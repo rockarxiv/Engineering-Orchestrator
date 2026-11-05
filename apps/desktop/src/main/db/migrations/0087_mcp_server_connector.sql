@@ -1,0 +1,26 @@
+-- A connector is an MCP server with a setup flow (EO-315,
+-- ARCHITECTURE.md, "A connector is an MCP server with a setup flow").
+--
+-- The column holds the words and the flow, never a value: a display
+-- name, a capability line written as what it reaches, the names of the
+-- secrets it needs, and whether a person connects it by pasting a token,
+-- by signing in, or not at all. `schemas/connectors.ts` is the shape.
+--
+-- On this table rather than in one of its own, because a connector *is*
+-- a server. A `connectors(server_id, …)` table would be a second place
+-- for "which server is Slack" to be answered, one row per server at
+-- most, and the second answer would be the one that went stale. The
+-- names it declares are folded into `env_names` by `readMcpServerDraft`
+-- at save time, so the delivery path -- the generated `.mcp.json`, the
+-- Codex merge, `attachmentEnvironment` -- reads exactly what it always
+-- read and learns nothing about connectors.
+--
+-- NULL on every existing row, and that is the honest answer for all of
+-- them: nobody has written words for a server somebody typed into the
+-- catalogue, and a migration that invented a capability line would be
+-- EO describing a third-party server it has never seen.
+--
+-- No value moves. Whatever is already in the keychain under a server's
+-- id stays there, and a server that becomes a connector tomorrow finds
+-- its token already set.
+ALTER TABLE `mcp_servers` ADD `connector` text;

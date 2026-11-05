@@ -1,0 +1,14 @@
+-- KAN-18: an optional gate before the implementer touches anything.
+--
+-- Off by default. With it on, the implementer describes what it intends
+-- to do and waits, which is the trade someone makes deliberately when
+-- they want more control over a particular board than the unattended
+-- loop gives them.
+--
+-- A board-level flag rather than an extra workflow state, and not for
+-- want of trying: `workflow_states` is global, so a per-board gate
+-- cannot be a state without making workflows per-board — a much larger
+-- change than the one being asked for. Invariant 7 says workflow is
+-- data, and it still is; this is a property of a board, not a stage in
+-- the pipeline.
+ALTER TABLE boards ADD COLUMN plan_mode INTEGER NOT NULL DEFAULT 0;

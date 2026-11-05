@@ -1,0 +1,23 @@
+node_modules/
+dist/
+out/
+.turbo/
+*.tsbuildinfo
+.DS_Store
+.env
+.env.local
+*.log
+coverage/
+.vite/
+release/
+test-results/
+playwright-report/
+blob-report/
+
+# electron-builder output
+release/
+
+# Written into a checkout by EO itself (repository intelligence, EO-207 skills).
+# EO excludes both in the worktrees it cuts; this is the developer's own checkout.
+.codewiki/
+.agent/

@@ -1,0 +1,11 @@
+-- J-05: what a transition asks for, and what to send it.
+--
+-- Keyed by Jira status name rather than by EO state: the fields belong
+-- to the transition into that status, so two EO states mapped to the
+-- same one want the same values.
+--
+-- Shape: { "Done": { requires: [ ...field ], values: { ... } } }
+-- `requires` is discovered at push time — Jira only describes
+-- transitions available from where an issue currently sits, so there is
+-- no moment in Settings when the whole picture could be fetched.
+ALTER TABLE projects ADD COLUMN jira_transition_fields TEXT;

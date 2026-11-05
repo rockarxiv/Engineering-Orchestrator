@@ -1,0 +1,30 @@
+-- The template item a pack ships for Preview (EO-314,
+-- the original design).
+--
+-- "Preview this pipeline" walks an example item through every step with
+-- canned output, before the person has signed anything in -- so the
+-- example has to arrive *with* the pack rather than be invented by the
+-- machine reading it. The pack format carries one; without a column it
+-- would be read on import and dropped on the floor, and the same pack
+-- passed on from here would have lost the one thing that lets the next
+-- person see it work before they commit to anything.
+--
+-- On `pipelines` because that is what it is an example *of*: a preview
+-- item is walked through this graph and means nothing beside another.
+--
+-- JSON and nullable, for `pipeline_steps.results`' reason and one more:
+-- almost every pipeline has no template item, and NULL says so exactly.
+-- An empty object would be a template with no title, which is a
+-- different and worse thing to have to read back.
+--
+-- **Not an item.** Nothing here is filed: this is the pack's example,
+-- and Preview is what turns it into a marked item excluded from inbox,
+-- archive and cost (ARCHITECTURE.md, "Preview"). A row in `items` written by an import would
+-- be a real item nobody asked for.
+--
+-- The other half of the design is `items.preview_at` (EO-313, 0084), and the
+-- two are deliberately different things wearing a similar word: that
+-- column marks an item somebody *is* previewing, this one is the example
+-- a pack ships for them to preview. One is a fact about a run, the other
+-- is part of the document.
+ALTER TABLE `pipelines` ADD `preview_item` text;

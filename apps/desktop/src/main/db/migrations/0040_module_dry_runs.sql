@@ -1,0 +1,22 @@
+-- A dry run: a module run somebody asked for to watch it work.
+--
+-- Invariant #5 says the engine verifies rather than trusts, and a module
+-- is the hardest case EO has — nothing it returns can be checked against
+-- anything, and a module the architect wrote from someone's script is
+-- that agent's *reading* of the script. Reading the code is not how most
+-- people will judge that, and pretending otherwise is how an approval
+-- gate becomes a rubber stamp. What a person can judge is what it did
+-- when it ran, so the answer is observation: run it once, in front of
+-- them, and show the result and the transcript.
+--
+-- It gets a real `runs` row. It takes time, it can fail, and it produces
+-- a transcript — the same argument the design makes for why the
+-- worktree became a step rather than staying a side effect. A dry run
+-- that left no trace would be a thing that happened to the repository
+-- with nothing anywhere saying so.
+--
+-- Flagged rather than hidden, because it is not work: it moves no
+-- ticket, consults no route, and must not read as progress in a
+-- transcript. Nullable-with-default rather than NOT NULL so every
+-- existing row means what it always meant.
+ALTER TABLE `runs` ADD `dry_run` integer DEFAULT 0 NOT NULL;

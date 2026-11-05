@@ -1,0 +1,41 @@
+-- Which projects the record has, and which the person kept (EO-325,
+-- `ARCHITECTURE.md`, "The record",
+-- "What a person sees first", "Identity").
+--
+-- A solo person signs in to an organisation with work already on their
+-- board, and until this story nothing said what became of it. The
+-- honest default is that it stays theirs until they say otherwise, per
+-- project, so a project needs somewhere to keep that answer.
+--
+-- Two columns rather than one, because there are three states and a
+-- single timestamp can only hold two of them:
+--
+--  * **undecided** — both null, on a desktop that has just signed in.
+--    The keep-or-move sheet lists exactly these, and until one is
+--    answered the project behaves as it did in solo mode. Silence has
+--    to mean "keep", because the alternative is a person's work
+--    arriving on their employer's server because they were slow to read
+--    a dialog.
+--  * **kept** — `kept_local_at` set. It stays under the local record
+--    and the local scheduler, beside the managed projects, and the
+--    switcher groups it under "Local".
+--  * **on the record** — `managed_at` set. Its rows were handed to the
+--    record, this copy is the replica, and there is no way back in this
+--    version. That is why the two are separate columns and not one
+--    nullable enum: `managed_at` is a point of no return and wants to
+--    be written once and read forever, and a column that could be set
+--    back to "local" is one a later story would be tempted to set back.
+--
+-- A project made *while signed in* is the record's from birth — see
+-- `createProject`, which asks `isReplica` — so it is never undecided
+-- and never appears on the sheet. The sheet is about the work that
+-- predates the sign-in, which is the whole of the design.
+ALTER TABLE `projects` ADD COLUMN `managed_at` integer;--> statement-breakpoint
+ALTER TABLE `projects` ADD COLUMN `kept_local_at` integer;--> statement-breakpoint
+-- Whose it is on the record.
+--
+-- Null in solo mode, where the one person is implicit and naming them
+-- would be bookkeeping. Set by the move to the person who signed in,
+-- which is the whole of "uploads its rows … as that person's": the
+-- server assigns nothing new except this.
+ALTER TABLE `projects` ADD COLUMN `owner_id` text REFERENCES `people`(`id`);

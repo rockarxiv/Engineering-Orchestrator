@@ -1,0 +1,18 @@
+-- When a run row last changed (EO-324, ARCHITECTURE.md, "Identity").
+--
+-- A run is mutated for as long as it lasts — queued, running, parked,
+-- finished, with tokens and a cost arriving at the end — and nothing
+-- else on the row says *when*. `started_at` is fixed at the beginning
+-- and `ended_at` is null until it is over, so a replica asking the
+-- record for "runs that changed since" had nothing to page on.
+--
+-- Which is what left a second desktop unable to show that anybody was
+-- working: the board reads the latest run's status out of the local
+-- `runs` table, and a machine that never received another device's runs
+-- draws an idle board while an agent is going elsewhere. The design's admin,
+-- watching every project, saw the least of anyone.
+--
+-- `0` rather than NULL for existing rows, which reads as "before any
+-- cursor a device holds" and so sends them all on the first pull —
+-- correct, and the only answer that does not silently hide history.
+ALTER TABLE `runs` ADD COLUMN `updated_at` integer DEFAULT 0 NOT NULL;

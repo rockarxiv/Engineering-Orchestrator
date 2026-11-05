@@ -1,0 +1,76 @@
+[
+  {
+    "date": "2026-08-17",
+    "scope": "app",
+    "genre": "utilitarian",
+    "macrostructure": "Workbench",
+    "theme": "studied-DNA",
+    "DNA_source": "image (user reference \u2014 agent-monitoring desktop tool)",
+    "theme_axes": "dark (L~21%, cool 262\u00b0) / neutral-grotesque, no display face / cool (cyan-blue 258\u00b0)",
+    "display_face": "Geist Variable",
+    "body_face": "Geist Variable",
+    "label_face": "JetBrains Mono Variable",
+    "pairing_logic": "two families \u2014 sans for humans, mono for machines",
+    "nav": "N3 two-tier side-rail",
+    "footer": "Ft2 inline rule",
+    "enrichment": "none",
+    "design_system": "ARCHITECTURE.md",
+    "studied": "yes",
+    "notes": "Replaces the five-variant spread; none of the five landed. Departures from the DNA: reviewing moved to violet 305\u00b0 because the accent took the blue and 6\u00b0 of separation is the collision two earlier systems were built to avoid; no translucency (the reference's vibrancy is a macOS material); inks lightened because the 21-28% canvas ladder failed them on raised surfaces. Diversification suspended \u2014 this follows an external DNA rather than rotating the catalog.",
+    "brief": "EO \u00b7 desktop app that drives a feature request to ready-to-merge via role-based agents \u2014 rebuild on studied DNA"
+  },
+  {
+    "date": "2026-08-17",
+    "scope": "app",
+    "genre": "atmospheric + editorial + brutalist + modern-minimal",
+    "macrostructure": "Map/Diagram + Index-First + Long Document",
+    "theme": "five systems, switchable at runtime",
+    "variants": [
+      {
+        "name": "Terminal",
+        "axes": "dark / mono / warm (amber 82\u00b0)",
+        "genre": "atmospheric"
+      },
+      {
+        "name": "Dusk",
+        "axes": "dark / rounded-geometric-sans / chromatic-other (jade 175\u00b0)",
+        "genre": "atmospheric"
+      },
+      {
+        "name": "Press",
+        "axes": "light / high-contrast-serif / neutral (achromatic)",
+        "genre": "editorial"
+      },
+      {
+        "name": "Brut",
+        "axes": "light / display-heavy / warm (vermilion 35\u00b0)",
+        "genre": "brutalist"
+      },
+      {
+        "name": "Cobalt",
+        "axes": "light / grotesk-sans / cool (cobalt 256\u00b0)",
+        "genre": "modern-minimal"
+      }
+    ],
+    "nav": "N3 two-tier side-rail (shared \u2014 the IA does not vary per system)",
+    "footer": "Ft2 inline rule",
+    "enrichment": "none",
+    "design_system": "ARCHITECTURE.md",
+    "notes": "Five fresh systems replacing the single petrol/editorial one, which was discarded as a candidate at the user's request. All five differ pairwise on display style and accent hue; two dark, three light. Each re-solves its own status scale so the accent clears the run states by \u226535\u00b0, enforced by scripts/design-tokens.mjs. Aurora and Grid were rejected \u2014 Aurora's cyan sits at the discarded petrol's 200\u00b0, Grid's red duplicates Brut's.",
+    "brief": "EO \u00b7 desktop app that drives a feature request to ready-to-merge via role-based agents \u2014 five-variant app-wide redesign, runtime switchable"
+  },
+  {
+    "date": "2026-08-17",
+    "scope": "app",
+    "genre": "editorial",
+    "macrostructure": "Map/Diagram + Index-First + Long Document",
+    "theme": "custom",
+    "theme_axes": "dark / roman-serif / chromatic-other (petrol ~200\u00b0)",
+    "vibe": "ink on paper, quiet instrument",
+    "nav": "N3 two-tier side-rail",
+    "footer": "Ft2 inline rule",
+    "enrichment": "none",
+    "design_system": "ARCHITECTURE.md",
+    "brief": "EO \u00b7 desktop app that drives a feature request to ready-to-merge via role-based agents \u2014 app-wide redesign"
+  }
+]

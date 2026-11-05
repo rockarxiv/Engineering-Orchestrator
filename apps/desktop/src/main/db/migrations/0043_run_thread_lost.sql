@@ -1,0 +1,25 @@
+-- The thread this run was continuing was gone from the backend (EO-93).
+--
+-- A stored thread id is a claim about a file on disk EO does not own:
+-- Claude keeps its sessions under `~/.claude`, Codex under
+-- `~/.codex/sessions`, and either can be cleaned up under EO's feet. When
+-- one is, the resume fails and the work has to carry on from a fresh
+-- conversation — but something has to remember, or the next dispatch
+-- looks up the newest run for that agent, finds the same dead thread id,
+-- and tries again until the attempt limit refuses the ticket for a reason
+-- that has nothing to do with the work.
+--
+-- A column of its own rather than nulling `thread_id`. The run really was
+-- handed that session id and really did try to resume it; erasing it
+-- would make the row read as a run that never had a thread, which is a
+-- different thing that happened and the opposite of a history worth
+-- keeping. `run_events` is not the place either — it is append-only
+-- durability substrate, not a flag `findReusableThread` can query.
+--
+-- It marks the *thread*, not the run: every run of that agent's on this
+-- ticket carrying this thread id is dead with it, which is what stops the
+-- one before this one being offered up next tick.
+--
+-- Nullable-with-default rather than NOT NULL, so every existing row keeps
+-- meaning exactly what it always meant: a thread nobody has found missing.
+ALTER TABLE `runs` ADD `thread_lost` integer DEFAULT 0 NOT NULL;

@@ -1,0 +1,282 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  # By hand, on any branch: how several runs in a row on the same commit
+  # are asked for without pushing a commit for each.
+  workflow_dispatch:
+
+jobs:
+  # Linux only, deliberately.
+  #
+  # This used to be a three-OS matrix, justified by "install is what
+  # proves electron-rebuild works cleanly on macOS and Windows". That
+  # reasoning did not survive P-02: better-sqlite3 ships N-API prebuilds
+  # and `binding.js` prefers them over anything node-gyp produces, so
+  # electron-rebuild is close to a no-op and cannot fail the way the
+  # matrix was built to catch.
+  #
+  # What it did do was cost roughly seventy billable minutes per push,
+  # because GitHub bills macOS at ten times wall-clock and Windows at
+  # twice. The cross-platform suite still runs on every platform — in the
+  # release workflow, before anything is packaged, which is the moment it
+  # actually protects something. And on Windows in CI too, but only where
+  # that costs no minutes; see test-windows below.
+  test:
+    # ubuntu-latest normally. The CI_RUNS_ON repo variable points this at
+    # the self-hosted runner while the free Actions allowance is spent;
+    # delete the variable and it goes straight back to hosted.
+    #
+    # Never for a pull request from a fork, whatever the variables say.
+    # The self-hosted runner is the maintainer's own machine, the one that
+    # runs EO and its agents. In a public repository anyone can open a
+    # pull request, and its code would run there. A fork's pull
+    # request is hosted and uncontainerised, as if neither variable were
+    # set. A head repository that has since been deleted reads as null,
+    # which differs from this one, so it counts as a fork too.
+    runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && 'ubuntu-latest' || vars.CI_RUNS_ON || 'ubuntu-latest' }}
+    # Null on hosted. On the self-hosted runner both jobs must agree on
+    # this: they share one working directory, and a containerised job
+    # writes as root, which left the next job unable to clean it.
+    container: ${{ fromJSON((github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && 'null' || vars.CI_CONTAINER || 'null') }}
+    steps:
+      - uses: actions/checkout@v5
+
+      # Must come before setup-node: v5 turns on package-manager-cache by
+      # default, which reads the `packageManager` field and shells out to
+      # pnpm to find the store path — so pnpm has to already exist. This
+      # action pins the version from that same field, so there's one
+      # source of truth for it.
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v5
+        with:
+          # 22.x, matching the Node that Electron 39 bundles. Not 20:
+          # jsdom 30 pulls undici 8, which calls markAsUncloneable —
+          # a Node API that only exists from 22.10 on.
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Lint
+        run: pnpm lint
+
+      # Recomputes every contrast pair and fails on a value that doesn't
+      # clear it, and fails if tokens.css has drifted from styles.css.
+      # Nothing else enforces the design system's own numbers.
+      - name: Design system
+        run: pnpm design:check
+
+      # EO contains each agent in a cgroup of its own below EO's (EO-494),
+      # which needs a cgroup EO's user may write to: what a desktop session
+      # gives every application, and not what a hosted runner gives a job,
+      # whose cgroup is root's. So the suite is handed one of its own, and
+      # told to fail rather than skip the containment cases if it still
+      # cannot use it. Not on the self-hosted container, whose cgroup tree
+      # is read-only; there the suite holds EO to what it can find instead.
+      - name: Test
+        run: |
+          if [ "${{ runner.environment }}" = github-hosted ] && [ -f /sys/fs/cgroup/cgroup.controllers ]; then
+            sudo mkdir -p /sys/fs/cgroup/eo-ci
+            sudo chown -R "$(id -u):$(id -g)" /sys/fs/cgroup/eo-ci
+            echo $$ | sudo tee /sys/fs/cgroup/eo-ci/cgroup.procs > /dev/null
+            export EO_EXPECT_CGROUP_CONTAINMENT=1
+          fi
+          pnpm test
+
+  # The suite on Windows, on every push, but only on a self-hosted runner:
+  # it runs when CI_WINDOWS_RUNS_ON names one and is skipped otherwise,
+  # so going back to hosted runners cannot quietly bring back the
+  # Windows bill that made CI Linux-only above.
+  #
+  # Only the suite. Typecheck, lint and the design-system check read the
+  # same sources on any system and already run in `test`; what differs on
+  # Windows is paths, shells and processes, and those are in the tests.
+  #
+  # In slices, one job each, as the release workflow's verify jobs are. The
+  # whole suite as one job under the self-hosted runner's service failed
+  # every test that starts a Codex app-server with `spawn EPERM` — Windows
+  # refusing to start the process at all — while the same files pass there
+  # on their own, the release's slices pass there, and the whole suite run
+  # by hand on the same machine never hits it. EO-598 pinned it down:
+  # Defender judging `node -e` command lines, which the tests no longer
+  # hand it.
+  #
+  # Much of what slows a Windows runner lies outside the repository:
+  # Defender scanning every file and process the suite makes, a pagefile
+  # too small for the suite's peak, too little memory. Those are the
+  # machine owner's to fix; the steps below that report on the machine
+  # say on every run whether it is in that state.
+  #
+  # The runner's default shell, as in the release workflow's verify job,
+  # and for its reason: Git Bash's GNU tar reads `C:\...` as a host.
+  #
+  # Skipped for a pull request from a fork, for the reason in `test`: a
+  # self-hosted runner must never run a stranger's code. Not
+  # moved to windows-latest instead: that is the Windows bill this job
+  # exists to avoid, and the release workflow runs the suite on Windows
+  # before anything ships.
+  test-windows:
+    if: vars.CI_WINDOWS_RUNS_ON != '' && !(github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository)
+    name: test-windows (${{ matrix.shard }}/4)
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    runs-on: ${{ vars.CI_WINDOWS_RUNS_ON }}
+    steps:
+      # The runner keeps one machine for every job, one job at a time, so
+      # a process of this user's from the work folder, TEMP or Git that
+      # started before this job did is an earlier job's: a test's child
+      # that outlived it, or a whole suite whose job was cancelled or lost
+      # its connection. It holds memory, CPU and folders the next job
+      # wants, and nothing else ends it. Get-Process, not CIM: the first
+      # CIM query can stall for minutes (see the WMI step below).
+      - name: End what earlier jobs left running
+        shell: pwsh
+        run: |
+          $job = Get-Process Runner.Worker -ErrorAction SilentlyContinue | Sort-Object StartTime | Select-Object -Last 1
+          if (-not $job) { 'No Runner.Worker to date this job by; nothing ended.'; exit 0 }
+          $roots = @((Split-Path $env:RUNNER_WORKSPACE), [IO.Path]::GetTempPath(), "$env:ProgramFiles\Git") | ForEach-Object { $_.TrimEnd('\') + '\' }
+          $left = foreach ($p in Get-Process) {
+            try { $path = $p.Path; $start = $p.StartTime } catch { continue }
+            if (-not $path -or -not $start -or $start -ge $job.StartTime) { continue }
+            foreach ($root in $roots) { if ($path.StartsWith($root, [StringComparison]::OrdinalIgnoreCase)) { $p; break } }
+          }
+          if (-not $left) { 'Nothing from an earlier job is running.'; exit 0 }
+          $left | Format-Table Id, Name, StartTime, Path -AutoSize | Out-String -Width 300
+          $left | Stop-Process -Force -ErrorAction SilentlyContinue
+          "::warning title=Windows runner::Ended $(@($left).Count) processes an earlier job left running; the list is in this step's log."
+
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # The packages other than the desktop are small; the first slice
+      # takes them. One package at a time: turbo otherwise starts core's,
+      # engine's and ui's suites and core's build together, each vitest
+      # with a worker per CPU but one, so three suites' forks and a tsc
+      # compete for the same CPUs. ui's jsdom forks were the ones that did
+      # not answer within vitest's minute — "Failed to start forks worker" for every file,
+      # and no test run at all. Together they take under a minute anyway.
+      - name: The package suites
+        if: matrix.shard == 1
+        run: pnpm exec turbo run test '--filter=!@eo/desktop' --concurrency=1
+
+      # As in the release workflow (EO-502): the suite reads the process
+      # table through CIM, and the first such read can stall for minutes —
+      # inside whichever test makes it. One query here takes that outside
+      # every test's limit. Best effort.
+      - name: Wake WMI before the desktop suite
+        continue-on-error: true
+        timeout-minutes: 15
+        shell: pwsh
+        run: "(Measure-Command { Get-CimInstance -Query 'SELECT ProcessId, ParentProcessId, CreationDate FROM Win32_Process' | Out-Null }).TotalSeconds"
+
+      # The machine's state, read back: a failure below this step is
+      # easier to place once it says how long the machine has been up, how
+      # much memory it had, and whether Defender was scanning the suite's
+      # folders. A warning, never a failure: the machine is a person's to
+      # change, and the suite may still pass without it.
+      - name: Report the machine
+        continue-on-error: true
+        timeout-minutes: 5
+        shell: pwsh
+        run: |
+          $os = Get-CimInstance Win32_OperatingSystem
+          $page = (Get-CimInstance Win32_PageFileUsage | Measure-Object AllocatedBaseSize -Sum).Sum
+          'Up {0:N1} h. Memory: {1:N1} of {2:N1} GB free. Commit: {3:N1} of {4:N1} GB free. Pagefile: {5:N1} GB. CPUs: {6}.' -f ((Get-Date) - $os.LastBootUpTime).TotalHours, ($os.FreePhysicalMemory / 1MB), ($os.TotalVisibleMemorySize / 1MB), ($os.FreeVirtualMemory / 1MB), ($os.TotalVirtualMemorySize / 1MB), ($page / 1KB), [Environment]::ProcessorCount
+          $mp = Get-MpComputerStatus -ErrorAction SilentlyContinue
+          if (-not $mp -or -not $mp.RealTimeProtectionEnabled) { 'Defender real-time protection: off.'; exit 0 }
+          $excluded = @((Get-MpPreference).ExclusionPath) | Where-Object { $_ -and $_ -notlike 'N/A*' } | ForEach-Object { $_.TrimEnd('\') + '\' }
+          $needed = @((Split-Path $env:RUNNER_WORKSPACE), [IO.Path]::GetTempPath()) | ForEach-Object { $_.TrimEnd('\') + '\' }
+          $scanned = foreach ($folder in $needed) { if (-not ($excluded | Where-Object { $folder.StartsWith($_, [StringComparison]::OrdinalIgnoreCase) })) { $folder } }
+          "Defender real-time protection: on. Excluded: $(if ($excluded) { $excluded -join ', ' } else { 'nothing this user can see' })."
+          if ($scanned) { "::warning title=Windows runner::Defender scans $($scanned -join ' and ') in real time, which slows every git, node and PowerShell start the suite makes. Exclude the runner's work folder and TEMP from Defender real-time scanning." }
+
+      # Through turbo, so @eo/core and @eo/engine are built first; only
+      # the desktop's own `vitest run` receives what follows the `--`.
+      - name: Desktop suite, slice ${{ matrix.shard }} of 4
+        run: pnpm exec turbo run test '--filter=@eo/desktop' '--' '--shard=${{ matrix.shard }}/4'
+
+  # Separate from the matrix: Electron needs a display, and one Linux run
+  # is enough to catch what these tests are for — the preload bridge, the
+  # real IPC round-trip, and the screens that only fail when a real main
+  # process is behind them. They had drifted against a page that no
+  # longer existed precisely because nothing ran them.
+  e2e:
+    # Hosted for a pull request from a fork, for the reason in `test`.
+    runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && 'ubuntu-latest' || vars.CI_RUNS_ON || 'ubuntu-latest' }}
+    # Null unless CI_CONTAINER is set, which happens only alongside
+    # CI_RUNS_ON: a self-hosted runner's OS may not be Debian, and the
+    # steps below use apt-get. Containerising also keeps CI off the
+    # runner's own packages. Null for a fork's pull request, which is
+    # hosted.
+    container: ${{ fromJSON((github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && 'null' || vars.CI_CONTAINER || 'null') }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Install Playwright browsers
+        run: pnpm --filter @eo/desktop exec playwright install --with-deps chromium
+
+      # Through turbo, not `pnpm --filter`: electron-vite bundles
+      # @eo/core, so the workspace packages have to be built first and
+      # only turbo knows that graph. A direct filter run resolves against
+      # a dist/ that exists locally and not on a clean checkout.
+      - name: Build the app
+        run: pnpm build --filter=@eo/desktop
+
+      # A keyring, because J-01 puts the Jira token in one and refuses
+      # to connect without it — so the Jira e2e has nowhere to store a
+      # token on a bare runner.
+      #
+      # xvfb and dbus-x11 ship on the hosted image but not in the
+      # container, so they are named here too, and sudo exists only on
+      # the hosted image — in the container the job is already root.
+      - name: Install a keyring
+        run: |
+          ${{ runner.environment == 'github-hosted' && 'sudo ' || '' }}apt-get update
+          ${{ runner.environment == 'github-hosted' && 'sudo ' || '' }}apt-get install -y gnome-keyring xvfb xauth dbus-x11
+
+      # xvfb-run, because Electron will not start headless on a runner
+      # with no X server. dbus-run-session and an unlocked keyring for
+      # the reason above; the empty password is the runner's throwaway
+      # login.
+      #
+      # Two things stop it raising a graphical prompt nobody can answer,
+      # which otherwise hangs the run until the test times out. The
+      # `default` file, so libsecret finds a default collection instead
+      # of asking to create one — and a *non-empty* password, because
+      # gnome-keyring asks for confirmation before making a keyring with
+      # an empty one. It is a throwaway on a throwaway runner.
+      - name: End-to-end
+        run: |
+          mkdir -p "$HOME/.local/share/keyrings"
+          printf 'login' > "$HOME/.local/share/keyrings/default"
+          xvfb-run -a dbus-run-session -- bash -c '
+            eval "$(printf eo-ci-keyring | gnome-keyring-daemon --unlock --daemonize --components=secrets)"
+            export GNOME_KEYRING_CONTROL
+            pnpm --filter @eo/desktop exec playwright test
+          '
+          

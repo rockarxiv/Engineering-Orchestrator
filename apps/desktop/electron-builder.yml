@@ -1,0 +1,200 @@
+appId: dev.eo.desktop
+productName: EO
+directories:
+  buildResources: build
+  output: release
+
+files:
+  - out/**/*
+  - package.json
+  # A-08: the agent CLIs are fetched at runtime, not shipped. The Claude
+  # one is "© Anthropic PBC. All rights reserved" and is not ours to
+  # redistribute; Codex is Apache-2.0 and could be, but it takes the
+  # same path so there is one mechanism rather than two. Between them
+  # they are most of the installer.
+  #
+  # The Claude JS wrapper (`claude-agent-sdk`) is what EO imports; only
+  # its platform binary packages go. Codex has no wrapper any more: EO
+  # speaks `codex app-server` itself (EO-372), so nothing of `@openai/`
+  # is a dependency, and the two Codex lines below stay only so that a
+  # future `pnpm add` cannot quietly put a binary back in the installer.
+  # The SDK's own JavaScript, not just its binaries. It is a
+  # devDependency now so this is belt and braces, but the exclusion is
+  # what a future `pnpm add` back into dependencies would run into.
+  - "!**/node_modules/@anthropic-ai/**"
+  - "!**/node_modules/@openai/codex/**"
+  - "!**/node_modules/@openai/codex-{linux,darwin,win32}-*/**"
+
+# Read from disk at runtime, so they cannot live inside the asar bundle:
+# migrations are SQL, prompts are markdown, and eoServer.mjs has to
+# be a real path because Codex launches it as a subprocess (A-05).
+extraResources:
+  - from: src/main/db/migrations
+    to: app-resources/migrations
+    filter: ["**/*.sql", "meta/**/*"]
+  - from: src/main/packs/developer/prompts
+    to: app-resources/prompts
+    filter: ["**/*.md"]
+  - from: src/main/mcp/eoServer.mjs
+    to: app-resources/mcp/eoServer.mjs
+  # Same reason again, and one a packaged build would fail on silently:
+  # a backend CLI executes this by path to keep a delivered MCP server
+  # from outliving it (EO-151).
+  - from: src/main/mcp/superviseStdioServer.mjs
+    to: app-resources/mcp/superviseStdioServer.mjs
+  # And once more: Codex runs a hook as a command, by path, and this is
+  # the one EO's broad-search nudge is delivered through (EO-379). Left
+  # out, a packaged build would run every Codex agent without the nudge
+  # and report nothing.
+  - from: src/main/providers/codexSearchHookCommand.mjs
+    to: app-resources/providers/codexSearchHookCommand.mjs
+  # Same reason as eoServer.mjs, one story later: a custom module runs in
+  # a child process so that nothing of EO is in scope while it does, and
+  # that process needs a real file to execute (KAN-105).
+  - from: src/main/modules/moduleHost.mjs
+    to: app-resources/modules/moduleHost.mjs
+  # The gallery's bundled templates (EO-316). Read from disk at runtime
+  # like the migrations, and shipped for the reason the design gives: first run
+  # has to work offline and on the day the installer does, which means
+  # the bundled set cannot be something the app fetches.
+  - from: resources/gallery
+    to: app-resources/gallery
+    filter: ["**/*.json"]
+  # Not read at runtime — this one is for a person. NOTICE is the record
+  # of what EO fetches but does not ship, and of the attribution those
+  # components carry (CodeWiki's MIT licence, the CodeGraph work it
+  # derives from, the tree-sitter grammars it embeds). An attribution
+  # file that exists only in the source repository is not one the person
+  # running the installed app can read, so it ships beside the app rather
+  # than inside the asar. `..` is resolved against this project directory,
+  # the same way `nsis.license` below reaches LICENSE.
+  - from: ../../NOTICE
+    to: NOTICE
+  # Apache-2.0 section 4: whoever receives the app must also receive a
+  # copy of the licence, so it ships beside NOTICE for the same reason.
+  - from: ../../LICENSE
+    to: LICENSE
+
+# Without this the executable is named from package.json's scoped name
+# ("@eodesktop"). macOS and Windows use productName, but being explicit
+# keeps every platform consistent.
+executableName: EO
+
+# Deterministic and arch-explicit. Naming the pattern also switches off
+# electron-builder's habit of omitting the arch for x64
+# (platformPackager.js:547), which matters: electron-updater picks a file
+# by looking for `process.arch` in its name, so an unlabelled x64
+# artifact is matched by position rather than by name.
+artifactName: ${productName}-${version}-${os}-${arch}.${ext}
+
+asar: true
+# better-sqlite3 ships N-API prebuilds and is loaded through node-gyp-build,
+# which resolves a real path — inside an asar it cannot. Unpacking it is
+# what makes the native module load in a packaged app.
+asarUnpack:
+  - "**/node_modules/better-sqlite3/**"
+
+# And for the same reason there is nothing to rebuild. better-sqlite3 is
+# the only native module, its package carries a prebuild for every
+# platform and arch EO ships, and lib/binding.js loads
+# prebuilds/<platform>-<arch>.node, never anything node-gyp produced. Left
+# on, the rebuild still runs node-gyp, which needs a C++ toolchain for
+# the target: it cannot cross-compile at all, so `--arm64` fails on an
+# x64 Linux host, and on Windows it needs Visual Studio Build Tools that
+# only GitHub's hosted image happens to have.
+npmRebuild: false
+
+publish:
+  provider: github
+  # The release feed is public, and electron-updater reads it with no
+  # credential at all. `private: true` is kept for one thing only: it is
+  # what makes electron-updater look for GH_TOKEN or GITHUB_TOKEN in the
+  # app's environment and, when one is set, read the releases through the
+  # API as that user (providerFactory picks PrivateGitHubProvider) instead
+  # of the public releases atom feed. With neither set it builds the
+  # public provider, which is the ordinary case. Keeping it means an
+  # installation that has a token keeps working exactly as before, and
+  # it does not make a token necessary.
+  private: true
+  # Checksums come from electron-builder's own latest*.yml, which
+  # electron-updater verifies before applying an update.
+
+mac:
+  category: public.app-category.developer-tools
+  # Per-arch rather than universal: a universal binary would carry two
+  # copies of the native modules and double the download for no benefit
+  # to a single user. Both archs are built in ONE electron-builder run —
+  # see the note above `win.target`.
+  target:
+    - target: dmg
+      arch: [arm64, x64]
+    # Not optional. macOS updates are applied from a zip, and
+    # MacUpdater throws ERR_UPDATER_ZIP_FILE_NOT_FOUND when the feed
+    # lists only a dmg. Since autoDownload is on, that error arrives
+    # before anything is visible: the app would find every update and
+    # silently fail to install any of them.
+    - target: zip
+      arch: [arm64, x64]
+  hardenedRuntime: true
+  gatekeeperAssess: false
+  entitlements: build/entitlements.mac.plist
+  entitlementsInherit: build/entitlements.mac.plist
+  # False while EO ships unsigned. `true` is harmless without
+  # credentials — it warns and skips — but *partial* credentials throw,
+  # so the day someone sets APPLE_ID alone every macOS build dies. Flip
+  # this in the same commit that adds all three secrets.
+  notarize: false
+
+win:
+  # One installer, carrying both architectures and choosing at install
+  # time. Deliberately WITHOUT ${arch}: NsisTarget builds the combined
+  # installer *and* one per arch when the name pattern contains it and
+  # more than one arch is asked for, which is how a release page ends up
+  # offering three .exe files and no way to tell which one you want.
+  artifactName: ${productName}-${version}-win.${ext}
+  # Both archs, and both from a SINGLE electron-builder invocation.
+  # Splitting them across two CI jobs looks tidier and quietly breaks
+  # auto-update: only Linux gets an arch suffix on its update metadata,
+  # so two Windows jobs both write `latest.yml` and the second upload
+  # overwrites the first. Multi-arch metadata is only merged within one
+  # run (updateInfoBuilder.js:170).
+  target:
+    - target: nsis
+      arch: [x64, arm64]
+  # Authenticode signing is configured through CSC_LINK / CSC_KEY_PASSWORD
+  # in CI. Unsigned binaries that spawn processes and open sockets get
+  # flagged by Defender ML heuristics, which is what EO does all day.
+
+linux:
+  # Explicit, and it has to be: the default is ["snap", "appimage"], and
+  # snap needs snapcraft on the build machine.
+  target:
+    - target: AppImage
+      arch: [x64]
+  category: Development
+  synopsis: Drives a feature request from idea to ready to merge, using role-based coding agents.
+  # AppImage does not need this; a future .deb would fail without it.
+  maintainer: EO <rockarxiv@gmail.com>
+  # Electron derives its app_id from `desktopName` in package.json and
+  # the .desktop entry's StartupWMClass must match, or the desktop
+  # environment shows a running EO window as an unnamed stray.
+  syncDesktopName: true
+
+# The default AppImage runtime is FUSE2 and needs libfuse2, which Ubuntu
+# 22.04 and later do not ship — the build succeeds and the download then
+# refuses to start on a modern desktop. 1.0.3 uses a static runtime.
+toolsets:
+  appimage: "1.0.3"
+
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  perMachine: false
+  # EO's open-source licence (Apache-2.0), shown as the installer's
+  # licence page. It is the only licence there is: nothing else is
+  # agreed to elsewhere. Any file that is not .html goes straight to
+  # MUI_PAGE_LICENSE, so LICENSE needs no extension.
+  #
+  # Belongs to nsis, not the root: electron-builder rejects a top-level
+  # `license` outright, which is how this was caught.
+  license: ../../LICENSE

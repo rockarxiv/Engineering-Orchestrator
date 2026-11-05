@@ -1,0 +1,31 @@
+-- A ticket that has just been attached to an issue and not yet read it
+-- (EO-127).
+--
+-- Attaching is a local write and always will be: the pinned decision on
+-- EO-121 is that `work_submit_ticket`, `work_submit_plan` and
+-- `ticket_update` are synchronous paths, and a Jira that is down must
+-- never cost somebody the ticket they just submitted. So attaching
+-- cannot fetch the issue itself. But an attached ticket that never
+-- reads its issue is a key and nothing else — the comments, the files
+-- and the text everyone else is editing all stay in Jira.
+--
+-- The ordinary sweep cannot cover it either. `pullProject` asks Jira
+-- which issues *moved* in the last few minutes, so an issue nobody has
+-- touched this week is invisible to it no matter how long you wait; a
+-- freshly attached ticket needs a pull aimed at it by name.
+--
+-- This column is that intent, written where the link is written and
+-- acted on later from the timer that already exists — the same division
+-- `outbox` uses for pushes. `linkJiraKey` sets it in the transaction
+-- that writes the key, `setJiraSync(id, true)` sets it on a ticket that
+-- holds one, and clearing either clears it. `startJiraPull`'s tick
+-- drains it with `pullTicket`, clearing the flag only once the pull has
+-- succeeded, so an attempt made while Jira is unreachable is retried on
+-- the next tick rather than losing the backfill.
+--
+-- Every existing row becomes 0, by the column default and without
+-- looking at anything. A ticket attached before this column existed has
+-- had every scheduled pull since to catch up on its issue, and marking
+-- the board pending on the launch that applies this would send one
+-- `getIssue` per mirrored ticket for a backfill nobody asked for.
+ALTER TABLE `tickets` ADD COLUMN `jira_pull_pending` integer DEFAULT 0 NOT NULL;

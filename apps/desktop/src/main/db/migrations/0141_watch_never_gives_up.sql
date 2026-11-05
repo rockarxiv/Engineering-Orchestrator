@@ -1,0 +1,14 @@
+-- Keep checking with no deadline (EO-571, ARCHITECTURE.md, "Keep checking").
+--
+-- A step's watch could only give up after a number of hours, and a pull
+-- request can wait weeks for a person. This is the flag that says a step
+-- keeps checking until a check has a result, however long that takes.
+--
+-- A column of its own rather than a NULL or a sentinel in
+-- `watch_give_up_hours`, because NULL there already reads as "the step
+-- runs once" (`watchOf`), and the hours stay what a device that predates
+-- the flag reads the step as. Default 0, so every step that exists keeps
+-- the deadline it had. Schema only: no pipeline graph is edited here.
+-- The shipped template takes the setting as a template version
+-- (§15.5), never through a migration.
+ALTER TABLE `pipeline_steps` ADD `watch_never_gives_up` integer DEFAULT 0 NOT NULL;

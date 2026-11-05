@@ -1,0 +1,21 @@
+-- Which model each run was answered by, as its own log says (EO-541).
+--
+-- `runs` records no model, and the agent's configured one is today's
+-- setting rather than what a finished run ran on: change an agent's
+-- model, or its backend, and every run it ever made would be reported as
+-- the new one. The run's own events say it — `thread_started` names the
+-- model the backend opened or resumed the thread on, and `usage` the one
+-- a turn was spent on where the backend names a single one (EO-392) —
+-- and `run_events` is append-only, so what they say never changes.
+--
+-- `runs_list` reads that for every run it lists, and `run_events` is
+-- keyed on `(run_id, seq)` with nothing on `type`: without this, each
+-- run's whole transcript would be read to find its handful of rows.
+-- Partial, for `idx_run_events_debug_sent`'s reason: it holds the rows
+-- of those two types and nothing else. The query has to say the same
+-- `type IN (...)` as a literal for SQLite to use it — see `modelOf` in
+-- `repos/runAnalysisRepo.ts`.
+--
+-- An index only. No row of `run_events` is written, changed or removed
+-- (invariant #3): this changes what is read, never what is stored.
+CREATE INDEX `idx_run_events_model` ON `run_events` (`run_id`, `seq`) WHERE `type` IN ('thread_started', 'usage');

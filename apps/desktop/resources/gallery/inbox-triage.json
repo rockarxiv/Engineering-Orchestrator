@@ -1,0 +1,254 @@
+{
+  "eoPipelineExport": 8,
+  "modules": [],
+  "roles": [
+    {
+      "slug": "triager",
+      "prompt": "You read one message that came into a shared inbox and say what it is asking for.\n\nAnswer in the sender's own terms, not the company's. Say who wrote in, what they want, and how quickly. If the message does not say clearly, say that rather than guessing.",
+      "schemasByAction": {},
+      "actions": [
+        {
+          "action": "triage",
+          "description": "Read the message and say who wrote in, what they want and how quickly, in the sender's own terms.",
+          "results": [
+            {
+              "key": "triaged",
+              "label": "Triaged",
+              "meaning": "The message says clearly enough what is being asked for, and your summary says it."
+            },
+            {
+              "key": "unclear",
+              "label": "Cannot tell what it wants",
+              "meaning": "The message does not say what it wants. Say what is missing rather than guessing."
+            }
+          ],
+          "fields": {}
+        }
+      ],
+      "allowedTools": null,
+      "backend": null,
+      "model": null
+    }
+  ],
+  "itemTypes": [
+    {
+      "packSlug": "inbox-triage",
+      "slug": "message",
+      "label": "Message",
+      "plural": "Messages",
+      "container": false,
+      "specShape": {
+        "type": "object",
+        "properties": {
+          "from": {
+            "type": "string",
+            "description": "Who wrote in."
+          },
+          "asked": {
+            "type": "string",
+            "description": "What they actually want.",
+            "x-eo-criteria": true
+          },
+          "urgency": {
+            "type": "string",
+            "enum": [
+              "now",
+              "this week",
+              "whenever"
+            ],
+            "description": "How fast an answer is wanted."
+          }
+        },
+        "required": [
+          "asked"
+        ]
+      },
+      "actionOverrides": {}
+    }
+  ],
+  "connectors": [
+    {
+      "slug": "mailbox",
+      "label": "Shared mailbox",
+      "description": "reads the shared inbox this triages",
+      "mcpServer": "mailbox"
+    }
+  ],
+  "mcpServers": [
+    {
+      "name": "mailbox",
+      "description": "reads the shared inbox this triages",
+      "connector": {
+        "label": "Mailbox",
+        "kind": "token",
+        "secretNames": [
+          "MAILBOX_API_TOKEN"
+        ],
+        "oauth": null
+      }
+    }
+  ],
+  "vocabulary": {
+    "types": [
+      {
+        "type": "inbox-triage:message",
+        "label": "Message",
+        "plural": "Messages"
+      }
+    ],
+    "results": [
+      {
+        "key": "answer",
+        "label": "Answer it"
+      },
+      {
+        "key": "escalate",
+        "label": "Escalate"
+      },
+      {
+        "key": "close",
+        "label": "Close"
+      }
+    ]
+  },
+  "previewItem": {
+    "title": "Invoice for August is wrong",
+    "type": "inbox-triage:message",
+    "body": "Hi \u2014 the August invoice charges us for 40 seats and we only have 22. Can somebody look?",
+    "spec": {
+      "from": "priya@northwind.example",
+      "asked": "A corrected August invoice for 22 seats",
+      "urgency": "this week"
+    }
+  },
+  "pipeline": {
+    "name": "Inbox triage",
+    "icon": "inbox",
+    "entryStepId": "read"
+  },
+  "steps": [
+    {
+      "id": "read",
+      "position": 0,
+      "name": "Read",
+      "type": "agent",
+      "ownerRole": "triager",
+      "entryAction": "triage",
+      "instructionsSummary": "Works out what the message is actually asking for",
+      "isTerminal": false,
+      "planMode": false,
+      "results": []
+    },
+    {
+      "id": "decide",
+      "position": 1,
+      "name": "Decide",
+      "type": "user",
+      "ownerRole": null,
+      "entryAction": null,
+      "instructionsSummary": "You choose what happens to it",
+      "isTerminal": false,
+      "planMode": false,
+      "results": [
+        {
+          "key": "answer",
+          "label": "Answer it",
+          "tone": "success",
+          "requiresComment": false
+        },
+        {
+          "key": "escalate",
+          "label": "Escalate",
+          "tone": "warning",
+          "requiresComment": true
+        },
+        {
+          "key": "close",
+          "label": "Close",
+          "tone": "info",
+          "requiresComment": true
+        }
+      ]
+    },
+    {
+      "id": "handled",
+      "position": 2,
+      "name": "Handled",
+      "type": "user",
+      "ownerRole": null,
+      "entryAction": null,
+      "instructionsSummary": null,
+      "isTerminal": true,
+      "planMode": false,
+      "results": []
+    }
+  ],
+  "routes": [
+    {
+      "fromStepId": "read",
+      "resultKey": "triaged",
+      "label": "Triaged",
+      "tone": "success",
+      "target": "decide",
+      "position": 0
+    },
+    {
+      "fromStepId": "read",
+      "resultKey": "unclear",
+      "label": "Cannot tell what it wants",
+      "tone": "info",
+      "target": "user_attention",
+      "position": 1
+    },
+    {
+      "fromStepId": "decide",
+      "resultKey": "answer",
+      "label": "Answer it",
+      "tone": "success",
+      "target": "handled",
+      "position": 0
+    },
+    {
+      "fromStepId": "decide",
+      "resultKey": "escalate",
+      "label": "Escalate",
+      "tone": "warning",
+      "target": "user_attention",
+      "position": 1
+    },
+    {
+      "fromStepId": "decide",
+      "resultKey": "close",
+      "label": "Close",
+      "tone": "info",
+      "target": "handled",
+      "position": 2
+    }
+  ],
+  "template": {
+    "slug": "inbox-triage",
+    "title": "Inbox triage",
+    "description": "Everything that lands in a shared mailbox is read, summarised in the sender's own terms, and put in front of you with three buttons: answer, escalate, close.",
+    "version": "1.0",
+    "blanks": [
+      {
+        "key": "mailbox",
+        "kind": "connector",
+        "label": "The mailbox",
+        "help": "Which inbox this triages. You authorise it on the needs check.",
+        "required": false,
+        "default": "",
+        "connector": "mailbox"
+      },
+      {
+        "key": "keyPrefix",
+        "kind": "keyPrefix",
+        "label": "Message prefix",
+        "help": "What each triaged message is numbered with, like MSG-1.",
+        "required": true,
+        "default": "MSG",
+        "connector": null
+      }
+    ]
+  }
+}

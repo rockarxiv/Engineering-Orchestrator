@@ -1,0 +1,92 @@
+name: Claude Code
+
+on:
+  issue_comment:
+    types: [created]
+  pull_request_review_comment:
+    types: [created]
+  issues:
+    types: [opened, assigned]
+  pull_request_review:
+    types: [submitted]
+
+jobs:
+  claude:
+    # Only for someone with a standing in the repository: its owner, a
+    # member of its organisation, or a collaborator. The job spends the
+    # maintainer's CLAUDE_CODE_OAUTH_TOKEN and runs on the maintainer's
+    # runner, and in a public repository anyone can write "@claude" in an
+    # issue or comment; theirs does nothing. The association is read from
+    # whatever carried the mention: the comment, the review, or the issue.
+    if: |
+      (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude') && contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)) ||
+      (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@claude') && contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)) ||
+      (github.event_name == 'pull_request_review' && contains(github.event.review.body, '@claude') && contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.review.author_association)) ||
+      (github.event_name == 'issues' && (contains(github.event.issue.body, '@claude') || contains(github.event.issue.title, '@claude')) && contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.issue.author_association))
+    # ubuntu-latest normally. Same CI_RUNS_ON / CI_CONTAINER switch the CI
+    # workflow uses: while the free Actions allowance is spent this points
+    # at the self-hosted runner, and deleting the variables puts it back on
+    # hosted. The container matters as much as the runner — a self-hosted
+    # runner's OS may not be the Debian the steps expect, and both
+    # workflows share one working directory, so a containerised job writing
+    # as root leaves the next job unable to clean up unless every job
+    # agrees.
+    runs-on: ${{ vars.CI_RUNS_ON || 'ubuntu-latest' }}
+    container: ${{ fromJSON(vars.CI_CONTAINER || 'null') }}
+    permissions:
+      contents: read
+      pull-requests: read
+      issues: read
+      id-token: write
+      actions: read # Required for Claude to read CI results on PRs
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      # git refuses a repository whose directory belongs to someone else, and
+      # in a container the job is root while .git on the self-hosted runner
+      # belongs to the runner's own user. The refusal reads "fatal: not in a
+      # git directory", which sounds like a missing checkout and is not.
+      #
+      # actions/checkout does not cover this. It adds safe.directory to a
+      # temporary global config that lasts only as long as its own step, and
+      # CI never notices because CI runs git only inside checkout.
+      # claude-code-action runs git itself, several steps later.
+      #
+      # Inert on hosted runners: no container, and the workspace already
+      # belongs to the user running the job.
+      - name: Trust the workspace
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      - name: Run Claude Code
+        id: claude
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+
+          # This is an optional setting that allows Claude to read CI results on PRs
+          additional_permissions: |
+            actions: read
+
+          # Optional: Give a custom prompt to Claude. If this is not specified, Claude will perform the instructions specified in the comment that tagged it.
+          # prompt: 'Update the pull request description to include a summary of changes.'
+
+          # Optional: Add claude_args to customize behavior and configuration
+          # See https://github.com/anthropics/claude-code-action/blob/main/docs/usage.md
+          # or https://code.claude.com/docs/en/cli-reference for available options
+          # claude_args: '--allowed-tools Bash(gh pr *)'
+
+      # claude-code-action runs `bun install` inside its own directory under
+      # _work/_actions. That tree belongs to the runner's own user, which
+      # deletes and re-extracts it before every job — so root-owned files left
+      # there by a containerised run make "Prepare workflow directory" fail for
+      # every later job on this runner, CI included. It is not enough for the
+      # jobs to agree with each other; they have to agree with the runner too.
+      #
+      # Hand the tree back. Hosted runners discard the whole VM, so there is
+      # nothing to return and the ownership check would be meaningless there.
+      - name: Return the actions cache to the runner
+        if: always() && runner.environment != 'github-hosted'
+        run: chown -R "$(stat -c '%u:%g' "$RUNNER_WORKSPACE")" "$RUNNER_WORKSPACE/../_actions"

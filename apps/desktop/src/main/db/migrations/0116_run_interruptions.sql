@@ -1,0 +1,12 @@
+-- What cut a run short without it failing.
+--
+-- `perItemAttemptLimit` counts the runs of one initiation, and until now
+-- every row counted: a run EO cancelled because a person closed the app
+-- mid-step, and both rows a restart leaves behind (the run it found
+-- still marked running, and the continuation it resumed on the same
+-- thread). Two restarts and a laptop lid could park an item whose agent
+-- had done nothing wrong. Recording why a run stopped is what lets the
+-- count leave those out.
+--
+-- NULL for every existing row, which counts exactly as before.
+ALTER TABLE `runs` ADD COLUMN `interruption` text;

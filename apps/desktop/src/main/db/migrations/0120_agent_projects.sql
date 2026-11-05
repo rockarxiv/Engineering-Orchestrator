@@ -1,0 +1,15 @@
+-- Agents scoped to a project (EO-474, ARCHITECTURE.md, "An agent is a
+-- row").
+--
+-- NULL is a global agent, which is what every agent was before there
+-- was a choice — so every row that exists is global after this runs,
+-- and no item is staffed differently because of it. A project's own
+-- agent staffs that project's items only, and outranks the global
+-- agents in its role there; `staffingAgents` in `packages/core` is the
+-- rule.
+--
+-- A real foreign key, and no ON DELETE rule: an agent is what runs and
+-- comments point at, so it is never cascaded away with its project.
+-- `deleteProject` tombstones the project's own agents and detaches them
+-- first.
+ALTER TABLE `agents` ADD COLUMN `project_id` text REFERENCES `projects`(`id`);

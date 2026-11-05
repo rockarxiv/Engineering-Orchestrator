@@ -1,0 +1,14 @@
+-- When a comment's pin last changed (EO-324, ARCHITECTURE.md, "The record").
+--
+-- A comment is otherwise immutable, so `created_at` is enough to page a
+-- thread with — and was, until two desktops had to agree about one. The
+-- pin is the one mutable thing on the row, and changing it moves no
+-- timestamp the record's pull is keyed on: somebody pins a comment on
+-- their machine, the record takes it, and every other desktop goes on
+-- showing it unpinned for ever.
+--
+-- So the pin gets a clock of its own and the pull pages on it. Null for
+-- every comment nobody has pinned or unpinned since this column
+-- existed, which reads correctly as "no pin change to catch up on" —
+-- the pin itself is still on `pinned`, where it always was.
+ALTER TABLE `comments` ADD COLUMN `pinned_at` integer;

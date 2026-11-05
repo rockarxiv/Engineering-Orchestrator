@@ -1,0 +1,34 @@
+-- What a handover sync cost, so the measurement story has something to
+-- read (EO-153).
+--
+-- This feature exists on a claim: that a persistent index costs less
+-- than making every agent rediscover the repository. The last story in
+-- EO-141 is the one that checks it, and it cannot check anything nobody
+-- wrote down at the time -- a measurement retrofitted afterwards is a
+-- measurement of whatever survived. So the two numbers are recorded on
+-- the row as the syncs happen, before there is anything to prove.
+--
+-- Two columns and not a table. An index's cost is not an event with a
+-- life of its own: it is a property of the note EO already keeps about
+-- that index, it is rewritten every time the index is, and it dies with
+-- the row when the worktree is released. `run_events` is where events
+-- with a life of their own go, and inventing a third home for a pair of
+-- integers would be the wrong first reason to.
+--
+-- The last sync rather than a running total, and the reason is the row
+-- itself: `repository_indexes` is upserted per (repository, ticket) and
+-- rewritten whenever the index is rebuilt, so a sum kept here would
+-- silently restart at zero and nobody reading it could tell. One
+-- handover's cost is attributable to that handover; a total is not.
+--
+-- Only a sync writes them. A build from nothing reports no changed-file
+-- count on purpose -- "changed" there means "all of them", which answers
+-- nothing anyone asked -- so filling these in from an initial index
+-- would put two different measurements under one name.
+--
+-- Both nullable, and null is not missing data: it is a row whose index
+-- has never been brought up to date, which is every row until the first
+-- handover.
+
+ALTER TABLE `repository_indexes` ADD `last_sync_duration_ms` integer;--> statement-breakpoint
+ALTER TABLE `repository_indexes` ADD `last_sync_changed_files` integer;

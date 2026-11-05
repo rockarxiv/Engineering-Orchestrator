@@ -1,0 +1,23 @@
+-- Which rule `runs.turns` follows: `turn` counts one run's own turns and adds
+-- up with its neighbours', `session` is a claim about the whole conversation
+-- that may already include every earlier run on the same thread. Two runs'
+-- counts may be added only under the first, and the number itself cannot say
+-- which it is — a run group is a set of rows sharing a provider thread, which
+-- is exactly the boundary a session claim spans.
+--
+-- A migration of its own rather than a fourth line in 0044, because 0044 has
+-- been applied: on CI, and on any machine that ran this branch. Drizzle marks
+-- a migration done by its journal entry rather than by the file's contents, so
+-- editing an applied one is not a change — it is skipped, in silence, and the
+-- column never arrives. `schema.ts` then names a column the database does not
+-- have, every read of `runs` fails with "no such column: turns_scope", and the
+-- app cannot open a window. A fresh database hides all of it, which is why the
+-- unit suite stayed green and only the one e2e that keeps its data between
+-- runs went red.
+--
+-- 0044's own header describes the cache pair as a split of `tokens_in`. That
+-- claim was retracted for `cache_write_tokens`, which no backend documents as
+-- sitting inside the total — the correction lives in `schema.ts` and the `Run`
+-- type, since the text of an applied migration cannot be edited either.
+
+ALTER TABLE `runs` ADD COLUMN `turns_scope` TEXT;

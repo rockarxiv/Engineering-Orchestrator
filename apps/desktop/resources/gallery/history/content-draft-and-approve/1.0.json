@@ -1,0 +1,260 @@
+{
+  "eoTemplateHistory": 1,
+  "notes": "The first version, as the gallery first shipped it.",
+  "pack": {
+    "eoPipelineExport": 8,
+    "modules": [],
+    "roles": [
+      {
+        "slug": "writer",
+        "prompt": "You draft short pieces from a brief: an announcement, a changelog entry, a customer email.\n\nWrite for the audience the brief names. Plain sentences, no marketing adjectives, and nothing claimed that the brief does not support. Say what you left out and why.",
+        "schemasByAction": {},
+        "actions": [
+          {
+            "action": "outline",
+            "description": "Turn the brief into an outline: the points the piece makes, in order, for the audience the brief names. Do not write the piece yet.",
+            "results": [
+              {
+                "key": "outlined",
+                "label": "Outlined",
+                "meaning": "The brief supports an outline and your summary holds it."
+              },
+              {
+                "key": "brief_unclear",
+                "label": "The brief is unclear",
+                "meaning": "The brief does not say enough to outline from: who it is for, or what it has to say. Say what is missing."
+              }
+            ],
+            "fields": {}
+          },
+          {
+            "action": "write",
+            "description": "Write the piece against the outline. Say what you left out and why.",
+            "results": [
+              {
+                "key": "written",
+                "label": "Written",
+                "meaning": "The piece is written and follows the outline."
+              },
+              {
+                "key": "needs_outline",
+                "label": "Back to the outline",
+                "meaning": "The outline cannot be written against as it stands: a point is missing or the brief does not support one. Say which."
+              }
+            ],
+            "fields": {}
+          }
+        ],
+        "allowedTools": null,
+        "backend": null,
+        "model": null
+      }
+    ],
+    "itemTypes": [
+      {
+        "packSlug": "content",
+        "slug": "draft",
+        "label": "Draft",
+        "plural": "Drafts",
+        "container": false,
+        "specShape": {
+          "type": "object",
+          "properties": {
+            "brief": {
+              "type": "string",
+              "description": "What this piece is for.",
+              "x-eo-criteria": true
+            },
+            "audience": {
+              "type": "string",
+              "description": "Who reads it."
+            },
+            "channel": {
+              "type": "string",
+              "description": "Where it goes once approved."
+            }
+          },
+          "required": [
+            "brief"
+          ]
+        },
+        "actionOverrides": {}
+      }
+    ],
+    "connectors": [],
+    "mcpServers": [],
+    "vocabulary": {
+      "types": [
+        {
+          "type": "content:draft",
+          "label": "Draft",
+          "plural": "Drafts"
+        }
+      ],
+      "results": [
+        {
+          "key": "approved",
+          "label": "Approve"
+        },
+        {
+          "key": "changes",
+          "label": "Send back"
+        }
+      ]
+    },
+    "previewItem": {
+      "title": "Announce the September release",
+      "type": "content:draft",
+      "body": "Two paragraphs for the blog, plus a one-line summary for the changelog.",
+      "spec": {
+        "brief": "Announce the September release: faster search, per-key rate limits",
+        "audience": "Existing customers",
+        "channel": "Blog"
+      }
+    },
+    "pipeline": {
+      "name": "Content draft and approve",
+      "icon": "pen-line",
+      "entryStepId": "outline"
+    },
+    "steps": [
+      {
+        "id": "outline",
+        "position": 0,
+        "name": "Outline",
+        "type": "agent",
+        "ownerRole": "writer",
+        "entryAction": "outline",
+        "instructionsSummary": "Turns the brief into a shape you can argue with",
+        "isTerminal": false,
+        "planMode": false,
+        "results": []
+      },
+      {
+        "id": "write",
+        "position": 1,
+        "name": "Write",
+        "type": "agent",
+        "ownerRole": "writer",
+        "entryAction": "write",
+        "instructionsSummary": "Writes the piece against the outline",
+        "isTerminal": false,
+        "planMode": false,
+        "results": []
+      },
+      {
+        "id": "approve",
+        "position": 2,
+        "name": "Approve",
+        "type": "user",
+        "ownerRole": null,
+        "entryAction": null,
+        "instructionsSummary": "Nothing leaves without this",
+        "isTerminal": false,
+        "planMode": false,
+        "results": [
+          {
+            "key": "approved",
+            "label": "Approve",
+            "tone": "success",
+            "requiresComment": false
+          },
+          {
+            "key": "changes",
+            "label": "Send back",
+            "tone": "warning",
+            "requiresComment": true
+          }
+        ]
+      },
+      {
+        "id": "approved",
+        "position": 3,
+        "name": "Approved",
+        "type": "user",
+        "ownerRole": null,
+        "entryAction": null,
+        "instructionsSummary": null,
+        "isTerminal": true,
+        "planMode": false,
+        "results": []
+      }
+    ],
+    "routes": [
+      {
+        "fromStepId": "outline",
+        "resultKey": "outlined",
+        "label": "Outlined",
+        "tone": "success",
+        "target": "write",
+        "position": 0
+      },
+      {
+        "fromStepId": "outline",
+        "resultKey": "brief_unclear",
+        "label": "The brief is unclear",
+        "tone": "info",
+        "target": "user_attention",
+        "position": 1
+      },
+      {
+        "fromStepId": "write",
+        "resultKey": "written",
+        "label": "Written",
+        "tone": "success",
+        "target": "approve",
+        "position": 0
+      },
+      {
+        "fromStepId": "write",
+        "resultKey": "needs_outline",
+        "label": "Back to the outline",
+        "tone": "warning",
+        "target": "outline",
+        "position": 1
+      },
+      {
+        "fromStepId": "approve",
+        "resultKey": "approved",
+        "label": "Approve",
+        "tone": "success",
+        "target": "approved",
+        "position": 0
+      },
+      {
+        "fromStepId": "approve",
+        "resultKey": "changes",
+        "label": "Send back",
+        "tone": "warning",
+        "target": "write",
+        "position": 1
+      }
+    ],
+    "template": {
+      "slug": "content-draft-and-approve",
+      "title": "Content draft and approve",
+      "description": "A brief becomes an outline, then a draft, then a thing you approve. Nothing is published without you pressing the button.",
+      "version": "1.0",
+      "blanks": [
+        {
+          "key": "folder",
+          "kind": "folder",
+          "label": "Where drafts are kept",
+          "help": "The folder the drafts are written into.",
+          "required": true,
+          "default": "",
+          "connector": null
+        },
+        {
+          "key": "keyPrefix",
+          "kind": "keyPrefix",
+          "label": "Draft prefix",
+          "help": "What each draft is numbered with, like DOC-1.",
+          "required": true,
+          "default": "DOC",
+          "connector": null
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,546 @@
+{
+  "eoTemplateHistory": 1,
+  "notes": "The first version. A feature is prepared on a branch of its own, indexed, implemented and reviewed, and its pull request is opened and waits at Done for you to approve.",
+  "pack": {
+    "eoPipelineExport": 9,
+    "template": {
+      "slug": "software-feature-to-merge",
+      "title": "Software feature to merge",
+      "description": "A feature is implemented on a branch of its own, reviewed, and opened as a pull request for you to approve. This is the pipeline EO ships for its own work.",
+      "version": "1.0",
+      "blanks": [
+        {
+          "key": "keyPrefix",
+          "kind": "keyPrefix",
+          "label": "Ticket prefix",
+          "help": "What this project's tickets are numbered with, like EO-1.",
+          "required": true,
+          "default": "EO",
+          "connector": null
+        }
+      ]
+    },
+    "pipeline": {
+      "name": "Delivery",
+      "icon": "workflow",
+      "entryStepId": "worktree"
+    },
+    "steps": [
+      {
+        "id": "worktree",
+        "position": 0,
+        "name": "Worktree",
+        "type": "builtin",
+        "ownerRole": null,
+        "entryAction": "create_worktree",
+        "instructionsSummary": "Prepares the branch and worktree for the work",
+        "isTerminal": false,
+        "planMode": false,
+        "results": []
+      },
+      {
+        "id": "repository_index",
+        "position": 1,
+        "name": "Index",
+        "type": "builtin",
+        "ownerRole": null,
+        "entryAction": "index_repository",
+        "instructionsSummary": "Describes the checkout so agents can query it instead of searching it",
+        "isTerminal": false,
+        "planMode": false,
+        "results": []
+      },
+      {
+        "id": "todo",
+        "position": 2,
+        "name": "To Do",
+        "type": "agent",
+        "ownerRole": "implementer",
+        "entryAction": "implement",
+        "instructionsSummary": null,
+        "isTerminal": false,
+        "planMode": false,
+        "results": []
+      },
+      {
+        "id": "review",
+        "position": 3,
+        "name": "Review",
+        "type": "agent",
+        "ownerRole": "reviewer",
+        "entryAction": "review",
+        "instructionsSummary": null,
+        "isTerminal": false,
+        "planMode": false,
+        "results": []
+      },
+      {
+        "id": "merge_request",
+        "position": 4,
+        "name": "Merge Request",
+        "type": "builtin",
+        "ownerRole": null,
+        "entryAction": "open_pull_request",
+        "instructionsSummary": "Opens the pull request for review",
+        "isTerminal": false,
+        "planMode": false,
+        "results": []
+      },
+      {
+        "id": "ready_to_merge",
+        "position": 5,
+        "name": "Done",
+        "type": "user",
+        "ownerRole": null,
+        "entryAction": null,
+        "instructionsSummary": null,
+        "isTerminal": true,
+        "planMode": false,
+        "results": [
+          {
+            "key": "approved",
+            "label": "Approve",
+            "tone": "success",
+            "requiresComment": false
+          },
+          {
+            "key": "send_back",
+            "label": "Send back",
+            "tone": "warning",
+            "requiresComment": true
+          }
+        ]
+      }
+    ],
+    "routes": [
+      {
+        "fromStepId": "todo",
+        "resultKey": "done",
+        "label": "Implemented",
+        "tone": "success",
+        "target": "review",
+        "position": 0
+      },
+      {
+        "fromStepId": "review",
+        "resultKey": "approved",
+        "label": "Approved",
+        "tone": "success",
+        "target": "merge_request",
+        "position": 0
+      },
+      {
+        "fromStepId": "worktree",
+        "resultKey": "ready",
+        "label": "Ready",
+        "tone": "success",
+        "target": "repository_index",
+        "position": 0
+      },
+      {
+        "fromStepId": "merge_request",
+        "resultKey": "opened",
+        "label": "Pull request open",
+        "tone": "success",
+        "target": "ready_to_merge",
+        "position": 0
+      },
+      {
+        "fromStepId": "repository_index",
+        "resultKey": "indexed",
+        "label": "Indexed",
+        "tone": "success",
+        "target": "todo",
+        "position": 0
+      },
+      {
+        "fromStepId": "ready_to_merge",
+        "resultKey": "approved",
+        "label": "Approve",
+        "tone": "success",
+        "target": "terminal",
+        "position": 0
+      },
+      {
+        "fromStepId": "review",
+        "resultKey": "changes_requested",
+        "label": "Changes requested",
+        "tone": "warning",
+        "target": "todo",
+        "position": 1
+      },
+      {
+        "fromStepId": "merge_request",
+        "resultKey": "skipped",
+        "label": "No pull request",
+        "tone": "info",
+        "target": "ready_to_merge",
+        "position": 1
+      },
+      {
+        "fromStepId": "worktree",
+        "resultKey": "failed",
+        "label": "Could not prepare the worktree",
+        "tone": "danger",
+        "target": "user_attention",
+        "position": 1
+      },
+      {
+        "fromStepId": "repository_index",
+        "resultKey": "skipped",
+        "label": "Not indexed",
+        "tone": "info",
+        "target": "todo",
+        "position": 1
+      },
+      {
+        "fromStepId": "ready_to_merge",
+        "resultKey": "send_back",
+        "label": "Send back",
+        "tone": "warning",
+        "target": "todo",
+        "position": 1
+      },
+      {
+        "fromStepId": "review",
+        "resultKey": "needs_user_input",
+        "label": "Needs user input",
+        "tone": "info",
+        "target": "user_attention",
+        "position": 2
+      },
+      {
+        "fromStepId": "merge_request",
+        "resultKey": "failed",
+        "label": "Could not open the pull request",
+        "tone": "danger",
+        "target": "user_attention",
+        "position": 2
+      },
+      {
+        "fromStepId": "repository_index",
+        "resultKey": "failed",
+        "label": "Indexing failed",
+        "tone": "danger",
+        "target": "todo",
+        "position": 2
+      },
+      {
+        "fromStepId": "merge_request",
+        "resultKey": "uncommitted_changes",
+        "label": "Uncommitted changes",
+        "tone": "warning",
+        "target": "todo",
+        "position": 3
+      },
+      {
+        "fromStepId": "merge_request",
+        "resultKey": "remote_diverged",
+        "label": "Remote branch diverged",
+        "tone": "warning",
+        "target": "todo",
+        "position": 4
+      }
+    ],
+    "roles": [
+      {
+        "slug": "implementer",
+        "prompt": "<!-- prompt-version: 14 -->\nYou are an engineer implementing one story. You are working in a git\nworktree on a branch that already exists and is checked out for you.\nNobody else is editing it.\n\n- Your prompt carries the newest word from every step this ticket has\n  passed through, and everything the person has said since you last\n  worked on it. If a previous attempt was rejected, the reviewer's\n  feedback is there and addressing it is your first priority — not an\n  afterthought.\n- What is not there is counted at the foot of your prompt, by who wrote\n  it and what kind it was. Search it with `mcp__eo__comment_search` and\n  open an exchange with `mcp__eo__comment_read` when the count tells you something you\n  need is in there. Every fetch costs you a turn and your whole\n  conversation is re-sent on each one, so fetch what you have a reason\n  to read rather than everything.\n- Dependencies are listed by key. Read one with `mcp__eo__item_detail`,\n  which\n  answers with that ticket and what it shipped. Work that shipped before\n  yours is described there, and duplicating or contradicting it is a real\n  failure mode.\n- **Other tickets' worktrees may be visible on this machine. They are not\n  yours to read from.** Their branches are unmerged: nobody has approved\n  that work, it can still change, and it can be thrown away entirely.\n  Copying from one makes your story depend on something that may never\n  exist. If you need what another story produced, `mcp__eo__item_detail`\n  on its\n  key is the sanctioned account of it — and if that is not enough, ask,\n  by returning a question as your result rather than going and looking.\n  The `mcp__eo__comment` tool writes a note into the thread; it notifies\n  nobody\n  and does not pause your run, so it is not how you ask a person\n  anything.\n- **Ask the repository index before you go looking.** This worktree is\n  indexed, and you query it through the tools of an MCP server EO\n  registers as `repo`. They are in your tool list, each with its own\n  description — every backend spells a tool id its own way, so find them\n  by that server name rather than by any punctuation around it. If your\n  harness has deferred them instead of listing them, it says so and says\n  how to load them; do that once, for `repo`, rather than treating them as\n  absent. Reach for them before broad filesystem exploration: they are how\n  you find the symbols, callers, dependencies, implementations and files\n  that matter, which makes navigating this codebase a query rather than a\n  search, and makes \"what would this change touch?\" answerable. The source\n  files in this worktree are the source of truth, not the index — always\n  read the relevant source before you modify or judge it, and never assume\n  the index is current for files that have changed since it was last\n  synchronised. Not finding them listed is not the signal that there is no\n  index; if loading them turns up no `repo` tool at all then repository\n  intelligence is unavailable on this run, an engine comment on the ticket\n  says why, and you work from the filesystem and git tools exactly as\n  agents always have.\n- **Memory is for what will still be true on the next run.** Your\n  prompt may carry a Memory section: what earlier runs and people on this\n  project recorded. When you learn something the next run would otherwise\n  have to learn again at the same cost — a setup step the tests need, a\n  convention the team enforces, where something lives, a trap that cost\n  you time — write it down with `memory_note`, the tool on the `eo`\n  server, scoped to `project` or to the workspace it is true of. One fact\n  per note. Not notes about this run: its progress, this ticket, or what\n  you did all belong in your result and handoff, and stop being true once\n  the ticket is done. A note takes effect at once, so write what you\n  checked, not what you guess.\n- Implement the story's acceptance criteria. Do not implement adjacent\n  things you think are also good ideas; scope discipline is part of the\n  job.\n- Write tests alongside the code, matching what the repository already\n  does. Run the project's check suite yourself before you report finished.\n- **Commit your work.** Uncommitted changes do not exist as far as the\n  engine is concerned — the run is verified by inspecting the branch, and\n  anything you leave in the working tree is discarded.\n- **Never commit the generated repository index.** EO writes it into\n  your worktree as an untracked directory you did not create — it is\n  not part of the repository, and EO's own checks already step over it,\n  so leaving it untracked costs you nothing. `git add -A` is how it ends\n  up in a commit anyway; stage what you actually changed.\n- **When an engine note on the ticket says the remote branch has\n  diverged**, EO's push was rejected because the remote branch holds\n  commits your local one does not, and EO did not force-push. The note\n  names the remote, the branch and the base ref the pull request\n  targets. This is the one situation in which you push:\n  - Fetch, and look at what the remote branch has that the local branch\n    does not.\n  - If those commits are only earlier versions of this ticket's own\n    work, or merges of the base branch: rebase the local branch onto the\n    base ref the note names, then push with\n    `git push --force-with-lease`. Rebase before you push — EO rebases\n    again after your run, and a branch already on that base is left as\n    you pushed it.\n  - If the remote branch holds work that is not on the local branch in\n    any form, do not overwrite it. Bring it into the local branch, or\n    return a question.\n  - Never a bare `--force`, `-f` or a `+refspec`. Never any branch but\n    this ticket's own. Never a branch a person named on the ticket.\n- If the story is ambiguous in a way you cannot resolve from the thread or\n  the code, ask rather than guessing — a question costs minutes, a wrong\n  assumption costs a review cycle. Do not write the question yourself.\n  Return it as your result instead:\n\n  ```json\n  { \"outcome\": { \"status\": \"clarification_required\", \"questions\": [\n      { \"id\": \"empty_input\",\n        \"question\": \"Should an empty payload be rejected or treated as no-op?\",\n        \"why\": \"The acceptance criteria cover neither, and the two differ in what the caller sees.\",\n        \"options\": [\"reject with 400\", \"treat as no-op\"] } ] } }\n  ```\n\n  Your run ends there and does not resume until **every** question has an\n  answer, so ask everything you need in one result — one question per\n  entry, and `why` saying what it blocks. Commit anything already\n  finished first: a parked run's uncommitted work is discarded.\n- Report an accurate summary. Your branch is independently verified — it\n  is rebased onto the base branch and the check suite is run — so claiming\n  success you did not achieve just produces a rejection with your name on\n  it.\n- **Write a `handoff`.** `summary` is for the engine; this is for the\n  person and the reviewer who read the ticket next, and it is the only\n  thing you leave in the thread. Say what a diff cannot: what you\n  considered and rejected, what you deliberately left out, and where to\n  look first. If this story comes back rejected, this is what the next\n  attempt has to go on.",
+        "schemasByAction": {
+          "implement": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "type": "object",
+            "properties": {
+              "branch": {
+                "type": "string",
+                "minLength": 1
+              },
+              "summary": {
+                "type": "string"
+              },
+              "files_changed": {
+                "default": [],
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "tests_run": {
+                "default": false,
+                "type": "boolean"
+              },
+              "handoff": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "required": [
+              "branch",
+              "summary",
+              "handoff"
+            ]
+          }
+        },
+        "actions": [],
+        "allowedTools": [
+          "mcp__eo__memory_note"
+        ],
+        "backend": null,
+        "model": null
+      },
+      {
+        "slug": "reviewer",
+        "prompt": "<!-- prompt-version: 14 -->\nYou are reviewing one story's implementation. You are given the diff\nagainst the base branch and can run the check suite in the worktree.\n\nThe engine has already verified the mechanical facts before you see this:\nthe branch has commits, the tree is clean, it rebases onto base, and the\nconfigured checks pass. Do not spend your review re-establishing those.\nReview what only a reader can judge.\n\n- **Read the whole change before you decide anything.** Every acceptance\n  criterion, every file in the diff. Finding one blocking issue is not a\n  reason to stop looking — it is the point at which the rest of your\n  review becomes valuable, because everything else you find now travels\n  back with it instead of costing another round.\n- **Report every blocking issue you found, in one verdict.** A second\n  rejection for something that was already visible during the first is\n  the expensive mistake this role can make: it sends the story back for\n  another full implementation run to fix one line. Over EO's own 136\n  rejections, 73% carried exactly one blocking issue, the average was\n  1.40, and the worst story went thirteen rounds. Four issues in one\n  rejection is four times the work saved. Those figures are recomputed\n  from `run_events`, not remembered: EO posts the current ones onto every\n  ticket it approves, and `scripts/review-census.mts` recomputes them on\n  demand. If the census comment on a recent ticket disagrees with this\n  paragraph, believe the census.\n- Check the diff against the story's acceptance criteria, one at a time.\n  A criterion that is not met is a blocking issue. What the ticket\n  declares is the only list there is. EO does not dispatch a review of a\n  ticket that declares none — it refuses the dispatch and asks a person\n  for one — so there is never an occasion to assemble a list out of the\n  thread, a pinned comment or a bug report's \"expected\", and reporting\n  against one you assembled is reporting against criteria nobody agreed\n  to.\n- **A rejection has to say what became of every acceptance criterion.**\n  `criteria_coverage` takes one entry per criterion the story lists:\n  echo the criterion's own words, and say `met`, `not_met`, or\n  `not_assessed`. It is not a summary written after the fact — it is the\n  worksheet, and filling it in is how you find the second and third\n  fault before you send the first one back. Add a `note` where the\n  answer needs a sentence: the evidence for `met`, the gap for the\n  others.\n  - `not_assessed` is honest and available, and saying it is better than\n    guessing. But every one you write says this review has not\n    established that its blocking issues are all of them, it is rendered\n    into the ticket saying exactly that, and the next round reads it. A\n    criterion you left out entirely reads worse still — EO compares your\n    coverage against the story's own list and reports what you never\n    mentioned.\n  - This is the one obligation a rejection carries that an approval does\n    not. Approving requires no coverage table at all: an approval\n    already asserts every criterion is met, and a clean review should\n    stay cheap.\n- **Ask the repository index what the change touches.** This worktree is\n  indexed, and you query it through the tools of an MCP server EO\n  registers as `repo`. They are in your tool list, each with its own\n  description — every backend spells a tool id its own way, so find them\n  by that server name rather than by any punctuation around it. If your\n  harness has deferred them instead of listing them, it says so and says\n  how to load them; do that once, for `repo`, rather than treating them as\n  absent. Work outward from the diff: for each symbol it changed, ask what\n  calls it, what implements it and what depends on it, then read the\n  affected code. That is impact analysis, and it is the half of a review a\n  diff cannot give you on its own — the caller a changed signature broke\n  is not in the diff. Reach for them before broad filesystem exploration:\n  what they name is where to look. The source files in this worktree are\n  the source of truth, not the index — always read the relevant source\n  before you modify or judge it, and never assume the index is current for\n  files that have changed since it was last synchronised. Not finding them\n  listed is not the signal that there is no index; if loading them turns\n  up no `repo` tool at all then repository intelligence is unavailable on\n  this run, an engine comment on the ticket says why, and you review from\n  the diff, the filesystem and git tools as before.\n- You are given the newest word from every step this ticket has passed\n  through, and everything the person has said since you last looked. The\n  rest of the thread is counted at the foot of your prompt and reachable\n  with `mcp__eo__comment_search`. If a choice you disagree with was already\n  settled with the human, it is settled — searching for the term you are\n  about to object to is the cheap way to find that out before you write\n  it up.\n- Judge correctness, then clarity, then consistency with the surrounding\n  code. Style opinions the repository does not already express are not\n  blocking issues.\n- `reject` only for things that must change: a missed criterion, a real\n  bug, a test that does not test what it claims. Everything else belongs\n  in feedback without blocking. Being thorough is about how much of the\n  change you *read*, not about how much you block.\n- A rejection must list at least one `blocking_issue`, and the schema will\n  not accept one that does not — but one is a floor, not a target. Each\n  entry is a single thing to fix, so that the agent reattempting the work\n  can act on them one by one; a rejection nobody can act on sends the\n  story back with nothing to change, which costs an attempt and teaches\n  the implementer nothing.\n- **`needs_user_input` is the third verdict, and it is how you ask.** It\n  is for a change that cannot be judged without a decision only a person\n  can make: an acceptance criterion that contradicts what the thread\n  settled, two readings of the story that would send the work in\n  different directions. Like an approval, and unlike a rejection, it\n  carries neither `blocking_issues` nor a coverage table — it is not a\n  finding about the work, so `feedback` alone has to say what you need\n  decided and why you cannot decide it yourself. Reach for it having read\n  the whole change, never instead of reading it: a question the diff\n  would have answered costs a person their attention and this story a\n  round. The schema will also accept a bare list of questions, and that\n  shape is not yours — this verdict is the one the pipeline routes to a\n  person.\n- **Memory is for what will still be true on the next run.** Your\n  prompt may carry a Memory section: what earlier runs and people on this\n  project recorded. When a review turns up something the next run would\n  otherwise have to learn again — a convention the team always enforces,\n  a check the suite needs before it means anything, a recurring mistake\n  in this codebase — write it down with `memory_note`, the tool on the\n  `eo` server, scoped to `project` or to the workspace it is true of. One\n  fact per note. Not notes about this review: the verdict, the findings\n  and this change belong in your answer, and stop being true once the\n  story is merged.\n- Your feedback is read by the agent that reattempts the work, and it is\n  the only thing it receives from you. Be specific: name the file, the\n  case, and what correct would look like. \"Needs work\" wastes an entire\n  attempt.\n- When your task says an approval opens a pull request, return\n  `pull_request_body` alongside your verdict: the repository's template\n  filled in, if it gave you one, or a short description otherwise. You\n  have read the whole change, and the people who will merge it have not.\n- **Your verdict is the last thing you say.** An outcome you send and\n  then carry on working past is not an answer, and EO does not treat it\n  as one: it drops the payload and says so on the ticket. Nor is there\n  anything to announce before you have a verdict — every file you open\n  and every command you run is already in front of whoever is watching\n  this run, so a plan written out first tells them nothing they cannot\n  see. Read the change, decide, then answer once.",
+        "schemasByAction": {
+          "review": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "oneOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "verdict": {
+                    "type": "string",
+                    "const": "approve"
+                  },
+                  "feedback": {
+                    "type": "string"
+                  },
+                  "pull_request_body": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "verdict",
+                  "feedback"
+                ]
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "verdict": {
+                    "type": "string",
+                    "const": "reject"
+                  },
+                  "feedback": {
+                    "type": "string"
+                  },
+                  "criteria_coverage": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "criterion": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "result": {
+                          "type": "string",
+                          "enum": [
+                            "met",
+                            "not_met",
+                            "not_assessed"
+                          ]
+                        },
+                        "note": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "criterion",
+                        "result"
+                      ]
+                    }
+                  },
+                  "blocking_issues": {
+                    "minItems": 1,
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  }
+                },
+                "required": [
+                  "verdict",
+                  "feedback",
+                  "criteria_coverage",
+                  "blocking_issues"
+                ]
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "verdict": {
+                    "type": "string",
+                    "const": "needs_user_input"
+                  },
+                  "feedback": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "verdict",
+                  "feedback"
+                ]
+              }
+            ]
+          }
+        },
+        "actions": [],
+        "allowedTools": [
+          "mcp__eo__memory_note"
+        ],
+        "backend": null,
+        "model": null
+      }
+    ],
+    "itemTypes": [
+      {
+        "packSlug": "developer",
+        "slug": "bug",
+        "label": "Bug",
+        "plural": "Bugs",
+        "container": false,
+        "specShape": {
+          "type": "object",
+          "properties": {
+            "steps_to_reproduce": {
+              "type": "string",
+              "minLength": 1
+            },
+            "expected": {
+              "type": "string",
+              "x-eo-criteria-offer": true,
+              "minLength": 1
+            },
+            "actual": {
+              "type": "string",
+              "minLength": 1
+            },
+            "environment": {
+              "type": "string",
+              "minLength": 1
+            },
+            "acceptance_criteria": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              },
+              "x-eo-criteria": true,
+              "default": []
+            }
+          },
+          "required": [
+            "steps_to_reproduce",
+            "expected",
+            "actual",
+            "environment"
+          ]
+        },
+        "actionOverrides": {
+          "refine": {
+            "schema": "clarify",
+            "resultKey": "clarified",
+            "poster": "clarification_note"
+          }
+        }
+      },
+      {
+        "packSlug": "developer",
+        "slug": "feature",
+        "label": "Feature",
+        "plural": "Features",
+        "container": true,
+        "specShape": {
+          "type": "object",
+          "properties": {},
+          "required": []
+        },
+        "actionOverrides": {
+          "refine": {
+            "schema": "refine",
+            "resultKey": "decomposed",
+            "poster": "refine_proposal"
+          }
+        }
+      },
+      {
+        "packSlug": "developer",
+        "slug": "story",
+        "label": "Story",
+        "plural": "Stories",
+        "container": false,
+        "specShape": {
+          "type": "object",
+          "properties": {
+            "acceptance_criteria": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              },
+              "title": "at least one acceptance criterion",
+              "description": "it is what EO checks the implementer's claim against",
+              "x-eo-criteria": true,
+              "minItems": 1
+            }
+          },
+          "required": [
+            "acceptance_criteria"
+          ]
+        },
+        "actionOverrides": {
+          "refine": {
+            "schema": "clarify",
+            "resultKey": "clarified",
+            "poster": "clarification_note"
+          }
+        }
+      }
+    ],
+    "connectors": [],
+    "mcpServers": [],
+    "vocabulary": {
+      "types": [
+        {
+          "type": "developer:bug",
+          "label": "Bug",
+          "plural": "Bugs"
+        },
+        {
+          "type": "developer:feature",
+          "label": "Feature",
+          "plural": "Features"
+        },
+        {
+          "type": "developer:story",
+          "label": "Story",
+          "plural": "Stories"
+        }
+      ],
+      "results": [
+        {
+          "key": "approved",
+          "label": "Approve"
+        },
+        {
+          "key": "send_back",
+          "label": "Send back"
+        }
+      ]
+    },
+    "previewItem": {
+      "title": "Rate limit the public API",
+      "type": "developer:story",
+      "body": "Callers can hammer the search endpoint. Add a per-key limit and a clear 429.",
+      "spec": {
+        "acceptance_criteria": [
+          "A key over its limit gets a 429 with a Retry-After",
+          "The limit is configurable per key"
+        ]
+      }
+    },
+    "modules": []
+  }
+}

@@ -1,0 +1,26 @@
+-- How long a step's module may run before EO stops it (EO-162).
+--
+-- Ten minutes was a constant in `runModule.ts` and reachable from nowhere
+-- a person could see. The merge module waits for CI and then merges, so
+-- it capped its own wait below that ceiling to leave room for the merge —
+-- and on a repository whose end-to-end check takes longer than the
+-- ceiling, every story reaching Merge escalated on a pull request nothing
+-- was wrong with. The `wait_seconds` input a person set to 2400 was
+-- stored and floored, which is the worse half: a number somebody
+-- configured was quietly not the number that ran.
+--
+-- On `pipeline_steps` for the reason `inputs` is (EO-78): two steps
+-- running different modules have no reason to share a limit, and it is
+-- ordinary configuration that drafts and publishes with the step.
+--
+-- NULL rather than a default of 600000, and the distinction is the same
+-- one `inputs` draws: NULL means "EO's default", so a step that never set
+-- one follows that default if it ever moves, while a step holding 600000
+-- has chosen ten minutes and keeps it. It also makes the whole feature
+-- opt-in — every row that exists today means exactly what it meant
+-- before.
+--
+-- Bounded by the run timeout (`engine.guards.wallClockTimeoutMs`), which
+-- is enforced by refusing to store a contradicting pair on either side
+-- rather than by anything here: see `timeLimitBoundProblem`.
+ALTER TABLE `pipeline_steps` ADD `timeout_ms` integer;

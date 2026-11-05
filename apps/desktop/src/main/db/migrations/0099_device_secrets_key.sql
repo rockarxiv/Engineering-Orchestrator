@@ -1,0 +1,33 @@
+-- A second credential per device, for the organisation's secret values
+-- (EO-328, ARCHITECTURE.md, "Secrets").
+--
+-- The device token is not enough, and the reason is a fact about where
+-- each credential *lives* rather than about how strong it is. A desktop
+-- keeps its token in the OS keychain; the renderer a server hands a
+-- browser keeps the same kind of token in `sessionStorage`, because it
+-- needs one to POST `/ipc/…`. So a route guarded by the device token is
+-- a route the served renderer can call, and the story's third acceptance
+-- criterion — that no query the renderer can make returns an
+-- organisation secret — would be false however careful the channels are.
+--
+-- This is the credential that opens `ORGANISATION_SECRETS_PATH`, and it
+-- is minted only for a client that says it runs work. A desktop's main
+-- process stores it beside its device token, under the same keychain,
+-- and never hands it to a window. A browser is issued none at all, so
+-- there is nothing in `sessionStorage` that opens the route and nothing
+-- for a renderer query to return.
+--
+-- Nullable, and null on every row that exists today: no device has one
+-- until it signs in again, and a device without one simply receives no
+-- organisation secrets. Hashed like the token beside it — SHA-256, for
+-- the reason `identity/secrets.ts` gives about high-entropy secrets EO
+-- minted itself.
+ALTER TABLE devices ADD COLUMN secrets_key_hash TEXT;
+--> statement-breakpoint
+
+-- Looked up by the value presented on the route, which is the same
+-- indexed-lookup-not-a-scan argument `idx_devices_token_hash` makes.
+-- Not UNIQUE: several rows hold NULL, and SQLite treats NULLs as
+-- distinct in a unique index, but saying so out loud is cheaper than
+-- having somebody work it out later.
+CREATE INDEX IF NOT EXISTS idx_devices_secrets_key_hash ON devices (secrets_key_hash);

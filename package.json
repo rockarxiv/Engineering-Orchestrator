@@ -1,0 +1,37 @@
+{
+  "name": "eo",
+  "private": true,
+  "license": "Apache-2.0",
+  "version": "0.0.0",
+  "engines": {
+    "node": ">=22.15"
+  },
+  "packageManager": "pnpm@10.28.0",
+  "scripts": {
+    "build": "turbo run build",
+    "typecheck": "turbo run typecheck",
+    "lint": "turbo run lint",
+    "test": "turbo run test",
+    "test:coverage": "turbo run test:coverage",
+    "dev": "turbo run dev --filter=@eo/desktop",
+    "design": "node scripts/design-tokens.mjs",
+    "design:check": "node scripts/design-tokens.mjs --check",
+    "report:index-benefit": "node --experimental-strip-types --disable-warning=ExperimentalWarning --import ./scripts/local-typescript.mjs scripts/index-benefit.mts",
+    "install:local": "bash scripts/install-local.sh",
+    "postinstall": "node scripts/fix-electron-install.mjs"
+  },
+  "devDependencies": {
+    "eslint": "9.39.5",
+    "turbo": "2.10.7",
+    "typescript": "5.9.3",
+    "vitest": "4.1.10"
+  },
+  "pnpm": {
+    "//onlyBuiltDependencies": "better-sqlite3 is deliberately absent. It has a binding.gyp but no install script, so allowlisting it makes pnpm default to `node-gyp rebuild` — which compiles from source and needs a full toolchain (this is what broke the Windows CI runner: no Visual Studio). It ships N-API prebuilds for darwin/linux/win32 x64+arm64, and N-API is ABI-stable across both Node and Electron, so the prebuild is all we need. Verified: with every compiled artifact deleted, the Electron app boots and runs its migrations on the prebuild alone.",
+    "onlyBuiltDependencies": [
+      "electron",
+      "electron-winstaller",
+      "esbuild"
+    ]
+  }
+}

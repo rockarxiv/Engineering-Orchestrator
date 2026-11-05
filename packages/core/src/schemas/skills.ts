@@ -1,0 +1,336 @@
+import { z } from "zod";
+import { SKILL_SLUG_MAX_LENGTH, SKILL_SLUG_PATTERN, slugifySkillName } from "../skillSlugs.js";
+
+/**
+ * A skill a person wrote, as it crosses every boundary (EO-105).
+ *
+ * One definition, because a skill crosses several: IPC when the
+ * catalogue screen saves one (EO-109), an agent's attachment when it is
+ * ticked onto a role (EO-106), and a `skills/<slug>/SKILL.md` inside a
+ * generated plugin directory when it is finally dispatched (EO-107).
+ * Three hand-written shapes that had to agree is the arrangement the
+ * conventions rule out — the same reason `schemas/modules.ts` exists.
+ *
+ * A skill is a slug, a display name, a description, a body and zero or
+ * more supporting files. The slug is the only one of those a model can
+ * invoke; the rest of the note about that is on `skillFrontmatter`.
+ */
+
+/**
+ * One file that sits beside `SKILL.md` in the skill's own directory.
+ *
+ * Text only, deliberately. A checklist, a template, a snippet — the
+ * things a skill's body says "see `checklist.md`" about. A binary would
+ * need base64 in a JSON column and a decision about size limits, and no
+ * skill EO can currently deliver has one; the day one does, this is
+ * where it grows a `encoding` field rather than where it quietly starts
+ * holding something that is not a string.
+ */
+export const SkillFileSchema = z.object({
+  /** Relative to the skill's directory. `readSkillDraft` is what refuses one that escapes it. */
+  path: z.string(),
+  content: z.string(),
+});
+
+export type SkillFile = z.infer<typeof SkillFileSchema>;
+
+/**
+ * Where a skill is delivered (EO-470, ARCHITECTURE.md §13.3).
+ *
+ * `global` — every run of an agent it is attached to, which is what every
+ * skill was before scopes existed and what the migration made each of
+ * them. `project` — only runs on items of that project. `workspace` —
+ * only runs whose step works in that workspace.
+ *
+ * A procedure learned in one repository is noise in every other one, and
+ * a skill an agent is offered is a description competing for its
+ * attention on every turn, so scoping is about what reaches the model and
+ * not about who may see the row: the catalogue lists every skill
+ * whatever its scope.
+ *
+ * Attachment is still the first gate. A scope narrows the runs an
+ * attached skill reaches; it never delivers a skill to an agent nobody
+ * attached it to.
+ */
+export const SkillScopeSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("global") }),
+  z.object({ kind: z.literal("project"), projectId: z.string().min(1) }),
+  z.object({ kind: z.literal("workspace"), workspaceId: z.string().min(1) }),
+]);
+
+export type SkillScope = z.infer<typeof SkillScopeSchema>;
+
+export const GLOBAL_SKILL_SCOPE: SkillScope = { kind: "global" };
+
+/**
+ * Where one run works, as far as a skill's scope cares (EO-470).
+ *
+ * The item's project, and the workspace the run's step works in — the
+ * step's own pick, else the item's, else the first its project spans,
+ * which is the one answer `workspaceFor` gives. Either may be null: an
+ * item on no project, a step that says "no disk". A null matches no
+ * scope of that kind, so such a run is given its global skills only.
+ */
+export const SkillRunScopeSchema = z.object({
+  projectId: z.string().nullable(),
+  workspaceId: z.string().nullable(),
+});
+
+export type SkillRunScope = z.infer<typeof SkillRunScopeSchema>;
+
+/** A run that is on no project and works in no workspace — global skills only. */
+export const UNSCOPED_RUN: SkillRunScope = { projectId: null, workspaceId: null };
+
+/**
+ * Whether a skill's scope takes in this run (EO-470).
+ *
+ * The one rule, in `packages/core` because both backends' deliveries ask
+ * it — the Claude plugin directory and the Codex `.agent/skills` folder
+ * with the list in its prompt (invariant 12) — and two copies of a rule
+ * like this is how one backend came to deliver a name the other refused
+ * (EO-151). Nothing about enabled or archived is decided here; that is
+ * `isDeliverable`, and the two compose.
+ */
+export function skillInRunScope(scope: SkillScope, run: SkillRunScope): boolean {
+  switch (scope.kind) {
+    case "global":
+      return true;
+    case "project":
+      return run.projectId !== null && scope.projectId === run.projectId;
+    case "workspace":
+      return run.workspaceId !== null && scope.workspaceId === run.workspaceId;
+  }
+}
+
+/**
+ * The skills, out of those attached, whose scope takes in this run.
+ *
+ * Absent run scope reads as `UNSCOPED_RUN` — global skills only — rather
+ * than as "everything": a caller that did not say where the run works
+ * must not be handed a procedure meant for one repository.
+ */
+export function skillsForRun<T extends { scope: SkillScope }>(skills: readonly T[], run: SkillRunScope | undefined): T[] {
+  const where = run ?? UNSCOPED_RUN;
+  return skills.filter((skill) => skillInRunScope(skill.scope, where));
+}
+
+export const SkillSchema = z.object({
+  id: z.string(),
+  /**
+   * The identifier, and the only thing a model can invoke.
+   *
+   * Also the directory name under `skills/`, which is why it is held to
+   * a narrower shape than a display name and why two skills may not
+   * share one.
+   */
+  slug: z.string(),
+  /** What a person calls it. Never what is offered to the model. */
+  name: z.string(),
+  /**
+   * What the model reads to decide whether this skill is the one.
+   *
+   * Required for that reason: a skill with no description is in the
+   * list and never chosen, which reads exactly like a skill that is
+   * broken.
+   */
+  description: z.string(),
+  /** The markdown below the frontmatter — what the model reads once it has chosen. */
+  body: z.string(),
+  files: z.array(SkillFileSchema),
+  /**
+   * Present on disk, absent from what the model is choosing between.
+   *
+   * For a skill somebody invokes deliberately, or one that is half
+   * written: a way to keep it installed without it competing for the
+   * model's attention. Distinct from `enabled`, which is about whether
+   * it is delivered at all.
+   */
+  disableModelInvocation: z.boolean(),
+  /**
+   * Whether this skill is offered at all.
+   *
+   * Distinct from archived: disabled is a switch a person flips while
+   * they work out whether a skill is helping, archived is "I am done
+   * with this". Attachment (EO-106) reads both.
+   */
+  enabled: z.boolean(),
+  /**
+   * Which runs it reaches (EO-470) — see `SkillScopeSchema`.
+   *
+   * Defaulted when absent so that an organisation's published section
+   * written before scopes existed still reads, as what it meant then:
+   * global.
+   */
+  scope: SkillScopeSchema.default(GLOBAL_SKILL_SCOPE),
+  createdAt: z.number(),
+  updatedAt: z.number(),
+  /** Archived rather than deleted — a run that used it still points at it (invariant #3). */
+  archivedAt: z.number().nullable(),
+});
+
+export type Skill = z.infer<typeof SkillSchema>;
+
+/**
+ * What a supporting file's path may look like.
+ *
+ * A relative path in ordinary characters, one or more segments. This is
+ * written under a generated directory (EO-107), so the shape is the
+ * whole defence: no leading slash, no drive letter, no backslash, and —
+ * with `.` and `..` refused as segments below — nothing that resolves
+ * outside the skill's own directory.
+ */
+const SKILL_FILE_PATH_PATTERN = /^[A-Za-z0-9._-]+(?:\/[A-Za-z0-9._-]+)*$/;
+
+/** The one filename a supporting file may not take: the body is written there. */
+const RESERVED_SKILL_FILE = "skill.md";
+
+/**
+ * What a caller sends to save a skill: flat, tolerant, and typed.
+ *
+ * `slug` is nullable rather than required. A person naming a skill "PR
+ * review" should not have to invent `pr-review` as well, so absent means
+ * "decide one for me" and `saveSkill` asks `allocateSkillSlugs` — the
+ * pure half — with the slugs the catalogue has already spent. Present
+ * means they chose, and a choice that is not a slug comes back as a
+ * sentence rather than being silently rewritten under them.
+ */
+export const SkillDraftSchema = z.object({
+  /** Absent creates; present edits that skill in place. */
+  id: z.string().optional(),
+  /** Absent on a create means "decide one"; absent on an edit means "keep the one it has". */
+  slug: z.string().nullable().default(null),
+  name: z.string(),
+  description: z.string(),
+  body: z.string(),
+  files: z.array(SkillFileSchema).default([]),
+  /**
+   * Optional with no default, deliberately — the note on `enabled`
+   * applies to this in the same way.
+   */
+  disableModelInvocation: z.boolean().optional(),
+  /**
+   * Optional with no default, deliberately.
+   *
+   * A `.default(true)` here is not a default at all on an edit: it makes
+   * `enabled` always present, so a form that fixes a typo in the body
+   * and does not think about the switch turns a skill somebody had
+   * deliberately turned off back on — silently, because nothing about
+   * editing a body says anything about being enabled. Absent means
+   * "leave it as it is"; `saveSkill` defaults a *new* row to on.
+   * `McpServerDraftSchema.enabled` carries the same note.
+   */
+  enabled: z.boolean().optional(),
+  /**
+   * Optional with no default, for `enabled`'s reason: absent on an edit
+   * means "leave the scope as it is", so a form that only fixes a typo
+   * cannot move a project's skill back to global. A new row is global
+   * unless the caller says otherwise.
+   */
+  scope: SkillScopeSchema.optional(),
+});
+
+export type SkillDraft = z.infer<typeof SkillDraftSchema>;
+
+/** A draft that is well-formed, or the sentences saying why it is not. */
+export type SkillDraftResult =
+  | {
+      ok: true;
+      /** The slug they asked for, or null for "decide one" — see `SkillDraftSchema.slug`. */
+      slug: string | null;
+      name: string;
+      description: string;
+      body: string;
+      files: SkillFile[];
+      disableModelInvocation: boolean | undefined;
+      enabled: boolean | undefined;
+      scope: SkillScope | undefined;
+    }
+  | { ok: false; problems: string[] };
+
+/**
+ * Everything wrong with a supporting file's path, or nothing.
+ *
+ * Written as a list because a path can be wrong in more than one way at
+ * once, and the person fixing it should see all of them.
+ */
+function filePathProblems(path: string): string[] {
+  const problems: string[] = [];
+  if (path === "") return ["A supporting file needs a path."];
+
+  if (!SKILL_FILE_PATH_PATTERN.test(path)) {
+    problems.push(`"${path}" cannot be a supporting file's path: use a relative path in letters, digits, dots, hyphens, underscores and forward slashes.`);
+  }
+  // Checked separately from the pattern, which allows both as segments
+  // so that this can say what is actually wrong with them. A skill's
+  // files are written into a directory EO generates, and a path that
+  // climbs out of it writes somewhere nobody asked for.
+  if (path.split("/").some((segment) => segment === "." || segment === "..")) {
+    problems.push(`"${path}" has to stay inside the skill's own folder — no "." or ".." in it.`);
+  }
+  if (path.toLowerCase() === RESERVED_SKILL_FILE) {
+    problems.push(`"${path}" is the skill's own file — its body is what goes there. Give the supporting file another name.`);
+  }
+  return problems;
+}
+
+/**
+ * Narrows a draft to a skill, or says everything that is wrong with it
+ * (EO-105).
+ *
+ * Every problem at once rather than the first: a person fixing a form
+ * one refusal per save is being made to play a guessing game with a
+ * dialog box. Sentences rather than codes, because they are shown as
+ * written.
+ *
+ * Pure, and in `packages/core` for that reason — the repository and the
+ * IPC command both apply it, and neither should be the only place a
+ * malformed skill is caught. It refuses; it never throws. Throwing is
+ * for programmer error, and a person typing a path wrong is not one.
+ */
+export function readSkillDraft(draft: SkillDraft): SkillDraftResult {
+  const problems: string[] = [];
+
+  const name = draft.name.trim();
+  if (name === "") problems.push("A skill needs a name.");
+
+  const description = draft.description.trim();
+  if (description === "") problems.push("A skill needs a description — it is what the model reads to decide whether to use it.");
+
+  const body = draft.body;
+  if (body.trim() === "") problems.push("A skill needs a body — it is what the model reads once it has picked the skill.");
+
+  const asked = draft.slug === null ? "" : draft.slug.trim();
+  let slug: string | null = null;
+  if (asked !== "") {
+    if (asked.length > SKILL_SLUG_MAX_LENGTH) {
+      problems.push(`"${asked}" is too long for a slug — ${String(SKILL_SLUG_MAX_LENGTH)} characters at most.`);
+    } else if (!SKILL_SLUG_PATTERN.test(asked)) {
+      // Suggested rather than applied. The slug is what a model
+      // invokes, so rewriting it under somebody who typed one is
+      // changing the identifier they are about to put in a prompt.
+      problems.push(`"${asked}" cannot be a slug: it is the only name a model can invoke, so use lowercase letters and digits with single hyphens between them — "${slugifySkillName(asked)}", for instance.`);
+    } else {
+      slug = asked;
+    }
+  }
+
+  const files: SkillFile[] = [];
+  const seen = new Set<string>();
+  for (const file of draft.files) {
+    const path = file.path.trim();
+    const pathProblems = filePathProblems(path);
+    if (pathProblems.length > 0) {
+      problems.push(...pathProblems);
+      continue;
+    }
+    if (seen.has(path)) {
+      problems.push(`"${path}" is listed twice — one path holds one file.`);
+      continue;
+    }
+    seen.add(path);
+    files.push({ path, content: file.content });
+  }
+
+  if (problems.length > 0) return { ok: false, problems };
+  return { ok: true, slug, name, description, body, files, disableModelInvocation: draft.disableModelInvocation, enabled: draft.enabled, scope: draft.scope };
+}

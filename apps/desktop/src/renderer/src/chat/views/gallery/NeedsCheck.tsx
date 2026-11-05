@@ -1,0 +1,358 @@
+import { useState } from "react";
+import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useNavigate } from "react-router-dom";
+import { Check, FolderOpen, X } from "lucide-react";
+import type { GalleryNeedView, GalleryTemplateView, RuntimeStatusView, SectionLock } from "@eo/core";
+import { MANAGED_RUNTIMES } from "../../../shared/agents/catalog";
+import { runtimeKey } from "../../../shared/agents/runtimeStatus";
+import { machineAvailable } from "../../../ipc/bridge";
+import { ipcQuery } from "../../../query/client";
+import { galleryNeedsKey, useChromeVocabulary } from "../../../query/hooks";
+import { useInvalidateOnPush } from "../../../query/useInvalidateOnPush";
+import { ConnectorNeeds } from "../../connectors/ConnectorNeeds";
+import { ManagedLockNotice } from "../../managed/ManagedSection";
+import { Button, Card, ErrorLine, TextInput, ViewHeader } from "../../kit";
+import { SignInDialog } from "../agents/SignIn";
+
+/**
+ * The needs check — step 5 of first run (EO-317,
+ * `ARCHITECTURE.md`, "The needs check", "What a person sees first").
+ *
+ * One status per line — a backend signed in, a folder chosen, a
+ * connector authorised, a secret set — each red line saying why and
+ * carrying the one button that fixes it, in place: every fix acts here
+ * and then asks the machine the question again, never patching the line
+ * it acted on and never sending anybody to Settings to come back.
+ *
+ * Both exits are always offered: the board (or, with every line green
+ * and a job to fire, the first item), and "Continue with Preview only",
+ * which rehearses the pack with nothing real filed.
+ */
+export function NeedsCheck({
+  template,
+  projectId,
+  pipelineId,
+  needs: first,
+  jobId: firstJob,
+  onFinished,
+}: {
+  template: GalleryTemplateView;
+  projectId: string;
+  /** The board to land on. Null falls back to the project's own address. */
+  pipelineId: string | null;
+  /** The lines as `gallery:use` answered them, so the view draws before its first refetch. */
+  needs: GalleryNeedView[];
+  jobId: string | null;
+  /** Called on the way out, by either exit. */
+  onFinished: () => void;
+}) {
+  const navigate = useNavigate();
+  const queryClient = useQueryClient();
+  const vocabulary = useChromeVocabulary();
+  const key = galleryNeedsKey(projectId, template.slug);
+
+  const needs = useQuery({
+    queryKey: key,
+    queryFn: () => ipcQuery("gallery:needs", { projectId, slug: template.slug, token: template.token }),
+    initialData: { needs: first, jobId: firstJob, problem: null },
+  });
+  // Signing in, connecting and attaching a folder announce
+  // `config:changed`, and the sign-in ends in the main process rather
+  // than in a mutation here — so the view listens.
+  useInvalidateOnPush("config:changed", key);
+  const refresh = () => void queryClient.invalidateQueries({ queryKey: key });
+
+  const lines = needs.data?.needs ?? [];
+  const jobId = needs.data?.jobId ?? null;
+  const red = lines.filter((need) => !need.met);
+  const boardAddress = pipelineId === null ? "/project" : `/pipelines/${pipelineId}`;
+
+  /** Where they are going first, and only then the flow closing behind them. */
+  const leave = (to: string) => {
+    void navigate(to);
+    onFinished();
+  };
+
+  /** Step 6: the job fires, and the first item it files is opened to be watched. */
+  const start = useMutation({
+    mutationFn: () => ipcQuery("jobs:runNow", { jobId: jobId ?? "" }),
+    onSuccess: (result) => leave(result.itemId === null ? boardAddress : `/items/${result.itemId}`),
+  });
+
+  /**
+   * The exit for somebody who cannot get a line green: a rehearsal in
+   * EO's preview project, landing on its board. The window is pointed at
+   * that project first, because a board draws the project it is on.
+   */
+  const previewOnly = useMutation({
+    mutationFn: async () => {
+      const result = await ipcQuery("gallery:preview", { slug: template.slug, token: template.token });
+      if (result.projectId !== null) await ipcQuery("projects:setActive", { id: result.projectId });
+      return result;
+    },
+    onSuccess: (result) => {
+      if (result.problem !== null) return;
+      leave(result.pipelineId === null ? "/project" : `/pipelines/${result.pipelineId}`);
+      // After the navigation: everything project-scoped is asked again.
+      void queryClient.invalidateQueries();
+    },
+  });
+
+  const greenThroughout = red.length === 0;
+  return (
+    <div className="flex min-w-0 flex-col gap-4">
+      <ViewHeader
+        title={`${template.title} is set up`}
+        meta={
+          greenThroughout
+            ? "Everything it needs is here."
+            : `${red.length} thing${red.length === 1 ? "" : "s"} left before real work runs. Each one says why, and carries the one button that fixes it.`
+        }
+      />
+
+      <Card label="What this needs" className="gap-0 py-1.5">
+        <ul className="flex min-w-0 flex-col [&>li+li]:border-t [&>li+li]:border-line/60">
+          {lines.map((need) => (
+            <li key={need.key}>
+              <NeedRow need={need} projectId={projectId} template={template} onFixed={refresh} />
+            </li>
+          ))}
+        </ul>
+      </Card>
+
+      {needs.data?.problem ? <ErrorLine>{needs.data.problem}</ErrorLine> : null}
+      {previewOnly.data?.problem ? <ErrorLine>{previewOnly.data.problem}</ErrorLine> : null}
+      {start.data?.problem ? <ErrorLine>{start.data.problem}</ErrorLine> : null}
+
+      <div className="flex flex-wrap items-center gap-2">
+        {jobId !== null && greenThroughout ? (
+          <Button variant="primary" disabled={start.isPending} onClick={() => start.mutate()}>
+            Start the first {vocabulary.item.toLowerCase()}
+          </Button>
+        ) : (
+          <Button variant="primary" onClick={() => leave(boardAddress)}>
+            Go to the board
+          </Button>
+        )}
+        {/* The quiet way out beside the loud way on: it costs nothing and creates nothing real. */}
+        {template.previewable ? (
+          <Button disabled={previewOnly.isPending} onClick={() => previewOnly.mutate()}>
+            Continue with Preview only
+          </Button>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+/** One line: the status, the sentence, why it is red, and the one button. */
+function NeedRow({ need, projectId, template, onFixed }: { need: GalleryNeedView; projectId: string; template: GalleryTemplateView; onFixed: () => void }) {
+  return (
+    <div className="flex min-w-0 flex-col gap-1.5 py-2.5">
+      <div className="flex items-start gap-2.5">
+        {need.met ? (
+          <Check size={14} aria-label="Ready" className="mt-[3px] shrink-0 text-running" />
+        ) : (
+          <X size={14} aria-label="Not ready" className="mt-[3px] shrink-0 text-danger" />
+        )}
+        <span className={need.met ? "text-[13px] text-ink-muted" : "text-[13px] text-ink"}>{need.line}</span>
+      </div>
+      {/* In the words of whatever decided it — never composed here. */}
+      {need.why === null ? null : <p className="pl-6 text-[12.5px] leading-snug text-danger">{need.why}</p>}
+      {need.met || need.fix === null ? null : <Fix need={need} projectId={projectId} template={template} onFixed={onFixed} />}
+    </div>
+  );
+}
+
+function Fix({ need, projectId, template, onFixed }: { need: GalleryNeedView; projectId: string; template: GalleryTemplateView; onFixed: () => void }) {
+  const fix = need.fix;
+  if (fix === null) return null;
+  if (fix.kind === "folder" || fix.kind === "repository") {
+    return <WorkspaceFix label={fix.label} kind={fix.kind} path={fix.target ?? ""} projectId={projectId} onFixed={onFixed} />;
+  }
+  if (fix.kind === "backend") return <BackendFix label={fix.label} backend={fix.target} onFixed={onFixed} />;
+  if (fix.kind === "connector") return <ConnectorFix label={fix.label} server={fix.target} onFixed={onFixed} />;
+  if (fix.kind === "secret") return <SecretFix label={fix.label} name={fix.target ?? ""} onFixed={onFixed} />;
+  return <RoleFix label={fix.label} role={fix.target ?? ""} template={template} onFixed={onFixed} />;
+}
+
+/**
+ * Staffing a role from here (ARCHITECTURE.md, "The needs check"): the main process points the agent
+ * the
+ * import wrote at a backend this machine is signed in to, or refuses.
+ *
+ * A lock is drawn as the lock every other view draws, never as red text:
+ * a section somebody else manages is not something the person did wrong.
+ * The button stays offered while locked, because the same press *binds*
+ * a published agent, which stays the person's.
+ */
+function RoleFix({ label, role, template, onFixed }: { label: string; role: string; template: GalleryTemplateView; onFixed: () => void }) {
+  const [problem, setProblem] = useState<string | null>(null);
+  const [locked, setLocked] = useState<SectionLock | null>(null);
+  const staff = useMutation({
+    mutationFn: () => ipcQuery("gallery:staffRole", { slug: template.slug, token: template.token, role }),
+    onSuccess: (result) => {
+      setLocked(result.locked);
+      setProblem(result.locked === null ? result.problem : null);
+      if (result.ok) onFixed();
+    },
+    onError: (error: Error) => {
+      setLocked(null);
+      setProblem(error.message);
+    },
+  });
+
+  return (
+    <div className="flex flex-col gap-1.5 pl-6">
+      <div>
+        <Button size="sm" disabled={staff.isPending} onClick={() => staff.mutate()}>
+          {label}
+        </Button>
+      </div>
+      {locked === null ? null : <ManagedLockNotice lock={locked} />}
+      {problem === null ? null : <ErrorLine>{problem}</ErrorLine>}
+    </div>
+  );
+}
+
+/**
+ * The folder or the repository, chosen or typed (ARCHITECTURE.md, "The needs check"). Choosing *is*
+ * the answer; typing is for a pasted path and for a server, where there
+ * is no dialog to open (EO-319).
+ */
+function WorkspaceFix({ label, kind, path, projectId, onFixed }: { label: string; kind: "folder" | "repository"; path: string; projectId: string; onFixed: () => void }) {
+  const [typed, setTyped] = useState(path);
+  const [problem, setProblem] = useState<string | null>(null);
+
+  const attach = useMutation({
+    mutationFn: (chosen: string) => ipcQuery("gallery:attachWorkspace", { projectId, path: chosen, kind: kind === "repository" ? "git" : "folder" }),
+    onSuccess: (result) => {
+      setProblem(result.problem);
+      if (result.ok) onFixed();
+    },
+    onError: (error: Error) => setProblem(error.message),
+  });
+
+  const pick = useMutation({
+    mutationFn: () => ipcQuery("dialog:pickDirectory", { title: label }),
+    onSuccess: (result) => {
+      if (!result.path) return;
+      setTyped(result.path);
+      attach.mutate(result.path);
+    },
+  });
+
+  const field = kind === "repository" ? "Repository path" : "Folder path";
+  return (
+    <div className="flex flex-col gap-1.5 pl-6">
+      <div className="flex min-w-0 flex-wrap items-center gap-2">
+        <TextInput aria-label={field} value={typed} onChange={(event) => setTyped(event.target.value)} placeholder={field} className="min-w-[12rem] flex-1 font-mono text-[12.5px]" />
+        {machineAvailable() ? (
+          <Button size="sm" icon={<FolderOpen size={12} />} disabled={pick.isPending || attach.isPending} onClick={() => pick.mutate()}>
+            {label}
+          </Button>
+        ) : null}
+        <Button size="sm" variant="primary" disabled={typed.trim() === "" || attach.isPending} onClick={() => attach.mutate(typed.trim())}>
+          Save
+        </Button>
+      </div>
+      {problem === null ? null : <ErrorLine>{problem}</ErrorLine>}
+    </div>
+  );
+}
+
+/**
+ * Signing a backend in, from here (ARCHITECTURE.md, "The needs check"), with the dialog the Agents
+ * view
+ * uses. A machine with no runtime installed is told so rather than handed
+ * a button over an empty dialog (invariant #12).
+ */
+function BackendFix({ label, backend, onFixed }: { label: string; backend: string | null; onFixed: () => void }) {
+  const [open, setOpen] = useState(false);
+  const statuses = useQueries({
+    queries: MANAGED_RUNTIMES.map((choice) => ({
+      queryKey: runtimeKey(choice.id),
+      queryFn: () => ipcQuery("runtime:status", { provider: choice.id }),
+      // What is installed on this disk, which a server cannot answer (EO-319).
+      enabled: machineAvailable(),
+    })),
+  });
+  const installed = statuses.map((status) => status.data?.runtime ?? null).filter((runtime): runtime is RuntimeStatusView => runtime !== null);
+  // The one the pack was built on where this machine has it; otherwise any signed-in backend answers the line.
+  const runtime = installed.find((candidate) => candidate.id === backend) ?? installed[0] ?? null;
+
+  if (runtime === null) {
+    return (
+      <p className="pl-6 text-[12.5px] text-ink-subtle">
+        {machineAvailable()
+          ? "No coding agent is installed on this machine yet. EO ships none — Agents → Runtimes is where one is added."
+          : "Signing a coding agent in happens on the machine that runs it, which is not this server."}
+      </p>
+    );
+  }
+  return (
+    <div className="pl-6">
+      <Button size="sm" onClick={() => setOpen(true)}>
+        {label} to {runtime.label}
+      </Button>
+      {open ? (
+        <SignInDialog
+          runtime={runtime}
+          open
+          onOpenChange={setOpen}
+          onSignedIn={() => {
+            setOpen(false);
+            onFixed();
+          }}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+/** Connecting a connector from here (ARCHITECTURE.md, "The needs check"), narrowed to the one server this line is about. */
+function ConnectorFix({ label, server, onFixed }: { label: string; server: string | null; onFixed: () => void }) {
+  const [open, setOpen] = useState(false);
+  if (server === null) return null;
+  return (
+    <div className="flex flex-col pl-6">
+      {open ? (
+        <ConnectorNeeds role={null} servers={[server]} empty="That connector is no longer here." onChanged={onFixed} />
+      ) : (
+        <div>
+          <Button size="sm" onClick={() => setOpen(true)}>
+            {label}
+          </Button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** A secret, set where it is missing. Names in, values in, nothing back. */
+function SecretFix({ label, name, onFixed }: { label: string; name: string; onFixed: () => void }) {
+  const [value, setValue] = useState("");
+  const [problem, setProblem] = useState<string | null>(null);
+  const save = useMutation({
+    mutationFn: () => ipcQuery("moduleSecrets:set", { name, value }),
+    onSuccess: (result) => {
+      setProblem(result.problem);
+      if (!result.saved) return;
+      setValue("");
+      onFixed();
+    },
+    onError: (error: Error) => setProblem(error.message),
+  });
+
+  return (
+    <div className="flex flex-col gap-1.5 pl-6">
+      <div className="flex min-w-0 flex-wrap items-center gap-2">
+        <TextInput type="password" aria-label={`Value for ${name}`} value={value} onChange={(event) => setValue(event.target.value)} className="min-w-[12rem] flex-1" />
+        <Button size="sm" variant="primary" disabled={value === "" || save.isPending} onClick={() => save.mutate()}>
+          {label}
+        </Button>
+      </div>
+      {problem === null ? null : <ErrorLine>{problem}</ErrorLine>}
+    </div>
+  );
+}

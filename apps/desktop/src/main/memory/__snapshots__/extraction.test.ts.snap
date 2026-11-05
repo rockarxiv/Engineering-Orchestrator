@@ -1,0 +1,87 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`memory extraction > builds the prompt from core's one definition of a note, which tells the work under way apart from the project (EO-592) 1`] = `
+"You read an AI agent's finished run and pick out what it learned that the next agent on the same project should be told. You are shown the item the run worked on — its title, description and acceptance criteria — so that you can tell the work under way from what is true of the project.
+
+A note is worth writing when a later agent, working on something else in this project, would get something wrong or lose time without it, and would not see it just by reading the code: how to build, run or test the project, and what the usual commands miss; a rule the whole project follows, for any change, not only this one; files that are generated, and from what; a trap that cost time; a decision a person made about how work is done here.
+
+The test a note must pass: would a later agent need this after this item is finished? What stops being true, or stops mattering, once the item is finished is not a note.
+
+So none of these is a note. What is wrong, missing or still to do in the work under way — a defect found in it, a gap it leaves, a check it fails, a fix it still needs — however it is worded, as a rule ("ensure…", "must…") or not: it is put right before the item is finished, or said in the run's answer. Anything that restates what the item asks for — its description or its acceptance criteria, in the same words or others: the item already says it. What the work did or changed, its progress, how many tests passed, and the item's status. What reading the code shows, such as what the code now says or where something is defined.
+
+Nor is a gap the work leaves when it is finished — something it was not asked to do, or left out, that is now missing — or something in the project that is wrong and should be put right, such as a comment or document that says the wrong thing, which a note would only work around. Say either in the run's answer, where whoever reads the work next can judge it: in memory it would be read by agents and seen by nobody. A trap in how the code works, which nobody has said should change, is still a note.
+
+Not a note: "Ensure module-created items remain trial-scoped, or refuse before writing." — a defect in the change under way, gone once it is fixed.
+A note: "deleteConversationItem must delete the conversation's rows before its first await; tests expect them gone when the call returns." — a trap for anyone touching that code, after this item as before it.
+
+Look for notes in everything the run said — its final answer, its comments, and what people said on the item. A run often states such a fact only in passing, while saying what it did and why; it is still a fact about the project, and still a note. A run that lists what is wrong with the work under way is talking about this item, not the project: leave out every one of those findings, and keep only a fact among them that a later agent would need after this item is finished.
+
+Many runs teach nothing worth keeping, and then the answer is no notes. When the run does state a fact of the kind above that memory does not hold, write it. At most 5 notes, each one self-contained fact a later agent could act on without having seen this run, at most 1000 characters: what is true and, where the run says, why.
+
+A note: "Locale strings live in \`i18n/en.json\`, and the build fails on a key used in code but missing there, so add the key in the same change."
+Not a note: "Added the export endpoint and its tests." — that is what this run did.
+Not a note: "The settings page has a dark-mode toggle." — that is what the code says.
+
+Each note has a scope: "project" for what is true across the whole project, the id of one of the listed workspaces for what is true only of that workspace, or the id of the listed container, where there is one, for what is only true while the work filed under it is in progress — what the other items under it will need after this one is finished, and nobody will once all of it is.
+
+You are shown what memory already holds. Do not repeat an entry, or say again in other words what one already says; a fact memory does not hold is still a note, even beside one that it does. Write a note that corrects an existing entry only when this run plainly shows the entry is wrong, and say what is true now.
+
+A note that corrects an entry names that entry's id in replaces, and EO retires the entry when it writes the note. Name only an entry written by an agent, never one written by a person. Every other note's replaces is empty."
+`;
+
+exports[`memory extraction > lays out an extraction's input the same way every time (EO-592) 1`] = `
+"# Where a note may go
+
+- "project": the project Payments
+- "workspace-1": the workspace api
+
+# What memory already holds
+
+<entry id="entry-1" scope="workspace-1" by="an agent">
+Money is integer cents.
+</entry>
+<entry id="entry-2" scope="project" by="a person">
+Settlements close at 17:00 UTC.
+</entry>
+
+# The item the run worked on
+
+Title: Add CSV export
+
+## Its description
+
+Finance wants a spreadsheet.
+
+## Its acceptance criteria
+
+- The export lists every settlement.
+- Amounts are in cents.
+
+# What people said on the item since this agent last ran
+
+<comment>
+a person: Keep the column order.
+</comment>
+
+# The run
+
+Checker ran the action "check". It ended: succeeded, reporting the result "sent_back".
+
+## The comments it posted
+
+<comment>
+Looking at the export.
+</comment>
+
+## The tools it used
+
+Read, Grep
+
+## Its final answer
+
+{ "result": "sent_back" }
+
+# Your answer
+
+A note for each fact this run states that a later agent would need after this item is finished and that memory does not already hold — or no notes, when there is none."
+`;

@@ -1,0 +1,22 @@
+-- `worktree_path` was one kind's word for it (EO-295,
+-- ARCHITECTURE.md, "The interface").
+--
+-- The column holds the directory a run worked in, written by whatever
+-- prepared the workspace and read again on both resume paths — the
+-- reconciliation that picks a run back up after a restart, and the
+-- reply that unparks a conversation. Both hand it to the backend as its
+-- `cwd`, because a session resumed from a different directory is not
+-- the same session.
+--
+-- Which is exactly why the name has to change. A worktree is the git
+-- kind's answer to "where does this run happen"; a folder workspace
+-- hands back a directory nobody cut, a scratch workspace a temporary
+-- one, and a `none` workspace nothing at all. The value was never a
+-- worktree path — it was a cwd that happened to be one — and a column
+-- named after one kind is how the next kind ends up writing its
+-- directory into a field that says it is something else.
+--
+-- A rename rather than a new column and a backfill: every historical
+-- row means exactly what it meant, and a run interrupted by the upgrade
+-- resumes in the directory it started in.
+ALTER TABLE `runs` RENAME COLUMN `worktree_path` TO `cwd`;

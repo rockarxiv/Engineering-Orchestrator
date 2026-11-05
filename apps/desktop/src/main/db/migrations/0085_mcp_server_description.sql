@@ -1,0 +1,22 @@
+-- What a server does, in the words a person reads (EO-314,
+-- ARCHITECTURE.md, "One document", "A connector is an MCP server with a setup flow").
+--
+-- The catalogue could say what a server *is* — a command, a URL, the
+-- variables it needs — and nothing about what reaching it means. That
+-- was enough while the only reader was the person who added it, and
+-- stops being enough the moment a **pack** asks for one: the import
+-- gate shows a pack's tool surface as capabilities, one line per MCP
+-- server, and "reads your Slack channels" has to come from somewhere.
+-- A tool list cannot supply it — `mcp__slack__conversations_history` is
+-- a name only its author can read — and EO cannot invent it, because
+-- only whoever added the server knows what it reaches.
+--
+-- So it is a column on the server definition: written once by the
+-- person who added it, carried by every pack whose roles name that
+-- server, and read by the gate on the far side.
+--
+-- `''` rather than NULL, for every row and for every row to come. An
+-- absent description and an empty one are the same thing — nobody has
+-- said what this server does — and two spellings of it would be two
+-- branches at every reader.
+ALTER TABLE `mcp_servers` ADD `description` text DEFAULT '' NOT NULL;

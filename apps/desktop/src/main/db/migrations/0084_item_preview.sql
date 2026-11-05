@@ -1,0 +1,16 @@
+-- A preview is a mark on the item (EO-313, ARCHITECTURE.md,
+-- "Preview").
+--
+-- `runs.dry_run` exists and says the wrong thing here: it marks one run
+-- as a rehearsal, and what a person previewing a template is watching is
+-- a whole item walk a whole pipeline. Unmarked, that item was
+-- indistinguishable from work — it counted in the inbox, appeared in the
+-- archive, added to the day's spend, and put a green tick beside "post
+-- to Slack" that read as posted.
+--
+-- Nullable with no default, so every row written before this reads as
+-- what it is: real work. A timestamp rather than a flag, for the reason
+-- `archived_at` and `held_at` are timestamps — it is the same kind of
+-- mark on the same table, and when a preview was made is a fact the
+-- gallery will want.
+ALTER TABLE `items` ADD `preview_at` integer;

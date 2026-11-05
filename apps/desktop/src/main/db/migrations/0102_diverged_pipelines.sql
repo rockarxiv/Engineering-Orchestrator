@@ -1,0 +1,22 @@
+-- A published pipeline this machine edited anyway (EO-331,
+-- the original design).
+--
+-- "A pack a person edited locally is marked diverged, and updates stop
+-- applying silently." Two columns on the pipeline rather than a table
+-- of divergences: it is a fact about one row, written when somebody
+-- suggests a change or edits a locked graph, and cleared when they
+-- discard their edits.
+--
+-- It is not a second lock, and it is not the lock's opposite. Whether
+-- this installation may edit the pipelines section at all stays derived
+-- from `published_sections` and `isReplica` (invariant #6). What this
+-- records is narrower and is genuinely a fact rather than a derivation:
+-- *which published version this machine's copy was made from*, which
+-- nothing else knows once the copy has been edited — the graph is the
+-- person's now, and the version pointer beside it is the organisation's
+-- account of a graph that is no longer there.
+ALTER TABLE `pipelines` ADD `diverged_from_version_id` text;--> statement-breakpoint
+-- When the copy was made. Null together with the column above, always:
+-- a pipeline is diverged or it is not, and two columns that could
+-- disagree about it would be two answers.
+ALTER TABLE `pipelines` ADD `diverged_at` integer;

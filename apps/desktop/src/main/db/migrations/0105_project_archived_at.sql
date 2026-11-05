@@ -1,0 +1,16 @@
+-- A project put away, and when (EO-347).
+--
+-- Reversible, which is the whole difference from deleting one (EO-346):
+-- the row, its items, their threads and their runs all stay exactly as
+-- they were, and restoring is clearing this column.
+--
+-- What it pauses is derived rather than written. The scheduler reads
+-- this column when it builds its input and leaves every item on an
+-- archived project out of it, so nothing is written onto the items
+-- themselves -- and an item somebody had put on hold (`items.held_at`)
+-- is still on hold after the project comes back, because archiving
+-- never touched that column.
+--
+-- Null is every project that is live, which is every project that
+-- existed before this migration.
+ALTER TABLE `projects` ADD `archived_at` integer;

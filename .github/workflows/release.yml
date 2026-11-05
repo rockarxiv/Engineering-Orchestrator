@@ -1,0 +1,376 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  # A dry run: builds installers and uploads them as CI artifacts
+  # without publishing anything. This is where icon conversion, the
+  # cross-arch builds and AppImage packaging either work or do not.
+  #
+  # Linux by default, because the other two are expensive: GitHub bills
+  # macOS at ten times wall-clock and Windows at twice, so "all" costs
+  # roughly a sixth of a month's free allowance every time it is
+  # clicked. Opt into them deliberately.
+  workflow_dispatch:
+    inputs:
+      platforms:
+        description: Which platforms to build
+        type: choice
+        default: linux
+        options: [linux, windows, macos, all]
+
+# electron-builder's GitHub publisher needs to write releases, and the
+# default token is read-only in a good many organisations.
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+# Hosted runners normally. The RELEASE_RUNNERS repo variable moves the
+# release onto self-hosted runners while the Actions allowance is spent,
+# the same way CI_RUNS_ON moves CI: a JSON object from platform id to a
+# runner label, e.g. {"linux":"<label>","win":"<label>"}. A platform it
+# does not name stays hosted, and deleting the variable puts the
+# whole workflow back as it was.
+#
+# Linux jobs on a self-hosted runner take CI_CONTAINER, as CI's do, and
+# for the same two reasons: a self-hosted runner's OS may not be the
+# Debian the steps expect, and every job on that runner shares one
+# working directory, so a containerised job (which writes as root)
+# followed by a bare one leaves the bare one unable to clean it.
+# `prepare` and `publish` run bare but check nothing out, so they never
+# touch that directory.
+
+jobs:
+  # The draft is created once, up front, so the build jobs never race to
+  # create it. electron-builder's publisher is a plain list-then-create
+  # with no locking and no handling of the 422 that GitHub returns to
+  # whoever loses: three jobs starting together would fail two builds.
+  # With a draft already there, every job takes the "reuse it" branch.
+  prepare:
+    runs-on: ${{ fromJSON(vars.RELEASE_RUNNERS || '{}').linux || 'ubuntu-latest' }}
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      include: ${{ steps.matrix.outputs.include }}
+      verify: ${{ steps.matrix.outputs.verify }}
+    # No checkout: nothing here reads the repository, and see above for
+    # why a self-hosted Linux job outside the container must not.
+    steps:
+      - id: version
+        shell: bash
+        run: |
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            # The publisher refuses a version starting with "v" and adds
+            # the prefix back itself when it builds the tag name.
+            version="${GITHUB_REF_NAME#v}"
+          else
+            version="0.0.0-dev.${GITHUB_RUN_NUMBER}"
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "building $version"
+
+      # The build matrix is chosen here rather than filtered in the build
+      # job, because a job-level `if` cannot see `matrix`: it is evaluated
+      # before the matrix expands, and naming it there is a load-time
+      # error that took the whole workflow down — no jobs, no triggers, a
+      # zero-second failure on every push. `inputs` is legal in a step, so
+      # the same selection happens where the contexts allow it.
+      - id: matrix
+        shell: bash
+        env:
+          # A tag builds what a release ships. A manual run builds only
+          # what was asked for, so the cheap option is the default one.
+          SELECTION: ${{ github.ref_type == 'tag' && 'shipping' || inputs.platforms }}
+          RUNNERS: ${{ vars.RELEASE_RUNNERS || '{}' }}
+          CONTAINER: ${{ vars.CI_CONTAINER || 'null' }}
+        run: |
+          set -euo pipefail
+          # One entry per operating system, building BOTH architectures in
+          # a single electron-builder run. Splitting the archs across jobs
+          # looks tidier and silently breaks auto-update: only Linux gets
+          # an arch suffix on its update metadata, so two Windows jobs
+          # both write `latest.yml` and the second upload overwrites the
+          # first. Whichever finished last would become the only installer
+          # every user is ever offered.
+          #
+          # `shards` is how many jobs the desktop suite is split across
+          # on that system; see the verify job. Windows and macOS get
+          # more because the same suite takes far longer there.
+          all='[
+            {"id":"win",  "os":"windows-latest","args":"--win --x64 --arm64","pnpm_os":"win32", "pnpm_cpu":["x64","arm64"],"shards":4},
+            {"id":"mac",  "os":"macos-latest",  "args":"--mac --x64 --arm64","pnpm_os":"darwin","pnpm_cpu":["x64","arm64"],"shards":4},
+            {"id":"linux","os":"ubuntu-latest", "args":"--linux --x64",      "pnpm_os":"linux", "pnpm_cpu":["x64"],        "shards":2}
+          ]'
+          case "$SELECTION" in
+            # What a tag ships. macOS is deliberately not in it: the
+            # suite does not pass on a mac runner yet, and an unsigned
+            # .dmg is the platform where that hurts most. `all` still
+            # builds it, so a dry run can be used to work the gap down.
+            shipping) wanted='["win","linux"]'      ;;
+            all)     wanted='["win","mac","linux"]' ;;
+            windows) wanted='["win"]'               ;;
+            macos)   wanted='["mac"]'               ;;
+            linux)   wanted='["linux"]'             ;;
+            # An empty matrix is a load-time error of its own, so refuse
+            # here with something readable instead.
+            *) echo "::error::unknown platform selection: '$SELECTION'"; exit 1 ;;
+          esac
+          # Then the runner each one lands on (see RELEASE_RUNNERS at the
+          # top). `container` is always present, null on a hosted runner
+          # and on any self-hosted one but Linux.
+          include=$(jq -cn --argjson all "$all" --argjson wanted "$wanted" \
+            --argjson runners "$RUNNERS" --argjson container "$CONTAINER" '
+              $all
+              | map(select(.id as $id | $wanted | index($id)))
+              | map(if $runners[.id] then
+                      .os = $runners[.id]
+                      | .container = (if .id == "linux" then $container else null end)
+                    else .container = null end)')
+          echo "include=$include" >> "$GITHUB_OUTPUT"
+          echo "building: $(jq -r 'map("\(.id) on \(.os)") | join(", ")' <<<"$include")"
+          # Per system: one verify job for the static checks and the
+          # small packages (shard 0), and one for each slice of the
+          # desktop suite (1..shards).
+          verify=$(jq -cn --argjson include "$include" \
+            '[$include[] | . as $p | range(0; $p.shards + 1) | $p + {shard: .}]')
+          echo "verify=$verify" >> "$GITHUB_OUTPUT"
+
+      - name: Create the draft release
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 \
+            || gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
+                 --draft --title "$GITHUB_REF_NAME" \
+                 --notes "Installers are attached below. They are **not code-signed** yet — see the README for what your operating system will say and how to get past it."
+
+  # The suite has to pass before anything is published; a broken
+  # release is far more expensive to withdraw than to not cut.
+  #
+  # It runs here, split across jobs, rather than as a step of each
+  # build. In one job the desktop suite took 45 minutes on the Windows
+  # runner against 15 on Linux, and the whole release waited on it.
+  # Every test file still runs exactly once on every system; only the
+  # wall-clock changes. Billed minutes go up a little, since each job
+  # repeats the install.
+  verify:
+    needs: prepare
+    name: verify (${{ matrix.id }}, ${{ matrix.shard == 0 && 'checks' || format('tests {0}/{1}', matrix.shard, matrix.shards) }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.prepare.outputs.verify) }}
+    runs-on: ${{ matrix.os }}
+    # Null except for Linux on a self-hosted runner; see the top.
+    container: ${{ matrix.container }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: pnpm
+
+      # The same install the build job does, for the reason given there,
+      # so that what is tested is what gets packaged.
+      - name: Fetch this platform's agent binaries
+        shell: bash
+        run: |
+          node -e '
+            const fs = require("node:fs");
+            const pkg = JSON.parse(fs.readFileSync("package.json", "utf8"));
+            pkg.pnpm = { ...pkg.pnpm, supportedArchitectures: { os: ["${{ matrix.pnpm_os }}"], cpu: ${{ toJSON(matrix.pnpm_cpu) }} } };
+            fs.writeFileSync("package.json", JSON.stringify(pkg, null, 2) + "\n");
+          '
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Both steps below run in the runner's default shell, as the suite
+      # always has, and not in bash. On Windows `shell: bash` is Git
+      # Bash, which puts its own GNU tar ahead of System32's on PATH —
+      # and GNU tar reads `C:\...` as a remote host, so every test that
+      # packs or unpacks an archive fails with "Cannot connect to C:".
+      # The quotes are for PowerShell, where a bare `@` or `!` can mean
+      # something.
+
+      # Everything that is not the desktop suite: quick enough on any
+      # runner to share one job.
+      - name: Typecheck, lint and the package suites
+        if: matrix.shard == 0
+        run: pnpm typecheck && pnpm lint && pnpm exec turbo run test '--filter=!@eo/desktop'
+
+      # Windows only (EO-502): the suite ends agent processes by reading
+      # the process table through CIM, and on v0.10.0's release runners the
+      # first such reads stalled for minutes — inside whichever tests made
+      # them first, which then timed out. One query here wakes WMI outside
+      # every test's time limit, and says in the log how long it took.
+      # Best effort: a slow or failed warm-up is not a failed release.
+      - name: Wake WMI before the desktop suite
+        if: matrix.shard != 0 && runner.os == 'Windows'
+        continue-on-error: true
+        timeout-minutes: 15
+        run: "(Measure-Command { Get-CimInstance -Query 'SELECT ProcessId, ParentProcessId, CreationDate FROM Win32_Process' | Out-Null }).TotalSeconds"
+
+      # Through turbo, so @eo/core and @eo/engine are built first; only
+      # the desktop's own `vitest run` receives what follows the `--`.
+      - name: Desktop suite, slice ${{ matrix.shard }} of ${{ matrix.shards }}
+        if: matrix.shard != 0
+        run: pnpm exec turbo run test '--filter=@eo/desktop' '--' '--shard=${{ matrix.shard }}/${{ matrix.shards }}'
+
+  build:
+    # Nothing is packaged, on any system, until every verify job on
+    # every system has passed.
+    needs: [prepare, verify]
+    strategy:
+      fail-fast: false
+      matrix:
+        # Already narrowed to the platforms this run wants; see prepare.
+        include: ${{ fromJSON(needs.prepare.outputs.include) }}
+    runs-on: ${{ matrix.os }}
+    # Null except for Linux on a self-hosted runner; see the top.
+    container: ${{ matrix.container }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: pnpm
+
+      # The agent SDKs ship their real binaries as per-platform optional
+      # dependencies gated on os/cpu, and pnpm 10 installs only the
+      # host's. Without this the arm64 artifacts would build cleanly and
+      # ship with no Codex or Claude binary in them at all — the runner
+      # is x64, so it would never have downloaded the arm64 one.
+      #
+      # Written here rather than committed so a developer installing on
+      # one machine does not pull six platforms' worth of binaries.
+      - name: Fetch this platform's agent binaries
+        shell: bash
+        run: |
+          node -e '
+            const fs = require("node:fs");
+            const pkg = JSON.parse(fs.readFileSync("package.json", "utf8"));
+            pkg.pnpm = { ...pkg.pnpm, supportedArchitectures: { os: ["${{ matrix.pnpm_os }}"], cpu: ${{ toJSON(matrix.pnpm_cpu) }} } };
+            fs.writeFileSync("package.json", JSON.stringify(pkg, null, 2) + "\n");
+          '
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Through turbo, not `pnpm --filter`: electron-vite bundles
+      # @eo/core, and with the suite in its own jobs nothing earlier in
+      # this one has built the workspace packages.
+      - name: Build
+        run: pnpm build --filter=@eo/desktop
+
+      - name: Package
+        working-directory: apps/desktop
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Signing, for whenever the certificates exist.
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          # Lets a re-run of a failed tag reuse its release; without it
+          # the publisher refuses anything older than two hours.
+          EP_GH_IGNORE_TIME: "true"
+        run: |
+          # An unset GitHub secret expands to the empty string, and an
+          # empty CSC_LINK is *defined* — electron-builder resolves it as
+          # a path, lands on the working directory, and dies with
+          # "apps/desktop not a file". Unsetting them is the difference
+          # between an unsigned build and no build at all.
+          for var in CSC_LINK CSC_KEY_PASSWORD APPLE_ID APPLE_APP_SPECIFIC_PASSWORD APPLE_TEAM_ID; do
+            [ -n "${!var}" ] || unset "$var"
+          done
+          # And with no certificate, stop it hunting the keychain for one.
+          [ -n "${CSC_LINK:-}" ] || export CSC_IDENTITY_AUTO_DISCOVERY=false
+
+          pnpm exec electron-builder ${{ matrix.args }} \
+            -c.extraMetadata.version=${{ needs.prepare.outputs.version }} \
+            ${{ github.ref_type == 'tag' && '--publish always' || '--publish never' }}
+
+      # electron-builder's own latest*.yml carries a sha512 that
+      # electron-updater verifies before applying an update. This is the
+      # plain list, for anyone checking a download by hand.
+      - name: Checksums
+        shell: bash
+        working-directory: apps/desktop/release
+        run: |
+          shopt -s nullglob
+          files=(*.dmg *.exe *.zip *.AppImage)
+          [ ${#files[@]} -gt 0 ] || exit 0
+          # No single tool is on all three runners: macOS has `shasum`
+          # and not `sha256sum`, and Windows' Git Bash has it the other
+          # way round.
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum "${files[@]}" | tee "SHA256SUMS-${{ matrix.id }}.txt"
+          else
+            shasum -a 256 "${files[@]}" | tee "SHA256SUMS-${{ matrix.id }}.txt"
+          fi
+
+      # On a tag the installers are already on the draft release —
+      # electron-builder put them there — so the checksums go beside
+      # them and nothing is stored as a CI artifact. That used to be how
+      # `publish` collected the checksums, and it made every release
+      # depend on artifact storage: installers for every platform on
+      # every tag filled the account's quota, and a full quota failed
+      # v0.5.0's builds after they had built. GitHub recalculates usage
+      # only every 6–12 hours, so deleting old artifacts did not help
+      # either.
+      - name: Attach the checksums
+        if: github.ref_type == 'tag'
+        shell: bash
+        working-directory: apps/desktop/release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          shopt -s nullglob
+          sums=(SHA256SUMS-*.txt)
+          [ ${#sums[@]} -gt 0 ] || exit 0
+          # Every hosted image has gh; the Debian container does not,
+          # and in it the job is already root.
+          command -v gh >/dev/null || { apt-get update -qq && apt-get install -y -qq gh; }
+          gh release upload "$GITHUB_REF_NAME" "${sums[@]}" --repo "$GITHUB_REPOSITORY" --clobber
+
+      # A dry run publishes nothing, so this is the only place its
+      # installers end up. Kept briefly: they are for looking at, and
+      # every day they are kept is quota a later run cannot use.
+      - uses: actions/upload-artifact@v4
+        if: github.ref_type != 'tag'
+        with:
+          name: eo-${{ matrix.id }}
+          retention-days: 3
+          path: |
+            apps/desktop/release/*.dmg
+            apps/desktop/release/*.exe
+            apps/desktop/release/*.zip
+            apps/desktop/release/*.AppImage
+            apps/desktop/release/*.blockmap
+            apps/desktop/release/*.yml
+            apps/desktop/release/SHA256SUMS-*.txt
+          # A build that produced nothing at all should fail here rather
+          # than quietly upload an empty artifact.
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    if: github.ref_type == 'tag'
+    runs-on: ${{ fromJSON(vars.RELEASE_RUNNERS || '{}').linux || 'ubuntu-latest' }}
+    steps:
+      # Not cosmetic: electron-updater discovers versions through the
+      # releases Atom feed, and a draft release does not appear in it.
+      # Left as a draft, this would be invisible to every installed copy.
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft=false

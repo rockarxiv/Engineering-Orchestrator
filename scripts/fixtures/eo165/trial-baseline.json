@@ -1,0 +1,445 @@
+{
+  "arm": "baseline",
+  "task": "When EO finishes building a repository index it does not trust the exit code — it re-reads the index and confirms one is there. A sync already reports how many files it changed, and that number reaches the row EO keeps for the index. A first build reports no such number, so a freshly built index has a blank where a sync leaves a count.\n\nGive a successful first build the same treatment: report how many files were indexed, carry it to the same place the sync's count goes, and cover it with tests.\n\nTake the smaller reading of anything ambiguous and note it in your handoff rather than asking.",
+  "instructionsFrom": "/home/lyudvig/.eo/worktrees/EO-165/apps/desktop/src/main/roles/prompts/implementer.md",
+  "runs": [
+    {
+      "id": "baseline-1·0298f4ee",
+      "calls": [
+        {
+          "name": "mcp__repo__codewiki_context",
+          "args": {
+            "task": "repository index build verification and sync file count reporting"
+          }
+        },
+        {
+          "name": "Bash",
+          "args": {
+            "command": "git status --short | head -20 && git log --oneline -5 && ls"
+          }
+        },
+        {
+          "name": "Bash",
+          "args": {
+            "command": "sed -n '1,120p' apps/desktop/src/main/repositoryIntelligence/codewiki/provider.ts"
+          }
+        },
+        {
+          "name": "Bash",
+          "args": {
+            "command": "sed -n '380,600p' apps/desktop/src/main/repositoryIntelligence/codewiki/provider.ts"
+          }
+        },
+        {
+          "name": "Bash",
+          "args": {
+            "command": "cat apps/desktop/src/main/repositoryIntelligence/codewiki/output.ts"
+          }
+        },
+        {
+          "name": "Bash",
+          "args": {
+            "command": "sed -n '300,400p' apps/desktop/src/main/repositoryIntelligence/codewiki/provider.ts; echo ---PORT---; cat apps/desktop/src/main/repositoryIntelligence/port.ts"
+          }
+        },
+        {
+          "name": "Bash",
+          "args": {
+            "command": "grep -rn \"changedFileCount\\|changed_file_count\" --include=*.ts --include=*.sql --include=*.tsx . | grep -v node_modules"
+          }
+        },
+        {
+          "name": "Bash",
+          "args": {
+            "command": "grep -rn \"changedFileCount\\|changed_file_count\" . --include=\"*.ts\" --include=\"*.tsx\" --include=\"*.sql\" --exclude-dir=node_modules --exclude-dir=.codewiki"
+          }
+        },
+        {
+          "name": "Bash",
+          "args": {
+            "command": "sed -n '190,300p' apps/desktop/src/main/repositoryIntelligence/service.ts"
+          }
+        },
+        {
+          "name": "Bash",
+          "args": {
+            "command": "sed -n '300,400p' apps/desktop/src/main/repositoryIntelligence/service.ts"
+          }
+        },
+        {
+          "name": "Bash",
+          "args": {
+            "command": "sed -n '400,460p' apps/desktop/src/main/repositoryIntelligence/service.test.ts"
+          }
+        },
+        {
+          "name": "Bash",
+          "args": {
+            "command": "grep -rn \"lastSyncChangedFiles\\|last_sync_changed_files\" . --include=\"*.ts\" --include=\"*.tsx\" --exclude-dir=node_modules --exclude-dir=.codewiki"
+          }
+        },
+        {
+          "name": "Bash",
+          "args": {
+            "command": "sed -n '560,680p' apps/desktop/src/main/repositoryIntelligence/codewiki/provider.test.ts"
+          }
+        },
+        {
+          "name": "Bash",
+          "args": {
+            "command": "sed -n '1,140p' apps/desktop/src/main/repositoryIntelligence/codewiki/provider.test.ts"
+          }
+        },
+        {
+          "name": "Bash",
+          "args": {
+            "command": "cat apps/desktop/src/main/repositoryIntelligence/codewiki/testShim.ts"
+          }
+        },
+        {
+          "name": "Bash",
+          "args": {
+            "command": "grep -rn \"files\\|count\" apps/desktop/src/main/repositoryIntelligence/handover.ts | head -40"
+          }
+        },
+        {
+          "name": "Bash",
+          "args": {
+            "command": "sed -n '120,145p' packages/core/src/schemas/repositoryIntelligence.ts; echo ---; sed -n '20,60p' apps/desktop/src/main/db/repos/repositoryIndexesRepo.ts"
+          }
+        },
+        {
+          "name": "Bash",
+          "args": {
+            "command": "grep -n \"describe(\\|^  it(\" apps/desktop/src/main/repositoryIntelligence/codewiki/provider.test.ts | sed -n '1,80p'"
+          }
+        },
+        {
+          "name": "Bash",
+          "args": {
+            "command": "sed -n '369,446p' apps/desktop/src/main/repositoryIntelligence/codewiki/provider.test.ts; echo \"=== 955-995 ===\"; sed -n '955,1000p' apps/desktop/src/main/repositoryIntelligence/codewiki/provider.test.ts"
+          }
+        },
+        {
+          "name": "Bash",
+          "args": {
+            "command": "sed -n '140,295p' apps/desktop/src/main/repositoryIntelligence/codewiki/provider.test.ts"
+          }
+        },
+        {
+          "name": "Bash",
+          "args": {
+            "command": "grep -rn \"lastSync\" apps/desktop/src/renderer --include=\"*.tsx\" --include=\"*.ts\" | head -20"
+          }
+        },
+        {
+          "name": "Bash",
+          "args": {
+            "command": "python3 - <<'PY'\nimport re\np = \"apps/desktop/src/main/repositoryIntelligence/codewiki/provider.ts\"\ns = open(p).read()\n\n# 1. import IndexReport type\nold = 'import { explainOutput, readCommitSha, readIndexReport, readSyncReport, readVersion } from \"./output.js\";'\nnew = 'import { explainOutput, type IndexReport, readCommitSha, readIndexReport, readSyncReport, readVersion } from \"./output.js\";'\nassert s.count(old) == 1\ns = s.replace(old, new)\n\n# 2. Verification type\nold = '''  type Verification = { present: true; probe: RepositoryIndexProbe } | { present: false; probe: RepositoryIndexProbe; problem: string };'''\nnew = '''  type Verification =\n    | { present: true; probe: RepositoryIndexProbe; report: IndexReport }\n    | { present: false; probe: RepositoryIndexProbe; problem: string };'''\nassert s.count(old) == 1\ns = s.replace(old, new)\n\nopen(p, \"w\").write(s)\nPY\necho ok"
+          }
+        }
+      ],
+      "firstEditRank": 21,
+      "usage": null,
+      "interceptions": []
+    },
+    {
+      "id": "baseline-2·881a342f",
+      "calls": [
+        {
+          "name": "mcp__repo__codewiki_context",
+          "args": {
+            "task": "repository index build and sync, verifying index exists after build, recording files changed count on the index row"
+          }
+        },
+        {
+          "name": "Bash",
+          "args": {
+            "command": "ls && git log --oneline -5 && git status --short | head -20"
+          }
+        },
+        {
+          "name": "Bash",
+          "args": {
+            "command": "cat apps/desktop/src/main/db/repos/repositoryIndexesRepo.ts"
+          }
+        },
+        {
+          "name": "Bash",
+          "args": {
+            "command": "ls apps/desktop/src/main/repositoryIntelligence/ && cat apps/desktop/src/main/repositoryIntelligence/port.ts"
+          }
+        },
+        {
+          "name": "Bash",
+          "args": {
+            "command": "ls apps/desktop/src/main/repositoryIntelligence/codewiki/ && wc -l apps/desktop/src/main/repositoryIntelligence/codewiki/*"
+          }
+        },
+        {
+          "name": "Bash",
+          "args": {
+            "command": "grep -rn \"changedFileCount\" apps/desktop/src packages --include=*.ts | grep -v node_modules"
+          }
+        },
+        {
+          "name": "Bash",
+          "args": {
+            "command": "grep -rn \"changedFileCount\" --include=\"*.ts\" apps/desktop/src packages 2>/dev/null | grep -v node_modules"
+          }
+        },
+        {
+          "name": "Bash",
+          "args": {
+            "command": "cat apps/desktop/src/main/repositoryIntelligence/codewiki/output.ts"
+          }
+        },
+        {
+          "name": "Bash",
+          "args": {
+            "command": "cat -n apps/desktop/src/main/repositoryIntelligence/codewiki/provider.ts"
+          }
+        },
+        {
+          "name": "Bash",
+          "args": {
+            "command": "sed -n 250,540p apps/desktop/src/main/repositoryIntelligence/codewiki/provider.ts"
+          }
+        },
+        {
+          "name": "Bash",
+          "args": {
+            "command": "sed -n 180,300p apps/desktop/src/main/repositoryIntelligence/service.ts"
+          }
+        },
+        {
+          "name": "Bash",
+          "args": {
+            "command": "sed -n 380,470p apps/desktop/src/main/repositoryIntelligence/service.test.ts"
+          }
+        },
+        {
+          "name": "Bash",
+          "args": {
+            "command": "grep -rn \"lastSyncChangedFiles\\|last_sync_changed_files\" --include=\"*.ts\" --include=\"*.tsx\" --include=\"*.sql\" apps packages 2>/dev/null | grep -v node_modules"
+          }
+        },
+        {
+          "name": "Bash",
+          "args": {
+            "command": "sed -n 296,400p apps/desktop/src/main/repositoryIntelligence/service.ts"
+          }
+        },
+        {
+          "name": "Bash",
+          "args": {
+            "command": "sed -n 560,680p apps/desktop/src/main/repositoryIntelligence/codewiki/provider.test.ts"
+          }
+        },
+        {
+          "name": "Bash",
+          "args": {
+            "command": "sed -n 1,120p apps/desktop/src/main/repositoryIntelligence/codewiki/provider.test.ts; echo ====; cat apps/desktop/src/main/repositoryIntelligence/codewiki/testShim.ts"
+          }
+        },
+        {
+          "name": "Bash",
+          "args": {
+            "command": "cat apps/desktop/src/main/repositoryIntelligence/codewiki/testShim.ts"
+          }
+        },
+        {
+          "name": "Bash",
+          "args": {
+            "command": "sed -n 100,250p apps/desktop/src/main/repositoryIntelligence/codewiki/provider.ts"
+          }
+        },
+        {
+          "name": "Bash",
+          "args": {
+            "command": "git branch --show-current; git log --oneline -15 | cat"
+          }
+        },
+        {
+          "name": "Bash",
+          "args": {
+            "command": "git status -sb | head -3; git branch -a | head; echo \"---\"; git log -1 --format=%B | cat"
+          }
+        },
+        {
+          "name": "Bash",
+          "args": {
+            "command": "sed -n 380,560p apps/desktop/src/main/repositoryIntelligence/codewiki/provider.test.ts"
+          }
+        },
+        {
+          "name": "Bash",
+          "args": {
+            "command": "sed -n 200,380p apps/desktop/src/main/repositoryIntelligence/codewiki/provider.test.ts"
+          }
+        },
+        {
+          "name": "Bash",
+          "args": {
+            "command": "sed -n 150,200p apps/desktop/src/main/repositoryIntelligence/codewiki/provider.test.ts"
+          }
+        },
+        {
+          "name": "Bash",
+          "args": {
+            "command": "grep -rn \"changed\\|files\" apps/desktop/src/main/repositoryIntelligence/sayable.ts | head -30; echo \"=== handover\"; grep -n \"changed\\|count\\|files\" apps/desktop/src/main/repositoryIntelligence/handover.ts | head -40"
+          }
+        },
+        {
+          "name": "Bash",
+          "args": {
+            "command": "sed -n 900,986p apps/desktop/src/main/repositoryIntelligence/codewiki/provider.test.ts"
+          }
+        },
+        {
+          "name": "Bash",
+          "args": {
+            "command": "grep -rn \"initialize(\\|ensureReady(\\|rebuild(\" --include=\"*.test.ts\" apps/desktop/src/main/repositoryIntelligence | grep -v node_modules | head -40"
+          }
+        },
+        {
+          "name": "Bash",
+          "args": {
+            "command": "python3 - <<'PY'\nimport re\np = \"apps/desktop/src/main/repositoryIntelligence/port.ts\"\ns = open(p).read()\nold = \"\"\"      /**\n       * How many files the implementation reported updating.\n       *\n       * Meaningful for an update of an existing index and absent for a\n       * build from nothing, where \"changed\" would mean \"all of them\" and\n       * would say nothing anyone asked. Reported by the implementation\n       * rather than computed by the caller: a checkout carries\n       * uncommitted work that a commit-to-commit diff would miss, and\n       * the thing that just walked the tree already knows the answer.\n       */\n      changedFileCount?: number;\"\"\"\nnew = \"\"\"      /**\n       * How many files the work accounted for: the ones an update\n       * reported changing, or the ones a build from nothing put in the\n       * index.\n       *\n       * One number covering both, because both answer the question\n       * whoever reads the row is asking — how much of this checkout the\n       * index describes — and a build that reported nothing left a blank\n       * there. A blank is not \"all of them\"; it reads as \"never\n       * measured\", and it is indistinguishable from a sync that never\n       * ran. \"All of them\" is a real answer when all of them is what was\n       * indexed, so it is now given rather than withheld.\n       *\n       * Still optional, and still may be omitted: an implementation that\n       * cannot say how much it did is entitled to say nothing, and a\n       * caller that only wants to know whether the index is usable must\n       * not have to care.\n       *\n       * Reported by the implementation rather than computed by the\n       * caller: a checkout carries uncommitted work that a\n       * commit-to-commit diff would miss, and the thing that just walked\n       * the tree already knows the answer.\n       */\n      changedFileCount?: number;\"\"\"\nassert old in s\nopen(p, \"w\").write(s.replace(old, new))\nprint(\"ok\")\nPY"
+          }
+        }
+      ],
+      "firstEditRank": 26,
+      "usage": null,
+      "interceptions": []
+    },
+    {
+      "id": "baseline-3·4dd7f240",
+      "calls": [
+        {
+          "name": "mcp__repo__codewiki_context",
+          "args": {
+            "task": "repository index build and sync, verifying index exists after build, reporting number of files changed to the index row"
+          }
+        },
+        {
+          "name": "Bash",
+          "args": {
+            "command": "git status --short | head -30 && echo \"--- branch ---\" && git branch --show-current && echo \"--- log ---\" && git log --oneline -5"
+          }
+        },
+        {
+          "name": "Bash",
+          "args": {
+            "command": "git status | head -5 && echo \"=== repo file ===\" && cat apps/desktop/src/main/db/repos/repositoryIndexesRepo.ts"
+          }
+        },
+        {
+          "name": "Bash",
+          "args": {
+            "command": "cat apps/desktop/src/main/repositoryIntelligence/port.ts"
+          }
+        },
+        {
+          "name": "Bash",
+          "args": {
+            "command": "ls -la apps/desktop/src/main/repositoryIntelligence/ && echo \"=== grep changedFileCount ===\" && grep -rn \"changedFileCount\" --include=*.ts apps/ packages/ | grep -v node_modules"
+          }
+        },
+        {
+          "name": "Bash",
+          "args": {
+            "command": "grep -rn \"changedFileCount\" --include=\"*.ts\" apps packages 2>/dev/null | grep -v node_modules"
+          }
+        },
+        {
+          "name": "Bash",
+          "args": {
+            "command": "ls codewiki 2>/dev/null; ls apps/desktop/src/main/repositoryIntelligence/codewiki apps/desktop/src/main/repositoryIntelligence/binary"
+          }
+        },
+        {
+          "name": "Bash",
+          "args": {
+            "command": "cat apps/desktop/src/main/repositoryIntelligence/codewiki/output.ts"
+          }
+        },
+        {
+          "name": "Bash",
+          "args": {
+            "command": "sed -n 380,540p apps/desktop/src/main/repositoryIntelligence/codewiki/provider.ts"
+          }
+        },
+        {
+          "name": "Bash",
+          "args": {
+            "command": "sed -n 1,120p apps/desktop/src/main/repositoryIntelligence/codewiki/provider.ts"
+          }
+        },
+        {
+          "name": "Bash",
+          "args": {
+            "command": "sed -n 190,300p apps/desktop/src/main/repositoryIntelligence/service.ts"
+          }
+        },
+        {
+          "name": "Bash",
+          "args": {
+            "command": "grep -n \"recordSuccess\\|measured\" apps/desktop/src/main/repositoryIntelligence/service.ts | sed -n 1,60p; echo \"=== run fn ===\"; sed -n 300,400p apps/desktop/src/main/repositoryIntelligence/service.ts"
+          }
+        },
+        {
+          "name": "Bash",
+          "args": {
+            "command": "sed -n 300,400p apps/desktop/src/main/repositoryIntelligence/codewiki/provider.ts"
+          }
+        },
+        {
+          "name": "Bash",
+          "args": {
+            "command": "sed -n 1,120p apps/desktop/src/main/repositoryIntelligence/codewiki/provider.test.ts"
+          }
+        },
+        {
+          "name": "Bash",
+          "args": {
+            "command": "cat apps/desktop/src/main/repositoryIntelligence/codewiki/testShim.ts"
+          }
+        },
+        {
+          "name": "Bash",
+          "args": {
+            "command": "cat apps/desktop/src/main/repositoryIntelligence/sayable.ts; echo \"=== handover ===\"; cat apps/desktop/src/main/repositoryIntelligence/handover.ts"
+          }
+        },
+        {
+          "name": "Bash",
+          "args": {
+            "command": "grep -rn \"lastSyncChangedFiles\\|last_sync_changed_files\" --include=\"*.ts\" --include=\"*.tsx\" apps packages 2>/dev/null | grep -v node_modules"
+          }
+        },
+        {
+          "name": "Bash",
+          "args": {
+            "command": "sed -n 380,460p apps/desktop/src/main/repositoryIntelligence/service.test.ts; echo \"=== schema doc ===\"; sed -n 950,1000p apps/desktop/src/main/db/schema.ts; echo \"=== core schema ===\"; sed -n 110,150p packages/core/src/schemas/repositoryIntelligence.ts"
+          }
+        },
+        {
+          "name": "Bash",
+          "args": {
+            "command": "sed -n 560,680p apps/desktop/src/main/repositoryIntelligence/codewiki/provider.test.ts"
+          }
+        },
+        {
+          "name": "Bash",
+          "args": {
+            "command": "grep -n \"describe(\\|makeRepo\\|mkdtempSync\\|function built\\|function refused\\|function providerFor\\|writeFileSync(join(workspace\" apps/desktop/src/main/repositoryIntelligence/codewiki/provider.test.ts | sed -n 1,80p"
+          }
+        }
+      ],
+      "firstEditRank": 19,
+      "usage": null,
+      "interceptions": []
+    }
+  ]
+}

@@ -1,0 +1,15 @@
+-- When a pipeline's template base last moved (EO-534).
+--
+-- The assistant is told the person's own edits since the base, from the
+-- pipeline's versions — and "since" needs a moment to count from. The
+-- version an applied update filed was the only marker, and a base that
+-- moved without filing one (an update the person had already made, a
+-- conflict resolved by keeping their pipeline) left none, nor did a
+-- template-authored version that has since been pruned. So the moment is
+-- kept beside the base itself, written with it by `recordPipelineOrigin`.
+--
+-- Null where it was never kept: an origin recorded before this column,
+-- or one the startup backfill matched for a pipeline made long before
+-- origins, whose base is the version it was made from — every version it
+-- has is the person's.
+ALTER TABLE `pipelines` ADD `template_base_moved_at` integer;

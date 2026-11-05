@@ -1,0 +1,47 @@
+{
+  "template": {
+    "slug": "software-feature-to-merge",
+    "title": "Software feature to merge",
+    "pipelineName": "Delivery",
+    "previewable": true
+  },
+  "needs": [
+    {
+      "key": "role:implementer",
+      "line": "An agent for \"implementer\"",
+      "met": true,
+      "why": null,
+      "fix": null
+    },
+    {
+      "key": "role:reviewer",
+      "line": "An agent for \"reviewer\"",
+      "met": true,
+      "why": null,
+      "fix": null
+    },
+    {
+      "key": "workspace",
+      "line": "A repository — the checkout its work happens in",
+      "met": false,
+      "why": "This project has no repository yet, so nothing can be branched, reviewed or opened as a pull request.",
+      "fix": {
+        "kind": "repository",
+        "label": "Choose a repository",
+        "target": ""
+      }
+    },
+    {
+      "key": "backend",
+      "line": "A coding agent signed in",
+      "met": false,
+      "why": "Nothing on this machine is signed in, so no step would dispatch.",
+      "fix": {
+        "kind": "backend",
+        "label": "Sign in",
+        "target": null
+      }
+    }
+  ],
+  "jobId": null
+}

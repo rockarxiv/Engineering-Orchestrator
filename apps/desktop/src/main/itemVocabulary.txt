@@ -1,0 +1,598 @@
+apps/desktop/src/main/archive/schedule.ts: console.log(`[eo] archived ${result.archived} finished ticket(s)`);
+apps/desktop/src/main/db/client.test.ts: // And the ticket's own workspace, which is likewise what every
+apps/desktop/src/main/db/migrate.test.ts: '{"name":"Release notes","description":"Writes them.","inputs":{},"needs":{"bin":[],"env":[],"network":false,"ticket":true,"comment":false},"results":["written"]}', 1, 1)`,
+apps/desktop/src/main/db/migrate.test.ts: * was `ticket`, and the card it produced is still on the screen.
+apps/desktop/src/main/db/migrate.test.ts: // In the shape a turn wrote before the rename: `ticket`, not `item`.
+apps/desktop/src/main/db/migrate.test.ts: ["a2", "ASK-2", "ticket:019fb8c6-de92-7a41-9c33-4471f0c2b1de"],
+apps/desktop/src/main/db/migrate.test.ts: const assisted = { message: "One thing.", proposals: [{ action: "amend", ticket: "EO-2", why: "clearer", title: "Something else entirely" }] };
+apps/desktop/src/main/db/migrate.test.ts: const named = handle.db.all<{ name: string }>(sql`SELECT name FROM sqlite_master WHERE name LIKE '%ticket%'`);
+apps/desktop/src/main/db/migrate.test.ts: expect(both.parsed.proposals[1]).not.toHaveProperty("ticket");
+apps/desktop/src/main/db/migrate.test.ts: expect(both.raw.proposals[1]).toHaveProperty("ticket");
+apps/desktop/src/main/db/migrate.test.ts: { action: "amend", ticket: "EO-1", why: "the cap was wrong", title: "Rate limit the import at 100/min" },
+apps/desktop/src/main/db/repos/itemsRepo.test.ts: (_, i) => createTestItem(handle.db, { type: "story", title: `Ticket ${i}`, stepId: "todo" }).key,
+apps/desktop/src/main/db/repos/itemsRepo.test.ts: expect(linkJiraKey(handle.db, item.id, "KAN-123")).toEqual({ ok: false, problem: "That ticket no longer exists." });
+apps/desktop/src/main/db/repos/itemsRepo.test.ts: expect(setJiraSync(handle.db, item.id, false)).toEqual({ ok: false, problem: "That ticket no longer exists." });
+apps/desktop/src/main/db/repos/itemsRepo.ts: const ITEM_IS_GONE = "That ticket no longer exists.";
+apps/desktop/src/main/db/repos/itemsRepo.ts: if (!step) throw new Error(`no pipeline step "${input.stepId}" — a ticket cannot start on a step that does not exist`);
+apps/desktop/src/main/db/repos/pipelineStepsRepo.ts: * caller saying "back to the ticket's workspace".
+apps/desktop/src/main/db/repos/pipelineStepsRepo.ts: // back to the ticket's workspace exactly as an unset pick does.
+apps/desktop/src/main/db/repos/transitionsRepo.ts: `transitionItem: step "${input.toStepId}" does not belong to pipeline "${toPipelineId}" — refusing a move that would leave the ticket on a step its own pipeline does not have`,
+apps/desktop/src/main/db/repos/transitionsRepo.ts: throw new Error(`transitionItem: ticket ${input.itemId} not found`);
+apps/desktop/src/main/db/repos/workspacesRepo.ts: * here, the step falls back to the ticket's workspace, which is what it
+apps/desktop/src/main/db/repos/workspacesRepo.ts: if (folder) return folder.config.perItemSubfolder ? `${folder.config.path} · a subfolder per ticket` : folder.config.path;
+apps/desktop/src/main/db/schema.ts: * out loud, or NULL for "whatever the ticket is on" — which is what
+apps/desktop/src/main/gallery/softwarePack.test.ts: * A builtin's unrouted result is only a warning — EO parks the ticket
+apps/desktop/src/main/gallery/softwarePack.test.ts: * missing route is a ticket stopped on a step nobody was watching.
+apps/desktop/src/main/guardDefaultNotice.ts: `This installation now has a daily spend ceiling of ${cents}¢ (${money(cents)}), across every ticket.`,
+apps/desktop/src/main/ipc/archiveProjectCommand.ts: `Run stopped because this ticket's project, "${projectName}", was archived. Nothing will be dispatched on it ` +
+apps/desktop/src/main/ipc/assistCommands.test.ts: * ticket composer has done since EO-176 — the comment first, then the
+apps/desktop/src/main/ipc/assistCommands.test.ts: // A sentence, in this room's words rather than a ticket's.
+apps/desktop/src/main/ipc/assistCommands.test.ts: // Recorded on the run as the ticket composer's is, and nothing a
+apps/desktop/src/main/ipc/assistCommands.test.ts: expect(refusal).toContain("**Worktree**, holding 1 ticket");
+apps/desktop/src/main/ipc/assistCommands.test.ts: expect(result.delivery?.note).not.toMatch(/ticket/);
+apps/desktop/src/main/ipc/assistCommands.test.ts: message: "I cannot inspect the screen. Which ticket or pipeline should I identify?",
+apps/desktop/src/main/ipc/assistCommands.ts: * through `deliverToLiveRun` — the path the ticket composer has used
+apps/desktop/src/main/ipc/commentDelivery.test.ts: expect(result.delivery?.note).toMatch(/Nothing is running on this ticket/);
+apps/desktop/src/main/ipc/config.test.ts: // Null is "the ticket's own", which is not a pick; the sentinel is
+apps/desktop/src/main/ipc/config.test.ts: // repository takes it off that project, and any ticket left behind
+apps/desktop/src/main/ipc/config.test.ts: // ticket's project; the outbox sender resolves one from the
+apps/desktop/src/main/ipc/config.test.ts: // workspace's project. A stranded ticket pulls its comments from one
+apps/desktop/src/main/ipc/config.test.ts: expect(created.problem).toMatch(/ticket/i);
+apps/desktop/src/main/ipc/config.test.ts: expect(moved.problem).toMatch(/ticket/i);
+apps/desktop/src/main/ipc/config.test.ts: it("still moves a repository no ticket is on", async () => {
+apps/desktop/src/main/ipc/configCommands.ts: * "the ticket's own", which is not a pick; the `none` sentinel is "no
+apps/desktop/src/main/ipc/configCommands.ts: `project's workspaces, or leave it on the ticket's own.`,
+apps/desktop/src/main/ipc/currentView.test.ts: const outcome = await move.run(dispatchIpc, { ticketId: id, toStepId, comment: "Asked for from the ticket's screen." });
+apps/desktop/src/main/ipc/currentView.test.ts: expect(factOf(matching?.rows ?? [], "ticket id")).toEqual([item.id]);
+apps/desktop/src/main/ipc/currentView.test.ts: expect(text).toContain(`"this ticket", "it" and "here" mean **${item.key}**`);
+apps/desktop/src/main/ipc/currentView.test.ts: if (showing?.kind !== "item") throw new Error("expected a ticket");
+apps/desktop/src/main/ipc/currentView.ts: describes: "the work this project has put away. An archived ticket keeps its comments and runs and can be restored.",
+apps/desktop/src/main/ipc/currentView.ts: { label: "ticket id", value: item.itemId },
+apps/desktop/src/main/ipc/deleteItemCommand.test.ts: scratch = mkdtempSync(join(tmpdir(), "eo delete ticket "));
+apps/desktop/src/main/ipc/deleteItemCommand.ts: `There is uncommitted work in ${names.join(", ")}. It exists nowhere else — deleting the ticket would be the last chance to look at it.`,
+apps/desktop/src/main/ipc/deleteItemCommand.ts: if (!item) return refused("That ticket no longer exists.");
+apps/desktop/src/main/ipc/domain.test.ts: expect(detail.comments.at(-1)?.body).toContain("you moved this ticket");
+apps/desktop/src/main/ipc/domain.test.ts: expect(engineComment?.body).toContain("Run cancelled because you resumed this ticket");
+apps/desktop/src/main/ipc/domain.test.ts: expect(engineComment?.body).toContain("cancelled because you put this ticket on hold");
+apps/desktop/src/main/ipc/domain.test.ts: problem: "That ticket no longer exists.",
+apps/desktop/src/main/ipc/domainCommands.ts: "Acceptance criteria were edited on this ticket.",
+apps/desktop/src/main/ipc/domainCommands.ts: * **Two doors.** `acceptanceCriteria` is the one the ticket screen and
+apps/desktop/src/main/ipc/domainCommands.ts: * and a sentence telling them about "the next run on this ticket" would
+apps/desktop/src/main/ipc/domainCommands.ts: * differs: somebody typing into the assistant has never seen a ticket,
+apps/desktop/src/main/ipc/domainCommands.ts: : ` Nothing is being brought in from ${after}: this ticket's Jira sync is off, so switching it on is what asks for the issue's comments, attachments and text.`;
+apps/desktop/src/main/ipc/domainCommands.ts: : `This ticket now mirrors ${after} and no longer ${before}.${backfill}`;
+apps/desktop/src/main/ipc/domainCommands.ts: : `Ticket put on hold at "${stepName}". It will stay on this step until you resume it.`,
+apps/desktop/src/main/ipc/domainCommands.ts: : `Ticket resumed at "${stepName}". ${outlook}`,
+apps/desktop/src/main/ipc/domainCommands.ts: ? "Jira sync is off, so this ticket will not be pushed to Jira or pulled from it."
+apps/desktop/src/main/ipc/domainCommands.ts: ? ` ${after}'s comments and attachments are being brought in now, and its summary, description and acceptance criteria replace what this ticket holds — a note will record whatever they replaced.`
+apps/desktop/src/main/ipc/domainCommands.ts: ? `Run cancelled because you put this ticket on hold at "${stepName}". It will stay on this step until you resume it.`
+apps/desktop/src/main/ipc/domainCommands.ts: ? `Run cancelled because you resumed this ticket at "${stepName}" while that run was still in flight. ${outlook}`
+apps/desktop/src/main/ipc/domainCommands.ts: ? `This ticket no longer mirrors ${before}. Jira pushes still queued for it were dropped, and nothing here reaches Jira — or comes back from it — until a key is attached again.`
+apps/desktop/src/main/ipc/domainCommands.ts: ? `This ticket now mirrors ${after}.${backfill}`
+apps/desktop/src/main/ipc/domainCommands.ts: `"${step.name}" is a step of "${nameOfPipeline(step.pipelineId)}", not of "${destination}". A ticket's step and ` +
+apps/desktop/src/main/ipc/domainCommands.ts: `Jira sync is on, so this ticket talks to ${key} again — status, comments and attachments are pushed there, and whatever was written on the issue while it was off is being brought in now.`
+apps/desktop/src/main/ipc/domainCommands.ts: `actually has, or leave the pipeline out to move the ticket within the one it is already on.`
+apps/desktop/src/main/ipc/domainCommands.ts: `its pipeline have to name the same place — one written without the other leaves the ticket on a step its own ` +
+apps/desktop/src/main/ipc/domainCommands.ts: `them back within the minute, or switch this ticket's Jira sync off first if it should stop following that issue.`
+apps/desktop/src/main/ipc/domainCommands.ts: body: `Could not pick this ticket back up after your reply: ${reason}\n\nReply again to retry.`,
+apps/desktop/src/main/ipc/domainCommands.ts: body: `Run cancelled: you moved this ticket from "${nameOf(item.stepId)}" to "${nameOf(input.toStepId)}" while an agent was working on it.`,
+apps/desktop/src/main/ipc/domainCommands.ts: const nextRun = where === "ticket" ? "the next run on this ticket" : "the next turn in this conversation";
+apps/desktop/src/main/ipc/domainCommands.ts: if (!getItem(db, itemId)) return { archived: false, problem: "That ticket no longer exists." };
+apps/desktop/src/main/ipc/domainCommands.ts: if (!item) return { updated: false, problem: "That ticket no longer exists." };
+apps/desktop/src/main/ipc/domainCommands.ts: if (!item) throw new Error(`ticket ${input.itemId} not found`);
+apps/desktop/src/main/ipc/domainCommands.ts: if (!item) throw new Error(`ticket ${itemId} not found`);
+apps/desktop/src/main/ipc/domainCommands.ts: return "An empty list is not an edit — acceptance criteria are what EO checks the implementer's claim against. Send the criteria you mean, or leave them out of the call to keep the ones the ticket has.";
+apps/desktop/src/main/ipc/domainCommands.ts: return `EO has no step "${toStepId}", so it cannot be where a ticket enters "${destination}". Nothing moved.`;
+apps/desktop/src/main/ipc/domainCommands.ts: where: "ticket" | "conversation" = "ticket",
+apps/desktop/src/main/ipc/domainQueries.ts: * attachments' sync state travel with `ticket`, because they are facts
+apps/desktop/src/main/ipc/domainQueries.ts: * ticket's workspace, or no disk.
+apps/desktop/src/main/ipc/domainQueries.ts: /** The `ticket` section: the item's own fields, the watch on its step, and its attachments' sync state. */
+apps/desktop/src/main/ipc/domainQueries.ts: const own = wanted.has("ticket") ? ownFieldsSection(db, context) : undefined;
+apps/desktop/src/main/ipc/itemCommands.ts: "Everything else the submission carried is on the ticket itself.",
+apps/desktop/src/main/ipc/itemCommands.ts: const REPRO_ELSEWHERE = "This type does not carry the bug repro fields, so this sentence is here and nowhere else on the ticket.";
+apps/desktop/src/main/ipc/itemSections.test.ts: * reads from. Not every mention of a table: the ticket's own
+apps/desktop/src/main/ipc/itemSections.test.ts: // The latest run the ticket is named by, and the one the section asked for.
+apps/desktop/src/main/ipc/itemSections.test.ts: // The ticket's own fields name its latest run and count its open
+apps/desktop/src/main/ipc/itemSections.test.ts: // The whole item reads each of them; the ticket alone reads none.
+apps/desktop/src/main/ipc/itemSections.test.ts: const answer = getItemSections(handle.db, { itemId: item.id, include: ["ticket"] })!;
+apps/desktop/src/main/ipc/itemSections.test.ts: const own = getItemSections(handle.db, { itemId: one.id, include: ["ticket"] })!.item!;
+apps/desktop/src/main/ipc/itemSections.test.ts: const ownOnly = statementsDuring(() => getItemSections(handle.db, { itemId: item.id, include: ["ticket"] }));
+apps/desktop/src/main/ipc/itemSections.test.ts: const statements = statementsDuring(() => getItemSections(handle.db, { itemId: item.id, include: ["ticket", "runs"], runsLimit: 1 }));
+apps/desktop/src/main/ipc/itemSections.test.ts: expect(getItemSections(handle.db, { itemId: "00000000-0000-0000-0000-000000000000", include: ["ticket"] })).toBeNull();
+apps/desktop/src/main/ipc/itemSections.test.ts: it("answers only the ticket's fields for include ['ticket']", () => {
+apps/desktop/src/main/ipc/itemSections.test.ts: it("gives the ticket the summary the board gives it", () => {
+apps/desktop/src/main/ipc/itemSections.test.ts: it("reads no run history for the ticket's fields beside a limited runs section", () => {
+apps/desktop/src/main/ipc/outputCommands.test.ts: * A person's correction of what a ticket has produced (EO-298,
+apps/desktop/src/main/ipc/outputCommands.test.ts: * told apart: a ticket that has gone, a ticket that produced nothing,
+apps/desktop/src/main/ipc/outputCommands.test.ts: // answered would take the `!` off a ticket still waiting for a
+apps/desktop/src/main/ipc/outputCommands.test.ts: // on a ticket that is parked on an unrelated question has not
+apps/desktop/src/main/ipc/outputCommands.test.ts: // only a fact the ticket can state if what was changed is still here.
+apps/desktop/src/main/ipc/outputCommands.test.ts: it("answers nothing, so it neither clears the ticket's markers nor resumes what parked on one", () => {
+apps/desktop/src/main/ipc/outputCommands.test.ts: it("is the first output when the ticket had none, and says it superseded nothing", () => {
+apps/desktop/src/main/ipc/outputCommands.test.ts: it("refuses a ticket that is not there", () => {
+apps/desktop/src/main/ipc/outputCommands.test.ts: it("refuses a ticket with nothing to export, and one that is not there", async () => {
+apps/desktop/src/main/ipc/outputCommands.test.ts: it("refuses an empty body rather than making the ticket produce nothing", () => {
+apps/desktop/src/main/ipc/outputCommands.ts: if (!item) return { saved: false, path: null, problem: "That ticket no longer exists." };
+apps/desktop/src/main/ipc/outputCommands.ts: if (output === undefined) return { saved: false, path: null, problem: "This ticket has not produced anything to export." };
+apps/desktop/src/main/ipc/outputCommands.ts: problem: "An output cannot be empty — it is the thing this ticket has produced, and the next step works from it.",
+apps/desktop/src/main/ipc/outputCommands.ts: return { commentId: null, supersededCommentId: null, problem: "That ticket no longer exists." };
+apps/desktop/src/main/ipc/projectCommands.ts: `${stranded.length} ticket(s) on ${from ? `"${from.name}"` : "another project"} belong to that repository. ` +
+apps/desktop/src/main/ipc/projectCommands.ts: problem: `${stranded.length} ticket(s) on this project belong to that repository. Move or close them first — leaving them here would point them at a repository the project no longer covers.`,
+apps/desktop/src/main/ipc/repositoryCommands.ts: `${workspace.config.name} still has ${items.length} ticket(s), so it can't be removed — their run history is ` +
+apps/desktop/src/main/ipc/repositoryIntelligenceCommands.test.ts: if (!hold) throw new Error("expected the ticket to be free");
+apps/desktop/src/main/ipc/repositoryIntelligenceCommands.ts: return { ok: false, problem: "A run is working in that checkout and EO cannot stop it from here. Cancel it on the ticket and try again." };
+apps/desktop/src/main/ipc/roleActionCommands.test.ts: expect(catalog.text).toContain(`used by "Check" (Delivery v${boundTo.number}, 1 ticket still finishing on it)`);
+apps/desktop/src/main/ipc/roleActionCommands.test.ts: expect(refused.text).toContain(`"Check" (Delivery v${boundTo.number}, 1 ticket still finishing on it)`);
+apps/desktop/src/main/ipc/roleActionCommands.ts: "A ticket finishes on the pipeline version it entered on, so a step an older version defines can still be dispatched for the tickets bound to it and would then have no answer shape: that use clears when those tickets have finished or been archived, not by editing the pipeline.",
+apps/desktop/src/main/ipc/roleActionCommands.ts: return `"${use.stepName}" (${use.pipelineName} v${version}, ${items} ticket${items === 1 ? "" : "s"} still finishing on it)`;
+apps/desktop/src/main/ipc/workspaceCommands.test.ts: // The repository is still first, which is the workspace a ticket
+apps/desktop/src/main/ipc/workspaceCommands.test.ts: // every such ticket onto it.
+apps/desktop/src/main/ipc/workspaceCommands.test.ts: // ticket's own workspace, which is what a step with no pick has
+apps/desktop/src/main/ipc/workspaceCommands.ts: // pointing at a workspace that is gone would resolve to the ticket's
+apps/desktop/src/main/ipc/workspaceCommands.ts: `${workspaceLabel(workspace)} still has ${items.length} ticket(s), so it can't be removed — their run history is ` +
+apps/desktop/src/main/itemVocabulary.test.ts: * A key spelled `ticket` in that file is the external contract written
+apps/desktop/src/main/itemVocabulary.test.ts: * Where the word "ticket" is still written down, after KAN-145 renamed
+apps/desktop/src/main/itemVocabulary.test.ts: * `grep -iw ticket`. JavaScript's `\b` counts `_` as a word character
+apps/desktop/src/main/itemVocabulary.test.ts: * grep -riw ticket --include=*.ts --include=*.tsx packages apps/desktop/src \
+apps/desktop/src/main/itemVocabulary.test.ts: * of its items a "Ticket", the field on `PackVocabulary` documenting
+apps/desktop/src/main/itemVocabulary.test.ts: * so `"ticket"` appears there as a *value on the wire* rather than as a
+apps/desktop/src/main/itemVocabulary.test.ts: expect(BARE_WORD.test("A Ticket here")).toBe(true);
+apps/desktop/src/main/itemVocabulary.test.ts: expect(BARE_WORD.test("PER-TICKET")).toBe(true);
+apps/desktop/src/main/itemVocabulary.test.ts: expect(BARE_WORD.test("the ticket moved")).toBe(true);
+apps/desktop/src/main/mcp/eoServer.test.ts: expect(text).not.toContain("No ticket with key");
+apps/desktop/src/main/mcp/eoServer.test.ts: expect(text).toContain("1 ticket(s) sitting here right now");
+apps/desktop/src/main/mcpHost/aliases.test.ts: * the name it aliases answered `ticket`, and this test was green.
+apps/desktop/src/main/mcpHost/aliases.test.ts: const structured = answer.structuredContent as { ticket?: { key?: string } };
+apps/desktop/src/main/mcpHost/aliases.test.ts: expect(structured.ticket?.key).toBe(itemKey);
+apps/desktop/src/main/mcpHost/aliases.test.ts: if (/"ticket(s|Id|Key|Title|Count|State)?":/.test(JSON.stringify(answer.structuredContent))) withRenamedKeys.push(pair.deprecated);
+apps/desktop/src/main/mcpHost/dispatch.test.ts: expect(listed.text).toContain("a new ticket creates an issue by default: no");
+apps/desktop/src/main/mcpHost/dispatch.test.ts: expect(outcome.text).toContain("No ticket with that id");
+apps/desktop/src/main/mcpHost/guides.test.ts: expect(flat).toContain("takes its key as well: `EO-486` names the same ticket as its UUID");
+apps/desktop/src/main/mcpHost/guides.test.ts: expect(guide).toContain("Left out, a ticket is 0.");
+apps/desktop/src/main/mcpHost/guides.test.ts: it("says a key is accepted wherever a ticket's id is, and that no list has to be read for one (EO-539)", () => {
+apps/desktop/src/main/mcpHost/guides.ts: ## 4. If a specific ticket is stuck
+apps/desktop/src/main/mcpHost/guides.ts: ## Naming a ticket
+apps/desktop/src/main/mcpHost/guides.ts: ## Reading part of a ticket
+apps/desktop/src/main/mcpHost/guides.ts: - **Run** — one execution of a step against a ticket. Its transcript is in
+apps/desktop/src/main/mcpHost/guides.ts: - **Ticket** — \`feature\`, \`story\` or \`bug\`. A feature is a container and
+apps/desktop/src/main/mcpHost/guides.ts: - **You cannot move a ticket directly.** Only the engine writes where a
+apps/desktop/src/main/mcpHost/guides.ts: Every tool that takes a ticket's id — \`ticket_get\`, \`comment_post\`,
+apps/desktop/src/main/mcpHost/guides.ts: Mention the agent whose step it is, move the ticket, or \`ticket_hold\`
+apps/desktop/src/main/mcpHost/guides.ts: There is no tool that makes a ticket from a title: work typed straight
+apps/desktop/src/main/mcpHost/guides.ts: \`["tickets.key", "tickets.stepName"]\` answers two properties per ticket. A
+apps/desktop/src/main/mcpHost/guides.ts: \`everythingBlocked\` means every ticket that could be moving is waiting on
+apps/desktop/src/main/mcpHost/guides.ts: \`include: ["ticket", "comments"]\` with \`pinnedOnly: true\` is what a
+apps/desktop/src/main/mcpHost/guides.ts: \`removeDependsOn\` ones it is to stop waiting for, by key. So a ticket
+apps/desktop/src/main/mcpHost/guides.ts: \`runs_list\` reads runs across every ticket, newest first: each one's ticket
+apps/desktop/src/main/mcpHost/guides.ts: \`ticket_get\` answers with the whole ticket: its fields, every comment,
+apps/desktop/src/main/mcpHost/guides.ts: decides where a ticket goes next, and it is data, not code.
+apps/desktop/src/main/mcpHost/guides.ts: description: "Which submit tool fits which shape of work, and what a plan or a ticket has to carry to be accepted and worked well.",
+apps/desktop/src/main/mcpHost/guides.ts: did not need. \`include\` names the parts you do — any of \`ticket\`,
+apps/desktop/src/main/mcpHost/guides.ts: every run and every move. On a long-lived ticket that is most of what you
+apps/desktop/src/main/mcpHost/guides.ts: makes a ticket from a title. \`work_submit_plan\` takes a decomposition
+apps/desktop/src/main/mcpHost/guides.ts: name it in \`repository\`, per story in a plan. A ticket filed under a
+apps/desktop/src/main/mcpHost/guides.ts: out, a ticket is 0. On \`work_submit_plan\` the plan's own \`priority\` is
+apps/desktop/src/main/mcpHost/guides.ts: person, or a run with its \`runId\` and ticket key), \`extracted\`, \`state\`
+apps/desktop/src/main/mcpHost/guides.ts: role-based coding agents against a dependency-ordered ticket graph. You are
+apps/desktop/src/main/mcpHost/guides.ts: route never taken, and a result nothing routes parks the ticket and ends
+apps/desktop/src/main/mcpHost/guides.ts: several repositories refuses a ticket that names no repository. A name
+apps/desktop/src/main/mcpHost/guides.ts: the ticket. Read the reason. Never retry the same call unchanged.
+apps/desktop/src/main/mcpHost/guides.ts: ticket as its UUID. The key is read through the project whose prefix it
+apps/desktop/src/main/mcpHost/guides.ts: ticket is and what was settled about it.
+apps/desktop/src/main/mcpHost/guides.ts: ticket it has nothing to check against, rather than let a reviewer
+apps/desktop/src/main/mcpHost/guides.ts: ticket sits, by looking a result key up in a route. \`ticket_move\` asks
+apps/desktop/src/main/mcpHost/guides.ts: work is one ticket, send one ticket.
+apps/desktop/src/main/mcpHost/http.test.ts: const structured = result.structuredContent as { ticket?: { key?: string } };
+apps/desktop/src/main/mcpHost/http.test.ts: const structured = result.structuredContent as { ticket?: { key?: string }; comments?: unknown[] };
+apps/desktop/src/main/mcpHost/http.test.ts: const structured = twin.structuredContent as { ticket?: { key?: string } };
+apps/desktop/src/main/mcpHost/http.test.ts: expect(structured.ticket?.key).toBe(item.key);
+apps/desktop/src/main/mcpHost/itemKeys.ts: const KEY_ACCEPTED_PROPERTY = "The ticket's id, or its key such as EO-486.";
+apps/desktop/src/main/mcpHost/itemKeys.ts: export const KEY_ACCEPTED_SENTENCE = "The ticket may be named by its key, such as EO-486, wherever its id is asked for.";
+apps/desktop/src/main/mcpHost/itemSections.test.ts: // `ticket` is `item` in the spelling clients registered against.
+apps/desktop/src/main/mcpHost/itemSections.test.ts: const result = await call("item_get", { itemId: item.id, include: ["ticket"] });
+apps/desktop/src/main/mcpHost/itemSections.test.ts: expect(Object.keys(data).sort()).toEqual(["attachmentSync", "ticket", "watch"]);
+apps/desktop/src/main/mcpHost/itemSections.test.ts: expect(pinned.structuredContent).toHaveProperty("ticket");
+apps/desktop/src/main/mcpHost/itemSections.test.ts: expect(textOf(result)).toContain("it waits on no other ticket");
+apps/desktop/src/main/mcpHost/itemSections.test.ts: it("returns only the ticket's fields for include ['ticket'], and renders only those", async () => {
+apps/desktop/src/main/mcpHost/legacyNames.test.ts: const boundary = boundaryArguments(channel, "ticket");
+apps/desktop/src/main/mcpHost/legacyNames.test.ts: const json = inputSchemaFor(boundaryArguments(channel, "ticket").advertised);
+apps/desktop/src/main/mcpHost/legacyNames.test.ts: const legacy = boundaryArguments(channel, "ticket");
+apps/desktop/src/main/mcpHost/legacyNames.test.ts: const legacyTools = TOOLS.filter((tool) => advertisedSpelling(tool.name) === "ticket");
+apps/desktop/src/main/mcpHost/legacyNames.test.ts: const refused = boundaryArguments(channel, "ticket").accepts.safeParse({
+apps/desktop/src/main/mcpHost/legacyNames.test.ts: const refused = boundaryArguments(channel, "ticket").accepts.safeParse({ itemId: "a", ticketId: "b", toStepId: "review" });
+apps/desktop/src/main/mcpHost/legacyNames.test.ts: const refused = boundaryArguments(channel, "ticket").accepts.safeParse({ ticketId: "t1", archived: "yes" });
+apps/desktop/src/main/mcpHost/legacyNames.test.ts: expect(boundaryArguments(channel, "ticket").accepts.safeParse({ itemId: "t1" })).toMatchObject({ success: true, data: { itemId: "t1" } });
+apps/desktop/src/main/mcpHost/legacyNames.test.ts: expect(boundaryArguments(channel, "ticket").accepts.safeParse({ ticketId: "t1", nonsense: 1 })).toMatchObject({ success: true, data: { itemId: "t1" } });
+apps/desktop/src/main/mcpHost/legacyNames.test.ts: expect(boundaryArguments(channel, "ticket").accepts.safeParse({})).toMatchObject({ success: true, data: {} });
+apps/desktop/src/main/mcpHost/legacyNames.test.ts: expect(toLegacyShape({ item: null, itemCount: 0, tags: ["a", "b"] })).toEqual({ ticket: null, ticketCount: 0, tags: ["a", "b"] });
+apps/desktop/src/main/mcpHost/legacyNames.test.ts: expect(toLegacyShape({ item: { key: "EO-1" }, comments: [{ itemId: "t1" }] })).toEqual({ ticket: { key: "EO-1" }, comments: [{ ticketId: "t1" }] });
+apps/desktop/src/main/mcpHost/legacyNames.test.ts: for (const spelling of ["item", "ticket"] as const) {
+apps/desktop/src/main/mcpHost/legacyNames.test.ts: it("leaves itemTypes alone, because it never was a ticket", () => {
+apps/desktop/src/main/mcpHost/legacyNames.ts: * `"ticket"` is what every tool EO has ever offered advertises, and what
+apps/desktop/src/main/mcpHost/legacyNames.ts: * not a ticket and never was, while this is a field of an inbox row,
+apps/desktop/src/main/mcpHost/legacyNames.ts: * registered against `ticket_get` reads `ticket`, `ticketId` and
+apps/desktop/src/main/mcpHost/legacyNames.ts: * ticket that was renamed. A rule like "any key starting with `item`"
+apps/desktop/src/main/mcpHost/legacyNames.ts: export type ToolSpelling = "item" | "ticket";
+apps/desktop/src/main/mcpHost/legacyNames.ts: item: "ticket",
+apps/desktop/src/main/mcpHost/legacyNames.ts: return { advertised: spelling === "ticket" ? advertisedInLegacy(schema, pairs) : schema, accepts: accepts as z.ZodType<z.output<T>>, translated: true };
+apps/desktop/src/main/mcpHost/narrow.test.ts: const run = { ticket: { key: "EO-2" }, ticketId: "a" };
+apps/desktop/src/main/mcpHost/narrow.test.ts: expect(matches(run, { path: "ticket.key", op: "eq", value: "EO-2" })).toBe(true);
+apps/desktop/src/main/mcpHost/render.ts: "These are the figures the daily and per-ticket budget guardrails are measured against: a run, other than the system agent's, stops the moment " +
+apps/desktop/src/main/mcpHost/render.ts: "This is an answer, not a failure. Do not guess at a screen — ask which ticket or pipeline is meant, or work from the conversation alone.",
+apps/desktop/src/main/mcpHost/render.ts: // A call that left the ticket out starts at its first section, not
+apps/desktop/src/main/mcpHost/render.ts: : "Ticket restored to the project.";
+apps/desktop/src/main/mcpHost/render.ts: : ` ${data.adoptedItems} ticket(s) written before any repository existed now belong to it.`;
+apps/desktop/src/main/mcpHost/render.ts: : `${data.archiveAfterDays} day(s) after a ticket is finished`;
+apps/desktop/src/main/mcpHost/render.ts: : `${step.holding} ticket${step.holding === 1 ? "" : "s"} here now${step.running === 0 ? "" : `, ${step.running} being worked`}`;
+apps/desktop/src/main/mcpHost/render.ts: ? "**Every ticket that could be moving is waiting on a person.** The pipeline is idle."
+apps/desktop/src/main/mcpHost/render.ts: ? "Comment pinned. It now survives context truncation, so every agent that works this ticket reads it however long the thread gets — and on a feature it is carried into every story underneath."
+apps/desktop/src/main/mcpHost/render.ts: ? "Ticket archived. Nothing was deleted — it is still readable through tickets_list_archived."
+apps/desktop/src/main/mcpHost/render.ts: ? "as soon as a ticket is finished"
+apps/desktop/src/main/mcpHost/render.ts: `- agent-to-agent mentions on one ticket: ${data.agentMentionDepth} before a person has to comment`,
+apps/desktop/src/main/mcpHost/render.ts: `- attempts per ticket: ${data.perItemAttemptLimit}`,
+apps/desktop/src/main/mcpHost/render.ts: `- per-ticket budget: ${data.perItemBudgetCents === null ? "none" : money(data.perItemBudgetCents)}`,
+apps/desktop/src/main/mcpHost/render.ts: `- pipeline versions to keep: ${data.pipelineVersionsToKeep} per pipeline (older ones are deleted at that pipeline's next save, except the current one and any a ticket is bound to)`,
+apps/desktop/src/main/mcpHost/render.ts: `- watch round trips per ticket: ${data.watchRoundTripsPerItem} sends by steps that keep checking before a person has to comment`,
+apps/desktop/src/main/mcpHost/render.ts: `Sent to the organisation's record: the ticket moves from version ${data.fromVersion ?? "?"} to version ${data.toVersion ?? "?"} ` +
+apps/desktop/src/main/mcpHost/render.ts: `They are looking at a ticket: **${item.key}** (${item.type}) — ${item.title}`,
+apps/desktop/src/main/mcpHost/render.ts: `Ticket moved from version ${data.fromVersion ?? "?"} to version ${data.toVersion ?? "?"} of its pipeline. Its step is unchanged; ` +
+apps/desktop/src/main/mcpHost/render.ts: `issue types: ${jira.featureIssueType ?? "Epic"} for features, ${jira.storyIssueType ?? "Story"} for stories; a new ticket creates an issue by default: ${jira.createByDefault ? "yes" : "no"}`,
+apps/desktop/src/main/mcpHost/render.ts: const items = `${workspace.itemCount} ticket(s)`;
+apps/desktop/src/main/mcpHost/render.ts: const lines = [`- ${report.date}, across every ticket: ${money(report.dailyCostCents)}${sideCallShare(report.dailySideCalls)}`];
+apps/desktop/src/main/mcpHost/render.ts: const nothing = report.item.costCents === 0 ? " — nothing has run on it yet, or that is not a ticket EO has; ticket_get says which" : "";
+apps/desktop/src/main/mcpHost/render.ts: if (active) lines.push(`- **a run is in progress** (${active.agentName}, ${active.action}) — moving or deleting this ticket will refuse unless the run is cancelled`);
+apps/desktop/src/main/mcpHost/render.ts: if (baseBranch !== null) lines.push(`- Base branch: \`${baseBranch}\`, set on this ticket — its branch is cut from it and its pull request opens against it`);
+apps/desktop/src/main/mcpHost/render.ts: if (branch !== null) lines.push(`- branch: ${branch}${namedBranch ? " (an existing branch, named on this ticket)" : ""}`);
+apps/desktop/src/main/mcpHost/render.ts: if (data === null) return "No ticket with that id. Call tickets_list for the ones that exist.";
+apps/desktop/src/main/mcpHost/render.ts: if (data.updated) return data.dependencies === undefined ? "Ticket updated." : `Ticket updated. ${dependencyChangeSentences(data.dependencies)}`;
+apps/desktop/src/main/mcpHost/render.ts: if (decision.length === 0) lines.push("Nothing to decide here: the ticket is not on a step that waits on a person's decision.");
+apps/desktop/src/main/mcpHost/render.ts: lines.push("", "## Routes", "", "A step's result key decides where its ticket goes next.", "");
+apps/desktop/src/main/mcpHost/render.ts: lines.push("", "## Waits for", "", "Nothing — it waits on no other ticket.");
+apps/desktop/src/main/mcpHost/render.ts: lines.push("", `"this ticket", "it" and "here" mean **${item.key}** unless they name something else.`);
+apps/desktop/src/main/mcpHost/render.ts: lines.push(`- Branch: ${branch === null ? "none yet" : `\`${branch}\``}${branch !== null && namedBranch ? ", an existing branch named on this ticket — EO never rebases or force-pushes it" : ""}`);
+apps/desktop/src/main/mcpHost/render.ts: lines.push(`- ticket ${report.item.itemId}, every run against it: ${money(report.item.costCents)}${sideCallShare(report.item.sideCalls)}${nothing}`);
+apps/desktop/src/main/mcpHost/render.ts: return [`${done}. ${project.name} (id: ${project.id}, key prefix: ${project.keyPrefix}) — ${project.itemCount} ticket(s).`, repositories].join("\n");
+apps/desktop/src/main/mcpHost/render.ts: return `${repository.name} (id: ${repository.id}, base branch ${repository.baseBranch}${jira})${description}\n  ${repository.repoPath} — ${repository.itemCount} ticket(s)\n  ${commands}${jiraSettings(repository.jira)}`;
+apps/desktop/src/main/mcpHost/render.ts: return `Decision recorded. The ticket moved ${where}.${comment}`;
+apps/desktop/src/main/mcpHost/render.ts: return `Hold cleared. The ticket is dispatchable again from the step it was already on.${cancelled}`;
+apps/desktop/src/main/mcpHost/render.ts: return `Ticket held where it is. The scheduler will not pick it up until it is resumed.${cancelled}`;
+apps/desktop/src/main/mcpHost/render.ts: return `Ticket moved.${cancelled}${comment}`;
+apps/desktop/src/main/mcpHost/render.ts: value === "per-conversation" ? "one thread per conversation" : value ? "one thread per ticket" : "a fresh thread per run";
+apps/desktop/src/main/mcpHost/server.ts: "A refusal is not a failure. Tools that move, hold, resume or delete a ticket answer 'no, and here is why' on a",
+apps/desktop/src/main/mcpHost/server.ts: "EO only moves a ticket through its pipeline's own routes; nothing here writes a ticket's step directly.",
+apps/desktop/src/main/mcpHost/server.ts: "There is no tool that makes a ticket from a title, and that is deliberate: work nothing has thought about is",
+apps/desktop/src/main/mcpHost/server.ts: "against a dependency-ordered ticket graph. These tools do what the person at EO's keyboard can do.",
+apps/desktop/src/main/mcpHost/server.ts: "successful call — usually because an agent is working on the ticket. Read the text and the structured fields",
+apps/desktop/src/main/mcpHost/server.ts: "these tools assume, eo_submit_work for what a plan or a ticket must carry to be accepted, eo_change_pipeline",
+apps/desktop/src/main/mcpHost/server.ts: // that registered against `ticket_get` reads `ticket`, `ticketId`
+apps/desktop/src/main/mcpHost/submittedPriority.test.ts: * A ticket an agent creates carries the priority it was sent (EO-568),
+apps/desktop/src/main/mcpHost/submittedPriority.test.ts: /** Each listed ticket's priority by its title, whichever vocabulary the answer is spelled in. */
+apps/desktop/src/main/mcpHost/submittedPriority.test.ts: it("creates the ticket with the priority it was sent, and 0 without one", async () => {
+apps/desktop/src/main/mcpHost/submittedPriority.test.ts: it("leaves every ticket at 0 when the plan says nothing", async () => {
+apps/desktop/src/main/memory/writing.test.ts: expect(block).not.toMatch(/\b(ticket|story|feature|branch|worktree|repository)\b/i);
+apps/desktop/src/main/modules/moduleComments.ts: if (!target) return `no ticket has the key "${comment.key}".`;
+apps/desktop/src/main/modules/pipelineTransfer.test.ts: description: "Writes the notes from the ticket and its thread.",
+apps/desktop/src/main/modules/runModule.test.ts: "ticket",
+apps/desktop/src/main/modules/runModule.test.ts: // (KAN-162): a module approved before the rename reads `.ticket` off
+apps/desktop/src/main/modules/runModule.test.ts: // `ticket` beside `item`, and the same object under both keys
+apps/desktop/src/main/modules/runModule.test.ts: const [byItem, byTicket] = await Promise.all([read("item()"), read("ticket()")]);
+apps/desktop/src/main/modules/runModule.test.ts: const item = (answered(outcome)["ticket"] as { comments: { author: { type: string; name: string } }[] }).comments;
+apps/desktop/src/main/modules/runModule.test.ts: expect(String(answered(outcome)["reason"])).toContain("ticket key");
+apps/desktop/src/main/modules/runModule.test.ts: expect(answered(outcome)).toEqual({ found: false, reason: 'No ticket has the key "NOPE-404".' });
+apps/desktop/src/main/modules/runModule.test.ts: expect(answered(outcome)).toEqual({ found: true, item: shape, ticket: shape });
+apps/desktop/src/main/modules/runModule.test.ts: expect(answered(outcome)).toEqual({ posted: false, reason: 'No ticket has the key "NOPE-404".' });
+apps/desktop/src/main/modules/runModule.test.ts: expect(answered(outcome)).toMatchObject({ found: true, ticket: { key: elsewhere.key, title: "Somebody else's work", parentKey: null, comments: [] } });
+apps/desktop/src/main/modules/runModule.test.ts: expect(getItem(handle.db, running.id)?.title).toBe("Let a module read a ticket");
+apps/desktop/src/main/modules/runModule.test.ts: expect(transcript.match(/ctx\.ticket\(\) or ctx\.ticketByKey\(\)/g)?.length).toBe(1);
+apps/desktop/src/main/modules/runModule.test.ts: title: "Let a module read a ticket",
+apps/desktop/src/main/modules/runModuleTests.test.ts: assert.deepEqual(run.logs, ['No ticket has the key "EO-404".']);
+apps/desktop/src/main/outbox/retireForgeQueue.ts: `simply has no pull request open. Move this ticket through the merge step again to open one.`,
+apps/desktop/src/main/packs/pack.ts: `— comes from a pack. Install one and this ticket carries on from here.`
+apps/desktop/src/main/providers/demo.ts: "A placeholder agent read this ticket. Configure a real backend in Agents to have it understood properly.",
+apps/desktop/src/main/providers/fixtures.ts: steps: [{ output: "Looking at the ticket..." }, { output: "Implementing..." }, { fileEdit: "src/foo.ts" }],
+apps/desktop/src/main/providers/providerParity.test.ts: const ATTACH_ACCEPTED = "EO attached this file to the ticket in one comment (c-1):\n- shot.png — attachment a-1";
+apps/desktop/src/main/providers/providerParity.test.ts: { tool: "attachment_add", args: { paths: ["shot.png"], caption: "The screen." }, answer: { ok: true, text: "EO attached shot.png to the ticket in comment c-2.", data: { commentId: "c-2" } } },
+apps/desktop/src/main/record/remoteRecord.ts: const key = getItem(db, request.itemId)?.key ?? "This ticket";
+apps/desktop/src/main/roles/architect.ts: return count === 0 ? "" : ` _(${count} ticket${count === 1 ? "" : "s"} here now)_`;
+apps/desktop/src/main/roles/architect.ts: return count === 0 ? ", holding nothing" : `, holding ${count} ticket${count === 1 ? "" : "s"}`;
+apps/desktop/src/main/roles/discussion.ts: "with a note on each ticket recording what they replaced.",
+apps/desktop/src/main/roles/discussion.ts: : `Jira sync is off, so this ticket will not be pushed to Jira or pulled from it.`,
+apps/desktop/src/main/roles/discussion.ts: : `This ticket mirrors ${jira.key}.`,
+apps/desktop/src/main/roles/discussion.ts: ? `This ticket mirrors ${jira.key}. The issue's comments and attachments are being brought in now, and its ` +
+apps/desktop/src/main/roles/discussion.ts: `summary, description and acceptance criteria replace what this ticket was created with — a note will record ` +
+apps/desktop/src/main/roles/discussion.ts: if (!dependency) return { ok: false, reason: `There is no ticket ${key} for this to depend on.` };
+apps/desktop/src/main/roles/discussion.ts: if (!item) return { ok: false, reason: `There is no ticket ${proposal.item}, so there is nothing to change.` };
+apps/desktop/src/main/roles/discussion.ts: if (!item) return { ok: false, reason: `There is no ticket ${proposal.item}, so there is nothing to reorder.` };
+apps/desktop/src/main/roles/discussion.ts: if (!item) return { ok: false, reason: `There is no ticket ${proposal.item}.` };
+apps/desktop/src/main/roles/discussion.ts: if (!parent) return { ok: false, reason: `There is no ticket ${handed.parent} to put this under.` };
+apps/desktop/src/main/roles/discussion.ts: return { ok: false, reason: `This plan gives ${link.key} to ${holder} and to ${label}. One Jira issue is one EO ticket.` };
+apps/desktop/src/main/roles/intake.ts: `Intake answered about **${type.slug}** as one ticket, but this project's ${type.slug} type is a container, which holds work rather than being work. Its classification was left alone.`,
+apps/desktop/src/main/roles/intake.ts: `Intake read this as a **${type.slug}**, and this ticket carries fields a ${type.slug} does not accept, so its classification was left alone:\n${formatIssues(issues)}`,
+apps/desktop/src/main/roles/intake.ts: `Intake understood this as a **${type.slug}**, and a ${type.slug} does not accept what that left on the ticket, so nothing was written:\n${formatIssues(issues)}`,
+apps/desktop/src/main/roles/intake.ts: const lines = [`I'm treating this as a **${type.slug}** — one ticket, no decomposition.`, "", `**${leaf.title}**`, "", leaf.body];
+apps/desktop/src/main/roles/interpretation.ts: // what the ticket produced has corrected a document; they have not
+apps/desktop/src/main/roles/itemDependencies.ts: if (!item) return { ok: false, reason: "That ticket no longer exists." };
+apps/desktop/src/main/roles/itemDependencies.ts: if (!other) return { ok: false, reason: `There is no ticket ${reference.trim()}.` };
+apps/desktop/src/main/roles/itemGuards.ts: if (state?.isTerminal) return `${item.key} is finished. Propose a follow-up ticket rather than changing what shipped.`;
+apps/desktop/src/main/roles/itemGuards.ts: return `${item.key} is in review. Changing what it asks for now would invalidate the review — propose a follow-up ticket instead.`;
+apps/desktop/src/main/roles/mentionReply.test.ts: item = createTestItem(handle.db, { type: "story", title: "Resolve internal ticket references", stepId: "ready_to_merge" });
+apps/desktop/src/main/roles/refine.test.ts: "an engine comment on the ticket says why, and you",
+apps/desktop/src/main/roles/refine.test.ts: expect(prompt).toContain("Never a branch a person named on the ticket");
+apps/desktop/src/main/roles/refine.test.ts: expect(prompt).toContain("Never any branch but this ticket's own");
+apps/desktop/src/main/roles/refine.test.ts: expect(prompt).toContain("engine note on the ticket says the remote branch has diverged");
+apps/desktop/src/main/roles/refine.test.ts: expect(reviewer).toContain("it drops the payload and says so on the ticket");
+apps/desktop/src/main/roles/refine.ts: const lines = [`Here is how I would break this down, into ${children.length} ${children.length === 1 ? "ticket" : "tickets"}:`, ""];
+apps/desktop/src/main/roles/reviewVerdict.test.ts: expect(body).toContain("Reported, but matching no criterion this ticket declares:");
+apps/desktop/src/main/roles/reviewVerdict.test.ts: expect(body).toContain("This ticket took 1 review round.");
+apps/desktop/src/main/roles/reviewVerdict.ts: ? "No rejection yet has been against a ticket declaring acceptance criteria, so coverage has nothing to report."
+apps/desktop/src/main/roles/reviewVerdict.ts: ? "This ticket declares no acceptance criteria; the reviewer reported on the following anyway."
+apps/desktop/src/main/roles/reviewVerdict.ts: `**Review census.** This ticket took ${here} review round${here === 1 ? "" : "s"}.\n\n${comparison}\n\n` +
+apps/desktop/src/main/roles/reviewVerdict.ts: `Rounds per ticket: ${census.roundsPerItem?.toFixed(2) ?? "n/a"} over ${census.items}, worst ${census.maxRounds}, against a worst of ${PRE_CHANGE_BASELINE.maxRounds}.`,
+apps/desktop/src/main/roles/reviewVerdict.ts: sections.push("", "Reported, but matching no criterion this ticket declares:", ...summary.extra.map(line));
+apps/desktop/src/main/roles/systemAgentModuleCard.test.ts: expect(flat).toContain("`ticket`, `comment` and `attach` are not enforced");
+apps/desktop/src/main/roles/systemAgentModuleCard.test.ts: expect(flat).toContain("a run on a generation 3 ticket cannot create");
+apps/desktop/src/main/roles/systemAgentPriority.test.ts: expect(flat).toContain("Left out, a new ticket is 0.");
+apps/desktop/src/main/supervisor/agentComments.ts: ? `Comment posted. The mention-depth cap of ${MENTION_DEPTH_CAP} is reached on this ticket, so it went to the person instead of the agent you named. `
+apps/desktop/src/main/supervisor/agentComments.ts: body: `Escalation redirected to you: mention-depth cap of ${MENTION_DEPTH_CAP} reached on this ticket.`,
+apps/desktop/src/main/supervisor/agentComments.ts: if (!isOutput) body = `${body}\n\n(Escalation redirected to you: mention-depth cap of ${MENTION_DEPTH_CAP} reached on this ticket.)`;
+apps/desktop/src/main/supervisor/buildDispatchContext.test.ts: expect(fullText).toContain("Nothing new has been said on this ticket since your last run.");
+apps/desktop/src/main/supervisor/buildDispatchContext.test.ts: expect(fullText).toContain('perform the "implement" action on this ticket');
+apps/desktop/src/main/supervisor/buildDispatchContext.test.ts: expect(fullText).toContain('perform the "review" action on this ticket');
+apps/desktop/src/main/supervisor/buildDispatchContext.test.ts: expect(text).toContain('perform the "implement" action on this ticket');
+apps/desktop/src/main/supervisor/buildDispatchContext.ts: "The ticket does not move and this run changes nothing about where it stands. Do not answer on the person's behalf: if two of the options fit and nothing chooses between them, that is `unusable` or a question, not a guess.",
+apps/desktop/src/main/supervisor/buildDispatchContext.ts: "The ticket does not move; answering a question is not progress through the pipeline.",
+apps/desktop/src/main/supervisor/buildDispatchContext.ts: // and this is the one comment on the ticket that certainly is not
+apps/desktop/src/main/supervisor/buildDispatchContext.ts: // the ticket has produced (EO-298).
+apps/desktop/src/main/supervisor/codexBudget.test.ts: expect(refused?.error).toContain("Per-ticket cost budget of 200¢ reached (spent 250¢ so far)");
+apps/desktop/src/main/supervisor/codexBudget.test.ts: expect(run?.error).toContain("Per-ticket cost budget of 200¢ reached (spent 300¢ so far)");
+apps/desktop/src/main/supervisor/codexBudget.test.ts: expect(run?.error).toContain("Per-ticket cost budget of 200¢ reached");
+apps/desktop/src/main/supervisor/codexBudget.test.ts: expect(said[0]!.body).toContain("per-ticket and daily budgets cannot see it");
+apps/desktop/src/main/supervisor/contextActions.test.ts: item: { key: "EO-1", title: "A ticket", body: null, acceptanceCriteria: [], actionOverrides: new Map(), workspaceKind: "none" },
+apps/desktop/src/main/supervisor/conversationThread.test.ts: expect(notice).toContain("this thread ends when the ticket does");
+apps/desktop/src/main/supervisor/dispatchAuthorisation.test.ts: expect(engineNotes().some((body) => body.includes("Run cancelled: you moved this ticket"))).toBe(true);
+apps/desktop/src/main/supervisor/dispatchBlockers.ts: "Give this ticket's project an agent of its own in this role, or use a global one. Nothing has changed."
+apps/desktop/src/main/supervisor/dispatchBlockers.ts: "Mention an agent that works for this ticket's project, or a global one. Nothing has changed."
+apps/desktop/src/main/supervisor/dispatchBlockers.ts: : `Mention ${rerunWith} to hand the step back, move the ticket, or hold it and resume it — any of the three picks it up again.`;
+apps/desktop/src/main/supervisor/dispatchBlockers.ts: ? `Move the ticket, or hold it and resume it, and it is picked up again.`
+apps/desktop/src/main/supervisor/dispatchBlockers.ts: `This ticket is free to carry on — whoever works for its project in the "${role}" role picks the step up again.`
+apps/desktop/src/main/supervisor/dispatchBlockers.ts: condition: "this ticket declares no acceptance criteria, so a review would have nothing to judge it against",
+apps/desktop/src/main/supervisor/dispatchBlockers.ts: condition: "this ticket is not sitting on a step an agent is dispatched at",
+apps/desktop/src/main/supervisor/dispatchBlockers.ts: condition: "this ticket is waiting on another that has not finished",
+apps/desktop/src/main/supervisor/dispatchBlockers.ts: condition: `this ticket has moved to "${blocker.nowAt}" since you asked`,
+apps/desktop/src/main/supervisor/dispatchBlockers.ts: const where = itemProject === null ? "this ticket belongs to no project" : `this ticket is on "${itemProject}"`;
+apps/desktop/src/main/supervisor/dispatchBlockers.ts: fix: "Add at least one — `ticket_update` takes them on any type, and the ticket screen edits them.",
+apps/desktop/src/main/supervisor/dispatchBlockers.ts: fix: "Finish that ticket, or remove the dependency.",
+apps/desktop/src/main/supervisor/dispatchBlockers.ts: fix: "Say something on this ticket and they can carry on from there.",
+apps/desktop/src/main/supervisor/dispatchBlockers.ts: if (names.length === 0) return "agents on this ticket";
+apps/desktop/src/main/supervisor/dispatchBlockers.ts: return { condition: "this ticket is on hold", fix: "Resume it." };
+apps/desktop/src/main/supervisor/itemExclusion.test.ts: expect(engineNotes[0]?.body).toBe(blockedByActiveRunRefusal("pick this ticket back up after your reply"));
+apps/desktop/src/main/supervisor/itemLock.test.ts: "EO did not move the ticket: an agent is working on it right now. Call ticket_move again with " +
+apps/desktop/src/main/supervisor/itemLock.test.ts: "EO did not run this module against this ticket: an agent is working on it right now. Wait for the run to " +
+apps/desktop/src/main/supervisor/itemLock.test.ts: blockedByActiveRunRefusal("hold the ticket", { tool: "ticket_hold" }),
+apps/desktop/src/main/supervisor/itemLock.test.ts: blockedByActiveRunRefusal("pick this ticket back up after your reply"),
+apps/desktop/src/main/supervisor/itemLock.test.ts: blockedByActiveRunRefusal("run this module against this ticket"),
+apps/desktop/src/main/supervisor/itemLock.test.ts: expect(blockedByActiveRunRefusal("move the ticket", { tool: "ticket_move" })).toBe(
+apps/desktop/src/main/supervisor/itemLock.test.ts: expect(blockedByActiveRunRefusal("run this module against this ticket")).toBe(
+apps/desktop/src/main/supervisor/manualDispatch.test.ts: expect(notes[0]?.body).toContain('Support writer works for the "Support" project only, and this ticket is on "Shop"');
+apps/desktop/src/main/supervisor/manualDispatch.test.ts: expect(said[0]?.body).toContain("Say something on this ticket");
+apps/desktop/src/main/supervisor/moduleQuestion.test.ts: const thread = seen.ticket.comments;
+apps/desktop/src/main/supervisor/moduleSteps.test.ts: // gained with verification: an output is a claim that the ticket has
+apps/desktop/src/main/supervisor/moduleSteps.test.ts: expect(listCommentsForItem(handle.db, item.id).at(-1)?.body).toContain("after you moved this ticket");
+apps/desktop/src/main/supervisor/projectScopeRecovery.test.ts: const SAYS_WHY = 'Support implementer works for the "Shop" project only, and this ticket is on "Support"';
+apps/desktop/src/main/supervisor/quotaLimit.test.ts: const { provider } = providerEmitting([refusal(), { type: "output", text: "I'll start by reading the ticket" }]);
+apps/desktop/src/main/supervisor/reconcile.test.ts: expect(posted.map((comment) => comment.body).join("\n")).toContain("was archived while EO was picking this ticket back up");
+apps/desktop/src/main/supervisor/rerunMention.test.ts: expect(refusal).toContain("Finish that ticket, or remove the dependency.");
+apps/desktop/src/main/supervisor/rerunMention.test.ts: expect(refusal).toContain('this ticket has moved to "To Do" since you asked');
+apps/desktop/src/main/supervisor/reviewWithoutCriteria.test.ts: expect(census?.body).toContain("This ticket took 1 review round.");
+apps/desktop/src/main/supervisor/reviewWithoutCriteria.test.ts: expect(escalation).toContain("the ticket screen");
+apps/desktop/src/main/supervisor/reviewWithoutCriteria.test.ts: expect(note).toContain(`Ticket resumed at "Review"`);
+apps/desktop/src/main/supervisor/routeResult.ts: "Ask the assistant to add a route for it, or move the ticket yourself.";
+apps/desktop/src/main/supervisor/routeResult.ts: `"${currentStep.name}" returned the result "${result}", which has no route configured, so the ticket has not moved. ` +
+apps/desktop/src/main/supervisor/runAttachments.test.ts: yield toolResultEvent({ name: ATTACHMENT_ADD_TOOL_NAME, callId: "call-1", ok: true, output: "EO accepted this file and is attaching it to the ticket in one comment:\n- shot.png" });
+apps/desktop/src/main/supervisor/runAttachments.ts: `EO attached ${attached.length === 1 ? "this file" : `these ${attached.length} files`} to the ticket in one comment (${comment.id}):\n` +
+apps/desktop/src/main/supervisor/runSupervisor.ts: "so this run's cost is not counted: the per-ticket and daily budgets cannot see it and will not stop it. " +
+apps/desktop/src/main/supervisor/runSupervisor.ts: * this end would mean the ticket no longer holds the thing it produced,
+apps/desktop/src/main/supervisor/runSupervisor.ts: // about what the ticket has produced, and EO does not make one
+apps/desktop/src/main/supervisor/runSupervisor.ts: // not claim a ticket has produced something on work its own
+apps/desktop/src/main/supervisor/runSupervisor.ts: // so the output is on the ticket by the time whatever this routes to
+apps/desktop/src/main/supervisor/runSupervisor.ts: // ticket by then.
+apps/desktop/src/main/supervisor/runSupervisor.ts: ? "interrupted by an app restart; another interrupted run on this ticket was picked up instead"
+apps/desktop/src/main/supervisor/runSupervisor.ts: ? `${retiredAgent.name} was archived while EO was not running, so the run it was interrupted in the middle of (attempt ${run.attempt}) is marked orphaned rather than resumed: an archived agent is dispatched to nothing, and nothing brings one back. The ticket stays in "${item.stepId}" for the next agent on the "${retiredAgent.role}" role to pick up.`
+apps/desktop/src/main/supervisor/runSupervisor.ts: ? `Two runs on this ticket were interrupted by an app restart. Only one of them can carry on — a ticket has one checkout, and two agents in it is a diff nobody wrote — so attempt ${run.attempt} is marked orphaned and the other one continues. The ticket stays in "${item.stepId}".`
+apps/desktop/src/main/supervisor/runSupervisor.ts: `${agent.name} was archived while EO was picking this ticket back up after a restart, so the run it was ` +
+apps/desktop/src/main/supervisor/runSupervisor.ts: `${error instanceof Error ? error.message : String(error)}. The ticket moves on regardless, and the ` +
+apps/desktop/src/main/supervisor/runSupervisor.ts: `${one ? "was" : "were"} queued for the next turn, and that run has now finished and handed this ticket on. ` +
+apps/desktop/src/main/supervisor/runSupervisor.ts: `A run on this ticket (attempt ${run.attempt}) was interrupted and had no thread to resume, so it's marked orphaned. The ticket stays in "${item.stepId}".`),
+apps/desktop/src/main/supervisor/runSupervisor.ts: `EO could not bring this ticket's repository index up to date before it moved on: ` +
+apps/desktop/src/main/supervisor/runSupervisor.ts: `If ${one ? "it was" : "they were"} meant for ${fromAgentName}, @-mention ${fromAgentName} to send the ticket back.`,
+apps/desktop/src/main/supervisor/runSupervisor.ts: `Nothing has been discarded and the ticket has moved on. Review what landed with more care than usual: nobody approved the approach.`,
+apps/desktop/src/main/supervisor/runSupervisor.ts: `Nothing is lost: this ticket is starting a fresh conversation, which is given the newest word from every step and everything you have said since, and can search the rest.`,
+apps/desktop/src/main/supervisor/runSupervisor.ts: `Reply here to keep watching from now, or move this ticket on yourself.`,
+apps/desktop/src/main/supervisor/runSupervisor.ts: `Stopped before "${step.name}" checked again: steps that keep checking have sent this ticket to another step ${trips} time${trips === 1 ? "" : "s"} since anybody commented on it, and the limit is ${cap}. ` +
+apps/desktop/src/main/supervisor/runSupervisor.ts: `The conversation ${agent.name} had going on this ticket is no longer available on the "${agent.provider}" backend. ` +
+apps/desktop/src/main/supervisor/runSupervisor.ts: `This project is in plan mode, so this ticket was meant to be proposed before anything changed — but this run implemented it directly and never stopped to ask.\n\n` +
+apps/desktop/src/main/supervisor/runSupervisor.ts: `dispatched to nothing and nothing brings one back, so that run is closed and this ticket is free to ` +
+apps/desktop/src/main/supervisor/runSupervisor.ts: `nothing brings one back. This ticket waits where it stands for the next agent on the "${agent.role}" role.`,
+apps/desktop/src/main/supervisor/runSupervisor.ts: `ticket's branch or as what this run produced.\n\n` +
+apps/desktop/src/main/supervisor/runSupervisor.ts: body: `"${action}" could not finish, and this ticket had moved on by the time it stopped, so nothing was routed: ${outcome.reason}`,
+apps/desktop/src/main/supervisor/runSupervisor.ts: body: `${account}\n\nThis ticket had moved on by the time that was checked, so nothing was routed and it has been left where it is.`,
+apps/desktop/src/main/supervisor/runSupervisor.ts: body: `${runSubject(db, priorRun)} was waiting for you here, but this ticket has moved to another step. That run is closed and this ticket is free to carry on.`,
+apps/desktop/src/main/supervisor/runSupervisor.ts: body: `${runSubject(db, run)} finished with "${outcome.result}" after you moved this ticket, so it has been left where it is rather than routed from the step it started on.`,
+apps/desktop/src/main/supervisor/runSupervisor.ts: body: `Could not release this ticket's workspace: ${error instanceof Error ? error.message : String(error)}`,
+apps/desktop/src/main/supervisor/runSupervisor.ts: body: `EO could not record what this run produced, so this ticket has no output from it: ${error instanceof Error ? error.message : String(error)}`,
+apps/desktop/src/main/supervisor/runSupervisor.ts: body: blockedByActiveRunRefusal("pick this ticket back up after your reply"),
+apps/desktop/src/main/supervisor/runSupervisor.ts: error: `Finished after this ticket was moved to another step, so it was left where it is.`,
+apps/desktop/src/main/supervisor/runSupervisor.ts: if (!current) return "The ticket itself is gone.";
+apps/desktop/src/main/supervisor/runSupervisor.ts: return `Per-ticket cost budget of ${guards.perItemBudgetCents}¢ reached (spent ${spent}¢ so far). Stopping — raise the per-ticket budget on the Guardrails screen to let it go on.`;
+apps/desktop/src/main/supervisor/runSupervisor.ts: return step ? `The ticket is at "${step.name}".` : "The ticket is not on any step.";
+apps/desktop/src/main/supervisor/runSupervisor.ts: text: `EO checked out \`${branch}\` of ${repository} at ${path}, detached at ${commit}: ${from}. It is for reading; EO removes it when this ticket is finished.`,
+apps/desktop/src/main/supervisor/runSupervisor.ts: updateRun(db, runId, { status: "succeeded", error: "Finished after this ticket was moved to another step, so it was left where it is.", endedAt: ended });
+apps/desktop/src/main/supervisor/steering.test.ts: * The path is shared, so this is the ticket and transcript composers'
+apps/desktop/src/main/supervisor/steering.test.ts: it("carries the files posted with a comment from the ticket composer into the turn", async () => {
+apps/desktop/src/main/supervisor/stepWorkspacePick.test.ts: * to *which disk* for a whole pipeline — the ticket's, and behind it the
+apps/desktop/src/main/supervisor/stepWorkspacePick.test.ts: // The ticket is on the repository, which is what every ticket in a
+apps/desktop/src/main/supervisor/stepWorkspacePick.test.ts: // hand-edit. The ticket's own workspace is the answer that leaves
+apps/desktop/src/main/supervisor/stepWorkspacePick.test.ts: it("falls back to the ticket's workspace when the step picks nothing, which is what every step did before", () => {
+apps/desktop/src/main/supervisor/stepWorkspacePick.test.ts: it("gives a step that says 'no disk' no disk, whatever the ticket is on", () => {
+apps/desktop/src/main/supervisor/stepWorkspacePick.test.ts: it("routes the run into the folder the step named, not the repository the ticket is on", async () => {
+apps/desktop/src/main/supervisor/stepWorkspacePick.test.ts: it("takes the step's pick over the ticket's own workspace", () => {
+apps/desktop/src/main/supervisor/streamFinalisation.test.ts: expect(note?.body).toContain('The ticket is at "Review".');
+apps/desktop/src/main/supervisor/systemAgentGuardrails.test.ts: // On that same item the per-ticket total has gone, and on another the day's.
+apps/desktop/src/main/supervisor/systemAgentGuardrails.test.ts: expect(refused?.error).toContain("Per-ticket cost budget");
+apps/desktop/src/main/supervisor/systemAgentGuardrails.test.ts: expect(runsOn(sent).find((run) => run.status === "awaiting_input")?.error).toContain("Per-ticket cost budget");
+apps/desktop/src/main/supervisor/threadReuse.test.ts: expect(reason).toContain("hasn't run on this ticket before");
+apps/desktop/src/main/supervisor/threadReuse.test.ts: expect(reasonFor(ask(), "no-thread")).toContain("hasn't run on this ticket before");
+apps/desktop/src/main/supervisor/threadReuse.test.ts: instructions: "Implement the ticket, and read ARCHITECTURE.md first.",
+apps/desktop/src/main/supervisor/threadReuse.ts: : `Nothing here needs doing: this thread ends when the ticket does, and a fresh run is given the newest word ` +
+apps/desktop/src/main/supervisor/threadReuse.ts: `${agent.name} hasn't run on this ticket before, so there is no conversation to carry over — this run ` +
+apps/desktop/src/main/supervisor/threadReuse.ts: `${agent.name}'s instructions have changed since its last run on this ticket. A provider session keeps the ` +
+apps/desktop/src/main/supervisor/threadReuse.ts: `${agent.name}'s last run on this ticket is parked waiting on a reply, and that conversation belongs to the ` +
+apps/desktop/src/main/supervisor/threadReuse.ts: `${agent.name}'s last run on this ticket is still running, and a live run is still talking into its own ` +
+apps/desktop/src/main/supervisor/threadReuse.ts: `${agent.name}'s last run on this ticket never opened a provider session — it ended before a backend ` +
+apps/desktop/src/main/supervisor/threadReuse.ts: `${agent.name}'s last run on this ticket used the "${run.provider}" backend, and it now uses "${agent.provider}". ` +
+apps/desktop/src/main/supervisor/threadReuse.ts: `${agent.name}'s last run on this ticket was a dry run. A dry run's conversation isn't the ticket's history, ` +
+apps/desktop/src/main/supervisor/threadReuse.ts: `${agent.name}'s last run on this ticket was refused by the attempt-limit guard before any backend was ` +
+apps/desktop/src/main/supervisor/threadReuse.ts: `${agent.name}'s last run on this ticket worked in ${before}, and this one works in "${cwd}". ` +
+apps/desktop/src/main/supervisor/threadReuse.ts: `EO has no record of the instructions ${agent.name}'s last run on this ticket was given — that run predates ` +
+apps/desktop/src/main/supervisor/threadReuse.ts: `EO has no record of which backend issued the thread from ${agent.name}'s last run on this ticket — that run ` +
+apps/desktop/src/main/supervisor/threadReuse.ts: `The MCP servers or skills attached to ${agent.name} have changed since its last run on this ticket. A ` +
+apps/desktop/src/main/supervisor/threadReuse.ts: `The conversation behind ${agent.name}'s last run on this ticket was no longer on the backend when EO tried ` +
+apps/desktop/src/main/supervisor/threadReuse.ts: `instructions it was started with, so the conversation couldn't be carried over — this ticket is starting ` +
+apps/desktop/src/main/supervisor/threadReuse.ts: `is lost from the ticket — every message here is a comment, and this thread is the record. ${whatToDo}`
+apps/desktop/src/main/supervisor/threadReuse.ts: `over; this ticket starts fresh, on the instructions the agent has now.`
+apps/desktop/src/main/supervisor/threadReuse.ts: `ticket is starting fresh, which is how it picks the new ones up.`
+apps/desktop/src/main/supervisor/watchSteps.test.ts: expect(parked?.body).toContain("sent this ticket to another step 2 times since anybody commented on it, and the limit is 2");
+apps/desktop/src/main/supervisor/workspaceKind.ts: * say a ticket has produced something on work its own workspace has
+apps/desktop/src/main/supervisor/workspaceKinds.test.ts: // A second attempt on the same ticket: the item is back where a
+apps/desktop/src/main/supervisor/workspaceKinds.test.ts: // Nothing to supersede on a ticket that has produced nothing before.
+apps/desktop/src/main/supervisor/workspaceKinds.test.ts: // and the rest of the diff renders as prose — on the ticket, in
+apps/desktop/src/main/supervisor/workspaceKinds.test.ts: // what the ticket has, not a check on whether it may keep it.
+apps/desktop/src/main/supervisor/workspaceResolution.ts: * "whose disks may this ticket use", and a ticket on a project's
+apps/desktop/src/main/supervisor/workspaceResolution.ts: * EO-301 is the step's pick before the ticket's own — `workspaceFor`
+apps/desktop/src/main/supervisor/workspaceResolution.ts: * Which project a ticket answers to, for deciding whether a step's pick
+apps/desktop/src/main/supervisor/workspaceResolution.ts: * able to pick, and it only works if the pick beats the ticket's own
+apps/desktop/src/main/supervisor/workspaceResolution.ts: * ticket's own workspace. The fallback is not defensive padding: an item
+apps/desktop/src/main/supervisor/workspaceResolution.ts: * workspace rather than the other way round — the ticket carries one
+apps/desktop/src/main/supervisor/workspaceResolution.ts: // **And a pick is only this ticket's if this ticket's project holds
+apps/desktop/src/main/supervisor/workspaceResolution.ts: // A pick whose row has gone falls through to the ticket's
+apps/desktop/src/main/supervisor/workspaceResolution.ts: // is the right disk for this ticket — it is the answer a step with
+apps/desktop/src/main/supervisor/workspaceResolution.ts: // the missing row above falls through: the ticket's own workspace
+apps/desktop/src/renderer/src/chat/conversation/Composer.test.tsx: it.each(["default", "chat"] as const)("links ticket keys in %s composer alerts", async (appearance) => {
+apps/desktop/src/renderer/src/chat/conversation/ProposalCard.test.tsx: expect(await screen.findByRole("button", { name: "Create ticket" })).toBeInTheDocument();
+apps/desktop/src/renderer/src/chat/conversation/ProposalCard.test.tsx: expect(screen.getByRole("region", { name: "Proposal" })).not.toHaveTextContent(/ticket|story|feature/i);
+apps/desktop/src/renderer/src/chat/conversation/ProposalCard.test.tsx: expect(screen.queryByRole("button", { name: "Create ticket" })).not.toBeInTheDocument();
+apps/desktop/src/renderer/src/chat/conversation/ProposalCard.test.tsx: fireEvent.click(await screen.findByRole("button", { name: "Create ticket" }));
+apps/desktop/src/renderer/src/chat/views/agentTools/AgentToolsView.test.tsx: // The developer pack's vocabulary, so the sentences that name the thing in flight say "ticket".
+apps/desktop/src/renderer/src/chat/views/agentTools/AgentToolsView.test.tsx: expect(note).not.toHaveTextContent(/ticket/i);
+apps/desktop/src/renderer/src/chat/views/agentTools/AgentToolsView.test.tsx: expect(screen.getByText(/Applies from the next dispatch/)).toHaveTextContent("starts a fresh conversation on that ticket");
+apps/desktop/src/renderer/src/chat/views/agents/AgentsView.test.tsx: const REUSE = /Reuse the thread for a whole ticket/;
+apps/desktop/src/renderer/src/chat/views/agents/AgentsView.test.tsx: expect(box).toHaveAccessibleName(/until that ticket is done/);
+apps/desktop/src/renderer/src/chat/views/agents/AgentsView.test.tsx: expect(within(pane).getByText(/Applies from the next dispatch/)).toHaveTextContent("starts a fresh conversation on that ticket");
+apps/desktop/src/renderer/src/chat/views/board/BoardView.test.tsx: const chooser = () => screen.getByLabelText("Pipeline to send the ticket to");
+apps/desktop/src/renderer/src/chat/views/board/BoardView.test.tsx: expect(await within(rail).findByText(/A run is in flight on this ticket/)).toBeInTheDocument();
+apps/desktop/src/renderer/src/chat/views/board/BoardView.test.tsx: expect(within(dialog).getByRole("button", { name: "Send ticket" })).toBeDisabled();
+apps/desktop/src/renderer/src/chat/views/board/BoardView.test.tsx: expect(within(screen.getByRole("region", { name: "Review — 1 ticket" })).getByText("Reviewing")).toBeInTheDocument();
+apps/desktop/src/renderer/src/chat/views/board/BoardView.test.tsx: fireEvent.click(screen.getByRole("button", { name: "Hold ticket" }));
+apps/desktop/src/renderer/src/chat/views/board/BoardView.test.tsx: fireEvent.click(screen.getByRole("button", { name: "Send ticket" }));
+apps/desktop/src/renderer/src/chat/views/board/BoardView.test.tsx: fireEvent.click(within(dialog).getByRole("button", { name: "Hold ticket" }));
+apps/desktop/src/renderer/src/chat/views/board/BoardView.test.tsx: fireEvent.click(within(dialog).getByRole("button", { name: "Move ticket" }));
+apps/desktop/src/renderer/src/chat/views/board/BoardView.test.tsx: fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Move ticket" }));
+apps/desktop/src/renderer/src/chat/views/board/BoardView.test.tsx: fireEvent.click(within(screen.getByRole("dialog", { name: "Move EO-1 to Review?" })).getByRole("button", { name: "Move ticket" }));
+apps/desktop/src/renderer/src/chat/views/inbox/InboxView.test.tsx: expect(banner).toHaveTextContent("No ticket can move until you answer below");
+apps/desktop/src/renderer/src/chat/views/inbox/InboxView.test.tsx: fireEvent.click(await screen.findByRole("button", { name: "Open ticket" }));
+apps/desktop/src/renderer/src/chat/views/item/ItemView.test.tsx: // The registry as EO ships it, so the chrome says "ticket" as a developer project does.
+apps/desktop/src/renderer/src/chat/views/item/ItemView.test.tsx: expect(await screen.findByRole("region", { name: "Jira" })).toHaveTextContent("changes everything under this ticket");
+apps/desktop/src/renderer/src/chat/views/item/ItemView.test.tsx: fireEvent.click(await screen.findByRole("button", { name: "Delete this ticket" }));
+apps/desktop/src/renderer/src/chat/views/item/ItemView.test.tsx: fireEvent.click(screen.getByRole("button", { name: "Delete this ticket" }));
+apps/desktop/src/renderer/src/chat/views/item/ItemView.test.tsx: fireEvent.click(within(dialog).getByRole("button", { name: "Delete this ticket" }));
+apps/desktop/src/renderer/src/chat/views/item/RunComposer.test.tsx: expect(await screen.findByText(/cannot be spoken to mid-turn, so this will be read by the next run on this ticket/)).toBeInTheDocument();
+apps/desktop/src/renderer/src/chat/views/items/ItemsView.test.tsx: const list = screen.getByRole("list", { name: /Every ticket on/ });
+apps/desktop/src/renderer/src/chat/views/settings/sections/GeneralSection.test.tsx: expect(await screen.findByText(/never one a ticket is still finishing on, archived tickets included/)).toBeInTheDocument();
+apps/desktop/src/renderer/src/chat/views/settings/sections/GuardrailsSection.test.tsx: expect(screen.getByText(/A ticket that is blocked or still in progress is never archived/)).toBeInTheDocument();
+apps/desktop/src/renderer/src/chat/views/settings/sections/GuardrailsSection.test.tsx: expect(within(guardrails).getByLabelText("Per-ticket budget (cents, blank = none)")).toHaveValue(null);
+apps/desktop/src/renderer/src/chat/views/settings/sections/GuardrailsSection.test.tsx: fireEvent.change(within(guardrails).getByLabelText("Per-ticket budget (cents, blank = none)"), { target: { value: "250" } });
+apps/desktop/src/renderer/src/chat/views/settings/sections/ProjectsSection.test.tsx: expect(dialog).toHaveTextContent("Every ticket on it will be deleted with its history");
+apps/desktop/src/renderer/src/chat/views/settings/sections/RepositoryIntelligenceSection.test.tsx: expect(within(never).getByText(/agents working on this ticket search the code instead of querying it/i)).toBeInTheDocument();
+apps/desktop/src/renderer/src/chat/views/settings/sections/WorkspacesSection.test.tsx: await waitFor(() => expect(lastUnsavedEdits(calls)).toEqual([{ field: "A subfolder per ticket", value: "true" }]));
+apps/desktop/src/renderer/src/chat/views/settings/sections/WorkspacesSection.test.tsx: expect(within(section).getByText("/mnt/share/reports · a subfolder per ticket")).toBeInTheDocument();
+apps/desktop/src/renderer/src/chat/views/settings/sections/WorkspacesSection.test.tsx: workspace({ id: "w2", kind: "folder", label: "/mnt/share/reports", summary: "/mnt/share/reports · a subfolder per ticket", config: { path: "/mnt/share/reports", perItemSubfolder: true } }),
+apps/desktop/src/renderer/src/chat/views/settings/sections/WorktreesSection.test.tsx: expect(screen.getByText("no ticket")).toBeInTheDocument();
+apps/desktop/src/renderer/src/vocabulary.test.tsx: * "ticket"; asserted here as literals, screen by screen, rather than
+apps/desktop/src/renderer/src/vocabulary.test.tsx: * against "reads 'Case' or 'Ticket' beside its key" — and it was asked
+apps/desktop/src/renderer/src/vocabulary.test.tsx: * orders by — and that the list itself has stopped saying "ticket".
+apps/desktop/src/renderer/src/vocabulary.test.tsx: * project reads "Story". "Ticket" is the pack's word for the
+apps/desktop/src/renderer/src/vocabulary.test.tsx: expect(screen.getByLabelText("Ticket context")).toBeInTheDocument();
+apps/desktop/src/renderer/src/vocabulary.test.tsx: expect(screen.getByRole("button", { name: "Open ticket" })).toBeInTheDocument();
+apps/desktop/src/renderer/src/vocabulary.test.tsx: expect(screen.getByRole("list", { name: "Every ticket on EO" })).toBeInTheDocument();
+apps/desktop/src/renderer/src/vocabulary.test.tsx: expect(screen.getByText("No ticket can move until you answer below — the agents have nothing else to work on.")).toBeInTheDocument();
+apps/desktop/src/renderer/src/vocabulary.test.tsx: expect(screen.getByText("This ticket's run ended waiting for your reply. Nothing on it moves until you answer.")).toBeInTheDocument();
+packages/core/src/comment-tool.ts: "Post a comment on this ticket. Mention @user to ask the human something you cannot resolve, " +
+packages/core/src/comment-tool.ts: "output on a ticket is what the next step works from and what a person edits.",
+packages/core/src/deprecations.test.ts: // "ticket" would be an alias to nowhere.
+packages/core/src/deprecations.test.ts: const wrong = DEPRECATED_TOOL_NAMES.filter((entry) => /ticket/.test(entry.replacement) || !/item/.test(entry.replacement));
+packages/core/src/domain.ts: * read apart. Null is "whatever the ticket is on", which is what every
+packages/core/src/ipc-schemas.ts: * the `ticket` part; `comments` and `currentOutput` the `comments` part;
+packages/core/src/ipc-schemas.ts: * ticket is on" — `stepWorkspaceChoice` reads the three apart, and
+packages/core/src/ipc.ts: * `ticket` is the item's own fields — the summary, its description and
+packages/core/src/ipc.ts: .describe("Only these parts of the item, of ticket, comments, runs, transitions, dependsOn and decision. Every part when omitted."),
+packages/core/src/ipc.ts: // one CLAUDE.md sets for "ticket" against `items`: what a person picks
+packages/core/src/ipc.ts: export const ITEM_SECTIONS = ["ticket", "comments", "runs", "transitions", "dependsOn", "decision"] as const;
+packages/core/src/registry/developer.ts: * "Ticket" because that is what this pack has always called its work,
+packages/core/src/registry/developer.ts: item: "Ticket",
+packages/core/src/registry/index.ts: /** What one of this pack's items is called: "Ticket". */
+packages/core/src/registry/registry.test.ts: "starts a fresh thread for %s, which runs on a work ticket",
+packages/core/src/registry/vocabulary.test.ts: expect(chromeVocabulary(developerRegistry())).toEqual({ item: "Ticket", items: "Tickets", mixed: false });
+packages/core/src/registry/vocabulary.test.ts: expect(chromeVocabulary(registry)).toEqual({ item: "Ticket", items: "Tickets", mixed: false });
+packages/core/src/registry/vocabulary.ts: * "Ticket" beside "Ticket" is a column of noise. That is today's
+packages/core/src/registry/vocabulary.ts: * keeps **ticket** so that "phase 6 changes no words on a developer's
+packages/core/src/registry/vocabulary.ts: * pack's word and the rows say nothing extra, because "Ticket" beside
+packages/core/src/registry/vocabulary.ts: /** One of them, capitalised for a heading: "Ticket", or "Item". */
+packages/core/src/schemas/assist.test.ts: const parsed = AssistOutputSchema.safeParse({ message: "That ticket is on Review, waiting for you." });
+packages/core/src/schemas/discussion.test.ts: const chatter = { message: "The scheduler skips a ticket whose dependencies aren't terminal yet." };
+packages/core/src/schemas/discussion.test.ts: expect(result.ok === false && result.error).toContain("ticket key");
+packages/core/src/schemas/discussion.ts: .regex(/-\d+$/, 'must be a ticket key, like "EO-42"');
+packages/core/src/schemas/mcpServers.ts: `"${REPOSITORY_MCP_SERVER_NAME}" is the name of the repository intelligence server EO gives an agent whose ticket has an index — a second server by that name would shadow it. Pick another name.`,
+packages/core/src/schemas/pipelineExport.ts: // inherits the ticket's workspace until somebody picks one here.
+packages/core/src/schemas/workspaces.ts: *   the ticket is on.
+packages/core/src/schemas/workspaces.ts: * - `inherit` — the step said nothing. The ticket's own workspace
+packages/core/src/schemas/workspaces.ts: * either: `null`, "whatever the ticket is on", which is what every step
+packages/core/src/schemas/workspaces.ts: * orphans, so the step falls back to the ticket's workspace rather than
+packages/engine/src/context.test.ts: * thing on the ticket into every prompt from here on, beside the section
+packages/engine/src/context.test.ts: // and costs the thread its record of what the ticket has produced —
+packages/engine/src/context.test.ts: expect(commentThreadSection).toContain("Nothing new has been said on this ticket since your last run.");
+packages/engine/src/context.test.ts: expect(fullText).toContain('You are being asked to perform the "review" action on this ticket.');
+packages/engine/src/context.ts: "Everything a person has said since you last worked on this ticket. Read it before anything else — it is the only part of this prompt nobody can re-derive from the code.",
+packages/engine/src/context.ts: "It answers with the path of a checkout of that branch made for this ticket, the commit and where that commit came from. " +
+packages/engine/src/context.ts: "Nothing new has been said on this ticket since your last run. Everything you need is already in this conversation — carry on with the task above.",
+packages/engine/src/context.ts: "The most recent word from every step this ticket has passed through, oldest first. Anything earlier is in the thread, not here.",
+packages/engine/src/context.ts: * it, so the largest thing on the ticket would arrive twice in the same
+packages/engine/src/context.ts: // record of what the ticket has produced — which is the one thing on
+packages/engine/src/context.ts: `${omitted.total} other comment${omitted.total === 1 ? "" : "s"} on this ticket: ${counts}.`,
+packages/engine/src/context.ts: `Call it **before** answering anything about "this", "here", "that ticket" or the current screen, and call it again whenever you think they may have navigated — it is read live, so the second answer is about wherever they are then. It distinguishes rows EO resolved from the parameters of the view and from edits the person has typed and not saved; never treat an unsaved edit as a stored value.`,
+packages/engine/src/context.ts: `If your tools hold no \`${ADMIN_SERVER}\` server at all, say so and ask which ticket or pipeline is meant. Do not guess at the screen.`,
+packages/engine/src/context.ts: `The latest output on this ticket is the ticket's current one.)`
+packages/engine/src/context.ts: `Work that shipped before yours. Read one with \`${ITEM_DETAIL}\` — it answers with the ticket and what that ticket produced.`,
+packages/engine/src/context.ts: const base = `# Task\nYou are being asked to perform the "${action}" action on this ticket.`;
+packages/engine/src/context.ts: if (stepComments.length === 0) return "## What each step said\n\nNothing yet — this ticket has no history.";
+packages/engine/src/context.ts: return "## What the person said\n\nNothing since you last worked on this ticket. Anything a person said before that is counted below, and you have seen it in an earlier run.";
+packages/engine/src/contextSeed.test.ts: // Another branch of the ticket's own repository is worth reading too,
+packages/engine/src/dagProperties.test.ts: title: `Ticket ${n}`,
+packages/engine/src/domainNeutrality.test.ts: "branched.ts:1: \"feature\" — take the container flag on the ticket view — item types are registry data, not string literals (KAN-161, and KAN-129 makes them rows)",
+packages/engine/src/domainNeutrality.test.ts: "branched.ts:2: \"story\" — take the container flag on the ticket view — item types are registry data, not string literals (KAN-161, and KAN-129 makes them rows)",
+packages/engine/src/domainNeutrality.test.ts: "capped.ts:1: workspaceId — take `capacityKeyOf(ticket)` on the tick input — the pack decides what a shared filesystem is (KAN-161)",
+packages/engine/src/domainNeutrality.test.ts: writeFileSync(join(tempDir, "branched.ts"), 'if (ticket.type === "feature") return decompose();\nif (ticket.type === "story") return clarify();\n');
+packages/engine/src/domainNeutrality.test.ts: writeFileSync(join(tempDir, "capped.ts"), "const key = ticket.workspaceId ?? PROJECTLESS;\n");
+packages/engine/src/domainNeutrality.test.ts: writeFileSync(join(tempDir, "innocent.test.ts"), 'const capacityKeyOf = (t: Ticket) => t.workspaceId ?? null;\nexpect(t.type).toBe("feature");\n');
+packages/engine/src/domainNeutrality.test.ts: writeFileSync(join(tempDir, "reintroduced.ts"), "export const target = (ticket: Ticket) => ticket.branch;\n");
+packages/engine/src/domainNeutrality.test.ts: { term: "repositoryId", pattern: /repositoryId/i, instead: "`capacityKeyOf(ticket)` on the tick input — the pack decides what a shared filesystem is (KAN-161)" },
+packages/engine/src/domainNeutrality.test.ts: { term: "workspaceId", pattern: /workspaceId/i, instead: "`capacityKeyOf(ticket)` on the tick input — the pack decides what a shared filesystem is (KAN-161)" },
+packages/engine/src/domainNeutrality.test.ts: { term: '"feature"', pattern: /["'`]feature["'`]/i, instead: "the container flag on the ticket view — item types are registry data, not string literals (KAN-161, and KAN-129 makes them rows)" },
+packages/engine/src/domainNeutrality.test.ts: { term: '"story"', pattern: /["'`]story["'`]/i, instead: "the container flag on the ticket view — item types are registry data, not string literals (KAN-161, and KAN-129 makes them rows)" },
+packages/engine/src/pipelineValidation.test.ts: expect(problems.some((p) => p.stateId === "orphan" && /no ticket can ever reach it/.test(p.message))).toBe(true);
+packages/engine/src/pipelineValidation.test.ts: expect(warnings(input)).toContain('"Deploy" can return "failed", which has no route — a ticket getting that result would park and ask you.');
+packages/engine/src/pipelineValidation.test.ts: expect(warnings(input)).toContain('"open_pull_request" can return "skipped", which has no route — a ticket getting that result would park and ask you.');
+packages/engine/src/pipelineValidation.ts: message: `"${step.name}" cannot reach a terminal step — a ticket arriving here would loop forever.`,
+packages/engine/src/pipelineValidation.ts: message: `"${subject}" can return "${result}", which has no route — a ticket getting that result would park and ask you.`,
+packages/engine/src/pipelineValidation.ts: message: `Nothing routes to "${step.name}", so no ticket can ever reach it.`,
+packages/engine/src/schedulerProperties.test.ts: title: `Ticket ${n}`,
+packages/ui/src/components/Markdown.tsx: const key = `${keyPrefix}-ticket-${index}`;

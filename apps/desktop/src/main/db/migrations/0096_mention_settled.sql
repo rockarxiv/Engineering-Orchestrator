@@ -1,0 +1,23 @@
+-- When a mention stopped waiting (EO-325).
+--
+-- `comment_mentions.status` is what the inbox and the `!` marker *are*,
+-- and it is the one thing about a mention that changes after it is
+-- written: somebody answers an escalation, or dismisses it. Until this
+-- column there was nothing to page that change on, so a reply made on
+-- one desktop reached the record as a comment and never as a
+-- resolution — and the escalation stayed open in the person's inbox on
+-- their other machine and on the record's board.
+--
+-- The same shape `comments.pinned_at` already has, and for the same
+-- reason: a row that is only ever read by its parent's cursor cannot
+-- report a change made days later, because a comment is paged once and
+-- never revisited. A timestamp of its own is what makes the change
+-- something `record:changes` can offer.
+--
+-- Null is a mention nobody has settled — which is every open one, and
+-- every row written before this column existed. Backfilling the ones
+-- that are already addressed or dismissed would be inventing a moment
+-- for something that happened at an unknown time; they travel with
+-- their comment on a first pull, which is where they were always going
+-- to come from.
+ALTER TABLE `comment_mentions` ADD COLUMN `settled_at` integer;

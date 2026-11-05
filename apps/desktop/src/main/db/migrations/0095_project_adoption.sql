@@ -1,0 +1,27 @@
+-- A transfer into a record, while it is still in flight (EO-325,
+-- `ARCHITECTURE.md`, "What a person sees first").
+--
+-- A move is a paged conversation about thousands of rows, and until
+-- the review there was no word for the middle of it. The record wrote
+-- the project live on the first page, so an organisation's board could
+-- draw half a project and its scheduler could dispatch an item whose
+-- other half had not arrived — while the machine sending it still had
+-- the same item and the same scheduler. Two writers for one item, which
+-- is the one thing invariant #1 cannot survive.
+--
+-- So a move has a middle, and this column is it. Set on both sides for
+-- the length of the transfer and cleared by the commit that ends it:
+--
+--  * **on the record**, the project exists so that foreign keys resolve
+--    and pages can land, and is hidden from `record:changes` and taken
+--    out of the scheduler's input until the last page says so;
+--  * **on the machine sending it**, the project stays local — it is not
+--    the record's until the record says it has everything — and its
+--    items come out of the local scheduler, so nothing new starts on
+--    work that is half way to somewhere else.
+--
+-- Null is every project that is not moving, which is every project
+-- almost all of the time. A column rather than a separate table because
+-- there is at most one of these per project and its whole life is one
+-- function call.
+ALTER TABLE `projects` ADD COLUMN `adopting_at` integer;

@@ -1,0 +1,17 @@
+-- Deleting an agent leaves a tombstone, not a hole (EO-350).
+--
+-- `runs.agent_id` references `agents(id)` with no ON DELETE rule, and
+-- foreign keys are on, so the row of an agent that has ever run cannot
+-- simply go. Nor should it: `comments.author_id` and
+-- `comment_mentions.target_id` name it too, without a foreign key, and a
+-- deleted row would turn every one of those names into "unknown agent".
+--
+-- So a delete keeps the name and the role and clears the rest —
+-- instructions, config, backend — and stamps this column. The row is
+-- archived and disabled as well, which is what already keeps an agent
+-- out of dispatch and the validator; `deleted_at` is what keeps it off
+-- the Agents screen, where an archived one is still offered under "Show
+-- archived".
+--
+-- Nothing here touches `runs` or `run_events` (invariant #3).
+ALTER TABLE `agents` ADD COLUMN `deleted_at` integer;

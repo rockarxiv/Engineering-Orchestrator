@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <!--
+    EO's mark: work rising left to right, and the last one finished.
+
+    Deliberately not a monogram and deliberately only four shapes — the
+    first draft had six and turned to mush at 32px, which is the size
+    that actually decides whether an icon works. The colours are the
+    app's own tokens (accent oklch(55% 0.19 268) and its dark variant,
+    canvas oklch(16% 0.01 265)) so the icon and the window agree.
+  -->
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1c2233"/>
+      <stop offset="1" stop-color="#0b0d12"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="1024" height="1024" rx="228" fill="url(#tile)"/>
+  <rect x="7" y="7" width="1010" height="1010" rx="221" fill="none" stroke="#2f3950" stroke-width="14"/>
+
+  <!-- Queued, then in flight, then done: heights say the same thing the
+       colours do, so the shape still reads with the colour stripped. -->
+  <rect x="196" y="606" width="168" height="212" rx="52" fill="#4a5470"/>
+  <rect x="428" y="452" width="168" height="366" rx="52" fill="#4364df"/>
+  <rect x="660" y="206" width="168" height="612" rx="52" fill="#668af9"/>
+
+  <!-- The tick on the finished column. Thick enough to survive being
+       three pixels tall. -->
+  <path d="M700 372 l52 54 l84 -104" fill="none" stroke="#0b0d12" stroke-width="52"
+        stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

@@ -1,0 +1,17 @@
+-- Which runs were recorded by debug mode (EO-394).
+--
+-- The debug window lists only runs with a `debug_sent` row, and asks
+-- again on every `runs:progress` push. `run_events` is keyed on
+-- `(run_id, seq)` with nothing on `type`, so answering "has this run a
+-- recorded send?" for a run that has none meant reading its whole
+-- transcript, for every unrecorded run on the project, on every push.
+--
+-- Partial, because debug mode is off by default: the index holds one
+-- entry per recorded send and nothing for the rest of the table, so it
+-- costs an ordinary append nothing. The query has to say
+-- `type = 'debug_sent'` as a literal for SQLite to use it — see
+-- `hasRecordedSend` in `repos/runsRepo.ts`.
+--
+-- An index only. No row of `run_events` is written, changed or removed
+-- (invariant #3): this changes what is read, never what is stored.
+CREATE INDEX `idx_run_events_debug_sent` ON `run_events` (`run_id`) WHERE `type` = 'debug_sent';

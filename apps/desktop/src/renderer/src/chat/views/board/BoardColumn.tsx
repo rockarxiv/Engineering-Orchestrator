@@ -1,0 +1,229 @@
+import { useState } from "react";
+import { useDroppable } from "@dnd-kit/core";
+import { watchLine, type ChromeVocabulary, type ItemSummary, type ModuleView, type PipelineStepView } from "@eo/core";
+import { cn } from "@eo/ui";
+import { Button, Select } from "../../kit";
+import { OwnerChip } from "../../parts";
+import { NotFullyTested } from "../../modules/NotFullyTested";
+import { BoardCard } from "./BoardCard";
+import { descriptionFor } from "../../../shared/pipeline/dashboard";
+
+/**
+ * A column of the board: one step, who owns it, what it does, what can
+ * be believed about it, and the work standing on it.
+ *
+ * A lit lane on the canvas's darker ground, with the cards raised on it
+ * (ARCHITECTURE.md, "The chat-centric layout").
+ */
+
+/** Who a human step waits on, as the picker's own vocabulary (EO-323): a person and a group are different promises. */
+export type StepOwner = { kind: "person" | "group"; id: string };
+
+/**
+ * What every card on the board is told, whichever column it is in.
+ *
+ * The board memoises it (EO-565), and each card is handed only its own
+ * share — a boolean where this holds a set — so a claim or a move on one
+ * card leaves every other card's props as they were.
+ */
+export interface CardHandlers {
+  /** Whether the project's work goes by more than one word (EO-309), read once by the board. */
+  mixed: boolean;
+  queued: ReadonlySet<string>;
+  canHandOff: boolean;
+  onHandOff: (item: ItemSummary) => void;
+  /** The cards with a claim in flight (EO-562): their Claim is disabled and says so. */
+  claiming: ReadonlyMap<string, true>;
+  /** The card drawn where it was dropped while its move is confirmed and applied (EO-564), or null. */
+  moving: string | null;
+  /**
+   * The card the last confirmed move on this board applied to, or null.
+   * Shown in its column however far down it sorts (EO-634), so a card
+   * moved into a long column does not land past "Show more" and vanish.
+   */
+  moved: string | null;
+  onClaim: (item: ItemSummary) => void;
+  onOpen: (itemId: string) => void;
+}
+
+/** "3 tickets", "1 item": a column's count in the project's own word. */
+function countLabel(count: number, vocabulary: ChromeVocabulary): string {
+  return `${count} ${(count === 1 ? vocabulary.item : vocabulary.items).toLowerCase()}`;
+}
+
+/** How many cards a column shows at first, and how many more each "Show more" adds (EO-634). */
+export const CARDS_PER_STEP = 4;
+
+/**
+ * A column's cards, newest first, a few at a time (EO-634): the first
+ * four, then four more for each press of "Show more". A card just moved
+ * here is shown wherever it sorts. How far a column is opened is this
+ * column's own, and goes when the board does.
+ */
+function Cards({ items, handlers }: { items: ItemSummary[]; handlers: CardHandlers }) {
+  const [limit, setLimit] = useState(CARDS_PER_STEP);
+  const shown: ItemSummary[] = [];
+  let counted = 0;
+  for (const item of items) {
+    const pinned = item.id === handlers.moving || item.id === handlers.moved;
+    if (pinned || counted < limit) shown.push(item);
+    if (!pinned) counted += 1;
+  }
+  const more = Math.min(CARDS_PER_STEP, items.length - shown.length);
+  return (
+    <>
+      {shown.map((item) => (
+        <BoardCard
+          key={item.id}
+          item={item}
+          mixed={handlers.mixed}
+          queued={handlers.queued.has(item.id)}
+          canHandOff={handlers.canHandOff}
+          onHandOff={handlers.onHandOff}
+          claiming={handlers.claiming.has(item.id)}
+          moving={handlers.moving === item.id}
+          onClaim={handlers.onClaim}
+          onOpen={handlers.onOpen}
+        />
+      ))}
+      {more > 0 ? (
+        <Button variant="ghost" size="sm" className="w-full" onClick={() => setLimit((current) => current + CARDS_PER_STEP)}>
+          Show {more} more
+        </Button>
+      ) : null}
+    </>
+  );
+}
+
+export function StepColumn({
+  step,
+  module,
+  items,
+  verifies,
+  ownerId,
+  people,
+  groups,
+  onSetOwner,
+  handlers,
+  vocabulary,
+}: {
+  step: PipelineStepView;
+  /** The module a module step runs (EO-354), read for whether it is fully tested. */
+  module: ModuleView | undefined;
+  items: ItemSummary[];
+  /** What is checked here or who approves here (EO-312), or null where this board says nothing. */
+  verifies: string | null;
+  /** Who this step waits on, as an id, or "" for nobody in particular. */
+  ownerId: string;
+  people: readonly { id: string; name: string }[];
+  groups: readonly { id: string; name: string }[];
+  onSetOwner: (owner: StepOwner | null) => void;
+  handlers: CardHandlers;
+  /** The project's words, read once by the board (EO-565). */
+  vocabulary: ChromeVocabulary;
+}) {
+  const { setNodeRef, isOver } = useDroppable({ id: step.id });
+  const count = countLabel(items.length, vocabulary);
+  const summary = step.instructionsSummary ?? descriptionFor(step);
+  return (
+    <section
+      ref={setNodeRef}
+      aria-label={`${step.name} — ${count}`}
+      className={cn(
+        "flex min-w-0 flex-col gap-2 rounded-[14px] bg-canvas px-2.5 py-3",
+        isOver && "bg-accent-subtle/40 shadow-[inset_0_0_0_1.5px_var(--color-accent)]",
+      )}
+    >
+      <header className="flex min-w-0 flex-col gap-1 px-0.5">
+        <div className="flex min-w-0 items-center gap-2">
+          <h2 className="min-w-0 truncate text-[13px] font-medium text-ink">{step.name}</h2>
+          {items.length > 0 ? (
+            <span aria-hidden className="text-[11.5px] tabular-nums text-ink-subtle">
+              {items.length}
+            </span>
+          ) : null}
+        </div>
+        {step.isTerminal ? (
+          <span className="text-[11px] text-ink-subtle">end</span>
+        ) : (
+          // A step nobody owns is where the engine hands off to you (ARCHITECTURE.md, "A step").
+          <span className="flex min-w-0" {...(step.type === "user" ? { title: "Human-owned — the engine won't act here" } : {})}>
+            <OwnerChip step={step} />
+          </span>
+        )}
+        <NotFullyTested module={module} />
+        {summary ? <p className="truncate text-[11.5px] text-ink-subtle">{summary}</p> : null}
+        {/* Not truncated: cutting "EO checks: commits, tests ran" short
+            would claim less than is true (EO-312, ARCHITECTURE.md, "What 'EO checks' means on a step"). */}
+        {verifies === null ? null : <p className="text-[11px] leading-snug text-ink-subtle">{verifies}</p>}
+        {/* How often a step that keeps checking looks, and when it gives up (EO-456). */}
+        {watchLine(step) === null ? null : <p className="text-[11px] leading-snug text-ink-subtle">{watchLine(step)}</p>}
+        {/* Who waits here, changeable from the board (EO-323). Only on a
+            human step: nothing waits at an agent step. */}
+        {step.type === "user" ? (
+          <Select
+            aria-label={`Who waits at ${step.name}`}
+            className="mt-1"
+            value={ownerId}
+            onChange={(event) => {
+              const id = event.target.value;
+              if (id === "") return onSetOwner(null);
+              onSetOwner({
+                kind: groups.some((group) => group.id === id) ? "group" : "person",
+                id,
+              });
+            }}
+          >
+            <option value="">Nobody in particular</option>
+            {people.map((person) => (
+              <option key={person.id} value={person.id}>
+                {person.name}
+              </option>
+            ))}
+            {groups.map((group) => (
+              <option key={group.id} value={group.id}>
+                {group.name}
+              </option>
+            ))}
+          </Select>
+        ) : null}
+      </header>
+
+      <div className="flex min-w-0 flex-col gap-2">
+        <Cards items={items} handlers={handlers} />
+        {items.length === 0 ? (
+          // Drawn, so a drag can see where it may land.
+          <p
+            aria-hidden
+            className={cn(
+              "rounded-[10px] border border-dashed px-2 py-5 text-center text-[11.5px]",
+              isOver ? "border-accent text-accent-soft" : "border-line text-ink-subtle",
+            )}
+          >
+            {isOver ? "Drop to move here" : "Empty"}
+          </p>
+        ) : null}
+      </div>
+    </section>
+  );
+}
+
+/**
+ * A step this pipeline has removed, still finishing work (EO-327, the original design):
+ * "Review (v6) · 2 finishing". Cards can be dragged out; nothing can be
+ * dropped in, so it registers no drop target, and it offers no owner and
+ * says nothing about what is checked.
+ */
+export function GhostColumn({ label, items, handlers }: { label: string; items: ItemSummary[]; handlers: CardHandlers }) {
+  return (
+    <section aria-label={label} className="flex min-w-0 flex-col gap-2 rounded-[14px] border border-dashed border-line px-2.5 py-3 opacity-90">
+      <header className="flex min-w-0 flex-col gap-1 px-0.5">
+        <h2 className="truncate text-[13px] font-medium text-ink-muted">{label}</h2>
+        <p className="text-[11.5px] text-ink-subtle">Removed from the pipeline. These finish here.</p>
+      </header>
+      <div className="flex min-w-0 flex-col gap-2">
+        <Cards items={items} handlers={handlers} />
+      </div>
+    </section>
+  );
+}

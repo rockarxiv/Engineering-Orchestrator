@@ -1,0 +1,24 @@
+-- Why a job is stopped, written down rather than guessed at (EO-308,
+-- ARCHITECTURE.md, "The inbox, the archive and jobs").
+--
+-- The original design gives a job a chip while it is paused, and it is two different
+-- chips: "paused: daily budget reached" for a job a guard stopped on the
+-- person's behalf, and a plain "paused" for one they stopped themselves.
+-- EO-308 first derived which by asking whether the newest firing's item
+-- had reached the per-occurrence budget -- on the reading that `!` is
+-- derived and never stored (invariant #6), so a second column about a
+-- pause would be the same fact twice.
+--
+-- That derivation is wrong, and wrong in the ordinary case rather than a
+-- corner: a person who looks at an expensive occurrence and then pauses
+-- the job *by hand* is told a budget did it. The two are not the same
+-- fact -- "this job has spent what one occurrence may" is about the
+-- spend, and "why is this job stopped" is about an act -- and no amount
+-- of reading the spend recovers which act it was. Invariant #6 is about
+-- a flag that would drift from the rows it summarises; this is the only
+-- record of something that happened.
+--
+-- Null is both "not paused" and "paused before this column existed". The
+-- second reads as "by hand", which is the honest default: a pause EO
+-- cannot attribute to a guard of its own is one a person chose.
+ALTER TABLE `jobs` ADD `paused_reason` text;

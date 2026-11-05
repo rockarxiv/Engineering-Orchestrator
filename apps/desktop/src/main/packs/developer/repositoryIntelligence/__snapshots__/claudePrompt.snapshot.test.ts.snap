@@ -1,0 +1,325 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`the Claude adapter's prompt, pinned > sends the same bare start turn 1`] = `
+{
+  "hook": {
+    "hook": "none registered",
+  },
+  "options": {
+    "abortController": "[AbortController]",
+    "allowDangerouslySkipPermissions": true,
+    "cwd": "/tmp/wt",
+    "env": {
+      "CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1",
+      "CLAUDE_CODE_FORK_SUBAGENT": "0",
+      "[process.env]": true,
+    },
+    "includePartialMessages": true,
+    "permissionMode": "bypassPermissions",
+    "settingSources": [
+      "project",
+    ],
+    "skills": [],
+    "spawnClaudeCodeProcess": "[Function]",
+    "strictMcpConfig": true,
+    "systemPrompt": "You are the implementer.",
+  },
+  "prompt": "EO-1: do the thing",
+}
+`;
+
+exports[`the Claude adapter's prompt, pinned > sends the same fully configured start turn, and the hook says the same things 1`] = `
+{
+  "hook": {
+    "Glob": {
+      "hookSpecificOutput": {
+        "additionalContext": "That walked the whole checkout looking for \`**/*.test.ts\`. This repository has an index: \`mcp__repo__idx_files\` answers which files exist and where, and \`mcp__repo__idx_area\` returns the files and symbols for an area from a question in prose. Your command was not blocked and has run.",
+        "hookEventName": "PreToolUse",
+      },
+    },
+    "Grep": {
+      "hookSpecificOutput": {
+        "additionalContext": "That searched the whole checkout for \`transitionItem\`. This repository has an index: \`mcp__repo__idx_symbol\` for \`transitionItem\` returns where it is declared — file, line, signature and doc — in one call, and \`mcp__repo__idx_area\` answers a question in prose when you do not have a name yet. mcp__repo__idx_callers then answer what calls it and what changing it would reach, which no search of the text can. Your command was not blocked and has run.",
+        "hookEventName": "PreToolUse",
+      },
+    },
+    "cat": {},
+    "find": {
+      "hookSpecificOutput": {
+        "additionalContext": "That walked the whole checkout looking for \`*.test.ts\`. This repository has an index: \`mcp__repo__idx_files\` answers which files exist and where, and \`mcp__repo__idx_area\` returns the files and symbols for an area from a question in prose. Your command was not blocked and has run.",
+        "hookEventName": "PreToolUse",
+      },
+    },
+    "grep": {
+      "hookSpecificOutput": {
+        "additionalContext": "That searched the whole checkout for \`transitionItem\`. This repository has an index: \`mcp__repo__idx_symbol\` for \`transitionItem\` returns where it is declared — file, line, signature and doc — in one call, and \`mcp__repo__idx_area\` answers a question in prose when you do not have a name yet. mcp__repo__idx_callers then answer what calls it and what changing it would reach, which no search of the text can. Your command was not blocked and has run.",
+        "hookEventName": "PreToolUse",
+      },
+    },
+    "ls": {
+      "hookSpecificOutput": {
+        "additionalContext": "That walked the whole checkout to see what is in it. This repository has an index: \`mcp__repo__idx_files\` returns the file tree it holds, and \`mcp__repo__idx_area\` returns the symbols, files and callers for one area in a single call. Your command was not blocked and has run.",
+        "hookEventName": "PreToolUse",
+      },
+    },
+    "rg": {
+      "hookSpecificOutput": {
+        "additionalContext": "That searched the whole checkout for \`transitionItem\`. This repository has an index: \`mcp__repo__idx_symbol\` for \`transitionItem\` returns where it is declared — file, line, signature and doc — in one call, and \`mcp__repo__idx_area\` answers a question in prose when you do not have a name yet. mcp__repo__idx_callers then answer what calls it and what changing it would reach, which no search of the text can. Your command was not blocked and has run.",
+        "hookEventName": "PreToolUse",
+      },
+    },
+    "test": {},
+  },
+  "options": {
+    "abortController": "[AbortController]",
+    "allowDangerouslySkipPermissions": true,
+    "allowedTools": [
+      "Read",
+      "Edit",
+      "Bash",
+      "mcp__repo",
+    ],
+    "cwd": "/tmp/wt",
+    "effort": "max",
+    "env": {
+      "CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1",
+      "CLAUDE_CODE_FORK_SUBAGENT": "0",
+      "[process.env]": true,
+    },
+    "hooks": {
+      "PreToolUse": [
+        {
+          "hooks": [
+            "[Function]",
+          ],
+          "matcher": "Bash|Grep|Glob",
+        },
+      ],
+    },
+    "includePartialMessages": true,
+    "mcpServers": {
+      "eo": {
+        "alwaysLoad": true,
+        "args": [
+          "/opt/eo/mcp/server.js",
+        ],
+        "command": "[process.execPath]",
+        "env": {
+          "ELECTRON_RUN_AS_NODE": "1",
+          "EO_MCP_COMMENT_ENABLED": "1",
+          "EO_MCP_CONFIG_ENABLED": "1",
+          "EO_MCP_DB_PATH": "/tmp/eo.db",
+          "EO_MCP_FULL_THREAD_ENABLED": "0",
+          "EO_MCP_MEMORY_NOTE_ENABLED": "0",
+          "EO_MCP_RUNTIME_ROOT": "/opt/eo/runtimes",
+        },
+        "type": "stdio",
+      },
+      "repo": {
+        "alwaysLoad": true,
+        "args": [
+          "serve",
+          "--mcp",
+          "--path",
+          "/tmp/wt",
+          "--no-watch",
+        ],
+        "command": "/opt/eo/index-tool",
+        "type": "stdio",
+      },
+    },
+    "model": "claude-opus-4-1",
+    "outputFormat": {
+      "schema": {
+        "additionalProperties": false,
+        "properties": {
+          "branch": {
+            "type": "string",
+          },
+          "summary": {
+            "type": "string",
+          },
+        },
+        "required": [
+          "branch",
+          "summary",
+        ],
+        "type": "object",
+      },
+      "type": "json_schema",
+    },
+    "pathToClaudeCodeExecutable": "/opt/eo/runtimes/claude/claude",
+    "permissionMode": "bypassPermissions",
+    "settingSources": [
+      "project",
+    ],
+    "skills": [],
+    "spawnClaudeCodeProcess": "[Function]",
+    "strictMcpConfig": true,
+    "systemPrompt": "You are the implementer.
+
+Do exactly what the ticket says.",
+  },
+  "prompt": "# Task
+EO-1: do the thing
+
+## Acceptance Criteria
+- It does the thing.
+
+Attachments (metadata only; use attachment_read for content):
+- ID: att-1; name: spec.pdf; MIME type: application/pdf; size: 1234 bytes; origin: local; synchronization state: synced
+- ID: att-2; name: mock.png; MIME type: image/png; size: 99 bytes; origin: jira; synchronization state: pending",
+}
+`;
+
+exports[`the Claude adapter's prompt, pinned > sends the same resumed turn 1`] = `
+{
+  "hook": {
+    "Glob": {
+      "hookSpecificOutput": {
+        "additionalContext": "That walked the whole checkout looking for \`**/*.test.ts\`. This repository has an index: \`mcp__repo__idx_files\` answers which files exist and where, and \`mcp__repo__idx_area\` returns the files and symbols for an area from a question in prose. Your command was not blocked and has run.",
+        "hookEventName": "PreToolUse",
+      },
+    },
+    "Grep": {
+      "hookSpecificOutput": {
+        "additionalContext": "That searched the whole checkout for \`transitionItem\`. This repository has an index: \`mcp__repo__idx_symbol\` for \`transitionItem\` returns where it is declared — file, line, signature and doc — in one call, and \`mcp__repo__idx_area\` answers a question in prose when you do not have a name yet. mcp__repo__idx_callers then answer what calls it and what changing it would reach, which no search of the text can. Your command was not blocked and has run.",
+        "hookEventName": "PreToolUse",
+      },
+    },
+    "cat": {},
+    "find": {
+      "hookSpecificOutput": {
+        "additionalContext": "That walked the whole checkout looking for \`*.test.ts\`. This repository has an index: \`mcp__repo__idx_files\` answers which files exist and where, and \`mcp__repo__idx_area\` returns the files and symbols for an area from a question in prose. Your command was not blocked and has run.",
+        "hookEventName": "PreToolUse",
+      },
+    },
+    "grep": {
+      "hookSpecificOutput": {
+        "additionalContext": "That searched the whole checkout for \`transitionItem\`. This repository has an index: \`mcp__repo__idx_symbol\` for \`transitionItem\` returns where it is declared — file, line, signature and doc — in one call, and \`mcp__repo__idx_area\` answers a question in prose when you do not have a name yet. mcp__repo__idx_callers then answer what calls it and what changing it would reach, which no search of the text can. Your command was not blocked and has run.",
+        "hookEventName": "PreToolUse",
+      },
+    },
+    "ls": {
+      "hookSpecificOutput": {
+        "additionalContext": "That walked the whole checkout to see what is in it. This repository has an index: \`mcp__repo__idx_files\` returns the file tree it holds, and \`mcp__repo__idx_area\` returns the symbols, files and callers for one area in a single call. Your command was not blocked and has run.",
+        "hookEventName": "PreToolUse",
+      },
+    },
+    "rg": {
+      "hookSpecificOutput": {
+        "additionalContext": "That searched the whole checkout for \`transitionItem\`. This repository has an index: \`mcp__repo__idx_symbol\` for \`transitionItem\` returns where it is declared — file, line, signature and doc — in one call, and \`mcp__repo__idx_area\` answers a question in prose when you do not have a name yet. mcp__repo__idx_callers then answer what calls it and what changing it would reach, which no search of the text can. Your command was not blocked and has run.",
+        "hookEventName": "PreToolUse",
+      },
+    },
+    "test": {},
+  },
+  "options": {
+    "abortController": "[AbortController]",
+    "allowDangerouslySkipPermissions": true,
+    "cwd": "/tmp/wt",
+    "env": {
+      "CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1",
+      "CLAUDE_CODE_FORK_SUBAGENT": "0",
+      "[process.env]": true,
+    },
+    "hooks": {
+      "PreToolUse": [
+        {
+          "hooks": [
+            "[Function]",
+          ],
+          "matcher": "Bash|Grep|Glob",
+        },
+      ],
+    },
+    "includePartialMessages": true,
+    "mcpServers": {
+      "repo": {
+        "alwaysLoad": true,
+        "args": [
+          "serve",
+          "--mcp",
+          "--path",
+          "/tmp/wt",
+          "--no-watch",
+        ],
+        "command": "/opt/eo/index-tool",
+        "type": "stdio",
+      },
+    },
+    "model": "claude-sonnet-4-5",
+    "outputFormat": {
+      "schema": {
+        "additionalProperties": false,
+        "properties": {
+          "branch": {
+            "type": "string",
+          },
+          "summary": {
+            "type": "string",
+          },
+        },
+        "required": [
+          "branch",
+          "summary",
+        ],
+        "type": "object",
+      },
+      "type": "json_schema",
+    },
+    "permissionMode": "bypassPermissions",
+    "resume": "sess_1",
+    "settingSources": [
+      "project",
+    ],
+    "skills": [],
+    "spawnClaudeCodeProcess": "[Function]",
+    "strictMcpConfig": true,
+  },
+  "prompt": "carry on",
+}
+`;
+
+exports[`the Claude adapter's prompt, pinned > sends the same start turn minus the hook when the caller supplies no nudge 1`] = `
+{
+  "hook": {
+    "hook": "none registered",
+  },
+  "options": {
+    "abortController": "[AbortController]",
+    "allowDangerouslySkipPermissions": true,
+    "cwd": "/tmp/wt",
+    "env": {
+      "CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1",
+      "CLAUDE_CODE_FORK_SUBAGENT": "0",
+      "[process.env]": true,
+    },
+    "includePartialMessages": true,
+    "mcpServers": {
+      "repo": {
+        "alwaysLoad": true,
+        "args": [
+          "serve",
+          "--mcp",
+          "--path",
+          "/tmp/wt",
+          "--no-watch",
+        ],
+        "command": "/opt/eo/index-tool",
+        "type": "stdio",
+      },
+    },
+    "model": "claude-sonnet-4-5",
+    "permissionMode": "bypassPermissions",
+    "settingSources": [
+      "project",
+    ],
+    "skills": [],
+    "spawnClaudeCodeProcess": "[Function]",
+    "strictMcpConfig": true,
+    "systemPrompt": "You are the implementer.",
+  },
+  "prompt": "EO-1: do the thing",
+}
+`;

@@ -1,0 +1,19 @@
+# Line endings are load-bearing here, so they are not left to whatever a
+# clone's `core.autocrlf` happens to be.
+#
+# EO hashes its own shipped role prompts to tell "EO wrote this" from "a
+# person edited it" (SHIPPED_PROMPT_HASHES in src/main/roles/prompts.ts).
+# The hash is over the file's bytes, so a CRLF checkout matches none of
+# them: every shipped prompt would read as hand-edited, and `syncRolePrompts`
+# would refuse to update any of them. That is a shipped-app bug on Windows,
+# not only a test one — the prompts go into the installer as they sit on
+# disk.
+*         text=auto eol=lf
+
+# Never touched, whatever the contents happen to look like to git's
+# heuristic.
+*.png     binary
+*.ico     binary
+*.icns    binary
+*.svg     text eol=lf
+*.snap    text eol=lf

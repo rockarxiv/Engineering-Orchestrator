@@ -1,0 +1,485 @@
+{
+  "arm": "hook",
+  "task": "When EO finishes building a repository index it does not trust the exit code — it re-reads the index and confirms one is there. A sync already reports how many files it changed, and that number reaches the row EO keeps for the index. A first build reports no such number, so a freshly built index has a blank where a sync leaves a count.\n\nGive a successful first build the same treatment: report how many files were indexed, carry it to the same place the sync's count goes, and cover it with tests.\n\nTake the smaller reading of anything ambiguous and note it in your handoff rather than asking.",
+  "instructionsFrom": "/home/lyudvig/.eo/worktrees/EO-165/apps/desktop/src/main/roles/prompts/implementer.md",
+  "runs": [
+    {
+      "id": "hook-1·67b8efab",
+      "calls": [
+        {
+          "name": "mcp__repo__codewiki_context",
+          "args": {
+            "task": "repository index build and sync, verify index exists after build, record files changed count on index row"
+          }
+        },
+        {
+          "name": "Bash",
+          "args": {
+            "command": "git status --short && git log --oneline -5 && ls",
+            "description": "Check worktree status"
+          }
+        },
+        {
+          "name": "Bash",
+          "args": {
+            "command": "ls -R /tmp/eo164-hook-nO0Ki7/apps/desktop/src/main/repositoryIntelligence && cat /tmp/eo164-hook-nO0Ki7/apps/desktop/src/main/repositoryIntelligence/port.ts",
+            "description": "List repositoryIntelligence and read port.ts"
+          }
+        },
+        {
+          "name": "Bash",
+          "args": {
+            "command": "cat /tmp/eo164-hook-nO0Ki7/apps/desktop/src/main/db/repos/repositoryIndexesRepo.ts",
+            "description": "Read repositoryIndexesRepo"
+          }
+        },
+        {
+          "name": "Bash",
+          "args": {
+            "command": "cd /tmp/eo164-hook-nO0Ki7/apps/desktop/src/main/repositoryIntelligence/codewiki && cat output.ts && echo \"=====RUN=====\" && cat run.ts",
+            "description": "Read output.ts and run.ts"
+          }
+        },
+        {
+          "name": "Bash",
+          "args": {
+            "command": "cat provider.ts",
+            "description": "Read provider.ts"
+          }
+        },
+        {
+          "name": "Bash",
+          "args": {
+            "command": "cd /tmp/eo164-hook-nO0Ki7/apps/desktop/src/main/repositoryIntelligence && grep -n \"changedFileCount\\|lastSyncChangedFiles\" -r /tmp/eo164-hook-nO0Ki7/apps /tmp/eo164-hook-nO0Ki7/packages --include=*.ts --include=*.tsx | grep -v node_modules",
+            "description": "Find all changedFileCount usages"
+          }
+        },
+        {
+          "name": "Bash",
+          "args": {
+            "command": "cd /tmp/eo164-hook-nO0Ki7 && grep -rn \"changedFileCount\\|lastSyncChangedFiles\\|last_sync_changed_files\" apps packages --include=\"*.ts\" --include=\"*.tsx\" 2>/dev/null | grep -v node_modules",
+            "description": "Find changedFileCount usages"
+          }
+        },
+        {
+          "name": "Bash",
+          "args": {
+            "command": "sed -n 190,300p apps/desktop/src/main/repositoryIntelligence/service.ts",
+            "description": "Read service.ts mapping section"
+          }
+        },
+        {
+          "name": "Bash",
+          "args": {
+            "command": "sed -n 300,400p apps/desktop/src/main/repositoryIntelligence/service.ts",
+            "description": "Read service.ts run/initialize section"
+          }
+        },
+        {
+          "name": "Bash",
+          "args": {
+            "command": "cd /tmp/eo164-hook-nO0Ki7/apps/desktop/src/main/repositoryIntelligence && sed -n 380,460p service.test.ts",
+            "description": "Read service.test.ts measurement tests"
+          }
+        },
+        {
+          "name": "Bash",
+          "args": {
+            "command": "sed -n 560,680p codewiki/provider.test.ts",
+            "description": "Read provider.test.ts sync tests"
+          }
+        },
+        {
+          "name": "Bash",
+          "args": {
+            "command": "cd /tmp/eo164-hook-nO0Ki7/apps/desktop/src/main/repositoryIntelligence/codewiki && cat testShim.ts",
+            "description": "Read testShim.ts"
+          }
+        },
+        {
+          "name": "Bash",
+          "args": {
+            "command": "sed -n 1,120p codewiki/provider.test.ts",
+            "description": "Read provider.test.ts header"
+          }
+        },
+        {
+          "name": "Bash",
+          "args": {
+            "command": "grep -n \"describe(\\|  it(\" codewiki/provider.test.ts | head -80",
+            "description": "List provider tests"
+          }
+        },
+        {
+          "name": "Bash",
+          "args": {
+            "command": "cd /tmp/eo164-hook-nO0Ki7/apps/desktop/src/main/repositoryIntelligence && sed -n 1,140p codewiki/provider.test.ts",
+            "description": "Read provider.test.ts header"
+          }
+        },
+        {
+          "name": "Bash",
+          "args": {
+            "command": "sed -n 140,330p codewiki/provider.test.ts",
+            "description": "Read provider.test.ts setup + initialize tests"
+          }
+        },
+        {
+          "name": "Bash",
+          "args": {
+            "command": "grep -n \"^describe\\|^  it(\\|^  describe\\|^});\" codewiki/provider.test.ts | sed -n 1,120p",
+            "description": "List test blocks"
+          }
+        },
+        {
+          "name": "Bash",
+          "args": {
+            "command": "sed -n 369,445p codewiki/provider.test.ts; echo ===; sed -n 950,990p codewiki/provider.test.ts",
+            "description": "Read initialize tests and real binary test"
+          }
+        },
+        {
+          "name": "Bash",
+          "args": {
+            "command": "sed -n 946,990p codewiki/provider.test.ts",
+            "description": "Read real binary test block"
+          }
+        },
+        {
+          "name": "Bash",
+          "args": {
+            "command": "cd /tmp/eo164-hook-nO0Ki7 && grep -rn \"lastSync\" apps/desktop/src/renderer packages/ui/src 2>/dev/null | grep -v node_modules | head -20",
+            "description": "Check UI usage of lastSync fields"
+          }
+        },
+        {
+          "name": "Bash",
+          "args": {
+            "command": "sed -n 100,150p packages/core/src/schemas/repositoryIntelligence.ts; echo \"=== SCHEMA ===\"; sed -n 940,990p apps/desktop/src/main/db/schema.ts",
+            "description": "Read core schema and db schema for index fields"
+          }
+        },
+        {
+          "name": "Bash",
+          "args": {
+            "command": "python3 - <<'PY'\nimport re\np = \"apps/desktop/src/main/repositoryIntelligence/codewiki/provider.ts\"\ns = open(p).read()\n\nold_type = '''  type Verification = { present: true; probe: RepositoryIndexProbe } | { present: false; probe: RepositoryIndexProbe; problem: string };'''\nnew_type = '''  type Verification =\n    | {\n        present: true;\n        probe: RepositoryIndexProbe;\n        /**\n         * How many files the index holds, as it has just described\n         * itself (EO-166).\n         *\n         * On the present arm alone, because it is read out of the very\n         * report that makes this `present` — there is no verification\n         * that saw an index and did not learn its size, and no failed\n         * one that could invent a number.\n         */\n        files: number;\n      }\n    | { present: false; probe: RepositoryIndexProbe; problem: string };'''\nassert old_type in s\ns = s.replace(old_type, new_type)\n\nold_verify = '''    if (readIndexReport(result.stdout) === null) {\n      const problem = `EO could not read CodeWiki's description of the index at ${indexPath}: ${explainOutput(result.stdout, result.stderr)}`;\n      return {\n        present: false,\n        probe: { present: false, indexPath, providerVersion, indexedCommitSha: null, unavailableReason: problem },\n        problem,\n      };\n    }\n\n    return {\n      present: true,\n      probe: { present: true, indexPath, providerVersion, indexedCommitSha: await headSha(target.workspacePath), unavailableReason: null },\n    };'''\nnew_verify = '''    const report = readIndexReport(result.stdout);\n    if (report === null) {\n      const problem = `EO could not read CodeWiki's description of the index at ${indexPath}: ${explainOutput(result.stdout, result.stderr)}`;\n      return {\n        present: false,\n        probe: { present: false, indexPath, providerVersion, indexedCommitSha: null, unavailableReason: problem },\n        problem,\n      };\n    }\n\n    return {\n      present: true,\n      files: report.files,\n      probe: { present: true, indexPath, providerVersion, indexedCommitSha: await headSha(target.workspacePath), unavailableReason: null },\n    };'''\nassert old_verify in s\ns = s.replace(old_verify, new_verify)\nopen(p, \"w\").write(s)\nprint(\"ok\")\nPY",
+            "description": "Carry the file count out of verify"
+          }
+        }
+      ],
+      "firstEditRank": 22,
+      "usage": null,
+      "hookDelivered": true,
+      "broadSearches": 1,
+      "interceptions": [
+        "That searched the whole checkout for `changedFileCount`. This repository has an index: `mcp__repo__codewiki_search` for `changedFileCount` returns where it is declared — file, line, signature and doc — in one call, and `mcp__repo__codewiki_context` answers a question in prose when you do not have a name yet. mcp__repo__codewiki_callers and mcp__repo__codewiki_impact then answer what calls it and what changing it would reach, which no search of the text can. Your command was not blocked and has run."
+      ]
+    },
+    {
+      "id": "hook-2·d82e2d15",
+      "calls": [
+        {
+          "name": "mcp__repo__codewiki_context",
+          "args": {
+            "task": "repository index build and sync, verifying index exists after build, recording files changed count on the index row"
+          }
+        },
+        {
+          "name": "Bash",
+          "args": {
+            "command": "ls && git log --oneline -5 && git status --short | head -20",
+            "description": "List repo root and git state"
+          }
+        },
+        {
+          "name": "Bash",
+          "args": {
+            "command": "ls apps/desktop/src/main/repositoryIntelligence/ && cat apps/desktop/src/main/db/repos/repositoryIndexesRepo.ts",
+            "description": "List repositoryIntelligence dir and read index repo"
+          }
+        },
+        {
+          "name": "Bash",
+          "args": {
+            "command": "cat apps/desktop/src/main/repositoryIntelligence/port.ts",
+            "description": "Read port.ts"
+          }
+        },
+        {
+          "name": "Bash",
+          "args": {
+            "command": "ls apps/desktop/src/main/repositoryIntelligence/codewiki/ && wc -l apps/desktop/src/main/repositoryIntelligence/codewiki/*",
+            "description": "List codewiki adapter dir"
+          }
+        },
+        {
+          "name": "Bash",
+          "args": {
+            "command": "cat apps/desktop/src/main/repositoryIntelligence/codewiki/output.ts",
+            "description": "Read output.ts"
+          }
+        },
+        {
+          "name": "Bash",
+          "args": {
+            "command": "cat apps/desktop/src/main/repositoryIntelligence/codewiki/provider.ts",
+            "description": "Read provider.ts"
+          }
+        },
+        {
+          "name": "Bash",
+          "args": {
+            "command": "grep -rn \"changedFileCount\\|lastSyncChangedFiles\" --include=*.ts apps packages | grep -v node_modules",
+            "description": "Find all changedFileCount references"
+          }
+        },
+        {
+          "name": "Bash",
+          "args": {
+            "command": "grep -rn \"changedFileCount\\|lastSyncChangedFiles\" apps packages --include='*.ts' 2>/dev/null | grep -v node_modules",
+            "description": "Find changedFileCount references"
+          }
+        },
+        {
+          "name": "mcp__repo__codewiki_impact",
+          "args": {
+            "symbol": "changedFileCount"
+          }
+        },
+        {
+          "name": "Bash",
+          "args": {
+            "command": "sed -n 190,300p apps/desktop/src/main/repositoryIntelligence/service.ts",
+            "description": "Read service.ts recordBuild area"
+          }
+        },
+        {
+          "name": "Bash",
+          "args": {
+            "command": "sed -n 395,460p apps/desktop/src/main/repositoryIntelligence/service.test.ts",
+            "description": "Read service.test.ts measurement tests"
+          }
+        },
+        {
+          "name": "Bash",
+          "args": {
+            "command": "sed -n 300,420p apps/desktop/src/main/repositoryIntelligence/service.ts",
+            "description": "Read rest of service.ts run and callers"
+          }
+        },
+        {
+          "name": "Bash",
+          "args": {
+            "command": "sed -n 560,680p apps/desktop/src/main/repositoryIntelligence/codewiki/provider.test.ts",
+            "description": "Read provider.test.ts measurement section"
+          }
+        },
+        {
+          "name": "Bash",
+          "args": {
+            "command": "cat apps/desktop/src/main/repositoryIntelligence/codewiki/testShim.ts",
+            "description": "Read testShim.ts"
+          }
+        },
+        {
+          "name": "Bash",
+          "args": {
+            "command": "grep -rn \"changed\\|Changed\" apps/desktop/src/main/repositoryIntelligence/handover.ts apps/desktop/src/main/repositoryIntelligence/sayable.ts | head -30",
+            "description": "Check handover/sayable for changed-file wording"
+          }
+        },
+        {
+          "name": "Bash",
+          "args": {
+            "command": "python3 - <<'PY'\nimport re\np=\"apps/desktop/src/main/repositoryIntelligence/port.ts\"\ns=open(p).read()\nold = \"\"\"      /**\n       * How many files the implementation reported updating.\n       *\n       * Meaningful for an update of an existing index and absent for a\n       * build from nothing, where \"changed\" would mean \"all of them\" and\n       * would say nothing anyone asked. Reported by the implementation\n       * rather than computed by the caller: a checkout carries\n       * uncommitted work that a commit-to-commit diff would miss, and\n       * the thing that just walked the tree already knows the answer.\n       */\n      changedFileCount?: number;\"\"\"\nnew = \"\"\"      /**\n       * How many files the index now accounts for as a result of this\n       * work: what an update reported changing, or what a build from\n       * nothing put in the index.\n       *\n       * Both, and not only the update, because a build that answered\n       * nothing left a row with a blank where every other successful\n       * build leaves a number — and a blank reads as \"never measured\"\n       * rather than as \"measured, and the answer was every file\". The\n       * two readings want opposite things from whoever is looking at\n       * the row.\n       *\n       * Reported by the implementation rather than computed by the\n       * caller, and for the same reason in both cases: a checkout\n       * carries uncommitted work that a commit-to-commit diff would\n       * miss, and the thing that just walked the tree already knows the\n       * answer.\n       *\n       * Still optional. Not every implementation of this port has to\n       * count anything, and a caller that only wants to know whether\n       * the index is usable must not have to care.\n       */\n      changedFileCount?: number;\"\"\"\nassert old in s\ns=s.replace(old,new)\nopen(p,\"w\").write(s)\nPY\necho ok",
+            "description": "Update port.ts changedFileCount doc"
+          }
+        }
+      ],
+      "firstEditRank": 16,
+      "usage": null,
+      "hookDelivered": true,
+      "broadSearches": 2,
+      "interceptions": [
+        "That searched the whole checkout for `changedFileCount`. This repository has an index: `mcp__repo__codewiki_search` for `changedFileCount` returns where it is declared — file, line, signature and doc — in one call, and `mcp__repo__codewiki_context` answers a question in prose when you do not have a name yet. mcp__repo__codewiki_callers and mcp__repo__codewiki_impact then answer what calls it and what changing it would reach, which no search of the text can. Your command was not blocked and has run.",
+        "That searched the whole checkout for `changedFileCount`. This repository has an index: `mcp__repo__codewiki_search` for `changedFileCount` returns where it is declared — file, line, signature and doc — in one call, and `mcp__repo__codewiki_context` answers a question in prose when you do not have a name yet. mcp__repo__codewiki_callers and mcp__repo__codewiki_impact then answer what calls it and what changing it would reach, which no search of the text can. Your command was not blocked and has run."
+      ]
+    },
+    {
+      "id": "hook-3·46176919",
+      "calls": [
+        {
+          "name": "mcp__repo__codewiki_context",
+          "args": {
+            "task": "repository index build and sync, verifying index exists after build, reporting file counts to the index row"
+          }
+        },
+        {
+          "name": "Bash",
+          "args": {
+            "command": "git status --short && git log --oneline -5 && ls"
+          }
+        },
+        {
+          "name": "Bash",
+          "args": {
+            "command": "cat apps/desktop/src/main/repositoryIntelligence/port.ts"
+          }
+        },
+        {
+          "name": "Bash",
+          "args": {
+            "command": "ls apps/desktop/src/main/repositoryIntelligence/"
+          }
+        },
+        {
+          "name": "Bash",
+          "args": {
+            "command": "ls apps/desktop/src/main/repositoryIntelligence/codewiki/ && grep -rn \"changedFileCount\" apps/desktop/src packages --include=*.ts | head -60"
+          }
+        },
+        {
+          "name": "Bash",
+          "args": {
+            "command": "grep -rn \"changedFileCount\" apps/desktop/src packages --include='*.ts' | head -60"
+          }
+        },
+        {
+          "name": "Bash",
+          "args": {
+            "command": "cat apps/desktop/src/main/repositoryIntelligence/codewiki/output.ts"
+          }
+        },
+        {
+          "name": "Bash",
+          "args": {
+            "command": "sed -n 350,560p apps/desktop/src/main/repositoryIntelligence/codewiki/provider.ts"
+          }
+        },
+        {
+          "name": "Bash",
+          "args": {
+            "command": "sed -n 190,300p apps/desktop/src/main/repositoryIntelligence/service.ts"
+          }
+        },
+        {
+          "name": "Bash",
+          "args": {
+            "command": "sed -n 300,420p apps/desktop/src/main/repositoryIntelligence/service.ts"
+          }
+        },
+        {
+          "name": "Bash",
+          "args": {
+            "command": "sed -n 1,120p apps/desktop/src/main/repositoryIntelligence/service.ts"
+          }
+        },
+        {
+          "name": "Bash",
+          "args": {
+            "command": "grep -rn \"lastSyncChangedFiles\\|last_sync_changed_files\" apps/desktop/src packages --include='*.ts' | grep -v '\\.test\\.ts' "
+          }
+        },
+        {
+          "name": "Bash",
+          "args": {
+            "command": "sed -n 1,120p apps/desktop/src/main/repositoryIntelligence/codewiki/provider.ts"
+          }
+        },
+        {
+          "name": "Bash",
+          "args": {
+            "command": "sed -n 300,360p apps/desktop/src/main/repositoryIntelligence/codewiki/provider.ts; echo ====; sed -n 110,150p packages/core/src/schemas/repositoryIntelligence.ts; echo ====; sed -n 160,215p apps/desktop/src/main/db/repos/repositoryIndexesRepo.ts"
+          }
+        },
+        {
+          "name": "Bash",
+          "args": {
+            "command": "sed -n 110,150p packages/core/src/schemas/repositoryIntelligence.ts; echo \"-----\"; sed -n 160,215p apps/desktop/src/main/db/repos/repositoryIndexesRepo.ts"
+          }
+        },
+        {
+          "name": "Bash",
+          "args": {
+            "command": "sed -n 380,470p apps/desktop/src/main/repositoryIntelligence/service.test.ts"
+          }
+        },
+        {
+          "name": "Bash",
+          "args": {
+            "command": "sed -n 40,120p apps/desktop/src/main/repositoryIntelligence/handover.ts; echo ---; grep -rn \"changed\" apps/desktop/src/main/repositoryIntelligence/handover.ts apps/desktop/src/main/repositoryIntelligence/sayable.ts"
+          }
+        },
+        {
+          "name": "Bash",
+          "args": {
+            "command": "sed -n 1,80p apps/desktop/src/main/repositoryIntelligence/codewiki/testShim.ts; echo \"======\"; sed -n 560,680p apps/desktop/src/main/repositoryIntelligence/codewiki/provider.test.ts"
+          }
+        },
+        {
+          "name": "Bash",
+          "args": {
+            "command": "sed -n 80,200p apps/desktop/src/main/repositoryIntelligence/codewiki/testShim.ts"
+          }
+        },
+        {
+          "name": "Bash",
+          "args": {
+            "command": "git branch --show-current; git log --oneline -20 | cat"
+          }
+        },
+        {
+          "name": "ToolSearch",
+          "args": {
+            "query": "ticket_detail comment_search eo",
+            "max_results": 6
+          }
+        },
+        {
+          "name": "Bash",
+          "args": {
+            "command": "git rev-parse --abbrev-ref HEAD; git branch -vv --all | head -20"
+          }
+        },
+        {
+          "name": "Bash",
+          "args": {
+            "command": "git worktree list; echo ---; git reflog -5 | cat; echo ---; ls /tmp | head -30"
+          }
+        },
+        {
+          "name": "Bash",
+          "args": {
+            "command": "git switch rockarxiv/EO-165 && git status --short && git log --oneline -1 | cat"
+          }
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "/tmp/eo164-hook-rm5pr6/apps/desktop/src/main/repositoryIntelligence/codewiki/provider.ts",
+            "offset": 306,
+            "limit": 130
+          }
+        },
+        {
+          "name": "Edit",
+          "args": {
+            "replace_all": false,
+            "file_path": "/tmp/eo164-hook-rm5pr6/apps/desktop/src/main/repositoryIntelligence/codewiki/provider.ts",
+            "old_string": "   * So `problem` carries the account of the verification for whoever\n   * asked for a build, `getStatus` projects it away for whoever asked\n   * for a probe, and the type makes the pairing impossible to get wrong:\n   * there is no way to spell \"not present, and no reason why\".\n   */\n  type Verification = { present: true; probe: RepositoryIndexProbe } | { present: false; probe: RepositoryIndexProbe; problem: string };",
+            "new_string": "   * So `problem` carries the account of the verification for whoever\n   * asked for a build, `getStatus` projects it away for whoever asked\n   * for a probe, and the type makes the pairing impossible to get wrong:\n   * there is no way to spell \"not present, and no reason why\".\n   *\n   * `files` is the other half of the same asymmetry. A verification that\n   * found an index has read the tool's own description of it, and that\n   * description carries a number a build wants to report; a verification\n   * that found nothing has no number to carry, and the type says so\n   * rather than offering a zero that would read as an empty index.\n   */\n  type Verification =\n    | { present: true; probe: RepositoryIndexProbe; files: number }\n    | { present: false; probe: RepositoryIndexProbe; problem: string };"
+          }
+        }
+      ],
+      "firstEditRank": 25,
+      "usage": null,
+      "hookDelivered": true,
+      "broadSearches": 3,
+      "interceptions": [
+        "That searched the whole checkout for `changedFileCount`. This repository has an index: `mcp__repo__codewiki_search` for `changedFileCount` returns where it is declared — file, line, signature and doc — in one call, and `mcp__repo__codewiki_context` answers a question in prose when you do not have a name yet. mcp__repo__codewiki_callers and mcp__repo__codewiki_impact then answer what calls it and what changing it would reach, which no search of the text can. Your command was not blocked and has run.",
+        "That searched the whole checkout for `changedFileCount`. This repository has an index: `mcp__repo__codewiki_search` for `changedFileCount` returns where it is declared — file, line, signature and doc — in one call, and `mcp__repo__codewiki_context` answers a question in prose when you do not have a name yet. mcp__repo__codewiki_callers and mcp__repo__codewiki_impact then answer what calls it and what changing it would reach, which no search of the text can. Your command was not blocked and has run.",
+        "That searched the whole checkout for `lastSyncChangedFiles`. This repository has an index: `mcp__repo__codewiki_search` for `lastSyncChangedFiles` returns where it is declared — file, line, signature and doc — in one call, and `mcp__repo__codewiki_context` answers a question in prose when you do not have a name yet. mcp__repo__codewiki_callers and mcp__repo__codewiki_impact then answer what calls it and what changing it would reach, which no search of the text can. Your command was not blocked and has run."
+      ]
+    }
+  ]
+}

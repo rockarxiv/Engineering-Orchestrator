@@ -1,0 +1,27 @@
+-- A step picks among the project's workspaces (EO-301,
+-- the original design).
+--
+-- "A step may pick among the project's workspaces. A step does not
+-- define a workspace of its own." A pipeline whose first step drafts in
+-- `scratch` and whose second commits to a repository is the case this
+-- column exists for, and until now the only answer to "which disk" was
+-- the *ticket's*, which every step of every pipeline shared.
+--
+-- NULL for every existing row, and NULL keeps meaning what it has
+-- always meant: whatever the ticket is on, then its project's first
+-- workspace. Backfilling this with the project's workspace id would
+-- look like a no-op and is not one — it would freeze every step onto
+-- whichever workspace happened to be first today, so a ticket moved to
+-- a second repository would go on running against the first.
+--
+-- **No foreign key, deliberately.** The column holds a workspace id or
+-- the sentinel `none`, which is a step saying "no disk" out loud rather
+-- than inheriting one — `step_routes.target` has held `user_attention`
+-- and `terminal` beside step ids since routing became data, and this is
+-- the same arrangement for the same reason: the column answers "where",
+-- and one of the answers is not a row. What a key would have bought —
+-- no step left pointing at a workspace that is gone — `deleteWorkspace`
+-- buys instead by clearing the picks it orphans, which is the better
+-- half of the bargain anyway: ON DELETE SET NULL could not have told
+-- the difference between that and the sentinel.
+ALTER TABLE `pipeline_steps` ADD COLUMN `workspace_id` TEXT;

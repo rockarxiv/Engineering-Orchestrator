@@ -1,0 +1,27 @@
+-- What a step sets for the inputs its module declares (EO-78).
+--
+-- A module has declared `inputs` — a type, a description and a default —
+-- since KAN-103, and until now nothing could set one. They resolved to
+-- the manifest's defaults on every run, so a module wanting a different
+-- number had to be edited and re-approved, which withdraws approval and
+-- asks a person to re-read code that did not change.
+--
+-- On the step rather than on the module, for the reason a secret is on
+-- the step (KAN-105): two steps can run one module and mean different
+-- things by it. The merge module waits for CI, and how long to wait is a
+-- property of a repository's CI rather than of the code that waits.
+--
+-- On `pipeline_steps` rather than in a side table, unlike a secret,
+-- because this is ordinary configuration and belongs to the graph
+-- document. The editor drafts it with the step, publishes it with the
+-- same click, and discards what a newly chosen module does not declare in
+-- the same transaction that changes the module — three things that would
+-- each need their own write, and their own window to be wrong in, if the
+-- values lived anywhere else. A secret cannot live here: the design
+-- keeps those in the OS keychain and out of SQLite.
+--
+-- A JSON object of the names somebody set, and only those. An unset input
+-- is absent rather than stored-as-its-default, so a manifest that changes
+-- a default moves every step that never overrode it. Defaulted to `{}` so
+-- every existing row means what it always meant: nothing configured.
+ALTER TABLE `pipeline_steps` ADD `inputs` text DEFAULT '{}' NOT NULL;

@@ -1,0 +1,421 @@
+/* Hallmark · macrostructure: Workbench · tone: utilitarian · anchor hue: cyan-blue
+ * theme: studied-DNA (source: image — user reference, agent-monitoring desktop tool)
+ * paper: oklch(21% 0.016 262) · accent: oklch(55% 0.18 258)
+ * display: Geist (neutral grotesque, no separate display face) · body: Geist
+ * outlier: JetBrains Mono · pairing: two families — sans for humans, mono for machines
+ * nav: N3 two-tier side-rail · inspector: right context rail · footer: Ft2 inline rule
+ * studied: yes · DNA-source: image (user reference)
+ * pre-emit critique: P5 H5 E4 S5 R5 V4
+ * contrast: computed, see scripts/design-tokens.mjs · tokens: pass (48)
+ * chrome: pass (47) · honest: pass (46) · icons: pass (30, Lucide only)
+ * slop: pass (42-45) · context: user-provided · v1.1.0
+ *
+ * The system's whole argument is that it should not have one. The reference
+ * this was extracted from spends every pixel on making agent activity
+ * legible and nothing at all on having a voice: no display face, no accent
+ * scheme, no concept. This file follows that.
+ *
+ * `ARCHITECTURE.md`, "The visual design system", is the source of truth for why any
+ * value is what it is. `tokens.css` is generated — run `pnpm design`.
+ */
+
+@import "tailwindcss";
+
+/*
+ * Two families, which is the whole type system.
+ *
+ * Geist carries everything a person reads — there is deliberately no
+ * separate display face, because the reference has none and an app whose
+ * subject is someone else's output has nothing to announce. Display type
+ * here is the body face larger and heavier, nothing more.
+ *
+ * JetBrains Mono carries exactly one role: text a machine wrote or a
+ * machine parses. The italic builds of both are not imported — display is
+ * roman, always, and an italic file nobody may use is 40KB of nothing.
+ */
+@import "@fontsource-variable/geist";
+@import "@fontsource-variable/jetbrains-mono";
+
+/*
+ * Tailwind v4 auto-detects sources from where the build runs — which is
+ * apps/desktop — so this package's own components are outside the scan
+ * and any class used *only* here silently generates nothing. The class
+ * lands on the element and resolves to no style, which looks like a
+ * design mistake rather than a build one: `list-disc pl-5` on a list
+ * computed to `list-style-type: none; padding-left: 0`.
+ *
+ * @source is relative to this file, so it stays correct for any app that
+ * imports these styles.
+ */
+@source "./**/*.{ts,tsx}";
+
+/*
+ * Colours are declared as @theme tokens so Tailwind generates real
+ * utilities for them (`bg-canvas`, `text-ink-muted`, `border-line`).
+ * The v3 habit of writing `bg-[--color-x]` silently produces *nothing*
+ * in v4 — the class is emitted but resolves to no colour, which looks
+ * like a styling mistake rather than a syntax one.
+ */
+
+@theme {
+  /*
+   * Two bases, not one.
+   *
+   * Chrome (rails, boards, lists, toolbars) runs at 13–14px, which is what
+   * lets the pipeline hold six steps across a laptop screen. Reading
+   * surfaces — comments, transcripts, discussions — run at `--text-read`
+   * with 1.6 leading and a 65ch measure, because a comment a person wrote
+   * is prose and deserves to be set as prose.
+   *
+   * The reference does exactly this: a tight rail against conversation
+   * turns with real vertical air. Dense chrome, medium content.
+   *
+   * Each size carries its own `--text-*--line-height`. Tailwind emits a
+   * paired line-height with every `text-*` utility, so a size declared
+   * without one silently inherits Tailwind's default leading and any
+   * `line-height` set in a base rule loses to it.
+   */
+  --text-2xs: 0.6875rem; /* 11px — counts, dense metadata */
+  --text-2xs--line-height: 1.45;
+  --text-xs: 0.75rem; /* 12px — labels, column heads */
+  --text-xs--line-height: 1.45;
+  --text-sm: 0.8125rem; /* 13px — dense rows, the rail */
+  --text-sm--line-height: 1.45;
+  --text-base: 0.875rem; /* 14px — chrome workhorse */
+  --text-base--line-height: 1.45;
+  --text-read: 1rem; /* 16px — reading surfaces ONLY */
+  --text-read--line-height: 1.6;
+  --text-lg: 1.125rem; /* 18px — subheads */
+  --text-lg--line-height: 1.35;
+  --text-xl: 1.375rem; /* 22px — section titles */
+  --text-xl--line-height: 1.3;
+  --text-2xl: 1.75rem; /* 28px — screen titles */
+  --text-2xl--line-height: 1.25;
+  --text-display: 2rem;
+  --text-display--line-height: 1.2;
+
+  /*
+   * `--font-display` is the body face on purpose — it exists so screens can
+   * say "this is a title" without that meaning "this is a different
+   * typeface". Weight and size carry the hierarchy instead.
+   */
+  --font-display: "Geist Variable", ui-sans-serif, system-ui, sans-serif;
+  --font-body: "Geist Variable", ui-sans-serif, system-ui, sans-serif;
+  --font-sans: "Geist Variable", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono Variable", ui-monospace, "SF Mono", Menlo, monospace;
+
+  /*
+   * Spacing is Tailwind's own 4-point numeric scale — `p-4`, `gap-6` — and
+   * there is deliberately no named one on top of it.
+   *
+   * There used to be: `--spacing-md: 1rem` and friends, so screens could
+   * write `p-md`. It worked, and it silently broke every `max-w-*` in the
+   * app. Tailwind v4's named spacing keys share a namespace with its
+   * container scale and win the lookup, so declaring `--spacing-md` made
+   * `max-w-md` resolve to 1rem instead of 28rem — a paragraph wrapping one
+   * word per line, with nothing failing and nothing to grep for. Declaring
+   * `--container-md` alongside it does not reclaim the name; spacing wins
+   * unconditionally.
+   *
+   * The named steps mapped exactly onto the numeric ones (md = 4, lg = 6,
+   * xl = 10), so nothing was lost in the conversion except the trap.
+   */
+
+  /*
+   * Generous radii — 10px and 14px, not the 4px the previous systems used.
+   * This is the most visible single thing carried over from the reference:
+   * its cards, its message bubbles and its file rows are all noticeably
+   * rounded, and that softness is what stops a dense dark tool reading as
+   * a spreadsheet. A pill is still a status, never a button.
+   */
+  --radius-sm: 0.375rem; /* 6px — chips, dots, inline marks */
+  --radius-md: 0.625rem; /* 10px — inputs, buttons, rows */
+  --radius-lg: 0.875rem; /* 14px — cards, panels, dialogs */
+
+  /*
+   * Depth is lightness, not shadow. On a dark screen *lightness* is what
+   * reads as "closer"; shadows barely register and a coloured one reads as
+   * a glow. Static surfaces step up the canvas ladder and take no shadow at
+   * all — these two exist for layers that genuinely float, where there is
+   * nothing behind the element to step away from.
+   */
+  --shadow-subtle: inset 0 1px 0 oklch(96% 0.006 262 / 0.05);
+  --shadow-panel:
+    inset 0 1px 0 oklch(96% 0.006 262 / 0.07), 0 0 0 1px oklch(96% 0.006 262 / 0.06),
+    0 16px 40px -12px oklch(8% 0.02 262 / 0.65);
+
+  /* Motion. Never the browser default `ease`. */
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-in: cubic-bezier(0.7, 0, 0.84, 0);
+  --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+
+  /*
+   * The surface ladder — a cool slate, blue-tilted at 262°.
+   *
+   * Deliberately lighter than the near-black the previous systems used. The
+   * reference's window ground sits around L 21%, not 11–14%, and the
+   * difference is most of why it reads as a room rather than a void. Hue
+   * and chroma stay fixed while lightness steps up one notch per layer of
+   * elevation; the steps have to be visibly apart or the whole app flattens
+   * into one sheet.
+   */
+  --color-canvas: oklch(21% 0.016 262);
+  --color-canvas-subtle: oklch(24% 0.017 262);
+  --color-canvas-raised: oklch(28% 0.018 262);
+  --color-canvas-hover: oklch(32% 0.019 262);
+  --color-canvas-active: oklch(36% 0.02 262);
+
+  /* Hairlines that barely register — the reference's borders are almost
+     invisible and the lightness step does the separating. */
+  --color-line: oklch(31% 0.016 262);
+  --color-line-strong: oklch(42% 0.018 262);
+
+  --color-ink: oklch(94% 0.006 262);
+  --color-ink-muted: oklch(76% 0.01 262);
+  --color-ink-subtle: oklch(66% 0.012 262);
+
+  /*
+   * The one action colour: the reference's cyan-blue.
+   *
+   * Unlike the previous system's inversion, the fill is a mid blue carrying
+   * near-white text — which is what the reference does, and what keeps a
+   * primary action reading as a solid object rather than a highlighter.
+   */
+  --color-accent: oklch(55% 0.18 258);
+  --color-accent-hover: oklch(61% 0.18 258);
+  --color-accent-ink: oklch(98% 0.01 258);
+  --color-accent-subtle: oklch(31% 0.06 258);
+  /* Accent used *as text* on a tinted fill — the fill steals contrast, so
+     the text needs its own, lighter step. */
+  --color-accent-soft: oklch(80% 0.12 258);
+
+  --color-danger: oklch(67% 0.18 22);
+  --color-warning: oklch(79% 0.13 75);
+  --color-success: oklch(71% 0.15 150);
+
+  --color-focus: oklch(70% 0.15 258);
+
+  /* The scrim behind a dialog. Not black — a deep slate, so what it covers
+     recedes into the same world the app lives in. */
+  --color-scrim: oklch(12% 0.02 262 / 0.7);
+
+  /*
+   * Run status, as its own scale rather than reused semantics.
+   *
+   * `running` is not `success` and `paused` is not `warning`: a run in
+   * flight has not succeeded, and a ticket waiting on a person is not a
+   * problem. Reusing those tokens is how a dashboard ends up looking
+   * alarmed at perfectly normal work.
+   *
+   * `reviewing` is violet at 305° rather than the blue it wants to be. The
+   * accent took the blue, and an accent 6° from a run state is the exact
+   * collision — "you can act" reading as "the machine is working" — that
+   * two previous systems were built to avoid.
+   */
+  --color-running: oklch(71% 0.15 150);
+  --color-reviewing: oklch(66% 0.16 305);
+  --color-paused: oklch(79% 0.13 75);
+  --color-idle: oklch(58% 0.012 262);
+}
+
+/*
+ * Named z-levels and durations. Neither is a Tailwind theme namespace, so
+ * they live here as plain custom properties and are reached through
+ * `z-[var(--z-modal)]` / `duration-[var(--dur-short)]`. Seven levels and
+ * three buckets — no ad-hoc numbers anywhere in the app.
+ */
+:root {
+  --z-base: 1;
+  --z-raised: 10;
+  --z-dropdown: 100;
+  --z-sticky: 200;
+  --z-modal: 400;
+  --z-toast: 500;
+  --z-tooltip: 600;
+
+  --dur-micro: 120ms; /* press, toggle, colour shift */
+  --dur-short: 220ms; /* hover, tooltip, menu */
+  --dur-long: 420ms; /* dialog, drawer, screen entrance */
+}
+
+@layer base {
+  * {
+    border-color: var(--color-line);
+  }
+
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  /* A deliberately overflowing element must never make the window scroll
+     sideways. `clip` rather than `hidden` — `hidden` creates a scroll
+     container, which breaks `position: sticky` on descendants. */
+  html,
+  body {
+    overflow-x: clip;
+  }
+
+  body {
+    background-color: var(--color-canvas);
+    color: var(--color-ink);
+    font-family: var(--font-body);
+    font-size: var(--text-base);
+    line-height: 1.45;
+    -webkit-font-smoothing: antialiased;
+    /* The app is full of columns of numbers that have to line up. */
+    font-variant-numeric: tabular-nums;
+  }
+
+  /*
+   * Headings are roman and tight. There is no separate display face to
+   * protect here, but the rule stays: an italicised word inside an upright
+   * heading is the most reliable generated-UI tell there is.
+   */
+  h1,
+  h2,
+  h3 {
+    font-style: normal;
+  }
+
+  /*
+   * `.font-display` is a weight and a tightening, not a typeface change.
+   * The utility exists so a screen can say "this is a title" — and in this
+   * system that means heavier and slightly tighter, nothing more.
+   */
+  .font-display {
+    font-family: var(--font-display);
+    font-style: normal;
+    font-weight: 600;
+    letter-spacing: -0.02em;
+  }
+
+  /*
+   * Two label registers, kept from the reference's own split.
+   *
+   * `.voice-label` is the micro-label — a sort key, a metadata key, the
+   * word beside a status dot. The reference sets these in mono, tracked and
+   * uppercased, and it is the single clearest signal that a value came from
+   * the machine rather than from a person.
+   *
+   * `.voice-section` is a heading a person reads — "Acceptance criteria",
+   * "Timeline". Sentence case, body face: the reference does not shout its
+   * section heads and neither does this.
+   *
+   * Neither sets a font-size; the call site owns size. Casing is done with
+   * `text-transform` rather than by writing capitals into the string, so
+   * the accessible name stays the sentence a person wrote.
+   */
+  .voice-label {
+    font-family: var(--font-mono);
+    font-weight: 500;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+
+  .voice-section {
+    font-family: var(--font-body);
+    font-weight: 600;
+    letter-spacing: 0.01em;
+    text-transform: none;
+  }
+
+  /* Selection in the accent, not the browser's default blue. */
+  ::selection {
+    background-color: color-mix(in oklab, var(--color-accent) 45%, transparent);
+  }
+
+  /*
+   * A visible focus ring everywhere, on the element actually focused.
+   * :focus-visible rather than :focus so a mouse click doesn't leave a
+   * ring behind while keyboard navigation always shows one — that's the
+   * acceptance criterion, and also the difference between an app you can
+   * drive from the keyboard and one you can't.
+   *
+   * Never transitioned: a ring that fades in leaves a keyboard user with
+   * no indicator for the length of the transition.
+   */
+  :focus-visible {
+    outline: 2px solid var(--color-focus);
+    outline-offset: 1px;
+    border-radius: var(--radius-sm);
+    transition: none;
+  }
+
+  /*
+   * Text fields are the exception to the outline: clicking into one
+   * counts as :focus-visible, so the 2px outline landed on every input
+   * you touched with the mouse and read as a harsh box around the
+   * composer. A tinted border plus a soft ring is just as visible to a
+   * keyboard user and sits inside the control's own geometry.
+   */
+  input:focus-visible,
+  textarea:focus-visible,
+  select:focus-visible {
+    outline: none;
+    border-color: color-mix(in oklab, var(--color-accent) 60%, transparent);
+    box-shadow: 0 0 0 3px color-mix(in oklab, var(--color-accent) 18%, transparent);
+  }
+
+  /*
+   * Chromium's default scrollbar is ~15px of solid grey. The pipeline
+   * scrolls horizontally whenever it is wider than the window — which is
+   * often — so the default reads as a chrome bug sitting under the
+   * content. Overlay-thin, and only visible against the surface it
+   * scrolls.
+   */
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background-color: var(--color-line-strong);
+    border: 3px solid transparent;
+    background-clip: content-box;
+    border-radius: 999px;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background-color: var(--color-ink-subtle);
+  }
+
+  ::-webkit-scrollbar-corner {
+    background: transparent;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  /*
+   * Collapse animation rather than shortening it. A previous version set a
+   * flat 150ms, which *accelerated* every looping animation it touched: a
+   * 700ms spinner became a 150ms one, so the users who asked for less
+   * motion got a spinner turning nearly five times faster than everyone
+   * else's. Near-zero plus a single iteration is the standard collapse.
+   */
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-delay: 0ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+
+  /*
+   * Spinners are the exception that has to keep moving: they report that
+   * the app is busy, and a frozen spinner reads as a hung app — which is
+   * worse than the motion. They stay infinite and simply slow down, which
+   * is the direction "reduce motion" actually asks for.
+   */
+  .animate-spin {
+    animation-duration: 1.6s !important;
+    animation-iteration-count: infinite !important;
+  }
+}

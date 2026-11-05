@@ -1,0 +1,276 @@
+{
+  "eoTemplateHistory": 1,
+  "notes": "The first version, as the gallery first shipped it.",
+  "pack": {
+    "eoPipelineExport": 8,
+    "modules": [],
+    "roles": [
+      {
+        "slug": "reporter",
+        "prompt": "You write a short weekly report for people who did not do the work.\n\nRead what the folder holds for the week you are given. Say what changed, what is still open, and what needs a decision. Three hundred words at most, no jargon, and never invent a number you cannot point at.",
+        "schemasByAction": {},
+        "actions": [
+          {
+            "action": "gather",
+            "description": "Read what the folder holds for the week this report covers and pull out what actually changed: what shipped, what is still open, and what needs a decision. Do not write the report yet.",
+            "results": [
+              {
+                "key": "gathered",
+                "label": "Gathered",
+                "meaning": "You found material for the week and your summary lists what changed, what is open and what needs a decision."
+              },
+              {
+                "key": "nothing_to_report",
+                "label": "Nothing to report",
+                "meaning": "The folder holds nothing for this week, or nothing in it changed. Say what you looked at."
+              }
+            ],
+            "fields": {}
+          },
+          {
+            "action": "draft",
+            "description": "Write the report from what was gathered, for the audience the item names. Three hundred words at most.",
+            "results": [
+              {
+                "key": "drafted",
+                "label": "Drafted",
+                "meaning": "The report is written and covers everything the item says it must."
+              },
+              {
+                "key": "needs_more",
+                "label": "Needs more material",
+                "meaning": "What was gathered does not answer something the report must cover. Say what is missing."
+              }
+            ],
+            "fields": {}
+          }
+        ],
+        "allowedTools": null,
+        "backend": null,
+        "model": null
+      }
+    ],
+    "itemTypes": [
+      {
+        "packSlug": "weekly-report",
+        "slug": "report",
+        "label": "Report",
+        "plural": "Reports",
+        "container": false,
+        "specShape": {
+          "type": "object",
+          "properties": {
+            "period": {
+              "type": "string",
+              "description": "The week this report covers."
+            },
+            "audience": {
+              "type": "string",
+              "description": "Who reads it."
+            },
+            "must_cover": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "What the report has to answer.",
+              "x-eo-criteria": true
+            }
+          },
+          "required": [
+            "period"
+          ]
+        },
+        "actionOverrides": {}
+      }
+    ],
+    "connectors": [],
+    "mcpServers": [],
+    "vocabulary": {
+      "types": [
+        {
+          "type": "weekly-report:report",
+          "label": "Report",
+          "plural": "Reports"
+        }
+      ],
+      "results": [
+        {
+          "key": "approved",
+          "label": "Approve"
+        },
+        {
+          "key": "changes",
+          "label": "Send back"
+        }
+      ]
+    },
+    "previewItem": {
+      "title": "Weekly report — week of 8 September",
+      "type": "weekly-report:report",
+      "body": "The week's material is in the folder. Write it up for the leadership meeting on Monday.",
+      "spec": {
+        "period": "8–14 September",
+        "audience": "Leadership",
+        "must_cover": [
+          "What shipped",
+          "What slipped and why",
+          "Anything that needs a decision"
+        ]
+      }
+    },
+    "pipeline": {
+      "name": "Weekly report",
+      "icon": "file-text",
+      "entryStepId": "gather"
+    },
+    "steps": [
+      {
+        "id": "gather",
+        "position": 0,
+        "name": "Gather",
+        "type": "agent",
+        "ownerRole": "reporter",
+        "entryAction": "gather",
+        "instructionsSummary": "Reads the week's material and pulls out what actually changed",
+        "isTerminal": false,
+        "planMode": false,
+        "results": []
+      },
+      {
+        "id": "draft",
+        "position": 1,
+        "name": "Draft",
+        "type": "agent",
+        "ownerRole": "reporter",
+        "entryAction": "draft",
+        "instructionsSummary": "Writes the report for the audience it names",
+        "isTerminal": false,
+        "planMode": false,
+        "results": []
+      },
+      {
+        "id": "approve",
+        "position": 2,
+        "name": "Approve",
+        "type": "user",
+        "ownerRole": null,
+        "entryAction": null,
+        "instructionsSummary": "You read it before anybody else does",
+        "isTerminal": false,
+        "planMode": false,
+        "results": [
+          {
+            "key": "approved",
+            "label": "Approve",
+            "tone": "success",
+            "requiresComment": false
+          },
+          {
+            "key": "changes",
+            "label": "Send back",
+            "tone": "warning",
+            "requiresComment": true
+          }
+        ]
+      },
+      {
+        "id": "filed",
+        "position": 3,
+        "name": "Filed",
+        "type": "user",
+        "ownerRole": null,
+        "entryAction": null,
+        "instructionsSummary": null,
+        "isTerminal": true,
+        "planMode": false,
+        "results": []
+      }
+    ],
+    "routes": [
+      {
+        "fromStepId": "gather",
+        "resultKey": "gathered",
+        "label": "Gathered",
+        "tone": "success",
+        "target": "draft",
+        "position": 0
+      },
+      {
+        "fromStepId": "gather",
+        "resultKey": "nothing_to_report",
+        "label": "Nothing to report",
+        "tone": "info",
+        "target": "user_attention",
+        "position": 1
+      },
+      {
+        "fromStepId": "draft",
+        "resultKey": "drafted",
+        "label": "Drafted",
+        "tone": "success",
+        "target": "approve",
+        "position": 0
+      },
+      {
+        "fromStepId": "draft",
+        "resultKey": "needs_more",
+        "label": "Needs more material",
+        "tone": "warning",
+        "target": "gather",
+        "position": 1
+      },
+      {
+        "fromStepId": "approve",
+        "resultKey": "approved",
+        "label": "Approve",
+        "tone": "success",
+        "target": "filed",
+        "position": 0
+      },
+      {
+        "fromStepId": "approve",
+        "resultKey": "changes",
+        "label": "Send back",
+        "tone": "warning",
+        "target": "draft",
+        "position": 1
+      }
+    ],
+    "template": {
+      "slug": "weekly-report",
+      "title": "Weekly report",
+      "description": "Every week, EO reads a folder, writes the report, and puts it in front of you to approve before it is filed.",
+      "version": "1.0",
+      "blanks": [
+        {
+          "key": "folder",
+          "kind": "folder",
+          "label": "Where the material lives",
+          "help": "The folder EO reads the week's work out of, and writes the report into.",
+          "required": true,
+          "default": "",
+          "connector": null
+        },
+        {
+          "key": "schedule",
+          "kind": "schedule",
+          "label": "When it runs",
+          "help": "Pick a day and a time. EO files the report that morning.",
+          "required": true,
+          "default": "monday 08:00",
+          "connector": null
+        },
+        {
+          "key": "keyPrefix",
+          "kind": "keyPrefix",
+          "label": "Report prefix",
+          "help": "What each week's report is numbered with, like REP-1.",
+          "required": true,
+          "default": "REP",
+          "connector": null
+        }
+      ]
+    }
+  }
+}

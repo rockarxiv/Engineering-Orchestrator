@@ -1,0 +1,26 @@
+-- Which of the record's versions of an agent a replica holds (EO-476,
+-- ARCHITECTURE.md, "The record").
+--
+-- An agent reaches a replica by two doors that page independently: a
+-- global one in the agents section's publication, a record-held
+-- project's own on the sync's list. The record can move an agent from
+-- one to the other, so the two can deliver versions of one agent out of
+-- order — a publication read after a newer project copy, or a held
+-- project copy retried after the publication that made the agent
+-- global.
+--
+-- `revision` counts the record's changes to the row — every edit, scope
+-- change, archive, delete and change of its tool surface adds one — and
+-- travels with every copy through both doors. It is the ordering rather
+-- than a timestamp because two changes can land in one millisecond, and
+-- a clock that cannot tell them apart cannot say which is newer. Zero
+-- for every row that exists.
+--
+-- `record_stamp` is the revision of the copy the record last wrote on
+-- this replica, so an older one arriving late is recognised and passed
+-- over whichever door it came through. NULL on every row the record has
+-- never written here — an agent this machine made itself, and every
+-- agent that exists when this runs — which any copy may write over.
+ALTER TABLE `agents` ADD COLUMN `revision` integer DEFAULT 0 NOT NULL;
+--> statement-breakpoint
+ALTER TABLE `agents` ADD COLUMN `record_stamp` integer;

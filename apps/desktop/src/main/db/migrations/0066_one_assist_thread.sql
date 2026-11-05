@@ -1,0 +1,46 @@
+-- One assistant thread, so the threads keyed per page are put away
+-- (EO-193).
+--
+-- 0064 gave the help widget a conversation per *page*, and the reason
+-- was EO-189: the page was resolved into a `## The page` section and
+-- pasted into every turn, so a thread opened on a ticket carried that
+-- ticket's section with it. Carrying such a thread to another screen
+-- would have described somewhere the person had left, so each page kept
+-- its own.
+--
+-- EO-192 ended that. The agent reads the screen itself with
+-- `view_current`, at the moment it asks, so nothing about a thread is
+-- about a page any more — and keying one on a page only fragments a
+-- conversation that should have been continuous. Walking from a ticket
+-- to the board to Settings is one conversation now.
+--
+-- So the threads that exist are retired, not rewritten. Every one of
+-- them was opened on a page and is keyed on it in `spec`; leaving them
+-- live would mean the first thing somebody sees after upgrading is
+-- whichever of those `liveAssistConversation` happened to sort first —
+-- a thread about a screen they are not on, resumed for a reason that no
+-- longer exists.
+--
+-- Archived rather than deleted, which is invariant #3 and the choice
+-- every other retirement in EO has made. Nothing is removed: the
+-- comments stay, the runs stay, the keys stay, and each thread is
+-- readable in the archive exactly as an archived ticket is. What
+-- archiving buys is that the mention path can never dispatch against one
+-- again, and that the next opening of the widget starts the single
+-- thread this story is about.
+--
+-- Guarded on `archived_at IS NULL` so a thread somebody has already put
+-- away keeps the timestamp it was put away with, and scoped to
+-- `step_id = 'assist'` so nothing else in the catalogue is touched — the
+-- Discussions and architect rooms are their own steps and are not part
+-- of this.
+--
+-- `strftime` rather than a constant, for 0065's reason: the only moment
+-- this database can honestly claim is the one the migration runs in.
+-- `strftime('%s','now')` rather than `unixepoch()` for portability
+-- across SQLite versions, `* 1000` because every timestamp in this
+-- schema is milliseconds.
+UPDATE `tickets`
+SET `archived_at` = CAST(strftime('%s', 'now') AS INTEGER) * 1000
+WHERE `step_id` = 'assist'
+  AND `archived_at` IS NULL;

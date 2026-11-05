@@ -1,0 +1,36 @@
+-- Whether this ticket talks to Jira at all, said outright (EO-122).
+--
+-- Until now the answer was inferred from `jira_key`: a ticket with a key
+-- was mirrored, a ticket without one was not, and every push site --
+-- `transitionsRepo` for status, `commentsRepo` for comments,
+-- `attachmentsRepo` for files, `dispatchWorkspace` and `forge` for the
+-- branch -- read `jira_key AND repository_id` to decide. `jira/pull.ts`
+-- selected on the same column coming the other way. That made "stop
+-- talking to Jira about this one" and "forget which issue this is" the
+-- same act: the only way to silence a ticket was to clear its key, which
+-- also lost the issue it was silenced against, so turning it back on
+-- meant finding and retyping the key.
+--
+-- This column separates the two questions. The key stays the *identity*
+-- of the mirrored issue; this is the *switch*, and the two are
+-- independent -- a ticket may keep its key while sync is off, and
+-- switching it back on resumes against the same issue.
+--
+-- It gates both directions (the pinned decision on EO-121): pushes out
+-- and pulls in. A ticket with sync off is invisible to Jira either way.
+--
+-- Stored per ticket rather than derived from the parent. A story under a
+-- feature inherits the feature's value at the moment it is created, and
+-- nothing re-reads the parent afterwards -- what a ticket does is always
+-- readable off that ticket's own row, which is what keeps the gate a
+-- field test at every one of the sites above rather than a walk up the
+-- tree inside a transaction.
+--
+-- Every existing row becomes 1, by the column default and without
+-- looking at anything. That is the whole point of the default: before
+-- this column, a ticket with a key was mirrored, and it goes on being
+-- mirrored. A ticket without a key is unaffected either way -- the `AND
+-- jira_key` half of every gate still decides that one -- so `1` is
+-- correct for it too and needs no special case. Nobody's Jira behaviour
+-- changes on the launch that applies this.
+ALTER TABLE `tickets` ADD COLUMN `jira_sync` integer DEFAULT 1 NOT NULL;

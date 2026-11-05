@@ -1,0 +1,9 @@
+# Code owners for this repository.
+#
+# GitHub requests the owners below as reviewers on every pull request
+# automatically. With "Require review from Code Owners" on in the branch
+# ruleset, a pull request cannot merge until an owner has approved it.
+#
+# One rule for the whole repository: the maintainer owns every path.
+
+* @rockarxiv

@@ -1,0 +1,24 @@
+-- Where a job's work happens (EO-330,
+-- ARCHITECTURE.md, "Where a job runs", "Secrets").
+--
+-- Until phase 7a there was one answer and no column was needed: a job
+-- ran while EO was open on somebody's desktop, because the server was
+-- the mailbox and the record and had no run supervisor on it. 7a put
+-- the whole of EO on the other side of `startMain`, so the server can
+-- run work too -- and the moment there are two places, a person has a
+-- choice and EO owes them an honest one.
+--
+-- `device` or `server`, and `device` is the default for every row that
+-- exists: a job written before this migration has always run on this
+-- machine, and moving it would be moving work nobody asked to move. It
+-- is also what every solo installation keeps forever -- the control is
+-- hidden where there is no organisation, and a hidden control must not
+-- be able to have a value a person never chose.
+--
+-- Text and not a boolean, for `workspaces.kind`'s reason: the column
+-- names what was picked, and `runs_on_server` would have to be renamed
+-- the day a third place exists. Nothing about *why* a place is allowed
+-- is here: the reasons are derived from the pipeline, the agent rows
+-- and the secret namespaces (invariant #6), and they stop being true
+-- the moment an agent is re-bound or a secret is set.
+ALTER TABLE `jobs` ADD `runs_on` text DEFAULT 'device' NOT NULL;

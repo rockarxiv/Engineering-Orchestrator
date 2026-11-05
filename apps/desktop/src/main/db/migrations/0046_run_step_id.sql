@@ -1,0 +1,23 @@
+-- The step a run was dispatched from.
+--
+-- The scheduler resolves it, hands it to the supervisor and then it was
+-- thrown away: `runs` recorded the *action* only. That is not the same
+-- question. Nothing forbids two steps in one pipeline naming the same
+-- `entry_action` — there is no unique index and the validator does not
+-- check — so a pipeline with "Security review" and "Code review", both
+-- `review`, makes action→step ambiguous. The manual actions (`respond`,
+-- `discuss`, `configure`) name no step at all, by design.
+--
+-- What needs the answer is attribution: a comment written during a run
+-- belongs to the step that run was dispatched from, and "the latest
+-- comment from every step this ticket has passed through" is what an
+-- agent is now given in place of the whole thread. Comments with no run
+-- of their own — every human comment, some engine notes — are placed by
+-- bisecting `transitions` instead, which is exact because only
+-- `transitionTicket` writes that table and it does so in the same
+-- transaction as `tickets.step_id`.
+--
+-- Null on every row written before this column existed, and on nothing
+-- written after it: a run always comes from somewhere.
+
+ALTER TABLE `runs` ADD COLUMN `step_id` TEXT;

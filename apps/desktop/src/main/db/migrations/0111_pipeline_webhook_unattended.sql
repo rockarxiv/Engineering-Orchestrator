@@ -1,0 +1,14 @@
+-- Whether a pipeline may send what a webhook delivers without a person
+-- reading it first (EO-405).
+--
+-- A pipeline a webhook job files onto is refused at publish while a step
+-- that acts outside EO can be reached before any human step (EO-334).
+-- That refusal stays the default. This column is the one way past it,
+-- per pipeline: turned on by a person in the pipeline's editor, after
+-- which the same finding is reported as a warning.
+--
+-- NOT NULL DEFAULT 0, so every pipeline that existed before this
+-- migration is off, which is the refusal exactly as it was. Nothing is
+-- backfilled, because there is no pipeline anybody has accepted this
+-- for yet.
+ALTER TABLE `pipelines` ADD `webhook_unattended` integer DEFAULT false NOT NULL;

@@ -1,0 +1,24 @@
+-- A deleted job leaves a tombstone rather than a hole (EO-308,
+-- ARCHITECTURE.md, "The inbox, the archive and jobs").
+--
+-- 0078 removed the row and let the cascade take its occurrences, on the
+-- reading that a person asking for a job to be gone is invariant #3's
+-- own exception. The Job page is where that reading runs out: its delete
+-- offers "archive its items" or "keep them", and an item somebody chose
+-- to keep is work still on the board that has to go on saying what filed
+-- it. An item's provenance is resolved through its occurrence, and the
+-- occurrence dies with the job -- so "keep them" would have left cards
+-- whose "From: job ..." row silently disappeared the moment the job was
+-- deleted, which is the one thing the choice existed to prevent.
+--
+-- So the row stays and records that it is gone. `listJobs`,
+-- `listAllJobs` and `jobForThreadItem` all step over it, which takes it
+-- out of the Jobs list, out of the scheduler's sweep and out of the
+-- conversation-reuse path; `getJob` still answers, which is how the
+-- origin is still named. Nothing about the history is rewritten, which
+-- is what invariant #3 asks for everywhere else.
+--
+-- Nullable, and null for every job that has not been deleted -- the
+-- column is the moment, not a flag, for `items.archived_at`'s reason:
+-- "when" answers "whether" and the reverse is not true.
+ALTER TABLE `jobs` ADD `deleted_at` integer;

@@ -1,0 +1,36 @@
+-- How a remote MCP server authenticates, said outright (EO-117).
+--
+-- The catalogue modelled remote authentication as a bag of headers and
+-- nothing else, so a server could say what to send but never what it was
+-- doing. The Codex CLI has one channel that reaches a remote server with
+-- a secret -- `bearer_token_env_var`, which it reads from its own
+-- environment for a connection it makes itself, rather than through the
+-- fixed allowlist a stdio child is spawned into (EO-108) -- and using it
+-- means being able to tell a bearer server from any other. Reading
+-- `Authorization: Bearer ${VAR}` back out of a header string is guessing
+-- at what somebody meant; this column is the catalogue being asked
+-- instead.
+--
+-- The closed set is `none`, `bearer`, `header`. It is the same set
+-- Multica's `plugin_installation_config.auth_type` holds, minus `oauth`,
+-- which is deliberate and argued at `McpAuthKindSchema` in
+-- packages/core: EO performs no OAuth flow, and a kind nothing
+-- implements is a value on a screen that both provider adapters could
+-- only ignore. The Zod enum is the source of truth for the set and this
+-- follows it -- which is also why there is no CHECK constraint here:
+-- every write goes through `readMcpServerDraft`, and a second spelling
+-- of the same closed set in SQL is a second thing to keep true.
+--
+-- Every existing row becomes `header`, by the column default and without
+-- looking at anything. That is not a fallback: an explicit
+-- `Authorization` header is exactly what a person configuring a remote
+-- server had to write before this column existed, `header` stays a
+-- first-class kind rather than a legacy one, and the row keeps working
+-- untouched. A stdio row takes the default too and nothing reads it --
+-- the union in packages/core has no authentication on a stdio server.
+ALTER TABLE `mcp_servers` ADD COLUMN `auth_kind` text DEFAULT 'header' NOT NULL;--> statement-breakpoint
+-- The *name* of the environment variable holding the bearer token, and
+-- never the token: the value is in the OS keychain under the server's
+-- id, the same arrangement EO-104 built for every other value this table
+-- refuses to hold (ARCHITECTURE.md, "Secrets"). Null unless `auth_kind` = 'bearer'.
+ALTER TABLE `mcp_servers` ADD COLUMN `bearer_token_env_name` text;

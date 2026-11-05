@@ -1,0 +1,21 @@
+-- What a run's workspace kind checked, kept so a person can read it
+-- (EO-312, ARCHITECTURE.md, "The item", "The interface").
+--
+-- `verification` beside it has never been the list. It is the *evidence*
+-- one check carried -- which step of the branch check failed and what it
+-- printed -- and it is the shape G-02 has always written there, which is
+-- why this is a column of its own rather than a wider reading of that
+-- one: a screen listing checks out of a bag of evidence would be
+-- guessing at a structure nothing promised.
+--
+-- Invariant 5 reads "verify where you can, and say what you checked"
+-- since EO-297, and the second half needs the checks themselves. The
+-- sidebar's step block lists them with a pass or fail mark each, so a
+-- person reading a parked item knows what was looked at rather than only
+-- that the answer was no.
+--
+-- NULL on every existing row, which reads as "nothing to show" -- the
+-- same thing an empty list says. The checks those runs ran are not
+-- recoverable and inventing them would be worse than the gap: what they
+-- failed on is in the thread, where it was posted at the time.
+ALTER TABLE runs ADD COLUMN checks TEXT;

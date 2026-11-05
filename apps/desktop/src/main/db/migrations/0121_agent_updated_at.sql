@@ -1,0 +1,15 @@
+-- When an agent row last changed (EO-476, ARCHITECTURE.md, "The
+-- record").
+--
+-- A project's own agents travel with the project: on a project the
+-- organisation's record holds they are the record's configuration, and
+-- a replica pulls them the way it pulls the project's pipelines — paged
+-- on the row's own `updated_at` and its id. `agents` never had a
+-- timestamp, because nothing paged it before; global agents still
+-- travel in the agents section's publication, which is frozen at the
+-- moment somebody pressed Publish and needs none.
+--
+-- Zero for every row that exists, which reads as "older than any
+-- cursor": a replica that has not seen an agent yet is offered it on
+-- its first pull, and nothing already here changes because of it.
+ALTER TABLE `agents` ADD COLUMN `updated_at` integer DEFAULT 0 NOT NULL;

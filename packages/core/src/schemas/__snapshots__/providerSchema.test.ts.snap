@@ -1,0 +1,3272 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`the JSON Schema each provider receives > is unchanged for assist (undefined) 1`] = `
+"{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "outcome": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "status": {
+              "type": "string",
+              "const": "clarification_required"
+            },
+            "questions": {
+              "minItems": 1,
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "question": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "why": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "options": {
+                    "default": [],
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "allow_free_text": {
+                    "default": true,
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "id",
+                  "question",
+                  "why"
+                ]
+              }
+            }
+          },
+          "required": [
+            "status",
+            "questions"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "message": {
+              "type": "string",
+              "minLength": 1
+            },
+            "questions": {
+              "default": [],
+              "maxItems": 6,
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "question": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "why": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "options": {
+                    "minItems": 2,
+                    "maxItems": 5,
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  }
+                },
+                "required": [
+                  "id",
+                  "question",
+                  "why",
+                  "options"
+                ]
+              }
+            },
+            "draft": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "steps": {
+                  "minItems": 1,
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "type": "string"
+                      },
+                      "position": {
+                        "type": "number"
+                      },
+                      "name": {
+                        "type": "string"
+                      },
+                      "type": {
+                        "type": "string",
+                        "enum": [
+                          "agent",
+                          "user",
+                          "builtin",
+                          "module"
+                        ]
+                      },
+                      "ownerRole": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "entryAction": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "instructionsSummary": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "isTerminal": {
+                        "type": "boolean"
+                      },
+                      "planMode": {
+                        "type": "boolean"
+                      },
+                      "timeoutMs": {
+                        "anyOf": [
+                          {
+                            "type": "integer",
+                            "exclusiveMinimum": 0,
+                            "maximum": 9007199254740991
+                          },
+                          {
+                            "type": "string",
+                            "const": "default"
+                          }
+                        ]
+                      },
+                      "inputs": {
+                        "type": "object",
+                        "propertyNames": {
+                          "type": "string"
+                        },
+                        "additionalProperties": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "number"
+                            },
+                            {
+                              "type": "boolean"
+                            }
+                          ]
+                        }
+                      },
+                      "watch": {
+                        "anyOf": [
+                          {
+                            "type": "object",
+                            "properties": {
+                              "everyMinutes": {
+                                "type": "number"
+                              },
+                              "giveUpAfterHours": {
+                                "default": 168,
+                                "type": "number"
+                              },
+                              "neverGivesUp": {
+                                "type": "boolean"
+                              }
+                            },
+                            "required": [
+                              "everyMinutes"
+                            ]
+                          },
+                          {
+                            "type": "string",
+                            "const": "off"
+                          }
+                        ]
+                      },
+                      "workspaceId": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "workspaceMode": {
+                        "type": "string",
+                        "enum": [
+                          "isolated",
+                          "read"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "id",
+                      "position",
+                      "name",
+                      "type",
+                      "ownerRole",
+                      "entryAction",
+                      "instructionsSummary",
+                      "isTerminal",
+                      "planMode"
+                    ]
+                  }
+                },
+                "routes": {
+                  "default": [],
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "fromStepId": {
+                        "type": "string"
+                      },
+                      "resultKey": {
+                        "type": "string"
+                      },
+                      "label": {
+                        "type": "string"
+                      },
+                      "tone": {
+                        "type": "string",
+                        "enum": [
+                          "success",
+                          "warning",
+                          "info",
+                          "danger"
+                        ]
+                      },
+                      "target": {
+                        "type": "string"
+                      },
+                      "position": {
+                        "type": "number"
+                      },
+                      "requiresComment": {
+                        "type": "boolean"
+                      }
+                    },
+                    "required": [
+                      "fromStepId",
+                      "resultKey",
+                      "label",
+                      "tone",
+                      "target",
+                      "position"
+                    ]
+                  }
+                },
+                "entryStepId": {
+                  "type": "string"
+                },
+                "entryRules": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "field": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "types": {
+                        "minItems": 1,
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "minLength": 1
+                        }
+                      },
+                      "message": {
+                        "type": "string",
+                        "minLength": 1
+                      }
+                    },
+                    "required": [
+                      "kind"
+                    ]
+                  }
+                },
+                "removes": {
+                  "default": [],
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "rationale": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "target": {
+                  "type": "object",
+                  "properties": {
+                    "pipelineId": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "newPipeline": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  }
+                },
+                "icon": {
+                  "type": "string",
+                  "enum": [
+                    "square-stack",
+                    "boxes",
+                    "database",
+                    "monitor",
+                    "workflow"
+                  ]
+                },
+                "restoredFrom": {
+                  "type": "integer",
+                  "exclusiveMinimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "templateStepIds": {
+                  "type": "object",
+                  "propertyNames": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "additionalProperties": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                }
+              },
+              "required": [
+                "steps",
+                "entryStepId",
+                "rationale"
+              ]
+            },
+            "alternatives": {
+              "maxItems": 2,
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "steps": {
+                    "minItems": 1,
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string"
+                        },
+                        "position": {
+                          "type": "number"
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "type": {
+                          "type": "string",
+                          "enum": [
+                            "agent",
+                            "user",
+                            "builtin",
+                            "module"
+                          ]
+                        },
+                        "ownerRole": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "entryAction": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "instructionsSummary": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "isTerminal": {
+                          "type": "boolean"
+                        },
+                        "planMode": {
+                          "type": "boolean"
+                        },
+                        "timeoutMs": {
+                          "anyOf": [
+                            {
+                              "type": "integer",
+                              "exclusiveMinimum": 0,
+                              "maximum": 9007199254740991
+                            },
+                            {
+                              "type": "string",
+                              "const": "default"
+                            }
+                          ]
+                        },
+                        "inputs": {
+                          "type": "object",
+                          "propertyNames": {
+                            "type": "string"
+                          },
+                          "additionalProperties": {
+                            "anyOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "type": "number"
+                              },
+                              {
+                                "type": "boolean"
+                              }
+                            ]
+                          }
+                        },
+                        "watch": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "everyMinutes": {
+                                  "type": "number"
+                                },
+                                "giveUpAfterHours": {
+                                  "default": 168,
+                                  "type": "number"
+                                },
+                                "neverGivesUp": {
+                                  "type": "boolean"
+                                }
+                              },
+                              "required": [
+                                "everyMinutes"
+                              ]
+                            },
+                            {
+                              "type": "string",
+                              "const": "off"
+                            }
+                          ]
+                        },
+                        "workspaceId": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "workspaceMode": {
+                          "type": "string",
+                          "enum": [
+                            "isolated",
+                            "read"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "position",
+                        "name",
+                        "type",
+                        "ownerRole",
+                        "entryAction",
+                        "instructionsSummary",
+                        "isTerminal",
+                        "planMode"
+                      ]
+                    }
+                  },
+                  "routes": {
+                    "default": [],
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "fromStepId": {
+                          "type": "string"
+                        },
+                        "resultKey": {
+                          "type": "string"
+                        },
+                        "label": {
+                          "type": "string"
+                        },
+                        "tone": {
+                          "type": "string",
+                          "enum": [
+                            "success",
+                            "warning",
+                            "info",
+                            "danger"
+                          ]
+                        },
+                        "target": {
+                          "type": "string"
+                        },
+                        "position": {
+                          "type": "number"
+                        },
+                        "requiresComment": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "fromStepId",
+                        "resultKey",
+                        "label",
+                        "tone",
+                        "target",
+                        "position"
+                      ]
+                    }
+                  },
+                  "entryStepId": {
+                    "type": "string"
+                  },
+                  "entryRules": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "kind": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "field": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "types": {
+                          "minItems": 1,
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "minLength": 1
+                          }
+                        },
+                        "message": {
+                          "type": "string",
+                          "minLength": 1
+                        }
+                      },
+                      "required": [
+                        "kind"
+                      ]
+                    }
+                  },
+                  "removes": {
+                    "default": [],
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "rationale": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "target": {
+                    "type": "object",
+                    "properties": {
+                      "pipelineId": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "newPipeline": {
+                        "type": "string",
+                        "minLength": 1
+                      }
+                    }
+                  },
+                  "icon": {
+                    "type": "string",
+                    "enum": [
+                      "square-stack",
+                      "boxes",
+                      "database",
+                      "monitor",
+                      "workflow"
+                    ]
+                  },
+                  "restoredFrom": {
+                    "type": "integer",
+                    "exclusiveMinimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "templateStepIds": {
+                    "type": "object",
+                    "propertyNames": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "additionalProperties": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  }
+                },
+                "required": [
+                  "steps",
+                  "entryStepId",
+                  "rationale"
+                ]
+              }
+            },
+            "modules": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "slug": {
+                    "type": "string",
+                    "pattern": "^[a-z0-9_-]+$"
+                  },
+                  "description": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "code": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "manifest": {
+                    "type": "object",
+                    "properties": {
+                      "name": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "description": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "inputs": {
+                        "default": {},
+                        "type": "object",
+                        "propertyNames": {
+                          "type": "string"
+                        },
+                        "additionalProperties": {
+                          "type": "object",
+                          "properties": {
+                            "type": {
+                              "type": "string",
+                              "enum": [
+                                "string",
+                                "number",
+                                "boolean"
+                              ]
+                            },
+                            "description": {
+                              "type": "string"
+                            },
+                            "default": {
+                              "anyOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "number"
+                                },
+                                {
+                                  "type": "boolean"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            }
+                          },
+                          "required": [
+                            "type"
+                          ]
+                        }
+                      },
+                      "needs": {
+                        "default": {
+                          "bin": [],
+                          "env": [],
+                          "network": false,
+                          "item": false,
+                          "comment": false,
+                          "attach": false,
+                          "create": false
+                        },
+                        "type": "object",
+                        "properties": {
+                          "bin": {
+                            "default": [],
+                            "type": "array",
+                            "items": {
+                              "type": "string",
+                              "minLength": 1
+                            }
+                          },
+                          "env": {
+                            "default": [],
+                            "type": "array",
+                            "items": {
+                              "type": "string",
+                              "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+                            }
+                          },
+                          "network": {
+                            "default": false,
+                            "type": "boolean"
+                          },
+                          "item": {
+                            "default": false,
+                            "type": "boolean"
+                          },
+                          "comment": {
+                            "default": false,
+                            "type": "boolean"
+                          },
+                          "attach": {
+                            "default": false,
+                            "type": "boolean"
+                          },
+                          "create": {
+                            "default": false,
+                            "type": "boolean"
+                          }
+                        }
+                      },
+                      "results": {
+                        "minItems": 1,
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "minLength": 1
+                        }
+                      },
+                      "sideEffects": {
+                        "type": "boolean"
+                      },
+                      "watch": {
+                        "type": "boolean"
+                      }
+                    },
+                    "required": [
+                      "name",
+                      "description",
+                      "results"
+                    ]
+                  },
+                  "originalScript": {
+                    "default": null,
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "why": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "tests": {
+                    "minItems": 1,
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "description": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "source": {
+                          "type": "string",
+                          "minLength": 1
+                        }
+                      },
+                      "required": [
+                        "description",
+                        "source"
+                      ]
+                    }
+                  }
+                },
+                "required": [
+                  "name",
+                  "slug",
+                  "description",
+                  "code",
+                  "manifest",
+                  "why",
+                  "tests"
+                ]
+              }
+            },
+            "actions": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "role": {
+                    "type": "string"
+                  },
+                  "action": {
+                    "type": "string"
+                  },
+                  "description": {
+                    "default": "",
+                    "type": "string"
+                  },
+                  "results": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "key": {
+                          "type": "string"
+                        },
+                        "label": {
+                          "default": "",
+                          "type": "string"
+                        },
+                        "meaning": {
+                          "default": "",
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "key"
+                      ]
+                    }
+                  },
+                  "fields": {
+                    "default": [],
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "name": {
+                          "type": "string"
+                        },
+                        "type": {
+                          "type": "string",
+                          "enum": [
+                            "string",
+                            "number",
+                            "integer",
+                            "boolean",
+                            "string_list"
+                          ]
+                        },
+                        "required": {
+                          "default": false,
+                          "type": "boolean"
+                        },
+                        "description": {
+                          "default": "",
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "name",
+                        "type"
+                      ]
+                    }
+                  }
+                },
+                "required": [
+                  "role",
+                  "action",
+                  "results"
+                ]
+              }
+            },
+            "proposals": {
+              "default": [],
+              "type": "array",
+              "items": {
+                "oneOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "action": {
+                        "type": "string",
+                        "const": "new_feature"
+                      },
+                      "pipeline": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "title": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "understanding": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "decisions": {
+                        "default": [],
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "topic": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "decision": {
+                              "type": "string",
+                              "minLength": 1
+                            }
+                          },
+                          "required": [
+                            "topic",
+                            "decision"
+                          ]
+                        }
+                      },
+                      "priority": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 9007199254740991,
+                        "description": "An integer, 0 or more; the scheduler picks the highest first. 0 is Normal, 1 High, 2 Urgent."
+                      },
+                      "stories": {
+                        "minItems": 1,
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "title": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "repository": {
+                              "type": "string"
+                            },
+                            "body": {
+                              "type": "string"
+                            },
+                            "acceptance_criteria": {
+                              "minItems": 1,
+                              "type": "array",
+                              "items": {
+                                "type": "string",
+                                "minLength": 1
+                              }
+                            },
+                            "depends_on": {
+                              "default": [],
+                              "type": "array",
+                              "items": {
+                                "type": "integer",
+                                "minimum": 0,
+                                "maximum": 9007199254740991
+                              }
+                            },
+                            "touches": {
+                              "default": [],
+                              "type": "array",
+                              "items": {
+                                "type": "string",
+                                "minLength": 1,
+                                "pattern": "^\\\\S+$"
+                              }
+                            },
+                            "base_branch": {
+                              "type": "string"
+                            },
+                            "existing_branch": {
+                              "type": "string"
+                            },
+                            "priority": {
+                              "type": "integer",
+                              "minimum": 0,
+                              "maximum": 9007199254740991,
+                              "description": "An integer, 0 or more; the scheduler picks the highest first. 0 is Normal, 1 High, 2 Urgent."
+                            }
+                          },
+                          "required": [
+                            "title",
+                            "body",
+                            "acceptance_criteria"
+                          ]
+                        }
+                      }
+                    },
+                    "required": [
+                      "action",
+                      "title",
+                      "understanding",
+                      "stories"
+                    ]
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "action": {
+                        "type": "string",
+                        "const": "new_story"
+                      },
+                      "parent": {
+                        "type": "string",
+                        "minLength": 1,
+                        "pattern": "-\\\\d+$"
+                      },
+                      "pipeline": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "title": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "body": {
+                        "type": "string"
+                      },
+                      "priority": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 9007199254740991,
+                        "description": "An integer, 0 or more; the scheduler picks the highest first. 0 is Normal, 1 High, 2 Urgent."
+                      },
+                      "acceptance_criteria": {
+                        "minItems": 1,
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "minLength": 1
+                        }
+                      },
+                      "depends_on": {
+                        "default": [],
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "minLength": 1,
+                          "pattern": "-\\\\d+$"
+                        }
+                      },
+                      "touches": {
+                        "default": [],
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "minLength": 1,
+                          "pattern": "^\\\\S+$"
+                        }
+                      },
+                      "repository": {
+                        "type": "string"
+                      },
+                      "base_branch": {
+                        "type": "string"
+                      },
+                      "existing_branch": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "action",
+                      "title",
+                      "body",
+                      "acceptance_criteria"
+                    ]
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "action": {
+                        "type": "string",
+                        "const": "new_bug"
+                      },
+                      "parent": {
+                        "type": "string",
+                        "minLength": 1,
+                        "pattern": "-\\\\d+$"
+                      },
+                      "pipeline": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "title": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "body": {
+                        "type": "string"
+                      },
+                      "priority": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 9007199254740991,
+                        "description": "An integer, 0 or more; the scheduler picks the highest first. 0 is Normal, 1 High, 2 Urgent."
+                      },
+                      "steps_to_reproduce": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "expected": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "actual": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "environment": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "acceptance_criteria": {
+                        "default": [],
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "minLength": 1
+                        }
+                      },
+                      "repository": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "action",
+                      "title",
+                      "body",
+                      "steps_to_reproduce",
+                      "expected",
+                      "actual",
+                      "environment"
+                    ]
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "action": {
+                        "type": "string",
+                        "const": "amend"
+                      },
+                      "item": {
+                        "type": "string",
+                        "minLength": 1,
+                        "pattern": "-\\\\d+$"
+                      },
+                      "why": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "title": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "body": {
+                        "type": "string"
+                      },
+                      "acceptance_criteria": {
+                        "minItems": 1,
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "minLength": 1
+                        }
+                      },
+                      "priority": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 9007199254740991,
+                        "description": "An integer, 0 or more; the scheduler picks the highest first. 0 is Normal, 1 High, 2 Urgent."
+                      }
+                    },
+                    "required": [
+                      "action",
+                      "item",
+                      "why"
+                    ]
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "action": {
+                        "type": "string",
+                        "const": "reorder"
+                      },
+                      "item": {
+                        "type": "string",
+                        "minLength": 1,
+                        "pattern": "-\\\\d+$"
+                      },
+                      "add_depends_on": {
+                        "default": [],
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "minLength": 1,
+                          "pattern": "-\\\\d+$"
+                        }
+                      },
+                      "remove_depends_on": {
+                        "default": [],
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "minLength": 1,
+                          "pattern": "-\\\\d+$"
+                        }
+                      },
+                      "why": {
+                        "type": "string",
+                        "minLength": 1
+                      }
+                    },
+                    "required": [
+                      "action",
+                      "item",
+                      "why"
+                    ]
+                  }
+                ]
+              }
+            },
+            "change": {
+              "default": null,
+              "anyOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "summary": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "code": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "manifest": {
+                      "default": null,
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "name": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "description": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "inputs": {
+                              "default": {},
+                              "type": "object",
+                              "propertyNames": {
+                                "type": "string"
+                              },
+                              "additionalProperties": {
+                                "type": "object",
+                                "properties": {
+                                  "type": {
+                                    "type": "string",
+                                    "enum": [
+                                      "string",
+                                      "number",
+                                      "boolean"
+                                    ]
+                                  },
+                                  "description": {
+                                    "type": "string"
+                                  },
+                                  "default": {
+                                    "anyOf": [
+                                      {
+                                        "type": "string"
+                                      },
+                                      {
+                                        "type": "number"
+                                      },
+                                      {
+                                        "type": "boolean"
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ]
+                                  }
+                                },
+                                "required": [
+                                  "type"
+                                ]
+                              }
+                            },
+                            "needs": {
+                              "default": {
+                                "bin": [],
+                                "env": [],
+                                "network": false,
+                                "item": false,
+                                "comment": false,
+                                "attach": false,
+                                "create": false
+                              },
+                              "type": "object",
+                              "properties": {
+                                "bin": {
+                                  "default": [],
+                                  "type": "array",
+                                  "items": {
+                                    "type": "string",
+                                    "minLength": 1
+                                  }
+                                },
+                                "env": {
+                                  "default": [],
+                                  "type": "array",
+                                  "items": {
+                                    "type": "string",
+                                    "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+                                  }
+                                },
+                                "network": {
+                                  "default": false,
+                                  "type": "boolean"
+                                },
+                                "item": {
+                                  "default": false,
+                                  "type": "boolean"
+                                },
+                                "comment": {
+                                  "default": false,
+                                  "type": "boolean"
+                                },
+                                "attach": {
+                                  "default": false,
+                                  "type": "boolean"
+                                },
+                                "create": {
+                                  "default": false,
+                                  "type": "boolean"
+                                }
+                              }
+                            },
+                            "results": {
+                              "minItems": 1,
+                              "type": "array",
+                              "items": {
+                                "type": "string",
+                                "minLength": 1
+                              }
+                            },
+                            "sideEffects": {
+                              "type": "boolean"
+                            },
+                            "watch": {
+                              "type": "boolean"
+                            }
+                          },
+                          "required": [
+                            "name",
+                            "description",
+                            "results"
+                          ]
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "moduleId": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "tests": {
+                      "default": [],
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "description": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "source": {
+                            "type": "string",
+                            "minLength": 1
+                          }
+                        },
+                        "required": [
+                          "description",
+                          "source"
+                        ]
+                      }
+                    },
+                    "removeTests": {
+                      "default": [],
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "minLength": 1
+                      }
+                    }
+                  },
+                  "required": [
+                    "summary",
+                    "code",
+                    "moduleId"
+                  ]
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "card": {
+              "default": null,
+              "anyOf": [
+                {
+                  "oneOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "kind": {
+                          "type": "string",
+                          "const": "pipelineExport"
+                        },
+                        "pipelineId": {
+                          "type": "string",
+                          "minLength": 1
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "pipelineId"
+                      ]
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "kind": {
+                          "type": "string",
+                          "const": "pipelineImport"
+                        },
+                        "attachmentId": {
+                          "type": "string",
+                          "minLength": 1
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "attachmentId"
+                      ]
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "kind": {
+                          "type": "string",
+                          "const": "pipelineDelete"
+                        },
+                        "pipelineId": {
+                          "type": "string",
+                          "minLength": 1
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "pipelineId"
+                      ]
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "kind": {
+                          "type": "string",
+                          "const": "pipelineDiscardEdits"
+                        },
+                        "pipelineId": {
+                          "type": "string",
+                          "minLength": 1
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "pipelineId"
+                      ]
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "kind": {
+                          "type": "string",
+                          "const": "pipelineWebhookUnattended"
+                        },
+                        "pipelineId": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "unattended": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "pipelineId",
+                        "unattended"
+                      ]
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "kind": {
+                          "type": "string",
+                          "const": "stepSecret"
+                        },
+                        "stepId": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "name": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "action": {
+                          "type": "string",
+                          "enum": [
+                            "set",
+                            "clear"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "stepId",
+                        "name",
+                        "action"
+                      ]
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "kind": {
+                          "type": "string",
+                          "const": "stepVariable"
+                        },
+                        "stepId": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "name": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "action": {
+                          "type": "string",
+                          "enum": [
+                            "set",
+                            "clear"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "stepId",
+                        "name",
+                        "action"
+                      ]
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "kind": {
+                          "type": "string",
+                          "const": "itemTypeCreate"
+                        },
+                        "projectId": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "label": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "plural": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "container": {
+                          "type": "boolean"
+                        },
+                        "fields": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "name": {
+                                "type": "string",
+                                "minLength": 1
+                              },
+                              "kind": {
+                                "type": "string",
+                                "enum": [
+                                  "string",
+                                  "number",
+                                  "boolean",
+                                  "string list"
+                                ]
+                              },
+                              "required": {
+                                "type": "boolean"
+                              }
+                            },
+                            "required": [
+                              "name",
+                              "kind",
+                              "required"
+                            ]
+                          }
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "projectId",
+                        "label",
+                        "plural",
+                        "container",
+                        "fields"
+                      ]
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "kind": {
+                          "type": "string",
+                          "const": "itemTypeUpdate"
+                        },
+                        "itemTypeId": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "label": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "plural": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "container": {
+                          "anyOf": [
+                            {
+                              "type": "boolean"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "fields": {
+                          "anyOf": [
+                            {
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "properties": {
+                                  "name": {
+                                    "type": "string",
+                                    "minLength": 1
+                                  },
+                                  "kind": {
+                                    "type": "string",
+                                    "enum": [
+                                      "string",
+                                      "number",
+                                      "boolean",
+                                      "string list"
+                                    ]
+                                  },
+                                  "required": {
+                                    "type": "boolean"
+                                  }
+                                },
+                                "required": [
+                                  "name",
+                                  "kind",
+                                  "required"
+                                ]
+                              }
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "itemTypeId",
+                        "label",
+                        "plural",
+                        "container",
+                        "fields"
+                      ]
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "kind": {
+                          "type": "string",
+                          "const": "itemTypeDelete"
+                        },
+                        "itemTypeId": {
+                          "type": "string",
+                          "minLength": 1
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "itemTypeId"
+                      ]
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "kind": {
+                          "type": "string",
+                          "const": "pipelineKeepMine"
+                        },
+                        "pipelineId": {
+                          "type": "string",
+                          "minLength": 1
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "pipelineId"
+                      ]
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "kind": {
+                          "type": "string",
+                          "const": "trialPublish"
+                        }
+                      },
+                      "required": [
+                        "kind"
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "trial": {
+              "default": null,
+              "anyOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "items": {
+                      "minItems": 1,
+                      "maxItems": 6,
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "key": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "title": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "body": {
+                            "default": null,
+                            "anyOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "type": {
+                            "default": null,
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "minLength": 1
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "workspaceId": {
+                            "default": null,
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "minLength": 1
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "expected": {
+                            "type": "object",
+                            "properties": {
+                              "stepId": {
+                                "type": "string",
+                                "minLength": 1
+                              },
+                              "criteria": {
+                                "default": null,
+                                "anyOf": [
+                                  {
+                                    "type": "string"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              }
+                            },
+                            "required": [
+                              "stepId"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "key",
+                          "title",
+                          "expected"
+                        ]
+                      }
+                    },
+                    "steps": {
+                      "default": [],
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "stepId": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "mode": {
+                            "type": "string",
+                            "enum": [
+                              "real",
+                              "redirected",
+                              "mocked"
+                            ]
+                          },
+                          "reason": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "mocks": {
+                            "default": [],
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "item": {
+                                  "type": "string",
+                                  "minLength": 1
+                                },
+                                "resultKey": {
+                                  "type": "string",
+                                  "minLength": 1
+                                },
+                                "output": {
+                                  "type": "string"
+                                }
+                              },
+                              "required": [
+                                "item",
+                                "resultKey",
+                                "output"
+                              ]
+                            }
+                          }
+                        },
+                        "required": [
+                          "stepId",
+                          "mode",
+                          "reason"
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "items"
+                  ]
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "message"
+          ]
+        }
+      ]
+    }
+  },
+  "required": [
+    "outcome"
+  ]
+}"
+`;
+
+exports[`the JSON Schema each provider receives > is unchanged for implement (undefined) 1`] = `
+"{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "outcome": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "status": {
+              "type": "string",
+              "const": "clarification_required"
+            },
+            "questions": {
+              "minItems": 1,
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "question": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "why": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "options": {
+                    "default": [],
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "allow_free_text": {
+                    "default": true,
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "id",
+                  "question",
+                  "why"
+                ]
+              }
+            }
+          },
+          "required": [
+            "status",
+            "questions"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "branch": {
+              "type": "string",
+              "minLength": 1
+            },
+            "summary": {
+              "type": "string"
+            },
+            "files_changed": {
+              "default": [],
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "tests_run": {
+              "default": false,
+              "type": "boolean"
+            },
+            "handoff": {
+              "type": "string",
+              "minLength": 1
+            },
+            "memoryUsed": {
+              "description": "The ids of the memory entries you were given and relied on in this work. Leave out any you were not given.",
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "required": [
+            "branch",
+            "summary",
+            "handoff"
+          ]
+        }
+      ]
+    }
+  },
+  "required": [
+    "outcome"
+  ]
+}"
+`;
+
+exports[`the JSON Schema each provider receives > is unchanged for intake (undefined) 1`] = `
+"{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "outcome": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "status": {
+              "type": "string",
+              "const": "clarification_required"
+            },
+            "questions": {
+              "minItems": 1,
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "question": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "why": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "options": {
+                    "default": [],
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "allow_free_text": {
+                    "default": true,
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "id",
+                  "question",
+                  "why"
+                ]
+              }
+            }
+          },
+          "required": [
+            "status",
+            "questions"
+          ]
+        },
+        {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "type": {
+                  "type": "string",
+                  "const": "feature"
+                },
+                "ready": {
+                  "type": "boolean",
+                  "const": true
+                },
+                "understanding": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "decisions": {
+                  "default": [],
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "topic": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "decision": {
+                        "type": "string",
+                        "minLength": 1
+                      }
+                    },
+                    "required": [
+                      "topic",
+                      "decision"
+                    ]
+                  }
+                }
+              },
+              "required": [
+                "type",
+                "ready",
+                "understanding"
+              ]
+            },
+            {
+              "type": "object",
+              "properties": {
+                "type": {
+                  "type": "string",
+                  "const": "story"
+                },
+                "ready": {
+                  "type": "boolean",
+                  "const": true
+                },
+                "title": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "body": {
+                  "type": "string"
+                },
+                "acceptance_criteria": {
+                  "minItems": 1,
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "title": "at least one acceptance criterion",
+                  "description": "it is what EO checks the implementer's claim against"
+                }
+              },
+              "required": [
+                "type",
+                "ready",
+                "title",
+                "body",
+                "acceptance_criteria"
+              ]
+            },
+            {
+              "type": "object",
+              "properties": {
+                "type": {
+                  "type": "string",
+                  "const": "bug"
+                },
+                "ready": {
+                  "type": "boolean",
+                  "const": true
+                },
+                "title": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "body": {
+                  "type": "string"
+                },
+                "steps_to_reproduce": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "expected": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "actual": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "environment": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "acceptance_criteria": {
+                  "default": [],
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                }
+              },
+              "required": [
+                "type",
+                "ready",
+                "title",
+                "body",
+                "steps_to_reproduce",
+                "expected",
+                "actual",
+                "environment"
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "required": [
+    "outcome"
+  ]
+}"
+`;
+
+exports[`the JSON Schema each provider receives > is unchanged for interpret (undefined) 1`] = `
+"{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "outcome": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "status": {
+              "type": "string",
+              "const": "clarification_required"
+            },
+            "questions": {
+              "minItems": 1,
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "question": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "why": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "options": {
+                    "default": [],
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "allow_free_text": {
+                    "default": true,
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "id",
+                  "question",
+                  "why"
+                ]
+              }
+            }
+          },
+          "required": [
+            "status",
+            "questions"
+          ]
+        },
+        {
+          "oneOf": [
+            {
+              "type": "object",
+              "properties": {
+                "status": {
+                  "type": "string",
+                  "const": "answered"
+                },
+                "answer": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "note": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "status",
+                "answer"
+              ]
+            },
+            {
+              "type": "object",
+              "properties": {
+                "status": {
+                  "type": "string",
+                  "const": "acted"
+                },
+                "summary": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "retry": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "status",
+                "summary",
+                "retry"
+              ]
+            },
+            {
+              "type": "object",
+              "properties": {
+                "status": {
+                  "type": "string",
+                  "const": "unusable"
+                },
+                "problem": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "required": [
+                "status",
+                "problem"
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "required": [
+    "outcome"
+  ]
+}"
+`;
+
+exports[`the JSON Schema each provider receives > is unchanged for refine (bug) 1`] = `
+"{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "outcome": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "status": {
+              "type": "string",
+              "const": "clarification_required"
+            },
+            "questions": {
+              "minItems": 1,
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "question": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "why": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "options": {
+                    "default": [],
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "allow_free_text": {
+                    "default": true,
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "id",
+                  "question",
+                  "why"
+                ]
+              }
+            }
+          },
+          "required": [
+            "status",
+            "questions"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "ready": {
+              "type": "boolean",
+              "const": true
+            },
+            "understanding": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "required": [
+            "ready",
+            "understanding"
+          ]
+        }
+      ]
+    }
+  },
+  "required": [
+    "outcome"
+  ]
+}"
+`;
+
+exports[`the JSON Schema each provider receives > is unchanged for refine (feature) 1`] = `
+"{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "outcome": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "status": {
+              "type": "string",
+              "const": "clarification_required"
+            },
+            "questions": {
+              "minItems": 1,
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "question": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "why": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "options": {
+                    "default": [],
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "allow_free_text": {
+                    "default": true,
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "id",
+                  "question",
+                  "why"
+                ]
+              }
+            }
+          },
+          "required": [
+            "status",
+            "questions"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "children": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "type": {
+                        "type": "string",
+                        "const": "story"
+                      },
+                      "title": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "body": {
+                        "type": "string"
+                      },
+                      "repository": {
+                        "type": "string"
+                      },
+                      "depends_on": {
+                        "default": [],
+                        "type": "array",
+                        "items": {
+                          "type": "integer",
+                          "minimum": 0
+                        }
+                      },
+                      "touches": {
+                        "default": [],
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "pattern": "^\\\\S+$"
+                        }
+                      },
+                      "acceptance_criteria": {
+                        "minItems": 1,
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "title": "at least one acceptance criterion",
+                        "description": "it is what EO checks the implementer's claim against"
+                      }
+                    },
+                    "required": [
+                      "type",
+                      "title",
+                      "body",
+                      "acceptance_criteria"
+                    ]
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "type": {
+                        "type": "string",
+                        "const": "bug"
+                      },
+                      "title": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "body": {
+                        "type": "string"
+                      },
+                      "repository": {
+                        "type": "string"
+                      },
+                      "depends_on": {
+                        "default": [],
+                        "type": "array",
+                        "items": {
+                          "type": "integer",
+                          "minimum": 0
+                        }
+                      },
+                      "touches": {
+                        "default": [],
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "pattern": "^\\\\S+$"
+                        }
+                      },
+                      "steps_to_reproduce": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "expected": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "actual": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "environment": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "acceptance_criteria": {
+                        "default": [],
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "minLength": 1
+                        }
+                      }
+                    },
+                    "required": [
+                      "type",
+                      "title",
+                      "body",
+                      "steps_to_reproduce",
+                      "expected",
+                      "actual",
+                      "environment"
+                    ]
+                  }
+                ]
+              }
+            }
+          },
+          "required": [
+            "children"
+          ]
+        }
+      ]
+    }
+  },
+  "required": [
+    "outcome"
+  ]
+}"
+`;
+
+exports[`the JSON Schema each provider receives > is unchanged for refine (story) 1`] = `
+"{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "outcome": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "status": {
+              "type": "string",
+              "const": "clarification_required"
+            },
+            "questions": {
+              "minItems": 1,
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "question": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "why": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "options": {
+                    "default": [],
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "allow_free_text": {
+                    "default": true,
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "id",
+                  "question",
+                  "why"
+                ]
+              }
+            }
+          },
+          "required": [
+            "status",
+            "questions"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "ready": {
+              "type": "boolean",
+              "const": true
+            },
+            "understanding": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "required": [
+            "ready",
+            "understanding"
+          ]
+        }
+      ]
+    }
+  },
+  "required": [
+    "outcome"
+  ]
+}"
+`;
+
+exports[`the JSON Schema each provider receives > is unchanged for refine (undefined) 1`] = `
+"{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "outcome": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "status": {
+              "type": "string",
+              "const": "clarification_required"
+            },
+            "questions": {
+              "minItems": 1,
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "question": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "why": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "options": {
+                    "default": [],
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "allow_free_text": {
+                    "default": true,
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "id",
+                  "question",
+                  "why"
+                ]
+              }
+            }
+          },
+          "required": [
+            "status",
+            "questions"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "children": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "type": {
+                        "type": "string",
+                        "const": "story"
+                      },
+                      "title": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "body": {
+                        "type": "string"
+                      },
+                      "repository": {
+                        "type": "string"
+                      },
+                      "depends_on": {
+                        "default": [],
+                        "type": "array",
+                        "items": {
+                          "type": "integer",
+                          "minimum": 0
+                        }
+                      },
+                      "touches": {
+                        "default": [],
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "pattern": "^\\\\S+$"
+                        }
+                      },
+                      "acceptance_criteria": {
+                        "minItems": 1,
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "title": "at least one acceptance criterion",
+                        "description": "it is what EO checks the implementer's claim against"
+                      }
+                    },
+                    "required": [
+                      "type",
+                      "title",
+                      "body",
+                      "acceptance_criteria"
+                    ]
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "type": {
+                        "type": "string",
+                        "const": "bug"
+                      },
+                      "title": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "body": {
+                        "type": "string"
+                      },
+                      "repository": {
+                        "type": "string"
+                      },
+                      "depends_on": {
+                        "default": [],
+                        "type": "array",
+                        "items": {
+                          "type": "integer",
+                          "minimum": 0
+                        }
+                      },
+                      "touches": {
+                        "default": [],
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "pattern": "^\\\\S+$"
+                        }
+                      },
+                      "steps_to_reproduce": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "expected": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "actual": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "environment": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "acceptance_criteria": {
+                        "default": [],
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "minLength": 1
+                        }
+                      }
+                    },
+                    "required": [
+                      "type",
+                      "title",
+                      "body",
+                      "steps_to_reproduce",
+                      "expected",
+                      "actual",
+                      "environment"
+                    ]
+                  }
+                ]
+              }
+            }
+          },
+          "required": [
+            "children"
+          ]
+        }
+      ]
+    }
+  },
+  "required": [
+    "outcome"
+  ]
+}"
+`;
+
+exports[`the JSON Schema each provider receives > is unchanged for respond (undefined) 1`] = `
+"{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "outcome": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "status": {
+              "type": "string",
+              "const": "clarification_required"
+            },
+            "questions": {
+              "minItems": 1,
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "question": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "why": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "options": {
+                    "default": [],
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "allow_free_text": {
+                    "default": true,
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "id",
+                  "question",
+                  "why"
+                ]
+              }
+            }
+          },
+          "required": [
+            "status",
+            "questions"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "message": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "required": [
+            "message"
+          ]
+        }
+      ]
+    }
+  },
+  "required": [
+    "outcome"
+  ]
+}"
+`;
+
+exports[`the JSON Schema each provider receives > is unchanged for review (undefined) 1`] = `
+"{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "outcome": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "status": {
+              "type": "string",
+              "const": "clarification_required"
+            },
+            "questions": {
+              "minItems": 1,
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "question": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "why": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "options": {
+                    "default": [],
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "allow_free_text": {
+                    "default": true,
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "id",
+                  "question",
+                  "why"
+                ]
+              }
+            }
+          },
+          "required": [
+            "status",
+            "questions"
+          ]
+        },
+        {
+          "oneOf": [
+            {
+              "type": "object",
+              "properties": {
+                "verdict": {
+                  "type": "string",
+                  "const": "approve"
+                },
+                "feedback": {
+                  "type": "string"
+                },
+                "pull_request_body": {
+                  "type": "string"
+                },
+                "memoryUsed": {
+                  "description": "The ids of the memory entries you were given and relied on in this work. Leave out any you were not given.",
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              },
+              "required": [
+                "verdict",
+                "feedback"
+              ]
+            },
+            {
+              "type": "object",
+              "properties": {
+                "verdict": {
+                  "type": "string",
+                  "const": "reject"
+                },
+                "feedback": {
+                  "type": "string"
+                },
+                "criteria_coverage": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "criterion": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "result": {
+                        "type": "string",
+                        "enum": [
+                          "met",
+                          "not_met",
+                          "not_assessed"
+                        ]
+                      },
+                      "note": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "criterion",
+                      "result"
+                    ]
+                  }
+                },
+                "blocking_issues": {
+                  "minItems": 1,
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "memoryUsed": {
+                  "description": "The ids of the memory entries you were given and relied on in this work. Leave out any you were not given.",
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              },
+              "required": [
+                "verdict",
+                "feedback",
+                "criteria_coverage",
+                "blocking_issues"
+              ]
+            },
+            {
+              "type": "object",
+              "properties": {
+                "verdict": {
+                  "type": "string",
+                  "const": "needs_user_input"
+                },
+                "feedback": {
+                  "type": "string"
+                },
+                "memoryUsed": {
+                  "description": "The ids of the memory entries you were given and relied on in this work. Leave out any you were not given.",
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              },
+              "required": [
+                "verdict",
+                "feedback"
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "required": [
+    "outcome"
+  ]
+}"
+`;

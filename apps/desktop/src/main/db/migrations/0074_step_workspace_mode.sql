@@ -1,0 +1,20 @@
+-- A step says how it uses a git workspace (EO-296,
+-- ARCHITECTURE.md, "The four kinds").
+--
+-- Read mode is a *mode of the git kind*, chosen per step, rather than a
+-- fifth kind: a person attached one repository and thinks of it as one
+-- repository, so the picker offers it once and the step editor offers
+-- "Works on a branch" or "Reads only" over it.
+--
+-- `isolated` for every existing row, because that is what every step
+-- did: the three places that already handed an agent the repository's
+-- own checkout — an interpret run, an off-board conversation, a
+-- container item — decide it from the item rather than from the step,
+-- and they go on deciding it. Backfilling the discussion and assist
+-- steps to `read` would say the same thing twice and let the two
+-- disagree.
+--
+-- No CHECK constraint, for `workspaces.kind`'s reason one table over:
+-- the legal values are a fact about the code reading the column, and a
+-- constraint here would have to be migrated in step with it.
+ALTER TABLE `pipeline_steps` ADD COLUMN `workspace_mode` TEXT NOT NULL DEFAULT 'isolated';

@@ -1,0 +1,33 @@
+-- The comment that offered to run a skipped occurrence (EO-306,
+-- `ARCHITECTURE.md`, "Schedules, and a machine that was off").
+--
+-- A skip beyond the grace posts a question on the job's thread with
+-- "Run it now" on it, and a person answering that question is answering
+-- it *about one occurrence*. Without this column the answer had nothing
+-- to point at, so the reply had to be matched to "the newest skipped
+-- row" — which fires last Monday's report when somebody scrolls up to
+-- an older offer, and lets any comment on the thread whose first line
+-- reads "Run it now" fire the latest skip.
+--
+-- On `job_occurrences` rather than on `comments`, because the fact is
+-- about the occurrence and not about the comment: every item in EO has
+-- a thread, and a column only jobs would ever fill has no business on
+-- the table all of them share. The occurrence is written *after* the
+-- comment it names, in the same transaction, so the row is complete the
+-- first and only time it is written -- `job_occurrences` stays
+-- append-only.
+--
+-- Nullable, and null on almost every row: a `fired` occurrence was
+-- never offered, and a skip for "the previous item is still open"
+-- carries no offer because running it is the duplicate the skip
+-- existed to prevent.
+--
+-- Not a foreign key, for `item_id`'s reason on the same table: a person
+-- may delete a comment, and the record of the offer having been made
+-- outlives it. A cascade would erase the occurrence and `on delete set
+-- null` would rewrite an append-only row.
+ALTER TABLE `job_occurrences` ADD `offer_comment_id` text;
+--> statement-breakpoint
+-- The lookup the reply path makes, once per comment posted on a job
+-- thread: which occurrence, if any, was this the offer for.
+CREATE INDEX `idx_job_occurrences_offer` ON `job_occurrences` (`offer_comment_id`);

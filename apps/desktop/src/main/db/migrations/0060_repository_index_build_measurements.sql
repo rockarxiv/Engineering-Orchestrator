@@ -1,0 +1,31 @@
+-- What a build from nothing cost, and how much disk the index takes
+-- (EO-155).
+--
+-- 0058 recorded the recurring half of the same question and said why:
+-- this feature exists on a claim, and the story that checks it cannot
+-- check anything nobody wrote down at the time. These are the other
+-- half. A ticket pays `last_index_duration_ms` once, when its worktree
+-- is indexed, and `last_sync_duration_ms` at every handover after it;
+-- neither number answers "is this worth its wall-clock" on its own.
+--
+-- Two columns and not one, for the reason 0058 kept its two apart. A
+-- build from nothing and a pass over an existing index are different
+-- costs with an order of magnitude between them -- seconds against
+-- tens of milliseconds, on the rows already in this table -- and one
+-- column holding whichever happened last would be a number nobody
+-- could attribute to either.
+--
+-- The size is a property rather than an event: it is what the
+-- directory measures now, so a build and a sync both refresh it, while
+-- only a build writes the duration. It is recorded rather than stat'ed
+-- when somebody asks, because the directory lives inside a ticket's
+-- worktree and the worktree is released when the ticket finishes -- a
+-- report that measured on demand would answer for every live index and
+-- for none of the finished ones worth comparing.
+--
+-- Both nullable, and null is not missing data: it is a row whose index
+-- was built before these columns existed. The measurement reads them as
+-- "not recorded" and says so rather than substituting a zero.
+
+ALTER TABLE `repository_indexes` ADD `last_index_duration_ms` integer;--> statement-breakpoint
+ALTER TABLE `repository_indexes` ADD `index_size_bytes` integer;
