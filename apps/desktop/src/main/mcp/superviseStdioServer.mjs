@@ -292,13 +292,13 @@ function processTable(withMark) {
       return table;
     }
     if (process.platform === "darwin") {
-      const listing = execFileSync("ps", ["-A", "-o", "pid=,ppid=,stat=,lstart="], { encoding: "utf8", maxBuffer: 256 * 1024 * 1024, windowsHide: true });
+      const listing = execFileSync(DARWIN_PS, ["-A", "-o", "pid=,ppid=,stat=,lstart="], { encoding: "utf8", maxBuffer: 256 * 1024 * 1024, windowsHide: true });
       for (const line of listing.split("\n")) {
         const match = /^\s*(\d+)\s+(\d+)\s+(\S+)\s+(.+?)\s*$/.exec(line);
         if (match) table.set(Number(match[1]), { ppid: Number(match[2]), start: match[4], zombie: match[3].startsWith("Z"), marked: false });
       }
       if (withMark) {
-        const environments = execFileSync("ps", ["-A", "-wwE", "-o", "pid=,command="], { encoding: "utf8", maxBuffer: 256 * 1024 * 1024, windowsHide: true });
+        const environments = execFileSync(DARWIN_PS, ["-A", "-wwE", "-o", "pid=,command="], { encoding: "utf8", maxBuffer: 256 * 1024 * 1024, windowsHide: true });
         for (const line of environments.split("\n")) {
           const match = /^\s*(\d+)\s/.exec(line);
           const row = match && table.get(Number(match[1]));
@@ -353,6 +353,14 @@ function descendants(withMark = cgroup === null) {
   }
   return [...found];
 }
+
+/**
+ * macOS's `ps`, by its path, for the reason `windowsSystemExecutable`
+ * gives below: the backend chose this process's PATH, and a PATH without
+ * `/bin` left the server's tree unfound (EO-640). As `DARWIN_PS` in
+ * `process/processTree.ts`, restated because this file imports nothing.
+ */
+const DARWIN_PS = "/bin/ps";
 
 /**
  * One of Windows' own programs, by its System32 path: the backend chose
