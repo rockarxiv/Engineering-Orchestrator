@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import Database from "better-sqlite3";
 import { expect, test, type Locator, type Page } from "@playwright/test";
-import { attachRepository, closeApp, homeEnv, launchApp } from "./support/app.js";
+import { attachRepository, closeApp, homeEnv, launchApp, sizeWindow } from "./support/app.js";
 import { itemCard, openView } from "./support/board.js";
 import { openPipeline, openPlace } from "./support/rail.js";
 import { seedItem } from "./support/seed.js";
@@ -88,7 +88,7 @@ test("a long board: columns as tall as their cards, scrolling as one under a hea
   const { app, window: page } = await launchApp(homeEnv(home));
 
   try {
-    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.setContentSize(1100, 720));
+    await sizeWindow(app, page, 1100, 720);
     await attachRepository(page, repoPath);
     await expect.poll(() => page.evaluate(() => window.innerHeight)).toBe(720);
 
@@ -135,7 +135,7 @@ test("a long board: columns as tall as their cards, scrolling as one under a hea
     expect(filter.x + filter.width).toBeLessThanOrEqual(1100);
 
     // A short canvas: the columns keep about two cards' height, and the canvas scrolls to them.
-    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.setContentSize(1100, 380));
+    await sizeWindow(app, page, 1100, 380);
     await expect.poll(() => page.evaluate(() => window.innerHeight)).toBe(380);
     const squeezed = await extent(columns);
     expect(squeezed.clientHeight).toBeGreaterThanOrEqual(190);
@@ -145,7 +145,7 @@ test("a long board: columns as tall as their cards, scrolling as one under a hea
     }).toBe(true);
 
     // Every other view scrolls in the canvas as it did: an item's page…
-    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.setContentSize(1100, 720));
+    await sizeWindow(app, page, 1100, 720);
     await expect.poll(() => page.evaluate(() => window.innerHeight)).toBe(720);
     const long_comment = Array.from({ length: 60 }, (_, line) => `Line ${line} of a long note.`).join("\n\n");
     seedItem(home, { title: "A long read", stepId: short.id, comment: long_comment });

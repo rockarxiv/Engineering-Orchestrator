@@ -21,7 +21,7 @@ import type { ProviderCapabilities, ProviderModel } from "@eo/core";
  * `satisfies` rather than a cast. For Codex the union is EO's own now
  * (`codexClient.ts`, copied from `@openai/codex-sdk` 0.161.0 when the
  * library was removed in EO-372): the app-server types an effort as a
- * bare string, as 0.163.0's and 0.165.0's still do, so no upstream type can catch a
+ * bare string, as 0.163.0's, 0.165.0's and 0.166.0's still do, so no upstream type can catch a
  * level going away, and the
  * live model list (`codexModels.ts`, which reads each model's supported
  * efforts from the binary) is the authority on what a model accepts.

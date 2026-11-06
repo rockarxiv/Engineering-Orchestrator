@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir, platform as osPlatform } from "node:os";
-import { delimiter, join } from "node:path";
+import { delimiter, join, posix, win32 } from "node:path";
 import { promisify } from "node:util";
 import { MCP_HOST_SERVER_KEY, MCP_TOKEN_VAR, claudeCodeAddArgs, codexAddArgs, mcpConnectCommand, mcpRemoteArgs, mcpRemoteEnv } from "@eo/core";
 
@@ -186,11 +186,20 @@ function manualFor(id: ClientId, registration: Registration | null, home: string
 
 // ── Claude Desktop ──────────────────────────────────────────────────
 
-/** Where Claude Desktop keeps the file it reads on launch. */
+/**
+ * Where Claude Desktop keeps the file it reads on launch — the paths the
+ * MCP project's "Connect to local MCP servers" page gives for each
+ * platform.
+ *
+ * Joined the way `platform` joins paths, as `claudeSettingsLayers` is
+ * (EO-598), so that naming a platform names its paths too, and a test
+ * can hold every platform's answer whatever machine runs it.
+ */
 export function claudeDesktopConfig(home: string, platform: NodeJS.Platform): string {
-  if (platform === "darwin") return join(home, "Library", "Application Support", "Claude", "claude_desktop_config.json");
-  if (platform === "win32") return join(process.env["APPDATA"] ?? join(home, "AppData", "Roaming"), "Claude", "claude_desktop_config.json");
-  return join(home, ".config", "Claude", "claude_desktop_config.json");
+  const paths = platform === "win32" ? win32 : posix;
+  if (platform === "darwin") return paths.join(home, "Library", "Application Support", "Claude", "claude_desktop_config.json");
+  if (platform === "win32") return paths.join(process.env["APPDATA"] ?? paths.join(home, "AppData", "Roaming"), "Claude", "claude_desktop_config.json");
+  return paths.join(home, ".config", "Claude", "claude_desktop_config.json");
 }
 
 /**

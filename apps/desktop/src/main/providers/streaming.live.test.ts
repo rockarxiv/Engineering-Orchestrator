@@ -122,7 +122,7 @@ describe.skipIf(!OPTED_IN)("a streamed turn on the real backends", () => {
     "Codex sends the answer's words as they are written",
     { timeout: 240_000 },
     async () => {
-      const codex = process.env["EO_CODEX_BIN"] ?? join(homedir(), ".config", "EO", "runtimes", "codex@0.165.0-linux-x64", "vendor", "x86_64-unknown-linux-musl", "bin", "codex");
+      const codex = process.env["EO_CODEX_BIN"] ?? join(homedir(), ".config", "EO", "runtimes", "codex@0.166.0-linux-x64", "vendor", "x86_64-unknown-linux-musl", "bin", "codex");
       const provider = createCodexProvider({ executablePath: codex });
       const seen = await timed(
         provider.start({

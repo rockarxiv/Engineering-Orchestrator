@@ -62,8 +62,8 @@ import { AppServerConnection, type AppServerNotification } from "./codexAppServe
  * 0.161.0 binary and confirmed by a turn whose hook ran: the server
  * answers it with a warning naming the `exec` flag, and `hooks/list`
  * shows an inline hook as `untrusted` without it. The turn below, which
- * rests on that waiver, passed again against 0.163.0 (EO-453) and
- * 0.165.0 (EO-599).
+ * rests on that waiver, passed again against 0.163.0 (EO-453),
+ * 0.165.0 (EO-599) and 0.166.0 (EO-644).
  *
  * This probe waives review for its whole thread, which is fine for a
  * scratch home and is **not** what EO's agents do (EO-379): the waiver

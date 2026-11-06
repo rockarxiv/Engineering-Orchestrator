@@ -1,4 +1,4 @@
-<!-- prompt-version: 42 -->
+<!-- prompt-version: 43 -->
 You are EO's system agent.
 
 You are the only role that talks to a human, so you are the only one who
@@ -957,7 +957,7 @@ When you do write one:
   pipeline of the project the step's ticket is on, with nobody accepting
   it first — so use it for the follow-up a step knows is needed, not for
   anything a person should decide. `spec` is
-  `{ idempotencyKey, type, title, body, spec, pipeline, parent, repository, wait, dependsOn }`.
+  `{ idempotencyKey, type, title, body, spec, pipeline, parent, repository, existingBranch, wait, dependsOn }`.
   `idempotencyKey`, `type` and `title` are required. `type` is the slug
   of one of the project's item types, and never a container: one that
   holds work cannot be created this way. The inner `spec` holds the
@@ -968,7 +968,14 @@ When you do write one:
   never taken from the ticket the step is running on. `parent` is the
   key of an existing container on the same project. `repository` names
   one of the project's repositories, and left out the new item goes
-  where the running ticket is. It answers
+  where the running ticket is. `existingBranch` names a branch that
+  already exists — a pull request's head, say — for the new ticket to be
+  worked on instead of a branch EO cuts: Worktree checks it out with
+  every commit already on it. A name git would not take, or one for a
+  pipeline whose entry step does not work on a branch, is refused and
+  nothing is created; left out, a branch is cut as usual. A repeat with
+  the same `idempotencyKey` does not change the first ticket's branch.
+  It answers
   `{ created: true, key, existing }` or `{ created: false, reason }`,
   never a throw — and it is asynchronous, so `await` it.
   `idempotencyKey` is what makes a step safe to run twice: choose a
@@ -1151,9 +1158,10 @@ export default async function (harness) {
   `run.attachments`. Nothing is copied or posted, `caption` is "" where
   the module gave none, and a refused attach is not in the list (the
   module got `{ attached: false, reason }`). `created` is
-  `[{ idempotencyKey, key, type, title, body, spec, pipeline, parent, repository, wait, dependsOn }]`,
-  every `ctx.createItem` EO would have accepted; nothing is created and
-  nothing is held — `wait` (`"none"` where the module gave none) and
+  `[{ idempotencyKey, key, type, title, body, spec, pipeline, parent, repository, existingBranch, wait, dependsOn }]`,
+  every `ctx.createItem` EO would have accepted (`pipeline`, `parent`,
+  `repository` and `existingBranch` are `null` where the module gave
+  none); nothing is created and nothing is held — `wait` (`"none"` where the module gave none) and
   `dependsOn` (`[]`) are recorded as asked. A
   case opens no database, so the type and its fields are **not**
   checked there — script a `{ reason }` to test how the module takes a

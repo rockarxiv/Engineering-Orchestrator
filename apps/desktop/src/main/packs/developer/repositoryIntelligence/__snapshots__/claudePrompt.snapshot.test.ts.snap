@@ -19,6 +19,11 @@ exports[`the Claude adapter's prompt, pinned > sends the same bare start turn 1`
     "settingSources": [
       "project",
     ],
+    "settings": {
+      "enabledPlugins": {
+        "cc-plugin-privacy@builtin": false,
+      },
+    },
     "skills": [],
     "spawnClaudeCodeProcess": "[Function]",
     "strictMcpConfig": true,
@@ -153,6 +158,11 @@ exports[`the Claude adapter's prompt, pinned > sends the same fully configured s
     "settingSources": [
       "project",
     ],
+    "settings": {
+      "enabledPlugins": {
+        "cc-plugin-privacy@builtin": false,
+      },
+    },
     "skills": [],
     "spawnClaudeCodeProcess": "[Function]",
     "strictMcpConfig": true,
@@ -273,6 +283,11 @@ exports[`the Claude adapter's prompt, pinned > sends the same resumed turn 1`] =
     "settingSources": [
       "project",
     ],
+    "settings": {
+      "enabledPlugins": {
+        "cc-plugin-privacy@builtin": false,
+      },
+    },
     "skills": [],
     "spawnClaudeCodeProcess": "[Function]",
     "strictMcpConfig": true,
@@ -315,6 +330,11 @@ exports[`the Claude adapter's prompt, pinned > sends the same start turn minus t
     "settingSources": [
       "project",
     ],
+    "settings": {
+      "enabledPlugins": {
+        "cc-plugin-privacy@builtin": false,
+      },
+    },
     "skills": [],
     "spawnClaudeCodeProcess": "[Function]",
     "strictMcpConfig": true,

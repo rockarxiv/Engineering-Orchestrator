@@ -103,6 +103,12 @@ function whyNoPullRequest(home: string, mainLog: string[]): string {
 }
 
 test("a story reaching ready_to_merge is pushed and opened as a pull request", async () => {
+  // Skipped on Windows, and only there: the fake `gh` is a Node script on
+  // PATH, and EO starts `gh` with `execFile` and no shell
+  // (`forge/cli.ts`), which on Windows finds only an executable —
+  // `gh.exe` — and never a script. The real `gh.exe` is what EO runs
+  // there, and the unit tests hold the arguments it is given.
+  test.skip(process.platform === "win32", "the fake gh is a script, and without a shell Windows starts only gh.exe");
   const scratch = mkdtempSync(path.join(tmpdir(), "eo e2e pr "));
   const home = path.join(scratch, "home");
   const repoPath = path.join(scratch, "acme-api");
@@ -136,7 +142,7 @@ test("a story reaching ready_to_merge is pushed and opened as a pull request", a
   git(["checkout", "main"], repoPath);
 
   const mainLog: string[] = [];
-  const { app, window } = await launchApp(homeEnv(home, { PATH: `${binDir}:${process.env["PATH"] ?? ""}` }));
+  const { app, window } = await launchApp(homeEnv(home, { PATH: `${binDir}${path.delimiter}${process.env["PATH"] ?? ""}` }));
 
   app.process().stdout?.on("data", (chunk: Buffer) => mainLog.push(`[out] ${chunk.toString()}`));
   app.process().stderr?.on("data", (chunk: Buffer) => mainLog.push(`[err] ${chunk.toString()}`));

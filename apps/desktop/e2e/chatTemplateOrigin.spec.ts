@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { expect, test, type Locator } from "@playwright/test";
-import { attachRepository, closeApp, homeEnv, launchApp } from "./support/app.js";
+import { attachRepository, closeApp, homeEnv, launchApp, sizeWindow } from "./support/app.js";
 import { openView } from "./support/board.js";
 import { openPipeline } from "./support/rail.js";
 
@@ -44,7 +44,7 @@ test("a pipeline's template origin, applied update and waiting update fit a narr
   const { app, window: page } = await launchApp(homeEnv(home));
 
   try {
-    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.setContentSize(1100, 720));
+    await sizeWindow(app, page, 1100, 720);
     await attachRepository(page, repoPath);
     await expect.poll(() => page.evaluate(() => window.innerWidth)).toBe(1100);
 

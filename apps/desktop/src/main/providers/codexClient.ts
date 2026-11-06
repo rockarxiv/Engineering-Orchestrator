@@ -45,6 +45,17 @@ import { AppServerConnection, type AppServerExit, AppServerExitedError, type App
 // `commandExecution` with its `aggregatedOutput`, `agentMessage`,
 // `RateLimitWindow`, `thread/tokenUsage/updated` — are unchanged.
 //
+// 0.166.0's set beside 0.165.0's (EO-644): again no notification or
+// server request added, removed or reshaped — `ServerNotification`,
+// `ServerRequest`, `ClientRequest`, `Turn`, `ThreadStartParams`,
+// `ThreadResumeParams` and `RateLimitWindow` are the same files byte for
+// byte. Every `ThreadItem` may now carry `startedAtMs` and
+// `completedAtMs` beside its own fields, flat on the wire, which EO does
+// not read; `CodexErrorInfo` gains `policyCapacityUnavailable` (EO reads
+// only `usageLimitExceeded`); `review/start` loses its `detached`
+// delivery (EO starts no review); and an image item, an account, hook
+// metadata and a thread's usage each gain a field EO does not read.
+//
 // 0.165.0's set beside 0.163.0's (EO-599): no notification or server
 // request was added, removed or reshaped — `ServerNotification`,
 // `ServerRequest`, `Turn`, `ThreadStartParams`, `ThreadResumeParams` and
@@ -104,7 +115,7 @@ export type Usage = {
 
 /**
  * One allowance window, as `account/rateLimits/updated` reports it
- * (0.161.0's `RateLimitWindow`, unchanged at 0.163.0 and 0.165.0): the share used,
+ * (0.161.0's `RateLimitWindow`, unchanged at 0.163.0, 0.165.0 and 0.166.0): the share used,
  * 0–100, the window's length, and when it refreshes in Unix seconds.
  */
 export type RateLimitWindow = { usedPercent: number; windowDurationMins: number | null; resetsAt: number | null };
@@ -552,7 +563,7 @@ export class CodexClient {
       : // `excludeTurns`: EO needs the thread, not its history replayed
         // back to it — and full-history hydration is deprecated for
         // the paginated threads 0.161.0 writes (`ThreadResumeParams` is
-        // unchanged at 0.163.0 and 0.165.0).
+        // unchanged at 0.163.0, 0.165.0 and 0.166.0).
         await ask("thread/resume", { threadId: resumeId, ...threadParams, excludeTurns: true }, opened.connection)) as { thread?: { id?: unknown }; model?: unknown } | undefined;
     const threadId = typeof answer?.thread?.id === "string" ? answer.thread.id : resumeId;
     // The model the thread actually runs on (EO-374). Not necessarily
