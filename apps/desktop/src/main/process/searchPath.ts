@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { posix } from "node:path";
 
 /**
  * Where EO looks for the command-line tools it runs on a person's behalf
@@ -145,7 +145,9 @@ export async function readLoginShellPath(options: ReadShellPathOptions = {}): Pr
 /** Folders searched beyond PATH whatever the shell said — the list `mcpHost/clients.ts` kept before EO-655. */
 export function fixedDirectories(home: string, platform: NodeJS.Platform): string[] {
   if (platform === "win32") return [];
-  return [join(home, ".local", "bin"), join(home, "bin"), join(home, ".npm-global", "bin"), join(home, ".bun", "bin"), "/opt/homebrew/bin", "/usr/local/bin"];
+  // POSIX joins whatever the host: these are only ever macOS and Linux
+  // directories, and a test run on Windows asks about them too.
+  return [posix.join(home, ".local", "bin"), posix.join(home, "bin"), posix.join(home, ".npm-global", "bin"), posix.join(home, ".bun", "bin"), "/opt/homebrew/bin", "/usr/local/bin"];
 }
 
 export interface SearchPathInputs {

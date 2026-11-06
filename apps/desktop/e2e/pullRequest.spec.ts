@@ -142,7 +142,11 @@ test("a story reaching ready_to_merge is pushed and opened as a pull request", a
   git(["checkout", "main"], repoPath);
 
   const mainLog: string[] = [];
-  const { app, window } = await launchApp(homeEnv(home, { PATH: `${binDir}${path.delimiter}${process.env["PATH"] ?? ""}` }));
+  // No login shell (EO-655). EO puts the shell's PATH ahead of the one it
+  // inherited, and on a macOS runner `/etc/zprofile`'s path_helper puts
+  // the real `gh` in /usr/local/bin ahead of this fake — so with $SHELL
+  // set, EO would run the runner's `gh` and not the one under test.
+  const { app, window } = await launchApp(homeEnv(home, { PATH: `${binDir}${path.delimiter}${process.env["PATH"] ?? ""}`, SHELL: "" }));
 
   app.process().stdout?.on("data", (chunk: Buffer) => mainLog.push(`[out] ${chunk.toString()}`));
   app.process().stderr?.on("data", (chunk: Buffer) => mainLog.push(`[err] ${chunk.toString()}`));
