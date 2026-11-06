@@ -96,7 +96,7 @@ describe("which settings files the CLI reads, and in what order", () => {
     expect(claudeManagedSettingsDirectory(platform)).toBe(directory);
     const reader = filesReader({ [file]: { env: { C: "managed" } } });
     const layers = claudeSettingsLayers({ cwd, env: { HOME: home }, sources: "none", platform, reader });
-    expect(layers).toEqual([{ source: "policySettings", path: file, env: { C: "managed" }, model: null }]);
+    expect(layers).toEqual([{ source: "policySettings", path: file, env: { C: "managed" }, model: null, plugins: [] }]);
   });
 
   it("has no managed settings directory on a platform the CLI does not name", () => {
