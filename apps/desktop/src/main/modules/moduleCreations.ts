@@ -271,6 +271,10 @@ export function postModuleCreation(db: Db, context: ModuleCommentContext, creati
           // which for a finished item is wherever it came to rest.
           ...(creation.pipeline === undefined ? {} : { pipeline: creation.pipeline }),
           ...(creation.repository === undefined ? {} : { repository: creation.repository }),
+          // A branch that already exists, worked on instead of cutting one
+          // (EO-648). The door judges it — a name git would not take, a
+          // pipeline whose entry works on no branch — and writes it.
+          ...(creation.existingBranch === undefined ? {} : { existingBranch: creation.existingBranch }),
           fallbackWorkspaceId: origin.workspaceId,
           // Whoever filed the item this came from. A module is nobody,
           // and the local person on whichever machine ran it is not who
