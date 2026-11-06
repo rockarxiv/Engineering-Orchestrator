@@ -373,8 +373,15 @@ function windowsSystemExecutable(relative) {
   return win32.join(win32.isAbsolute(configured) ? configured : "C:\\Windows", "System32", relative);
 }
 
-/** The PowerShell command that lists every process with its parent and creation time, as `pid ppid FILETIME` lines. */
-const WINDOWS_TABLE_COMMAND = "Get-CimInstance -Query 'SELECT ProcessId, ParentProcessId, CreationDate FROM Win32_Process' | ForEach-Object { '{0} {1} {2}' -f $_.ProcessId, $_.ParentProcessId, $(if ($_.CreationDate) { $_.CreationDate.ToFileTimeUtc() } else { 0 }) }";
+/**
+ * The PowerShell command that lists every process with its parent and
+ * creation time, as `pid ppid FILETIME` lines — with module autoloading
+ * off and `Get-CimInstance`'s module imported by its path, for the reason
+ * in `processTree.ts` (EO-645): the environment a backend starts a server
+ * in may not lead PowerShell to its module cache, and without it every
+ * autoload reads every installed module again, each look.
+ */
+const WINDOWS_TABLE_COMMAND = "$PSModuleAutoLoadingPreference = 'None'; Import-Module -Name ($PSHOME + '\\Modules\\CimCmdlets'); Get-CimInstance -Query 'SELECT ProcessId, ParentProcessId, CreationDate FROM Win32_Process' | ForEach-Object { '{0} {1} {2}' -f $_.ProcessId, $_.ParentProcessId, $(if ($_.CreationDate) { $_.CreationDate.ToFileTimeUtc() } else { 0 }) }";
 
 /**
  * **The holder, Windows only (EO-502).** Run as a process of its own, from
