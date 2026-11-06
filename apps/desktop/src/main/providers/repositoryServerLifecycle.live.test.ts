@@ -245,8 +245,8 @@ describe.skipIf(!OPTED_IN)("a real backend and the query server it was given", (
       // running", and it still did at 0.161.0 under `exec` (EO-370). At
       // 0.161.0 over `app-server` (EO-372) it printed "ended by the
       // cancelled CLI": the app-server, sent the same SIGTERM, takes its
-      // MCP servers with it. At 0.163.0 (EO-453) and 0.165.0 (EO-599) it
-      // printed "ended by the cancelled CLI" again. The afterEach ends it
+      // MCP servers with it. At 0.163.0 (EO-453), 0.165.0 (EO-599) and
+      // 0.166.0 (EO-644) it printed "ended by the cancelled CLI" again. The afterEach ends it
       // either way.
       const reaped = await goneWithin(pid, 15_000);
       console.info(`[EO-343] codex: a server that ignores EOF was ${reaped ? "ended by the cancelled CLI" : "left running by the cancelled CLI"} (pid ${pid})`);

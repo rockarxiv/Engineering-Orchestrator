@@ -36,6 +36,8 @@ CI runs the same checks on every pull request, along with `pnpm design:check`, w
 
 Every pull request is reviewed by the maintainer before it can merge.
 
+Dependency updates arrive as Dependabot pull requests, and are reviewed like any other pull request.
+
 ## Writing the change
 
 - **Tests live beside the code**, and they are part of the change, not a follow-up. Engine logic is unit-tested; anything touching SQLite uses an in-memory database.

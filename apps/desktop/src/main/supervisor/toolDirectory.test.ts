@@ -553,7 +553,8 @@ describe("checking that an attached server actually started", () => {
  * the way 0.161.0 does, including the `starting` before each outcome —
  * as 0.163.0 still does, one server at a time (EO-453), and 0.165.0 too:
  * its notification is the same file byte for byte, and a real turn there
- * reported `codex_apps` `starting`, then `ready` (EO-599).
+ * reported `codex_apps` `starting`, then `ready` (EO-599) — and 0.166.0
+ * the same, file and real turn both (EO-644).
  */
 describe("checking that an attached server actually started, on Codex", () => {
   function codexReporting(...startups: ReturnType<typeof note.mcpStartup>[]) {

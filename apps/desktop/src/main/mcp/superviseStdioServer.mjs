@@ -292,13 +292,13 @@ function processTable(withMark) {
       return table;
     }
     if (process.platform === "darwin") {
-      const listing = execFileSync("ps", ["-A", "-o", "pid=,ppid=,stat=,lstart="], { encoding: "utf8", maxBuffer: 256 * 1024 * 1024, windowsHide: true });
+      const listing = execFileSync(DARWIN_PS, ["-A", "-o", "pid=,ppid=,stat=,lstart="], { encoding: "utf8", maxBuffer: 256 * 1024 * 1024, windowsHide: true });
       for (const line of listing.split("\n")) {
         const match = /^\s*(\d+)\s+(\d+)\s+(\S+)\s+(.+?)\s*$/.exec(line);
         if (match) table.set(Number(match[1]), { ppid: Number(match[2]), start: match[4], zombie: match[3].startsWith("Z"), marked: false });
       }
       if (withMark) {
-        const environments = execFileSync("ps", ["-A", "-wwE", "-o", "pid=,command="], { encoding: "utf8", maxBuffer: 256 * 1024 * 1024, windowsHide: true });
+        const environments = execFileSync(DARWIN_PS, ["-A", "-wwE", "-o", "pid=,command="], { encoding: "utf8", maxBuffer: 256 * 1024 * 1024, windowsHide: true });
         for (const line of environments.split("\n")) {
           const match = /^\s*(\d+)\s/.exec(line);
           const row = match && table.get(Number(match[1]));
@@ -355,6 +355,14 @@ function descendants(withMark = cgroup === null) {
 }
 
 /**
+ * macOS's `ps`, by its path, for the reason `windowsSystemExecutable`
+ * gives below: the backend chose this process's PATH, and a PATH without
+ * `/bin` left the server's tree unfound (EO-640). As `DARWIN_PS` in
+ * `process/processTree.ts`, restated because this file imports nothing.
+ */
+const DARWIN_PS = "/bin/ps";
+
+/**
  * One of Windows' own programs, by its System32 path: the backend chose
  * this process's PATH, and finding or ending the server's tree must not
  * depend on what it put there. As `windowsSystemExecutable` in
@@ -365,8 +373,15 @@ function windowsSystemExecutable(relative) {
   return win32.join(win32.isAbsolute(configured) ? configured : "C:\\Windows", "System32", relative);
 }
 
-/** The PowerShell command that lists every process with its parent and creation time, as `pid ppid FILETIME` lines. */
-const WINDOWS_TABLE_COMMAND = "Get-CimInstance -Query 'SELECT ProcessId, ParentProcessId, CreationDate FROM Win32_Process' | ForEach-Object { '{0} {1} {2}' -f $_.ProcessId, $_.ParentProcessId, $(if ($_.CreationDate) { $_.CreationDate.ToFileTimeUtc() } else { 0 }) }";
+/**
+ * The PowerShell command that lists every process with its parent and
+ * creation time, as `pid ppid FILETIME` lines — with module autoloading
+ * off and `Get-CimInstance`'s module imported by its path, for the reason
+ * in `processTree.ts` (EO-645): the environment a backend starts a server
+ * in may not lead PowerShell to its module cache, and without it every
+ * autoload reads every installed module again, each look.
+ */
+const WINDOWS_TABLE_COMMAND = "$PSModuleAutoLoadingPreference = 'None'; Import-Module -Name ($PSHOME + '\\Modules\\CimCmdlets'); Get-CimInstance -Query 'SELECT ProcessId, ParentProcessId, CreationDate FROM Win32_Process' | ForEach-Object { '{0} {1} {2}' -f $_.ProcessId, $_.ParentProcessId, $(if ($_.CreationDate) { $_.CreationDate.ToFileTimeUtc() } else { 0 }) }";
 
 /**
  * **The holder, Windows only (EO-502).** Run as a process of its own, from

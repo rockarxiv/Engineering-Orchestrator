@@ -32,7 +32,7 @@ import { repositorySearchNudge } from "./broadSearch.js";
  *    person's own setup may find there — and that hook must stay unrun.
  *    A thread-wide waiver of review would run it.
  *
- * Last run against the 0.165.0 binary EO pins (EO-599).
+ * Last run against the 0.166.0 binary EO pins (EO-644).
  *
  * The index is a stand-in on purpose: a vocabulary and a `knows` that
  * says yes, served by a command that is not an MCP server at all. The

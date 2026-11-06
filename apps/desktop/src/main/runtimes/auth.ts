@@ -215,7 +215,7 @@ export function readClaudeAuth(result: AuthProbeResult): RuntimeAuthView {
 const CODEX_SIGNED_OUT = /not\s+(?:logged|signed)\s+in|logged\s+out|no\s+credentials|run\s+["'`]?codex\s+login/i;
 const CODEX_SIGNED_IN = /(?:logged|signed)\s+in(?:\s+(?:using|with|as)\s+(?<method>[^\n]+))?/i;
 /**
- * A key held by the CLI, as 0.165.0 words it (EO-599): "API key
+ * A key held by the CLI, as 0.165.0 words it (EO-599) and 0.166.0 still does (EO-644): "API key
  * configured - sk-…", then "Authentication is checked when you send a
  * request." 0.163.0 said "Logged in using an API key - sk-…" for the
  * same state, which `CODEX_SIGNED_IN` reads. The state did not change

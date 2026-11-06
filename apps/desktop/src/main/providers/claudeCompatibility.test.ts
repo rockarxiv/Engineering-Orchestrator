@@ -1,12 +1,14 @@
 import { describe, expect, it } from "vitest";
 import {
   claudeCompatibilityHolds,
+  claudeManagedSettingsDirectory,
   claudeSettingsLayers,
   effectiveClaudeEnvironment,
   effectiveClaudeModel,
   fullPromptHeld,
   isCustomModelName,
   modelCatalogHeldOff,
+  privacyPluginHeldOff,
   refusalFallbackHeldOff,
   toolSearchHeldOff,
   type ClaudeSettingsReader,
@@ -19,9 +21,13 @@ function filesReader(files: Record<string, unknown>, dirs: Record<string, string
 
 const GATEWAY = "https://llm-gateway.example.com/anthropic";
 
+/** The flag settings that switch 2.1.317's account-email check off (EO-644). */
+const PRIVACY_OFF = { enabledPlugins: { "cc-plugin-privacy@builtin": false } };
+
 /**
  * The defaults claude@0.3.312 changed, each held to claude@0.3.302's answer
- * (EO-599). Every rule here was read off both binaries and measured with a
+ * (EO-599), and the one claude@0.3.318 changed that EO's default setup
+ * meets, held to 0.3.312's (EO-644). Every rule here was read off both binaries and measured with a
  * capture server; the measurements are recorded in `claudeCompatibility.ts`.
  */
 describe("which settings files the CLI reads, and in what order", () => {
@@ -77,6 +83,26 @@ describe("which settings files the CLI reads, and in what order", () => {
     expect(effectiveClaudeEnvironment({}, layers)).toEqual({ A: "global", B: "project", C: "drop-in" });
   });
 
+  // Every platform's answer side by side, macOS's included: CI runs this
+  // file on Linux, where the darwin branch is never the one taken, so a
+  // wrong macOS directory would pass everything else here. Checked
+  // against Claude Code's own documentation, "Deploy a managed settings
+  // file" (https://code.claude.com/docs/en/managed-settings).
+  it.each([
+    ["darwin", "/Library/Application Support/ClaudeCode", "/Library/Application Support/ClaudeCode/managed-settings.json"],
+    ["linux", "/etc/claude-code", "/etc/claude-code/managed-settings.json"],
+    ["win32", "C:\\Program Files\\ClaudeCode", "C:\\Program Files\\ClaudeCode\\managed-settings.json"],
+  ] as const)("reads managed settings on %s from %s", (platform, directory, file) => {
+    expect(claudeManagedSettingsDirectory(platform)).toBe(directory);
+    const reader = filesReader({ [file]: { env: { C: "managed" } } });
+    const layers = claudeSettingsLayers({ cwd, env: { HOME: home }, sources: "none", platform, reader });
+    expect(layers).toEqual([{ source: "policySettings", path: file, env: { C: "managed" }, model: null, plugins: [] }]);
+  });
+
+  it("has no managed settings directory on a platform the CLI does not name", () => {
+    expect(claudeManagedSettingsDirectory("freebsd")).toBeNull();
+  });
+
   it("skips a file it cannot parse, as the CLI does", () => {
     const reader: ClaudeSettingsReader = { readText: (path) => (path === `${cwd}/.claude/settings.json` ? "{ not json" : null), listDir: () => [] };
     expect(claudeSettingsLayers({ cwd, env: { HOME: home }, sources: "project", platform: "linux", reader })).toEqual([]);
@@ -121,9 +147,9 @@ describe("what is not held", () => {
     // A scope decision (EO-599): 2.1.312's Monitor, sleep refusal, prompt
     // guidance and plugin monitors come as one, and EO keeps none of them back.
     for (const env of [{ CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1" }, { DISABLE_TELEMETRY: "1" }, { DO_NOT_TRACK: "1" }]) {
-      expect(claudeCompatibilityHolds({ spawnEnv: { HOME: "/home/someone", ...env }, cwd: "/work/repo", sources: "project", platform: "linux", reader: filesReader({}) })).toEqual({ env: {} });
+      expect(claudeCompatibilityHolds({ spawnEnv: { HOME: "/home/someone", ...env }, cwd: "/work/repo", sources: "project", platform: "linux", reader: filesReader({}) })).toEqual({ env: {}, settings: PRIVACY_OFF });
     }
-    expect(Object.keys(claudeCompatibilityHolds({ spawnEnv: { HOME: "/home/someone", CLAUDE_CODE_USE_VERTEX: "1" }, cwd: "/work/repo", sources: "project", platform: "linux", reader: filesReader({}) }))).toEqual(["env"]);
+    expect(Object.keys(claudeCompatibilityHolds({ spawnEnv: { HOME: "/home/someone", CLAUDE_CODE_USE_VERTEX: "1" }, cwd: "/work/repo", sources: "project", platform: "linux", reader: filesReader({}) }))).toEqual(["env", "settings"]);
   });
 });
 
@@ -164,16 +190,53 @@ describe("a custom deployment on a cloud platform", () => {
   });
 });
 
+describe("the account-email check (EO-644)", () => {
+  const home = "/home/someone";
+  const cwd = "/work/repo";
+  const holds = (sources: "none" | "project" | "all", files: Record<string, unknown>) =>
+    claudeCompatibilityHolds({ spawnEnv: { HOME: home }, cwd, sources, platform: "linux", reader: filesReader(files) }).settings;
+
+  it("is switched off for every kind of turn, a side call included, when nobody has named it", () => {
+    for (const sources of ["none", "project", "all"] as const) expect(holds(sources, {}), sources).toEqual(PRIVACY_OFF);
+  });
+
+  it("is left to the person when their user settings name it, either way, for an agent on their own setup", () => {
+    for (const value of [true, false]) {
+      expect(holds("all", { [`${home}/.claude/settings.json`]: { enabledPlugins: { "cc-plugin-privacy@builtin": value } } }), String(value)).toEqual({});
+    }
+    // Read as theirs in any casing: EO does not hold over what the person may have meant.
+    expect(holds("all", { [`${home}/.claude/settings.json`]: { enabledPlugins: { "CC-Plugin-Privacy@Builtin": true } } })).toEqual({});
+  });
+
+  it("is left to managed settings when they name it", () => {
+    expect(holds("project", { "/etc/claude-code/managed-settings.json": { enabledPlugins: { "cc-plugin-privacy@builtin": true } } })).toEqual({});
+  });
+
+  it("is still held where the CLI would not read the person's naming of it: project or local settings, or user settings the turn does not load", () => {
+    expect(holds("all", { [`${cwd}/.claude/settings.json`]: { enabledPlugins: { "cc-plugin-privacy@builtin": true } } })).toEqual(PRIVACY_OFF);
+    expect(holds("all", { [`${cwd}/.claude/settings.local.json`]: { enabledPlugins: { "cc-plugin-privacy@builtin": true } } })).toEqual(PRIVACY_OFF);
+    expect(holds("project", { [`${home}/.claude/settings.json`]: { enabledPlugins: { "cc-plugin-privacy@builtin": true } } })).toEqual(PRIVACY_OFF);
+  });
+
+  it("is not confused by another plugin of the person's", () => {
+    expect(holds("all", { [`${home}/.claude/settings.json`]: { enabledPlugins: { "formatter@anthropic-tools": true } } })).toEqual(PRIVACY_OFF);
+    const layers = claudeSettingsLayers({ cwd, env: { HOME: home }, sources: "all", platform: "linux", reader: filesReader({ [`${home}/.claude/settings.json`]: { enabledPlugins: { "formatter@anthropic-tools": true } } }) });
+    expect(layers[0]?.plugins).toEqual(["formatter@anthropic-tools"]);
+    expect(privacyPluginHeldOff(layers)).toBe(true);
+  });
+});
+
 describe("everything a turn is handed", () => {
   it("decides on the settings files as well as the spawn environment", () => {
     const reader = filesReader({ "/work/repo/.claude/settings.json": { env: { ANTHROPIC_BASE_URL: GATEWAY, CLAUDE_CODE_USE_VERTEX: "" }, model: "my-custom-deployment" } });
     expect(claudeCompatibilityHolds({ spawnEnv: { HOME: "/home/someone" }, cwd: "/work/repo", sources: "project", platform: "linux", reader })).toEqual({
       env: { ENABLE_TOOL_SEARCH: "false", CLAUDE_CODE_DISABLE_REFUSAL_FALLBACK: "1" },
+      settings: PRIVACY_OFF,
     });
   });
 
-  it("holds nothing for a turn on Anthropic's own API with nothing set", () => {
-    expect(claudeCompatibilityHolds({ spawnEnv: { HOME: "/home/someone" }, cwd: "/work/repo", sources: "all", platform: "linux", reader: filesReader({}) })).toEqual({ env: {} });
+  it("holds only the account-email check for a turn on Anthropic's own API with nothing set", () => {
+    expect(claudeCompatibilityHolds({ spawnEnv: { HOME: "/home/someone" }, cwd: "/work/repo", sources: "all", platform: "linux", reader: filesReader({}) })).toEqual({ env: {}, settings: PRIVACY_OFF });
   });
 
   it("never sets a variable a settings file defines, even as empty, which the CLI would lay over it", () => {
@@ -181,6 +244,7 @@ describe("everything a turn is handed", () => {
     const holds = claudeCompatibilityHolds({ spawnEnv: { HOME: "/home/someone" }, cwd: "/work/repo", sources: "project", model: "my-custom-deployment", platform: "linux", reader });
     expect(holds).toEqual({
       env: { CLAUDE_CODE_SIMPLE_SYSTEM_PROMPT: "0", CLAUDE_CODE_DISABLE_REFUSAL_FALLBACK: "1" },
+      settings: PRIVACY_OFF,
     });
   });
 

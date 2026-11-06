@@ -453,7 +453,7 @@ describe("the method in use", () => {
   });
 
   it("reads Codex 0.165.0's API-key sentence as an API key too (EO-599)", async () => {
-    // Verbatim from `codex login status` at 0.165.0 with a key stored by
+    // Verbatim from `codex login status` at 0.165.0, and word for word the same at 0.166.0 (EO-644), with a key stored by
     // `login --with-api-key`; 0.163.0 printed "Logged in using an API key - sk-…".
     const { run } = answering({ stdout: "API key configured - sk-eo599***bogus\nAuthentication is checked when you send a request." });
 

@@ -112,7 +112,7 @@ export interface ProcessTable {
 export async function readProcessTable(marker?: string): Promise<ProcessTable | null> {
   try {
     if (process.platform === "linux") return await linuxTable(marker);
-    if (process.platform === "darwin") return darwinTable(await run("ps", ["-A", "-o", "pid=,ppid=,stat=,lstart="]), marker === undefined ? undefined : await run("ps", ["-A", "-wwE", "-o", "pid=,command="]), marker);
+    if (process.platform === "darwin") return darwinTable(await run(DARWIN_PS, ["-A", "-o", "pid=,ppid=,stat=,lstart="]), marker === undefined ? undefined : await run(DARWIN_PS, ["-A", "-wwE", "-o", "pid=,command="]), marker);
     if (process.platform === "win32") return windowsTable(await run(windowsSystemExecutable(WINDOWS_POWERSHELL), WINDOWS_TABLE_ARGS, WINDOWS_LOOK_TIMEOUT_MS));
   } catch (error) {
     console.warn("[eo] could not read the process table:", error);
@@ -132,7 +132,7 @@ export function readProcessTableSync(marker?: string): ProcessTable | null {
       return table;
     }
     if (process.platform === "darwin") {
-      const listing = (args: string[]) => execFileSync("ps", args, { encoding: "utf8", maxBuffer: TABLE_BUFFER, windowsHide: true });
+      const listing = (args: string[]) => execFileSync(DARWIN_PS, args, { encoding: "utf8", maxBuffer: TABLE_BUFFER, windowsHide: true });
       return darwinTable(listing(["-A", "-o", "pid=,ppid=,stat=,lstart="]), marker === undefined ? undefined : listing(["-A", "-wwE", "-o", "pid=,command="]), marker);
     }
     if (process.platform === "win32") return windowsTable(execFileSync(windowsSystemExecutable(WINDOWS_POWERSHELL), WINDOWS_TABLE_ARGS, { encoding: "utf8", maxBuffer: TABLE_BUFFER, timeout: WINDOWS_LOOK_TIMEOUT_MS, windowsHide: true }));
@@ -168,6 +168,15 @@ function linuxRow(table: ProcessTable, name: string, stat: string | null, enviro
   table.rows.set(pid, { pid, ppid: Number(fields[1]), start: fields[19] ?? "", zombie: fields[0] === "Z" || fields[0] === "X" });
   if (marker !== undefined && environ !== null && `\0${environ}\0`.includes(`\0${TREE_MARKER_VARIABLE}=${marker}\0`)) table.marked.add(pid);
 }
+
+/**
+ * macOS's `ps`, by its path, never looked up on PATH (EO-640): as with
+ * Windows' System32 programs below, a caller that narrowed PATH — a test
+ * stubbing it to `/probe/bin:/usr/bin` did, on the first macOS run —
+ * would otherwise leave every tree unfound, its descendants unended.
+ * `ps` lives in `/bin` there, and nowhere else.
+ */
+const DARWIN_PS = "/bin/ps";
 
 /** Large: `ps -E` prints every environment on the machine that is ours. */
 const TABLE_BUFFER = 256 * 1024 * 1024;
@@ -221,13 +230,24 @@ function darwinTable(listing: string, environments: string | undefined, marker: 
  * PowerShell and taskkill are named by their System32 paths, never looked
  * up on PATH (`windowsSystemExecutable`): a caller that narrowed PATH
  * would otherwise leave every tree unfound, its descendants unended.
+ *
+ * And module autoloading is switched off, `Get-CimInstance`'s module
+ * imported by its path under PowerShell's own folder (EO-645). Whenever a
+ * command autoloads, PowerShell checks every installed module against a
+ * cache that `PSModulePath` and `PSModuleAnalysisCachePath` lead it to.
+ * An environment without them — turbo's, for a task; a backend's, for a
+ * server it starts — has it read every module again. On a machine with
+ * many installed, GitHub's hosted Windows runner among them, that took
+ * twenty to thirty seconds a look, every look ran out its limit, and no
+ * tree was found. With nothing autoloaded the look took a quarter of a
+ * second in the same environment.
  */
 const WINDOWS_POWERSHELL = "WindowsPowerShell\\v1.0\\powershell.exe";
 const WINDOWS_TABLE_ARGS = [
   "-NoProfile",
   "-NonInteractive",
   "-Command",
-  "Get-CimInstance -Query 'SELECT ProcessId, ParentProcessId, CreationDate FROM Win32_Process' | ForEach-Object { '{0} {1} {2}' -f $_.ProcessId, $_.ParentProcessId, $(if ($_.CreationDate) { $_.CreationDate.ToFileTimeUtc() } else { 0 }) }",
+  "$PSModuleAutoLoadingPreference = 'None'; Import-Module -Name ($PSHOME + '\\Modules\\CimCmdlets'); Get-CimInstance -Query 'SELECT ProcessId, ParentProcessId, CreationDate FROM Win32_Process' | ForEach-Object { '{0} {1} {2}' -f $_.ProcessId, $_.ParentProcessId, $(if ($_.CreationDate) { $_.CreationDate.ToFileTimeUtc() } else { 0 }) }",
 ];
 
 export function windowsTable(listing: string): ProcessTable {

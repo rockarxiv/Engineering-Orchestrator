@@ -30,8 +30,12 @@ export function ItemHeader({
   children?: ReactNode;
 }) {
   const navigate = useNavigate();
+  // `stackActions`, as the board's head has: in a canvas a few hundred
+  // pixels across, the actions took the whole row and left the title a
+  // column no wide at all (EO-646, found where a hosted runner's screen
+  // made the window 1024 wide).
   return (
-    <ViewHeader icon={current === "item" ? <FileText size={15} /> : <SquareTerminal size={15} />} title={title} meta={meta} actions={actions}>
+    <ViewHeader icon={current === "item" ? <FileText size={15} /> : <SquareTerminal size={15} />} title={title} meta={meta} actions={actions} stackActions>
       <Tabs
         label="Item or runs"
         value={current}
