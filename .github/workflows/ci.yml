@@ -22,9 +22,9 @@ jobs:
   # because GitHub bills macOS at ten times wall-clock and Windows at
   # twice. The cross-platform suite still runs on every platform — in the
   # release workflow, before anything is packaged, which is the moment it
-  # actually protects something. And on Windows in CI too, but only where
-  # that costs no minutes; see test-windows below. And on macOS, hosted,
-  # which costs a public repository nothing; see test-macos below.
+  # actually protects something. And on Windows and macOS in CI too,
+  # hosted, which costs a public repository nothing; see test-windows and
+  # test-macos below.
   test:
     # ubuntu-latest normally. The CI_RUNS_ON repo variable points this at
     # the self-hosted runner while the free Actions allowance is spent;
@@ -92,48 +92,46 @@ jobs:
           fi
           pnpm test
 
-  # The suite on Windows, on every push, but only on a self-hosted runner:
-  # it runs when CI_WINDOWS_RUNS_ON names one and is skipped otherwise,
-  # so going back to hosted runners cannot quietly bring back the
-  # Windows bill that made CI Linux-only above.
+  # The suite on Windows, on every push to main and every pull request
+  # (EO-645), forks' included: GitHub-hosted windows-latest, which costs a
+  # public repository nothing. It is what keeps the suite passing on
+  # Windows between releases, rather than the release finding out.
+  #
+  # CI_WINDOWS_RUNS_ON, when set, names a self-hosted Windows runner to use
+  # instead, for pushes and same-repository pull requests. Never for a pull
+  # request from a fork, for the reason in `test`: a self-hosted runner
+  # must never run a stranger's code. A fork's pull request runs on
+  # windows-latest, as if the variable were not set.
   #
   # Only the suite. Typecheck, lint and the design-system check read the
   # same sources on any system and already run in `test`; what differs on
   # Windows is paths, shells and processes, and those are in the tests.
   #
   # In slices, one job each, as the release workflow's verify jobs are. The
-  # whole suite as one job under the self-hosted runner's service failed
+  # whole suite as one job under a self-hosted runner's service failed
   # every test that starts a Codex app-server with `spawn EPERM` — Windows
-  # refusing to start the process at all — while the same files pass there
-  # on their own, the release's slices pass there, and the whole suite run
-  # by hand on the same machine never hits it. EO-598 pinned it down:
-  # Defender judging `node -e` command lines, which the tests no longer
-  # hand it.
+  # refusing to start the process at all — while the same files passed
+  # there on their own. EO-598 pinned it down: Defender judging `node -e`
+  # command lines, which the tests no longer hand it.
   #
-  # Much of what slows a Windows runner lies outside the repository:
-  # Defender scanning every file and process the suite makes, a pagefile
-  # too small for the suite's peak, too little memory. Those are the
-  # machine owner's to fix; the steps below that report on the machine
-  # say on every run whether it is in that state.
+  # On a self-hosted runner, much of what slows Windows lies outside the
+  # repository: Defender scanning every file and process the suite makes,
+  # a pagefile too small for the suite's peak, too little memory. The two
+  # steps below that run only there end what earlier jobs left behind and
+  # report whether the machine is in that state. A hosted runner is a
+  # fresh VM each job, with nothing earlier to end.
   #
   # The runner's default shell, as in the release workflow's verify job,
   # and for its reason: Git Bash's GNU tar reads `C:\...` as a host.
-  #
-  # Skipped for a pull request from a fork, for the reason in `test`: a
-  # self-hosted runner must never run a stranger's code. Not
-  # moved to windows-latest instead: that is the Windows bill this job
-  # exists to avoid, and the release workflow runs the suite on Windows
-  # before anything ships.
   test-windows:
-    if: vars.CI_WINDOWS_RUNS_ON != '' && !(github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository)
     name: test-windows (${{ matrix.shard }}/4)
     strategy:
       fail-fast: false
       matrix:
         shard: [1, 2, 3, 4]
-    runs-on: ${{ vars.CI_WINDOWS_RUNS_ON }}
+    runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && 'windows-latest' || vars.CI_WINDOWS_RUNS_ON || 'windows-latest' }}
     steps:
-      # The runner keeps one machine for every job, one job at a time, so
+      # A self-hosted runner keeps one machine for every job, one at a time, so
       # a process of this user's from the work folder, TEMP or Git that
       # started before this job did is an earlier job's: a test's child
       # that outlived it, or a whole suite whose job was cancelled or lost
@@ -141,6 +139,7 @@ jobs:
       # wants, and nothing else ends it. Get-Process, not CIM: the first
       # CIM query can stall for minutes (see the WMI step below).
       - name: End what earlier jobs left running
+        if: runner.environment == 'self-hosted'
         shell: pwsh
         run: |
           $job = Get-Process Runner.Worker -ErrorAction SilentlyContinue | Sort-Object StartTime | Select-Object -Last 1
@@ -193,6 +192,7 @@ jobs:
       # folders. A warning, never a failure: the machine is a person's to
       # change, and the suite may still pass without it.
       - name: Report the machine
+        if: runner.environment == 'self-hosted'
         continue-on-error: true
         timeout-minutes: 5
         shell: pwsh
