@@ -166,9 +166,9 @@ jobs:
     # Null except for Linux on a self-hosted runner; see the top.
     container: ${{ matrix.container }}
     steps:
-      - uses: actions/checkout@v5
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v5
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: pnpm
@@ -233,9 +233,9 @@ jobs:
     # Null except for Linux on a self-hosted runner; see the top.
     container: ${{ matrix.container }}
     steps:
-      - uses: actions/checkout@v5
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v5
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: pnpm
@@ -343,7 +343,7 @@ jobs:
       # A dry run publishes nothing, so this is the only place its
       # installers end up. Kept briefly: they are for looking at, and
       # every day they are kept is quota a later run cannot use.
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: github.ref_type != 'tag'
         with:
           name: eo-${{ matrix.id }}
