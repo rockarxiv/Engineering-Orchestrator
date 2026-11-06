@@ -21,7 +21,7 @@
     "postinstall": "node scripts/fix-electron-install.mjs"
   },
   "devDependencies": {
-    "eslint": "9.39.5",
+    "eslint": "10.14.0",
     "turbo": "2.10.7",
     "typescript": "5.9.3",
     "vitest": "4.1.10"
