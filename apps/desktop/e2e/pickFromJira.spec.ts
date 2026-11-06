@@ -132,7 +132,9 @@ test("an epic is picked from Jira and its children arrive as stories", async () 
       // and `--use-mock-keychain`, so safeStorage lands on Chromium's
       // plaintext store and J-01 refuses — correctly — to put a token
       // there. Naming a real backend is the only way an e2e can reach
-      // the connected half of this feature at all.
+      // the connected half of this feature at all. The name is Linux's;
+      // on a Mac setting it at all is what puts the real keychain back,
+      // and Windows has only DPAPI and no switch.
       EO_PASSWORD_STORE: process.env["EO_PASSWORD_STORE"] ?? "gnome-libsecret",
     }),
   );
@@ -186,6 +188,15 @@ test("an epic is picked from Jira and its children arrive as stories", async () 
     await site.getByLabel("Personal access token").fill("a-real-looking-pat");
     await site.getByRole("button", { name: "Save" }).click();
     await expect(site).toHaveCount(0, { timeout: 15_000 });
+
+    // On a Mac, that the token was encrypted under the real keychain and
+    // not the mock one Playwright asks for (see EO_PASSWORD_STORE in
+    // `index.ts`): the key safeStorage encrypts with lives there as the
+    // app's name and "Safe Storage", and the app is "Electron" when run
+    // unpackaged, as here.
+    if (process.platform === "darwin") {
+      expect(() => execFileSync("security", ["find-generic-password", "-s", "Electron Safe Storage"], { stdio: "ignore" }), "no safeStorage key in the macOS keychain").not.toThrow();
+    }
 
     const connect = view.getByLabel("Connect to Jira");
     await connect.getByLabel("Project key").fill("ACME");

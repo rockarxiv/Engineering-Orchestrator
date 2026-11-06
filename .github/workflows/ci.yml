@@ -251,11 +251,15 @@ jobs:
       - name: Desktop suite, slice ${{ matrix.shard }} of 4
         run: pnpm exec turbo run test '--filter=@eo/desktop' '--' '--shard=${{ matrix.shard }}/4'
 
-  # Separate from the matrix: Electron needs a display, and one Linux run
-  # is enough to catch what these tests are for — the preload bridge, the
-  # real IPC round-trip, and the screens that only fail when a real main
+  # Separate from the matrix: Electron needs a display, and these tests
+  # are for what only the real app shows — the preload bridge, the real
+  # IPC round-trip, and the screens that only fail when a real main
   # process is behind them. They had drifted against a page that no
   # longer existed precisely because nothing ran them.
+  #
+  # Named `e2e` and kept on this runner selection because the `main`
+  # ruleset requires a check by that name. The same suite runs on macOS
+  # and Windows in e2e-macos and e2e-windows below.
   e2e:
     # Hosted for a pull request from a fork, for the reason in `test`.
     runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && 'ubuntu-latest' || vars.CI_RUNS_ON || 'ubuntu-latest' }}
@@ -319,3 +323,70 @@ jobs:
             pnpm --filter @eo/desktop exec playwright test
           '
           
+
+  # The same suite on macOS (EO-646): the real app started there, its
+  # window and dock lifecycle, real paths, and the keychain behind
+  # safeStorage. Always GitHub-hosted, forks' pull requests included, for
+  # test-macos's reason, so none of the self-hosted runner variables
+  # reach it. No virtual display: a hosted Mac has a desktop session.
+  e2e-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Through turbo, for the reason in `e2e`. No Playwright browsers:
+      # every spec launches Electron, which brings its own Chromium.
+      - name: Build the app
+        run: pnpm build --filter=@eo/desktop
+
+      # The Jira spec stores a token through safeStorage, which on a Mac
+      # keeps its key in the user's default keychain, and asks for the
+      # real one rather than Playwright's mock (EO_PASSWORD_STORE in
+      # src/main/index.ts). A keychain made here, unlocked, with no
+      # timeout to lock it again, and made the default, so nothing waits
+      # on a password prompt nobody can answer. The password is a
+      # throwaway on a throwaway runner.
+      - name: A keychain the app can unlock without a prompt
+        run: |
+          keychain="$RUNNER_TEMP/eo-ci.keychain-db"
+          security create-keychain -p eo-ci "$keychain"
+          security set-keychain-settings "$keychain"
+          security unlock-keychain -p eo-ci "$keychain"
+          security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
+          security default-keychain -d user -s "$keychain"
+
+      - name: End-to-end
+        run: pnpm --filter @eo/desktop exec playwright test
+
+  # The same suite on Windows (EO-646). Hosted, on every push to main
+  # and every pull request: unlike test-windows, this cannot wait for a
+  # self-hosted runner, since nothing else starts the real app on
+  # Windows before a release does. Neither a display nor a keyring:
+  # Windows has a desktop session, and safeStorage there is DPAPI, which
+  # the signed-in account already holds.
+  e2e-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build the app
+        run: pnpm build --filter=@eo/desktop
+
+      - name: End-to-end
+        run: pnpm --filter @eo/desktop exec playwright test

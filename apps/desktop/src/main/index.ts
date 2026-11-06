@@ -32,8 +32,18 @@ import { startMain } from "./startMain.js";
 //
 // Here rather than in the platform because it has to be said before
 // `app.whenReady()`, and the platform is not built until after it.
+//
+// On a Mac there is one real backend, the keychain, and what Playwright
+// forces there is `--use-mock-keychain`: a fake that encrypts with a
+// fixed key, so an e2e that stores a secret proves nothing about the
+// keychain. Setting the variable at all asks for the real one back
+// (EO-646). Linux's switch is meaningless there and harmless; Windows
+// has DPAPI and neither switch.
 const passwordStore = process.env["EO_PASSWORD_STORE"];
-if (passwordStore) app.commandLine.appendSwitch("password-store", passwordStore);
+if (passwordStore) {
+  app.commandLine.appendSwitch("password-store", passwordStore);
+  if (process.platform === "darwin") app.commandLine.removeSwitch("use-mock-keychain");
+}
 
 const gotSingleInstanceLock = app.requestSingleInstanceLock();
 

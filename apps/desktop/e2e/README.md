@@ -28,6 +28,25 @@ Electron needs a display. Without one every spec fails at launch with
 xvfb-run -a pnpm e2e
 ```
 
+## On macOS and Windows
+
+CI runs the same suite on both (`e2e-macos`, `e2e-windows`). Neither
+needs a display. Each launch gets its own `userData` through
+`--user-data-dir` (see `launchApp`), because on those two systems no
+environment variable moves it. On every platform it sits at
+`<home>/.config/Electron`, which is why a spec can open
+`.config/Electron/eo.db` wherever it runs.
+
+Two tests are skipped on Windows, each giving its reason in the code.
+`firstRun.spec.ts` fakes a signed-in Claude, and `pullRequest.spec.ts`
+fakes `gh`. Both fakes are scripts, and Windows starts only a real
+`.exe` for either.
+
+On a Mac, setting `EO_PASSWORD_STORE` (the Jira spec always does)
+undoes Playwright's `--use-mock-keychain`, so safeStorage uses the real
+default keychain. That keychain has to be unlocked, or the spec waits on
+a prompt. CI makes a temporary one with `security`.
+
 ## `pickFromJira.spec.ts` needs a real OS keychain
 
 **Any Secret Service will do, not only GNOME's.** `EO_PASSWORD_STORE`

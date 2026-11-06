@@ -8,10 +8,11 @@ const mainEntry = path.join(path.resolve(path.dirname(fileURLToPath(import.meta.
 /**
  * The environment that gives a launch a home of its own.
  *
- * All three, because Electron resolves `userData` through a different one
- * on each platform, and a spec that set only `HOME` would still share a
- * directory — and the single-instance lock that comes with it — on
- * Windows. `extra` is anything else the spec's subject needs.
+ * `HOME` is the home Node and git read on Linux and macOS, `USERPROFILE`
+ * the one they read on Windows, and `XDG_CONFIG_HOME` where Electron puts
+ * `userData` on Linux. On macOS and Windows no variable moves `userData`,
+ * which is why `launchApp` names it outright. `extra` is anything else the
+ * spec's subject needs.
  */
 export function homeEnv(home: string, extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
   return { ...process.env, HOME: home, XDG_CONFIG_HOME: path.join(home, ".config"), USERPROFILE: home, ...extra };
@@ -30,7 +31,17 @@ export async function launchApp(env: NodeJS.ProcessEnv): Promise<{ app: Electron
   // Only the variables that are set: Electron takes strings, and an
   // inherited variable that is unset is not one.
   const strings = Object.fromEntries(Object.entries(env).filter((entry): entry is [string, string] => entry[1] !== undefined));
-  const app = await electron.launch({ args: [mainEntry], env: strings });
+  // `userData` named outright, under the launch's own home, at the place
+  // XDG_CONFIG_HOME already puts it on Linux. On macOS and Windows
+  // Electron finds it from the signed-in account rather than from any
+  // variable, so without this every spec there shared one installation —
+  // database, first-run state and the single-instance lock that makes a
+  // second launch quit without a window. One place on every platform, so
+  // a spec that opens `.config/Electron/eo.db` opens the app's database
+  // wherever it runs.
+  const home = env["HOME"];
+  const userData = home ? [`--user-data-dir=${path.join(home, ".config", "Electron")}`] : [];
+  const app = await electron.launch({ args: [mainEntry, ...userData], env: strings });
   const window = await app.firstWindow();
   await window.waitForLoadState("domcontentloaded");
   return { app, window };
