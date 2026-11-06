@@ -73,7 +73,8 @@ describe("the pinned versions", () => {
   it("asks for the Codex pin's own build on every platform EO supports", () => {
     // Every one of these is a version of `@openai/codex` that has to
     // exist on the registry at the pin (EO-370 checked all six at
-    // 0.161.0, EO-453 at 0.163.0, EO-599 at 0.165.0). Linux alone above
+    // 0.161.0, EO-453 at 0.163.0, EO-599 at 0.165.0, EO-644 at 0.166.0).
+    // Linux alone above
     // would let a platform
     // drift unseen.
     for (const platform of ["linux", "darwin", "win32"] as const) {

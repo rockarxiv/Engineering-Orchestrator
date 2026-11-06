@@ -130,8 +130,8 @@ describe("a Codex turn over a stubbed app-server", () => {
 
     // The field's shape is 0.161.0's `ThreadStartParams`, read from
     // `codex app-server generate-ts`: an optional string (EO-385), and
-    // 0.163.0's (EO-453) and 0.165.0's (EO-599) are the same file byte
-    // for byte.
+    // 0.163.0's (EO-453), 0.165.0's (EO-599) and 0.166.0's (EO-644) are
+    // the same file byte for byte.
     expect(fake.paramsOf("thread/start")).toEqual({ cwd, baseInstructions: "You are the implementer." });
     expect(fake.paramsOf("turn/start")).toEqual({ threadId: "thr-fake", input: [{ type: "text", text: "EO-1: do the thing", text_elements: [] }] });
   });

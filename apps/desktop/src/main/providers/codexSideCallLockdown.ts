@@ -57,6 +57,11 @@ import { join } from "node:path";
  * so the request still offers `request_user_input` alone, and the 29
  * overrides a side call is launched with were replayed under
  * `--strict-config` and accepted, as they are by 0.163.0.
+ *
+ * Re-measured at 0.166.0 (EO-644): `codexSideCall.live.test.ts` passed
+ * again, and the 21 overrides a side call is now launched with besides
+ * its catalogue path (which the live test exercises) were replayed under `--strict-config` beside 0.165.0 and accepted by both,
+ * while an invented feature name was refused by both.
  */
 /*
  * All of this assumes the launch is in a Codex home of the side calls'

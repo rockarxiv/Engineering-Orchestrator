@@ -30,10 +30,11 @@
 // November 21, 2026" — read the page again after that date.
 //
 // Every model the pinned Codex lists has a row; `codexPricing.test.ts`
-// holds this table against `__fixtures__/codex-0.165.0-model-list.json`,
+// holds this table against `__fixtures__/codex-0.166.0-model-list.json`,
 // captured from that binary's `model/list`: 0.161.0's and 0.163.0's seven
 // models (EO-453), plus gpt-6.1-terra, which 0.165.0 added and whose row
-// was read off the same page and tier on 2026-10-29 (EO-599). A Codex bump that adds a
+// was read off the same page and tier on 2026-10-29 (EO-599). 0.166.0
+// lists the same eight, every field as 0.165.0 had it (EO-644). A Codex bump that adds a
 // model fails that test until somebody reads the page and adds its price.
 // A model the table does not know — a newer one, or one typed in by hand
 // — is not priced at zero: the run posts a note saying the budgets cannot

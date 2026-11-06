@@ -4,7 +4,7 @@ import { join } from "node:path";
 import type { Options, SDKMessage, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import { developerRegistry, isThreadNotFound, outputSchemaFor, type AgentEvent, type ThreadNotFoundError } from "@eo/core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { answersTurn, createClaudeProvider, mapSdkMessage, normaliseToolName, stripSchemaDialect, type SearchNudge } from "./claude.js";
+import { answersTurn, buildSideCallOptions, createClaudeProvider, mapSdkMessage, normaliseToolName, stripSchemaDialect, type SearchNudge } from "./claude.js";
 import { writeToolDirectory } from "../agentAttachments/pluginDirectory.js";
 
 /** No settings files at all, so a test does not read the developer's own (EO-599). */
@@ -2155,7 +2155,7 @@ describe("the words of a turn as they are generated", () => {
       const start = { instructions: "i", context: "c", cwd: "/work/repo", ...(extra.environmentVariables ? { environmentVariables: extra.environmentVariables } : {}), ...(extra.model ? { model: extra.model } : {}) };
       for await (const _ of createClaudeProvider({ runQuery, enableCommentTool: false, settingsReader, ...(extra.config ? { config: extra.config as never } : {}) }).start(start as never)) void _;
       const options = calls[0] ?? {};
-      return { env: (options["env"] ?? {}) as Record<string, string | undefined>, disallowedTools: options["disallowedTools"] as string[] | undefined };
+      return { env: (options["env"] ?? {}) as Record<string, string | undefined>, disallowedTools: options["disallowedTools"] as string[] | undefined, settings: options["settings"] };
     };
     const HELD = ["ANTHROPIC_BASE_URL", "ENABLE_TOOL_SEARCH", "DISABLE_TELEMETRY", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "DO_NOT_TRACK", "DISABLE_GROWTHBOOK", "CLAUDE_CODE_CUSTOM_OAUTH_URL", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_BEDROCK", "ANTHROPIC_MODEL"];
     let saved: Record<string, string | undefined> = {};
@@ -2202,6 +2202,25 @@ describe("the words of a turn as they are generated", () => {
       expect(known.env["CLAUDE_CODE_SIMPLE_SYSTEM_PROMPT"]).toBeUndefined();
       expect(known.env["CLAUDE_CODE_DISABLE_REFUSAL_FALLBACK"]).toBeUndefined();
       expect(known.env["CLAUDE_CODE_MODEL_CATALOG"]).toBe("off");
+    });
+
+    it("switches claude@0.3.318's account-email check off, as `--settings`, unless the person's own settings name it (EO-644)", async () => {
+      const off = { enabledPlugins: { "cc-plugin-privacy@builtin": false } };
+      expect((await optionsFor({})).settings).toEqual(off);
+      expect((await optionsFor({}, { config: { inheritAmbientConfig: true } })).settings).toEqual(off);
+      const home = process.env["HOME"] || homedir();
+      const theirs = { [`${home}/.claude/settings.json`]: { enabledPlugins: { "cc-plugin-privacy@builtin": true } } };
+      expect((await optionsFor(theirs, { config: { inheritAmbientConfig: true } })).settings).toBeUndefined();
+      // A locked-down agent does not load them, so the CLI would not read that choice.
+      expect((await optionsFor(theirs)).settings).toEqual(off);
+    });
+
+    it("hands a side call the same switch (EO-644)", () => {
+      const options = buildSideCallOptions(
+        { cwd: "/tmp/side", system: "s", prompt: "p", outputSchema: { type: "object" }, signal: new AbortController().signal } as never,
+        { settingsReader: { readText: () => null, listDir: () => [] } },
+      );
+      expect(options.settings).toEqual({ enabledPlugins: { "cc-plugin-privacy@builtin": false } });
     });
   });
 

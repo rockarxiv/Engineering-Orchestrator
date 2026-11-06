@@ -266,6 +266,12 @@ export function prepareCodexHome(options: CodexHomeOptions): CodexHomePreparatio
  * curated remote plugins, not new at either pin — which is not kept, for
  * the reason `skills/` is not.
  *
+ * Re-checked at 0.166.0 (EO-644) the same way, beside 0.165.0: the
+ * same names but for SQLite's `-wal` and `-shm` files, which 0.165.0
+ * left beside its databases after the turn and 0.166.0 did not (the
+ * pattern keeps both either way), and with EO's switches still neither
+ * memory store.
+ *
  * `skills/` is *not* kept, though Codex makes it — it unpacks its own
  * bundled skills there on every start, and it is also exactly where an
  * agent would put one of its own.

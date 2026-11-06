@@ -147,8 +147,10 @@ export function fakeAppServer(scenario: FakeAppServerScenario = {}): FakeAppServ
 
 /**
  * Notification builders, in the app-server's own shapes (0.161.0, and
- * re-read against 0.163.0's `generate-ts` at EO-453 and 0.165.0's at
- * EO-599, which changed none of them). The one shape a
+ * re-read against 0.163.0's `generate-ts` at EO-453, 0.165.0's at
+ * EO-599 and 0.166.0's at EO-644, which changed none of them — 0.166.0
+ * lets every item carry two optional timestamps, which a builder may
+ * leave out). The one shape a
  * builder mirrors that moved is `Turn`, which gained `rootTurnId`: a
  * real 0.163.0 turn a person started names itself as its root, which is
  * what both turn builders below now say.
@@ -203,7 +205,7 @@ export const note = {
       },
     };
   },
-  /** `mcpServer/startupStatus/updated`, one server at a time, as 0.161.0 sends it and 0.163.0 and 0.165.0 still do. */
+  /** `mcpServer/startupStatus/updated`, one server at a time, as 0.161.0 sends it and 0.163.0, 0.165.0 and 0.166.0 still do. */
   mcpStartup: (name: string, status: "starting" | "ready" | "failed" | "cancelled", error: string | null = null, threadId: string | null = "thr-fake") => ({
     method: "mcpServer/startupStatus/updated",
     params: { threadId, name, status, error, failureReason: null },

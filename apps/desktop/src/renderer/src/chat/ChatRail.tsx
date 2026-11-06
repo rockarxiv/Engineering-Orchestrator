@@ -155,8 +155,8 @@ export function ChatRail({ onNewPipeline }: { onNewPipeline: () => void }) {
         <button type="button" onClick={() => setSearching(true)} className={cn(ROW, "w-full", rowTone(false))}>
           <Search size={14} className="shrink-0" />
           <span className="flex-1 text-left">Search</span>
-          {/* Ctrl/⌘K opens it from anywhere in the layout. */}
-          <span className="font-mono text-[11.5px] text-ink-subtle">{isMac() ? "⌘K" : "^K"}</span>
+          {/* ⌘K on a Mac, Ctrl+K elsewhere, opens it from anywhere in the layout. Spelled out off a Mac, where ^ is not how a key is named. */}
+          <span className="font-mono text-[11.5px] text-ink-subtle">{isMac() ? "⌘K" : "Ctrl+K"}</span>
         </button>
         {searching ? <SearchBox onClose={() => setSearching(false)} /> : null}
       </div>

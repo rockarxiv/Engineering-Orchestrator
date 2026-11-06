@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { createServer, type Server } from "node:http";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import { expect, test } from "@playwright/test";
 import { attachRepository, closeApp, homeEnv, launchApp } from "./support/app.js";
@@ -109,6 +109,30 @@ function startStubJira(): Promise<{ server: Server; baseUrl: string; requests: s
   });
 }
 
+/**
+ * The keychains of whoever runs the suite, reached from a scratch `home`,
+ * on a Mac. Returns the login keychain's path as that home sees it.
+ *
+ * macOS finds a user's keychains under `$HOME`, and every spec points
+ * `HOME` at a scratch folder. With no `Library/Keychains` there, the app's
+ * first encryption blocked its main thread on a keychain dialog nobody
+ * could answer, and the spec and its teardown both timed out (EO-646). A
+ * keychain made in the scratch home and named its default with
+ * `security` did not help either: the hang was the same. What is known
+ * to work is the real folder, linked in, so the app uses the login
+ * keychain the account already has unlocked. A hosted runner's is, and
+ * so is a person's at their own desk, where the app run by hand uses it
+ * too.
+ *
+ * Nothing in it is removed afterwards: it is the account's own. Removing
+ * the scratch home removes only the link.
+ */
+function reachLoginKeychain(home: string): string {
+  mkdirSync(path.join(home, "Library"), { recursive: true });
+  symlinkSync(path.join(homedir(), "Library", "Keychains"), path.join(home, "Library", "Keychains"));
+  return path.join(home, "Library", "Keychains", "login.keychain-db");
+}
+
 test("an epic is picked from Jira and its children arrive as stories", async () => {
   const jira = await startStubJira();
   const scratch = mkdtempSync(path.join(tmpdir(), "eo e2e jira "));
@@ -126,13 +150,17 @@ test("an epic is picked from Jira and its children arrive as stories", async () 
   git("add", "-A");
   git("commit", "-m", "initial");
 
+  const loginKeychain = process.platform === "darwin" ? reachLoginKeychain(home) : null;
+
   const { app, window } = await launchApp(
     homeEnv(home, {
       // Playwright launches every Electron with `--password-store=basic`
       // and `--use-mock-keychain`, so safeStorage lands on Chromium's
       // plaintext store and J-01 refuses — correctly — to put a token
       // there. Naming a real backend is the only way an e2e can reach
-      // the connected half of this feature at all.
+      // the connected half of this feature at all. The name is Linux's;
+      // on a Mac setting it at all is what puts the real keychain back,
+      // and Windows has only DPAPI and no switch.
       EO_PASSWORD_STORE: process.env["EO_PASSWORD_STORE"] ?? "gnome-libsecret",
     }),
   );
@@ -186,6 +214,18 @@ test("an epic is picked from Jira and its children arrive as stories", async () 
     await site.getByLabel("Personal access token").fill("a-real-looking-pat");
     await site.getByRole("button", { name: "Save" }).click();
     await expect(site).toHaveCount(0, { timeout: 15_000 });
+
+    // On a Mac, that the token was encrypted under the real keychain and
+    // not a mock one: the key safeStorage encrypts with is in the login
+    // keychain, named for the app and "Safe Storage", and the app is
+    // "Electron" when run unpackaged, as here. Its attributes only, which
+    // asks for no permission.
+    if (loginKeychain) {
+      expect(
+        () => execFileSync("security", ["find-generic-password", "-s", "Electron Safe Storage", loginKeychain], { env: homeEnv(home), stdio: "ignore" }),
+        "no safeStorage key in the login keychain",
+      ).not.toThrow();
+    }
 
     const connect = view.getByLabel("Connect to Jira");
     await connect.getByLabel("Project key").fill("ACME");
