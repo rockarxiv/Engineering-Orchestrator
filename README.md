@@ -37,7 +37,7 @@ Every release attaches installers for all three platforms: [Releases](https://gi
 - **macOS** refuses outright — *"EO is damaged and can't be opened"* is what Gatekeeper says about any unsigned, un-notarized app, and it is not true. Either right-click the app → **Open** → **Open**, or run `xattr -cr /Applications/EO.app` once after dragging it across.
 - **Linux** has no such gate. The AppImage needs FUSE, which every current desktop already has; on a headless box, `./EO-*.AppImage --appimage-extract-and-run` skips it.
 
-Checksums are attached to each release as `SHA256SUMS-*.txt`. Updates come from the same releases and need no setup: an installed EO checks at start and every six hours, and *Settings → Updates* says when a newer release is out and downloads it and restarts when you ask it to.
+Checksums are attached to each release as `SHA256SUMS-*.txt`. Updates come from the same releases and need no setup: an installed EO checks at start and every six hours, and *Settings → Updates* says when a newer release is out and downloads it and restarts when you ask it to. **Not on macOS, for now:** automatic updates need a signed app, and the macOS build is not code-signed, so until there is a signing certificate Mac users update by downloading the new `.dmg` from [Releases](https://github.com/rockarxiv/Engineering-Orchestrator/releases) and installing it over the old one.
 
 ## Building your own
 
