@@ -23,7 +23,8 @@ jobs:
   # twice. The cross-platform suite still runs on every platform — in the
   # release workflow, before anything is packaged, which is the moment it
   # actually protects something. And on Windows in CI too, but only where
-  # that costs no minutes; see test-windows below.
+  # that costs no minutes; see test-windows below. And on macOS, hosted,
+  # which costs a public repository nothing; see test-macos below.
   test:
     # ubuntu-latest normally. The CI_RUNS_ON repo variable points this at
     # the self-hosted runner while the free Actions allowance is spent;
@@ -206,6 +207,44 @@ jobs:
           $scanned = foreach ($folder in $needed) { if (-not ($excluded | Where-Object { $folder.StartsWith($_, [StringComparison]::OrdinalIgnoreCase) })) { $folder } }
           "Defender real-time protection: on. Excluded: $(if ($excluded) { $excluded -join ', ' } else { 'nothing this user can see' })."
           if ($scanned) { "::warning title=Windows runner::Defender scans $($scanned -join ' and ') in real time, which slows every git, node and PowerShell start the suite makes. Exclude the runner's work folder and TEMP from Defender real-time scanning." }
+
+      # Through turbo, so @eo/core and @eo/engine are built first; only
+      # the desktop's own `vitest run` receives what follows the `--`.
+      - name: Desktop suite, slice ${{ matrix.shard }} of 4
+        run: pnpm exec turbo run test '--filter=@eo/desktop' '--' '--shard=${{ matrix.shard }}/4'
+
+  # The suite on macOS, on every push to main and every pull request
+  # (EO-640), forks' included: it is always GitHub-hosted, and hosted
+  # macOS costs this public repository nothing. So none of the
+  # self-hosted runner variables above reach it, whatever they say. It
+  # is what keeps the suite passing on macOS between releases, rather
+  # than the release finding out.
+  #
+  # Only the suites, as in test-windows, and for its reason. In four
+  # slices, as the release's macOS verify jobs are, which took between two
+  # and eight minutes each; one job would wait on the sum of them.
+  test-macos:
+    name: test-macos (${{ matrix.shard }}/4)
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # One package at a time, as in test-windows.
+      - name: The package suites
+        if: matrix.shard == 1
+        run: pnpm exec turbo run test '--filter=!@eo/desktop' --concurrency=1
 
       # Through turbo, so @eo/core and @eo/engine are built first; only
       # the desktop's own `vitest run` receives what follows the `--`.

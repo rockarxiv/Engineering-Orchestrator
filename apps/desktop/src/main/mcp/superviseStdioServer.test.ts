@@ -1,5 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -615,6 +615,41 @@ describe.runIf(process.platform === "linux" && containmentAvailable())("a superv
     backend.kill("SIGKILL");
 
     await allReaped(server, [orphan]);
+  });
+});
+
+// The supervisor reads macOS's table with `ps`, and the backend chooses
+// its PATH: one without `/bin`, where macOS keeps `ps`, left the server's
+// tree unfound (EO-640). Linux reads /proc and Windows names System32, so
+// there this holds whatever the supervisor's table is read with.
+describe.skipIf(process.platform === "win32")("a supervised server whose backend narrowed PATH (EO-640)", () => {
+  it("still has what it started ended when the backend is killed, PATH naming nowhere `ps` is", async () => {
+    const nowhere = join(scratch, "nowhere");
+    mkdirSync(nowhere);
+    const childPidPath = join(scratch, "detached.pid");
+    const script = join(scratch, "detaches.cjs");
+    writeFileSync(
+      script,
+      [
+        "const { spawn } = require('node:child_process');",
+        "const { writeFileSync } = require('node:fs');",
+        "const [serverPidPath, childPidPath] = process.argv.slice(2);",
+        // Its own session, so only the supervisor's look at the table finds it.
+        "const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore', detached: true });",
+        "child.unref();",
+        "writeFileSync(childPidPath, String(child.pid));",
+        "writeFileSync(serverPidPath, String(process.pid));",
+        "setInterval(() => {}, 1000);",
+      ].join("\n"),
+    );
+    const { backend, server } = await launch({ supervised: true, env: { PATH: nowhere, EO_SUPERVISOR_CONTAIN: "0" }, server: { path: script, args: [childPidPath] } });
+    const child = Number(readFileSync(childPidPath, "utf8"));
+    launched.push(child);
+    expect(inPidTable(child)).toBe(true);
+
+    backend.kill("SIGKILL");
+
+    await allReaped(server, [child]);
   });
 });
 

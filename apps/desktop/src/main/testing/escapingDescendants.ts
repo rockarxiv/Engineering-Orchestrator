@@ -19,7 +19,8 @@ import { containmentAvailable } from "../process/cgroupContainment.js";
  *   not its session, not its environment. Only a cgroup still does.
  *
  * Where there is no `setsid` (macOS), Node's `detached`, which is the
- * same `setsid(2)`. On Windows, which has neither sessions nor a shell to
+ * same `setsid(2)`, from a Node that lets go of the child and exits as
+ * the shell does. On Windows, which has neither sessions nor a shell to
  * background from, two Node children — one plain, one `detached` into a
  * process group of its own.
  *
@@ -41,7 +42,9 @@ export const DESCENDANTS_SNIPPET = String.raw`
   } else {
     let setsid = true;
     try { execSync("command -v setsid", { stdio: "ignore", shell: "/bin/sh" }); } catch { setsid = false; }
-    const detach = JSON.stringify(process.execPath) + " -e 'const c = require(\"node:child_process\").spawn(\"sleep\", [\"600\"], { detached: true, stdio: \"ignore\" }); console.log(c.pid);'";
+    // Unref'd: Node otherwise waits for a detached child to exit, so the
+    // shell, and the execSync on it, would wait out the whole sleep.
+    const detach = JSON.stringify(process.execPath) + " -e 'const c = require(\"node:child_process\").spawn(\"sleep\", [\"600\"], { detached: true, stdio: \"ignore\" }); c.unref(); console.log(c.pid);'";
     const background = (prefix) => execSync(prefix + (setsid ? "setsid sleep 600 >/dev/null 2>&1 </dev/null & echo $!" : detach), { shell: "/bin/sh", encoding: "utf8", windowsHide: true }).trim();
     const escaped = background("");
     const vanished = background("env -i PATH=/usr/bin:/bin ");

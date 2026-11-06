@@ -2,12 +2,12 @@ import { spawn, type ChildProcess, type ChildProcessWithoutNullStreams } from "n
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { allGone, CONTAINMENT_EXPECTED, descendantPids, DESCENDANTS_SNIPPET, running, sweepUp, type DescendantKind } from "../testing/escapingDescendants.js";
 import { nodeScript } from "../testing/nodeScript.js";
 import { containmentAvailable } from "./cgroupContainment.js";
 import type { EndableProcess } from "./endProcess.js";
-import { endAllProcessTrees, fileTime, liveProcessTrees, ProcessTree, readProcessTable, TREE_MARKER_VARIABLE, type ProcessTable, type ProcessTreeOptions } from "./processTree.js";
+import { endAllProcessTrees, fileTime, liveProcessTrees, ProcessTree, readProcessTable, readProcessTableSync, TREE_MARKER_VARIABLE, type ProcessTable, type ProcessTreeOptions } from "./processTree.js";
 
 const directories: string[] = [];
 const leftovers: number[] = [];
@@ -191,6 +191,30 @@ describe.runIf(posix)("a process tree found rather than contained — macOS, or 
     await tree.end(100);
 
     expect(running(stranger.pid!)).toBe(true);
+  });
+});
+
+// macOS's table is `ps`'s, and `ps` is in /bin there: looked up on a
+// PATH without it — a test stubbing PATH to `/probe/bin:/usr/bin` did so
+// on the first macOS run — no tree was found at all (EO-640). Linux reads
+// /proc, so there this holds whatever the table is read with.
+describe.runIf(posix)("the process table, whatever PATH says (EO-640)", () => {
+  it("is read, and a marked process found in it, when PATH names nowhere `ps` is", async () => {
+    const nowhere = mkdtempSync(join(tmpdir(), "eo-nowhere-"));
+    directories.push(nowhere);
+    const marker = ProcessTree.newMarker();
+    const child = spawn(process.execPath, ["-e", 'process.stdout.write("up"); setInterval(() => {}, 1000);'], { env: { ...process.env, [TREE_MARKER_VARIABLE]: marker }, stdio: ["ignore", "pipe", "ignore"] });
+    roots.push(child);
+    // Up, so what the table shows is its own environment, not its parent's.
+    await new Promise((resolve) => child.stdout.once("data", resolve));
+
+    vi.stubEnv("PATH", nowhere);
+    try {
+      expect((await readProcessTable(marker))?.marked.has(child.pid!)).toBe(true);
+      expect(readProcessTableSync(marker)?.marked.has(child.pid!)).toBe(true);
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 });
 
