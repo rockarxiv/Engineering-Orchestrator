@@ -7,6 +7,10 @@ on:
 jobs:
   diag:
     runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 4]
     steps:
       - uses: actions/checkout@v5
       - uses: pnpm/action-setup@v4
@@ -15,40 +19,33 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - name: Time the process-table look, idle
-        shell: pwsh
-        run: |
-          $ps = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
-          $q = "Get-CimInstance -Query 'SELECT ProcessId, ParentProcessId, CreationDate FROM Win32_Process' | ForEach-Object { '{0} {1} {2}' -f `$_.ProcessId, `$_.ParentProcessId, `$(if (`$_.CreationDate) { `$_.CreationDate.ToFileTimeUtc() } else { 0 }) }"
-          "env PSModulePath: $env:PSModulePath"
-          foreach ($i in 1..3) { "powershell exit 0: " + (Measure-Command { & $ps -NoProfile -NonInteractive -Command "exit 0" | Out-Null }).TotalSeconds }
-          foreach ($i in 1..3) { "powershell CIM look: " + (Measure-Command { & $ps -NoProfile -NonInteractive -Command $q | Out-Null }).TotalSeconds }
-          foreach ($i in 1..3) { "powershell Get-WmiObject: " + (Measure-Command { & $ps -NoProfile -NonInteractive -Command "Get-WmiObject -Query 'SELECT ProcessId, ParentProcessId, CreationDate FROM Win32_Process' | Out-Null" | Out-Null }).TotalSeconds }
-          foreach ($i in 1..3) { "powershell Import CimCmdlets only: " + (Measure-Command { & $ps -NoProfile -NonInteractive -Command "Import-Module CimCmdlets" | Out-Null }).TotalSeconds }
-          & $ps -NoProfile -NonInteractive -Command $q | Select-Object -First 3
-          "count: " + (& $ps -NoProfile -NonInteractive -Command $q | Measure-Object).Count
-      - name: Time it from Node, as EO does, 8 at once
+      - name: Start the sampler
         shell: pwsh
         run: |
           @'
-          const { execFile } = require("node:child_process");
-          const ps = process.env.SystemRoot + "\\System32\\WindowsPowerShell\\v1.0\\powershell.exe";
-          const q = "Get-CimInstance -Query 'SELECT ProcessId, ParentProcessId, CreationDate FROM Win32_Process' | ForEach-Object { '{0} {1} {2}' -f $_.ProcessId, $_.ParentProcessId, $(if ($_.CreationDate) { $_.CreationDate.ToFileTimeUtc() } else { 0 }) }";
-          const one = (args) => new Promise((r) => { const t = Date.now(); execFile(ps, args, { windowsHide: true, maxBuffer: 1 << 28 }, (e, out, err) => r(`${Date.now() - t} ms ${e ? "ERR " + String(err).slice(0, 300) : out.split("\n").length + " lines"}`)); });
-          (async () => {
-            for (let i = 0; i < 3; i++) console.log("serial look", await one(["-NoProfile", "-NonInteractive", "-Command", q]));
-            console.log("8 at once", await Promise.all(Array.from({ length: 8 }, () => one(["-NoProfile", "-NonInteractive", "-Command", q]))));
-            console.log("8 exit-0 at once", await Promise.all(Array.from({ length: 8 }, () => one(["-NoProfile", "-NonInteractive", "-Command", "exit 0"]))));
-          })();
-          '@ | Set-Content -Path diag.cjs
-          node diag.cjs
-      - name: Build the workspace packages
-        run: pnpm exec turbo run build --filter=@eo/core --filter=@eo/engine --filter=@eo/ui
-      - name: The shard-1 failures, alone
+          $ps = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
+          $q = "Get-CimInstance -Query 'SELECT ProcessId, ParentProcessId, CreationDate FROM Win32_Process' | ForEach-Object { '{0} {1} {2}' -f `$_.ProcessId, `$_.ParentProcessId, `$(if (`$_.CreationDate) { `$_.CreationDate.ToFileTimeUtc() } else { 0 }) }"
+          while ($true) {
+            try {
+              $t = Measure-Command { $p = Get-CimInstance Win32_Process -Property ProcessId,Name,ParentProcessId }
+              $t5 = Measure-Command { & $ps -NoProfile -NonInteractive -Command $q | Out-Null }
+              $os = Get-CimInstance Win32_OperatingSystem
+              $cpu = (Get-CimInstance Win32_Processor | Measure-Object LoadPercentage -Average).Average
+              $top = ($p | Group-Object Name | Sort-Object Count -Descending | Select-Object -First 6 | ForEach-Object { "$($_.Name)=$($_.Count)" }) -join ' '
+              Add-Content -Path "$env:RUNNER_TEMP\sampler.log" -Value ("{0:HH:mm:ss} procs={1} look7={2:N1}s look5={3:N1}s free={4:N1}GB commitfree={5:N1}GB cpu={6}% {7}" -f (Get-Date), $p.Count, $t.TotalSeconds, $t5.TotalSeconds, ($os.FreePhysicalMemory/1MB), ($os.FreeVirtualMemory/1MB), $cpu, $top)
+            } catch { Add-Content -Path "$env:RUNNER_TEMP\sampler.log" -Value ("{0:HH:mm:ss} error {1}" -f (Get-Date), $_) }
+            Start-Sleep 15
+          }
+          '@ | Set-Content -Path "$env:RUNNER_TEMP\sampler.ps1"
+          Start-Process pwsh -ArgumentList '-NoProfile','-File',"$env:RUNNER_TEMP\sampler.ps1" -WindowStyle Hidden
+          "CPUs: $([Environment]::ProcessorCount)"
+          $mp = Get-MpComputerStatus -ErrorAction SilentlyContinue; "Defender RTP: $($mp.RealTimeProtectionEnabled) AMSI: $($mp.AMServiceEnabled)"
+      - name: Desktop suite, slice ${{ matrix.shard }} of 4
         continue-on-error: true
-        working-directory: apps/desktop
-        run: pnpm exec vitest run src/main/process/processTree.test.ts src/main/mcp/superviseStdioServer.test.ts
-      - name: A shard-4 failure, alone
-        continue-on-error: true
-        working-directory: apps/desktop
-        run: pnpm exec vitest run src/main/supervisor/codexBudget.test.ts src/main/providers/codex.test.ts
+        run: pnpm exec turbo run test '--filter=@eo/desktop' '--' '--shard=${{ matrix.shard }}/4'
+      - name: The sampler's log
+        if: always()
+        shell: pwsh
+        run: |
+          Get-Content "$env:RUNNER_TEMP\sampler.log"
+          Get-CimInstance Win32_Process | Where-Object Name -eq 'node.exe' | Select-Object -First 40 ProcessId, ParentProcessId, CreationDate, @{n='cmd';e={$_.CommandLine.Substring(0, [Math]::Min(200, $_.CommandLine.Length))}} | Format-Table -AutoSize | Out-String -Width 400
