@@ -718,6 +718,8 @@ export const ModuleCreationSchema = z.object({
   pipeline: z.string().min(1).optional(),
   parent: z.string().min(1).optional(),
   repository: z.string().min(1).optional(),
+  /** A branch that already exists, to work on instead of cutting one (EO-648). Judged by the door that creates the item. */
+  existingBranch: z.string().min(1).optional(),
   /** Left out means `none`. */
   wait: ModuleCreationWaitSchema.optional(),
   /** Keys of other existing items the new one waits for. Left out means none. */

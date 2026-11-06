@@ -172,7 +172,7 @@
  *     Recorded, never copied and never posted. `caption` is "" where
  *     the module gave none, and `paths` are as the module wrote them.
  *   - `created`:
- *     `[{ idempotencyKey, key, type, title, body, spec, pipeline, parent, repository, wait, dependsOn }]`,
+ *     `[{ idempotencyKey, key, type, title, body, spec, pipeline, parent, repository, existingBranch, wait, dependsOn }]`,
  *     every `ctx.createItem()` EO would have accepted (EO-433).
  *     Recorded, never created: a case opens no database, so nothing here
  *     checks that the type exists or that `spec` has its fields — a real
@@ -180,7 +180,8 @@
  *     `idempotencyKey`, a repeated key answering `existing: true` with
  *     the first key and recording nothing more, and the cap per run.
  *     `body` is "" and `spec` `{}` where the module gave none;
- *     `pipeline`, `parent` and `repository` are null. `wait` is "none"
+ *     `pipeline`, `parent`, `repository` and `existingBranch` are null
+ *     where the module gave none (EO-648). `wait` is "none"
  *     and `dependsOn` `[]` where the module gave none (EO-434); nothing
  *     is held in a case, they are recorded as asked. A `dependsOn` key
  *     that is neither the running item's nor one in `itemByKey` is
@@ -2031,7 +2032,7 @@ function makeComments(request, reads, send = (comment) => emit({ type: "comment"
 // ── Creating work ─────────────────────────────────────────────
 
 /** Every name `ctx.createItem` takes. One outside this is a typo, and is refused rather than ignored. */
-const CREATION_FIELDS = ["idempotencyKey", "type", "title", "body", "spec", "pipeline", "parent", "repository", "wait", "dependsOn"];
+const CREATION_FIELDS = ["idempotencyKey", "type", "title", "body", "spec", "pipeline", "parent", "repository", "existingBranch", "wait", "dependsOn"];
 
 /**
  * What `wait` may be (EO-434). `this_waits` holds the item this step is
@@ -2042,6 +2043,7 @@ const CREATION_FIELDS = ["idempotencyKey", "type", "title", "body", "spec", "pip
 const CREATION_WAITS = ["none", "this_waits", "created_waits"];
 const CREATION_WAIT_REFUSAL = `wait is one of ${CREATION_WAITS.map((value) => JSON.stringify(value)).join(", ")}.`;
 const CREATION_DEPENDS_ON_REFUSAL = 'dependsOn is a list of item keys, like ["EO-40"].';
+const CREATION_EXISTING_BRANCH_REFUSAL = "existingBranch is the name of a branch that already exists, as text.";
 
 /**
  * `ctx.createItem(spec)` (EO-433): one work item, on a pipeline of the
@@ -2105,7 +2107,7 @@ function makeCreations(request, ask) {
     try {
       if (!declared) return refuse("This module does not declare needs.create in its manifest, so it may not create items.");
       if (spec === null || typeof spec !== "object" || Array.isArray(spec)) {
-        return refuse("ctx.createItem takes one object: { idempotencyKey, type, title, body, spec, pipeline, parent, repository, wait, dependsOn }.");
+        return refuse("ctx.createItem takes one object: { idempotencyKey, type, title, body, spec, pipeline, parent, repository, existingBranch, wait, dependsOn }.");
       }
       const unknown = Object.keys(spec).filter((name) => !CREATION_FIELDS.includes(name));
       if (unknown.length > 0) {
@@ -2138,6 +2140,17 @@ function makeCreations(request, ask) {
         const value = named(spec[name]);
         if (value === null) return refuse(`${name} is a name, as text.`);
         creation[name] = value;
+      }
+      // A branch that already exists, to be worked on instead of cutting
+      // one (EO-648). Whether git would take the name, and whether the
+      // pipeline works on a branch at all, is the door's to answer; what
+      // is known here is that it is text. Unlike the three above, a
+      // `null` is refused: only leaving it out means "cut a branch", and
+      // a lookup that found no branch is not that.
+      if (spec.existingBranch !== undefined) {
+        const value = named(spec.existingBranch);
+        if (value === null) return refuse(CREATION_EXISTING_BRANCH_REFUSAL);
+        creation.existingBranch = value;
       }
       // Who waits for whom (EO-434). A `wait` that is none of the three
       // is refused rather than read as "none": a module that asked to be
@@ -3528,6 +3541,7 @@ async function testMain(request) {
           pipeline: creation.pipeline ?? null,
           parent: creation.parent ?? null,
           repository: creation.repository ?? null,
+          existingBranch: creation.existingBranch ?? null,
           wait,
           dependsOn: Object.freeze(dependsOn.slice()),
         }),
