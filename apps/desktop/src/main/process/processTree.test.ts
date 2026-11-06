@@ -218,6 +218,24 @@ describe.runIf(posix)("the process table, whatever PATH says (EO-640)", () => {
   });
 });
 
+// PowerShell finds its cache of installed modules through PSModulePath and
+// PSModuleAnalysisCachePath, and turbo hands a task neither: every
+// autoload then read every module on the machine again, twenty to thirty
+// seconds a look on a hosted runner, and every look ran out its limit
+// (EO-645).
+describe.runIf(process.platform === "win32")("the process table on Windows, whatever the environment says (EO-645)", () => {
+  it("is read when the environment does not lead PowerShell to its module cache", async () => {
+    vi.stubEnv("PSModulePath", undefined);
+    vi.stubEnv("PSModuleAnalysisCachePath", undefined);
+    try {
+      expect((await readProcessTable())?.rows.has(process.pid)).toBe(true);
+      expect(readProcessTableSync()?.rows.has(process.pid)).toBe(true);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+});
+
 describe.runIf(process.platform === "win32")("a process tree on Windows (EO-494)", () => {
   it("ends the children of an agent that went on its own before anything looked", async () => {
     const { root, tree, pid, all } = await agent({ exitsAfterMs: 300 });

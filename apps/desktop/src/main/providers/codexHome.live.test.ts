@@ -212,7 +212,7 @@ describe.skipIf(!OPTED_IN)("what a redirected CODEX_HOME does to auth and to res
 
     const wrote = runCodex(home, ["login", "--with-api-key"], 60_000, "sk-eo110-after\n");
     expect(wrote.ok, `the credential write did not run: ${wrote.stderr}`).toBe(true);
-    // 0.165.0's words for a stored key (EO-599); up to 0.163.0 it said
+    // 0.165.0's words for a stored key (EO-599), and 0.166.0's (EO-644); up to 0.163.0 it said
     // "Successfully logged in". Neither checks the key when storing it.
     expect(`${wrote.stdout}${wrote.stderr}`).toContain("API key saved");
 

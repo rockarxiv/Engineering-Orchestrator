@@ -11,7 +11,7 @@ import { RUNTIMES, versionFor } from "../src/main/runtimes/catalog.js";
 
 // The pinned Claude build, read off the catalog the main process reads —
 // `runtimes.spec.ts` explains at length why this is not a literal.
-const CLAUDE_VERSION = versionFor(RUNTIMES.claude, "linux", "x64")!;
+const CLAUDE_VERSION = versionFor(RUNTIMES.claude, process.platform, process.arch)!;
 
 /**
  * First run, in the order the design settled (EO-317,
@@ -119,6 +119,12 @@ function checkout(root: string): string {
 }
 
 test("a fresh installation walks solo, gallery, Preview, blanks, the needs check and its first item", async () => {
+  // Skipped on Windows, and only there: the signed-in Claude above is a
+  // script at the managed CLI's path, which the main process runs with
+  // `execFile` and no shell. On Windows that path is `claude.exe`, and
+  // only a real executable can answer there. The two tests below cover
+  // the same screens on Windows, short of a sign-in to turn green.
+  test.skip(process.platform === "win32", "the signed-in Claude is a shell script, and Windows runs claude.exe, which a script cannot stand in for");
   // Longer than the default: this drives six screens, waits on a
   // rehearsal under the fake provider, and then on a real dispatch.
   test.setTimeout(180_000);

@@ -60,7 +60,9 @@ export const EO_SERVER_NAME = "eo";
  *
  *   - *Whether tool search runs at all* is the CLI's. Measured from the
  *     binary EO downloads (claude@0.3.312 / Claude Code 2.1.312, re-read
- *     at EO-599): the
+ *     at EO-599, and unchanged at claude@0.3.318 / 2.1.318: with the
+ *     variable unset, a capture server's request still carried
+ *     `ToolSearch`, EO-644): the
  *     mode is `ENABLE_TOOL_SEARCH` when that variable is set and `tst`
  *     — on — when it is not, and the tool is then registered. Up to
  *     2.1.302 it was not registered when the session was pointed at a
@@ -74,10 +76,10 @@ export const EO_SERVER_NAME = "eo";
  *   - *Which servers are exempt from it* is EO's, per server, and this
  *     is that. `alwaysLoad` is declared on the server config by both the
  *     runtime EO downloads and the pinned types
- *     (`McpStdioServerConfig.alwaysLoad`, both 0.3.312): "all
+ *     (`McpStdioServerConfig.alwaysLoad`, both 0.3.318): "all
  *     tools from this server are always included in the prompt and never
  *     deferred behind tool search". (0.3.293 added one exception, still
- *     there at 0.3.312: a tool the server itself lists with `_meta`
+ *     there at 0.3.318: a tool the server itself lists with `_meta`
  *     `anthropic/alwaysLoad: false` stays deferred.) The CLI splits its
  *     servers on it —
  *     `alwaysLoad === true` connects under `--mcp-config alwaysLoad
@@ -410,8 +412,8 @@ export function usageOf(message: SDKMessage & { type: "result" }): UsageEvent {
  * the turn carrying EO's recovery prompt. Taken as the turn's answer,
  * that result failed the schema, opened a correction, and killed the
  * process that was about to do the recovery. Measured against the pinned
- * CLI (0.3.302) with a capture server, and again at 0.3.312 (EO-599,
- * `recoveryResult.live.test.ts`): the stale result echoes no user
+ * CLI (0.3.302) with a capture server, and again at 0.3.312 (EO-599) and
+ * 0.3.318 (EO-644, `recoveryResult.live.test.ts`): the stale result echoes no user
  * message, and the next one echoes EO's.
  *
  * **So identity decides, as it does on Codex.** Every message a turn
@@ -1255,9 +1257,10 @@ interface ClaudeAdapter {
 }
 
 /**
- * The defaults claude@0.3.312 changed, held to what claude@0.3.302 did
- * (EO-599, `claudeCompatibility.ts`): variables added to the spawn
- * environment. Runs on the finished
+ * The defaults claude@0.3.312 and claude@0.3.318 changed, held to what the
+ * pin before each did (EO-599, EO-644, `claudeCompatibility.ts`):
+ * variables added to the spawn environment, and the flag settings
+ * (`--settings`) that switch off a built-in plugin. Runs on the finished
  * environment, so a run's own variables count, and never sets a name the
  * person, a settings file or EO already set.
  */
@@ -1270,6 +1273,9 @@ function applyCompatibilityHolds(options: Options, sources: ClaudeSettingSources
     ...(reader ? { reader } : {}),
   });
   if (Object.keys(holds.env).length > 0) options.env = { ...(options.env ?? process.env), ...holds.env };
+  // Nothing else in EO hands the CLI flag settings; were that to change,
+  // this would have to merge into them rather than replace them.
+  if (Object.keys(holds.settings).length > 0) options.settings = holds.settings;
 }
 
 /** An environment less every name that must arrive unset (EO-488); the same object when there are none. */
@@ -1331,7 +1337,7 @@ function buildOptions(opts: ClaudeTurn, adapter: ClaudeAdapter): Options {
     // EO-120: the companion the SDK's own declaration asks for — "Must
     // be set to `true` when using `permissionMode: 'bypassPermissions'`.
     // This is a safety measure to ensure intentional bypassing of
-    // permissions" (sdk.d.ts:2055 at 0.3.312).
+    // permissions" (sdk.d.ts:2080 at 0.3.318).
     //
     // **It is not enforced.** Established against
     // @anthropic-ai/claude-agent-sdk 0.3.227 driving Claude Code CLI
@@ -1388,6 +1394,14 @@ function buildOptions(opts: ClaudeTurn, adapter: ClaudeAdapter): Options {
     // That is the mode EO sets arriving, not the unset-option half above,
     // which was not re-run.
     //
+    // EO-644 re-read it at 0.3.318 driving CLI 2.1.318. The sentence is
+    // unchanged (now at sdk.d.ts:2080) and the branches are still
+    // independent — `if(S)q.push(qe("--permission-mode",S))` and
+    // `if(E)q.push("--allow-dangerously-skip-permissions")`. Neither live
+    // half was re-run through the SDK; the CLI itself, handed
+    // `--permission-mode bypassPermissions` against a capture server, still
+    // reports `"permissionMode":"bypassPermissions"` on `init`.
+    //
     // So setting it is a judgement, not a fix, and the judgement is to
     // set it: EO was relying on a stated requirement going unapplied,
     // and a version bump is free to start applying it — on every
@@ -1433,7 +1447,8 @@ function buildOptions(opts: ClaudeTurn, adapter: ClaudeAdapter): Options {
     //
     // Held to this process's own spend, not the session's, on a resumed
     // turn too (EO-490). Checked against the CLI EO pins (0.3.302, and
-    // re-read at 0.3.312 for EO-599, where the two are `p0`/`kTe`): a
+    // re-read at 0.3.312 for EO-599, where the two are `p0`/`kTe`, and at
+    // 0.3.318 for EO-644, where `BIe` is the second): a
     // resumed session restores its cost state from the transcript, and
     // `total_cost_usd` goes on from it — but the budget check compares
     // the cap with that total *less* the restored cost (`r0`/`iSe` in
@@ -1538,7 +1553,9 @@ function buildOptions(opts: ClaudeTurn, adapter: ClaudeAdapter): Options {
     // claude@0.3.293 offered. Holding it is the bump keeping an agent's
     // tools as they were, not a judgement about forks. Re-measured at
     // claude@0.3.312 (EO-599): the variable still takes the fork type
-    // out of the `Agent` tool, and nothing else.
+    // out of the `Agent` tool, and nothing else. At claude@0.3.318
+    // (EO-644) the `Agent` tool is byte-identical to 0.3.312's both ways,
+    // with the variable unset and at `0`.
     //
     // Only when the variable is unset: the CLI read a person's own
     // `CLAUDE_CODE_FORK_SUBAGENT=1` before this pin too, and the old
@@ -1553,8 +1570,8 @@ function buildOptions(opts: ClaudeTurn, adapter: ClaudeAdapter): Options {
     // channel EO cannot see, attribute or retire, and on a
     // person's own machine it would be mixed with theirs.
     //
-    // Read from the pinned CLI (2.1.302, and again at 2.1.312 for EO-599)
-    // rather than assumed: the switch
+    // Read from the pinned CLI (2.1.302, again at 2.1.312 for EO-599 and
+    // at 2.1.318 for EO-644) rather than assumed: the switch
     // is checked before any setting is, a truthy value ("1") answers
     // "off" whatever `autoMemoryEnabled` a settings file holds, and the
     // background consolidation ("auto-dream") is gated on auto-memory
@@ -1589,8 +1606,9 @@ function buildOptions(opts: ClaudeTurn, adapter: ClaudeAdapter): Options {
     ...withoutNames(withoutReservedEnvironmentVariables(opts.environmentVariables ?? {}), withheld),
     ...injected,
   };
-  // EO-599: the defaults claude@0.3.312 changed, held to what claude@0.3.302
-  // did (`claudeCompatibility.ts`). Decided on what the CLI will see — this
+  // EO-599 and EO-644: the defaults claude@0.3.312 and claude@0.3.318
+  // changed, held to what the pin before each did
+  // (`claudeCompatibility.ts`). Decided on what the CLI will see — this
   // environment, a run's own variables (EO-487) included, with the env
   // blocks of the settings files the turn loads laid over it, which
   // `applyAttachments` above has decided.
@@ -1911,8 +1929,9 @@ export function createClaudeProvider(options: ClaudeProviderOptions = {}): Agent
    * "into this turn". First driven against the CLI EO-176 pinned
    * (claude@0.3.227, capture server, no credit spent).
    * `steering.live.test.ts` keeps the `next` and `shouldQuery: false`
-   * halves of that measurement, and they passed again at the current
-   * pin, claude@0.3.312 (EO-599). The `now` and `later` readings are not
+   * halves of that measurement, and they passed again at claude@0.3.312
+   * (EO-599) and at the current pin, claude@0.3.318 (EO-644). The `now`
+   * and `later` readings are not
    * in that file, and no bump since EO-176 has re-driven them:
    *
    *   - `now` **interrupts**. The running turn ends immediately with an

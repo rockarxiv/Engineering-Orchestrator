@@ -106,7 +106,7 @@ describe.skipIf(!OPTED_IN)("a Codex side call, against the real app-server (live
 
     expect(capture.bodies.length).toBeGreaterThan(0);
     const offered = toolsOf(capture.bodies[0]);
-    // Exactly this, measured at 0.163.0 and again at 0.165.0 (EO-599).
+    // Exactly this, measured at 0.163.0 and again at 0.165.0 (EO-599) and 0.166.0 (EO-644).
     // `request_user_input` says of
     // itself that it is only available in plan mode, which a side call
     // never is, and EO's client refuses every request the app-server

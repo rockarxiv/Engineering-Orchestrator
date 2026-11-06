@@ -4,7 +4,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { eq } from "drizzle-orm";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { LOCAL_PERSON_ID, ModuleManifestSchema } from "@eo/core";
+import { gitStateOf, LOCAL_PERSON_ID, ModuleManifestSchema } from "@eo/core";
 import type { Item, ModuleManifest, Uuid } from "@eo/core";
 import type { DbHandle } from "../db/client.js";
 import {
@@ -314,6 +314,91 @@ describe("where a created item lands", () => {
     const feature = createTestItem(handle.db, { type: "feature", title: "Release 2.0", stepId: null as unknown as string });
     const result = await run(`answer = await ctx.createItem({ idempotencyKey: "a", ${STORY}, parent: ${JSON.stringify(feature.key)} });`);
     expect(getItemByKey(handle.db, (result.answer as { key: string }).key)?.parentId).toBe(feature.id);
+  });
+});
+
+/**
+ * An item worked on a branch that already exists (EO-648): the field a
+ * plan, a proposal and `items:update` already carry, through the same
+ * door. The door judges the name and the pipeline; the host only that it
+ * is text.
+ */
+describe("a creation naming an existing branch", () => {
+  const BRANCH = "dependabot/npm_and_yarn/foo-1.2.3";
+  /** An item on a git repository, so what it creates lands on a step that works on a branch. */
+  const onRepository = () => {
+    const repository = attachWorkspace(handle.db, { name: "api", keyPrefix: "API", repoPath: join(root, "api"), baseBranch: "main" });
+    return createTestItem(handle.db, { type: "story", title: "Watch Dependabot", stepId: "todo", workspaceId: repository.id, projectId: projectForWorkspace(handle.db, repository.id)!.id });
+  };
+
+  it("creates the item with that branch as its own, marked as named, so Worktree checks it out rather than cutting one", async () => {
+    const on = onRepository();
+    const result = await run(`answer = await ctx.createItem({ idempotencyKey: "a", ${STORY}, existingBranch: ${JSON.stringify(` ${BRANCH} `)} });`, { on });
+
+    expect(result.answer).toMatchObject({ created: true, existing: false });
+    const made = getItemByKey(handle.db, (result.answer as { key: string }).key)!;
+    expect(gitStateOf(made)).toMatchObject({ branch: BRANCH, namedBranch: true, baseBranch: null, attachedAt: null });
+  });
+
+  it("answers a repeat naming another branch with the first item, whose branch is unchanged", async () => {
+    const on = onRepository();
+    const first = await run(`answer = await ctx.createItem({ idempotencyKey: "a", ${STORY}, existingBranch: ${JSON.stringify(BRANCH)} });`, { on });
+    const again = await run(`answer = await ctx.createItem({ idempotencyKey: "a", ${STORY}, existingBranch: "dependabot/other" });`, { on });
+
+    const key = (first.answer as { key: string }).key;
+    expect(again.answer).toEqual({ created: true, key, existing: true });
+    expect(gitStateOf(getItemByKey(handle.db, key)!)).toMatchObject({ branch: BRANCH, namedBranch: true });
+  });
+
+  it("leaves the item without a git state when it names none", async () => {
+    const on = onRepository();
+    const result = await run(`answer = await ctx.createItem({ idempotencyKey: "a", ${STORY} });`, { on });
+
+    expect(gitStateOf(getItemByKey(handle.db, (result.answer as { key: string }).key)!)).toMatchObject({ branch: null, namedBranch: false });
+  });
+
+  it("refuses a name git would not take in the door's words, and leaves no item", async () => {
+    const on = onRepository();
+    const before = everyItem().length;
+    const result = await run(`answer = await ctx.createItem({ idempotencyKey: "a", ${STORY}, existingBranch: "my branch" });`, { on });
+
+    const reason = refused(result.answer);
+    expect(reason).toContain('"Write the changelog" names an existing branch EO cannot use.');
+    expect(everyItem()).toHaveLength(before);
+    expect(result.transcript).toContain(reason);
+  });
+
+  it("refuses one for an item that would land on a step working on no branch, and leaves no item", async () => {
+    const before = everyItem().length;
+    const result = await run(`answer = await ctx.createItem({ idempotencyKey: "a", ${STORY}, existingBranch: ${JSON.stringify(BRANCH)} });`);
+
+    const reason = refused(result.answer);
+    expect(reason).toContain(`names \`${BRANCH}\` as the branch to work on, but it would land on a step that does not work on a branch`);
+    expect(everyItem()).toHaveLength(before);
+  });
+
+  it("refuses one that is not text, or is blank, in the host — before the parent is asked — and says so in the transcript", async () => {
+    const on = onRepository();
+    const before = everyItem().length;
+    for (const given of ["42", '"   "', "null", '["main"]']) {
+      const result = await run(`answer = await ctx.createItem({ idempotencyKey: "a", ${STORY}, existingBranch: ${given} });`, { on });
+      expect(result.answer).toEqual({ created: false, reason: "existingBranch is the name of a branch that already exists, as text." });
+      // The host's own refusal, which names no item: the parent's names the one it was asked from.
+      expect(result.transcript).toContain("EO did not create an item: existingBranch is the name of a branch that already exists, as text.");
+      expect(result.transcript).not.toContain(`EO did not create an item from ${on.key}`);
+    }
+    expect(everyItem()).toHaveLength(before);
+  });
+
+  it("holds one written straight to fd 3 to the same shape", async () => {
+    const on = onRepository();
+    const result = await run(
+      `writeSync(3, JSON.stringify({ type: "create", id: "forged", creation: { idempotencyKey: "a", ${STORY}, existingBranch: 42 } }) + "\\n"); answer = true;`,
+      { on, prelude: `import { writeSync } from "node:fs";` },
+    );
+
+    expect(everyItem().filter((each) => each.id !== item.id && each.id !== on.id)).toEqual([]);
+    expect(result.transcript).toContain("existingBranch is the name of a branch that already exists, as text.");
   });
 });
 

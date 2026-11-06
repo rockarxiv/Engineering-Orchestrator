@@ -3525,7 +3525,8 @@ const UNGATED_WRITE_TOOLS: readonly ToolSpec[] = [
       "body, branch, prUrl, comments…). itemByKey — { KEY: item } for ctx.itemByKey and ctx.commentOn. answer — " +
       "ctx.answer(). inputs — the step's values. timeoutMs — ctx.timeoutMs. createItem — [{ key } or { reason }], the answers ctx.createItem gets in order (NEW-1, NEW-2… when none is scripted). Nothing real happens: no process is " +
       "spawned, comments are recorded in `comments` and never posted, files given to ctx.attach are recorded in " +
-      "`attachments` as [{ key, caption, paths }] and never copied, items given to ctx.createItem are recorded in `created` and never created, there are no secrets and no network, writes " +
+      "`attachments` as [{ key, caption, paths }] and never copied, items given to ctx.createItem are recorded in `created` as [{ idempotencyKey, key, type, title, body, spec, pipeline, " +
+      "parent, repository, existingBranch, wait, dependsOn }] and never created, there are no secrets and no network, writes " +
       "outside harness.cwd fail, and time is faked so a polling loop finishes at once. Saving re-runs the module's tests " +
       "in the background; module_tests_run runs them and answers with the result. Any change to an approved module's " +
       "test cases withdraws its approval: adding a case, or saving one with a different description or source, leaves " +
