@@ -1,7 +1,6 @@
 import { execFile, execFileSync } from "node:child_process";
 import { readdirSync, readFileSync } from "node:fs";
 import { readdir, readFile } from "node:fs/promises";
-import { constants as osConstants, setPriority } from "node:os";
 import { uuidv7 } from "@eo/core";
 import { contain as containInCgroup, type Containment } from "./cgroupContainment.js";
 import { END_PROCESS_GRACE_MS, endProcess, hasExited, type EndableProcess } from "./endProcess.js";
@@ -194,36 +193,8 @@ export const WINDOWS_LOOK_TIMEOUT_MS = 10_000;
 
 function run(command: string, args: readonly string[], timeout = 0): Promise<string> {
   return new Promise((resolve, reject) => {
-    const began = Date.now();
-    const traced = process.env["EO_LOOK_TRACE"] === "1" && process.platform === "win32";
-    const limit = traced && timeout > 0 ? 60_000 : timeout;
-    const child = execFile(command, traced ? [...args.slice(0, -1), `[Console]::Error.WriteLine('started ' + [DateTime]::Now.ToString('HH:mm:ss.fff')); ${args.at(-1)}; [Console]::Error.WriteLine('queried ' + [DateTime]::Now.ToString('HH:mm:ss.fff'))`] : args, { encoding: "utf8", maxBuffer: TABLE_BUFFER, timeout: limit, windowsHide: true }, (error, stdout, stderr) => {
-      if (traced && (error !== null || Date.now() - began > 2_000)) console.warn(`[eo-trace] look from ${new Date(began).toISOString().slice(11, 23)} took ${Date.now() - began} ms, error=${error !== null}, stderr: ${String(stderr).slice(0, 400)}`);
-      if (traced && error === null && Date.now() - began > timeout) return reject(new Error("over the real limit"));
-      return error ? reject(error) : resolve(stdout);
-    });
-    if (process.platform === "win32") raiseLookPriority(child.pid);
+    execFile(command, args, { encoding: "utf8", maxBuffer: TABLE_BUFFER, timeout, windowsHide: true }, (error, stdout) => (error ? reject(error) : resolve(stdout)));
   });
-}
-
-/**
- * A look at Windows' table, run ahead of everything else on the machine
- * (EO-645). Most of a look is PowerShell starting; the query itself takes
- * a tenth of a second. On a machine whose every CPU is busy — a hosted CI
- * runner mid-suite, a person's machine with agents at work — PowerShell
- * started at normal priority took up to ten seconds to start, the look
- * ran out its limit, and the tree it was for went unfound. Windows hands
- * the CPU to the higher priority class first, so the look takes what it
- * needs and is gone; it is bounded by its own limit either way.
- * `superviseStdioServer.mjs` does the same for its holder's looks.
- */
-export function raiseLookPriority(pid: number | undefined): void {
-  if (pid === undefined) return;
-  try {
-    setPriority(pid, osConstants.priority.PRIORITY_HIGH);
-  } catch {
-    // Already gone, or not ours to change: the look runs at normal priority.
-  }
 }
 
 function darwinTable(listing: string, environments: string | undefined, marker: string | undefined): ProcessTable {
@@ -259,13 +230,21 @@ function darwinTable(listing: string, environments: string | undefined, marker: 
  * PowerShell and taskkill are named by their System32 paths, never looked
  * up on PATH (`windowsSystemExecutable`): a caller that narrowed PATH
  * would otherwise leave every tree unfound, its descendants unended.
+ *
+ * And `Get-CimInstance`'s module is imported by its path under PowerShell's
+ * own folder, never found by autoloading (EO-645). Autoloading reads a
+ * cache of every installed module, kept under LOCALAPPDATA; an environment
+ * without it — turbo's, for a task; a backend's, for a server it starts —
+ * has PowerShell read every module again instead. On a machine with many
+ * installed, GitHub's hosted Windows runner among them, that took thirty
+ * seconds a look, every look ran out its limit, and no tree was found.
  */
 const WINDOWS_POWERSHELL = "WindowsPowerShell\\v1.0\\powershell.exe";
 const WINDOWS_TABLE_ARGS = [
   "-NoProfile",
   "-NonInteractive",
   "-Command",
-  "Get-CimInstance -Query 'SELECT ProcessId, ParentProcessId, CreationDate FROM Win32_Process' | ForEach-Object { '{0} {1} {2}' -f $_.ProcessId, $_.ParentProcessId, $(if ($_.CreationDate) { $_.CreationDate.ToFileTimeUtc() } else { 0 }) }",
+  "Import-Module -Name (Join-Path $PSHOME 'Modules\\CimCmdlets'); Get-CimInstance -Query 'SELECT ProcessId, ParentProcessId, CreationDate FROM Win32_Process' | ForEach-Object { '{0} {1} {2}' -f $_.ProcessId, $_.ParentProcessId, $(if ($_.CreationDate) { $_.CreationDate.ToFileTimeUtc() } else { 0 }) }",
 ];
 
 export function windowsTable(listing: string): ProcessTable {

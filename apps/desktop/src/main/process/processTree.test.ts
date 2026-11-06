@@ -1,13 +1,13 @@
 import { spawn, type ChildProcess, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
-import { constants as osConstants, getPriority, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { allGone, CONTAINMENT_EXPECTED, descendantPids, DESCENDANTS_SNIPPET, running, sweepUp, type DescendantKind } from "../testing/escapingDescendants.js";
 import { nodeScript } from "../testing/nodeScript.js";
 import { containmentAvailable } from "./cgroupContainment.js";
 import type { EndableProcess } from "./endProcess.js";
-import { endAllProcessTrees, fileTime, liveProcessTrees, ProcessTree, raiseLookPriority, readProcessTable, readProcessTableSync, TREE_MARKER_VARIABLE, type ProcessTable, type ProcessTreeOptions } from "./processTree.js";
+import { endAllProcessTrees, fileTime, liveProcessTrees, ProcessTree, readProcessTable, readProcessTableSync, TREE_MARKER_VARIABLE, type ProcessTable, type ProcessTreeOptions } from "./processTree.js";
 
 const directories: string[] = [];
 const leftovers: number[] = [];
@@ -218,22 +218,20 @@ describe.runIf(posix)("the process table, whatever PATH says (EO-640)", () => {
   });
 });
 
-// Most of a look at Windows' table is PowerShell starting, and on a
-// machine whose every CPU is busy that took up to ten seconds at normal
-// priority — the whole of the look's limit (EO-645).
-describe.runIf(process.platform === "win32")("a look at Windows' table (EO-645)", () => {
-  it("is run ahead of everything else on the machine", () => {
-    const look = spawn(process.execPath, [nodeScript("setInterval(() => {}, 1000);")], { stdio: "ignore", windowsHide: true });
-    roots.push(look);
-
-    raiseLookPriority(look.pid);
-
-    expect(getPriority(look.pid!)).toBe(osConstants.priority.PRIORITY_HIGH);
-  });
-
-  it("is left alone when its process has already gone", () => {
-    expect(() => raiseLookPriority(undefined)).not.toThrow();
-    expect(() => raiseLookPriority(2 ** 30)).not.toThrow();
+// PowerShell keeps its cache of installed modules under LOCALAPPDATA, and
+// turbo hands a task no LOCALAPPDATA: autoloading Get-CimInstance then
+// read every module on the machine again, thirty seconds a look on a
+// hosted runner, and every look ran out its limit (EO-645).
+describe.runIf(process.platform === "win32")("the process table on Windows, whatever the environment says (EO-645)", () => {
+  it("is read when the environment names neither LOCALAPPDATA nor PSModulePath", async () => {
+    vi.stubEnv("LOCALAPPDATA", undefined);
+    vi.stubEnv("PSModulePath", undefined);
+    try {
+      expect((await readProcessTable())?.rows.has(process.pid)).toBe(true);
+      expect(readProcessTableSync()?.rows.has(process.pid)).toBe(true);
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 });
 
