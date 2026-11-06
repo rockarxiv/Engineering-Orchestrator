@@ -17,7 +17,8 @@
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "test": "vitest run",
-    "test:coverage": "vitest run --coverage"
+    "test:coverage": "vitest run --coverage",
+    "envprobe": "node ../../.github/eo645/probe.cjs"
   },
   "dependencies": {
     "ajv": "catalog:",

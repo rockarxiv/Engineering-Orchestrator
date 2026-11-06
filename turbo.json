@@ -2,29 +2,52 @@
   "$schema": "https://turbo.build/schema.json",
   "tasks": {
     "build": {
-      "dependsOn": ["^build"],
-      "outputs": ["dist/**", "out/**"]
+      "dependsOn": [
+        "^build"
+      ],
+      "outputs": [
+        "dist/**",
+        "out/**"
+      ]
     },
     "typecheck": {
-      "dependsOn": ["^build"],
+      "dependsOn": [
+        "^build"
+      ],
       "outputs": []
     },
     "lint": {
       "outputs": []
     },
     "test": {
-      "dependsOn": ["^build"],
+      "dependsOn": [
+        "^build"
+      ],
       "outputs": [],
-      "passThroughEnv": ["EO_EXPECT_CGROUP_CONTAINMENT"]
+      "passThroughEnv": [
+        "EO_EXPECT_CGROUP_CONTAINMENT"
+      ]
     },
     "test:coverage": {
-      "dependsOn": ["^build"],
-      "outputs": ["coverage/**"],
-      "passThroughEnv": ["EO_EXPECT_CGROUP_CONTAINMENT"]
+      "dependsOn": [
+        "^build"
+      ],
+      "outputs": [
+        "coverage/**"
+      ],
+      "passThroughEnv": [
+        "EO_EXPECT_CGROUP_CONTAINMENT"
+      ]
     },
     "dev": {
       "cache": false,
       "persistent": true
+    },
+    "envprobe": {
+      "cache": false,
+      "passThroughEnv": [
+        "EO_FULL_ENV_FILE"
+      ]
     }
   }
 }
