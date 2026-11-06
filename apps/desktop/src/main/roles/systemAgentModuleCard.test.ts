@@ -205,7 +205,7 @@ describe("what the system agent's prompt says about a module attaching files", (
   it("describes existingBranch: worked on instead of a cut branch, and refused where no branch is worked on (EO-648)", () => {
     expect(flat).toContain("`existingBranch` names a branch that already exists");
     expect(flat).toContain("pipeline whose entry step does not work on a branch, is refused and nothing is created");
-    expect(flat).toContain("does not change the first ticket's branch");
+    expect(flat).toContain("the same `idempotencyKey` does not change the first");
   });
 
   it("tells it to declare needs.create, and that it is enforced", () => {
