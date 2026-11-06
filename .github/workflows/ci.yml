@@ -43,16 +43,16 @@ jobs:
     # writes as root, which left the next job unable to clean it.
     container: ${{ fromJSON((github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && 'null' || vars.CI_CONTAINER || 'null') }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       # Must come before setup-node: v5 turns on package-manager-cache by
       # default, which reads the `packageManager` field and shells out to
       # pnpm to find the store path — so pnpm has to already exist. This
       # action pins the version from that same field, so there's one
       # source of truth for it.
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
 
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@v7
         with:
           # 22.x, matching the Node that Electron 39 bundles. Not 20:
           # jsdom 30 pulls undici 8, which calls markAsUncloneable —
@@ -155,9 +155,9 @@ jobs:
           $left | Stop-Process -Force -ErrorAction SilentlyContinue
           "::warning title=Windows runner::Ended $(@($left).Count) processes an earlier job left running; the list is in this step's log."
 
-      - uses: actions/checkout@v5
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v5
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: pnpm
@@ -231,9 +231,9 @@ jobs:
         shard: [1, 2, 3, 4]
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v5
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v5
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: pnpm
@@ -270,9 +270,9 @@ jobs:
     # hosted.
     container: ${{ fromJSON((github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && 'null' || vars.CI_CONTAINER || 'null') }}
     steps:
-      - uses: actions/checkout@v5
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v5
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: pnpm
@@ -337,9 +337,9 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v5
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v5
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: pnpm
@@ -359,7 +359,7 @@ jobs:
       # failure, which the log alone does not carry.
       - name: Keep what a failed spec saw
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: e2e-macos-test-results
           path: apps/desktop/test-results
@@ -376,9 +376,9 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v5
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v5
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: pnpm
@@ -396,7 +396,7 @@ jobs:
       # failure, which the log alone does not carry.
       - name: Keep what a failed spec saw
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: e2e-windows-test-results
           path: apps/desktop/test-results
