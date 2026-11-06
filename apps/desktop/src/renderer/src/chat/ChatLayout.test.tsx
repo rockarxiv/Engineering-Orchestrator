@@ -1231,6 +1231,28 @@ describe("the chat layout's home", () => {
     await waitFor(() => expect(window.location.hash).toBe("#/items/i3"));
   });
 
+  // What Chromium reports as the platform on each system EO ships for.
+  // jsdom reports none, so without this every run here is "not a Mac"
+  // whatever machine it is on, and the Mac branch is never taken.
+  it.each([
+    { system: "a Mac", platform: "MacIntel", label: "⌘K", keys: { metaKey: true } },
+    { system: "Windows", platform: "Win32", label: "Ctrl+K", keys: { ctrlKey: true } },
+    { system: "Linux", platform: "Linux x86_64", label: "Ctrl+K", keys: { ctrlKey: true } },
+  ])("on $system, labels the search $label and opens it on that key", async ({ platform, label, keys }) => {
+    const reported = vi.spyOn(window.navigator, "platform", "get").mockReturnValue(platform);
+    try {
+      open("/chat");
+
+      const search = within(await screen.findByRole("navigation", { name: "Main" })).getByRole("button", { name: /^Search/ });
+      expect(search).toHaveTextContent(`Search${label}`);
+
+      fireEvent.keyDown(window, { key: "k", ...keys });
+      expect(await screen.findByRole("textbox", { name: "Search items and pipelines" })).toBeInTheDocument();
+    } finally {
+      reported.mockRestore();
+    }
+  });
+
   it("gives way to the conversation rather than offering a second door into it", async () => {
     open("/chat");
     await screen.findByRole("region", { name: "Conversation" });

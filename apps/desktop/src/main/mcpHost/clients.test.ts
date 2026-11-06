@@ -1,7 +1,7 @@
 import { mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TOKEN_VAR, claudeDesktopConfig, createRunner, detectClients, registerWith, type ClientContext, type Runner } from "./clients.js";
 
 /**
@@ -150,6 +150,32 @@ describe("registering with Codex", () => {
     // learns that here rather than from a refused tool call.
     expect(result.registered).toBe(true);
     expect(result.caveat).toContain(TOKEN_VAR);
+  });
+});
+
+// Every platform's answer side by side, macOS's included: CI runs this
+// file on Linux, where the darwin branch is never the one taken, so a
+// wrong macOS path would pass everything else here. Checked against the
+// MCP project's "Connect to local MCP servers"
+// (https://modelcontextprotocol.io/docs/develop/connect-local-servers),
+// which is where Claude Desktop's own help sends people for this file.
+describe("where Claude Desktop keeps its config", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it.each([
+    ["darwin", "/Users/someone", "/Users/someone/Library/Application Support/Claude/claude_desktop_config.json"],
+    ["linux", "/home/someone", "/home/someone/.config/Claude/claude_desktop_config.json"],
+    ["win32", "C:\\Users\\someone", "C:\\Users\\someone\\AppData\\Roaming\\Claude\\claude_desktop_config.json"],
+  ] as const)("on %s, under %s", (platform, home, expected) => {
+    vi.stubEnv("APPDATA", "C:\\Users\\someone\\AppData\\Roaming");
+    expect(claudeDesktopConfig(home, platform)).toBe(expected);
+  });
+
+  it("finds it on Windows under the home's roaming folder when APPDATA is unset", () => {
+    vi.stubEnv("APPDATA", undefined);
+    expect(claudeDesktopConfig("C:\\Users\\someone", "win32")).toBe("C:\\Users\\someone\\AppData\\Roaming\\Claude\\claude_desktop_config.json");
   });
 });
 
