@@ -15,12 +15,12 @@
     "test": {
       "dependsOn": ["^build"],
       "outputs": [],
-      "passThroughEnv": ["EO_EXPECT_CGROUP_CONTAINMENT"]
+      "passThroughEnv": ["EO_EXPECT_CGROUP_CONTAINMENT", "EO_LOOK_TRACE"]
     },
     "test:coverage": {
       "dependsOn": ["^build"],
       "outputs": ["coverage/**"],
-      "passThroughEnv": ["EO_EXPECT_CGROUP_CONTAINMENT"]
+      "passThroughEnv": ["EO_EXPECT_CGROUP_CONTAINMENT", "EO_LOOK_TRACE"]
     },
     "dev": {
       "cache": false,

@@ -194,7 +194,14 @@ export const WINDOWS_LOOK_TIMEOUT_MS = 10_000;
 
 function run(command: string, args: readonly string[], timeout = 0): Promise<string> {
   return new Promise((resolve, reject) => {
-    const child = execFile(command, args, { encoding: "utf8", maxBuffer: TABLE_BUFFER, timeout, windowsHide: true }, (error, stdout) => (error ? reject(error) : resolve(stdout)));
+    const began = Date.now();
+    const traced = process.env["EO_LOOK_TRACE"] === "1" && process.platform === "win32";
+    const limit = traced && timeout > 0 ? 60_000 : timeout;
+    const child = execFile(command, traced ? [...args.slice(0, -1), `[Console]::Error.WriteLine('started ' + [DateTime]::Now.ToString('HH:mm:ss.fff')); ${args.at(-1)}; [Console]::Error.WriteLine('queried ' + [DateTime]::Now.ToString('HH:mm:ss.fff'))`] : args, { encoding: "utf8", maxBuffer: TABLE_BUFFER, timeout: limit, windowsHide: true }, (error, stdout, stderr) => {
+      if (traced && (error !== null || Date.now() - began > 2_000)) console.warn(`[eo-trace] look from ${new Date(began).toISOString().slice(11, 23)} took ${Date.now() - began} ms, error=${error !== null}, stderr: ${String(stderr).slice(0, 400)}`);
+      if (traced && error === null && Date.now() - began > timeout) return reject(new Error("over the real limit"));
+      return error ? reject(error) : resolve(stdout);
+    });
     if (process.platform === "win32") raiseLookPriority(child.pid);
   });
 }

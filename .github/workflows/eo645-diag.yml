@@ -10,7 +10,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 4]
+        shard: [1]
     steps:
       - uses: actions/checkout@v5
       - uses: pnpm/action-setup@v4
@@ -42,6 +42,8 @@ jobs:
           $mp = Get-MpComputerStatus -ErrorAction SilentlyContinue; "Defender RTP: $($mp.RealTimeProtectionEnabled) AMSI: $($mp.AMServiceEnabled)"
       - name: Desktop suite, slice ${{ matrix.shard }} of 4
         continue-on-error: true
+        env:
+          EO_LOOK_TRACE: "1"
         run: pnpm exec turbo run test '--filter=@eo/desktop' '--' '--shard=${{ matrix.shard }}/4'
       - name: The sampler's log
         if: always()
