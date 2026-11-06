@@ -410,6 +410,7 @@ const WINDOWS_TABLE_COMMAND = "Get-CimInstance -Query 'SELECT ProcessId, ParentP
  */
 function windowsHolder(configText) {
   const { execFile, spawn: startServer } = process.getBuiltinModule("node:child_process");
+  const { constants: osConstants, setPriority } = process.getBuiltinModule("node:os");
   const { command, args, powershell, taskkill, tableCommand, lookTimeoutMs } = JSON.parse(configText);
   /** How long ending the tree may take, looks included, before the holder goes anyway. */
   const BUDGET_MS = 30000;
@@ -421,7 +422,15 @@ function windowsHolder(configText) {
     new Promise((resolveLater) => {
       // Bounded (`lookTimeoutMs`): CIM can stall for minutes, and a look
       // that does not answer must not hold up the taskkill after it.
-      execFile(file, argv, { encoding: "utf8", maxBuffer: 64 * 1024 * 1024, timeout: lookTimeoutMs, windowsHide: true }, (error, stdout) => resolveLater(error ? null : stdout));
+      const child = execFile(file, argv, { encoding: "utf8", maxBuffer: 64 * 1024 * 1024, timeout: lookTimeoutMs, windowsHide: true }, (error, stdout) => resolveLater(error ? null : stdout));
+      // Ahead of everything else on the machine, as `raiseLookPriority` in
+      // `processTree.ts` says why (EO-645): on a busy machine PowerShell at
+      // normal priority can take the whole limit just to start.
+      try {
+        setPriority(child.pid, osConstants.priority.PRIORITY_HIGH);
+      } catch {
+        // Gone already, or not ours to change.
+      }
     });
 
   const spawnedAfter = fileTime(Date.now() - 1000);

@@ -1,6 +1,7 @@
 import { execFile, execFileSync } from "node:child_process";
 import { readdirSync, readFileSync } from "node:fs";
 import { readdir, readFile } from "node:fs/promises";
+import { constants as osConstants, setPriority } from "node:os";
 import { uuidv7 } from "@eo/core";
 import { contain as containInCgroup, type Containment } from "./cgroupContainment.js";
 import { END_PROCESS_GRACE_MS, endProcess, hasExited, type EndableProcess } from "./endProcess.js";
@@ -193,8 +194,29 @@ export const WINDOWS_LOOK_TIMEOUT_MS = 10_000;
 
 function run(command: string, args: readonly string[], timeout = 0): Promise<string> {
   return new Promise((resolve, reject) => {
-    execFile(command, args, { encoding: "utf8", maxBuffer: TABLE_BUFFER, timeout, windowsHide: true }, (error, stdout) => (error ? reject(error) : resolve(stdout)));
+    const child = execFile(command, args, { encoding: "utf8", maxBuffer: TABLE_BUFFER, timeout, windowsHide: true }, (error, stdout) => (error ? reject(error) : resolve(stdout)));
+    if (process.platform === "win32") raiseLookPriority(child.pid);
   });
+}
+
+/**
+ * A look at Windows' table, run ahead of everything else on the machine
+ * (EO-645). Most of a look is PowerShell starting; the query itself takes
+ * a tenth of a second. On a machine whose every CPU is busy — a hosted CI
+ * runner mid-suite, a person's machine with agents at work — PowerShell
+ * started at normal priority took up to ten seconds to start, the look
+ * ran out its limit, and the tree it was for went unfound. Windows hands
+ * the CPU to the higher priority class first, so the look takes what it
+ * needs and is gone; it is bounded by its own limit either way.
+ * `superviseStdioServer.mjs` does the same for its holder's looks.
+ */
+export function raiseLookPriority(pid: number | undefined): void {
+  if (pid === undefined) return;
+  try {
+    setPriority(pid, osConstants.priority.PRIORITY_HIGH);
+  } catch {
+    // Already gone, or not ours to change: the look runs at normal priority.
+  }
 }
 
 function darwinTable(listing: string, environments: string | undefined, marker: string | undefined): ProcessTable {
