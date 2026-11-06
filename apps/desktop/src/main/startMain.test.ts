@@ -59,6 +59,23 @@ vi.mock("./engine.js", async (importOriginal) => {
 });
 
 /**
+ * The login shell is never run here (EO-655): a test machine's profile is
+ * nobody's business, and the answer it would give is not what is under
+ * test. The stand-in never answers, which is the slowest shell there is.
+ */
+const shellPathAsked = vi.hoisted(() => ({ count: 0 }));
+vi.mock("./process/searchPath.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./process/searchPath.js")>();
+  return {
+    ...actual,
+    resolveSearchPath: () => {
+      shellPathAsked.count += 1;
+      return new Promise(() => {});
+    },
+  };
+});
+
+/**
  * Startup is chatty, and some of it arrives late.
  *
  * `checkGitAvailable()` logs whenever git answers, which can be after
@@ -117,6 +134,16 @@ describe("starting the main process with a fake platform", () => {
     });
 
     expect(existsSync(join(platform.userDataPath, "eo.db"))).toBe(true);
+  });
+
+  it("asks for the login shell's PATH without waiting for the answer", async () => {
+    const before = shellPathAsked.count;
+
+    start();
+
+    // The shell above never answers, and startup is done regardless.
+    expect(shellPathAsked.count).toBe(before + 1);
+    await expect(dispatchIpc("app:getVersion", undefined)).resolves.toEqual({ ok: true, data: { version: "7.7.7" } });
   });
 
   it("opens the door before the surface that knocks on it", () => {

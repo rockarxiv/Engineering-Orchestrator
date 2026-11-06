@@ -1,8 +1,9 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { ModuleManifest, PipelineExport, StepWatch, Uuid } from "@eo/core";
+import { resetSearchPathForTests, resolveSearchPath } from "../process/searchPath.js";
 import {
   actionShapeFromSchema,
   ADMIN_GRANT_REFUSAL,
@@ -508,6 +509,44 @@ describe("preflight", () => {
     if (!built.ok) return;
 
     expect(preflightImport(handle.db, secrets, built.document).missingBinaries).toEqual([]);
+  });
+
+  // EO-655: an app opened from Finder does not inherit the person's PATH,
+  // so the preflight searches what their login shell said — the same
+  // directories `ctx.exec` will be run with.
+  it.skipIf(process.platform === "win32")("finds a binary only the login shell's PATH has", async () => {
+    const bin = mkdtempSync(join(tmpdir(), "eo-login-bin-"));
+    try {
+      writeFileSync(join(bin, "eo-login-only-tool"), "#!/bin/sh\necho hi\n");
+      chmodSync(join(bin, "eo-login-only-tool"), 0o755);
+      const saved = saveModule(handle.db, {
+        slug: "login-only",
+        name: "Login only",
+        description: "Runs a tool the login shell knows about.",
+        code,
+        manifest: { ...manifest, needs: { bin: ["eo-login-only-tool"], env: [], network: false, item: false, comment: false, attach: false, create: false } },
+        approve: true,
+      });
+      if (!saved.ok) throw new Error(saved.reason);
+      const pipeline = createPipeline(handle.db, { name: "Login only" });
+      createStep(handle.db, { id: "s", pipelineId: pipeline.id, position: 0, name: "Login only", type: "module", entryAction: saved.module.id });
+      createStep(handle.db, { id: "done", pipelineId: pipeline.id, position: 1, name: "Done", type: "user", isTerminal: true });
+      const built = exportPipeline(handle.db, pipeline.id);
+      if (!built.ok) throw new Error("export failed");
+
+      expect(preflightImport(handle.db, secrets, built.document).missingBinaries.map((missing) => missing.name)).toEqual(["eo-login-only-tool"]);
+
+      await resolveSearchPath({
+        platform: "linux",
+        shell: "/bin/sh",
+        run: async () => ({ code: 0, stdout: `__EO_LOGIN_SHELL_PATH_START__\n${bin}:/usr/bin\n__EO_LOGIN_SHELL_PATH_END__\n`, timedOut: false }),
+      });
+
+      expect(preflightImport(handle.db, secrets, built.document).missingBinaries).toEqual([]);
+    } finally {
+      resetSearchPathForTests();
+      rmSync(bin, { recursive: true, force: true });
+    }
   });
 
   it("reports a slug this catalog already uses", () => {

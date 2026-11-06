@@ -1,8 +1,9 @@
 import { execFile } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir, platform as osPlatform } from "node:os";
-import { delimiter, join, posix, win32 } from "node:path";
+import { join, posix, win32 } from "node:path";
 import { promisify } from "node:util";
+import { searchPath } from "../process/searchPath.js";
 import { MCP_HOST_SERVER_KEY, MCP_TOKEN_VAR, claudeCodeAddArgs, codexAddArgs, mcpConnectCommand, mcpRemoteArgs, mcpRemoteEnv } from "@eo/core";
 
 const execFileAsync = promisify(execFile);
@@ -53,32 +54,15 @@ const NON_INTERACTIVE_ENV: Record<string, string> = {
   CI: "1",
 };
 
-/**
- * Where to look for a CLI beyond whatever PATH this process inherited.
- *
- * Load-bearing on macOS, where an app launched from Finder gets a PATH
- * of roughly `/usr/bin:/bin:/usr/sbin:/sbin` and sees neither Homebrew
- * nor anything npm installed. A person with `claude` working perfectly
- * in their terminal would otherwise be told it is not installed, which
- * is the single most confusing thing this screen could say.
- */
-function searchPath(home: string, platform: NodeJS.Platform): string[] {
-  const fromEnv = (process.env["PATH"] ?? "").split(delimiter).filter(Boolean);
-  if (platform === "win32") return fromEnv;
-  return [
-    ...fromEnv,
-    join(home, ".local", "bin"),
-    join(home, "bin"),
-    join(home, ".npm-global", "bin"),
-    join(home, ".bun", "bin"),
-    "/opt/homebrew/bin",
-    "/usr/local/bin",
-  ];
-}
-
 export function createRunner(home = homedir(), platform = osPlatform(), timeoutMs = 20_000): Runner {
-  const path = searchPath(home, platform).join(delimiter);
   return async (cli, args) => {
+    // Where to look is decided in one place (EO-655): the login shell's
+    // PATH, the inherited one and the fixed folders, read at the call so a
+    // runner made before the shell answered still uses its answer. On
+    // macOS an app launched from Finder otherwise sees neither Homebrew
+    // nor anything npm installed, and someone whose `claude` works in a
+    // terminal would be told it is not installed.
+    const path = searchPath({ home, platform });
     try {
       const { stdout } = await execFileAsync(cli, args, {
         windowsHide: true,

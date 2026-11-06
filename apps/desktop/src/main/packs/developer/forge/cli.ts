@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { searchPath } from "../../../process/searchPath.js";
 import type { ForgeKind } from "./remote.js";
 
 const execFileAsync = promisify(execFile);
@@ -61,7 +62,10 @@ export function createCliRunner(timeoutMs = 120_000): CliRunner {
         windowsHide: true,
         timeout: timeoutMs,
         maxBuffer: 8 * 1024 * 1024,
-        env: { ...process.env, ...NON_INTERACTIVE_ENV },
+        // Read at the call, not when the runner was made: a runner built
+        // before the login shell answered still finds Homebrew once it has
+        // (EO-655).
+        env: { ...process.env, ...NON_INTERACTIVE_ENV, PATH: searchPath() },
         ...(options?.signal ? { signal: options.signal } : {}),
       });
       return { ok: true, stdout: stdout.trim(), error: "", notFound: false };

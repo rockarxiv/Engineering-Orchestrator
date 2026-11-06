@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -23,6 +23,7 @@ import {
   updateItem,
 } from "../db/repos/index.js";
 import type { StepAnswer } from "../roles/answers.js";
+import { resetSearchPathForTests, resolveSearchPath } from "../process/searchPath.js";
 import { postModuleComment } from "./moduleComments.js";
 import {
   MAX_COMMENTS_PER_RUN,
@@ -1911,6 +1912,29 @@ describe("what a module can reach", () => {
     const code = `export default async function run(ctx) { const r = await ctx.exec("echo", ["hello"]); return { ok: true, result: "ok", detail: r.stdout.trim() }; }`;
     const module = moduleWith(code, { needs: { bin: ["echo"], env: [], network: false, item: false, comment: false, attach: false, create: false } });
     expect(await run(module)).toMatchObject({ ok: true, detail: "hello" });
+  });
+
+  // EO-655: an app opened from Finder does not inherit the person's PATH,
+  // so the host is handed the one their login shell reported, and
+  // `ctx.exec` finds what their terminal finds.
+  it.skipIf(process.platform === "win32")("runs a declared binary only the login shell's PATH has", async () => {
+    const bin = mkdtempSync(join(tmpdir(), "eo-login-bin-"));
+    try {
+      writeFileSync(join(bin, "eo-login-only-tool"), "#!/bin/sh\necho from the login shell\n");
+      chmodSync(join(bin, "eo-login-only-tool"), 0o755);
+      await resolveSearchPath({
+        platform: "linux",
+        shell: "/bin/sh",
+        run: async () => ({ code: 0, stdout: `__EO_LOGIN_SHELL_PATH_START__\n${bin}:/usr/bin:/bin\n__EO_LOGIN_SHELL_PATH_END__\n`, timedOut: false }),
+      });
+      const code = `export default async function run(ctx) { const r = await ctx.exec("eo-login-only-tool"); return { ok: true, result: "ok", detail: r.stdout.trim() }; }`;
+      const module = moduleWith(code, { needs: { bin: ["eo-login-only-tool"], env: [], network: false, item: false, comment: false, attach: false, create: false } });
+
+      expect(await run(module)).toMatchObject({ ok: true, detail: "from the login shell" });
+    } finally {
+      resetSearchPathForTests();
+      rmSync(bin, { recursive: true, force: true });
+    }
   });
 
   // `needs.bin` is a promise EO keeps, not documentation. Without this a
