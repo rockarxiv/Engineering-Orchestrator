@@ -1,3 +1,5 @@
+import { describeSearchedDirectories } from "../../../process/searchPath.js";
+
 /**
  * Whether a failure is worth trying again (F-06).
  *
@@ -63,7 +65,7 @@ export function missingCli(cli: string): Classification {
   return {
     final: true,
     diverged: false,
-    message: `\`${cli}\` is not on PATH. EO opens pull requests through it — install it, or turn this off in Settings → Forge.`,
+    message: `\`${cli}\` is not on PATH. EO opens pull requests through it — install it, or turn this off in Settings → Forge. ${describeSearchedDirectories()}`,
   };
 }
 

@@ -1,6 +1,7 @@
 import type { IpcPayload, IpcResponse, Uuid } from "@eo/core";
 import type { Db } from "../db/client.js";
 import { getGitWorkspace } from "../db/repos/index.js";
+import { describeSearchedDirectories } from "../process/searchPath.js";
 import { CLI_FOR, createCliRunner, type CliRunner } from "../packs/developer/forge/cli.js";
 import { guessForge, parseRemoteUrl } from "../packs/developer/forge/remote.js";
 import { findTemplate, type TreeReader } from "../packs/developer/forge/template.js";
@@ -49,7 +50,7 @@ export async function detectForge(db: Db, input: IpcPayload<"forge:detect">, run
     authenticated: auth.ok,
     templatePath: template.path,
     problem: auth.notFound
-      ? `\`${cli}\` is not installed. EO opens pull requests through it.`
+      ? `\`${cli}\` is not installed. EO opens pull requests through it. ${describeSearchedDirectories()}`
       : auth.ok
         ? null
         : `\`${cli}\` is not signed in: run \`${cli} auth login\`.`,

@@ -83,6 +83,7 @@ import { entryRuleProblems } from "@eo/engine";
 import { registry } from "../registry.js";
 import { adoptCarriedSchemas, adoptExportedActions, carriedSchemaRefusal, exportedActionRefusal, malformedActionRefusal } from "../actionDefinitionAdoption.js";
 import { loadRolePrompt } from "../roles/prompts.js";
+import { searchPath } from "../process/searchPath.js";
 import { listAvailableNames, type ModuleSecretsOptions } from "./secrets.js";
 
 /**
@@ -529,7 +530,7 @@ function isSentinel(target: string): boolean {
 
 export interface ImportPreflight {
   pipelineName: string;
-  /** Binaries no directory on PATH provides, and which module wants each. */
+  /** Binaries no directory EO searches provides (`process/searchPath.ts`), and which module wants each. */
   missingBinaries: { name: string; wantedBy: string[] }[];
   /** Declared secrets this machine has no value for. */
   missingSecrets: { name: string; wantedBy: string[] }[];
@@ -723,7 +724,7 @@ export interface PreflightOptions {
 }
 
 /** Whether any directory on PATH provides an executable of this name. */
-function onPath(name: string, path = process.env["PATH"] ?? ""): boolean {
+function onPath(name: string, path = searchPath()): boolean {
   // An absolute or relative path is checked as given; a bare name is
   // looked up, which is what `ctx.exec` will do with it.
   const candidates = name.includes("/") || name.includes("\\") ? [name] : path.split(delimiter).filter(Boolean).map((dir) => join(dir, name));

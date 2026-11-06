@@ -1,4 +1,5 @@
 import type { WatchNews, WatchPullRequestReadyWhen } from "@eo/core";
+import { describeSearchedDirectories } from "../../../process/searchPath.js";
 import { CLI_FOR, type CliResult, type CliRunner } from "./cli.js";
 import type { ForgeKind } from "./remote.js";
 
@@ -136,7 +137,7 @@ function failure(cli: string, result: CliResult): PullRequestReading {
       ok: false,
       problem: "missing_cli",
       cli,
-      reason: `\`${cli}\` is not installed, or is not on EO's PATH, so EO cannot ask the forge about this pull request. Install it and sign in with \`${cli} auth login\`.`,
+      reason: `\`${cli}\` is not installed, or is not on EO's PATH, so EO cannot ask the forge about this pull request. Install it and sign in with \`${cli} auth login\`. ${describeSearchedDirectories()}`,
     };
   }
   const said = result.error.trim() || result.stdout.trim() || "it gave no reason";

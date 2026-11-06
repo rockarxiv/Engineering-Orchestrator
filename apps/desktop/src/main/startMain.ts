@@ -47,6 +47,7 @@ import { checkGitAvailable } from "./packs/developer/workspace/index.js";
 import { itemTypeContributions } from "./packs/pack.js";
 import { preflightPackPrompts, promptReader } from "./packs/promptPreflight.js";
 import { syncRolePrompts, usePromptsDir } from "./roles/prompts.js";
+import { resolveSearchPath } from "./process/searchPath.js";
 import { runtimeRoot } from "./runtimes/install.js";
 import { createShutdownCoordinator, type ShutdownChoice } from "./shutdownCoordinator.js";
 import { startDeferredAutoUpdate } from "./updater.js";
@@ -104,6 +105,13 @@ export function startMain(platform: Platform): RunningMain {
   // sync, and the Agents screen offering the default — has to resolve the
   // same directory, and in a packaged build it is not the source tree.
   usePromptsDir(resources.prompts);
+
+  // EO-655: ask the person's login shell for its PATH, so the tools EO
+  // runs for them — `gh`, `glab`, a module's binaries — are found where
+  // their terminal finds them. In the background and under a time limit:
+  // startup never waits, and until it answers everything searches the
+  // inherited PATH plus the fixed folders.
+  void resolveSearchPath();
 
   const userDataPath = platform.userDataPath;
   console.log(`[eo] userData path: ${userDataPath}`);

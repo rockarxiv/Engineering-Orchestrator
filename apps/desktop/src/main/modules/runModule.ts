@@ -5,6 +5,7 @@ import { DEFAULT_MODULE_TIMEOUT_MS, MAX_ATTACHMENT_ADD_PATHS, MAX_MODULE_CREATIO
 import type { CustomModule, Item, ModuleCreation, ModuleCreationAnswer, ModuleCreationWait, WatchNews } from "@eo/core";
 import type { StepAnswer } from "../roles/answers.js";
 import { killTree } from "../process/killTree.js";
+import { searchPath } from "../process/searchPath.js";
 
 /**
  * Running one module, from the outside (KAN-105).
@@ -568,7 +569,10 @@ export function runModule(launcher: ModuleHostLauncher, request: RunModuleReques
         // before importing anything.
         ...launcher.hostEnv,
         ...systemRootEnv(process.platform, process.env),
-        PATH: process.env.PATH ?? "",
+        // The login shell's PATH as well as the inherited one (EO-655): the
+        // host hands it to every `ctx.exec` child, and the import
+        // preflight's `needs.bin` check searches the same directories.
+        PATH: searchPath(),
       },
     });
 
