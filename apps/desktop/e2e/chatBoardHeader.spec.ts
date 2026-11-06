@@ -3,7 +3,9 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { expect, test } from "@playwright/test";
-import { attachRepository, closeApp, homeEnv, launchApp } from "./support/app.js";
+import { attachRepository, closeApp, homeEnv, launchApp, sizeWindow } from "./support/app.js";
+import { openView } from "./support/board.js";
+import { seedItem } from "./support/seed.js";
 
 /**
  * A board's head stays readable in a narrow canvas (EO-409).
@@ -43,7 +45,7 @@ test("a board's head keeps its title, its status line and its button readable be
 
   try {
     // The size the window opens at, said here so the spec does not move if that default does.
-    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.setContentSize(1100, 720));
+    await sizeWindow(app, page, 1100, 720);
     await attachRepository(page, repoPath);
     await expect.poll(() => page.evaluate(() => window.innerWidth)).toBe(1100);
 
@@ -118,6 +120,64 @@ test("a board's head keeps its title, its status line and its button readable be
     await expect(views.getByRole("link", { name: "Graph" })).toHaveAttribute("aria-current", "page");
     await expect(views.getByRole("link")).toHaveText(["Board", "Graph"]);
     await expect(view.getByRole("link", { name: "Configure" })).toHaveCount(0);
+  } finally {
+    await closeApp(app);
+    rmSync(scratch, { recursive: true, force: true });
+  }
+});
+
+/**
+ * An item's head keeps its title in a narrow canvas too (EO-646).
+ *
+ * The item's actions sat beside its title and took what they needed
+ * first, so in a window 1024 wide — a hosted Mac's or Windows runner's
+ * whole screen — the title was left a column no pixels wide: there in the
+ * page, and nowhere on the screen. Found by the Jira spec on Windows,
+ * whose window the screen made that narrow; held here at that size on
+ * every platform.
+ */
+test("an item's head keeps its title readable beside the conversation in a window 1024 wide", async () => {
+  const scratch = mkdtempSync(path.join(tmpdir(), "eo e2e chat item header "));
+  const home = path.join(scratch, "home");
+  const repoPath = path.join(scratch, "the repo");
+  mkdirSync(home, { recursive: true });
+  mkdirSync(repoPath, { recursive: true });
+
+  const git = (...args: string[]) => execFileSync("git", args, { cwd: repoPath, encoding: "utf8" });
+  git("init", "-b", "main");
+  git("config", "user.email", "eo@example.com");
+  git("config", "user.name", "EO E2E");
+  git("config", "commit.gpgsign", "false");
+  writeFileSync(path.join(repoPath, "README.md"), "# fixture\n");
+  git("add", "-A");
+  git("commit", "-m", "initial");
+
+  const { app, window: page } = await launchApp(homeEnv(home));
+
+  try {
+    await attachRepository(page, repoPath);
+    await sizeWindow(app, page, 1024, 645);
+    const seeded = seedItem(home, { title: "Rate limiting for the public API" });
+    await page.evaluate((id) => {
+      window.location.hash = `#/items/${id}`;
+    }, seeded.id);
+
+    // Beside the conversation, which is what makes the canvas narrow.
+    await expect(page.getByLabel("Assistant transcript")).toBeVisible();
+    const head = openView(page).locator("header").first();
+    const heading = head.getByRole("heading", { level: 1, name: "Rate limiting for the public API" });
+    await expect(heading).toBeVisible({ timeout: 10_000 });
+
+    // Read as a title rather than a word to a line.
+    const lines = await heading.evaluate((element) => {
+      const range = document.createRange();
+      range.selectNodeContents(element);
+      return new Set(Array.from(range.getClientRects(), (rect) => Math.round(rect.top))).size;
+    });
+    expect(lines).toBeLessThanOrEqual(2);
+
+    // And the actions are still there, wholly inside the window.
+    await expect(head.getByRole("button", { name: "Archive" })).toBeInViewport({ ratio: 1 });
   } finally {
     await closeApp(app);
     rmSync(scratch, { recursive: true, force: true });

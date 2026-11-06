@@ -12,7 +12,24 @@ import { RUNTIMES, versionFor } from "../src/main/runtimes/catalog.js";
 // literal here would be a second copy of it — and a version bump would
 // then have to remember to edit a Playwright spec that CI does not run
 // on every push.
-const CLAUDE_VERSION = versionFor(RUNTIMES.claude, "linux", "x64")!;
+const CLAUDE_VERSION = versionFor(RUNTIMES.claude, process.platform, process.arch)!;
+/** The package and the executable this machine's build comes as: `-darwin-arm64` and `claude` on a Mac, `claude.exe` on Windows. */
+const CLAUDE_PACKAGE = RUNTIMES.claude.packageFor(process.platform, process.arch)!;
+const CLAUDE_BINARY = RUNTIMES.claude.binaryName(process.platform);
+
+/**
+ * A search path with no agent CLI on it: the system's own directories.
+ *
+ * On Windows under the spelling the process already has. Its environment
+ * is case-insensitive and arrives as `Path`, and handing Electron that
+ * and a `PATH` beside it leaves which one wins to the child.
+ */
+function systemPath(): NodeJS.ProcessEnv {
+  if (process.platform !== "win32") return { PATH: "/usr/bin:/bin" };
+  const key = Object.keys(process.env).find((name) => name.toUpperCase() === "PATH") ?? "Path";
+  const root = process.env["SystemRoot"] ?? "C:\\Windows";
+  return { [key]: `${root}\\System32;${root}` };
+}
 
 /**
  * The agent runtimes, in the shipped process (A-08).
@@ -43,7 +60,7 @@ function isolate(scratch: string): { home: string; env: NodeJS.ProcessEnv } {
       // very likely has `claude` on theirs, and then "reports absent"
       // would pass on CI and fail on their machine, or worse the other
       // way round.
-      PATH: "/usr/bin:/bin",
+      ...systemPath(),
     }),
   };
 }
@@ -55,8 +72,11 @@ function seedManagedClaudeCli(scratch: string): void {
   // and the code share.
   const cache = path.join(scratch, `home/.config/Electron/runtimes/claude@${CLAUDE_VERSION}`);
   mkdirSync(cache, { recursive: true });
-  writeFileSync(path.join(cache, "claude"), "#!/bin/sh\nexit 0\n");
-  chmodSync(path.join(cache, "claude"), 0o755);
+  // Under the name the main process looks for. What it answers when run
+  // is nothing this spec asserts on, so a script stands in even where the
+  // real one is `claude.exe` and Windows cannot run it.
+  writeFileSync(path.join(cache, CLAUDE_BINARY), "#!/bin/sh\nexit 0\n");
+  chmodSync(path.join(cache, CLAUDE_BINARY), 0o755);
 }
 
 async function openRuntimes(scratch: string) {
@@ -95,7 +115,7 @@ test("a machine with no agent CLI says so, and offers to fetch one", async () =>
 
     // Everything consent is actually about, and all of it from the
     // catalog rather than the network — so this holds offline.
-    await expect(consent).toContainText(`@anthropic-ai/claude-agent-sdk-linux-x64@${CLAUDE_VERSION}`);
+    await expect(consent).toContainText(`${CLAUDE_PACKAGE}@${CLAUDE_VERSION}`);
     await expect(consent).toContainText("Anthropic PBC");
     await expect(consent).toContainText("checksum");
     await expect(consent.getByRole("link", { name: /Read them/ })).toHaveAttribute(

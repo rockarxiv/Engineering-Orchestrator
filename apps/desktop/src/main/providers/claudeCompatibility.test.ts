@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   claudeCompatibilityHolds,
+  claudeManagedSettingsDirectory,
   claudeSettingsLayers,
   effectiveClaudeEnvironment,
   effectiveClaudeModel,
@@ -80,6 +81,26 @@ describe("which settings files the CLI reads, and in what order", () => {
     const layers = claudeSettingsLayers({ cwd: "C:\\work\\repo", env: { HOME: "C:\\Users\\someone" }, sources: "project", platform: "win32", reader });
     expect(layers.map((layer) => layer.source)).toEqual(["globalConfig", "projectSettings", "policySettings", "policySettings"]);
     expect(effectiveClaudeEnvironment({}, layers)).toEqual({ A: "global", B: "project", C: "drop-in" });
+  });
+
+  // Every platform's answer side by side, macOS's included: CI runs this
+  // file on Linux, where the darwin branch is never the one taken, so a
+  // wrong macOS directory would pass everything else here. Checked
+  // against Claude Code's own documentation, "Deploy a managed settings
+  // file" (https://code.claude.com/docs/en/managed-settings).
+  it.each([
+    ["darwin", "/Library/Application Support/ClaudeCode", "/Library/Application Support/ClaudeCode/managed-settings.json"],
+    ["linux", "/etc/claude-code", "/etc/claude-code/managed-settings.json"],
+    ["win32", "C:\\Program Files\\ClaudeCode", "C:\\Program Files\\ClaudeCode\\managed-settings.json"],
+  ] as const)("reads managed settings on %s from %s", (platform, directory, file) => {
+    expect(claudeManagedSettingsDirectory(platform)).toBe(directory);
+    const reader = filesReader({ [file]: { env: { C: "managed" } } });
+    const layers = claudeSettingsLayers({ cwd, env: { HOME: home }, sources: "none", platform, reader });
+    expect(layers).toEqual([{ source: "policySettings", path: file, env: { C: "managed" }, model: null, plugins: [] }]);
+  });
+
+  it("has no managed settings directory on a platform the CLI does not name", () => {
+    expect(claudeManagedSettingsDirectory("freebsd")).toBeNull();
   });
 
   it("skips a file it cannot parse, as the CLI does", () => {

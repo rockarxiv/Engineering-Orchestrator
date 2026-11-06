@@ -28,6 +28,35 @@ Electron needs a display. Without one every spec fails at launch with
 xvfb-run -a pnpm e2e
 ```
 
+## On macOS and Windows
+
+CI runs the same suite on both (`e2e-macos`, `e2e-windows`). Neither
+needs a display. Each launch gets its own `userData` through
+`--user-data-dir` (see `launchApp`), because on those two systems no
+environment variable moves it. On every platform it sits at
+`<home>/.config/Electron`, which is why a spec can open
+`.config/Electron/eo.db` wherever it runs.
+
+Two tests are skipped on Windows, each giving its reason in the code.
+`firstRun.spec.ts` fakes a signed-in Claude, and `pullRequest.spec.ts`
+fakes `gh`. Both fakes are scripts, and Windows starts only a real
+`.exe` for either.
+
+On a Mac the Jira spec stores its token through the real keychain.
+Setting `EO_PASSWORD_STORE` (the spec always does) removes Playwright's
+`--use-mock-keychain`, in case that switch had taken effect. macOS
+finds a user's keychains under `$HOME`, which is the spec's scratch
+home. So the spec links the real `~/Library/Keychains` into it and uses
+the login keychain the account already has unlocked. Without that, the
+app blocks on a keychain dialog nobody can answer. A keychain made in
+the scratch home with `security` did not help. Run on your own Mac,
+the spec leaves an "Electron Safe Storage" item in your login keychain,
+as running the app unpackaged does.
+
+A hosted Mac's screen is 1024×768, and macOS keeps a window inside its
+screen. A spec that measures layout sizes the window with `sizeWindow`
+(`support/app.ts`), which also pins the page's viewport to that size.
+
 ## `pickFromJira.spec.ts` needs a real OS keychain
 
 **Any Secret Service will do, not only GNOME's.** `EO_PASSWORD_STORE`
