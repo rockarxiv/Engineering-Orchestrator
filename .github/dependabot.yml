@@ -1,0 +1,34 @@
+version: 2
+updates:
+  - package-ecosystem: npm
+    # One pnpm-lock.yaml at the root covers every workspace package.
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      minor-and-patch:
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch
+    ignore:
+      # A major Electron upgrade is a deliberate story: it touches the native
+      # modules (better-sqlite3, node-pty) and the app's runtime.
+      - dependency-name: electron
+        update-types:
+          - version-update:semver-major
+      # Its version in the pnpm catalog moves in lockstep with the Claude
+      # runtime pin in apps/desktop/src/main/runtimes/catalog.ts, which
+      # Dependabot cannot see, and is updated through its own process.
+      - dependency-name: "@anthropic-ai/claude-agent-sdk"
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      github-actions:
+        patterns:
+          - "*"
