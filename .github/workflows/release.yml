@@ -104,11 +104,10 @@ jobs:
             {"id":"linux","os":"ubuntu-latest", "args":"--linux --x64",      "pnpm_os":"linux", "pnpm_cpu":["x64"],        "shards":2}
           ]'
           case "$SELECTION" in
-            # What a tag ships. macOS is deliberately not in it: the
-            # suite does not pass on a mac runner yet, and an unsigned
-            # .dmg is the platform where that hurts most. `all` still
-            # builds it, so a dry run can be used to work the gap down.
-            shipping) wanted='["win","linux"]'      ;;
+            # What a tag ships: every platform. macOS joined it once the
+            # suite passed on a mac runner (EO-640, EO-641); its builds
+            # are unsigned, so they ship without auto-update.
+            shipping) wanted='["win","mac","linux"]' ;;
             all)     wanted='["win","mac","linux"]' ;;
             windows) wanted='["win"]'               ;;
             macos)   wanted='["mac"]'               ;;
