@@ -42,12 +42,16 @@ Two tests are skipped on Windows, each giving its reason in the code.
 fakes `gh`. Both fakes are scripts, and Windows starts only a real
 `.exe` for either.
 
-On a Mac, setting `EO_PASSWORD_STORE` (the Jira spec always does)
-undoes Playwright's `--use-mock-keychain`, so safeStorage uses the real
-keychain. macOS looks for the keychain list and default under `$HOME`,
-which is the spec's scratch home, so the spec makes a keychain there
-with `security`, unlocks it and makes it that home's default. Without
-one, the app blocks on a keychain it cannot find.
+On a Mac the Jira spec stores its token through the real keychain.
+Setting `EO_PASSWORD_STORE` (the spec always does) removes Playwright's
+`--use-mock-keychain`, in case that switch had taken effect. macOS
+finds a user's keychains under `$HOME`, which is the spec's scratch
+home. So the spec links the real `~/Library/Keychains` into it and uses
+the login keychain the account already has unlocked. Without that, the
+app blocks on a keychain dialog nobody can answer. A keychain made in
+the scratch home with `security` did not help. Run on your own Mac,
+the spec leaves an "Electron Safe Storage" item in your login keychain,
+as running the app unpackaged does.
 
 A hosted Mac's screen is 1024×768, and macOS keeps a window inside its
 screen. A spec that measures layout sizes the window with `sizeWindow`

@@ -34,11 +34,14 @@ import { startMain } from "./startMain.js";
 // `app.whenReady()`, and the platform is not built until after it.
 //
 // On a Mac there is one real backend, the keychain, and what Playwright
-// forces there is `--use-mock-keychain`: a fake that encrypts with a
-// fixed key, so an e2e that stores a secret proves nothing about the
+// asks for there is `--use-mock-keychain`: a fake that encrypts with a
+// fixed key, so an e2e that stores a secret would prove nothing about the
 // keychain. Setting the variable at all asks for the real one back
-// (EO-646). Linux's switch is meaningless there and harmless; Windows
-// has DPAPI and neither switch.
+// (EO-646). Playwright adds that switch from inside the app, which other
+// projects report is already too late for safeStorage to see. If so,
+// this removes nothing, and the real keychain was in use anyway. Linux's
+// switch is meaningless on a Mac and harmless; Windows has DPAPI and
+// neither switch.
 const passwordStore = process.env["EO_PASSWORD_STORE"];
 if (passwordStore) {
   app.commandLine.appendSwitch("password-store", passwordStore);

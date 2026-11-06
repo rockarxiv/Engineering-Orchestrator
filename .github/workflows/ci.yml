@@ -329,9 +329,9 @@ jobs:
   # safeStorage. Always GitHub-hosted, forks' pull requests included, for
   # test-macos's reason, so none of the self-hosted runner variables
   # reach it. No virtual display: a hosted Mac has a desktop session. No
-  # keychain set up here either: the one spec that stores a secret makes
-  # an unlocked keychain in its own scratch home, which is where macOS
-  # looks for one (pickFromJira.spec.ts, `macKeychain`).
+  # keychain set up here either: the one spec that stores a secret uses
+  # the runner's own login keychain, which is unlocked, by linking it into
+  # its scratch home (pickFromJira.spec.ts, `reachLoginKeychain`).
   e2e-macos:
     runs-on: macos-latest
     permissions:

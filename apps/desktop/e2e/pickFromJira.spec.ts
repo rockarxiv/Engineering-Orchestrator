@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { createServer, type Server } from "node:http";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import { expect, test } from "@playwright/test";
 import { attachRepository, closeApp, homeEnv, launchApp } from "./support/app.js";
@@ -110,41 +110,27 @@ function startStubJira(): Promise<{ server: Server; baseUrl: string; requests: s
 }
 
 /**
- * An unlocked keychain in `home`, on a Mac, made that home's default, for
- * safeStorage to keep its key in.
+ * The keychains of whoever runs the suite, reached from a scratch `home`,
+ * on a Mac. Returns the login keychain's path as that home sees it.
  *
- * In the scratch home, because that is where the app looks: macOS's
- * keychain library finds the user's keychain list and default keychain
- * under `$HOME`, and every spec points `HOME` at a scratch folder. With
- * none there, the app's first encryption blocked its main thread on a
- * keychain it could not find (EO-646), so the spec timed out and its
- * worker could not even close the app.
+ * macOS finds a user's keychains under `$HOME`, and every spec points
+ * `HOME` at a scratch folder. With no `Library/Keychains` there, the app's
+ * first encryption blocked its main thread on a keychain dialog nobody
+ * could answer, and the spec and its teardown both timed out (EO-646). A
+ * keychain made in the scratch home and named its default with
+ * `security` did not help either: the hang was the same. What is known
+ * to work is the real folder, linked in, so the app uses the login
+ * keychain the account already has unlocked. A hosted runner's is, and
+ * so is a person's at their own desk, where the app run by hand uses it
+ * too.
  *
- * Not named `login`: unlocking a keychain made there under that name
- * failed on a hosted Mac, and macOS treats the login keychain as the
- * account's own. So a keychain of its own name, unlocked, then named as
- * this home's search list and default — the recipe CI signing setups
- * use, written to the scratch home's preferences because every command
- * runs with `HOME` pointing there. A failure says what `security` said.
+ * Nothing in it is removed afterwards: it is the account's own. Removing
+ * the scratch home removes only the link.
  */
-function macKeychain(home: string): string {
-  const keychain = path.join(home, "Library", "Keychains", "eo-e2e.keychain-db");
-  mkdirSync(path.dirname(keychain), { recursive: true });
-  const security = (...args: string[]) => {
-    try {
-      execFileSync("security", args, { env: homeEnv(home), stdio: ["ignore", "pipe", "pipe"], encoding: "utf8" });
-    } catch (error) {
-      const detail = error as { stderr?: string; stdout?: string; message?: string };
-      throw new Error(`security ${args[0]} failed: ${(detail.stderr || detail.stdout || detail.message || "").trim()}`);
-    }
-  };
-  security("create-keychain", "-p", "eo-e2e", keychain);
-  security("unlock-keychain", "-p", "eo-e2e", keychain);
-  // No timeout: a keychain that locked itself mid-spec would ask for its password.
-  security("set-keychain-settings", keychain);
-  security("list-keychains", "-d", "user", "-s", keychain);
-  security("default-keychain", "-d", "user", "-s", keychain);
-  return keychain;
+function reachLoginKeychain(home: string): string {
+  mkdirSync(path.join(home, "Library"), { recursive: true });
+  symlinkSync(path.join(homedir(), "Library", "Keychains"), path.join(home, "Library", "Keychains"));
+  return path.join(home, "Library", "Keychains", "login.keychain-db");
 }
 
 test("an epic is picked from Jira and its children arrive as stories", async () => {
@@ -164,7 +150,7 @@ test("an epic is picked from Jira and its children arrive as stories", async () 
   git("add", "-A");
   git("commit", "-m", "initial");
 
-  const homeKeychain = process.platform === "darwin" ? macKeychain(home) : null;
+  const loginKeychain = process.platform === "darwin" ? reachLoginKeychain(home) : null;
 
   const { app, window } = await launchApp(
     homeEnv(home, {
@@ -230,14 +216,14 @@ test("an epic is picked from Jira and its children arrive as stories", async () 
     await expect(site).toHaveCount(0, { timeout: 15_000 });
 
     // On a Mac, that the token was encrypted under the real keychain and
-    // not the mock one Playwright asks for (see EO_PASSWORD_STORE in
-    // `index.ts`): the key safeStorage encrypts with is in the keychain
-    // made above, named for the app and "Safe Storage", and the app is
-    // "Electron" when run unpackaged, as here.
-    if (homeKeychain) {
+    // not a mock one: the key safeStorage encrypts with is in the login
+    // keychain, named for the app and "Safe Storage", and the app is
+    // "Electron" when run unpackaged, as here. Its attributes only, which
+    // asks for no permission.
+    if (loginKeychain) {
       expect(
-        () => execFileSync("security", ["find-generic-password", "-s", "Electron Safe Storage", homeKeychain], { env: homeEnv(home), stdio: "ignore" }),
-        "no safeStorage key in this home's keychain",
+        () => execFileSync("security", ["find-generic-password", "-s", "Electron Safe Storage", loginKeychain], { env: homeEnv(home), stdio: "ignore" }),
+        "no safeStorage key in the login keychain",
       ).not.toThrow();
     }
 
@@ -296,15 +282,6 @@ test("an epic is picked from Jira and its children arrive as stories", async () 
   } finally {
     await closeApp(app);
     jira.server.close();
-    // Out of the keychain list as well as off the disk. Best effort: the
-    // home it lives in is removed next either way.
-    if (homeKeychain) {
-      try {
-        execFileSync("security", ["delete-keychain", homeKeychain], { env: homeEnv(home), stdio: "ignore" });
-      } catch {
-        // Nothing the spec asserts depends on it.
-      }
-    }
     rmSync(scratch, { recursive: true, force: true });
   }
 });
