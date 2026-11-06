@@ -150,7 +150,7 @@ test("an epic is picked from Jira and its children arrive as stories", async () 
   git("add", "-A");
   git("commit", "-m", "initial");
 
-  const keychain = process.platform === "darwin" ? macKeychain(home) : null;
+  const homeKeychain = process.platform === "darwin" ? macKeychain(home) : null;
 
   const { app, window } = await launchApp(
     homeEnv(home, {
@@ -220,9 +220,9 @@ test("an epic is picked from Jira and its children arrive as stories", async () 
     // `index.ts`): the key safeStorage encrypts with is in the keychain
     // made above, named for the app and "Safe Storage", and the app is
     // "Electron" when run unpackaged, as here.
-    if (keychain) {
+    if (homeKeychain) {
       expect(
-        () => execFileSync("security", ["find-generic-password", "-s", "Electron Safe Storage", keychain], { env: homeEnv(home), stdio: "ignore" }),
+        () => execFileSync("security", ["find-generic-password", "-s", "Electron Safe Storage", homeKeychain], { env: homeEnv(home), stdio: "ignore" }),
         "no safeStorage key in this home's keychain",
       ).not.toThrow();
     }
@@ -283,7 +283,7 @@ test("an epic is picked from Jira and its children arrive as stories", async () 
     await closeApp(app);
     jira.server.close();
     // Out of the keychain list as well as off the disk.
-    if (keychain) execFileSync("security", ["delete-keychain", keychain], { env: homeEnv(home), stdio: "ignore" });
+    if (homeKeychain) execFileSync("security", ["delete-keychain", homeKeychain], { env: homeEnv(home), stdio: "ignore" });
     rmSync(scratch, { recursive: true, force: true });
   }
 });
