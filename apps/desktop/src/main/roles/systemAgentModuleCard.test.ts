@@ -194,12 +194,18 @@ describe("what the system agent's prompt says about a module attaching files", (
 
   it("describes ctx.createItem, its answer and its limits", () => {
     expect(flat).toContain("`await ctx.createItem(spec)`");
-    expect(flat).toContain("`{ idempotencyKey, type, title, body, spec, pipeline, parent, repository, wait, dependsOn }`");
+    expect(flat).toContain("`{ idempotencyKey, type, title, body, spec, pipeline, parent, repository, existingBranch, wait, dependsOn }`");
     expect(flat).toContain("`{ created: true, key, existing }` or `{ created: false, reason }`");
     expect(flat).toContain("never a container");
     expect(flat).toContain("A run may create ten items");
     expect(flat).toContain("a run on a generation 3 ticket cannot create");
     expect(flat).toContain("answers the first item's key with `existing: true`");
+  });
+
+  it("describes existingBranch: worked on instead of a cut branch, and refused where no branch is worked on (EO-648)", () => {
+    expect(flat).toContain("`existingBranch` names a branch that already exists");
+    expect(flat).toContain("pipeline whose entry step does not work on a branch, is refused and nothing is created");
+    expect(flat).toContain("does not change the first ticket's branch");
   });
 
   it("tells it to declare needs.create, and that it is enforced", () => {
@@ -210,7 +216,7 @@ describe("what the system agent's prompt says about a module attaching files", (
   it("describes the harness's createItem fixture and created", () => {
     expect(flat).toContain("`createItem`: `[{ key: \"EO-9\" }, { reason: \"…\" }, …]`");
     expect(flat).toContain("creations answer `NEW-1`, `NEW-2` and so on");
-    expect(flat).toContain("`created` is `[{ idempotencyKey, key, type, title, body, spec, pipeline, parent, repository, wait, dependsOn }]`");
+    expect(flat).toContain("`created` is `[{ idempotencyKey, key, type, title, body, spec, pipeline, parent, repository, existingBranch, wait, dependsOn }]`");
   });
 
   /**

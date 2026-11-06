@@ -100,7 +100,7 @@ export function creationCapRefusal(): string {
 export type { ModuleCreation, ModuleCreationAnswer };
 
 /** The names a creation may carry. Shared with nothing: the host holds its own copy, and this side is the one that decides. */
-const CREATION_FIELDS = new Set(["idempotencyKey", "type", "title", "body", "spec", "pipeline", "parent", "repository", "wait", "dependsOn"]);
+const CREATION_FIELDS = new Set(["idempotencyKey", "type", "title", "body", "spec", "pipeline", "parent", "repository", "existingBranch", "wait", "dependsOn"]);
 
 /** What a `wait` that is none of the three is refused with. Names them, so the refusal is also the fix. */
 export function creationWaitRefusal(): string {
@@ -141,6 +141,14 @@ function readCreation(raw: unknown): { ok: true; creation: ModuleCreation } | { 
     if (typeof value !== "string" || value.trim() === "") return { ok: false, problem: `${name} is a name, as text.` };
     optional[name] = value.trim();
   }
+  // Absent means "cut a branch"; anything present has to be a name
+  // (EO-648). Whether it is one git takes is the door's to answer.
+  const branch: { existingBranch?: string } = {};
+  if (given.existingBranch !== undefined) {
+    const value = given.existingBranch;
+    if (typeof value !== "string" || value.trim() === "") return { ok: false, problem: "existingBranch is the name of a branch that already exists, as text." };
+    branch.existingBranch = value.trim();
+  }
 
   // Who waits for whom (EO-434). Left out, both mean nothing waits; and
   // a `wait` this does not know is refused rather than read as `none`,
@@ -162,7 +170,7 @@ function readCreation(raw: unknown): { ok: true; creation: ModuleCreation } | { 
   }
   return {
     ok: true,
-    creation: { idempotencyKey, type, title, body: (given.body as string | null | undefined) ?? "", spec: spec as Record<string, unknown>, ...optional, ...waiting },
+    creation: { idempotencyKey, type, title, body: (given.body as string | null | undefined) ?? "", spec: spec as Record<string, unknown>, ...optional, ...branch, ...waiting },
   };
 }
 

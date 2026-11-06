@@ -283,7 +283,7 @@ describe("runModuleTests", () => {
   it("records ctx.createItem, answering NEW-1, NEW-2 and so on, and writes nothing", async () => {
     const module = `
       export default async function (ctx) {
-        const one = await ctx.createItem({ idempotencyKey: "a", type: "story", title: "First", body: "Why.", spec: { acceptance_criteria: ["x"] }, pipeline: "Delivery", parent: "EO-9", repository: "web" });
+        const one = await ctx.createItem({ idempotencyKey: "a", type: "story", title: "First", body: "Why.", spec: { acceptance_criteria: ["x"] }, pipeline: "Delivery", parent: "EO-9", repository: "web", existingBranch: "dependabot/npm_and_yarn/foo-1.2.3" });
         const two = await ctx.createItem({ idempotencyKey: "b", type: "bug", title: "Second" });
         const again = await ctx.createItem({ idempotencyKey: "a", type: "story", title: "First, again" });
         return { ok: true, result: "merged", detail: JSON.stringify([one, two, again]) };
@@ -300,8 +300,8 @@ describe("runModuleTests", () => {
               { created: true, key: "NEW-1", existing: true },
             ]);
             assert.deepEqual(run.created, [
-              { idempotencyKey: "a", key: "NEW-1", type: "story", title: "First", body: "Why.", spec: { acceptance_criteria: ["x"] }, pipeline: "Delivery", parent: "EO-9", repository: "web", wait: "none", dependsOn: [] },
-              { idempotencyKey: "b", key: "NEW-2", type: "bug", title: "Second", body: "", spec: {}, pipeline: null, parent: null, repository: null, wait: "none", dependsOn: [] },
+              { idempotencyKey: "a", key: "NEW-1", type: "story", title: "First", body: "Why.", spec: { acceptance_criteria: ["x"] }, pipeline: "Delivery", parent: "EO-9", repository: "web", existingBranch: "dependabot/npm_and_yarn/foo-1.2.3", wait: "none", dependsOn: [] },
+              { idempotencyKey: "b", key: "NEW-2", type: "bug", title: "Second", body: "", spec: {}, pipeline: null, parent: null, repository: null, existingBranch: null, wait: "none", dependsOn: [] },
             ]);
             assert.deepEqual(run.comments, []);
           }`),
