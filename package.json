@@ -22,7 +22,7 @@
   },
   "devDependencies": {
     "eslint": "9.39.5",
-    "turbo": "2.10.7",
+    "turbo": "2.11.10",
     "typescript": "5.9.3",
     "vitest": "4.1.10"
   },
