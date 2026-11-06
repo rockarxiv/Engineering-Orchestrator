@@ -44,9 +44,10 @@ fakes `gh`. Both fakes are scripts, and Windows starts only a real
 
 On a Mac, setting `EO_PASSWORD_STORE` (the Jira spec always does)
 undoes Playwright's `--use-mock-keychain`, so safeStorage uses the real
-keychain. macOS looks for it under `$HOME`, which is the spec's scratch
-home, so the spec makes an unlocked login keychain there with
-`security`. Without one, the app blocks on a keychain it cannot find.
+keychain. macOS looks for the keychain list and default under `$HOME`,
+which is the spec's scratch home, so the spec makes a keychain there
+with `security`, unlocks it and makes it that home's default. Without
+one, the app blocks on a keychain it cannot find.
 
 A hosted Mac's screen is 1024×768, and macOS keeps a window inside its
 screen. A spec that measures layout sizes the window with `sizeWindow`

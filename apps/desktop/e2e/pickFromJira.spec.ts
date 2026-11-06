@@ -110,26 +110,40 @@ function startStubJira(): Promise<{ server: Server; baseUrl: string; requests: s
 }
 
 /**
- * An unlocked login keychain in `home`, on a Mac, for safeStorage to keep
- * its key in.
+ * An unlocked keychain in `home`, on a Mac, made that home's default, for
+ * safeStorage to keep its key in.
  *
  * In the scratch home, because that is where the app looks: macOS's
- * keychain library finds the user's keychain list and login keychain
+ * keychain library finds the user's keychain list and default keychain
  * under `$HOME`, and every spec points `HOME` at a scratch folder. With
  * none there, the app's first encryption blocked its main thread on a
  * keychain it could not find (EO-646), so the spec timed out and its
- * worker could not even close the app. Made with `security` and never
- * touching the keychains of whoever runs it, and with a password nobody
- * needs, because it is unlocked here and deleted with the home.
+ * worker could not even close the app.
+ *
+ * Not named `login`: unlocking a keychain made there under that name
+ * failed on a hosted Mac, and macOS treats the login keychain as the
+ * account's own. So a keychain of its own name, unlocked, then named as
+ * this home's search list and default — the recipe CI signing setups
+ * use, written to the scratch home's preferences because every command
+ * runs with `HOME` pointing there. A failure says what `security` said.
  */
 function macKeychain(home: string): string {
-  const keychain = path.join(home, "Library", "Keychains", "login.keychain-db");
+  const keychain = path.join(home, "Library", "Keychains", "eo-e2e.keychain-db");
   mkdirSync(path.dirname(keychain), { recursive: true });
-  const security = (...args: string[]) => execFileSync("security", args, { env: homeEnv(home), stdio: "ignore" });
+  const security = (...args: string[]) => {
+    try {
+      execFileSync("security", args, { env: homeEnv(home), stdio: ["ignore", "pipe", "pipe"], encoding: "utf8" });
+    } catch (error) {
+      const detail = error as { stderr?: string; stdout?: string; message?: string };
+      throw new Error(`security ${args[0]} failed: ${(detail.stderr || detail.stdout || detail.message || "").trim()}`);
+    }
+  };
   security("create-keychain", "-p", "eo-e2e", keychain);
+  security("unlock-keychain", "-p", "eo-e2e", keychain);
   // No timeout: a keychain that locked itself mid-spec would ask for its password.
   security("set-keychain-settings", keychain);
-  security("unlock-keychain", "-p", "eo-e2e", keychain);
+  security("list-keychains", "-d", "user", "-s", keychain);
+  security("default-keychain", "-d", "user", "-s", keychain);
   return keychain;
 }
 
@@ -282,8 +296,15 @@ test("an epic is picked from Jira and its children arrive as stories", async () 
   } finally {
     await closeApp(app);
     jira.server.close();
-    // Out of the keychain list as well as off the disk.
-    if (homeKeychain) execFileSync("security", ["delete-keychain", homeKeychain], { env: homeEnv(home), stdio: "ignore" });
+    // Out of the keychain list as well as off the disk. Best effort: the
+    // home it lives in is removed next either way.
+    if (homeKeychain) {
+      try {
+        execFileSync("security", ["delete-keychain", homeKeychain], { env: homeEnv(home), stdio: "ignore" });
+      } catch {
+        // Nothing the spec asserts depends on it.
+      }
+    }
     rmSync(scratch, { recursive: true, force: true });
   }
 });
