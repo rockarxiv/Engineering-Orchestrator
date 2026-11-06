@@ -231,20 +231,23 @@ function darwinTable(listing: string, environments: string | undefined, marker: 
  * up on PATH (`windowsSystemExecutable`): a caller that narrowed PATH
  * would otherwise leave every tree unfound, its descendants unended.
  *
- * And `Get-CimInstance`'s module is imported by its path under PowerShell's
- * own folder, never found by autoloading (EO-645). Autoloading reads a
- * cache of every installed module, kept under LOCALAPPDATA; an environment
- * without it — turbo's, for a task; a backend's, for a server it starts —
- * has PowerShell read every module again instead. On a machine with many
- * installed, GitHub's hosted Windows runner among them, that took thirty
- * seconds a look, every look ran out its limit, and no tree was found.
+ * And module autoloading is switched off, `Get-CimInstance`'s module
+ * imported by its path under PowerShell's own folder (EO-645). Whenever a
+ * command autoloads, PowerShell checks every installed module against a
+ * cache that `PSModulePath` and `PSModuleAnalysisCachePath` lead it to.
+ * An environment without them — turbo's, for a task; a backend's, for a
+ * server it starts — has it read every module again. On a machine with
+ * many installed, GitHub's hosted Windows runner among them, that took
+ * twenty to thirty seconds a look, every look ran out its limit, and no
+ * tree was found. With nothing autoloaded the look took a quarter of a
+ * second in the same environment.
  */
 const WINDOWS_POWERSHELL = "WindowsPowerShell\\v1.0\\powershell.exe";
 const WINDOWS_TABLE_ARGS = [
   "-NoProfile",
   "-NonInteractive",
   "-Command",
-  "Import-Module -Name (Join-Path $PSHOME 'Modules\\CimCmdlets'); Get-CimInstance -Query 'SELECT ProcessId, ParentProcessId, CreationDate FROM Win32_Process' | ForEach-Object { '{0} {1} {2}' -f $_.ProcessId, $_.ParentProcessId, $(if ($_.CreationDate) { $_.CreationDate.ToFileTimeUtc() } else { 0 }) }",
+  "$PSModuleAutoLoadingPreference = 'None'; Import-Module -Name ($PSHOME + '\\Modules\\CimCmdlets'); Get-CimInstance -Query 'SELECT ProcessId, ParentProcessId, CreationDate FROM Win32_Process' | ForEach-Object { '{0} {1} {2}' -f $_.ProcessId, $_.ParentProcessId, $(if ($_.CreationDate) { $_.CreationDate.ToFileTimeUtc() } else { 0 }) }",
 ];
 
 export function windowsTable(listing: string): ProcessTable {
