@@ -113,7 +113,8 @@ describe.skipIf(!OPTED_IN)("a Codex thread over the pinned app-server", () => {
  * reports what it spent. Measured by hand at 0.161.0 before this was
  * written — the steered turn answered `pineapple`, the interrupted one
  * ended `interrupted` with its token reading already sent — and both
- * cases passed again against 0.163.0 (EO-453) and 0.165.0 (EO-599).
+ * cases passed again against 0.163.0 (EO-453), 0.165.0 (EO-599) and
+ * 0.166.0 (EO-644).
  *
  * The turn is held open by a command the agent is asked to run, so there
  * is a turn to speak into: the model is told to wait, then answer with a

@@ -2858,7 +2858,7 @@ const CODEX: Record<CapabilityName, Proof> = {
       after: {
         "turn/start": [note.turnStarted()],
         // What the real binary does with a steer (0.161.0, and again at
-        // 0.163.0 and 0.165.0 in `codexAppServer.live.test.ts`): the message joins the
+        // 0.163.0, 0.165.0 and 0.166.0 in `codexAppServer.live.test.ts`): the message joins the
         // running turn, which finishes on an answer to it.
         "turn/steer": [note.agentMessage("pineapple"), note.tokenUsage({ input: 27_452, output: 114 }), note.turnCompleted()],
       },
