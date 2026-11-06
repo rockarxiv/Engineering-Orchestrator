@@ -157,3 +157,21 @@ export async function attachRepository(window: Page, repoPath: string): Promise<
 export async function skipFirstRun(window: Page): Promise<void> {
   await window.evaluate(() => window.eo.ipc.invoke("firstRun:finish" as never, undefined as never));
 }
+
+/**
+ * Lays the window out at `width` × `height`, for a spec that measures
+ * where things land.
+ *
+ * The real window is asked for that size first. But macOS keeps a window
+ * inside its screen, and a hosted Mac's screen is 1024×768, so there the
+ * window comes back smaller: 1024×645 on the run that found it (EO-646),
+ * and a spec measuring a layout at 1100 was measuring one at 1024. So the
+ * page's viewport is pinned to the size as well, which is the size CSS
+ * lays out at whatever the screen allows the window. Where the window
+ * did reach the size, as on Linux and Windows, the two agree and pinning
+ * changes nothing.
+ */
+export async function sizeWindow(app: ElectronApplication, page: Page, width: number, height: number): Promise<void> {
+  await app.evaluate(({ BrowserWindow }, size) => BrowserWindow.getAllWindows()[0]?.setContentSize(size.width, size.height), { width, height });
+  await page.setViewportSize({ width, height });
+}

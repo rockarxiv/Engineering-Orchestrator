@@ -44,8 +44,13 @@ fakes `gh`. Both fakes are scripts, and Windows starts only a real
 
 On a Mac, setting `EO_PASSWORD_STORE` (the Jira spec always does)
 undoes Playwright's `--use-mock-keychain`, so safeStorage uses the real
-default keychain. That keychain has to be unlocked, or the spec waits on
-a prompt. CI makes a temporary one with `security`.
+keychain. macOS looks for it under `$HOME`, which is the spec's scratch
+home, so the spec makes an unlocked login keychain there with
+`security`. Without one, the app blocks on a keychain it cannot find.
+
+A hosted Mac's screen is 1024×768, and macOS keeps a window inside its
+screen. A spec that measures layout sizes the window with `sizeWindow`
+(`support/app.ts`), which also pins the page's viewport to that size.
 
 ## `pickFromJira.spec.ts` needs a real OS keychain
 

@@ -109,6 +109,30 @@ function startStubJira(): Promise<{ server: Server; baseUrl: string; requests: s
   });
 }
 
+/**
+ * An unlocked login keychain in `home`, on a Mac, for safeStorage to keep
+ * its key in.
+ *
+ * In the scratch home, because that is where the app looks: macOS's
+ * keychain library finds the user's keychain list and login keychain
+ * under `$HOME`, and every spec points `HOME` at a scratch folder. With
+ * none there, the app's first encryption blocked its main thread on a
+ * keychain it could not find (EO-646), so the spec timed out and its
+ * worker could not even close the app. Made with `security` and never
+ * touching the keychains of whoever runs it, and with a password nobody
+ * needs, because it is unlocked here and deleted with the home.
+ */
+function macKeychain(home: string): string {
+  const keychain = path.join(home, "Library", "Keychains", "login.keychain-db");
+  mkdirSync(path.dirname(keychain), { recursive: true });
+  const security = (...args: string[]) => execFileSync("security", args, { env: homeEnv(home), stdio: "ignore" });
+  security("create-keychain", "-p", "eo-e2e", keychain);
+  // No timeout: a keychain that locked itself mid-spec would ask for its password.
+  security("set-keychain-settings", keychain);
+  security("unlock-keychain", "-p", "eo-e2e", keychain);
+  return keychain;
+}
+
 test("an epic is picked from Jira and its children arrive as stories", async () => {
   const jira = await startStubJira();
   const scratch = mkdtempSync(path.join(tmpdir(), "eo e2e jira "));
@@ -125,6 +149,8 @@ test("an epic is picked from Jira and its children arrive as stories", async () 
   writeFileSync(path.join(repoPath, "README.md"), "# acme-api\n");
   git("add", "-A");
   git("commit", "-m", "initial");
+
+  const keychain = process.platform === "darwin" ? macKeychain(home) : null;
 
   const { app, window } = await launchApp(
     homeEnv(home, {
@@ -191,11 +217,14 @@ test("an epic is picked from Jira and its children arrive as stories", async () 
 
     // On a Mac, that the token was encrypted under the real keychain and
     // not the mock one Playwright asks for (see EO_PASSWORD_STORE in
-    // `index.ts`): the key safeStorage encrypts with lives there as the
-    // app's name and "Safe Storage", and the app is "Electron" when run
-    // unpackaged, as here.
-    if (process.platform === "darwin") {
-      expect(() => execFileSync("security", ["find-generic-password", "-s", "Electron Safe Storage"], { stdio: "ignore" }), "no safeStorage key in the macOS keychain").not.toThrow();
+    // `index.ts`): the key safeStorage encrypts with is in the keychain
+    // made above, named for the app and "Safe Storage", and the app is
+    // "Electron" when run unpackaged, as here.
+    if (keychain) {
+      expect(
+        () => execFileSync("security", ["find-generic-password", "-s", "Electron Safe Storage", keychain], { env: homeEnv(home), stdio: "ignore" }),
+        "no safeStorage key in this home's keychain",
+      ).not.toThrow();
     }
 
     const connect = view.getByLabel("Connect to Jira");
@@ -253,6 +282,8 @@ test("an epic is picked from Jira and its children arrive as stories", async () 
   } finally {
     await closeApp(app);
     jira.server.close();
+    // Out of the keychain list as well as off the disk.
+    if (keychain) execFileSync("security", ["delete-keychain", keychain], { env: homeEnv(home), stdio: "ignore" });
     rmSync(scratch, { recursive: true, force: true });
   }
 });
