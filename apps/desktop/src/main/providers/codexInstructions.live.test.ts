@@ -41,7 +41,8 @@ import { createCodexProvider } from "./codex.js";
  * thing these tests do not repeat: `thread/resume` accepts different
  * base instructions and applies them to that resumed turn only — the
  * next resume that sends none is governed by the originals again. Both
- * cases here passed again against 0.163.0 (EO-453) and 0.165.0 (EO-599);
+ * cases here passed again against 0.163.0 (EO-453), 0.165.0 (EO-599) and
+ * 0.166.0 (EO-644);
  * that third reading was not re-taken, so it stands as measured at
  * 0.161.0.
  *

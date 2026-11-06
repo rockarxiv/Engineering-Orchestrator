@@ -1,11 +1,15 @@
 /**
  * What EO hands the Claude CLI so its agents behave as they did on the
- * pin before this one (EO-599).
+ * pins before this one (EO-599, EO-644).
  *
  * claude@0.3.312 (Claude Code 2.1.312) changed defaults that claude@0.3.302
  * (2.1.302) decided differently, each in a configuration EO's agents can be
  * dispatched in — behind a person's gateway, or on Bedrock, Vertex,
- * Foundry or Mantle. A pin bump is not a decision to adopt them, so each
+ * Foundry or Mantle. claude@0.3.318 (2.1.318), the pin now, keeps those
+ * four switches as 2.1.312 read them, and adds one more change EO's own
+ * default setup meets: a built-in plugin that refuses an unattended agent
+ * some calls holding the person's account email (`privacyPluginHeldOff`).
+ * A pin bump is not a decision to adopt them, so each
  * that can be kept exactly is held here to the old answer, in exactly the
  * case the old CLI gave it and nowhere else, and never over a choice the
  * person made themselves. One that cannot be kept exactly is left to the
@@ -60,6 +64,8 @@ export interface ClaudeSettingsLayer {
   env: Record<string, string>;
   /** The file's `model`, when it names one. */
   model: string | null;
+  /** The plugin ids its `enabledPlugins` names, whatever it says of each. */
+  plugins: string[];
 }
 
 export interface ClaudeSettingsReader {
@@ -106,7 +112,8 @@ function layerFrom(source: ClaudeSettingsSource, path: string, reader: ClaudeSet
     for (const [key, value] of Object.entries(parsed["env"])) if (typeof value === "string") env[key] = value;
   }
   const model = typeof parsed["model"] === "string" && parsed["model"].trim() !== "" ? parsed["model"].trim() : null;
-  return { source, path, env, model };
+  const plugins = isRecord(parsed["enabledPlugins"]) ? Object.keys(parsed["enabledPlugins"]) : [];
+  return { source, path, env, model, plugins };
 }
 
 /** The directory the CLI reads managed settings from, by platform (from the binary). */
@@ -340,9 +347,46 @@ export function modelCatalogHeldOff(env: ClaudeEnvironment): boolean {
   return !set(env["CLAUDE_CODE_MODEL_CATALOG"]) && isCloudPlatform(claudeProvider(env));
 }
 
+/** The built-in plugin 2.1.317 added, by the id `enabledPlugins` names it with. */
+export const CLAUDE_PRIVACY_PLUGIN = "cc-plugin-privacy@builtin";
+
+/**
+ * The account-email check off, as before 2.1.317 ("Added a check that
+ * asks before a web or shell tool call sends your account email address
+ * to the network").
+ *
+ * It is a built-in plugin, `cc-plugin-privacy`, on by default: a
+ * `tool.check` hook on Bash, PowerShell, Monitor, Tmux, WebFetch,
+ * WebSearch and WebBrowser that answers `ask` when a call's input holds the
+ * signed-in account's email — and, for a shell, also a network word
+ * (`curl`, `ssh`, `http`, `scp`, …). The email is the stored claude.ai
+ * login's, so a session on an API key alone is never asked. An unattended
+ * agent has nobody to ask, and the ask is a refusal. Measured with a
+ * capture server, a stand-in claude.ai token and the CLI in
+ * `bypassPermissions`, the mode every EO turn runs in: `echo curl
+ * <the account's email>` ran at 2.1.312 and was refused at 2.1.318 ("Permission
+ * to use Bash denied by plugin cc-plugin-privacy: …"), under `project`
+ * setting sources too; with `{"enabledPlugins":{"cc-plugin-privacy@builtin":false}}`
+ * passed as `--settings` it ran again, exactly as at 2.1.312, which had no
+ * such plugin.
+ *
+ * The CLI reads this plugin's switch only from trusted settings — user,
+ * `--settings` (flag) and managed, later winning — and never from project
+ * or local settings. So the person's own choice is one their user settings
+ * (when the turn loads them) or managed settings make, under any spelling
+ * of the id; EO's flag would win over the first, so it is not sent then.
+ */
+export function privacyPluginHeldOff(layers: readonly ClaudeSettingsLayer[]): boolean {
+  return !layers.some(
+    (layer) => (layer.source === "userSettings" || layer.source === "policySettings") && layer.plugins.some((id) => id.toLowerCase().startsWith("cc-plugin-privacy@")),
+  );
+}
+
 export interface ClaudeCompatibilityHolds {
   /** Variables to add to the spawn environment. Never one a settings file defines. */
   env: Record<string, string>;
+  /** Settings to hand the CLI as `--settings` (the SDK's `settings`); empty when none is held. */
+  settings: { enabledPlugins?: Record<string, boolean> };
 }
 
 /**
@@ -379,5 +423,5 @@ export function claudeCompatibilityHolds(options: {
   hold("CLAUDE_CODE_SIMPLE_SYSTEM_PROMPT", "0", fullPromptHeld(effective, model));
   hold("CLAUDE_CODE_DISABLE_REFUSAL_FALLBACK", "1", refusalFallbackHeldOff(effective, model));
   hold("CLAUDE_CODE_MODEL_CATALOG", "off", modelCatalogHeldOff(effective));
-  return { env };
+  return { env, settings: privacyPluginHeldOff(layers) ? { enabledPlugins: { [CLAUDE_PRIVACY_PLUGIN]: false } } : {} };
 }

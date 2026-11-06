@@ -1872,7 +1872,7 @@ describe("createCodexProvider", () => {
     it("is translated into the one error the supervisor recognises", async () => {
       // How it really arrives: `thread/resume` cannot find the rollout
       // and refuses, in the words and code 0.161.0 uses (EO-372) and
-      // 0.163.0 (EO-453) and 0.165.0 (EO-599) still do. Under
+      // 0.163.0 (EO-453), 0.165.0 (EO-599) and 0.166.0 (EO-644) still do. Under
       // `exec` the same sentence came as a non-zero exit's stderr.
       const { codex } = stubRefusingCodex({
         replies: { "thread/resume": { error: { code: -32600, message: "no rollout found for thread id 0199-gone" } } },
@@ -1899,7 +1899,7 @@ describe("createCodexProvider", () => {
       expect((thrown as ThreadNotFoundError).threadId).toBe("0199-gone");
     });
 
-    it("is translated when the rollout is there but empty, as 0.155.1 first said it and 0.165.0 still does", async () => {
+    it("is translated when the rollout is there but empty, as 0.155.1 first said it and 0.166.0 still does", async () => {
       // Verbatim from the report on EO-369 but for the path: a first
       // turn cut off before Codex wrote anything leaves the rollout file
       // created and empty, and every resume of that thread is refused.
@@ -2258,8 +2258,8 @@ describe("createCodexProvider over a stubbed app-server", () => {
     expect(fake.paramsOf("thread/resume")).toMatchObject({ threadId: "thr-persisted", cwd, sandbox: "danger-full-access", approvalPolicy: "never" });
     // No instructions go with it, and the turn is the message alone: the
     // app-server keeps a thread's base instructions, measured at 0.161.0
-    // (EO-385, `codexInstructions.live.test.ts`) and again at 0.163.0 and
-    // 0.165.0.
+    // (EO-385, `codexInstructions.live.test.ts`) and again at 0.163.0,
+    // 0.165.0 and 0.166.0.
     expect(fake.paramsOf("thread/resume")).not.toHaveProperty("baseInstructions");
     expect(fake.paramsOf("turn/start")).toMatchObject({ input: [{ type: "text", text: "the human replied", text_elements: [] }] });
     expect(events.at(-1)).toEqual({ type: "result", data: "continued" });
@@ -2390,8 +2390,8 @@ describe("createCodexProvider over a stubbed app-server", () => {
    * An escalated turn is interrupted, not walked away from (EO-373).
    *
    * `turn/interrupt` is sent for the turn that is running, the app-server
-   * ends it `interrupted` — measured at 0.161.0 and again at 0.163.0 and
-   * 0.165.0, with
+   * ends it `interrupted` — measured at 0.161.0 and again at 0.163.0,
+   * 0.165.0 and 0.166.0, with
    * the token reading already sent — and the tokens it spent come out
    * before the error the
    * supervisor files as a wind-down.
@@ -2486,7 +2486,7 @@ describe("createCodexProvider over a stubbed app-server", () => {
       after: {
         "turn/start": [note.turnStarted()],
         // What the real binary does with a steer (0.161.0, and again at
-        // 0.163.0 and 0.165.0 in `codexAppServer.live.test.ts`): the message joins the
+        // 0.163.0, 0.165.0 and 0.166.0 in `codexAppServer.live.test.ts`): the message joins the
         // running turn, which finishes on an answer to it.
         "turn/steer": [note.agentMessage("pineapple"), note.tokenUsage({ input: 27_452, output: 114 }), note.turnCompleted()],
       },

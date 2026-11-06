@@ -54,7 +54,7 @@ export const RUNTIMES: Record<RuntimeId, RuntimeSpec> = {
     label: "Claude Code",
     publisher: "Anthropic PBC",
     termsUrl: "https://code.claude.com/docs/en/legal-and-compliance",
-    version: "0.3.312",
+    version: "0.3.318",
     packageFor: (platform, arch) => {
       const platformSuffix = suffix(platform, arch);
       return platformSuffix ? `@anthropic-ai/claude-agent-sdk-${platformSuffix}` : null;
@@ -66,9 +66,9 @@ export const RUNTIMES: Record<RuntimeId, RuntimeSpec> = {
     label: "Codex",
     publisher: "OpenAI",
     termsUrl: "https://github.com/openai/codex/blob/main/LICENSE",
-    version: "0.165.0",
+    version: "0.166.0",
     // Codex publishes its platform builds as *versions* of one package
-    // rather than as separate packages: @openai/codex@0.165.0-linux-x64.
+    // rather than as separate packages: @openai/codex@0.166.0-linux-x64.
     packageFor: (platform, arch) => (suffix(platform, arch) ? "@openai/codex" : null),
     binaryName: (platform) => (platform === "win32" ? "codex.exe" : "codex"),
   },
