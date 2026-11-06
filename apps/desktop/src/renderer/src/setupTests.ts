@@ -27,25 +27,31 @@ import { developerRegistry, NO_POLICY, toRegistryView } from "@eo/core";
  * that import: `@testing-library/jest-dom/vitest` augments vitest's
  * `Assertion` as well as extending it, and dropping the import dropped
  * `toBeInTheDocument` from every renderer test's types. This is that
- * declaration, written against vitest 5's own `Matchers` rather than
- * copied from the package's `types/vitest.d.ts`, which still augments
- * vitest 4's `Assertion<T = any>` and no longer typechecks (EO-653).
+ * declaration, written against the installed vitest's own `Matchers`.
  */
 declare module "vitest" {
   // `Matchers` is the seam vitest documents for custom matchers, and
   // `Assertion` extends it — so augmenting it reaches both `expect(x)`
   // and the asymmetric forms without redeclaring either. An augmentation
-  // whose type parameters differ from vitest's is refused outright ("All
-  // declarations of 'Matchers' must have identical type parameters"), so
-  // these repeat vitest 5's exactly: `R` is what a matcher returns (a
-  // promise under `.resolves`/`.rejects`), which is the second parameter
-  // jest-dom's matchers take, and `T` is the received value's type.
+  // whose type parameters differ from vitest's own is refused outright
+  // ("All declarations of 'Matchers' must have identical type
+  // parameters"), which is why this one is spelled exactly the way
+  // vitest spells it. Vitest 5 (EO-654) changed that spelling from
+  // vitest 4's `<T = any>` to `<R, T>`, with `R` the matcher's return
+  // type, which is the slot `TestingLibraryMatchers<E, R>` returns. So
+  // the augmentation follows whatever version is installed, and
+  // jest-dom's own `types/vitest.d.ts` is not the model to copy.
   // Empty on purpose: the members are what it extends. That is what a
-  // matcher augmentation is, and `T` goes unused because jest-dom's
-  // matchers do not depend on it — both rules below are about code that
+  // matcher augmentation is, and the rule below is about code that
   // means something else.
-  /* eslint-disable-next-line @typescript-eslint/no-empty-object-type, @typescript-eslint/no-unused-vars */
-  interface Matchers<R extends void | Promise<void> = void | Promise<void>, T = unknown> extends TestingLibraryMatchers<unknown, R> {}
+  /* eslint-disable-next-line @typescript-eslint/no-empty-object-type */
+  interface Matchers<
+    R extends void | Promise<void> = void | Promise<void>,
+    // Unused here, but required: vitest declares it, so every
+    // augmentation must declare it too.
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    T = unknown,
+  > extends TestingLibraryMatchers<unknown, R> {}
 }
 
 expect.extend(jestDom);
