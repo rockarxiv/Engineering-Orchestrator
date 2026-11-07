@@ -8,7 +8,7 @@ import { createProject } from "../db/repos/index.js";
 import { openMigratedTestDb } from "../db/testHelpers.js";
 import { forgetListed } from "../gallery/session.js";
 import { previewGalleryCommand, useGalleryCommand } from "../ipc/galleryCommands.js";
-import { finishFirstRunCommand, firstRunStateCommand, setFirstRunModeCommand } from "./firstRun.js";
+import { finishFirstRunCommand, firstRunStateCommand, markTourSeenCommand, setFirstRunModeCommand, tourStateCommand } from "./firstRun.js";
 
 /**
  * When first run is first run (EO-317, `ARCHITECTURE.md`, "What a person sees first").
@@ -136,5 +136,35 @@ describe("step 1: solo or organisation", () => {
     // Nothing was created on the strength of it — no project, no
     // sign-in, no work.
     expect(firstRunStateCommand(handle.db).done).toBe(false);
+  });
+});
+
+/**
+ * The first-board tour (EO-667): shown on its own once, after first run
+ * has been left, and recorded here so a relaunch does not show it again.
+ */
+describe("the first-board tour", () => {
+  it("is not due while first run is still open", () => {
+    expect(tourStateCommand(handle.db)).toEqual({ due: false });
+  });
+
+  it("is due once first run has been left by one of its exits", () => {
+    finishFirstRunCommand(handle.db);
+    expect(tourStateCommand(handle.db)).toEqual({ due: true });
+  });
+
+  it("is not due on an installation that predates first run and never went through it", () => {
+    createProject(handle.db, { name: "Acme API", keyPrefix: "ACME" });
+    expect(firstRunStateCommand(handle.db).done).toBe(true);
+    expect(tourStateCommand(handle.db)).toEqual({ due: false });
+  });
+
+  it("is not due again once finished or skipped", () => {
+    finishFirstRunCommand(handle.db);
+    expect(markTourSeenCommand(handle.db)).toEqual({ due: false });
+    expect(tourStateCommand(handle.db)).toEqual({ due: false });
+    // A replay from Settings marks it again, and changes nothing.
+    expect(markTourSeenCommand(handle.db)).toEqual({ due: false });
+    expect(tourStateCommand(handle.db)).toEqual({ due: false });
   });
 });

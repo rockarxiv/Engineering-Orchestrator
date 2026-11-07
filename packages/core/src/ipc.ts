@@ -5159,6 +5159,16 @@ export const recordContract = {
   "gallery:staffAssistant": channel(z.object({ backend: z.string().min(1) }), z.object({ ok: z.boolean(), problem: z.string().nullable() })),
   /** Marks the flow behind them, by any exit — the first item, the assistant's brief, or "Continue with Preview only". */
   "firstRun:finish": channel(z.void(), z.object({ done: z.boolean() })),
+  /**
+   * The first-board tour (EO-667, ARCHITECTURE.md, "What a person sees
+   * first"). `due` is true once first run has been left by one of its
+   * exits and the tour has not yet been finished or skipped; an
+   * installation that never went through first run is never shown it
+   * unasked. Settings' "Show the tour" replays it whatever this says.
+   */
+  "firstRun:tourState": channel(z.void(), z.object({ due: z.boolean() })),
+  /** The tour was finished or skipped: it does not start on its own again. */
+  "firstRun:tourSeen": channel(z.void(), z.object({ due: z.boolean() })),
 
   // ── The organisation's list (EO-323, ARCHITECTURE.md, "Identity") ───
   //

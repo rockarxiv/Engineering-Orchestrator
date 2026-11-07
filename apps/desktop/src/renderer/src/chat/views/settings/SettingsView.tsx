@@ -40,14 +40,14 @@ export function SettingsView() {
       {/* The effective-policy card beside the section on a wide canvas,
           under it on a narrow one — always there, as the classic rail is. */}
       <div className="grid min-w-0 grid-cols-[12.5rem_minmax(0,1fr)] gap-x-5 gap-y-4 @[60rem]:grid-cols-[12.5rem_minmax(0,1fr)_15rem]">
-        <nav aria-label="Settings sections" className="row-span-2 flex flex-col gap-0.5 @[60rem]:row-span-1">
+        <nav aria-label="Settings sections" data-tour="settings" className="row-span-2 flex flex-col gap-0.5 @[60rem]:row-span-1">
           {sections.map((candidate) => (
             <NavItem key={candidate.id} selected={candidate.id === current.id} onClick={() => open(candidate.id)}>
               {candidate.label}
             </NavItem>
           ))}
         </nav>
-        <div key={current.id} className="flex min-w-0 flex-col gap-4">
+        <div key={current.id} data-tour={`settings-${current.id}`} className="flex min-w-0 flex-col gap-4">
           <Section />
         </div>
         <aside aria-label="Effective policy" className="col-start-2 min-w-0 @[60rem]:col-start-3 @[60rem]:row-start-1">

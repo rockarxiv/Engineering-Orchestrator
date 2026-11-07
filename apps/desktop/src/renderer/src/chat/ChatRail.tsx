@@ -98,7 +98,7 @@ export function ChatRail({ onNewPipeline }: { onNewPipeline: () => void }) {
   const [searching, setSearching] = useState(false);
 
   return (
-    <nav aria-label="Main" className={cn("relative flex w-[250px] shrink-0 flex-col gap-px overflow-y-auto border-r border-line px-2.5 pb-3.5 pt-1", DEEP)}>
+    <nav aria-label="Main" data-tour="rail" className={cn("relative flex w-[250px] shrink-0 flex-col gap-px overflow-y-auto border-r border-line px-2.5 pb-3.5 pt-1", DEEP)}>
       {/* Space for the traffic lights, which the frameless window draws over. */}
       <div className="h-6 shrink-0" />
 
@@ -162,7 +162,7 @@ export function ChatRail({ onNewPipeline }: { onNewPipeline: () => void }) {
       </div>
       <SearchShortcut onOpen={() => setSearching(true)} />
 
-      <NavLink to="/inbox" className={({ isActive }) => cn(ROW, "shrink-0", rowTone(isActive))}>
+      <NavLink to="/inbox" data-tour="waiting" className={({ isActive }) => cn(ROW, "shrink-0", rowTone(isActive))}>
         <Inbox size={14} className="shrink-0" />
         <span className="flex-1 truncate">Waiting on you</span>
         {blocking > 0 ? <WaitingCount count={blocking} label={`${blocking} waiting on you`} /> : null}
