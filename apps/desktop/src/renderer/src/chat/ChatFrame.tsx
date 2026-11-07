@@ -8,7 +8,7 @@ import { itemsKey } from "../query/hooks";
 import { useInvalidateOnPush } from "../query/useInvalidateOnPush";
 import { ipcQuery } from "../query/client";
 import { CanvasChip, ChatCanvas } from "./ChatCanvas";
-import { ChatBanners } from "./ChatBanners";
+import { ChatBanners, useBannersShown } from "./ChatBanners";
 import { ChatConversation } from "./ChatConversation";
 import { ChatRail } from "./ChatRail";
 import { CanvasWindow } from "./CanvasWindow";
@@ -103,7 +103,10 @@ function ChatFrame() {
    * controls are coloured to match and the header ends short of them.
    */
   const besideRight = home ? drawerOpen : view !== null && tabKey !== null && !poppedOut;
-  useTitleBarColours(besideRight ? "deep" : "canvas");
+  // A banner, when there is one, is the top of the window's right edge,
+  // and it is drawn on the canvas colour whatever is beneath it.
+  const banners = useBannersShown();
+  useTitleBarColours(besideRight && !banners ? "deep" : "canvas");
   const titleBar = useTitleBar();
 
   // A tab for each view opened this session (`useCanvasTabs`). Not
@@ -231,7 +234,10 @@ function ChatFrame() {
               aria-label="Conversation"
               data-tour="assistant"
               hidden={folded}
-              className={cn("flex min-h-0 min-w-0 flex-col", beside ? "w-[30rem] shrink-0" : "flex-1", folded && "hidden")}
+              // Beside a canvas it gives way, down to 16rem, before the canvas
+              // would be squeezed under the window controls (EO-668): the
+              // canvas keeps room for its own buttons and theirs.
+              className={cn("flex min-h-0 min-w-0 flex-col", beside ? "w-[30rem] min-w-[16rem] shrink" : "flex-1", folded && "hidden")}
             >
               <ChatConversation
                 narrow={beside}

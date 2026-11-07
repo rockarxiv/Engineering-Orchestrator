@@ -21,6 +21,17 @@ export function ChatBanners() {
   );
 }
 
+/**
+ * Whether a banner is up: the same two conditions the strips are drawn on.
+ * The frame asks, because a banner is then what the window controls are
+ * drawn over (EO-668).
+ */
+export function useBannersShown(): boolean {
+  const session = useSession();
+  const sync = useSyncStatus();
+  return session.data?.state === "revoked" || sync.data?.state === "offline";
+}
+
 function Strip({ label, icon, children, end }: { label: string; icon: ReactNode; children: ReactNode; end?: ReactNode }) {
   return (
     // Above the top row when it is drawn, so part of the title bar

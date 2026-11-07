@@ -3306,6 +3306,40 @@ describe("the main window's title bar", () => {
     await waitFor(() => expect(coloured(invoke).at(-1)).toEqual({ color: "#262624", symbolColor: "#c3c1b8" }));
   });
 
+  it("colours them for a banner while one is up, through a theme change, and for what is under it when it goes", async () => {
+    const push = pushes();
+    let state = "offline";
+    const invoke = bridge();
+    invoke.mockImplementation(async (channel: string) => {
+      if (channel === "sync:status") return { ok: true, data: { state, offlineSince: 1, queued: 0, queuedItemIds: [], problem: null } };
+      return bridge()(channel);
+    });
+    open("/chat", invoke);
+    await screen.findByRole("region", { name: "Overview" });
+    await screen.findByRole("status", { name: "Offline" });
+
+    // The banner is the top of the window's right edge, on the canvas colour, over the overview.
+    await waitFor(() => expect(coloured(invoke).at(-1)).toEqual({ color: "#262624", symbolColor: "#c3c1b8" }));
+
+    act(() => setThemeChoice({ kind: "preset", id: "nord" }));
+    await waitFor(() => expect(coloured(invoke).at(-1)).toEqual({ color: "#2e3440", symbolColor: "#d8dee9" }));
+
+    state = "online";
+    push("items:changed", {});
+    await waitFor(() => expect(screen.queryByRole("status", { name: "Offline" })).not.toBeInTheDocument());
+    // Gone, the overview's deep is at the edge again.
+    await waitFor(() => expect(coloured(invoke).at(-1)).toEqual({ color: "#272c36", symbolColor: "#d8dee9" }));
+  });
+
+  it("lets the conversation beside a canvas give way before the canvas would go under the controls", async () => {
+    open("/pipelines/p-report");
+    const conversation = await screen.findByRole("region", { name: "Conversation" });
+
+    // Not shrink-0 any more: the canvas holds its minimum, and the conversation narrows to 16rem.
+    expect(conversation).toHaveClass("w-[30rem]", "min-w-[16rem]", "shrink");
+    expect(conversation).not.toHaveClass("shrink-0");
+  });
+
   it("reserves nothing in full screen, and the room comes back when it leaves", async () => {
     const push = pushes();
     let fullScreen = true;

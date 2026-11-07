@@ -401,6 +401,13 @@
  * drag regions as rectangles, not as what is on top, so a dialog drawn
  * over the top row would otherwise move the window from its own margin.
  *
+ * Taking the floating thing out of the drag is not enough on its own.
+ * Electron adds and subtracts the regions in document order, so a backdrop
+ * drawn inside the rail is undone by the conversation's header after it —
+ * which real pointer input on KDE showed: with the project menu open, the
+ * header still moved the window. So while any backdrop or modal is up
+ * (every one is `fixed inset-0`), no part of the top row is a handle.
+ *
  * Ignored by a browser, and in a window with a native frame.
  */
 @layer base {
@@ -409,7 +416,8 @@
   }
 
   .app-drag :is(a, button, input, select, textarea, summary, label, [role="button"], [role="tab"], [role="dialog"], [role="menu"], [contenteditable]),
-  .fixed {
+  .fixed,
+  :root:has(.fixed.inset-0) .app-drag {
     -webkit-app-region: no-drag;
   }
 }

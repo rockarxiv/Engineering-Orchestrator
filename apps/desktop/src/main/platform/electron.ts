@@ -592,6 +592,13 @@ export function createElectronPlatform(options: { mainDir: string }): Platform {
 export const TITLE_BAR_HEIGHT = 51;
 
 /**
+ * The main window's narrowest on Windows and Linux (EO-668): the rail
+ * (250px), the conversation at its narrowest beside a canvas (16rem) and
+ * the canvas at its (6rem and the window controls), with room to spare.
+ */
+export const MAIN_MIN_WIDTH = 760;
+
+/**
  * The main window's chrome, per platform (EO-668, ARCHITECTURE.md, "Window
  * chrome").
  *
@@ -615,9 +622,13 @@ export const TITLE_BAR_HEIGHT = 51;
  */
 export function mainWindowChrome(
   platform: NodeJS.Platform,
-): Pick<BrowserWindowConstructorOptions, "titleBarStyle" | "titleBarOverlay" | "trafficLightPosition"> {
+): Pick<BrowserWindowConstructorOptions, "titleBarStyle" | "titleBarOverlay" | "trafficLightPosition" | "minWidth"> {
   if (platform === "darwin") return { titleBarStyle: "hiddenInset", trafficLightPosition: { x: 18, y: 10 } };
   return {
+    // Narrower than this, the rail, a conversation given way to 16rem and
+    // a canvas with its two buttons cannot all sit left of the controls
+    // (138px on Windows, 96 on Linux): something would be drawn under them.
+    minWidth: MAIN_MIN_WIDTH,
     titleBarStyle: "hidden",
     // The Claude theme's rail and muted ink, which is what the window
     // opens in until the renderer says otherwise.

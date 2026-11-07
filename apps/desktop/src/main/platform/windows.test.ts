@@ -195,7 +195,7 @@ vi.mock("electron", () => ({
   safeStorage: { isEncryptionAvailable: () => false },
 }));
 
-const { canvasBoundsPath, createElectronPlatform, debugBoundsPath, fitOntoAvailableDisplay, mainWindowChrome, readSavedBounds, TITLE_BAR_HEIGHT } = await import(
+const { canvasBoundsPath, createElectronPlatform, debugBoundsPath, fitOntoAvailableDisplay, MAIN_MIN_WIDTH, mainWindowChrome, readSavedBounds, TITLE_BAR_HEIGHT } = await import(
   "./electron.js"
 );
 const { askFromCanvas, canvasState, closeCanvas, openInCanvas, popOutCanvas, resetCanvasWindow } = await import("../ipc/canvasWindow.js");
@@ -317,6 +317,7 @@ describe("the main window's title bar", () => {
     // Windows and Linux: Electron's overlay, as tall as the top row above its rule.
     for (const platform of ["linux", "win32"] as const) {
       expect(mainWindowChrome(platform)).toEqual({
+        minWidth: MAIN_MIN_WIDTH,
         titleBarStyle: "hidden",
         titleBarOverlay: { color: expect.stringMatching(/^#[0-9a-f]{6}$/), symbolColor: expect.stringMatching(/^#[0-9a-f]{6}$/), height: 51 },
       });
@@ -325,6 +326,8 @@ describe("the main window's title bar", () => {
     // and no overlay, which has nothing to draw there.
     expect(mainWindowChrome("darwin")).toEqual({ titleBarStyle: "hiddenInset", trafficLightPosition: { x: 18, y: 10 } });
     expect(TITLE_BAR_HEIGHT).toBe(51);
+    // The rail, the conversation at 16rem and the canvas at 6rem, beside Windows' 138px of controls.
+    expect(MAIN_MIN_WIDTH).toBeGreaterThanOrEqual(250 + 256 + 96 + 138);
   });
 
   it("is what the main window is made with, and not the windows beside it", () => {

@@ -63,7 +63,14 @@ export function ChatCanvas({
     active.current?.scrollIntoView?.({ block: "nearest", inline: "nearest" });
   }, [tabKey]);
   return (
-    <section aria-label="Canvas" className={cn("grid min-h-0 min-w-0 flex-1 grid-rows-[52px_minmax(0,1fr)] border-l border-line", DEEP)}>
+    <section
+      aria-label="Canvas"
+      className={cn("grid min-h-0 min-w-0 flex-1 grid-rows-[52px_minmax(0,1fr)] border-l border-line", DEEP)}
+      // At the window's edge (EO-668), never narrower than its own two
+      // buttons and the window controls beside them: the conversation
+      // gives way first, so nothing of either column is under the controls.
+      style={titleBar ? { minWidth: `calc(6rem + ${CONTROLS_END})` } : undefined}
+    >
       <div
         className={cn("flex min-w-0 items-center gap-1 border-b border-line px-3", titleBar && "app-drag")}
         style={titleBar ? { paddingRight: `calc(0.75rem + ${CONTROLS_END})` } : undefined}
