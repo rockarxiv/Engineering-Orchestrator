@@ -76,8 +76,6 @@ async function connect(agentId?: string): Promise<Client> {
   const lease = endpoint.lease(agentId);
   const client = new Client({ name: "test", version: "0" });
   await client.connect(
-    // @ts-expect-error — the SDK's own transport and Transport interface disagree under
-    // `exactOptionalPropertyTypes: true`; see admin.test.ts.
     new StreamableHTTPClientTransport(new URL(endpoint.url), { requestInit: { headers: { authorization: `Bearer ${lease.token}` } } }),
   );
   clients.push(client);

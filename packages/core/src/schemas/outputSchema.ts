@@ -155,9 +155,10 @@ export interface OutputSchema<T = unknown> {
    * as a property of a larger document — which `providerSchemaFor`
    * makes it, under `outcome`.
    *
-   * This is what zod's emitter concludes about a schema whose input
-   * side it cannot type (a `z.preprocess` at the root: today, `intake`
-   * alone) and records by leaving the property out of `required`. The
+   * This is what zod's emitter concludes about a schema whose input may
+   * be missing — a `.optional()` or a `.default()` at the root; before
+   * zod 4.6 a root `z.preprocess` too — and records by leaving the
+   * property out of `required`. No action EO ships has one today. The
    * bare document does not say it, so the wrapper cannot recover it,
    * and the provider must keep receiving what it received. A JSON
    * Schema document never says it either: it describes a value, and a
@@ -185,7 +186,7 @@ export function zodOutputSchema<T>(schema: z.ZodType<T>): OutputSchema<T> {
       return { ok: false, issues: parsed.error.issues.map(issueFromZod) };
     },
     toJsonSchema() {
-      return z.toJSONSchema(schema, { io: "input" }) as JsonSchema;
+      return spellTypeUnionsAsAnyOf(z.toJSONSchema(schema, { io: "input" })) as JsonSchema;
     },
     get mayBeAbsent() {
       // Asked of zod the way the old union asked it — by placing the
@@ -196,6 +197,44 @@ export function zodOutputSchema<T>(schema: z.ZodType<T>): OutputSchema<T> {
       return !required.includes("value");
     },
   };
+}
+
+/** Keywords whose value is data rather than a schema, so a `type` inside it is not the keyword. */
+const SCHEMA_DATA_KEYWORDS = new Set(["const", "enum", "default", "examples"]);
+
+/** Keywords whose value is a table of schemas by name: a property called `default` is a property. */
+const SCHEMA_TABLE_KEYWORDS = new Set(["properties", "patternProperties", "$defs", "definitions"]);
+
+/**
+ * zod's emission, with every `type` array spelled as the `anyOf` of bare
+ * types it was before zod 4.6 (EO-671).
+ *
+ * From 4.6, `z.toJSONSchema` compacts `anyOf: [{ type: "string" }, { type:
+ * "null" }]` into `type: ["string", "null"]`, after any `override` has run,
+ * so no option reaches it. The two mean the same thing, but providers do
+ * not document the same support for both: both take the nullable pair,
+ * and neither says whether strict mode takes several non-null types, which
+ * a `z.record` of primitives emits. The provider snapshot in
+ * providerSchema.test.ts holds what every agent is asked to produce, and a
+ * dependency bump is not the place to change it, so it is put back.
+ */
+function spellTypeUnionsAsAnyOf(node: unknown): unknown {
+  if (Array.isArray(node)) return node.map(spellTypeUnionsAsAnyOf);
+  if (node === null || typeof node !== "object") return node;
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(node)) {
+    if (SCHEMA_TABLE_KEYWORDS.has(key) && value !== null && typeof value === "object" && !Array.isArray(value)) {
+      out[key] = Object.fromEntries(Object.entries(value).map(([name, schema]) => [name, spellTypeUnionsAsAnyOf(schema)]));
+    } else {
+      out[key] = SCHEMA_DATA_KEYWORDS.has(key) ? value : spellTypeUnionsAsAnyOf(value);
+    }
+  }
+  const type = out["type"];
+  if (Array.isArray(type) && type.every((member) => typeof member === "string")) {
+    delete out["type"];
+    out["anyOf"] = type.map((member) => ({ type: member }));
+  }
+  return out;
 }
 
 function issueFromZod(issue: z.core.$ZodIssue): SchemaIssue {

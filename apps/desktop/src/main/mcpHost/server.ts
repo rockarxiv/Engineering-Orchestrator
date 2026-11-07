@@ -726,14 +726,6 @@ export async function startProtocolHost(
       if (transport.sessionId !== undefined) sessions.delete(transport.sessionId);
     };
 
-    // @ts-expect-error — the SDK's own transport does not satisfy the SDK's
-    // own `Transport` interface under `exactOptionalPropertyTypes: true`:
-    // it declares `onclose` and `sessionId` as `T | undefined` where the
-    // interface wants them optional. Their bug, between two of their own
-    // exports. Narrowed to this one line rather than papered over by
-    // casting the transport to a hand-written shape, which is what this
-    // file used to do and what stopped the compiler noticing anything
-    // else about it.
     await server.connect(transport);
     await transport.handleRequest(req, res, parsedBody);
 

@@ -86,10 +86,6 @@ afterEach(async () => {
 async function connect(url: string, token: string): Promise<Client> {
   const client = new Client({ name: "test", version: "0" });
   await client.connect(
-    // @ts-expect-error — the SDK's own client transport does not satisfy the
-    // SDK's own Transport interface under `exactOptionalPropertyTypes: true`.
-    // Their bug, between two of their own exports — and using anything but
-    // their client here would defeat the point of testing over the transport.
     new StreamableHTTPClientTransport(new URL(url), { requestInit: { headers: { authorization: `Bearer ${token}` } } }),
   );
   clients.push(client);

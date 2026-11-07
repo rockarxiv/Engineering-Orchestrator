@@ -479,11 +479,31 @@ describe("a JSON Schema document loaded at runtime", () => {
     expect(() => jsonSchemaOutputSchema({ type: "object", required: "note" })).toThrow();
   });
 
-  it("never claims its value may be absent; only zod's emitter has that to say, and only for a root preprocess", () => {
+  it("never claims its value may be absent; only zod's emitter has that to say, and only for a root that may be missing", () => {
     expect(jsonSchemaOutputSchema(document).mayBeAbsent).toBeUndefined();
     expect(zodOutputSchema(ImplementOutputSchema).mayBeAbsent).toBe(false);
-    // What only a root preprocess produces: zod's emitter cannot type the
-    // input side, so it leaves the property out of `required`.
-    expect(zodOutputSchema(z.preprocess((value) => value, z.object({ body: z.string() }))).mayBeAbsent).toBe(true);
+    // A root `.optional()` is what zod's emitter leaves out of `required`.
+    expect(zodOutputSchema(z.object({ body: z.string() }).optional()).mayBeAbsent).toBe(true);
+    // A root preprocess was, until zod 4.6 learnt to type its input side.
+    expect(zodOutputSchema(z.preprocess((value) => value, z.object({ body: z.string() }))).mayBeAbsent).toBe(false);
+  });
+
+  it("hands a provider an `anyOf` of bare types where zod 4.6 compacts it into a `type` array (EO-671)", () => {
+    const schema = zodOutputSchema(
+      z.object({
+        note: z.string().nullable(),
+        default: z.union([z.string(), z.number(), z.boolean()]),
+        settings: z.record(z.string(), z.union([z.string(), z.number()])),
+        tag: z.literal("x").default("x"),
+      }),
+    ).toJsonSchema() as Record<string, unknown>;
+    const properties = schema["properties"] as Record<string, Record<string, unknown>>;
+
+    expect(properties["note"]).toEqual({ anyOf: [{ type: "string" }, { type: "null" }] });
+    expect(properties["default"]).toEqual({ anyOf: [{ type: "string" }, { type: "number" }, { type: "boolean" }] });
+    expect(properties["settings"]?.["additionalProperties"]).toEqual({ anyOf: [{ type: "string" }, { type: "number" }] });
+    // Data is left as written: a default is a value, not a schema.
+    expect(properties["tag"]?.["default"]).toBe("x");
+    expect(JSON.stringify(schema)).not.toMatch(/"type":\[/);
   });
 });
