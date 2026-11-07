@@ -43,7 +43,8 @@ import { noteFirstRunProject } from "../firstRun/firstRun.js";
 import { activeProjectId, movingProjectRefusal, repositoryPathProblem } from "./repositoryCommands.js";
 import { listPeopleCommand } from "./identityCommands.js";
 import type { ManagedDirectory } from "../managed/directory.js";
-import { ensurePerson } from "../db/repos/peopleRepo.js";
+import { ensurePerson, getPerson } from "../db/repos/peopleRepo.js";
+import { rememberedOrganisationPeople } from "../managed/session.js";
 
 /**
  * The gallery's channels (EO-316, EO-317, `ARCHITECTURE.md`,
@@ -79,15 +80,32 @@ export interface GalleryContext extends GalleryOptions {
  * assigned, and a first run that has just signed in would otherwise
  * offer nobody (EO-661). Otherwise this machine's rows, and none at all
  * in solo mode: EO-302 settled that solo mode displays no names.
+ *
+ * Signed in is never solo, whether or not the server answered this
+ * time. A list that could not be fetched is answered from the last one
+ * the organisation gave (`rememberedOrganisationPeople`), and `reached`
+ * says so: falling back to the local table would read a fresh desktop's
+ * one row as solo mode, and solo mode replaces every slot the person
+ * chose with themselves.
  */
-async function rolePeople(db: Db, context: GalleryContext): Promise<{ solo: boolean; people: { id: string; name: string }[] }> {
+async function rolePeople(
+  db: Db,
+  context: GalleryContext,
+): Promise<{ solo: boolean; people: { id: string; name: string }[]; organisation: boolean; reached: boolean }> {
   if (context.managed?.client() != null) {
     const list = await listPeopleCommand(db, { managed: context.managed });
-    if (list.fromServer) return { solo: false, people: list.people.map((person) => ({ id: person.id, name: person.name })) };
+    if (list.fromServer) {
+      return { solo: false, people: list.people.map((person) => ({ id: person.id, name: person.name })), organisation: true, reached: true };
+    }
+    return { solo: false, people: rememberedOrganisationPeople(db), organisation: true, reached: false };
   }
   const solo = isSoloMode(db);
-  return { solo, people: solo ? [] : listPeople(db).map((person) => ({ id: person.id, name: person.name })) };
+  return { solo, people: solo ? [] : listPeople(db).map((person) => ({ id: person.id, name: person.name })), organisation: false, reached: true };
 }
+
+/** Said when a chosen colleague cannot be named because the organisation could not be asked. Nothing is created. */
+const ORGANISATION_UNREACHABLE =
+  "EO could not reach your organisation just now, so it cannot say who you chose for a role. Nothing was created; try again in a moment.";
 
 /**
  * The cards (ARCHITECTURE.md, "The gallery").
@@ -177,15 +195,22 @@ export async function useGalleryCommand(db: Db, context: GalleryContext, payload
   if (who.solo) {
     const you = localPerson(db).id as Uuid;
     for (const slot of galleryRoleSlots(template.document)) roleSlots[slot.stepId] = you;
-  } else {
+  } else if (who.organisation) {
     // A colleague off the organisation's list may be nobody this
     // database has a row for yet, and a step's owner is a row here. The
     // row is written under the record's own id, as `knowAssignee` does
     // for an assignment, so the record and this machine name them alike.
+    // Resolved before anything is written: a colleague neither list
+    // names, while the server cannot be asked, is refused here rather
+    // than dropped or swapped for somebody else.
+    const colleagues: { id: string; name: string }[] = [];
     for (const personId of Object.values(roleSlots)) {
+      if (personId.trim() === "" || getPerson(db, personId as Uuid) !== undefined) continue;
       const colleague = who.people.find((person) => person.id === personId);
-      if (colleague !== undefined) ensurePerson(db, colleague.id as Uuid, colleague.name);
+      if (colleague !== undefined) colleagues.push(colleague);
+      else if (!who.reached) return { projectId: null, pipelineId: null, jobId: null, needs: [], problem: ORGANISATION_UNREACHABLE };
     }
+    for (const colleague of colleagues) ensurePerson(db, colleague.id as Uuid, colleague.name);
   }
 
   const result = useTemplate(db, {

@@ -438,12 +438,18 @@ describe("the people a role slot names", () => {
  */
 describe("the people a role slot names, on a desktop signed in to an organisation", () => {
   const dana = { id: "019a0000-0000-7000-8000-00000000da0a", name: "Dana", email: "dana@acme.com", isAdmin: true, invitedAt: 1, acceptedAt: 2, credentialKind: "password" };
-  const signedIn = () => ({
+  /** Signed in; `reachable` says whether the organisation answers this time. */
+  const signedIn = (reachable = true) => ({
     ...context(),
     managed: {
       client: () => ({
         address: "https://eo.acme.com",
-        request: (() => Promise.resolve({ ok: true, data: { people: [dana], groups: [], fromServer: false } })) as ServerClient["request"],
+        request: (() =>
+          Promise.resolve(
+            reachable
+              ? { ok: true, data: { people: [dana], groups: [], fromServer: false } }
+              : { ok: false, error: { message: "EO could not reach https://eo.acme.com" } },
+          )) as ServerClient["request"],
       }),
     },
   });
@@ -461,6 +467,38 @@ describe("the people a role slot names, on a desktop signed in to an organisatio
     expect(answer.problem).toBeNull();
     const approve = listStepsForPipeline(handle.db, answer.pipelineId!).find((step) => step.name === "Approve");
     expect(approve?.ownerPersonId).toBe(dana.id);
+  });
+
+  /**
+   * The server goes away between the list and the submission (EO-661
+   * review). The local table still holds only this machine's person,
+   * which used to read as solo mode and put them on every slot instead.
+   */
+  it("keeps the chosen colleague when the server is lost after the list was drawn", async () => {
+    await listGalleryCommand(handle.db, signedIn(true));
+    const answer = await useGalleryCommand(handle.db, signedIn(false), { ...monday(), roleSlots: { approve: dana.id } });
+
+    expect(answer.problem).toBeNull();
+    const approve = listStepsForPipeline(handle.db, answer.pipelineId!).find((step) => step.name === "Approve");
+    expect(approve?.ownerPersonId).toBe(dana.id);
+  });
+
+  it("is not solo while the server cannot be reached, so the picker stays and nobody is put on a slot for them", async () => {
+    await listGalleryCommand(handle.db, signedIn(true));
+    const listed = await listGalleryCommand(handle.db, signedIn(false));
+    expect(listed.templates.every((template) => !template.solo)).toBe(true);
+    expect(listed.people).toEqual([{ id: dana.id, name: "Dana" }]);
+
+    const answer = await useGalleryCommand(handle.db, signedIn(false), { ...monday(), roleSlots: { approve: "" } });
+    const approve = listStepsForPipeline(handle.db, answer.pipelineId!).find((step) => step.name === "Approve");
+    expect(approve?.ownerPersonId).toBeNull();
+  });
+
+  it("refuses, creating nothing, a colleague it cannot name while the server cannot be reached", async () => {
+    const answer = await useGalleryCommand(handle.db, signedIn(false), { ...monday(), roleSlots: { approve: dana.id } });
+
+    expect(answer.problem).toContain("could not reach your organisation");
+    expect(listProjects(handle.db)).toHaveLength(0);
   });
 });
 

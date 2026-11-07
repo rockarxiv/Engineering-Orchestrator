@@ -13,4 +13,21 @@ describe("invitationLinkFrom", () => {
       expect(invitationLinkFrom(link)).toBeNull();
     }
   });
+
+  /** What a browser normalises away: these reach the server's root, not an invitation (EO-661 review). */
+  it("is null for a code a browser would resolve away as a dot segment or a backslash", () => {
+    for (const link of [
+      "https://eo.acme.com/invite/..",
+      "https://eo.acme.com/invite/.",
+      "https://eo.acme.com/invite/%2e%2e",
+      "https://eo.acme.com/invite/%2E%2e",
+      "https://eo.acme.com/invite/.%2e",
+      "https://eo.acme.com/invite/%2e",
+      "https://eo.acme.com/invite/a1b2\\..",
+      "https://eo.acme.com/invite/a1b2%5c..",
+      "https://eo.acme.com\\invite/a1b2",
+    ]) {
+      expect(invitationLinkFrom(link)).toBeNull();
+    }
+  });
 });

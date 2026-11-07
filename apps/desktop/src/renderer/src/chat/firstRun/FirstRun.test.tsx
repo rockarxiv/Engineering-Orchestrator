@@ -197,14 +197,16 @@ describe("step 1, before anything else", () => {
     open.mockRestore();
   });
 
-  it("refuses a link that is not an invitation, before opening anything", async () => {
+  it.each(["https://eo.acme.com/project", "https://eo.acme.com/invite/..", "https://eo.acme.com/invite/%2e%2e"])("refuses %s, which is not an invitation, before opening anything", async (link) => {
+    // What a browser would actually open, so the case is judged by the URL semantics the link will meet.
+    if (link.includes("/invite/")) expect(new URL(link).pathname).toBe("/");
     const open = vi.spyOn(window, "open").mockReturnValue(null);
     mockIpc({ done: false, mode: null });
     renderFirstRun(<FirstRun onLeft={() => {}} />);
 
     fireEvent.click(await screen.findByRole("button", { name: "My organisation" }));
     fireEvent.click(await screen.findByRole("button", { name: "I have an invitation link" }));
-    fireEvent.change(screen.getByLabelText("Invitation link"), { target: { value: "https://eo.acme.com/project" } });
+    fireEvent.change(screen.getByLabelText("Invitation link"), { target: { value: link } });
     fireEvent.click(screen.getByRole("button", { name: "Open the invitation" }));
 
     expect(await screen.findByText(/One looks like https:\/\/eo\.example\.com\/invite\//)).toBeInTheDocument();

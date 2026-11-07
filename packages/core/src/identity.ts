@@ -165,11 +165,18 @@ export function invitationCodeFrom(pathname: string): string | null {
 export function invitationLinkFrom(link: string): { address: string; code: string } | null {
   // A regular expression rather than `URL`, which this package does not
   // assume (see `addressHost`): scheme and authority, then the path.
-  const match = /^(https?:\/\/[^/?#@\s]+)(\/[^?#\s]*)(?:[?#]\S*)?$/i.exec(link.trim());
+  // A backslash is excluded from the authority because a browser reads
+  // it as a slash in an http(s) address.
+  const match = /^(https?:\/\/[^/\\?#@\s]+)(\/[^?#\s]*)(?:[?#]\S*)?$/i.exec(link.trim());
   if (match === null) return null;
   const [, origin = "", path = ""] = match;
   const code = invitationCodeFrom(path);
-  if (code === null || code.includes("/")) return null;
+  if (code === null) return null;
+  // Judged as the browser will read the path, not as it was typed. A
+  // browser treats `\` as `/` and resolves `.` and `..` segments —
+  // `%2e` spelling included — so `/invite/..` and `/invite/%2e%2e` both
+  // arrive at the server's root, which is not an invitation page.
+  if (code.includes("/") || code.includes("\\") || code === "." || code === "..") return null;
   return { address: origin, code };
 }
 
