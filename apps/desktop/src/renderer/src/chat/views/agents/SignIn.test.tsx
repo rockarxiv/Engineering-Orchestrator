@@ -57,6 +57,7 @@ type Started = {
   url?: string | null;
   verificationCode?: string | null;
   needsCode?: boolean;
+  cliOpensBrowser?: boolean;
   opened?: boolean;
   transcript?: string;
   problem?: string | null;
@@ -67,10 +68,11 @@ type Finished = { ok?: boolean; state?: "signed_in" | "failed" | "cancelled"; tr
 /**
  * The main process, as far as this dialog can tell.
  *
- * `submitSignInCode` is deliberately left unresolved until a test says
- * otherwise: for Codex that call is the whole browser half of the flow,
- * and a dialog that only behaves while nothing is pending is not the
- * dialog anybody uses.
+ * The wait — `submitSignInCode` with no code — is deliberately left
+ * unresolved until a test releases it: for both CLIs that call is the
+ * whole browser half of the flow, and a dialog that only behaves while
+ * nothing is pending is not the dialog anybody uses. `finish` answers a
+ * pasted code; without it, that call is held too.
  */
 type Keyed = { ok?: boolean; heldBy?: "cli" | "eo" | null; transcript?: string; problem?: string | null };
 
@@ -102,7 +104,8 @@ function renderDialog(
           url: "https://auth.example.com/oauth/authorize?state=xyz",
           verificationCode: null,
           needsCode: runtime.id === "claude",
-          opened: true,
+          cliOpensBrowser: runtime.id === "claude",
+          opened: runtime.id !== "claude",
           transcript: "",
           problem: null,
           ...chosen,
@@ -120,11 +123,12 @@ function renderDialog(
       return response;
     }
     if (channel === "runtime:submitSignInCode") {
-      if (!options.finish) {
+      if (payload["code"] === null) {
         const sessionId = String(payload["sessionId"]);
         waitedOn = sessionId;
         return new Promise((resolve) => waiting.set(sessionId, resolve));
       }
+      if (!options.finish) return new Promise(() => {});
       return { ok: true, data: { ok: false, state: "failed", transcript: "", problem: null, ...options.finish } };
     }
     if (channel === "runtime:cancelSignIn") return { ok: true, data: { cancelled: true } };
@@ -190,19 +194,62 @@ describe("before anything is spawned", () => {
   });
 });
 
+/** Opens Claude's paste-a-code fallback, which stays collapsed until asked for. */
+async function showCodeField(): Promise<HTMLElement> {
+  fireEvent.click(await screen.findByRole("button", { name: "The page showed me a code" }));
+  return screen.findByLabelText("Authorization code");
+}
+
 describe("the Claude flow", () => {
-  it("shows the URL with a copy button and a field for the code the page displays", async () => {
+  it("shows the CLI's fallback URL with a copy button, and the code field collapsed", async () => {
     const writeText = vi.fn();
     Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
     renderDialog(CLAUDE);
     await signIn();
 
     expect(await screen.findByText("https://auth.example.com/oauth/authorize?state=xyz")).toBeInTheDocument();
+    // The CLI opened its own page; the printed one is for when it did not.
+    expect(screen.getByText(/Claude Code opened the sign-in page in your browser/)).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Copy" }));
-    // The copy button is not decoration: `openExternal` resolving is not
-    // proof a browser appeared.
     expect(writeText).toHaveBeenCalledWith("https://auth.example.com/oauth/authorize?state=xyz");
+
+    const toggle = screen.getByRole("button", { name: "The page showed me a code" });
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByLabelText("Authorization code")).not.toBeInTheDocument();
+    fireEvent.click(toggle);
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
     expect(screen.getByLabelText("Authorization code")).toBeInTheDocument();
+  });
+
+  it("closes as signed in when the CLI finishes by itself, with no code pasted", async () => {
+    const { sent, onSignedIn, onOpenChange, release } = renderDialog(CLAUDE);
+    await signIn();
+
+    // The wait starts by itself, exactly as Codex's does.
+    await waitFor(() => expect(sent("runtime:submitSignInCode")[0]?.payload).toEqual({ sessionId: "session-1", code: null }));
+    release({ ok: true, state: "signed_in" });
+
+    await waitFor(() => expect(onSignedIn).toHaveBeenCalledTimes(1));
+    expect(onOpenChange).toHaveBeenCalledWith(false);
+    expect(sent("runtime:submitSignInCode")).toHaveLength(1);
+    expect(sent("runtime:cancelSignIn")).toEqual([]);
+  });
+
+  it("shows the problem and what the CLI printed when it exits non-zero while waiting, and offers Try again", async () => {
+    const { onOpenChange, onSignedIn, release } = renderDialog(CLAUDE);
+    await signIn();
+    await screen.findByText(/finishes by itself/);
+
+    release({
+      state: "failed",
+      problem: "Claude Code exited with code 1 without signing in. It printed:\nOAuth error: denied",
+      transcript: "OAuth error: denied",
+    });
+
+    expect(await screen.findByText(/exited with code 1/)).toHaveTextContent("OAuth error: denied");
+    expect(screen.getByRole("button", { name: /Try again/ })).toBeInTheDocument();
+    expect(onSignedIn).not.toHaveBeenCalled();
+    expect(onOpenChange).not.toHaveBeenCalledWith(false);
   });
 
   it("cancels the Copied label's reset when the dialog goes, rather than leaving a timer behind", async () => {
@@ -249,17 +296,21 @@ describe("the Claude flow", () => {
   });
 
   it("submits what was pasted, and closes once the child exits successfully", async () => {
-    const { sent, onSignedIn, onOpenChange } = renderDialog(CLAUDE, { finish: { ok: true, state: "signed_in" } });
+    const { sent, onSignedIn, onOpenChange, release } = renderDialog(CLAUDE, { finish: { ok: true, state: "signed_in" } });
     await signIn();
 
-    fireEvent.change(await screen.findByLabelText("Authorization code"), { target: { value: "pasted-code" } });
+    fireEvent.change(await showCodeField(), { target: { value: "pasted-code" } });
     fireEvent.click(screen.getByRole("button", { name: "Submit" }));
 
-    await waitFor(() => expect(onSignedIn).toHaveBeenCalled());
-    expect(sent("runtime:submitSignInCode")[0]?.payload).toEqual({ sessionId: "session-1", code: "pasted-code" });
+    await waitFor(() => expect(onSignedIn).toHaveBeenCalledTimes(1));
+    expect(sent("runtime:submitSignInCode").at(-1)?.payload).toEqual({ sessionId: "session-1", code: "pasted-code" });
     // The status re-probes because the dialog refetches it, not because
     // anything here decided the answer.
     expect(onOpenChange).toHaveBeenCalledWith(false);
+    // The wait ends on the same exit; landing second, it changes nothing.
+    release({ ok: true, state: "signed_in" });
+    await Promise.resolve();
+    expect(onSignedIn).toHaveBeenCalledTimes(1);
   });
 
   it("does not cancel a child that has already exited cleanly", async () => {
@@ -269,7 +320,7 @@ describe("the Claude flow", () => {
     const { sent, onSignedIn } = renderDialog(CLAUDE, { finish: { ok: true, state: "signed_in" } });
     await signIn();
 
-    fireEvent.change(await screen.findByLabelText("Authorization code"), { target: { value: "pasted-code" } });
+    fireEvent.change(await showCodeField(), { target: { value: "pasted-code" } });
     fireEvent.click(screen.getByRole("button", { name: "Submit" }));
     await waitFor(() => expect(onSignedIn).toHaveBeenCalled());
 
@@ -282,7 +333,7 @@ describe("the Claude flow", () => {
     });
     await signIn();
 
-    fireEvent.change(await screen.findByLabelText("Authorization code"), { target: { value: "wrong" } });
+    fireEvent.change(await showCodeField(), { target: { value: "wrong" } });
     fireEvent.click(screen.getByRole("button", { name: "Submit" }));
 
     expect(await screen.findByText(/exited with code 1/)).toBeInTheDocument();
@@ -490,7 +541,7 @@ describe("signing in with an API key", () => {
 
   it("offers Claude the Console flow as well, and runs it as an ordinary sign-in", async () => {
     // `claude auth login --console` is API billing through the same
-    // browser-plus-paste shape as the subscription login, and it leaves
+    // shape as the subscription login, and it leaves
     // the credential with the CLI rather than with EO.
     const view = renderDialog(CLAUDE);
     await chooseApiKey();
@@ -499,9 +550,10 @@ describe("signing in with an API key", () => {
 
     await waitFor(() => expect(view.sent("runtime:startSignIn")).toHaveLength(1));
     expect(view.sent("runtime:startSignIn")[0]?.payload).toMatchObject({ provider: "claude", mode: "console" });
-    // And it is the same flow from there: a URL, then the code the page
-    // displays.
-    expect(await screen.findByLabelText("Authorization code")).toBeInTheDocument();
+    // And it is the same flow from there: a URL, the wait, and the
+    // fallback page's code field.
+    expect(await showCodeField()).toBeInTheDocument();
+    expect(view.sent("runtime:submitSignInCode")[0]?.payload).toEqual({ sessionId: "session-1", code: null });
   });
 
   it("says that EO itself will hold a Claude key typed into it", async () => {

@@ -64,7 +64,7 @@ function mockIpc(
       case "runtime:startSignIn":
         return {
           ok: true,
-          data: { ok: true, sessionId: "session-1", url: "https://auth.example.com/", verificationCode: null, needsCode: true, opened: true, transcript: "", problem: null },
+          data: { ok: true, sessionId: "session-1", url: "https://auth.example.com/", verificationCode: null, needsCode: true, cliOpensBrowser: true, opened: false, transcript: "", problem: null },
         };
       case "runtime:setEnabled": {
         const { provider, enabled } = payload as { provider: string; enabled: boolean };
@@ -291,9 +291,8 @@ describe("connecting a coding agent", () => {
 
     fireEvent.click(await screen.findByRole("button", { name: "Sign in to Claude Code" }));
     const dialog = await screen.findByRole("dialog", { name: "Sign in to Claude Code" });
+    // The CLI finishes by itself once the browser comes back to it: no code to paste.
     fireEvent.click(within(dialog).getByRole("button", { name: "Sign in" }));
-    fireEvent.change(await within(dialog).findByLabelText("Authorization code"), { target: { value: "pasted-code" } });
-    fireEvent.click(within(dialog).getByRole("button", { name: "Submit" }));
 
     // No further press: the statuses are asked again and one now says signed in.
     expect(await screen.findByText("Start with a template")).toBeInTheDocument();

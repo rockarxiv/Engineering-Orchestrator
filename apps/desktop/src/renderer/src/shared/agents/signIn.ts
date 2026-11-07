@@ -34,7 +34,7 @@ export const CODEX_WARNING =
  * but cannot yet name. Closing the dialog in that window used to drop
  * it on the floor: there was no session id to cancel, so nothing was
  * sent, and the flow surfaced a moment later with nobody left to stop
- * it. Claude's would sit blocked on a stdin no one will write to and
+ * it. Claude's would keep its own sign-in listener open and
  * Codex's would keep `localhost:1455`, which is the one port the next
  * attempt needs.
  *
@@ -49,7 +49,7 @@ export function introFor(runtime: RuntimeStatusView): string {
   if (runtime.id === "codex") {
     return `EO will run \`codex login\` and open the sign-in page in your browser. Codex completes the exchange itself — no code passes through EO.`;
   }
-  return `EO will run \`claude auth login\` and open the sign-in page in your browser. The page displays an authorization code — paste it back here.`;
+  return `EO will run \`claude auth login\`, which opens the sign-in page in your browser and finishes by itself once you approve. If the page shows a code instead, you can paste it here.`;
 }
 
 /**

@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import { useMutation } from "@tanstack/react-query";
-import { ExternalLink } from "lucide-react";
-import type { RuntimeStatusView } from "@eo/core";
+import { ChevronRight, ExternalLink } from "lucide-react";
+import type { IpcResponse, RuntimeStatusView } from "@eo/core";
 import { ipcQuery } from "../../../query/client";
 import { CODEX_WARNING, cancelStarted, introFor, keyCustodyFor, type Phase, type Started } from "../../../shared/agents/signIn";
+import { cn } from "@eo/ui";
 import { Button, Dialog, TextInput } from "../../kit";
 
 /**
@@ -34,6 +35,8 @@ export function SignInDialog({
   const [problem, setProblem] = useState<string | null>(null);
   const [transcript, setTranscript] = useState("");
   const [code, setCode] = useState("");
+  /** Claude's paste-a-code fallback, collapsed until the person says the page showed one. */
+  const [showCodeField, setShowCodeField] = useState(false);
   const [apiKey, setApiKey] = useState("");
   const [copied, setCopied] = useState(false);
   const copiedReset = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -90,9 +93,12 @@ export function SignInDialog({
       }
       const generation = own(result.sessionId);
       setSession(result);
+      setShowCodeField(false);
       setPhase("waiting");
-      // Codex has nothing to submit — its child takes the code itself.
-      if (!result.needsCode) finish.mutate({ sessionId: result.sessionId, code: null, attempt: generation });
+      // Every child finishes by itself — its own listener takes the code —
+      // so the wait starts now. A code pasted into Claude's fallback field
+      // is a second call that ends on the same exit.
+      wait.mutate({ sessionId: result.sessionId, code: null, attempt: generation });
     },
     onError: (error: Error, variables) => {
       if (variables.generation !== attempt.current) return;
@@ -103,33 +109,46 @@ export function SignInDialog({
     },
   });
 
-  const finish = useMutation({
-    mutationFn: (input: { sessionId: string; code: string | null; attempt: number }) =>
-      ipcQuery("runtime:submitSignInCode", { sessionId: input.sessionId, code: input.code }),
-    onSuccess: (result, variables) => {
-      if (variables.attempt !== attempt.current) return;
-      live.current = null;
-      if (result.state === "signed_in") {
-        setSession(null);
-        onSignedIn();
-        onOpenChange(false);
-        return;
-      }
-      // Cancelled is reported as cancelled, never as a success or a failure to interpret.
-      setSession(null);
-      setPhase(result.state === "cancelled" ? "cancelled" : "failed");
-      setProblem(result.problem);
-      setTranscript(result.transcript);
-    },
-    onError: (error: Error, variables) => {
-      if (variables.attempt !== attempt.current) return;
-      live.current = null;
-      setSession(null);
-      setPhase("failed");
-      setProblem(error.message);
-      setTranscript("");
-    },
-  });
+  /**
+   * The end of a sign-in, from whichever call answered first.
+   *
+   * The wait and a pasted code both end on the same exit, so the first
+   * answer retires the attempt and the second lands on nothing — one
+   * close, one `onSignedIn`.
+   */
+  const settled = (result: IpcResponse<"runtime:submitSignInCode">, variables: { attempt: number }): void => {
+    if (variables.attempt !== attempt.current) return;
+    attempt.current += 1;
+    live.current = null;
+    setSession(null);
+    if (result.state === "signed_in") {
+      onSignedIn();
+      onOpenChange(false);
+      return;
+    }
+    // Cancelled is reported as cancelled, never as a success or a failure to interpret.
+    setPhase(result.state === "cancelled" ? "cancelled" : "failed");
+    setProblem(result.problem);
+    setTranscript(result.transcript);
+  };
+
+  const broke = (error: Error, variables: { attempt: number }): void => {
+    if (variables.attempt !== attempt.current) return;
+    attempt.current += 1;
+    live.current = null;
+    setSession(null);
+    setPhase("failed");
+    setProblem(error.message);
+    setTranscript("");
+  };
+
+  const submit = (input: { sessionId: string; code: string | null; attempt: number }) =>
+    ipcQuery("runtime:submitSignInCode", { sessionId: input.sessionId, code: input.code });
+
+  /** Waiting for the child to finish by itself. Its own mutation, so a pending wait never disables the code field. */
+  const wait = useMutation({ mutationFn: submit, onSuccess: settled, onError: broke });
+  /** A code pasted from Claude's fallback page. */
+  const finish = useMutation({ mutationFn: submit, onSuccess: settled, onError: broke });
 
   const cancel = useMutation({
     mutationFn: (sessionId: string) => ipcQuery("runtime:cancelSignIn", { sessionId }),
@@ -191,6 +210,7 @@ export function SignInDialog({
     setCode("");
     setApiKey("");
     start.reset();
+    wait.reset();
     finish.reset();
     withKey.reset();
   };
@@ -329,8 +349,8 @@ export function SignInDialog({
                     Sign in through the Anthropic Console
                   </Button>
                   <p className="text-[12px] text-ink-subtle">
-                    EO runs <code className="font-mono">claude auth login --console</code> and opens the page in your browser, the same as a subscription
-                    sign-in. Claude Code keeps the credential itself — EO stores nothing.
+                    EO runs <code className="font-mono">claude auth login --console</code>, which opens the page in your browser the same as a
+                    subscription sign-in. Claude Code keeps the credential itself — EO stores nothing.
                   </p>
                 </div>
                 <p className="text-ink">Or, if you already have a key:</p>
@@ -353,7 +373,11 @@ export function SignInDialog({
         {phase === "waiting" && session ? (
           <>
             <p className="text-ink">
-              {session.opened ? "Your browser should have opened. If it did not, use this link:" : "EO could not open your browser. Open this link yourself:"}
+              {session.cliOpensBrowser
+                ? `${runtime.label} opened the sign-in page in your browser. If it did not, open this link yourself:`
+                : session.opened
+                  ? "Your browser should have opened. If it did not, use this link:"
+                  : "EO could not open your browser. Open this link yourself:"}
             </p>
             <div className="flex items-center gap-2">
               <code className="min-w-0 flex-1 truncate rounded-[8px] bg-canvas-raised px-2 py-1 font-mono text-[12px] text-ink" title={session.url ?? ""}>
@@ -379,33 +403,49 @@ export function SignInDialog({
               </div>
             ) : null}
 
+            <p role="status" className="text-[12.5px] text-ink-subtle">
+              {session.needsCode
+                ? `Waiting for ${runtime.label} to finish signing in. It finishes by itself once you approve it in the browser.`
+                : `Waiting for ${runtime.label} to finish signing in. It completes the exchange itself — there is no code to paste.`}
+            </p>
+
+            {/* The fallback page's half: only that page shows a code, so the field waits until somebody says they are looking at one. */}
             {session.needsCode ? (
-              <form
-                className="flex flex-col gap-2"
-                onSubmit={(event) => {
-                  event.preventDefault();
-                  if (session.sessionId !== null) finish.mutate({ sessionId: session.sessionId, code, attempt: attempt.current });
-                }}
-              >
-                <span className="text-[12.5px] text-ink-muted">After signing in, the page shows an authorization code. Paste it here.</span>
-                <div className="flex items-center gap-2">
-                  <TextInput
-                    aria-label="Authorization code"
-                    value={code}
-                    autoComplete="off"
-                    disabled={finish.isPending}
-                    onChange={(event) => setCode(event.target.value)}
-                  />
-                  <Button type="submit" variant="primary" disabled={code.trim() === "" || finish.isPending}>
-                    {finish.isPending ? "Signing in…" : "Submit"}
-                  </Button>
-                </div>
-              </form>
-            ) : (
-              <p role="status" className="text-[12.5px] text-ink-subtle">
-                Waiting for {runtime.label} to finish signing in. It completes the exchange itself — there is no code to paste.
-              </p>
-            )}
+              <div className="flex flex-col gap-2">
+                <button
+                  type="button"
+                  aria-expanded={showCodeField}
+                  onClick={() => setShowCodeField((shown) => !shown)}
+                  className="flex items-center gap-1 self-start rounded-[8px] px-1 text-left text-[12.5px] text-ink-muted hover:bg-canvas-raised"
+                >
+                  <ChevronRight aria-hidden size={13} className={cn("shrink-0 transition-transform", showCodeField && "rotate-90")} />
+                  The page showed me a code
+                </button>
+                {showCodeField ? (
+                  <form
+                    className="flex flex-col gap-2"
+                    onSubmit={(event) => {
+                      event.preventDefault();
+                      if (session.sessionId !== null) finish.mutate({ sessionId: session.sessionId, code, attempt: attempt.current });
+                    }}
+                  >
+                    <span className="text-[12.5px] text-ink-muted">Paste the authorization code the page displayed.</span>
+                    <div className="flex items-center gap-2">
+                      <TextInput
+                        aria-label="Authorization code"
+                        value={code}
+                        autoComplete="off"
+                        disabled={finish.isPending}
+                        onChange={(event) => setCode(event.target.value)}
+                      />
+                      <Button type="submit" variant="primary" disabled={code.trim() === "" || finish.isPending}>
+                        {finish.isPending ? "Signing in…" : "Submit"}
+                      </Button>
+                    </div>
+                  </form>
+                ) : null}
+              </div>
+            ) : null}
           </>
         ) : null}
 

@@ -99,8 +99,13 @@ function fakeBrowser(): { openExternal: (url: string) => Promise<void>; opened: 
  * part of the Codex fixture: the first URL on its stdout is
  * `localhost:1455`, and a scrape that took it would open a browser at
  * the child's own socket and achieve nothing.
+ *
+ * Claude's is the shape of the managed 0.3.318: it has already opened
+ * the browser itself (at a localhost redirect it never prints), and the
+ * URL on stdout is its fallback, the page that displays a code.
  */
-const CLAUDE_OUTPUT = "Opening browser to sign in…\nhttps://claude.ai/oauth/authorize?code=true&client_id=abc\n\nPaste code here: ";
+const CLAUDE_URL = "https://claude.com/cai/oauth/authorize?code=true&client_id=abc&redirect_uri=https%3A%2F%2Fplatform.claude.com%2Foauth%2Fcode%2Fcallback";
+const CLAUDE_OUTPUT = `Opening browser to sign in…\nIf the browser didn't open, visit: ${CLAUDE_URL}\nPaste code here if prompted > `;
 const CODEX_OUTPUT =
   "Starting local login server on http://localhost:1455.\nIf your browser did not open, navigate to this URL to authenticate:\n\nhttps://auth.openai.com/oauth/authorize?client_id=app_codex&state=xyz\n";
 const CODEX_DEVICE_OUTPUT = "Open https://auth.openai.com/device to sign in.\nYour one-time code is: WDJB-MJHT\n";
@@ -110,7 +115,7 @@ beforeEach(() => {
 });
 
 describe("starting a Claude sign-in", () => {
-  it("runs `auth login` against the resolved executable and opens what it printed", async () => {
+  it("runs `auth login` against the resolved executable, and returns the fallback URL without opening it", async () => {
     const { spawn, calls, child } = fakeSpawner();
     const browser = fakeBrowser();
 
@@ -120,15 +125,77 @@ describe("starting a Claude sign-in", () => {
 
     expect(calls).toEqual([{ command: "/opt/eo/claude", args: ["auth", "login"] }]);
     expect(result.ok).toBe(true);
-    expect(result.url).toBe("https://claude.ai/oauth/authorize?code=true&client_id=abc");
-    // Opened *and* returned: `openExternal` resolving is not proof a
-    // browser appeared, so the dialog shows the URL regardless.
-    expect(browser.opened).toEqual(["https://claude.ai/oauth/authorize?code=true&client_id=abc"]);
-    expect(result.opened).toBe(true);
-    // The code travels browser → person → EO → stdin, so the dialog
-    // needs a field for it.
+    expect(result.url).toBe(CLAUDE_URL);
+    // The CLI opened its own page; opening the fallback as well would
+    // put the page that shows a code in front of the person too.
+    expect(browser.opened).toEqual([]);
+    expect(result.opened).toBe(false);
+    expect(result.cliOpensBrowser).toBe(true);
+    // The fallback page's code still travels person → EO → stdin.
     expect(result.needsCode).toBe(true);
     expect(result.verificationCode).toBeNull();
+  });
+
+  it("signs in when the child finishes by itself, with no code pasted", async () => {
+    const { spawn, child } = fakeSpawner();
+    const signedIn: AuthProbeRunner = async () => ({ ok: true, stdout: '{"loggedIn": true}', error: "", notFound: false });
+    const started = startSignIn({ provider: "claude", executablePath: "/opt/eo/claude", mode: "browser", spawn });
+    child().say(CLAUDE_OUTPUT);
+    const session = await started;
+    // Cached during the flow, so it describes the signed-out middle of it.
+    await runtimeAuth({ provider: "claude", executablePath: "/opt/eo/claude", run: signedIn });
+
+    const waiting = submitSignInCode({ sessionId: session.sessionId!, code: null });
+    // The browser came back to the CLI's own listener.
+    child().end({ code: 0 });
+
+    await expect(waiting).resolves.toMatchObject({ ok: true, state: "signed_in", problem: null });
+    expect(child().written).toEqual([]);
+    // So the status the dialog asks for next reaches the binary again.
+    expect(cachedRuntimeAuth("claude", "/opt/eo/claude").state).toBe("unknown");
+  });
+
+  it("writes nothing for a blank code, and goes on waiting rather than blocking the child on an empty line", async () => {
+    const { spawn, child } = fakeSpawner();
+    const started = startSignIn({ provider: "claude", executablePath: "/opt/eo/claude", mode: "browser", spawn });
+    child().say(CLAUDE_OUTPUT);
+    const session = await started;
+
+    const waiting = submitSignInCode({ sessionId: session.sessionId!, code: "  " });
+    expect(child().written).toEqual([]);
+    child().end({ code: 0 });
+    await expect(waiting).resolves.toMatchObject({ ok: true, state: "signed_in" });
+  });
+
+  it("ends a pending wait and a pasted code alike on the one exit", async () => {
+    const { spawn, child } = fakeSpawner();
+    const started = startSignIn({ provider: "claude", executablePath: "/opt/eo/claude", mode: "browser", spawn });
+    child().say(CLAUDE_OUTPUT);
+    const session = await started;
+
+    const waiting = submitSignInCode({ sessionId: session.sessionId!, code: null });
+    const pasted = submitSignInCode({ sessionId: session.sessionId!, code: "code-from-the-page" });
+    expect(child().written).toEqual(["code-from-the-page\n"]);
+    child().end({ code: 0 });
+
+    await expect(waiting).resolves.toMatchObject({ ok: true, state: "signed_in" });
+    await expect(pasted).resolves.toMatchObject({ ok: true, state: "signed_in" });
+  });
+
+  it("reports a non-zero exit while waiting, with what the CLI printed", async () => {
+    const { spawn, child } = fakeSpawner();
+    const started = startSignIn({ provider: "claude", executablePath: "/opt/eo/claude", mode: "browser", spawn });
+    child().say(CLAUDE_OUTPUT);
+    const session = await started;
+
+    const waiting = submitSignInCode({ sessionId: session.sessionId!, code: null });
+    child().say("OAuth error: the authorization was denied\n");
+    child().end({ code: 1 });
+
+    const result = await waiting;
+    expect(result).toMatchObject({ ok: false, state: "failed" });
+    expect(result.problem).toContain("exited with code 1");
+    expect(result.problem).toContain("the authorization was denied");
   });
 
   it("writes the authorization code to stdin, with the newline the CLI is blocked on", async () => {
@@ -145,19 +212,6 @@ describe("starting a Claude sign-in", () => {
 
     child().end({ code: 0 });
     await expect(finishing).resolves.toMatchObject({ ok: true, state: "signed_in", problem: null });
-  });
-
-  it("refuses to submit nothing rather than blocking the child on an empty line", async () => {
-    const { spawn, child } = fakeSpawner();
-    const started = startSignIn({ provider: "claude", executablePath: "/opt/eo/claude", mode: "browser", spawn });
-    child().say(CLAUDE_OUTPUT);
-    const session = await started;
-
-    const result = await submitSignInCode({ sessionId: session.sessionId!, code: "  " });
-
-    expect(result).toMatchObject({ ok: false, state: "failed" });
-    expect(result.problem).toContain("authorization code");
-    expect(child().written).toEqual([]);
   });
 
   it("reports a non-zero exit with what the CLI actually said", async () => {
@@ -488,24 +542,29 @@ describe("reading what the CLI printed", () => {
  * The Anthropic Console flow (EO-84).
  *
  * Claude's API-key path that leaves EO holding nothing: the same
- * browser-plus-paste shape as the subscription login, one flag apart, so
+ * shape as the subscription login, one flag apart, so
  * everything the subscription flow already does is reused rather than
  * re-implemented. What is worth asserting is the argv — a `--console`
  * that never reaches the child is a person signing into the wrong kind
  * of account and finding out on their invoice.
  */
 describe("signing in through the Anthropic Console", () => {
-  it("runs `auth login --console` and still carries the code to stdin", async () => {
+  it("runs `auth login --console`, leaves the browser to the CLI, and still carries a pasted code to stdin", async () => {
     const { spawn, calls, child } = fakeSpawner();
     const browser = fakeBrowser();
 
     const started = startSignIn({ provider: "claude", executablePath: "/opt/eo/claude", mode: "console", spawn, openExternal: browser.openExternal });
-    child().say("Opening browser…\nhttps://console.anthropic.com/oauth/authorize?code=true\n\nPaste code here: ");
+    child().say(
+      "Opening browser to sign in…\nIf the browser didn't open, visit: https://platform.claude.com/oauth/authorize?code=true\nPaste code here if prompted > ",
+    );
     const result = await started;
 
     expect(calls).toEqual([{ command: "/opt/eo/claude", args: ["auth", "login", "--console"] }]);
-    expect(result.url).toBe("https://console.anthropic.com/oauth/authorize?code=true");
-    // The page displays a code, exactly as the subscription flow does.
+    expect(result.url).toBe("https://platform.claude.com/oauth/authorize?code=true");
+    // On 0.3.318 it opens its own page and finishes by itself, exactly
+    // as the subscription flow does — the printed URL is the fallback.
+    expect(browser.opened).toEqual([]);
+    expect(result.cliOpensBrowser).toBe(true);
     expect(result.needsCode).toBe(true);
 
     const finished = submitSignInCode({ sessionId: result.sessionId!, code: "console-code" });
