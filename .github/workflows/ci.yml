@@ -238,8 +238,9 @@ jobs:
   # than the release finding out.
   #
   # Typecheck and lint once, in the first slice, as in test-windows and
-  # for its reason. In four slices, as the release's macOS verify jobs are, which took between two
-  # and eight minutes each; one job would wait on the sum of them.
+  # for its reason. In four slices, as the release's macOS verify jobs
+  # are, which took between two and eight minutes each; one job would
+  # wait on the sum of them.
   test-macos:
     name: test-macos (${{ matrix.shard }}/4)
     strategy:
