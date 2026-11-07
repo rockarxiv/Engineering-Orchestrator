@@ -41,6 +41,9 @@ import { preflightImport } from "../modules/pipelineTransfer.js";
 import type { ModuleSecretsOptions } from "../modules/secrets.js";
 import { noteFirstRunProject } from "../firstRun/firstRun.js";
 import { activeProjectId, movingProjectRefusal, repositoryPathProblem } from "./repositoryCommands.js";
+import { listPeopleCommand } from "./identityCommands.js";
+import type { ManagedDirectory } from "../managed/directory.js";
+import { ensurePerson } from "../db/repos/peopleRepo.js";
 
 /**
  * The gallery's channels (EO-316, EO-317, `ARCHITECTURE.md`,
@@ -58,6 +61,32 @@ export interface GalleryContext extends GalleryOptions {
   moduleSecrets: ModuleSecretsOptions;
   /** What a pack's recommendation is measured against (ARCHITECTURE.md, "An agent is a row"). */
   signedInBackends: readonly string[];
+  /**
+   * How this desktop reaches its organisation, when it is signed in to
+   * one (EO-661). Its people are who a role slot may be given to; absent
+   * on a server, which answers from its own rows.
+   */
+  managed?: ManagedDirectory;
+}
+
+/**
+ * Who a role slot may be given to, and whether the picker is hidden
+ * (ARCHITECTURE.md, "The gallery").
+ *
+ * On a desktop signed in to an organisation, the organisation's list —
+ * the same `people:list` the item picker reads — because the local
+ * table holds only this machine's own person until somebody is
+ * assigned, and a first run that has just signed in would otherwise
+ * offer nobody (EO-661). Otherwise this machine's rows, and none at all
+ * in solo mode: EO-302 settled that solo mode displays no names.
+ */
+async function rolePeople(db: Db, context: GalleryContext): Promise<{ solo: boolean; people: { id: string; name: string }[] }> {
+  if (context.managed?.client() != null) {
+    const list = await listPeopleCommand(db, { managed: context.managed });
+    if (list.fromServer) return { solo: false, people: list.people.map((person) => ({ id: person.id, name: person.name })) };
+  }
+  const solo = isSoloMode(db);
+  return { solo, people: solo ? [] : listPeople(db).map((person) => ({ id: person.id, name: person.name })) };
 }
 
 /**
@@ -74,7 +103,7 @@ export async function listGalleryCommand(db: Db, context: GalleryContext): Promi
   // `gallery/session.ts`, where the two ways that goes wrong are
   // written down.
   rememberListed(templates);
-  const solo = isSoloMode(db);
+  const { solo, people } = await rolePeople(db, context);
   return {
     templates: templates.map((template) => cardOf(db, template, context, solo)),
     // Bundled entries all carry `bundled: true`, so anything else came
@@ -89,8 +118,8 @@ export async function listGalleryCommand(db: Db, context: GalleryContext): Promi
     // and deliberately: EO-302 settled that solo mode displays no names,
     // the picker is hidden there, and sending the one person's name for
     // a control nobody draws would be EO putting a name on the wire for
-    // nothing.
-    people: solo ? [] : listPeople(db).map((person) => ({ id: person.id, name: person.name })),
+    // nothing. A signed-in desktop offers its organisation's people.
+    people,
   };
 }
 
@@ -144,9 +173,19 @@ export async function useGalleryCommand(db: Db, context: GalleryContext, payload
   if (template === null) return { projectId: null, pipelineId: null, jobId: null, needs: [], problem: missing(payload.slug, payload.token) };
 
   const roleSlots = { ...payload.roleSlots };
-  if (isSoloMode(db)) {
+  const who = await rolePeople(db, context);
+  if (who.solo) {
     const you = localPerson(db).id as Uuid;
     for (const slot of galleryRoleSlots(template.document)) roleSlots[slot.stepId] = you;
+  } else {
+    // A colleague off the organisation's list may be nobody this
+    // database has a row for yet, and a step's owner is a row here. The
+    // row is written under the record's own id, as `knowAssignee` does
+    // for an assignment, so the record and this machine name them alike.
+    for (const personId of Object.values(roleSlots)) {
+      const colleague = who.people.find((person) => person.id === personId);
+      if (colleague !== undefined) ensurePerson(db, colleague.id as Uuid, colleague.name);
+    }
   }
 
   const result = useTemplate(db, {

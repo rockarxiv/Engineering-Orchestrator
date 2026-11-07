@@ -29,6 +29,7 @@ import { activeProjectId } from "../ipc/repositoryCommands.js";
 import { galleryNeedsCommand, listGalleryCommand, previewGalleryCommand, useGalleryCommand } from "../ipc/galleryCommands.js";
 import { parseScheduleAnswer } from "./commands.js";
 import { forgetListed } from "./session.js";
+import type { ServerClient } from "../managed/serverClient.js";
 import { bundledTemplates } from "./templates.js";
 
 /**
@@ -427,6 +428,39 @@ describe("the people a role slot names", () => {
     expect(answer.problem).toBeNull();
     const approve = listStepsForPipeline(handle.db, answer.pipelineId!).find((step) => step.name === "Approve");
     expect(approve?.ownerPersonId).toBeNull();
+  });
+});
+
+/**
+ * After an organisation sign-in in first run (EO-661): the local table
+ * holds only this machine's own person, so without the organisation's
+ * list the picker would be hidden as solo and offer nobody.
+ */
+describe("the people a role slot names, on a desktop signed in to an organisation", () => {
+  const dana = { id: "019a0000-0000-7000-8000-00000000da0a", name: "Dana", email: "dana@acme.com", isAdmin: true, invitedAt: 1, acceptedAt: 2, credentialKind: "password" };
+  const signedIn = () => ({
+    ...context(),
+    managed: {
+      client: () => ({
+        address: "https://eo.acme.com",
+        request: (() => Promise.resolve({ ok: true, data: { people: [dana], groups: [], fromServer: false } })) as ServerClient["request"],
+      }),
+    },
+  });
+
+  it("lists the organisation's people and shows the picker", async () => {
+    const listed = await listGalleryCommand(handle.db, signedIn());
+
+    expect(listed.people).toEqual([{ id: dana.id, name: "Dana" }]);
+    expect(listed.templates.every((template) => !template.solo)).toBe(true);
+  });
+
+  it("puts a colleague off that list on the step they were chosen for", async () => {
+    const answer = await useGalleryCommand(handle.db, signedIn(), { ...monday(), roleSlots: { approve: dana.id } });
+
+    expect(answer.problem).toBeNull();
+    const approve = listStepsForPipeline(handle.db, answer.pipelineId!).find((step) => step.name === "Approve");
+    expect(approve?.ownerPersonId).toBe(dana.id);
   });
 });
 

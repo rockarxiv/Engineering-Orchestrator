@@ -1,10 +1,11 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { PlugZap, Sparkles } from "lucide-react";
+import { INVITATION_LINK_SHAPE_LINE, invitationLinkFrom, serverAddressRefusal } from "@eo/core";
 import { machineAvailable } from "../../ipc/bridge";
 import { ipcQuery } from "../../query/client";
-import { firstRunKey } from "../../query/hooks";
-import { Button, Card, Field, Loading, TextInput, ViewHeader } from "../kit";
+import { firstRunKey, galleryKey, peopleKey, sessionKey } from "../../query/hooks";
+import { Button, Card, ErrorLine, Field, Loading, Notice, TextInput, ViewHeader } from "../kit";
 import { StandaloneScreen } from "../standalone";
 import { ConnectAgentPanel, useCodingAgents } from "../views/agents/ConnectAgent";
 import { Gallery } from "../views/gallery/GalleryView";
@@ -151,27 +152,103 @@ function ConnectStep({ onLookAround }: { onLookAround: () => void }) {
 /**
  * Step 1: "one question before anything else — solo or organisation."
  *
- * Solo goes straight in. Organisation is where a server is, and until
- * EO-323 there was none: EO took the address and said plainly that
- * signing in was not available in this version, because a control that
- * did nothing is what invariant #12 rules out.
+ * Solo goes straight in. Organisation is a real way in (EO-661), by one
+ * of two doors:
  *
- * There is one now, and this step says where it is rather than claiming
- * to be it. Signing in needs an invitation from whoever runs that server
- * — an address alone cannot get anybody in — so a form here would be a
- * password field in front of somebody who does not have a password yet.
- * The address is still kept, and Settings → Organisation is where they
- * go once the link arrives. The same rule, one release on: an absence is
- * never left to be discovered, and neither is a presence.
+ *  - **I have an account** — server address, email, password, signed in
+ *    through `session:signIn`, the same call Settings → Organisation
+ *    makes. There is one sign-in, in the main process; this is a second
+ *    form in front of it, not a second implementation.
+ *  - **I have an invitation link** — the link is opened in the person's
+ *    browser, where `/invite/<code>` sets the password
+ *    (`AcceptInvitation`), and the account form comes back with the
+ *    server's address already in it for when that is done.
+ *
+ * Somebody with neither is told plainly that whoever runs the server
+ * has to invite them, and offered "Continue on my own" — an address
+ * alone gets nobody in, so a form that took one and carried on would be
+ * a door painted on a wall.
+ *
+ * The mode is recorded only once there is an answer: solo when they
+ * carry on alone, organisation once the sign-in succeeded.
  */
+type ModeView = "question" | "organisation" | "account" | "invitation";
+
 function Mode({ onAnswered }: { onAnswered: () => void }) {
-  const [organisation, setOrganisation] = useState(false);
+  const queryClient = useQueryClient();
+  const [view, setView] = useState<ModeView>("question");
   const [address, setAddress] = useState("");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [link, setLink] = useState("");
+  const [linkProblem, setLinkProblem] = useState<string | null>(null);
+  /** The account form was reached by opening an invitation, so it says what to do in the browser first. */
+  const [invited, setInvited] = useState(false);
 
   const answer = useMutation({
-    mutationFn: (mode: "solo" | "organisation") => ipcQuery("firstRun:setMode", { mode, address }),
+    mutationFn: (input: { mode: "solo" | "organisation"; address: string }) => ipcQuery("firstRun:setMode", input),
     onSuccess: onAnswered,
   });
+
+  const signIn = useMutation({
+    mutationFn: (input: { address: string; email: string; password: string }) => ipcQuery("session:signIn", input),
+    onSuccess: (result, input) => {
+      // A failure keeps every field as it was typed, so a mistyped
+      // password is one field to fix rather than three to fill again.
+      if (result.problem !== null) return;
+      setPassword("");
+      // What the signed-in machine can name changes with the sign-in:
+      // the session itself, and the people the gallery's role pickers
+      // offer (`gallery:list` asks the organisation once signed in).
+      for (const queryKey of [sessionKey, peopleKey, galleryKey]) void queryClient.invalidateQueries({ queryKey });
+      answer.mutate({ mode: "organisation", address: input.address });
+    },
+  });
+
+  const typed = address.trim();
+  const addressProblem = typed === "" ? null : serverAddressRefusal(typed);
+  const ready = typed !== "" && email.trim() !== "" && password !== "" && addressProblem === null;
+  const busy = signIn.isPending || answer.isPending;
+  const submit = () => {
+    if (ready && !busy) signIn.mutate({ address: typed, email: email.trim(), password });
+  };
+
+  /**
+   * Opens the invitation, after it has been read.
+   *
+   * Judged first, and refused with a sentence about what a link looks
+   * like before anything is opened: a browser pointed at whatever was
+   * pasted is not a step towards an account. `window.open` reaches the
+   * window-open handler, which hands the address to the real browser.
+   */
+  const openInvitation = () => {
+    const found = invitationLinkFrom(link);
+    const problem = found === null ? INVITATION_LINK_SHAPE_LINE : serverAddressRefusal(found.address);
+    setLinkProblem(problem);
+    if (found === null || problem !== null) return;
+    window.open(link.trim(), "_blank", "noopener,noreferrer");
+    setAddress(found.address);
+    setInvited(true);
+    setView("account");
+  };
+
+  const organisationFooter = (
+    <div className="flex flex-col gap-2 pt-3">
+      <p className="text-[12.5px] leading-relaxed text-ink-muted">
+        Without an account or an invitation, you need to be invited by whoever runs your organisation&apos;s EO server. Until then, EO
+        works on this machine on its own.
+      </p>
+      <div className="flex flex-wrap items-center gap-2">
+        <Button disabled={busy} onClick={() => answer.mutate({ mode: "solo", address: "" })}>
+          Continue on my own
+        </Button>
+        <Button variant="ghost" onClick={() => setView(view === "organisation" ? "question" : "organisation")}>
+          Back
+        </Button>
+      </div>
+      {answer.error ? <ErrorLine>{answer.error.message}</ErrorLine> : null}
+    </div>
+  );
 
   return (
     <StandaloneScreen>
@@ -181,42 +258,124 @@ function Mode({ onAnswered }: { onAnswered: () => void }) {
         meta="EO runs work through a pipeline: agents do the steps that can be done for you, and you decide the ones that are yours. One question before anything else."
       />
 
-      <Card>
-        {organisation ? (
-          <>
-            <Field label="Your organisation's EO address" hint="Something like eo.acme.com.">
-              <TextInput aria-label="Your organisation's EO address" value={address} onChange={(event) => setAddress(event.target.value)} />
-            </Field>
-            {/* Said before anything is typed into it, not after. */}
-            <p className="text-[12.5px] leading-relaxed text-ink-muted">
-              EO keeps the address. Ask whoever runs that server to invite you, then open Settings → Organisation and sign in with the link
-              they send — everything below works on this machine on its own in the meantime.
-            </p>
-            <div className="flex items-center gap-2">
-              <Button variant="primary" disabled={answer.isPending} onClick={() => answer.mutate("organisation")}>
-                Carry on
+      {view === "question" ? (
+        <Card>
+          <p className="text-[13.5px] text-ink">Is this just you, or is it for an organisation?</p>
+          <div className="flex items-center gap-2">
+            <Button variant="primary" disabled={answer.isPending} onClick={() => answer.mutate({ mode: "solo", address: "" })}>
+              Just me
+            </Button>
+            <Button onClick={() => setView("organisation")}>My organisation</Button>
+          </div>
+          <p className="text-[12.5px] leading-relaxed text-ink-subtle">
+            Just me keeps everything on this machine: your projects, your sign-ins, your folders. An organisation shares pipelines and
+            agents through a server.
+          </p>
+        </Card>
+      ) : null}
+
+      {view === "organisation" ? (
+        <>
+          <Card>
+            <p className="text-[13.5px] text-ink">How are you getting in to your organisation?</p>
+            <div className="flex flex-wrap items-center gap-2">
+              <Button
+                variant="primary"
+                onClick={() => {
+                  setInvited(false);
+                  setView("account");
+                }}
+              >
+                I have an account
               </Button>
-              <Button variant="ghost" onClick={() => setOrganisation(false)}>
-                Back
-              </Button>
+              <Button onClick={() => setView("invitation")}>I have an invitation link</Button>
             </div>
-          </>
-        ) : (
-          <>
-            <p className="text-[13.5px] text-ink">Is this just you, or is it for an organisation?</p>
-            <div className="flex items-center gap-2">
-              <Button variant="primary" disabled={answer.isPending} onClick={() => answer.mutate("solo")}>
-                Just me
-              </Button>
-              <Button onClick={() => setOrganisation(true)}>My organisation</Button>
-            </div>
-            <p className="text-[12.5px] leading-relaxed text-ink-subtle">
-              Just me keeps everything on this machine: your projects, your sign-ins, your folders. An organisation shares pipelines and
-              agents through a server.
-            </p>
-          </>
-        )}
-      </Card>
+          </Card>
+          {organisationFooter}
+        </>
+      ) : null}
+
+      {view === "invitation" ? (
+        <>
+          <Card>
+            <form
+              aria-label="Open an invitation"
+              className="flex min-w-0 max-w-[26rem] flex-col gap-3"
+              onSubmit={(event) => {
+                event.preventDefault();
+                openInvitation();
+              }}
+            >
+              <Field
+                label="Invitation link"
+                hint="The link in the invitation you were sent. It opens in your browser, where you choose your password."
+                error={linkProblem}
+              >
+                <TextInput
+                  aria-label="Invitation link"
+                  placeholder="https://eo.example.com/invite/…"
+                  value={link}
+                  onChange={(event) => {
+                    setLink(event.target.value);
+                    setLinkProblem(null);
+                  }}
+                />
+              </Field>
+              <div>
+                <Button type="submit" variant="primary" disabled={link.trim() === ""}>
+                  Open the invitation
+                </Button>
+              </div>
+            </form>
+          </Card>
+          {organisationFooter}
+        </>
+      ) : null}
+
+      {view === "account" ? (
+        <>
+          <Card>
+            {invited ? (
+              <Notice tone="info" role="status">
+                The invitation has opened in your browser. Choose your password there, then come back and sign in with your email and that
+                password.
+              </Notice>
+            ) : null}
+            <form
+              aria-label="Sign in to an organisation"
+              className="flex min-w-0 max-w-[26rem] flex-col gap-3"
+              onSubmit={(event) => {
+                event.preventDefault();
+                submit();
+              }}
+            >
+              <Field label="Server address" error={addressProblem}>
+                <TextInput value={address} aria-label="Server address" placeholder="https://eo.example.com" onChange={(event) => setAddress(event.target.value)} />
+              </Field>
+              <Field label="Email">
+                <TextInput value={email} type="email" autoComplete="username" aria-label="Email" onChange={(event) => setEmail(event.target.value)} />
+              </Field>
+              <Field label="Password">
+                <TextInput
+                  type="password"
+                  autoComplete="current-password"
+                  value={password}
+                  aria-label="Password"
+                  onChange={(event) => setPassword(event.target.value)}
+                />
+              </Field>
+              <div>
+                <Button type="submit" variant="primary" disabled={!ready || busy}>
+                  {busy ? "Signing in…" : "Sign in"}
+                </Button>
+              </div>
+            </form>
+            {signIn.data?.problem ? <ErrorLine>{signIn.data.problem}</ErrorLine> : null}
+            {signIn.error ? <ErrorLine>{signIn.error.message}</ErrorLine> : null}
+          </Card>
+          {organisationFooter}
+        </>
+      ) : null}
     </StandaloneScreen>
   );
 }

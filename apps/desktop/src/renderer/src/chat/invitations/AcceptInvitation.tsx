@@ -80,8 +80,9 @@ export function AcceptInvitation({ code }: { code: string }) {
       <Shell title={`Welcome, ${accepted.name}.`}>
         <Card>
           <p className="text-[13px] leading-relaxed text-ink-muted">
-            You are on this organisation&apos;s list as <span className="text-ink">{accepted.email}</span>. Open EO on your own machine, go to
-            Settings → Organisation, and sign in with this server&apos;s address and the password you just set.
+            You are on this organisation&apos;s list as <span className="text-ink">{accepted.email}</span>. Back in EO on your own machine, sign in
+            with this server&apos;s address and the password you just set — on the welcome screen if EO is still showing it, otherwise in
+            Settings → Organisation.
           </p>
         </Card>
       </Shell>
