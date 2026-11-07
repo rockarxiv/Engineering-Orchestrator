@@ -1362,6 +1362,11 @@ export function registerAllHandlers(db: Db, engine: EngineHandle | undefined, re
   registerHandler("debug:window", () => openDebugWindow(db, platform), opts);
   registerHandler("debug:runs", () => listDebugAgents(db), opts);
 
+  // The main window's own title bar (EO-668): the platform's, because
+  // the window is, and nothing to it but the window.
+  registerHandler("window:state", () => ({ fullScreen: platform.isFullScreen() }), opts);
+  registerHandler("window:titleBar", (payload) => ({ applied: platform.setTitleBarColours(payload) }), opts);
+
   // A module's scenario chat (EO-356): "+ Add scenario" on its page. One
   // thread per module. Apply is the one button here that writes anything
   // outside the thread — a module save, with the module's tests re-run

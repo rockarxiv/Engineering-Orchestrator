@@ -55,6 +55,8 @@ export function fakePlatform(overrides: Partial<Platform> = {}): Platform {
     openCanvas: () => false,
     // Nor a debug window (EO-392).
     openDebug: () => false,
+    isFullScreen: () => false,
+    setTitleBarColours: () => false,
     hasCanvas: () => false,
     closeCanvas: () => {},
     // A test's platform stands in for a desktop unless it says

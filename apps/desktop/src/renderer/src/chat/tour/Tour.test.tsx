@@ -265,6 +265,20 @@ describe("where the callout goes", () => {
   it("beside the element where there is room", () => {
     expect(placeCallout({ top: 100, left: 0, width: 250, height: 700 }, viewport, 180)).toEqual({ top: 100, left: 262 });
   });
+  it("never under the window controls: below them, or left of them where the window is too short", () => {
+    // A control at the right of a 1100px window's top row, as the tour found one: the callout goes left
+    // of it at the top — 742 to 1062, under controls drawn from 1004 down to 51.
+    const control = { top: 11, left: 1074, width: 30, height: 30 };
+    const window1100 = { width: 1100, height: 720 };
+    const controls = { left: 1004, bottom: 51 };
+    expect(placeCallout(control, window1100, 160)).toEqual({ top: 12, left: 742 });
+    expect(placeCallout(control, window1100, 160, controls)).toEqual({ top: 63, left: 742 });
+    // Too short to go below them: left of them instead.
+    const short = placeCallout(control, { width: 1100, height: 200 }, 160, controls);
+    expect(short.left + 320).toBeLessThanOrEqual(1004);
+    // Clear of them already: left alone.
+    expect(placeCallout({ top: 100, left: 0, width: 250, height: 700 }, viewport, 180, controls)).toEqual({ top: 100, left: 262 });
+  });
   it("over the element's corner when it fills the window", () => {
     const place = placeCallout({ top: 0, left: 0, width: 1200, height: 800 }, viewport, 180);
     expect(place.left).toBeLessThanOrEqual(1200 - 320 - 12);

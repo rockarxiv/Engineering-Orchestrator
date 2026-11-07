@@ -28,6 +28,7 @@ import { itemsKey, modulesKey, pipelineStepsKey, useChromeVocabulary, useModules
 import { useProjects } from "../query/useRepositories";
 import { PipelineDrawing } from "./graph/PipelineDrawing";
 import { Button, IconButton } from "./kit";
+import { CONTROLS_END } from "./windowChrome";
 import { withArticle } from "./parts";
 
 /**
@@ -61,6 +62,7 @@ export function ChatConversation({
   hidden = false,
   onFold,
   focusRequest = 0,
+  atWindowEnd = false,
 }: {
   /** Beside the canvas, where the column is a fixed width rather than the window's middle. */
   narrow: boolean;
@@ -75,6 +77,8 @@ export function ChatConversation({
   onFold?: () => void;
   /** Bumped by a view's hand-off (`askAssistant.tsx`) to put the cursor in the box. */
   focusRequest?: number;
+  /** Nothing is beside the column, so its header's end is under the window controls (EO-668). */
+  atWindowEnd?: boolean;
 }) {
   const room = useAssistRoom(true);
   const view = room.conversation;
@@ -202,7 +206,12 @@ export function ChatConversation({
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <header className="flex h-[52px] shrink-0 items-center gap-2.5 border-b border-line px-5">
+      {/* Part of the window's title bar (EO-668): it drags the window, and
+          at the window's right edge it ends short of the controls. */}
+      <header
+        className="app-drag flex h-[52px] shrink-0 items-center gap-2.5 border-b border-line px-5"
+        style={atWindowEnd ? { paddingRight: `calc(1.25rem + ${CONTROLS_END})` } : undefined}
+      >
         <span className="text-[14px] font-semibold text-ink">Assistant</span>
         {context}
         <span className="flex-1" />

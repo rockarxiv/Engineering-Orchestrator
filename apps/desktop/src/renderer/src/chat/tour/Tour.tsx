@@ -9,6 +9,7 @@ import { pipelinesKey, projectsKey, tourKey, useChromeVocabulary } from "../../q
 import { useInvalidateOnPush } from "../../query/useInvalidateOnPush";
 import { Button } from "../kit";
 import type { ChatView } from "../views/registry";
+import { windowControlsBox, type WindowControlsBox } from "../windowChrome";
 import { TOUR_START, TOUR_STOPS, countOf, isLast, next, screensOf, shownStops, skipMissing, stopsFor, type TourPosition, type TourStop } from "./stops";
 
 /**
@@ -279,8 +280,26 @@ const CALLOUT_WIDTH = 320;
 const GAP = 12;
 const MARGIN = 12;
 
-/** Beside the element where there is room — right, left, below, above — and over its corner where there is none. */
-export function placeCallout(anchor: Box, viewport: { width: number; height: number }, height: number): { top: number; left: number } {
+/**
+ * Beside the element where there is room — right, left, below, above — and
+ * over its corner where there is none. Never under the window controls
+ * drawn over the main window's top row (EO-668): a callout that would be
+ * goes below them, or, where the window is too short for that, left of them.
+ */
+export function placeCallout(
+  anchor: Box,
+  viewport: { width: number; height: number },
+  height: number,
+  controls: WindowControlsBox | null = null,
+): { top: number; left: number } {
+  const place = besideAnchor(anchor, viewport, height);
+  if (controls === null || place.left + CALLOUT_WIDTH <= controls.left || place.top >= controls.bottom) return place;
+  const below = controls.bottom + MARGIN;
+  if (below + height + MARGIN <= viewport.height) return { ...place, top: below };
+  return { ...place, left: Math.max(MARGIN, controls.left - CALLOUT_WIDTH - MARGIN) };
+}
+
+function besideAnchor(anchor: Box, viewport: { width: number; height: number }, height: number): { top: number; left: number } {
   const width = CALLOUT_WIDTH;
   const clampTop = (top: number) => Math.max(MARGIN, Math.min(top, viewport.height - height - MARGIN));
   const clampLeft = (left: number) => Math.max(MARGIN, Math.min(left, viewport.width - width - MARGIN));
@@ -349,7 +368,7 @@ function TourOverlay({
   }, []);
 
   const viewport = { width: window.innerWidth, height: window.innerHeight };
-  const place = rect === null ? null : placeCallout(rect, viewport, height);
+  const place = rect === null ? null : placeCallout(rect, viewport, height, windowControlsBox());
   const PAD = 4;
 
   return createPortal(

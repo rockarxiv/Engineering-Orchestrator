@@ -655,6 +655,11 @@ const NOT_CATALOGUED_MACHINE: Partial<Record<MachineChannel, string>> = {
   "canvas:ask": "moves the person's own cursor to the conversation, from a window they are sitting at",
   "canvas:state": "describes this desktop's windows, which `view_current` already answers for what matters",
 
+  // The main window's own title bar (EO-668): the renderer and the window
+  // it is drawn in, talking about that window's chrome.
+  "window:state": "describes whether the window on this desktop is full screen, which is about drawing its top row and nothing an agent acts on",
+  "window:titleBar": "colours the window controls on this desktop to match the person's theme, which is theirs to choose",
+
   // Debug mode (EO-392). The switch decides whether every agent's
   // prompts and instructions are written down, which is a person's to
   // decide: an agent that could flip it would be choosing what is

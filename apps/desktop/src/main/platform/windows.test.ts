@@ -36,6 +36,9 @@ interface FakeWindowOptions {
   minWidth?: number;
   minHeight?: number;
   alwaysOnTop?: boolean;
+  titleBarStyle?: string;
+  titleBarOverlay?: unknown;
+  trafficLightPosition?: unknown;
 }
 
 /** What `loadFile`/`loadURL` were asked for, so a hash can be asserted. */
@@ -64,6 +67,8 @@ class FakeBrowserWindow {
   shown = false;
   focused = false;
   minimized = false;
+  fullScreen = false;
+  overlays: unknown[] = [];
   bounds = { x: 0, y: 0, width: 0, height: 0 };
 
   constructor(options: FakeWindowOptions = {}) {
@@ -111,6 +116,17 @@ class FakeBrowserWindow {
   }
   isMinimized(): boolean {
     return this.minimized;
+  }
+  isFullScreen(): boolean {
+    return this.fullScreen;
+  }
+  /** What the OS does on the green button or F11: the state, then the event. */
+  setFullScreen(fullScreen: boolean): void {
+    this.fullScreen = fullScreen;
+    this.emit(fullScreen ? "enter-full-screen" : "leave-full-screen");
+  }
+  setTitleBarOverlay(options: unknown): void {
+    this.overlays.push(options);
   }
   restore(): void {
     this.minimized = false;
@@ -179,7 +195,9 @@ vi.mock("electron", () => ({
   safeStorage: { isEncryptionAvailable: () => false },
 }));
 
-const { canvasBoundsPath, createElectronPlatform, debugBoundsPath, fitOntoAvailableDisplay, readSavedBounds } = await import("./electron.js");
+const { canvasBoundsPath, createElectronPlatform, debugBoundsPath, fitOntoAvailableDisplay, MAIN_MIN_WIDTH, mainWindowChrome, readSavedBounds, TITLE_BAR_HEIGHT } = await import(
+  "./electron.js"
+);
 const { askFromCanvas, canvasState, closeCanvas, openInCanvas, popOutCanvas, resetCanvasWindow } = await import("../ipc/canvasWindow.js");
 const { readCurrentView } = await import("../ipc/currentView.js");
 const { clearPublishedView, publishedPage, publishView } = await import("../ipc/currentView.js");
@@ -285,6 +303,87 @@ describe("the main window", () => {
 
     expect(FakeBrowserWindow.getAllWindows()).toHaveLength(1);
     expect(platform.hasWindow()).toBe(false);
+  });
+});
+
+/**
+ * The main window's own title bar (EO-668): no native one, the system's
+ * controls over EO's top row, and only on the main window.
+ */
+describe("the main window's title bar", () => {
+  const pushed = (window: FakeBrowserWindow, channel: string) => window.sent.filter((push) => push.channel === `push:${channel}`).map((push) => push.payload);
+
+  it("hides the native title bar on every platform and keeps the system's controls", () => {
+    // Windows and Linux: Electron's overlay, as tall as the top row above its rule.
+    for (const platform of ["linux", "win32"] as const) {
+      expect(mainWindowChrome(platform)).toEqual({
+        minWidth: MAIN_MIN_WIDTH,
+        titleBarStyle: "hidden",
+        titleBarOverlay: { color: expect.stringMatching(/^#[0-9a-f]{6}$/), symbolColor: expect.stringMatching(/^#[0-9a-f]{6}$/), height: 51 },
+      });
+    }
+    // macOS: the inset traffic lights, moved into the rail's top inset —
+    // and no overlay, which has nothing to draw there.
+    expect(mainWindowChrome("darwin")).toEqual({ titleBarStyle: "hiddenInset", trafficLightPosition: { x: 18, y: 10 } });
+    expect(TITLE_BAR_HEIGHT).toBe(51);
+    // The rail, the conversation at 16rem and the canvas at 6rem, beside Windows' 138px of controls.
+    expect(MAIN_MIN_WIDTH).toBeGreaterThanOrEqual(250 + 256 + 96 + 138);
+  });
+
+  it("is what the main window is made with, and not the windows beside it", () => {
+    const { db, close } = openMigratedTestDb();
+    try {
+      setDebugMode(db, true);
+      const platform = platformOnTemporaryMachine();
+      platform.openUserInterface();
+      platform.openCanvas("/inbox");
+      openDebugWindow(db, platform);
+      const [main, canvas, debug] = windows();
+
+      expect(main!.options).toMatchObject(mainWindowChrome(process.platform));
+      // The canvas and the debug window keep their native frames.
+      for (const other of [canvas!, debug!]) {
+        expect(other.options.titleBarStyle).toBeUndefined();
+        expect(other.options.titleBarOverlay).toBeUndefined();
+      }
+    } finally {
+      close();
+    }
+  });
+
+  it("colours the overlay on the main window, where there is one to colour", () => {
+    const platform = platformOnTemporaryMachine();
+    expect(platform.setTitleBarColours({ color: "#262624", symbolColor: "#c3c1b8" })).toBe(false);
+
+    platform.openUserInterface();
+    platform.openCanvas("/inbox");
+    const [main, canvas] = windows();
+    const applied = platform.setTitleBarColours({ color: "#262624", symbolColor: "#c3c1b8" });
+
+    if (process.platform === "darwin") {
+      // The traffic lights are the system's, and take no colours.
+      expect(applied).toBe(false);
+      expect(main!.overlays).toEqual([]);
+    } else {
+      expect(applied).toBe(true);
+      expect(main!.overlays).toEqual([{ color: "#262624", symbolColor: "#c3c1b8" }]);
+    }
+    expect(canvas!.overlays).toEqual([]);
+  });
+
+  it("says when the main window goes into full screen and comes out", () => {
+    const platform = platformOnTemporaryMachine();
+    expect(platform.isFullScreen()).toBe(false);
+    platform.openUserInterface();
+    const [main] = windows();
+
+    main!.setFullScreen(true);
+    expect(platform.isFullScreen()).toBe(true);
+    expect(pushed(main!, "window:changed")).toEqual([{}]);
+
+    main!.setFullScreen(false);
+    expect(platform.isFullScreen()).toBe(false);
+    expect(pushed(main!, "window:changed")).toEqual([{}, {}]);
   });
 });
 

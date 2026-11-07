@@ -6590,6 +6590,36 @@ export const machineContract = {
    */
   "debug:runs": channel(z.void(), z.object({ agents: z.array(DebugAgentSchema) })),
 
+  // ── The main window's own title bar (EO-668) ───────────────────
+  //
+  // The machine half, both. The main window draws no native title bar:
+  // its own top row is the title bar, with the system's window controls
+  // drawn over it — the window's business on this desktop, and a browser
+  // tab served the same renderer has no title bar to hide.
+  /**
+   * The main window as its top row needs to know it: whether it is full
+   * screen, where there are no window controls to leave room for and no
+   * window to drag.
+   *
+   * Asked when the renderer loads, and again on `window:changed`.
+   */
+  "window:state": channel(z.void(), z.object({ fullScreen: z.boolean() })),
+  /**
+   * The colours of the window controls Electron draws over the main
+   * window's top row on Windows and Linux (`setTitleBarOverlay`): the
+   * background they are drawn on and their symbols, as `#rrggbb` because
+   * that is what Electron reads.
+   *
+   * Sent whenever the chat theme or what is under the controls changes.
+   * `applied` is false where there is no overlay to colour — macOS,
+   * whose traffic lights are the system's own; no main window; a host
+   * with no screen.
+   */
+  "window:titleBar": channel(
+    z.object({ color: z.string().regex(/^#[0-9a-f]{6}$/i), symbolColor: z.string().regex(/^#[0-9a-f]{6}$/i) }),
+    z.object({ applied: z.boolean() }),
+  ),
+
   // ── The current view (EO-192) ───────────────────────────────────
   /**
    * The renderer saying what is on screen.
@@ -7669,6 +7699,11 @@ export const ipcPushContract = {
    * later must not take the cursor a second time.
    */
   "canvas:asked": z.object({}),
+  /**
+   * The main window went into full screen or came out of it (EO-668).
+   * Ask `window:state` again.
+   */
+  "window:changed": z.object({}),
 } as const;
 
 export type IpcPushContract = typeof ipcPushContract;

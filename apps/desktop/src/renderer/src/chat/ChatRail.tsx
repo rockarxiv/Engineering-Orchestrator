@@ -18,6 +18,7 @@ import { useInvalidateOnPush } from "../query/useInvalidateOnPush";
 import { useProjects } from "../query/useRepositories";
 import { ConfirmDialog, ContextMenu, contextMenuAt, isContextMenuKey, StatusDot, type ContextMenuAt } from "./kit";
 import { DEEP, GroupLabel, WaitingCount, useWaitingOnYou, withArticle } from "./parts";
+import { useTitleBar } from "./windowChrome";
 
 /** One row of the rail: a glyph, a name, and whatever trails it. */
 const ROW = "flex h-[30px] items-center gap-[9px] overflow-hidden whitespace-nowrap rounded-[10px] px-2.5 text-[13px]";
@@ -96,13 +97,18 @@ export function ChatRail({ onNewPipeline }: { onNewPipeline: () => void }) {
 
   const [switching, setSwitching] = useState(false);
   const [searching, setSearching] = useState(false);
+  const titleBar = useTitleBar();
 
   return (
     <nav aria-label="Main" data-tour="rail" className={cn("relative flex w-[250px] shrink-0 flex-col gap-px overflow-y-auto border-r border-line px-2.5 pb-3.5 pt-1", DEEP)}>
-      {/* Space for the traffic lights, which the frameless window draws over. */}
-      <div className="h-6 shrink-0" />
+      {/* The top of the rail is the title bar's left end (EO-668): on macOS
+          the traffic lights sit in this inset (`mainWindowChrome` puts
+          them there), and everywhere it is a handle that moves the
+          window. Not drawn where there is no title bar — full screen, or
+          a browser tab. */}
+      {titleBar ? <div className="app-drag h-6 shrink-0" /> : null}
 
-      <div className="relative px-2 pb-3 pt-0.5">
+      <div className="app-drag relative px-2 pb-3 pt-0.5">
         <button
           type="button"
           aria-label="Switch project"

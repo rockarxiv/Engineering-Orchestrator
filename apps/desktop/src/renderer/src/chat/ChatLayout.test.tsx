@@ -3225,6 +3225,169 @@ describe("the chat layout's colours", () => {
 });
 
 /**
+ * The main window's own title bar (EO-668). The native one is hidden, so
+ * the top row is what drags the window, leaves room for the controls the
+ * system draws over it, and tells the main process what colour to draw
+ * them in. What CSS does with `app-drag` and `env(titlebar-area-*)` is
+ * Chromium's, and not something jsdom can show; what is held here is that
+ * the row asks for it, where, and when.
+ */
+describe("the main window's title bar", () => {
+  type Listener = (payload: unknown) => void;
+
+  function pushes() {
+    const listeners = new Map<string, Listener[]>();
+    window.eo.ipc.subscribe = vi.fn((channel: string, callback: Listener) => {
+      listeners.set(channel, [...(listeners.get(channel) ?? []), callback]);
+      return () => listeners.set(channel, (listeners.get(channel) ?? []).filter((listener) => listener !== callback));
+    }) as never;
+    return (channel: string, payload: unknown) => act(() => (listeners.get(channel) ?? []).forEach((listener) => listener(payload)));
+  }
+
+  const coloured = (invoke: ReturnType<typeof bridge>) => invoke.mock.calls.filter(([name]) => name === "window:titleBar").map(([, payload]) => payload);
+  const dragging = (element: Element | null) => element?.classList.contains("app-drag") ?? false;
+  /** The rail's top inset — where macOS's traffic lights sit — or null where none is drawn. */
+  const railInset = () => {
+    const first = rail().firstElementChild;
+    return first !== null && dragging(first) && first.childElementCount === 0 ? first : null;
+  };
+  const overviewStrip = () => screen.queryByRole("region", { name: "Overview" })?.previousElementSibling ?? null;
+
+  afterEach(() => {
+    cleanup();
+    setBridge(undefined);
+    window.localStorage.removeItem(THEME_STORAGE_KEY);
+    window.sessionStorage.removeItem("eo.serverToken");
+    window.history.replaceState(null, "", "/");
+  });
+
+  it("drags the window by the top row, and leaves what is in it pressable", async () => {
+    open("/pipelines/p-report");
+    const conversation = await screen.findByRole("region", { name: "Conversation" });
+    const tabs = (await screen.findByRole("tablist", { name: "Open views" })).parentElement;
+
+    expect(railInset()).not.toBeNull();
+    expect(dragging(screen.getByRole("button", { name: "Switch project" }).parentElement)).toBe(true);
+    expect(dragging(conversation.querySelector("header"))).toBe(true);
+    expect(dragging(tabs)).toBe(true);
+    // Every control in those rows is a button or a tab, which the stylesheet takes out of the drag.
+    for (const row of [conversation.querySelector("header")!, tabs!]) {
+      for (const control of row.querySelectorAll("button")) expect(control.closest(".app-drag")).toBe(row);
+    }
+  });
+
+  it("puts a strip of title bar over the overview, which has no header", async () => {
+    open("/chat");
+    await screen.findByRole("region", { name: "Overview" });
+
+    expect(dragging(overviewStrip())).toBe(true);
+    expect(overviewStrip()).toHaveAttribute("aria-hidden", "true");
+  });
+
+  it("colours the window controls with the theme, and again the moment it changes", async () => {
+    const invoke = open("/settings?section=layout");
+    const themes = await screen.findByRole("group", { name: "Colour themes" });
+    // Claude's deep, which a view beside the conversation is drawn on, and its muted ink.
+    await waitFor(() => expect(coloured(invoke).at(-1)).toEqual({ color: "#1f1e1d", symbolColor: "#c3c1b8" }));
+
+    fireEvent.click(within(themes).getByRole("button", { name: /Nord/ }));
+
+    await waitFor(() => expect(coloured(invoke).at(-1)).toEqual({ color: "#272c36", symbolColor: "#d8dee9" }));
+  });
+
+  it("colours them for what is under them: the overview, or the conversation once it is hidden", async () => {
+    const invoke = open("/chat");
+    await screen.findByRole("region", { name: "Overview" });
+    await waitFor(() => expect(coloured(invoke).at(-1)).toEqual({ color: "#1f1e1d", symbolColor: "#c3c1b8" }));
+
+    fireEvent.click(screen.getByRole("button", { name: "Hide the side panel" }));
+
+    // The conversation's header is at the window's edge now, on the canvas colour.
+    await waitFor(() => expect(coloured(invoke).at(-1)).toEqual({ color: "#262624", symbolColor: "#c3c1b8" }));
+  });
+
+  it("colours them for a banner while one is up, through a theme change, and for what is under it when it goes", async () => {
+    const push = pushes();
+    let state = "offline";
+    const invoke = bridge();
+    invoke.mockImplementation(async (channel: string) => {
+      if (channel === "sync:status") return { ok: true, data: { state, offlineSince: 1, queued: 0, queuedItemIds: [], problem: null } };
+      return bridge()(channel);
+    });
+    open("/chat", invoke);
+    await screen.findByRole("region", { name: "Overview" });
+    await screen.findByRole("status", { name: "Offline" });
+
+    // The banner is the top of the window's right edge, on the canvas colour, over the overview.
+    await waitFor(() => expect(coloured(invoke).at(-1)).toEqual({ color: "#262624", symbolColor: "#c3c1b8" }));
+
+    act(() => setThemeChoice({ kind: "preset", id: "nord" }));
+    await waitFor(() => expect(coloured(invoke).at(-1)).toEqual({ color: "#2e3440", symbolColor: "#d8dee9" }));
+
+    state = "online";
+    push("items:changed", {});
+    await waitFor(() => expect(screen.queryByRole("status", { name: "Offline" })).not.toBeInTheDocument());
+    // Gone, the overview's deep is at the edge again.
+    await waitFor(() => expect(coloured(invoke).at(-1)).toEqual({ color: "#272c36", symbolColor: "#d8dee9" }));
+  });
+
+  it("lets the conversation beside a canvas give way before the canvas would go under the controls", async () => {
+    open("/pipelines/p-report");
+    const conversation = await screen.findByRole("region", { name: "Conversation" });
+
+    // Not shrink-0 any more: the canvas holds its minimum, and the conversation narrows to 16rem.
+    expect(conversation).toHaveClass("w-[30rem]", "min-w-[16rem]", "shrink");
+    expect(conversation).not.toHaveClass("shrink-0");
+  });
+
+  it("reserves nothing in full screen, and the room comes back when it leaves", async () => {
+    const push = pushes();
+    let fullScreen = true;
+    const invoke = bridge();
+    invoke.mockImplementation(async (channel: string) => {
+      if (channel === "window:state") return { ok: true, data: { fullScreen } };
+      return bridge()(channel);
+    });
+    open("/chat", invoke);
+    await screen.findByRole("region", { name: "Overview" });
+    await waitFor(() => expect(railInset()).toBeNull());
+    expect(dragging(overviewStrip())).toBe(false);
+
+    fullScreen = false;
+    push("window:changed", {});
+
+    await waitFor(() => expect(railInset()).not.toBeNull());
+    expect(dragging(overviewStrip())).toBe(true);
+  });
+
+  it("is not drawn in a browser tab, which has no title bar to stand in for", async () => {
+    window.sessionStorage.setItem("eo.serverToken", "token-for-the-test");
+    setBridge({
+      machineAvailable: false,
+      invoke: (channel, payload) => window.eo.ipc.invoke(channel, payload),
+      subscribe: (channel, callback) => window.eo.ipc.subscribe(channel, callback),
+      subscribeRefetch: () => () => {},
+    });
+    const invoke = open("/chat");
+    await screen.findByRole("region", { name: "Overview" });
+
+    expect(railInset()).toBeNull();
+    expect(dragging(overviewStrip())).toBe(false);
+    expect(coloured(invoke)).toEqual([]);
+    expect(invoke.mock.calls.some(([name]) => name === "window:state")).toBe(false);
+  });
+
+  it("is not the canvas's own window's, which keeps its native frame", async () => {
+    window.history.replaceState(null, "", "/?window=canvas");
+    const invoke = open("/pipelines/p-report", bridge({ "canvas:state": { poppedOut: true, tabs: ["/pipelines/p-report"], active: "/pipelines/p-report" } }));
+    const tabs = (await screen.findByRole("tablist", { name: "Open views" })).parentElement;
+
+    expect(dragging(tabs)).toBe(false);
+    expect(coloured(invoke)).toEqual([]);
+  });
+});
+
+/**
  * The canvas in a window of its own (EO-383).
  *
  * Two renderers share nothing but the main process, so each half is a
