@@ -91,6 +91,8 @@ export const galleryKey = ["gallery"] as const;
 export const galleryNeedsKey = (projectId: string, slug: string) => [...galleryKey, "needs", projectId, slug] as const;
 /** Whether first run is behind this installation, and which mode it answered (EO-317). */
 export const firstRunKey = ["firstRun"] as const;
+/** Whether the first-board tour is still to be shown on its own (EO-667). */
+export const tourKey = ["tour"] as const;
 
 export const workspacesKey = ["workspaces"] as const;
 export const projectsKey = ["projects"] as const;

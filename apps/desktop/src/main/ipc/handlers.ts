@@ -67,7 +67,7 @@ import {
   type GalleryContext,
 } from "./galleryCommands.js";
 import { loadTemplateHistory, type TemplateHistory } from "../gallery/history.js";
-import { finishFirstRunCommand, firstRunStateCommand, setFirstRunModeCommand } from "../firstRun/firstRun.js";
+import { finishFirstRunCommand, firstRunStateCommand, markTourSeenCommand, setFirstRunModeCommand, tourStateCommand } from "../firstRun/firstRun.js";
 import {
   acceptInvitationCommand,
   deleteGroupCommand,
@@ -1066,6 +1066,11 @@ export function registerAllHandlers(db: Db, engine: EngineHandle | undefined, re
   // that outlive a window. Everything else in the order is a screen.
   registerHandler("firstRun:state", () => firstRunStateCommand(db), opts);
   registerHandler("firstRun:setMode", (payload) => setFirstRunModeCommand(db, payload), opts);
+  // The first-board tour (EO-667): whether it is still to be shown, and
+  // that it has been. Held here rather than in the window's storage, so
+  // a relaunch, a second window and a served tab all agree.
+  registerHandler("firstRun:tourState", () => tourStateCommand(db), opts);
+  registerHandler("firstRun:tourSeen", () => markTourSeenCommand(db), opts);
   registerHandler(
     "firstRun:finish",
     () => {

@@ -5,7 +5,8 @@ import { settingsKey } from "../../../../query/hooks";
 import { useViewParameters } from "../../../../shared/view/ViewPublisher";
 import { unsavedEditsBetween } from "../../../../shared/settings/primitives";
 import { withArticle } from "../../../parts";
-import { CardSection, ErrorLine, Facts, Field, Loading, TextInput } from "../../../kit";
+import { Button, CardSection, ErrorLine, Facts, Field, Loading, TextInput } from "../../../kit";
+import { useShowTour } from "../../../tour/Tour";
 import { Note } from "../core/fields";
 import { useItemWords } from "../core/words";
 
@@ -32,7 +33,21 @@ export function GeneralSection() {
           counts when a restored module is checked for an earlier approval.
         </VersionsToKeepField>
       </CardSection>
+      <TourCard />
     </>
+  );
+}
+
+/** Replays the first-board tour (EO-667) from its first stop, on the board. Absent where no tour is drawn — the canvas's own window. */
+function TourCard() {
+  const showTour = useShowTour();
+  if (showTour === null) return null;
+  return (
+    <CardSection
+      title="Tour"
+      description="A short walk through where things are: the board, the assistant, the rail, Agents, Agent tools and Settings."
+      actions={<Button onClick={showTour}>Show the tour</Button>}
+    />
   );
 }
 

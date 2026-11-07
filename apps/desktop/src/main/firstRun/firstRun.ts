@@ -42,6 +42,8 @@ const DONE_KEY = "firstRun.doneAt";
  * later is nobody's first run.
  */
 const INSTALLED_KEY = "firstRun.projectId";
+/** When the first-board tour was finished or skipped (EO-667). */
+const TOUR_SEEN_KEY = "firstRun.tourSeenAt";
 
 /**
  * Is first run behind this installation?
@@ -125,4 +127,25 @@ export function setFirstRunModeCommand(db: Db, payload: IpcPayload<"firstRun:set
 export function finishFirstRunCommand(db: Db): IpcResponse<"firstRun:finish"> {
   if (getSetting<number | null>(db, DONE_KEY, null) === null) setSetting(db, DONE_KEY, Date.now());
   return { done: true };
+}
+
+/**
+ * Whether the first-board tour is still to be shown on its own (EO-667).
+ *
+ * Due once somebody has left first run by one of its exits — every exit
+ * writes `DONE_KEY` — and until they finish or skip the tour. Read off
+ * the exit rather than off `firstRunDone`, which is also true for an
+ * installation that predates first run: somebody with work on their
+ * board was never a newcomer, and is not shown a tour of it unasked.
+ */
+export function tourStateCommand(db: Db): IpcResponse<"firstRun:tourState"> {
+  const left = getSetting<number | null>(db, DONE_KEY, null) !== null;
+  const seen = getSetting<number | null>(db, TOUR_SEEN_KEY, null) !== null;
+  return { due: left && !seen };
+}
+
+/** The tour was finished or skipped. Written once, like `DONE_KEY`: a replay from Settings is not a first sight. */
+export function markTourSeenCommand(db: Db): IpcResponse<"firstRun:tourSeen"> {
+  if (getSetting<number | null>(db, TOUR_SEEN_KEY, null) === null) setSetting(db, TOUR_SEEN_KEY, Date.now());
+  return { due: false };
 }
