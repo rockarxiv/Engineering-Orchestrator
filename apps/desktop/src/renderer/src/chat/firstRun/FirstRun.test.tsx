@@ -66,6 +66,12 @@ function mockIpc(
           ok: true,
           data: { ok: true, sessionId: "session-1", url: "https://auth.example.com/", verificationCode: null, needsCode: true, opened: true, transcript: "", problem: null },
         };
+      case "runtime:setEnabled": {
+        const { provider, enabled } = payload as { provider: string; enabled: boolean };
+        const index = runtimes.findIndex((runtime) => runtime.id === provider);
+        runtimes[index] = { ...runtimes[index]!, enabled, state: enabled ? "ready" : "disabled" };
+        return { ok: true, data: { ok: true, runtime: runtimes[index], problem: null } };
+      }
       case "runtime:submitSignInCode": {
         const index = runtimes.findIndex((runtime) => runtime.id === "claude");
         runtimes[index] = signedIn("claude", "Claude Code");
@@ -262,6 +268,42 @@ describe("connecting a coding agent", () => {
     expect(await screen.findByRole("heading", { name: "Connect a coding agent" })).toBeInTheDocument();
     expect(screen.getByText(/happens on the machine that runs the agent/)).toBeInTheDocument();
     expect(screen.getAllByRole("button").map((button) => button.textContent)).toEqual(["Look around first"]);
+  });
+
+  /** Nothing here can establish a sign-in, so the gallery behind it stays Preview-only. */
+  it("keeps the gallery to Preview on a served tab", async () => {
+    mockIpc({ done: false, mode: "solo" }, { templates: [TEMPLATE] });
+    setBridge({
+      invoke: ((channel: string, payload: unknown) => window.eo.ipc.invoke(channel as never, payload as never)) as never,
+      machineAvailable: false,
+      subscribe: () => () => {},
+      subscribeRefetch: () => () => {},
+    });
+    renderFirstRun(<FirstRun onLeft={() => {}} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Look around first" }));
+    const card = await screen.findByRole("region", { name: "Weekly report" });
+    expect(within(card).getByRole("button", { name: "Use this" })).toBeDisabled();
+    expect(within(card).getByRole("button", { name: "Preview" })).toBeEnabled();
+    expect(within(card).getByRole("button", { name: "Connect a coding agent" })).toBeInTheDocument();
+  });
+
+  /**
+   * A managed copy somebody turned off, and nobody is signed in to: turned
+   * back on here, with the Runtimes card's own call, and then signed in.
+   */
+  it("turns a turned-off runtime back on, and then offers its sign-in", async () => {
+    const invoke = mockIpc(
+      { done: false, mode: "solo" },
+      { runtimes: [absent("codex", "Codex"), { ...signedOut("claude", "Claude Code"), state: "disabled", enabled: false }] },
+    );
+    renderFirstRun(<FirstRun onLeft={() => {}} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Turn on Claude Code" }));
+    await waitFor(() =>
+      expect(invoke.mock.calls.find((call: unknown[]) => call[0] === "runtime:setEnabled")?.[1]).toEqual({ provider: "claude", enabled: true }),
+    );
+    expect(await screen.findByRole("button", { name: "Sign in to Claude Code" })).toBeInTheDocument();
   });
 });
 

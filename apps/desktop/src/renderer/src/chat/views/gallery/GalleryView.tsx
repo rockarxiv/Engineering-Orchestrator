@@ -194,7 +194,7 @@ function TemplateCard({
       <div className="mt-auto flex flex-col gap-2 pt-1">
         {onConnect ? (
           <div className="flex flex-wrap items-center gap-2">
-            <span className="text-[12.5px] text-ink-subtle">Using this needs a coding agent signed in on this machine.</span>
+            <span className="text-[12.5px] text-ink-subtle">Using this needs a coding agent signed in.</span>
             <Button size="sm" icon={<PlugZap size={12} />} onClick={onConnect}>
               Connect a coding agent
             </Button>

@@ -91,6 +91,8 @@ function mockIpc(options: {
   staffLocked?: SectionLock;
   /** What `runtime:status` answers, by provider. Nothing at all when absent. */
   runtimes?: RuntimeStatusView[];
+  /** What `modules:list` answers. Only the fields the module line reads are filled. */
+  modules?: unknown[];
 }) {
   // What the *machine* would say, before and after the folder is
   // attached — rather than a queue of answers keyed to how many times
@@ -129,6 +131,11 @@ function mockIpc(options: {
         return { ok: true, data: { unpackedBytes: 1_000_000, sourceUrl: null, problem: null } };
       case "runtime:install":
         return { ok: true, data: { ok: true, runtime: null, problem: null } };
+      case "modules:list":
+        return { ok: true, data: { modules: options.modules ?? [] } };
+      case "modules:approve":
+        fixed = true;
+        return { ok: true, data: { approved: true, problem: null, lineCoverage: 100, coverageAcknowledgementNeeded: false, machineSpecific: [] } };
       case "dialog:pickDirectory":
         return { ok: true, data: { path: "/home/anna/elsewhere" } };
       default:
@@ -324,6 +331,42 @@ describe("a red line", () => {
 
     expect(await screen.findByRole("button", { name: "Sign in to Claude Code" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Install a coding agent" })).toBeNull();
+  });
+});
+
+/**
+ * A module the pack brought, read and approved here (EO-659) rather than
+ * in Settings → Modules, which first run hides.
+ */
+describe("a module to approve", () => {
+  const MODULE_LINE: GalleryNeedView = {
+    key: "module:m1",
+    line: "Post it — a module, read and approved",
+    met: false,
+    why: "A module is code from somebody else's machine. EO runs none of it until you have read it and approved it.",
+    fix: { kind: "module", label: "Read and approve", target: "m1" },
+  };
+  const POST_IT = {
+    id: "m1",
+    slug: "post",
+    name: "Post it",
+    description: "Puts the approved report where people read it.",
+    code: "export default async function run() { return { result: 'posted' }; }",
+    manifest: { needs: { bin: [], env: [], network: true, item: false, comment: false, attach: false, create: false }, results: ["posted"] },
+    approvedAt: null,
+  };
+
+  it("shows the code and approves it in place, and the line goes green", async () => {
+    const invoke = mockIpc({ needs: [MODULE_LINE], onceFixed: [{ ...MODULE_LINE, met: true, why: null, fix: null }], modules: [POST_IT] });
+    renderNeeds([MODULE_LINE]);
+
+    expect(screen.queryByText(/Settings/)).toBeNull();
+    fireEvent.click(await screen.findByRole("button", { name: "Read and approve" }));
+    expect(await screen.findByLabelText("Code of Post it")).toHaveTextContent("export default async function run()");
+
+    fireEvent.click(screen.getByRole("button", { name: "Approve" }));
+    await waitFor(() => expect(invoke.mock.calls.find((call: unknown[]) => call[0] === "modules:approve")?.[1]).toEqual({ id: "m1", acknowledgeLowCoverage: false }));
+    expect(await screen.findByText("Everything it needs is here.")).toBeInTheDocument();
   });
 });
 

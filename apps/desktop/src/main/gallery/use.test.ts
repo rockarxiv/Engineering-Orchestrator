@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { FOLDER_KIND, isPreviewAgent, moduleInputProblems, type ModuleManifest, type Uuid } from "@eo/core";
 import type { DbHandle } from "../db/client.js";
 import {
+  approveModule,
   asFolderWorkspace,
   createAgent,
   createPerson,
@@ -25,7 +26,7 @@ import {
 import { openMigratedTestDb } from "../db/testHelpers.js";
 import { setActiveProjectCommand } from "../ipc/projectCommands.js";
 import { activeProjectId } from "../ipc/repositoryCommands.js";
-import { listGalleryCommand, previewGalleryCommand, useGalleryCommand } from "../ipc/galleryCommands.js";
+import { galleryNeedsCommand, listGalleryCommand, previewGalleryCommand, useGalleryCommand } from "../ipc/galleryCommands.js";
 import { parseScheduleAnswer } from "./commands.js";
 import { forgetListed } from "./session.js";
 import { bundledTemplates } from "./templates.js";
@@ -633,6 +634,33 @@ describe("a template whose module declares typed inputs", () => {
 
     expect(answer.problem).toBeNull();
     expect(postInputs(answer.pipelineId!)).toEqual({ channel: "#general", wait: 900, draft: true });
+  });
+
+  /**
+   * The modules line, as first run meets it (EO-659): no sentence sends
+   * anybody to Settings → Modules, which first run hides. Before a
+   * project exists the card counts the modules; the project's needs
+   * check has one line per module its steps run, whose button approves it
+   * in place, and which goes green once it is approved.
+   */
+  it("names each module on the needs check with a button that approves it, and no hidden screen", async () => {
+    const card = (await listGalleryCommand(handle.db, typedContext())).templates.find((template) => template.slug === "weekly-report")!;
+    const counted = card.needs.find((need) => need.key === "modules")!;
+    expect(counted.why).not.toContain("Settings");
+
+    const answer = await useGalleryCommand(handle.db, typedContext(), monday());
+    expect(answer.problem).toBeNull();
+    expect(answer.needs.some((need) => need.key === "modules")).toBe(false);
+
+    const step = listStepsForPipeline(handle.db, answer.pipelineId!).find((candidate) => candidate.name === "Post")!;
+    const moduleId = step.entryAction!;
+    const red = answer.needs.find((need) => need.key === `module:${moduleId}`)!;
+    expect(red).toMatchObject({ line: "Post it — a module, read and approved", met: false, fix: { kind: "module", label: "Read and approve", target: moduleId } });
+    for (const need of answer.needs) expect(`${need.line} ${need.why ?? ""}`).not.toMatch(/Settings|Agents →/);
+
+    approveModule(handle.db, moduleId);
+    const again = await galleryNeedsCommand(handle.db, typedContext(), { projectId: answer.projectId!, slug: "weekly-report" });
+    expect(again.needs.find((need) => need.key === `module:${moduleId}`)).toMatchObject({ met: true, why: null, fix: null });
   });
 
   /**

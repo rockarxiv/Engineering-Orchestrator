@@ -1,6 +1,6 @@
 import { useState } from "react";
-import { useQueries, useQueryClient } from "@tanstack/react-query";
-import { Download, KeyRound } from "lucide-react";
+import { useMutation, useQueries, useQueryClient } from "@tanstack/react-query";
+import { Download, KeyRound, Power } from "lucide-react";
 import type { RuntimeStatusView } from "@eo/core";
 import { machineAvailable } from "../../../ipc/bridge";
 import { ipcQuery } from "../../../query/client";
@@ -12,7 +12,7 @@ import { ConsentPanel } from "./runtime";
 import { SignInDialog } from "./SignIn";
 
 /**
- * Installing and signing in a coding agent without leaving the screen
+ * Installing, turning on and signing in a coding agent without leaving the screen
  * that needs one (EO-659): first run's "Connect a coding agent" step, and
  * the needs check's coding-agent line on a machine with nothing installed.
  *
@@ -114,6 +114,15 @@ function AgentRow({ entry, onChanged, onSignedIn }: { entry: CodingAgentEntry; o
   const [signingIn, setSigningIn] = useState(false);
   const runtime = entry.runtime;
   const label = runtime?.label ?? entry.choice.label;
+  // A copy EO manages that somebody switched off: switched back on here,
+  // with the call the Runtimes card's Enable makes, since first run hides
+  // that card.
+  const turnOn = useMutation({
+    mutationFn: () => ipcQuery("runtime:setEnabled", { provider: entry.choice.id as "codex" | "claude", enabled: true }),
+    onSuccess: (result) => {
+      if (result.ok) onChanged();
+    },
+  });
 
   if (runtime !== null && installing) {
     return (
@@ -129,6 +138,7 @@ function AgentRow({ entry, onChanged, onSignedIn }: { entry: CodingAgentEntry; o
   }
 
   const state = runtime === null ? null : runtimeState(runtime);
+  const problem = turnOn.data?.ok === false ? turnOn.data.problem : (turnOn.error?.message ?? null);
   return (
     <section aria-label={label} className="flex min-w-0 flex-col gap-1.5 rounded-[12px] bg-canvas-subtle px-3.5 py-3">
       <div className="flex min-w-0 flex-wrap items-center gap-3">
@@ -136,10 +146,13 @@ function AgentRow({ entry, onChanged, onSignedIn }: { entry: CodingAgentEntry; o
           <span className="text-[13.5px] font-medium text-ink">{label}</span>
           <span className="text-[12px] text-ink-subtle">{runtime === null ? "asking this machine…" : `${runtime.publisher} · ${line(runtime)}`}</span>
         </div>
-        {runtime === null ? null : <Action runtime={runtime} onInstall={() => setInstalling(true)} onSignIn={() => setSigningIn(true)} />}
+        {runtime === null ? null : (
+          <Action runtime={runtime} turningOn={turnOn.isPending} onInstall={() => setInstalling(true)} onSignIn={() => setSigningIn(true)} onTurnOn={() => turnOn.mutate()} />
+        )}
       </div>
       {state === "updating" ? <Loading>Installing {label}…</Loading> : null}
       {state === "error" ? <ErrorLine>{runtime?.problem ?? `Installing ${label} failed.`}</ErrorLine> : null}
+      {problem === null ? null : <ErrorLine>{problem}</ErrorLine>}
       {runtime !== null && signingIn ? (
         <SignInDialog
           runtime={runtime}
@@ -167,9 +180,28 @@ function line(runtime: RuntimeStatusView): string {
   return "installed";
 }
 
-function Action({ runtime, onInstall, onSignIn }: { runtime: RuntimeStatusView; onInstall: () => void; onSignIn: () => void }) {
+function Action({
+  runtime,
+  turningOn,
+  onInstall,
+  onSignIn,
+  onTurnOn,
+}: {
+  runtime: RuntimeStatusView;
+  turningOn: boolean;
+  onInstall: () => void;
+  onSignIn: () => void;
+  onTurnOn: () => void;
+}) {
   const state = runtimeState(runtime);
-  if (state === "updating" || state === "disabled") return null;
+  if (state === "updating") return null;
+  if (state === "disabled") {
+    return (
+      <Button size="sm" variant="primary" icon={<Power size={12} />} disabled={turningOn} onClick={onTurnOn}>
+        {turningOn ? "Turning on…" : `Turn on ${runtime.label}`}
+      </Button>
+    );
+  }
   if (state === "error" || !runtimeInstalled(runtime)) {
     if (runtime.packageName === null) return null;
     return (

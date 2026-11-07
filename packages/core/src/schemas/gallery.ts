@@ -158,13 +158,13 @@ export const GalleryRoleSlotViewSchema = z.object({
  * that would apologise, and says why in its own words instead.
  */
 export const GalleryNeedFixSchema = z.object({
-  kind: z.enum(["folder", "repository", "backend", "connector", "secret", "role"]),
+  kind: z.enum(["folder", "repository", "backend", "connector", "secret", "role", "module"]),
   /** What the button says: "Choose folder", "Choose a repository", "Sign in". */
   label: z.string(),
   /**
    * What it acts on, in the kind's own terms: the path a folder line is
    * about, the server name a connector line is about, the secret's name,
-   * the role's slug, the backend a pack was built on.
+   * the role's slug, the backend a pack was built on, the module's id.
    *
    * One field rather than one per kind, because the screen branches on
    * `kind` anyway and a shape with five nullable members is five ways to

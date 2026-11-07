@@ -275,7 +275,9 @@ export function galleryNeeds(preflight: ImportPreflight, extra: readonly Gallery
       key: "modules",
       line: `${preflight.moduleCount} module${preflight.moduleCount === 1 ? "" : "s"} to read and approve`,
       met: false,
-      why: `A module is code from somebody else's machine. EO runs none of it until you have read it in Settings → Modules and said so.`,
+      // No screen named: the needs check a project lands on carries one
+      // line per module with the button that approves it (EO-659).
+      why: `A module is code from somebody else's machine. EO runs none of it until you have read it and approved it.`,
       fix: null,
     });
   }

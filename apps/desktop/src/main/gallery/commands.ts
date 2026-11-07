@@ -25,6 +25,7 @@ import {
   keepProjectLocal,
   createWorkspace,
   folderPathProblem,
+  getModule,
   getPerson,
   getPipeline,
   getProject,
@@ -738,13 +739,50 @@ function localTimeZone(): string {
  * the document: somewhere to work, and something to work with.
  */
 export function projectNeeds(db: Db, input: ProjectNeedsInput): GalleryNeed[] {
-  return galleryNeeds(
-    input.preflight,
-    [workspaceNeed(db, input.projectId, input.document), backendNeed(input.preflight, input.signedInBackends)],
-    // What a role could be pointed at, which decides whether its red
-    // line carries a sign-in or the one gesture that staffs it.
-    input.signedInBackends,
-  );
+  return [
+    // The document's count of modules is what a card and an import can
+    // say before anything is written. Once the project exists, each
+    // module its steps run is a line of its own, green once approved.
+    ...galleryNeeds(
+      input.preflight,
+      [workspaceNeed(db, input.projectId, input.document), backendNeed(input.preflight, input.signedInBackends)],
+      // What a role could be pointed at, which decides whether its red
+      // line carries a sign-in or the one gesture that staffs it.
+      input.signedInBackends,
+    ).filter((need) => need.key !== "modules"),
+    ...moduleNeeds(db, input.projectId),
+  ];
+}
+
+/**
+ * One line per module this project's steps run (EO-659), read off the
+ * steps rather than the document: an import may have reused a module
+ * already here or renamed the incoming one, and the line is about the
+ * module that will actually run. Its button reads and approves it in
+ * place, because the screen where modules are otherwise approved is
+ * one first run hides.
+ */
+function moduleNeeds(db: Db, projectId: Uuid): GalleryNeed[] {
+  const ids = new Set<string>();
+  for (const pipeline of listPipelines(db, projectId)) {
+    for (const step of listStepsForPipeline(db, pipeline.id)) {
+      if (step.type === "module" && step.entryAction !== null) ids.add(step.entryAction);
+    }
+  }
+  return [...ids].flatMap((id): GalleryNeed[] => {
+    const module = getModule(db, id);
+    if (module === undefined) return [];
+    const met = module.approvedAt !== null;
+    return [
+      {
+        key: `module:${module.id}`,
+        line: `${module.name} — a module, read and approved`,
+        met,
+        why: met ? null : "A module is code from somebody else's machine. EO runs none of it until you have read it and approved it.",
+        fix: met ? null : { kind: "module", label: "Read and approve", target: module.id },
+      },
+    ];
+  });
 }
 
 export interface ProjectNeedsInput {

@@ -116,9 +116,9 @@ function AfterMode({ onLeft }: { onLeft: () => void }) {
     <StandaloneScreen width="max-w-6xl" centred={false}>
       <Gallery
         onFinished={onLeft}
-        // Only where this machine can be asked: a served tab cannot tell
-        // signed out from not asked, and must not be held on a guess.
-        {...(agents.signedIn || !machineAvailable() ? {} : { needsCodingAgent: { onConnect: () => remember(false) } })}
+        // Until a sign-in is established, Preview only — on a served tab
+        // too, where nothing here can establish one.
+        {...(agents.signedIn ? {} : { needsCodingAgent: { onConnect: () => remember(false) } })}
       />
     </StandaloneScreen>
   );
