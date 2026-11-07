@@ -1268,7 +1268,7 @@ EO is licensed under [Apache-2.0](./LICENSE). Third-party components are listed 
 
 Packaged builds update through `electron-updater` from the project's GitHub releases. EO checks at start and every six hours. The releases are public, so a check needs no setup and no credential. An unpackaged build never checks.
 
-Installers are built per platform: a `.dmg` for macOS on each architecture, one NSIS installer for Windows covering x64 and arm64, and an AppImage for Linux. The macOS build is not code-signed, and `electron-updater` will not update an unsigned Mac app, so until there is a signing certificate Mac users update by downloading the new installer.
+Installers are built per platform: a `.dmg` for macOS on each architecture, one NSIS installer for Windows covering x64 and arm64, and an AppImage for Linux. The macOS build has no Developer ID signature, and `electron-updater` will not update a Mac app without one, so until there is a signing certificate Mac users update by downloading the new installer. It is ad-hoc signed meanwhile (`mac.identity: "-"`): from Electron 42 macOS refuses notifications from an app carrying only the linker's automatic signature, and accepts them from an ad-hoc one (EO-670). `e2e-macos` packages the app, checks the signature, and shows a notification from it (`packagedNotification.spec.ts`).
 
 ---
 

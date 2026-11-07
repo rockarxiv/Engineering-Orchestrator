@@ -111,9 +111,10 @@ jobs:
   # must never run a stranger's code. A fork's pull request runs on
   # windows-latest, as if the variable were not set.
   #
-  # Only the suite. Typecheck, lint and the design-system check read the
-  # same sources on any system and already run in `test`; what differs on
-  # Windows is paths, shells and processes, and those are in the tests.
+  # Typecheck and lint run here too, once, in the first slice (EO-670):
+  # the acceptance criterion for a runtime upgrade is that they pass on
+  # every system the app ships for, not only on Linux. The design-system
+  # check stays in `test` alone; it is arithmetic over one CSS file.
   #
   # In slices, one job each, as the release workflow's verify jobs are. The
   # whole suite as one job under a self-hosted runner's service failed
@@ -173,6 +174,14 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Typecheck
+        if: matrix.shard == 1
+        run: pnpm typecheck
+
+      - name: Lint
+        if: matrix.shard == 1
+        run: pnpm lint
+
       # The packages other than the desktop are small; the first slice
       # takes them. One package at a time: turbo otherwise starts core's,
       # engine's and ui's suites and core's build together, each vitest
@@ -228,8 +237,8 @@ jobs:
   # is what keeps the suite passing on macOS between releases, rather
   # than the release finding out.
   #
-  # Only the suites, as in test-windows, and for its reason. In four
-  # slices, as the release's macOS verify jobs are, which took between two
+  # Typecheck and lint once, in the first slice, as in test-windows and
+  # for its reason. In four slices, as the release's macOS verify jobs are, which took between two
   # and eight minutes each; one job would wait on the sum of them.
   test-macos:
     name: test-macos (${{ matrix.shard }}/4)
@@ -248,6 +257,14 @@ jobs:
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        if: matrix.shard == 1
+        run: pnpm typecheck
+
+      - name: Lint
+        if: matrix.shard == 1
+        run: pnpm lint
 
       # One package at a time, as in test-windows.
       - name: The package suites
@@ -362,6 +379,38 @@ jobs:
 
       - name: End-to-end
         run: pnpm --filter @eo/desktop exec playwright test
+
+      # The packaged app, as a release builds it, ad-hoc signed
+      # (`mac.identity` in electron-builder.yml). From Electron 42 macOS
+      # refuses notifications from an app that is not properly signed,
+      # and only the packaged app is signed at all (EO-670). One
+      # architecture, the runner's own, and no installer: what is under
+      # test is the signature. electron-builder signs nothing on a pull
+      # request unless told to; an ad-hoc signature holds no secret.
+      - name: Package the app
+        working-directory: apps/desktop
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+          CSC_FOR_PULL_REQUEST: "true"
+        run: pnpm exec electron-builder --mac --dir --arm64 --publish never
+
+      # A real ad-hoc signature, not the linker's (`linker-signed`), which
+      # is the one macOS refuses notifications from — and one that holds
+      # across the whole bundle.
+      - name: Check the signature
+        working-directory: apps/desktop
+        run: |
+          app=release/mac-arm64/EO.app
+          codesign --verify --deep --strict --verbose=2 "$app"
+          details=$(codesign -dv "$app" 2>&1)
+          echo "$details"
+          echo "$details" | grep -q 'flags=0x[0-9a-f]*(.*adhoc' || { echo "::error::$app is not ad-hoc signed"; exit 1; }
+          if echo "$details" | grep -q 'linker-signed'; then echo "::error::$app carries only the linker's signature"; exit 1; fi
+
+      - name: A notification from the packaged app
+        env:
+          EO_PACKAGED_APP: ${{ github.workspace }}/apps/desktop/release/mac-arm64/EO.app/Contents/MacOS/EO
+        run: pnpm --filter @eo/desktop exec playwright test e2e/packagedNotification.spec.ts
 
       # What a failed spec saw: Playwright's snapshot of the page at the
       # failure, which the log alone does not carry.

@@ -427,6 +427,9 @@ export function createElectronPlatform(options: { mainDir: string }): Platform {
     notify({ title, body, onClick }) {
       const notification = new Notification({ title, body });
       if (onClick) notification.on("click", onClick);
+      // macOS refuses a notification from an app that is not properly
+      // signed (Electron 42 on, EO-670) and says so only here.
+      notification.on("failed", (_event, error) => console.warn(`[eo] notification not shown: ${error}`));
       notification.show();
     },
     // The *main* window, and not merely any window. This is what
