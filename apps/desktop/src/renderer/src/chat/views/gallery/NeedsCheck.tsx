@@ -226,6 +226,7 @@ function Fix({ need, projectId, template, onFixed }: { need: GalleryNeedView; pr
   if (fix.kind === "module") return <ModuleFix label={fix.label} moduleId={fix.target ?? ""} onFixed={done} />;
   if (fix.kind === "forge") return <ForgeFix label={fix.label} link={fix.link ?? null} onCheck={onFixed} />;
   if (fix.kind === "forgeKind") return <ForgeKindFix repositoryId={fix.target ?? ""} onFixed={done} />;
+  if (fix.kind === "assistant") return <AssistantFix label={fix.label} backend={fix.target ?? ""} onFixed={done} />;
   return <RoleFix label={fix.label} role={fix.target ?? ""} template={template} onFixed={done} />;
 }
 
@@ -263,6 +264,34 @@ function RoleFix({ label, role, template, onFixed }: { label: string; role: stri
         </Button>
       </div>
       {locked === null ? null : <ManagedLockNotice lock={locked} />}
+      {problem === null ? null : <ErrorLine>{problem}</ErrorLine>}
+    </div>
+  );
+}
+
+/**
+ * The assistant pointed at a signed-in backend and switched on (EO-664),
+ * for a template whose first item the assistant asks for. Only on this
+ * press; the main process refuses with a sentence where it cannot.
+ */
+function AssistantFix({ label, backend, onFixed }: { label: string; backend: string; onFixed: () => void }) {
+  const [problem, setProblem] = useState<string | null>(null);
+  const staff = useMutation({
+    mutationFn: () => ipcQuery("gallery:staffAssistant", { backend }),
+    onSuccess: (result) => {
+      setProblem(result.problem);
+      if (result.ok) onFixed();
+    },
+    onError: (error: Error) => setProblem(error.message),
+  });
+
+  return (
+    <div className="flex flex-col gap-1.5 pl-6">
+      <div>
+        <Button size="sm" disabled={staff.isPending} onClick={() => staff.mutate()}>
+          {label}
+        </Button>
+      </div>
       {problem === null ? null : <ErrorLine>{problem}</ErrorLine>}
     </div>
   );

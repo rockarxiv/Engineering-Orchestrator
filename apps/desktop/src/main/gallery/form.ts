@@ -470,6 +470,6 @@ function parseInputValue(written: string, type: ModuleInputType): string | numbe
 }
 
 /** What a runtime is called in front of a person — "Claude Code" — or its own id for one EO does not manage. */
-function runtimeName(id: string): string {
+export function runtimeName(id: string): string {
   return id in RUNTIMES ? RUNTIMES[id as RuntimeId].label : id;
 }

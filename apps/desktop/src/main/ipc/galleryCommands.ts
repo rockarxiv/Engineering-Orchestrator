@@ -36,9 +36,10 @@ import {
 import { isAdopting } from "../db/repos/projectsRepo.js";
 import { forgeCardNeed, galleryBlanks, galleryNeeds, galleryRoleSlots, repositoryAnswer } from "../gallery/form.js";
 import { forgeNeeds, type DetectForge } from "../gallery/forgeNeeds.js";
-import { previewTemplate, projectNeeds, useTemplate } from "../gallery/commands.js";
+import { assistantRow, previewTemplate, projectNeeds, useTemplate } from "../gallery/commands.js";
 import { firstItemBrief } from "../gallery/firstItemBrief.js";
 import { openBriefedAssist } from "./assistCommands.js";
+import { setAgentBinding } from "./configCommands.js";
 import type { EngineHandle } from "./domainCommands.js";
 import { listedByToken, listedTemplate, rememberListed } from "../gallery/session.js";
 import { bundledTemplates, listGalleryTemplates, type GalleryOptions, type GalleryTemplate } from "../gallery/templates.js";
@@ -443,6 +444,30 @@ export async function staffRoleCommand(db: Db, context: GalleryContext, payload:
     enabled: true,
   });
   return { ok: true, problem: null, locked: null };
+}
+
+/**
+ * The button on a red assistant line (EO-664): the assistant pointed at a
+ * backend this machine is signed in to, and switched on.
+ *
+ * Only on a press, as a role is staffed — never because somebody signed
+ * in. The binding goes through `agents:setBinding`'s own door, so the
+ * organisation's policy on backends is asked here as it is there; the
+ * model is left to the backend's default when the backend changes, since
+ * a model name is one backend's vocabulary.
+ */
+export function staffAssistantCommand(db: Db, context: GalleryContext, payload: IpcPayload<"gallery:staffAssistant">): IpcResponse<"gallery:staffAssistant"> {
+  if (!context.signedInBackends.includes(payload.backend)) {
+    return { ok: false, problem: "Nothing on this machine is signed in to that, so the assistant would have nothing to run on. Sign in first, then this line can go green." };
+  }
+  const agent = assistantRow(db);
+  if (agent === undefined) return { ok: false, problem: "This installation has no assistant to switch on." };
+  if (agent.provider !== payload.backend) {
+    const bound = setAgentBinding(db, { agentId: agent.id, provider: payload.backend, model: null });
+    if (!bound.bound) return { ok: false, problem: bound.problem };
+  }
+  if (!agent.enabled) updateAgent(db, agent.id, { enabled: true });
+  return { ok: true, problem: null };
 }
 
 /**

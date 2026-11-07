@@ -167,8 +167,13 @@ export const GalleryNeedFixSchema = z.object({
    * install `gh` or `glab`, so the one button is **Check again**, which
    * asks `forge:detect` again; `forgeKind` is the choice between GitHub
    * and GitLab for a remote EO cannot place. `target` is the repository.
+   *
+   * `assistant` is the assistant line's (EO-664), on a project with no
+   * job, whose first item the assistant asks for: it points the assistant
+   * at a backend this machine is signed in to and switches it on, when the
+   * person presses it. `target` is the backend.
    */
-  kind: z.enum(["folder", "repository", "addRepository", "backend", "connector", "secret", "role", "module", "forge", "forgeKind"]),
+  kind: z.enum(["folder", "repository", "addRepository", "backend", "connector", "secret", "role", "module", "forge", "forgeKind", "assistant"]),
   /** What the button says: "Choose folder", "Choose a repository", "Sign in". */
   label: z.string(),
   /**

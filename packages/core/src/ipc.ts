@@ -5148,6 +5148,15 @@ export const recordContract = {
     z.object({ projectId: z.string(), slug: z.string().min(1), ...TEMPLATE_TOKEN, pipelineId: z.string().nullable() }),
     z.object({ conversation: DiscussionSchema.nullable(), problem: z.string().nullable() }),
   ),
+  /**
+   * The button on a red assistant line (EO-664): points the assistant at
+   * `backend`, which this machine must be signed in to, and switches it
+   * on. Only when pressed — EO never staffs the assistant unasked.
+   * Refused, with the sentence to show, for a backend nothing here is
+   * signed in to, one the organisation's policy does not allow, or an
+   * installation with no assistant at all.
+   */
+  "gallery:staffAssistant": channel(z.object({ backend: z.string().min(1) }), z.object({ ok: z.boolean(), problem: z.string().nullable() })),
   /** Marks the flow behind them, by any exit — the first item, the assistant's brief, or "Continue with Preview only". */
   "firstRun:finish": channel(z.void(), z.object({ done: z.boolean() })),
 

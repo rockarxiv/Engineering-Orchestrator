@@ -302,7 +302,9 @@ test("a developer's first run reaches the board it reaches today, through the sa
     await expect(window.getByRole("heading", { name: "Software feature to merge is set up" })).toBeVisible({ timeout: 15_000 });
     await expect(window.getByText("A repository — the checkout its work happens in")).toBeVisible();
     await expect(window.getByText(/This project has no repository yet/)).toBeVisible();
-    await expect(window.getByText("A coding agent signed in")).toBeVisible();
+    await expect(window.getByText("A coding agent signed in", { exact: true })).toBeVisible();
+    // It has no job, so its first item is the assistant's to ask for (EO-664).
+    await expect(window.getByText("The assistant, which plans the first piece of work with you")).toBeVisible();
     // Its pipeline opens pull requests, so it needs gh or glab (EO-663);
     // which one waits on a repository's remote.
     await expect(window.getByText("GitHub or GitLab CLI", { exact: true })).toBeVisible();
@@ -383,13 +385,19 @@ test("a template with no job ends in an assistant chat that opens with EO's brie
 
     await expect(window.getByRole("heading", { name: "Content draft and approve is set up" })).toBeVisible({ timeout: 15_000 });
     await window.getByRole("button", { name: /^Use Claude Code for these steps$/ }).click();
+    // The exit is the assistant, so the assistant is a line of its own: a
+    // fresh installation's runs on the placeholder, and pressing its button
+    // points it at the coding agent that is signed in.
+    await expect(window.getByText("The assistant, which plans the first piece of work with you")).toBeVisible();
+    await window.getByRole("button", { name: /^Use Claude Code for the assistant$/ }).click();
     await expect(window.getByText("Everything it needs is here.")).toBeVisible({ timeout: 15_000 });
     // No job, so nothing to start and no board to settle for.
     await expect(window.getByRole("button", { name: /^Start the first/ })).toHaveCount(0);
     await expect(window.getByRole("button", { name: "Go to the board" })).toHaveCount(0);
 
-    // The turn runs on the fake provider, for `runOnTheFakeProvider`'s reason.
-    runOnTheFakeProvider(home);
+    // The turn is dispatched to the signed-in Claude, which here is the
+    // stub that can only answer the sign-in question: what is asserted
+    // below is that a turn started, not what it said.
     await window.getByRole("button", { name: /^Plan the first .+ with the assistant$/ }).click();
 
     // First run is behind them, and the chat on show is the brief's.

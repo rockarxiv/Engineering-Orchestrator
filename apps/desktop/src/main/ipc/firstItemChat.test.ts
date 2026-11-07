@@ -13,7 +13,8 @@ import { bundledTemplates } from "../gallery/templates.js";
 import { assistAgent, assistBoards, listAssistThreads, shownAssistConversation } from "../roles/assist.js";
 import { ASSIST_STEP } from "../roles/conversationSteps.js";
 import type { EngineHandle } from "./domainCommands.js";
-import { openFirstItemChatCommand, useGalleryCommand } from "./galleryCommands.js";
+import { assistantRow } from "../gallery/commands.js";
+import { galleryNeedsCommand, openFirstItemChatCommand, staffAssistantCommand, useGalleryCommand } from "./galleryCommands.js";
 
 /**
  * The end of first run for a template with no job (EO-664): the needs
@@ -45,8 +46,8 @@ afterEach(() => {
   rmSync(folder, { recursive: true, force: true });
 });
 
-function context() {
-  return { directory: GALLERY_DIRECTORY, moduleSecrets: NO_SECRETS, signedInBackends: [] as string[] };
+function context(signedInBackends: string[] = []) {
+  return { directory: GALLERY_DIRECTORY, moduleSecrets: NO_SECRETS, signedInBackends };
 }
 
 function engineStub(): EngineHandle & { notifyStateChange: ReturnType<typeof vi.fn> } {
@@ -148,5 +149,85 @@ describe("the brief, for a template that brings no question of its own", () => {
 
     const brief = listCommentsForItem(handle.db, opened.conversation!.id as Uuid)[0]!;
     expect(brief.body).toContain(`> Weekly report: ${weekly.description} What is the first piece of work you want it to take on?`);
+  });
+});
+
+/**
+ * The assistant as a line of the needs check (EO-664): the exit above
+ * needs it, so a project with no job is not "everything it needs" until
+ * the assistant is switched on and runs on a backend this machine is
+ * signed in to — and the line's button makes it so, when pressed.
+ */
+describe("the assistant line, on a project with no job", () => {
+  async function assistantLine(signedIn: string[], projectId: string) {
+    const needs = await galleryNeedsCommand(handle.db, context(signedIn), { projectId, slug: CONTENT });
+    return needs.needs.find((need) => need.key === "assistant");
+  }
+
+  it("is red on a fresh installation, whose assistant runs on the placeholder, and its button points it at the signed-in backend", async () => {
+    const { projectId } = await useContent();
+    expect(assistantRow(handle.db)?.provider).toBe("fake");
+
+    const red = await assistantLine(["claude"], projectId);
+    expect(red).toMatchObject({
+      line: "The assistant, which plans the first piece of work with you",
+      met: false,
+      why: "The assistant does not run on a coding agent signed in on this machine yet, so nothing would answer.",
+      fix: { kind: "assistant", label: "Use Claude Code for the assistant", target: "claude" },
+    });
+
+    expect(staffAssistantCommand(handle.db, context(["claude"]), { backend: "claude" })).toEqual({ ok: true, problem: null });
+
+    expect(assistantRow(handle.db)).toMatchObject({ provider: "claude", enabled: true });
+    expect(await assistantLine(["claude"], projectId)).toMatchObject({ met: true, why: null, fix: null });
+  });
+
+  it("says a switched-off assistant is off, and turning it on lets the needs check's exit open the chat", async () => {
+    const { projectId, pipelineId } = await useContent();
+    const assistant = assistantRow(handle.db)!;
+    updateAgent(handle.db, assistant.id, { provider: "claude", enabled: false });
+
+    expect(await assistantLine(["claude"], projectId)).toMatchObject({
+      met: false,
+      why: "The assistant is switched off, so nothing would answer.",
+      fix: { kind: "assistant", label: "Turn the assistant on", target: "claude" },
+    });
+    // Before the repair, the exit is refused rather than opening a chat nobody answers.
+    expect((await openFirstItemChatCommand(handle.db, context(["claude"]), engineStub(), { projectId, slug: CONTENT, pipelineId })).conversation).toBeNull();
+
+    expect(staffAssistantCommand(handle.db, context(["claude"]), { backend: "claude" }).ok).toBe(true);
+
+    const needs = await galleryNeedsCommand(handle.db, context(["claude"]), { projectId, slug: CONTENT });
+    expect(needs.needs.find((need) => need.key === "assistant")?.met).toBe(true);
+    const opened = await openFirstItemChatCommand(handle.db, context(["claude"]), engineStub(), { projectId, slug: CONTENT, pipelineId });
+    expect(opened.problem).toBeNull();
+    expect(opened.conversation).not.toBeNull();
+  });
+
+  it("asks for a sign-in while nothing is signed in", async () => {
+    const { projectId } = await useContent();
+    expect(await assistantLine([], projectId)).toMatchObject({
+      met: false,
+      why: "Nothing on this machine is signed in, so the assistant has nothing to run on yet.",
+      fix: { kind: "backend", label: "Sign in", target: null },
+    });
+  });
+
+  it("never switches the assistant on unasked, and refuses a backend nothing here is signed in to", async () => {
+    const { projectId } = await useContent();
+    const before = assistantRow(handle.db)!;
+    await assistantLine(["claude"], projectId);
+    expect(assistantRow(handle.db)).toEqual(before);
+
+    const refused = staffAssistantCommand(handle.db, context(["claude"]), { backend: "codex" });
+    expect(refused.ok).toBe(false);
+    expect(refused.problem).toContain("Sign in first");
+    expect(assistantRow(handle.db)).toEqual(before);
+  });
+
+  it("is not a line for a template with a job, which starts its first item itself", async () => {
+    const used = await useGalleryCommand(handle.db, context(), { slug: "weekly-report", answers: { folder, schedule: "monday 08:00", keyPrefix: "REP" }, roleSlots: {} });
+    const needs = await galleryNeedsCommand(handle.db, context(["claude"]), { projectId: used.projectId!, slug: "weekly-report" });
+    expect(needs.needs.map((need) => need.key)).not.toContain("assistant");
   });
 });

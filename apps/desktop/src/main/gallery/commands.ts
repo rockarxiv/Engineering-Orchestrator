@@ -2,11 +2,13 @@ import {
   FOLDER_KIND,
   GIT_WORKTREE_KIND,
   PREVIEW_AGENT_KEY,
+  SYSTEM_ROLE,
   isBoundAgent,
   isDispatchable,
   isPreviewAgent,
   parseQualifiedItemType,
   qualifiedItemType,
+  type Agent,
   type GalleryNeedPart,
   type ItemTypeRef,
   uuidv7,
@@ -34,6 +36,7 @@ import {
   hasItemType,
   isTemplateDocument,
   listAgents,
+  listJobs,
   listPipelines,
   listProjects,
   listStepsForPipeline,
@@ -48,7 +51,7 @@ import {
 import { createJob } from "../jobs/jobs.js";
 import { ACTIVE_PROJECT_KEY } from "../ipc/repositoryCommands.js";
 import { importPipeline, type ImportPreflight } from "../modules/pipelineTransfer.js";
-import { galleryBlanks, galleryNeeds, galleryRoleSlots, stepInputValues, wantsRepository, type GalleryNeed } from "./form.js";
+import { galleryBlanks, galleryNeeds, galleryRoleSlots, runtimeName, stepInputValues, wantsRepository, type GalleryNeed } from "./form.js";
 import type { GalleryTemplate } from "./templates.js";
 
 /**
@@ -753,7 +756,58 @@ export function projectNeeds(db: Db, input: ProjectNeedsInput): GalleryNeed[] {
       input.signedInBackends,
     ).filter((need) => need.key !== "modules"),
     ...moduleNeeds(db, input.projectId),
+    ...assistantNeed(db, input.projectId, input.signedInBackends),
   ];
+}
+
+/**
+ * The assistant, on a project with no job (EO-664).
+ *
+ * A template with no job ends first run in an assistant chat whose brief
+ * asks for the first item, so the assistant is one of the things that
+ * has to be true before that exit can work: green only while it is
+ * switched on and runs on a backend this machine is signed in to. One
+ * that is off, or still on the placeholder a fresh installation seeds it
+ * with, would take the brief and answer nothing.
+ *
+ * Its button points it at a signed-in backend and switches it on, when
+ * pressed (`gallery:staffAssistant`) — the same explicit press a role
+ * line asks for. With nothing signed in, the button is the sign-in.
+ */
+function assistantNeed(db: Db, projectId: Uuid, signedIn: readonly string[]): GalleryNeed[] {
+  if (listJobs(db, projectId).length > 0) return [];
+  const agent = assistantRow(db);
+  const line = "The assistant, which plans the first piece of work with you";
+  if (agent === undefined) {
+    return [{ key: "assistant", line, met: false, why: "This installation has no assistant, so nothing would answer when first run asks for the first piece of work.", fix: null }];
+  }
+  const onSignedIn = signedIn.includes(agent.provider);
+  if (onSignedIn && isDispatchable(agent)) return [{ key: "assistant", line, met: true, why: null, fix: null }];
+  const usable = onSignedIn ? agent.provider : (signedIn[0] ?? null);
+  if (usable === null) {
+    return [
+      { key: "assistant", line, met: false, why: "Nothing on this machine is signed in, so the assistant has nothing to run on yet.", fix: { kind: "backend", label: "Sign in", target: null } },
+    ];
+  }
+  return [
+    {
+      key: "assistant",
+      line,
+      met: false,
+      why: onSignedIn ? "The assistant is switched off, so nothing would answer." : "The assistant does not run on a coding agent signed in on this machine yet, so nothing would answer.",
+      fix: { kind: "assistant", label: onSignedIn ? "Turn the assistant on" : `Use ${runtimeName(usable)} for the assistant`, target: usable },
+    },
+  ];
+}
+
+/**
+ * The assistant's row: the one that answers chats where there is one
+ * (`assistAgent`), and otherwise the system agent somebody switched off.
+ * Never an archived one, which is retired rather than off.
+ */
+export function assistantRow(db: Db): Agent | undefined {
+  const rows = listAgents(db).filter((agent) => agent.role === SYSTEM_ROLE && agent.archivedAt === null && !isPreviewAgent(agent));
+  return rows.find(isDispatchable) ?? rows[0];
 }
 
 /**

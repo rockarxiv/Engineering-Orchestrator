@@ -141,6 +141,9 @@ function mockIpc(options: {
         return { ok: true, data: { ok: options.staffProblem == null, problem: options.staffProblem ?? null, locked: null } };
       case "gallery:preview":
         return { ok: true, data: { itemId: "preview-1", projectId: "p-preview", pipelineId: "preview-pl", problem: null } };
+      case "gallery:staffAssistant":
+        fixed = true;
+        return { ok: true, data: { ok: true, problem: null } };
       case "gallery:openFirstItemChat":
         return {
           ok: true,
@@ -472,6 +475,31 @@ describe("the two ways out", () => {
     expect(finished).toHaveBeenCalled();
   });
 
+  /**
+   * The assistant is a line of its own on a template with no job: the
+   * exit needs it. Its button is pressed, never implied, and once it is
+   * the exit is the assistant (EO-664).
+   */
+  it("turns the assistant on from its own line, and then offers the assistant's exit", async () => {
+    const OFF: GalleryNeedView = {
+      key: "assistant",
+      line: "The assistant, which plans the first piece of work with you",
+      met: false,
+      why: "The assistant is switched off, so nothing would answer.",
+      fix: { kind: "assistant", label: "Turn the assistant on", target: "claude" },
+    };
+    const invoke = mockIpc({ needs: [...GREEN, OFF], onceFixed: [...GREEN, { ...OFF, met: true, why: null, fix: null }], jobId: null });
+    renderNeeds([...GREEN, OFF]);
+
+    expect(await screen.findByText("The assistant is switched off, so nothing would answer.")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /with the assistant$/ })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Turn the assistant on" }));
+
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("gallery:staffAssistant", { backend: "claude" }));
+    expect(await screen.findByRole("button", { name: /^Plan the first .+ with the assistant$/ })).toBeInTheDocument();
+    expect(screen.queryByText("The assistant is switched off, so nothing would answer.")).not.toBeInTheDocument();
+  });
+
   it("says why there is no chat, and stays where it is", async () => {
     mockIpc({ needs: GREEN, jobId: null, briefProblem: "There is no enabled system agent to talk to." });
     const finished = vi.fn();
@@ -649,7 +677,7 @@ describe("the developer's first-run copy", () => {
     previewable: DEVELOPER_FIRST_RUN.template.previewable,
   };
 
-  it("asks for a repository, the forge CLI and a backend, in these words", async () => {
+  it("asks for a repository, the forge CLI, a backend and the assistant, in these words", async () => {
     mockIpc({ needs, jobId: DEVELOPER_FIRST_RUN.jobId });
     const { container } = renderNeeds(needs, { template, jobId: DEVELOPER_FIRST_RUN.jobId });
 
@@ -657,12 +685,16 @@ describe("the developer's first-run copy", () => {
     // Word for word, and nowhere sending the person to a screen first
     // run hides (EO-659).
     expect(container.textContent).toBe(
-      `Software feature to merge is set up3 things left before real work runs. Each one says why, and carries the one button that fixes it.An agent for the Implementer stepsAn agent for the Reviewer stepsA repository — the checkout its work happens inThis project has no repository yet, so nothing can be branched, reviewed or opened as a pull request.Choose a repositorySaveGitHub or GitLab CLIThis pipeline opens pull requests through the GitHub CLI (gh) or the GitLab CLI (glab), whichever the repository's remote is on. EO checks which once a repository is attached.A coding agent signed inNothing on this machine is signed in, so no step would dispatch.No coding agent is installed on this machine yet. EO ships none, and can fetch one for you.Install a coding agentGo to the boardContinue with Preview only`,
+      `Software feature to merge is set up4 things left before real work runs. Each one says why, and carries the one button that fixes it.An agent for the Implementer stepsAn agent for the Reviewer stepsA repository — the checkout its work happens inThis project has no repository yet, so nothing can be branched, reviewed or opened as a pull request.Choose a repositorySaveGitHub or GitLab CLIThis pipeline opens pull requests through the GitHub CLI (gh) or the GitLab CLI (glab), whichever the repository's remote is on. EO checks which once a repository is attached.A coding agent signed inNothing on this machine is signed in, so no step would dispatch.No coding agent is installed on this machine yet. EO ships none, and can fetch one for you.Install a coding agentThe assistant, which plans the first piece of work with youNothing on this machine is signed in, so the assistant has nothing to run on yet.No coding agent is installed on this machine yet. EO ships none, and can fetch one for you.Install a coding agentGo to the boardContinue with Preview only`,
     );
   });
 
-  /** The two red ones the old first-run panel asked for, and the forge CLI its pull requests go through (EO-663). */
-  it("has exactly three red lines", () => {
-    expect(needs.filter((need) => !need.met).map((need) => need.key)).toEqual(["workspace", "forge", "backend"]);
+  /**
+   * The two red ones the old first-run panel asked for, the forge CLI its
+   * pull requests go through (EO-663), and the assistant its first item is
+   * asked for by, since it has no job (EO-664).
+   */
+  it("has exactly four red lines", () => {
+    expect(needs.filter((need) => !need.met).map((need) => need.key)).toEqual(["workspace", "forge", "backend", "assistant"]);
   });
 });

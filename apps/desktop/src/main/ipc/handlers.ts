@@ -63,6 +63,7 @@ import {
   staffRoleCommand,
   useGalleryCommand,
   openFirstItemChatCommand,
+  staffAssistantCommand,
   type GalleryContext,
 } from "./galleryCommands.js";
 import { loadTemplateHistory, type TemplateHistory } from "../gallery/history.js";
@@ -1036,6 +1037,17 @@ export function registerAllHandlers(db: Db, engine: EngineHandle | undefined, re
     opts,
   );
 
+  // The button on a red assistant line (EO-664). The Agents screen and the
+  // needs check both read the row it wrote.
+  registerHandler(
+    "gallery:staffAssistant",
+    async (payload) => {
+      const result = staffAssistantCommand(db, await galleryContext(), payload);
+      if (result.ok) emitPush("config:changed", {});
+      return result;
+    },
+    opts,
+  );
   // The needs check's way on for a template with no job (EO-664): a new
   // assistant chat with EO's brief for the first item. Pushed like New
   // chat: it changes which chat the room shows.
