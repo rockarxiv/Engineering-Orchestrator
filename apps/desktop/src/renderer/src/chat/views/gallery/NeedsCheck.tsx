@@ -1,10 +1,8 @@
 import { useState } from "react";
-import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
-import { Check, FolderOpen, X } from "lucide-react";
+import { Check, Download, FolderOpen, X } from "lucide-react";
 import type { GalleryNeedView, GalleryTemplateView, RuntimeStatusView, SectionLock } from "@eo/core";
-import { MANAGED_RUNTIMES } from "../../../shared/agents/catalog";
-import { runtimeKey } from "../../../shared/agents/runtimeStatus";
 import { machineAvailable } from "../../../ipc/bridge";
 import { ipcQuery } from "../../../query/client";
 import { galleryNeedsKey, useChromeVocabulary } from "../../../query/hooks";
@@ -12,6 +10,7 @@ import { useInvalidateOnPush } from "../../../query/useInvalidateOnPush";
 import { ConnectorNeeds } from "../../connectors/ConnectorNeeds";
 import { ManagedLockNotice } from "../../managed/ManagedSection";
 import { Button, Card, ErrorLine, TextInput, ViewHeader } from "../../kit";
+import { ConnectAgentPanel, runtimeInstalled, useCodingAgents } from "../agents/ConnectAgent";
 import { SignInDialog } from "../agents/SignIn";
 
 /**
@@ -263,31 +262,37 @@ function WorkspaceFix({ label, kind, path, projectId, onFixed }: { label: string
 
 /**
  * Signing a backend in, from here (ARCHITECTURE.md, "The needs check"), with the dialog the Agents
- * view
- * uses. A machine with no runtime installed is told so rather than handed
- * a button over an empty dialog (invariant #12).
+ * view uses. A machine with no runtime installed is offered the install
+ * first, in place (EO-659): the same panel first run's "Connect a coding
+ * agent" step draws, since Agents → Runtimes is a screen first run hides.
  */
 function BackendFix({ label, backend, onFixed }: { label: string; backend: string | null; onFixed: () => void }) {
   const [open, setOpen] = useState(false);
-  const statuses = useQueries({
-    queries: MANAGED_RUNTIMES.map((choice) => ({
-      queryKey: runtimeKey(choice.id),
-      queryFn: () => ipcQuery("runtime:status", { provider: choice.id }),
-      // What is installed on this disk, which a server cannot answer (EO-319).
-      enabled: machineAvailable(),
-    })),
-  });
-  const installed = statuses.map((status) => status.data?.runtime ?? null).filter((runtime): runtime is RuntimeStatusView => runtime !== null);
+  const [connecting, setConnecting] = useState(false);
+  const { entries } = useCodingAgents();
+  const installed = entries.map((entry) => entry.runtime).filter((runtime): runtime is RuntimeStatusView => runtimeInstalled(runtime));
   // The one the pack was built on where this machine has it; otherwise any signed-in backend answers the line.
   const runtime = installed.find((candidate) => candidate.id === backend) ?? installed[0] ?? null;
 
+  if (!machineAvailable()) {
+    return <p className="pl-6 text-[12.5px] text-ink-subtle">Signing a coding agent in happens on the machine that runs it, which is not this server.</p>;
+  }
   if (runtime === null) {
     return (
-      <p className="pl-6 text-[12.5px] text-ink-subtle">
-        {machineAvailable()
-          ? "No coding agent is installed on this machine yet. EO ships none — Agents → Runtimes is where one is added."
-          : "Signing a coding agent in happens on the machine that runs it, which is not this server."}
-      </p>
+      <div className="flex flex-col gap-2 pl-6">
+        {connecting ? (
+          <ConnectAgentPanel onSignedIn={onFixed} />
+        ) : (
+          <>
+            <p className="text-[12.5px] text-ink-subtle">No coding agent is installed on this machine yet. EO ships none, and can fetch one for you.</p>
+            <div>
+              <Button size="sm" icon={<Download size={12} />} onClick={() => setConnecting(true)}>
+                Install a coding agent
+              </Button>
+            </div>
+          </>
+        )}
+      </div>
     );
   }
   return (

@@ -5,7 +5,7 @@ import type { RuntimeStatusView } from "@eo/core";
 import type { StatusTone } from "@eo/ui";
 import { ipcQuery } from "../../../query/client";
 import { megabytes, runtimeKey, runtimeState, useRuntimeStatus } from "../../../shared/agents/runtimeStatus";
-import { Button, Checkbox, ErrorLine, Facts, type Tone } from "../../kit";
+import { Button, Checkbox, ErrorLine, Facts, Loading, type Tone } from "../../kit";
 
 /**
  * What a runtime looks like from an agent's editor, and the consent in
@@ -202,6 +202,8 @@ export function ConsentPanel({
       </p>
 
       {details.data?.problem ? <p className="text-[12.5px] text-paused">{details.data.problem}</p> : null}
+      {/* Said while it happens, not only on the button: a runtime is tens of megabytes. */}
+      {install.isPending ? <Loading>Downloading {runtime.label} and checking it…</Loading> : null}
       {problem ? <ErrorLine>{problem}</ErrorLine> : null}
 
       <div className="flex justify-end gap-2">

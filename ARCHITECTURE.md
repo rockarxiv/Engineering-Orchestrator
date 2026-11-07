@@ -957,11 +957,12 @@ An organisation secret is set once on the server and delivered to signed-in desk
 "Point EO at a repository" is the wrong door for most people. In order:
 
 1. **One question: just me, or my organisation.** Solo goes straight in. Organisation takes the server's address and signs in, and pulls what the organisation has published.
-2. **A gallery, not an empty board.** Each template has a plain description and a list of what it needs.
-3. **Preview**, optional, before anything is signed in.
-4. **The template's own blanks.** The template knows what the person wants; it lacks which folder, which day, which prefix, who approves. A short form, one line per blank.
-5. **The needs check.**
-6. **The first item, or the board.** Where the person lands depends on whether there is a first item to watch. If the template came with a job and every line of the needs check is green, the last button starts the first item by firing that job, and the person is taken to **that item's own page** to watch it run. If the template has no job — or the firing produced no item — there is nothing to watch, and the button opens **the pipeline's board** instead. Leaving with Preview only also lands on the board.
+2. **Connect a coding agent** (EO-659), shown only while no backend on this machine is signed in. It lists every runtime EO can fetch (`MANAGED_RUNTIMES`), installs one through the consent and `runtime:install` channel Agents → Runtimes uses, and signs it in with the same `SignInDialog`; once a runtime's status answers "signed in" the flow moves on by itself. **Look around first** goes on to the gallery without one, where Preview works and every card's Use this waits, saying a coding agent is needed, with a button back to this step. On a served tab, where there is no machine to install on, the step says signing in happens on the machine that runs the agent and offers only Look around first. The needs check's coding-agent line opens the same panel in place when nothing is installed, since first run hides Agents → Runtimes.
+3. **A gallery, not an empty board.** Each template has a plain description and a list of what it needs.
+4. **Preview**, optional, before anything is signed in.
+5. **The template's own blanks.** The template knows what the person wants; it lacks which folder, which day, which prefix, who approves. A short form, one line per blank.
+6. **The needs check.**
+7. **The first item, or the board.** Where the person lands depends on whether there is a first item to watch. If the template came with a job and every line of the needs check is green, the last button starts the first item by firing that job, and the person is taken to **that item's own page** to watch it run. If the template has no job — or the firing produced no item — there is nothing to watch, and the button opens **the pipeline's board** instead. Leaving with Preview only also lands on the board.
 
 Conversations with the assistant remain the door for work no template covers.
 

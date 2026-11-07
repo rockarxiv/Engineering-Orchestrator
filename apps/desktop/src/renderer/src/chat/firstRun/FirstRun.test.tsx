@@ -1,9 +1,12 @@
 import { QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { GalleryTemplateView, RuntimeStatusView } from "@eo/core";
 import { ThemeProvider } from "@eo/ui";
+import { setBridge } from "../../ipc/bridge";
 import { createQueryClient } from "../../query/client";
+import { absent, signedIn, signedOut } from "../views/agents/testRuntimes";
 import { DEFAULT_PRESET_ID, paletteOf, setThemeChoice, THEME_STORAGE_KEY } from "../theme";
 import { FirstRun } from "./FirstRun";
 import { FirstRunGate } from "./FirstRunGate";
@@ -18,10 +21,56 @@ import { FirstRunGate } from "./FirstRunGate";
  * The gallery's own three screens are asserted where they live.
  */
 
-function mockIpc(state: { done: boolean; mode: "solo" | "organisation" | null }) {
+const TEMPLATE: GalleryTemplateView = {
+  slug: "weekly-report",
+  token: "weekly-v1",
+  title: "Weekly report",
+  description: "Every week, EO reads a folder and writes the report.",
+  version: "1.0",
+  source: "Bundled with EO",
+  bundled: true,
+  pipelineName: "Weekly report",
+  needs: [],
+  blanks: [],
+  roleSlots: [],
+  solo: true,
+  previewable: true,
+};
+
+/**
+ * `runtimes` is what this machine has, by default a signed-in Claude, so
+ * the tests about step 1 go on to the gallery as they always have. The
+ * sign-in channels sign Claude in, the way a finished `claude auth login`
+ * would, and `runtime:install` answers `installProblem` when given one.
+ */
+function mockIpc(
+  state: { done: boolean; mode: "solo" | "organisation" | null },
+  options: { runtimes?: RuntimeStatusView[]; installProblem?: string; templates?: GalleryTemplateView[] } = {},
+) {
   const stored = { ...state };
+  const runtimes = [...(options.runtimes ?? [signedIn("claude", "Claude Code"), absent("codex", "Codex")])];
   const invoke = vi.fn(async (channel: string, payload: unknown) => {
     switch (channel) {
+      case "runtime:status": {
+        const provider = (payload as { provider: string }).provider;
+        return { ok: true, data: { runtime: runtimes.find((runtime) => runtime.id === provider) ?? null } };
+      }
+      case "runtime:describe":
+        return { ok: true, data: { unpackedBytes: 1_000_000, sourceUrl: null, problem: null } };
+      case "runtime:install":
+        return options.installProblem === undefined
+          ? { ok: true, data: { ok: true, runtime: null, problem: null } }
+          : { ok: true, data: { ok: false, runtime: null, problem: options.installProblem } };
+      case "runtime:startSignIn":
+        return {
+          ok: true,
+          data: { ok: true, sessionId: "session-1", url: "https://auth.example.com/", verificationCode: null, needsCode: true, opened: true, transcript: "", problem: null },
+        };
+      case "runtime:submitSignInCode": {
+        const index = runtimes.findIndex((runtime) => runtime.id === "claude");
+        runtimes[index] = signedIn("claude", "Claude Code");
+        return { ok: true, data: { ok: true, state: "signed_in", transcript: "", problem: null } };
+      }
       // A copy each time, not the held object: the screen compares what
       // it was given with what it has, and handing back the very object
       // it already holds is a change it cannot see.
@@ -32,7 +81,7 @@ function mockIpc(state: { done: boolean; mode: "solo" | "organisation" | null })
         return { ok: true, data: { mode: stored.mode } };
       }
       case "gallery:list":
-        return { ok: true, data: { templates: [], fetched: false, people: [] } };
+        return { ok: true, data: { templates: options.templates ?? [], fetched: false, people: [] } };
       default:
         return { ok: true, data: {} };
     }
@@ -51,6 +100,9 @@ function renderFirstRun(node: React.ReactNode) {
     </ThemeProvider>,
   );
 }
+
+beforeEach(() => window.sessionStorage.clear());
+afterEach(() => setBridge(undefined));
 
 describe("step 1, before anything else", () => {
   it("asks solo or organisation, and shows no gallery until it is answered", async () => {
@@ -103,6 +155,113 @@ describe("step 1, before anything else", () => {
 
     expect(await screen.findByText("Start with a template")).toBeInTheDocument();
     expect(screen.queryByText("Is this just you, or is it for an organisation?")).not.toBeInTheDocument();
+  });
+});
+
+/**
+ * Step 2, "Connect a coding agent" (EO-659): between the welcome question
+ * and the gallery, and only while nothing on this machine is signed in.
+ * The three states a machine can be in are the three tests that open it.
+ */
+describe("connecting a coding agent", () => {
+  const answerSolo = async () => fireEvent.click(await screen.findByRole("button", { name: "Just me" }));
+
+  it("offers every managed runtime when none is installed, and installs on the Runtimes channel", async () => {
+    const invoke = mockIpc({ done: false, mode: null }, { runtimes: [absent("codex", "Codex"), absent("claude", "Claude Code")] });
+    renderFirstRun(<FirstRun onLeft={() => {}} />);
+    await answerSolo();
+
+    expect(await screen.findByRole("heading", { name: "Connect a coding agent" })).toBeInTheDocument();
+    expect(screen.queryByText("Start with a template")).not.toBeInTheDocument();
+    const list = screen.getByRole("list", { name: "Coding agents" });
+    expect(within(list).getByRole("button", { name: "Install Codex" })).toBeInTheDocument();
+    expect(within(list).getByRole("button", { name: "Install Claude Code" })).toBeInTheDocument();
+
+    // The consent Agents → Runtimes shows, then the same channel.
+    fireEvent.click(within(list).getByRole("button", { name: "Install Claude Code" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Download" }));
+    await waitFor(() => expect(invoke.mock.calls.find((call: unknown[]) => call[0] === "runtime:install")?.[1]).toEqual({ provider: "claude" }));
+  });
+
+  it("says what the install channel said when the download fails", async () => {
+    mockIpc(
+      { done: false, mode: "solo" },
+      { runtimes: [absent("codex", "Codex"), absent("claude", "Claude Code")], installProblem: "EO could not reach the npm registry: offline" },
+    );
+    renderFirstRun(<FirstRun onLeft={() => {}} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Install Codex" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Download" }));
+    expect(await screen.findByText("EO could not reach the npm registry: offline")).toBeInTheDocument();
+  });
+
+  it("signs an installed runtime in with the sign-in dialog, and goes on to the gallery by itself", async () => {
+    mockIpc({ done: false, mode: null }, { runtimes: [absent("codex", "Codex"), signedOut("claude", "Claude Code")] });
+    renderFirstRun(<FirstRun onLeft={() => {}} />);
+    await answerSolo();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Sign in to Claude Code" }));
+    const dialog = await screen.findByRole("dialog", { name: "Sign in to Claude Code" });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Sign in" }));
+    fireEvent.change(await within(dialog).findByLabelText("Authorization code"), { target: { value: "pasted-code" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Submit" }));
+
+    // No further press: the statuses are asked again and one now says signed in.
+    expect(await screen.findByText("Start with a template")).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Connect a coding agent" })).not.toBeInTheDocument();
+  });
+
+  it("is not shown when a backend is already signed in", async () => {
+    mockIpc({ done: false, mode: null }, { runtimes: [absent("codex", "Codex"), signedIn("claude", "Claude Code")], templates: [TEMPLATE] });
+    renderFirstRun(<FirstRun onLeft={() => {}} />);
+    await answerSolo();
+
+    expect(await screen.findByText("Start with a template")).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Connect a coding agent" })).not.toBeInTheDocument();
+    const card = await screen.findByRole("region", { name: "Weekly report" });
+    expect(within(card).getByRole("button", { name: "Use this" })).toBeEnabled();
+    expect(within(card).queryByRole("button", { name: "Connect a coding agent" })).toBeNull();
+  });
+
+  it("looks around first: Preview works, Use this waits, and the card leads back to this step", async () => {
+    mockIpc({ done: false, mode: "solo" }, { runtimes: [absent("codex", "Codex"), absent("claude", "Claude Code")], templates: [TEMPLATE] });
+    renderFirstRun(<FirstRun onLeft={() => {}} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Look around first" }));
+
+    const card = await screen.findByRole("region", { name: "Weekly report" });
+    expect(within(card).getByRole("button", { name: "Use this" })).toBeDisabled();
+    expect(within(card).getByRole("button", { name: "Preview" })).toBeEnabled();
+    expect(within(card).getByText(/needs a coding agent/)).toBeInTheDocument();
+
+    fireEvent.click(within(card).getByRole("button", { name: "Connect a coding agent" }));
+    expect(await screen.findByRole("heading", { name: "Connect a coding agent" })).toBeInTheDocument();
+  });
+
+  it("remembers Look around first across a trip to a preview item", async () => {
+    mockIpc({ done: false, mode: "solo" }, { runtimes: [absent("codex", "Codex"), absent("claude", "Claude Code")] });
+    const first = renderFirstRun(<FirstRun onLeft={() => {}} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Look around first" }));
+    expect(await screen.findByText("Start with a template")).toBeInTheDocument();
+    first.unmount();
+
+    renderFirstRun(<FirstRun onLeft={() => {}} />);
+    expect(await screen.findByText("Start with a template")).toBeInTheDocument();
+  });
+
+  it("says signing in happens on the machine that runs the agent, on a served tab, and offers only Look around first", async () => {
+    mockIpc({ done: false, mode: "solo" });
+    setBridge({
+      invoke: ((channel: string, payload: unknown) => window.eo.ipc.invoke(channel as never, payload as never)) as never,
+      machineAvailable: false,
+      subscribe: () => () => {},
+      subscribeRefetch: () => () => {},
+    });
+    renderFirstRun(<FirstRun onLeft={() => {}} />);
+
+    expect(await screen.findByRole("heading", { name: "Connect a coding agent" })).toBeInTheDocument();
+    expect(screen.getByText(/happens on the machine that runs the agent/)).toBeInTheDocument();
+    expect(screen.getAllByRole("button").map((button) => button.textContent)).toEqual(["Look around first"]);
   });
 });
 
