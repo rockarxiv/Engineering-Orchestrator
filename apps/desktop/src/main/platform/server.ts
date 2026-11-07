@@ -211,6 +211,8 @@ export function createServerPlatform(options: ServerPlatformOptions): ServerPlat
     // and refused at the door, and a server hands no backend anything
     // for the window to show.
     openDebug: () => false,
+    isFullScreen: () => false,
+    setTitleBarColours: () => false,
 
     // And nobody's machine is here either (EO-324, ARCHITECTURE.md, "The record"). This process
     // is the record: it owns item state, it runs the only scheduler,

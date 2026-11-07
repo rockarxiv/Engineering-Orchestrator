@@ -2,6 +2,7 @@ import { Link } from "react-router-dom";
 import { CloudOff, KeyRound } from "lucide-react";
 import type { ReactNode } from "react";
 import { useSession, useSyncStatus } from "../query/hooks";
+import { CONTROLS_END } from "./windowChrome";
 
 /**
  * What the whole window needs to say, over the conversation and the
@@ -22,7 +23,15 @@ export function ChatBanners() {
 
 function Strip({ label, icon, children, end }: { label: string; icon: ReactNode; children: ReactNode; end?: ReactNode }) {
   return (
-    <div role="status" aria-label={label} className="flex min-h-9 shrink-0 items-center gap-2.5 border-b border-line px-4 py-1.5 text-[12.5px]">
+    // Above the top row when it is drawn, so part of the title bar
+    // (EO-668): it drags the window, and its end clears the window
+    // controls — the second strip too, which a 51px overlay still reaches.
+    <div
+      role="status"
+      aria-label={label}
+      className="app-drag flex min-h-9 shrink-0 items-center gap-2.5 border-b border-line px-4 py-1.5 text-[12.5px]"
+      style={{ paddingRight: `calc(1rem + ${CONTROLS_END})` }}
+    >
       <span aria-hidden className="shrink-0 text-paused">
         {icon}
       </span>

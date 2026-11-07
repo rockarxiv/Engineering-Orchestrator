@@ -7,6 +7,7 @@ import {
   THEME_PRESETS,
   THEME_TOKENS,
   THEME_STORAGE_KEY,
+  colourAsHex,
   contrastRatio,
   hexForSeed,
   hexToOklch,
@@ -18,6 +19,7 @@ import {
   seedOf,
   setThemeChoice,
   statusClash,
+  titleBarColours,
   type Palette,
   type ThemeSeed,
   type ThemeToken,
@@ -208,5 +210,46 @@ describe("the stored choice", () => {
     expect(JSON.parse(window.localStorage.getItem(THEME_STORAGE_KEY)!)).toEqual({ kind: "preset", id: "nord" });
     setThemeChoice({ kind: "preset", id: "claude" });
     expect(window.localStorage.getItem(THEME_STORAGE_KEY)).toBeNull();
+  });
+});
+
+/**
+ * The window controls' colours (EO-668): Electron's overlay reads hex, and
+ * the palettes are written in hex, OKLCH and `color-mix` toward black.
+ */
+describe("the title bar's colours", () => {
+  it("reads every form a palette is written in", () => {
+    expect(colourAsHex("#B85A3A")).toBe("#b85a3a");
+    expect(colourAsHex("oklch(21% 0.016 262)")).toBe(oklchToHex(0.21, 0.016, 262));
+    // Toward black in OKLab: the lightness scaled, the hue kept.
+    const deep = hexToOklch(colourAsHex("color-mix(in oklab, oklch(21% 0.016 262), black 22%)")!)!;
+    expect(deep.l).toBeCloseTo(0.21 * 0.78, 2);
+    expect(deep.h).toBeCloseTo(262, -1);
+    expect(colourAsHex("color-mix(in oklab, #ffffff, black 100%)")).toBe("#000000");
+    expect(colourAsHex("rgb(15 14 13 / 0.7)")).toBeNull();
+  });
+
+  it("has a ground and a symbol colour for every preset and a custom theme, on either ground", () => {
+    const palettes = [...THEME_PRESETS.map((preset) => preset.palette), paletteFor(SLATE_LIKE), paletteFor({ ground: { h: 150, c: 0.08 }, accent: { h: 30, c: 0.2 } })];
+    for (const palette of palettes) {
+      for (const under of ["deep", "canvas"] as const) {
+        const colours = titleBarColours(palette, under);
+        expect(colours).toEqual({ color: expect.stringMatching(/^#[0-9a-f]{6}$/), symbolColor: expect.stringMatching(/^#[0-9a-f]{6}$/) });
+        // The symbols read on the ground they are drawn on.
+        expect(contrastRatio(colours!.symbolColor, colours!.color)).toBeGreaterThanOrEqual(4.5);
+      }
+    }
+  });
+
+  it("matches what the window opens with, until the renderer says otherwise", () => {
+    // `mainWindowChrome` starts the overlay on the default theme's deep and muted ink.
+    expect(titleBarColours(paletteOf({ kind: "preset", id: DEFAULT_PRESET_ID }), "deep")).toEqual({ color: "#1f1e1d", symbolColor: "#c3c1b8" });
+  });
+
+  it("changes with the theme", () => {
+    const claude = titleBarColours(paletteOf({ kind: "preset", id: "claude" }), "deep");
+    const nord = titleBarColours(paletteOf({ kind: "preset", id: "nord" }), "deep");
+    expect(nord).toEqual({ color: "#272c36", symbolColor: "#d8dee9" });
+    expect(nord).not.toEqual(claude);
   });
 });

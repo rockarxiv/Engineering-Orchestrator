@@ -1451,6 +1451,17 @@ Screens pick the family that matches their job: **map** for a pipeline, which is
 
 Two things are deliberately not done. **A person's turns are not tinted in the accent**: they sit on the right in a bubble one step up the ground, as Claude Desktop draws them, and the one colour reserved for action is not spent on the text carrying the least information. And **reasoning is not given invented titles**: output is one open stream, and a heading made from its first line would be fabricated copy.
 
+### 22.6a Window chrome
+
+The main window has no native title bar. EO's own top row — the rail's top with the project switcher, the conversation's header, the canvas's tab strip, and over the overview a strip as tall as the window controls — is the title bar, and the system's window controls are drawn over it. EO draws no window buttons of its own (EO-668).
+
+- **Windows and Linux**: `titleBarStyle: "hidden"` with Electron's title bar overlay, which draws minimise, maximise and close at the top right, 51px tall so the row's rule runs on beneath them. Their background and symbols are the chat theme's — the deep or the canvas, whichever the row is at the window's edge, and the muted ink — sent through `window:titleBar` to `setTitleBarOverlay` whenever either changes. On Linux these are Electron's buttons, not the desktop theme's; that was accepted for a top edge in EO's colours rather than the window manager's.
+- **macOS**: `titleBarStyle: "hiddenInset"`, with the traffic lights moved into the rail's fixed top inset, above "EO" and clear of every control.
+
+The row's empty parts drag the window and, where the platform does it, maximise on a double-click (`app-drag` in `packages/ui/src/styles.css`); every control in it, and anything floating over it, is taken out of the drag. Where the controls are, the row ends short of them by the Window Controls Overlay's own `env(titlebar-area-*)`, which is zero wherever there is no overlay. In full screen there are no controls and nothing to drag, so none of it is reserved: the main process says when the window enters and leaves full screen (`window:state`, `window:changed`), since on Linux the overlay still reports its height there. A screen drawn before the frame — first run — has a 52px strip of its own to drag by.
+
+The canvas's own window and the debug window keep their native frames: neither has a top row of EO's to stand in for a title bar.
+
 ### 22.7 What the checker enforces
 
 `pnpm design` recomputes every pair and regenerates `tokens.css`; `pnpm design:check` verifies it is current without writing it. A failure means the value is wrong. It is not advisory, and it refuses to write `tokens.css` while any check fails.

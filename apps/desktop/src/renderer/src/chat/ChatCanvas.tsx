@@ -4,6 +4,7 @@ import { useNavigate } from "react-router-dom";
 import { cn } from "@eo/ui";
 import { IconButton } from "./kit";
 import { DEEP } from "./parts";
+import { CONTROLS_END } from "./windowChrome";
 import { ViewBody, ViewLabel, tabKeyOf, type ChatView } from "./views/registry";
 
 /**
@@ -31,6 +32,7 @@ export function ChatCanvas({
   onCloseTab,
   onClose,
   pop,
+  titleBar = false,
 }: {
   view: ChatView;
   tabKey: string;
@@ -46,6 +48,12 @@ export function ChatCanvas({
    * renderer — and no button is drawn there.
    */
   pop?: { label: "Pop out" | "Pop in"; onPress: () => void } | undefined;
+  /**
+   * The tab strip is part of the window's title bar (EO-668): the main
+   * window's, at its right edge. Not in the canvas's own window, which
+   * keeps its native frame.
+   */
+  titleBar?: boolean;
 }) {
   const navigate = useNavigate();
   // The open view's tab is always in sight, however many are open beside
@@ -56,7 +64,10 @@ export function ChatCanvas({
   }, [tabKey]);
   return (
     <section aria-label="Canvas" className={cn("grid min-h-0 min-w-0 flex-1 grid-rows-[52px_minmax(0,1fr)] border-l border-line", DEEP)}>
-      <div className="flex min-w-0 items-center gap-1 border-b border-line px-3">
+      <div
+        className={cn("flex min-w-0 items-center gap-1 border-b border-line px-3", titleBar && "app-drag")}
+        style={titleBar ? { paddingRight: `calc(0.75rem + ${CONTROLS_END})` } : undefined}
+      >
         <div role="tablist" aria-label="Open views" className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
           {tabs.map((tab) => {
             const on = tab.key === tabKey;

@@ -536,6 +536,42 @@ export function oklchToHex(l: number, c: number, h: number): string {
 }
 
 /**
+ * A palette colour as `#rrggbb`, or null for a form this does not read.
+ *
+ * For what cannot read CSS itself: Electron's title bar overlay (EO-668)
+ * takes hex, and the palettes are written in hex, `oklch(L% C H)`, and —
+ * the deep, in Slate and every custom theme — `color-mix(in oklab, …,
+ * black N%)`. Mixing toward black in OKLab scales every coordinate toward
+ * zero, so in OKLCH it is the lightness and the chroma scaled alike, with
+ * the hue kept.
+ */
+export function colourAsHex(value: string): string | null {
+  const text = value.trim();
+  if (/^#[0-9a-f]{6}$/i.test(text)) return text.toLowerCase();
+  const lch = /^oklch\(\s*([\d.]+)%\s+([\d.]+)\s+([\d.]+)\s*\)$/.exec(text);
+  if (lch) return oklchToHex(Number(lch[1]) / 100, Number(lch[2]), Number(lch[3]));
+  const mix = /^color-mix\(in oklab,\s*(.+),\s*black\s+([\d.]+)%\s*\)$/.exec(text);
+  if (!mix) return null;
+  const base = colourAsHex(mix[1]!);
+  const colour = base === null ? null : hexToOklch(base);
+  if (colour === null) return null;
+  const keep = 1 - clamp(Number(mix[2]) / 100, 0, 1);
+  return oklchToHex(colour.l * keep, colour.c * keep, colour.h);
+}
+
+/**
+ * The window controls' colours for a palette (EO-668): the ground they are
+ * drawn on, which is whatever the top row is at the window's right edge —
+ * the deep of the canvas and the overview, or the conversation's canvas —
+ * and the rail's muted ink for their symbols.
+ */
+export function titleBarColours(palette: Palette, under: "deep" | "canvas"): { color: string; symbolColor: string } | null {
+  const color = colourAsHex(palette[under === "deep" ? "--chat-deep" : "--color-canvas"]);
+  const symbolColor = colourAsHex(palette["--color-ink-muted"]);
+  return color === null || symbolColor === null ? null : { color, symbolColor };
+}
+
+/**
  * A picked colour as a seed half: its hue and how much colour it has,
  * with the strength held to what that half of the palette can carry.
  */

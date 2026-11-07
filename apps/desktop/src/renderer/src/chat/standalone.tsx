@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 import { cn } from "@eo/ui";
 import { DEEP } from "./parts";
 import { useChatTheme } from "./theme";
+import { useTitleBar, useTitleBarColours } from "./windowChrome";
 
 /**
  * A screen that is the whole window, before the window's frame is drawn
@@ -34,9 +35,18 @@ export function StandaloneScreen({
   centred?: boolean;
 }) {
   useChatTheme();
+  useTitleBarColours("deep");
+  const titleBar = useTitleBar();
   return (
-    <main className={cn("h-dvh min-h-0 overflow-y-auto text-ink", DEEP)}>
-      <div className={cn("mx-auto flex min-h-full w-full flex-col px-6 py-8", width, centred && "justify-center")}>{children}</div>
-    </main>
+    <div className={cn("flex h-dvh flex-col text-ink", DEEP)}>
+      {/* The desktop's main window has no native title bar (EO-668), and
+          this screen has no top row to stand in for one: a strip as tall
+          as the frame's top row, to move the window by and to keep the
+          content clear of the window controls drawn over it. */}
+      {titleBar ? <div aria-hidden className="app-drag h-[52px] shrink-0" /> : null}
+      <main className="min-h-0 flex-1 overflow-y-auto">
+        <div className={cn("mx-auto flex min-h-full w-full flex-col px-6 py-8", width, centred && "justify-center")}>{children}</div>
+      </main>
+    </div>
   );
 }

@@ -140,6 +140,20 @@ export interface Platform {
    * are not it.
    */
   openDebug(): boolean;
+  /**
+   * Whether the main window is full screen (EO-668). False with no main
+   * window, and on a host with no screen.
+   */
+  isFullScreen(): boolean;
+  /**
+   * Colours the window controls drawn over the main window's top row,
+   * and answers whether there were any to colour (EO-668).
+   *
+   * Windows and Linux draw them through Electron's title bar overlay,
+   * whose colours are the app's to set; macOS draws its own traffic
+   * lights and answers `false`, as does a host with no screen.
+   */
+  setTitleBarColours(colours: { color: string; symbolColor: string }): boolean;
   /** Whether the canvas has a window of its own right now. */
   hasCanvas(): boolean;
   /**

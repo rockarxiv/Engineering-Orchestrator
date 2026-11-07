@@ -184,6 +184,10 @@ describe("the two halves of the contract", () => {
         "updates:status",
         "view:current",
         "view:publish",
+        // The main window's own title bar (EO-668): whether that window
+        // is full screen, and the colours of the controls drawn over it.
+        "window:state",
+        "window:titleBar",
         "worktrees:list",
         "worktrees:release",
       ].sort(),

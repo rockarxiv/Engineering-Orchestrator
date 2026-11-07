@@ -18,6 +18,8 @@ import { AskAssistantContext } from "./askAssistant";
 import { ChatDrawer } from "./ChatHome";
 import { useChatTheme } from "./theme";
 import { TourHost } from "./tour/Tour";
+import { CONTROLS_HEIGHT, useTitleBar, useTitleBarColours } from "./windowChrome";
+import { DEEP } from "./parts";
 import { chatViewFor, isWide, movedAddressOf, tabKeyOf, type ChatViewKind } from "./views/registry";
 
 /**
@@ -94,6 +96,15 @@ function ChatFrame() {
   // already brought this window forward.
   useEffect(() => bridge().subscribe("canvas:asked", () => askAssistant()), [askAssistant]);
   const [drawerOpen, setDrawerOpen] = useState(true);
+  /*
+   * What is at the window's right edge, under the window controls
+   * (EO-668): the overview or the canvas, drawn on the deep, or nothing —
+   * and then the conversation's own header is, on the canvas colour. The
+   * controls are coloured to match and the header ends short of them.
+   */
+  const besideRight = home ? drawerOpen : view !== null && tabKey !== null && !poppedOut;
+  useTitleBarColours(besideRight ? "deep" : "canvas");
+  const titleBar = useTitleBar();
 
   // A tab for each view opened this session (`useCanvasTabs`). Not
   // recorded while the canvas is out: those are the other window's tabs.
@@ -229,6 +240,7 @@ function ChatFrame() {
                 {...(beside ? { onFold: toggleFold } : {})}
                 context={beside && view ? <CanvasChip view={view} /> : undefined}
                 {...(home ? { drawerOpen, onToggleDrawer: () => setDrawerOpen((open) => !open) } : {})}
+                atWindowEnd={!besideRight}
               />
             </section>
 
@@ -236,6 +248,11 @@ function ChatFrame() {
               // The overview column.
               drawerOpen ? (
                 <div className="flex min-h-0 w-[300px] shrink-0 flex-col border-l border-line">
+                  {/* The overview has no header of its own, so above it is a
+                      strip of title bar as tall as the window controls drawn
+                      on it (EO-668) — none on macOS, whose traffic lights are
+                      at the other end, and none in full screen. */}
+                  {titleBar ? <div aria-hidden className={cn("app-drag shrink-0", DEEP)} style={{ height: CONTROLS_HEIGHT }} /> : null}
                   <ChatDrawer />
                 </div>
               ) : null
@@ -248,6 +265,7 @@ function ChatFrame() {
                   onCloseTab={closeTab}
                   onClose={() => void navigate(CHAT_HOME_ROUTE)}
                   pop={canPopOutCanvas() ? { label: "Pop out", onPress: popOut } : undefined}
+                  titleBar
                 />
               </AskAssistantContext.Provider>
             ) : null}

@@ -1,11 +1,23 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { app, BrowserWindow, dialog, ipcMain, net, Notification, powerMonitor, safeStorage, screen, shell } from "electron";
+import {
+  app,
+  BrowserWindow,
+  dialog,
+  ipcMain,
+  net,
+  Notification,
+  powerMonitor,
+  safeStorage,
+  screen,
+  shell,
+  type BrowserWindowConstructorOptions,
+} from "electron";
 import { CANVAS_WINDOW_SEARCH, DEBUG_WINDOW_SEARCH, withActingAgent } from "@eo/core";
 import { canvasWindowClosed } from "../ipc/canvasWindow.js";
 import { clearPublishedView } from "../ipc/currentView.js";
 import type { Platform } from "../ipc/platform.js";
-import { bridgePushChannels } from "../ipc/push.js";
+import { bridgePushChannels, emitPush } from "../ipc/push.js";
 import { dispatchIpc, registeredChannels } from "../ipc/registry.js";
 import { resolveResourcePaths } from "../resources.js";
 import type { InjectedUpdater } from "../updater.js";
@@ -47,7 +59,8 @@ import { webContentsTransport } from "./webContentsTransport.js";
  * publishes the view while it is open and clears it when it goes; the
  * debug window publishes no view and clears none — it is an instrument
  * pointed at the runs, not a screen an agent should be told the person
- * is looking at.
+ * is looking at. And only the main window hides its native title bar
+ * (EO-668, `mainWindowChrome`): the other two keep their frames.
  *
  * @param mainDir the directory the main bundle was loaded from —
  *   `__dirname`, which only the entry point can honestly answer, and
@@ -145,6 +158,8 @@ export function createElectronPlatform(options: { mainDir: string }): Platform {
       height: 720,
       show: false,
       autoHideMenuBar: true,
+      // No native title bar: EO's own top row is the title bar (EO-668).
+      ...mainWindowChrome(process.platform),
       webPreferences: {
         // Forced to CJS in electron.vite.config.ts: Electron's sandboxed
         // preload loader can't execute ES modules.
@@ -185,6 +200,12 @@ export function createElectronPlatform(options: { mainDir: string }): Platform {
       if (alive(debugWindow)) debugWindow.close();
     });
     window.on("close", (event) => requestClose?.(event));
+    // Full screen has no window controls to leave room for and no title
+    // bar to drag (EO-668): the top row is told, and stops reserving the
+    // space. The overlay's own geometry is no use for this — on Linux
+    // `env(titlebar-area-height)` still answers the overlay's height in full screen.
+    window.on("enter-full-screen", () => emitPush("window:changed", {}));
+    window.on("leave-full-screen", () => emitPush("window:changed", {}));
 
     window.on("ready-to-show", () => {
       window.show();
@@ -244,6 +265,11 @@ export function createElectronPlatform(options: { mainDir: string }): Platform {
    * "Close the canvas" and the window's own close button all take.
    */
   function createCanvasWindow(path: string): BrowserWindow {
+    // A native frame, deliberately, unlike the main window (EO-668). The
+    // canvas draws no top row of its own to stand in for a title bar —
+    // its tab strip is shared with the main window's canvas, where it is
+    // not at the window's edge — and a window somebody pops out has to
+    // be movable and closable whatever is open in it.
     const window = new BrowserWindow({
       ...readBounds(canvasBoundsPath(userDataPath), { width: CANVAS_DEFAULT_WIDTH, height: CANVAS_DEFAULT_HEIGHT }),
       minWidth: CANVAS_MIN_WIDTH,
@@ -297,6 +323,8 @@ export function createElectronPlatform(options: { mainDir: string }): Platform {
    * bridge, its own remembered bounds, closed with the main window.
    */
   function createDebugWindow(): BrowserWindow {
+    // A native frame, for the canvas window's reason (EO-668): an
+    // instrument window has no top row of EO's to be its title bar.
     const window = new BrowserWindow({
       ...readBounds(debugBoundsPath(userDataPath), { width: DEBUG_DEFAULT_WIDTH, height: DEBUG_DEFAULT_HEIGHT }),
       minWidth: DEBUG_MIN_WIDTH,
@@ -471,6 +499,14 @@ export function createElectronPlatform(options: { mainDir: string }): Platform {
       debugWindow = createDebugWindow();
       return true;
     },
+    isFullScreen: () => alive(mainWindow) && mainWindow.isFullScreen(),
+    setTitleBarColours(colours) {
+      // macOS draws its own traffic lights, whose colours are the
+      // system's; only the overlay on Windows and Linux takes ours.
+      if (process.platform === "darwin" || !alive(mainWindow)) return false;
+      mainWindow.setTitleBarOverlay(colours);
+      return true;
+    },
     closeCanvas() {
       if (alive(canvasWindow)) canvasWindow.close();
     },
@@ -545,6 +581,50 @@ export function createElectronPlatform(options: { mainDir: string }): Platform {
 }
 
 /** The window a dialog should be modal to: the focused one, else any. */
+/**
+ * How tall the window controls drawn over EO's top row are (EO-668).
+ *
+ * The conversation's header and the canvas's tab strip are 52px, the last
+ * of which is the rule under them. The controls fill the rest, so they sit
+ * in the row rather than above it and the rule runs on under them to the
+ * window's edge instead of stopping where the overlay starts.
+ */
+export const TITLE_BAR_HEIGHT = 51;
+
+/**
+ * The main window's chrome, per platform (EO-668, ARCHITECTURE.md, "Window
+ * chrome").
+ *
+ * No native title bar anywhere: the window manager's bar doubled the
+ * chrome above EO's own top row, and on Linux it is drawn in the desktop's
+ * theme, which EO cannot colour. The system's window controls stay —
+ * nothing here draws buttons of its own.
+ *
+ * - **macOS**: `hiddenInset`, with the traffic lights moved into the
+ *   rail's top inset (`ChatRail`'s spacer, 24px under a 4px pad), level
+ *   with the left edge of "EO" below them.
+ * - **Windows and Linux**: `hidden` with Electron's title bar overlay,
+ *   which draws minimise, maximise and close over the top-right of the
+ *   window. Its colours start as the default theme's and follow the
+ *   person's from then on (`window:titleBar`); on Linux these are
+ *   Electron's buttons rather than the desktop theme's, which was
+ *   accepted for an EO-coloured top edge.
+ *
+ * The renderer makes room for them: `env(titlebar-area-*)` on Windows and
+ * Linux, the rail's fixed inset on macOS.
+ */
+export function mainWindowChrome(
+  platform: NodeJS.Platform,
+): Pick<BrowserWindowConstructorOptions, "titleBarStyle" | "titleBarOverlay" | "trafficLightPosition"> {
+  if (platform === "darwin") return { titleBarStyle: "hiddenInset", trafficLightPosition: { x: 18, y: 10 } };
+  return {
+    titleBarStyle: "hidden",
+    // The Claude theme's rail and muted ink, which is what the window
+    // opens in until the renderer says otherwise.
+    titleBarOverlay: { color: "#1f1e1d", symbolColor: "#c3c1b8", height: TITLE_BAR_HEIGHT },
+  };
+}
+
 function focusedWindow(): BrowserWindow | undefined {
   return BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0];
 }
