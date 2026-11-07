@@ -220,6 +220,26 @@ describe("going through it", () => {
     expect(address()).toBe("/pipelines/p1");
   });
 
+  /**
+   * The key listener stays attached from stop to stop. Re-attached at each
+   * one, it was missing between a callout being painted and its effect
+   * running, and a key pressed in that gap was lost (seen in CI).
+   */
+  it("keeps one key listener across stops, so no key pressed as a callout appears is lost", async () => {
+    renderAt("/pipelines/p1");
+    await tour();
+    const added = vi.spyOn(document, "addEventListener");
+    try {
+      fireEvent.keyDown(document.body, { key: "ArrowRight" });
+      await waitFor(async () => expect(await tour()).toHaveTextContent("Waiting on you"));
+      fireEvent.keyDown(document.body, { key: "ArrowRight" });
+      await waitFor(async () => expect(await tour()).toHaveTextContent("The assistant"));
+      expect(added.mock.calls.filter(([type]) => type === "keydown")).toHaveLength(0);
+    } finally {
+      added.mockRestore();
+    }
+  });
+
   it("moves focus into the callout, onto Next", async () => {
     renderAt("/pipelines/p1");
     await tour();

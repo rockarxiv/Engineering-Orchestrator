@@ -319,28 +319,34 @@ function TourOverlay({
   useLayoutEffect(() => {
     if (callout.current && callout.current.offsetHeight > 0) setHeight(callout.current.offsetHeight);
   });
-  // Focus moves into the callout at every stop.
-  useEffect(() => {
+  // Focus moves into the callout at every stop, before the callout is
+  // painted: an Enter pressed the moment it can be seen lands on Next.
+  useLayoutEffect(() => {
     if (shown) nextButton.current?.focus();
   }, [shown, stop.id]);
 
   // Escape skips and Right Arrow goes on wherever focus is; Enter goes on
   // unless it is on a button, which answers for itself.
-  const keys = useRef({ onNext, onSkip });
-  keys.current = { onNext, onSkip };
+  //
+  // One listener for as long as the tour is on, reading whether a callout
+  // is drawn from a ref set while rendering. Re-attached at every stop, it
+  // was missing between a callout being painted and the effect that added
+  // it running, and a key pressed in that gap was lost (seen in CI as a
+  // tour that stayed on one stop).
+  const keys = useRef({ onNext, onSkip, shown });
+  keys.current = { onNext, onSkip, shown };
   useEffect(() => {
-    if (!shown) return;
     const onKey = (event: KeyboardEvent) => {
       const onButton = event.target instanceof HTMLElement && event.target.closest("button") !== null;
       if (event.key === "Escape") keys.current.onSkip();
-      else if (event.key === "ArrowRight" || (event.key === "Enter" && !onButton)) keys.current.onNext();
+      else if (keys.current.shown && (event.key === "ArrowRight" || (event.key === "Enter" && !onButton))) keys.current.onNext();
       else return;
       event.preventDefault();
       event.stopPropagation();
     };
     document.addEventListener("keydown", onKey, true);
     return () => document.removeEventListener("keydown", onKey, true);
-  }, [shown]);
+  }, []);
 
   const viewport = { width: window.innerWidth, height: window.innerHeight };
   const place = rect === null ? null : placeCallout(rect, viewport, height);
