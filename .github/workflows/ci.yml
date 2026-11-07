@@ -8,6 +8,14 @@ on:
   # are asked for without pushing a commit for each.
   workflow_dispatch:
 
+# Read-only, for every job (EO-672). Each one checks the repository out and
+# runs the suite; none writes to it, comments, or publishes anything. The
+# artifacts e2e-macos and e2e-windows keep on failure go through the
+# runner's own token, not this one. A job that needs more declares its own
+# block, saying what for.
+permissions:
+  contents: read
+
 jobs:
   # Linux only, deliberately.
   #
