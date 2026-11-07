@@ -249,7 +249,8 @@ describe("step 1, before anything else", () => {
 
 /**
  * Step 2, "Connect a coding agent" (EO-659): between the welcome question
- * and the gallery, and only while nothing on this machine is signed in.
+ * and the gallery, shown only while nothing on this machine is signed in,
+ * and kept on screen through a sign-in until the person moves on (EO-666).
  * The three states a machine can be in are the three tests that open it.
  */
 describe("connecting a coding agent", () => {
@@ -284,19 +285,56 @@ describe("connecting a coding agent", () => {
     expect(await screen.findByText("EO could not reach the npm registry: offline")).toBeInTheDocument();
   });
 
-  it("signs an installed runtime in with the sign-in dialog, and goes on to the gallery by itself", async () => {
-    mockIpc({ done: false, mode: null }, { runtimes: [absent("codex", "Codex"), signedOut("claude", "Claude Code")] });
-    renderFirstRun(<FirstRun onLeft={() => {}} />);
-    await answerSolo();
-
+  const signInClaude = async () => {
     fireEvent.click(await screen.findByRole("button", { name: "Sign in to Claude Code" }));
     const dialog = await screen.findByRole("dialog", { name: "Sign in to Claude Code" });
     // The CLI finishes by itself once the browser comes back to it: no code to paste.
     fireEvent.click(within(dialog).getByRole("button", { name: "Sign in" }));
+  };
 
-    // No further press: the statuses are asked again and one now says signed in.
-    expect(await screen.findByText("Start with a template")).toBeInTheDocument();
+  it("signs an installed runtime in with the sign-in dialog, and stays so another can be signed in too", async () => {
+    mockIpc({ done: false, mode: null }, { runtimes: [absent("codex", "Codex"), signedOut("claude", "Claude Code")] });
+    renderFirstRun(<FirstRun onLeft={() => {}} />);
+    await answerSolo();
+
+    expect(await screen.findByRole("button", { name: "Look around first" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Continue" })).toBeNull();
+    await signInClaude();
+
+    // The statuses are asked again and one now says signed in; the step stays (EO-666).
+    const list = screen.getByRole("list", { name: "Coding agents" });
+    expect(await within(within(list).getByRole("region", { name: "Claude Code" })).findByText("Signed in")).toBeInTheDocument();
+    expect(within(list).getByRole("button", { name: "Install Codex" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Connect a coding agent" })).toBeInTheDocument();
+    expect(screen.queryByText("Start with a template")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Look around first" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Continue" })).toBeInTheDocument();
+  });
+
+  it("moves on to the gallery on Continue once one is signed in", async () => {
+    mockIpc({ done: false, mode: "solo" }, { runtimes: [absent("codex", "Codex"), signedOut("claude", "Claude Code")], templates: [TEMPLATE] });
+    renderFirstRun(<FirstRun onLeft={() => {}} />);
+    await signInClaude();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Continue" }));
+    const card = await screen.findByRole("region", { name: "Weekly report" });
+    expect(within(card).getByRole("button", { name: "Use this" })).toBeEnabled();
     expect(screen.queryByRole("heading", { name: "Connect a coding agent" })).not.toBeInTheDocument();
+  });
+
+  it("returns to the gallery on Continue when reached from a card's Connect a coding agent", async () => {
+    mockIpc({ done: false, mode: "solo" }, { runtimes: [absent("codex", "Codex"), signedOut("claude", "Claude Code")], templates: [TEMPLATE] });
+    renderFirstRun(<FirstRun onLeft={() => {}} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Look around first" }));
+    const before = await screen.findByRole("region", { name: "Weekly report" });
+    fireEvent.click(within(before).getByRole("button", { name: "Connect a coding agent" }));
+
+    expect(await screen.findByRole("heading", { name: "Connect a coding agent" })).toBeInTheDocument();
+    await signInClaude();
+    fireEvent.click(await screen.findByRole("button", { name: "Continue" }));
+
+    const card = await screen.findByRole("region", { name: "Weekly report" });
+    expect(within(card).getByRole("button", { name: "Use this" })).toBeEnabled();
   });
 
   it("is not shown when a backend is already signed in", async () => {
