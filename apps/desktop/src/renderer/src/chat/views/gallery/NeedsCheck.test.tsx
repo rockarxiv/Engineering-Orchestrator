@@ -96,6 +96,8 @@ function mockIpc(options: {
   /** What `repositories:list` and `projects:list` answer, for "Add another repository". */
   repositories?: { id: string; name: string }[];
   projectRepositoryIds?: string[];
+  /** Whether the machine has changed since, outside EO — `gh auth login` run in a terminal (EO-663). */
+  changedOutside?: () => boolean;
 }) {
   // What the *machine* would say, before and after the folder is
   // attached — rather than a queue of answers keyed to how many times
@@ -106,13 +108,16 @@ function mockIpc(options: {
   const invoke = vi.fn(async (channel: string, _payload?: unknown) => {
     switch (channel) {
       case "gallery:needs":
-        return { ok: true, data: { needs: fixed ? (options.onceFixed ?? options.needs) : options.needs, jobId: options.jobId ?? null, problem: null } };
+        return { ok: true, data: { needs: fixed || options.changedOutside?.() === true ? (options.onceFixed ?? options.needs) : options.needs, jobId: options.jobId ?? null, problem: null } };
       case "gallery:attachWorkspace":
         if (options.attachProblem == null) fixed = true;
         return { ok: true, data: { ok: options.attachProblem == null, problem: options.attachProblem ?? null } };
       case "workspaces:create":
         fixed = true;
         return { ok: true, data: { ok: true, workspace: null, problem: null } };
+      case "workspaces:update":
+        fixed = true;
+        return { ok: true, data: { ok: true, problem: null } };
       case "projects:addProject":
         fixed = true;
         return { ok: true, data: { ok: true, project: null, problem: null } };
@@ -551,6 +556,52 @@ describe("several repositories", () => {
  * screen said something else, which is the one thing a snapshot of copy
  * must not do.
  */
+describe("the forge CLI line (EO-663)", () => {
+  const NOT_INSTALLED: GalleryNeedView = {
+    key: "forge:w1",
+    line: "GitHub CLI (gh) installed and signed in, for shop",
+    met: false,
+    why: "shop is on GitHub, and EO opens its pull requests through the GitHub CLI, gh, which is not installed on this machine. Install it, then check again.",
+    fix: { kind: "forge", label: "Check again", target: "w1", link: { label: "Install gh", url: "https://cli.github.com" } },
+  };
+  const SIGNED_IN: GalleryNeedView = { key: "forge:w1", line: NOT_INSTALLED.line, met: true, why: null, fix: null };
+  const UNPLACED: GalleryNeedView = {
+    key: "forge:w1",
+    line: "GitHub or GitLab CLI, for shop",
+    met: false,
+    why: "EO cannot tell whether code.acme.dev is GitHub or GitLab. Say which below — guessing from a self-hosted hostname is how work ends up on the wrong kind of server.",
+    fix: { kind: "forgeKind", label: "Say which", target: "w1" },
+  };
+
+  it("says which CLI and why, links to its install page, and goes green when checked again", async () => {
+    let installed = false;
+    mockIpc({ needs: [NOT_INSTALLED], onceFixed: [SIGNED_IN], changedOutside: () => installed });
+    renderNeeds([NOT_INSTALLED]);
+
+    expect(screen.getByText(NOT_INSTALLED.why!)).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Install gh" })).toHaveAttribute("href", "https://cli.github.com");
+    expect(screen.getByLabelText("Not ready")).toBeInTheDocument();
+
+    // Installed and signed in, in a terminal; then asked again from here.
+    installed = true;
+    fireEvent.click(screen.getByRole("button", { name: "Check again" }));
+    expect(await screen.findByText("Everything it needs is here.")).toBeInTheDocument();
+    expect(screen.getByLabelText("Ready")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Check again" })).not.toBeInTheDocument();
+  });
+
+  it("shows forge:detect's problem for a host it cannot place, and writes the person's choice to the repository", async () => {
+    const invoke = mockIpc({ needs: [UNPLACED], onceFixed: [SIGNED_IN] });
+    renderNeeds([UNPLACED]);
+
+    expect(screen.getByText(UNPLACED.why!)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "It is GitLab" }));
+
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("workspaces:update", { id: "w1", config: { forgeKind: "gitlab" } }));
+    expect(await screen.findByText("Everything it needs is here.")).toBeInTheDocument();
+  });
+});
+
 describe("the developer's first-run copy", () => {
   const needs = DEVELOPER_FIRST_RUN.needs as GalleryNeedView[];
   const template: GalleryTemplateView = {
@@ -562,7 +613,7 @@ describe("the developer's first-run copy", () => {
     previewable: DEVELOPER_FIRST_RUN.template.previewable,
   };
 
-  it("asks for a repository and a backend, in these words", async () => {
+  it("asks for a repository, the forge CLI and a backend, in these words", async () => {
     mockIpc({ needs, jobId: DEVELOPER_FIRST_RUN.jobId });
     const { container } = renderNeeds(needs, { template, jobId: DEVELOPER_FIRST_RUN.jobId });
 
@@ -570,12 +621,12 @@ describe("the developer's first-run copy", () => {
     // Word for word, and nowhere sending the person to a screen first
     // run hides (EO-659).
     expect(container.textContent).toBe(
-      'Software feature to merge is set up2 things left before real work runs. Each one says why, and carries the one button that fixes it.An agent for the Implementer stepsAn agent for the Reviewer stepsA repository — the checkout its work happens inThis project has no repository yet, so nothing can be branched, reviewed or opened as a pull request.Choose a repositorySaveA coding agent signed inNothing on this machine is signed in, so no step would dispatch.No coding agent is installed on this machine yet. EO ships none, and can fetch one for you.Install a coding agentGo to the boardContinue with Preview only',
+      `Software feature to merge is set up3 things left before real work runs. Each one says why, and carries the one button that fixes it.An agent for the Implementer stepsAn agent for the Reviewer stepsA repository — the checkout its work happens inThis project has no repository yet, so nothing can be branched, reviewed or opened as a pull request.Choose a repositorySaveGitHub or GitLab CLIThis pipeline opens pull requests through the GitHub CLI (gh) or the GitLab CLI (glab), whichever the repository's remote is on. EO checks which once a repository is attached.A coding agent signed inNothing on this machine is signed in, so no step would dispatch.No coding agent is installed on this machine yet. EO ships none, and can fetch one for you.Install a coding agentGo to the boardContinue with Preview only`,
     );
   });
 
-  /** The two red ones are the two the old first-run panel asked for, and no others. */
-  it("has exactly two red lines", () => {
-    expect(needs.filter((need) => !need.met).map((need) => need.key)).toEqual(["workspace", "backend"]);
+  /** The two red ones the old first-run panel asked for, and the forge CLI its pull requests go through (EO-663). */
+  it("has exactly three red lines", () => {
+    expect(needs.filter((need) => !need.met).map((need) => need.key)).toEqual(["workspace", "forge", "backend"]);
   });
 });

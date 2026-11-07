@@ -746,7 +746,8 @@ export function projectNeeds(db: Db, input: ProjectNeedsInput): GalleryNeed[] {
     // module its steps run is a line of its own, green once approved.
     ...galleryNeeds(
       input.preflight,
-      [workspaceNeed(db, input.projectId, input.document), backendNeed(input.preflight, input.signedInBackends)],
+      // The forge CLI lines sit under the repositories they are about (EO-663).
+      [workspaceNeed(db, input.projectId, input.document), ...(input.forge ?? []), backendNeed(input.preflight, input.signedInBackends)],
       // What a role could be pointed at, which decides whether its red
       // line carries a sign-in or the one gesture that staffs it.
       input.signedInBackends,
@@ -792,6 +793,11 @@ export interface ProjectNeedsInput {
   preflight: ImportPreflight;
   projectId: Uuid;
   signedInBackends: readonly string[];
+  /**
+   * The forge CLI lines, one per repository (EO-663, `forgeNeeds`). Read
+   * by the caller, because asking `gh` is asynchronous and this is not.
+   */
+  forge?: readonly GalleryNeed[];
 }
 
 /**

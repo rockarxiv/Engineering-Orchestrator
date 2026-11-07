@@ -706,6 +706,8 @@ export function developerRegistry(): Registry {
           ...(BUILTIN_INPUTS[action] === undefined ? {} : { inputs: BUILTIN_INPUTS[action] }),
           sideEffects: BUILTIN_SIDE_EFFECTS[action],
           ...(BUILTIN_WATCH[action] ? { watch: true } : {}),
+          // Through `gh` or `glab`, which the needs check asks for (EO-663).
+          ...(action === "open_pull_request" ? { opensPullRequest: true } : {}),
         },
       ]),
     ),

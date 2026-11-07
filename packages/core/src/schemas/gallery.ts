@@ -162,8 +162,13 @@ export const GalleryNeedFixSchema = z.object({
    * `addRepository` is the one kind a green line carries (EO-662): a
    * project can span several repositories, so the repository line offers
    * another once one works, attached the way Settings → Projects does.
+   *
+   * `forge` and `forgeKind` are the forge CLI line's (EO-663): EO does not
+   * install `gh` or `glab`, so the one button is **Check again**, which
+   * asks `forge:detect` again; `forgeKind` is the choice between GitHub
+   * and GitLab for a remote EO cannot place. `target` is the repository.
    */
-  kind: z.enum(["folder", "repository", "addRepository", "backend", "connector", "secret", "role", "module"]),
+  kind: z.enum(["folder", "repository", "addRepository", "backend", "connector", "secret", "role", "module", "forge", "forgeKind"]),
   /** What the button says: "Choose folder", "Choose a repository", "Sign in". */
   label: z.string(),
   /**
@@ -176,6 +181,11 @@ export const GalleryNeedFixSchema = z.object({
    * read the wrong one.
    */
   target: z.string().nullable().default(null),
+  /**
+   * A page beside the button, for what EO cannot do itself (EO-663): where
+   * the CLI a forge line needs is installed from. Absent on every other line.
+   */
+  link: z.object({ label: z.string(), url: z.string() }).optional(),
 });
 
 /**

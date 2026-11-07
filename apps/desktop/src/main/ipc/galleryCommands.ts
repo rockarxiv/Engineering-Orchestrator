@@ -33,11 +33,13 @@ import {
   workspaceProblem,
 } from "../db/repos/index.js";
 import { isAdopting } from "../db/repos/projectsRepo.js";
-import { galleryBlanks, galleryNeeds, galleryRoleSlots, repositoryAnswer } from "../gallery/form.js";
+import { forgeCardNeed, galleryBlanks, galleryNeeds, galleryRoleSlots, repositoryAnswer } from "../gallery/form.js";
+import { forgeNeeds, type DetectForge } from "../gallery/forgeNeeds.js";
 import { previewTemplate, projectNeeds, useTemplate } from "../gallery/commands.js";
 import { listedByToken, listedTemplate, rememberListed } from "../gallery/session.js";
 import { bundledTemplates, listGalleryTemplates, type GalleryOptions, type GalleryTemplate } from "../gallery/templates.js";
 import { preflightImport } from "../modules/pipelineTransfer.js";
+import { detectForge } from "./forgeCommands.js";
 import type { ModuleSecretsOptions } from "../modules/secrets.js";
 import { noteFirstRunProject } from "../firstRun/firstRun.js";
 import { activeProjectId, movingProjectRefusal, repositoryPathProblem } from "./repositoryCommands.js";
@@ -68,6 +70,8 @@ export interface GalleryContext extends GalleryOptions {
    * on a server, which answers from its own rows.
    */
   managed?: ManagedDirectory;
+  /** How a repository's forge CLI is checked (EO-663): `forge:detect`, unless a test says otherwise. */
+  detectForge?: DetectForge;
 }
 
 /**
@@ -156,7 +160,8 @@ function cardOf(db: Db, template: GalleryTemplate, context: GalleryContext, solo
     source: template.source,
     bundled: template.bundled,
     pipelineName: template.document.pipeline.name,
-    needs: galleryNeeds(preflight),
+    // The forge CLI line too, before any repository says which (EO-663).
+    needs: galleryNeeds(preflight, forgeCardNeed(template.document)),
     blanks: galleryBlanks(template.document),
     roleSlots: galleryRoleSlots(template.document),
     solo,
@@ -250,7 +255,7 @@ export async function useGalleryCommand(db: Db, context: GalleryContext, payload
     projectId: result.projectId,
     pipelineId: result.pipelineId,
     jobId: result.jobId,
-    needs: needsOf(db, context, template.document, result.projectId),
+    needs: await needsOf(db, context, template.document, result.projectId),
     problem: null,
   };
 }
@@ -276,11 +281,11 @@ export async function galleryNeedsCommand(db: Db, context: GalleryContext, paylo
   // from the install, because this channel is also how a reloaded window
   // finds its way back to step 6.
   const job = listJobs(db, projectId)[0] ?? null;
-  return { needs: needsOf(db, context, template.document, projectId), jobId: job?.id ?? null, problem: null };
+  return { needs: await needsOf(db, context, template.document, projectId), jobId: job?.id ?? null, problem: null };
 }
 
 /** One reading of the design's lines, so the two channels that answer with them cannot come to differ. */
-function needsOf(db: Db, context: GalleryContext, document: PipelineExport, projectId: Uuid): IpcResponse<"gallery:needs">["needs"] {
+async function needsOf(db: Db, context: GalleryContext, document: PipelineExport, projectId: Uuid): Promise<IpcResponse<"gallery:needs">["needs"]> {
   // Preflighted against the project that now exists, because that is the
   // only reading that can answer the design's lines: which types landed, which
   // connectors are still disconnected, which roles the import left
@@ -289,7 +294,9 @@ function needsOf(db: Db, context: GalleryContext, document: PipelineExport, proj
     projectId,
     signedInBackends: context.signedInBackends,
   });
-  return projectNeeds(db, { document, preflight, projectId, signedInBackends: context.signedInBackends });
+  const detect = context.detectForge ?? ((repositoryId: string) => detectForge(db, { repositoryId }));
+  const forge = await forgeNeeds(db, projectId, document, detect);
+  return projectNeeds(db, { document, preflight, projectId, signedInBackends: context.signedInBackends, forge });
 }
 
 /**

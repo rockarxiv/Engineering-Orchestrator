@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
-import { Check, Download, FolderOpen, Plus, X } from "lucide-react";
+import { Check, Download, ExternalLink, FolderOpen, Plus, RefreshCw, X } from "lucide-react";
 import { GIT_WORKTREE_KIND, type GalleryNeedView, type GalleryTemplateView, type RuntimeStatusView, type SectionLock } from "@eo/core";
 import { machineAvailable } from "../../../ipc/bridge";
 import { ipcQuery } from "../../../query/client";
@@ -63,7 +63,7 @@ export function NeedsCheck({
   // `config:changed`, and the sign-in ends in the main process rather
   // than in a mutation here — so the view listens.
   useInvalidateOnPush("config:changed", key);
-  const refresh = () => void queryClient.invalidateQueries({ queryKey: key });
+  const refresh = () => queryClient.invalidateQueries({ queryKey: key });
 
   const lines = needs.data?.needs ?? [];
   const jobId = needs.data?.jobId ?? null;
@@ -149,7 +149,7 @@ export function NeedsCheck({
 }
 
 /** One line: the status, the sentence, why it is red, and the one button. */
-function NeedRow({ need, projectId, template, onFixed }: { need: GalleryNeedView; projectId: string; template: GalleryTemplateView; onFixed: () => void }) {
+function NeedRow({ need, projectId, template, onFixed }: { need: GalleryNeedView; projectId: string; template: GalleryTemplateView; onFixed: () => Promise<unknown> }) {
   return (
     <div className="flex min-w-0 flex-col gap-1.5 py-2.5">
       <div className="flex items-start gap-2.5">
@@ -186,18 +186,22 @@ function NeedRow({ need, projectId, template, onFixed }: { need: GalleryNeedView
   );
 }
 
-function Fix({ need, projectId, template, onFixed }: { need: GalleryNeedView; projectId: string; template: GalleryTemplateView; onFixed: () => void }) {
+function Fix({ need, projectId, template, onFixed }: { need: GalleryNeedView; projectId: string; template: GalleryTemplateView; onFixed: () => Promise<unknown> }) {
   const fix = need.fix;
   if (fix === null) return null;
+  /** Every other fix is told only that it is done; Check again waits on the reading. */
+  const done = () => void onFixed();
   if (fix.kind === "folder" || fix.kind === "repository") {
-    return <WorkspaceFix label={fix.label} kind={fix.kind} path={fix.target ?? ""} projectId={projectId} onFixed={onFixed} />;
+    return <WorkspaceFix label={fix.label} kind={fix.kind} path={fix.target ?? ""} projectId={projectId} onFixed={done} />;
   }
-  if (fix.kind === "addRepository") return <AddRepositoryFix label={fix.label} projectId={projectId} onFixed={onFixed} />;
-  if (fix.kind === "backend") return <BackendFix label={fix.label} backend={fix.target} onFixed={onFixed} />;
-  if (fix.kind === "connector") return <ConnectorFix label={fix.label} server={fix.target} onFixed={onFixed} />;
-  if (fix.kind === "secret") return <SecretFix label={fix.label} name={fix.target ?? ""} onFixed={onFixed} />;
-  if (fix.kind === "module") return <ModuleFix label={fix.label} moduleId={fix.target ?? ""} onFixed={onFixed} />;
-  return <RoleFix label={fix.label} role={fix.target ?? ""} template={template} onFixed={onFixed} />;
+  if (fix.kind === "addRepository") return <AddRepositoryFix label={fix.label} projectId={projectId} onFixed={done} />;
+  if (fix.kind === "backend") return <BackendFix label={fix.label} backend={fix.target} onFixed={done} />;
+  if (fix.kind === "connector") return <ConnectorFix label={fix.label} server={fix.target} onFixed={done} />;
+  if (fix.kind === "secret") return <SecretFix label={fix.label} name={fix.target ?? ""} onFixed={done} />;
+  if (fix.kind === "module") return <ModuleFix label={fix.label} moduleId={fix.target ?? ""} onFixed={done} />;
+  if (fix.kind === "forge") return <ForgeFix label={fix.label} link={fix.link ?? null} onCheck={onFixed} />;
+  if (fix.kind === "forgeKind") return <ForgeKindFix repositoryId={fix.target ?? ""} onFixed={done} />;
+  return <RoleFix label={fix.label} role={fix.target ?? ""} template={template} onFixed={done} />;
 }
 
 /**
@@ -470,6 +474,57 @@ function ModuleFix({ label, moduleId, onFixed }: { label: string; moduleId: stri
       </div>
       {approval.dialog}
     </section>
+  );
+}
+
+/**
+ * The forge CLI line's button (EO-663): EO does not install `gh` or
+ * `glab`, so this asks `forge:detect` again — the needs check's own
+ * question, read afresh — and links to where the CLI is installed from.
+ */
+function ForgeFix({ label, link, onCheck }: { label: string; link: { label: string; url: string } | null; onCheck: () => Promise<unknown> }) {
+  const check = useMutation({ mutationFn: onCheck });
+  return (
+    <div className="flex flex-wrap items-center gap-2 pl-6">
+      <Button size="sm" icon={<RefreshCw size={12} />} disabled={check.isPending} onClick={() => check.mutate()}>
+        {check.isPending ? "Checking…" : label}
+      </Button>
+      {/* `target="_blank"` reaches the window-open handler, which sends it to the real browser. */}
+      {link === null ? null : (
+        <a href={link.url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-[12.5px] text-accent-soft hover:underline">
+          <ExternalLink size={12} />
+          {link.label}
+        </a>
+      )}
+    </div>
+  );
+}
+
+/**
+ * GitHub or GitLab, for a remote EO cannot place (EO-663): written to the
+ * repository as Settings → Workspaces' Forge field writes it, and then the
+ * line is asked again.
+ */
+function ForgeKindFix({ repositoryId, onFixed }: { repositoryId: string; onFixed: () => void }) {
+  const choose = useMutation({
+    mutationFn: (forgeKind: "github" | "gitlab") => ipcQuery("workspaces:update", { id: repositoryId, config: { forgeKind } }),
+    onSuccess: (result) => {
+      if (result.ok) onFixed();
+    },
+  });
+  const problem = choose.data?.problem ?? choose.error?.message ?? null;
+  return (
+    <div className="flex flex-col gap-1.5 pl-6">
+      <div className="flex flex-wrap items-center gap-2">
+        <Button size="sm" disabled={choose.isPending} onClick={() => choose.mutate("github")}>
+          It is GitHub
+        </Button>
+        <Button size="sm" disabled={choose.isPending} onClick={() => choose.mutate("gitlab")}>
+          It is GitLab
+        </Button>
+      </div>
+      {problem === null ? null : <ErrorLine>{problem}</ErrorLine>}
+    </div>
   );
 }
 

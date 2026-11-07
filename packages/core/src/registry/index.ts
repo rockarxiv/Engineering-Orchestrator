@@ -451,6 +451,16 @@ export interface BuiltinEntry {
    * this runs once.
    */
   watch?: boolean;
+  /**
+   * Whether running this opens a pull request on the repository's forge,
+   * through its command-line client — `gh` or `glab` (EO-663).
+   *
+   * The pack's word for it, so the needs check can say a pipeline needs
+   * that client installed and signed in by reading the pipeline's own
+   * steps rather than recognising a template (invariant 13). Optional,
+   * and absent is no.
+   */
+  opensPullRequest?: boolean;
 }
 
 /**
@@ -616,6 +626,14 @@ export function builtinHasSideEffects(registry: RegistryFacts, action: string | 
  */
 export function builtinCanWait(registry: RegistryFacts, action: string | null): boolean {
   return action !== null && registry.builtins.get(action)?.watch === true;
+}
+
+/**
+ * Whether this function opens a pull request (EO-663). False for an
+ * action nothing declares, for `builtinHasSideEffects`' reason.
+ */
+export function builtinOpensPullRequest(registry: RegistryFacts, action: string | null): boolean {
+  return action !== null && registry.builtins.get(action)?.opensPullRequest === true;
 }
 
 /**
@@ -1233,6 +1251,8 @@ export const RegistryViewSchema = z.object({
       sideEffects: z.boolean().optional(),
       /** Whether it can serve as a keep-checking check (EO-456). Optional for `sideEffects`' reason. */
       watch: z.boolean().optional(),
+      /** Whether it opens a pull request (EO-663). Optional for `sideEffects`' reason. */
+      opensPullRequest: z.boolean().optional(),
     }),
   ),
   itemTypes: z.array(
@@ -1310,6 +1330,7 @@ export function toRegistryView(registry: RegistryFacts): RegistryView {
       ...(entry.inputs === undefined ? {} : { inputs: Object.fromEntries(Object.entries(entry.inputs).map(([name, input]) => [name, { ...input }])) }),
       sideEffects: entry.sideEffects,
       ...(entry.watch === true ? { watch: true } : {}),
+      ...(entry.opensPullRequest === true ? { opensPullRequest: true } : {}),
     })),
     itemTypes: [...registry.itemTypes.values()].map((type) => ({
       packSlug: type.packSlug,
@@ -1347,6 +1368,7 @@ export function fromRegistryView(view: RegistryView): RegistryFacts {
           ...(builtin.inputs === undefined ? {} : { inputs: builtin.inputs }),
           sideEffects: builtin.sideEffects === true,
           ...(builtin.watch === true ? { watch: true } : {}),
+          ...(builtin.opensPullRequest === true ? { opensPullRequest: true } : {}),
         },
       ]),
     ),
