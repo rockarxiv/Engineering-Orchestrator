@@ -115,7 +115,7 @@ export function ChatCanvas({
           against the next — while one view whose address moves under it
           (a Settings section, a board narrowed to a step) stays the one
           mount and keeps what it holds. */}
-      <div key={mountKeyOf(view)} role="tabpanel" aria-label="Open view" className="flex min-h-0 min-w-0 flex-col overflow-auto px-[18px] relative py-4">
+      <div key={mountKeyOf(view)} role="tabpanel" aria-label="Open view" data-tour={`view-${view.kind}`} className="flex min-h-0 min-w-0 flex-col overflow-auto px-[18px] relative py-4">
         <ViewBody view={view} />
       </div>
     </section>

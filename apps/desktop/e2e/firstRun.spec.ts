@@ -474,3 +474,100 @@ test("a machine with no coding agent is asked to connect one, and can look aroun
     cleanUp();
   }
 });
+
+/**
+ * The first-board tour (EO-667): after first run is left, the first board
+ * shown starts a short tour of where things are. What only a launch shows
+ * is that it starts on its own there, walks to every screen it points at
+ * and back, that finishing it is remembered by the main process across a
+ * relaunch, and that Settings replays it.
+ */
+test("the first board after first run starts a tour, which a relaunch does not repeat and Settings replays", async () => {
+  // Use this waits for a signed-in coding agent, and the signed-in Claude is a script: the first test's reason.
+  test.skip(process.platform === "win32", "the signed-in Claude is a shell script, and Windows runs claude.exe, which a script cannot stand in for");
+  test.setTimeout(180_000);
+
+  const { root, home, env, cleanUp } = scratch("first run tour");
+  const material = path.join(root, "the reports drive");
+  mkdirSync(material, { recursive: true });
+  seedSignedInClaude(home);
+
+  let { app, window } = await launchApp(env);
+  try {
+    await expect(window.getByRole("heading", { name: "Welcome to EO" })).toBeVisible({ timeout: 15_000 });
+    await window.getByRole("button", { name: "Just me" }).click();
+    await window.getByRole("listitem").filter({ hasText: "Weekly report" }).getByRole("button", { name: "Use this" }).click();
+    await window.getByLabel("Where the material lives").fill(material);
+    await window.getByRole("button", { name: "Create" }).click();
+    await expect(window.getByRole("heading", { name: "Weekly report is set up" })).toBeVisible({ timeout: 15_000 });
+    await window.getByRole("button", { name: "Continue with Preview only" }).click();
+
+    // ── On the board, on its own ──────────────────────────────────
+    const tour = window.getByRole("dialog", { name: "Tour" });
+    await expect(tour).toBeVisible({ timeout: 30_000 });
+    await expect(tour.getByRole("heading", { name: "The board" })).toBeVisible();
+    await expect(tour).toContainText("1 of 9");
+    await expect(tour.getByRole("button", { name: "Skip tour" })).toBeVisible();
+    // Focus is in the callout.
+    await expect(tour.getByRole("button", { name: "Next" })).toBeFocused();
+    const board = await window.evaluate(() => window.location.hash);
+    expect(board).toMatch(/^#\/pipelines\//);
+
+    // ── Every stop, in order, each on its own screen ──────────────
+    const stops: [title: string, at: RegExp][] = [
+      ["The board", /^#\/pipelines\//],
+      ["Waiting on you", /^#\/pipelines\//],
+      ["The assistant", /^#\/pipelines\//],
+      ["The rail", /^#\/pipelines\//],
+      ["Agents", /^#\/agents$/],
+      ["Agent tools", /^#\/agent-tools$/],
+      ["Settings", /^#\/settings/],
+      ["Modules", /^#\/settings\?section=modules$/],
+      ["MCP server", /^#\/settings\?section=mcp$/],
+    ];
+    for (const [index, [title, at]] of stops.entries()) {
+      await expect(tour.getByRole("heading", { name: title, exact: true })).toBeVisible({ timeout: 15_000 });
+      await expect(tour).toContainText(`${index + 1} of 9`);
+      expect(await window.evaluate(() => window.location.hash)).toMatch(at);
+      if (index === stops.length - 1) {
+        await expect(tour.getByRole("button", { name: "Done" })).toBeVisible();
+        await tour.getByRole("button", { name: "Done" }).click();
+      } else {
+        // The keyboard, both ways it goes on.
+        await window.keyboard.press(index % 2 === 0 ? "Enter" : "ArrowRight");
+      }
+    }
+
+    // Back on the board, and the tour gone.
+    await expect(tour).toHaveCount(0);
+    await expect.poll(() => window.evaluate(() => window.location.hash)).toBe(board);
+    await expect(openView(window).getByRole("heading", { level: 2, name: "Gather" })).toBeVisible({ timeout: 15_000 });
+
+    // ── A relaunch does not show it again ─────────────────────────
+    await closeApp(app);
+    ({ app, window } = await launchApp(env));
+    await expect(window.getByRole("navigation", { name: "Main" })).toBeVisible({ timeout: 15_000 });
+    await window.evaluate((hash) => {
+      window.location.hash = hash;
+    }, board);
+    await expect(openView(window).getByRole("heading", { level: 2, name: "Gather" })).toBeVisible({ timeout: 30_000 });
+    // Long enough for the tour to have asked the main process and started, had it been due.
+    await window.waitForTimeout(3000);
+    const tourAgain = window.getByRole("dialog", { name: "Tour" });
+    await expect(tourAgain).toHaveCount(0);
+
+    // ── Settings replays it from the first stop, on the board ─────
+    await openPlace(window, "Settings");
+    await openView(window).getByRole("button", { name: "Show the tour" }).click();
+    await expect(tourAgain.getByRole("heading", { name: "The board" })).toBeVisible({ timeout: 15_000 });
+    await expect(tourAgain).toContainText("1 of 9");
+    await expect.poll(() => window.evaluate(() => window.location.hash)).toBe(board);
+    // Escape skips it, and leaves the board on screen.
+    await window.keyboard.press("Escape");
+    await expect(tourAgain).toHaveCount(0);
+    await expect(openView(window).getByRole("heading", { level: 2, name: "Gather" })).toBeVisible();
+  } finally {
+    await closeApp(app);
+    cleanUp();
+  }
+});

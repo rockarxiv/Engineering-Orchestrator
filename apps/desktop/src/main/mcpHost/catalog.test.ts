@@ -522,6 +522,8 @@ const NOT_CATALOGUED: Partial<Record<RecordChannel, string>> = {
   "firstRun:state": "where somebody is in their own first run is the window's business, not a client's",
   "firstRun:setMode": "solo or organisation is the owner's answer about their own installation",
   "firstRun:finish": "a client that could end first run could end it for somebody standing in the middle of it",
+  "firstRun:tourState": "whether the window shows its own tour is the window's business, not a client's",
+  "firstRun:tourSeen": "a client that could mark the tour seen could take it away from the person it is for",
 
   // Small UI affordances.
   "app:getVersion": "folded into the MCP initialize handshake",

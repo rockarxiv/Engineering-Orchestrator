@@ -105,6 +105,9 @@ const EMPTY_RESPONSES: Record<string, unknown> = {
    * channel and say so.
    */
   "firstRun:state": { done: true, mode: "solo" },
+  // The first-board tour (EO-667), already seen: a test about a board is
+  // not about a callout drawn over it. The tour's own tests say otherwise.
+  "firstRun:tourState": { due: false },
   "items:listArchived": { items: [] },
   "pipelineSteps:list": { steps: [], routes: [] },
   "agents:list": { agents: [] },

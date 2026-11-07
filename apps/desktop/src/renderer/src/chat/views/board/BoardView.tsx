@@ -536,7 +536,7 @@ export function BoardView({ pipelineId }: { pipelineId: string }) {
                 over its box, so the columns' height never props the board
                 open; the box's least height, about two cards, does. */}
             <div className="relative order-1 min-h-[13rem] min-w-0 flex-1 @4xl:self-stretch">
-              <div aria-label="Columns" role="group" className="absolute inset-0 overflow-auto pb-1">
+              <div aria-label="Columns" role="group" data-tour="board" className="absolute inset-0 overflow-auto pb-1">
                 {/* Each column as tall as its own cards, not the tallest one's. */}
                 <div className="grid auto-cols-[minmax(14rem,1fr)] grid-flow-col items-start gap-2.5">
                   {columns.map((step) => (

@@ -17,6 +17,7 @@ import { useCanvasTabs } from "./useCanvasTabs";
 import { AskAssistantContext } from "./askAssistant";
 import { ChatDrawer } from "./ChatHome";
 import { useChatTheme } from "./theme";
+import { TourHost } from "./tour/Tour";
 import { chatViewFor, isWide, movedAddressOf, tabKeyOf, type ChatViewKind } from "./views/registry";
 
 /**
@@ -188,67 +189,71 @@ function ChatFrame() {
   if (!home && view === null) return <Navigate to={CHAT_HOME_ROUTE} replace />;
 
   return (
-    // Positioned and clipped, so nothing in the layout ever lengthens the
-    // document: an absolutely placed element with no positioned ancestor
-    // (a screen-reader label in a long transcript) escapes its scroller,
-    // and a document taller than the window scrolls the whole frame away.
-    <div className="relative flex h-full overflow-hidden bg-canvas text-ink">
-      <ChatRail onNewPipeline={askAssistant} />
-      <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-        <ChatBanners />
-        <div className="flex min-h-0 min-w-0 flex-1">
-          {/* One element in every state: a column that changed type between
-              the home and a view would be remounted, and take what was
-              typed in the composer with it. */}
-          {folded ? (
-            <div className="flex w-12 shrink-0 flex-col items-center border-r border-line pt-3">
-              <button
-                type="button"
-                aria-label="Show the conversation"
-                title="Show the conversation"
-                onClick={toggleFold}
-                className="grid h-[30px] w-[30px] place-items-center rounded-[10px] bg-accent-subtle text-accent-soft hover:bg-canvas-raised"
-              >
-                <Sparkles size={15} />
-              </button>
-            </div>
-          ) : null}
-          <section
-            aria-label="Conversation"
-            hidden={folded}
-            className={cn("flex min-h-0 min-w-0 flex-col", beside ? "w-[30rem] shrink-0" : "flex-1", folded && "hidden")}
-          >
-            <ChatConversation
-              narrow={beside}
-              hidden={folded}
-              focusRequest={focusRequest}
-              {...(beside ? { onFold: toggleFold } : {})}
-              context={beside && view ? <CanvasChip view={view} /> : undefined}
-              {...(home ? { drawerOpen, onToggleDrawer: () => setDrawerOpen((open) => !open) } : {})}
-            />
-          </section>
-
-          {home ? (
-            // The overview column.
-            drawerOpen ? (
-              <div className="flex min-h-0 w-[300px] shrink-0 flex-col border-l border-line">
-                <ChatDrawer />
+    // The first-board tour (EO-667) over the whole window: it points at the rail and the conversation as well as at views.
+    <TourHost view={view}>
+      {/* Positioned and clipped, so nothing in the layout ever lengthens the
+          document: an absolutely placed element with no positioned ancestor
+          (a screen-reader label in a long transcript) escapes its scroller,
+          and a document taller than the window scrolls the whole frame away. */}
+      <div className="relative flex h-full overflow-hidden bg-canvas text-ink">
+        <ChatRail onNewPipeline={askAssistant} />
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+          <ChatBanners />
+          <div className="flex min-h-0 min-w-0 flex-1">
+            {/* One element in every state: a column that changed type between
+                the home and a view would be remounted, and take what was
+                typed in the composer with it. */}
+            {folded ? (
+              <div className="flex w-12 shrink-0 flex-col items-center border-r border-line pt-3">
+                <button
+                  type="button"
+                  aria-label="Show the conversation"
+                  title="Show the conversation"
+                  onClick={toggleFold}
+                  className="grid h-[30px] w-[30px] place-items-center rounded-[10px] bg-accent-subtle text-accent-soft hover:bg-canvas-raised"
+                >
+                  <Sparkles size={15} />
+                </button>
               </div>
-            ) : null
-          ) : view && tabKey && !poppedOut ? (
-            <AskAssistantContext.Provider value={askAssistant}>
-              <ChatCanvas
-                view={view}
-                tabKey={tabKey}
-                tabs={tabs}
-                onCloseTab={closeTab}
-                onClose={() => void navigate(CHAT_HOME_ROUTE)}
-                pop={canPopOutCanvas() ? { label: "Pop out", onPress: popOut } : undefined}
+            ) : null}
+            <section
+              aria-label="Conversation"
+              data-tour="assistant"
+              hidden={folded}
+              className={cn("flex min-h-0 min-w-0 flex-col", beside ? "w-[30rem] shrink-0" : "flex-1", folded && "hidden")}
+            >
+              <ChatConversation
+                narrow={beside}
+                hidden={folded}
+                focusRequest={focusRequest}
+                {...(beside ? { onFold: toggleFold } : {})}
+                context={beside && view ? <CanvasChip view={view} /> : undefined}
+                {...(home ? { drawerOpen, onToggleDrawer: () => setDrawerOpen((open) => !open) } : {})}
               />
-            </AskAssistantContext.Provider>
-          ) : null}
+            </section>
+
+            {home ? (
+              // The overview column.
+              drawerOpen ? (
+                <div className="flex min-h-0 w-[300px] shrink-0 flex-col border-l border-line">
+                  <ChatDrawer />
+                </div>
+              ) : null
+            ) : view && tabKey && !poppedOut ? (
+              <AskAssistantContext.Provider value={askAssistant}>
+                <ChatCanvas
+                  view={view}
+                  tabKey={tabKey}
+                  tabs={tabs}
+                  onCloseTab={closeTab}
+                  onClose={() => void navigate(CHAT_HOME_ROUTE)}
+                  pop={canPopOutCanvas() ? { label: "Pop out", onPress: popOut } : undefined}
+                />
+              </AskAssistantContext.Provider>
+            ) : null}
+          </div>
         </div>
       </div>
-    </div>
+    </TourHost>
   );
 }
