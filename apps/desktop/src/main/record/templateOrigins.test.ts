@@ -141,8 +141,8 @@ describe("moving a template pipeline to the record", () => {
     // The record compares it, and applies the new version.
     const results = applyTemplateUpdates(recordDb.db, history, { isTheRecord: true });
 
-    expect(results).toContainEqual(expect.objectContaining({ pipelineId, outcome: "applied", from: "1.0", to: "1.2" }));
-    expect(currentVersion(recordDb.db, pipelineId)?.createdBy).toBe(`template:${SOFTWARE}@1.2`);
+    expect(results).toContainEqual(expect.objectContaining({ pipelineId, outcome: "applied", from: "1.0", to: "1.3" }));
+    expect(currentVersion(recordDb.db, pipelineId)?.createdBy).toBe(`template:${SOFTWARE}@1.3`);
     const watch = listStepsForPipeline(recordDb.db, pipelineId).find((step) => step.entryAction === "watch_pull_request");
     expect(watch).toBeDefined();
     // Not the template's literal id: the record's own Delivery holds that one.
@@ -177,9 +177,9 @@ describe("moving a template pipeline updated lately", () => {
       const { pipelineId, ids } = importedPipeline(project.id as Uuid);
       createTestItem(deskDb.db, { type: "story", title: "In flight", stepId: ids.get("todo")!, projectId: project.id as Uuid });
 
-      expect(applyTemplateUpdates(deskDb.db, history, { isTheRecord: false, now: APPLIED_AT })).toContainEqual(expect.objectContaining({ pipelineId, outcome: "applied", to: "1.2" }));
+      expect(applyTemplateUpdates(deskDb.db, history, { isTheRecord: false, now: APPLIED_AT })).toContainEqual(expect.objectContaining({ pipelineId, outcome: "applied", to: "1.3" }));
       const filed = currentVersion(deskDb.db, pipelineId)!;
-      expect(filed.createdBy).toBe(`template:${SOFTWARE}@1.2`);
+      expect(filed.createdBy).toBe(`template:${SOFTWARE}@1.3`);
 
       if (pruned) {
         // Only the newest kept, and an ordinary edit after the update: its version is gone.
@@ -189,19 +189,19 @@ describe("moving a template pipeline updated lately", () => {
         );
         const routes = listRoutesForPipeline(deskDb.db, pipelineId).map(({ id: _id, ...route }) => route);
         expect(replacePipelineGraph(deskDb.db, pipelineId, steps, routes, { createdBy: null })).toEqual(expect.objectContaining({ replaced: true }));
-        expect(listPipelineVersions(deskDb.db, pipelineId).map((version) => version.createdBy)).not.toContain(`template:${SOFTWARE}@1.2`);
+        expect(listPipelineVersions(deskDb.db, pipelineId).map((version) => version.createdBy)).not.toContain(`template:${SOFTWARE}@1.3`);
       }
 
       await move(project.id as Uuid);
 
       // The record answers the moved pipeline's head, and still says so.
       const status = describeTemplateStatus(recordDb.db, pipelineId, history, { onTheRecord: true, now: APPLIED_AT + 24 * 60 * 60 * 1000 });
-      expect(status.origin).toEqual(expect.objectContaining({ slug: SOFTWARE, version: "1.2" }));
+      expect(status.origin).toEqual(expect.objectContaining({ slug: SOFTWARE, version: "1.3" }));
       expect(status.updated).toEqual({
-        version: "1.2",
+        version: "1.3",
         pipelineVersion: filed.number,
         at: APPLIED_AT,
-        notes: history.get(SOFTWARE)!.find((version) => version.version === "1.2")!.notes,
+        notes: history.get(SOFTWARE)!.find((version) => version.version === "1.3")!.notes,
       });
       // And stops saying so when the three days are up, as it would have on the desktop.
       expect(describeTemplateStatus(recordDb.db, pipelineId, history, { onTheRecord: true, now: APPLIED_AT + TEMPLATE_UPDATE_RECENT_MS + 1 }).updated).toBeNull();

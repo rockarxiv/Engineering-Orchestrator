@@ -559,6 +559,21 @@ export const PackTemplateSchema = z.object({
   /** The author's own, shown beside the source. Free-form: "1.0", "2026-09-01". */
   version: z.string().min(1),
   blanks: z.array(TemplateBlankSchema).default([]),
+  /**
+   * What the assistant asks first, about the first item (EO-664): "What
+   * is the first feature you want built?".
+   *
+   * For a template with no job, which has no first item of its own to
+   * start: first run ends in an assistant chat whose brief carries this
+   * question, and the plan the assistant files from the answer is the
+   * first item. Absent, the brief asks a generic question built from the
+   * title and description.
+   *
+   * Not a reason to bump `PIPELINE_EXPORT_VERSION`: an older build drops
+   * it and asks the generic question, which is still the right thing to
+   * ask.
+   */
+  openingQuestion: z.string().min(1).optional(),
 });
 export type PackTemplate = z.infer<typeof PackTemplateSchema>;
 

@@ -48,6 +48,17 @@
         "label": "Sign in",
         "target": null
       }
+    },
+    {
+      "key": "assistant",
+      "line": "The assistant, which plans the first piece of work with you",
+      "met": false,
+      "why": "Nothing on this machine is signed in, so the assistant has nothing to run on yet.",
+      "fix": {
+        "kind": "backend",
+        "label": "Sign in",
+        "target": null
+      }
     }
   ],
   "jobId": null

@@ -168,7 +168,7 @@ async function call<K extends IpcChannel>(channel: K, payload: unknown): Promise
  * EO's own Delivery on the record, customised before EO-461 to hand
  * opened pull requests to the project's Merge pipeline, in a project the
  * organisation holds, with the pipelines section published — so every
- * desktop's copy is the record's. The record holds the 1.2 update and
+ * desktop's copy is the record's. The record holds the 1.3 update and
  * posts the notice, which Anna's desktop pulls.
  */
 async function heldOnTheRecord(): Promise<{ conflictId: string; projectId: Uuid }> {
@@ -275,7 +275,7 @@ describe("a template update the organisation's record holds", () => {
     const { data, refused } = await readConflict();
 
     expect(refused).toBe(false);
-    expect(data.conflict).toMatchObject({ conflictId, pipelineId: "default", fromVersion: "1.0", toVersion: "1.2", chatId: chat.id });
+    expect(data.conflict).toMatchObject({ conflictId, pipelineId: "default", fromVersion: "1.0", toVersion: "1.3", chatId: chat.id });
     expect(data.conflict!.changes[0]).toMatchObject({ changedBy: "conflict", current: { target: "merge_pr" }, template: { target: "pull_request_watch" } });
   });
 
@@ -303,7 +303,7 @@ describe("a template update the organisation's record holds", () => {
     expect(currentVersion(recordDb.db, "default")?.createdBy).toBe(annaId);
     const conflict = getUpdateConflict(recordDb.db, conflictId)!;
     expect(conflict).toMatchObject({ resolution: "published" });
-    expect(getPipelineOrigin(recordDb.db, "default")).toMatchObject({ version: "1.2", baseId: conflict.templateId });
+    expect(getPipelineOrigin(recordDb.db, "default")).toMatchObject({ version: "1.3", baseId: conflict.templateId });
     expect(listMentionsForComment(recordDb.db, conflict.noticeCommentIds[0]! as Uuid).map((mention) => mention.status)).not.toContain("open");
     // Never raised again on the record.
     expect(applyTemplateUpdates(recordDb.db, loadTemplateHistory(GALLERY_DIRECTORY), { isTheRecord: true })).toEqual([]);
@@ -355,12 +355,12 @@ describe("a template update the organisation's record holds", () => {
     const before = { record: listRoutesForPipeline(recordDb.db, "default").map(({ id: _id, ...route }) => route), version: currentVersion(recordDb.db, "default")?.number };
 
     const shown = await call("assist:card", { conversationId: chat.id, messageId: keep });
-    expect(shown.card).toMatchObject({ kind: "pipelineKeepMine", held: { fromVersion: "1.0", toVersion: "1.2" } });
+    expect(shown.card).toMatchObject({ kind: "pipelineKeepMine", held: { fromVersion: "1.0", toVersion: "1.3" } });
     const pressed = await call("assist:applyCard", { conversationId: chat.id, messageId: keep });
 
     expect(pressed.applied).toBe(true);
     expect(getUpdateConflict(recordDb.db, conflictId)?.resolution).toBe("kept");
-    expect(getPipelineOrigin(recordDb.db, "default")?.version).toBe("1.2");
+    expect(getPipelineOrigin(recordDb.db, "default")?.version).toBe("1.3");
     expect(listRoutesForPipeline(recordDb.db, "default").map(({ id: _id, ...route }) => route)).toEqual(before.record);
     expect(currentVersion(recordDb.db, "default")?.number).toBe(before.version);
   });
@@ -393,7 +393,7 @@ describe("a pipeline's head, for a pipeline the organisation's record holds (EO-
     const status = await call("pipeline:templateStatus", { pipelineId: "default" });
 
     expect(status.origin).toEqual(expect.objectContaining({ slug: "software-feature-to-merge", version: "1.0" }));
-    expect(status.waiting).toEqual(expect.objectContaining({ conflictId, toVersion: "1.2", conflicts: 1, chatId: null, notice: { itemId: thread.id, commentId: notice!.id } }));
+    expect(status.waiting).toEqual(expect.objectContaining({ conflictId, toVersion: "1.3", conflicts: 1, chatId: null, notice: { itemId: thread.id, commentId: notice!.id } }));
     expect(status.problem).toBeNull();
 
     // Once Fix with assistant has opened the chat, the head goes to it.
@@ -447,7 +447,7 @@ describe("when the record cannot say", () => {
 });
 
 describe("a desktop conflict from before the record held the pipeline", () => {
-  /** Anna's own Delivery, customised and compared here, with its 1.2 update held on this desktop — before any organisation. */
+  /** Anna's own Delivery, customised and compared here, with its 1.3 update held on this desktop — before any organisation. */
   function heldHere(): string {
     const db = anna.handle.db;
     db.run(sql`DELETE FROM step_routes WHERE from_step_id = 'pull_request_watch'`);

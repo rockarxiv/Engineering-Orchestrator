@@ -229,7 +229,7 @@
     "slug": "inbox-triage",
     "title": "Inbox triage",
     "description": "Everything that lands in a shared mailbox is read, summarised in the sender's own terms, and put in front of you with three buttons: answer, escalate, close.",
-    "version": "1.0",
+    "version": "1.1",
     "blanks": [
       {
         "key": "mailbox",
@@ -249,6 +249,7 @@
         "default": "MSG",
         "connector": null
       }
-    ]
+    ],
+    "openingQuestion": "Which message should be triaged first? Paste it here, or say who wrote in and what they asked for."
   }
 }

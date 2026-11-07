@@ -100,13 +100,14 @@ describe("the bundled software template", () => {
    * After the first launch's template update. Migrations seed the 1.1
    * graph, and 1.2 (EO-571) reaches the seed as a template version like
    * it reaches every other pipeline made from 1.1 — never as a migration
-   * (ARCHITECTURE.md §15.5).
+   * (ARCHITECTURE.md §15.5). Along with 1.3 (EO-664), which changed the
+   * template's opening question and nothing in the graph.
    */
   it("is exactly what exporting the shipped Delivery pipeline produces, once the first launch has brought it up to date", () => {
     syncRolePrompts(handle.db, PROMPTS_DIRECTORY);
     const history = loadTemplateHistory(GALLERY_DIRECTORY);
     backfillPipelineOrigins(handle.db, history);
-    expect(applyTemplateUpdates(handle.db, history, { isTheRecord: false })).toEqual([expect.objectContaining({ pipelineId: "default", outcome: "applied", from: "1.1", to: "1.2" })]);
+    expect(applyTemplateUpdates(handle.db, history, { isTheRecord: false })).toEqual([expect.objectContaining({ pipelineId: "default", outcome: "applied", from: "1.1", to: "1.3" })]);
     const built = exportPipeline(handle.db, "default");
     expect(built.ok).toBe(true);
     if (!built.ok) return;

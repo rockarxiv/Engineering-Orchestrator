@@ -121,7 +121,7 @@ function desktop(handle: DbHandle, deviceId = "device"): Desktop {
 
 /**
  * EO's own Delivery on the record, customised before EO-461 and held by
- * a project the organisation owns: the record compares it, holds the 1.2
+ * a project the organisation owns: the record compares it, holds the 1.3
  * update and posts the notice — which both desktops then pull.
  */
 async function heldOnTheRecord(): Promise<{ conflictId: string; projectId: Uuid }> {
@@ -209,7 +209,7 @@ describe("a conflict the organisation's record holds", () => {
     expect(rest).toEqual([]);
     expect(brief!.authorType).toBe("engine");
     expect(brief!.body).toContain("Pipeline: Delivery (id: default)");
-    expect(brief!.body).toContain("from version 1.0 (the pipeline's base) to version 1.2");
+    expect(brief!.body).toContain("from version 1.0 (the pipeline's base) to version 1.3");
     expect(listCommentsForItem(recordDb.db, chatId).map((comment) => comment.id)).toEqual([brief!.id]);
     expect(assistBoards(chat)).toEqual([{ from: brief!.id, pipelineId: "default" }]);
     // Asking this desktop's assistant, so this desktop's tick answers it.

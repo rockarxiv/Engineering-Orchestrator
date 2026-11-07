@@ -99,7 +99,7 @@ describe("a developer's first run, through everybody's screen", () => {
    * on every installation, which is what makes the developer's list two
    * lines rather than four.
    */
-  it("asks for a repository, the forge CLI and a backend, and nothing else", async () => {
+  it("asks for a repository, the forge CLI, a backend and the assistant, and nothing else", async () => {
     const installed = await install("software-feature-to-merge", { keyPrefix: "ACME" });
 
     const needs = await galleryNeedsCommand(handle.db, context(), {
@@ -108,7 +108,7 @@ describe("a developer's first run, through everybody's screen", () => {
     });
 
     expect(needs.problem).toBeNull();
-    expect(needs.needs.filter((need) => !need.met).map((need) => need.key)).toEqual(["workspace", "forge", "backend"]);
+    expect(needs.needs.filter((need) => !need.met).map((need) => need.key)).toEqual(["workspace", "forge", "backend", "assistant"]);
 
     const workspace = line(needs.needs, "workspace");
     expect(workspace.line).toContain("repository");

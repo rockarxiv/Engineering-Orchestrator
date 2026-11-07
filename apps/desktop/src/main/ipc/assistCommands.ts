@@ -79,6 +79,7 @@ import { designCardView } from "../trials/designCard.js";
 import { discardTrial } from "../trials/discard.js";
 import { readTrialPublish } from "../trials/publishCard.js";
 import { threadOf } from "../roles/conversationThread.js";
+import { openBriefedChat } from "../roles/briefedChat.js";
 import { ASSIST_SETTINGS_KEY, ASSIST_STEP } from "../roles/conversationSteps.js";
 import { capabilitiesFor } from "../providers/capabilities.js";
 import { sectionLockFor } from "../managed/locks.js";
@@ -347,6 +348,37 @@ export async function openUpdateConflictAssist(
   // The first turn starts on the next tick, as a person's message does —
   // here only where it is this desktop's to answer.
   if (answer.firstTurn) engine?.notifyStateChange({ promptly: true });
+  return { conversation: toView(db, shown.conversation), problem: null };
+}
+
+/**
+ * The end of first run for a template with no job (EO-664): a new
+ * assistant chat with EO's brief for the first item, shown.
+ *
+ * Fix with assistant's mechanism (`openBriefedChat`): the brief is the
+ * chat's first message, posted by EO and mentioning this desktop's
+ * assistant, so the mention dispatches the first turn with nobody
+ * typing, and the pipeline is pinned to it. What the brief says is the
+ * gallery's (`firstItemBrief`); this is the chat it is said in.
+ *
+ * A new chat on every call, deliberately: it is pressed once, on the way
+ * out of first run, and there is nothing for a second press to find.
+ *
+ * Refused where there is no assistant to talk to — nothing is written,
+ * and the needs check shows the sentence.
+ */
+export function openBriefedAssist(
+  db: Db,
+  engine: EngineHandle | undefined,
+  request: { projectId: Uuid; pipelineId: string; brief: string },
+): { conversation: DiscussionView | null; problem: string | null } {
+  const assistant = assistAgent(db);
+  if (!assistant) return { conversation: null, problem: "There is no enabled system agent to talk to." };
+  const chat = db.transaction(() => openBriefedChat(db, { projectId: request.projectId, pipelineId: request.pipelineId, brief: request.brief, asking: assistant.id }));
+  const shown = resumeAssistRoom(db, chat.id as Uuid);
+  if ("problem" in shown) return { conversation: null, problem: shown.problem };
+  // The first turn starts on the next tick, as a person's message does.
+  engine?.notifyStateChange({ promptly: true });
   return { conversation: toView(db, shown.conversation), problem: null };
 }
 

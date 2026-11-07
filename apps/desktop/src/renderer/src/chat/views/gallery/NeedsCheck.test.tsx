@@ -3,7 +3,7 @@ import { fireEvent, render, screen, waitFor, within } from "@testing-library/rea
 import { MemoryRouter, Route, Routes, useParams } from "react-router-dom";
 import { describe, expect, it, vi } from "vitest";
 import { ThemeProvider } from "@eo/ui";
-import { GIT_WORKTREE_KIND, sectionLockedLine } from "@eo/core";
+import { CHAT_HOME_ROUTE, GIT_WORKTREE_KIND, sectionLockedLine } from "@eo/core";
 import type { GalleryNeedView, GalleryTemplateView, RuntimeStatusView, SectionLock } from "@eo/core";
 import { createQueryClient } from "../../../query/client";
 import { absent, signedOut } from "../agents/testRuntimes";
@@ -98,6 +98,8 @@ function mockIpc(options: {
   projectRepositoryIds?: string[];
   /** Whether the machine has changed since, outside EO — `gh auth login` run in a terminal (EO-663). */
   changedOutside?: () => boolean;
+  /** What `gallery:openFirstItemChat` refuses with, if it does. */
+  briefProblem?: string;
 }) {
   // What the *machine* would say, before and after the folder is
   // attached — rather than a queue of answers keyed to how many times
@@ -139,6 +141,14 @@ function mockIpc(options: {
         return { ok: true, data: { ok: options.staffProblem == null, problem: options.staffProblem ?? null, locked: null } };
       case "gallery:preview":
         return { ok: true, data: { itemId: "preview-1", projectId: "p-preview", pipelineId: "preview-pl", problem: null } };
+      case "gallery:staffAssistant":
+        fixed = true;
+        return { ok: true, data: { ok: true, problem: null } };
+      case "gallery:openFirstItemChat":
+        return {
+          ok: true,
+          data: options.briefProblem == null ? { conversation: { id: "chat-1", messages: [] }, problem: null } : { conversation: null, problem: options.briefProblem },
+        };
       case "jobs:runNow":
         return { ok: true, data: { fired: true, occurrence: null, itemId: "item-1", problem: null } };
       case "runtime:status": {
@@ -197,6 +207,7 @@ function renderNeeds(needs: GalleryNeedView[], overrides: { jobId?: string | nul
             />
             <Route path="/items/:itemId" element={<Item />} />
             <Route path="/pipelines/:pipelineId" element={<Board />} />
+            <Route path={CHAT_HOME_ROUTE} element={<span data-testid="chat-home" />} />
           </Routes>
         </MemoryRouter>
       </QueryClientProvider>
@@ -446,15 +457,68 @@ describe("the two ways out", () => {
 
   /**
    * And a template that files nothing on a schedule has no first item to
-   * start — which is the developer's first run, and the reason the board
-   * is always the other button.
+   * start, so the assistant asks for one (EO-664): a new chat with EO's
+   * brief, on the board this check is about, and first run closes behind
+   * it as it does on every other exit.
    */
-  it("offers the board when the template made no job, even with everything green", async () => {
-    mockIpc({ needs: GREEN, jobId: null });
-    renderNeeds(GREEN);
+  it("opens the assistant with the first item's brief when the template made no job, and everything is green", async () => {
+    const invoke = mockIpc({ needs: GREEN, jobId: null });
+    const finished = vi.fn();
+    renderNeeds(GREEN, { onFinished: finished });
+
+    expect(screen.queryByRole("button", { name: "Go to the board" })).not.toBeInTheDocument();
+    fireEvent.click(await screen.findByRole("button", { name: /^Plan the first .+ with the assistant$/ }));
+
+    expect(await screen.findByTestId("chat-home")).toBeInTheDocument();
+    expect(invoke.mock.calls.find((call: unknown[]) => call[0] === "gallery:openFirstItemChat")?.[1]).toEqual({ projectId: "p1", slug: "weekly-report", token: "weekly-v1", pipelineId: "pl1" });
+    expect(invoke.mock.calls.some((call: unknown[]) => call[0] === "jobs:runNow")).toBe(false);
+    expect(finished).toHaveBeenCalled();
+  });
+
+  /**
+   * The assistant is a line of its own on a template with no job: the
+   * exit needs it. Its button is pressed, never implied, and once it is
+   * the exit is the assistant (EO-664).
+   */
+  it("turns the assistant on from its own line, and then offers the assistant's exit", async () => {
+    const OFF: GalleryNeedView = {
+      key: "assistant",
+      line: "The assistant, which plans the first piece of work with you",
+      met: false,
+      why: "The assistant is switched off, so nothing would answer.",
+      fix: { kind: "assistant", label: "Turn the assistant on", target: "claude" },
+    };
+    const invoke = mockIpc({ needs: [...GREEN, OFF], onceFixed: [...GREEN, { ...OFF, met: true, why: null, fix: null }], jobId: null });
+    renderNeeds([...GREEN, OFF]);
+
+    expect(await screen.findByText("The assistant is switched off, so nothing would answer.")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /with the assistant$/ })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Turn the assistant on" }));
+
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("gallery:staffAssistant", { backend: "claude" }));
+    expect(await screen.findByRole("button", { name: /^Plan the first .+ with the assistant$/ })).toBeInTheDocument();
+    expect(screen.queryByText("The assistant is switched off, so nothing would answer.")).not.toBeInTheDocument();
+  });
+
+  it("says why there is no chat, and stays where it is", async () => {
+    mockIpc({ needs: GREEN, jobId: null, briefProblem: "There is no enabled system agent to talk to." });
+    const finished = vi.fn();
+    renderNeeds(GREEN, { onFinished: finished });
+
+    fireEvent.click(await screen.findByRole("button", { name: /^Plan the first .+ with the assistant$/ }));
+
+    expect(await screen.findByText("There is no enabled system agent to talk to.")).toBeInTheDocument();
+    expect(screen.queryByTestId("chat-home")).not.toBeInTheDocument();
+    expect(finished).not.toHaveBeenCalled();
+  });
+
+  it("offers the board while a line is red on a template with no job", async () => {
+    mockIpc({ needs: [MISSING_FOLDER], jobId: null });
+    renderNeeds([MISSING_FOLDER]);
 
     fireEvent.click(await screen.findByRole("button", { name: "Go to the board" }));
     expect(await screen.findByTestId("board")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /with the assistant$/ })).not.toBeInTheDocument();
   });
 });
 
@@ -613,7 +677,7 @@ describe("the developer's first-run copy", () => {
     previewable: DEVELOPER_FIRST_RUN.template.previewable,
   };
 
-  it("asks for a repository, the forge CLI and a backend, in these words", async () => {
+  it("asks for a repository, the forge CLI, a backend and the assistant, in these words", async () => {
     mockIpc({ needs, jobId: DEVELOPER_FIRST_RUN.jobId });
     const { container } = renderNeeds(needs, { template, jobId: DEVELOPER_FIRST_RUN.jobId });
 
@@ -621,12 +685,16 @@ describe("the developer's first-run copy", () => {
     // Word for word, and nowhere sending the person to a screen first
     // run hides (EO-659).
     expect(container.textContent).toBe(
-      `Software feature to merge is set up3 things left before real work runs. Each one says why, and carries the one button that fixes it.An agent for the Implementer stepsAn agent for the Reviewer stepsA repository — the checkout its work happens inThis project has no repository yet, so nothing can be branched, reviewed or opened as a pull request.Choose a repositorySaveGitHub or GitLab CLIThis pipeline opens pull requests through the GitHub CLI (gh) or the GitLab CLI (glab), whichever the repository's remote is on. EO checks which once a repository is attached.A coding agent signed inNothing on this machine is signed in, so no step would dispatch.No coding agent is installed on this machine yet. EO ships none, and can fetch one for you.Install a coding agentGo to the boardContinue with Preview only`,
+      `Software feature to merge is set up4 things left before real work runs. Each one says why, and carries the one button that fixes it.An agent for the Implementer stepsAn agent for the Reviewer stepsA repository — the checkout its work happens inThis project has no repository yet, so nothing can be branched, reviewed or opened as a pull request.Choose a repositorySaveGitHub or GitLab CLIThis pipeline opens pull requests through the GitHub CLI (gh) or the GitLab CLI (glab), whichever the repository's remote is on. EO checks which once a repository is attached.A coding agent signed inNothing on this machine is signed in, so no step would dispatch.No coding agent is installed on this machine yet. EO ships none, and can fetch one for you.Install a coding agentThe assistant, which plans the first piece of work with youNothing on this machine is signed in, so the assistant has nothing to run on yet.No coding agent is installed on this machine yet. EO ships none, and can fetch one for you.Install a coding agentGo to the boardContinue with Preview only`,
     );
   });
 
-  /** The two red ones the old first-run panel asked for, and the forge CLI its pull requests go through (EO-663). */
-  it("has exactly three red lines", () => {
-    expect(needs.filter((need) => !need.met).map((need) => need.key)).toEqual(["workspace", "forge", "backend"]);
+  /**
+   * The two red ones the old first-run panel asked for, the forge CLI its
+   * pull requests go through (EO-663), and the assistant its first item is
+   * asked for by, since it has no job (EO-664).
+   */
+  it("has exactly four red lines", () => {
+    expect(needs.filter((need) => !need.met).map((need) => need.key)).toEqual(["workspace", "forge", "backend", "assistant"]);
   });
 });

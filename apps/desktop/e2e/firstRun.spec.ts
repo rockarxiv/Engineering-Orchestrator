@@ -302,7 +302,9 @@ test("a developer's first run reaches the board it reaches today, through the sa
     await expect(window.getByRole("heading", { name: "Software feature to merge is set up" })).toBeVisible({ timeout: 15_000 });
     await expect(window.getByText("A repository — the checkout its work happens in")).toBeVisible();
     await expect(window.getByText(/This project has no repository yet/)).toBeVisible();
-    await expect(window.getByText("A coding agent signed in")).toBeVisible();
+    await expect(window.getByText("A coding agent signed in", { exact: true })).toBeVisible();
+    // It has no job, so its first item is the assistant's to ask for (EO-664).
+    await expect(window.getByText("The assistant, which plans the first piece of work with you")).toBeVisible();
     // Its pipeline opens pull requests, so it needs gh or glab (EO-663);
     // which one waits on a repository's remote.
     await expect(window.getByText("GitHub or GitLab CLI", { exact: true })).toBeVisible();
@@ -346,6 +348,77 @@ test("a developer's first run reaches the board it reaches today, through the sa
     // And no Jobs entry: the developer template makes no job, and the
     // rail lists Jobs only for a project that has one (`ChatRail.tsx`).
     await expect(rail.getByRole("link", { name: "Jobs" })).toHaveCount(0);
+  } finally {
+    await closeApp(app);
+    cleanUp();
+  }
+});
+
+/**
+ * A template with no job ends in the assistant (EO-664).
+ *
+ * Content draft and approve files nothing on a schedule, so with every
+ * line green there is no first item to start and the window cannot make
+ * one: the last button opens a new assistant chat whose first message is
+ * EO's brief, and the assistant's first turn is dispatched with nobody
+ * typing. What only a launch shows is that the press leaves first run for
+ * the chat itself, with the brief in it, and that the engine picks the
+ * turn up.
+ */
+test("a template with no job ends in an assistant chat that opens with EO's brief for the first item", async () => {
+  // Signed in, for the first test's reason.
+  test.skip(process.platform === "win32", "the signed-in Claude is a shell script, and Windows runs claude.exe, which a script cannot stand in for");
+  test.setTimeout(120_000);
+
+  const { root, home, env, cleanUp } = scratch("first run assistant");
+  const drafts = path.join(root, "the drafts");
+  mkdirSync(drafts, { recursive: true });
+  seedSignedInClaude(home);
+
+  const { app, window } = await launchApp(env);
+  try {
+    await expect(window.getByRole("heading", { name: "Welcome to EO" })).toBeVisible({ timeout: 15_000 });
+    await window.getByRole("button", { name: "Just me" }).click();
+    await window.getByRole("listitem").filter({ hasText: "Content draft and approve" }).getByRole("button", { name: "Use this" }).click();
+    await window.getByLabel("Where drafts are kept").fill(drafts);
+    await window.getByRole("button", { name: "Create" }).click();
+
+    await expect(window.getByRole("heading", { name: "Content draft and approve is set up" })).toBeVisible({ timeout: 15_000 });
+    await window.getByRole("button", { name: /^Use Claude Code for these steps$/ }).click();
+    // The exit is the assistant, so the assistant is a line of its own: a
+    // fresh installation's runs on the placeholder, and pressing its button
+    // points it at the coding agent that is signed in.
+    await expect(window.getByText("The assistant, which plans the first piece of work with you")).toBeVisible();
+    await window.getByRole("button", { name: /^Use Claude Code for the assistant$/ }).click();
+    await expect(window.getByText("Everything it needs is here.")).toBeVisible({ timeout: 15_000 });
+    // No job, so nothing to start and no board to settle for.
+    await expect(window.getByRole("button", { name: /^Start the first/ })).toHaveCount(0);
+    await expect(window.getByRole("button", { name: "Go to the board" })).toHaveCount(0);
+
+    // The turn is dispatched to the signed-in Claude, which here is the
+    // stub that can only answer the sign-in question: what is asserted
+    // below is that a turn started, not what it said.
+    await window.getByRole("button", { name: /^Plan the first .+ with the assistant$/ }).click();
+
+    // First run is behind them, and the chat on show is the brief's.
+    await expect(window.getByRole("navigation", { name: "Main" })).toBeVisible({ timeout: 15_000 });
+    const transcript = window.getByLabel("Assistant transcript");
+    await expect(transcript.getByText("Help the person file the first piece of work for Content draft and approve.")).toBeVisible({ timeout: 15_000 });
+    await expect(transcript.getByText(/What is the first piece you want drafted\?/)).toBeVisible();
+
+    // And its first turn was dispatched, with nobody typing.
+    const turns = () => {
+      const db = new Database(path.join(home, ".config/Electron/eo.db"), { readonly: true });
+      try {
+        const row = db
+          .prepare("SELECT COUNT(*) AS n FROM runs WHERE item_id = (SELECT item_id FROM comments WHERE body LIKE 'Help the person file the first piece of work%' LIMIT 1)")
+          .get() as { n: number };
+        return row.n;
+      } finally {
+        db.close();
+      }
+    };
+    await expect.poll(turns, { timeout: 30_000 }).toBeGreaterThan(0);
   } finally {
     await closeApp(app);
     cleanUp();

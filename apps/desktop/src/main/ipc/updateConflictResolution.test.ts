@@ -61,7 +61,7 @@ import { clearHandlerRegistry, dispatchIpc } from "./registry.js";
  * (EO-534), and the person resolves it.
  *
  * Against EO's own Delivery, customised before EO-461 so Merge Request's
- * `opened` goes to a Merge pipeline's `merge_pr` — the shape whose 1.1 and 1.2
+ * `opened` goes to a Merge pipeline's `merge_pr` — the shape whose 1.1, 1.2 and 1.3
  * update EO-532 holds on exactly that route. Driven through the app's own
  * handlers: the tool through the catalog, the turn through the
  * supervisor with the fake provider, Publish as the draft card does it,
@@ -92,7 +92,7 @@ async function call<K extends IpcChannel>(channel: K, payload: unknown): Promise
   return answer.data as IpcResponse<K>;
 }
 
-/** EO's own Delivery with its 1.2 update held, and the notice posted on the adopting project's thread. */
+/** EO's own Delivery with its 1.3 update held, and the notice posted on the adopting project's thread. */
 function heldUpdate(): { conflictId: string; noticeId: string } {
   // The Merge pipeline is the project's own, as EO's is: a route hands
   // work only to a step of another of the project's pipelines.
@@ -209,7 +209,7 @@ function recommendedDraft(conflict: UpdateConflictDetail): DraftOf {
 function templateDraft(conflict: UpdateConflictDetail): DraftOf {
   const steps = [...conflict.template.steps].sort((a, b) => a.position - b.position);
   return {
-    rationale: "Takes the template's 1.2 as it ships: Merge Request goes to Watching pull request, and your route to Merge PR is set aside.",
+    rationale: "Takes the template's 1.3 as it ships: Merge Request goes to Watching pull request, and your route to Merge PR is set aside.",
     entryStepId: conflict.template.entryStepId!,
     steps: steps.map((step, index) => draftStep(step, index, step.watch === null ? {} : { watch: step.watch })),
     routes: conflict.template.routes.map(draftRoute),
@@ -295,7 +295,7 @@ describe("pipeline_update_conflict", () => {
 
     expect(refused).toBe(false);
     const conflict = data.conflict!;
-    expect(conflict).toMatchObject({ conflictId, pipelineId: "default", pipelineName: "Delivery", templateSlug: "software-feature-to-merge", fromVersion: "1.0", toVersion: "1.2" });
+    expect(conflict).toMatchObject({ conflictId, pipelineId: "default", pipelineName: "Delivery", templateSlug: "software-feature-to-merge", fromVersion: "1.0", toVersion: "1.3" });
     expect(conflict.releaseNotes).toContain("1.1: Adds Watching pull request after Merge Request");
     expect(conflict.releaseNotes).toContain("1.2: Watching pull request no longer gives up");
     // The three graphs, each in the pipeline's own ids.
@@ -323,7 +323,7 @@ describe("pipeline_update_conflict", () => {
     expect(conflict.takenStepIds).toEqual([]);
 
     // Said as text too, with the same facts.
-    expect(text).toContain('"Delivery" (id: default) holds the Software feature to merge template\'s update (software-feature-to-merge) from 1.0, its base, to 1.2.');
+    expect(text).toContain('"Delivery" (id: default) holds the Software feature to merge template\'s update (software-feature-to-merge) from 1.0, its base, to 1.3.');
     expect(text).toContain("[conflict] **Merge Request**'s 'opened' route");
     expect(text).toContain("The person's edits since the base");
   });
@@ -434,7 +434,7 @@ describe("resolving a held update from its chat", () => {
     expect(conflict.resolution).toBe("published");
     expect(conflict.resolvedAt).not.toBeNull();
     const origin = getPipelineOrigin(handle.db, "default")!;
-    expect(origin.version).toBe("1.2");
+    expect(origin.version).toBe("1.3");
     expect(origin.baseId).toBe(conflict.templateId);
     expect(origin.stepIds["pull_request_watch"]).toBe("pull_request_watch");
     // The graph is the draft's.
@@ -463,7 +463,7 @@ describe("resolving a held update from its chat", () => {
 
     expect(resolved).toEqual({ resolved: true, problem: null });
     expect(graphOf().routes.find((route) => route.fromStepId === "merge_request" && route.resultKey === "opened")?.target).toBe("pull_request_watch");
-    expect(getPipelineOrigin(handle.db, "default")?.version).toBe("1.2");
+    expect(getPipelineOrigin(handle.db, "default")?.version).toBe("1.3");
   });
 
   it("does not believe a draft was published until the pipeline is that draft", async () => {
@@ -505,15 +505,15 @@ describe("Keep my pipeline", () => {
     const before = { graph: graphOf(), versions: listPipelineVersions(handle.db, "default").length };
 
     const shown = await call("assist:card", { conversationId: chat.id, messageId: keep });
-    expect(shown.card).toEqual({ kind: "pipelineKeepMine", pipelineId: "default", pipelineName: "Delivery", held: { templateTitle: "Software feature to merge", fromVersion: "1.0", toVersion: "1.2" } });
+    expect(shown.card).toEqual({ kind: "pipelineKeepMine", pipelineId: "default", pipelineName: "Delivery", held: { templateTitle: "Software feature to merge", fromVersion: "1.0", toVersion: "1.3" } });
 
     const pressed = await call("assist:applyCard", { conversationId: chat.id, messageId: keep });
 
     expect(pressed.applied).toBe(true);
-    expect(pressed.said).toContain("Kept Delivery as it is and skipped the template update to 1.2");
+    expect(pressed.said).toContain("Kept Delivery as it is and skipped the template update to 1.3");
     const conflict = getUpdateConflict(handle.db, conflictId)!;
     expect(conflict.resolution).toBe("kept");
-    expect(getPipelineOrigin(handle.db, "default")).toMatchObject({ version: "1.2", baseId: conflict.templateId });
+    expect(getPipelineOrigin(handle.db, "default")).toMatchObject({ version: "1.3", baseId: conflict.templateId });
     // Not one step or route changed, and no version was filed.
     expect(graphOf()).toEqual(before.graph);
     expect(listPipelineVersions(handle.db, "default")).toHaveLength(before.versions);
@@ -610,11 +610,11 @@ describe("the person's edits since the base", () => {
     expect(movedAt).not.toBeNull();
 
     // A later update, held against the new base, sees none of what came before the move.
-    expect(editsSinceBase(handle.db, "default", { id: "later", templateSlug: "software-feature-to-merge", fromVersion: "1.2" })).toEqual([]);
+    expect(editsSinceBase(handle.db, "default", { id: "later", templateSlug: "software-feature-to-merge", fromVersion: "1.3" })).toEqual([]);
     // And sees what Dana does after it.
     const renamed = rewritten((step) => (step.id === "review" ? { ...step, name: "Code review" } : step));
     replacePipelineGraph(handle.db, "default", renamed.steps, renamed.routes, { createdBy: dana.id });
-    const after = editsSinceBase(handle.db, "default", { id: "later", templateSlug: "software-feature-to-merge", fromVersion: "1.2" });
+    const after = editsSinceBase(handle.db, "default", { id: "later", templateSlug: "software-feature-to-merge", fromVersion: "1.3" });
     expect(after.map((edit) => edit.changes)).toEqual([["Changed **Code review**: name Review → Code review"]]);
   });
 
@@ -624,7 +624,7 @@ describe("the person's edits since the base", () => {
     turn(chat, resolutionReply((await readConflict()).data.conflict!));
     await publish(chat, postedCards(chat).cards[0]!);
 
-    expect(editsSinceBase(handle.db, "default", { id: "later", templateSlug: "software-feature-to-merge", fromVersion: "1.2" })).toEqual([]);
+    expect(editsSinceBase(handle.db, "default", { id: "later", templateSlug: "software-feature-to-merge", fromVersion: "1.3" })).toEqual([]);
   });
 
   it("are every version a backfilled origin has: its pipeline was made from the base long before anybody recorded it", async () => {
@@ -638,15 +638,15 @@ describe("the person's edits since the base", () => {
   });
 });
 
-/** The shipped history with a 1.3 of the template on top, which checks the pull request every ten minutes instead of five. */
+/** The shipped history with a 1.4 of the template on top, which checks the pull request every ten minutes instead of five. */
 function historyWithEveryTenMinutes() {
   const history = loadTemplateHistory(GALLERY_DIRECTORY);
   const versions = history.get("software-feature-to-merge")!;
   const latest = versions.at(-1)!;
   const document = structuredClone(latest.document);
-  document.template.version = "1.3";
+  document.template.version = "1.4";
   for (const step of document.steps) if (step.id === "pull_request_watch") Object.assign(step, { watch: { everyMinutes: 10, giveUpAfterHours: 168, neverGivesUp: true } });
-  return new Map(history).set("software-feature-to-merge", [...versions, { ...latest, version: "1.3", notes: "Checks every ten minutes.", document }]);
+  return new Map(history).set("software-feature-to-merge", [...versions, { ...latest, version: "1.4", notes: "Checks every ten minutes.", document }]);
 }
 
 describe("a template step published under a fresh id", () => {
@@ -672,7 +672,7 @@ describe("a template step published under a fresh id", () => {
 
     expect(resolved).toEqual({ resolved: true, problem: null });
     expect(getPipelineOrigin(handle.db, "default")!.stepIds["pull_request_watch"]).toBe("delivery_watch");
-    // 1.3 changes how often the template's watch checks: a change only
+    // 1.4 changes how often the template's watch checks: a change only
     // the template made, applied to the person's step of that name.
     const [update] = applyTemplateUpdates(handle.db, historyWithEveryTenMinutes(), { isTheRecord: false }).filter((entry) => entry.pipelineId === "default");
     expect(update?.outcome).toBe("applied");

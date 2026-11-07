@@ -65,7 +65,7 @@ describe("Software feature to merge", () => {
   const versions = () => loadTemplateHistory(GALLERY_DIRECTORY).get(SOFTWARE)!;
 
   it("has the graph from before EO-461, the one that gave up after a week, and the current one", () => {
-    expect(versions().map((version) => version.version)).toEqual(["1.0", "1.1", "1.2"]);
+    expect(versions().map((version) => version.version)).toEqual(["1.0", "1.1", "1.2", "1.3"]);
   });
 
   it("1.0 opens the pull request and waits at Done, with no step watching it", () => {
@@ -118,6 +118,14 @@ describe("Software feature to merge", () => {
     expect(strip(before!.document)).toEqual(strip(current!.document));
   });
 
+  it("differs between 1.2 and 1.3 only in the question the assistant opens first run with (EO-664)", () => {
+    const [, , before, current] = versions();
+    expect(current!.document.template.openingQuestion).toMatch(/first feature/);
+    expect(current!.notes).toContain("chat with the assistant");
+    const strip = (document: TemplateVersion["document"]) => ({ ...document, template: { ...document.template, version: "", openingQuestion: undefined } });
+    expect(strip(current!.document)).toEqual(strip(before!.document));
+  });
+
   it("differs between 1.0 and 1.1 only in what EO-461 changed", () => {
     const [before, current] = versions();
     const strip = (document: TemplateVersion["document"]) => ({
@@ -127,6 +135,32 @@ describe("Software feature to merge", () => {
       routes: document.routes.filter((route) => route.fromStepId !== "pull_request_watch" && !(route.fromStepId === "merge_request" && route.resultKey === "opened")),
     });
     expect(strip(before!.document)).toEqual(strip(current!.document));
+  });
+});
+
+/**
+ * A template with no job has no first item of its own, so first run ends
+ * in the assistant asking for one (EO-664) — with the template's own
+ * question, which arrived as a version of its own.
+ */
+describe("the templates with no job", () => {
+  const withoutJob = () => bundledTemplates(GALLERY_DIRECTORY).filter((template) => !template.document.template!.blanks.some((blank) => blank.kind === "schedule"));
+
+  it("are the three that do not file work on a schedule", () => {
+    expect(withoutJob().map((template) => template.slug).sort()).toEqual(["content-draft-and-approve", "inbox-triage", SOFTWARE]);
+  });
+
+  it("each ask their own opening question, from a version whose notes say so, changing nothing else", () => {
+    const history = loadTemplateHistory(GALLERY_DIRECTORY);
+    for (const template of withoutJob()) {
+      expect(template.document.template!.openingQuestion, `${template.slug} has no opening question`).toMatch(/\?/);
+      const versions = history.get(template.slug)!;
+      const [before, current] = versions.slice(-2);
+      expect(current!.notes).toContain("chat with the assistant");
+      expect(before!.document.template!.openingQuestion).toBeUndefined();
+      const strip = (document: TemplateVersion["document"]) => ({ ...document, template: { ...document.template!, version: "", openingQuestion: undefined } });
+      expect(strip(current!.document), `${template.slug} changed more than its question`).toEqual(strip(before!.document));
+    }
   });
 });
 
@@ -147,7 +181,7 @@ describe("reading the history", () => {
   it("skips a damaged file and keeps the versions around it", () => {
     const directory = copyOfHistory();
     writeFileSync(join(templateHistoryDirectory(directory), SOFTWARE, "1.0.json"), "{ not json");
-    expect(loadTemplateHistory(directory).get(SOFTWARE)?.map((version) => version.version)).toEqual(["1.1", "1.2"]);
+    expect(loadTemplateHistory(directory).get(SOFTWARE)?.map((version) => version.version)).toEqual(["1.1", "1.2", "1.3"]);
   });
 
   it("skips a file whose path disagrees with the version it carries", () => {
@@ -159,7 +193,7 @@ describe("reading the history", () => {
 
     const history = loadTemplateHistory(directory);
     expect(history.has("somebody-else")).toBe(false);
-    expect(history.get(SOFTWARE)?.map((version) => version.version)).toEqual(["1.0", "1.1", "1.2"]);
+    expect(history.get(SOFTWARE)?.map((version) => version.version)).toEqual(["1.0", "1.1", "1.2", "1.3"]);
   });
 
   it("refuses a pack that asks for the admin grant, as every other door does", () => {

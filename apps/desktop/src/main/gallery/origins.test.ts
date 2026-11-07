@@ -45,13 +45,15 @@ describe("matching step ids against the history", () => {
   });
 
   it("maps a pipeline that watches its pull request to the current version, when only its step ids are known", () => {
-    expect(matchTemplateVersion([...DELIVERY_BEFORE_EO_461, "pull_request_watch"], history)?.version.version).toBe("1.2");
+    expect(matchTemplateVersion([...DELIVERY_BEFORE_EO_461, "pull_request_watch"], history)?.version.version).toBe("1.3");
   });
 
   /**
    * 1.1 and 1.2 have the same step ids (EO-571), so the ids cannot tell
    * them apart. The steps can: a watch that gives up after a week is
-   * 1.1's, and one that never gives up is 1.2's.
+   * 1.1's, and one that never gives up is 1.2's — or 1.3's, which differs
+   * from 1.2 only in the question first run asks (EO-664), so the newest
+   * of the two is the one.
    */
   it("tells two versions with the same steps apart by what the steps are set to", () => {
     const steps = listStepsForPipeline(handle.db, "default");
@@ -60,7 +62,7 @@ describe("matching step ids against the history", () => {
     expect(matchTemplateVersion(ids, history, steps)?.version.version).toBe("1.1");
 
     const neverGivesUp = steps.map((step) => (step.id === "pull_request_watch" ? { ...step, watch: { everyMinutes: 5, giveUpAfterHours: 168, neverGivesUp: true } } : step));
-    expect(matchTemplateVersion(ids, history, neverGivesUp)?.version.version).toBe("1.2");
+    expect(matchTemplateVersion(ids, history, neverGivesUp)?.version.version).toBe("1.3");
   });
 
   it("still matches a pipeline the person removed a step from, and leaves that step out of the map", () => {

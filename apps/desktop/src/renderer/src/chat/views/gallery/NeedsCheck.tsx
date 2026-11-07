@@ -2,12 +2,13 @@ import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import { Check, Download, ExternalLink, FolderOpen, Plus, RefreshCw, X } from "lucide-react";
-import { GIT_WORKTREE_KIND, type GalleryNeedView, type GalleryTemplateView, type RuntimeStatusView, type SectionLock } from "@eo/core";
+import { CHAT_HOME_ROUTE, GIT_WORKTREE_KIND, type GalleryNeedView, type GalleryTemplateView, type RuntimeStatusView, type SectionLock } from "@eo/core";
 import { machineAvailable } from "../../../ipc/bridge";
 import { ipcQuery } from "../../../query/client";
 import { galleryNeedsKey, projectsKey, repositoriesKey, useChromeVocabulary, useModules } from "../../../query/hooks";
 import { useProjects, useRepositories } from "../../../query/useRepositories";
 import { useInvalidateOnPush } from "../../../query/useInvalidateOnPush";
+import { assistRoomKey, assistThreadsKey } from "../../../shared/assist/useAssistRoom";
 import { ConnectorNeeds } from "../../connectors/ConnectorNeeds";
 import { ManagedLockNotice } from "../../managed/ManagedSection";
 import { Button, Card, ErrorLine, Loading, TextInput, ViewHeader } from "../../kit";
@@ -27,9 +28,10 @@ import { GitForm } from "../settings/sections/WorkspacesSection";
  * and then asks the machine the question again, never patching the line
  * it acted on and never sending anybody to Settings to come back.
  *
- * Both exits are always offered: the board (or, with every line green
- * and a job to fire, the first item), and "Continue with Preview only",
- * which rehearses the pack with nothing real filed.
+ * Both exits are always offered: the board (or, with every line green,
+ * the first item — started by the template's job where it has one, and
+ * otherwise asked for by the assistant), and "Continue with Preview
+ * only", which rehearses the pack with nothing real filed.
  */
 export function NeedsCheck({
   template,
@@ -83,6 +85,23 @@ export function NeedsCheck({
   });
 
   /**
+   * Step 6 for a template with no job (EO-664): there is no first item to
+   * start, and the window has no way to make one, so the assistant asks
+   * for it. A new chat whose first message is EO's brief, put on show and
+   * opened as Fix with assistant opens one; its first turn is already on
+   * its way.
+   */
+  const brief = useMutation({
+    mutationFn: () => ipcQuery("gallery:openFirstItemChat", { projectId, slug: template.slug, token: template.token, pipelineId }),
+    onSuccess: (result) => {
+      if (result.conversation === null) return;
+      queryClient.setQueryData(assistRoomKey, { conversation: result.conversation });
+      void queryClient.invalidateQueries({ queryKey: assistThreadsKey });
+      leave(CHAT_HOME_ROUTE);
+    },
+  });
+
+  /**
    * The exit for somebody who cannot get a line green: a rehearsal in
    * EO's preview project, landing on its board. The window is pointed at
    * that project first, because a board draws the project it is on.
@@ -126,11 +145,17 @@ export function NeedsCheck({
       {needs.data?.problem ? <ErrorLine>{needs.data.problem}</ErrorLine> : null}
       {previewOnly.data?.problem ? <ErrorLine>{previewOnly.data.problem}</ErrorLine> : null}
       {start.data?.problem ? <ErrorLine>{start.data.problem}</ErrorLine> : null}
+      {brief.data?.problem ? <ErrorLine>{brief.data.problem}</ErrorLine> : null}
+      {brief.error ? <ErrorLine>{brief.error instanceof Error ? brief.error.message : String(brief.error)}</ErrorLine> : null}
 
       <div className="flex flex-wrap items-center gap-2">
         {jobId !== null && greenThroughout ? (
           <Button variant="primary" disabled={start.isPending} onClick={() => start.mutate()}>
             Start the first {vocabulary.item.toLowerCase()}
+          </Button>
+        ) : greenThroughout ? (
+          <Button variant="primary" disabled={brief.isPending} onClick={() => brief.mutate()}>
+            Plan the first {vocabulary.item.toLowerCase()} with the assistant
           </Button>
         ) : (
           <Button variant="primary" onClick={() => leave(boardAddress)}>
@@ -201,6 +226,7 @@ function Fix({ need, projectId, template, onFixed }: { need: GalleryNeedView; pr
   if (fix.kind === "module") return <ModuleFix label={fix.label} moduleId={fix.target ?? ""} onFixed={done} />;
   if (fix.kind === "forge") return <ForgeFix label={fix.label} link={fix.link ?? null} onCheck={onFixed} />;
   if (fix.kind === "forgeKind") return <ForgeKindFix repositoryId={fix.target ?? ""} onFixed={done} />;
+  if (fix.kind === "assistant") return <AssistantFix label={fix.label} backend={fix.target ?? ""} onFixed={done} />;
   return <RoleFix label={fix.label} role={fix.target ?? ""} template={template} onFixed={done} />;
 }
 
@@ -238,6 +264,34 @@ function RoleFix({ label, role, template, onFixed }: { label: string; role: stri
         </Button>
       </div>
       {locked === null ? null : <ManagedLockNotice lock={locked} />}
+      {problem === null ? null : <ErrorLine>{problem}</ErrorLine>}
+    </div>
+  );
+}
+
+/**
+ * The assistant pointed at a signed-in backend and switched on (EO-664),
+ * for a template whose first item the assistant asks for. Only on this
+ * press; the main process refuses with a sentence where it cannot.
+ */
+function AssistantFix({ label, backend, onFixed }: { label: string; backend: string; onFixed: () => void }) {
+  const [problem, setProblem] = useState<string | null>(null);
+  const staff = useMutation({
+    mutationFn: () => ipcQuery("gallery:staffAssistant", { backend }),
+    onSuccess: (result) => {
+      setProblem(result.problem);
+      if (result.ok) onFixed();
+    },
+    onError: (error: Error) => setProblem(error.message),
+  });
+
+  return (
+    <div className="flex flex-col gap-1.5 pl-6">
+      <div>
+        <Button size="sm" disabled={staff.isPending} onClick={() => staff.mutate()}>
+          {label}
+        </Button>
+      </div>
       {problem === null ? null : <ErrorLine>{problem}</ErrorLine>}
     </div>
   );

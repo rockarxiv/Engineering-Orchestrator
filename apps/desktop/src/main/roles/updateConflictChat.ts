@@ -1,8 +1,8 @@
-import { uuidv7, type Item, type Uuid } from "@eo/core";
+import type { Item, Uuid } from "@eo/core";
 import type { Db } from "../db/client.js";
-import { getComment, getItem, getPipeline, getUpdateConflict, handUpdateConflictTurn, postComment, setUpdateConflictChat } from "../db/repos/index.js";
+import { getComment, getItem, getPipeline, getUpdateConflict, handUpdateConflictTurn, setUpdateConflictChat } from "../db/repos/index.js";
 import { updateConflictBrief } from "../gallery/templateUpdates.js";
-import { openAssistConversation, recordAssistBoard } from "./assist.js";
+import { openBriefedChat } from "./briefedChat.js";
 import { ASSIST_STEP } from "./conversationSteps.js";
 
 /**
@@ -83,26 +83,17 @@ export function openUpdateConflictChat(db: Db, request: UpdateConflictChatReques
   if (!getPipeline(db, conflict.pipelineId)) return { ok: false, problem: "That pipeline no longer exists." };
 
   const chat = db.transaction(() => {
-    const started = openAssistConversation(db, chatProjectFor(db, conflict.pipelineId, request));
-    const briefId = uuidv7();
-    // The board first, for `sendToAssist`'s reason: the mention below is
-    // what wakes the supervisor, and a turn dispatched before the board
-    // is written would have no pipeline to raise a draft against.
-    const pinned = recordAssistBoard(db, started, briefId, conflict.pipelineId);
-    postComment(db, {
-      id: briefId,
-      itemId: pinned.id,
-      author: { type: "engine" },
-      kind: "note",
-      body: updateConflictBrief(db, conflict),
+    const started = openBriefedChat(db, {
+      projectId: chatProjectFor(db, conflict.pipelineId, request),
+      pipelineId: conflict.pipelineId,
+      brief: updateConflictBrief(db, conflict),
       // Asking this installation's assistant, where it is the one to
       // answer; asking nobody on the record, where the turn is handed to
       // a device instead.
-      mentions: answeredBy.kind === "here" ? [{ type: "agent", agentId: answeredBy.agentId as Uuid }] : [],
-      parseBodyMentions: false,
+      asking: answeredBy.kind === "here" ? answeredBy.agentId : null,
     });
-    setUpdateConflictChat(db, conflict.id, pinned.id);
-    return getItem(db, pinned.id) ?? pinned;
+    setUpdateConflictChat(db, conflict.id, started.id);
+    return started;
   });
   return { ok: true, chat, started: true, firstTurn: answeredBy.kind === "here" || handed() };
 }
