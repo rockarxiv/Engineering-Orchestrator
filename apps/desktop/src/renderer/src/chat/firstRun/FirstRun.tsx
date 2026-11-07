@@ -71,10 +71,11 @@ export function FirstRun({ onLeft }: { onLeft: () => void }) {
 }
 
 /**
- * Where "Look around first" is remembered, for the rest of this window's
- * session. Not React state: Preview takes the window to an item page,
- * which unmounts the flow, and coming back from a rehearsal the person
- * chose must not ask them the question they just answered.
+ * Where moving on from the connect step — "Look around first" or
+ * "Continue" — is remembered, for the rest of this window's session. Not
+ * React state: Preview takes the window to an item page, which unmounts
+ * the flow, and coming back from a rehearsal the person chose must not
+ * ask them the question they just answered.
  */
 const LOOKED_AROUND_KEY = "eo.firstRun.lookedAround";
 
@@ -85,22 +86,26 @@ function lookedAroundBefore(): boolean {
 /**
  * Step 2, "Connect a coding agent" (EO-659), and then the gallery.
  *
- * Asked only while nothing on this machine is signed in, and decided
- * from what the runtimes themselves answer rather than from the dialog
- * having closed: a sign-in that finishes is followed by the statuses
- * being asked again, and the gallery arrives because one of them now
- * says "signed in" — without a further press.
- *
- * "Look around first" goes on to the gallery anyway, where Preview works
- * and every Use this waits for a coding agent, with a way back here.
+ * Skipped when something on this machine is already signed in at the
+ * moment it would first be shown, decided from what the runtimes
+ * themselves answer. Once it is on screen it stays there until the
+ * person moves on (EO-666): a sign-in that finishes turns that row to
+ * "Signed in" and leaves the others offering their own Install or Sign
+ * in, so somebody with both Claude Code and Codex can sign in to both.
+ * "Continue" moves on once one is signed in; while none is, "Look
+ * around first" goes on to the gallery anyway, where Preview works and
+ * every Use this waits for a coding agent, with a way back here.
  */
 function AfterMode({ onLeft }: { onLeft: () => void }) {
   const agents = useCodingAgents();
   const [lookedAround, setLookedAround] = useState(lookedAroundBefore);
+  /** The step has been shown and not yet moved on from, so a sign-in does not take it away. */
+  const [stepOpen, setStepOpen] = useState(false);
   const remember = (value: boolean) => {
     if (value) window.sessionStorage.setItem(LOOKED_AROUND_KEY, "1");
     else window.sessionStorage.removeItem(LOOKED_AROUND_KEY);
     setLookedAround(value);
+    setStepOpen(!value);
   };
 
   if (agents.loading) {
@@ -110,7 +115,12 @@ function AfterMode({ onLeft }: { onLeft: () => void }) {
       </StandaloneScreen>
     );
   }
-  if (!agents.signedIn && !lookedAround) return <ConnectStep onLookAround={() => remember(true)} />;
+  const showStep = !lookedAround && (stepOpen || !agents.signedIn);
+  // Adjusting state while rendering, React's pattern for state derived
+  // from what was rendered: the step is held open from the render that
+  // first shows it, before any sign-in can land.
+  if (showStep && !stepOpen) setStepOpen(true);
+  if (showStep) return <ConnectStep signedIn={agents.signedIn} onMoveOn={() => remember(true)} />;
   return (
     // From the top rather than centred: the cards, the form and the needs
     // check all run longer than a window, and the ground scrolls.
@@ -125,7 +135,7 @@ function AfterMode({ onLeft }: { onLeft: () => void }) {
   );
 }
 
-function ConnectStep({ onLookAround }: { onLookAround: () => void }) {
+function ConnectStep({ signedIn, onMoveOn }: { signedIn: boolean; onMoveOn: () => void }) {
   const machine = machineAvailable();
   return (
     <StandaloneScreen>
@@ -142,8 +152,16 @@ function ConnectStep({ onLookAround }: { onLookAround: () => void }) {
         <ConnectAgentPanel />
       </Card>
       <div className="flex flex-wrap items-center gap-3 pt-3">
-        <Button onClick={onLookAround}>Look around first</Button>
-        <span className="text-[12.5px] text-ink-subtle">Every template can be previewed without one. Nothing is sent, and nothing costs money.</span>
+        {signedIn ? (
+          <Button variant="primary" onClick={onMoveOn}>
+            Continue
+          </Button>
+        ) : (
+          <>
+            <Button onClick={onMoveOn}>Look around first</Button>
+            <span className="text-[12.5px] text-ink-subtle">Every template can be previewed without one. Nothing is sent, and nothing costs money.</span>
+          </>
+        )}
       </div>
     </StandaloneScreen>
   );
