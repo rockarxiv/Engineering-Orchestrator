@@ -109,12 +109,6 @@ async function connect(): Promise<Client> {
 async function connectAs(name: string): Promise<Client> {
   const client = new Client({ name, version: "0" });
   await client.connect(
-    // @ts-expect-error — the SDK's own client transport does not satisfy the
-    // SDK's own Transport interface under `exactOptionalPropertyTypes: true`:
-    // it declares `sessionId: string | undefined` where the interface wants
-    // an optional `string`. Their bug, between two of their own exports —
-    // and using anything but their client here would defeat the point of
-    // testing over the real transport.
     new StreamableHTTPClientTransport(url, { requestInit: { headers: { authorization: `Bearer ${TOKEN}` } } }),
   );
   clients.push(client);
@@ -680,7 +674,6 @@ describe("what one client can make the server hold", () => {
   async function connectTo(target: URL, turn: string): Promise<Client> {
     const client = new Client({ name: "test", version: "0" });
     await client.connect(
-      // @ts-expect-error — the SDK's own client transport against its own interface; see `connectAs`.
       new StreamableHTTPClientTransport(target, { requestInit: { headers: { authorization: `Bearer ${TOKEN}`, "x-turn": turn } } }),
     );
     clients.push(client);

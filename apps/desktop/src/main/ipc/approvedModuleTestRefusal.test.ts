@@ -77,8 +77,6 @@ async function adminClient() {
   const token = endpoint.lease().token;
   const client = new Client({ name: "test", version: "0" });
   await client.connect(
-    // @ts-expect-error — the SDK's client transport does not satisfy its own Transport type under
-    // `exactOptionalPropertyTypes`; see admin.test.ts.
     new StreamableHTTPClientTransport(new URL(endpoint.url), { requestInit: { headers: { authorization: `Bearer ${token}` } } }),
   );
   return {
