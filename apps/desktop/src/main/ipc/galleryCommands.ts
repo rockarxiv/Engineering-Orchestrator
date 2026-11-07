@@ -26,6 +26,7 @@ import {
   listGitWorkspaces,
   listJobs,
   listPeople,
+  listPipelines,
   localPerson,
   projectWorkspaceList,
   updateAgent,
@@ -36,6 +37,9 @@ import { isAdopting } from "../db/repos/projectsRepo.js";
 import { forgeCardNeed, galleryBlanks, galleryNeeds, galleryRoleSlots, repositoryAnswer } from "../gallery/form.js";
 import { forgeNeeds, type DetectForge } from "../gallery/forgeNeeds.js";
 import { previewTemplate, projectNeeds, useTemplate } from "../gallery/commands.js";
+import { firstItemBrief } from "../gallery/firstItemBrief.js";
+import { openBriefedAssist } from "./assistCommands.js";
+import type { EngineHandle } from "./domainCommands.js";
 import { listedByToken, listedTemplate, rememberListed } from "../gallery/session.js";
 import { bundledTemplates, listGalleryTemplates, type GalleryOptions, type GalleryTemplate } from "../gallery/templates.js";
 import { preflightImport } from "../modules/pipelineTransfer.js";
@@ -282,6 +286,46 @@ export async function galleryNeedsCommand(db: Db, context: GalleryContext, paylo
   // finds its way back to step 6.
   const job = listJobs(db, projectId)[0] ?? null;
   return { needs: await needsOf(db, context, template.document, projectId), jobId: job?.id ?? null, problem: null };
+}
+
+/**
+ * The needs check's way on for a template with no job (EO-664): an
+ * assistant chat whose first message is EO's brief for the first item,
+ * shown, with its first turn dispatched.
+ *
+ * The brief is built here because what it says is the template's: its
+ * own opening question for its first item, or a generic one from its
+ * title and description (`firstItemBrief`). The chat is the assistant's
+ * (`openBriefedAssist`).
+ *
+ * On the board `gallery:use` answered with, where it is this project's;
+ * otherwise the project's own pipeline. That is the board pinned to the
+ * brief, and the one the brief names.
+ */
+export async function openFirstItemChatCommand(
+  db: Db,
+  context: GalleryContext,
+  engine: EngineHandle | undefined,
+  payload: IpcPayload<"gallery:openFirstItemChat">,
+): Promise<IpcResponse<"gallery:openFirstItemChat">> {
+  const template = await find(context, payload.slug, payload.token);
+  if (template === null) return { conversation: null, problem: missing(payload.slug, payload.token) };
+
+  const projectId = payload.projectId as Uuid;
+  const project = getProject(db, projectId);
+  if (project === undefined) return { conversation: null, problem: "That project no longer exists." };
+
+  const pipelines = listPipelines(db, projectId);
+  const named = payload.pipelineId === null ? undefined : pipelines.find((pipeline) => pipeline.id === payload.pipelineId);
+  const pipeline = named ?? pipelines.find((candidate) => candidate.projectId === projectId) ?? pipelines[0];
+  if (pipeline === undefined) return { conversation: null, problem: "That project has no pipeline to file work on." };
+
+  const brief = firstItemBrief({
+    template: template.document.template ?? { title: template.title, description: template.description },
+    project: { id: project.id, name: project.name },
+    pipeline: { id: pipeline.id, name: pipeline.name },
+  });
+  return openBriefedAssist(db, engine, { projectId, pipelineId: pipeline.id, brief });
 }
 
 /** One reading of the design's lines, so the two channels that answer with them cannot come to differ. */

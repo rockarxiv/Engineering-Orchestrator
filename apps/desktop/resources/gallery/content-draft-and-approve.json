@@ -231,7 +231,7 @@
     "slug": "content-draft-and-approve",
     "title": "Content draft and approve",
     "description": "A brief becomes an outline, then a draft, then a thing you approve. Nothing is published without you pressing the button.",
-    "version": "1.0",
+    "version": "1.1",
     "blanks": [
       {
         "key": "folder",
@@ -251,6 +251,7 @@
         "default": "DOC",
         "connector": null
       }
-    ]
+    ],
+    "openingQuestion": "What is the first piece you want drafted? Say what it is about, who it is for, and roughly how long it should be."
   }
 }

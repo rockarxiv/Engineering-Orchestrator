@@ -90,6 +90,16 @@ function mockIpc(
         return { ok: true, data: { status: { state: "signed-out" }, problem: options.signInProblem ?? null } };
       case "gallery:list":
         return { ok: true, data: { templates: options.templates ?? [], fetched: false, people: [] } };
+      // A template with no job, every line green (EO-664).
+      case "gallery:use":
+        return { ok: true, data: { projectId: "p1", pipelineId: "pl1", jobId: null, needs: [], problem: null } };
+      case "gallery:needs":
+        return { ok: true, data: { needs: [], jobId: null, problem: null } };
+      case "gallery:openFirstItemChat":
+        return { ok: true, data: { conversation: { id: "chat-1", messages: [] }, problem: null } };
+      case "firstRun:finish":
+        stored.done = true;
+        return { ok: true, data: { done: true } };
       default:
         return { ok: true, data: {} };
     }
@@ -464,6 +474,29 @@ describe("the gate", () => {
 
     expect(await screen.findByTestId("the-app")).toBeInTheDocument();
     expect(screen.queryByText("Start with a template")).not.toBeInTheDocument();
+  });
+
+  /**
+   * A template with no job ends in the assistant (EO-664), and that is an
+   * exit like the others: first run is marked behind them, and the gate
+   * lets the app — the chat the brief was posted in — through at once.
+   */
+  it("lets the app through once the needs check opens the assistant with the first item's brief", async () => {
+    const content: GalleryTemplateView = { ...TEMPLATE, slug: "content-draft-and-approve", token: "content-v1", title: "Content draft and approve", previewable: false };
+    const invoke = mockIpc({ done: false, mode: "solo" }, { templates: [content] });
+    renderFirstRun(
+      <FirstRunGate>
+        <span data-testid="the-app" />
+      </FirstRunGate>,
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: "Use this" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Create" }));
+    fireEvent.click(await screen.findByRole("button", { name: /^Plan the first .+ with the assistant$/ }));
+
+    expect(await screen.findByTestId("the-app")).toBeInTheDocument();
+    expect(invoke).toHaveBeenCalledWith("gallery:openFirstItemChat", { projectId: "p1", slug: "content-draft-and-approve", token: "content-v1", pipelineId: "pl1" });
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("firstRun:finish", undefined));
   });
 
   /**

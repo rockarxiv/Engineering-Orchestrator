@@ -4,7 +4,7 @@
     "slug": "software-feature-to-merge",
     "title": "Software feature to merge",
     "description": "A feature is implemented on a branch of its own, reviewed, and opened as a pull request for you to approve. This is the pipeline EO ships for its own work.",
-    "version": "1.2",
+    "version": "1.3",
     "blanks": [
       {
         "key": "keyPrefix",
@@ -15,7 +15,8 @@
         "default": "EO",
         "connector": null
       }
-    ]
+    ],
+    "openingQuestion": "What is the first feature you want built? Say what it should do, and how you will know it is done."
   },
   "pipeline": {
     "name": "Delivery",

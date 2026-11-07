@@ -5129,7 +5129,26 @@ export const recordContract = {
     z.object({ mode: z.enum(["solo", "organisation"]), address: z.string().default("") }),
     z.object({ mode: z.enum(["solo", "organisation"]) }),
   ),
-  /** Marks the flow behind them, by either exit — the first item or "Continue with Preview only". */
+  /**
+   * The needs check's way on for a template with no job (EO-664): every
+   * line green, and no first item to start.
+   *
+   * Starts a new assistant chat and shows it. Its first message is EO's
+   * brief for the first item — the project, the pipeline and the
+   * template's own opening question (`PackTemplateSchema.openingQuestion`)
+   * — posted by EO and mentioning the assistant, so its first turn is
+   * dispatched without anybody typing. The pipeline is pinned to the
+   * brief, so what the assistant raises in answer lands on it.
+   *
+   * `pipelineId` is the board `gallery:use` answered with; null means the
+   * project's own pipeline. Refused, with the sentence to show and no
+   * chat, where there is no assistant to talk to.
+   */
+  "gallery:openFirstItemChat": channel(
+    z.object({ projectId: z.string(), slug: z.string().min(1), ...TEMPLATE_TOKEN, pipelineId: z.string().nullable() }),
+    z.object({ conversation: DiscussionSchema.nullable(), problem: z.string().nullable() }),
+  ),
+  /** Marks the flow behind them, by any exit — the first item, the assistant's brief, or "Continue with Preview only". */
   "firstRun:finish": channel(z.void(), z.object({ done: z.boolean() })),
 
   // ── The organisation's list (EO-323, ARCHITECTURE.md, "Identity") ───

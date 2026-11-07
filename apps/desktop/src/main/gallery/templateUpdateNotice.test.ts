@@ -52,7 +52,7 @@ afterEach(() => {
 /**
  * EO's own Delivery as it was before EO-461, with Merge Request's
  * `opened` re-pointed at a Merge pipeline's `merge_pr`: the one conflict
- * the 1.1 template raises against it, and so 1.2 (EO-571).
+ * the 1.1 template raises against it, and so 1.2 (EO-571) and 1.3 (EO-664).
  */
 function customisedDelivery(): void {
   const merge = createPipeline(handle.db, { projectId: null, name: "Merge" });
@@ -95,7 +95,7 @@ describe("recording an update conflict", () => {
     expect(notice.authorType).toBe("engine");
     expect(notice.body).toContain("**Delivery**");
     expect(notice.body).toContain("*Software feature to merge*");
-    expect(notice.body).toContain("from 1.0 to 1.2");
+    expect(notice.body).toContain("from 1.0 to 1.3");
     // The conflicting key in plain words, each value in step names.
     expect(notice.body).toContain(
       "**Merge Request**'s 'opened' route: it went to **Done**; you have it going to **Merge PR**; the template sends it to **Watching pull request**.",
@@ -192,7 +192,7 @@ describe("when the conflict resolves", () => {
 
     // Resolved without the base moving — a path that should never leave
     // the base behind, and the guard that holds even if one does: the
-    // next launch compares 1.2 again, holds it again, and says nothing.
+    // next launch compares 1.3 again, holds it again, and says nothing.
     resolveUpdateConflict(handle.db, openUpdateConflict(handle.db, "default")!.id, "kept");
     expect(getPipelineOrigin(handle.db, "default")?.version).toBe("1.0");
     applyTemplateUpdates(handle.db, history, { isTheRecord: false });
@@ -208,13 +208,13 @@ describe("when the conflict resolves", () => {
     applyTemplateUpdates(handle.db, history, { isTheRecord: false });
     const first = noticesOn(projectId)[0]!;
 
-    applyTemplateUpdates(handle.db, withVersion("1.3", "A later version."), { isTheRecord: false });
+    applyTemplateUpdates(handle.db, withVersion("1.4", "A later version."), { isTheRecord: false });
 
     const notices = noticesOn(projectId);
     expect(notices).toHaveLength(2);
     expect(listMentionsForComment(handle.db, first.id as Uuid).map((mention) => mention.status)).toEqual(["dismissed"]);
     const second = notices.find((comment) => comment.id !== first.id)!;
-    expect(second.body).toContain("from 1.0 to 1.3");
+    expect(second.body).toContain("from 1.0 to 1.4");
     expect(listMentionsForComment(handle.db, second.id as Uuid).map((mention) => mention.status)).toEqual(["open"]);
   });
 });
@@ -229,7 +229,7 @@ describe("EO's brief", () => {
     const brief = updateConflictBrief(handle.db, conflict);
 
     expect(brief).toContain("Pipeline: Delivery (id: default)");
-    expect(brief).toContain(`Template: Software feature to merge (${SOFTWARE}), from version 1.0 (the pipeline's base) to version 1.2`);
+    expect(brief).toContain(`Template: Software feature to merge (${SOFTWARE}), from version 1.0 (the pipeline's base) to version 1.3`);
     expect(brief).toContain("CI failures, merge conflicts and review comments send the work back to the implementer");
     expect(brief).toContain(
       "**Merge Request**'s 'opened' route: it went to **Done**; the person has it going to **Merge PR**; the template sends it to **Watching pull request**.",
@@ -254,10 +254,10 @@ describe("a held update nobody was told about", () => {
       pipelineId: "default",
       templateSlug: SOFTWARE,
       fromVersion: "1.0",
-      toVersion: "1.2",
+      toVersion: "1.3",
       baseId: origin.baseId,
       templateId: origin.baseId,
-      notes: "1.1: Adds Watching pull request.\n1.2: Watching pull request no longer gives up.",
+      notes: "1.1: Adds Watching pull request.\n1.2: Watching pull request no longer gives up.\n1.3: First run ends in the assistant.",
       conflicts: [
         {
           key: { kind: "route", fromStepId: "merge_request", resultKey: "opened" },
@@ -275,7 +275,7 @@ describe("a held update nobody was told about", () => {
 
     const notices = noticesOn(projectId);
     expect(notices).toHaveLength(1);
-    expect(notices[0]!.body).toContain("from 1.0 to 1.2");
+    expect(notices[0]!.body).toContain("from 1.0 to 1.3");
     expect(notices[0]!.body).toContain("**Merge Request**'s 'opened' route: it went to **Done**; you have it going to **Merge PR**; the template sends it to **Watching pull request**.");
     expect(notices[0]!.options).toEqual(conflictNoticeOptions(held.id));
     expect(listMentionsForComment(handle.db, notices[0]!.id as Uuid).map((mention) => mention.status)).toEqual(["open"]);

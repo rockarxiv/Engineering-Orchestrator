@@ -511,6 +511,7 @@ const NOT_CATALOGUED: Partial<Record<RecordChannel, string>> = {
   "gallery:use": "a client that could install a pack of its choosing could give this machine an agent with a tool surface it chose — invariant #11",
   "gallery:needs": "the needs check is a person reading their own machine's sign-ins, folders and secrets — the three calls it is for are withheld above",
   "gallery:attachWorkspace": "choosing which disk EO works in is the owner's, and a client that could point a project at a directory could point it at any directory",
+  "gallery:openFirstItemChat": "the way out of a person's own first run, onto a chat with the assistant on show in the window in front of them",
   "gallery:staffRole": "pointing an agent at a backend is spending the owner's subscription, and invariant #11 keeps an agent's own tool surface out of an agent's hands",
 
   // First run (EO-317). Answering the product's first question, and

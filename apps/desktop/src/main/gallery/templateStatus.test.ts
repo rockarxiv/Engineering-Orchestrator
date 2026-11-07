@@ -57,7 +57,7 @@ function deliveryOn10(target: string): void {
   backfillPipelineOrigins(handle.db, history);
 }
 
-/** Delivery re-pointed at a Merge pipeline: the one conflict 1.1, and so 1.2, raises against it. */
+/** Delivery re-pointed at a Merge pipeline: the one conflict 1.1, and so 1.2 and 1.3, raise against it. */
 function customisedDelivery(): void {
   const merge = createPipeline(handle.db, { projectId: null, name: "Merge" });
   createStep(handle.db, { id: "merge_pr", pipelineId: merge.id as Uuid, position: 0, name: "Merge PR", type: "user" });
@@ -120,8 +120,8 @@ describe("after an applied update", () => {
     const filed = currentVersion(handle.db, "default")!;
 
     expect(describeTemplateStatus(handle.db, "default", history, { now: APPLIED_AT + 1 })).toEqual({
-      origin: { slug: SOFTWARE, title: "Software feature to merge", version: "1.2" },
-      updated: { version: "1.2", pipelineVersion: filed.number, at: APPLIED_AT, notes: notesOf("1.2") },
+      origin: { slug: SOFTWARE, title: "Software feature to merge", version: "1.3" },
+      updated: { version: "1.3", pipelineVersion: filed.number, at: APPLIED_AT, notes: notesOf("1.3") },
       waiting: null,
       problem: null,
     });
@@ -132,10 +132,10 @@ describe("after an applied update", () => {
     adopted();
     applyTemplateUpdates(handle.db, history, { isTheRecord: false, now: APPLIED_AT });
 
-    expect(describeTemplateStatus(handle.db, "default", history, { now: APPLIED_AT + TEMPLATE_UPDATE_RECENT_MS })?.updated?.version).toBe("1.2");
+    expect(describeTemplateStatus(handle.db, "default", history, { now: APPLIED_AT + TEMPLATE_UPDATE_RECENT_MS })?.updated?.version).toBe("1.3");
     const later = describeTemplateStatus(handle.db, "default", history, { now: APPLIED_AT + TEMPLATE_UPDATE_RECENT_MS + 1 });
     expect(later.updated).toBeNull();
-    expect(later.origin?.version).toBe("1.2");
+    expect(later.origin?.version).toBe("1.3");
   });
 
   it("is still said after an ordinary edit has pruned the version the update filed", () => {
@@ -145,19 +145,19 @@ describe("after an applied update", () => {
     setPipelineVersionsToKeep(handle.db, 1);
     applyTemplateUpdates(handle.db, history, { isTheRecord: false, now: APPLIED_AT });
     const filed = currentVersion(handle.db, "default")!;
-    expect(filed.createdBy).toBe(`template:${SOFTWARE}@1.2`);
+    expect(filed.createdBy).toBe(`template:${SOFTWARE}@1.3`);
 
     // The person renames a step: an ordinary save, which files a version and prunes.
     const steps = listStepsForPipeline(handle.db, "default").map(({ ownerPersonId: _person, ownerGroupId: _group, ...step }) => (step.id === "todo" ? { ...step, name: "Next up" } : step));
     const routes = listRoutesForPipeline(handle.db, "default").map(({ id: _id, ...route }) => route);
     expect(replacePipelineGraph(handle.db, "default", steps, routes, { createdBy: null })).toEqual(expect.objectContaining({ replaced: true }));
-    expect(listPipelineVersions(handle.db, "default").map((version) => version.createdBy)).not.toContain(`template:${SOFTWARE}@1.2`);
+    expect(listPipelineVersions(handle.db, "default").map((version) => version.createdBy)).not.toContain(`template:${SOFTWARE}@1.3`);
 
     expect(describeTemplateStatus(handle.db, "default", history, { now: APPLIED_AT + 60_000 }).updated).toEqual({
-      version: "1.2",
+      version: "1.3",
       pipelineVersion: filed.number,
       at: APPLIED_AT,
-      notes: notesOf("1.2"),
+      notes: notesOf("1.3"),
     });
   });
 
@@ -166,7 +166,7 @@ describe("after an applied update", () => {
     adopted();
     applyTemplateUpdates(handle.db, history, { isTheRecord: false, now: APPLIED_AT });
     // The base moved on to a version this update did not take.
-    handle.db.run(sql`UPDATE pipelines SET template_version = '1.3' WHERE id = 'default'`);
+    handle.db.run(sql`UPDATE pipelines SET template_version = '1.4' WHERE id = 'default'`);
 
     expect(describeTemplateStatus(handle.db, "default", history, { now: APPLIED_AT + 1 }).updated).toBeNull();
   });
@@ -184,10 +184,10 @@ describe("after an applied update", () => {
     handle.db.run(sql.raw(backfill));
 
     expect(describeTemplateStatus(handle.db, "default", history, { now: filed.createdAt }).updated).toEqual({
-      version: "1.2",
+      version: "1.3",
       pipelineVersion: filed.number,
       at: filed.createdAt,
-      notes: notesOf("1.2"),
+      notes: notesOf("1.3"),
     });
   });
 
@@ -212,7 +212,7 @@ describe("with an update held", () => {
     expect(status.waiting).toEqual({
       conflictId: conflict.id,
       fromVersion: "1.0",
-      toVersion: "1.2",
+      toVersion: "1.3",
       conflicts: 1,
       problems: 0,
       chatId: null,

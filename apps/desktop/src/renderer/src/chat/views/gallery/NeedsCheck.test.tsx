@@ -3,7 +3,7 @@ import { fireEvent, render, screen, waitFor, within } from "@testing-library/rea
 import { MemoryRouter, Route, Routes, useParams } from "react-router-dom";
 import { describe, expect, it, vi } from "vitest";
 import { ThemeProvider } from "@eo/ui";
-import { GIT_WORKTREE_KIND, sectionLockedLine } from "@eo/core";
+import { CHAT_HOME_ROUTE, GIT_WORKTREE_KIND, sectionLockedLine } from "@eo/core";
 import type { GalleryNeedView, GalleryTemplateView, RuntimeStatusView, SectionLock } from "@eo/core";
 import { createQueryClient } from "../../../query/client";
 import { absent, signedOut } from "../agents/testRuntimes";
@@ -98,6 +98,8 @@ function mockIpc(options: {
   projectRepositoryIds?: string[];
   /** Whether the machine has changed since, outside EO — `gh auth login` run in a terminal (EO-663). */
   changedOutside?: () => boolean;
+  /** What `gallery:openFirstItemChat` refuses with, if it does. */
+  briefProblem?: string;
 }) {
   // What the *machine* would say, before and after the folder is
   // attached — rather than a queue of answers keyed to how many times
@@ -139,6 +141,11 @@ function mockIpc(options: {
         return { ok: true, data: { ok: options.staffProblem == null, problem: options.staffProblem ?? null, locked: null } };
       case "gallery:preview":
         return { ok: true, data: { itemId: "preview-1", projectId: "p-preview", pipelineId: "preview-pl", problem: null } };
+      case "gallery:openFirstItemChat":
+        return {
+          ok: true,
+          data: options.briefProblem == null ? { conversation: { id: "chat-1", messages: [] }, problem: null } : { conversation: null, problem: options.briefProblem },
+        };
       case "jobs:runNow":
         return { ok: true, data: { fired: true, occurrence: null, itemId: "item-1", problem: null } };
       case "runtime:status": {
@@ -197,6 +204,7 @@ function renderNeeds(needs: GalleryNeedView[], overrides: { jobId?: string | nul
             />
             <Route path="/items/:itemId" element={<Item />} />
             <Route path="/pipelines/:pipelineId" element={<Board />} />
+            <Route path={CHAT_HOME_ROUTE} element={<span data-testid="chat-home" />} />
           </Routes>
         </MemoryRouter>
       </QueryClientProvider>
@@ -446,15 +454,43 @@ describe("the two ways out", () => {
 
   /**
    * And a template that files nothing on a schedule has no first item to
-   * start — which is the developer's first run, and the reason the board
-   * is always the other button.
+   * start, so the assistant asks for one (EO-664): a new chat with EO's
+   * brief, on the board this check is about, and first run closes behind
+   * it as it does on every other exit.
    */
-  it("offers the board when the template made no job, even with everything green", async () => {
-    mockIpc({ needs: GREEN, jobId: null });
-    renderNeeds(GREEN);
+  it("opens the assistant with the first item's brief when the template made no job, and everything is green", async () => {
+    const invoke = mockIpc({ needs: GREEN, jobId: null });
+    const finished = vi.fn();
+    renderNeeds(GREEN, { onFinished: finished });
+
+    expect(screen.queryByRole("button", { name: "Go to the board" })).not.toBeInTheDocument();
+    fireEvent.click(await screen.findByRole("button", { name: /^Plan the first .+ with the assistant$/ }));
+
+    expect(await screen.findByTestId("chat-home")).toBeInTheDocument();
+    expect(invoke.mock.calls.find((call: unknown[]) => call[0] === "gallery:openFirstItemChat")?.[1]).toEqual({ projectId: "p1", slug: "weekly-report", token: "weekly-v1", pipelineId: "pl1" });
+    expect(invoke.mock.calls.some((call: unknown[]) => call[0] === "jobs:runNow")).toBe(false);
+    expect(finished).toHaveBeenCalled();
+  });
+
+  it("says why there is no chat, and stays where it is", async () => {
+    mockIpc({ needs: GREEN, jobId: null, briefProblem: "There is no enabled system agent to talk to." });
+    const finished = vi.fn();
+    renderNeeds(GREEN, { onFinished: finished });
+
+    fireEvent.click(await screen.findByRole("button", { name: /^Plan the first .+ with the assistant$/ }));
+
+    expect(await screen.findByText("There is no enabled system agent to talk to.")).toBeInTheDocument();
+    expect(screen.queryByTestId("chat-home")).not.toBeInTheDocument();
+    expect(finished).not.toHaveBeenCalled();
+  });
+
+  it("offers the board while a line is red on a template with no job", async () => {
+    mockIpc({ needs: [MISSING_FOLDER], jobId: null });
+    renderNeeds([MISSING_FOLDER]);
 
     fireEvent.click(await screen.findByRole("button", { name: "Go to the board" }));
     expect(await screen.findByTestId("board")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /with the assistant$/ })).not.toBeInTheDocument();
   });
 });
 
