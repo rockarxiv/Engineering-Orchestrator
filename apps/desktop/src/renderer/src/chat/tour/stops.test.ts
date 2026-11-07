@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { TOUR_START, TOUR_STOPS, countOf, isLast, next, skipMissing, stopsFor, type TourPosition } from "./stops";
+import { TOUR_START, TOUR_STOPS, countOf, isLast, next, screensOf, shownStops, skipMissing, stopsFor, type TourPosition } from "./stops";
 
 /** The first-board tour's order and arithmetic (EO-667). */
 describe("the tour's stops", () => {
@@ -73,5 +73,37 @@ describe("moving through the stops", () => {
     const atWaiting = skipMissing(stops, TOUR_START)!;
     expect(stops[atWaiting.index]!.id).toBe("waiting");
     expect(countOf(stops, atWaiting)).toEqual({ n: 1, m: 8 });
+  });
+});
+
+describe("the survey's arithmetic", () => {
+  it("visits each screen once, with the stops on it", () => {
+    expect(screensOf(TOUR_STOPS).map((screen) => [screen.at, screen.stops.map((stop) => stop.id)])).toEqual([
+      ["board", ["board", "waiting", "assistant", "rail"]],
+      ["/agents", ["agents"]],
+      ["/agent-tools", ["agentTools"]],
+      ["/settings", ["settings"]],
+      ["/settings?section=modules", ["modules"]],
+      ["/settings?section=mcp", ["mcp"]],
+    ]);
+  });
+
+  it("counts a middle stop the survey did not find out of every callout, the first included", () => {
+    const shown = shownStops(TOUR_STOPS, ["agentTools"]);
+    expect(countOf(shown, TOUR_START)).toEqual({ n: 1, m: 8 });
+    expect(shown.map((stop) => stop.id)).not.toContain("agentTools");
+  });
+
+  it("makes the last stop shown the one that reads Done when the last stop's element is absent", () => {
+    const shown = shownStops(TOUR_STOPS, ["mcp"]);
+    const atModules: TourPosition = { index: shown.length - 1, missing: [] };
+    expect(shown[atModules.index]!.id).toBe("modules");
+    expect(countOf(shown, atModules)).toEqual({ n: 8, m: 8 });
+    expect(isLast(shown, atModules)).toBe(true);
+  });
+
+  it("reads Done before a stop whose element went after the survey", () => {
+    expect(isLast(TOUR_STOPS, { index: 7, missing: ["mcp"] })).toBe(true);
+    expect(isLast(TOUR_STOPS, { index: 7, missing: [] })).toBe(false);
   });
 });

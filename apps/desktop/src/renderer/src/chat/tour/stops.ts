@@ -103,7 +103,37 @@ export function stopsFor(stops: readonly TourStop[], machine: boolean): TourStop
   return stops.filter((stop) => machine || !stop.machine);
 }
 
-/** Where the tour is: the stop on screen, and the stops found to have nothing to point at. */
+/** The screens the stops are on, in the tour's order: the stops of each, and where it is. */
+export interface TourScreen {
+  at: TourStop["at"];
+  stops: TourStop[];
+}
+
+/**
+ * The stops grouped by the screen they are on, so the tour can look at
+ * every screen once before it shows anything and know which stops it has
+ * (see `TourHost`'s survey).
+ */
+export function screensOf(stops: readonly TourStop[]): TourScreen[] {
+  const screens: TourScreen[] = [];
+  for (const stop of stops) {
+    const last = screens[screens.length - 1];
+    if (last !== undefined && last.at === stop.at) last.stops.push(stop);
+    else screens.push({ at: stop.at, stops: [stop] });
+  }
+  return screens;
+}
+
+/** The stops the tour will show: every one whose element the survey found. */
+export function shownStops(stops: readonly TourStop[], missing: readonly string[]): TourStop[] {
+  return stops.filter((stop) => !missing.includes(stop.id));
+}
+
+/**
+ * Where the tour is: the stop on screen, and the stops found to have
+ * nothing to point at after the survey — an element that went between
+ * the survey and its stop.
+ */
 export interface TourPosition {
   index: number;
   missing: readonly string[];
@@ -130,9 +160,9 @@ export function countOf(stops: readonly TourStop[], position: TourPosition): { n
   return { n: before + 1, m: shown.length };
 }
 
-/** Whether the stop on screen is the last one: its button reads Done. */
+/** Whether the stop on screen is the last one still to be shown: its button reads Done. */
 export function isLast(stops: readonly TourStop[], position: TourPosition): boolean {
-  return position.index === stops.length - 1;
+  return stops.slice(position.index + 1).every((stop) => position.missing.includes(stop.id));
 }
 
 function capitalise(word: string): string {

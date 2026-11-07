@@ -101,6 +101,28 @@ function renderAt(path: string, absent?: string[], folded = false) {
 const tour = () => screen.findByRole("dialog", { name: "Tour" });
 const address = () => screen.getByTestId("address").textContent;
 
+/** Every callout until the tour ends, as "title N of M button", pressing its button each time. */
+async function walk(): Promise<string[]> {
+  const seen: string[] = [];
+  for (;;) {
+    const callout = await tour();
+    const button = await screen.findByRole("button", { name: /^(Next|Done)$/ });
+    const line = `${callout.querySelector("h2")!.textContent} ${/\d+ of \d+/.exec(callout.textContent ?? "")![0]} ${button.textContent}`;
+    if (line === seen.at(-1)) {
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      });
+      continue;
+    }
+    seen.push(line);
+    fireEvent.click(button);
+    if (button.textContent === "Done") break;
+    if (seen.length > 20) throw new Error(`no end: ${seen.join(", ")}`);
+  }
+  await waitFor(() => expect(screen.queryByRole("dialog", { name: "Tour" })).toBeNull());
+  return seen;
+}
+
 async function pressNext() {
   fireEvent.click(await screen.findByRole("button", { name: /^(Next|Done)$/ }));
 }
@@ -156,26 +178,35 @@ describe("going through it", () => {
     await waitFor(() => expect(seenCalls).toBe(1));
   });
 
-  it("passes over a stop whose element is not on screen, and counts it out", async () => {
+  it("leaves out a stop whose element is not on screen, and counts only the stops shown from the first callout", async () => {
     renderAt("/pipelines/p1", ["view-agentTools"]);
-    for (let stop = 0; stop < 5; stop += 1) {
-      await tour();
-      if (stop < 4) await pressNext();
-    }
-    await waitFor(async () => expect(await tour()).toHaveTextContent("5 of 9"));
-    await pressNext();
-    const callout = await screen.findByText("Settings", { selector: "h2" });
-    expect(callout.closest("[role=dialog]")).toHaveTextContent("6 of 8");
+    expect(await walk()).toEqual([
+      "The board 1 of 8 Next",
+      "Waiting on you 2 of 8 Next",
+      "The assistant 3 of 8 Next",
+      "The rail 4 of 8 Next",
+      "Agents 5 of 8 Next",
+      "Settings 6 of 8 Next",
+      "Modules 7 of 8 Next",
+      "MCP server 8 of 8 Done",
+    ]);
+    expect(address()).toBe("/pipelines/p1");
   });
 
-  it("passes over an element that is there but hidden, as the folded conversation is", async () => {
+  it("ends on Done at the last stop shown when the last stop's element is not on screen", async () => {
+    renderAt("/pipelines/p1", ["settings-mcp"]);
+    const seen = await walk();
+    expect(seen).toHaveLength(8);
+    expect(seen[0]).toBe("The board 1 of 8 Next");
+    expect(seen.at(-1)).toBe("Modules 8 of 8 Done");
+    await waitFor(() => expect(seenCalls).toBe(1));
+  });
+
+  it("leaves out an element that is there but hidden, as the folded conversation is", async () => {
     renderAt("/pipelines/p1", [], true);
-    await tour();
-    await pressNext();
-    await waitFor(async () => expect(await tour()).toHaveTextContent("Waiting on you"));
-    await pressNext();
-    await waitFor(async () => expect(await tour()).toHaveTextContent("The rail"));
-    expect(await tour()).toHaveTextContent("3 of 8");
+    const seen = await walk();
+    expect(seen.slice(0, 3)).toEqual(["The board 1 of 8 Next", "Waiting on you 2 of 8 Next", "The rail 3 of 8 Next"]);
+    expect(seen.at(-1)).toBe("MCP server 8 of 8 Done");
   });
 
   it("is skipped with Escape, which records it seen and goes back to the board", async () => {

@@ -9,7 +9,7 @@ import { pipelinesKey, projectsKey, tourKey, useChromeVocabulary } from "../../q
 import { useInvalidateOnPush } from "../../query/useInvalidateOnPush";
 import { Button } from "../kit";
 import type { ChatView } from "../views/registry";
-import { TOUR_START, TOUR_STOPS, countOf, isLast, next, skipMissing, stopsFor, type TourPosition, type TourStop } from "./stops";
+import { TOUR_START, TOUR_STOPS, countOf, isLast, next, screensOf, shownStops, skipMissing, stopsFor, type TourPosition, type TourStop } from "./stops";
 
 /**
  * The first-board tour (EO-667, ARCHITECTURE.md, "What a person sees
@@ -24,8 +24,12 @@ import { TOUR_START, TOUR_STOPS, countOf, isLast, next, skipMissing, stopsFor, t
  * "Show the tour" replays it from the first stop (`useShowTour`).
  *
  * The tour goes to each screen it points at and back to the board at the
- * end. A stop whose element is not on screen within `wait` is counted
- * out and passed over, rather than pointing at nothing.
+ * end. **Before it shows anything it surveys them**: behind a cover, it
+ * visits each screen once and looks for every stop's element there. A
+ * stop whose element is not on screen within `wait` is left out, so the
+ * first callout already counts only the stops that will be shown, and
+ * the last of those is the one whose button reads Done. An element that
+ * goes away between the survey and its stop is passed over then.
  */
 
 /** What Settings presses to replay the tour; null where no tour is drawn (the canvas's own window). */
@@ -38,10 +42,32 @@ export function useShowTour(): (() => void) | null {
 /** How long a stop waits for its element — a screen being navigated to, its data loading — before it is passed over. */
 const ANCHOR_WAIT_MS = 3000;
 
-interface Run {
-  /** The board the tour belongs to and ends on; null when there is none to go to. */
-  board: string | null;
-  position: TourPosition;
+type Run =
+  /** Looking at screen `screen` of `screensOf(stops)`, with what earlier screens lacked. */
+  | { phase: "survey"; board: string | null; screen: number; missing: string[] }
+  /** Showing `shown`, the stops the survey found, at `position`. */
+  | { phase: "show"; board: string | null; shown: TourStop[]; position: TourPosition };
+
+/** An element that is on screen: there, and not inside a hidden one — the conversation folded beside Settings. */
+function anchorOf(stop: TourStop): HTMLElement | null {
+  const element = document.querySelector<HTMLElement>(`[data-tour="${stop.anchor}"]`);
+  return element !== null && element.closest("[hidden]") === null ? element : null;
+}
+
+/** Each frame where there are frames; a short wait where there are not (a test's document). Returns the cancel. */
+function everyFrame(tick: () => boolean): () => void {
+  let frame = 0;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const step = () => {
+    if (!tick()) return;
+    if (typeof requestAnimationFrame === "function") frame = requestAnimationFrame(step);
+    else timer = setTimeout(step, 50);
+  };
+  step();
+  return () => {
+    if (frame !== 0) cancelAnimationFrame(frame);
+    if (timer !== undefined) clearTimeout(timer);
+  };
 }
 
 export function TourHost({ view, children, wait = ANCHOR_WAIT_MS }: { view: ChatView | null; children: ReactNode; wait?: number }) {
@@ -74,12 +100,12 @@ export function TourHost({ view, children, wait = ANCHOR_WAIT_MS }: { view: Chat
   useEffect(() => {
     if (run !== null || started.current || state.data?.due !== true || view?.kind !== "board") return;
     started.current = true;
-    setRun({ board: here, position: TOUR_START });
+    setRun({ phase: "survey", board: here, screen: 0, missing: [] });
   }, [run, state.data?.due, view?.kind, here]);
 
   const replay = useCallback(() => {
     started.current = true;
-    setRun({ board: lastBoard.current ?? firstBoard(queryClient), position: TOUR_START });
+    setRun({ phase: "survey", board: lastBoard.current ?? firstBoard(queryClient), screen: 0, missing: [] });
   }, [queryClient]);
 
   const end = useCallback(() => {
@@ -91,42 +117,102 @@ export function TourHost({ view, children, wait = ANCHOR_WAIT_MS }: { view: Chat
   }, [run, navigate, queryClient, seen]);
 
   const goOn = useCallback(
-    (step: (position: TourPosition) => TourPosition | null) => {
-      if (run === null) return;
-      const after = step(run.position);
+    (step: (shown: readonly TourStop[], position: TourPosition) => TourPosition | null) => {
+      if (run === null || run.phase !== "show") return;
+      const after = step(run.shown, run.position);
       if (after === null) end();
       else setRun({ ...run, position: after });
     },
     [run, end],
   );
 
-  const stop = run === null ? null : (stops[run.position.index] ?? null);
-  const target = stop === null || run === null ? null : stop.at === "board" ? run.board : stop.at;
+  const screens = useMemo(() => screensOf(stops), [stops]);
+  const addressOf = (at: TourStop["at"]) => (run === null ? null : at === "board" ? run.board : at);
 
-  // Each stop takes the window to its screen, once, as it is reached.
-  const stopKey = run === null ? null : `${run.position.index}|${run.board ?? ""}`;
+  // ── The survey: each screen once, every stop's element looked for ──
+  const surveyKey = run?.phase === "survey" ? `${run.screen}|${run.board ?? ""}` : null;
+  const finishSurvey = useRef(end);
+  finishSurvey.current = end;
   useEffect(() => {
+    if (run === null || run.phase !== "survey") return;
+    const screen = screens[run.screen];
+    if (screen === undefined) {
+      const shown = shownStops(stops, run.missing);
+      if (shown.length === 0) finishSurvey.current();
+      else setRun({ phase: "show", board: run.board, shown, position: TOUR_START });
+      return;
+    }
+    const target = addressOf(screen.at);
+    if (target !== null && target !== here) void navigate(target);
+    const deadline = Date.now() + wait;
+    return everyFrame(() => {
+      const absent = screen.stops.filter((stop) => anchorOf(stop) === null).map((stop) => stop.id);
+      if (absent.length > 0 && Date.now() < deadline) return true;
+      setRun((current) =>
+        current !== null && current.phase === "survey" && current.screen === run.screen
+          ? { ...current, screen: current.screen + 1, missing: [...current.missing, ...absent] }
+          : current,
+      );
+      return false;
+    });
+    // Only on reaching a screen: the address is this effect's own to move.
+  }, [surveyKey]);
+
+  // ── Showing: each stop takes the window to its screen, once, as it is reached ──
+  const stop = run?.phase === "show" ? (run.shown[run.position.index] ?? null) : null;
+  const stopKey = run?.phase === "show" ? `${run.position.index}|${run.board ?? ""}` : null;
+  useEffect(() => {
+    const target = stop === null ? null : addressOf(stop.at);
     if (target !== null && target !== here) void navigate(target);
     // Only on reaching a stop: the address moving afterwards is the person's, or this.
   }, [stopKey]);
 
-  const rect = useAnchor(stop, stopKey, wait, () => goOn((position) => skipMissing(stops, position)));
+  const rect = useAnchor(stop, stopKey, wait, () => goOn(skipMissing));
 
   return (
     <TourContext.Provider value={replay}>
       {children}
-      {run !== null && stop !== null ? (
+      {run?.phase === "survey" ? <SurveyCover onSkip={end} /> : null}
+      {run?.phase === "show" && stop !== null ? (
         <TourOverlay
           stop={stop}
           rect={rect}
-          count={countOf(stops, run.position)}
-          last={isLast(stops, run.position)}
+          count={countOf(run.shown, run.position)}
+          last={isLast(run.shown, run.position)}
           text={stop.text(words)}
-          onNext={() => goOn((position) => next(stops, position))}
+          onNext={() => goOn(next)}
           onSkip={end}
         />
       ) : null}
     </TourContext.Provider>
+  );
+}
+
+/**
+ * What the window shows while the tour looks at the screens it will visit:
+ * a cover, so the screens going by are not mistaken for the tour, and
+ * Escape to skip it.
+ */
+function SurveyCover({ onSkip }: { onSkip: () => void }) {
+  const skip = useRef(onSkip);
+  skip.current = onSkip;
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      event.stopPropagation();
+      skip.current();
+    };
+    document.addEventListener("keydown", onKey, true);
+    return () => document.removeEventListener("keydown", onKey, true);
+  }, []);
+  return createPortal(
+    <div className="fixed inset-0 z-[var(--z-modal)] grid place-items-center bg-canvas">
+      <p role="status" className="text-[13px] text-ink-subtle">
+        Getting the tour ready…
+      </p>
+    </div>,
+    document.body,
   );
 }
 
@@ -162,16 +248,12 @@ function useAnchor(stop: TourStop | null, stopKey: string | null, wait: number, 
 
   useEffect(() => {
     if (stop === null || stopKey === null) return;
-    const selector = `[data-tour="${stop.anchor}"]`;
     const deadline = Date.now() + wait;
     let found = false;
     let last = "";
-    let frame = 0;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const tick = () => {
-      // An element inside a hidden one — the conversation folded beside Settings — is not on screen.
-      const element = document.querySelector<HTMLElement>(selector);
-      if (element !== null && element.closest("[hidden]") === null) {
+    return everyFrame(() => {
+      const element = anchorOf(stop);
+      if (element !== null) {
         if (!found) {
           found = true;
           element.scrollIntoView?.({ block: "nearest", inline: "nearest" });
@@ -184,17 +266,10 @@ function useAnchor(stop: TourStop | null, stopKey: string | null, wait: number, 
         }
       } else if (!found && Date.now() >= deadline) {
         missing.current();
-        return;
+        return false;
       }
-      // A frame where there are frames; a short wait where there are not (a test's document).
-      if (typeof requestAnimationFrame === "function") frame = requestAnimationFrame(tick);
-      else timer = setTimeout(tick, 50);
-    };
-    tick();
-    return () => {
-      if (frame !== 0) cancelAnimationFrame(frame);
-      if (timer !== undefined) clearTimeout(timer);
-    };
+      return true;
+    });
   }, [stopKey]);
 
   return measured !== null && measured.stopKey === stopKey ? measured.box : null;
