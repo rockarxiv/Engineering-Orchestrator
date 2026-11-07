@@ -32,6 +32,13 @@
       }
     },
     {
+      "key": "forge",
+      "line": "GitHub or GitLab CLI",
+      "met": false,
+      "why": "This pipeline opens pull requests through the GitHub CLI (gh) or the GitLab CLI (glab), whichever the repository's remote is on. EO checks which once a repository is attached.",
+      "fix": null
+    },
+    {
       "key": "backend",
       "line": "A coding agent signed in",
       "met": false,

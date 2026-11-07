@@ -10,6 +10,7 @@ import {
   actionsAvailableTo,
   builtinInputs,
   builtinLabel,
+  builtinOpensPullRequest,
   builtinResults,
   buildRegistry,
   emptyRegistry,
@@ -350,6 +351,17 @@ describe("building a registry", () => {
     expect(builtinInputs(fromRegistryView(bare), "go")).toEqual({});
     expect(builtinInputs(fromRegistryView(bare), "nothing")).toBeNull();
     expect(builtinLabel(fromRegistryView(view), "watch")).toBe("Watch it");
+  });
+
+  it("says which function opens a pull request, and carries it across the wire (EO-663)", () => {
+    const shipped = developerRegistry();
+    expect(BUILTIN_ACTIONS.filter((action) => builtinOpensPullRequest(shipped, action))).toEqual(["open_pull_request"]);
+    expect(builtinOpensPullRequest(shipped, null)).toBe(false);
+    expect(builtinOpensPullRequest(shipped, "nothing")).toBe(false);
+    const view = toRegistryView(shipped);
+    expect(RegistryViewSchema.parse(view)).toEqual(view);
+    expect(builtinOpensPullRequest(fromRegistryView(view), "open_pull_request")).toBe(true);
+    expect(view.builtins.find((builtin) => builtin.action === "create_worktree")).not.toHaveProperty("opensPullRequest");
   });
 
   it("refuses two roles declaring one action's schema, since the lookup is by action", () => {

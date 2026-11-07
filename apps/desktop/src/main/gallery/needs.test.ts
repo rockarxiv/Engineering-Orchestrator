@@ -4,16 +4,18 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { DEFAULT_PIPELINE_ID, GIT_WORKTREE_KIND, SECTION_LOCK_TEXT, type GalleryNeedView } from "@eo/core";
+import { DEFAULT_PIPELINE_ID, GIT_WORKTREE_KIND, SECTION_LOCK_TEXT, type GalleryNeedView, type PipelineExport } from "@eo/core";
 import type { DbHandle } from "../db/client.js";
-import { archiveAgent, createGitWorkspace, addWorkspaceToProject, getProject, listAgents, listGitWorkspaces, listJobs, listPipelines, listProjects, projectWorkspaceList, publishSection } from "../db/repos/index.js";
+import { archiveAgent, asGitWorkspace, updateWorkspace, createGitWorkspace, addWorkspaceToProject, getProject, listAgents, listGitWorkspaces, listJobs, listPipelines, listProjects, projectWorkspaceList, publishSection } from "../db/repos/index.js";
 import { beginAdoption } from "../db/repos/projectsRepo.js";
 import { markReplica } from "../db/recordRole.js";
 import { openMigratedTestDb } from "../db/testHelpers.js";
+import { detectForge } from "../ipc/forgeCommands.js";
 import { attachWorkspaceCommand, galleryNeedsCommand, listGalleryCommand, staffRoleCommand, useGalleryCommand } from "../ipc/galleryCommands.js";
 import { addRepositoryToProjectCommand, createProjectCommand } from "../ipc/projectCommands.js";
 import { createWorkspaceCommand } from "../ipc/workspaceCommands.js";
 import DEVELOPER_FIRST_RUN from "../../renderer/src/chat/views/gallery/__fixtures__/developerFirstRun.json" with { type: "json" };
+import { forgeCardNeed } from "./form.js";
 import { forgetListed } from "./session.js";
 
 /**
@@ -26,7 +28,8 @@ import { forgetListed } from "./session.js";
  *
  *  - a developer's fresh installation has **the same two needs** it has
  *    today — a repository and a backend — through the same screen
- *    everybody else gets;
+ *    everybody else gets, and, since EO-663, the forge CLI its pull
+ *    requests go through;
  *  - a red line about a folder EO cannot see **names the path** and
  *    carries a button whose kind says what pressing it does;
  *  - pressing it **turns the line green**, which is only provable by
@@ -96,7 +99,7 @@ describe("a developer's first run, through everybody's screen", () => {
    * on every installation, which is what makes the developer's list two
    * lines rather than four.
    */
-  it("asks for a repository and a backend, and nothing else", async () => {
+  it("asks for a repository, the forge CLI and a backend, and nothing else", async () => {
     const installed = await install("software-feature-to-merge", { keyPrefix: "ACME" });
 
     const needs = await galleryNeedsCommand(handle.db, context(), {
@@ -105,7 +108,7 @@ describe("a developer's first run, through everybody's screen", () => {
     });
 
     expect(needs.problem).toBeNull();
-    expect(needs.needs.filter((need) => !need.met).map((need) => need.key)).toEqual(["workspace", "backend"]);
+    expect(needs.needs.filter((need) => !need.met).map((need) => need.key)).toEqual(["workspace", "forge", "backend"]);
 
     const workspace = line(needs.needs, "workspace");
     expect(workspace.line).toContain("repository");
@@ -573,5 +576,167 @@ describe("a folder that is no longer there", () => {
     });
     expect(needs.jobId).toBe(installed.jobId);
     expect(needs.jobId).not.toBeNull();
+  });
+});
+
+/**
+ * The forge CLI line (EO-663): a pipeline with a step that opens a pull
+ * request needs `gh` or `glab`, one line per repository, read from
+ * `forge:detect`'s answer for it. The CLI is faked — what is under test
+ * is the line, not whether this machine has `gh`.
+ */
+describe("the forge CLI a pull request goes through (EO-663)", () => {
+  type Run = NonNullable<Parameters<typeof detectForge>[2]>;
+  /** `gh auth status` / `glab auth status`, answered as `state` says. */
+  let state: "missing" | "signedOut" | "signedIn";
+  const calls: string[] = [];
+  const run: Run = async (cli) => {
+    calls.push(cli);
+    if (state === "missing") return { ok: false, stdout: "", error: "not found", notFound: true };
+    return state === "signedIn" ? { ok: true, stdout: "", error: "", notFound: false } : { ok: false, stdout: "", error: "not logged in", notFound: false };
+  };
+  const forgeContext = () => ({ ...context(), detectForge: (repositoryId: string) => detectForge(handle.db, { repositoryId }, run) });
+
+  beforeEach(() => {
+    state = "signedIn";
+    calls.length = 0;
+  });
+
+  /** A checkout whose `origin` is `remote`. */
+  function withRemote(remote: string): string {
+    const path = checkout();
+    execFileSync("git", ["remote", "add", "origin", remote], { cwd: path });
+    return path;
+  }
+
+  async function needsFor(projectId: string) {
+    const answer = await galleryNeedsCommand(handle.db, forgeContext(), { projectId, slug: "software-feature-to-merge" });
+    expect(answer.problem).toBeNull();
+    return answer.needs;
+  }
+
+  it("is on the card of a template whose pipeline opens a pull request, and only there", async () => {
+    const listed = await listGalleryCommand(handle.db, context());
+    const lines = (slug: string) => listed.templates.find((template) => template.slug === slug)?.needs.map((need) => need.line) ?? [];
+    expect(lines("software-feature-to-merge")).toContain("GitHub or GitLab CLI");
+    const others = listed.templates.filter((template) => template.slug !== "software-feature-to-merge");
+    expect(others.length).toBeGreaterThan(0);
+    for (const template of others) expect(template.needs.map((need) => need.key)).not.toContain("forge");
+  });
+
+  it("asks nothing of a pipeline without a pull-request step", async () => {
+    const installed = await useGalleryCommand(handle.db, forgeContext(), { slug: "weekly-report", answers: { folder, schedule: "monday 08:00", keyPrefix: "REP" }, roleSlots: {} });
+    expect(installed.problem).toBeNull();
+    expect(installed.needs.filter((need) => need.key.startsWith("forge"))).toEqual([]);
+    expect(calls).toEqual([]);
+  });
+
+  it("gives each repository its own line, from forge:detect's answer for its remote", async () => {
+    const github = withRemote("git@github.com:acme/payments.git");
+    const gitlab = withRemote("https://gitlab.com/acme/web.git");
+    try {
+      const projectId = (await install("software-feature-to-merge", { keyPrefix: "ACME" })).projectId as string;
+      expect((await attachWorkspaceCommand(handle.db, { projectId, path: github, kind: "git" })).ok).toBe(true);
+      expect((await attachWorkspaceCommand(handle.db, { projectId, path: gitlab, kind: "git" })).ok).toBe(true);
+      const [first, second] = projectWorkspaceList(handle.db, projectId as never);
+
+      const needs = await needsFor(projectId);
+      const keys = needs.map((need) => need.key);
+      // The card's line gives way to one per repository, under the repositories.
+      expect(keys).not.toContain("forge");
+      expect(keys.slice(keys.indexOf("workspace"), keys.indexOf("backend"))).toEqual(["workspace", `forge:${first!.id}`, `forge:${second!.id}`]);
+      expect(line(needs, `forge:${first!.id}`)).toEqual({
+        key: `forge:${first!.id}`,
+        line: `GitHub CLI (gh) installed and signed in, for ${basename(github)}`,
+        met: true,
+        why: null,
+        fix: null,
+      });
+      expect(line(needs, `forge:${second!.id}`).line).toBe(`GitLab CLI (glab) installed and signed in, for ${basename(gitlab)}`);
+      expect([...calls].sort()).toEqual(["gh", "glab"]);
+    } finally {
+      rmSync(github, { recursive: true, force: true });
+      rmSync(gitlab, { recursive: true, force: true });
+    }
+  });
+
+  it("says which CLI is missing and why, links to its install page, and goes green when checked again", async () => {
+    const path = withRemote("git@github.com:acme/payments.git");
+    try {
+      const projectId = (await install("software-feature-to-merge", { keyPrefix: "ACME" })).projectId as string;
+      await attachWorkspaceCommand(handle.db, { projectId, path, kind: "git" });
+      const id = projectWorkspaceList(handle.db, projectId as never)[0]!.id;
+
+      state = "missing";
+      const missing = line(await needsFor(projectId), `forge:${id}`);
+      expect(missing.met).toBe(false);
+      expect(missing.why).toContain("GitHub CLI, gh, which is not installed");
+      expect(missing.why).toContain("EO opens its pull requests through");
+      expect(missing.fix).toEqual({ kind: "forge", label: "Check again", target: id, link: { label: "Install gh", url: "https://cli.github.com" } });
+
+      state = "signedOut";
+      const signedOut = line(await needsFor(projectId), `forge:${id}`);
+      expect(signedOut.met).toBe(false);
+      expect(signedOut.why).toContain("run: gh auth login");
+      expect(signedOut.fix).toEqual({ kind: "forge", label: "Check again", target: id });
+
+      // Check again is the same question asked once more.
+      state = "signedIn";
+      expect(line(await needsFor(projectId), `forge:${id}`).met).toBe(true);
+    } finally {
+      rmSync(path, { recursive: true, force: true });
+    }
+  });
+
+  it("names glab auth login, with the host, for a self-hosted GitLab", async () => {
+    const path = withRemote("git@gitlab.acme.dev:acme/web.git");
+    try {
+      const projectId = (await install("software-feature-to-merge", { keyPrefix: "ACME" })).projectId as string;
+      await attachWorkspaceCommand(handle.db, { projectId, path, kind: "git" });
+      const workspace = projectWorkspaceList(handle.db, projectId as never)[0]!;
+      updateWorkspace(handle.db, workspace.id, { config: { forgeKind: "gitlab" } });
+
+      state = "signedOut";
+      expect(line(await needsFor(projectId), `forge:${workspace.id}`).why).toContain("run: glab auth login --hostname gitlab.acme.dev");
+    } finally {
+      rmSync(path, { recursive: true, force: true });
+    }
+  });
+
+  it("shows forge:detect's own problem for a host it cannot place, and lets the person say which", async () => {
+    const path = withRemote("git@code.acme.dev:acme/web.git");
+    try {
+      const projectId = (await install("software-feature-to-merge", { keyPrefix: "ACME" })).projectId as string;
+      await attachWorkspaceCommand(handle.db, { projectId, path, kind: "git" });
+      const workspace = projectWorkspaceList(handle.db, projectId as never)[0]!;
+      const detected = await detectForge(handle.db, { repositoryId: workspace.id }, run);
+      expect(detected.kind).toBeNull();
+
+      const unplaced = line(await needsFor(projectId), `forge:${workspace.id}`);
+      expect(unplaced.line).toBe(`GitHub or GitLab CLI, for ${asGitWorkspace(workspace)!.config.name}`);
+      expect(unplaced.why).toBe(detected.problem);
+      expect(unplaced.fix).toEqual({ kind: "forgeKind", label: "Say which", target: workspace.id });
+
+      // What the choice writes — the Forge field Settings → Workspaces has.
+      updateWorkspace(handle.db, workspace.id, { config: { forgeKind: "gitlab" } });
+      const placed = line(await needsFor(projectId), `forge:${workspace.id}`);
+      expect(placed.line).toBe(`GitLab CLI (glab) installed and signed in, for ${asGitWorkspace(workspace)!.config.name}`);
+      expect(placed.met).toBe(true);
+    } finally {
+      rmSync(path, { recursive: true, force: true });
+    }
+  });
+
+  it("is read off the steps, never off the template", () => {
+    const step = (type: string, entryAction: string | null) => ({ type, entryAction }) as unknown as PipelineExport["steps"][number];
+    expect(forgeCardNeed({ steps: [step("agent", null), step("builtin", "open_pull_request")] }).map((need) => need.key)).toEqual(["forge"]);
+    expect(forgeCardNeed({ steps: [step("builtin", "create_worktree"), step("module", "open_pull_request")] })).toEqual([]);
+  });
+
+  it("keeps the card's line, with no button, until a repository is attached", async () => {
+    const projectId = (await install("software-feature-to-merge", { keyPrefix: "ACME" })).projectId as string;
+    const waiting = line(await needsFor(projectId), "forge");
+    expect(waiting).toMatchObject({ line: "GitHub or GitLab CLI", met: false, fix: null });
+    expect(calls).toEqual([]);
   });
 });

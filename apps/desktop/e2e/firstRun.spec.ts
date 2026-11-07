@@ -303,6 +303,9 @@ test("a developer's first run reaches the board it reaches today, through the sa
     await expect(window.getByText("A repository — the checkout its work happens in")).toBeVisible();
     await expect(window.getByText(/This project has no repository yet/)).toBeVisible();
     await expect(window.getByText("A coding agent signed in")).toBeVisible();
+    // Its pipeline opens pull requests, so it needs gh or glab (EO-663);
+    // which one waits on a repository's remote.
+    await expect(window.getByText("GitHub or GitLab CLI", { exact: true })).toBeVisible();
 
     // The one button that fixes the red line, pressed — and the line
     // goes green without leaving the screen.
@@ -311,6 +314,11 @@ test("a developer's first run reaches the board it reaches today, through the sa
     await expect(window.getByText(/This project has no repository yet/)).toHaveCount(0, { timeout: 15_000 });
     await expect(window.getByRole("heading", { name: "Software feature to merge is set up" })).toBeVisible();
     await expect(window.getByLabel("Repository path")).toHaveCount(0);
+    // The fixture has no remote, so the forge line is the repository's own
+    // and says what forge:detect found, with the button that asks again.
+    await expect(window.getByText("GitHub or GitLab CLI, for acme-api")).toBeVisible();
+    await expect(window.getByText(/No remote named `origin`/)).toBeVisible();
+    await expect(window.getByRole("button", { name: "Check again" })).toBeVisible();
 
     // A project can span several repositories (EO-662): the green line
     // offers another, attached the way Settings → Projects attaches one,

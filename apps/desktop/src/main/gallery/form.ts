@@ -1,5 +1,6 @@
-import { moduleInputProblems, type GalleryNeedView, type ModuleInputType, type PipelineExport, type StepInputs, type TemplateBlankKind } from "@eo/core";
+import { builtinOpensPullRequest, moduleInputProblems, type GalleryNeedView, type ModuleInputType, type PipelineExport, type StepInputs, type TemplateBlankKind } from "@eo/core";
 import { agentNameFor, type ImportPreflight } from "../modules/pipelineTransfer.js";
+import { registry } from "../registry.js";
 import { RUNTIMES, type RuntimeId } from "../runtimes/catalog.js";
 
 /**
@@ -223,6 +224,38 @@ export function repositoryAnswer(document: PipelineExport, answers: Record<strin
 export function wantsRepository(document: PipelineExport): boolean {
   if ((document.template?.blanks ?? []).some((blank) => blank.kind === "folder")) return false;
   return document.steps.some((step) => step.type === "builtin");
+}
+
+/**
+ * Whether a step of this pipeline opens a pull request (EO-663): a
+ * `builtin` step whose function the registry says opens one. Read off
+ * the steps and the pack's own declaration, never off the template, so
+ * the gallery names no pack (invariant 13).
+ */
+export function opensPullRequests(document: Pick<PipelineExport, "steps">): boolean {
+  return document.steps.some((step) => step.type === "builtin" && builtinOpensPullRequest(registry, step.entryAction));
+}
+
+/** The key of the forge CLI line before a repository says which forge (EO-663). */
+export const FORGE_NEED_KEY = "forge";
+
+/**
+ * The forge CLI line before a repository is attached (EO-663): which CLI
+ * depends on where the repository's remote lives, so all a card can say
+ * is that one of the two is needed. Once a repository is attached, the
+ * needs check replaces this with one line per repository (`forgeNeeds`).
+ */
+export function forgeCardNeed(document: Pick<PipelineExport, "steps">): GalleryNeed[] {
+  if (!opensPullRequests(document)) return [];
+  return [
+    {
+      key: FORGE_NEED_KEY,
+      line: "GitHub or GitLab CLI",
+      met: false,
+      why: "This pipeline opens pull requests through the GitHub CLI (gh) or the GitLab CLI (glab), whichever the repository's remote is on. EO checks which once a repository is attached.",
+      fix: null,
+    },
+  ];
 }
 
 /** Every human step the document draws that somebody has to decide, in pipeline order. */
