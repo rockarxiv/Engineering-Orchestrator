@@ -66,9 +66,15 @@ function removeScratch(path: string): void {
 
 // These tests spawn real git processes, and a killed one can still hold its
 // own repo open after `run` has resolved.
+//
+// Longer than Windows' 30-second hook limit, which is shorter than the
+// retries above (150ms more each time, 31.5s for all twenty). On Windows,
+// killing git leaves the hanging remote's `sleep 30` running in the repo,
+// so after those two tests the removal is refused until it exits, and the
+// hook used to time out first (EO-670, test-windows on Node 24).
 afterEach(() => {
   removeScratch(scratch);
-});
+}, 60_000);
 
 describe("composeGitArgs", () => {
   // Pure argument building, so both platforms' shapes are assertable
