@@ -155,13 +155,13 @@ interface Box {
  * appeared within `wait`.
  */
 function useAnchor(stop: TourStop | null, stopKey: string | null, wait: number, onMissing: () => void): Box | null {
-  const [rect, setRect] = useState<Box | null>(null);
+  // Kept with the stop it was measured for, so a new stop is never drawn against the last one's element.
+  const [measured, setMeasured] = useState<{ stopKey: string; box: Box } | null>(null);
   const missing = useRef(onMissing);
   missing.current = onMissing;
 
   useEffect(() => {
-    setRect(null);
-    if (stop === null) return;
+    if (stop === null || stopKey === null) return;
     const selector = `[data-tour="${stop.anchor}"]`;
     const deadline = Date.now() + wait;
     let found = false;
@@ -180,7 +180,7 @@ function useAnchor(stop: TourStop | null, stopKey: string | null, wait: number, 
         const key = `${top}|${left}|${width}|${height}`;
         if (key !== last) {
           last = key;
-          setRect({ top, left, width, height });
+          setMeasured({ stopKey, box: { top, left, width, height } });
         }
       } else if (!found && Date.now() >= deadline) {
         missing.current();
@@ -197,7 +197,7 @@ function useAnchor(stop: TourStop | null, stopKey: string | null, wait: number, 
     };
   }, [stopKey]);
 
-  return rect;
+  return measured !== null && measured.stopKey === stopKey ? measured.box : null;
 }
 
 const CALLOUT_WIDTH = 320;
@@ -279,7 +279,7 @@ function TourOverlay({
         <div
           aria-hidden
           data-testid="tour-highlight"
-          className="pointer-events-none absolute rounded-[12px] ring-2 ring-accent"
+          className="pointer-events-none absolute rounded-[12px] outline-2 outline-solid outline-accent"
           style={{
             top: rect.top - PAD,
             left: rect.left - PAD,
