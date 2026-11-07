@@ -1,14 +1,21 @@
 #!/usr/bin/env node
-// Workaround for a real-world failure mode, not a hypothetical one: on some
-// Node versions, electron's own postinstall (which shells out to
-// extract-zip/yauzl) downloads the correct zip into the @electron/get cache
-// but its extraction promise never settles — it neither resolves nor
-// rejects, so the process exits 0 anyway (nothing else is keeping the event
-// loop alive) and the electron binary is silently left unextracted. `pnpm
-// install` then reports success but `require('electron')` throws at
-// runtime. This script is a no-op when the normal extraction already
-// worked, and only intervenes to finish the job from the zip electron
-// already downloaded — it never fetches anything itself.
+// Leaves every electron package in the workspace with its binary extracted,
+// so `pnpm install` is the only step that touches the network for it.
+//
+// Since Electron 42 the electron package has no postinstall: it downloads
+// its binary the first time something asks it for the binary's path
+// (`require("electron")`, `npx electron`). Left to that, the download would
+// happen in the middle of whatever asked first — a Playwright launch under
+// its timeout, electron-vite dev, the packager — so this runs the package's
+// own installer (`install.js`, the same code the postinstall used to be)
+// for any copy that is not extracted yet.
+//
+// It also keeps a workaround for a real-world failure mode, not a
+// hypothetical one: on some Node versions the installer's extraction
+// promise never settled — it neither resolved nor rejected, so the process
+// exited 0 with the zip downloaded into the @electron/get cache and the
+// binary silently left unextracted. If the binary is still missing after
+// the installer, this finishes the job from that cached zip.
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import os from "node:os";
@@ -92,6 +99,17 @@ for (const electronDir of findWorkspaceElectronDirs()) {
   const pkg = JSON.parse(readFileSync(path.join(electronDir, "package.json"), "utf8"));
   const version = pkg.version;
   if (isAlreadyExtracted(electronDir, version, binaryRelPath)) continue;
+
+  const installer = path.join(electronDir, "install.js");
+  if (existsSync(installer)) {
+    console.log(`[fix-electron-install] downloading the binary for electron@${version}`);
+    try {
+      execFileSync(process.execPath, [installer], { cwd: electronDir, stdio: "inherit" });
+    } catch {
+      // Reported below if the binary is still missing.
+    }
+    if (isAlreadyExtracted(electronDir, version, binaryRelPath)) continue;
+  }
 
   const zip = findCachedZip(version);
   if (!zip) {

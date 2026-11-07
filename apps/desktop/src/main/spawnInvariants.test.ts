@@ -73,7 +73,7 @@ import { describe, expect, it } from "vitest";
  * Bindings are followed rather than guessed, from both spellings of the
  * module. Named, default, namespace, `require`, `await import` and
  * `process.getBuiltinModule` — Node 22's route to a builtin, which
- * Electron 39 has — in a name or destructured, and then ordinary aliasing on top of those:
+ * Electron 45's Node 24 has — in a name or destructured, and then ordinary aliasing on top of those:
  * `const start = spawn` makes `start` a starter, `const cp = childProcess`
  * makes `cp` the module, `promisify(cp.execFile)` makes its result one,
  * and each of those can be aliased again — resolved to a fixed point, so
@@ -594,8 +594,8 @@ function moduleLoad(expression: ts.Expression | undefined, constants: ReadonlyMa
   const viaImport = callee.kind === ts.SyntaxKind.ImportKeyword;
   const viaRequire = ts.isIdentifier(callee) && callee.text === "require";
   // `process.getBuiltinModule("node:child_process")` — Node 22's own way
-  // to a builtin, with no import and no require in sight. Electron 39
-  // runs Node 22, so it is available here and hands back the same module
+  // to a builtin, with no import and no require in sight. Electron 45
+  // runs Node 24, so it is available here and hands back the same module
   // synchronously. The object is not checked: anything spelled
   // `getBuiltinModule` is treated as one, which errs the safe way.
   const viaBuiltin = (ts.isPropertyAccessExpression(callee) || ts.isElementAccessExpression(callee)) && memberNameOf(callee) === "getBuiltinModule";
@@ -1202,7 +1202,7 @@ describe("finding the calls", () => {
   });
 
   it("reads process.getBuiltinModule, which reaches a builtin with no import or require", () => {
-    // Node 22, which is what Electron 39 runs, so this is a live route
+    // Node 22 and later, and Electron 45 runs Node 24, so this is a live route
     // here and hands back the module synchronously.
     const source = `const cp = process.getBuiltinModule("node:child_process");\ncp.spawn(bin, args, {});\n`;
     expect(spawnCallSites(source)).toEqual([{ call: "cp.spawn(bin, args, {})", guarded: false }]);

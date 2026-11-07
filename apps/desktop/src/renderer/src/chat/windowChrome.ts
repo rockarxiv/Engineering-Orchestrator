@@ -13,11 +13,13 @@ import { paletteOf, titleBarColours, useThemeChoice } from "./theme";
  * The desktop's main window draws no native title bar: its top row is the
  * title bar, with the system's window controls drawn over it — Electron's
  * overlay at the top right on Windows and Linux, the traffic lights in the
- * rail's top inset on macOS. What the row does about that is here:
+ * rail's top inset on macOS. On Linux the overlay follows the desktop's own
+ * button layout (Electron 43 on), so its controls may be at the top left
+ * instead, or at both ends. What the row does about that is here:
  *
  * - **Drag.** Its empty parts carry `app-drag` (`packages/ui/src/styles.css`),
  *   which moves the window and leaves every control in it pressable.
- * - **Room for the controls.** `CONTROLS_END` and `CONTROLS_HEIGHT`, from
+ * - **Room for the controls.** `CONTROLS_START`, `CONTROLS_END` and `CONTROLS_HEIGHT`, from
  *   the overlay's own `env(titlebar-area-*)`, which are absent — and so
  *   zero — wherever there is no overlay: macOS, a browser, the canvas's
  *   and the debug window's native frames.
@@ -33,6 +35,15 @@ import { paletteOf, titleBarColours, useThemeChoice } from "./theme";
  * screen, where the area is the whole width.
  */
 export const CONTROLS_END = "(100vw - env(titlebar-area-x, 0px) - env(titlebar-area-width, 100vw))";
+
+/**
+ * The width the window controls take at the top left: where the title bar
+ * area starts. Zero with no overlay, in full screen, and wherever the
+ * controls are all at the right — everywhere but a Linux desktop whose
+ * button layout puts some at the left (GNOME's `button-layout`, a
+ * right-to-left locale), which Electron honours from 43 on.
+ */
+export const CONTROLS_START = "env(titlebar-area-x, 0px)";
 
 /** How tall the window controls are: the overlay's height, 0 without one. */
 export const CONTROLS_HEIGHT = "env(titlebar-area-height, 0px)";

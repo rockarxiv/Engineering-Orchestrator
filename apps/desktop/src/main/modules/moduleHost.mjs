@@ -383,9 +383,10 @@ function emit(line) {
  * say the same thing.
  *
  * It needs Node 22.15, and this host already needs 22.5 for
- * `node:sqlite`. Production is Electron 39's Node 22.22 under
- * ELECTRON_RUN_AS_NODE=1, where loader hooks were measured working
- * before any of this was written. On a Node too old the named import
+ * `node:sqlite`. Production is Electron 45's Node 24.22 under
+ * ELECTRON_RUN_AS_NODE=1, which has both (checked on the upgrade to 45,
+ * EO-670); loader hooks were measured working under Electron 39's Node
+ * 22.22 before any of this was written. On a Node too old the named import
  * above fails at link time, which is the right way round: the host does
  * not start, so nothing runs unguarded.
  */

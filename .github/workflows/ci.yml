@@ -62,10 +62,10 @@ jobs:
 
       - uses: actions/setup-node@v7
         with:
-          # 22.x, matching the Node that Electron 39 bundles. Not 20:
-          # jsdom 30 pulls undici 8, which calls markAsUncloneable —
+          # 24.x, matching the Node that Electron 45 bundles (24.22). Not
+          # 20: jsdom 30 pulls undici 8, which calls markAsUncloneable —
           # a Node API that only exists from 22.10 on.
-          node-version: 22
+          node-version: 24
           cache: pnpm
 
       - name: Install dependencies
@@ -167,7 +167,7 @@ jobs:
       - uses: pnpm/action-setup@v6
       - uses: actions/setup-node@v7
         with:
-          node-version: 22
+          node-version: 24
           cache: pnpm
 
       - name: Install dependencies
@@ -243,7 +243,7 @@ jobs:
       - uses: pnpm/action-setup@v6
       - uses: actions/setup-node@v7
         with:
-          node-version: 22
+          node-version: 24
           cache: pnpm
 
       - name: Install dependencies
@@ -282,7 +282,7 @@ jobs:
       - uses: pnpm/action-setup@v6
       - uses: actions/setup-node@v7
         with:
-          node-version: 22
+          node-version: 24
           cache: pnpm
 
       - name: Install dependencies
@@ -349,7 +349,7 @@ jobs:
       - uses: pnpm/action-setup@v6
       - uses: actions/setup-node@v7
         with:
-          node-version: 22
+          node-version: 24
           cache: pnpm
 
       - name: Install dependencies
@@ -388,7 +388,7 @@ jobs:
       - uses: pnpm/action-setup@v6
       - uses: actions/setup-node@v7
         with:
-          node-version: 22
+          node-version: 24
           cache: pnpm
 
       - name: Install dependencies

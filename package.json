@@ -29,7 +29,6 @@
   "pnpm": {
     "//onlyBuiltDependencies": "better-sqlite3 is deliberately absent. It has a binding.gyp but no install script, so allowlisting it makes pnpm default to `node-gyp rebuild` — which compiles from source and needs a full toolchain (this is what broke the Windows CI runner: no Visual Studio). It ships N-API prebuilds for darwin/linux/win32 x64+arm64, and N-API is ABI-stable across both Node and Electron, so the prebuild is all we need. Verified: with every compiled artifact deleted, the Electron app boots and runs its migrations on the prebuild alone.",
     "onlyBuiltDependencies": [
-      "electron",
       "electron-winstaller",
       "esbuild"
     ]
