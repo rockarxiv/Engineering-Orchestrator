@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -350,6 +350,38 @@ describe("several repositories on one first-run project (EO-662)", () => {
       ["two", false],
     ]);
     expect(workspace.parts?.[1]?.why).toContain(join(folder, "two"));
+  });
+
+  /**
+   * A pack may key its own blanks however it likes, "repository"
+   * included. The derived field must not share that key, or the two
+   * fields share one answer and the template cannot be installed.
+   */
+  it("keeps the repository answer apart from a pack blank keyed \"repository\"", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "eo needs gallery "));
+    try {
+      const pack = JSON.parse(readFileSync(join(GALLERY_DIRECTORY, "software-feature-to-merge.json"), "utf8")) as {
+        template: { slug: string; blanks: { key: string; kind: string }[] };
+      };
+      pack.template.slug = "repository-keyed";
+      pack.template.blanks = pack.template.blanks.map((blank) => (blank.kind === "keyPrefix" ? { ...blank, key: "repository" } : blank));
+      writeFileSync(join(directory, "repository-keyed.json"), JSON.stringify(pack));
+      const here = { ...context(), directory };
+
+      const card = (await listGalleryCommand(handle.db, here)).templates.find((template) => template.slug === "repository-keyed")!;
+      const keys = card.blanks.map((blank) => blank.key);
+      expect(new Set(keys).size).toBe(keys.length);
+      const derived = card.blanks.find((blank) => blank.kind === "repository")!;
+      expect(derived.key).not.toBe("repository");
+
+      const path = repository();
+      const installed = await useGalleryCommand(handle.db, here, { slug: "repository-keyed", answers: { repository: "ACME", [derived.key]: path }, roleSlots: {} });
+      expect(installed.problem).toBeNull();
+      expect(getProject(handle.db, installed.projectId as never)?.keyPrefix).toBe("ACME");
+      expect(line(installed.needs, "workspace").parts?.map((part) => part.line)).toEqual([basename(path)]);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
   });
 
   it("leaves a template that wants a folder as it was", async () => {

@@ -167,7 +167,10 @@ export function galleryBlanks(document: PipelineExport): GalleryBlank[] {
   // (EO-662). Optional: the needs check still asks, and adds more.
   if (wantsRepository(document)) {
     blanks.push({
-      key: REPOSITORY_BLANK_KEY,
+      key: unusedKey(
+        "repository",
+        blanks.map((blank) => blank.key),
+      ),
       kind: "repository",
       label: "Repository",
       help: "The git checkout its work happens in. More can be added once the project is made.",
@@ -181,8 +184,23 @@ export function galleryBlanks(document: PipelineExport): GalleryBlank[] {
   return blanks;
 }
 
-/** The repository blank's key, which no pack can also use: a pack's own keys are its template's. */
-export const REPOSITORY_BLANK_KEY = "repository";
+/**
+ * A key none of the pack's own blanks has (EO-662). A pack may key its
+ * blanks however it likes, "repository" included, and two fields on one
+ * key would share one answer. Read back by kind (`repositoryAnswer`),
+ * never by spelling, so the form and the install agree on whichever it is.
+ */
+function unusedKey(wanted: string, taken: readonly string[]): string {
+  let key = wanted;
+  for (let n = 2; taken.includes(key); n += 1) key = `${wanted}-${n}`;
+  return key;
+}
+
+/** What the form answered for the derived repository blank, trimmed; "" where it asks none or was left empty. */
+export function repositoryAnswer(document: PipelineExport, answers: Record<string, string>): string {
+  const blank = galleryBlanks(document).find((candidate) => candidate.kind === "repository");
+  return blank === undefined ? "" : (answers[blank.key] ?? "").trim();
+}
 
 /**
  * Whether this pack's work happens in a checkout rather than in a
