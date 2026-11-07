@@ -6766,12 +6766,13 @@ export const machineContract = {
    * dialog has to show, `submitSignInCode` hands the child what remains
    * and waits for it to exit, and `cancelSignIn` kills it.
    *
-   * The two providers are shaped differently and these schemas say so.
-   * Claude's authorization code goes browser → person → EO → the
-   * child's stdin. Codex's goes browser → the child's own
-   * `localhost:1455` listener and never touches EO, so its `code` is
-   * always null and the submit call is purely "tell me when it is
-   * done". EO writes nothing into `~/.claude` or `~/.codex` either way.
+   * Both providers' children finish by themselves: the browser returns
+   * to the child's own localhost listener, so the dialog's first submit
+   * call carries no code and is purely "tell me when it is done". Claude
+   * additionally prints a fallback page that displays an authorization
+   * code, which goes browser → person → EO → the child's stdin in a
+   * second submit call (EO-665). Codex's code never touches EO. EO
+   * writes nothing into `~/.claude` or `~/.codex` either way.
    */
   "runtime:startSignIn": channel(
     z.object({
@@ -6786,8 +6787,8 @@ export const machineContract = {
        * browser did not open" fallback — it prints a one-time code the
        * user types into the page, the opposite direction from Claude's.
        * `console` is `claude auth login --console`, the Anthropic
-       * Console flow (EO-84): the same browser-plus-paste shape as the
-       * subscription login, billed to an API account rather than a
+       * Console flow (EO-84): the same shape as the subscription login,
+       * billed to an API account rather than a
        * subscription, and Claude's only one — Codex answers an API key
        * with `--with-api-key` instead, which is `runtime:signInWithApiKey`.
        */
@@ -6801,9 +6802,14 @@ export const machineContract = {
       url: z.string().nullable(),
       /** The one-time code the *page* asks for (`codex login --device-auth`). Null for every other flow. */
       verificationCode: z.string().nullable(),
-      /** Whether EO must carry a code back to the child's stdin. True for Claude, false for both Codex paths. */
+      /**
+       * Whether the child also takes a code on stdin. True for Claude, whose printed URL is a fallback page that
+       * displays one; false for both Codex paths. Never a reason to stop waiting — every flow finishes by itself.
+       */
       needsCode: z.boolean(),
-      /** Whether the OS actually opened the URL. False is not a failure — the URL is on screen and copyable. */
+      /** Whether the CLI opens the sign-in page itself, so `url` is only its fallback and EO did not open it. True for Claude. */
+      cliOpensBrowser: z.boolean(),
+      /** Whether EO had the OS open the URL. False is not a failure — the URL is on screen and copyable. */
       opened: z.boolean(),
       /** What the CLI printed, verbatim. The only honest thing to show when EO could not make sense of it. */
       transcript: z.string(),
@@ -6811,13 +6817,12 @@ export const machineContract = {
     }),
   ),
   /**
-   * Hands the child what remains and waits for it to exit.
+   * Hands the child what remains, if anything, and waits for it to exit.
    *
-   * `code` is the authorization code the sign-in page displayed, for the
-   * one provider whose code travels through EO. It is null for Codex,
-   * whose child takes its own code: there the call carries nothing and
-   * exists only to wait, because the dialog has to keep showing the URL
-   * while the browser half happens.
+   * `code` is the authorization code Claude's fallback page displayed.
+   * Null is the ordinary call for every flow: it carries nothing and
+   * exists only to wait, because the child finishes the exchange itself
+   * and the dialog has to keep showing the URL while it does.
    */
   "runtime:submitSignInCode": channel(
     z.object({ sessionId: z.string().min(1), code: z.string().nullable().default(null) }),

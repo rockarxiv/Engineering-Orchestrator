@@ -16,9 +16,18 @@ import { invalidateRuntimeAuth, type AuthProvider } from "./auth.js";
  *
  * The two providers are shaped differently and this file knows it:
  *
- * - `claude auth login` prints a URL and then waits on **stdin**. The
- *   sign-in page displays an authorization code, the person pastes it
- *   back, and EO writes it to the child. It is not an emailed code.
+ * - `claude auth login` opens the browser **itself**, at a page that
+ *   redirects to its own listener on `http://localhost:<port>/callback`,
+ *   and exits 0 once the browser comes back there (EO-665). The URL it
+ *   prints ("If the browser didn't open, visit: …") is only its fallback:
+ *   that one redirects to `platform.claude.com/oauth/code/callback`, a
+ *   page that displays an authorization code, and the child is still
+ *   reading stdin for it ("Paste code here if prompted >"). So EO opens
+ *   nothing, shows the printed URL with a copy button, waits for the
+ *   exit, and keeps a field for the code as the fallback's other half.
+ *   `claude auth login --console` behaves exactly the same — browser
+ *   opened by the CLI, localhost redirect, the code page as the printed
+ *   fallback — so it is handled the same way.
  * - `codex login` prints a URL and starts its own listener on
  *   `http://localhost:1455`. The browser redirects there and the child
  *   takes the code itself — it never passes through EO, so there is no
@@ -40,8 +49,11 @@ import { invalidateRuntimeAuth, type AuthProvider } from "./auth.js";
  * `SIGN_IN_FLOWS`, and a key typed into EO, which is stored with
  * `safeStorage` in `apiKey.ts` and never comes near this file.
  *
- * Every flow is line-oriented with stdout piped, verified against
- * claude 0.3.251 and codex 0.151.0. No pty, and no new native
+ * Every flow is line-oriented with stdout piped. The Claude flows were
+ * verified against EO's managed Claude Code 0.3.318 (the binary reports
+ * itself as 2.1.318) — 0.3.251, which they were first written against,
+ * printed only the code-page URL and never finished by itself — and the
+ * Codex flows against codex 0.151.0. No pty, and no new native
  * dependency: the spawn sits behind the `SignInSpawner` seam in the
  * manner of `forge/cli.ts`, so no test here starts a real CLI.
  */
@@ -51,8 +63,18 @@ export type SignInMode = "browser" | "device" | "console";
 export interface SignInFlow {
   /** The argv, after the resolved executable. */
   argv: string[];
-  /** Whether EO must carry a code back to the child's stdin. */
+  /**
+   * Whether the child also reads a code from stdin. Every flow finishes
+   * by itself; for Claude a pasted code is the fallback, for when the
+   * page displayed one instead of returning to the CLI's listener.
+   */
   needsCode: boolean;
+  /**
+   * Whether the CLI opens the sign-in page itself. Then the URL it prints
+   * is its own fallback, and EO opening that too would put a second page
+   * — the one that shows a code — in front of the person.
+   */
+  cliOpensBrowser: boolean;
   /** Whether the CLI prints a one-time code for the *person* to type into the page. */
   printsVerificationCode: boolean;
 }
@@ -60,25 +82,25 @@ export interface SignInFlow {
 /**
  * What each provider's sign-in actually is.
  *
- * Claude has no device flow: its browser page displays the code, which
- * is already the headless-friendly direction. Codex has both, and
+ * Claude has no device flow: its printed fallback page displays a code
+ * to paste, which is already the headless-friendly direction. Codex has both, and
  * `browser` is the default deliberately — a desktop app has a browser,
  * so the child's own listener is the better path and `--device-auth`
  * stays an explicit fallback.
  */
 export const SIGN_IN_FLOWS: Record<AuthProvider, Partial<Record<SignInMode, SignInFlow>>> = {
   claude: {
-    browser: { argv: ["auth", "login"], needsCode: true, printsVerificationCode: false },
+    browser: { argv: ["auth", "login"], needsCode: true, cliOpensBrowser: true, printsVerificationCode: false },
     // The Anthropic Console flow (EO-84): API billing rather than a
-    // subscription, and the same browser-plus-paste shape as the login
-    // above — a URL, then a code the page displays, then stdin. It is
-    // free to reuse for exactly that reason, and it is the API-key path
-    // that leaves EO holding nothing: the CLI stores what it gets.
-    console: { argv: ["auth", "login", "--console"], needsCode: true, printsVerificationCode: false },
+    // subscription, and on 0.3.318 the same shape as the login above —
+    // the CLI opens the page itself and finishes on its own, with the
+    // code page as the printed fallback. It is the API-key path that
+    // leaves EO holding nothing: the CLI stores what it gets.
+    console: { argv: ["auth", "login", "--console"], needsCode: true, cliOpensBrowser: true, printsVerificationCode: false },
   },
   codex: {
-    browser: { argv: ["login"], needsCode: false, printsVerificationCode: false },
-    device: { argv: ["login", "--device-auth"], needsCode: false, printsVerificationCode: true },
+    browser: { argv: ["login"], needsCode: false, cliOpensBrowser: false, printsVerificationCode: false },
+    device: { argv: ["login", "--device-auth"], needsCode: false, cliOpensBrowser: false, printsVerificationCode: true },
     // Codex's API key has no browser half at all — see `signInWithApiKey`.
   },
 };
@@ -317,6 +339,7 @@ export interface StartSignInResult {
   url: string | null;
   verificationCode: string | null;
   needsCode: boolean;
+  cliOpensBrowser: boolean;
   opened: boolean;
   transcript: string;
   problem: string | null;
@@ -324,7 +347,11 @@ export interface StartSignInResult {
 
 export interface SubmitSignInOptions {
   sessionId: string;
-  /** Claude's authorization code. Null for Codex, whose code never passes through EO. */
+  /**
+   * Claude's authorization code, when the page displayed one. Null — or
+   * blank — to only wait for the child to finish by itself, which every
+   * flow does.
+   */
   code: string | null;
   completionTimeoutMs?: number;
 }
@@ -336,8 +363,18 @@ export interface SubmitSignInResult {
   problem: string | null;
 }
 
-function failedStart(problem: string, transcript = "", needsCode = false): StartSignInResult {
-  return { ok: false, sessionId: null, url: null, verificationCode: null, needsCode, opened: false, transcript, problem };
+function failedStart(problem: string, transcript = "", flow?: SignInFlow): StartSignInResult {
+  return {
+    ok: false,
+    sessionId: null,
+    url: null,
+    verificationCode: null,
+    needsCode: flow?.needsCode ?? false,
+    cliOpensBrowser: flow?.cliOpensBrowser ?? false,
+    opened: false,
+    transcript,
+    problem,
+  };
 }
 
 /** What a flow is called when EO has to say it does not exist. */
@@ -437,19 +474,23 @@ export async function startSignIn(options: StartSignInOptions): Promise<StartSig
 
   if ("problem" in found) {
     child.kill();
-    return failedStart(found.problem, transcript, flow.needsCode);
+    return failedStart(found.problem, transcript, flow);
   }
 
   // The URL is shown with a copy button whatever happens here: an
   // `openExternal` that resolves is not proof a browser appeared, and
   // one that rejects is not a reason to abandon a flow the person can
-  // still complete by pasting.
+  // still complete by pasting. A CLI that opened the page itself has
+  // printed its fallback, which EO leaves for the person to open only
+  // if theirs did not appear.
   let opened = false;
-  try {
-    await options.openExternal?.(found.url);
-    opened = options.openExternal !== undefined;
-  } catch {
-    opened = false;
+  if (!flow.cliOpensBrowser) {
+    try {
+      await options.openExternal?.(found.url);
+      opened = options.openExternal !== undefined;
+    } catch {
+      opened = false;
+    }
   }
 
   sessions.set(session.id, session);
@@ -459,6 +500,7 @@ export async function startSignIn(options: StartSignInOptions): Promise<StartSig
     url: found.url,
     verificationCode: found.verificationCode,
     needsCode: flow.needsCode,
+    cliOpensBrowser: flow.cliOpensBrowser,
     opened,
     transcript,
     problem: null,
@@ -466,14 +508,14 @@ export async function startSignIn(options: StartSignInOptions): Promise<StartSig
 }
 
 /**
- * Hands the child what remains, and waits for it to exit.
+ * Hands the child what remains, if anything, and waits for it to exit.
  *
- * For Claude that is the authorization code the sign-in page displayed,
- * written to stdin with the newline the CLI is waiting for. For Codex
- * there is nothing to hand it — its own `localhost:1455` listener takes
- * the code — so `code` is null and this call is purely the wait, which
- * still has to exist because the dialog must stay up while the browser
- * half happens.
+ * Every flow finishes by itself — the child's own localhost listener
+ * takes the code — so the dialog calls this with no code as soon as the
+ * flow starts, and that call is purely the wait. For Claude a second
+ * call may carry the authorization code its fallback page displayed,
+ * written to stdin with the newline the CLI is waiting for; both calls
+ * wait on the same exit and answer alike.
  */
 export async function submitSignInCode(options: SubmitSignInOptions): Promise<SubmitSignInResult> {
   const session = sessions.get(options.sessionId);
@@ -482,20 +524,11 @@ export async function submitSignInCode(options: SubmitSignInOptions): Promise<Su
   }
   const label = RUNTIMES[session.provider].label;
 
-  if (session.flow.needsCode) {
-    const code = (options.code ?? "").trim();
-    if (code === "") {
-      return {
-        ok: false,
-        state: "failed",
-        transcript: session.transcript(),
-        problem: `${label} is waiting for the authorization code the sign-in page displayed.`,
-      };
-    }
-    // The newline is the submission: the CLI is blocked on a line read,
-    // not on a byte count.
-    session.child.write(`${code}\n`);
-  }
+  const code = (options.code ?? "").trim();
+  // The newline is the submission: the CLI is blocked on a line read,
+  // not on a byte count — which is also why a blank code is not written,
+  // as an empty line would be a wrong answer rather than no answer.
+  if (session.flow.needsCode && code !== "") session.child.write(`${code}\n`);
   // A code sent to a flow that does not take one is dropped rather than
   // written. Codex's code belongs to its own listener, and pushing one
   // into a child that is not reading stdin achieves nothing.
