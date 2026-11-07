@@ -1,10 +1,24 @@
 # EO
 
+![Asking the assistant for a change, and accepting the ticket it drafts](docs/media/assistant.gif)
+
+*Ask the assistant for a change. It reads the repository, drafts one ticket, and files it when you accept.*
+
 A desktop app for running work through pipelines of agent and human steps.
 
 A piece of work is an item. It sits on a step of a pipeline, and the step says who has it right now: an agent, a person, EO itself, or a script. When that party is finished, the item moves along the route the pipeline declares for the result. When an agent gets stuck it comments and mentions you, which ends its run rather than leaving a subprocess waiting.
 
-Pipelines are data. Start from a template — a weekly report, an inbox triage, a content draft — or describe what you want to the assistant and have it draft one. Software delivery is one template among them: in **Software feature to merge** an implementer works each ticket in its own git worktree, and the engine then checks the claim independently — commits exist, the tree is clean, your tests actually ran — before a reviewer sees it.
+Pipelines are data. Start from a template — a weekly report, an inbox triage, a content draft — or describe what you want to the assistant and have it draft one.
+
+![The Delivery board and graph, and the assistant adding a QA step to it](docs/media/pipelines.gif)
+
+*The board and the graph behind it. Asked for a hand-checked QA step after Review, the assistant drafts the change; publishing it rewires the routes.*
+
+Software delivery is one template among them: in **Software feature to merge** an implementer works each ticket in its own git worktree, and the engine then checks the claim independently — commits exist, the tree is clean, your tests actually ran — before a reviewer sees it.
+
+![A ticket moving through Worktree, Index, To Do, Review and Merge Request to Done](docs/media/delivery.gif)
+
+*One ticket through **Software feature to merge**: a worktree, an index, an implementer, a reviewer, then Done. The repository has no forge, so no pull request is opened. The agent stretches are sped up.*
 
 [`ARCHITECTURE.md`](./ARCHITECTURE.md) is the design document.
 
