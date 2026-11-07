@@ -292,7 +292,11 @@ describe("a role nobody here can play", () => {
     const signedIn = { ...context(), signedInBackends: ["claude"] };
 
     const before = await galleryNeedsCommand(handle.db, signedIn, { projectId, slug: "weekly-report" });
-    expect(line(before.needs, "role:reporter").fix).toEqual({ kind: "role", label: "Use claude for this", target: "reporter" });
+    const red = line(before.needs, "role:reporter");
+    expect(red.line).toBe("An agent for the Reporter steps");
+    expect(red.why).toBe("The Reporter steps have no agent to run on yet.");
+    expect(red.why).not.toMatch(/pack|backend|slug/i);
+    expect(red.fix).toEqual({ kind: "role", label: "Use Claude Code for these steps", target: "reporter" });
 
     expect(await staffRoleCommand(handle.db, signedIn, { slug: "weekly-report", role: "reporter" })).toEqual({ ok: true, problem: null, locked: null });
 

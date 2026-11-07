@@ -8,14 +8,14 @@
   "needs": [
     {
       "key": "role:implementer",
-      "line": "An agent for \"implementer\"",
+      "line": "An agent for the Implementer steps",
       "met": true,
       "why": null,
       "fix": null
     },
     {
       "key": "role:reviewer",
-      "line": "An agent for \"reviewer\"",
+      "line": "An agent for the Reviewer steps",
       "met": true,
       "why": null,
       "fix": null

@@ -1633,7 +1633,7 @@ function writeRoles(db: Db, document: PipelineExport, signedInBackends: readonly
  * it runs on — somebody's "Reviewer (Codex)" says something about their
  * installation and nothing about the pack.
  */
-function agentNameFor(slug: string): string {
+export function agentNameFor(slug: string): string {
   const words = slug.replace(/[_-]+/g, " ").trim();
   return words === "" ? slug : `${words[0]?.toUpperCase() ?? ""}${words.slice(1)}`;
 }

@@ -70,10 +70,10 @@ const NO_BACKEND: GalleryNeedView = {
  */
 const UNSTAFFED_ROLE: GalleryNeedView = {
   key: "role:reporter",
-  line: 'An agent for "reporter"',
+  line: "An agent for the Reporter steps",
   met: false,
-  why: 'No agent here plays "reporter" yet — the one this pack brought names no backend, so it has nothing to run on.',
-  fix: { kind: "role", label: "Use claude for this", target: "reporter" },
+  why: "The Reporter steps have no agent to run on yet.",
+  fix: { kind: "role", label: "Use Claude Code for these steps", target: "reporter" },
 };
 
 const GREEN: GalleryNeedView[] = [
@@ -246,7 +246,7 @@ describe("a red line", () => {
     const invoke = mockIpc({ needs: [UNSTAFFED_ROLE], onceFixed: GREEN });
     renderNeeds([UNSTAFFED_ROLE]);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Use claude for this" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Use Claude Code for these steps" }));
 
     await waitFor(() => expect(invoke.mock.calls.some((call: unknown[]) => call[0] === "gallery:staffRole")).toBe(true));
     expect(invoke.mock.calls.find((call: unknown[]) => call[0] === "gallery:staffRole")?.[1]).toEqual({
@@ -255,7 +255,7 @@ describe("a red line", () => {
       role: "reporter",
     });
 
-    await waitFor(() => expect(screen.queryByRole("button", { name: "Use claude for this" })).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Use Claude Code for these steps" })).not.toBeInTheDocument());
     expect(screen.getByText("Weekly report is set up")).toBeInTheDocument();
   });
 
@@ -263,7 +263,7 @@ describe("a red line", () => {
     mockIpc({ needs: [UNSTAFFED_ROLE], staffProblem: "Nothing on this machine is signed in." });
     renderNeeds([UNSTAFFED_ROLE]);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Use claude for this" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Use Claude Code for these steps" }));
 
     expect(await screen.findByText("Nothing on this machine is signed in.")).toBeInTheDocument();
   });
@@ -282,7 +282,7 @@ describe("a red line", () => {
     mockIpc({ needs: [UNSTAFFED_ROLE], staffLocked: { locked: true, section: "agents", publishedBy: "Dana" } });
     renderNeeds([UNSTAFFED_ROLE]);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Use claude for this" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Use Claude Code for these steps" }));
 
     const lock = await screen.findByTestId("managed-lock-agents");
     expect(lock).toHaveTextContent("Steps, routes and prompts are managed by your organisation.");
@@ -474,7 +474,7 @@ describe("the developer's first-run copy", () => {
     // Word for word, and nowhere sending the person to a screen first
     // run hides (EO-659).
     expect(container.textContent).toBe(
-      'Software feature to merge is set up2 things left before real work runs. Each one says why, and carries the one button that fixes it.An agent for "implementer"An agent for "reviewer"A repository — the checkout its work happens inThis project has no repository yet, so nothing can be branched, reviewed or opened as a pull request.Choose a repositorySaveA coding agent signed inNothing on this machine is signed in, so no step would dispatch.No coding agent is installed on this machine yet. EO ships none, and can fetch one for you.Install a coding agentGo to the boardContinue with Preview only',
+      'Software feature to merge is set up2 things left before real work runs. Each one says why, and carries the one button that fixes it.An agent for the Implementer stepsAn agent for the Reviewer stepsA repository — the checkout its work happens inThis project has no repository yet, so nothing can be branched, reviewed or opened as a pull request.Choose a repositorySaveA coding agent signed inNothing on this machine is signed in, so no step would dispatch.No coding agent is installed on this machine yet. EO ships none, and can fetch one for you.Install a coding agentGo to the boardContinue with Preview only',
     );
   });
 
