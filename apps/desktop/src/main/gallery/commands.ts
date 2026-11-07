@@ -7,6 +7,7 @@ import {
   isPreviewAgent,
   parseQualifiedItemType,
   qualifiedItemType,
+  type GalleryNeedPart,
   type ItemTypeRef,
   uuidv7,
   type JobSchedule,
@@ -47,7 +48,7 @@ import {
 import { createJob } from "../jobs/jobs.js";
 import { ACTIVE_PROJECT_KEY } from "../ipc/repositoryCommands.js";
 import { importPipeline, type ImportPreflight } from "../modules/pipelineTransfer.js";
-import { galleryBlanks, galleryNeeds, galleryRoleSlots, stepInputValues, type GalleryNeed } from "./form.js";
+import { galleryBlanks, galleryNeeds, galleryRoleSlots, stepInputValues, wantsRepository, type GalleryNeed } from "./form.js";
 import type { GalleryTemplate } from "./templates.js";
 
 /**
@@ -794,29 +795,6 @@ export interface ProjectNeedsInput {
 }
 
 /**
- * Whether this pack's work happens in a checkout rather than in a
- * folder (EO-317).
- *
- * Asked of the document, in two steps, and neither of them is EO
- * guessing at a domain:
- *
- *  - a template that wants a folder **says so in its own blanks**, and
- *    "Use this" already made it one, so the line is about that folder;
- *  - otherwise a `builtin` step is a step some installed *code* pack
- *    runs, and the only code pack EO ships — the developer pack — cuts
- *    worktrees from a git checkout.
- *
- * The second half is the developer template's whole case and is written
- * as the fallback rather than as a special case for a slug, so the day a
- * pack contributes builtins that work in a folder, what changes is this
- * sentence and not a list of template names.
- */
-function wantsRepository(document: PipelineExport): boolean {
-  if ((document.template?.blanks ?? []).some((blank) => blank.kind === "folder")) return false;
-  return document.steps.some((step) => step.type === "builtin");
-}
-
-/**
  * Somewhere the work happens, and why it is not there (ARCHITECTURE.md, "The needs check").
  *
  * Two red states with different sentences and one button, because they
@@ -834,9 +812,24 @@ function workspaceNeed(db: Db, projectId: Uuid, document: PipelineExport): Galle
   const fix = repository
     ? { kind: "repository" as const, label: "Choose a repository" }
     : { kind: "folder" as const, label: "Choose folder" };
+  // Every repository the project spans, by name and each with its own
+  // status (EO-662): a broken one among several says why on its own row,
+  // and the line is green while any one of them works.
+  const parts = repository && attached.length > 0 ? { parts: attached.map(repositoryPart) } : {};
 
   const working = attached.find((workspace) => workspaceProblem(workspace) === null);
-  if (working !== undefined) return { key: "workspace", line, met: true, why: null, fix: null };
+  if (working !== undefined) {
+    return {
+      key: "workspace",
+      line,
+      met: true,
+      why: null,
+      // The one button a green line carries: a project can span several
+      // repositories, and first run attaches more the way Settings → Projects does.
+      fix: repository ? { kind: "addRepository", label: "Add another repository", target: null } : null,
+      ...parts,
+    };
+  }
 
   const broken = attached[0];
   if (broken === undefined) {
@@ -856,10 +849,18 @@ function workspaceNeed(db: Db, projectId: Uuid, document: PipelineExport): Galle
     met: false,
     // The path is in this sentence because it is the one thing that
     // makes it actionable: "EO cannot see it" about an unnamed
-    // directory is a line nobody can check.
-    why: workspaceProblem(broken),
+    // directory is a line nobody can check. With several repositories,
+    // each row says its own, and this says what they add up to.
+    why: repository && attached.length > 1 ? "None of this project's repositories can be used yet. Each one below says why." : workspaceProblem(broken),
     fix: { ...fix, target: workspacePath(broken) },
+    ...parts,
   };
+}
+
+/** One repository's row on the repository line: its name, and `workspaceProblem`'s word on it. */
+function repositoryPart(workspace: Workspace): GalleryNeedPart {
+  const why = workspaceProblem(workspace);
+  return { key: workspace.id, line: asGitWorkspace(workspace)?.config.name ?? workspacePath(workspace), met: why === null, why };
 }
 
 /** Where a workspace says it is, for the field the fix button fills in. */

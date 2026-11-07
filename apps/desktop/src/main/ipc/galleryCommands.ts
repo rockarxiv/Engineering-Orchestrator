@@ -33,7 +33,7 @@ import {
   workspaceProblem,
 } from "../db/repos/index.js";
 import { isAdopting } from "../db/repos/projectsRepo.js";
-import { galleryBlanks, galleryNeeds, galleryRoleSlots } from "../gallery/form.js";
+import { REPOSITORY_BLANK_KEY, galleryBlanks, galleryNeeds, galleryRoleSlots, wantsRepository } from "../gallery/form.js";
 import { previewTemplate, projectNeeds, useTemplate } from "../gallery/commands.js";
 import { listedByToken, listedTemplate, rememberListed } from "../gallery/session.js";
 import { bundledTemplates, listGalleryTemplates, type GalleryOptions, type GalleryTemplate } from "../gallery/templates.js";
@@ -213,6 +213,15 @@ export async function useGalleryCommand(db: Db, context: GalleryContext, payload
     for (const colleague of colleagues) ensurePerson(db, colleague.id as Uuid, colleague.name);
   }
 
+  // The repository the form asked for (EO-662), checked before anything
+  // is written — a path git does not know, or one EO already holds, is a
+  // sentence on the form rather than a project with a red line.
+  const repository = wantsRepository(template.document) ? (payload.answers[REPOSITORY_BLANK_KEY] ?? "").trim() : "";
+  if (repository !== "") {
+    const problem = (await repositoryPathProblem(repository)) ?? (listGitWorkspaces(db).some((workspace) => workspace.config.repoPath === repository) ? `${repository} is already attached to EO as a repository.` : null);
+    if (problem !== null) return { projectId: null, pipelineId: null, jobId: null, needs: [], problem };
+  }
+
   const result = useTemplate(db, {
     template,
     answers: payload.answers,
@@ -227,6 +236,11 @@ export async function useGalleryCommand(db: Db, context: GalleryContext, payload
   // that ended itself at step 4 would take that screen away at the
   // moment it was produced. See `noteFirstRunProject`.
   noteFirstRunProject(db, result.projectId);
+
+  // Through the needs check's own door, onto the project just made. A
+  // refusal now (the path vanished meanwhile) leaves the repository line
+  // red with its reason, which is where it is answered.
+  if (repository !== "") await attachWorkspaceCommand(db, { projectId: result.projectId, path: repository, kind: "git" });
 
   // Preflighted again, against the project that now exists, because that
   // is the only reading that can answer the design's lines: which types landed,

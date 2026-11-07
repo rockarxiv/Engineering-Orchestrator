@@ -247,6 +247,28 @@ describe("the form", () => {
     expect((sent(invoke, "gallery:use") as { answers: Record<string, string> }).answers).toEqual({ "post.wait": "30", "post.draft": "false" });
   });
 
+  /** A pipeline that works on a repository asks for it on the form, not first on the needs check (EO-662). */
+  it("asks for the repository on the form, and sends it with the answers", async () => {
+    const developer: GalleryTemplateView = {
+      ...WEEKLY,
+      blanks: [
+        { key: "keyPrefix", kind: "keyPrefix", label: "Key prefix", help: "", required: true, default: "ACME", valueType: "string", connector: null },
+        { key: "repository", kind: "repository", label: "Repository", help: "The git checkout its work happens in.", required: false, default: "", valueType: "string", connector: null },
+      ],
+    };
+    const invoke = mockIpc({ templates: [developer] });
+    renderGallery();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Use this" }));
+    const repository = await screen.findByLabelText("Repository");
+    expect(repository).toHaveAttribute("placeholder", "/Users/you/code/your-repository");
+    fireEvent.change(repository, { target: { value: "/home/anna/code/shop" } });
+    fireEvent.click(screen.getByRole("button", { name: "Create" }));
+
+    await waitFor(() => expect(sent(invoke, "gallery:use")).toBeDefined());
+    expect((sent(invoke, "gallery:use") as { answers: Record<string, string> }).answers).toEqual({ keyPrefix: "ACME", repository: "/home/anna/code/shop" });
+  });
+
   it("keeps the pack whose form is open when the index republishes the same slug", async () => {
     const republished: GalleryTemplateView = {
       ...WEEKLY,

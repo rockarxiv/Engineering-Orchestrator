@@ -158,7 +158,12 @@ export const GalleryRoleSlotViewSchema = z.object({
  * that would apologise, and says why in its own words instead.
  */
 export const GalleryNeedFixSchema = z.object({
-  kind: z.enum(["folder", "repository", "backend", "connector", "secret", "role", "module"]),
+  /**
+   * `addRepository` is the one kind a green line carries (EO-662): a
+   * project can span several repositories, so the repository line offers
+   * another once one works, attached the way Settings → Projects does.
+   */
+  kind: z.enum(["folder", "repository", "addRepository", "backend", "connector", "secret", "role", "module"]),
   /** What the button says: "Choose folder", "Choose a repository", "Sign in". */
   label: z.string(),
   /**
@@ -171,6 +176,19 @@ export const GalleryNeedFixSchema = z.object({
    * read the wrong one.
    */
   target: z.string().nullable().default(null),
+});
+
+/**
+ * One thing a line is made of, with its own status (EO-662): each
+ * repository the repository line counts, by name, so a broken one among
+ * several says its own reason on its own row while the line itself stays
+ * green on the one that works.
+ */
+export const GalleryNeedPartSchema = z.object({
+  key: z.string(),
+  line: z.string(),
+  met: z.boolean(),
+  why: z.string().nullable().default(null),
 });
 
 /**
@@ -189,6 +207,8 @@ export const GalleryNeedSchema = z.object({
   /** Why this line is red, in the words of whatever decided it. Null on a green one. */
   why: z.string().nullable().default(null),
   fix: GalleryNeedFixSchema.nullable().default(null),
+  /** What the line counts, row by row. Absent on a line about one thing. */
+  parts: z.array(GalleryNeedPartSchema).optional(),
 });
 
 /** One card (ARCHITECTURE.md, "The gallery"). */
@@ -234,5 +254,6 @@ export type GalleryBlankView = z.infer<typeof GalleryBlankViewSchema>;
 export type GalleryRoleSlotView = z.infer<typeof GalleryRoleSlotViewSchema>;
 export type GalleryNeedFix = z.infer<typeof GalleryNeedFixSchema>;
 export type GalleryNeedFixKind = GalleryNeedFix["kind"];
+export type GalleryNeedPart = z.infer<typeof GalleryNeedPartSchema>;
 export type GalleryNeedView = z.infer<typeof GalleryNeedSchema>;
 export type GalleryTemplateView = z.infer<typeof GalleryTemplateViewSchema>;

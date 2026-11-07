@@ -1,16 +1,18 @@
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { DEFAULT_PIPELINE_ID, SECTION_LOCK_TEXT, type GalleryNeedView } from "@eo/core";
+import { DEFAULT_PIPELINE_ID, GIT_WORKTREE_KIND, SECTION_LOCK_TEXT, type GalleryNeedView } from "@eo/core";
 import type { DbHandle } from "../db/client.js";
 import { archiveAgent, createGitWorkspace, addWorkspaceToProject, getProject, listAgents, listGitWorkspaces, listJobs, listPipelines, listProjects, projectWorkspaceList, publishSection } from "../db/repos/index.js";
 import { beginAdoption } from "../db/repos/projectsRepo.js";
 import { markReplica } from "../db/recordRole.js";
 import { openMigratedTestDb } from "../db/testHelpers.js";
 import { attachWorkspaceCommand, galleryNeedsCommand, listGalleryCommand, staffRoleCommand, useGalleryCommand } from "../ipc/galleryCommands.js";
+import { addRepositoryToProjectCommand, createProjectCommand } from "../ipc/projectCommands.js";
+import { createWorkspaceCommand } from "../ipc/workspaceCommands.js";
 import DEVELOPER_FIRST_RUN from "../../renderer/src/chat/views/gallery/__fixtures__/developerFirstRun.json" with { type: "json" };
 import { forgetListed } from "./session.js";
 
@@ -252,6 +254,110 @@ describe("a developer's first run, through everybody's screen", () => {
     });
     expect(attached.ok).toBe(false);
     expect(attached.problem).toContain("is not a git repository");
+  });
+});
+
+describe("several repositories on one first-run project (EO-662)", () => {
+  const credentials = { directory: "/nowhere", store: NO_SECRETS.store };
+  const repositories: string[] = [];
+  const repository = () => {
+    const path = checkout();
+    repositories.push(path);
+    return path;
+  };
+  afterEach(() => {
+    for (const path of repositories.splice(0)) rmSync(path, { recursive: true, force: true });
+  });
+  const realProjects = () => listProjects(handle.db).filter((project) => project.name !== "Preview");
+  const needsOf = async (projectId: string) =>
+    line((await galleryNeedsCommand(handle.db, context(), { projectId, slug: "software-feature-to-merge" })).needs, "workspace");
+
+  it("asks for the repository on the setup form, and attaches it to the project it makes", async () => {
+    const listed = await listGalleryCommand(handle.db, context());
+    const card = listed.templates.find((template) => template.slug === "software-feature-to-merge")!;
+    expect(card.blanks.find((blank) => blank.kind === "repository")).toMatchObject({ key: "repository", required: false });
+
+    const first = repository();
+    const installed = await install("software-feature-to-merge", { keyPrefix: "ACME", repository: first });
+
+    const workspace = line(installed.needs, "workspace");
+    expect(workspace.met).toBe(true);
+    expect(workspace.parts).toEqual([{ key: expect.any(String), line: basename(first), met: true, why: null }]);
+    expect(workspace.fix).toEqual({ kind: "addRepository", label: "Add another repository", target: null });
+    expect(realProjects()).toHaveLength(1);
+  });
+
+  it("refuses a repository git does not know on the form, before anything is made", async () => {
+    const refused = await useGalleryCommand(handle.db, context(), { slug: "software-feature-to-merge", answers: { keyPrefix: "ACME", repository: folder }, roleSlots: {} });
+    expect(refused.problem).toContain("is not a git repository");
+    expect(realProjects()).toEqual([]);
+    expect(listGitWorkspaces(handle.db)).toEqual([]);
+  });
+
+  it("attaches a second repository through the channels Settings → Projects uses, and lists both by name", async () => {
+    const first = repository();
+    const second = repository();
+    const third = repository();
+    const projectId = (await install("software-feature-to-merge", { keyPrefix: "ACME", repository: first })).projectId as string;
+
+    // workspaces:create, as "Add another repository" sends it.
+    const created = await createWorkspaceCommand(handle.db, credentials, { kind: GIT_WORKTREE_KIND, projectId, config: { name: "payments", repoPath: second } });
+    expect(created.problem).toBeNull();
+
+    const workspace = await needsOf(projectId);
+    expect(workspace.met).toBe(true);
+    expect(workspace.parts?.map((part) => [part.line, part.met])).toEqual([
+      [basename(first), true],
+      ["payments", true],
+    ]);
+    expect(workspace.fix?.kind).toBe("addRepository");
+    expect(realProjects()).toHaveLength(1);
+    expect(projectWorkspaceList(handle.db, projectId as never)).toHaveLength(2);
+
+    // projects:addProject, for one EO already holds on another project.
+    const other = await createProjectCommand(handle.db, { name: "Other", keyPrefix: "OTH", repositoryIds: [] });
+    const elsewhere = await createWorkspaceCommand(handle.db, credentials, { kind: GIT_WORKTREE_KIND, projectId: other.project!.id, config: { name: "docs", repoPath: third } });
+    expect(addRepositoryToProjectCommand(handle.db, { projectId, repositoryId: elsewhere.workspace!.id }).ok).toBe(true);
+    expect((await needsOf(projectId)).parts?.map((part) => part.line)).toEqual([basename(first), "payments", "docs"]);
+  });
+
+  it("stays green with one working and one missing repository, and says why on the missing one's row", async () => {
+    const working = repository();
+    const projectId = (await install("software-feature-to-merge", { keyPrefix: "ACME", repository: working })).projectId as never;
+    const gone = join(folder, "gone");
+    addWorkspaceToProject(handle.db, projectId, createGitWorkspace(handle.db, { config: { name: "gone", repoPath: gone } }).id);
+
+    const workspace = await needsOf(projectId);
+    expect(workspace.met).toBe(true);
+    expect(workspace.why).toBeNull();
+    const [ok, missing] = workspace.parts ?? [];
+    expect(ok).toMatchObject({ line: basename(working), met: true, why: null });
+    expect(missing).toMatchObject({ line: "gone", met: false });
+    expect(missing?.why).toContain(gone);
+  });
+
+  it("goes red when none works, each row saying its own reason", async () => {
+    const projectId = (await install("software-feature-to-merge", { keyPrefix: "ACME" })).projectId as never;
+    for (const name of ["one", "two"]) {
+      addWorkspaceToProject(handle.db, projectId, createGitWorkspace(handle.db, { config: { name, repoPath: join(folder, name) } }).id);
+    }
+
+    const workspace = await needsOf(projectId);
+    expect(workspace.met).toBe(false);
+    expect(workspace.fix?.kind).toBe("repository");
+    expect(workspace.parts?.map((part) => [part.line, part.met])).toEqual([
+      ["one", false],
+      ["two", false],
+    ]);
+    expect(workspace.parts?.[1]?.why).toContain(join(folder, "two"));
+  });
+
+  it("leaves a template that wants a folder as it was", async () => {
+    const listed = await listGalleryCommand(handle.db, context());
+    expect(listed.templates.find((template) => template.slug === "weekly-report")?.blanks.some((blank) => blank.kind === "repository")).toBe(false);
+
+    const installed = await install("weekly-report", { folder, schedule: "monday 08:00", keyPrefix: "REP" });
+    expect(line(installed.needs, "workspace")).toEqual({ key: "workspace", line: "A folder — somewhere its work happens", met: true, why: null, fix: null });
   });
 });
 

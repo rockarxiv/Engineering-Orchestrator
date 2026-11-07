@@ -29,7 +29,12 @@ import { RUNTIMES, type RuntimeId } from "../runtimes/catalog.js";
 export interface GalleryBlank {
   /** For a `stepInput`, `<document step id>.<input name>`; otherwise the pack's own key. */
   key: string;
-  kind: TemplateBlankKind;
+  /**
+   * The pack's own kind, or `repository` — the one blank no pack writes:
+   * derived from a pipeline that works on a git checkout (EO-662), so the
+   * form asks for it rather than leaving it to the needs check.
+   */
+  kind: TemplateBlankKind | "repository";
   label: string;
   help: string;
   required: boolean;
@@ -158,7 +163,48 @@ export function galleryBlanks(document: PipelineExport): GalleryBlank[] {
     });
   }
 
+  // Where the work happens, for a pipeline that works on a repository
+  // (EO-662). Optional: the needs check still asks, and adds more.
+  if (wantsRepository(document)) {
+    blanks.push({
+      key: REPOSITORY_BLANK_KEY,
+      kind: "repository",
+      label: "Repository",
+      help: "The git checkout its work happens in. More can be added once the project is made.",
+      required: false,
+      default: "",
+      valueType: "string",
+      connector: null,
+    });
+  }
+
   return blanks;
+}
+
+/** The repository blank's key, which no pack can also use: a pack's own keys are its template's. */
+export const REPOSITORY_BLANK_KEY = "repository";
+
+/**
+ * Whether this pack's work happens in a checkout rather than in a
+ * folder (EO-317).
+ *
+ * Asked of the document, in two steps, and neither of them is EO
+ * guessing at a domain:
+ *
+ *  - a template that wants a folder **says so in its own blanks**, and
+ *    "Use this" already made it one, so the line is about that folder;
+ *  - otherwise a `builtin` step is a step some installed *code* pack
+ *    runs, and the only code pack EO ships — the developer pack — cuts
+ *    worktrees from a git checkout.
+ *
+ * The second half is the developer template's whole case and is written
+ * as the fallback rather than as a special case for a slug, so the day a
+ * pack contributes builtins that work in a folder, what changes is this
+ * sentence and not a list of template names.
+ */
+export function wantsRepository(document: PipelineExport): boolean {
+  if ((document.template?.blanks ?? []).some((blank) => blank.kind === "folder")) return false;
+  return document.steps.some((step) => step.type === "builtin");
 }
 
 /** Every human step the document draws that somebody has to decide, in pipeline order. */

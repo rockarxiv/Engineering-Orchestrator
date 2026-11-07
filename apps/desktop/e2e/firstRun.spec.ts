@@ -104,8 +104,8 @@ function runOnTheFakeProvider(home: string): void {
 }
 
 /** A checkout, because EO clones nothing and refuses a path git does not recognise. */
-function checkout(root: string): string {
-  const repoPath = path.join(root, "acme-api");
+function checkout(root: string, name = "acme-api"): string {
+  const repoPath = path.join(root, name);
   mkdirSync(repoPath, { recursive: true });
   const git = (...args: string[]) => execFileSync("git", args, { cwd: repoPath, encoding: "utf8" });
   git("init", "-b", "main");
@@ -310,6 +310,18 @@ test("a developer's first run reaches the board it reaches today, through the sa
     await window.getByRole("button", { name: "Save" }).click();
     await expect(window.getByText(/This project has no repository yet/)).toHaveCount(0, { timeout: 15_000 });
     await expect(window.getByRole("heading", { name: "Software feature to merge is set up" })).toBeVisible();
+    await expect(window.getByLabel("Repository path")).toHaveCount(0);
+
+    // A project can span several repositories (EO-662): the green line
+    // offers another, attached the way Settings → Projects attaches one,
+    // and lists each by name.
+    const second = checkout(root, "acme-web");
+    await window.getByRole("button", { name: "Add another repository" }).click();
+    await window.getByLabel("Repository path").fill(second);
+    await window.getByRole("button", { name: "Save" }).click();
+    const counted = window.getByRole("list", { name: 'What "A repository — the checkout its work happens in" counts' });
+    await expect(counted.getByText("acme-web")).toBeVisible({ timeout: 15_000 });
+    await expect(counted.getByText("acme-api")).toBeVisible();
     await expect(window.getByLabel("Repository path")).toHaveCount(0);
 
     // ── 6. The board ───────────────────────────────────────────────
