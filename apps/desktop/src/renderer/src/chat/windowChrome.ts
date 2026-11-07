@@ -39,6 +39,29 @@ export const CONTROLS_HEIGHT = "env(titlebar-area-height, 0px)";
 
 export const windowStateKey = ["window:state"] as const;
 
+/** Where the window controls are, as the bottom-left corner of their box at the top right; see `windowControlsBox`. */
+export interface WindowControlsBox {
+  left: number;
+  bottom: number;
+}
+
+/**
+ * Where the window controls are drawn over the page, by the overlay's own
+ * account, or null where none are: macOS, a browser, a window with a
+ * native frame, and full screen — where Linux still reports the overlay's
+ * height but its width is gone.
+ *
+ * For what is placed by script rather than laid out, and so cannot leave
+ * room with `env()`: the tour's callout (EO-667).
+ */
+export function windowControlsBox(): WindowControlsBox | null {
+  const overlay = (navigator as Navigator & { windowControlsOverlay?: { visible: boolean; getTitlebarAreaRect(): DOMRect } }).windowControlsOverlay;
+  if (!overlay?.visible) return null;
+  const area = overlay.getTitlebarAreaRect();
+  const left = area.x + area.width;
+  return left < window.innerWidth && area.height > 0 ? { left, bottom: area.height } : null;
+}
+
 /**
  * Whether this page is the main window on a desktop — the one window with
  * no native title bar. Not a browser tab served the same renderer, and

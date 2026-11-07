@@ -162,3 +162,68 @@ test("nothing in the top row is under the window controls, however narrow the wi
     rmSync(scratch, { recursive: true, force: true });
   }
 });
+
+/**
+ * The first-board tour's callout (EO-667) is placed by script, not laid
+ * out, so `env()` cannot keep it clear of the window controls: it asks the
+ * overlay where they are. Walked through every stop on the real window, at
+ * the narrowest the window goes and at the width it opens at — where, before
+ * it asked, the assistant's callout was drawn under them.
+ */
+test("no stop of the tour puts its callout under the window controls", async () => {
+  test.skip(process.platform === "darwin", "macOS draws its traffic lights in the rail's fixed inset; there is no overlay at the right edge");
+  test.setTimeout(120_000);
+  const scratch = mkdtempSync(path.join(tmpdir(), "eo e2e title bar tour "));
+  const home = path.join(scratch, "home");
+  mkdirSync(home, { recursive: true });
+
+  const { app, window: page } = await launchApp(homeEnv(home));
+
+  try {
+    await skipFirstRun(page);
+    await expect(page.getByRole("region", { name: "Conversation" })).toBeVisible({ timeout: 10_000 });
+
+    for (const width of [760, 1100]) {
+      await app.evaluate(({ BrowserWindow }, size) => BrowserWindow.getAllWindows()[0]!.setContentSize(size, 720), width);
+      await expect.poll(() => page.evaluate(() => window.innerWidth)).toBe(width);
+      await page.evaluate(() => {
+        window.location.hash = "#/settings?section=general";
+      });
+      await page.getByRole("button", { name: "Show the tour" }).click();
+      const tour = page.getByRole("dialog", { name: "Tour" });
+
+      for (let stop = 1; ; stop += 1) {
+        await expect(tour).toContainText(`${stop} of `, { timeout: 15_000 });
+        // Settled where it is going: the same box twice running.
+        let last = "";
+        await expect
+          .poll(async () => {
+            const now = JSON.stringify(await tour.boundingBox());
+            const settled = now === last;
+            last = now;
+            return settled;
+          })
+          .toBe(true);
+        const under = await page.evaluate(() => {
+          const overlay = (navigator as Navigator & { windowControlsOverlay?: { visible: boolean; getTitlebarAreaRect(): DOMRect } }).windowControlsOverlay;
+          if (!overlay?.visible) return "no overlay";
+          const area = overlay.getTitlebarAreaRect();
+          const callout = document.querySelector('[role="dialog"][aria-label="Tour"]')!.getBoundingClientRect();
+          const title = document.querySelector('[role="dialog"][aria-label="Tour"] h2')?.textContent ?? "";
+          return callout.right > area.x + area.width && callout.top < area.height ? `${title}: ${Math.round(callout.left)}–${Math.round(callout.right)} × ${Math.round(callout.top)}` : null;
+        });
+        expect(under, `at ${width}px wide, stop ${stop}`).toBeNull();
+        const done = tour.getByRole("button", { name: "Done" });
+        if ((await done.count()) > 0) {
+          await done.click();
+          break;
+        }
+        await tour.getByRole("button", { name: "Next" }).click();
+      }
+      await expect(tour).toHaveCount(0);
+    }
+  } finally {
+    await closeApp(app);
+    rmSync(scratch, { recursive: true, force: true });
+  }
+});
