@@ -4,8 +4,9 @@ import { MemoryRouter, Route, Routes, useParams } from "react-router-dom";
 import { describe, expect, it, vi } from "vitest";
 import { ThemeProvider } from "@eo/ui";
 import { sectionLockedLine } from "@eo/core";
-import type { GalleryNeedView, GalleryTemplateView, SectionLock } from "@eo/core";
+import type { GalleryNeedView, GalleryTemplateView, RuntimeStatusView, SectionLock } from "@eo/core";
 import { createQueryClient } from "../../../query/client";
+import { absent, signedOut } from "../agents/testRuntimes";
 import { NeedsCheck } from "./NeedsCheck";
 import DEVELOPER_FIRST_RUN from "./__fixtures__/developerFirstRun.json" with { type: "json" };
 
@@ -88,6 +89,10 @@ function mockIpc(options: {
   staffProblem?: string | null;
   /** The organisation publishes its agents, and this press would have created one (EO-329). */
   staffLocked?: SectionLock;
+  /** What `runtime:status` answers, by provider. Nothing at all when absent. */
+  runtimes?: RuntimeStatusView[];
+  /** What `modules:list` answers. Only the fields the module line reads are filled. */
+  modules?: unknown[];
 }) {
   // What the *machine* would say, before and after the folder is
   // attached — rather than a queue of answers keyed to how many times
@@ -118,8 +123,19 @@ function mockIpc(options: {
         return { ok: true, data: { itemId: "preview-1", projectId: "p-preview", pipelineId: "preview-pl", problem: null } };
       case "jobs:runNow":
         return { ok: true, data: { fired: true, occurrence: null, itemId: "item-1", problem: null } };
-      case "runtime:status":
-        return { ok: true, data: { runtime: null } };
+      case "runtime:status": {
+        const provider = (_payload as { provider: string }).provider;
+        return { ok: true, data: { runtime: options.runtimes?.find((runtime) => runtime.id === provider) ?? null } };
+      }
+      case "runtime:describe":
+        return { ok: true, data: { unpackedBytes: 1_000_000, sourceUrl: null, problem: null } };
+      case "runtime:install":
+        return { ok: true, data: { ok: true, runtime: null, problem: null } };
+      case "modules:list":
+        return { ok: true, data: { modules: options.modules ?? [] } };
+      case "modules:approve":
+        fixed = true;
+        return { ok: true, data: { approved: true, problem: null, lineCoverage: 100, coverageAcknowledgementNeeded: false, machineSpecific: [] } };
       case "dialog:pickDirectory":
         return { ok: true, data: { path: "/home/anna/elsewhere" } };
       default:
@@ -289,6 +305,69 @@ describe("a red line", () => {
     expect(await screen.findByText(/No coding agent is installed on this machine yet/)).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /^Sign in/ })).not.toBeInTheDocument();
   });
+
+  /**
+   * And it offers the install instead, in place (EO-659): the panel first
+   * run's connect step draws, on the channel Agents → Runtimes uses — and
+   * never a sentence pointing at Agents → Runtimes, which first run hides.
+   */
+  it("opens the install-and-sign-in panel in place when nothing is installed", async () => {
+    const invoke = mockIpc({ needs: [NO_BACKEND], runtimes: [absent("codex", "Codex"), absent("claude", "Claude Code")] });
+    renderNeeds([NO_BACKEND]);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Install a coding agent" }));
+    expect(await screen.findByRole("list", { name: "Coding agents" })).toBeInTheDocument();
+    expect(screen.queryByText(/Agents → Runtimes/)).toBeNull();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Install Claude Code" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Download" }));
+    await waitFor(() => expect(invoke.mock.calls.some((call: unknown[]) => call[0] === "runtime:install")).toBe(true));
+    expect(invoke.mock.calls.find((call: unknown[]) => call[0] === "runtime:install")?.[1]).toEqual({ provider: "claude" });
+  });
+
+  it("offers the sign-in once a runtime is installed", async () => {
+    mockIpc({ needs: [NO_BACKEND], runtimes: [absent("codex", "Codex"), signedOut("claude", "Claude Code")] });
+    renderNeeds([NO_BACKEND]);
+
+    expect(await screen.findByRole("button", { name: "Sign in to Claude Code" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Install a coding agent" })).toBeNull();
+  });
+});
+
+/**
+ * A module the pack brought, read and approved here (EO-659) rather than
+ * in Settings → Modules, which first run hides.
+ */
+describe("a module to approve", () => {
+  const MODULE_LINE: GalleryNeedView = {
+    key: "module:m1",
+    line: "Post it — a module, read and approved",
+    met: false,
+    why: "A module is code from somebody else's machine. EO runs none of it until you have read it and approved it.",
+    fix: { kind: "module", label: "Read and approve", target: "m1" },
+  };
+  const POST_IT = {
+    id: "m1",
+    slug: "post",
+    name: "Post it",
+    description: "Puts the approved report where people read it.",
+    code: "export default async function run() { return { result: 'posted' }; }",
+    manifest: { needs: { bin: [], env: [], network: true, item: false, comment: false, attach: false, create: false }, results: ["posted"] },
+    approvedAt: null,
+  };
+
+  it("shows the code and approves it in place, and the line goes green", async () => {
+    const invoke = mockIpc({ needs: [MODULE_LINE], onceFixed: [{ ...MODULE_LINE, met: true, why: null, fix: null }], modules: [POST_IT] });
+    renderNeeds([MODULE_LINE]);
+
+    expect(screen.queryByText(/Settings/)).toBeNull();
+    fireEvent.click(await screen.findByRole("button", { name: "Read and approve" }));
+    expect(await screen.findByLabelText("Code of Post it")).toHaveTextContent("export default async function run()");
+
+    fireEvent.click(screen.getByRole("button", { name: "Approve" }));
+    await waitFor(() => expect(invoke.mock.calls.find((call: unknown[]) => call[0] === "modules:approve")?.[1]).toEqual({ id: "m1", acknowledgeLowCoverage: false }));
+    expect(await screen.findByText("Everything it needs is here.")).toBeInTheDocument();
+  });
 });
 
 describe("the two ways out", () => {
@@ -392,11 +471,10 @@ describe("the developer's first-run copy", () => {
     const { container } = renderNeeds(needs, { template, jobId: DEVELOPER_FIRST_RUN.jobId });
 
     await screen.findByText("Software feature to merge is set up");
-    // Word for word the copy the classic screen's snapshot holds
-    // (`gallery/__snapshots__/NeedsCheck.test.tsx.snap`): the chat layout
-    // draws it differently and says exactly the same thing.
+    // Word for word, and nowhere sending the person to a screen first
+    // run hides (EO-659).
     expect(container.textContent).toBe(
-      'Software feature to merge is set up2 things left before real work runs. Each one says why, and carries the one button that fixes it.An agent for "implementer"An agent for "reviewer"A repository — the checkout its work happens inThis project has no repository yet, so nothing can be branched, reviewed or opened as a pull request.Choose a repositorySaveA coding agent signed inNothing on this machine is signed in, so no step would dispatch.No coding agent is installed on this machine yet. EO ships none — Agents → Runtimes is where one is added.Go to the boardContinue with Preview only',
+      'Software feature to merge is set up2 things left before real work runs. Each one says why, and carries the one button that fixes it.An agent for "implementer"An agent for "reviewer"A repository — the checkout its work happens inThis project has no repository yet, so nothing can be branched, reviewed or opened as a pull request.Choose a repositorySaveA coding agent signed inNothing on this machine is signed in, so no step would dispatch.No coding agent is installed on this machine yet. EO ships none, and can fetch one for you.Install a coding agentGo to the boardContinue with Preview only',
     );
   });
 

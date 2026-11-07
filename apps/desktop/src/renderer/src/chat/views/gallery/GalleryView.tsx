@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
-import { Check, Circle, FolderOpen, LayoutGrid } from "lucide-react";
+import { Check, Circle, FolderOpen, LayoutGrid, PlugZap } from "lucide-react";
 import type { GalleryNeedView, GalleryTemplateView } from "@eo/core";
 import { machineAvailable } from "../../../ipc/bridge";
 import { ipcQuery } from "../../../query/client";
@@ -37,8 +37,19 @@ export function GalleryView() {
  * `/gallery` draws inside it, and what first run draws on its own
  * (`chat/firstRun/FirstRun.tsx`), as it always has. `onFinished` is the
  * needs check's way out, which first run listens for to close behind it.
+ *
+ * `needsCodingAgent` is first run's, given while nothing on this machine
+ * is signed in (EO-659): every Use this waits for a coding agent and says
+ * so, with the way back to the step that connects one. Preview does not
+ * wait — it runs on nothing real.
  */
-export function Gallery({ onFinished }: { onFinished?: () => void } = {}) {
+export function Gallery({
+  onFinished,
+  needsCodingAgent,
+}: {
+  onFinished?: () => void;
+  needsCodingAgent?: { onConnect: () => void };
+} = {}) {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const gallery = useQuery({ queryKey: galleryKey, queryFn: () => ipcQuery("gallery:list", undefined) });
@@ -116,7 +127,13 @@ export function Gallery({ onFinished }: { onFinished?: () => void } = {}) {
         <ul aria-label="Templates" className="grid grid-cols-1 items-stretch gap-3 @3xl:grid-cols-2">
           {templates.map((entry) => (
             <li key={entry.slug} className="flex min-w-0">
-              <TemplateCard template={entry} busy={preview.isPending} onPreview={() => preview.mutate(entry)} onUse={() => setChosen(entry)} />
+              <TemplateCard
+                template={entry}
+                busy={preview.isPending}
+                onPreview={() => preview.mutate(entry)}
+                onUse={() => setChosen(entry)}
+                {...(needsCodingAgent ? { onConnect: needsCodingAgent.onConnect } : {})}
+              />
             </li>
           ))}
         </ul>
@@ -126,8 +143,24 @@ export function Gallery({ onFinished }: { onFinished?: () => void } = {}) {
   );
 }
 
-/** One card: what it does, what it needs, and the two things to do with it. */
-function TemplateCard({ template, busy, onPreview, onUse }: { template: GalleryTemplateView; busy: boolean; onPreview: () => void; onUse: () => void }) {
+/**
+ * One card: what it does, what it needs, and the two things to do with it.
+ * `onConnect` present means no coding agent is signed in yet, so Use this
+ * waits and the card says why, with the button that fixes it.
+ */
+function TemplateCard({
+  template,
+  busy,
+  onPreview,
+  onUse,
+  onConnect,
+}: {
+  template: GalleryTemplateView;
+  busy: boolean;
+  onPreview: () => void;
+  onUse: () => void;
+  onConnect?: () => void;
+}) {
   return (
     <section aria-label={template.title} className="flex h-full w-full min-w-0 flex-col gap-3 rounded-[14px] bg-canvas px-[18px] py-4">
       <div className="flex min-w-0 flex-col gap-0.5">
@@ -158,13 +191,23 @@ function TemplateCard({ template, busy, onPreview, onUse }: { template: GalleryT
       ) : null}
 
       {/* On the card's bottom edge, so a row of cards has its actions on one line. */}
-      <div className="mt-auto flex items-center gap-2 pt-1">
-        <Button variant="primary" onClick={onUse}>
-          Use this
-        </Button>
-        <Button disabled={busy || !template.previewable} onClick={onPreview}>
-          Preview
-        </Button>
+      <div className="mt-auto flex flex-col gap-2 pt-1">
+        {onConnect ? (
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-[12.5px] text-ink-subtle">Using this needs a coding agent signed in.</span>
+            <Button size="sm" icon={<PlugZap size={12} />} onClick={onConnect}>
+              Connect a coding agent
+            </Button>
+          </div>
+        ) : null}
+        <div className="flex items-center gap-2">
+          <Button variant="primary" disabled={onConnect !== undefined} onClick={onUse}>
+            Use this
+          </Button>
+          <Button disabled={busy || !template.previewable} onClick={onPreview}>
+            Preview
+          </Button>
+        </div>
       </div>
     </section>
   );

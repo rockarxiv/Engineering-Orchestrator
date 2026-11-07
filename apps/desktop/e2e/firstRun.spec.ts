@@ -150,7 +150,10 @@ test("a fresh installation walks solo, gallery, Preview, blanks, the needs check
     await window.getByRole("button", { name: "Just me" }).click();
 
     // ── 2. A gallery, not an empty board ───────────────────────────
+    // Straight there: something is signed in, so there is no coding agent
+    // to connect first (EO-659).
     await expect(window.getByRole("heading", { name: "Start with a template" })).toBeVisible();
+    await expect(window.getByRole("heading", { name: "Connect a coding agent" })).toHaveCount(0);
     const weekly = window.getByRole("listitem").filter({ hasText: "Weekly report" });
     await expect(weekly).toBeVisible();
 
@@ -222,11 +225,15 @@ test("a fresh installation walks solo, gallery, Preview, blanks, the needs check
 });
 
 test("Continue with Preview only lands on the board the rehearsal is on", async () => {
+  // Use this waits for a signed-in coding agent in first run (EO-659), and
+  // the signed-in Claude is a script: the first test's reason.
+  test.skip(process.platform === "win32", "the signed-in Claude is a shell script, and Windows runs claude.exe, which a script cannot stand in for");
   test.setTimeout(120_000);
 
-  const { root, env, cleanUp } = scratch("first run preview only");
+  const { root, home, env, cleanUp } = scratch("first run preview only");
   const material = path.join(root, "the reports drive");
   mkdirSync(material, { recursive: true });
+  seedSignedInClaude(home);
 
   const { app, window } = await launchApp(env);
   try {
@@ -237,12 +244,12 @@ test("Continue with Preview only lands on the board the rehearsal is on", async 
     await window.getByLabel("Where the material lives").fill(material);
     await window.getByRole("button", { name: "Create" }).click();
 
-    // Nothing is signed in on this launch, so the needs check has lines
-    // this machine cannot turn green — which is the state the design's exit
-    // exists for, and it says why rather than leaving somebody guessing.
+    // A line is still red — the reporter the pack brought names no
+    // backend — which is the state the design's exit exists for, and it
+    // says why rather than leaving somebody guessing.
     await expect(window.getByRole("heading", { name: "Weekly report is set up" })).toBeVisible({ timeout: 15_000 });
     await expect(window.getByText("A coding agent signed in")).toBeVisible();
-    await expect(window.getByText(/Nothing on this machine is signed in/).first()).toBeVisible();
+    await expect(window.getByText(/the one this pack brought names no backend/)).toBeVisible();
     await expect(window.getByRole("button", { name: /^Start the first/ })).toHaveCount(0);
 
     await window.getByRole("button", { name: "Continue with Preview only" }).click();
@@ -269,10 +276,13 @@ test("Continue with Preview only lands on the board the rehearsal is on", async 
 });
 
 test("a developer's first run reaches the board it reaches today, through the same screen", async () => {
+  // Signed in, for the reason the test above gives.
+  test.skip(process.platform === "win32", "the signed-in Claude is a shell script, and Windows runs claude.exe, which a script cannot stand in for");
   test.setTimeout(120_000);
 
-  const { root, env, cleanUp } = scratch("first run developer");
+  const { root, home, env, cleanUp } = scratch("first run developer");
   const repoPath = checkout(root);
+  seedSignedInClaude(home);
 
   const { app, window } = await launchApp(env);
   try {
@@ -314,6 +324,56 @@ test("a developer's first run reaches the board it reaches today, through the sa
     // And no Jobs entry: the developer template makes no job, and the
     // rail lists Jobs only for a project that has one (`ChatRail.tsx`).
     await expect(rail.getByRole("link", { name: "Jobs" })).toHaveCount(0);
+  } finally {
+    await closeApp(app);
+    cleanUp();
+  }
+});
+
+/**
+ * A search path with no agent CLI on it, so "no runtime installed" is
+ * this machine's answer and not the developer's `claude` (see
+ * `runtimes.spec.ts`, which this copies).
+ */
+function systemPath(): NodeJS.ProcessEnv {
+  if (process.platform !== "win32") return { PATH: "/usr/bin:/bin" };
+  const key = Object.keys(process.env).find((name) => name.toUpperCase() === "PATH") ?? "Path";
+  const systemRoot = process.env["SystemRoot"] ?? "C:\\Windows";
+  return { [key]: `${systemRoot}\\System32;${systemRoot}` };
+}
+
+test("a machine with no coding agent is asked to connect one, and can look around first", async () => {
+  test.setTimeout(120_000);
+
+  const { home, cleanUp } = scratch("first run connect");
+  const { app, window } = await launchApp(homeEnv(home, systemPath()));
+  try {
+    await expect(window.getByRole("heading", { name: "Welcome to EO" })).toBeVisible({ timeout: 15_000 });
+    await window.getByRole("button", { name: "Just me" }).click();
+
+    // ── 2. Connect a coding agent, before the gallery (EO-659) ─────
+    await expect(window.getByRole("heading", { name: "Connect a coding agent" })).toBeVisible({ timeout: 15_000 });
+    const agents = window.getByRole("list", { name: "Coding agents" });
+    await expect(agents.getByRole("button", { name: "Install Claude Code" })).toBeVisible({ timeout: 15_000 });
+    await expect(agents.getByRole("button", { name: "Install Codex" })).toBeVisible();
+    // Installing opens the consent first, never a download.
+    await agents.getByRole("button", { name: "Install Claude Code" }).click();
+    await expect(window.getByRole("region", { name: "Download Claude Code" })).toBeVisible();
+    await window.getByRole("button", { name: "Cancel" }).click();
+
+    // ── Look around first: the gallery, with Preview and not Use this ──
+    await window.getByRole("button", { name: "Look around first" }).click();
+    await expect(window.getByRole("heading", { name: "Start with a template" })).toBeVisible();
+    const weekly = window.getByRole("listitem").filter({ hasText: "Weekly report" });
+    await expect(weekly.getByRole("button", { name: "Use this" })).toBeDisabled();
+    await expect(weekly.getByRole("button", { name: "Preview" })).toBeEnabled();
+    await expect(weekly.getByText(/needs a coding agent signed in/)).toBeVisible();
+
+    // And the way back to the step that would turn it on.
+    await weekly.getByRole("button", { name: "Connect a coding agent" }).click();
+    await expect(window.getByRole("heading", { name: "Connect a coding agent" })).toBeVisible();
+    await window.getByRole("button", { name: "Look around first" }).click();
+    await expect(window.getByRole("heading", { name: "Start with a template" })).toBeVisible();
   } finally {
     await closeApp(app);
     cleanUp();

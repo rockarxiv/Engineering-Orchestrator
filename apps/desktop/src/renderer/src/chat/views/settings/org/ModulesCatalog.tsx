@@ -129,7 +129,7 @@ function restoreDraftOf(module: ModuleView, version: ModuleVersion): ModuleDraft
  * a module that declares nothing else still puts files where they can be
  * uploaded, and "needs nothing" would hide that from whoever approves it.
  */
-function Needs({ module }: { module: ModuleView }) {
+export function Needs({ module }: { module: ModuleView }) {
   const vocabulary = useChromeVocabulary();
   const { bin, env, network, item, comment, attach, create } = module.manifest.needs;
   if (bin.length === 0 && env.length === 0 && !network && !item && !comment && !attach && !create)
