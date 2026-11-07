@@ -240,7 +240,7 @@ function UseForm({
   const set = (key: string, value: string) => setAnswers((current) => ({ ...current, [key]: value }));
 
   const pick = useMutation({
-    mutationFn: (key: string) => ipcQuery("dialog:pickDirectory", { title: "Choose a folder" }).then((result) => ({ key, path: result.path })),
+    mutationFn: ({ key, title }: { key: string; title: string }) => ipcQuery("dialog:pickDirectory", { title }).then((result) => ({ key, path: result.path })),
     onSuccess: ({ key, path }) => {
       if (path) set(key, path);
     },
@@ -267,12 +267,22 @@ function UseForm({
 
         {template.blanks.map((blank) => (
           <Field key={blank.key} label={blank.label} {...(blank.help === "" ? {} : { hint: blank.help })}>
-            {blank.kind === "folder" ? (
+            {blank.kind === "folder" || blank.kind === "repository" ? (
+              // A repository is a path too (EO-662): the checkout, attached to the project when it is made.
               <span className="flex min-w-0 items-center gap-2">
-                <TextInput aria-label={blank.label} value={answers[blank.key] ?? ""} onChange={(event) => set(blank.key, event.target.value)} placeholder="/Users/you/reports" />
+                <TextInput
+                  aria-label={blank.label}
+                  value={answers[blank.key] ?? ""}
+                  onChange={(event) => set(blank.key, event.target.value)}
+                  placeholder={blank.kind === "repository" ? "/Users/you/code/your-repository" : "/Users/you/reports"}
+                />
                 {/* A round trip to the main process — and none on a server (EO-319), where the path is typed. */}
                 {machineAvailable() ? (
-                  <Button icon={<FolderOpen size={12} />} disabled={pick.isPending} onClick={() => pick.mutate(blank.key)}>
+                  <Button
+                    icon={<FolderOpen size={12} />}
+                    disabled={pick.isPending}
+                    onClick={() => pick.mutate({ key: blank.key, title: blank.kind === "repository" ? "Choose a repository" : "Choose a folder" })}
+                  >
                     Choose
                   </Button>
                 ) : null}

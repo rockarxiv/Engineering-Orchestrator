@@ -1,9 +1,9 @@
 import { QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes, useParams } from "react-router-dom";
 import { describe, expect, it, vi } from "vitest";
 import { ThemeProvider } from "@eo/ui";
-import { sectionLockedLine } from "@eo/core";
+import { GIT_WORKTREE_KIND, sectionLockedLine } from "@eo/core";
 import type { GalleryNeedView, GalleryTemplateView, RuntimeStatusView, SectionLock } from "@eo/core";
 import { createQueryClient } from "../../../query/client";
 import { absent, signedOut } from "../agents/testRuntimes";
@@ -93,6 +93,9 @@ function mockIpc(options: {
   runtimes?: RuntimeStatusView[];
   /** What `modules:list` answers. Only the fields the module line reads are filled. */
   modules?: unknown[];
+  /** What `repositories:list` and `projects:list` answer, for "Add another repository". */
+  repositories?: { id: string; name: string }[];
+  projectRepositoryIds?: string[];
 }) {
   // What the *machine* would say, before and after the folder is
   // attached — rather than a queue of answers keyed to how many times
@@ -107,6 +110,16 @@ function mockIpc(options: {
       case "gallery:attachWorkspace":
         if (options.attachProblem == null) fixed = true;
         return { ok: true, data: { ok: options.attachProblem == null, problem: options.attachProblem ?? null } };
+      case "workspaces:create":
+        fixed = true;
+        return { ok: true, data: { ok: true, workspace: null, problem: null } };
+      case "projects:addProject":
+        fixed = true;
+        return { ok: true, data: { ok: true, project: null, problem: null } };
+      case "repositories:list":
+        return { ok: true, data: { repositories: options.repositories ?? [] } };
+      case "projects:list":
+        return { ok: true, data: { projects: [{ id: "p1", name: "Shop", repositoryIds: options.projectRepositoryIds ?? [] }], archivedProjects: [], activeProjectId: "p1" } };
       case "gallery:staffRole":
         if (options.staffLocked !== undefined) {
           // What the main process answers when the organisation
@@ -437,6 +450,89 @@ describe("the two ways out", () => {
 
     fireEvent.click(await screen.findByRole("button", { name: "Go to the board" }));
     expect(await screen.findByTestId("board")).toBeInTheDocument();
+  });
+});
+
+/**
+ * A project that spans several repositories (EO-662): every one by name
+ * with its own status, the line green while one works, and another added
+ * the way Settings → Projects adds one.
+ */
+describe("several repositories", () => {
+  const DEVELOPER: GalleryTemplateView = { ...WEEKLY, slug: "software-feature-to-merge", token: "software-v1", title: "Software feature to merge" };
+  const line = "A repository — the checkout its work happens in";
+  const ONE_OF_TWO: GalleryNeedView = {
+    key: "workspace",
+    line,
+    met: true,
+    why: null,
+    fix: { kind: "addRepository", label: "Add another repository", target: null },
+    parts: [
+      { key: "w1", line: "shop", met: true, why: null },
+      { key: "w2", line: "payments", met: false, why: "/home/anna/code/payments does not exist, so it cannot be a repository." },
+    ],
+  };
+  const BOTH: GalleryNeedView = {
+    ...ONE_OF_TWO,
+    parts: [
+      { key: "w1", line: "shop", met: true, why: null },
+      { key: "w3", line: "docs", met: true, why: null },
+    ],
+  };
+
+  it("lists each repository with its own status, and stays green with one missing", async () => {
+    mockIpc({ needs: [ONE_OF_TWO] });
+    renderNeeds([ONE_OF_TWO], { template: DEVELOPER });
+
+    expect(await screen.findByText("Everything it needs is here.")).toBeInTheDocument();
+    const rows = within(screen.getByRole("list", { name: `What "${line}" counts` }));
+    expect(rows.getByText("shop")).toBeInTheDocument();
+    expect(rows.getByText("payments")).toBeInTheDocument();
+    expect(rows.getByText("/home/anna/code/payments does not exist, so it cannot be a repository.")).toBeInTheDocument();
+    expect(rows.getAllByLabelText("Ready")).toHaveLength(1);
+    expect(rows.getAllByLabelText("Not ready")).toHaveLength(1);
+    expect(screen.getByRole("button", { name: "Add another repository" })).toBeInTheDocument();
+  });
+
+  it("attaches another through workspaces:create, onto this project, and draws it where it is", async () => {
+    const invoke = mockIpc({ needs: [ONE_OF_TWO], onceFixed: [BOTH] });
+    renderNeeds([ONE_OF_TWO], { template: DEVELOPER });
+
+    fireEvent.click(await screen.findByRole("button", { name: "Add another repository" }));
+    fireEvent.change(screen.getByLabelText("Repository path"), { target: { value: "/home/anna/code/docs" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(invoke.mock.calls.some((call: unknown[]) => call[0] === "workspaces:create")).toBe(true));
+    expect(invoke.mock.calls.find((call: unknown[]) => call[0] === "workspaces:create")?.[1]).toMatchObject({
+      kind: GIT_WORKTREE_KIND,
+      projectId: "p1",
+      config: { name: "docs", repoPath: "/home/anna/code/docs" },
+    });
+    // Asked again rather than patched: the new one is drawn, the form is gone.
+    expect(await screen.findByText("docs")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Repository path")).not.toBeInTheDocument();
+    expect(invoke.mock.calls.some((call: unknown[]) => call[0] === "gallery:attachWorkspace")).toBe(false);
+  });
+
+  it("adds one EO already holds through projects:addProject", async () => {
+    const invoke = mockIpc({
+      needs: [ONE_OF_TWO],
+      onceFixed: [BOTH],
+      repositories: [
+        { id: "w1", name: "shop" },
+        { id: "w3", name: "docs" },
+      ],
+      projectRepositoryIds: ["w1", "w2"],
+    });
+    renderNeeds([ONE_OF_TWO], { template: DEVELOPER });
+
+    fireEvent.click(await screen.findByRole("button", { name: "Add another repository" }));
+    // Only the one not already on this project is offered.
+    fireEvent.click(await screen.findByRole("button", { name: "Add docs" }));
+    expect(screen.queryByRole("button", { name: "Add shop" })).not.toBeInTheDocument();
+
+    await waitFor(() => expect(invoke.mock.calls.find((call: unknown[]) => call[0] === "projects:addProject")?.[1]).toEqual({ projectId: "p1", repositoryId: "w3" }));
+    expect(await screen.findByText("docs")).toBeInTheDocument();
   });
 });
 

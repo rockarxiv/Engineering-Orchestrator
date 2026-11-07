@@ -1,11 +1,12 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
-import { Check, Download, FolderOpen, X } from "lucide-react";
-import type { GalleryNeedView, GalleryTemplateView, RuntimeStatusView, SectionLock } from "@eo/core";
+import { Check, Download, FolderOpen, Plus, X } from "lucide-react";
+import { GIT_WORKTREE_KIND, type GalleryNeedView, type GalleryTemplateView, type RuntimeStatusView, type SectionLock } from "@eo/core";
 import { machineAvailable } from "../../../ipc/bridge";
 import { ipcQuery } from "../../../query/client";
-import { galleryNeedsKey, useChromeVocabulary, useModules } from "../../../query/hooks";
+import { galleryNeedsKey, projectsKey, repositoriesKey, useChromeVocabulary, useModules } from "../../../query/hooks";
+import { useProjects, useRepositories } from "../../../query/useRepositories";
 import { useInvalidateOnPush } from "../../../query/useInvalidateOnPush";
 import { ConnectorNeeds } from "../../connectors/ConnectorNeeds";
 import { ManagedLockNotice } from "../../managed/ManagedSection";
@@ -14,6 +15,7 @@ import { useModuleApproval } from "../../modules/useModuleApproval";
 import { Needs as ModuleNeedChips } from "../settings/org/ModulesCatalog";
 import { ConnectAgentPanel, runtimeInstalled, useCodingAgents } from "../agents/ConnectAgent";
 import { SignInDialog } from "../agents/SignIn";
+import { GitForm } from "../settings/sections/WorkspacesSection";
 
 /**
  * The needs check — step 5 of first run (EO-317,
@@ -160,7 +162,26 @@ function NeedRow({ need, projectId, template, onFixed }: { need: GalleryNeedView
       </div>
       {/* In the words of whatever decided it — never composed here. */}
       {need.why === null ? null : <p className="pl-6 text-[12.5px] leading-snug text-danger">{need.why}</p>}
-      {need.met || need.fix === null ? null : <Fix need={need} projectId={projectId} template={template} onFixed={onFixed} />}
+      {/* What the line counts — each repository, by name, with its own status and reason (EO-662). */}
+      {need.parts === undefined || need.parts.length === 0 ? null : (
+        <ul aria-label={`What "${need.line}" counts`} className="flex flex-col gap-1 pl-6">
+          {need.parts.map((part) => (
+            <li key={part.key} className="flex min-w-0 flex-col gap-0.5">
+              <span className="flex items-start gap-2">
+                {part.met ? (
+                  <Check size={12} aria-label="Ready" className="mt-[3px] shrink-0 text-running" />
+                ) : (
+                  <X size={12} aria-label="Not ready" className="mt-[3px] shrink-0 text-danger" />
+                )}
+                <span className="text-[12.5px] text-ink-muted">{part.line}</span>
+              </span>
+              {part.why === null ? null : <p className="pl-5 text-[12px] leading-snug text-danger">{part.why}</p>}
+            </li>
+          ))}
+        </ul>
+      )}
+      {/* A green line carries a button only where it offers more of the same — another repository. */}
+      {need.fix === null || (need.met && need.fix.kind !== "addRepository") ? null : <Fix need={need} projectId={projectId} template={template} onFixed={onFixed} />}
     </div>
   );
 }
@@ -171,6 +192,7 @@ function Fix({ need, projectId, template, onFixed }: { need: GalleryNeedView; pr
   if (fix.kind === "folder" || fix.kind === "repository") {
     return <WorkspaceFix label={fix.label} kind={fix.kind} path={fix.target ?? ""} projectId={projectId} onFixed={onFixed} />;
   }
+  if (fix.kind === "addRepository") return <AddRepositoryFix label={fix.label} projectId={projectId} onFixed={onFixed} />;
   if (fix.kind === "backend") return <BackendFix label={fix.label} backend={fix.target} onFixed={onFixed} />;
   if (fix.kind === "connector") return <ConnectorFix label={fix.label} server={fix.target} onFixed={onFixed} />;
   if (fix.kind === "secret") return <SecretFix label={fix.label} name={fix.target ?? ""} onFixed={onFixed} />;
@@ -258,6 +280,71 @@ function WorkspaceFix({ label, kind, path, projectId, onFixed }: { label: string
           Save
         </Button>
       </div>
+      {problem === null ? null : <ErrorLine>{problem}</ErrorLine>}
+    </div>
+  );
+}
+
+/**
+ * Another repository on the project, once one works (EO-662) — the way
+ * Settings → Projects adds one: the same repository form and
+ * `workspaces:create` for a checkout EO does not have yet, and
+ * `projects:addProject` for one it already holds on another project.
+ */
+function AddRepositoryFix({ label, projectId, onFixed }: { label: string; projectId: string; onFixed: () => void }) {
+  const queryClient = useQueryClient();
+  const [open, setOpen] = useState(false);
+  const { repositories } = useRepositories();
+  const { projects } = useProjects();
+  const onProject = new Set<string>(projects.find((project) => project.id === projectId)?.repositoryIds ?? []);
+  const elsewhere = repositories.filter((repository) => !onProject.has(repository.id));
+
+  const done = (result: { ok: boolean }) => {
+    if (!result.ok) return;
+    setOpen(false);
+    for (const key of [repositoriesKey, projectsKey]) void queryClient.invalidateQueries({ queryKey: key });
+    onFixed();
+  };
+  const create = useMutation({
+    mutationFn: (config: unknown) => ipcQuery("workspaces:create", { kind: GIT_WORKTREE_KIND, projectId, config }),
+    onSuccess: done,
+  });
+  const add = useMutation({
+    mutationFn: (repositoryId: string) => ipcQuery("projects:addProject", { projectId, repositoryId }),
+    onSuccess: done,
+  });
+  const problem = create.data?.problem ?? create.error?.message ?? add.data?.problem ?? add.error?.message ?? null;
+
+  if (!open) {
+    return (
+      <div className="pl-6">
+        <Button
+          size="sm"
+          icon={<Plus size={12} />}
+          onClick={() => {
+            create.reset();
+            add.reset();
+            setOpen(true);
+          }}
+        >
+          {label}
+        </Button>
+      </div>
+    );
+  }
+  return (
+    <div role="group" aria-label={label} className="ml-6 flex min-w-0 flex-col gap-3 rounded-[12px] bg-canvas-subtle px-3.5 py-3">
+      <GitForm isNew busy={create.isPending} onCancel={() => setOpen(false)} onSave={(config) => create.mutate(config)} />
+      {elsewhere.length > 0 ? (
+        <div className="flex flex-wrap items-center gap-1.5">
+          <span className="text-[12px] text-ink-subtle">Or one EO already has:</span>
+          {elsewhere.map((repository) => (
+            <Button key={repository.id} size="sm" variant="ghost" icon={<Plus size={11} />} disabled={add.isPending} aria-label={`Add ${repository.name}`} onClick={() => add.mutate(repository.id)}>
+              {repository.name}
+            </Button>
+          ))}
+        </div>
+      ) : null}
       {problem === null ? null : <ErrorLine>{problem}</ErrorLine>}
     </div>
   );
