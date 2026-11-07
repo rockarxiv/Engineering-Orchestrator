@@ -1,5 +1,6 @@
 import { moduleInputProblems, type GalleryNeedView, type ModuleInputType, type PipelineExport, type StepInputs, type TemplateBlankKind } from "@eo/core";
-import type { ImportPreflight } from "../modules/pipelineTransfer.js";
+import { agentNameFor, type ImportPreflight } from "../modules/pipelineTransfer.js";
+import { RUNTIMES, type RuntimeId } from "../runtimes/catalog.js";
 
 /**
  * The template's own blanks, and what it still needs (EO-316,
@@ -211,22 +212,27 @@ export function galleryNeeds(preflight: ImportPreflight, extra: readonly Gallery
     // otherwise whatever it does have: any signed-in backend can play a
     // role whose pack named none, which is most of them.
     const usable = backend !== null && signedIn.includes(backend) ? backend : (signedIn[0] ?? null);
+    // Worded for somebody who has never heard of a pack, a backend or a
+    // slug (EO-660): the role by the name its agent is given on import,
+    // and the runtime by the name the Runtimes screen gives it. The
+    // button still waits to be pressed — EO does not staff a role unasked.
+    const role = agentNameFor(slot.slug);
     needs.push({
       key: `role:${slot.slug}`,
-      line: `An agent for "${slot.slug}"`,
+      line: `An agent for the ${role} steps`,
       met: slot.filled,
       why: slot.filled
         ? null
         : usable === null
           ? backend === null
-            ? `Nothing on this machine is signed in, so there is nothing for the "${slot.slug}" steps to run on.`
-            : `This pack was built on ${backend}, and nothing on this machine is signed in to ${backend}.`
-          : `No agent here plays "${slot.slug}" yet — the one this pack brought names no backend, so it has nothing to run on.`,
+            ? `Nothing on this machine is signed in, so the ${role} steps have no agent to run on yet.`
+            : `The ${role} steps were set up to run on ${runtimeName(backend)}, and nothing on this machine is signed in to it.`
+          : `The ${role} steps have no agent to run on yet.`,
       fix: slot.filled
         ? null
         : usable === null
-          ? { kind: "backend", label: backend === null ? "Sign in" : `Sign in to ${backend}`, target: backend }
-          : { kind: "role", label: `Use ${usable} for this`, target: slot.slug },
+          ? { kind: "backend", label: backend === null ? "Sign in" : `Sign in to ${runtimeName(backend)}`, target: backend }
+          : { kind: "role", label: `Use ${runtimeName(usable)} for these steps`, target: slot.slug },
     });
   }
 
@@ -364,4 +370,9 @@ function parseInputValue(written: string, type: ModuleInputType): string | numbe
   }
   const value = Number(written);
   return Number.isFinite(value) ? value : null;
+}
+
+/** What a runtime is called in front of a person — "Claude Code" — or its own id for one EO does not manage. */
+function runtimeName(id: string): string {
+  return id in RUNTIMES ? RUNTIMES[id as RuntimeId].label : id;
 }

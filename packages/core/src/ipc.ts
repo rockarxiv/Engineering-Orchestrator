@@ -5021,7 +5021,7 @@ export const recordContract = {
   /**
    * The button on a red role line (EO-317, the original design).
    *
-   * "An agent for `reporter`" goes red when nothing here can play that
+   * "An agent for the Reporter steps" goes red when nothing here can play that
    * role, and the commonest way to arrive there is an import: a pack
    * whose role names no backend — which is most of them, since a backend
    * is a fact about the installing machine — lands as an agent with

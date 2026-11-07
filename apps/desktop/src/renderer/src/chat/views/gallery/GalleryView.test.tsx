@@ -24,7 +24,7 @@ const WEEKLY: GalleryTemplateView = {
   bundled: true,
   pipelineName: "Weekly report",
   needs: [
-    { key: "role:reporter", line: 'An agent for "reporter"', met: false, why: 'No agent here has the "reporter" role.', fix: null },
+    { key: "role:reporter", line: "An agent for the Reporter steps", met: false, why: "The Reporter steps have no agent to run on yet.", fix: null },
     { key: "workspace", line: "A folder — somewhere its work happens", met: true, why: null, fix: null },
   ],
   blanks: [
@@ -124,7 +124,7 @@ describe("the cards", () => {
     await screen.findByText("Weekly report");
     expect(screen.getByText("Every week, EO reads a folder and writes the report.")).toBeInTheDocument();
     expect(screen.getByText("What this needs")).toBeInTheDocument();
-    expect(screen.getByText('An agent for "reporter"')).toBeInTheDocument();
+    expect(screen.getByText("An agent for the Reporter steps")).toBeInTheDocument();
   });
 
   it("shows a fetched entry's source and version beside the bundled one", async () => {

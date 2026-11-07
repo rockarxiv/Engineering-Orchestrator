@@ -187,13 +187,15 @@ test("a fresh installation walks solo, gallery, Preview, blanks, the needs check
     // Red, and this is the line every import leaves behind: the pack's
     // `reporter` names no backend, so the agent it brought points at
     // nothing and is switched off. Signing in did not move it, which is
-    // why it carries a button of its own.
-    await expect(window.getByText(/the one this pack brought names no backend/)).toBeVisible();
-    await window.getByRole("button", { name: /^Use claude for this$/ }).click();
+    // why it carries a button of its own — worded for somebody who has
+    // never heard of a pack or a backend (EO-660).
+    await expect(window.getByText("An agent for the Reporter steps")).toBeVisible();
+    await expect(window.getByText("The Reporter steps have no agent to run on yet.")).toBeVisible();
+    await window.getByRole("button", { name: /^Use Claude Code for these steps$/ }).click();
 
     // Green, without leaving the screen, and now nothing is left.
     await expect(window.getByText("Everything it needs is here.")).toBeVisible({ timeout: 15_000 });
-    await expect(window.getByText(/the one this pack brought names no backend/)).toHaveCount(0);
+    await expect(window.getByText("The Reporter steps have no agent to run on yet.")).toHaveCount(0);
 
     // ── 6. The first item runs, and they watch it ──────────────────
     //
@@ -249,7 +251,7 @@ test("Continue with Preview only lands on the board the rehearsal is on", async 
     // says why rather than leaving somebody guessing.
     await expect(window.getByRole("heading", { name: "Weekly report is set up" })).toBeVisible({ timeout: 15_000 });
     await expect(window.getByText("A coding agent signed in")).toBeVisible();
-    await expect(window.getByText(/the one this pack brought names no backend/)).toBeVisible();
+    await expect(window.getByText("The Reporter steps have no agent to run on yet.")).toBeVisible();
     await expect(window.getByRole("button", { name: /^Start the first/ })).toHaveCount(0);
 
     await window.getByRole("button", { name: "Continue with Preview only" }).click();
