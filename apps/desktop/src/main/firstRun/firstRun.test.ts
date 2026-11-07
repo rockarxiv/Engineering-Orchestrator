@@ -127,11 +127,10 @@ describe("step 1: solo or organisation", () => {
   });
 
   /**
-   * The address is kept rather than acted on: signing in to a server is
-   * 7b, EO says so on the screen, and throwing the address away would
-   * mean asking for it again when the sign-in arrives.
+   * The sign-in is `session:signIn`, made by the screen before this is
+   * sent (EO-661); this only records the answer and the address.
    */
-  it("keeps an organisation's address without pretending to sign in", () => {
+  it("records organisation mode and the address it signed in to", () => {
     setFirstRunModeCommand(handle.db, { mode: "organisation", address: " eo.acme.com " });
     expect(firstRunStateCommand(handle.db).mode).toBe("organisation");
     // Nothing was created on the strength of it — no project, no

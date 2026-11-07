@@ -5120,10 +5120,10 @@ export const recordContract = {
    * Step 1's answer (the original design).
    *
    * "Solo goes straight in. Organisation asks for a server address,
-   * signs in, and pulls the published packs" — and signing in is 7b, so
-   * the address is kept and the screen says the rest is not available
-   * yet rather than offering a control that would do nothing
-   * (invariant #12).
+   * signs in, and pulls the published packs." The sign-in is
+   * `session:signIn`, made by the welcome screen before this is sent
+   * (EO-661); `address` is the server it signed in to, kept beside the
+   * mode.
    */
   "firstRun:setMode": channel(
     z.object({ mode: z.enum(["solo", "organisation"]), address: z.string().default("") }),

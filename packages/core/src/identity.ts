@@ -153,6 +153,38 @@ export function invitationCodeFrom(pathname: string): string | null {
 }
 
 /**
+ * A whole invitation link, as somebody pasted it — `https://eo.acme.com/invite/<code>`
+ * — split into the server it came from and its code, or null when it is
+ * not one (EO-661).
+ *
+ * The address is the link's origin, because that is what the admin's
+ * screen resolves `invitationPath` against, and so it is the address
+ * the desktop then signs in to. Only http and https: anything else is
+ * not a server's page to open in a browser.
+ */
+export function invitationLinkFrom(link: string): { address: string; code: string } | null {
+  // A regular expression rather than `URL`, which this package does not
+  // assume (see `addressHost`): scheme and authority, then the path.
+  // A backslash is excluded from the authority because a browser reads
+  // it as a slash in an http(s) address.
+  const match = /^(https?:\/\/[^/\\?#@\s]+)(\/[^?#\s]*)(?:[?#]\S*)?$/i.exec(link.trim());
+  if (match === null) return null;
+  const [, origin = "", path = ""] = match;
+  const code = invitationCodeFrom(path);
+  if (code === null) return null;
+  // Judged as the browser will read the path, not as it was typed. A
+  // browser treats `\` as `/` and resolves `.` and `..` segments —
+  // `%2e` spelling included — so `/invite/..` and `/invite/%2e%2e` both
+  // arrive at the server's root, which is not an invitation page.
+  if (code.includes("/") || code.includes("\\") || code === "." || code === "..") return null;
+  return { address: origin, code };
+}
+
+/** What an invitation link looks like, said when something else was pasted. */
+export const INVITATION_LINK_SHAPE_LINE =
+  "That is not an invitation link. One looks like https://eo.example.com/invite/ followed by a code: your organisation's server address, then /invite/ and the code.";
+
+/**
  * A password, as a rule rather than as a policy screen.
  *
  * A minimum length and nothing else: composition rules push people to

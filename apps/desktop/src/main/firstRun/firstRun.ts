@@ -23,7 +23,7 @@ import { previewProjectId } from "../gallery/commands.js";
 
 /** `solo` or `organisation`, as answered at step 1. */
 const MODE_KEY = "firstRun.mode";
-/** The server address an organisation typed, kept for 7b's sign-in. */
+/** The server address an organisation signed in to at step 1. */
 const ADDRESS_KEY = "firstRun.address";
 /** When somebody left the flow, by either exit. */
 const DONE_KEY = "firstRun.doneAt";
@@ -103,12 +103,10 @@ export function firstRunStateCommand(db: Db): IpcResponse<"firstRun:state"> {
 /**
  * Step 1's answer (ARCHITECTURE.md, "What a person sees first").
  *
- * The address is stored beside the mode rather than acted on, and still
- * is now that there is a sign-in (EO-323): getting in needs an
- * invitation from whoever runs that server, not an address, so this step
- * keeps what the person typed and points them at Settings →
- * Organisation for when the link arrives. A password field here would be
- * one in front of somebody who has no password yet.
+ * Recorded once the person has a way in (EO-661): solo when they chose
+ * to carry on alone, organisation once `session:signIn` succeeded from
+ * the welcome screen. The address is the one they signed in to, kept
+ * beside the mode; the sign-in itself is the session's, not this.
  */
 export function setFirstRunModeCommand(db: Db, payload: IpcPayload<"firstRun:setMode">): IpcResponse<"firstRun:setMode"> {
   setSetting(db, MODE_KEY, payload.mode);

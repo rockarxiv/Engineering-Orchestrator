@@ -220,16 +220,22 @@ export function rememberOrganisationPeople(db: Db, people: readonly RememberedPe
   );
 }
 
-/** One colleague off the last list the organisation answered with, or undefined. */
-export function rememberedOrganisationPerson(db: Db, id: string): RememberedPerson | undefined {
+/** The last list the organisation answered with, as kept by `rememberOrganisationPeople`. Empty when none was. */
+export function rememberedOrganisationPeople(db: Db): RememberedPerson[] {
   const list = getSetting<unknown>(db, ORGANISATION_PEOPLE_KEY, []);
-  if (!Array.isArray(list)) return undefined;
+  if (!Array.isArray(list)) return [];
+  const people: RememberedPerson[] = [];
   for (const entry of list as unknown[]) {
     if (typeof entry !== "object" || entry === null) continue;
-    const { id: entryId, name } = entry as { id?: unknown; name?: unknown };
-    if (entryId === id && typeof name === "string" && name !== "") return { id, name };
+    const { id, name } = entry as { id?: unknown; name?: unknown };
+    if (typeof id === "string" && typeof name === "string" && name !== "") people.push({ id, name });
   }
-  return undefined;
+  return people;
+}
+
+/** One colleague off the last list the organisation answered with, or undefined. */
+export function rememberedOrganisationPerson(db: Db, id: string): RememberedPerson | undefined {
+  return rememberedOrganisationPeople(db).find((person) => person.id === id);
 }
 
 /**

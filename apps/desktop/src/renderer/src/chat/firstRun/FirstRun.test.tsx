@@ -45,7 +45,7 @@ const TEMPLATE: GalleryTemplateView = {
  */
 function mockIpc(
   state: { done: boolean; mode: "solo" | "organisation" | null },
-  options: { runtimes?: RuntimeStatusView[]; installProblem?: string; templates?: GalleryTemplateView[] } = {},
+  options: { runtimes?: RuntimeStatusView[]; installProblem?: string; templates?: GalleryTemplateView[]; signInProblem?: string } = {},
 ) {
   const stored = { ...state };
   const runtimes = [...(options.runtimes ?? [signedIn("claude", "Claude Code"), absent("codex", "Codex")])];
@@ -86,6 +86,8 @@ function mockIpc(
         stored.mode = (payload as { mode: "solo" | "organisation" }).mode;
         return { ok: true, data: { mode: stored.mode } };
       }
+      case "session:signIn":
+        return { ok: true, data: { status: { state: "signed-out" }, problem: options.signInProblem ?? null } };
       case "gallery:list":
         return { ok: true, data: { templates: options.templates ?? [], fetched: false, people: [] } };
       default:
@@ -129,30 +131,101 @@ describe("step 1, before anything else", () => {
     expect(invoke.mock.calls.find((call: unknown[]) => call[0] === "firstRun:setMode")?.[1]).toEqual({ mode: "solo", address: "" });
   });
 
+  const setModeCall = (invoke: ReturnType<typeof mockIpc>) => invoke.mock.calls.find((call: unknown[]) => call[0] === "firstRun:setMode")?.[1];
+  const fillAccount = (address: string) => {
+    if (address !== "") fireEvent.change(screen.getByLabelText("Server address"), { target: { value: address } });
+    fireEvent.change(screen.getByLabelText("Email"), { target: { value: "dana@acme.com" } });
+    fireEvent.change(screen.getByLabelText("Password"), { target: { value: "correct horse battery" } });
+    fireEvent.click(screen.getByRole("button", { name: "Sign in" }));
+  };
+
   /**
    * "Organisation asks for a server address, signs in, and pulls the
-   * published packs." The sign-in exists since EO-323 and lives in
-   * Settings → Organisation, because getting in needs an invitation from
-   * whoever runs the server rather than an address — so this step keeps
-   * the address and says where to go, rather than putting a password
-   * field in front of somebody who has no password yet.
+   * published packs" (EO-661): through `session:signIn`, the same call
+   * Settings → Organisation makes, and the mode is recorded only once it
+   * has succeeded.
    */
-  it("takes an organisation's address and says where the sign-in is", async () => {
+  it("signs in with an account and goes on as an organisation", async () => {
     const invoke = mockIpc({ done: false, mode: null });
     renderFirstRun(<FirstRun onLeft={() => {}} />);
 
     fireEvent.click(await screen.findByRole("button", { name: "My organisation" }));
+    fireEvent.click(await screen.findByRole("button", { name: "I have an account" }));
+    fillAccount("https://eo.acme.com");
 
-    expect(await screen.findByText(/Settings → Organisation/)).toBeInTheDocument();
-    fireEvent.change(screen.getByLabelText("Your organisation's EO address"), { target: { value: "eo.acme.com" } });
-    fireEvent.click(screen.getByRole("button", { name: "Carry on" }));
-
-    await waitFor(() => expect(invoke.mock.calls.some((call: unknown[]) => call[0] === "firstRun:setMode")).toBe(true));
-    expect(invoke.mock.calls.find((call: unknown[]) => call[0] === "firstRun:setMode")?.[1]).toEqual({
-      mode: "organisation",
-      address: "eo.acme.com",
+    await waitFor(() => expect(setModeCall(invoke)).toEqual({ mode: "organisation", address: "https://eo.acme.com" }));
+    expect(invoke.mock.calls.find((call: unknown[]) => call[0] === "session:signIn")?.[1]).toEqual({
+      address: "https://eo.acme.com",
+      email: "dana@acme.com",
+      password: "correct horse battery",
     });
     expect(await screen.findByText("Start with a template")).toBeInTheDocument();
+  });
+
+  it("shows what the sign-in said when it fails, and keeps what was typed", async () => {
+    const invoke = mockIpc({ done: false, mode: null }, { signInProblem: "That email and password do not match an account on this server." });
+    renderFirstRun(<FirstRun onLeft={() => {}} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "My organisation" }));
+    fireEvent.click(await screen.findByRole("button", { name: "I have an account" }));
+    fillAccount("https://eo.acme.com");
+
+    expect(await screen.findByText("That email and password do not match an account on this server.")).toBeInTheDocument();
+    expect(screen.getByLabelText("Server address")).toHaveValue("https://eo.acme.com");
+    expect(screen.getByLabelText("Email")).toHaveValue("dana@acme.com");
+    expect(screen.getByLabelText("Password")).toHaveValue("correct horse battery");
+    expect(setModeCall(invoke)).toBeUndefined();
+    expect(screen.queryByText("Start with a template")).not.toBeInTheDocument();
+  });
+
+  it("opens an invitation link in the browser, then signs in on the server it named", async () => {
+    const open = vi.spyOn(window, "open").mockReturnValue(null);
+    const invoke = mockIpc({ done: false, mode: null });
+    renderFirstRun(<FirstRun onLeft={() => {}} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "My organisation" }));
+    fireEvent.click(await screen.findByRole("button", { name: "I have an invitation link" }));
+    fireEvent.change(screen.getByLabelText("Invitation link"), { target: { value: "https://eo.acme.com/invite/a1b2c3" } });
+    fireEvent.click(screen.getByRole("button", { name: "Open the invitation" }));
+
+    expect(open).toHaveBeenCalledWith("https://eo.acme.com/invite/a1b2c3", "_blank", "noopener,noreferrer");
+    expect(await screen.findByText(/Choose your password there/)).toBeInTheDocument();
+    expect(screen.getByLabelText("Server address")).toHaveValue("https://eo.acme.com");
+
+    fillAccount("");
+    await waitFor(() => expect(setModeCall(invoke)).toEqual({ mode: "organisation", address: "https://eo.acme.com" }));
+    open.mockRestore();
+  });
+
+  it.each(["https://eo.acme.com/project", "https://eo.acme.com/invite/..", "https://eo.acme.com/invite/%2e%2e"])("refuses %s, which is not an invitation, before opening anything", async (link) => {
+    // What a browser would actually open, so the case is judged by the URL semantics the link will meet.
+    if (link.includes("/invite/")) expect(new URL(link).pathname).toBe("/");
+    const open = vi.spyOn(window, "open").mockReturnValue(null);
+    mockIpc({ done: false, mode: null });
+    renderFirstRun(<FirstRun onLeft={() => {}} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "My organisation" }));
+    fireEvent.click(await screen.findByRole("button", { name: "I have an invitation link" }));
+    fireEvent.change(screen.getByLabelText("Invitation link"), { target: { value: link } });
+    fireEvent.click(screen.getByRole("button", { name: "Open the invitation" }));
+
+    expect(await screen.findByText(/One looks like https:\/\/eo\.example\.com\/invite\//)).toBeInTheDocument();
+    expect(open).not.toHaveBeenCalled();
+    expect(screen.queryByLabelText("Password")).not.toBeInTheDocument();
+    open.mockRestore();
+  });
+
+  it("says an invitation is needed without either, and continues on my own as solo", async () => {
+    const invoke = mockIpc({ done: false, mode: null });
+    renderFirstRun(<FirstRun onLeft={() => {}} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "My organisation" }));
+    expect(await screen.findByText(/you need to be invited by whoever runs your organisation's EO server/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Continue on my own" }));
+
+    await waitFor(() => expect(setModeCall(invoke)).toEqual({ mode: "solo", address: "" }));
+    expect(await screen.findByText("Start with a template")).toBeInTheDocument();
+    expect(invoke.mock.calls.some((call: unknown[]) => call[0] === "session:signIn")).toBe(false);
   });
 
   it("resumes at the gallery for somebody who already answered", async () => {

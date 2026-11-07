@@ -992,6 +992,8 @@ export function registerAllHandlers(db: Db, engine: EngineHandle | undefined, re
     directory: resources.galleryDirectory ?? "",
     moduleSecrets,
     signedInBackends: await signedInBackends(runtimes),
+    // Who a role slot may be given to, once this desktop is signed in (EO-661).
+    ...(resources.managed === undefined ? {} : { managed: resources.managed }),
   });
   registerHandler("gallery:list", async () => listGalleryCommand(db, await galleryContext()), opts);
   registerHandler("gallery:preview", async (payload) => previewGalleryCommand(db, await galleryContext(), payload), opts);
