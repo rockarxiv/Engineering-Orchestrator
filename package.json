@@ -31,6 +31,11 @@
     "onlyBuiltDependencies": [
       "electron-winstaller",
       "esbuild"
-    ]
+    ],
+    "//overrides": "Both force patched versions of transitive devDependencies that Dependabot cannot bump itself. minimatch: every 7.x-11.0.0 is open to GHSA-g3hv-75wg-m249 (DoS via globparts amplification) and 11.0.1 is the only fix, but eslint, @eslint/config-array, @typescript-eslint/typescript-estree, app-builder-lib (electron-builder) and @electron/universal still ask for minimatch ^10 or ^9 (3.x and 5.x are not affected and are left alone); remove this override once eslint, typescript-eslint and electron-builder ask for minimatch ^11 themselves. esbuild: drizzle-kit 0.31.x pulls in @esbuild-kit/esm-loader -> @esbuild-kit/core-utils, which pins esbuild ~0.18.20, open to GHSA-67mh-4wv8-2f99 (dev server answers cross-origin requests; fixed in 0.25.0); remove this override once drizzle-kit no longer depends on @esbuild-kit.",
+    "overrides": {
+      "minimatch@>=7.0.0 <11.0.1": "^11.0.5",
+      "@esbuild-kit/core-utils>esbuild": "^0.25.0"
+    }
   }
 }
