@@ -1,6 +1,6 @@
 # EO — Engineering Orchestrator
 
-EO is an open-source, local-first desktop app for running work through pipelines you build yourself. You draw the graph, or describe it and the assistant drafts it, and you can change it any time. A step is one of four kinds: an agent (Claude Code or Codex), a person, EO itself, or your own script, a module a person approved. Routes between steps are data.
+EO is an open-source, local-first desktop app for running work through pipelines you build yourself. You describe the pipeline you want, the assistant drafts it, and you publish it; you change it the same way, at any time. A step is one of four kinds: an agent (Claude Code or Codex), a person, EO itself, or your own script, a module a person approved.
 
 Software delivery is one template: each ticket is worked in its own git worktree, and the engine checks the implementer's claims (commits exist, the tree is clean, the tests ran) before a reviewer sees it. Other templates cover reports, inbox triage and content drafts.
 
