@@ -75,12 +75,15 @@ export function Card({ children, className, label }: { children: ReactNode; clas
  */
 export function CardSection({
   title,
+  titleAside,
   description,
   actions,
   children,
   className,
 }: {
   title: string;
+  /** Drawn on the heading's line, right after it — a step's kind chip (EO-681). */
+  titleAside?: ReactNode;
   description?: ReactNode;
   actions?: ReactNode;
   children?: ReactNode;
@@ -90,7 +93,14 @@ export function CardSection({
     <section aria-label={title} className={cn("flex min-w-0 flex-col gap-3 rounded-[14px] bg-canvas px-[18px] py-4", className)}>
       <div className="flex min-w-0 items-start gap-3">
         <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-          <h2 className="text-[14px] font-medium text-ink">{title}</h2>
+          {titleAside === undefined ? (
+            <h2 className="text-[14px] font-medium text-ink">{title}</h2>
+          ) : (
+            <div className="flex min-w-0 flex-wrap items-center gap-2">
+              <h2 className="text-[14px] font-medium text-ink">{title}</h2>
+              {titleAside}
+            </div>
+          )}
           {description ? <p className="text-[12.5px] leading-snug text-ink-subtle">{description}</p> : null}
         </div>
         {actions ? <div className="flex shrink-0 flex-wrap items-center gap-1.5">{actions}</div> : null}

@@ -258,6 +258,17 @@ export const VersionDiffSchema = z.object({
       stepId: z.string(),
       name: z.string(),
       change: z.enum(["added", "removed", "changed"]),
+      /**
+       * What kind of step it is (EO-681), for the chip the diff draws
+       * beside its name: read from the version the step belongs to — the
+       * newer one for a step added or changed, the older one for a step
+       * removed. Null for a terminal step, which is an end and not a kind
+       * of work, and for a diff from a record older than the field.
+       */
+      kind: z
+        .object({ type: PipelineStepViewSchema.shape.type, ownerRole: z.string().nullable(), entryAction: z.string().nullable() })
+        .nullable()
+        .default(null),
       /** Field-level, so "the prompt changed" and "it was renamed" are not the same line. */
       fields: z.array(z.object({ field: z.string(), before: z.string().nullable(), after: z.string().nullable() })),
     }),
@@ -361,6 +372,13 @@ function shownStepField(field: (typeof DIFFED_FIELDS)[number], step: VersionStep
  * about it moved — a diff listing every unchanged step is a diff
  * nobody reads.
  */
+/** A step's kind as a diff row carries it: null for a terminal step, and for a type this build does not know. */
+function stepKind(step: VersionStep): VersionDiff["steps"][number]["kind"] {
+  if (step.isTerminal) return null;
+  const type = PipelineStepViewSchema.shape.type.safeParse(step.type);
+  return type.success ? { type: type.data, ownerRole: step.ownerRole, entryAction: step.entryAction } : null;
+}
+
 export function diffVersions(
   from: { number: number; steps: VersionStep[]; routes: VersionRoute[]; entryRules?: readonly EntryRule[] },
   to: { number: number; steps: VersionStep[]; routes: VersionRoute[]; entryRules?: readonly EntryRule[] },
@@ -373,7 +391,7 @@ export function diffVersions(
   for (const [id, step] of after) {
     const was = before.get(id);
     if (!was) {
-      steps.push({ stepId: id, name: step.name, change: "added", fields: [] });
+      steps.push({ stepId: id, name: step.name, change: "added", kind: stepKind(step), fields: [] });
       continue;
     }
     const fields = DIFFED_FIELDS.flatMap((field) =>
@@ -381,10 +399,10 @@ export function diffVersions(
         ? []
         : [{ field, before: shownStepField(field, was), after: shownStepField(field, step) }],
     );
-    if (fields.length > 0) steps.push({ stepId: id, name: step.name, change: "changed", fields });
+    if (fields.length > 0) steps.push({ stepId: id, name: step.name, change: "changed", kind: stepKind(step), fields });
   }
   for (const [id, step] of before) {
-    if (!after.has(id)) steps.push({ stepId: id, name: step.name, change: "removed", fields: [] });
+    if (!after.has(id)) steps.push({ stepId: id, name: step.name, change: "removed", kind: stepKind(step), fields: [] });
   }
 
   // A route is identified by the step it leaves and the result it is

@@ -33,12 +33,17 @@ const ANSWER = {
         stepId: "review",
         name: "Second look",
         change: "changed" as const,
+        kind: { type: "agent" as const, ownerRole: "reviewer", entryAction: "review" },
         fields: [
           { field: "name", before: "Review", after: "Second look" },
           { field: "instructionsSummary", before: null, after: "Look again." },
         ],
       },
-      { stepId: "qa", name: "QA", change: "removed" as const, fields: [] },
+      // Its kind as the older version had it, since the newer has no such step (EO-681).
+      { stepId: "qa", name: "QA", change: "removed" as const, kind: { type: "module" as const, ownerRole: null, entryAction: "run_checks" }, fields: [] },
+      { stepId: "signoff", name: "Sign-off", change: "added" as const, kind: { type: "user" as const, ownerRole: null, entryAction: null }, fields: [] },
+      // An end is not a kind of work, so it comes with none.
+      { stepId: "shipped", name: "Shipped", change: "added" as const, kind: null, fields: [] },
     ],
     routes: [
       {
@@ -104,6 +109,27 @@ describe("the read-only diff between two versions", () => {
     // being absent.
     expect(screen.getAllByText("QA").length).toBeGreaterThan(0);
     expect(screen.getByText("removed")).toBeTruthy();
+  });
+
+  /**
+   * The kind chip the Graph view draws (EO-680), beside every step the
+   * diff lists — a removed one included — and none beside an end (EO-681).
+   */
+  it("shows each step's kind beside its name, and none for an end", async () => {
+    mockIpc();
+    renderChanges();
+
+    await screen.findByText("Shipped");
+    const kindOf = (name: string) =>
+      screen
+        .getAllByText(name)
+        .map((element) => element.closest("li")?.querySelector("[data-step-kind]")?.getAttribute("data-step-kind"))
+        .find((kind) => kind !== undefined) ?? null;
+    expect(kindOf("Second look")).toBe("agent");
+    expect(kindOf("QA")).toBe("script");
+    expect(kindOf("Sign-off")).toBe("person");
+    expect(kindOf("Shipped")).toBeNull();
+    expect(screen.getByTitle("module · run_checks").textContent).toBe("script");
   });
 
   it("says where a route goes now, and where it went before", async () => {

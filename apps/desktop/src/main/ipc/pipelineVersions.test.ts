@@ -822,6 +822,7 @@ describe("a board whose pipeline has moved on", () => {
         stepId: decide.id,
         name: "Second look",
         change: "changed",
+        kind: { type: "user", ownerRole: null, entryAction: null },
         fields: [
           { field: "name", before: "Review", after: "Second look" },
           { field: "instructionsSummary", before: null, after: "Look again." },

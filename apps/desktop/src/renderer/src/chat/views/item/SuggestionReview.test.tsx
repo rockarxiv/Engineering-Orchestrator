@@ -17,7 +17,7 @@ const SUGGESTION: SuggestionView = {
   diff: {
     from: 7,
     to: 8,
-    steps: [{ stepId: "review", name: "Second opinion", change: "changed", fields: [{ field: "name", before: "Review", after: "Second opinion" }] }],
+    steps: [{ stepId: "review", name: "Second opinion", change: "changed", kind: { type: "agent", ownerRole: "reviewer", entryAction: "review" }, fields: [{ field: "name", before: "Review", after: "Second opinion" }] }],
     routes: [],
   entryRules: null,
   },

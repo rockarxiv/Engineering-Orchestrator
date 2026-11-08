@@ -60,14 +60,15 @@ export function PausedRail({
       <div
         ref={setNodeRef}
         className={cn(
-          "flex min-w-0 flex-col gap-2.5 rounded-[14px] bg-canvas px-3.5 py-3",
+          // A board column's raised, hairline-outlined panel (BoardColumn.tsx), so the rail reads as one of them.
+          "flex min-w-0 flex-col gap-2.5 rounded-[14px] border border-line bg-canvas-raised px-3.5 py-3",
           isOver && "bg-accent-subtle/40 shadow-[inset_0_0_0_1.5px_var(--color-accent)]",
         )}
       >
         <div className="flex items-center gap-2">
           <Pause size={13} className="shrink-0 text-paused" aria-hidden />
-          <h2 className="text-[13.5px] font-medium text-ink">Paused</h2>
-          <span className="text-[12px] tabular-nums text-ink-subtle">{paused.length}</span>
+          <h2 className="text-[15px] font-semibold text-ink">Paused</h2>
+          <span className="text-[12.5px] tabular-nums text-ink-subtle">{paused.length}</span>
           <IconButton label="Hide paused tasks" icon={<X size={14} />} onClick={onClose} className="-my-1 ml-auto h-7 w-7" />
         </div>
         <p className="-mt-1 text-[12px] text-ink-subtle">{anyHeld ? "Waiting for input, or held by you." : "Waiting for input."}</p>
@@ -151,7 +152,7 @@ export function PausedRail({
       </div>
 
       {handOff ? (
-        <section ref={handOffTarget.setNodeRef} aria-label="Send to another pipeline" className="rounded-[14px] bg-canvas p-2.5">
+        <section ref={handOffTarget.setNodeRef} aria-label="Send to another pipeline" className="rounded-[14px] border border-line bg-canvas-raised p-2.5">
           <p
             className={cn(
               "rounded-[10px] border border-dashed px-2 py-5 text-center text-[12px]",
@@ -175,7 +176,8 @@ function RailCard({ item, held = false, onOpen, children }: { item: ItemSummary;
   return (
     <article
       className={cn(
-        "relative rounded-[10px] bg-canvas-raised px-[9px] py-2 text-[11.5px] hover:bg-canvas-hover",
+        // A board card's surface (BoardCard.tsx), one step up from the raised panel.
+        "relative rounded-[10px] border border-line bg-canvas-hover px-[9px] py-2 text-[11.5px] hover:bg-canvas-active",
         // A hold is yours, an agent's pause is not: the leading rule says which at a glance.
         held && "border-l-2 border-l-paused",
       )}
@@ -198,7 +200,7 @@ function RailCard({ item, held = false, onOpen, children }: { item: ItemSummary;
             <Pause size={11} className="ml-auto text-paused" aria-hidden />
           )}
         </span>
-        <span className="block text-[12.5px] leading-snug text-ink">{item.title}</span>
+        <h3 className="text-[13.5px] font-medium leading-snug text-ink">{item.title}</h3>
         {branch ? <span className="block truncate font-mono text-[10.5px] text-ink-subtle">{branch}</span> : null}
         <div className="pt-1">{children}</div>
       </div>

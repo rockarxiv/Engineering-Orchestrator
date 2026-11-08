@@ -20,7 +20,7 @@ import { ipcQuery } from "../../../query/client";
 import { environmentVariablesKey, environmentVariablesRootKey, moduleSecretsKey, moduleSecretsRootKey, useChromeVocabulary, useModules, useRegistry } from "../../../query/hooks";
 import { useInvalidateOnPush } from "../../../query/useInvalidateOnPush";
 import { WORKSPACE_MODES, declaredInputs, declaredResults, resultLabel } from "../../../shared/pipeline/configuration";
-import { CardSection, Chip, Facts } from "../../kit";
+import { CardSection, Chip, Facts, StepKindChip } from "../../kit";
 import { targetName } from "../shared";
 
 /**
@@ -99,7 +99,12 @@ export function StepDetails({
   if (step.instructionsSummary) facts.push({ term: "Instructions", value: step.instructionsSummary });
 
   return (
-    <CardSection title={step.name} description="This step as published. To change it, ask the assistant.">
+    <CardSection
+      title={step.name}
+      // The kind chip the drawing it was clicked in uses (EO-680, EO-681); an end is not a kind of work.
+      {...(step.isTerminal ? {} : { titleAside: <StepKindChip step={step} /> })}
+      description="This step as published. To change it, ask the assistant."
+    >
       <Facts label="Step details" items={facts} />
       <section aria-label="Results" className="flex flex-col gap-1.5">
         <h3 className="text-[12.5px] font-medium text-ink">Results and where each goes</h3>

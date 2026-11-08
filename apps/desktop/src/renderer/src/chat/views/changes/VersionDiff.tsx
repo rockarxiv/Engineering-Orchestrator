@@ -1,5 +1,5 @@
 import type { VersionDiff as VersionDiffValue } from "@eo/core";
-import { CardSection, Chip, type Tone } from "../../kit";
+import { CardSection, Chip, StepKindChip, type Tone } from "../../kit";
 
 /**
  * What changed between two graphs (EO-327 ARCHITECTURE.md, "Publish, lock and versions", EO-331
@@ -43,6 +43,8 @@ export function VersionDiff({ diff }: { diff: Pick<VersionDiffValue, "steps" | "
               <li key={step.stepId} className="py-2 text-[13px]">
                 <span className="flex flex-wrap items-center gap-2">
                   <span className="text-ink">{step.name}</span>
+                  {/* The kind as the version the step belongs to says it (EO-681); none for an end. */}
+                  {step.kind == null ? null : <StepKindChip step={step.kind} />}
                   <Chip tone={changeTone(step.change)}>{step.change}</Chip>
                 </span>
                 {/* Field by field, so "the prompt changed" and "it was
