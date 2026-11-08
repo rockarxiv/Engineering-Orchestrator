@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>EO — Engineering Orchestrator: build your own pipelines of agent, person and script steps</title>
+<meta name="description" content="EO — Engineering Orchestrator is an open-source desktop app for building and changing your own pipelines through its assistant. A step can be an agent (Claude Code or Codex), a person, EO itself or your own script.">
+<link rel="canonical" href="https://rockarxiv.github.io/Engineering-Orchestrator/">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<meta name="theme-color" content="#1c2233">
+
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="EO — Engineering Orchestrator">
+<meta property="og:title" content="EO — Engineering Orchestrator">
+<meta property="og:description" content="An open-source desktop app for building and changing your own pipelines through its assistant. A step can be an agent (Claude Code or Codex), a person, EO itself or your own script.">
+<meta property="og:url" content="https://rockarxiv.github.io/Engineering-Orchestrator/">
+<meta property="og:image" content="https://rockarxiv.github.io/Engineering-Orchestrator/og.png">
+<meta property="og:image:width" content="1280">
+<meta property="og:image:height" content="640">
+<meta property="og:image:alt" content="A Refund request pipeline of script, agent and person steps, with the assistant inserting a step.">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="EO — Engineering Orchestrator">
+<meta name="twitter:description" content="An open-source desktop app for building and changing your own pipelines through its assistant. A step can be an agent (Claude Code or Codex), a person, EO itself or your own script.">
+<meta name="twitter:image" content="https://rockarxiv.github.io/Engineering-Orchestrator/og.png">
+
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  "name": "EO",
+  "alternateName": "Engineering Orchestrator",
+  "description": "An open-source desktop app for building and changing your own pipelines through its assistant. A step can be an agent (Claude Code or Codex), a person, EO itself or your own script.",
+  "url": "https://rockarxiv.github.io/Engineering-Orchestrator/",
+  "image": "https://rockarxiv.github.io/Engineering-Orchestrator/og.png",
+  "operatingSystem": "Windows, macOS, Linux",
+  "applicationCategory": "DeveloperApplication",
+  "license": "https://spdx.org/licenses/Apache-2.0.html",
+  "offers": {
+    "@type": "Offer",
+    "price": "0",
+    "priceCurrency": "USD"
+  },
+  "codeRepository": "https://github.com/rockarxiv/Engineering-Orchestrator",
+  "downloadUrl": "https://github.com/rockarxiv/Engineering-Orchestrator/releases"
+}
+</script>
+
+<style>
+  /* Colours from tokens.css (the app's dark theme); fonts fall back to the system stack. */
+  :root {
+    color-scheme: dark;
+    --canvas: oklch(21% 0.016 262);
+    --canvas-subtle: oklch(24% 0.017 262);
+    --line: oklch(31% 0.016 262);
+    --ink: oklch(94% 0.006 262);
+    --ink-muted: oklch(76% 0.01 262);
+    --ink-subtle: oklch(66% 0.012 262);
+    --accent: oklch(55% 0.18 258);
+    --accent-hover: oklch(61% 0.18 258);
+    --accent-ink: oklch(98% 0.01 258);
+    --accent-soft: oklch(80% 0.12 258);
+    --focus: oklch(70% 0.15 258);
+    --radius: 0.625rem;
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0;
+    background: var(--canvas);
+    color: var(--ink-muted);
+    font: 1rem/1.6 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    overflow-wrap: break-word;
+  }
+  main { max-width: 44rem; margin: 0 auto; padding: 3rem 1.25rem 4rem; }
+  header { display: flex; align-items: center; gap: 1rem; margin-bottom: 1.5rem; }
+  header img { width: 4rem; height: 4rem; flex: none; }
+  h1 { margin: 0; color: var(--ink); font-size: 1.75rem; line-height: 1.25; font-weight: 650; }
+  h2 { margin: 2.5rem 0 1rem; color: var(--ink); font-size: 1.125rem; line-height: 1.35; font-weight: 600; }
+  p { margin: 0 0 1rem; }
+  strong { color: var(--ink); font-weight: 600; }
+  .pitch { font-size: 1.125rem; color: var(--ink); }
+  a { color: var(--accent-soft); text-underline-offset: 0.15em; }
+  a:hover { color: var(--ink); }
+  a:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; border-radius: 2px; }
+  .actions { display: flex; flex-wrap: wrap; gap: 0.75rem; margin: 1.5rem 0 0; }
+  .button {
+    display: inline-block; padding: 0.55rem 1rem; border-radius: var(--radius);
+    border: 1px solid var(--line); background: var(--canvas-subtle);
+    color: var(--ink); text-decoration: none; font-weight: 500;
+  }
+  .button:hover { color: var(--ink); border-color: var(--ink-subtle); }
+  .button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+  .button.primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); color: var(--accent-ink); }
+  ol.points { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.75rem; }
+  ol.points li { padding: 1rem 1.125rem; border: 1px solid var(--line); border-radius: var(--radius); background: var(--canvas-subtle); }
+  ol.points li p:last-child { margin-bottom: 0; }
+  ul { margin: 0 0 1rem; padding-left: 1.25rem; }
+  code { font: 0.875em ui-monospace, "SF Mono", Menlo, Consolas, monospace; color: var(--ink); overflow-wrap: anywhere; }
+  footer { margin-top: 3rem; padding-top: 1.25rem; border-top: 1px solid var(--line); color: var(--ink-subtle); font-size: 0.875rem; }
+  @media (max-width: 30rem) {
+    main { padding-top: 2rem; }
+    header img { width: 3rem; height: 3rem; }
+    h1 { font-size: 1.375rem; }
+    .pitch { font-size: 1rem; }
+  }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <img src="icon.svg" alt="" width="64" height="64">
+    <h1>EO — Engineering Orchestrator</h1>
+  </header>
+
+  <p class="pitch">EO is an open-source desktop app for building your own pipelines and running work through them. You tell the assistant what you want, it drafts the pipeline, and you publish it; you change it the same way, at any time. A step can be an agent (Claude Code or Codex), a person, EO itself, or your own script: a module a person approved.</p>
+
+  <div class="actions">
+    <a class="button primary" href="https://github.com/rockarxiv/Engineering-Orchestrator/releases">Download from Releases</a>
+    <a class="button" href="https://github.com/rockarxiv/Engineering-Orchestrator">Repository on GitHub</a>
+  </div>
+
+  <h2>What it does</h2>
+  <ol class="points">
+    <li>
+      <p><strong>You build and change your own pipelines through the assistant.</strong> Describe the pipeline you want, or the change you want to one you have, and the assistant drafts it as a graph on a card. Nothing changes until you press Publish, and you change it the same way at any time. Publishing writes a new version; items already in flight finish on the version they entered on. EO has no pipeline editor: the Graph view is read-only.</p>
+    </li>
+    <li>
+      <p><strong>A step is one of four kinds: an agent, a person, EO itself, or your own script.</strong> An agent is Claude Code or Codex, signed in with your own account. A person sees the step's results as buttons, such as "Approve". EO itself runs a builtin, such as cutting a git worktree, watching a pull request or waiting until a date. Your own script is a module, JavaScript with a manifest of what it needs, and it cannot run on live work until a person approves it after its tests pass.</p>
+    </li>
+    <li>
+      <p><strong>Software delivery is one template among several.</strong> In <em>Software feature to merge</em> each ticket is worked in its own git worktree, and the engine checks the implementer's claims itself (commits exist, the tree is clean, the tests ran) before a reviewer sees the work. Other templates cover a weekly report, an inbox triage and a content draft.</p>
+    </li>
+    <li>
+      <p><strong>It runs on your machine.</strong> Nothing needs a server. When an agent gets stuck it comments on the item and mentions you, which ends its run rather than leaving a process waiting.</p>
+    </li>
+  </ol>
+
+  <h2>Download</h2>
+  <p>Every release on <a href="https://github.com/rockarxiv/Engineering-Orchestrator/releases">GitHub Releases</a> attaches installers for Windows, macOS and Linux. They are not code-signed, so Windows and macOS warn you before the first run; the <a href="https://github.com/rockarxiv/Engineering-Orchestrator#download">README</a> says how to get past each warning. On Windows and Linux an installed EO checks for new releases and installs one when you ask; macOS has no automatic updates, so you download the new release by hand.</p>
+  <p>EO is free and open source under the Apache License 2.0. The agents' usage is billed by Anthropic or OpenAI to the account you sign in with.</p>
+
+  <h2>Read more</h2>
+  <ul>
+    <li><a href="https://github.com/rockarxiv/Engineering-Orchestrator#readme">README</a>: installing, running and first steps.</li>
+    <li><a href="https://github.com/rockarxiv/Engineering-Orchestrator/blob/main/docs/FAQ.md">FAQ</a>: the questions people ask about EO.</li>
+    <li><a href="https://github.com/rockarxiv/Engineering-Orchestrator/blob/main/ARCHITECTURE.md">ARCHITECTURE.md</a>: the design, and why it is shaped the way it is.</li>
+    <li><a href="https://github.com/rockarxiv/Engineering-Orchestrator">The repository</a> and its <a href="https://github.com/rockarxiv/Engineering-Orchestrator/releases">Releases</a>.</li>
+  </ul>
+
+  <footer>
+    <p>EO — Engineering Orchestrator · Apache-2.0 · <a href="llms.txt">llms.txt</a></p>
+  </footer>
+</main>
+</body>
+</html>

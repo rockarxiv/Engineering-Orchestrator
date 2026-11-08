@@ -1,0 +1,23 @@
+# EO — Engineering Orchestrator
+
+> EO is an open-source desktop app for building your own pipelines and running work through them: you tell the assistant what you want, it drafts the pipeline, and you publish it, and a step can be an agent (Claude Code or Codex), a person, EO itself or your own approved script (a module).
+
+You change a pipeline the same way, through the assistant, at any time; EO has no pipeline editor and its Graph view is read-only. Publishing writes a new version, and items already in flight finish on the version they entered on.
+
+A piece of work is an item. It sits on a step, the step says who has it right now, and when that party reports a result the pipeline's routes say where the item goes next. Routes are data, so changing a process needs no code.
+
+Software delivery is one template among several: each ticket is worked in its own git worktree, and the engine checks the implementer's claims itself (commits exist, the tree is clean, the tests ran) before a reviewer sees the work. Other templates cover a weekly report, an inbox triage and a content draft.
+
+EO runs on Windows, macOS and Linux, on your own machine, and is licensed under Apache-2.0. The installers are not code-signed, and macOS has no automatic updates.
+
+## Docs
+
+- [README.md](https://raw.githubusercontent.com/rockarxiv/Engineering-Orchestrator/main/README.md): what EO is, how to download, install, build and run it, and the first run.
+- [ARCHITECTURE.md](https://raw.githubusercontent.com/rockarxiv/Engineering-Orchestrator/main/ARCHITECTURE.md): the design document: the core and its packs, pipelines and routes, the engine, both agent backends, and why each decision was made.
+- [docs/FAQ.md](https://raw.githubusercontent.com/rockarxiv/Engineering-Orchestrator/main/docs/FAQ.md): answers to the questions people ask about EO, from building pipelines to how it differs from running agents by hand.
+- [CONTRIBUTING.md](https://raw.githubusercontent.com/rockarxiv/Engineering-Orchestrator/main/CONTRIBUTING.md): how to work on EO itself and send changes.
+
+## Optional
+
+- [Releases](https://github.com/rockarxiv/Engineering-Orchestrator/releases): installers for Windows, macOS and Linux, with checksums.
+- [SECURITY.md](https://raw.githubusercontent.com/rockarxiv/Engineering-Orchestrator/main/SECURITY.md): how to report a security vulnerability.

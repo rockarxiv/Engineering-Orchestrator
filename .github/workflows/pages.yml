@@ -1,0 +1,43 @@
+name: Pages
+
+# Publishes site/ — the hand-written landing page, llms.txt, robots.txt and
+# sitemap.xml — to https://rockarxiv.github.io/Engineering-Orchestrator/
+# (EO-679). There is no build step: the directory is uploaded as it is.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "site/**"
+  workflow_dispatch:
+
+# What actions/deploy-pages needs and nothing more: read the checkout,
+# write the Pages deployment, and mint the OIDC token that proves the
+# deployment came from this workflow.
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# One deployment at a time. A newer push waits rather than cancelling a
+# deployment already under way, so the site never ends up half-published.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    # Hosted, always. Uploading a directory takes seconds, and the Pages
+    # deployment does not need the self-hosted runner the CI_RUNS_ON
+    # variable points the test jobs at.
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/configure-pages@v6
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: site
+      - id: deployment
+        uses: actions/deploy-pages@v5
