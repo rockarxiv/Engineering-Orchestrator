@@ -110,6 +110,35 @@ describe("a draft settings box", () => {
     expect(writes).toEqual(["9"]);
   });
 
+  it("does not send a saved edit again from a blur before React has drawn the answer", async () => {
+    // The race test-windows found (EO-670): the save comes back stored, and
+    // the blur lands before the render that drops the draft.
+    const writes: string[] = [];
+    const replies: Array<() => void> = [];
+    render(
+      <DraftInput
+        aria-label="Limit"
+        type="number"
+        value="3"
+        onCommit={(text) => {
+          writes.push(text);
+          return new Promise<boolean>((resolve) => replies.push(() => resolve(true)));
+        }}
+      />,
+    );
+    const field = screen.getByLabelText("Limit");
+
+    fireEvent.change(field, { target: { value: "9" } });
+    await waitFor(() => expect(writes).toEqual(["9"]));
+    // Answered outside act, so React has not drawn it when the blur arrives.
+    replies[0]?.();
+    await Promise.resolve();
+    await Promise.resolve();
+    fireEvent.blur(field);
+
+    expect(writes).toEqual(["9"]);
+  });
+
   it("keeps a failed value, and a later blur tries it again", async () => {
     const writes: string[] = [];
     let failing = true;
