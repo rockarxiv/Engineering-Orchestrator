@@ -6,3 +6,4 @@ export * from "./controls";
 export * from "./surfaces";
 export * from "./overlays";
 export * from "./virtual";
+export * from "./stepKind";

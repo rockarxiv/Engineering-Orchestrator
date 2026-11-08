@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { HandOffTargets, PipelineStepView, StepRouteView } from "@eo/core";
-import { layoutPipeline, packLanes, type LaidArrow, type PipelineLayout, type Point, type Rect } from "./layout";
+import { BOX_MAX_WIDTH, BOX_PAD_X, HERE_ROOM, KIND_CHIP_ROOM, NAME_CHAR, START_BADGE, layoutPipeline, packLanes, type LaidArrow, type PipelineLayout, type Point, type Rect } from "./layout";
 
 function step(id: string, name: string, position: number, overrides: Partial<PipelineStepView> = {}): PipelineStepView {
   return {
@@ -241,6 +241,20 @@ describe("where a pipeline's boxes and arrows go", () => {
     const layout = layoutPipeline(RELEASE_STEPS, [{ ...route("prepare", "", "changelog"), resultKey: "prepared" }]);
 
     expect(layout.arrows[0]!.label.text).toBe("prepared");
+  });
+
+  it("makes every box wide enough for its one row: the name, the start badge, a count and the kind chip (EO-680)", () => {
+    const row = (name: string) => name.length * NAME_CHAR + START_BADGE + HERE_ROOM + KIND_CHIP_ROOM + 2 * BOX_PAD_X;
+    for (const layout of [layoutPipeline(RELEASE_STEPS, RELEASE_ROUTES, ELSEWHERE), layoutPipeline(TWELVE_STEPS, TWELVE_ROUTES, ELSEWHERE)]) {
+      // As wide as the longest name asks, up to the cap past which a name is cut.
+      const widest = Math.min(BOX_MAX_WIDTH, Math.max(...layout.steps.map((laid) => row(laid.step.name))));
+      for (const { step: one, box } of layout.steps) expect(box.width, one.name).toBeGreaterThanOrEqual(widest);
+    }
+    // A short name still leaves the chip its room; a very long one is capped and cut by the box, not given a wider column.
+    const [short] = layoutPipeline([step("a", "QA", 0)], []).steps;
+    expect(short!.box.width - 2 * BOX_PAD_X - START_BADGE - HERE_ROOM).toBeGreaterThanOrEqual(KIND_CHIP_ROOM);
+    const [long] = layoutPipeline([step("a", "A step whose name runs on far longer than any box", 0)], []).steps;
+    expect(long!.box.width).toBe(BOX_MAX_WIDTH);
   });
 
   it("answers the same boxes and arrows for the same steps and routes", () => {

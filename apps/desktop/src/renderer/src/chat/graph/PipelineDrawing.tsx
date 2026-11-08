@@ -2,7 +2,8 @@ import { useId, useMemo } from "react";
 import { Link } from "react-router-dom";
 import { USER_ATTENTION_TARGET, type HandOffTargets, type PipelineStepView, type StepRouteView } from "@eo/core";
 import { cn } from "@eo/ui";
-import { BOX_PAD_X, layoutPipeline, ownerLine, type LaidArrow, type Rect } from "./layout";
+import { StepKindChip } from "../kit";
+import { BOX_PAD_X, layoutPipeline, type LaidArrow, type Rect } from "./layout";
 
 /**
  * A pipeline, drawn as the graph it is (EO-400): its steps as boxes from
@@ -16,6 +17,12 @@ import { BOX_PAD_X, layoutPipeline, ownerLine, type LaidArrow, type Rect } from 
  * looks before Publish exactly as the pipeline will after it. Where
  * everything goes is `layoutPipeline`'s answer and nothing here moves
  * it; this file only draws the rectangles and paths it is given.
+ *
+ * A step is one raised row (EO-680): its name, then the kind chip at the
+ * far end, whose title is the owner line the box used to spell out. On a
+ * draft for an existing pipeline, a step that pipeline has not got yet is
+ * outlined dashed in the neutral ink and tagged "new" — never the accent,
+ * since a new step is not something to press.
  *
  * The drawing is as wide as its boxes, labels and lanes need and no
  * narrower. In a column too narrow for it, it scrolls sideways inside
@@ -50,6 +57,7 @@ export function PipelineDrawing({
   stepHref,
   selectedStepId = null,
   onSelectStep,
+  newStepIds,
   className,
 }: {
   steps: PipelineStepView[];
@@ -68,6 +76,12 @@ export function PipelineDrawing({
   selectedStepId?: string | null;
   /** Makes each step's name a button that opens its details. Absent on a draft, whose steps are read on the card itself. */
   onSelectStep?: (stepId: string) => void;
+  /**
+   * The steps a draft adds to the pipeline it changes, drawn as new.
+   * Only the draft card passes it, and only for a pipeline that exists:
+   * on a new one every step would be new, which says nothing.
+   */
+  newStepIds?: ReadonlySet<string>;
   className?: string;
 }) {
   const layout = useMemo(() => layoutPipeline(steps, routes, elsewhere), [steps, routes, elsewhere]);
@@ -102,19 +116,27 @@ export function PipelineDrawing({
         <ol aria-label="Pipeline graph" aria-describedby={describedBy}>
           {layout.steps.map(({ step, box }) => {
             const here = counts?.get(step.id) ?? 0;
+            const added = newStepIds?.has(step.id) ?? false;
             return (
               <li
                 key={step.id}
                 data-step={step.id}
+                {...(added ? { "data-new-step": "" } : {})}
                 style={{ ...px(box), paddingLeft: BOX_PAD_X, paddingRight: BOX_PAD_X }}
                 className={cn(
-                  "absolute flex flex-col justify-center gap-0.5 rounded-[12px]",
-                  // A terminal step is an end: outlined, not filled.
-                  step.isTerminal ? "shadow-[inset_0_0_0_1px_var(--color-line-strong)]" : "bg-canvas",
+                  "absolute flex flex-col justify-center gap-0.5 rounded-[10px] border",
+                  // A terminal step is an end: outlined, not filled. Every other step is raised on a hairline.
+                  step.isTerminal ? "border-line-strong" : "border-line bg-canvas-raised",
+                  // New in this draft: dashed, in the neutral ink rather than the accent (ARCHITECTURE.md, "Genre: utilitarian", rule 6).
+                  added && "border-[1.5px] border-dashed border-ink-muted",
                   // The step whose details are open: outlined in the accent, the way the layout marks what is chosen.
                   step.id === selectedStepId && "shadow-[inset_0_0_0_1.5px_var(--color-accent)]",
                 )}
               >
+                {added ? (
+                  // Astride the top edge: the layout leaves at least 6px above every box, and no route's label comes that close.
+                  <span className="absolute right-3 top-[-6px] rounded-full bg-canvas-raised px-1.5 text-[10.5px] leading-[12px] text-ink-muted">new</span>
+                ) : null}
                 <span className="flex min-w-0 items-center gap-2">
                   {onSelectStep ? (
                     // The name, not the whole box: "N here" beside it is a link of its own.
@@ -123,27 +145,26 @@ export function PipelineDrawing({
                       title={step.name}
                       aria-pressed={step.id === selectedStepId}
                       onClick={() => onSelectStep(step.id)}
-                      className={cn("truncate text-left text-[13px] font-medium hover:underline", step.isTerminal ? "text-ink-muted" : "text-ink")}
+                      className={cn("truncate text-left text-[15px] font-semibold hover:underline", step.isTerminal ? "text-ink-muted" : "text-ink")}
                     >
                       {step.name}
                     </button>
                   ) : (
-                    <b title={step.name} className={cn("truncate text-[13px] font-medium", step.isTerminal ? "text-ink-muted" : "text-ink")}>
+                    <b title={step.name} className={cn("truncate text-[15px] font-semibold", step.isTerminal ? "text-ink-muted" : "text-ink")}>
                       {step.name}
                     </b>
                   )}
-                  {step.id === entryStepId ? <span className="shrink-0 rounded-[5px] bg-canvas-active px-1.5 text-[10.5px] text-ink-muted">start</span> : null}
-                </span>
-                <span className="flex min-w-0 items-center gap-2">
-                  <span className={cn("truncate font-mono text-[11px]", !step.isTerminal && step.type === "user" ? "text-paused" : "text-ink-subtle")}>
-                    {step.isTerminal ? "end" : ownerLine(step)}
+                  {step.id === entryStepId ? <span className="shrink-0 rounded-[5px] bg-canvas-active px-1.5 text-[11.5px] text-ink-muted">start</span> : null}
+                  <span className="ml-auto flex shrink-0 items-center gap-2">
+                    {here > 0 && stepHref ? (
+                      // What stands here now, and the board narrowed to it.
+                      <Link to={stepHref(step.id)} className="text-[12px] text-ink-subtle hover:text-ink hover:underline">
+                        {here} here
+                      </Link>
+                    ) : null}
+                    {/* An end is not a kind of work: no chip, and the outline says it. Said aloud, since the outline is not. */}
+                    {step.isTerminal ? <span className="sr-only">end</span> : <StepKindChip step={step} />}
                   </span>
-                  {here > 0 && stepHref ? (
-                    // What stands here now, and the board narrowed to it.
-                    <Link to={stepHref(step.id)} className="ml-auto shrink-0 text-[11px] text-ink-subtle hover:text-ink hover:underline">
-                      {here} here
-                    </Link>
-                  ) : null}
                 </span>
                 {step.id === entryStepId && entryNote !== null ? (
                   <span title={entryNote} className="truncate text-[11px] text-ink-subtle">
@@ -163,7 +184,7 @@ export function PipelineDrawing({
                 <span
                   title={arrow.label.text}
                   style={px(arrow.label.rect)}
-                  className={cn("absolute truncate font-mono text-[10.5px] leading-[14px]", arrow.kind === "side" ? "text-right" : "text-left", tone.text)}
+                  className={cn("absolute truncate font-mono text-[11.5px] leading-[14px]", arrow.kind === "side" ? "text-right" : "text-left", tone.text)}
                 >
                   {arrow.label.text}
                 </span>

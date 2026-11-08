@@ -320,6 +320,62 @@ describe("the board's columns", () => {
     expect(screen.getByTitle(/Human-owned/)).toBeInTheDocument();
   });
 
+  it("draws each column as a raised panel headed by its name, count and kind chip, and each card raised on it (EO-680)", async () => {
+    mockIpc({
+      states: [
+        { id: "worktree", pipelineId: "default", position: -1, name: "Worktree", type: "builtin", ownerRole: null, entryAction: "create_worktree", instructionsSummary: null, isTerminal: false },
+        ...STATES,
+        { id: "merge", pipelineId: "default", position: 3, name: "Merge", type: "module", ownerRole: null, entryAction: "merge_branch", instructionsSummary: null, isTerminal: false },
+        { id: "done", pipelineId: "default", position: 4, name: "Done", type: "user", ownerRole: null, entryAction: null, instructionsSummary: null, isTerminal: true },
+      ],
+      items: [item({ id: "t1", title: "On to do", stepId: "todo", stepName: "To Do" })],
+      version: { id: "v7", pipelineId: "default", number: 7, createdAt: 1, createdBy: "p1", createdByName: "Dana" },
+      finishingOn: [{ number: 6, items: 1 }],
+      ghosts: [{ stepId: "qa", name: "QA", version: 6, holding: 1 }],
+    });
+    renderBoard();
+
+    const todo = await column("To Do");
+    await within(todo).findByText("On to do");
+    const chip = (name: string, region: HTMLElement) => {
+      const head = within(region).getByRole("heading", { level: 2, name }).parentElement!;
+      return [...head.querySelectorAll("[data-step-kind]")];
+    };
+    for (const [name, text, title] of [
+      ["Worktree", "EO", "built in · create_worktree"],
+      ["To Do", "agent", "agent · implementer"],
+      ["Pending Approval", "person", "you"],
+      ["Merge", "script", "module · merge_branch"],
+    ] as const) {
+      const region = await column(name);
+      expect(region.className, name).toContain("bg-canvas-raised");
+      expect(region.className, name).toContain("border-line");
+      expect(region.className, name).toContain("rounded-[14px]");
+      expect(within(region).getByRole("heading", { level: 2, name }).className).toContain("text-[15px]");
+      const chips = chip(name, region);
+      expect(chips, name).toHaveLength(1);
+      expect(chips[0]).toHaveTextContent(text);
+      expect(chips[0]).toHaveAttribute("title", title);
+    }
+    // An end has no kind.
+    expect(chip("Done", await column("Done"))).toHaveLength(0);
+    // The count sits between the name and the chip.
+    const head = within(todo).getByRole("heading", { level: 2, name: "To Do" }).parentElement!;
+    expect([...head.children].map((child) => child.textContent)).toEqual(["To Do", "1", "agent"]);
+    // The action line under it, in mono.
+    expect(within(todo).getByText("implementer").className).toContain("font-mono");
+
+    // A card is one step up from its column, on a hairline.
+    const card = within(todo).getByText("On to do").closest("article")!;
+    expect(card.className).toContain("bg-canvas-hover");
+    expect(card.className).toContain("border-line");
+    expect(within(card).getByText("On to do").className).toContain("text-[13.5px]");
+
+    // The removed step's column and an empty column's placeholder stay dashed.
+    expect((await screen.findByRole("region", { name: "QA (v6) · 1 finishing" })).className).toContain("border-dashed");
+    expect(within(await column("Review")).getByText("Empty").className).toContain("border-dashed");
+  });
+
   it("puts each item in its own column, newest first, and counts in the project's word", async () => {
     mockIpc({
       items: [

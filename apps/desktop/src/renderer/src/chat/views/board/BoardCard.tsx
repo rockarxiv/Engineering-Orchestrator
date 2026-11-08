@@ -14,8 +14,8 @@ import { originHover } from "../../../shared/pipeline/dashboard";
 import { useMayClaim } from "../../HolderGate";
 
 /**
- * One item on the board, in the chat layout's drawing: a raised tile on
- * the column's lit lane, with what it is called, what it is, where its
+ * One item on the board, in the chat layout's drawing: a tile raised one
+ * step above its column, on a hairline (EO-680), with what it is called, what it is, where its
  * work happens and what is happening to it — the classic card's four
  * lines, at this layout's density.
  */
@@ -80,7 +80,7 @@ export const BoardCard = memo(function BoardCard({
       aria-busy={moving}
       {...(item.origin === null ? {} : { title: originHover(item.origin) })}
       className={cn(
-        "relative rounded-[10px] bg-canvas-raised px-[9px] py-2 hover:bg-canvas-hover",
+        "relative rounded-[10px] border border-line bg-canvas-hover px-[9px] py-2 hover:bg-canvas-active",
         // Waiting on you is a state, so it is drawn in the paused scale.
         item.needsAttention && "shadow-[inset_0_0_0_1.5px_var(--color-paused)]",
         (queued || moving) && "border border-dashed border-line-strong",
@@ -168,7 +168,7 @@ export function CardBody({
         </span>
       </div>
 
-      <h3 className="text-[12.5px] leading-snug text-ink">{item.title}</h3>
+      <h3 className="text-[13.5px] font-medium leading-snug text-ink">{item.title}</h3>
 
       {item.preview ? (
         <div role="note" aria-label="Preview" className="rounded-[6px] bg-paused/15 px-1.5 py-0.5 text-[11px] text-paused">

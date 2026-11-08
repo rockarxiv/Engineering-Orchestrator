@@ -167,6 +167,13 @@ for (const status of [
   add(status, "--color-canvas-raised", NON_TEXT, "status mark on card");
 }
 
+// A step's kind is a chip of its own colour (ARCHITECTURE.md, "Colour"):
+// its text and border are that colour, on every surface a step is drawn on.
+const KINDS = ["--color-kind-agent", "--color-kind-script"];
+for (const kind of KINDS) {
+  for (const surface of surfaces) add(kind, surface, NON_TEXT, "step kind chip");
+}
+
 /* ── check ──────────────────────────────────────────────────────────── */
 
 let failures = 0;
@@ -239,6 +246,30 @@ if (accent && accent.c >= 0.04) {
         `  FAIL  accent is ${delta.toFixed(0)}° from ${status} (needs 35°) — ` +
           `"you can act" and "the machine is working" read as one family`,
       );
+    }
+  }
+}
+
+/*
+ * A step kind must not be mistakable for a run state either. The scale is
+ * fixed like the status scale, and a chip within 35° of one would read as
+ * that state — which is why the first proposal's green (running's own hue)
+ * was refused.
+ */
+for (const kind of KINDS) {
+  const colour = parseOklch(tokens.get(kind) ?? "");
+  if (!colour) continue; // its contrast pairs have already failed it
+  for (const status of ["--color-running", "--color-reviewing", "--color-paused", "--color-danger"]) {
+    const other = parseOklch(tokens.get(status) ?? "");
+    if (!other) {
+      failures += 1;
+      rows.push(`  FAIL  ${status} is missing or unparseable, so ${kind} was never held apart from it`);
+      continue;
+    }
+    const delta = Math.abs(((colour.h - other.h + 540) % 360) - 180);
+    if (delta < 35) {
+      failures += 1;
+      rows.push(`  FAIL  ${kind} is ${delta.toFixed(0)}° from ${status} (needs 35°) — a step's kind reads as a run state`);
     }
   }
 }

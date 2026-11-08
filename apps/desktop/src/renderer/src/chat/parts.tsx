@@ -1,6 +1,6 @@
 import { useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Bot, Code2, Cog, LoaderCircle, User } from "lucide-react";
+import { LoaderCircle } from "lucide-react";
 import type { DiscussionView, InboxItem, PipelineStepView, StepDecision } from "@eo/core";
 import { cn } from "@eo/ui";
 import { ActAsAdmin } from "./admin/ActAsAdmin";
@@ -98,17 +98,6 @@ export function ownerOf(step: Pick<PipelineStepView, "type" | "ownerRole" | "ent
     default:
       return { kind: "builtin", label: step.entryAction ?? "EO" };
   }
-}
-
-export function OwnerChip({ step, className }: { step: Pick<PipelineStepView, "type" | "ownerRole" | "entryAction">; className?: string }) {
-  const owner = ownerOf(step);
-  const Icon = owner.kind === "agent" ? Bot : owner.kind === "user" ? User : owner.kind === "module" ? Code2 : Cog;
-  return (
-    <span className={cn("inline-flex min-w-0 items-center gap-1 text-[11px]", owner.kind === "user" ? "text-paused" : "text-ink-subtle", className)}>
-      <Icon size={12} className="shrink-0" />
-      <span className="truncate">{owner.label}</span>
-    </span>
-  );
 }
 
 /**

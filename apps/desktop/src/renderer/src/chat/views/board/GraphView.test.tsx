@@ -269,13 +269,16 @@ describe("the pipeline's graph", () => {
     const graph = await screen.findByRole("list", { name: "Pipeline graph" });
     expect(within(graph).getAllByRole("listitem").map((box) => box.getAttribute("data-step"))).toEqual(["todo", "review", "done"]);
     expect(within(graph).getByText("To Do")).toBeInTheDocument();
-    expect(within(graph).getByText("agent · implementer")).toBeInTheDocument();
+    expect(within(graph).getByTitle("agent · implementer")).toHaveTextContent("agent");
     expect(await screen.findByText("Delivery")).toBeInTheDocument();
     // The entry step the pipeline names, not the first one drawn.
     expect(await within(screen.getByText("Review").closest("li")!).findByText("start")).toBeInTheDocument();
     expect(within(screen.getByText("To Do").closest("li")!).queryByText("start")).not.toBeInTheDocument();
     // A terminal step is an end, not somebody's step.
     expect(within(screen.getByText("Done").closest("li")!).getByText("end")).toBeInTheDocument();
+    expect(screen.getByText("Done").closest("li")!.querySelector("[data-step-kind]")).toBeNull();
+    // The steps as published: nothing on them is a draft's addition (EO-680).
+    expect(graph.querySelectorAll("[data-new-step]")).toHaveLength(0);
   });
 
   it("shows a pipeline's entry rules on its entry step, in the words a refusal would use (EO-610)", async () => {
