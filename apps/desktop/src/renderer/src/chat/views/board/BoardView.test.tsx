@@ -1096,6 +1096,18 @@ describe("handing a card to another pipeline (EO-71)", () => {
   });
 });
 
+/**
+ * Asserts the text sits in a three-line clamp nothing lifts: Tailwind's
+ * line-clamp-3 sets display:-webkit-box, and a display utility beside it
+ * (`block`, `flex`, …) overrides that and lets the text run on (EO-692).
+ */
+function expectClamped(text: HTMLElement) {
+  const clamp = text.closest(".line-clamp-3");
+  expect(clamp, "the text is inside a line-clamp-3").not.toBeNull();
+  const display = ["block", "inline", "inline-block", "flex", "inline-flex", "grid", "inline-grid", "contents", "table", "flow-root"];
+  expect(clamp!.className.split(/\s+/).filter((token) => display.includes(token))).toEqual([]);
+}
+
 describe("the paused rail", () => {
   it("lists work waiting on a person, with why and who is waiting, and links keys in the reason without opening the card", async () => {
     mockIpc({
@@ -1132,6 +1144,35 @@ describe("the paused rail", () => {
     expect(reasonLink).toHaveAttribute("href", "/items/t2");
     fireEvent.click(reasonLink);
     expect(within(rail).getByRole("link", { name: "View all paused tasks" })).toHaveAttribute("href", "/inbox");
+  });
+
+  it("clamps a long reason to three lines, so the rail cannot squeeze the board (EO-692)", async () => {
+    const body = `Could not start: branch 'eo/rate-limit' is already checked out at ${"/home/someone/.eo/worktrees/a-very-long-path".repeat(12)}`;
+    mockIpc({
+      items: [item({ latestRunStatus: "awaiting_input" })],
+      inboxItems: [
+        {
+          commentId: "c1",
+          itemId: "t1",
+          itemKey: "EO-1",
+          itemTypeLabel: "Story",
+          itemTitle: "Rate limit the API",
+          itemState: "todo",
+          authorName: "EO",
+          body,
+          kind: "question",
+          options: null,
+          createdAt: 1,
+          blocking: true,
+          waitingOn: { who: "you" },
+          preview: false,
+        },
+      ],
+    });
+    renderBoard();
+
+    const rail = await screen.findByRole("complementary", { name: "Paused tasks" });
+    expectClamped(await within(rail).findByText(body));
   });
 
   /**
@@ -1258,7 +1299,7 @@ describe("the paused rail", () => {
     await waitFor(() => expect(invoke).toHaveBeenCalledWith("items:hold", { itemId: "t1", cancelActiveRun: false, comment: "Waiting on the API decision." }));
     const rail = await screen.findByRole("complementary", { name: "Paused tasks" });
     await waitFor(() => expect(within(rail).getByText("Your note")).toBeInTheDocument());
-    expect(within(rail).getByText("Waiting on the API decision.")).toBeInTheDocument();
+    expectClamped(within(rail).getByText("Waiting on the API decision."));
     expect(within(rail).getByText("Held")).toBeInTheDocument();
     expect(within(await column("To Do")).queryByText("EO-1")).not.toBeInTheDocument();
   });
