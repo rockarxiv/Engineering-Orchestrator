@@ -82,7 +82,7 @@ export function PipelineChangesView({ pipelineId }: { pipelineId: string }) {
               published nowhere until you suggest it and an administrator approves it. To throw it away, ask the assistant to discard your edits.
             </p>
           </div>
-          <VersionDiff diff={local.diff} />
+          <VersionDiff diff={local.diff} kinds />
         </section>
       )}
 
@@ -108,7 +108,7 @@ export function PipelineChangesView({ pipelineId }: { pipelineId: string }) {
               <Version number={diff.to} version={versionOf(diff.to)} />
             </p>
           </CardSection>
-          <VersionDiff diff={diff} />
+          <VersionDiff diff={diff} kinds />
         </section>
       )}
     </div>

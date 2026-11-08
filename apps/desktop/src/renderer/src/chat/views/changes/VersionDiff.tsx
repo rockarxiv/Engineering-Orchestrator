@@ -31,7 +31,18 @@ function Fields({ fields }: { fields: readonly FieldChange[] }) {
   );
 }
 
-export function VersionDiff({ diff }: { diff: Pick<VersionDiffValue, "steps" | "routes"> & Partial<Pick<VersionDiffValue, "entryRules">> }) {
+export function VersionDiff({
+  diff,
+  kinds = false,
+}: {
+  diff: Pick<VersionDiffValue, "steps" | "routes"> & Partial<Pick<VersionDiffValue, "entryRules">>;
+  /**
+   * Draw each step's kind chip beside its name (EO-681). Opt-in: the
+   * Changes view asks for it, to match the Graph view beside it; the
+   * suggestion review on an item's page keeps its own look.
+   */
+  kinds?: boolean;
+}) {
   return (
     <>
       <CardSection title="Steps">
@@ -44,7 +55,7 @@ export function VersionDiff({ diff }: { diff: Pick<VersionDiffValue, "steps" | "
                 <span className="flex flex-wrap items-center gap-2">
                   <span className="text-ink">{step.name}</span>
                   {/* The kind as the version the step belongs to says it (EO-681); none for an end. */}
-                  {step.kind == null ? null : <StepKindChip step={step.kind} />}
+                  {!kinds || step.kind == null ? null : <StepKindChip step={step.kind} />}
                   <Chip tone={changeTone(step.change)}>{step.change}</Chip>
                 </span>
                 {/* Field by field, so "the prompt changed" and "it was

@@ -53,6 +53,18 @@ describe("a suggestion on the admin's item", () => {
     expect(screen.getByText("No route changed.")).toBeInTheDocument();
   });
 
+  /**
+   * The step-kind chip is the Changes view's (EO-681), not this one's:
+   * the suggestion's rows carry a kind, and the review still draws none.
+   */
+  it("draws no step-kind chip beside a step, though the diff carries its kind", async () => {
+    renderReview(SUGGESTION);
+
+    const steps = await screen.findByRole("region", { name: "Steps" });
+    expect(within(steps).getAllByText("Second opinion", { exact: false }).length).toBeGreaterThan(0);
+    expect(steps.querySelector("[data-step-kind]")).toBeNull();
+  });
+
   it("carries the needs list and the unapproved modules the author saw", async () => {
     renderReview(SUGGESTION);
     expect(await screen.findByText("1 module to read and approve")).toBeInTheDocument();
