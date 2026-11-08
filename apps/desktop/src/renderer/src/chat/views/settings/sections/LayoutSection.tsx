@@ -94,7 +94,7 @@ function ColoursCard() {
       </Note>
       {clash ? (
         <p role="status" className="rounded-[12px] bg-paused/15 px-3.5 py-2.5 text-[12.5px] leading-relaxed text-ink">
-          This accent is close to the colour that means {clash}, so a button can be mistaken for a status. A hue further round the wheel keeps them apart.
+          This accent is close to the colour that means {clash}, so a button can be mistaken for a label rather than something to press. A hue further round the wheel keeps them apart.
         </p>
       ) : null}
     </CardSection>

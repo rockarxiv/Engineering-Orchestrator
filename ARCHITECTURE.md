@@ -1397,20 +1397,22 @@ The window's colours are a **theme**, chosen per device in Settings → Colours 
 | `--color-canvas-raised` | `oklch(28% 0.018 262)` |
 | `--color-canvas-hover` | `oklch(32% 0.019 262)` |
 | `--color-canvas-active` | `oklch(36% 0.02 262)` |
-| `--color-line` | `oklch(31% 0.016 262)` |
-| `--color-line-strong` | `oklch(42% 0.018 262)` |
+| `--color-line` | `oklch(37.2% 0.0163 262)` |
+| `--color-line-strong` | `oklch(47.8% 0.0144 262)` |
 | `--color-ink` | `oklch(94% 0.006 262)` |
 | `--color-ink-muted` | `oklch(76% 0.01 262)` |
 | `--color-ink-subtle` | `oklch(66% 0.012 262)` |
 | `--color-accent` | `oklch(55% 0.18 258)` |
 
-In Slate, hairlines barely register; the lightness step does the separating. Its accent is a mid blue carrying near-white text, so a primary action reads as a solid object rather than a highlighter. There is no translucency: window vibrancy is a platform material, not a token, and the ground is flat.
+**The outlines are relative to the raised surface**, the lightest one a line is drawn on, in Slate and in every other theme alike (EO-684): `--color-line` is the raised surface mixed 14% toward the body ink in OKLab, and `--color-line-strong` the same at 30%. The line has to show against that surface at **1.4:1** at least; where a theme's 14% falls short — Linear, GitHub Dimmed, Catppuccin and Tokyo Night — its line steps one point further toward the ink at a time until it does. A line picked as a grey of its own ended up at 1.0–1.2:1 against a panel, and in Nord and Catppuccin it was the panel's own colour, so cards and columns did not separate. Slate's accent is a mid blue carrying near-white text, so a primary action reads as a solid object rather than a highlighter. There is no translucency: window vibrancy is a platform material, not a token, and the ground is flat.
 
-A theme replaces the ground, line, ink, accent, focus and scrim tokens — and one extra, a deeper ground for the rails and the conversation's own surface — by setting them on the document root, so a dialog or a menu drawn in a portal wears the same colours as the window it opens over. **The status scale is not themeable**, apart from the idle grey, which is a ground colour: running, reviewing, paused and danger mean the same thing in every theme. Claude's clay accent sits between failed and waiting, where no hue is 35° from both; it is kept because it is the scheme, and it does no harm because a status mark is always drawn in the status scale, never in the accent.
+A theme replaces the ground, line, ink, accent, focus and scrim tokens — and one extra, a deeper ground for the rails and the conversation's own surface — by setting them on the document root, so a dialog or a menu drawn in a portal wears the same colours as the window it opens over. **It also sets the status and kind colours** (EO-684): running, reviewing, paused and danger, success and warning, and the agent and script kinds. What each one means is fixed, and so is the hue it sits near — running green, reviewing violet, paused amber, danger red, agent teal, script pink — but each preset draws them in its own palette, because one set tuned for Slate clashed with Claude's warm grey and was too loud for Nord and Catppuccin. Success is always running's value and warning paused's. Slate's are the values below, and a custom theme keeps Slate's, since its two seeds say nothing about them. Claude's clay accent sits between failed and waiting, where no hue is 35° from both; it is kept because it is the scheme, and it does no harm because a status mark is always drawn in the status scale, never in the accent. Nord's frost accent sits near its own agent teal, a known open point: there the accent is a button and the agent a dot on a neutral chip, and they are told apart by shape.
 
-A **custom** theme is two seeds — a hue and chroma for the ground, a hue and chroma for the accent — and everything else is derived, not picked: the canvas ladder at the Slate lightness steps, inks lightened until they clear 4.5:1 on a raised surface, an accent fill that clears 3:1 against the canvas with whichever of a light or dark ink reads on it, a hover step, and a focus ring that clears 3:1. Contrast stays computed even when a person chooses the colours. If a custom accent of real chroma falls within 35° of a status hue, the picker says which state it would be mistaken for.
+A **custom** theme is two seeds — a hue and chroma for the ground, a hue and chroma for the accent — and everything else is derived, not picked: the canvas ladder at the Slate lightness steps, inks lightened until they clear 4.5:1 on a raised surface, an accent fill that clears 3:1 against the canvas with whichever of a light or dark ink reads on it, a hover step, and a focus ring that clears 3:1. Contrast stays computed even when a person chooses the colours. Its status and kind colours, and its outlines' recipe, are Slate's. If a custom accent of real chroma falls within 35° of a status hue, or of the agent or script hue, the picker says which state or kind it would be mistaken for.
 
 **Status is its own scale.** Running is not success and paused is not a warning: a run in flight has not succeeded, and an item waiting on a person is not a problem. Reusing those tokens is how a dashboard ends up looking alarmed at normal work.
+
+Slate's values, as `styles.css` declares them; every preset has its own at the same hues (`THEME_PRESETS` in `theme.ts`).
 
 | Token | Value | Means |
 |---|---|---|
@@ -1433,7 +1435,7 @@ Reviewing is violet rather than blue because the accent took the blue, and an ac
 | `module` | `script` | `--color-kind-script`, `oklch(78% 0.1 345)` |
 | `builtin` | `EO` | the subtle ink: EO's own steps are the neutral case |
 
-The kind scale is fixed like the status scale: no theme sets it, so a kind reads the same in every window. It is never the accent, because a step's kind is not something you can do, and its two colours of its own sit at least 35° of hue from running, reviewing, paused and danger, so a chip is not read as a state. That is why the first proposal, a blue and a green, was refused: the green was running's hue and the blue read as the accent. A step a draft adds to an existing pipeline is outlined dashed in the muted ink and tagged "new" for the same reason — neutral, never the accent.
+The kind scale is themed like the status scale: each preset draws agent and script in its own palette near the hues above (the values in the table are Slate's), so a kind means the same in every window. It is never the accent, because a step's kind is not something you can do, and its two colours of its own sit at least 35° of hue from running, reviewing, paused and danger, so a chip is not read as a state. That is why the first proposal, a blue and a green, was refused: the green was running's hue and the blue read as the accent. A step a draft adds to an existing pipeline is outlined dashed in the muted ink and tagged "new" for the same reason — neutral, never the accent.
 
 ### 22.4 Shape and spacing
 
@@ -1483,7 +1485,7 @@ The canvas's own window and the debug window keep their native frames: neither h
 - **The step-kind colours clear the status scale by 35° of hue**, each against running, reviewing, paused and danger. A kind chip in a run state's hue would be read as that state.
 - **Every pair is computed.** A pair that could not be parsed is a failure, not a pass.
 
-The themes are held to the same pairs by their own test (`apps/desktop/src/renderer/src/chat/theme.test.ts`): Slate is `styles.css` token for token, every preset and any colour a person picks clears the contrast pairs — the kind colours' among them — no preset sets a status or a kind colour, and every preset's accent clears the status hues but Claude's clay (§22.3).
+The themes are held to the same pairs by their own test (`apps/desktop/src/renderer/src/chat/theme.test.ts`): Slate is `styles.css` token for token, every preset and any colour a person picks clears the contrast pairs — the kind colours' among them — every preset sets all eight status and kind colours at the values its story chose, a custom theme keeps Slate's, every theme's line shows at 1.4:1 against its raised surface, and every preset's accent clears the status and kind hues but Claude's clay and Nord's frost (§22.3).
 
 One renderer test holds the shape of the renderer itself (`apps/desktop/src/renderer/src/oneLayout.test.ts`). It fails if any of the classic layout's folders comes back under `apps/desktop/src/renderer/src/`, if any renderer file takes a design-system control from `@eo/ui`, type-only imports included, and if `@eo/ui` exports one again — the package exports only what §23.3 lists, and a control is the chat layout's kit's to draw. It replaces EO-519's `chat/noClassicUi.test.ts`, which held the chat layout apart from a classic layout that no longer exists.
 
