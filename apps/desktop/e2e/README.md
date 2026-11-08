@@ -57,6 +57,20 @@ A hosted Mac's screen is 1024×768, and macOS keeps a window inside its
 screen. A spec that measures layout sizes the window with `sizeWindow`
 (`support/app.ts`), which also pins the page's viewport to that size.
 
+## `packagedNotification.spec.ts` launches the packaged app
+
+It is the one spec that does not go through `launchApp`, because what it
+tests is the packaged app's signature: from Electron 42 macOS refuses
+notifications from an app that is not properly signed, and the
+unpackaged Electron the other specs launch is unsigned. It skips unless
+`EO_PACKAGED_APP` names a packaged app's executable, and off macOS.
+`e2e-macos` packages the app and sets it. On your own Mac:
+
+```bash
+cd apps/desktop && pnpm exec electron-builder --mac --dir --publish never
+EO_PACKAGED_APP="$PWD/release/mac-arm64/EO.app/Contents/MacOS/EO" pnpm exec playwright test e2e/packagedNotification.spec.ts
+```
+
 ## `pickFromJira.spec.ts` needs a real OS keychain
 
 **Any Secret Service will do, not only GNOME's.** `EO_PASSWORD_STORE`

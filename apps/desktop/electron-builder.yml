@@ -144,6 +144,18 @@ mac:
   # so the day someone sets APPLE_ID alone every macOS build dies. Flip
   # this in the same commit that adds all three secrets.
   notarize: false
+  # Ad-hoc signed while there is no Developer ID certificate (EO-670).
+  # From Electron 42, macOS notifications go through UNNotification, and
+  # macOS refuses them — `failed`, UNErrorDomain error 1 — for an app
+  # carrying only the linker's automatic signature, which is what an
+  # unsigned build has. A real ad-hoc signature is accepted. It needs
+  # `disable-library-validation` under the hardened runtime, which the
+  # entitlements above already grant. Remove this line in the same commit
+  # that adds the certificate: with it, electron-builder signs ad-hoc
+  # rather than with the certificate. Pull-request builds sign only with
+  # CSC_FOR_PULL_REQUEST=true (see `e2e-macos` in ci.yml); there is no
+  # secret in an ad-hoc signature to protect.
+  identity: "-"
 
 win:
   # One installer, carrying both architectures and choosing at install

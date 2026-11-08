@@ -19,7 +19,7 @@ The `stories/` folder that preceded it is gone as of August 2026; the 53 files r
 
 ## Stack
 
-Electron 39 · TypeScript · React 19 · Tailwind v4 · shadcn/ui · @dnd-kit · zustand · TanStack Query · SQLite (better-sqlite3 + Drizzle) · pnpm workspaces + Turborepo · Vitest + Playwright.
+Electron 45 · TypeScript · React 19 · Tailwind v4 · shadcn/ui · @dnd-kit · zustand · TanStack Query · SQLite (better-sqlite3 + Drizzle) · pnpm workspaces + Turborepo · Vitest + Playwright.
 
 ## Invariants
 

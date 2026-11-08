@@ -18,7 +18,7 @@ import { useInvalidateOnPush } from "../query/useInvalidateOnPush";
 import { useProjects } from "../query/useRepositories";
 import { ConfirmDialog, ContextMenu, contextMenuAt, isContextMenuKey, StatusDot, type ContextMenuAt } from "./kit";
 import { DEEP, GroupLabel, WaitingCount, useWaitingOnYou, withArticle } from "./parts";
-import { useTitleBar } from "./windowChrome";
+import { CONTROLS_START, useTitleBar } from "./windowChrome";
 
 /** One row of the rail: a glyph, a name, and whatever trails it. */
 const ROW = "flex h-[30px] items-center gap-[9px] overflow-hidden whitespace-nowrap rounded-[10px] px-2.5 text-[13px]";
@@ -108,7 +108,8 @@ export function ChatRail({ onNewPipeline }: { onNewPipeline: () => void }) {
           a browser tab. */}
       {titleBar ? <div className="app-drag h-6 shrink-0" /> : null}
 
-      <div className="app-drag relative px-2 pb-3 pt-0.5">
+      {/* Clear of window controls a Linux desktop puts at the top left. */}
+      <div className="app-drag relative px-2 pb-3 pt-0.5" style={titleBar ? { paddingLeft: `calc(0.5rem + ${CONTROLS_START})` } : undefined}>
         <button
           type="button"
           aria-label="Switch project"

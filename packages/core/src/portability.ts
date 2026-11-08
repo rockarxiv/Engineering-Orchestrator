@@ -80,7 +80,7 @@ const PATTERNS = [
 const BLOCKED_BUILTINS = new Set(["node:child_process", "node:module", "node:worker_threads", "node:vm", "node:v8", "node:inspector", "node:repl"]);
 
 /**
- * The builtins Node itself ships, as Electron 39's Node 22 has them.
+ * The builtins Node itself ships, as Electron 45's Node 24 has them.
  *
  * Here so that `node:does-not-exist` stops being read as a builtin on
  * the strength of how it is spelled. It is not one — the loader refuses
