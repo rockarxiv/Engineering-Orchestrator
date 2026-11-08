@@ -216,6 +216,20 @@
   --color-reviewing: oklch(66% 0.16 305);
   --color-paused: oklch(79% 0.13 75);
   --color-idle: oklch(58% 0.012 262);
+
+  /*
+   * Step kind: who a pipeline step belongs to, as a chip on the step.
+   *
+   * A fixed scale like the status scale above, and for the same reason:
+   * no theme sets it, so a kind reads the same in every window. It is
+   * never the accent (a step's kind is not something you can do) and it
+   * stays 35° of hue clear of running, reviewing, paused and danger, so a
+   * chip is not read as a state. A person's step is drawn in `paused`,
+   * which is already how a step waiting on a person is coloured, and EO's
+   * own steps in the neutral ink; these two are the rest.
+   */
+  --color-kind-agent: oklch(76% 0.11 205);
+  --color-kind-script: oklch(78% 0.1 345);
 }
 
 /*

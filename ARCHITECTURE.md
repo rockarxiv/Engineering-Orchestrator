@@ -1380,7 +1380,7 @@ The scale is a major third from a **14px chrome base**, with a separate **16px r
 --text-display 32px
 ```
 
-**Dense chrome against generous reading is the rule that makes it work.** The scale is what the base styles and the Markdown renderer read; the chat layout's kit sets its chrome a step denser, at sizes of its own between the steps — mostly 11.5 to 13px — so a board still holds six steps. Text a person reads — a turn, a comment, an item's body — is set larger, with generous leading and a bounded measure. Every size on the scale declares its own line height, because Tailwind pairs a line height with each size utility and one declared without would silently inherit a default. Columns of numbers use tabular numerals.
+**Dense chrome against generous reading is the rule that makes it work.** The scale is what the base styles and the Markdown renderer read; the chat layout's kit sets its chrome a step denser, at sizes of its own between the steps — mostly 11.5 to 13px — so a board still holds six steps. Two places step out of that range on purpose (EO-680): a step's name is 15px semibold in the pipeline drawing and at the head of a board column, and a card's title 13.5px medium, because the step is the thing those two screens are about and the name is what the eye goes looking for. Text a person reads — a turn, a comment, an item's body — is set larger, with generous leading and a bounded measure. Every size on the scale declares its own line height, because Tailwind pairs a line height with each size utility and one declared without would silently inherit a default. Columns of numbers use tabular numerals.
 
 Two label registers: a **micro-label** — mono, uppercase by `text-transform`, tracked — for a metadata key or the word beside a status dot; and a **section label** — body face, sentence case, 600 — for a heading a person reads. Casing is never written into the string, so the accessible name stays the sentence somebody wrote.
 
@@ -1424,9 +1424,20 @@ A **custom** theme is two seeds — a hue and chroma for the ground, a hue and c
 
 Reviewing is violet rather than blue because the accent took the blue, and an accent a few degrees from a run state is exactly the collision — "you can act" reading as "the machine is working" — the scale exists to prevent.
 
+**A step's kind is a scale of its own, too.** Who does the work at a step — an agent, a person, a script or EO itself — is shown as a chip on the step wherever one is drawn: the pipeline drawing on the Graph view and the assistant's draft card, and the head of a board column. The chip is a pill in its colour — a tint of about 15% for its fill, the colour at about 55% for its border, and its word in the colour, in mono because the kind is a machine word — with the step's whole owner line (`agent · implementer`, `built in · create_worktree`) as its title. A terminal step is an end, not a kind of work, and has none.
+
+| `step.type` | Chip | Colour |
+|---|---|---|
+| `agent` | `agent` | `--color-kind-agent`, `oklch(76% 0.11 205)` |
+| `user` | `person` | `--color-paused`, which is already how a step waiting on a person is coloured |
+| `module` | `script` | `--color-kind-script`, `oklch(78% 0.1 345)` |
+| `builtin` | `EO` | the subtle ink: EO's own steps are the neutral case |
+
+The kind scale is fixed like the status scale: no theme sets it, so a kind reads the same in every window. It is never the accent, because a step's kind is not something you can do, and its two colours of its own sit at least 35° of hue from running, reviewing, paused and danger, so a chip is not read as a state. That is why the first proposal, a blue and a green, was refused: the green was running's hue and the blue read as the accent. A step a draft adds to an existing pipeline is outlined dashed in the muted ink and tagged "new" for the same reason — neutral, never the accent.
+
 ### 22.4 Shape and spacing
 
-Radii are generous: **6px** for chips and inline marks, **10px** for inputs, buttons and rows, **14px** for cards, panels and dialogs. That softness is what stops a dense dark tool reading as a spreadsheet. A pill is a status, never a button.
+Radii are generous: **6px** for chips and inline marks, **10px** for inputs, buttons and rows, **14px** for cards, panels and dialogs. That softness is what stops a dense dark tool reading as a spreadsheet. A pill is a status or a step's kind, never a button.
 
 Spacing is Tailwind's own four-point numeric scale, and **there is deliberately no named scale on top of it**. Tailwind v4's named spacing keys share a namespace with its container scale and win the lookup, so declaring a spacing token called `md` makes `max-w-md` resolve to that spacing value instead of the container width — a paragraph wrapping one word per line, with nothing failing and nothing to search for. Declaring a container token alongside does not reclaim the name.
 
@@ -1436,7 +1447,7 @@ Rhythm: **do not pad every region equally.** The rail is tight, boards are mediu
 
 Depth is lightness, not shadow: on a dark screen lightness is what reads as closer. Static surfaces step up the canvas ladder and take no shadow. Only floating layers — menus, dialogs, drag ghosts — get the panel shadow, a hairline ring and a tight umbra, never a halo. There are seven named z-levels and no ad-hoc numbers.
 
-**Cards on the board are cards**, one step up the ladder at the 14px radius. The column draws no border of its own, so there is one containment layer, not a card inside a card. An empty column draws its edges, because a region you can drag onto has to show where a card would land.
+**The board is two raised layers** (EO-680). A column is a panel at the raised step of the ladder, on a hairline, at the 14px radius; its cards are one step further up, on a hairline of their own, at 10px. A step in the pipeline drawing is raised the same way, at 10px, and a terminal step is outlined rather than filled. An empty column's placeholder draws its edges dashed, because a region you can drag onto has to show where a card would land, and the column of a removed step that is still finishing work is dashed rather than raised, since nothing can be dropped on it.
 
 Motion is CSS only; there is no motion library. Three named easings and three durations (120, 220 and 420 milliseconds). Animate transform and opacity only. One orchestrated entrance per screen and no scroll-triggered reveals — this is an application, and content that fades in as a list scrolls is hostile. A focus ring appears instantly. Reduced-motion collapses animation to near zero, **except spinners**, which stay running: a frozen spinner reads as a hung app, which is worse than the motion.
 
@@ -1466,12 +1477,13 @@ The canvas's own window and the debug window keep their native frames: neither h
 
 `pnpm design` recomputes every pair and regenerates `tokens.css`; `pnpm design:check` verifies it is current without writing it. A failure means the value is wrong. It is not advisory, and it refuses to write `tokens.css` while any check fails.
 
-- **Thirty-five contrast pairs.** Text — the three inks on each of the three surfaces, text on the accent fill, accent text on its tint — clears **4.5:1**. Marks, icons and rings — the accent mark, the focus ring, and each of the seven status colours on each surface — clear **3:1**, which is what is asked of non-text indicators, and what a status dot is.
+- **Forty-one contrast pairs.** Text — the three inks on each of the three surfaces, text on the accent fill, accent text on its tint — clears **4.5:1**. Marks, icons and rings — the accent mark, the focus ring, each of the seven status colours on each surface, and both step-kind colours on each surface — clear **3:1**, which is what is asked of non-text indicators, and what a status dot and a kind chip are.
 - **The ink ladder is three steps.** Muted and subtle ink must be at least 8% of lightness apart. Two inks can both clear contrast against the ground and be indistinguishable from each other, collapsing the hierarchy to two without failing anything else.
 - **The accent clears the status scale by 35° of hue**, against running, reviewing and paused.
+- **The step-kind colours clear the status scale by 35° of hue**, each against running, reviewing, paused and danger. A kind chip in a run state's hue would be read as that state.
 - **Every pair is computed.** A pair that could not be parsed is a failure, not a pass.
 
-The themes are held to the same pairs by their own test (`apps/desktop/src/renderer/src/chat/theme.test.ts`): Slate is `styles.css` token for token, every preset and any colour a person picks clears the contrast pairs, no preset sets a status colour, and every preset's accent clears the status hues but Claude's clay (§22.3).
+The themes are held to the same pairs by their own test (`apps/desktop/src/renderer/src/chat/theme.test.ts`): Slate is `styles.css` token for token, every preset and any colour a person picks clears the contrast pairs — the kind colours' among them — no preset sets a status or a kind colour, and every preset's accent clears the status hues but Claude's clay (§22.3).
 
 One renderer test holds the shape of the renderer itself (`apps/desktop/src/renderer/src/oneLayout.test.ts`). It fails if any of the classic layout's folders comes back under `apps/desktop/src/renderer/src/`, if any renderer file takes a design-system control from `@eo/ui`, type-only imports included, and if `@eo/ui` exports one again — the package exports only what §23.3 lists, and a control is the chat layout's kit's to draw. It replaces EO-519's `chat/noClassicUi.test.ts`, which held the chat layout apart from a classic layout that no longer exists.
 

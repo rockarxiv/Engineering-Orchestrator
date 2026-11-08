@@ -86,28 +86,36 @@ export interface PipelineLayout {
 /** Room around the whole drawing, so a stroke on the outermost lane is not cut. */
 const PAD = 6;
 
-const BOX_MIN_WIDTH = 176;
-const BOX_MAX_WIDTH = 264;
+const BOX_MIN_WIDTH = 240;
+export const BOX_MAX_WIDTH = 360;
 const BOX_MIN_HEIGHT = 52;
 /** Inside a box, above its first side row and below its last. */
 const BOX_PAD_Y = 6;
 /** The box's own horizontal padding, as the component draws it. */
 export const BOX_PAD_X = 12;
-const NAME_CHAR = 7.4;
-const OWNER_CHAR = 6.7;
 /**
- * The "start" badge beside the entry step's name. Every name is given the
- * room for it: which step work enters at is not part of the shape, and a
- * drawing must not move when only that changes.
+ * A box is one row (EO-680): the name at 15px semibold, then the "start"
+ * badge; at the far end "N here" and the kind chip. Every box is given
+ * the room for all of them, whether it has them or not: which step work
+ * enters at and how much stands where are not part of the shape, and a
+ * drawing must not move when only they change. What is left is the
+ * name's, which is cut with an ellipsis past it.
  */
-const START_BADGE = 44;
+export const NAME_CHAR = 8.4;
+/** The "start" badge and the gap before it. */
+export const START_BADGE = 48;
+/** "N here", up to four digits, and the gap before it. */
+export const HERE_ROOM = 60;
+/** The widest kind chip — "person", "script" in 12px mono, padded and bordered — and the gap before it. */
+export const KIND_CHIP_ROOM = 72;
 
 /** One route leaving (or arriving at) the side of a box: its label above, its line below. */
 const ROW = 22;
 const ROW_LINE = 16;
 
 export const LABEL_HEIGHT = 14;
-const LABEL_CHAR = 6.4;
+/** A route's label is 11.5px mono: exact at JetBrains Mono's 0.6em advance. */
+const LABEL_CHAR = 6.9;
 const LABEL_PAD = 6;
 const LABEL_MAX_WIDTH = 190;
 /** Between a box's edge and the label beside it, and between that label and what is beyond it. */
@@ -139,20 +147,6 @@ function labelWidth(text: string): number {
 
 function markerWidth(text: string): number {
   return Math.min(MARKER_MAX_WIDTH, Math.ceil(text.length * MARKER_CHAR) + MARKER_PAD);
-}
-
-/** "agent · reporter", "you", "module · match_po", "built in · merge": who a step belongs to. */
-export function ownerLine(step: Pick<PipelineStepView, "type" | "ownerRole" | "entryAction">): string {
-  switch (step.type) {
-    case "agent":
-      return `agent · ${step.ownerRole ?? "agent"}`;
-    case "user":
-      return "you";
-    case "module":
-      return `module · ${step.entryAction ?? "module"}`;
-    default:
-      return `built in · ${step.entryAction ?? "EO"}`;
-  }
 }
 
 /** What a route's arrow says: its label, or its result key when it has none. */
@@ -305,7 +299,7 @@ export function layoutPipeline(
     Math.max(
       BOX_MIN_WIDTH,
       ...ordered.map((step) =>
-        Math.ceil(Math.max(step.name.length * NAME_CHAR + START_BADGE, (step.isTerminal ? 3 : ownerLine(step).length) * OWNER_CHAR)) + 2 * BOX_PAD_X,
+        Math.ceil(step.name.length * NAME_CHAR + START_BADGE + HERE_ROOM + KIND_CHIP_ROOM) + 2 * BOX_PAD_X,
       ),
     ),
   );

@@ -890,6 +890,21 @@ function DraftCard({ message, conversationId, onDone }: CardProps) {
   const routes = useMemo(() => draft.data?.routes ?? [], [draft.data]);
   const machineSpecific = useMemo(() => pipelineMachineSpecificWarnings(steps), [steps]);
   const elsewhere = useHandOffTargets(pipelineId, pipelines);
+  // The steps this draft adds (EO-680): the ones the pipeline as published
+  // has not got. Asked only of a pipeline that exists — on a new one every
+  // step would be new — and nothing is marked until the answer is in.
+  const changing = draft.data?.pipelineId ?? null;
+  const asPublished = useQuery({
+    queryKey: pipelineStepsKey(changing ?? ""),
+    queryFn: () => ipcQuery("pipelineSteps:list", { pipelineId: changing as string }),
+    enabled: changing !== null,
+  });
+  const newStepIds = useMemo(() => {
+    const live = asPublished.data?.steps;
+    if (changing === null || live === undefined) return undefined;
+    const known = new Set(live.map((step) => step.id));
+    return new Set(steps.filter((step) => !known.has(step.id)).map((step) => step.id));
+  }, [changing, asPublished.data, steps]);
 
   // Asked again when an approval or a deletion lands, wherever it was made.
   const catalog = useModulesWithDeleted();
@@ -975,7 +990,13 @@ function DraftCard({ message, conversationId, onDone }: CardProps) {
             </span>
           </div>
           {/* The picture the pipeline's Graph view draws (EO-400); in a column too narrow for it, it scrolls here. */}
-          <PipelineDrawing steps={steps} routes={routes} elsewhere={elsewhere} entryStepId={draft.data?.entryStepId ?? null} />
+          <PipelineDrawing
+            steps={steps}
+            routes={routes}
+            elsewhere={elsewhere}
+            entryStepId={draft.data?.entryStepId ?? null}
+            {...(newStepIds === undefined ? {} : { newStepIds })}
+          />
           {draft.data?.problem ? <p className="text-xs text-danger">{draft.data.problem}</p> : null}
           {/* What the steps hold that only exists on this machine (EO-450), each by step and field. Advice: Publish is never held for it. */}
           <MachineSpecificValues warnings={machineSpecific} subject="the pipeline" />

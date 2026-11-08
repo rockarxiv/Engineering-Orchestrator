@@ -397,6 +397,8 @@ describe("the chat layout's home", () => {
 
     const card = await screen.findByRole("region", { name: "Pipeline draft" });
     await within(card).findByRole("list", { name: "Pipeline graph" });
+    // A new pipeline's steps are all new, so none is marked as such (EO-680).
+    expect(card.querySelectorAll("[data-new-step]")).toHaveLength(0);
     // The project's pipelines are asked for as one of them: there is no id to ask with yet.
     await waitFor(() =>
       expect(within(within(card).getByRole("list", { name: "Routes" })).getAllByRole("listitem").map(routeLine)).toEqual([
@@ -420,8 +422,9 @@ describe("the chat layout's home", () => {
     const card = await screen.findByRole("region", { name: "Pipeline draft" });
     const steps = await within(card).findByRole("list", { name: "Pipeline graph" });
     expect(within(steps).getByText("Gather")).toBeInTheDocument();
-    expect(within(steps).getAllByText("agent · reporter")).toHaveLength(2);
-    expect(within(steps).getByText("you")).toBeInTheDocument();
+    // Each step's kind is a chip, its owner line the chip's title (EO-680).
+    expect(within(steps).getAllByTitle("agent · reporter").map((chip) => chip.textContent)).toEqual(["agent", "agent"]);
+    expect(within(steps).getByTitle("you")).toHaveTextContent("person");
     expect(within(within(steps).getByText("Gather").closest("li")!).getByText("start")).toBeInTheDocument();
     expect(within(within(steps).getByText("Filed").closest("li")!).getByText("end")).toBeInTheDocument();
     // Every route is an arrow with its result on it, not a chip in a list underneath.
@@ -438,6 +441,33 @@ describe("the chat layout's home", () => {
     fireEvent.click(within(card).getByRole("button", { name: "Publish pipeline" }));
     await waitFor(() => expect(within(card).getByRole("button", { name: "Published" })).toBeDisabled());
     expect(invoke.mock.calls.filter(([channel]) => channel === "pipeline:save")).toHaveLength(1);
+  });
+
+  it("marks the steps a draft adds to an existing pipeline, and only those (EO-680)", async () => {
+    const draft = message({ id: "d1", body: "Adds a check by hand.", canApprove: true, approves: "pipeline" });
+    const steps = [...STEPS.slice(0, 3), step("s-check", "Check by hand", 3, { type: "user", ownerRole: null }), { ...STEPS[3]!, position: 4 }];
+    open(
+      "/chat",
+      bridge({
+        "assist:open": { conversation: conversation([draft]) },
+        "assist:draft": { pipelineId: "p-report", steps, routes: ROUTES, entryStepId: "s-gather", problem: null },
+      }),
+    );
+
+    const card = await screen.findByRole("region", { name: "Pipeline draft" });
+    const graph = await within(card).findByRole("list", { name: "Pipeline graph" });
+    // Marked once the pipeline as published has been read: "Check by hand" is the one step it has not got.
+    await waitFor(() => expect([...graph.querySelectorAll("[data-new-step]")].map((box) => box.getAttribute("data-step"))).toEqual(["s-check"]));
+    const added = graph.querySelector('[data-step="s-check"]') as HTMLElement;
+    expect(within(added).getByText("new")).toBeInTheDocument();
+    expect(added.className).toContain("border-dashed");
+    expect(added.className).toContain("border-ink-muted");
+    // In the neutral ink, never the accent: a new step is not something to press.
+    expect(added.className).not.toMatch(/accent/);
+    expect(within(graph).getAllByText("new")).toHaveLength(1);
+    for (const id of ["s-gather", "s-draft", "s-approve", "s-filed"]) {
+      expect((graph.querySelector(`[data-step="${id}"]`) as HTMLElement).className, id).not.toContain("border-dashed");
+    }
   });
 
   // EO-520: a draft that restores a version and renames the pipeline says
@@ -1294,7 +1324,10 @@ describe("the canvas", () => {
 
     const canvas = await screen.findByRole("region", { name: "Canvas" });
     const graph = await within(canvas).findByRole("list", { name: "Pipeline graph" });
-    expect(within(graph).getAllByText("agent · reporter")).toHaveLength(2);
+    expect(within(graph).getAllByTitle("agent · reporter").map((chip) => chip.textContent)).toEqual(["agent", "agent"]);
+    // The published pipeline is never drawn as anybody's draft (EO-680).
+    expect(graph.querySelectorAll("[data-new-step]")).toHaveLength(0);
+    expect(within(graph).queryByText("new")).not.toBeInTheDocument();
     const routes = within(canvas).getByRole("list", { name: "Routes" });
     expect(within(routes).getByText("Gathered")).toBeInTheDocument();
     expect(within(routes).getAllByRole("listitem").map(routeLine)).toEqual(

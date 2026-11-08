@@ -27,10 +27,10 @@ import {
 
 const SLATE_LIKE: ThemeSeed = { ground: { h: 262, c: 0.016 }, accent: { h: 258, c: 0.18 } };
 
-/** The status scale, which no theme touches, as `styles.css` declares it. */
+/** The status scale and the step-kind scale, which no theme touches, as `styles.css` declares them. */
 const STYLES = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "../../../../../../packages/ui/src/styles.css"), "utf8");
 const STATUS: Record<string, string> = Object.fromEntries(
-  ["--color-running", "--color-reviewing", "--color-paused", "--color-danger", "--color-warning", "--color-success"].map((token) => [
+  ["--color-running", "--color-reviewing", "--color-paused", "--color-danger", "--color-warning", "--color-success", "--color-kind-agent", "--color-kind-script"].map((token) => [
     token,
     new RegExp(`${token}:\\s*(oklch\\([^)]*\\));`).exec(STYLES)![1]!,
   ]),
@@ -79,7 +79,7 @@ describe("a theme's palette", () => {
     for (const preset of THEME_PRESETS) {
       expect(Object.keys(preset.palette).sort(), preset.id).toEqual([...THEME_TOKENS].sort());
     }
-    for (const status of ["--color-running", "--color-reviewing", "--color-paused", "--color-danger", "--color-success", "--color-warning"]) {
+    for (const status of ["--color-running", "--color-reviewing", "--color-paused", "--color-danger", "--color-success", "--color-warning", "--color-kind-agent", "--color-kind-script"]) {
       expect(THEME_TOKENS as readonly string[]).not.toContain(status);
     }
   });

@@ -2,8 +2,8 @@ import { useState } from "react";
 import { useDroppable } from "@dnd-kit/core";
 import { watchLine, type ChromeVocabulary, type ItemSummary, type ModuleView, type PipelineStepView } from "@eo/core";
 import { cn } from "@eo/ui";
-import { Button, Select } from "../../kit";
-import { OwnerChip } from "../../parts";
+import { Button, Select, StepKindChip } from "../../kit";
+import { ownerOf } from "../../parts";
 import { NotFullyTested } from "../../modules/NotFullyTested";
 import { BoardCard } from "./BoardCard";
 import { descriptionFor } from "../../../shared/pipeline/dashboard";
@@ -12,8 +12,10 @@ import { descriptionFor } from "../../../shared/pipeline/dashboard";
  * A column of the board: one step, who owns it, what it does, what can
  * be believed about it, and the work standing on it.
  *
- * A lit lane on the canvas's darker ground, with the cards raised on it
- * (ARCHITECTURE.md, "The chat-centric layout").
+ * A raised panel on the canvas's darker ground, on a hairline, with the
+ * cards raised one step further on it (ARCHITECTURE.md, "Depth and
+ * motion"). Its head says the step's kind with the chip the pipeline
+ * drawing uses (EO-680).
  */
 
 /** Who a human step waits on, as the picker's own vocabulary (EO-323): a person and a group are different promises. */
@@ -130,25 +132,30 @@ export function StepColumn({
       ref={setNodeRef}
       aria-label={`${step.name} — ${count}`}
       className={cn(
-        "flex min-w-0 flex-col gap-2 rounded-[14px] bg-canvas px-2.5 py-3",
+        "flex min-w-0 flex-col gap-2 rounded-[14px] border border-line bg-canvas-raised px-2.5 py-3",
         isOver && "bg-accent-subtle/40 shadow-[inset_0_0_0_1.5px_var(--color-accent)]",
       )}
     >
       <header className="flex min-w-0 flex-col gap-1 px-0.5">
         <div className="flex min-w-0 items-center gap-2">
-          <h2 className="min-w-0 truncate text-[13px] font-medium text-ink">{step.name}</h2>
+          <h2 className="min-w-0 truncate text-[15px] font-semibold text-ink">{step.name}</h2>
           {items.length > 0 ? (
-            <span aria-hidden className="text-[11.5px] tabular-nums text-ink-subtle">
+            <span aria-hidden className="text-[12.5px] tabular-nums text-ink-subtle">
               {items.length}
             </span>
           ) : null}
+          {step.isTerminal ? null : <StepKindChip step={step} className="ml-auto" />}
         </div>
         {step.isTerminal ? (
           <span className="text-[11px] text-ink-subtle">end</span>
         ) : (
+          // What runs here, as the machine names it: the role, the action, or "you".
           // A step nobody owns is where the engine hands off to you (ARCHITECTURE.md, "A step").
-          <span className="flex min-w-0" {...(step.type === "user" ? { title: "Human-owned — the engine won't act here" } : {})}>
-            <OwnerChip step={step} />
+          <span
+            className="min-w-0 truncate font-mono text-[11.5px] text-ink-subtle"
+            {...(step.type === "user" ? { title: "Human-owned — the engine won't act here" } : {})}
+          >
+            {ownerOf(step).label}
           </span>
         )}
         <NotFullyTested module={module} />
@@ -218,7 +225,7 @@ export function GhostColumn({ label, items, handlers }: { label: string; items: 
   return (
     <section aria-label={label} className="flex min-w-0 flex-col gap-2 rounded-[14px] border border-dashed border-line px-2.5 py-3 opacity-90">
       <header className="flex min-w-0 flex-col gap-1 px-0.5">
-        <h2 className="truncate text-[13px] font-medium text-ink-muted">{label}</h2>
+        <h2 className="truncate text-[15px] font-semibold text-ink-muted">{label}</h2>
         <p className="text-[11.5px] text-ink-subtle">Removed from the pipeline. These finish here.</p>
       </header>
       <div className="flex min-w-0 flex-col gap-2">
