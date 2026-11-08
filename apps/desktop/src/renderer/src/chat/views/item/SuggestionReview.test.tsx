@@ -17,7 +17,7 @@ const SUGGESTION: SuggestionView = {
   diff: {
     from: 7,
     to: 8,
-    steps: [{ stepId: "review", name: "Second opinion", change: "changed", fields: [{ field: "name", before: "Review", after: "Second opinion" }] }],
+    steps: [{ stepId: "review", name: "Second opinion", change: "changed", kind: { type: "agent", ownerRole: "reviewer", entryAction: "review" }, fields: [{ field: "name", before: "Review", after: "Second opinion" }] }],
     routes: [],
   entryRules: null,
   },
@@ -51,6 +51,18 @@ describe("a suggestion on the admin's item", () => {
     expect(within(steps).getByText("changed")).toBeInTheDocument();
     expect(screen.getByRole("region", { name: "Steps" })).toHaveTextContent("name: Review → Second opinion");
     expect(screen.getByText("No route changed.")).toBeInTheDocument();
+  });
+
+  /**
+   * The step-kind chip is the Changes view's (EO-681), not this one's:
+   * the suggestion's rows carry a kind, and the review still draws none.
+   */
+  it("draws no step-kind chip beside a step, though the diff carries its kind", async () => {
+    renderReview(SUGGESTION);
+
+    const steps = await screen.findByRole("region", { name: "Steps" });
+    expect(within(steps).getAllByText("Second opinion", { exact: false }).length).toBeGreaterThan(0);
+    expect(steps.querySelector("[data-step-kind]")).toBeNull();
   });
 
   it("carries the needs list and the unapproved modules the author saw", async () => {

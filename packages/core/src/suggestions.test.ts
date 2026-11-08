@@ -81,7 +81,7 @@ describe("the document, as the diff reads it", () => {
     });
 
     expect(diff.steps).toEqual([
-      { stepId: "review", name: "Second opinion", change: "changed", fields: [{ field: "name", before: "Review", after: "Second opinion" }] },
+      { stepId: "review", name: "Second opinion", change: "changed", kind: { type: "agent", ownerRole: "reviewer", entryAction: null }, fields: [{ field: "name", before: "Review", after: "Second opinion" }] },
     ]);
   });
 

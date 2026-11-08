@@ -1009,7 +1009,7 @@ function DraftCard({ message, conversationId, onDone }: CardProps) {
               ))}
             </ul>
           ) : null}
-          {trial !== null ? <DesignPlan trial={trial} /> : null}
+          {trial !== null ? <DesignPlan trial={trial} steps={steps} /> : null}
           {trial?.problem ? <p className="text-xs text-danger">{trial.problem}</p> : null}
           {asking !== null ? (
             <ConfirmCoverage

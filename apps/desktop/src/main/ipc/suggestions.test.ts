@@ -229,6 +229,7 @@ describe("suggesting a change from a desktop", () => {
       stepId: "review",
       name: "Second opinion",
       change: "changed",
+      kind: { type: "agent", ownerRole: "reviewer", entryAction: "review" },
       fields: [{ field: "name", before: "Review", after: "Second opinion" }],
     });
   });
@@ -440,6 +441,7 @@ describe("a pipeline this machine diverged", () => {
       stepId: "review",
       name: "Second opinion",
       change: "changed",
+      kind: { type: "agent", ownerRole: "reviewer", entryAction: "review" },
       fields: [{ field: "name", before: "Review", after: "Second opinion" }],
     });
   });

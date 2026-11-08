@@ -1113,9 +1113,10 @@ describe("the chat layout's home", () => {
       const modes = within(card).getByRole("region", { name: "How each step runs" });
       const rows = within(modes).getAllByRole("listitem").filter((row) => row.parentElement?.parentElement === modes);
       expect(rows.map((row) => row.textContent)).toEqual([
-        expect.stringContaining("GatherRuns for realIt only reads the tracker."),
-        expect.stringContaining("DraftMockedSends outside EOIt posts to Slack, which reaches outside EO."),
-        expect.stringContaining("ApproveRuns for real"),
+        // Each with the kind chip the graph above draws for it (EO-681), and none for where work ends.
+        expect.stringContaining("GatheragentRuns for realIt only reads the tracker."),
+        expect.stringContaining("DraftagentMockedSends outside EOIt posts to Slack, which reaches outside EO."),
+        expect.stringContaining("ApprovepersonRuns for real"),
         expect.stringContaining("FiledRuns for real"),
       ]);
       expect(modes).toHaveTextContent("For “A normal week” it reports r3: Drafted.");

@@ -149,7 +149,13 @@ describe("the difference between two versions", () => {
     );
 
     expect(diff.steps).toEqual([
-      { stepId: "review", name: "Review", change: "changed", fields: [{ field: "instructionsSummary", before: null, after: "Look again." }] },
+      {
+        stepId: "review",
+        name: "Review",
+        change: "changed",
+        kind: { type: "user", ownerRole: null, entryAction: null },
+        fields: [{ field: "instructionsSummary", before: null, after: "Look again." }],
+      },
     ]);
   });
 
@@ -161,7 +167,9 @@ describe("the difference between two versions", () => {
   it("reports a step that only moved in the order", () => {
     const diff = diffVersions({ number: 6, steps: STEPS, routes: [] }, { number: 7, steps: [step({ position: 4 }), STEPS[1]!], routes: [] });
 
-    expect(diff.steps).toEqual([{ stepId: "review", name: "Review", change: "changed", fields: [{ field: "position", before: "1", after: "4" }] }]);
+    expect(diff.steps).toEqual([
+      { stepId: "review", name: "Review", change: "changed", kind: { type: "user", ownerRole: null, entryAction: null }, fields: [{ field: "position", before: "1", after: "4" }] },
+    ]);
   });
 
   /**
@@ -239,9 +247,35 @@ describe("the difference between two versions", () => {
     const diff = diffVersions({ number: 6, steps: [STEPS[0]!], routes: [] }, { number: 7, steps: [STEPS[1]!], routes: [] });
 
     expect(diff.steps).toEqual([
-      { stepId: "done", name: "Done", change: "added", fields: [] },
-      { stepId: "review", name: "Review", change: "removed", fields: [] },
+      { stepId: "done", name: "Done", change: "added", kind: null, fields: [] },
+      { stepId: "review", name: "Review", change: "removed", kind: { type: "user", ownerRole: null, entryAction: null }, fields: [] },
     ]);
+  });
+
+  /**
+   * The kind chip beside each step (EO-681) is read from the version the
+   * step belongs to: a removed step is not in the newer one at all, and
+   * a step whose type changed is drawn as what it now is.
+   */
+  it("carries each step's kind from the version it belongs to", () => {
+    const script = step({ id: "match", name: "Match", type: "module", entryAction: "match_po" });
+    const agent = step({ id: "draft", name: "Draft", type: "agent", ownerRole: "writer", entryAction: "implement" });
+    const diff = diffVersions(
+      { number: 6, steps: [script, step()], routes: [] },
+      { number: 7, steps: [agent, step({ type: "builtin", entryAction: "merge" })], routes: [] },
+    );
+
+    expect(diff.steps.map((row) => [row.name, row.change, row.kind])).toEqual([
+      ["Draft", "added", { type: "agent", ownerRole: "writer", entryAction: "implement" }],
+      ["Review", "changed", { type: "builtin", ownerRole: null, entryAction: "merge" }],
+      ["Match", "removed", { type: "module", ownerRole: null, entryAction: "match_po" }],
+    ]);
+  });
+
+  it("gives a step of a type it does not know no kind, rather than guessing one", () => {
+    const diff = diffVersions({ number: 6, steps: [], routes: [] }, { number: 7, steps: [step({ type: "oracle" })], routes: [] });
+
+    expect(diff.steps[0]?.kind).toBeNull();
   });
 });
 

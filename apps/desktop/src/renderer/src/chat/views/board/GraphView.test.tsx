@@ -475,6 +475,31 @@ describe("a step's details, read-only (EO-524)", () => {
     expect(screen.queryByRole("region", { name: "To Do" })).toBeNull();
   });
 
+  /**
+   * The kind chip the drawing it was opened from draws (EO-680), on the
+   * heading's line (EO-681): one each for an agent's, a person's and a
+   * script's step, and none for where work ends.
+   */
+  it("shows the step's kind beside its name in the header, and none for an end", async () => {
+    mockIpc({ steps: [STEPS[0]!, DEPLOY, step("approve", "Approve", 2, { type: "user", ownerRole: null, entryAction: null }), { ...STEPS[2]!, position: 3 }] });
+    renderGraph();
+    const chipIn = (name: string) => {
+      const details = screen.getByRole("region", { name });
+      const heading = within(details).getByRole("heading", { name });
+      return heading.parentElement?.querySelector("[data-step-kind]")?.getAttribute("data-step-kind") ?? null;
+    };
+
+    fireEvent.click(await screen.findByRole("button", { name: "To Do" }));
+    expect(chipIn("To Do")).toBe("agent");
+    fireEvent.click(screen.getByRole("button", { name: "Deploy" }));
+    expect(chipIn("Deploy")).toBe("script");
+    fireEvent.click(screen.getByRole("button", { name: "Approve" }));
+    expect(chipIn("Approve")).toBe("person");
+    fireEvent.click(screen.getByRole("button", { name: "Done" }));
+    expect(within(screen.getByRole("region", { name: "Done" })).queryByText("person")).toBeNull();
+    expect(screen.getByRole("region", { name: "Done" }).querySelector("[data-step-kind]")).toBeNull();
+  });
+
   it("names the built-in function a step runs, by its label", async () => {
     mockIpc({ steps: [step("pr", "Open PR", 0, { type: "builtin", ownerRole: null, entryAction: "open_pull_request" })] });
     renderGraph();

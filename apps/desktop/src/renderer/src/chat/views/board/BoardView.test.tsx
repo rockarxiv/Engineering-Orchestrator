@@ -1134,6 +1134,44 @@ describe("the paused rail", () => {
     expect(within(rail).getByRole("link", { name: "View all paused tasks" })).toHaveAttribute("href", "/inbox");
   });
 
+  /**
+   * The rail beside the board is drawn as one of its columns (EO-681):
+   * the same raised, hairline-outlined panel and the same heading, and
+   * its cards titled the way a board card is — by the same classes, so
+   * the two cannot drift apart.
+   */
+  it("is drawn as a board column, its cards titled as a board card's are", async () => {
+    mockIpc({
+      items: [
+        item({ id: "t1", latestRunStatus: "awaiting_input", title: "Durable comments" }),
+        item({ id: "t3", key: "EO-3", title: "On to do", stepId: "todo", stepName: "To Do" }),
+      ],
+    });
+    renderBoard();
+
+    const rail = await screen.findByRole("complementary", { name: "Paused tasks" });
+    const todo = await column("To Do");
+    const panel = within(rail).getByRole("heading", { level: 2, name: "Paused" }).closest("div")!.parentElement!;
+    for (const token of ["rounded-[14px]", "border", "border-line", "bg-canvas-raised"]) {
+      expect(todo.className.split(" "), token).toContain(token);
+      expect(panel.className.split(" "), token).toContain(token);
+    }
+    const tokens = (element: Element) => element.className.split(" ").filter((token) => token.startsWith("text-[") || token.startsWith("font-"));
+    expect(tokens(within(rail).getByRole("heading", { level: 2, name: "Paused" }))).toEqual(tokens(within(todo).getByRole("heading", { level: 2, name: "To Do" })));
+
+    const boardTitle = await within(todo).findByText("On to do");
+    const railTitle = within(rail).getByText("Durable comments");
+    expect(tokens(railTitle)).toEqual(["text-[13.5px]", "font-medium"]);
+    expect(tokens(railTitle)).toEqual(tokens(boardTitle));
+    // Its card is one step up from the panel, on a hairline, as a board card is.
+    const railCard = railTitle.closest("article")!;
+    const boardCard = boardTitle.closest("article")!;
+    for (const token of ["border", "border-line", "bg-canvas-hover", "hover:bg-canvas-active"]) {
+      expect(boardCard.className.split(" "), token).toContain(token);
+      expect(railCard.className.split(" "), token).toContain(token);
+    }
+  });
+
   describe("how long ago (EO-570)", () => {
     const NOW = new Date("2026-01-01T12:00:00Z").getTime();
     const MINUTE = 60_000;
