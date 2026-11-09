@@ -4,7 +4,24 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DbHandle } from "../db/client.js";
-import { addDependency, createAgent, latestRunForItem, listItems, listRunsForItem, createRun, projectForWorkspace, setItemArchived, transitionItem, updateRun } from "../db/repos/index.js";
+import {
+  addDependency,
+  createAgent,
+  createStep,
+  getItemWatch,
+  latestRunForItem,
+  listItems,
+  listItemWatchesOnCurrentSteps,
+  listRunsForItem,
+  listTransitionsForItem,
+  createRun,
+  projectForWorkspace,
+  setItemArchived,
+  startItemWatch,
+  stepEntryTransitionIds,
+  transitionItem,
+  updateRun,
+} from "../db/repos/index.js";
 import { attachWorkspace, createTestItem, openMigratedTestDb } from "../db/testHelpers.js";
 import { listItemSummaries } from "./domainQueries.js";
 
@@ -23,6 +40,10 @@ vi.mock("../db/repos/index.js", async (importOriginal) => {
     listItems: vi.fn(actual.listItems),
     listRunsForItem: vi.fn(actual.listRunsForItem),
     latestRunForItem: vi.fn(actual.latestRunForItem),
+    getItemWatch: vi.fn(actual.getItemWatch),
+    listTransitionsForItem: vi.fn(actual.listTransitionsForItem),
+    listItemWatchesOnCurrentSteps: vi.fn(actual.listItemWatchesOnCurrentSteps),
+    stepEntryTransitionIds: vi.fn(actual.stepEntryTransitionIds),
   };
 });
 
@@ -189,5 +210,27 @@ describe("items:list, read once per call", () => {
 
     expect(vi.mocked(listRunsForItem)).not.toHaveBeenCalled();
     expect(vi.mocked(latestRunForItem)).toHaveBeenCalledTimes(answer.items.length);
+  });
+
+  it("reads the watches on a board's steps once, however many cards are watching (EO-699)", () => {
+    seed();
+    createStep(handle.db, { id: "wait", pipelineId: "default" as Uuid, position: 15, name: "Wait", type: "builtin", entryAction: "create_worktree", watch: { everyMinutes: 1440, giveUpAfterHours: 168 } });
+    const watching = Array.from({ length: 5 }, (_, n) => {
+      const row = item(`Watch ${n}`, "todo");
+      transitionItem(handle.db, { itemId: row.id, toStepId: "wait", actor: "engine" });
+      const stay = listTransitionsForItem(handle.db, row.id).at(-1)!.id;
+      startItemWatch(handle.db, { itemId: row.id, stepId: "wait", initiationId: stay, startedAt: 1_000 });
+      return row;
+    });
+    for (const spy of [getItemWatch, listTransitionsForItem, listItemWatchesOnCurrentSteps, stepEntryTransitionIds]) vi.mocked(spy).mockClear();
+
+    const answer = listItemSummaries(handle.db, projectId);
+
+    for (const row of watching) expect(answer.items.find((entry) => entry.id === row.id)?.watch).toMatchObject({ stepId: "wait", nextCheckAt: 1_000 });
+    expect(answer.items.filter((entry) => entry.watch == null)).toHaveLength(answer.items.length - watching.length);
+    expect(vi.mocked(listItemWatchesOnCurrentSteps)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(stepEntryTransitionIds)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(getItemWatch)).not.toHaveBeenCalled();
+    expect(vi.mocked(listTransitionsForItem)).not.toHaveBeenCalled();
   });
 });

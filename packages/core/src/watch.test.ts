@@ -1,11 +1,21 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_WATCH_GIVE_UP_HOURS, itemWatchLines, settledWatch, StepWatchSchema, watchDurationWords, watchLine, watchNeverGivesUp } from "./watch.js";
+import { DEFAULT_WATCH_GIVE_UP_HOURS, itemWatchLines, settledWatch, StepWatchSchema, watchDurationWords, watchIntervalWords, watchLine, watchNeverGivesUp } from "./watch.js";
 
 describe("keep checking, as a column head says it (EO-456)", () => {
   it("says how often the step checks and when it gives up", () => {
     expect(watchLine({ watch: { everyMinutes: 5, giveUpAfterHours: 168 } })).toBe("Checks every 5 minutes · gives up after 7 days");
-    expect(watchLine({ watch: { everyMinutes: 1, giveUpAfterHours: 2 } })).toBe("Checks every 1 minute · gives up after 2 hours");
+    expect(watchLine({ watch: { everyMinutes: 1, giveUpAfterHours: 2 } })).toBe("Checks every minute · gives up after 2 hours");
     expect(watchLine({ watch: { everyMinutes: 15, giveUpAfterHours: 36 } })).toBe("Checks every 15 minutes · gives up after 36 hours");
+  });
+
+  it("says the interval in the unit that reads naturally (EO-699)", () => {
+    expect(watchLine({ watch: { everyMinutes: 1440, giveUpAfterHours: 168 } })).toBe("Checks every day · gives up after 7 days");
+    expect(watchLine({ watch: { everyMinutes: 60, giveUpAfterHours: 168 } })).toBe("Checks every hour · gives up after 7 days");
+    expect(watchLine({ watch: { everyMinutes: 5, giveUpAfterHours: 168 } })).toBe("Checks every 5 minutes · gives up after 7 days");
+    expect(watchIntervalWords(360)).toBe("6 hours");
+    expect(watchIntervalWords(2880)).toBe("2 days");
+    expect(watchIntervalWords(90)).toBe("90 minutes");
+    expect(watchIntervalWords(1500)).toBe("25 hours");
   });
 
   it("says nothing about a step that runs once", () => {

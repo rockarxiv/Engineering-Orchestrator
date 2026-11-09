@@ -210,6 +210,22 @@ export const ItemSummarySchema = z.object({
   /** The status of its most recent run, if it has ever run. */
   latestRunStatus: z.string().nullable(),
   /**
+   * The watch on the step it stands on (EO-699): when it last checked,
+   * when it checks next, and how many checks have failed in a row — the
+   * same `item_watches` row the item page reads (`ItemDetail.watch`).
+   *
+   * A watching item spends nearly all its time between checks, and every
+   * check that comes back `waiting` ends as a succeeded run, so without
+   * this the card read `latestRunStatus` and said "Done" on work that is
+   * still going on.
+   *
+   * Null on an item on a step that runs once, and on one whose watch has
+   * not started on this stay. Optional as well, because the renderer does
+   * not parse what a channel answers and a server older than this field
+   * sends a summary without it.
+   */
+  watch: ItemWatchViewSchema.nullable().optional(),
+  /**
    * Who is on it: the specific agent instance, not the role (ARCHITECTURE.md, "Vocabulary").
    *
    * `Orion`, not `Implementer` — two agents can staff one role, and which

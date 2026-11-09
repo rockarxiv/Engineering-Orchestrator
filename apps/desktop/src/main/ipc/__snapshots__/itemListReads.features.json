@@ -46,6 +46,7 @@
       "preview": false,
       "openDependencyCount": 0,
       "latestRunStatus": null,
+      "watch": null,
       "assigneeName": null,
       "assigneePerson": null,
       "claimable": false
@@ -96,6 +97,7 @@
       "preview": false,
       "openDependencyCount": 0,
       "latestRunStatus": null,
+      "watch": null,
       "assigneeName": null,
       "assigneePerson": null,
       "claimable": false
@@ -146,6 +148,7 @@
       "preview": false,
       "openDependencyCount": 0,
       "latestRunStatus": null,
+      "watch": null,
       "assigneeName": null,
       "assigneePerson": null,
       "claimable": false

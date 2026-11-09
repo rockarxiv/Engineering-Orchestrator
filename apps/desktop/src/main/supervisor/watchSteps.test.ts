@@ -19,6 +19,7 @@ import {
   updateRun,
   listStepsForPipeline,
   listTransitionsForItem,
+  mirrorItemWatch,
   postComment,
   replacePipelineGraph,
   transitionItem,
@@ -30,6 +31,7 @@ import type { BuiltinOutcome, BuiltinRunner } from "./builtins.js";
 import { itemWatchView, WAKE_GRACE_MS, WATCH_ROUTED_REASON, WATCH_VERIFICATION_FAILED_REASON } from "./watches.js";
 import { createServerPlatform } from "../platform/server.js";
 import { sourceTreeResources } from "../testing/platform.js";
+import { listItemSummaries } from "../ipc/domainQueries.js";
 
 /**
  * Keep checking, end to end (EO-456, ARCHITECTURE.md, "A step",
@@ -1097,5 +1099,60 @@ describe("a step that keeps checking, offline and after a wake", () => {
     clock = wokeAt + WAKE_GRACE_MS;
     await supervisor.runOnce();
     expect(check).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("the board's card carries the watch (EO-699)", () => {
+  const cardOf = (id: string) => listItemSummaries(handle.db, null).items.find((entry) => entry.id === id);
+
+  it("carries the same watch the item page reads, and nothing for an item on a step that runs once", async () => {
+    seed();
+    const elsewhere = createTestItem(handle.db, { type: "story", title: "Fix the thing", stepId: "fix" });
+    expect(cardOf(item.id)?.watch).toBeNull();
+
+    await supervisorWith(vi.fn<BuiltinRunner>(async () => waiting())).runOnce();
+
+    const page = itemWatchView(handle.db, getItem(handle.db, item.id)!, getStep(handle.db, "watch"));
+    expect(page).not.toBeNull();
+    expect(cardOf(item.id)?.watch).toEqual(page);
+    expect(cardOf(item.id)?.watch).toMatchObject({ lastCheckedAt: START, nextCheckAt: START + 5 * MINUTE, consecutiveFailures: 0, lastError: null });
+    expect(cardOf(elsewhere.id)?.watch).toBeNull();
+  });
+
+  it("carries a failing watch's count and error", async () => {
+    seed();
+    await supervisorWith(vi.fn<BuiltinRunner>(async () => ({ ok: false, reason: "rate limit exceeded" }))).runOnce();
+
+    expect(cardOf(item.id)?.watch).toMatchObject({ lastCheckedAt: START, consecutiveFailures: 1, lastError: "rate limit exceeded" });
+  });
+
+  it("on a replica, carries the watch row mirrored from the record, with no check run here", () => {
+    seed();
+    mirrorItemWatch(handle.db, {
+      itemId: item.id,
+      stepId: "watch",
+      initiationId: `initial:${item.id}:watch`,
+      startedAt: START - 2 * 60 * MINUTE,
+      lastCheckedAt: START - 20 * MINUTE,
+      nextCheckAt: START + 40 * MINUTE,
+      checks: 2,
+      consecutiveFailures: 2,
+      lastError: "rate limit exceeded",
+      postedNewsIds: [],
+      updatedAt: START,
+    });
+
+    expect(cardOf(item.id)?.watch).toMatchObject({ lastCheckedAt: START - 20 * MINUTE, nextCheckAt: START + 40 * MINUTE, consecutiveFailures: 2, lastError: "rate limit exceeded" });
+  });
+
+  it("carries nothing from an earlier stay on the step, as the item page does", async () => {
+    seed();
+    await supervisorWith(vi.fn<BuiltinRunner>(async () => waiting())).runOnce();
+    transitionItem(handle.db, { itemId: item.id, toStepId: "fix", actor: "engine", reason: "moved" });
+    expect(cardOf(item.id)?.watch).toBeNull();
+    transitionItem(handle.db, { itemId: item.id, toStepId: "watch", actor: "engine", reason: "back" });
+
+    expect(itemWatchView(handle.db, getItem(handle.db, item.id)!, getStep(handle.db, "watch"))).toBeNull();
+    expect(cardOf(item.id)?.watch).toBeNull();
   });
 });

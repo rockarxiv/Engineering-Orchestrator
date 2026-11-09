@@ -1,8 +1,8 @@
 import { createHash } from "node:crypto";
-import type { Item, ItemWatchView, MentionTarget, PipelineStep, Run, Uuid } from "@eo/core";
+import type { Item, ItemWatchView, MentionTarget, PipelineStep, Run, StepWatch, Uuid } from "@eo/core";
 import { watchGiveUpAt, type WatchHold } from "@eo/engine";
 import type { Db } from "../db/client.js";
-import { appendRunEventAt, createRun, getItemWatch, getRun, listCommentsForItem, listItemWatches, listTransitionsForItem, updateRun, type ItemWatch } from "../db/repos/index.js";
+import { appendRunEventAt, createRun, getItemWatch, getRun, listCommentsForItem, listItemWatches, listItemWatchesOnCurrentSteps, listTransitionsForItem, stepEntryTransitionIds, updateRun, type ItemWatch } from "../db/repos/index.js";
 import { watchStayOf } from "../db/repos/itemWatchesRepo.js";
 import { ownerOfItem } from "../policy/personBudget.js";
 
@@ -243,13 +243,48 @@ export function ownerMention(db: Db, item: Item): MentionTarget {
 export function itemWatchView(db: Db, item: Item, step: PipelineStep | undefined): ItemWatchView | null {
   if (!step || step.watch === null || item.stepId !== step.id) return null;
   const watch = currentWatch(db, item, step.id);
-  if (watch === undefined) return null;
+  return watch === undefined ? null : watchViewOf(watch, step.watch);
+}
+
+/**
+ * The watch on each listed item's current step, as its card draws it
+ * (`ItemSummary.watch`, EO-699) — the answer `itemWatchView` gives one
+ * item, for a whole board in two queries rather than a few per card: the
+ * watch rows on the steps the items stand on, and the moves that brought
+ * them there. Only items whose step keeps checking are asked about, which
+ * on most boards is none. An item missing from the map is not watching.
+ */
+export function currentWatchViews(db: Db, items: readonly Item[], stepOf: (item: Item) => PipelineStep | undefined): Map<string, ItemWatchView> {
+  const views = new Map<string, ItemWatchView>();
+  const watching = new Map<string, { item: Item; settings: StepWatch }>();
+  for (const item of items) {
+    const settings = stepOf(item)?.watch;
+    if (settings != null) watching.set(item.id, { item, settings });
+  }
+  if (watching.size === 0) return views;
+  const ids = [...watching.keys()];
+  const rows = listItemWatchesOnCurrentSteps(db, ids);
+  if (rows.length === 0) return views;
+  const entries = stepEntryTransitionIds(db, ids);
+  for (const row of rows) {
+    const entry = watching.get(row.itemId);
+    if (entry === undefined) continue;
+    // The same stay `watchStayOf` names, so a card and the item page
+    // agree on whether this row is the watch for the item now.
+    const stay = entries.get(row.itemId) ?? `initial:${entry.item.id}:${entry.item.stepId}`;
+    if (row.initiationId !== stay) continue;
+    views.set(row.itemId, watchViewOf(row, entry.settings));
+  }
+  return views;
+}
+
+function watchViewOf(watch: ItemWatch, settings: StepWatch): ItemWatchView {
   return {
     stepId: watch.stepId,
     startedAt: watch.startedAt,
     lastCheckedAt: watch.lastCheckedAt,
     nextCheckAt: watch.nextCheckAt,
-    giveUpAt: watchGiveUpAt(step.watch, watch.startedAt),
+    giveUpAt: watchGiveUpAt(settings, watch.startedAt),
     checks: watch.checks,
     consecutiveFailures: watch.consecutiveFailures,
     lastError: watch.lastError,

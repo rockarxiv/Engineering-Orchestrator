@@ -461,6 +461,26 @@ export function lastEntryIntoStates(db: Db, stateIds: string[]): Map<Uuid, numbe
 }
 
 /**
+ * The move that brought each of these items onto the step it stands on
+ * now: the id of the latest transition into it, in the order
+ * `listTransitionsForItem` reads (EO-699). What `watchStayOf` answers for
+ * one item, for a whole board in one query. An item that has never moved
+ * onto its step is missing from the map.
+ */
+export function stepEntryTransitionIds(db: Db, itemIds: readonly string[]): Map<string, string> {
+  if (itemIds.length === 0) return new Map();
+  const rows = db
+    .select({ itemId: transitions.itemId, id: transitions.id })
+    .from(transitions)
+    .innerJoin(items, and(eq(items.id, transitions.itemId), eq(items.stepId, transitions.toStepId)))
+    .where(inArray(transitions.itemId, [...itemIds]))
+    .orderBy(asc(transitions.ts), asc(transitions.id))
+    .all();
+  // Ascending, so the last row written for an item is its latest entry.
+  return new Map(rows.map((row) => [row.itemId, row.id]));
+}
+
+/**
  * When each of these items last arrived on the step it stands on now
  * (EO-570).
  *

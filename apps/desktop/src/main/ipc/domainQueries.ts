@@ -108,7 +108,7 @@ import { verificationOfKind } from "../workspaceKinds.js";
 import { activeProjectId } from "./repositoryCommands.js";
 import { workspaceView } from "./workspaceCommands.js";
 import { providerSteersLiveTurns } from "../providers/capabilities.js";
-import { itemWatchView } from "../supervisor/watches.js";
+import { currentWatchViews, itemWatchView } from "../supervisor/watches.js";
 import { runActionName } from "../modules/runName.js";
 import { registry, registryForProject } from "../registry.js";
 import { outsideReachForSteps } from "../trials/stepModes.js";
@@ -572,6 +572,9 @@ function summarise(db: Db, rows: Item[], stories: Item[] = rows, reads: SummaryR
   const boundSteps = stepsByItemVersion(db, all);
   const stepOf = (item: Item): PipelineStep | undefined =>
     item.stepId === null ? undefined : (boundSteps.get(item.id) ?? states.get(item.stepId));
+  // The watch on each card's step (EO-699), for the whole listing at
+  // once: the card says when it checks next rather than "Done".
+  const watches = currentWatchViews(db, all, stepOf);
 
   /**
    * What a dependency edge resolves against, which is *not* this board
@@ -717,6 +720,7 @@ function summarise(db: Db, rows: Item[], stories: Item[] = rows, reads: SummaryR
       preview: item.previewAt !== null,
       openDependencyCount: openDeps.length,
       latestRunStatus: latest?.status ?? null,
+      watch: watches.get(item.id) ?? null,
       // Who is actually on it (ARCHITECTURE.md, "Vocabulary"): the agent that ran most recently,
       // not
       // whichever agent happens to hold the step's role. Two implementers

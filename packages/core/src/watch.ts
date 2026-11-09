@@ -144,7 +144,21 @@ export function watchLine(step: { watch?: StepWatch | null | undefined }): strin
   // Absent as well as null: the renderer does not parse what a channel
   // answers, and a server older than this field sends a step without it.
   if (step.watch == null) return null;
-  return `Checks every ${count(step.watch.everyMinutes, "minute", "minutes")} · ${watchGiveUpWords(step.watch)}`;
+  return `Checks every ${watchIntervalWords(step.watch.everyMinutes)} · ${watchGiveUpWords(step.watch)}`;
+}
+
+/**
+ * How often a watch checks, as the end of "Checks every …", in the unit
+ * that reads naturally (EO-699): "day", "6 hours", "hour", "5 minutes",
+ * "minute". A whole number of days reads in days, of hours in hours, and
+ * anything else in minutes — so 90 minutes stays "90 minutes" rather than
+ * becoming "1.5 hours", and 1440 is "day" rather than "1440 minutes".
+ */
+export function watchIntervalWords(everyMinutes: number): string {
+  const every = (value: number, one: string, many: string) => (value === 1 ? one : `${Math.round(value * 10) / 10} ${many}`);
+  if (everyMinutes >= 1440 && everyMinutes % 1440 === 0) return every(everyMinutes / 1440, "day", "days");
+  if (everyMinutes >= 60 && everyMinutes % 60 === 0) return every(everyMinutes / 60, "hour", "hours");
+  return every(everyMinutes, "minute", "minutes");
 }
 
 /** When a step's watch gives up, as the end of a sentence: "gives up after 7 days", or "never gives up" (EO-571). */
