@@ -115,4 +115,44 @@ describe("shutdown coordinator", () => {
     expect(persisted).toBe(expectedAfterRestart);
     expect(options.persistPause).not.toHaveBeenCalled();
   });
+
+  it("says whether a request started the close, and only the first one did (EO-696)", async () => {
+    choice = "close-when-finished";
+    const coordinator = createShutdownCoordinator(options);
+
+    expect(coordinator.requestClose()).toBe(true);
+    // Joining a close already under way is not starting one.
+    expect(coordinator.requestClose()).toBe(false);
+    await vi.waitFor(() => expect(options.engine.waitForIdle).toHaveBeenCalledOnce());
+    expect(coordinator.requestClose()).toBe(false);
+  });
+
+  it("tells onStayOpen when Keep EO open is chosen, and only then (EO-696)", async () => {
+    const onStayOpen = vi.fn();
+    const coordinator = createShutdownCoordinator({ ...options, onStayOpen });
+
+    close(coordinator);
+    await vi.waitFor(() => expect(onStayOpen).toHaveBeenCalledOnce());
+
+    choice = "close-when-finished";
+    close(coordinator);
+    idle.resolve();
+    await vi.waitFor(() => expect(options.quit).toHaveBeenCalledOnce());
+    expect(onStayOpen).toHaveBeenCalledOnce();
+  });
+
+  it("tells onStayOpen when the dialog cannot be shown and EO stays open", async () => {
+    const onStayOpen = vi.fn();
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    options.showActiveRunsDialog = vi.fn(async () => {
+      throw new Error("no display");
+    });
+    const coordinator = createShutdownCoordinator({ ...options, onStayOpen });
+
+    close(coordinator);
+
+    await vi.waitFor(() => expect(onStayOpen).toHaveBeenCalledOnce());
+    expect(coordinator.state()).toBe("open");
+    error.mockRestore();
+  });
 });

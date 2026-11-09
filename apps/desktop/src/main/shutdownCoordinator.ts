@@ -14,6 +14,14 @@ export interface ShutdownCoordinatorOptions {
   persistPause: () => void;
   stopBackgroundServices: () => void;
   quit: () => void;
+  /**
+   * Told when a close that was asked for ends with EO still open — the
+   * person chose *Keep EO open*, or the dialog could not be shown
+   * (EO-696). Whatever was riding on that close, such as a restart into
+   * a downloaded update, is withdrawn here, so a later ordinary quit is
+   * only a quit.
+   */
+  onStayOpen?: () => void;
 }
 
 type CloseEvent = { preventDefault: () => void };
@@ -51,11 +59,13 @@ export function createShutdownCoordinator(options: ShutdownCoordinatorOptions) {
       // warning failure into destructive shutdown.
       console.error("[eo] failed to show active-agent close warning:", error);
       state = "open";
+      options.onStayOpen?.();
       return;
     }
 
     if (choice === "keep-open") {
       state = "open";
+      options.onStayOpen?.();
       return;
     }
 
@@ -86,22 +96,28 @@ export function createShutdownCoordinator(options: ShutdownCoordinatorOptions) {
    * both. That is the whole reason the button routes through here: the
    * active-agents dialog, the drain and the persisted pause are asked
    * once, in one place, rather than reimplemented beside the updater.
+   *
+   * Answers whether this request is the one that started a close: false
+   * when one was already under way, which this call has only joined
+   * (EO-696). A restart into an update needs to know, because it may
+   * install only when it is what led to the quit.
    */
-  function requestClose(event?: CloseEvent): void {
-    if (state === "ready-to-quit") return;
+  function requestClose(event?: CloseEvent): boolean {
+    if (state === "ready-to-quit") return false;
     event?.preventDefault();
 
-    if (state !== "open") return;
+    if (state !== "open") return false;
     if (options.engine.activeRunCount() === 0) {
       // Close the provider-boundary race for preflight work that is not
       // counted as an active agent yet. This remains runtime-only.
       options.engine.beginClose();
       void finalize();
-      return;
+      return true;
     }
 
     state = "choosing";
     void choose();
+    return true;
   }
 
   return {

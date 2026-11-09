@@ -10,6 +10,7 @@ import { UpdatesSection } from "./UpdatesSection";
  * `settings/UpdatesSection.test.tsx` asserts the classic section: the dead
  * ends say what they are and offer no button, a failed download says why
  * and never restarts, and the one button's label is the state it is in.
+ * Downloading and restarting are separate presses (EO-696).
  */
 
 function renderSection(status: UpdateStatus, answers: Partial<Record<string, unknown>> = {}) {
@@ -73,26 +74,36 @@ describe("the Updates section", () => {
     expect(calls).not.toContain("updates:download");
   });
 
-  it("downloads and then restarts, in that order", async () => {
+  it("downloads when asked and stops there, ending on Restart and update (EO-696)", async () => {
     const { calls } = renderSection(
       { state: "available", version: "0.5.0", lastCheckedAt: 1 },
       { "updates:download": { state: "downloaded", version: "0.5.0", lastCheckedAt: 1 }, "updates:install": { requested: true } },
     );
     expect(await screen.findByText("EO 0.5.0 is available.")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Update and restart" }));
+    fireEvent.click(screen.getByRole("button", { name: "Download" }));
+
+    expect(await screen.findByRole("button", { name: "Restart and update" })).toBeEnabled();
+    expect(screen.getByText("EO 0.5.0 has been downloaded. It installs when you press Restart and update.")).toBeInTheDocument();
+    expect(calls).toContain("updates:download");
+    // A finished download never leads to a restart by itself.
+    expect(calls).not.toContain("updates:install");
+
+    fireEvent.click(screen.getByRole("button", { name: "Restart and update" }));
     await waitFor(() => expect(calls).toContain("updates:install"));
-    expect(calls.indexOf("updates:download")).toBeLessThan(calls.indexOf("updates:install"));
+    expect(calls.filter((channel) => channel === "updates:download")).toHaveLength(1);
   });
 
-  it("advances a progress readout as the main process pushes it", async () => {
-    const { progress } = renderSection({ state: "available", version: "0.5.0", lastCheckedAt: 1 }, { "updates:download": new Promise(() => {}) });
-    fireEvent.click(await screen.findByRole("button", { name: "Update and restart" }));
+  it("advances a progress readout as the main process pushes it, with the button held", async () => {
+    const { progress, calls } = renderSection({ state: "available", version: "0.5.0", lastCheckedAt: 1 }, { "updates:download": new Promise(() => {}) });
+    fireEvent.click(await screen.findByRole("button", { name: "Download" }));
 
     progress(20);
     expect(await screen.findByText("Downloading… 20%")).toBeInTheDocument();
     expect(screen.getByRole("progressbar")).toHaveAttribute("aria-valuenow", "20");
     progress(75);
     expect(await screen.findByText("Downloading… 75%")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Download" })).toBeDisabled();
+    expect(calls).not.toContain("updates:install");
   });
 
   it("follows a background check that resolves while it is open, and re-enables the button", async () => {
@@ -113,17 +124,19 @@ describe("the Updates section", () => {
         "updates:download": { state: "error", message: "connection reset", lastCheckedAt: 1 },
       },
     );
-    fireEvent.click(await screen.findByRole("button", { name: "Update and restart" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Download" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("connection reset");
     expect(calls).not.toContain("updates:install");
 
     fireEvent.click(screen.getByRole("button", { name: "Try again" }));
     await waitFor(() => expect(calls.filter((channel) => channel === "updates:download")).toHaveLength(2));
+    expect(await screen.findByRole("button", { name: "Try again" })).toBeEnabled();
+    expect(calls).not.toContain("updates:install");
   });
 
   it("offers the restart on its own for an update staged earlier", async () => {
     const { calls } = renderSection({ state: "downloaded", version: "0.5.0", lastCheckedAt: 1 }, { "updates:install": { requested: true } });
-    fireEvent.click(await screen.findByRole("button", { name: "Restart to finish updating" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Restart and update" }));
     await waitFor(() => expect(calls).toContain("updates:install"));
     expect(calls).not.toContain("updates:download");
   });
