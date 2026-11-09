@@ -88,6 +88,7 @@ apps/desktop/src/main/ipc/domainQueries.ts: * attachments' sync state travel wit
 apps/desktop/src/main/ipc/domainQueries.ts: * ticket's workspace, or no disk.
 apps/desktop/src/main/ipc/domainQueries.ts: /** The `ticket` section: the item's own fields, the watch on its step, and its attachments' sync state. */
 apps/desktop/src/main/ipc/domainQueries.ts: const own = wanted.has("ticket") ? ownFieldsSection(db, context) : undefined;
+apps/desktop/src/main/ipc/itemAttachmentCommands.ts: if (!item) return { updated: false, problem: "That ticket no longer exists." };
 apps/desktop/src/main/ipc/itemCommands.ts: "Everything else the submission carried is on the ticket itself.",
 apps/desktop/src/main/ipc/itemCommands.ts: const REPRO_ELSEWHERE = "This type does not carry the bug repro fields, so this sentence is here and nowhere else on the ticket.";
 apps/desktop/src/main/ipc/itemSections.test.ts: * reads from. Not every mention of a table: the ticket's own

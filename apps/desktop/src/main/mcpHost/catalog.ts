@@ -3049,6 +3049,19 @@ const AGENT_ATTACHMENT_SET_TOOL: ToolSpec = {
   },
 };
 
+/**
+ * What `paths` takes on the tools that file or edit an item (EO-704), and
+ * the rule for each caller — `comment_post`'s (EO-700), said once for the
+ * three of them.
+ */
+const ITEM_PATHS_RULE =
+  "A client of EO's MCP server names any absolute path to a regular file the person's account can read; a " +
+  "relative path is refused. EO's own system agent, over eo_admin, names only files inside the directory its turn " +
+  "runs in — a path relative to it or an absolute one beneath it, reached through no symbolic link — and a turn " +
+  "that runs in no directory can name none. At most 8 files per paths list, each within 20 MB; EO works out each " +
+  "file's type and size itself. A path that is missing, not a regular file, too large or not one this caller may " +
+  "name refuses the whole call, naming the path and the reason, and nothing is created or changed. ";
+
 const UNGATED_WRITE_TOOLS: readonly ToolSpec[] = [
   channelTool({
     name: "work_submit_plan",
@@ -3084,7 +3097,12 @@ const UNGATED_WRITE_TOOLS: readonly ToolSpec[] = [
       "feature/rate-limits — instead of on one EO cuts: Worktree checks that branch out with every commit on it, " +
       "its pull request opens from it, and EO never renames, deletes, rebases or force-pushes it. It has to exist " +
       "locally or on the repository's remote, and must not be checked out anywhere else, by the time the story is " +
-      "picked up. Read the eo_submit_work guide, via eo_guide, before a " +
+      "picked up. " +
+      "paths puts files on the feature as its own, and paths on a story puts them on that story: files on the " +
+      "machine running EO that become part of what the item is, beside its description, written with the item so " +
+      "the first agent dispatched on it already has them. " +
+      ITEM_PATHS_RULE +
+      "Read the eo_submit_work guide, via eo_guide, before a " +
       "first plan.",
     kind: "write",
     annotations: { openWorldHint: false },
@@ -3118,6 +3136,10 @@ const UNGATED_WRITE_TOOLS: readonly ToolSpec[] = [
       "Jira key. Leave jiraKey out for work Jira has never heard of. Set jiraSync: false to create the ticket with " +
       "Jira switched off in both directions — nothing pushed, nothing pulled — which keeps any key attached for when " +
       "it is switched back on; leave it out to inherit the parent feature's setting, or on when there is no parent. " +
+      "paths puts files on the ticket as its own: files on the machine running EO that become part of what the " +
+      "ticket is, beside its description, written with the ticket so the first agent dispatched on it already has " +
+      "them. " +
+      ITEM_PATHS_RULE +
       "Read the eo_submit_work guide, via eo_guide, before a first ticket.",
     kind: "write",
     annotations: { openWorldHint: false },
@@ -3230,7 +3252,11 @@ const UNGATED_WRITE_TOOLS: readonly ToolSpec[] = [
       "waits for an unfinished one is not picked up until that one finishes, and the answer says when a removal " +
       "has left it free to be picked up on the next tick. On a project your organisation's record holds, the record " +
       "makes the change: send the two lists in a call of their own, and if the record cannot be reached nothing " +
-      "changes and the answer says so.",
+      "changes and the answer says so. " +
+      "paths adds files to the ticket as its own — part of what it is, beside its description, not said on a " +
+      "comment — and removeAttachmentIds takes the ticket's own files off it by id, from ticket_get; a comment's " +
+      "file goes only with its comment, and naming one refuses the call. " +
+      ITEM_PATHS_RULE.trimEnd(),
     kind: "write",
     annotations: { idempotentHint: true, openWorldHint: false },
     render: renderItemUpdated,

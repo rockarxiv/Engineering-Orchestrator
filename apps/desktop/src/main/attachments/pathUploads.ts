@@ -7,7 +7,9 @@ import { mediaTypeFor } from "../supervisor/workspaceFiles.js";
 import { MAX_ATTACHMENT_BYTES, type AttachmentStorage } from "./storage.js";
 
 /**
- * Files a comment names by path, checked and then uploaded (EO-700).
+ * Files a comment names by path, checked and then uploaded (EO-700) —
+ * and, by the same code, the files an item is filed or edited with
+ * (EO-704, `itemUploads.ts`).
  *
  * `comment_post` takes `paths` on EO's two MCP hosts, and who may name
  * what is the host's to say — stamped on the payload as `pathsFrom`,
@@ -35,11 +37,26 @@ type StoredUpload = Awaited<ReturnType<AttachmentStorage["storeImported"]>>;
 export type UploadCheck = { ok: true; paths: string[] } | { ok: false; problem: string };
 export type UploadStore = { ok: true; records: StoredUpload[] } | { ok: false; problem: string };
 
-const nothingPosted = (reasons: string[]): string => `Nothing was posted. ${reasons.join(" ")}`;
+/**
+ * What a refusal opens with (EO-704). A comment's says nothing was
+ * posted; the item channels, whose tools already say nothing was created
+ * or changed, pass null and get the reasons alone.
+ */
+export type RefusalLead = string | null;
+
+const COMMENT_LEAD = "Nothing was posted";
+
+const refusedWith = (lead: RefusalLead, reasons: string[]): string => (lead === null ? reasons.join(" ") : `${lead}. ${reasons.join(" ")}`);
+
+const NO_DIRECTORY = "this turn runs in no directory, so it has nowhere it may upload files from. A system agent may name only files inside the directory its turn runs in.";
+
+/** The refusal for a turn the administrative host knows no directory for, opened with `lead`. */
+export function noDirectoryProblem(lead: RefusalLead = COMMENT_LEAD): string {
+  return lead === null ? `This ${NO_DIRECTORY.slice("this ".length)}` : `${lead}: ${NO_DIRECTORY}`;
+}
 
 /** The refusal for a turn the administrative host knows no directory for. */
-export const NO_DIRECTORY_PROBLEM =
-  "Nothing was posted: this turn runs in no directory, so it has nowhere it may upload files from. A system agent may name only files inside the directory its turn runs in.";
+export const NO_DIRECTORY_PROBLEM = noDirectoryProblem();
 
 /** Whether one path names a file this caller may upload — the reason, where it may not. */
 async function checkAnywhere(path: string): Promise<string | null> {
@@ -61,8 +78,8 @@ async function checkAnywhere(path: string): Promise<string | null> {
  * read or written. Answers every reason at once rather than the first,
  * so a caller fixes the call in one go.
  */
-export async function checkUploadPaths(from: PathsFrom, paths: readonly string[]): Promise<UploadCheck> {
-  if (from.kind === "directory" && from.directory === null) return { ok: false, problem: NO_DIRECTORY_PROBLEM };
+export async function checkUploadPaths(from: PathsFrom, paths: readonly string[], lead: RefusalLead = COMMENT_LEAD): Promise<UploadCheck> {
+  if (from.kind === "directory" && from.directory === null) return { ok: false, problem: noDirectoryProblem(lead) };
   const reasons: string[] = [];
   for (const path of paths) {
     if (from.kind === "anywhere") {
@@ -74,7 +91,7 @@ export async function checkUploadPaths(from: PathsFrom, paths: readonly string[]
     }
   }
   if (new Set(paths).size !== paths.length) reasons.push("The same path is named twice.");
-  return reasons.length > 0 ? { ok: false, problem: nothingPosted(reasons) } : { ok: true, paths: [...paths] };
+  return reasons.length > 0 ? { ok: false, problem: refusedWith(lead, reasons) } : { ok: true, paths: [...paths] };
 }
 
 /**
@@ -117,15 +134,18 @@ async function readAnywhere(path: string): Promise<RunFileRead> {
  * labels a file, and otherwise the store's own reading of the first
  * bytes; the size is what was read.
  */
-export async function storeUploads(storage: AttachmentStorage, from: PathsFrom, paths: readonly string[]): Promise<UploadStore> {
+export async function storeUploads(storage: AttachmentStorage, from: PathsFrom, paths: readonly string[], lead: RefusalLead = COMMENT_LEAD): Promise<UploadStore> {
   const records: StoredUpload[] = [];
   const refuse = async (reason: string): Promise<UploadStore> => {
     await storage.rollback(records).catch(() => undefined);
-    return { ok: false, problem: nothingPosted([reason]) };
+    return { ok: false, problem: refusedWith(lead, [reason]) };
   };
   for (const path of paths) {
     const read = from.kind === "anywhere" ? await readAnywhere(path) : from.directory === null ? null : await readRunFile(from.directory, path);
-    if (read === null) return refuse(NO_DIRECTORY_PROBLEM);
+    if (read === null) {
+      await storage.rollback(records).catch(() => undefined);
+      return { ok: false, problem: noDirectoryProblem(lead) };
+    }
     if (!read.ok) return refuse(read.reason);
     try {
       const mediaType = mediaTypeFor(path);
