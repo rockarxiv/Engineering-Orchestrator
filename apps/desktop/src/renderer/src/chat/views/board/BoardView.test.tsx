@@ -749,6 +749,102 @@ describe("a card", () => {
   });
 });
 
+describe("a card on a step that keeps checking (EO-699)", () => {
+  const NOW = new Date("2026-01-01T12:00:00Z").getTime();
+  const MINUTE = 60_000;
+  const HOUR = 60 * MINUTE;
+  const watching = (overrides: Partial<NonNullable<ItemSummary["watch"]>> = {}): ItemSummary["watch"] => ({
+    stepId: "todo",
+    startedAt: NOW - 3 * 24 * HOUR,
+    lastCheckedAt: NOW - 20 * HOUR,
+    nextCheckAt: NOW + 4 * HOUR,
+    giveUpAt: null,
+    checks: 3,
+    consecutiveFailures: 0,
+    lastError: null,
+    ...overrides,
+  });
+
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] });
+    vi.setSystemTime(NOW);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("says when it checks next instead of Done, and counts down on its own", async () => {
+    mockIpc({ items: [item({ title: "Watching", latestRunStatus: "succeeded", watch: watching({ nextCheckAt: NOW + 3 * MINUTE }) })] });
+    renderBoard();
+
+    const card = (await screen.findByText("Watching")).closest("article")!;
+    expect(within(card).getByText("Next check in 3m")).toBeInTheDocument();
+    expect(within(card).getByText("Last check 20h ago · OK")).toBeInTheDocument();
+    expect(within(card).queryByText("Done")).not.toBeInTheDocument();
+    expect(within(card).getByText("Next check in 3m").parentElement!.title).toMatch(/^Last checked /);
+
+    act(() => {
+      vi.advanceTimersByTime(MINUTE);
+    });
+    expect(within(card).getByText("Next check in 2m")).toBeInTheDocument();
+    expect(within(card).getByText("Last check 20h ago · OK")).toBeInTheDocument();
+
+    act(() => {
+      vi.advanceTimersByTime(2 * MINUTE);
+    });
+    expect(within(card).getByText("Checking now")).toBeInTheDocument();
+  });
+
+  it("says it has not checked yet, that it is checking, and that checks are failing", async () => {
+    mockIpc({
+      items: [
+        item({ id: "t1", key: "EO-1", title: "Fresh", latestRunStatus: null, watch: watching({ lastCheckedAt: null, nextCheckAt: NOW + 3 * MINUTE, checks: 0 }) }),
+        item({ id: "t2", key: "EO-2", title: "Busy", latestRunStatus: "running", watch: watching({ lastCheckedAt: NOW - HOUR }) }),
+        item({ id: "t3", key: "EO-3", title: "Broken", latestRunStatus: "failed", watch: watching({ nextCheckAt: NOW + 5 * MINUTE, consecutiveFailures: 2, lastError: "rate limit exceeded" }) }),
+        // A quiet check in flight: its next check already moved on, its last run long succeeded.
+        item({ id: "t4", key: "EO-4", title: "Quietly", latestRunStatus: "succeeded", watch: watching({ nextCheckAt: NOW + 24 * HOUR, checking: true }) }),
+      ],
+    });
+    renderBoard();
+
+    const fresh = (await screen.findByText("Fresh")).closest("article")!;
+    expect(within(fresh).getByText("Next check in 3m")).toBeInTheDocument();
+    expect(within(fresh).getByText("Not checked yet")).toBeInTheDocument();
+
+    const busy = screen.getByText("Busy").closest("article")!;
+    expect(within(busy).getByText("Checking now")).toBeInTheDocument();
+    expect(within(busy).getByText("Last check 1h ago · OK")).toBeInTheDocument();
+    expect(within(busy).getByText("Checking now").parentElement!.querySelector(".bg-running")).not.toBeNull();
+
+    const broken = screen.getByText("Broken").closest("article")!;
+    expect(within(broken).getByText("Check failed · retrying in 5m").parentElement!.querySelector(".bg-paused")).not.toBeNull();
+    const detail = within(broken).getByText("2 in a row · rate limit exceeded");
+    expect(detail.className.split(" ")).toContain("truncate");
+
+    const quietly = screen.getByText("Quietly").closest("article")!;
+    expect(within(quietly).getByText("Checking now").parentElement!.querySelector(".bg-running")).not.toBeNull();
+    expect(within(quietly).getByText("Last check 20h ago · OK")).toBeInTheDocument();
+    expect(within(quietly).queryByText(/Next check in/)).not.toBeInTheDocument();
+  });
+
+  it("keeps a card on a step that runs once as it was, and a watching card's surface as its work state says", async () => {
+    mockIpc({
+      items: [
+        item({ id: "t1", key: "EO-1", title: "Once", latestRunStatus: "succeeded" }),
+        item({ id: "t2", key: "EO-2", title: "Watching", latestRunStatus: "succeeded", watch: watching() }),
+      ],
+    });
+    renderBoard();
+
+    const once = (await screen.findByText("Once")).closest("article")!;
+    const watched = screen.getByText("Watching").closest("article")!;
+    expect(within(once).getByText("Done")).toBeInTheDocument();
+    expect(within(once).queryByText(/Next check|Last check/)).not.toBeInTheDocument();
+    expect(watched.className).toBe(once.className);
+  });
+});
+
 /**
  * State on work (EO-687): how the work on a column is going, as a load
  * strip and a line of counts under its head, and as each card's tint
@@ -1640,7 +1736,7 @@ describe("the column heads", () => {
     });
     renderBoard();
 
-    expect(await screen.findByText("Checks every 1 minute · gives up after 2 hours")).toBeInTheDocument();
+    expect(await screen.findByText("Checks every minute · gives up after 2 hours")).toBeInTheDocument();
     expect(screen.getAllByText(/^Checks every/)).toHaveLength(1);
   });
 

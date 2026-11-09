@@ -1,12 +1,14 @@
 import { memo, type ReactNode } from "react";
 import { useDraggable } from "@dnd-kit/core";
-import { ArrowUp, CircleSlash, Eye, Forward, GitBranch, Layers } from "lucide-react";
+import { ArrowUp, CircleSlash, Clock, Eye, Forward, GitBranch, Layers } from "lucide-react";
 import { NONE_KIND, firstName, versionLabel, type ItemSummary, type WorkspaceBadge } from "@eo/core";
 import { cn } from "@eo/ui";
 import { useItemAuthority } from "../../../shared/admin/authority";
 import { runStatusOf, type RunStatus } from "../../../shared/items/status";
 import type { WorkState } from "../../../shared/items/workState";
 import { Elapsed } from "../../../shared/items/Elapsed";
+import { watchStatusOf } from "../../../shared/items/watchStatus";
+import { useMinuteTick } from "../../../hooks/useMinuteTick";
 import { PREVIEW_BANNER } from "../../../shared/items/previewBanner";
 import { priorityLabel, showsPriorityBadge } from "../../../shared/pipeline/priority";
 import { ReadOnlyFence } from "../../admin/ReadOnlyFence";
@@ -171,7 +173,6 @@ export function CardBody({
   moving?: boolean;
   claiming?: boolean;
 }) {
-  const status = runStatusOf(item.latestRunStatus);
   return (
     <div className="flex min-w-0 flex-col gap-1">
       <div className="flex min-w-0 items-center gap-1.5 text-[11px] text-ink-subtle">
@@ -210,10 +211,7 @@ export function CardBody({
       <WorkspaceLine workspace={item.workspace} />
 
       <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 pt-0.5 text-[11px] text-ink-muted">
-        <span className="flex items-center gap-1.5">
-          <span aria-hidden className={cn("h-[7px] w-[7px] shrink-0 rounded-full", RUN_DOT[status.tone])} />
-          {status.label}
-        </span>
+        {item.watch == null ? <RunStatusLine status={runStatusOf(item.latestRunStatus)} /> : <WatchStatusLine item={item} />}
         {queued ? (
           <span className="text-ink-subtle" title="This move is waiting to reach your organisation's record.">
             queued
@@ -249,6 +247,47 @@ export function CardBody({
     </div>
   );
 }
+
+/** What the item's latest run means: its dot and its word. */
+function RunStatusLine({ status }: { status: RunStatus }) {
+  return (
+    <span className="flex items-center gap-1.5">
+      <span aria-hidden className={cn("h-[7px] w-[7px] shrink-0 rounded-full", RUN_DOT[status.tone])} />
+      {status.label}
+    </span>
+  );
+}
+
+/**
+ * The status line of an item on a step that keeps checking (EO-699): when
+ * it checks next and when it last did, instead of the "Done" its last
+ * quiet check left — with the full times on hover. A leaf on the shared
+ * minute clock, like `Elapsed`, so the countdown moves without redrawing
+ * the card; only watching cards subscribe.
+ *
+ * The second line takes the row's whole width, so it sits under the
+ * first and pushes the assignee and the corner time to the line below.
+ */
+const WatchStatusLine = memo(function WatchStatusLine({ item }: { item: ItemSummary }) {
+  useMinuteTick();
+  const watch = watchStatusOf(item, Date.now());
+  if (watch === null) return <RunStatusLine status={runStatusOf(item.latestRunStatus)} />;
+  return (
+    <>
+      <span className="flex min-w-0 items-center gap-1.5 whitespace-nowrap" title={watch.title}>
+        {watch.kind === "waiting" ? (
+          <Clock size={11} className="shrink-0 text-ink-subtle" aria-hidden />
+        ) : (
+          <span aria-hidden className={cn("h-[7px] w-[7px] shrink-0 rounded-full", watch.kind === "checking" ? "bg-running" : "bg-paused")} />
+        )}
+        <span className="truncate">{watch.label}</span>
+      </span>
+      <span className="w-full truncate text-ink-subtle" title={watch.detail}>
+        {watch.detail}
+      </span>
+    </>
+  );
+});
 
 /** The two letters a person's name starts with, on a small disc. */
 function Initials({ name }: { name: string }) {

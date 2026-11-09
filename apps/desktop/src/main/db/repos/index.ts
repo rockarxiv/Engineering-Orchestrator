@@ -52,6 +52,7 @@ export {
   asRecordWatch,
   getItemWatch,
   listItemWatches,
+  listItemWatchesOnCurrentSteps,
   listItemWatchesUpdatedSince,
   mirrorItemWatch,
   startItemWatch,
@@ -299,6 +300,7 @@ export {
   listTransitionsForItem,
   listTransitionsSince,
   stepEntryTimes,
+  stepEntryTransitionIds,
   transitionItem,
   type TransitionItemInput,
 } from "./transitionsRepo.js";

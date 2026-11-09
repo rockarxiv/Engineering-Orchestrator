@@ -1,4 +1,4 @@
-import { and, asc, eq, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import { uuidv7, type RecordCursor, type RecordWatch, type Uuid } from "@eo/core";
 import type { Db } from "../client.js";
 import { items, itemWatches } from "../schema.js";
@@ -64,6 +64,23 @@ export function getItemWatch(db: Db, itemId: Uuid, stepId: string): ItemWatch | 
 /** Every watch there is. Read once a tick, so the scheduler can hold the items whose next check is not due. */
 export function listItemWatches(db: Db): ItemWatch[] {
   return db.select().from(itemWatches).all().map(toDomain);
+}
+
+/**
+ * The watches of these items on the steps they stand on now, in one
+ * query (EO-699): the board's cards. A row for a step an item has left is
+ * not read. Whether a row belongs to the item's current *stay* on that
+ * step is the caller's question (`watchStayOf`).
+ */
+export function listItemWatchesOnCurrentSteps(db: Db, itemIds: readonly string[]): ItemWatch[] {
+  if (itemIds.length === 0) return [];
+  return db
+    .select({ watch: itemWatches })
+    .from(itemWatches)
+    .innerJoin(items, and(eq(items.id, itemWatches.itemId), eq(items.stepId, itemWatches.stepId)))
+    .where(inArray(itemWatches.itemId, [...itemIds]))
+    .all()
+    .map((row) => toDomain(row.watch));
 }
 
 /**

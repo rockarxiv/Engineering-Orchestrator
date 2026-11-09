@@ -253,7 +253,7 @@ import { runSubject } from "../modules/runName.js";
 import { createSideCallSlots } from "../sideCalls/slots.js";
 import { endAllProcessTrees } from "../process/processTree.js";
 import { createMemoryConsolidator, type MemoryConsolidatorOptions } from "../memory/consolidator.js";
-import { currentWatch, ownerMention, recordQuietCheck, waitingLine, watchArrival, watchHold, watchRoundTrips, WATCH_ROUTED_REASON, WATCH_VERIFICATION_FAILED_REASON } from "./watches.js";
+import { currentWatch, markCheckInFlight, ownerMention, recordQuietCheck, waitingLine, watchArrival, watchHold, watchRoundTrips, WATCH_ROUTED_REASON, WATCH_VERIFICATION_FAILED_REASON } from "./watches.js";
 import { agentMentionChain } from "./escalation.js";
 
 function safeTurnAttachments(attachments: NonNullable<ReturnType<typeof listCommentsForItem>[number]["attachments"]>): AgentInputAttachment[] {
@@ -7440,35 +7440,48 @@ export function createRunSupervisor(
     // running work, or EO closing, stops a check as it stops a run.
     const controller = new AbortController();
     activeControllers.set(runId, controller);
-    const outcome: BuiltinOutcome = runner
-      ? await runner({
-          db,
-          item,
-          prepareWorkspace: async (forItem, forAction, request) => {
-            const prepared = await prepareWorkspace(forItem, forAction, request);
-            if (prepared.ok) {
-              cwd = prepared.workspace.cwd;
-              if (run !== undefined) updateRun(db, runId, { cwd });
-            }
-            return prepared;
-          },
-          report: (text) => {
-            lines.push(text);
-          },
-          runId,
-          signal: controller.signal,
-          ensureRun: () => {
-            ensureRun();
-          },
-          inputs: step.inputs,
-        }).catch((error: unknown) => ({ ok: false as const, reason: error instanceof Error ? error.message : String(error) }))
-      : {
-          ok: false,
-          reason: builtin
-            ? `"${action}" is not one of EO's built-in functions.`
-            : `This step runs a module that is missing, deleted, or no longer approved. Check it under Settings → Modules.`,
-        };
-    activeControllers.delete(runId);
+    // Said to be running for as long as the runner is (EO-699), so a
+    // card says "Checking now" rather than counting down to the check
+    // after this one. Cleared in `finally`, and everything after the
+    // runner is synchronous, so no read sees the mark gone and the
+    // watch row not yet written.
+    markCheckInFlight(db, item.id, true);
+    onItemChanged(item.id);
+    let outcome: BuiltinOutcome;
+    try {
+      outcome = runner
+        ? await runner({
+            db,
+            item,
+            prepareWorkspace: async (forItem, forAction, request) => {
+              const prepared = await prepareWorkspace(forItem, forAction, request);
+              if (prepared.ok) {
+                cwd = prepared.workspace.cwd;
+                if (run !== undefined) updateRun(db, runId, { cwd });
+              }
+              return prepared;
+            },
+            report: (text) => {
+              lines.push(text);
+            },
+            runId,
+            signal: controller.signal,
+            ensureRun: () => {
+              ensureRun();
+            },
+            inputs: step.inputs,
+          }).catch((error: unknown) => ({ ok: false as const, reason: error instanceof Error ? error.message : String(error) }))
+        : {
+            ok: false,
+            reason: builtin
+              ? `"${action}" is not one of EO's built-in functions.`
+              : `This step runs a module that is missing, deleted, or no longer approved. Check it under Settings → Modules.`,
+          };
+    } finally {
+      activeControllers.delete(runId);
+      markCheckInFlight(db, item.id, false);
+      onItemChanged(item.id);
+    }
     const ended = now();
 
     // Stopped while it checked: whoever stopped it has been told, and the

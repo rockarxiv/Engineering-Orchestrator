@@ -1,8 +1,8 @@
 import { createHash } from "node:crypto";
-import type { Item, ItemWatchView, MentionTarget, PipelineStep, Run, Uuid } from "@eo/core";
+import type { Item, ItemWatchView, MentionTarget, PipelineStep, Run, StepWatch, Uuid } from "@eo/core";
 import { watchGiveUpAt, type WatchHold } from "@eo/engine";
 import type { Db } from "../db/client.js";
-import { appendRunEventAt, createRun, getItemWatch, getRun, listCommentsForItem, listItemWatches, listTransitionsForItem, updateRun, type ItemWatch } from "../db/repos/index.js";
+import { appendRunEventAt, createRun, getItemWatch, getRun, listCommentsForItem, listItemWatches, listItemWatchesOnCurrentSteps, listTransitionsForItem, stepEntryTransitionIds, updateRun, type ItemWatch } from "../db/repos/index.js";
 import { watchStayOf } from "../db/repos/itemWatchesRepo.js";
 import { ownerOfItem } from "../policy/personBudget.js";
 
@@ -239,19 +239,82 @@ export function ownerMention(db: Db, item: Item): MentionTarget {
   return personId === null ? { type: "human" } : { type: "human", personId };
 }
 
+/**
+ * The items whose check is running right now, by database (EO-699): what
+ * lets a card say "Checking now" while one is. A check marks its item
+ * before it awaits the step's runner and clears it once the runner is
+ * done, whatever it answered.
+ *
+ * Held in memory rather than on the watch row, on purpose. A check that
+ * dies with the app leaves nothing behind to clear, so a card never says
+ * a check is running that is not; and a quiet check stays the record it
+ * is rather than an active run (`recordQuietCheck`). Another device in an
+ * organisation does not see this device's check in flight — only what it
+ * reported once it finished, through the mirrored row.
+ */
+const checksInFlight = new WeakMap<Db, Set<string>>();
+
+/** Marks this item's check as running, or as done. */
+export function markCheckInFlight(db: Db, itemId: string, running: boolean): void {
+  const items = checksInFlight.get(db) ?? new Set<string>();
+  if (running) items.add(itemId);
+  else items.delete(itemId);
+  checksInFlight.set(db, items);
+}
+
+function isCheckInFlight(db: Db, itemId: string): boolean {
+  return checksInFlight.get(db)?.has(itemId) === true;
+}
+
 /** The item's watch as the item page draws it, or null when it is not watching (`ItemDetail.watch`). */
 export function itemWatchView(db: Db, item: Item, step: PipelineStep | undefined): ItemWatchView | null {
   if (!step || step.watch === null || item.stepId !== step.id) return null;
   const watch = currentWatch(db, item, step.id);
-  if (watch === undefined) return null;
+  return watch === undefined ? null : watchViewOf(db, watch, step.watch);
+}
+
+/**
+ * The watch on each listed item's current step, as its card draws it
+ * (`ItemSummary.watch`, EO-699) — the answer `itemWatchView` gives one
+ * item, for a whole board in two queries rather than a few per card: the
+ * watch rows on the steps the items stand on, and the moves that brought
+ * them there. Only items whose step keeps checking are asked about, which
+ * on most boards is none. An item missing from the map is not watching.
+ */
+export function currentWatchViews(db: Db, items: readonly Item[], stepOf: (item: Item) => PipelineStep | undefined): Map<string, ItemWatchView> {
+  const views = new Map<string, ItemWatchView>();
+  const watching = new Map<string, { item: Item; settings: StepWatch }>();
+  for (const item of items) {
+    const settings = stepOf(item)?.watch;
+    if (settings != null) watching.set(item.id, { item, settings });
+  }
+  if (watching.size === 0) return views;
+  const ids = [...watching.keys()];
+  const rows = listItemWatchesOnCurrentSteps(db, ids);
+  if (rows.length === 0) return views;
+  const entries = stepEntryTransitionIds(db, ids);
+  for (const row of rows) {
+    const entry = watching.get(row.itemId);
+    if (entry === undefined) continue;
+    // The same stay `watchStayOf` names, so a card and the item page
+    // agree on whether this row is the watch for the item now.
+    const stay = entries.get(row.itemId) ?? `initial:${entry.item.id}:${entry.item.stepId}`;
+    if (row.initiationId !== stay) continue;
+    views.set(row.itemId, watchViewOf(db, row, entry.settings));
+  }
+  return views;
+}
+
+function watchViewOf(db: Db, watch: ItemWatch, settings: StepWatch): ItemWatchView {
   return {
     stepId: watch.stepId,
     startedAt: watch.startedAt,
     lastCheckedAt: watch.lastCheckedAt,
     nextCheckAt: watch.nextCheckAt,
-    giveUpAt: watchGiveUpAt(step.watch, watch.startedAt),
+    giveUpAt: watchGiveUpAt(settings, watch.startedAt),
     checks: watch.checks,
     consecutiveFailures: watch.consecutiveFailures,
     lastError: watch.lastError,
+    checking: isCheckInFlight(db, watch.itemId),
   };
 }

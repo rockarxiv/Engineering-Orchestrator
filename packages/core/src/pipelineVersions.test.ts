@@ -224,7 +224,7 @@ describe("the difference between two versions", () => {
       { field: "watch", before: "runs once", after: "Checks every 5 minutes · gives up after 7 days" },
     ]);
     expect(diffVersions({ number: 7, steps: [watching], routes: [] }, { number: 8, steps: [faster], routes: [] }).steps[0]?.fields).toEqual([
-      { field: "watch", before: "Checks every 5 minutes · gives up after 7 days", after: "Checks every 1 minute · gives up after 7 days" },
+      { field: "watch", before: "Checks every 5 minutes · gives up after 7 days", after: "Checks every minute · gives up after 7 days" },
     ]);
   });
 

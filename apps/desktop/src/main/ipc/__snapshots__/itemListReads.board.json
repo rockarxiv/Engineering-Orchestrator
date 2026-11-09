@@ -46,6 +46,7 @@
       "preview": false,
       "openDependencyCount": 0,
       "latestRunStatus": null,
+      "watch": null,
       "assigneeName": null,
       "assigneePerson": null,
       "claimable": false
@@ -93,6 +94,7 @@
       "preview": false,
       "openDependencyCount": 0,
       "latestRunStatus": null,
+      "watch": null,
       "assigneeName": null,
       "assigneePerson": null,
       "claimable": false
@@ -140,6 +142,7 @@
       "preview": false,
       "openDependencyCount": 0,
       "latestRunStatus": "failed",
+      "watch": null,
       "assigneeName": "Implementer",
       "assigneePerson": null,
       "claimable": false
@@ -190,6 +193,7 @@
       "preview": false,
       "openDependencyCount": 0,
       "latestRunStatus": null,
+      "watch": null,
       "assigneeName": null,
       "assigneePerson": null,
       "claimable": false
@@ -237,6 +241,7 @@
       "preview": false,
       "openDependencyCount": 0,
       "latestRunStatus": null,
+      "watch": null,
       "assigneeName": null,
       "assigneePerson": null,
       "claimable": false
@@ -287,6 +292,7 @@
       "preview": false,
       "openDependencyCount": 0,
       "latestRunStatus": null,
+      "watch": null,
       "assigneeName": null,
       "assigneePerson": null,
       "claimable": false
@@ -334,6 +340,7 @@
       "preview": false,
       "openDependencyCount": 1,
       "latestRunStatus": "succeeded",
+      "watch": null,
       "assigneeName": "EO",
       "assigneePerson": null,
       "claimable": false
@@ -381,6 +388,7 @@
       "preview": false,
       "openDependencyCount": 5,
       "latestRunStatus": "running",
+      "watch": null,
       "assigneeName": "Reviewer",
       "assigneePerson": null,
       "claimable": false
