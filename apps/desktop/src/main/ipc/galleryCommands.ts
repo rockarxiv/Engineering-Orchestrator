@@ -34,7 +34,7 @@ import {
   workspaceProblem,
 } from "../db/repos/index.js";
 import { isAdopting } from "../db/repos/projectsRepo.js";
-import { forgeCardNeed, galleryBlanks, galleryNeeds, galleryRoleSlots, repositoryAnswer } from "../gallery/form.js";
+import { forgeCardNeed, galleryBlanks, galleryNeeds, galleryRoleSlots, gallerySteps, repositoryAnswer } from "../gallery/form.js";
 import { forgeNeeds, type DetectForge } from "../gallery/forgeNeeds.js";
 import { assistantRow, previewTemplate, projectNeeds, useTemplate } from "../gallery/commands.js";
 import { firstItemBrief } from "../gallery/firstItemBrief.js";
@@ -165,6 +165,7 @@ function cardOf(db: Db, template: GalleryTemplate, context: GalleryContext, solo
     source: template.source,
     bundled: template.bundled,
     pipelineName: template.document.pipeline.name,
+    steps: gallerySteps(template.document),
     // The forge CLI line too, before any repository says which (EO-663).
     needs: galleryNeeds(preflight, forgeCardNeed(template.document)),
     blanks: galleryBlanks(template.document),

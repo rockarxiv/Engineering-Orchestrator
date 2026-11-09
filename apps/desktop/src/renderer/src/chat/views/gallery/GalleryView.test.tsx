@@ -1,5 +1,5 @@
 import { QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes, useParams } from "react-router-dom";
 import { describe, expect, it, vi } from "vitest";
 import { ThemeProvider } from "@eo/ui";
@@ -23,6 +23,12 @@ const WEEKLY: GalleryTemplateView = {
   source: "Bundled with EO",
   bundled: true,
   pipelineName: "Weekly report",
+  steps: [
+    { id: "gather", name: "Gather", type: "agent", isTerminal: false },
+    { id: "draft", name: "Draft", type: "agent", isTerminal: false },
+    { id: "approve", name: "Approve", type: "user", isTerminal: false },
+    { id: "filed", name: "Filed", type: "user", isTerminal: true },
+  ],
   needs: [
     { key: "role:reporter", line: "An agent for the Reporter steps", met: false, why: "The Reporter steps have no agent to run on yet.", fix: null },
     { key: "workspace", line: "A folder — somewhere its work happens", met: true, why: null, fix: null },
@@ -125,6 +131,77 @@ describe("the cards", () => {
     expect(screen.getByText("Every week, EO reads a folder and writes the report.")).toBeInTheDocument();
     expect(screen.getByText("What this needs")).toBeInTheDocument();
     expect(screen.getByText("An agent for the Reporter steps")).toBeInTheDocument();
+  });
+
+  it("draws the template's own steps in order, coloured by who owns each, with the end hollow", async () => {
+    // Every owner kind but script, and an end: the card draws what the template says, in its order.
+    const delivery: GalleryTemplateView = {
+      ...WEEKLY,
+      slug: "delivery",
+      title: "Delivery",
+      steps: [
+        { id: "worktree", name: "Worktree", type: "builtin", isTerminal: false },
+        { id: "todo", name: "To Do", type: "agent", isTerminal: false },
+        { id: "approve", name: "Approve", type: "user", isTerminal: false },
+        { id: "done", name: "Done", type: "user", isTerminal: true },
+      ],
+    };
+    mockIpc({ templates: [delivery] });
+    renderGallery();
+
+    const card = await screen.findByRole("region", { name: "Delivery" });
+    const steps = within(within(card).getByRole("list", { name: "Steps" })).getAllByRole("listitem");
+    expect(steps.map((step) => step.textContent)).toEqual(["Worktree", "To Do", "Approve", "Done"]);
+    expect(steps.map((step) => step.dataset.owner)).toEqual(["EO", "agent", "person", "end"]);
+    expect(steps.map((step) => step.firstElementChild!.className)).toEqual([
+      expect.stringContaining("bg-ink-subtle"),
+      expect.stringContaining("bg-kind-agent"),
+      expect.stringContaining("bg-paused"),
+      expect.stringContaining("border-line-strong"),
+    ]);
+    expect(steps[3]!.firstElementChild!.className).not.toMatch(/\bbg-/);
+  });
+
+  it("names the four owner colours once, above the cards", async () => {
+    mockIpc({ templates: [WEEKLY, FETCHED] });
+    renderGallery();
+
+    await screen.findByText("Board pack");
+    const key = screen.getByRole("list", { name: "Step owners" });
+    expect(within(key).getAllByRole("listitem").map((item) => item.textContent)).toEqual(["agent", "person", "script", "EO"]);
+    expect(screen.getAllByRole("list", { name: "Step owners" })).toHaveLength(1);
+  });
+
+  it("counts the needs met: none of them, then all of them", async () => {
+    const none: GalleryTemplateView = { ...WEEKLY, needs: WEEKLY.needs.map((need) => ({ ...need, met: false })) };
+    const all: GalleryTemplateView = { ...FETCHED, needs: WEEKLY.needs.map((need) => ({ ...need, met: true })) };
+    mockIpc({ templates: [none, all] });
+    const { container } = renderGallery();
+
+    const first = await screen.findByRole("region", { name: "Weekly report" });
+    expect(within(first).getByText("0 of 2 ready")).toBeInTheDocument();
+    expect(within(first).queryByText("Ready to use")).toBeNull();
+    const second = screen.getByRole("region", { name: "Board pack" });
+    expect(within(second).getByText("Ready to use")).toBeInTheDocument();
+    expect([...container.querySelectorAll("[data-met]")].map((segment) => segment.getAttribute("data-met"))).toEqual(["false", "false", "true", "true"]);
+  });
+
+  it("says a template that needs nothing is ready to use", async () => {
+    mockIpc({ templates: [{ ...WEEKLY, needs: [] }] });
+    const { container } = renderGallery();
+
+    const card = await screen.findByRole("region", { name: "Weekly report" });
+    expect(within(card).getByText("What this needs")).toBeInTheDocument();
+    expect(within(card).getByText("Ready to use")).toBeInTheDocument();
+    expect(container.querySelectorAll("[data-met]")).toHaveLength(0);
+  });
+
+  it("keeps Use this the filled accent button beside a plain Preview", async () => {
+    mockIpc();
+    renderGallery();
+
+    expect(await screen.findByRole("button", { name: "Use this" })).toHaveClass("bg-accent");
+    expect(screen.getByRole("button", { name: "Preview" })).not.toHaveClass("bg-accent");
   });
 
   it("shows a fetched entry's source and version beside the bundled one", async () => {
