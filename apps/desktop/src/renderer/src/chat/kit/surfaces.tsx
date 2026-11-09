@@ -120,11 +120,16 @@ export function GroupLabel({ children, trailing }: { children: ReactNode; traili
   );
 }
 
-export type Tone = "neutral" | "accent" | "success" | "running" | "reviewing" | "paused" | "danger";
+/**
+ * `tag` is a label with no state — pinned, admin, published — and is
+ * neutral rather than the accent, which marks only what can be pressed
+ * (ARCHITECTURE.md §22.1, rule 6; EO-689). A chip is never pressed.
+ */
+export type Tone = "neutral" | "tag" | "success" | "running" | "reviewing" | "paused" | "danger";
 
 const CHIP_TONE: Record<Tone, string> = {
   neutral: "bg-canvas-raised text-ink-muted",
-  accent: "bg-accent-subtle text-accent-soft",
+  tag: "bg-canvas-active text-ink-muted",
   success: "bg-success/15 text-success",
   running: "bg-running/15 text-running",
   reviewing: "bg-reviewing/15 text-reviewing",
@@ -144,7 +149,7 @@ export function Chip({ tone = "neutral", children, className, title }: { tone?: 
   );
 }
 
-const DOT_TONE: Record<Exclude<Tone, "accent">, string> = {
+const DOT_TONE: Record<Exclude<Tone, "tag">, string> = {
   neutral: "bg-idle",
   success: "bg-success",
   running: "bg-running",
@@ -154,7 +159,7 @@ const DOT_TONE: Record<Exclude<Tone, "accent">, string> = {
 };
 
 /** A status mark. Always with words beside it or a label on it: a colour alone says nothing to some people. */
-export function StatusDot({ tone, label }: { tone: Exclude<Tone, "accent">; label?: string }) {
+export function StatusDot({ tone, label }: { tone: Exclude<Tone, "tag">; label?: string }) {
   return (
     <span className="inline-flex shrink-0 items-center">
       <span aria-hidden className={cn("h-[7px] w-[7px] rounded-full", DOT_TONE[tone])} />

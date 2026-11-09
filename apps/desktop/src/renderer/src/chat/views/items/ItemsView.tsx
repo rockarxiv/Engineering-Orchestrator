@@ -79,7 +79,7 @@ function naturalDirection(key: ItemSortKey): "asc" | "desc" {
   return key === "updated" || key === "priority" ? "desc" : "asc";
 }
 
-const DOT: Record<string, Exclude<Tone, "accent">> = { running: "running", paused: "paused", failed: "danger", done: "neutral", idle: "neutral" };
+const DOT: Record<string, Exclude<Tone, "tag">> = { running: "running", paused: "paused", failed: "danger", done: "neutral", idle: "neutral" };
 
 export function ItemsView() {
   const navigate = useNavigate();

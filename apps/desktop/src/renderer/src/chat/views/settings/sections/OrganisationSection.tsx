@@ -80,7 +80,7 @@ export function OrganisationSection() {
       >
         <div className="flex min-w-0 flex-wrap items-center gap-2">
           <span className="text-[13.5px] font-medium text-ink">{status.personName}</span>
-          {status.isAdmin ? <Chip tone="accent">admin</Chip> : null}
+          {status.isAdmin ? <Chip tone="tag">admin</Chip> : null}
         </div>
         <Facts
           label="Sign-in"

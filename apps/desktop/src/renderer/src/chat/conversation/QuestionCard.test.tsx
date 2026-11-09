@@ -162,11 +162,13 @@ describe("the closed question card", () => {
 
     const markers = [...container.querySelectorAll("span[aria-hidden].rounded-full")];
     expect(markers).toHaveLength(2);
-    // A decision is a filled accent; one never made is an empty ring.
+    // A decision is a filled mark; one never made is an empty ring.
     // The old card ticked both and then printed "Not answered" beside
-    // the second (EO-338).
-    expect(markers[0]!.className).toContain("bg-accent-subtle");
-    expect(markers[1]!.className).not.toContain("bg-accent-subtle");
+    // the second (EO-338). Neutral rather than the accent, which marks
+    // only what can be pressed (EO-689).
+    expect(markers[0]!.className).toContain("bg-canvas-active");
+    expect(markers[0]!.className).not.toMatch(/accent/);
+    expect(markers[1]!.className).not.toContain("bg-canvas-active");
     expect(markers[1]!.className).toContain("border-line");
     expect(screen.getByText("Not answered")).toBeInTheDocument();
   });

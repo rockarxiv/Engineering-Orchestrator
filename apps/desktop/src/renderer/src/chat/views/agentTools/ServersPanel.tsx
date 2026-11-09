@@ -178,7 +178,7 @@ function ServerCard({
             {auth !== null ? <Chip>{auth}</Chip> : null}
             {server.archivedAt !== null ? <Chip tone="paused">Archived</Chip> : server.enabled ? null : <Chip>Disabled</Chip>}
             {/* Said rather than inferred: an edit to one of these is overwritten by the next sync (EO-328, ARCHITECTURE.md, "Policy"). */}
-            {managed ? <Chip tone="accent">from your organisation</Chip> : null}
+            {managed ? <Chip tone="tag">from your organisation</Chip> : null}
           </div>
           {/* What it does, before what it is (EO-314). */}
           {server.description === "" ? null : <p className="text-[12.5px] text-ink-muted">{server.description}</p>}

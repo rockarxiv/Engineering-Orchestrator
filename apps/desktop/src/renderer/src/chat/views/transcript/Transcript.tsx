@@ -19,7 +19,7 @@ import { TranscriptEvent } from "./TranscriptEvent";
 import { cachedShare, compactTokens, formatDuration, turnLabel } from "../../../shared/transcript/transcript";
 
 /** A run's status, in the state colours: working, waiting on somebody, failed, or still. */
-export function runTone(status: string): Exclude<Tone, "accent"> {
+export function runTone(status: string): Exclude<Tone, "tag"> {
   switch (status) {
     case "running":
     case "queued":

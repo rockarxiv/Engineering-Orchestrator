@@ -11,12 +11,12 @@ import { Initial, when } from "./parts";
 
 /** A comment's kind, where it is not a plain note: an output among notes is a different kind of thing. */
 const KIND_TONE: Record<string, Tone> = {
-  question: "accent",
-  decision: "accent",
+  question: "tag",
+  decision: "tag",
   approval: "running",
   rejection: "danger",
   escalation: "paused",
-  output: "accent",
+  output: "tag",
 };
 
 interface ThreadProps {
@@ -202,7 +202,7 @@ function CommentRow({
         {comment.authorRole ? <span className="text-ink-subtle">{comment.authorRole}</span> : null}
         {comment.kind !== "note" ? <Chip tone={KIND_TONE[comment.kind] ?? "neutral"}>{comment.kind}</Chip> : null}
         {comment.awaitingHuman ? <Chip tone="paused">awaiting your reply</Chip> : null}
-        {sending ? <Chip tone="neutral">{pinned ? "pinning…" : "unpinning…"}</Chip> : comment.pinned ? <Chip tone="accent">pinned</Chip> : null}
+        {sending ? <Chip tone="neutral">{pinned ? "pinning…" : "unpinning…"}</Chip> : comment.pinned ? <Chip tone="tag">pinned</Chip> : null}
         <span className="ml-auto flex items-center gap-0.5 text-[11px] text-ink-subtle">
           <span className="pr-1">{when(comment.createdAt)}</span>
           <button

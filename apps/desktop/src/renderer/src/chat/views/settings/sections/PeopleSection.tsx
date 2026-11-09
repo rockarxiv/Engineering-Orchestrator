@@ -78,7 +78,7 @@ function PeoplePanel({ organisation }: { organisation: boolean }) {
               <div className="flex min-w-0 flex-1 flex-col gap-0.5">
                 <div className="flex min-w-0 flex-wrap items-center gap-1.5">
                   <span className="text-[13px] text-ink">{person.name}</span>
-                  {person.isAdmin ? <Chip tone="accent">admin</Chip> : null}
+                  {person.isAdmin ? <Chip tone="tag">admin</Chip> : null}
                   {/* An invitation nobody has answered, said plainly. */}
                   {person.invitedAt !== null && person.acceptedAt === null ? <Chip tone="paused">invited</Chip> : null}
                 </div>

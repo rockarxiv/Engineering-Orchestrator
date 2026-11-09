@@ -33,7 +33,7 @@ function toneFor(status: UpdateStatus): Tone {
       return "danger";
     case "available":
     case "downloaded":
-      return "accent";
+      return "tag";
     case "checking":
     case "downloading":
       return "running";
