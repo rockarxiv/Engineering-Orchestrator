@@ -3896,8 +3896,10 @@ const GATED_TOOLS: readonly ToolSpec[] = [
     refusal: (data) =>
       data.deleted
         ? null
-        : "Nothing was deleted: EO has no attachment with that id. Read the ids off ticket_get rather than " +
-          "constructing one. Nothing has changed.",
+        : data.problem !== null
+          ? `Nothing was deleted: ${data.problem} Nothing has changed.`
+          : "Nothing was deleted: EO has no attachment with that id. Read the ids off ticket_get rather than " +
+            "constructing one. Nothing has changed.",
   }),
   channelTool({
     name: "pipeline_delete",

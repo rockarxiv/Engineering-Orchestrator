@@ -37,7 +37,14 @@ import { publishSection } from "../db/repos/publishedSectionsRepo.js";
 import { applySectionDocument } from "../managed/configuration.js";
 import { appendSyncedRunEvents, hasOwnRunEventsAfter, listRunEventsFrom, highestRunEventSeq } from "../db/repos/runEventsRepo.js";
 import { attributeMirroredRun, createRun, getRun, markRunSynced, runsNeedingSync, runSyncBookmark, updateRun } from "../db/repos/runsRepo.js";
-import { attachmentWasRemoved, getAttachment, insertAttachments, noteAttachmentRemoved, removeItemAttachment } from "../db/repos/attachmentsRepo.js";
+import {
+  attachmentWasRemoved,
+  forgetAttachmentRemoval,
+  getAttachment,
+  insertAttachments,
+  noteAttachmentRemoved,
+  removeItemAttachment,
+} from "../db/repos/attachmentsRepo.js";
 import { pending, pendingWithKeyPrefix, remember, rememberLatest, settled, triedAgain, type PendingKind } from "../db/repos/recordPendingRepo.js";
 import { backfillDone, backfillsOutstanding, rememberBackfill, wantBackfill } from "../db/repos/recordBackfillsRepo.js";
 import { getAgent, recordStampOf } from "../db/repos/agentsRepo.js";
@@ -318,7 +325,7 @@ export async function drainToRecord(options: DrainOptions): Promise<DrainResult>
       // was not answered, so it has not happened, and the next pass
       // sends it again — the record's side is idempotent by id.
       if (said === undefined) continue;
-      settle(options, entry, said, result);
+      await settle(options, entry, said, result);
       settled.push(entry.id);
       changed = true;
     }
@@ -870,7 +877,7 @@ async function readAttachment(options: DrainOptions, attachmentId: string): Prom
  * and leaving it to be sent again would be asking the same question
  * until somebody moved the item back.
  */
-function settle(options: DrainOptions, entry: QueuedCommand, said: RecordCommandResult, result: DrainResult): void {
+async function settle(options: DrainOptions, entry: QueuedCommand, said: RecordCommandResult, result: DrainResult): Promise<void> {
   const { db, local } = options;
   if (said.applied) {
     result.sent += 1;
@@ -955,6 +962,19 @@ function settle(options: DrainOptions, entry: QueuedCommand, said: RecordCommand
     // waits on a group leaves an item unclaimed, and the record's holder
     // is the one it should show.
     if (said.holder !== null) setReplicaAssignee(db, entry.itemId, said.holder.person);
+    // An item file (EO-702) put on or taken off by somebody the record
+    // says may not change the item: put on, it comes off this copy again,
+    // bytes and all; taken off, it is fetched back from the record, which
+    // still has it — this copy's row and bytes went when it was removed.
+    if (entry.command.kind === "attachment" && entry.command.commentId === null) {
+      const taken = removeItemAttachment(db, entry.command.attachmentId as Uuid, { announce: false });
+      if (taken !== undefined) await options.attachments?.removeManaged?.(taken);
+    }
+    if (entry.command.kind === "attachmentRemoval") {
+      const { attachmentId, itemId, name, mimeType } = entry.command;
+      forgetAttachmentRemoval(db, attachmentId as Uuid);
+      wantFile(options, attachmentId, { itemId, commentId: null, name: name || "the file", mimeType }, options.now?.() ?? Date.now());
+    }
     return;
   }
 

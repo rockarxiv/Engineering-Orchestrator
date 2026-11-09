@@ -2126,6 +2126,20 @@ describe("the item's own files (EO-702)", () => {
     );
   });
 
+  it("says which picked file main could not stage, in main's own sentence", async () => {
+    const { calls, onCall } = recorder();
+    renderItem(withFiles([]), onCall, {
+      ...free,
+      "attachments:pick": { attachments: [], omitted: 0, problem: "huge.bin is larger than the 20 MB attachment limit." },
+    });
+
+    const section = await screen.findByRole("region", { name: "Attachments" });
+    fireEvent.click(within(section).getByRole("button", { name: "Add files" }));
+
+    expect(await within(section).findByRole("alert")).toHaveTextContent("huge.bin is larger than the 20 MB attachment limit.");
+    expect(payloadOf(calls, "items:addAttachments")).toBeUndefined();
+  });
+
   it("refuses past eight in one go and a file over 20 MB, in the sentences a comment uses", async () => {
     staged = 0;
     const { calls, onCall } = recorder();

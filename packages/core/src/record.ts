@@ -439,6 +439,12 @@ export const RecordAttachmentRemovalCommandSchema = z.object({
   id: z.string(),
   itemId: z.string(),
   attachmentId: z.string(),
+  /**
+   * What the file was, so a device whose removal the record refuses can
+   * fetch it back by name — its own row and bytes are already gone.
+   */
+  name: z.string().default(""),
+  mimeType: z.string().default(""),
 });
 export type RecordAttachmentRemovalCommand = z.infer<typeof RecordAttachmentRemovalCommandSchema>;
 

@@ -1032,6 +1032,15 @@ async function applyOne(context: ServeRecordContext, deviceId: string, command: 
       // …or removed already: a removal queued behind a file a slow
       // replay is still sending. Taking it in now would bring it back.
       if (attachmentWasRemoved(db, command.attachmentId as Uuid)) return ok;
+      // One of the item's own files is part of what the item is, so it
+      // is changed on its description's terms (EO-702): on a step that
+      // waits on a group, only by the person the record has holding it.
+      // Judged here, against the record's own copy — the device asked a
+      // replica that can be a takeover behind.
+      if (command.commentId === null) {
+        const refusal = judgeOnGroupStep(db, item, personOfDevice(db, deviceId)?.id ?? null, "change");
+        if (refusal !== null) return notPermitted(refusal);
+      }
       return storeAttachment(context, command);
     }
 
@@ -1040,10 +1049,18 @@ async function applyOne(context: ServeRecordContext, deviceId: string, command: 
       // A comment's file is refused by `removeItemAttachment` itself: it
       // goes only with its comment. Noted even when the record never had
       // the file, so a removal is never the thing that is lost.
-      const removed = removeItemAttachment(db, command.attachmentId as Uuid, { announce: false });
+      const held = getAttachment(db, command.attachmentId as Uuid);
+      // Only the item the command names: naming one item is not a way to
+      // take a file off another.
+      if (held !== undefined && held.itemId !== command.itemId) {
+        return refused("That file belongs to another item, so this record removed nothing.");
+      }
+      if (held !== undefined && held.commentId !== null) return refused(`${held.name} is on a comment, and goes only with that comment.`);
+      // The same rule as putting one on, against the record's own copy.
+      const refusal = judgeOnGroupStep(db, item, personOfDevice(db, deviceId)?.id ?? null, "change");
+      if (refusal !== null) return notPermitted(refusal);
+      const removed = removeItemAttachment(db, command.attachmentId as Uuid, { announce: false, itemId: command.itemId as Uuid });
       if (removed === undefined) {
-        const held = getAttachment(db, command.attachmentId as Uuid);
-        if (held !== undefined) return refused(`${held.name} is on a comment, and goes only with that comment.`);
         noteAttachmentRemoved(db, command.attachmentId as Uuid, command.itemId as Uuid, Date.now());
         return ok;
       }

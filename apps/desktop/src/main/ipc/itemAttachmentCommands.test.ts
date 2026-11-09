@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, rmSync, truncateSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -9,7 +9,8 @@ import { getAttachment, listAttachmentsForItem, listCommentsForItem, listItemAtt
 import { attachmentWasRemoved } from "../db/repos/attachmentsRepo.js";
 import { createTestItem, openMigratedTestDb } from "../db/testHelpers.js";
 import { onItemAttachmentsChanged } from "../db/itemAttachmentEvents.js";
-import { deleteAttachmentCommand } from "./attachmentCommands.js";
+import { deleteAttachmentCommand, pickAttachmentsCommand } from "./attachmentCommands.js";
+import { handleIpcRequest } from "./handleRequest.js";
 import { getItemDetail } from "./domainQueries.js";
 import { addItemAttachmentsCommand, removeItemAttachmentCommand } from "./itemAttachmentCommands.js";
 
@@ -85,6 +86,23 @@ describe("item attachments", () => {
     expect(listItemAttachments(handle.db, item.id)).toEqual([]);
   });
 
+  it("says which picked file is over 20 MB even where a thrown error would read 'Internal error'", async () => {
+    const huge = join(directory, "huge.bin");
+    writeFileSync(huge, "");
+    truncateSync(huge, MAX_ATTACHMENT_BYTES + 1);
+    const small = join(directory, "small.txt");
+    writeFileSync(small, "fine");
+
+    // Through the envelope every door uses, as a packaged build sets it.
+    const answer = await handleIpcRequest("attachments:pick", undefined, () => pickAttachmentsCommand(async () => [small, huge], storage), {
+      exposeErrorDetails: false,
+    });
+
+    expect(answer).toEqual({ ok: true, data: { attachments: [], omitted: 0, problem: "huge.bin is larger than the 20 MB attachment limit." } });
+    // And it staged none of them, as a refused comment batch stages none.
+    expect(existsSync(join(directory, "managed", "staging")) ? readdirSync(join(directory, "managed", "staging")) : []).toEqual([]);
+  });
+
   it("says so rather than throwing when a draft is no longer staged", async () => {
     const id = await stage("gone.txt");
     await storage.discard(id);
@@ -128,7 +146,7 @@ describe("item attachments", () => {
   it("removes an item file the record's way when it is deleted through the generic delete too", async () => {
     const [added] = (await addItemAttachmentsCommand(handle.db, storage, { itemId: item.id, attachmentIds: [await stage("spec.md")] })).attachments;
 
-    expect(await deleteAttachmentCommand(handle.db, storage, { attachmentId: added!.id })).toEqual({ deleted: true });
+    expect(await deleteAttachmentCommand(handle.db, storage, { attachmentId: added!.id })).toEqual({ deleted: true, problem: null });
     expect(attachmentWasRemoved(handle.db, added!.id as Uuid)).toBe(true);
   });
 

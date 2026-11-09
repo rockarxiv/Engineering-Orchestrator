@@ -216,7 +216,7 @@ export function queueOutbound(options: OutboundOptions): () => void {
     },
     removed: (file) => {
       if (!options.linked(file.itemId)) return;
-      queue([{ kind: "attachmentRemoval", id: uuidv7(), itemId: file.itemId, attachmentId: file.id }], file.itemId);
+      queue([{ kind: "attachmentRemoval", id: uuidv7(), itemId: file.itemId, attachmentId: file.id, name: file.name, mimeType: file.mimeType }], file.itemId);
     },
   });
 

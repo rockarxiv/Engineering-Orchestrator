@@ -1,7 +1,7 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { ArchivedItemListFiltersSchema, ItemListFiltersSchema, toRegistryView, type AgentRemovalImpact, type IpcChannel, type IpcResponse, type Uuid } from "@eo/core";
-import { AttachmentStorage, MAX_ATTACHMENT_COUNT } from "../attachments/storage.js";
+import { AttachmentStorage } from "../attachments/storage.js";
 import type { Db } from "../db/client.js";
 import { archiveAgentCommand, customiseAgent, deleteAgentCommand, listAgentDetails, projectStaffing, readGuards, saveAgent, setAgentBinding, savePipeline, validatePipelineCommand, writeGuards } from "./configCommands.js";
 import {
@@ -201,7 +201,7 @@ import { jobEventsCommand, regenerateWebhookSecretCommand, sendTestWebhookEventC
 import { askFromCanvas, canvasState, closeCanvas, openInCanvas, popOutCanvas } from "./canvasWindow.js";
 import { getDebugMode, listDebugAgents, openDebugWindow, setDebugMode } from "./debugCommands.js";
 import { publishView, readCurrentView } from "./currentView.js";
-import { attachmentPath, attachmentPreview, deleteAttachmentCommand, saveAttachmentTo } from "./attachmentCommands.js";
+import { attachmentPath, attachmentPreview, deleteAttachmentCommand, pickAttachmentsCommand, saveAttachmentTo } from "./attachmentCommands.js";
 import { addItemAttachmentsCommand, removeItemAttachmentCommand } from "./itemAttachmentCommands.js";
 import { getAttachment } from "../db/repos/index.js";
 import { deleteCommentCommand } from "./deleteCommentCommand.js";
@@ -900,25 +900,19 @@ export function registerAllHandlers(db: Db, engine: EngineHandle | undefined, re
 
   registerHandler(
     "attachments:pick",
-    async () => {
-      const chosen = await platform.pickFile({
-        title: "Attach files",
-        multiple: true,
-        filters: [
-          { name: "Images and documents", extensions: ["png", "jpg", "jpeg", "gif", "webp", "pdf", "txt", "md", "json", "csv", "log"] },
-          { name: "All files", extensions: ["*"] },
-        ],
-      });
-      // Sliced rather than refused: eight of twelve is nearer to what
-      // somebody meant than none of twelve. What the slice used to cost
-      // was silence — the composer had no way to know it had happened, so
-      // four files vanished between the dialog and the chips (EO-194).
-      // The count travels back, and the composer says so.
-      return {
-        attachments: await attachmentStorage.stagePaths(chosen.slice(0, MAX_ATTACHMENT_COUNT)),
-        omitted: Math.max(0, chosen.length - MAX_ATTACHMENT_COUNT),
-      };
-    },
+    () =>
+      pickAttachmentsCommand(
+        () =>
+          platform.pickFile({
+            title: "Attach files",
+            multiple: true,
+            filters: [
+              { name: "Images and documents", extensions: ["png", "jpg", "jpeg", "gif", "webp", "pdf", "txt", "md", "json", "csv", "log"] },
+              { name: "All files", extensions: ["*"] },
+            ],
+          }),
+        attachmentStorage,
+      ),
     opts,
   );
   registerHandler("attachments:stage", (payload) => attachmentStorage.stageData(payload).then((attachment) => ({ attachment })), opts);

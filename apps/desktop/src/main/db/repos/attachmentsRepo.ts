@@ -202,10 +202,13 @@ export function addItemAttachments(db: Db, itemId: Uuid, records: Omit<CreateAtt
  * `announce` is false where the removal came *from* the record, so it
  * is not sent back to it.
  */
-export function removeItemAttachment(db: Db, id: Uuid, options: { announce?: boolean; now?: number } = {}): AttachmentRecord | undefined {
+export function removeItemAttachment(db: Db, id: Uuid, options: { announce?: boolean; now?: number; itemId?: Uuid } = {}): AttachmentRecord | undefined {
   const removed = db.transaction((tx) => {
     const row = selectAttachments(tx as unknown as Db).where(eq(attachments.id, id)).get();
     if (!row || row.commentId !== null) return undefined;
+    // Named by item as well as by id, where the caller was told which
+    // item: a removal for one item never takes another item's file.
+    if (options.itemId !== undefined && row.itemId !== options.itemId) return undefined;
     tx.delete(attachments).where(eq(attachments.id, id)).run();
     noteAttachmentRemoved(tx as unknown as Db, id, row.itemId as Uuid, options.now ?? Date.now());
     return toRecord(row);
@@ -221,6 +224,15 @@ export function removeItemAttachment(db: Db, id: Uuid, options: { announce?: boo
  */
 export function noteAttachmentRemoved(db: Db, attachmentId: Uuid, itemId: Uuid, removedAt: number): void {
   db.insert(attachmentRemovals).values({ attachmentId, itemId, removedAt }).onConflictDoNothing().run();
+}
+
+/**
+ * Takes back the note that a file was removed (EO-702): what a device
+ * does when the record refused the removal, so the file can be fetched
+ * back rather than skipped as gone.
+ */
+export function forgetAttachmentRemoval(db: Db, attachmentId: Uuid): void {
+  db.delete(attachmentRemovals).where(eq(attachmentRemovals.attachmentId, attachmentId)).run();
 }
 
 /** Whether this file was removed from its item here (EO-702) — so a late copy of it is not taken back in. */
