@@ -96,6 +96,11 @@
   ol.points li p:last-child { margin-bottom: 0; }
   ul { margin: 0 0 1rem; padding-left: 1.25rem; }
   code { font: 0.875em ui-monospace, "SF Mono", Menlo, Consolas, monospace; color: var(--ink); overflow-wrap: anywhere; }
+  figure { margin: 0; }
+  figure img { display: block; width: 100%; height: auto; border: 1px solid var(--line); border-radius: var(--radius); background: var(--canvas); }
+  figcaption { margin-top: 0.5rem; color: var(--ink-subtle); font-size: 0.875rem; line-height: 1.45; }
+  .hero { margin: 2rem 0 0; }
+  ol.points figure { margin-top: 1rem; }
   footer { margin-top: 3rem; padding-top: 1.25rem; border-top: 1px solid var(--line); color: var(--ink-subtle); font-size: 0.875rem; }
   @media (max-width: 30rem) {
     main { padding-top: 2rem; }
@@ -119,16 +124,33 @@
     <a class="button" href="https://github.com/rockarxiv/Engineering-Orchestrator">Repository on GitHub</a>
   </div>
 
+  <figure class="hero">
+    <img src="media/assistant.gif" width="960" height="600" alt="Asking the assistant for a change, and accepting the ticket it drafts">
+    <figcaption>Asking for a <code>/version</code> endpoint in plain words: the assistant reads the repository, drafts one ticket, and the board opens once it is accepted.</figcaption>
+  </figure>
+
   <h2>What it does</h2>
   <ol class="points">
     <li>
       <p><strong>You build and change your own pipelines through the assistant.</strong> Describe the pipeline you want, or the change you want to one you have, and the assistant drafts it as a graph on a card. Nothing changes until you press Publish, and you change it the same way at any time. Publishing writes a new version; items already in flight finish on the version they entered on. EO has no pipeline editor: the Graph view is read-only.</p>
+      <figure>
+        <img src="media/pipelines.gif" width="960" height="540" loading="lazy" decoding="async" alt="The Delivery board and graph, and the assistant adding a QA step to it">
+        <figcaption>A hand-checked QA step asked for in plain words, drafted with QA marked new, and published.</figcaption>
+      </figure>
     </li>
     <li>
       <p><strong>A step is one of four kinds: an agent, a person, EO itself, or your own script.</strong> An agent is Claude Code or Codex, signed in with your own account. A person sees the step's results as buttons, such as "Approve". EO itself runs a builtin, such as cutting a git worktree, watching a pull request or waiting until a date. Your own script is a module, JavaScript with a manifest of what it needs, and it cannot run on live work until a person approves it after its tests pass.</p>
+      <figure>
+        <img src="media/scripts.gif" width="960" height="540" loading="lazy" decoding="async" alt="Starting Weekly report from the gallery, and the assistant adding a word-count script step to it">
+        <figcaption>A word-count script step added to <em>Weekly report</em>. One of its nine tests fails on the first approval, so nothing is published until the fixed module passes.</figcaption>
+      </figure>
     </li>
     <li>
       <p><strong>Software delivery is one template among several.</strong> In <em>Software feature to merge</em> each ticket is worked in its own git worktree, and the engine checks the implementer's claims itself (commits exist, the tree is clean, the tests ran) before a reviewer sees the work. Other templates cover a weekly report, an inbox triage and a content draft.</p>
+      <figure>
+        <img src="media/delivery.gif" width="960" height="420" loading="lazy" decoding="async" alt="A ticket moving through Worktree, Index, To Do, Review and Merge Request to Done">
+        <figcaption>One ticket from Worktree to Done. The agent stretches are sped up.</figcaption>
+      </figure>
     </li>
     <li>
       <p><strong>It runs on your machine.</strong> Nothing needs a server. When an agent gets stuck it comments on the item and mentions you, which ends its run rather than leaving a process waiting.</p>

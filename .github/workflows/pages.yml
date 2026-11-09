@@ -2,12 +2,15 @@ name: Pages
 
 # Publishes site/ — the hand-written landing page, llms.txt, robots.txt and
 # sitemap.xml — to https://rockarxiv.github.io/Engineering-Orchestrator/
-# (EO-679). There is no build step: the directory is uploaded as it is.
+# (EO-679). There is no build step: the directory is uploaded as it is,
+# with the README's GIFs copied in beside it so the page shows the same
+# ones without a second copy of each in the repository.
 on:
   push:
     branches: [main]
     paths:
       - "site/**"
+      - "docs/media/*.gif"
   workflow_dispatch:
 
 # What actions/deploy-pages needs and nothing more: read the checkout,
@@ -36,6 +39,8 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: actions/configure-pages@v6
+      - name: Copy the README's GIFs into the site
+        run: mkdir -p site/media && cp docs/media/*.gif site/media/
       - uses: actions/upload-pages-artifact@v5
         with:
           path: site
