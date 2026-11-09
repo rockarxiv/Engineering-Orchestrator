@@ -1,8 +1,9 @@
 import { QueryClientProvider } from "@tanstack/react-query";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { IpcPushPayload, UpdateStatus } from "@eo/core";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createQueryClient } from "../../../../query/client";
+import { forgetUpdateFlow } from "../../../../shared/settings/useUpdateFlow";
 import { UpdatesSection } from "./UpdatesSection";
 
 /**
@@ -51,6 +52,9 @@ function renderSection(status: UpdateStatus, answers: Partial<Record<string, unk
     },
   };
 }
+
+// The sequencing is shared with the corner card (EO-697), and so is what it remembers.
+beforeEach(forgetUpdateFlow);
 
 describe("the Updates section", () => {
   it("shows the running version and when EO last looked", async () => {

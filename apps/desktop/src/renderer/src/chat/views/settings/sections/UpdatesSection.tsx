@@ -1,10 +1,8 @@
-import { useEffect, useState } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import type { UpdateStatus } from "@eo/core";
-import { bridge } from "../../../../ipc/bridge";
 import { ipcQuery } from "../../../../query/client";
-import { useInvalidateOnPush } from "../../../../query/useInvalidateOnPush";
-import { appVersionKey, updatesKey } from "../../../../shared/settings/updates";
+import { appVersionKey } from "../../../../shared/settings/updates";
+import { useUpdateFlow } from "../../../../shared/settings/useUpdateFlow";
 import { Button, CardSection, Chip, type Tone } from "../../../kit";
 import { Note } from "../core/fields";
 
@@ -19,9 +17,6 @@ import { Note } from "../core/fields";
  * a failed one cannot either, because nothing here calls
  * `updates:install` except the *Restart and update* button.
  */
-
-/** What the last press was, so an error's *Try again* repeats it. */
-type LastAction = "check" | "download";
 
 function formatChecked(epochMs: number | null): string {
   if (epochMs === null) return "not yet";
@@ -61,66 +56,10 @@ function labelFor(status: UpdateStatus): string {
 const DESCRIPTION = "Which build of EO this is, and whether there is a newer one.";
 
 export function UpdatesSection() {
-  const queryClient = useQueryClient();
-  const [lastAction, setLastAction] = useState<LastAction | null>(null);
-  const [sequencing, setSequencing] = useState(false);
-  // The pushed percentage: electron-updater's event stream is the only
-  // copy of a download's progress, so there is nothing to refetch it from.
-  // Null means no download is in flight.
-  const [pushedPercent, setPushedPercent] = useState<number | null>(null);
-
+  // The status, the progress and the sequencing are the corner card's too (EO-697).
+  const { status: current, percent, busy, check, download, retry, restart } = useUpdateFlow();
   const version = useQuery({ queryKey: appVersionKey, queryFn: () => ipcQuery("app:getVersion", undefined) });
-  const status = useQuery({ queryKey: updatesKey, queryFn: () => ipcQuery("updates:status", undefined) });
-  useEffect(() => bridge().subscribe("updates:progress", (payload) => setPushedPercent(payload.percent)), []);
-  // The background check moves the status with nobody having asked.
-  useInvalidateOnPush("updates:changed", updatesKey);
 
-  // Each channel answers with the whole status, so the cache is written
-  // rather than invalidated: a refetch could race the next event.
-  const store = (next: UpdateStatus): UpdateStatus => {
-    if (next.state !== "downloading") setPushedPercent(null);
-    queryClient.setQueryData(updatesKey, next);
-    return next;
-  };
-
-  const check = useMutation({ mutationFn: () => ipcQuery("updates:check", undefined), onSuccess: store });
-  const download = useMutation({ mutationFn: () => ipcQuery("updates:download", undefined), onSuccess: store });
-  const install = useMutation({ mutationFn: () => ipcQuery("updates:install", undefined) });
-
-  const current: UpdateStatus = status.data ?? { state: "idle", lastCheckedAt: null };
-  const busy = sequencing || check.isPending || download.isPending || install.isPending;
-
-  async function checkNow(): Promise<void> {
-    setLastAction("check");
-    await check.mutateAsync();
-  }
-
-  /**
-   * Download, and stop there. From anything but `available` — a failed
-   * download being tried again — it checks first, reading the answer the
-   * check returned rather than the cache. It never restarts.
-   */
-  async function downloadNow(): Promise<void> {
-    setLastAction("download");
-    setSequencing(true);
-    try {
-      let next = current;
-      if (next.state !== "available") next = await check.mutateAsync();
-      if (next.state === "available") {
-        setPushedPercent(0);
-        await download.mutateAsync();
-      }
-    } finally {
-      setSequencing(false);
-    }
-  }
-
-  /** The only path to `updates:install`. The main process may still ask about running agents first. */
-  async function restartAndUpdate(): Promise<void> {
-    await install.mutateAsync();
-  }
-
-  const retry = (): void => void (lastAction === "download" ? downloadNow() : checkNow());
   const header = <Header version={version.data?.version} status={current} />;
 
   if (current.state === "unsupported") {
@@ -131,9 +70,6 @@ export function UpdatesSection() {
       </CardSection>
     );
   }
-
-  // The pushed value wins: the push is the event stream itself, a status read only a snapshot of it.
-  const percent = pushedPercent ?? (current.state === "downloading" ? current.percent : null);
 
   return (
     <CardSection title="Updates" description={DESCRIPTION}>
@@ -166,19 +102,19 @@ export function UpdatesSection() {
 
       <div>
         {current.state === "error" ? (
-          <Button disabled={busy} onClick={retry}>
+          <Button disabled={busy} onClick={() => void retry()}>
             Try again
           </Button>
         ) : current.state === "downloaded" ? (
-          <Button variant="primary" disabled={busy} onClick={() => void restartAndUpdate()}>
+          <Button variant="primary" disabled={busy} onClick={() => void restart()}>
             Restart and update
           </Button>
         ) : current.state === "available" || percent !== null ? (
-          <Button variant="primary" disabled={busy || percent !== null} onClick={() => void downloadNow()}>
+          <Button variant="primary" disabled={busy || percent !== null} onClick={() => void download()}>
             Download
           </Button>
         ) : (
-          <Button disabled={busy || current.state === "checking"} onClick={() => void checkNow()}>
+          <Button disabled={busy || current.state === "checking"} onClick={() => void check()}>
             Check for updates
           </Button>
         )}

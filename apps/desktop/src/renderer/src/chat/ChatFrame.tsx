@@ -18,6 +18,7 @@ import { AskAssistantContext } from "./askAssistant";
 import { ChatDrawer } from "./ChatHome";
 import { useChatTheme } from "./theme";
 import { TourHost } from "./tour/Tour";
+import { UpdateCard } from "./UpdateCard";
 import { CONTROLS_HEIGHT, useTitleBar, useTitleBarColours } from "./windowChrome";
 import { DEEP } from "./parts";
 import { chatViewFor, isWide, movedAddressOf, tabKeyOf, type ChatViewKind } from "./views/registry";
@@ -277,6 +278,8 @@ function ChatFrame() {
             ) : null}
           </div>
         </div>
+        {/* A newer EO (EO-697): a corner card over the main window only, never the canvas window's. */}
+        <UpdateCard />
       </div>
     </TourHost>
   );
