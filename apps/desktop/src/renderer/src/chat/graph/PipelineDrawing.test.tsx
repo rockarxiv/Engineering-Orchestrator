@@ -136,7 +136,7 @@ describe("a step in the pipeline drawing (EO-680)", () => {
     expect(chips).not.toMatch(/accent|running|reviewing|danger|warning|success|idle/);
   });
 
-  it("draws a step an agent, a person or a script owns in its kind's lane, and EO's and the end neutral (EO-685)", () => {
+  it("draws a step an agent, a person or a script owns with its kind's edge on the neutral surface, and EO's and the end neutral (EO-685, EO-694)", () => {
     const { box } = draw();
     const classes = (id: string) => box(id).className;
 
@@ -145,13 +145,12 @@ describe("a step in the pipeline drawing (EO-680)", () => {
       ["qa", "--color-paused"],
       ["merge", "--color-kind-script"],
     ] as const) {
-      // The raised surface mixed 14% toward the kind, on a line mixed 22% toward it.
-      expect(classes(id), id).toContain(`bg-[color:color-mix(in_oklab,var(--color-canvas-raised),var(${colour})_14%)]`);
-      expect(classes(id), id).toContain(`border-[color:color-mix(in_oklab,var(--color-line),var(${colour})_22%)]`);
-      // A 4px edge down the left in the kind.
+      // The neutral raised surface on the hairline, with no fill or outline tint (EO-694)…
+      expect(classes(id).split(" "), id).toEqual(expect.arrayContaining(["bg-canvas-raised", "border-line"]));
+      expect(classes(id), id).not.toContain("color-mix");
+      // …and a 4px edge down the left in the kind.
       expect(classes(id), id).toContain(`[--lane-edge:var(${colour})]`);
       expect(classes(id), id).toContain("shadow-[inset_4px_0_0_var(--lane-edge)]");
-      expect(classes(id).split(" "), id).not.toContain("bg-canvas-raised");
     }
     // EO's own step: today's neutral surface, with a strong-line edge.
     expect(classes("worktree")).not.toContain("color-mix");

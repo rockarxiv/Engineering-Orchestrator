@@ -17,8 +17,8 @@ import { WORK_STATE_FILL, WORK_STATE_WORDS, workLoad, workStateOf, type WorkStep
  * cards raised one step further on it (ARCHITECTURE.md, "Depth and
  * motion"). Its head says the step's kind with the chip the pipeline
  * drawing uses (EO-680), and a step an agent, a person or a script owns
- * is a lane in that kind's colour (EO-685): a 3px cap, a light tint and
- * a line leaning toward it. EO's own columns and the ends stay grey.
+ * is a lane in that kind's colour (EO-685): a 3px cap on the neutral
+ * raised surface (EO-694). EO's own columns and the ends stay grey.
  *
  * Under its head, a load strip and a line of counts say how the work on
  * it is going (EO-687): failed, waiting, in review, running, idle — the

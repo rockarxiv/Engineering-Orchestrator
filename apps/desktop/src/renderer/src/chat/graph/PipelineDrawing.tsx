@@ -22,9 +22,9 @@ import { loadTotal, type StepLoad } from "./load";
  *
  * A step is one raised row (EO-680): its name, then the kind chip at the
  * far end, whose title is the owner line the box used to spell out. A
- * step an agent, a person or a script owns is tinted toward that kind's
- * colour with a 4px edge on its left in it, the same lane as its board
- * column (EO-685); EO's own steps keep the neutral surface with an edge
+ * step an agent, a person or a script owns has a 4px edge on its left in
+ * that kind's colour on the neutral surface, the same lane as its board
+ * column (EO-685, EO-694); EO's own steps have an edge
  * in the strong line, and an end is outlined as before. On a
  * draft for an existing pipeline, a step that pipeline has not got yet is
  * outlined dashed in the neutral ink and tagged "new" — never the accent,

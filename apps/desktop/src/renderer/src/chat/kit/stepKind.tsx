@@ -29,11 +29,12 @@ const KIND: Record<PipelineStepView["type"], { label: string; dot: string }> = {
 };
 
 /**
- * The structure a step is drawn as, in its owner's colour (EO-685): a
+ * The structure a step is drawn as, marked in its owner's colour (EO-685): a
  * board column, or a step in the pipeline drawing. Owner on structure,
  * state on work — an item's run state colours its card, never this.
  *
- * - `surface`: the raised surface mixed 14% toward the kind, on a line mixed 22% toward it.
+ * - `surface`: the neutral raised surface on the hairline, for every kind: the owner is the cap
+ *   and the edge, never a fill or outline tint (EO-694).
  * - `cap`: a board column's 3px top border in the kind.
  * - `ownerInk`: a board column's mono owner line, the subtle ink mixed 35% toward the kind.
  * - `edge`: a graph step's 4px left edge, as `--lane-edge` for the step's own shadow to draw.
@@ -57,22 +58,19 @@ const NEUTRAL_LANE: StepLane = {
 
 const LANE: Record<PipelineStepView["type"], StepLane> = {
   agent: {
-    surface:
-      "border-[color:color-mix(in_oklab,var(--color-line),var(--color-kind-agent)_22%)] bg-[color:color-mix(in_oklab,var(--color-canvas-raised),var(--color-kind-agent)_14%)]",
+    surface: NEUTRAL_LANE.surface,
     cap: "border-t-[3px] border-t-kind-agent",
     ownerInk: "text-[color:color-mix(in_oklab,var(--color-ink-subtle),var(--color-kind-agent)_35%)]",
     edge: "[--lane-edge:var(--color-kind-agent)]",
   },
   user: {
-    surface:
-      "border-[color:color-mix(in_oklab,var(--color-line),var(--color-paused)_22%)] bg-[color:color-mix(in_oklab,var(--color-canvas-raised),var(--color-paused)_14%)]",
+    surface: NEUTRAL_LANE.surface,
     cap: "border-t-[3px] border-t-paused",
     ownerInk: "text-[color:color-mix(in_oklab,var(--color-ink-subtle),var(--color-paused)_35%)]",
     edge: "[--lane-edge:var(--color-paused)]",
   },
   module: {
-    surface:
-      "border-[color:color-mix(in_oklab,var(--color-line),var(--color-kind-script)_22%)] bg-[color:color-mix(in_oklab,var(--color-canvas-raised),var(--color-kind-script)_14%)]",
+    surface: NEUTRAL_LANE.surface,
     cap: "border-t-[3px] border-t-kind-script",
     ownerInk: "text-[color:color-mix(in_oklab,var(--color-ink-subtle),var(--color-kind-script)_35%)]",
     edge: "[--lane-edge:var(--color-kind-script)]",
