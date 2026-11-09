@@ -22,6 +22,12 @@ Software delivery is one template among them: in **Software feature to merge** a
 
 *One ticket through **Software feature to merge**: a worktree, an index, an implementer, a reviewer, then Done. The repository has no forge, so no pull request is opened. The agent stretches are sped up.*
 
+A step can also be your own script. Ask for one in plain words and the assistant writes it as a module with its own tests; EO runs those tests when you approve it, and nothing is published unless they pass.
+
+![Starting Weekly report from the gallery, and the assistant adding a word-count script step to it](docs/media/scripts.gif)
+
+***Weekly report** from the gallery, then a script step asked for in plain words. The assistant writes a word-count module with nine tests; one fails on the first approval, so nothing is published. It fixes the module, the tests pass, and **Word count** goes in between Draft and Approve. The waits are sped up.*
+
 [`ARCHITECTURE.md`](./ARCHITECTURE.md) is the design document.
 
 ## Running it
