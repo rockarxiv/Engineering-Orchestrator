@@ -1,15 +1,14 @@
-import { jiraStateOf, type Item, type Uuid } from "@eo/core";
+import { jiraStateOf, type Item } from "@eo/core";
 import type { AttachmentStorage } from "../../../attachments/storage.js";
 import { MAX_ATTACHMENT_BYTES } from "../../../attachments/storage.js";
 import type { Db } from "../../../db/client.js";
 import {
+  addItemAttachments,
   deleteAttachmentLocally,
   findAttachmentByJiraId,
-  insertAttachments,
   listAttachmentsForItem,
-  listCommentsForItem,
   pendingPushesForItem,
-  postComment,
+  removeItemAttachment,
   stillMirrors,
 } from "../../../db/repos/index.js";
 import type { JiraClient } from "./client.js";
@@ -22,8 +21,13 @@ export interface AttachmentPullResult {
 }
 
 /**
- * Reconciles Jira's issue-level files with EO's durable comment-owned
- * files. A pending EO deletion is a tombstone until Jira acknowledges it,
+ * Reconciles Jira's issue-level files with the item's (EO-705). A Jira
+ * issue's files are what an item's own files are, so one pulled from
+ * now on lands on the item, not on a comment. Files pulled before that
+ * onto the "Attachments synchronized from Jira." note stay on it: the
+ * Jira link is looked up across every file on the item, so they are
+ * neither imported again nor moved, and a deletion in Jira still takes
+ * them. A pending EO deletion is a tombstone until Jira acknowledges it,
  * preventing a pull between the local click and the outbox drain from
  * resurrecting the file.
  *
@@ -77,14 +81,20 @@ export async function syncJiraAttachments(
     // skipping one file: everything after this point is decided by that
     // same listing.
     if (!stillMirrors(db, item)) return result;
-    const removed = deleteAttachmentLocally(db, local.id);
+    // An item file goes the way the item page removes one, so the
+    // organisation record hears; `fromJira` keeps it from being sent
+    // back to Jira as a deletion of its own. A file on a comment — one
+    // pulled before EO-705, or a comment's own upload — keeps its old
+    // path.
+    const removed = local.commentId === null
+      ? removeItemAttachment(db, local.id, { fromJira: true })
+      : deleteAttachmentLocally(db, local.id);
     if (removed) {
       await storage.removeManaged(removed);
       result.removed += 1;
     }
   }
 
-  let ownerId = listCommentsForItem(db, item.id)[0]?.id;
   for (const attachment of remote) {
     if (attachment.size > MAX_ATTACHMENT_BYTES) {
       result.skipped += 1;
@@ -112,28 +122,10 @@ export async function syncJiraAttachments(
         return result;
       }
 
-      // After the guards rather than before them, so a pull that stops
-      // here leaves no trace at all — this note carries the *old*
-      // issue's key in its `jiraCommentId`, and posting it on an item
-      // that has moved on would be a stray comment claiming to be from
-      // an issue the item no longer mirrors.
-      if (!ownerId) {
-        ownerId = postComment(db, {
-          itemId: item.id,
-          author: { type: "engine" },
-          kind: "note",
-          body: "Attachments synchronized from Jira.",
-          jiraCommentId: `attachments:${issueKey}`,
-        }).id;
-      }
-
       try {
-        insertAttachments(db, [{
-          ...stored,
-          itemId: item.id,
-          commentId: ownerId as Uuid,
-          jiraAttachmentId: attachment.id,
-        }]);
+        // Linked to its Jira id in the same write, so it is neither
+        // uploaded back nor imported again on the next pull.
+        addItemAttachments(db, item.id, [{ ...stored, jiraAttachmentId: attachment.id }]);
         result.added += 1;
       } catch (error) {
         await storage.removeManaged({ managed: true, path: stored.storagePath });
