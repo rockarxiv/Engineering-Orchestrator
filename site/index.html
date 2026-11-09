@@ -71,7 +71,7 @@
     font: 1rem/1.6 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
     overflow-wrap: break-word;
   }
-  main { max-width: 44rem; margin: 0 auto; padding: 3rem 1.25rem 4rem; }
+  main { max-width: 88rem; margin: 0 auto; padding: 3rem 2rem 4rem; }
   header { display: flex; align-items: center; gap: 1rem; margin-bottom: 1.5rem; }
   header img { width: 4rem; height: 4rem; flex: none; }
   h1 { margin: 0; color: var(--ink); font-size: 1.75rem; line-height: 1.25; font-weight: 650; }
@@ -91,19 +91,36 @@
   .button:hover { color: var(--ink); border-color: var(--ink-subtle); }
   .button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
   .button.primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); color: var(--accent-ink); }
-  ol.points { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.75rem; }
-  ol.points li { padding: 1rem 1.125rem; border: 1px solid var(--line); border-radius: var(--radius); background: var(--canvas-subtle); }
-  ol.points li p:last-child { margin-bottom: 0; }
+  h3 { margin: 0 0 0.5rem; color: var(--ink); font-size: 1.0625rem; line-height: 1.4; font-weight: 600; }
+  /* The text keeps a reading width; the GIFs take the rest of the row. */
+  .hero, .row { display: grid; gap: 1.5rem; }
+  .hero > *, .row > * { min-width: 0; }
+  .hero-media { margin-top: 0.5rem; }
+  /* Stacked, below the width that fits text beside a GIF: text at reading width, the GIF no larger than it was recorded. */
+  .hero > div, .copy { max-width: 44rem; }
+  ol.points { list-style: none; margin: 0; padding: 0; }
+  ol.points .row { padding: 2.5rem 0; border-top: 1px solid var(--line); }
+  ol.points .row:first-child { border-top: 0; padding-top: 0.5rem; }
+  .copy p:last-child { margin-bottom: 0; }
+  .band { display: grid; gap: 0 3rem; margin-top: 1rem; padding-top: 0.5rem; border-top: 1px solid var(--line); }
+  .band > * { min-width: 0; }
+  .band h2 { margin-top: 2rem; }
+  @media (min-width: 80rem) {
+    .hero { grid-template-columns: minmax(0, 26rem) minmax(0, 1fr); gap: 3.5rem; align-items: center; }
+    .hero-media { margin-top: 0; }
+    .row { grid-template-columns: minmax(0, 22rem) minmax(0, 1fr); gap: 3.5rem; align-items: center; }
+    .row.flip { grid-template-columns: minmax(0, 1fr) minmax(0, 22rem); }
+    .row.flip .copy { order: 2; }
+    .band { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  }
   ul { margin: 0 0 1rem; padding-left: 1.25rem; }
   code { font: 0.875em ui-monospace, "SF Mono", Menlo, Consolas, monospace; color: var(--ink); overflow-wrap: anywhere; }
-  figure { margin: 0; }
+  figure { margin: 0; max-width: 60rem; }
   figure img { display: block; width: 100%; height: auto; border: 1px solid var(--line); border-radius: var(--radius); background: var(--canvas); }
   figcaption { margin-top: 0.5rem; color: var(--ink-subtle); font-size: 0.875rem; line-height: 1.45; }
-  .hero { margin: 2rem 0 0; }
-  ol.points figure { margin-top: 1rem; }
   footer { margin-top: 3rem; padding-top: 1.25rem; border-top: 1px solid var(--line); color: var(--ink-subtle); font-size: 0.875rem; }
   @media (max-width: 30rem) {
-    main { padding-top: 2rem; }
+    main { padding: 2rem 1rem 3rem; }
     header img { width: 3rem; height: 3rem; }
     h1 { font-size: 1.375rem; }
     .pitch { font-size: 1rem; }
@@ -112,62 +129,78 @@
 </head>
 <body>
 <main>
-  <header>
-    <img src="icon.svg" alt="" width="64" height="64">
-    <h1>EO — Engineering Orchestrator</h1>
-  </header>
-
-  <p class="pitch">EO is an open-source desktop app for building your own pipelines and running work through them. You tell the assistant what you want, it drafts the pipeline, and you publish it; you change it the same way, at any time. A step can be an agent (Claude Code or Codex), a person, EO itself, or your own script: a module a person approved.</p>
-
-  <div class="actions">
+  <section class="hero">
+    <div>
+      <header>
+        <img src="icon.svg" alt="" width="64" height="64">
+        <h1>EO — Engineering Orchestrator</h1>
+      </header>
+      <p class="pitch">EO is an open-source desktop app for building your own pipelines and running work through them. You tell the assistant what you want, it drafts the pipeline, and you publish it; you change it the same way, at any time. A step can be an agent (Claude Code or Codex), a person, EO itself, or your own script: a module a person approved.</p>
+      <div class="actions">
     <a class="button primary" href="https://github.com/rockarxiv/Engineering-Orchestrator/releases">Download from Releases</a>
     <a class="button" href="https://github.com/rockarxiv/Engineering-Orchestrator">Repository on GitHub</a>
   </div>
-
-  <figure class="hero">
-    <img src="media/assistant.gif" width="960" height="600" alt="Asking the assistant for a change, and accepting the ticket it drafts">
+    </div>
+    <figure class="hero-media">
+      <img src="media/assistant.gif" width="960" height="600" alt="Asking the assistant for a change, and accepting the ticket it drafts">
     <figcaption>Asking for a <code>/version</code> endpoint in plain words: the assistant reads the repository, drafts one ticket, and the board opens once it is accepted.</figcaption>
-  </figure>
+    </figure>
+  </section>
 
   <h2>What it does</h2>
   <ol class="points">
-    <li>
-      <p><strong>You build and change your own pipelines through the assistant.</strong> Describe the pipeline you want, or the change you want to one you have, and the assistant drafts it as a graph on a card. Nothing changes until you press Publish, and you change it the same way at any time. Publishing writes a new version; items already in flight finish on the version they entered on. EO has no pipeline editor: the Graph view is read-only.</p>
+    <li class="row">
+      <div class="copy">
+        <h3>You build and change your own pipelines through the assistant.</h3>
+        <p>Describe the pipeline you want, or the change you want to one you have, and the assistant drafts it as a graph on a card. Nothing changes until you press Publish, and you change it the same way at any time. Publishing writes a new version; items already in flight finish on the version they entered on. EO has no pipeline editor: the Graph view is read-only.</p>
+      </div>
       <figure>
         <img src="media/pipelines.gif" width="960" height="540" loading="lazy" decoding="async" alt="The Delivery board and graph, and the assistant adding a QA step to it">
         <figcaption>A hand-checked QA step asked for in plain words, drafted with QA marked new, and published.</figcaption>
       </figure>
     </li>
-    <li>
-      <p><strong>A step is one of four kinds: an agent, a person, EO itself, or your own script.</strong> An agent is Claude Code or Codex, signed in with your own account. A person sees the step's results as buttons, such as "Approve". EO itself runs a builtin, such as cutting a git worktree, watching a pull request or waiting until a date. Your own script is a module, JavaScript with a manifest of what it needs, and it cannot run on live work until a person approves it after its tests pass.</p>
+    <li class="row flip">
+      <div class="copy">
+        <h3>A step is one of four kinds: an agent, a person, EO itself, or your own script.</h3>
+        <p>An agent is Claude Code or Codex, signed in with your own account. A person sees the step's results as buttons, such as "Approve". EO itself runs a builtin, such as cutting a git worktree, watching a pull request or waiting until a date. Your own script is a module, JavaScript with a manifest of what it needs, and it cannot run on live work until a person approves it after its tests pass.</p>
+      </div>
       <figure>
         <img src="media/scripts.gif" width="960" height="540" loading="lazy" decoding="async" alt="Starting Weekly report from the gallery, and the assistant adding a word-count script step to it">
         <figcaption>A word-count script step added to <em>Weekly report</em>. One of its nine tests fails on the first approval, so nothing is published until the fixed module passes.</figcaption>
       </figure>
     </li>
-    <li>
-      <p><strong>Software delivery is one template among several.</strong> In <em>Software feature to merge</em> each ticket is worked in its own git worktree, and the engine checks the implementer's claims itself (commits exist, the tree is clean, the tests ran) before a reviewer sees the work. Other templates cover a weekly report, an inbox triage and a content draft.</p>
+    <li class="row">
+      <div class="copy">
+        <h3>Software delivery is one template among several.</h3>
+        <p>In <em>Software feature to merge</em> each ticket is worked in its own git worktree, and the engine checks the implementer's claims itself (commits exist, the tree is clean, the tests ran) before a reviewer sees the work. Other templates cover a weekly report, an inbox triage and a content draft.</p>
+      </div>
       <figure>
         <img src="media/delivery.gif" width="960" height="420" loading="lazy" decoding="async" alt="A ticket moving through Worktree, Index, To Do, Review and Merge Request to Done">
         <figcaption>One ticket from Worktree to Done. The agent stretches are sped up.</figcaption>
       </figure>
     </li>
-    <li>
-      <p><strong>It runs on your machine.</strong> Nothing needs a server. When an agent gets stuck it comments on the item and mentions you, which ends its run rather than leaving a process waiting.</p>
-    </li>
   </ol>
 
-  <h2>Download</h2>
+  <div class="band">
+    <section>
+      <h2>It runs on your machine</h2>
+      <p>Nothing needs a server. When an agent gets stuck it comments on the item and mentions you, which ends its run rather than leaving a process waiting.</p>
+    </section>
+    <section>
+      <h2>Download</h2>
   <p>Every release on <a href="https://github.com/rockarxiv/Engineering-Orchestrator/releases">GitHub Releases</a> attaches installers for Windows, macOS and Linux. They are not code-signed, so Windows and macOS warn you before the first run; the <a href="https://github.com/rockarxiv/Engineering-Orchestrator#download">README</a> says how to get past each warning. On Windows and Linux an installed EO checks for new releases and installs one when you ask; macOS has no automatic updates, so you download the new release by hand.</p>
   <p>EO is free and open source under the Apache License 2.0. The agents' usage is billed by Anthropic or OpenAI to the account you sign in with.</p>
-
-  <h2>Read more</h2>
+    </section>
+    <section>
+      <h2>Read more</h2>
   <ul>
     <li><a href="https://github.com/rockarxiv/Engineering-Orchestrator#readme">README</a>: installing, running and first steps.</li>
     <li><a href="https://github.com/rockarxiv/Engineering-Orchestrator/blob/main/docs/FAQ.md">FAQ</a>: the questions people ask about EO.</li>
     <li><a href="https://github.com/rockarxiv/Engineering-Orchestrator/blob/main/ARCHITECTURE.md">ARCHITECTURE.md</a>: the design, and why it is shaped the way it is.</li>
     <li><a href="https://github.com/rockarxiv/Engineering-Orchestrator">The repository</a> and its <a href="https://github.com/rockarxiv/Engineering-Orchestrator/releases">Releases</a>.</li>
   </ul>
+    </section>
+  </div>
 
   <footer>
     <p>EO — Engineering Orchestrator · Apache-2.0 · <a href="llms.txt">llms.txt</a></p>
