@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   GIT_WORKTREE_KIND,
   NO_GIT_STATE,
+  REVIEW_ACTION,
   SECTION_LOCK_TEXT,
   developerRegistry,
   toRegistryView,
@@ -391,13 +392,15 @@ describe("the pipeline's graph", () => {
     }
   });
 
-  it("strips each step that holds work by the state of what is on it, and leaves an empty step bare (EO-686)", async () => {
+  it("strips each step that holds work by the state of what is on it, as the board does, and leaves an empty step bare (EO-686)", async () => {
     mockIpc({
       items: [
         item({ id: "t1", key: "EO-1", latestRunStatus: "running" }),
         item({ id: "t2", key: "EO-2", latestRunStatus: "queued" }),
         item({ id: "t3", key: "EO-3", latestRunStatus: "failed" }),
         item({ id: "t4", key: "EO-4", latestRunStatus: "awaiting_input" }),
+        // Waiting on you is waiting, whatever its run did.
+        item({ id: "t8", key: "EO-8", latestRunStatus: "succeeded", needsAttention: true }),
         item({ id: "t5", key: "EO-5", latestRunStatus: "succeeded" }),
         item({ id: "t6", key: "EO-6", latestRunStatus: null }),
         // Held work is parked, and counted nowhere.
@@ -406,18 +409,35 @@ describe("the pipeline's graph", () => {
     });
     const { container } = renderGraph();
 
-    await screen.findByRole("link", { name: "6 here" });
+    await screen.findByRole("link", { name: "7 here" });
     const box = (id: string) => container.querySelector<HTMLElement>(`[data-step="${id}"]`)!;
     const strip = box("review").querySelector<HTMLElement>("[data-load-strip]")!;
-    expect(strip).toHaveAttribute("aria-label", "1 failed, 1 waiting, 2 running, 2 idle");
+    expect(strip).toHaveAttribute("aria-label", "1 failed, 2 waiting, 2 running, 2 idle");
     expect([...strip.children].map((segment) => [segment.getAttribute("data-load"), (segment as HTMLElement).style.flexGrow])).toEqual([
-      ["failed", "1"],
-      ["waiting", "1"],
+      ["danger", "1"],
+      ["paused", "2"],
       ["running", "2"],
       ["idle", "2"],
     ]);
     expect(box("todo").querySelector("[data-load-strip]")).toBeNull();
     expect(box("done").querySelector("[data-load-strip]")).toBeNull();
+  });
+
+  it("counts work on a step that runs the review action as in review, unless it failed or waits (EO-686)", async () => {
+    mockIpc({
+      steps: [STEPS[0]!, { ...STEPS[1]!, entryAction: REVIEW_ACTION }, STEPS[2]!],
+      items: [
+        item({ id: "t1", key: "EO-1", latestRunStatus: "running" }),
+        item({ id: "t2", key: "EO-2", latestRunStatus: null }),
+        item({ id: "t3", key: "EO-3", latestRunStatus: "failed" }),
+      ],
+    });
+    const { container } = renderGraph();
+
+    await screen.findByRole("link", { name: "3 here" });
+    const strip = container.querySelector<HTMLElement>('[data-step="review"] [data-load-strip]')!;
+    expect(strip).toHaveAttribute("aria-label", "1 failed, 2 in review");
+    expect([...strip.children].map((segment) => segment.className.match(/\bbg-[a-z]+/)?.[0])).toEqual(["bg-danger", "bg-reviewing"]);
   });
 
   it("says above the drawing what its lines and dots mean (EO-686)", async () => {

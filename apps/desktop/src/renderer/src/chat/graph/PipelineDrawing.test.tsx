@@ -195,15 +195,15 @@ describe("a step in the pipeline drawing (EO-680)", () => {
 
 describe("the load strip on a step (EO-686)", () => {
   it("is a 3px bar 12px in from each side, a segment per state in the state's colour, as wide as its count", () => {
-    const { box } = draw({ loads: new Map([["todo", { idle: 1, running: 3, failed: 2, reviewing: 1, waiting: 1 }]]), stepHref: (id) => `/board?step=${id}` });
+    const { box } = draw({ loads: new Map([["todo", { idle: 1, running: 3, danger: 2, reviewing: 1, paused: 1 }]]), stepHref: (id) => `/board?step=${id}` });
 
     const strip = box("todo").querySelector<HTMLElement>("[data-load-strip]")!;
     expect(strip.className.split(" ")).toEqual(expect.arrayContaining(["absolute", "left-3", "right-3", "h-[3px]"]));
     const segments = [...strip.children] as HTMLElement[];
     // What wants looking at first, first.
     expect(segments.map((one) => [one.getAttribute("data-load"), one.style.flexGrow, one.getAttribute("title")])).toEqual([
-      ["failed", "2", "2 failed"],
-      ["waiting", "1", "1 waiting"],
+      ["danger", "2", "2 failed"],
+      ["paused", "1", "1 waiting"],
       ["reviewing", "1", "1 in review"],
       ["running", "3", "3 running"],
       ["idle", "1", "1 idle"],

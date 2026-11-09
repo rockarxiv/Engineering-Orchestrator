@@ -4,7 +4,8 @@ import { USER_ATTENTION_TARGET, type HandOffTargets, type PipelineStepView, type
 import { cn } from "@eo/ui";
 import { StepKindChip, stepLane } from "../kit";
 import { BOX_PAD_X, layoutPipeline, type LaidArrow, type Rect } from "./layout";
-import { LOAD_STATES, LOAD_WORD, loadTotal, type LoadState, type StepLoad } from "./load";
+import { WORK_STATE_FILL, WORK_STATE_WORDS, WORK_STATES } from "../../shared/items/workState";
+import { loadTotal, type StepLoad } from "./load";
 
 /**
  * A pipeline, drawn as the graph it is (EO-400): its steps as boxes from
@@ -66,14 +67,6 @@ function toneOf(arrow: LaidArrow): RouteTone {
   return ROUTE_TONE.next;
 }
 
-const LOAD_FILL: Readonly<Record<LoadState, string>> = {
-  failed: "bg-danger",
-  waiting: "bg-paused",
-  reviewing: "bg-reviewing",
-  running: "bg-running",
-  idle: "bg-idle",
-};
-
 /**
  * What stands on a step, by state (EO-686): a 3px bar along the bottom of
  * its box, 12px in from each side, one segment per state as wide as its
@@ -81,17 +74,17 @@ const LOAD_FILL: Readonly<Record<LoadState, string>> = {
  * nothing to make room for.
  */
 function LoadStrip({ load }: { load: StepLoad }) {
-  const present = LOAD_STATES.filter((state) => (load[state] ?? 0) > 0);
-  const said = present.map((state) => `${load[state]} ${LOAD_WORD[state]}`).join(", ");
+  const present = WORK_STATES.filter((state) => (load[state] ?? 0) > 0);
+  const said = present.map((state) => `${load[state]} ${WORK_STATE_WORDS[state]}`).join(", ");
   return (
     <span data-load-strip role="img" aria-label={said} className="absolute bottom-1.5 left-3 right-3 flex h-[3px] gap-[2px]">
       {present.map((state) => (
         <span
           key={state}
           data-load={state}
-          title={`${load[state]} ${LOAD_WORD[state]}`}
+          title={`${load[state]} ${WORK_STATE_WORDS[state]}`}
           style={{ flexGrow: load[state] }}
-          className={cn("h-full basis-0 rounded-full", LOAD_FILL[state])}
+          className={cn("h-full basis-0 rounded-full", WORK_STATE_FILL[state])}
         />
       ))}
     </span>

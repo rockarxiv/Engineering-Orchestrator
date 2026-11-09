@@ -38,7 +38,7 @@ export function GraphView({ pipelineId }: { pipelineId: string }) {
   useViewParameters({ selection: selected === null ? [] : [selected.id] });
 
   // What stands on each step now, and in what state: held work is parked, not in play.
-  const loads = useMemo(() => stepLoads(items, pipelineId), [items, pipelineId]);
+  const loads = useMemo(() => stepLoads(items, pipelineId, states), [items, pipelineId, states]);
 
   // Where work enters, as the pipeline says — not merely the first step drawn.
   const { active } = useProjects();
