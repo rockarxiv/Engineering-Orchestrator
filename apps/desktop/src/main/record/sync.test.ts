@@ -34,7 +34,7 @@ import { getPipeline, listRoutesForPipeline, replacePipelineGraph, setStepOwner 
 import { listPipelinesUpdatedSince, upsertReplicaPipeline } from "../db/repos/projectMoveRepo.js";
 import { MANAGED_PERSON_ID_KEY, MANAGED_PERSON_NAME_KEY } from "../identity/viewer.js";
 import { createRunEventBuffer } from "../db/repos/runEventBuffer.js";
-import { listAttachmentsForComment } from "../db/repos/attachmentsRepo.js";
+import { addItemAttachments, listAttachmentsForComment, listItemAttachments, removeItemAttachment } from "../db/repos/attachmentsRepo.js";
 import { AttachmentStorage } from "../attachments/storage.js";
 import { forgetCommands, itemsWithQueuedMoves, pendingCommands, queuedCommandCount } from "../db/repos/recordCommandsRepo.js";
 import { createLocalRecord, type LocalItemRecord } from "./localRecord.js";
@@ -782,6 +782,75 @@ describe("a file attached to a comment", () => {
   function pendingKinds(): string[] {
     return pendingCommands(annaDb.db).map((entry) => entry.kind);
   }
+});
+
+describe("an item's own file (EO-702)", () => {
+  /** Put on the item from its page: staged, then added with no comment. */
+  async function addToItem(machine: Desktop, itemId: string, name: string, contents: string): Promise<Uuid> {
+    const staged = await machine.files.stageData({ name, dataBase64: Buffer.from(contents).toString("base64") });
+    const prepared = await machine.files.prepare([staged.id]);
+    addItemAttachments(machine.handle.db, itemId as Uuid, prepared);
+    await machine.files.finish(prepared);
+    return prepared[0]!.id;
+  }
+
+  it("reaches the record and the other desktop with no comment to come first, and its removal follows", async () => {
+    const item = onTheRecord();
+    await anna.record.sync();
+    await dana.record.sync();
+
+    const fileId = await addToItem(anna, item.id, "mock.png", "the mock");
+    await anna.record.sync();
+
+    // On the record: the item's own, bytes behind it.
+    const onRecord = listItemAttachments(recordDb.db, item.id as Uuid);
+    expect(onRecord.map((file) => [file.id, file.name, file.commentId])).toEqual([[fileId, "mock.png", null]]);
+    expect((await serving.attachments!.read(onRecord[0]!.path))?.toString()).toBe("the mock");
+
+    await dana.record.sync();
+
+    // On Dana's: the item's own too, fetched, and in nobody's thread.
+    const onDana = listItemAttachments(danaDb.db, item.id as Uuid);
+    expect(onDana.map((file) => [file.id, file.name, file.commentId])).toEqual([[fileId, "mock.png", null]]);
+    expect((await dana.files.read(onDana[0]!.path))?.toString()).toBe("the mock");
+    expect(listCommentsForItem(danaDb.db, item.id).flatMap((comment) => comment.attachments ?? [])).toEqual([]);
+
+    // Anna takes it off again.
+    const removed = removeItemAttachment(annaDb.db, fileId);
+    expect(removed).toBeDefined();
+    await anna.files.removeManaged(removed!);
+    await anna.record.sync();
+
+    expect(listItemAttachments(recordDb.db, item.id as Uuid)).toEqual([]);
+    expect(await serving.attachments!.read(onRecord[0]!.path)).toBeNull();
+
+    await dana.record.sync();
+
+    expect(listItemAttachments(danaDb.db, item.id as Uuid)).toEqual([]);
+    expect(await dana.files.read(onDana[0]!.path)).toBeNull();
+    // And neither desktop sends anything back about it.
+    expect(queuedCommandCount(annaDb.db)).toBe(0);
+    expect(queuedCommandCount(danaDb.db)).toBe(0);
+  });
+
+  it("is not brought back when it was removed before the file was sent", async () => {
+    const item = onTheRecord();
+    await anna.record.sync();
+
+    anna.online = false;
+    const fileId = await addToItem(anna, item.id, "draft.txt", "never mind");
+    const removed = removeItemAttachment(annaDb.db, fileId);
+    await anna.files.removeManaged(removed!);
+    expect(pendingCommands(annaDb.db).map((entry) => entry.kind)).toEqual(["attachment", "attachmentRemoval"]);
+
+    anna.online = true;
+    await anna.record.sync();
+    await dana.record.sync();
+
+    expect(queuedCommandCount(annaDb.db)).toBe(0);
+    expect(listItemAttachments(recordDb.db, item.id as Uuid)).toEqual([]);
+    expect(listItemAttachments(danaDb.db, item.id as Uuid)).toEqual([]);
+  });
 });
 
 /**

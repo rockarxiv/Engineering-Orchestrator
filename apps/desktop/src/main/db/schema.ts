@@ -2226,9 +2226,10 @@ export const attachments = sqliteTable(
     itemId: text("item_id")
       .notNull()
       .references(() => items.id),
-    commentId: text("comment_id")
-      .notNull()
-      .references(() => comments.id),
+    // Null for one of the item's own files rather than a comment's
+    // (EO-702, migration 0158): part of what the item is, as its
+    // description is, and not anything anybody said.
+    commentId: text("comment_id").references(() => comments.id),
     storagePath: text("storage_path").notNull(),
     name: text("name").notNull(),
     mimeType: text("mime_type").notNull(),
@@ -2244,6 +2245,22 @@ export const attachments = sqliteTable(
     index("idx_attachments_item").on(table.itemId),
     index("idx_attachments_comment").on(table.commentId),
   ],
+);
+
+/**
+ * Item files somebody removed (EO-702), so the organisation record can
+ * tell every replica: a removed `attachments` row is gone and cannot say
+ * so itself. Paged on `(removed_at, attachment_id)`. No foreign key to
+ * `items` — `deleteItem` takes these with the item.
+ */
+export const attachmentRemovals = sqliteTable(
+  "attachment_removals",
+  {
+    attachmentId: text("attachment_id").primaryKey(),
+    itemId: text("item_id").notNull(),
+    removedAt: integer("removed_at").notNull(),
+  },
+  (table) => [index("idx_attachment_removals_paging").on(table.removedAt, table.attachmentId)],
 );
 
 // Mentions drive the inbox. A mention is a request for attention.

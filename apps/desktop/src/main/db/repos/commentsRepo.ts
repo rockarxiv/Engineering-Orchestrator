@@ -998,6 +998,7 @@ export function listCommentsForItem(db: Db, itemId: Uuid, window: CommentWindow 
   const allAttachments = listAttachmentsForComments(db, rows.map((row) => row.id as Uuid));
   const byComment = new Map<string, NonNullable<Comment["attachments"]>>(rows.map((row) => [row.id, []]));
   for (const attachment of allAttachments) {
+    if (attachment.commentId === null) continue;
     const values = byComment.get(attachment.commentId) ?? [];
     values.push(attachment);
     byComment.set(attachment.commentId, values);

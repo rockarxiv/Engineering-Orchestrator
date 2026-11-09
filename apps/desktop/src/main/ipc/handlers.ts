@@ -202,6 +202,7 @@ import { askFromCanvas, canvasState, closeCanvas, openInCanvas, popOutCanvas } f
 import { getDebugMode, listDebugAgents, openDebugWindow, setDebugMode } from "./debugCommands.js";
 import { publishView, readCurrentView } from "./currentView.js";
 import { attachmentPath, attachmentPreview, deleteAttachmentCommand, saveAttachmentTo } from "./attachmentCommands.js";
+import { addItemAttachmentsCommand, removeItemAttachmentCommand } from "./itemAttachmentCommands.js";
 import { getAttachment } from "../db/repos/index.js";
 import { deleteCommentCommand } from "./deleteCommentCommand.js";
 import { deleteItemCommand } from "./deleteItemCommand.js";
@@ -940,6 +941,9 @@ export function registerAllHandlers(db: Db, engine: EngineHandle | undefined, re
     }
   }, opts);
   registerHandler("attachments:delete", (payload) => deleteAttachmentCommand(db, attachmentStorage, payload), opts);
+  // The item's own files (EO-702): part of what it is, beside its description.
+  registerHandler("items:addAttachments", (payload) => addItemAttachmentsCommand(db, attachmentStorage, payload), opts);
+  registerHandler("items:removeAttachment", (payload) => removeItemAttachmentCommand(db, attachmentStorage, payload), opts);
 
   // Jobs (EO-304, ARCHITECTURE.md, "Jobs"). The Jobs page that calls them is the
   // sixth story of this phase; `reachable.test.ts` carries them in

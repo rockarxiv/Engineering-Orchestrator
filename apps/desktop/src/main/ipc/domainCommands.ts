@@ -1219,7 +1219,7 @@ export function takeOverItem(db: Db, input: IpcPayload<"items:takeOver">): IpcRe
  *
  * Answers the sentence for the caller's `problem`, or null to go ahead.
  */
-function refusedOnGroupStep(db: Db, item: Item, actingDeviceId: string | null | undefined, act: StepAct): string | null {
+export function refusedOnGroupStep(db: Db, item: Item, actingDeviceId: string | null | undefined, act: StepAct): string | null {
   const acting = actingCaller(db, actingDeviceId);
   if (!acting.served || isReplica(db, item.id)) return null;
   const refusal = judgeOnGroupStep(db, item, acting.person?.id ?? null, "change");
@@ -1242,7 +1242,7 @@ function refusedOnGroupStep(db: Db, item: Item, actingDeviceId: string | null | 
  * Told the way the record's refusals are told: an escalation mentioning
  * the person here, kept on this machine.
  */
-function refusedEditOnReplica(db: Db, item: Item): string | null {
+export function refusedEditOnReplica(db: Db, item: Item): string | null {
   if (!isReplica(db, item.id)) return null;
   const step = stepForItem(db, item);
   if (step === undefined || step.type !== "user" || step.ownerGroupId === null) return null;

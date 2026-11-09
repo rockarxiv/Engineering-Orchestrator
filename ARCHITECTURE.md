@@ -428,6 +428,8 @@ A person can send a message to a running agent, to be delivered now or at the ne
 
 A comment has an author type (`human`, `agent`, `engine`, `module`), a kind (`note`, `question`, `decision`, `approval`, `rejection`, `escalation`, `output`), optional choices rendered as buttons, optional attachments, a parent for replies, and a `pinned` flag that protects it from truncation.
 
+**An attachment is owned by one comment or by the item itself** (EO-702). A comment's files are part of what was said and go only with that comment. An item's own files — a mock a story is built against, a spec PDF, a screenshot of the bug — are part of what the item *is*, as its description and acceptance criteria are: a row in `attachments` with no `comment_id`. They are shown in an Attachments section under the description, never trimmed out of view with a comment, and deleting the item deletes them and their stored bytes (`removeItemsAndTheirWork`). This is not a second channel, and invariant 4 is unchanged: an item file says nothing to anybody, mentions nobody and wakes no agent — it is the item's definition, changed as its description is changed. So the same people may change it: a person on the item page (on a step that waits on a group, only the person holding the item), an outside MCP client acting for the person, and the system agent over `eo_admin`. A step-owning agent may not — an implementer must not edit its own spec — and its `attachment_add` keeps posting on comments. Adding takes staged files exactly as a comment does, with the same limits and sentences (eight in one go, 20 MB each, name, MIME type and size worked out by main). Removing one deletes its row and its stored file; it is not a run event, so invariant 3 is untouched.
+
 ### 7.2 Three facts, three places
 
 Conflating these is what causes state drift:
@@ -551,7 +553,7 @@ Transitions live in `transitions` and words live in `comments`. They are merged 
 
 ### 7.8 The output is a comment
 
-What a step produced — the report, the reply, the draft — is a comment of kind `output`, with attachments. The current output of an item is the latest such comment, derived the way attention is. A person's edit posts a new output comment and the one it replaces stays in the thread. The next step's context receives the current output, so a send step sends what the approver corrected. No new table, and one channel.
+What a step produced — the report, the reply, the draft — is a comment of kind `output`, with attachments. The current output of an item is the latest such comment, derived the way attention is. A person's edit posts a new output comment and the one it replaces stays in the thread. The next step's context receives the current output, so a send step sends what the approver corrected. No new table, and one channel. The item's own files (§7.1) are not outputs and do not make a second one: they belong to the item's definition, beside its description, and anything a step produces is still a comment.
 
 ---
 
@@ -1132,6 +1134,7 @@ On a signed-in desktop:
 - **Moves are provisional.** A move a person makes is written locally and queued as a command for the record. If the record had already applied a different move, it answers *superseded*, and the person gets an inbox row saying whose move won — never a silent revert.
 - **Runs and run events sync upward**, append-only, by run and sequence, so the rule that `run_events` is never rewritten holds on both sides.
 - **Changes come down** by cursor, prompted by the push stream.
+- **Files travel apart from what announced them.** A comment's files are queued behind the comment; an item's own files (§7.1) are queued on their own, with no comment to come first. Either way the metadata goes up as an `attachment` command whose bytes the drain reads from the store as it sends, and comes down on the `attachments` cursor, the bytes fetched one file at a time (`record:attachment`). Removing an item file is an `attachmentRemoval` command; the record deletes its row and bytes and keeps a note of the removal (`attachment_removals`), which every replica pages on an `attachmentRemovals` cursor and applies to its own copy — a deleted row cannot say it was deleted.
 - **Offline.** The desktop keeps working on what it has: it finishes the run it holds and queues the result, with a visible offline line. Offline means "finish and queue", not "keep scheduling locally" — the record is the only scheduler for what it owns.
 
 Side effects outside EO follow the same ownership: only the record tells a tracker that an item moved, so one move is one push however many desktops are open.

@@ -80,6 +80,7 @@ import {
   UpdateWorkspaceInputSchema,
   DiscussionSchema,
   AttachmentDraftSchema,
+  AttachmentViewSchema,
   DiscussionMessageSchema,
   DiscussionSettingsSchema,
   LiveDraftSchema,
@@ -1257,6 +1258,26 @@ export const recordContract = {
   "attachments:discard": channel(z.object({ attachmentId: z.string() }), z.object({ discarded: z.boolean() })),
   "attachments:preview": channel(z.object({ attachmentId: z.string() }), z.object({ dataUrl: z.string().nullable() })),
   "attachments:delete": channel(z.object({ attachmentId: z.string() }), z.object({ deleted: z.boolean() })),
+  /**
+   * Puts staged files on the item itself rather than on a comment
+   * (EO-702): part of what the item is, as its description is. The ids
+   * are `attachments:stage` / `attachments:pick` drafts, so name, MIME
+   * type and size are main's, as they are for a comment — and so are
+   * the limits: eight in one go, twenty megabytes each.
+   */
+  "items:addAttachments": channel(
+    z.object({ itemId: z.string(), attachmentIds: z.array(z.string()).min(1).max(8), ...ACTING_DEVICE }),
+    z.object({ attachments: z.array(AttachmentViewSchema), problem: z.string().nullable() }),
+  ),
+  /**
+   * Takes one of the item's own files off it: the row and the stored
+   * bytes (EO-702). A comment's file is refused — it is part of what was
+   * said and goes only with its comment.
+   */
+  "items:removeAttachment": channel(
+    z.object({ attachmentId: z.string(), ...ACTING_DEVICE }),
+    z.object({ removed: z.boolean(), problem: z.string().nullable() }),
+  ),
   /**
    * Pins the comment a thread should be read from, or takes the pin off.
    *
@@ -6163,6 +6184,7 @@ export const recordContract = {
         runs: { ts: 0, id: "" },
         runEvents: { ts: 0, runId: "", seq: -1 },
         attachments: { ts: 0, id: "" },
+        attachmentRemovals: { ts: 0, id: "" },
         projects: { ts: 0, id: "" },
         itemTypes: { ts: 0, id: "" },
         pipelines: { ts: 0, id: "" },
@@ -7334,6 +7356,10 @@ export const ACTOR_SCOPED_CHANNELS = [
   // about whoever is asking, and only the door knows who that is.
   "items:takeOver",
   "items:update",
+  // The item's own files are part of what it is, as its text is (EO-702),
+  // so they are the holder's to change on the same terms.
+  "items:addAttachments",
+  "items:removeAttachment",
   "items:authority",
   "comments:post",
   // Who published it, for "Dana published it" on five screens and in

@@ -1107,6 +1107,13 @@
       "when": 1797350400000,
       "tag": "0157_repository_checkout_tool",
       "breakpoints": true
+    },
+    {
+      "idx": 158,
+      "version": "6",
+      "when": 1797436800000,
+      "tag": "0158_item_attachments",
+      "breakpoints": true
     }
   ]
 }

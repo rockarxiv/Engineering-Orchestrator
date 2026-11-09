@@ -1,8 +1,9 @@
-import { and, asc, eq, getTableColumns, inArray, sql } from "drizzle-orm";
+import { and, asc, eq, getTableColumns, inArray, isNull, sql } from "drizzle-orm";
 import { onProject } from "./projectScope.js";
 import type { AgentAttachment, RecordCursor, Uuid } from "@eo/core";
 import type { Db } from "../client.js";
-import { attachments, comments, jiraAttachmentLinks, outbox, items } from "../schema.js";
+import { attachmentRemovals, attachments, comments, jiraAttachmentLinks, outbox, items } from "../schema.js";
+import { notifyItemAttachmentsAdded, notifyItemAttachmentRemoved } from "../itemAttachmentEvents.js";
 import { jiraStateFor } from "./itemsRepo.js";
 import { enqueueOutbox } from "./outboxRepo.js";
 
@@ -26,7 +27,8 @@ function selectAttachments(db: Db) {
 export interface AttachmentRecord extends AgentAttachment {
   id: Uuid;
   itemId: Uuid;
-  commentId: Uuid;
+  /** Null for one of the item's own files rather than a comment's (EO-702). */
+  commentId: Uuid | null;
   path: string;
   managed: boolean;
   jiraAttachmentId: string | null;
@@ -37,7 +39,8 @@ export interface AttachmentRecord extends AgentAttachment {
 export interface CreateAttachmentRecord {
   id: Uuid;
   itemId: Uuid;
-  commentId: Uuid;
+  /** Null for one of the item's own files (EO-702). */
+  commentId: Uuid | null;
   storagePath: string;
   name: string;
   mimeType: string;
@@ -52,7 +55,7 @@ function toRecord(row: AttachmentRow): AttachmentRecord {
   return {
     id: row.id as Uuid,
     itemId: row.itemId as Uuid,
-    commentId: row.commentId as Uuid,
+    commentId: row.commentId as Uuid | null,
     path: row.storagePath,
     name: row.name,
     mimeType: row.mimeType,
@@ -160,6 +163,91 @@ export function listAttachmentsForComments(db: Db, commentIds: Uuid[]): Attachme
 
 export function listAttachmentsForItem(db: Db, itemId: Uuid): AttachmentRecord[] {
   return selectAttachments(db).where(eq(attachments.itemId, itemId)).orderBy(attachments.createdAt, attachments.id).all().map(toRecord);
+}
+
+/**
+ * The item's own files, oldest first (EO-702) — the ones no comment
+ * owns. `listAttachmentsForItem` is every file on the item, its
+ * comments' included.
+ */
+export function listItemAttachments(db: Db, itemId: Uuid): AttachmentRecord[] {
+  return selectAttachments(db)
+    .where(and(eq(attachments.itemId, itemId), isNull(attachments.commentId)))
+    .orderBy(attachments.createdAt, attachments.id)
+    .all()
+    .map(toRecord);
+}
+
+/**
+ * Puts stored files on the item itself (EO-702), and announces them so
+ * the organisation record hears (`record/outbound.ts`). What a replica
+ * writes when a file arrives *from* the record goes through
+ * `insertAttachments` instead, which announces nothing: telling the
+ * record about its own file would be an echo.
+ */
+export function addItemAttachments(db: Db, itemId: Uuid, records: Omit<CreateAttachmentRecord, "itemId" | "commentId">[]): AttachmentRecord[] {
+  if (records.length === 0) return [];
+  insertAttachments(db, records.map((record) => ({ ...record, itemId, commentId: null })));
+  const added = records.map((record) => getAttachment(db, record.id)).filter((record): record is AttachmentRecord => record !== undefined);
+  notifyItemAttachmentsAdded(db, itemId, added);
+  return added;
+}
+
+/**
+ * Takes one of the item's own files off it (EO-702): the row, and a
+ * removal the record pages to every replica. Undefined for a file that
+ * is not there or that a comment owns — a comment's file goes only with
+ * its comment. The stored bytes are the caller's to remove, after.
+ *
+ * `announce` is false where the removal came *from* the record, so it
+ * is not sent back to it.
+ */
+export function removeItemAttachment(db: Db, id: Uuid, options: { announce?: boolean; now?: number } = {}): AttachmentRecord | undefined {
+  const removed = db.transaction((tx) => {
+    const row = selectAttachments(tx as unknown as Db).where(eq(attachments.id, id)).get();
+    if (!row || row.commentId !== null) return undefined;
+    tx.delete(attachments).where(eq(attachments.id, id)).run();
+    noteAttachmentRemoved(tx as unknown as Db, id, row.itemId as Uuid, options.now ?? Date.now());
+    return toRecord(row);
+  });
+  if (removed !== undefined && options.announce !== false) notifyItemAttachmentRemoved(db, removed);
+  return removed;
+}
+
+/**
+ * Remembers that an item file went, once. Also written on a replica and
+ * on a solo desktop — one small row per removal — so the record's
+ * paging and a desktop's own bookkeeping are the same code.
+ */
+export function noteAttachmentRemoved(db: Db, attachmentId: Uuid, itemId: Uuid, removedAt: number): void {
+  db.insert(attachmentRemovals).values({ attachmentId, itemId, removedAt }).onConflictDoNothing().run();
+}
+
+/** Whether this file was removed from its item here (EO-702) — so a late copy of it is not taken back in. */
+export function attachmentWasRemoved(db: Db, attachmentId: Uuid): boolean {
+  return db.select({ id: attachmentRemovals.attachmentId }).from(attachmentRemovals).where(eq(attachmentRemovals.attachmentId, attachmentId)).get() !== undefined;
+}
+
+/** Item files removed after a point, oldest first — the record's page of them (EO-702). */
+export function listAttachmentRemovalsSince(
+  db: Db,
+  cursor: RecordCursor,
+  limit: number,
+  within?: string,
+): { attachmentId: string; itemId: string; ts: number }[] {
+  return db
+    .select()
+    .from(attachmentRemovals)
+    .where(
+      and(
+        sql`(${attachmentRemovals.removedAt} > ${cursor.ts} or (${attachmentRemovals.removedAt} = ${cursor.ts} and ${attachmentRemovals.attachmentId} > ${cursor.id}))`,
+        within === undefined ? undefined : onProject(attachmentRemovals.itemId, within),
+      ),
+    )
+    .orderBy(asc(attachmentRemovals.removedAt), asc(attachmentRemovals.attachmentId))
+    .limit(limit)
+    .all()
+    .map((row) => ({ attachmentId: row.attachmentId, itemId: row.itemId, ts: row.removedAt }));
 }
 
 /**

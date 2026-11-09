@@ -27,6 +27,7 @@ import { AssigneePicker } from "./AssigneePicker";
 import { ConfirmDeleteComment } from "./ConfirmDeleteComment";
 import { ConfirmDeleteItem } from "./ConfirmDeleteItem";
 import { CriteriaSection, SpecSection } from "./Fields";
+import { ItemFiles } from "./ItemFiles";
 import { ItemHeader } from "./ItemHeader";
 import { JiraLink } from "./JiraLink";
 import { ReferenceField } from "./ReferenceField";
@@ -453,6 +454,9 @@ export function ItemView({ itemId }: { itemId: string }) {
                     <Markdown>{item.body}</Markdown>
                   </div>
                 ) : null}
+
+                {/* The item's own files, part of what it is as its description is (EO-702). */}
+                <ItemFiles itemId={itemId} attachments={item.attachments} readOnly={!mayEdit} />
 
                 {/* The item's own content is the holder's to change on a
                     step that waits on a group (EO-368); the thread stays open. */}
