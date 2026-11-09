@@ -2,7 +2,7 @@ import { useId, useMemo } from "react";
 import { Link } from "react-router-dom";
 import { USER_ATTENTION_TARGET, type HandOffTargets, type PipelineStepView, type StepRouteView } from "@eo/core";
 import { cn } from "@eo/ui";
-import { StepKindChip } from "../kit";
+import { StepKindChip, stepLane } from "../kit";
 import { BOX_PAD_X, layoutPipeline, type LaidArrow, type Rect } from "./layout";
 
 /**
@@ -19,7 +19,11 @@ import { BOX_PAD_X, layoutPipeline, type LaidArrow, type Rect } from "./layout";
  * it; this file only draws the rectangles and paths it is given.
  *
  * A step is one raised row (EO-680): its name, then the kind chip at the
- * far end, whose title is the owner line the box used to spell out. On a
+ * far end, whose title is the owner line the box used to spell out. A
+ * step an agent, a person or a script owns is tinted toward that kind's
+ * colour with a 4px edge on its left in it, the same lane as its board
+ * column (EO-685); EO's own steps keep the neutral surface with an edge
+ * in the strong line, and an end is outlined as before. On a
  * draft for an existing pipeline, a step that pipeline has not got yet is
  * outlined dashed in the neutral ink and tagged "new" — never the accent,
  * since a new step is not something to press.
@@ -117,6 +121,8 @@ export function PipelineDrawing({
           {layout.steps.map(({ step, box }) => {
             const here = counts?.get(step.id) ?? 0;
             const added = newStepIds?.has(step.id) ?? false;
+            const chosen = step.id === selectedStepId;
+            const lane = stepLane(step);
             return (
               <li
                 key={step.id}
@@ -125,12 +131,17 @@ export function PipelineDrawing({
                 style={{ ...px(box), paddingLeft: BOX_PAD_X, paddingRight: BOX_PAD_X }}
                 className={cn(
                   "absolute flex flex-col justify-center gap-0.5 rounded-[10px] border",
-                  // A terminal step is an end: outlined, not filled. Every other step is raised on a hairline.
-                  step.isTerminal ? "border-line-strong" : "border-line bg-canvas-raised",
+                  // A terminal step is an end: outlined, not filled. Every other step is raised on a hairline, in its owner's lane.
+                  step.isTerminal ? "border-line-strong" : cn(lane.surface, lane.edge),
                   // New in this draft: dashed, in the neutral ink rather than the accent (ARCHITECTURE.md, "Genre: utilitarian", rule 6).
                   added && "border-[1.5px] border-dashed border-ink-muted",
-                  // The step whose details are open: outlined in the accent, the way the layout marks what is chosen.
-                  step.id === selectedStepId && "shadow-[inset_0_0_0_1.5px_var(--color-accent)]",
+                  // The owner's edge down the left, and the step whose details are open outlined in the accent,
+                  // the way the layout marks what is chosen. One shadow, so the two can be drawn together.
+                  step.isTerminal
+                    ? chosen && "shadow-[inset_0_0_0_1.5px_var(--color-accent)]"
+                    : chosen
+                      ? "shadow-[inset_4px_0_0_var(--lane-edge),inset_0_0_0_1.5px_var(--color-accent)]"
+                      : "shadow-[inset_4px_0_0_var(--lane-edge)]",
                 )}
               >
                 {added ? (
@@ -143,7 +154,7 @@ export function PipelineDrawing({
                     <button
                       type="button"
                       title={step.name}
-                      aria-pressed={step.id === selectedStepId}
+                      aria-pressed={chosen}
                       onClick={() => onSelectStep(step.id)}
                       className={cn("truncate text-left text-[15px] font-semibold hover:underline", step.isTerminal ? "text-ink-muted" : "text-ink")}
                     >
@@ -157,8 +168,11 @@ export function PipelineDrawing({
                   {step.id === entryStepId ? <span className="shrink-0 rounded-[5px] bg-canvas-active px-1.5 text-[11.5px] text-ink-muted">start</span> : null}
                   <span className="ml-auto flex shrink-0 items-center gap-2">
                     {here > 0 && stepHref ? (
-                      // What stands here now, and the board narrowed to it.
-                      <Link to={stepHref(step.id)} className="text-[12px] text-ink-subtle hover:text-ink hover:underline">
+                      // What stands here now, and the board narrowed to it: a small pill in the ink.
+                      <Link
+                        to={stepHref(step.id)}
+                        className="rounded-full border border-line-strong bg-canvas px-2 text-[12px] leading-[18px] tabular-nums text-ink hover:underline"
+                      >
                         {here} here
                       </Link>
                     ) : null}

@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useDroppable } from "@dnd-kit/core";
 import { watchLine, type ChromeVocabulary, type ItemSummary, type ModuleView, type PipelineStepView } from "@eo/core";
 import { cn } from "@eo/ui";
-import { Button, Select, StepKindChip } from "../../kit";
+import { Button, Select, StepKindChip, stepLane } from "../../kit";
 import { ownerOf } from "../../parts";
 import { NotFullyTested } from "../../modules/NotFullyTested";
 import { BoardCard } from "./BoardCard";
@@ -15,7 +15,9 @@ import { descriptionFor } from "../../../shared/pipeline/dashboard";
  * A raised panel on the canvas's darker ground, on a hairline, with the
  * cards raised one step further on it (ARCHITECTURE.md, "Depth and
  * motion"). Its head says the step's kind with the chip the pipeline
- * drawing uses (EO-680).
+ * drawing uses (EO-680), and a step an agent, a person or a script owns
+ * is a lane in that kind's colour (EO-685): a 3px cap, a light tint and
+ * a line leaning toward it. EO's own columns and the ends stay grey.
  */
 
 /** Who a human step waits on, as the picker's own vocabulary (EO-323): a person and a group are different promises. */
@@ -127,12 +129,15 @@ export function StepColumn({
   const { setNodeRef, isOver } = useDroppable({ id: step.id });
   const count = countLabel(items.length, vocabulary);
   const summary = step.instructionsSummary ?? descriptionFor(step);
+  const lane = stepLane(step);
   return (
     <section
       ref={setNodeRef}
       aria-label={`${step.name} — ${count}`}
       className={cn(
-        "flex min-w-0 flex-col gap-2 rounded-[14px] border border-line bg-canvas-raised px-2.5 py-3",
+        "flex min-w-0 flex-col gap-2 rounded-[14px] border px-2.5 py-3",
+        lane.surface,
+        lane.cap,
         isOver && "bg-accent-subtle/40 shadow-[inset_0_0_0_1.5px_var(--color-accent)]",
       )}
     >
@@ -152,7 +157,7 @@ export function StepColumn({
           // What runs here, as the machine names it: the role, the action, or "you".
           // A step nobody owns is where the engine hands off to you (ARCHITECTURE.md, "A step").
           <span
-            className="min-w-0 truncate font-mono text-[11.5px] text-ink-subtle"
+            className={cn("min-w-0 truncate font-mono text-[11.5px]", lane.ownerInk)}
             {...(step.type === "user" ? { title: "Human-owned — the engine won't act here" } : {})}
           >
             {ownerOf(step).label}
