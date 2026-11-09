@@ -2,6 +2,7 @@ import { jiraStateOf, type Item } from "@eo/core";
 import type { AttachmentStorage } from "../../../attachments/storage.js";
 import { MAX_ATTACHMENT_BYTES } from "../../../attachments/storage.js";
 import type { Db } from "../../../db/client.js";
+import { isReplica } from "../../../db/recordRole.js";
 import {
   addItemAttachments,
   deleteAttachmentLocally,
@@ -48,6 +49,14 @@ export async function syncJiraAttachments(
   const result: AttachmentPullResult = { added: 0, removed: 0, skipped: 0, problems: [] };
   const issueKey = jiraStateOf(item).key;
   if (!issueKey) return result;
+  // Not on a replica (EO-705). Files go to Jira from the record, and
+  // the Jira id each one is given there stays there — it is not on the
+  // wire. A replica reconciling for itself would see the record's own
+  // upload as a file it lacks, import it, and announce it to the
+  // record, which would upload it again: a copy per pull, for ever. The
+  // record reconciles, and its files and removals page down to every
+  // replica as any item file's do.
+  if (isReplica(db, item.id)) return result;
 
   // Snapshot before the network call. If an outbox upload finishes while
   // Jira is answering this listing, that newly assigned remote id was
@@ -82,12 +91,12 @@ export async function syncJiraAttachments(
     // same listing.
     if (!stillMirrors(db, item)) return result;
     // An item file goes the way the item page removes one, so the
-    // organisation record hears; `fromJira` keeps it from being sent
-    // back to Jira as a deletion of its own. A file on a comment — one
+    // organisation record hears; `tellJira: false` keeps it from being
+    // sent back to Jira as a deletion of its own. A file on a comment — one
     // pulled before EO-705, or a comment's own upload — keeps its old
     // path.
     const removed = local.commentId === null
-      ? removeItemAttachment(db, local.id, { fromJira: true })
+      ? removeItemAttachment(db, local.id, { tellJira: false })
       : deleteAttachmentLocally(db, local.id);
     if (removed) {
       await storage.removeManaged(removed);

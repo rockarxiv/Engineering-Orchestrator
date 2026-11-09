@@ -2,13 +2,14 @@ import { existsSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import type { Uuid } from "@eo/core";
+import { uuidv7, type Uuid } from "@eo/core";
 import { AttachmentStorage, MAX_ATTACHMENT_BYTES } from "../../../attachments/storage.js";
 import type { DbHandle } from "../../../db/client.js";
 import {
   addItemAttachments,
   getAttachment,
   insertAttachments,
+  removeItemAttachment,
   listAttachmentsForItem,
   listCommentsForItem,
   listItemAttachments,
@@ -26,6 +27,10 @@ import { attachWorkspace, createTestItem, openMigratedTestDb } from "../../../db
 import { deleteAttachmentCommand } from "../../../ipc/attachmentCommands.js";
 import { addItemAttachmentsCommand, removeItemAttachmentCommand } from "../../../ipc/itemAttachmentCommands.js";
 import { markReplica } from "../../../db/recordRole.js";
+import { createPerson } from "../../../db/repos/peopleRepo.js";
+import { issueDevice } from "../../../db/repos/devicesRepo.js";
+import { createLocalRecord } from "../../../record/localRecord.js";
+import { serveApply, type ServeRecordContext } from "../../../record/serveRecord.js";
 import { drainChannel } from "../../../outbox/drain.js";
 import type { FetchLike, JiraAttachment } from "./client.js";
 import { createJiraClient } from "./index.js";
@@ -374,6 +379,87 @@ describe("item attachments and Jira issue attachments", () => {
     expect((await syncJiraAttachments(handle.db, client, item, storage)).removed).toBe(1);
     expect(getAttachment(handle.db, old.id)).toBeUndefined();
     expect(listItemAttachments(handle.db, item.id)).toHaveLength(1);
+  });
+
+  /**
+   * Organisation mode. The record owns the item's tracker (`recordRole.ts`),
+   * so a file a desktop puts on or takes off reaches Jira from the record
+   * when the record accepts the command — and from nowhere else.
+   */
+  function onTheRecord() {
+    const serving: ServeRecordContext = { db: handle.db, record: createLocalRecord(handle.db), attachments: storage, offerWork: async () => [] };
+    const person = createPerson(handle.db, { name: "Anna", email: "anna@example.com" });
+    const deviceId = issueDevice(handle.db, { personId: person.id, name: "anna-laptop", tokenHash: "hash-of-anna", secretsKeyHash: null }).id;
+    return {
+      put: (itemId: string, attachmentId: string) =>
+        serveApply(serving, {
+          deviceId,
+          commands: [{ kind: "attachment", id: uuidv7(), itemId, commentId: null, attachmentId, name: "mock.png", mimeType: "image/png", size: 5, dataBase64: Buffer.from("hello").toString("base64") }],
+        }),
+      take: (itemId: string, attachmentId: string) =>
+        serveApply(serving, {
+          deviceId,
+          commands: [{ kind: "attachmentRemoval", id: uuidv7(), itemId, attachmentId, name: "mock.png", mimeType: "image/png" }],
+        }),
+    };
+  }
+
+  it("uploads an item file a desktop sends the record, and the record's pull does not import it again", async () => {
+    const { item, fake, client, drain } = mirrored("API-25");
+    const record = onTheRecord();
+    const fileId = uuidv7();
+
+    expect((await record.put(item.id, fileId)).results[0]).toMatchObject({ applied: true });
+    expect(pendingPushesForItem(handle.db, item.id, "jira")).toMatchObject([{ kind: "attachment_upload", payload: { attachmentId: fileId } }]);
+    // A replayed queue is one file and one upload.
+    await record.put(item.id, fileId);
+    expect(pendingPushesForItem(handle.db, item.id, "jira")).toHaveLength(1);
+
+    await drain(Date.now());
+    expect(fake.uploads).toEqual(["uploaded-1"]);
+    expect(getAttachment(handle.db, fileId as Uuid)).toMatchObject({ commentId: null, jiraAttachmentId: "uploaded-1" });
+    expect((await syncJiraAttachments(handle.db, client, item, storage)).added).toBe(0);
+    expect(listItemAttachments(handle.db, item.id)).toHaveLength(1);
+  });
+
+  it("deletes in Jira an item file a desktop took off, with the pending deletion keeping the record's pull from bringing it back", async () => {
+    const { item, fake, client, drain } = mirrored("API-26");
+    const record = onTheRecord();
+    const fileId = uuidv7();
+    await record.put(item.id, fileId);
+    await drain(Date.now());
+    expect(getAttachment(handle.db, fileId as Uuid)?.jiraAttachmentId).toBe("uploaded-1");
+
+    expect((await record.take(item.id, fileId)).results[0]).toMatchObject({ applied: true });
+    expect(getAttachment(handle.db, fileId as Uuid)).toBeUndefined();
+    expect(pendingPushesForItem(handle.db, item.id, "jira")).toMatchObject([{ kind: "attachment_delete", payload: { jiraAttachmentId: "uploaded-1" } }]);
+
+    // Jira still lists it until the outbox drains: the tombstone holds.
+    expect(fake.remote.map((entry) => entry.id)).toEqual(["uploaded-1"]);
+    expect((await syncJiraAttachments(handle.db, client, item, storage)).added).toBe(0);
+    expect(listItemAttachments(handle.db, item.id)).toEqual([]);
+
+    await drain(Date.now() + 1);
+    expect(fake.deletes).toEqual(["uploaded-1"]);
+    expect(pendingPushesForItem(handle.db, item.id, "jira")).toEqual([]);
+  });
+
+  it("leaves Jira to the record on a replica: no deletion queued, and no reconciliation of its own", async () => {
+    const { item, fake, client } = mirrored("API-27");
+    const stored = await storage.storeImported({ name: "spec.txt", mimeType: "text/plain", data: new TextEncoder().encode("hello") });
+    insertAttachments(handle.db, [{ ...stored, itemId: item.id, commentId: null, jiraAttachmentId: "linked" }]);
+    fake.remote.push({ id: "elsewhere", filename: "new.txt", mimeType: "text/plain", size: 6, contentUrl: "https://jira.example/content/elsewhere", created: "" });
+    const release = markReplica(handle.db, () => true);
+    try {
+      // The record's own upload, seen from a replica that holds no link
+      // for it, would otherwise come back as a new file and go up again.
+      expect(await syncJiraAttachments(handle.db, client, item, storage)).toMatchObject({ added: 0, removed: 0 });
+      expect(listItemAttachments(handle.db, item.id).map((file) => file.jiraAttachmentId)).toEqual(["linked"]);
+      expect(removeItemAttachment(handle.db, stored.id)).toBeDefined();
+    } finally {
+      release();
+    }
+    expect(pendingPushesForItem(handle.db, item.id, "jira")).toEqual([]);
   });
 
   it("queues no upload for an item file added on a replica, whose files reach Jira from the record", async () => {

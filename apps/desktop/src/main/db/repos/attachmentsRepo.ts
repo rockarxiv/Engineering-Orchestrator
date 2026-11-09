@@ -213,20 +213,25 @@ export function addItemAttachments(db: Db, itemId: Uuid, records: Omit<CreateAtt
  * `announce` is false where the removal came *from* the record, so it
  * is not sent back to it.
  *
- * A removal made here also goes to Jira (EO-705): the pending
- * `attachment_delete` is the tombstone that keeps a pull, landing before
- * the outbox drains, from bringing the file back. Not for a removal that
- * came from the record, which is not this machine's to tell Jira, nor
- * for one that came *from* Jira (`fromJira`), which would be an echo.
+ * The removal also goes to Jira (EO-705): the pending `attachment_delete`
+ * is the tombstone that keeps a pull, landing before the outbox drains,
+ * from bringing the file back. Told by whoever owns the item's tracker —
+ * a solo desktop, or the record when it accepts a device's removal — so
+ * never from a replica, whose removal reaches Jira from the record
+ * (`recordRole.ts`). `tellJira: false` where nothing should go: a
+ * removal that came *from* Jira, which would be an echo, and one a
+ * replica applies on the record's word.
  */
-export function removeItemAttachment(db: Db, id: Uuid, options: { announce?: boolean; now?: number; itemId?: Uuid; fromJira?: boolean } = {}): AttachmentRecord | undefined {
+export function removeItemAttachment(db: Db, id: Uuid, options: { announce?: boolean; now?: number; itemId?: Uuid; tellJira?: boolean } = {}): AttachmentRecord | undefined {
   const removed = db.transaction((tx) => {
     const row = selectAttachments(tx as unknown as Db).where(eq(attachments.id, id)).get();
     if (!row || row.commentId !== null) return undefined;
     // Named by item as well as by id, where the caller was told which
     // item: a removal for one item never takes another item's file.
     if (options.itemId !== undefined && row.itemId !== options.itemId) return undefined;
-    if (options.announce !== false && options.fromJira !== true) queueAttachmentDeletion(tx as unknown as Db, row);
+    // Asked of `db`, not `tx`: the replica mark is kept against the
+    // database object, and a transaction handle is a different one.
+    if (options.tellJira !== false && !isReplica(db, row.itemId as Uuid)) queueAttachmentDeletion(tx as unknown as Db, row);
     tx.delete(attachments).where(eq(attachments.id, id)).run();
     noteAttachmentRemoved(tx as unknown as Db, id, row.itemId as Uuid, options.now ?? Date.now());
     return toRecord(row);

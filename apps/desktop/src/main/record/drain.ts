@@ -967,7 +967,7 @@ async function settle(options: DrainOptions, entry: QueuedCommand, said: RecordC
     // bytes and all; taken off, it is fetched back from the record, which
     // still has it — this copy's row and bytes went when it was removed.
     if (entry.command.kind === "attachment" && entry.command.commentId === null) {
-      const taken = removeItemAttachment(db, entry.command.attachmentId as Uuid, { announce: false });
+      const taken = removeItemAttachment(db, entry.command.attachmentId as Uuid, { announce: false, tellJira: false });
       if (taken !== undefined) await options.attachments?.removeManaged?.(taken);
     }
     if (entry.command.kind === "attachmentRemoval") {
@@ -1235,7 +1235,7 @@ async function applyChanges(options: DrainOptions, changes: RecordChanges): Prom
   // bytes go here too, and a fetch not yet finished is not finished.
   // Not sent back — the record is where this came from.
   for (const removal of changes.attachmentRemovals) {
-    const removed = removeItemAttachment(options.db, removal.attachmentId as Uuid, { announce: false, now: removal.ts });
+    const removed = removeItemAttachment(options.db, removal.attachmentId as Uuid, { announce: false, tellJira: false, now: removal.ts });
     if (removed === undefined) {
       noteAttachmentRemoved(options.db, removal.attachmentId as Uuid, removal.itemId as Uuid, removal.ts);
       continue;
