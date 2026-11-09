@@ -175,9 +175,10 @@ function TemplateCard({
       <p className="text-[13px] leading-relaxed text-ink-muted">{template.description}</p>
       {template.steps.length > 0 ? <StepStrip steps={template.steps} /> : null}
 
-      {template.needs.length > 0 ? (
-        <div className="flex flex-col gap-1.5">
-          <GroupLabel trailing={<ReadinessMeter needs={template.needs} />}>What this needs</GroupLabel>
+      {/* Always drawn, so a template that needs nothing still says it is ready to use. */}
+      <div className="flex flex-col gap-1.5">
+        <GroupLabel trailing={<ReadinessMeter needs={template.needs} />}>What this needs</GroupLabel>
+        {template.needs.length > 0 ? (
           <ul className="flex flex-col gap-1">
             {template.needs.map((need) => (
               <li key={need.key} className="flex items-start gap-2 text-[12.5px] text-ink-muted">
@@ -190,8 +191,8 @@ function TemplateCard({
               </li>
             ))}
           </ul>
-        </div>
-      ) : null}
+        ) : null}
+      </div>
 
       {/* On the card's bottom edge, so a row of cards has its actions on one line. */}
       <div className="mt-auto flex flex-col gap-2 pt-1">
@@ -267,17 +268,19 @@ function StepStrip({ steps }: { steps: readonly GalleryStepView[] }) {
   );
 }
 
-/** How many of the card's needs are already met: a segment per need, then the count in words. */
+/** How many of the card's needs are already met: a segment per need, then the count in words. A card that needs nothing is ready to use. */
 function ReadinessMeter({ needs }: { needs: readonly GalleryNeedView[] }) {
   const met = needs.filter((need) => need.met).length;
   const words = met === needs.length ? "Ready to use" : `${met} of ${needs.length} ready`;
   return (
     <span className="flex items-center gap-2 text-[11.5px] tabular-nums text-ink-muted">
-      <span aria-hidden className="flex w-24 gap-[3px]">
-        {needs.map((need) => (
-          <span key={need.key} data-met={need.met} className={`h-[5px] flex-1 rounded-[3px] ${need.met ? "bg-success" : "bg-line-strong"}`} />
-        ))}
-      </span>
+      {needs.length > 0 ? (
+        <span aria-hidden className="flex w-24 gap-[3px]">
+          {needs.map((need) => (
+            <span key={need.key} data-met={need.met} className={`h-[5px] flex-1 rounded-[3px] ${need.met ? "bg-success" : "bg-line-strong"}`} />
+          ))}
+        </span>
+      ) : null}
       <span>{words}</span>
     </span>
   );

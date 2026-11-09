@@ -186,6 +186,16 @@ describe("the cards", () => {
     expect([...container.querySelectorAll("[data-met]")].map((segment) => segment.getAttribute("data-met"))).toEqual(["false", "false", "true", "true"]);
   });
 
+  it("says a template that needs nothing is ready to use", async () => {
+    mockIpc({ templates: [{ ...WEEKLY, needs: [] }] });
+    const { container } = renderGallery();
+
+    const card = await screen.findByRole("region", { name: "Weekly report" });
+    expect(within(card).getByText("What this needs")).toBeInTheDocument();
+    expect(within(card).getByText("Ready to use")).toBeInTheDocument();
+    expect(container.querySelectorAll("[data-met]")).toHaveLength(0);
+  });
+
   it("keeps Use this the filled accent button beside a plain Preview", async () => {
     mockIpc();
     renderGallery();
