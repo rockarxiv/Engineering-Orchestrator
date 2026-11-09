@@ -107,8 +107,20 @@ test("the invoke round-trip and the push channel both work against the real app"
   // way every other spec's setup does.
   await attachRepository(mainWindow, checkout(home));
   await openPlace(mainWindow, "Settings");
-  await mainWindow.getByRole("navigation", { name: "Settings sections" }).getByRole("button", { name: "Updates" }).click();
-  await expect(mainWindow.getByText(/^EO \d+\.\d+\.\d+/)).toBeVisible();
+  const sections = mainWindow.getByRole("navigation", { name: "Settings sections" });
+  if (process.platform === "darwin") {
+    // macOS has no Settings → Updates (EO-698): EO cannot install over
+    // its ad-hoc signed build, so the main process marks the status
+    // manual and the section is not offered. The round-trip is asserted
+    // through the bridge instead, since nothing else draws the version.
+    await expect(sections.getByRole("button", { name: "General" })).toBeVisible();
+    await expect(sections.getByRole("button", { name: "Updates" })).toHaveCount(0);
+    const answered = await mainWindow.evaluate(() => window.eo.ipc.invoke("app:getVersion" as never, undefined as never));
+    expect(answered).toMatchObject({ ok: true, data: { version: expect.stringMatching(/^\d+\.\d+\.\d+/) } });
+  } else {
+    await sections.getByRole("button", { name: "Updates" }).click();
+    await expect(mainWindow.getByText(/^EO \d+\.\d+\.\d+/)).toBeVisible();
+  }
 
   // A push reaching the renderer over real IPC. Asserted through the
   // bridge rather than the page: this channel is the one every push in
