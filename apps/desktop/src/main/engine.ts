@@ -1063,7 +1063,7 @@ function buildProvider(
         // Unconditional, and read per turn: with no host to ask, this
         // answers null — the same answer every agent but one gets, and the
         // answer this agent gets before the listener has bound.
-        admin: () => adminDispatchFor(agent, adminMcp),
+        admin: (directory) => adminDispatchFor(agent, adminMcp, directory),
         // EO-378: the agent's own Codex home, made ready per turn. The
         // provider skips it when the agent is ticked over to the
         // person's own setup — the flag is in `config` below, and the
@@ -1107,7 +1107,7 @@ function buildProvider(
         // branch above makes. The URL is already in this agent's
         // `.mcp.json`, written by `adminDeliveryFor` when its directory
         // was prepared; what is per turn is the credential.
-        admin: () => adminDispatchFor(agent, adminMcp),
+        admin: (directory) => adminDispatchFor(agent, adminMcp, directory),
         // The judgement about broad searches is repository intelligence's
         // and the adapter only delivers it (KAN-126). Supplied here, by
         // the composition root, until the developer pack supplies it.

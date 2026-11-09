@@ -6,6 +6,7 @@ import {
   EMPTY_SPEC_SHAPE,
   formatIssues,
   gitStateOf,
+  MAX_COMMENT_ATTACHMENTS,
   jiraStateOf,
   missingSpecFields,
   namedBranchOf,
@@ -21,6 +22,7 @@ import {
   type MemoryConsolidateNowResult,
   type MemoryScope,
   type MessageDelivery,
+  type PathsFrom,
   type Run,
   type Item,
   type SpecShape,
@@ -29,6 +31,7 @@ import {
   type Uuid,
 } from "@eo/core";
 import type { AttachmentStorage } from "../attachments/storage.js";
+import { checkUploadPaths, storeUploads } from "../attachments/pathUploads.js";
 import type { Db } from "../db/client.js";
 import {
   dismissOpenMentionForAgent,
@@ -203,6 +206,65 @@ export interface EngineHandle {
   memoryConsolidationPending?: (scope: MemoryScope) => "queued" | "running" | null;
 }
 
+/** What posting a comment answers, where it posted one. */
+export interface PostedComment {
+  commentId: string;
+  resumedRun: boolean;
+  delivery: CommentDelivery | null;
+}
+
+/**
+ * A call naming files by path that was refused (EO-700), with the path
+ * and the reason. Thrown inside `postHumanComment` so every early exit
+ * there stays one line, and caught by `postCommentCommand`, which answers
+ * it — a throw would reach the caller as "Internal error" in a packaged
+ * build, and the sentence is the whole of what the caller needs.
+ */
+class UploadRefused extends Error {}
+
+/**
+ * `comments:post` as the channel answers it: the comment posted, or —
+ * for a call naming files by path that could not all be uploaded —
+ * nothing written and the reason why.
+ */
+export async function postCommentCommand(
+  db: Db,
+  engine: EngineHandle | undefined,
+  input: IpcPayload<"comments:post">,
+  attachmentStorage?: AttachmentStorage,
+): Promise<IpcResponse<"comments:post">> {
+  try {
+    return { ...(await postHumanComment(db, engine, input, attachmentStorage)), problem: null };
+  } catch (error) {
+    if (error instanceof UploadRefused) return { commentId: null, resumedRun: false, delivery: null, problem: error.message };
+    throw error;
+  }
+}
+
+/**
+ * Whether the files a comment names by path may be uploaded, and from
+ * where — or the refusal. Asked before anything is written.
+ *
+ * The grant is the door's (`pathsFrom`, stamped by EO's MCP hosts and
+ * taken off at every other door), so a payload without one names files
+ * nobody may read from here: the renderer stages a person's own files
+ * itself, and an organisation server's callers are on other machines.
+ */
+async function checkCommentUploads(input: IpcPayload<"comments:post">, staged: number, attachmentStorage: AttachmentStorage | undefined): Promise<PathsFrom> {
+  const paths = input.paths ?? [];
+  const from = input.pathsFrom;
+  if (from === undefined) throw new UploadRefused("Nothing was posted: files can be named by path only through EO's MCP servers. Attach a file in the app instead.");
+  if (staged + paths.length > MAX_COMMENT_ATTACHMENTS) {
+    throw new UploadRefused(
+      `Nothing was posted: a comment may carry at most ${MAX_COMMENT_ATTACHMENTS} files, and this one names ${paths.length} by path and ${staged} by attachment id.`,
+    );
+  }
+  if (!attachmentStorage) throw new UploadRefused("Nothing was posted: this installation has nowhere to keep a file.");
+  const checked = await checkUploadPaths(from, paths);
+  if (!checked.ok) throw new UploadRefused(checked.problem);
+  return from;
+}
+
 /**
  * A human comment, and the reply path that unblocks a parked run (ARCHITECTURE.md, "Escalation ends
  * the run").
@@ -218,10 +280,11 @@ export async function postHumanComment(
   engine: EngineHandle | undefined,
   input: IpcPayload<"comments:post">,
   attachmentStorage?: AttachmentStorage,
-): Promise<IpcResponse<"comments:post">> {
+): Promise<PostedComment> {
   const itemId = input.itemId as Uuid;
   const attachmentIds = input.attachmentIds ?? [];
-  if (input.body.trim() === "" && attachmentIds.length === 0) throw new Error("A comment needs text or an attachment.");
+  const paths = input.paths ?? [];
+  if (input.body.trim() === "" && attachmentIds.length === 0 && paths.length === 0) throw new Error("A comment needs text or an attachment.");
   if (attachmentIds.length > 0 && !attachmentStorage) throw new Error("Attachment storage is unavailable.");
 
   const resolution = resolveAndValidateMentions(db, input.mentions);
@@ -244,8 +307,25 @@ export async function postHumanComment(
   const onTrial = standIn.agent !== null && (getItem(db, itemId)?.trialAt ?? null) !== null;
   const standInAgent = onTrial ? standIn.agent : null;
 
+  // Files named by path (EO-700), checked whole before anything is
+  // written — the staged attachments below included — so a refusal
+  // leaves no comment, no attachment row and no file behind.
+  const uploadFrom = paths.length > 0 ? await checkCommentUploads(input, attachmentIds.length, attachmentStorage) : null;
+
   const commentId = uuidv7();
   const prepared = await attachmentStorage?.prepare(attachmentIds) ?? [];
+  let uploaded: Awaited<ReturnType<AttachmentStorage["storeImported"]>>[] = [];
+  if (uploadFrom !== null && attachmentStorage) {
+    const stored = await storeUploads(attachmentStorage, uploadFrom, paths).catch(async (error: unknown) => {
+      await attachmentStorage.rollback(prepared);
+      throw error;
+    });
+    if (!stored.ok) {
+      await attachmentStorage.rollback(prepared);
+      throw new UploadRefused(stored.problem);
+    }
+    uploaded = stored.records;
+  }
   let comment: ReturnType<typeof postComment>;
   try {
     comment = postComment(db, {
@@ -259,14 +339,14 @@ export async function postHumanComment(
       body: standInAgent === null ? input.body.trim() : withOnYourBehalfNote(input.body.trim(), input.parentId ? "answered" : "wrote"),
       mentions: resolution.targets,
       pinned: input.pinned,
-      attachmentRecords: prepared,
+      attachmentRecords: [...prepared, ...uploaded],
       // A reply is filed under the comment it answers (D-05). Which run
       // it unblocks is unchanged — that is decided below, by what is
       // waiting, not by where the answer is filed.
       parentId: (input.parentId as Uuid | null) ?? null,
     });
   } catch (error) {
-    await attachmentStorage?.rollback(prepared);
+    await attachmentStorage?.rollback([...prepared, ...uploaded]);
     throw error;
   }
   await attachmentStorage?.finish(prepared).catch((error: unknown) => console.error("[eo] could not clear staged comment attachments:", error));

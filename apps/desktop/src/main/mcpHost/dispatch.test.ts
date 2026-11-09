@@ -46,7 +46,7 @@ import type { JiraContext } from "../packs/developer/jira/connection.js";
 import { hasToken, type CredentialsOptions } from "../packs/developer/jira/credentials.js";
 import type { SecretStore } from "../secrets/store.js";
 import { listAgentDetails, readGuards, saveAgent, savePipeline, writeGuards } from "../ipc/configCommands.js";
-import { moveItem, postHumanComment, readSettings, setPinned, writeSettings } from "../ipc/domainCommands.js";
+import { moveItem, postCommentCommand, readSettings, setPinned, writeSettings } from "../ipc/domainCommands.js";
 import { getDailyCost, getItemCost } from "../ipc/costHandlers.js";
 import { formatDateKey } from "../dateUtils.js";
 import { deleteAttachmentCommand } from "../ipc/attachmentCommands.js";
@@ -331,7 +331,7 @@ describe("a tool whose advertised schema is not its channel's", () => {
 describe("a write tool", () => {
   it("posts a comment through the same handler the composer uses", async () => {
     const item = createTestItem(handle.db, { type: "story", title: "Rate limit", stepId: "todo" });
-    registerHandler("comments:post", (payload) => postHumanComment(handle.db, undefined, payload), opts);
+    registerHandler("comments:post", (payload) => postCommentCommand(handle.db, undefined, payload), opts);
 
     const outcome = await tool("comment_post").run(dispatch, { ticketId: item.id, body: "Looks right to me." });
 
@@ -745,7 +745,7 @@ const STORED_GUARDS: GuardConfigView = {
 
 describe("a pin, through the tool that sets it", () => {
   beforeEach(() => {
-    registerHandler("comments:post", (payload) => postHumanComment(handle.db, undefined, payload), opts);
+    registerHandler("comments:post", (payload) => postCommentCommand(handle.db, undefined, payload), opts);
     registerHandler("comments:setPinned", (payload) => setPinned(handle.db, payload), opts);
     registerHandler("items:getSections", (payload) => getItemSections(handle.db, payload), opts);
   });

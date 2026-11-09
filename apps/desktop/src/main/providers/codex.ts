@@ -206,8 +206,12 @@ export interface CodexProviderOptions {
    * The bearer is the turn's own (EO-444), and its `release` goes to the
    * client as `afterTurn`, which calls it once the app-server process is
    * over.
+   *
+   * Handed the directory the turn runs in (EO-700), the only place a
+   * comment the agent posts through the server may name files from.
+   * Undefined for a turn that says none.
    */
-  admin?: () => AdminMcpDispatch | null;
+  admin?: (directory?: string) => AdminMcpDispatch | null;
   /** Per-agent settings from `agents.config` (ARCHITECTURE.md, "An agent is a row": roles are configuration, not code). */
   config?: CodexAgentConfig;
   /**
@@ -295,6 +299,8 @@ export interface CodexProviderOptions {
     environmentVariables?: Readonly<Record<string, string>>,
     writeBridge?: AgentWriteBridgeAddress,
     withheldEnvironmentVariables?: readonly string[],
+    /** The directory the turn runs in, for the administrative bearer (EO-700). Handed only to an agent given that server. */
+    adminDirectory?: string,
   ) => Pick<CodexClient, "startThread" | "resumeThread"> & Partial<Pick<CodexClient, "prewarm">>;
   /**
    * Seam for tests — the client a side call runs on (EO-477), built from
@@ -1524,10 +1530,12 @@ export function buildCodexOptions(
   environmentVariables?: Readonly<Record<string, string>>,
   writeBridge?: AgentWriteBridgeAddress,
   withheldEnvironmentVariables?: readonly string[],
+  adminDirectory?: string,
 ): Pick<CodexClientOptions, "executablePath" | "config" | "env" | "afterTurn" | "perTurnEnv"> {
   // Asked once per client, and let go of again if the options cannot be
-  // built (EO-444): no process will be spawned to let it go after.
-  const admin = options.admin?.() ?? null;
+  // built (EO-444): no process will be spawned to let it go after. For
+  // the directory the turn runs in (EO-700).
+  const admin = options.admin?.(adminDirectory) ?? null;
   try {
     return codexOptionsWith(options, admin, repositoryMcp, searchHook, attachFrom, memoryScopes, environmentVariables, writeBridge, withheldEnvironmentVariables);
   } catch (error) {
@@ -1760,9 +1768,10 @@ export function codexClientOptions(
   environmentVariables?: Readonly<Record<string, string>>,
   writeBridge?: AgentWriteBridgeAddress,
   withheldEnvironmentVariables?: readonly string[],
+  adminDirectory?: string,
 ): CodexClientOptions {
   return {
-    ...buildCodexOptions(options, repositoryMcp, searchHook, attachFrom, memoryScopes, environmentVariables, writeBridge, withheldEnvironmentVariables),
+    ...buildCodexOptions(options, repositoryMcp, searchHook, attachFrom, memoryScopes, environmentVariables, writeBridge, withheldEnvironmentVariables, adminDirectory),
     ...(options.onUnmappedEvent ? { onUnmappedNotification: options.onUnmappedEvent } : {}),
   };
 }
@@ -2179,7 +2188,8 @@ export function createCodexProvider(options: CodexProviderOptions = {}): AgentPr
       environmentVariables?: Readonly<Record<string, string>>,
       writeBridge?: AgentWriteBridgeAddress,
       withheldEnvironmentVariables?: readonly string[],
-    ) => new CodexClient(codexClientOptions(options, repositoryMcp, searchHook, attachFrom, memoryScopes, environmentVariables, writeBridge, withheldEnvironmentVariables)));
+      adminDirectory?: string,
+    ) => new CodexClient(codexClientOptions(options, repositoryMcp, searchHook, attachFrom, memoryScopes, environmentVariables, writeBridge, withheldEnvironmentVariables, adminDirectory)));
 
   /**
    * What marks EO's hook as trusted, learned once per command line.
@@ -2245,8 +2255,14 @@ export function createCodexProvider(options: CodexProviderOptions = {}): AgentPr
     environmentVariables?: Readonly<Record<string, string>>,
     writeBridge?: AgentWriteBridgeAddress,
     withheldEnvironmentVariables?: readonly string[],
+    adminDirectory?: string,
   ) {
     const hook = searchHook ? { command: searchHook.command, env: searchHook.env, trust: searchHook.trust } : undefined;
+    // And the directory the turn runs in only to an agent given EO's
+    // administrative server (EO-700), whose bearer is leased for it.
+    if (options.admin && adminDirectory !== undefined) {
+      return createCodex(repositoryMcp, hook, attachFrom, memoryScopes, environmentVariables, writeBridge, withheldEnvironmentVariables, adminDirectory);
+    }
     // And the names a redirected step withholds only on a turn that
     // withholds some (EO-584).
     if (withheldEnvironmentVariables && withheldEnvironmentVariables.length > 0) {
@@ -2425,7 +2441,7 @@ export function createCodexProvider(options: CodexProviderOptions = {}): AgentPr
     }
 
     async function* resumedWith(hook: TurnSearchHook | null): AsyncIterable<AgentEvent> {
-      const thread = clientFor(resumeOpts?.repositoryMcp, hook, resumeOpts?.attachFrom, resumeOpts?.memoryScopes, resumeOpts?.environmentVariables, resumeOpts?.writeBridge, resumeOpts?.withheldEnvironmentVariables).resumeThread(
+      const thread = clientFor(resumeOpts?.repositoryMcp, hook, resumeOpts?.attachFrom, resumeOpts?.memoryScopes, resumeOpts?.environmentVariables, resumeOpts?.writeBridge, resumeOpts?.withheldEnvironmentVariables, resumeOpts?.cwd).resumeThread(
         threadId,
         threadOptionsFrom(
           {
@@ -2525,7 +2541,7 @@ export function createCodexProvider(options: CodexProviderOptions = {}): AgentPr
               options.config,
             );
       try {
-        clientFor(undefined, null, turn.attachFrom, turn.memoryScopes, turn.environmentVariables, turn.writeBridge, turn.withheldEnvironmentVariables).prewarm?.(turn.kind === "start" ? null : turn.threadId, thread, turn.warmKey);
+        clientFor(undefined, null, turn.attachFrom, turn.memoryScopes, turn.environmentVariables, turn.writeBridge, turn.withheldEnvironmentVariables, turn.cwd).prewarm?.(turn.kind === "start" ? null : turn.threadId, thread, turn.warmKey);
       } catch (error) {
         // A warm-up is a saving, never a requirement, as on Claude: the
         // turn builds its options again and says what was wrong.
@@ -2665,7 +2681,7 @@ export function createCodexProvider(options: CodexProviderOptions = {}): AgentPr
       //   back on the originals. EO never uses that. An agent whose
       //   instructions were edited gets a fresh thread
       //   (`findReusableThread`), which is the only way the edit sticks.
-      const thread = clientFor(opts.repositoryMcp, hook, opts.attachFrom, opts.memoryScopes, opts.environmentVariables, opts.writeBridge, opts.withheldEnvironmentVariables).startThread({
+      const thread = clientFor(opts.repositoryMcp, hook, opts.attachFrom, opts.memoryScopes, opts.environmentVariables, opts.writeBridge, opts.withheldEnvironmentVariables, opts.cwd).startThread({
         ...threadOptionsFrom(opts, options.config),
         ...(opts.instructions ? { baseInstructions: opts.instructions } : {}),
       });

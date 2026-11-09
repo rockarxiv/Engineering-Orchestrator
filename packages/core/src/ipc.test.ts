@@ -3,6 +3,7 @@ import {
   AGENT_ACTED_CHANNELS,
   isAgentActedChannel,
   withActingAgent,
+  withPathsFrom,
   ACTOR_SCOPED_CHANNELS,
   DEVICE_SCOPED_CHANNELS,
   ipcContract,
@@ -767,6 +768,13 @@ describe("the channels a system agent acts on as itself", () => {
   it("takes off what a caller sent, and puts back only the agent the door names", () => {
     expect(withActingAgent("items:decide", { itemId: "an-item", actingAgentId: "a-claim" }, undefined)).toEqual({ itemId: "an-item" });
     expect(withActingAgent("items:decide", { itemId: "an-item", actingAgentId: "a-claim" }, "the-agent")).toEqual({ itemId: "an-item", actingAgentId: "the-agent" });
+  });
+
+  it("takes off a claim to read files by path at every door, and only an MCP host puts one back, on comments:post alone (EO-700)", () => {
+    const claimed = { itemId: "an-item", paths: ["/etc/passwd"], pathsFrom: { kind: "anywhere" } };
+    expect(withActingAgent("comments:post", claimed, undefined)).toEqual({ itemId: "an-item", paths: ["/etc/passwd"] });
+    expect(withPathsFrom("comments:post", { itemId: "an-item" }, { kind: "directory", directory: "/turn" })).toEqual({ itemId: "an-item", pathsFrom: { kind: "directory", directory: "/turn" } });
+    expect(withPathsFrom("items:move", { itemId: "an-item" }, { kind: "anywhere" })).toEqual({ itemId: "an-item" });
   });
 
   it("stamps no agent on a channel no agent acts on", () => {

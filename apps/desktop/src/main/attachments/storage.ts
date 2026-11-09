@@ -1,10 +1,10 @@
 import { constants } from "node:fs";
 import { copyFile, mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { basename, extname, join } from "node:path";
-import { uuidv7, type AttachmentDraft, type Uuid } from "@eo/core";
+import { MAX_COMMENT_ATTACHMENTS, uuidv7, type AttachmentDraft, type Uuid } from "@eo/core";
 import type { CreateAttachmentRecord, AttachmentRecord } from "../db/repos/index.js";
 
-export const MAX_ATTACHMENT_COUNT = 8;
+export const MAX_ATTACHMENT_COUNT = MAX_COMMENT_ATTACHMENTS;
 export const MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024;
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;

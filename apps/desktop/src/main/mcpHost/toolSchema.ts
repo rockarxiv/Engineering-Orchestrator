@@ -1,4 +1,4 @@
-import { ACTING_AGENT_KEY, ipcContract, type IpcChannel } from "@eo/core";
+import { ACTING_AGENT_KEY, PATHS_FROM_KEY, ipcContract, type IpcChannel } from "@eo/core";
 import { z } from "zod";
 
 /** What an MCP client is handed as a tool's `inputSchema`. */
@@ -83,9 +83,11 @@ export const ACTING_DEVICE_KEY = "actingDeviceId";
  * the device a server's door stamps (EO-326), and the system agent EO's
  * administrative host stamps from the turn's credential (EO-585). A model
  * that could name the agent would be passing its own press off as the
- * assistant's, or the assistant's as the person's.
+ * assistant's, or the assistant's as the person's. And where the caller
+ * may name files from (EO-700), which EO's MCP hosts stamp from who is at
+ * the other end: a model that could name it would pick its own reach.
  */
-const CALLER_IDENTITY_KEYS: readonly string[] = [ACTING_DEVICE_KEY, ACTING_AGENT_KEY];
+const CALLER_IDENTITY_KEYS: readonly string[] = [ACTING_DEVICE_KEY, ACTING_AGENT_KEY, PATHS_FROM_KEY];
 
 /**
  * A channel's request schema, as the JSON Schema a tool advertises.

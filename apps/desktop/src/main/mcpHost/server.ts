@@ -7,7 +7,7 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import type { Db } from "../db/client.js";
 import { dispatchIpc } from "../ipc/registry.js";
 import { gateRefusal, readMcpConfig, toolAllowed, toolOffered, toolsFor, type McpAudience } from "./gate.js";
-import { canonicalToolName, withActingAgent } from "@eo/core";
+import { canonicalToolName, withActingAgent, withPathsFrom, type PathsFrom } from "@eo/core";
 import { TOOLS, type Dispatch, type ToolSpec } from "./catalog.js";
 import { GUIDES, guideNamed } from "./guides.js";
 import { toLegacyShape } from "./legacyNames.js";
@@ -232,6 +232,21 @@ export interface ProtocolHostOptions {
    * agent. A host without this acts for the person, as every host did.
    */
   actingAgent?: (owner: string) => string | null;
+  /**
+   * Where a call on this host may name files by path from, for
+   * `comment_post`'s `paths` (EO-700), asked per call with the session's
+   * owner. Absent, the audience decides: the external host's client acts
+   * on a credential the person handed it and may name any file their
+   * account can read, while the administrative host — whose owners are
+   * turns — names none unless it says which directory a turn runs in.
+   * The fail-safe direction, as `audience`'s default is.
+   */
+  pathsFrom?: (owner: string | null) => PathsFrom;
+}
+
+/** What a host grants when it says nothing: see `ProtocolHostOptions.pathsFrom`. */
+export function defaultPathsFrom(audience: McpAudience): PathsFrom {
+  return audience === "external" ? { kind: "anywhere" } : { kind: "directory", directory: null };
 }
 
 /**
@@ -267,9 +282,11 @@ const dispatch: Dispatch = (channel, payload) => {
  * dispatches (`spelledTool`), and this is the one place that knows which
  * turn the call arrived on.
  */
-function dispatchAs(actingAgentId: string | null): Dispatch {
-  if (actingAgentId === null) return dispatch;
-  return (channel, payload) => dispatch(channel, withActingAgent(channel, payload, actingAgentId));
+function dispatchAs(actingAgentId: string | null, pathsFrom: PathsFrom): Dispatch {
+  // And where this caller may name files from (EO-700), stamped here for
+  // the same reason: the tool has taken off whatever a client sent under
+  // that name, and only the host knows who is at the other end.
+  return (channel, payload) => dispatch(channel, withPathsFrom(channel, actingAgentId === null ? payload : withActingAgent(channel, payload, actingAgentId), pathsFrom));
 }
 
 /**
@@ -304,6 +321,7 @@ export async function answerToolCall(
   refuseCall?: (tool: string, args: unknown) => string | null,
   observeCall?: (tool: string, args: unknown, data: unknown) => void,
   actingAgentId: string | null = null,
+  pathsFrom: PathsFrom = defaultPathsFrom(audience),
 ): Promise<CallToolResult> {
   const tool = toolNamed(call.name, audience);
   if (!tool) {
@@ -313,7 +331,7 @@ export async function answerToolCall(
   // round through an alias of it (KAN-162).
   const refused = refuseCall?.(canonicalToolName(tool.name), call.arguments ?? {}) ?? null;
   if (refused !== null) return { isError: true, content: [{ type: "text", text: refused }] };
-  return callTool(tool, call.arguments ?? {}, dangerousOperations, observeCall, dispatchAs(actingAgentId));
+  return callTool(tool, call.arguments ?? {}, dangerousOperations, observeCall, dispatchAs(actingAgentId, pathsFrom));
 }
 
 /** What one tool call answers with, in MCP's shape. */
@@ -609,6 +627,7 @@ export async function startProtocolHost(
         options.refuseCall,
         options.observeCall,
         actingAgentId,
+        options.pathsFrom?.(owner) ?? defaultPathsFrom(audience),
       );
     });
 

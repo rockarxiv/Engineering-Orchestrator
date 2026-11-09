@@ -140,12 +140,18 @@ export function adminDeliveryFor(agent: Pick<Agent, "config">, lookup: AdminMcpL
  * point at. A backend given this delivers both halves or neither, which
  * is the only pair of outcomes that is not a 401 nobody can see.
  */
-export function adminDispatchFor(agent: Pick<Agent, "config"> & Partial<Pick<Agent, "id">>, lookup: AdminMcpLookup): AdminMcpDispatch | null {
+export function adminDispatchFor(
+  agent: Pick<Agent, "config"> & Partial<Pick<Agent, "id">>,
+  lookup: AdminMcpLookup,
+  directory?: string | null,
+): AdminMcpDispatch | null {
   const endpoint = endpointFor(agent, lookup);
   if (endpoint === null) return null;
   // Leased for this agent (EO-585), so what it presses or replies through
   // the credential is recorded as its own and not as the person's. Here,
   // where both backends ask, so neither can come to act as the person.
-  const lease = endpoint.lease(agent.id);
+  // And for the directory the turn runs in (EO-700), the only place a
+  // comment it posts may name files from — handed by both backends.
+  const lease = endpoint.lease(agent.id, directory);
   return { server: deliveryOf(endpoint), environment: { [ADMIN_TOKEN_ENV]: lease.token }, release: lease.release };
 }
