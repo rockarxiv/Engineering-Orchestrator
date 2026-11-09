@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { PipelineStepViewSchema } from "../ipc-schemas.js";
 import { PipelineExportSchema } from "./pipelineExport.js";
 
 /**
@@ -226,6 +227,13 @@ export const GalleryNeedSchema = z.object({
   parts: z.array(GalleryNeedPartSchema).optional(),
 });
 
+/**
+ * One step of the pipeline a card installs, as the card's strip draws it
+ * (EO-690): its name, who owns it, and whether it is the end. Read off
+ * the template's own document, so a pack that adds a step shows it.
+ */
+export const GalleryStepViewSchema = PipelineStepViewSchema.pick({ id: true, name: true, type: true, isTerminal: true });
+
 /** One card (ARCHITECTURE.md, "The gallery"). */
 export const GalleryTemplateViewSchema = z.object({
   slug: z.string(),
@@ -249,6 +257,8 @@ export const GalleryTemplateViewSchema = z.object({
   bundled: z.boolean(),
   /** What the pipeline it creates is called, which need not be the title. */
   pipelineName: z.string(),
+  /** The pipeline's steps in order, for the card's strip (EO-690). */
+  steps: z.array(GalleryStepViewSchema),
   /** "What this needs", derived from the pack's preflight — the same lines the needs check shows. */
   needs: z.array(GalleryNeedSchema),
   blanks: z.array(GalleryBlankViewSchema),
@@ -266,6 +276,7 @@ export const GalleryTemplateViewSchema = z.object({
 });
 
 export type GalleryBlankView = z.infer<typeof GalleryBlankViewSchema>;
+export type GalleryStepView = z.infer<typeof GalleryStepViewSchema>;
 export type GalleryRoleSlotView = z.infer<typeof GalleryRoleSlotViewSchema>;
 export type GalleryNeedFix = z.infer<typeof GalleryNeedFixSchema>;
 export type GalleryNeedFixKind = GalleryNeedFix["kind"];

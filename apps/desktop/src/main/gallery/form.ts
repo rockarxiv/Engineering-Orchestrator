@@ -1,4 +1,4 @@
-import { builtinOpensPullRequest, moduleInputProblems, type GalleryNeedView, type ModuleInputType, type PipelineExport, type StepInputs, type TemplateBlankKind } from "@eo/core";
+import { builtinOpensPullRequest, moduleInputProblems, type GalleryNeedView, type GalleryStepView, type ModuleInputType, type PipelineExport, type StepInputs, type TemplateBlankKind } from "@eo/core";
 import { agentNameFor, type ImportPreflight } from "../modules/pipelineTransfer.js";
 import { registry } from "../registry.js";
 import { RUNTIMES, type RuntimeId } from "../runtimes/catalog.js";
@@ -256,6 +256,13 @@ export function forgeCardNeed(document: Pick<PipelineExport, "steps">): GalleryN
       fix: null,
     },
   ];
+}
+
+/** Every step the document draws, in pipeline order, for the card's strip (EO-690). */
+export function gallerySteps(document: Pick<PipelineExport, "steps">): GalleryStepView[] {
+  return [...document.steps]
+    .sort((left, right) => left.position - right.position)
+    .map((step) => ({ id: step.id, name: step.name, type: step.type, isTerminal: step.isTerminal }));
 }
 
 /** Every human step the document draws that somebody has to decide, in pipeline order. */

@@ -219,6 +219,26 @@ describe("the bundled set", () => {
     expect(software?.roleSlots).toEqual([]);
   });
 
+  /** The card's strip (EO-690) is the template's own steps, in pipeline order, owner and end included. */
+  it("hands each card its template's steps in order, with who owns each", async () => {
+    const answer = await listGalleryCommand(handle.db, { directory: GALLERY_DIRECTORY, fetchImpl: offline, moduleSecrets: NO_SECRETS, signedInBackends: [] });
+
+    const software = answer.templates.find((template) => template.slug === "software-feature-to-merge");
+    expect(software?.steps.map((step) => [step.name, step.type, step.isTerminal])).toEqual([
+      ["Worktree", "builtin", false],
+      ["Index", "builtin", false],
+      ["To Do", "agent", false],
+      ["Review", "agent", false],
+      ["Merge Request", "builtin", false],
+      ["Watching pull request", "builtin", false],
+      ["Done", "user", true],
+    ]);
+    for (const card of answer.templates) {
+      const document = bundledTemplates(GALLERY_DIRECTORY).find((template) => template.slug === card.slug)!.document;
+      expect(card.steps.map((step) => step.id)).toEqual([...document.steps].sort((left, right) => left.position - right.position).map((step) => step.id));
+    }
+  });
+
   it("says where each one came from and what version it is at", () => {
     const weekly = bundledTemplates(GALLERY_DIRECTORY).find((template) => template.slug === "weekly-report");
 

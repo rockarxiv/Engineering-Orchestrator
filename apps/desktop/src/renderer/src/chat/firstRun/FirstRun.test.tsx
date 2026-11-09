@@ -30,6 +30,7 @@ const TEMPLATE: GalleryTemplateView = {
   source: "Bundled with EO",
   bundled: true,
   pipelineName: "Weekly report",
+  steps: [],
   needs: [],
   blanks: [],
   roleSlots: [],

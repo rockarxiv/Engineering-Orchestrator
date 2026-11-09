@@ -2,7 +2,7 @@ import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import { Check, Circle, FolderOpen, LayoutGrid, PlugZap } from "lucide-react";
-import type { GalleryNeedView, GalleryTemplateView } from "@eo/core";
+import type { GalleryNeedView, GalleryStepView, GalleryTemplateView } from "@eo/core";
 import { machineAvailable } from "../../../ipc/bridge";
 import { ipcQuery } from "../../../query/client";
 import { galleryKey } from "../../../query/hooks";
@@ -123,6 +123,8 @@ export function Gallery({
         <EmptyState title="This build ships no templates.">Describe what you want to the assistant instead.</EmptyState>
       ) : null}
 
+      {templates.length > 0 ? <OwnerKey /> : null}
+
       <div className="@container">
         <ul aria-label="Templates" className="grid grid-cols-1 items-stretch gap-3 @3xl:grid-cols-2">
           {templates.map((entry) => (
@@ -171,10 +173,11 @@ function TemplateCard({
         </span>
       </div>
       <p className="text-[13px] leading-relaxed text-ink-muted">{template.description}</p>
+      {template.steps.length > 0 ? <StepStrip steps={template.steps} /> : null}
 
       {template.needs.length > 0 ? (
         <div className="flex flex-col gap-1.5">
-          <GroupLabel>What this needs</GroupLabel>
+          <GroupLabel trailing={<ReadinessMeter needs={template.needs} />}>What this needs</GroupLabel>
           <ul className="flex flex-col gap-1">
             {template.needs.map((need) => (
               <li key={need.key} className="flex items-start gap-2 text-[12.5px] text-ink-muted">
@@ -210,6 +213,73 @@ function TemplateCard({
         </div>
       </div>
     </section>
+  );
+}
+
+/**
+ * Who owns a step, as the strip and its key colour it (EO-690, EO-683):
+ * the owner colour is painted on structure, and EO's own steps stay grey.
+ */
+const OWNER: Record<GalleryStepView["type"], { label: string; fill: string }> = {
+  agent: { label: "agent", fill: "bg-kind-agent" },
+  user: { label: "person", fill: "bg-paused" },
+  module: { label: "script", fill: "bg-kind-script" },
+  builtin: { label: "EO", fill: "bg-ink-subtle" },
+};
+
+/** The four owner colours, named once above the cards so each strip reads without a legend of its own. */
+function OwnerKey() {
+  return (
+    <ul aria-label="Step owners" className="flex flex-wrap items-center gap-3 text-[11.5px] text-ink-subtle">
+      {Object.values(OWNER).map((owner) => (
+        <li key={owner.label} className="flex items-center gap-[5px]">
+          <span aria-hidden className={`size-[7px] rounded-full ${owner.fill}`} />
+          {owner.label}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+/**
+ * The template's pipeline in order, one segment per step coloured by who
+ * owns it, read off the template's own steps. The terminal step is an
+ * end rather than work, so it is a short hollow segment.
+ */
+function StepStrip({ steps }: { steps: readonly GalleryStepView[] }) {
+  return (
+    <ol aria-label="Steps" className="flex min-w-0 items-stretch gap-[3px]">
+      {steps.map((step) => (
+        <li
+          key={step.id}
+          data-owner={step.isTerminal ? "end" : OWNER[step.type].label}
+          title={step.name}
+          className={`flex min-w-0 flex-col gap-[5px] text-[11.5px] ${step.isTerminal ? "min-w-6 flex-none text-ink-subtle" : "flex-1 basis-0 text-ink-muted"}`}
+        >
+          <span
+            aria-hidden
+            className={`h-[6px] rounded-[3px] ${step.isTerminal ? "border-[1.5px] border-line-strong" : OWNER[step.type].fill}`}
+          />
+          <span className="truncate">{step.name}</span>
+        </li>
+      ))}
+    </ol>
+  );
+}
+
+/** How many of the card's needs are already met: a segment per need, then the count in words. */
+function ReadinessMeter({ needs }: { needs: readonly GalleryNeedView[] }) {
+  const met = needs.filter((need) => need.met).length;
+  const words = met === needs.length ? "Ready to use" : `${met} of ${needs.length} ready`;
+  return (
+    <span className="flex items-center gap-2 text-[11.5px] tabular-nums text-ink-muted">
+      <span aria-hidden className="flex w-24 gap-[3px]">
+        {needs.map((need) => (
+          <span key={need.key} data-met={need.met} className={`h-[5px] flex-1 rounded-[3px] ${need.met ? "bg-success" : "bg-line-strong"}`} />
+        ))}
+      </span>
+      <span>{words}</span>
+    </span>
   );
 }
 
