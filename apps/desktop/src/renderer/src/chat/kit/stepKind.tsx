@@ -31,7 +31,7 @@ const KIND: Record<PipelineStepView["type"], { label: string; dot: string }> = {
 /**
  * The structure a step is drawn as, in its owner's colour (EO-685): a
  * board column, or a step in the pipeline drawing. Owner on structure,
- * state on work — a ticket's run state colours its card, never this.
+ * state on work — an item's run state colours its card, never this.
  *
  * - `surface`: the raised surface mixed 14% toward the kind, on a line mixed 22% toward it.
  * - `cap`: a board column's 3px top border in the kind.
