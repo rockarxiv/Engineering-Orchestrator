@@ -6092,6 +6092,17 @@ export function createRunSupervisor(
     // turns back too, and the next tick refuses its thread with a comment
     // (`resumeBlockedReason`) and starts the fresh one.
     if (continuation && (continuation.from.itemFilesHash ?? EMPTY_ITEM_FILES_HASH) !== itemFilesHash(db, item.id)) return;
+    // And any other dispatch whose item's files changed during preflight
+    // (EO-703). A resumed thread was chosen for the list as it stood
+    // before the awaits above and is sent a follow-up that says nothing
+    // about the item, so carrying it on now would leave the new file
+    // unseen; a fresh context may have been read before the file landed.
+    // Rebuilding here would be an await below the boundary, so the
+    // dispatch turns back having written nothing. The next tick weighs the
+    // thread up against the files as they are — refusing it with a
+    // comment where it was born with another list — and assembles the
+    // full context that lists them.
+    if (!continuation && itemFilesHash(db, item.id) !== itemFiles) return;
     if (resuming && (resuming.run.agentAttachmentsHash ?? EMPTY_ATTACHMENTS_HASH) !== attachments) {
       staleReuse = staleAttachmentsRefusal(agent);
       resuming = null;

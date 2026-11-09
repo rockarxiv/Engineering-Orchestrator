@@ -425,6 +425,42 @@ describe("dispatch on a reused thread", () => {
     expect(listRunsForItem(handle.db, item.id).at(-1)?.itemFilesHash).toBe(itemFilesHash(handle.db, item.id));
   });
 
+  it("does not carry on a thread when a file lands on the item while the dispatch is being prepared (EO-703)", async () => {
+    enableReuse();
+    priorRun();
+    newComment();
+    // Put on the item while the context is being assembled — after the
+    // thread was weighed up and chosen, before the provider is reached.
+    const fileId = uuidv7();
+    let landed = false;
+    const landsMidPreflight: SectionRenderer = {
+      id: "landsMidPreflight",
+      after: "item",
+      render: () => {
+        if (!landed) {
+          landed = true;
+          addItemAttachments(handle.db, item.id, [{ id: fileId, storagePath: `/tmp/eo/attachments/${fileId}`, name: "mock.png", mimeType: "image/png", size: 8 }]);
+        }
+        return null;
+      },
+    };
+    const supervisor = supervisorFor({ result: validImplementResult }, { sectionRenderers: [CRITERIA_SECTION, landsMidPreflight] });
+
+    // The dispatch turns back having written nothing…
+    await supervisor.runOnce();
+    expect(landed).toBe(true);
+    expect(turns).toEqual([]);
+    expect(listRunsForItem(handle.db, item.id)).toHaveLength(1);
+
+    // …and the next one refuses the thread, says why, and lists the file.
+    await supervisor.runOnce();
+    expect(turns.map((turn) => turn.kind)).toEqual(["start"]);
+    expect(turns[0]?.prompt).toContain(`- ID: ${fileId}; name: mock.png; MIME type: image/png`);
+    const notes = engineNotes();
+    expect(notes).toHaveLength(1);
+    expect(notes[0]).toContain("The files on this item have changed");
+  });
+
   it("resumes a thread born with the item's files, and does not list them again (EO-703)", async () => {
     enableReuse();
     const fileId = uuidv7();

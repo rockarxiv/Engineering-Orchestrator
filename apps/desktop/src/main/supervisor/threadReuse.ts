@@ -77,6 +77,26 @@ export function itemFilesHash(db: Db, itemId: Uuid): string {
 /** An item with no files of its own — what a null on a run row reads as. */
 export const EMPTY_ITEM_FILES_HASH = hashIds([]);
 
+/** Why a thread born with another list of the item's files is not carried on (EO-703). */
+function itemFilesChanged(agent: Agent): string {
+  return (
+    `The files on this item have changed since ${agent.name}'s last run here. A conversation already under way ` +
+    `is not told about the item again, so it couldn't be carried over — this run starts fresh, which is how ` +
+    `it sees the files as they are now.`
+  );
+}
+
+/**
+ * Whether a run's conversation is part of the item's history, for the
+ * barrier on the item's files (EO-703): a session was opened, and not to
+ * watch the agent work. A lost thread, a parked one and a live one all
+ * are, though none of them can be carried on; a dry run, a guard
+ * placeholder and a run that never reached a backend are not.
+ */
+function isHistory(run: Run): boolean {
+  return run.threadId !== null && !run.dryRun;
+}
+
 /** Neither backend can be handed a session that was never opened. */
 function isGuardPlaceholder(run: Run): boolean {
   return run.status === "awaiting_input" && run.threadId === null;
@@ -276,13 +296,7 @@ function refusalFor(run: Run, agent: Agent, cwd: string, wantedHash: string, wan
   // invisible to every turn of a thread that started before it — and one
   // removed would still be listed. Null reads as none, for the reason the
   // tool surface's does: no thread was told about any before the column.
-  if ((run.itemFilesHash ?? EMPTY_ITEM_FILES_HASH) !== wantedFiles) {
-    return (
-      `The files on this item have changed since ${agent.name}'s last run here. A conversation already under way ` +
-      `is not told about the item again, so it couldn't be carried over — this run starts fresh, which is how ` +
-      `it sees the files as they are now.`
-    );
-  }
+  if ((run.itemFilesHash ?? EMPTY_ITEM_FILES_HASH) !== wantedFiles) return itemFilesChanged(agent);
 
   // Correctness rather than caution, even though the git kind gives
   // every action on an item the same directory in practice: a Claude
@@ -499,9 +513,23 @@ export function findReusableThread(db: Db, query: ThreadReuseQuery): ThreadReuse
   let absence: string | null = null;
 
   for (const run of mine) {
+    const filesChanged = (run.itemFilesHash ?? EMPTY_ITEM_FILES_HASH) !== wantedFiles;
     const excluded = notACandidate(run, agent, lostThreads);
     if (excluded !== null) {
       absence ??= excluded;
+      // The barrier below holds across a conversation that cannot itself
+      // be carried on, too: a lost thread born with another list still
+      // stands for turns that worked from that list, and every thread
+      // before it is on the far side of the change.
+      //
+      // Said only for a lost thread. A parked one belongs to the reply
+      // that unparks it, which has already said why it starts fresh
+      // (`resumeBlockedReason`), and a live one is never dispatched over;
+      // a second sentence about the same change would be noise.
+      if (isHistory(run) && filesChanged) {
+        if (run.threadId !== null && lostThreads.has(run.threadId)) refusal ??= itemFilesChanged(agent);
+        break;
+      }
       continue;
     }
     const reason = refusalFor(run, agent, cwd, wantedHash, wantedAttachments, wantedFiles);
@@ -513,7 +541,7 @@ export function findReusableThread(db: Db, query: ThreadReuseQuery): ThreadReuse
     // oldest thread's list matches again while every turn since has
     // worked from another. Resuming it would carry on a conversation from
     // before that work as though nothing had happened.
-    if ((run.itemFilesHash ?? EMPTY_ITEM_FILES_HASH) !== wantedFiles) break;
+    if (filesChanged) break;
   }
 
   // A refusal outranks an absence even when the absence is newer: a

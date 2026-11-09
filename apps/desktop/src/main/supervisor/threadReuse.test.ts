@@ -544,6 +544,29 @@ describe("findReusableThread, with the item's own files (EO-703)", () => {
     expect(decision.kind === "refused" ? decision.reason : "").toContain("The files on this item have changed");
   });
 
+  it("does not fall back across the change past a thread that is itself excluded: add, run, lose it, remove", () => {
+    // B cannot be carried on — its thread is gone — but it still stands
+    // for turns that worked from a list A never had.
+    dispatched({ threadId: "session-a" });
+    const id = addFile();
+    const b = dispatched({ threadId: "session-b" });
+    updateRun(handle.db, b.id, { threadLost: true });
+    removeItemAttachment(handle.db, id);
+
+    const decision = ask();
+    expect(decision.kind).toBe("refused");
+    expect(decision.kind === "refused" ? decision.reason : "").toContain("The files on this item have changed");
+  });
+
+  it("still falls back past a dry run born with another list, which is not the item's history", () => {
+    const older = dispatched({ threadId: "session-a" });
+    const id = addFile();
+    dispatched({ threadId: "session-dry", dryRun: true });
+    removeItemAttachment(handle.db, id);
+
+    expect(ask()).toEqual({ kind: "resume", run: older });
+  });
+
   it("still falls back past a newer thread refused for something else, where the files never changed", () => {
     addFile();
     const older = dispatched({ threadId: "session-a" });
