@@ -85,10 +85,10 @@ describe("a step in the pipeline drawing (EO-680)", () => {
     for (const id of ["worktree", "todo", "qa", "merge"]) {
       // The name's row, and nothing else but the entry step's note.
       expect(box(id).children, id).toHaveLength(id === "worktree" ? 2 : 1);
-      expect(box(id).className, id).toContain("bg-canvas-raised");
-      expect(box(id).className, id).toContain("border-line");
       expect(box(id).className, id).toContain("rounded-[10px]");
     }
+    // EO's own step is raised on the hairline; the others are in their owner's lane (EO-685).
+    expect(box("worktree").className.split(" ")).toEqual(expect.arrayContaining(["bg-canvas-raised", "border-line"]));
     // The owner line is the chip's title now, never text in the box.
     expect(within(box("todo")).queryByText("agent · implementer")).not.toBeInTheDocument();
     expect(within(box("worktree")).queryByText("built in · create_worktree")).not.toBeInTheDocument();
@@ -108,18 +108,67 @@ describe("a step in the pipeline drawing (EO-680)", () => {
     // Beside the chip, at the far end of the name's row.
     expect(link.parentElement).toBe(box("todo").querySelector("[data-step-kind]")!.parentElement);
     expect(link.parentElement!.className).toContain("ml-auto");
+    // A small pill in the ink (EO-685).
+    expect(link.className.split(" ")).toEqual(expect.arrayContaining(["rounded-full", "border-line-strong", "text-ink"]));
   });
 
-  it("draws neither a kind nor anything else in the accent, nor any status colour but paused for a person", () => {
+  it("draws every chip as a neutral pill whose only colour is its dot, and EO's dot a hollow ring (EO-685)", () => {
     const { graph, box } = draw();
+    const chip = (id: string) => box(id).querySelector<HTMLElement>("[data-step-kind]")!;
+    const dot = (id: string) => chip(id).querySelector<HTMLElement>("[data-step-kind-dot]")!;
 
-    const chips = [...graph.querySelectorAll("[data-step-kind]")].map((chip) => chip.className).join(" ");
+    for (const id of ["worktree", "todo", "qa", "merge"]) {
+      expect(chip(id).className.split(" "), id).toEqual(expect.arrayContaining(["rounded-full", "border-line-strong", "text-ink-muted"]));
+      // No tinted fill, and no colour on the pill itself.
+      expect(chip(id).className, id).not.toMatch(/\bbg-|kind-|paused/);
+      expect(dot(id), id).toHaveAttribute("aria-hidden");
+      expect(dot(id).className, id).toContain("size-[7px]");
+    }
+    expect(dot("todo").className).toContain("bg-kind-agent");
+    expect(dot("qa").className).toContain("bg-paused");
+    expect(dot("merge").className).toContain("bg-kind-script");
+    // EO: a hollow 1.5px ring in the subtle ink.
+    expect(dot("worktree").className).toContain("border-[1.5px]");
+    expect(dot("worktree").className).toContain("border-ink-subtle");
+    expect(dot("worktree").className).not.toMatch(/\bbg-/);
+    // Never the accent, and no status colour but paused for a person.
+    const chips = [...graph.querySelectorAll("[data-step-kind]")].map(colours).join(" ");
     expect(chips).not.toMatch(/accent|running|reviewing|danger|warning|success|idle/);
-    expect(box("qa").querySelector("[data-step-kind]")!.className).toContain("text-paused");
-    for (const id of ["worktree", "todo", "merge"]) expect(box(id).querySelector("[data-step-kind]")!.className, id).not.toContain("paused");
-    expect(box("todo").querySelector("[data-step-kind]")!.className).toContain("text-kind-agent");
-    expect(box("merge").querySelector("[data-step-kind]")!.className).toContain("text-kind-script");
-    expect(box("worktree").querySelector("[data-step-kind]")!.className).toContain("text-ink-subtle");
+  });
+
+  it("draws a step an agent, a person or a script owns in its kind's lane, and EO's and the end neutral (EO-685)", () => {
+    const { box } = draw();
+    const classes = (id: string) => box(id).className;
+
+    for (const [id, colour] of [
+      ["todo", "--color-kind-agent"],
+      ["qa", "--color-paused"],
+      ["merge", "--color-kind-script"],
+    ] as const) {
+      // The raised surface mixed 14% toward the kind, on a line mixed 22% toward it.
+      expect(classes(id), id).toContain(`bg-[color:color-mix(in_oklab,var(--color-canvas-raised),var(${colour})_14%)]`);
+      expect(classes(id), id).toContain(`border-[color:color-mix(in_oklab,var(--color-line),var(${colour})_22%)]`);
+      // A 4px edge down the left in the kind.
+      expect(classes(id), id).toContain(`[--lane-edge:var(${colour})]`);
+      expect(classes(id), id).toContain("shadow-[inset_4px_0_0_var(--lane-edge)]");
+      expect(classes(id).split(" "), id).not.toContain("bg-canvas-raised");
+    }
+    // EO's own step: today's neutral surface, with a strong-line edge.
+    expect(classes("worktree")).not.toContain("color-mix");
+    expect(classes("worktree")).toContain("[--lane-edge:var(--color-line-strong)]");
+    expect(classes("worktree")).toContain("shadow-[inset_4px_0_0_var(--lane-edge)]");
+    // An end: outlined as before, no tint and no edge.
+    expect(classes("done")).not.toContain("color-mix");
+    expect(classes("done")).not.toContain("lane-edge");
+  });
+
+  it("keeps a chosen step's owner edge beside the accent outline", () => {
+    const { box } = draw({ selectedStepId: "todo", onSelectStep: () => {} });
+
+    expect(box("todo").className).toContain("shadow-[inset_4px_0_0_var(--lane-edge),inset_0_0_0_1.5px_var(--color-accent)]");
+    expect(box("todo").className).toContain("[--lane-edge:var(--color-kind-agent)]");
+    expect(box("qa").className).toContain("shadow-[inset_4px_0_0_var(--lane-edge)]");
+    expect(box("qa").className).not.toContain("--color-accent");
   });
 
   it("marks only the steps it is told are new, dashed in the neutral ink and tagged", () => {

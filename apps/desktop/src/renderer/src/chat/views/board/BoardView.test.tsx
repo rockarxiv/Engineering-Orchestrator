@@ -348,8 +348,6 @@ describe("the board's columns", () => {
       ["Merge", "script", "module · merge_branch"],
     ] as const) {
       const region = await column(name);
-      expect(region.className, name).toContain("bg-canvas-raised");
-      expect(region.className, name).toContain("border-line");
       expect(region.className, name).toContain("rounded-[14px]");
       expect(within(region).getByRole("heading", { level: 2, name }).className).toContain("text-[15px]");
       const chips = chip(name, region);
@@ -359,6 +357,38 @@ describe("the board's columns", () => {
     }
     // An end has no kind.
     expect(chip("Done", await column("Done"))).toHaveLength(0);
+
+    // A column an agent, a person or a script owns is a lane in its kind's colour (EO-685):
+    // a 3px cap, the raised surface mixed 14% toward it on a line mixed 22% toward it,
+    // and its mono owner line leaning 35% toward it.
+    for (const [name, colour, cap, owner] of [
+      ["To Do", "--color-kind-agent", "border-t-kind-agent", "implementer"],
+      ["Pending Approval", "--color-paused", "border-t-paused", "you"],
+      ["Merge", "--color-kind-script", "border-t-kind-script", "merge_branch"],
+    ] as const) {
+      const region = await column(name);
+      const classes = region.className.split(" ");
+      expect(classes, name).toEqual(
+        expect.arrayContaining([
+          "border-t-[3px]",
+          cap,
+          `bg-[color:color-mix(in_oklab,var(--color-canvas-raised),var(${colour})_14%)]`,
+          `border-[color:color-mix(in_oklab,var(--color-line),var(${colour})_22%)]`,
+        ]),
+      );
+      expect(classes, name).not.toContain("bg-canvas-raised");
+      const line = within(region).getByText(owner);
+      expect(line.className, name).toContain("font-mono");
+      expect(line.className, name).toContain(`text-[color:color-mix(in_oklab,var(--color-ink-subtle),var(${colour})_35%)]`);
+    }
+    // EO's own column and the end keep the neutral raised panel: no cap, no tint.
+    for (const name of ["Worktree", "Done"]) {
+      const classes = (await column(name)).className;
+      expect(classes.split(" "), name).toEqual(expect.arrayContaining(["bg-canvas-raised", "border-line"]));
+      expect(classes, name).not.toContain("border-t-");
+      expect(classes, name).not.toContain("color-mix");
+    }
+    expect(within(await column("Worktree")).getByText("create_worktree").className).toContain("text-ink-subtle");
     // The count sits between the name and the chip.
     const head = within(todo).getByRole("heading", { level: 2, name: "To Do" }).parentElement!;
     expect([...head.children].map((child) => child.textContent)).toEqual(["To Do", "1", "agent"]);
@@ -1193,10 +1223,12 @@ describe("the paused rail", () => {
     const rail = await screen.findByRole("complementary", { name: "Paused tasks" });
     const todo = await column("To Do");
     const panel = within(rail).getByRole("heading", { level: 2, name: "Paused" }).closest("div")!.parentElement!;
-    for (const token of ["rounded-[14px]", "border", "border-line", "bg-canvas-raised"]) {
+    for (const token of ["rounded-[14px]", "border"]) {
       expect(todo.className.split(" "), token).toContain(token);
       expect(panel.className.split(" "), token).toContain(token);
     }
+    // Raised on a hairline as an unowned column is; To Do's own colours are its agent's lane (EO-685).
+    for (const token of ["border-line", "bg-canvas-raised"]) expect(panel.className.split(" "), token).toContain(token);
     const tokens = (element: Element) => element.className.split(" ").filter((token) => token.startsWith("text-[") || token.startsWith("font-"));
     expect(tokens(within(rail).getByRole("heading", { level: 2, name: "Paused" }))).toEqual(tokens(within(todo).getByRole("heading", { level: 2, name: "To Do" })));
 
