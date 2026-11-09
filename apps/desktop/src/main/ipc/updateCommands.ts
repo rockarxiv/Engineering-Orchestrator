@@ -13,15 +13,52 @@ import type { UpdateController } from "../updater.js";
 export interface UpdateContext {
   controller: () => UpdateController | undefined;
   /**
-   * `createShutdownCoordinator`'s `requestClose`.
+   * `createShutdownCoordinator`'s `requestClose`, answering whether
+   * this call is what started the close.
    *
    * The only way this file can cause a restart. `quitAndInstall` is
    * deliberately unreachable from here — the coordinator owns every path
-   * out of the process, so a person pressing *Update and restart* with
+   * out of the process, so a person pressing *Restart and update* with
    * agents running gets the same dialog a window close gives them,
    * answered the same way, rather than a second question written here.
    */
-  requestClose: () => void;
+  requestClose: () => boolean;
+  /**
+   * Whether the person has asked to restart into the update (EO-696).
+   * Shared with `quitOrInstall`, which installs only while it is set.
+   */
+  installRequest: InstallRequest;
+}
+
+/**
+ * The one bit that tells a restart for an update from an ordinary quit
+ * (EO-696).
+ *
+ * Set by `updates:install` just before it asks the coordinator to close,
+ * and withdrawn when that close does not happen: the coordinator was
+ * already closing for some other reason, or the person answered the
+ * active-agents dialog with *Keep EO open* (the coordinator's
+ * `onStayOpen`). While it is clear, a downloaded update stays on disk
+ * through any quit — a window close, Cmd/Ctrl+Q, the OS — and is
+ * offered again next time.
+ */
+export interface InstallRequest {
+  request: () => void;
+  withdraw: () => void;
+  isRequested: () => boolean;
+}
+
+export function createInstallRequest(): InstallRequest {
+  let requested = false;
+  return {
+    request: () => {
+      requested = true;
+    },
+    withdraw: () => {
+      requested = false;
+    },
+    isRequested: () => requested,
+  };
 }
 
 /**
@@ -56,18 +93,36 @@ export async function downloadUpdate(context: UpdateContext): Promise<IpcRespons
  *
  * `requested: true` means the coordinator has been asked, not that the
  * app is going. It may raise the active-agents dialog and be told to
- * keep EO open — in which case the update stays staged, and the section
- * still offers the restart.
+ * keep EO open — in which case the request is withdrawn, the update
+ * stays staged, and the section still offers the restart.
+ *
+ * The request is marked before the coordinator is asked, because a close
+ * with no agents running reaches `quit` without anybody being asked
+ * anything. A press while a close is already under way for another
+ * reason is not what leads to that quit, so it is withdrawn and refused.
+ *
+ * A second press while the first one's close is still under way — the
+ * person chose *Close when finished* and agents are draining — is not
+ * another reason, it is the same one. It leaves the first request
+ * standing and answers as that press did. The request can only still be
+ * set during a close that an earlier press started: it is withdrawn when
+ * a press is refused, and when the coordinator stays open.
  */
 export function installUpdate(context: UpdateContext): IpcResponse<"updates:install"> {
   if (!context.controller()?.isStaged()) return { requested: false };
-  context.requestClose();
-  return { requested: true };
+  const alreadyRequested = context.installRequest.isRequested();
+  context.installRequest.request();
+  if (context.requestClose()) return { requested: true };
+  if (alreadyRequested) return { requested: true };
+  context.installRequest.withdraw();
+  return { requested: false };
 }
 
 /**
- * The shutdown coordinator's `quit` callback: leave, or leave into a
- * staged update.
+ * The shutdown coordinator's `quit` callback: leave, or — only when the
+ * person pressed *Restart and update* and that is what led here — leave
+ * into the staged update (EO-696). Every other quit leaves the download
+ * on disk and quits plainly.
  *
  * Exported rather than written inline in index.ts so that the wiring and
  * the test which proves it are the same code. A test asserting against
@@ -78,10 +133,10 @@ export function installUpdate(context: UpdateContext): IpcResponse<"updates:inst
  * `quitAndInstall` closes every window and quits by itself, so it
  * replaces the plain quit rather than preceding it.
  */
-export function quitOrInstall(controller: () => UpdateController | undefined, quit: () => void): () => void {
+export function quitOrInstall(controller: () => UpdateController | undefined, installRequest: InstallRequest, quit: () => void): () => void {
   return () => {
     const staged = controller();
-    if (staged?.isStaged()) staged.installStaged();
+    if (installRequest.isRequested() && staged?.isStaged()) staged.installStaged();
     else quit();
   };
 }

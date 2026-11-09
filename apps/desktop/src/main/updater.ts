@@ -22,9 +22,11 @@ import type { UpdateStatus } from "@eo/core";
 export interface InjectedUpdater {
   /** Assigning it is the point — see the note on `startAutoUpdate` below. */
   autoDownload: boolean;
+  /** Assigned `false`: a quit never installs by itself (EO-696). */
+  autoInstallOnAppQuit: boolean;
   checkForUpdates(): Promise<unknown>;
   downloadUpdate(): Promise<unknown>;
-  quitAndInstall(): void;
+  quitAndInstall(isSilent?: boolean, isForceRunAfter?: boolean): void;
   on(event: "error", listener: (error: Error) => void): unknown;
   on(event: "checking-for-update", listener: () => void): unknown;
   on(event: "update-not-available", listener: () => void): unknown;
@@ -86,9 +88,10 @@ export interface UpdateController {
   /** Whether a downloaded update is sitting on disk waiting for a restart. */
   isStaged: () => boolean;
   /**
-   * Replace this build and relaunch. Called from exactly one place — the
-   * shutdown coordinator's `quit` callback — and never from an IPC
-   * handler; see the block comment on `startAutoUpdate`.
+   * Replace this build silently and relaunch. Called from exactly one
+   * place — the shutdown coordinator's `quit` callback, and only when the
+   * person pressed *Restart and update* — and never from an IPC handler;
+   * see the block comment on `startAutoUpdate`.
    */
   installStaged: () => void;
   stop: () => void;
@@ -191,6 +194,11 @@ export function startAutoUpdate(deps: UpdaterDeps): UpdateController {
   // reaches the disk until `download()` is called, which happens only
   // when somebody presses the button.
   updater.autoDownload = false;
+  // And nothing downloaded installs by itself either (EO-696). Left at
+  // electron-updater's default of `true`, any quit with an update on
+  // disk would install it; the only install is the one `installStaged`
+  // asks for.
+  updater.autoInstallOnAppQuit = false;
 
   let lastCheckedAt: number | null = null;
   let status: UpdateStatus = { state: "idle", lastCheckedAt: null };
@@ -267,7 +275,7 @@ export function startAutoUpdate(deps: UpdaterDeps): UpdateController {
   });
 
   updater.on("update-downloaded", (event) => {
-    log(`update ${event.version} downloaded; it will install when you restart`);
+    log(`update ${event.version} downloaded; it will install when Restart and update is pressed`);
     set({ state: "downloaded", version: event.version, lastCheckedAt });
     pushProgress(100, true);
   });
@@ -341,7 +349,10 @@ export function startAutoUpdate(deps: UpdaterDeps): UpdateController {
     isStaged: () => read().state === "downloaded",
     installStaged: () => {
       log("installing the downloaded update and restarting");
-      updater.quitAndInstall();
+      // Silent, and reopen EO afterwards. With no arguments the Windows
+      // installer — `oneClick: false` — opens its full wizard and EO
+      // does not come back (EO-696).
+      updater.quitAndInstall(true, true);
     },
     stop: () => clearInterval(timer),
   };

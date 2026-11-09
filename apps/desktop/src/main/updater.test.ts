@@ -26,6 +26,7 @@ function fakeUpdater() {
 
   const updater = {
     autoDownload: true,
+    autoInstallOnAppQuit: true,
     checkForUpdates: vi.fn().mockResolvedValue(null),
     checkForUpdatesAndNotify: vi.fn().mockResolvedValue(null),
     downloadUpdate: vi.fn().mockResolvedValue([]),
@@ -121,6 +122,8 @@ describe("auto-update", () => {
     // The decision this story exists to make, stated rather than
     // inherited from the library's default of true.
     expect(updater.autoDownload).toBe(false);
+    // And a quit never installs on electron-updater's own say-so (EO-696).
+    expect(updater.autoInstallOnAppQuit).toBe(false);
 
     await vi.advanceTimersByTimeAsync(UPDATE_INTERVAL_MS * 2);
     expect(updater.checkForUpdates.mock.calls.length).toBeGreaterThan(1);
@@ -346,6 +349,9 @@ describe("auto-update", () => {
     expect(updater.quitAndInstall).not.toHaveBeenCalled();
     controller.installStaged();
     expect(updater.quitAndInstall).toHaveBeenCalledOnce();
+    // Silent and relaunching (EO-696). With no arguments the Windows
+    // installer opens its full wizard and EO does not come back.
+    expect(updater.quitAndInstall).toHaveBeenCalledWith(true, true);
     controller.stop();
   });
 

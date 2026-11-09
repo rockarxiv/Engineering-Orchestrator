@@ -11,16 +11,17 @@ import { Note } from "../core/fields";
 /**
  * Settings → Updates (EO-201): which build this is, whether there is a
  * newer one, and one button whose label is the state it is in — *Check
- * for updates*, *Update and restart*, a progress readout, the restart.
+ * for updates*, *Download*, a progress readout, *Restart and update*.
  *
  * One state is a dead end — a build from source — and it says so and
- * offers no button. The download and
- * the restart are separate channels sequenced here, so a download that
- * fails cannot go on to restart the app.
+ * offers no button. Downloading and restarting are separate presses
+ * (EO-696): a finished download never leads to a restart by itself, and
+ * a failed one cannot either, because nothing here calls
+ * `updates:install` except the *Restart and update* button.
  */
 
 /** What the last press was, so an error's *Try again* repeats it. */
-type LastAction = "check" | "update";
+type LastAction = "check" | "download";
 
 function formatChecked(epochMs: number | null): string {
   if (epochMs === null) return "not yet";
@@ -94,24 +95,32 @@ export function UpdatesSection() {
     await check.mutateAsync();
   }
 
-  /** Download, then restart — each step reading the answer the one before returned, never the cache. */
-  async function updateAndRestart(): Promise<void> {
-    setLastAction("update");
+  /**
+   * Download, and stop there. From anything but `available` — a failed
+   * download being tried again — it checks first, reading the answer the
+   * check returned rather than the cache. It never restarts.
+   */
+  async function downloadNow(): Promise<void> {
+    setLastAction("download");
     setSequencing(true);
     try {
       let next = current;
-      if (next.state !== "available" && next.state !== "downloaded") next = await check.mutateAsync();
+      if (next.state !== "available") next = await check.mutateAsync();
       if (next.state === "available") {
         setPushedPercent(0);
-        next = await download.mutateAsync();
+        await download.mutateAsync();
       }
-      if (next.state === "downloaded") await install.mutateAsync();
     } finally {
       setSequencing(false);
     }
   }
 
-  const retry = (): void => void (lastAction === "update" ? updateAndRestart() : checkNow());
+  /** The only path to `updates:install`. The main process may still ask about running agents first. */
+  async function restartAndUpdate(): Promise<void> {
+    await install.mutateAsync();
+  }
+
+  const retry = (): void => void (lastAction === "download" ? downloadNow() : checkNow());
   const header = <Header version={version.data?.version} status={current} />;
 
   if (current.state === "unsupported") {
@@ -132,7 +141,7 @@ export function UpdatesSection() {
 
       {current.state === "available" ? <p className="text-[13px] text-ink">EO {current.version} is available.</p> : null}
       {current.state === "up-to-date" ? <p className="text-[13px] text-ink-muted">This is the newest release.</p> : null}
-      {current.state === "downloaded" ? <p className="text-[13px] text-ink">EO {current.version} has been downloaded. It installs when EO restarts.</p> : null}
+      {current.state === "downloaded" ? <p className="text-[13px] text-ink">EO {current.version} has been downloaded. It installs when you press Restart and update.</p> : null}
       {current.state === "error" ? (
         <p role="alert" className="text-[12.5px] text-danger">
           {current.message}
@@ -161,12 +170,12 @@ export function UpdatesSection() {
             Try again
           </Button>
         ) : current.state === "downloaded" ? (
-          <Button variant="primary" disabled={busy} onClick={() => void updateAndRestart()}>
-            Restart to finish updating
+          <Button variant="primary" disabled={busy} onClick={() => void restartAndUpdate()}>
+            Restart and update
           </Button>
         ) : current.state === "available" || percent !== null ? (
-          <Button variant="primary" disabled={busy} onClick={() => void updateAndRestart()}>
-            Update and restart
+          <Button variant="primary" disabled={busy || percent !== null} onClick={() => void downloadNow()}>
+            Download
           </Button>
         ) : (
           <Button disabled={busy || current.state === "checking"} onClick={() => void checkNow()}>

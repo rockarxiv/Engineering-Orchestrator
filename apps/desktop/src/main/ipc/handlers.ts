@@ -116,7 +116,7 @@ import {
 } from "./repositoryCommands.js";
 import { createWorkspaceCommand, listWorkspacesCommand, removeWorkspaceCommand, updateWorkspaceCommand } from "./workspaceCommands.js";
 import { getDailyCost, getItemCost } from "./costHandlers.js";
-import { checkForUpdates, downloadUpdate, installUpdate, updateStatus, type UpdateContext } from "./updateCommands.js";
+import { checkForUpdates, createInstallRequest, downloadUpdate, installUpdate, updateStatus, type UpdateContext } from "./updateCommands.js";
 import { submitPlan } from "./planCommands.js";
 import { submitItem } from "./itemCommands.js";
 import { exportItemOutput, setItemOutput } from "./outputCommands.js";
@@ -540,7 +540,7 @@ export function registerAllHandlers(db: Db, engine: EngineHandle | undefined, re
   // cannot go on to restart the app. `updates:install` reaches the
   // shutdown coordinator and never `quitAndInstall` — see
   // updateCommands.ts.
-  const updates: UpdateContext = resources.updates ?? { controller: () => undefined, requestClose: () => {} };
+  const updates: UpdateContext = resources.updates ?? { controller: () => undefined, requestClose: () => false, installRequest: createInstallRequest() };
   registerHandler("updates:status", () => updateStatus(updates), opts);
   registerHandler("updates:check", () => checkForUpdates(updates), opts);
   registerHandler("updates:download", () => downloadUpdate(updates), opts);

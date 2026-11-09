@@ -24,7 +24,7 @@ import { persistEnginePause } from "./engineActivity.js";
 import { settleDailyBudgetNotice } from "./guardDefaultNotice.js";
 import { emitPush, registerAllHandlers, type Platform } from "./ipc/index.js";
 import { startManagedRuntimeReconciliation } from "./ipc/runtimeCommands.js";
-import { quitOrInstall } from "./ipc/updateCommands.js";
+import { createInstallRequest, quitOrInstall } from "./ipc/updateCommands.js";
 import { assistDeltaView } from "./ipc/assistCommands.js";
 import { watchAssistDeltas } from "./ipc/assistDeltas.js";
 import { startJobScheduler } from "./jobs/scheduler.js";
@@ -718,6 +718,9 @@ export function startMain(platform: Platform): RunningMain {
     void adminMcpHost.stop();
   };
 
+  // EO-696: set only by *Restart and update*, so an ordinary quit
+  // leaves a downloaded update on disk rather than installing it.
+  const installRequest = createInstallRequest();
   const shutdown = createShutdownCoordinator({
     engine,
     showActiveRunsDialog: async (): Promise<ShutdownChoice> => {
@@ -745,7 +748,11 @@ export function startMain(platform: Platform): RunningMain {
     // EO-201: the only place a staged update is ever installed —
     // reached after the active-agents question has already been asked
     // and answered, which is the whole reason the button routes here.
-    quit: quitOrInstall(updates.current, () => platform.quit()),
+    // EO-696: and only when the button is what led to this quit.
+    quit: quitOrInstall(updates.current, installRequest, () => platform.quit()),
+    // *Keep EO open* withdraws a pending restart for an update, so the
+    // next ordinary quit does not install it.
+    onStayOpen: installRequest.withdraw,
   });
   // Every way out of the process — a window closing, the menu, the OS
   // asking — through the one coordinator that can tell a second request
@@ -766,7 +773,7 @@ export function startMain(platform: Platform): RunningMain {
     // EO-201. `requestClose` rather than anything of the updater's own:
     // restarting into an update is a way out of the process, and the
     // coordinator owns all of those.
-    updates: { controller: updates.current, requestClose: () => shutdown.requestClose() },
+    updates: { controller: updates.current, requestClose: () => shutdown.requestClose(), installRequest },
     // EO-471. What has to be asked of whichever record owns a project —
     // its thread — rather than written to this database.
     record,
