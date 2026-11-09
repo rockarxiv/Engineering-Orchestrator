@@ -18,7 +18,7 @@ import { Button, Checkbox, ErrorLine, Facts, Loading, type Tone } from "../../ki
  */
 
 /** The design system's status words, in the kit's tones: a status colour only ever for a state. */
-export function toneOf(tone: StatusTone): Exclude<Tone, "accent"> {
+export function toneOf(tone: StatusTone): Exclude<Tone, "tag"> {
   switch (tone) {
     case "running":
     case "success":

@@ -70,7 +70,7 @@ export function PublishingSection() {
                 <div className="flex min-w-0 flex-1 flex-col gap-0.5">
                   <span className="flex min-w-0 flex-wrap items-center gap-1.5">
                     <span className="text-[13px] text-ink">{SECTION_LABELS[section]}</span>
-                    {published === undefined ? null : <Chip tone="accent">published</Chip>}
+                    {published === undefined ? null : <Chip tone="tag">published</Chip>}
                   </span>
                   <span className="text-[11.5px] text-ink-subtle">
                     {published === undefined

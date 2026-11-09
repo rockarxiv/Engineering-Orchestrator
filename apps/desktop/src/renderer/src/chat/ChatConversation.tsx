@@ -672,10 +672,10 @@ function Sending({ pending }: { pending: PendingSend }) {
   );
 }
 
-/** The assistant's mark: the one place the room's own colour appears, as a sign rather than a button. */
+/** The assistant's mark: a sign rather than a button, so neutral — the accent marks only what can be pressed (EO-689). */
 function Mark() {
   return (
-    <span aria-hidden className="grid h-[26px] w-[26px] shrink-0 place-items-center rounded-lg bg-accent-subtle text-accent-soft">
+    <span aria-hidden className="grid h-[26px] w-[26px] shrink-0 place-items-center rounded-lg bg-canvas-active text-ink-muted">
       <Sparkles size={14} />
     </span>
   );

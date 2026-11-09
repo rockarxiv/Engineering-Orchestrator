@@ -363,7 +363,7 @@ export function AgentEditor({
       {/* Who it is: the name, its state, and where it is used. */}
       <div className="flex min-w-0 flex-col gap-3 rounded-[14px] bg-canvas px-[18px] py-4">
         <div className="flex min-w-0 items-center gap-3">
-          <span aria-hidden className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-accent-subtle text-accent-soft">
+          <span aria-hidden className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-canvas-active text-ink-muted">
             <Bot size={17} />
           </span>
           <div className="flex min-w-0 flex-1 flex-col gap-0.5">

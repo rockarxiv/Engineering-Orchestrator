@@ -309,13 +309,13 @@ function Answered({ questions, answers, sending = false }: { questions: AskedQue
           const given = answer !== null;
           return (
             <div key={question.id} className={cn("flex gap-3 py-3", position > 0 && "border-t border-line/60")}>
-              {/* Filled accent for a decision, an empty ring for one never
+              {/* A filled mark for a decision, an empty ring for one never
                   made: the two read apart without being read. */}
               <span
                 aria-hidden
                 className={cn(
                   "mt-[3px] grid size-4 shrink-0 place-items-center rounded-full",
-                  given ? "bg-accent-subtle text-accent-soft" : "border border-line text-ink-subtle",
+                  given ? "bg-canvas-active text-ink-muted" : "border border-line text-ink-subtle",
                 )}
               >
                 {given ? <Check size={11} /> : <Minus size={9} />}

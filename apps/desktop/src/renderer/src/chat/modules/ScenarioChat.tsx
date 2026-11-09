@@ -64,7 +64,7 @@ function Turn({ name, live = false, danger = false, children }: { name: string; 
       aria-label={live ? "Live agent response" : undefined}
       className={cn("grid grid-cols-[22px_minmax(0,1fr)] gap-2.5", danger && "rounded-[10px] shadow-[inset_0_0_0_1px_var(--color-danger)] p-2")}
     >
-      <span aria-hidden className="grid h-[22px] w-[22px] place-items-center rounded-[7px] bg-accent-subtle text-accent-soft">
+      <span aria-hidden className="grid h-[22px] w-[22px] place-items-center rounded-[7px] bg-canvas-active text-ink-muted">
         <Sparkles size={12} />
       </span>
       <div className={cn("min-w-0 text-[13px] leading-[1.6]", live ? "text-ink-subtle" : "text-ink")}>

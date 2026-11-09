@@ -437,6 +437,8 @@ describe("the thread", () => {
     await act(async () => land({ ok: true, data: { pinned: true, found: true } }));
     expect(await screen.findByRole("button", { name: "Unpin comment" })).toBeEnabled();
     expect(screen.getByText("pinned")).toBeInTheDocument();
+    // A tag, not something to press: neutral rather than the accent (EO-689).
+    expect(screen.getByText("pinned").className).not.toMatch(/accent/);
     expect(screen.queryByText("pinning…")).not.toBeInTheDocument();
   });
 

@@ -13,6 +13,7 @@ import { ipcQuery } from "../../../query/client";
 import { agentsKey, itemsKey, useChromeVocabulary, usePipelineData, useStepAuthority } from "../../../query/hooks";
 import { useInFlight } from "../../../query/useInFlight";
 import { namesItemOrNone, useInvalidateOnPush } from "../../../query/useInvalidateOnPush";
+import { runStatusOf } from "../../../shared/items/status";
 import { groupRuns, isQuietRun, liveRunOf } from "../../../shared/transcript/grouping";
 import { ActAsAdmin } from "../../admin/ActAsAdmin";
 import { ReadOnlyFence } from "../../admin/ReadOnlyFence";
@@ -32,7 +33,7 @@ import { ReferenceField } from "./ReferenceField";
 import { MemoryPanel } from "../settings/sections/MemoryPanel";
 import { OutputSection } from "./Output";
 import { RunComposer } from "./RunComposer";
-import { Stepper } from "./Stepper";
+import { StepStateDot, Stepper } from "./Stepper";
 import { SuggestionReview } from "./SuggestionReview";
 import { CommentThread } from "./Thread";
 import { transitionsShown, useItemThread } from "./useEarlierComments";
@@ -289,6 +290,8 @@ export function ItemView({ itemId }: { itemId: string }) {
   // Conversations, not `runs` rows: counted as the runs view groups them.
   const runCount = groupRuns(detail.data.runs).length;
   const latestRun = detail.data.runs.filter((run) => !isQuietRun(run)).at(-1);
+  // The current step wears its run's state (EO-689): the run the "Run" section below shows, idle with none.
+  const runState = runStatusOf(latestRun?.status ?? null);
   const steps = item.stepId === null ? [] : pipelineSteps;
   const stepName = (id: string) => pipelineSteps.find((step) => step.id === id)?.name ?? spoken(id);
   const current = pipelineSteps.find((step) => step.id === item.stepId);
@@ -330,7 +333,10 @@ export function ItemView({ itemId }: { itemId: string }) {
               <ItemRef itemKey={item.key} itemId={item.id} className="font-mono text-ink-muted" />
               <span>{item.typeLabel}</span>
               {/* The step's name, never its id: only seeded ids read as words. */}
-              <Chip tone={item.needsAttention ? "paused" : "neutral"}>{current?.name ?? item.stepName}</Chip>
+              <Chip tone={item.needsAttention ? "paused" : "neutral"} className="gap-1.5">
+                <StepStateDot tone={runState.tone} />
+                {current?.name ?? item.stepName}
+              </Chip>
               {item.needsAttention ? <Chip tone="paused">waiting on you</Chip> : null}
             </span>
           }
@@ -440,7 +446,7 @@ export function ItemView({ itemId }: { itemId: string }) {
                 </div>
 
                 {/* A container is on no pipeline (ARCHITECTURE.md, "One work entity"), so it has no stepper. */}
-                {steps.length > 0 ? <Stepper steps={steps} currentId={item.stepId} /> : null}
+                {steps.length > 0 ? <Stepper steps={steps} currentId={item.stepId} state={runState.tone} stateLabel={runState.label} /> : null}
 
                 {item.body ? (
                   <div className="min-w-0 text-ink">
