@@ -110,12 +110,18 @@ export function CardSection({
   );
 }
 
-/** The small spaced capitals over a group of rows: "WAITING ON YOU", "PIPELINES". */
+/**
+ * The heading over a group of rows: "Waiting on you", "Acceptance criteria".
+ * A heading a person reads, so it is the section register — body face,
+ * sentence case, 600 — not the mono capitals `.voice-label` keeps for
+ * machine values (ARCHITECTURE.md §22.2; EO-691). What trails it is not
+ * part of the heading and stays small and regular.
+ */
 export function GroupLabel({ children, trailing }: { children: ReactNode; trailing?: ReactNode }) {
   return (
-    <div className="flex items-center gap-2 font-mono text-[10.5px] uppercase tracking-[0.1em] text-ink-subtle">
+    <div className="voice-section flex items-center gap-2 text-[12.5px] text-ink-muted">
       <span>{children}</span>
-      {trailing !== undefined ? <span className="ml-auto font-sans normal-case tracking-normal">{trailing}</span> : null}
+      {trailing !== undefined ? <span className="ml-auto text-[10.5px] font-normal text-ink-subtle">{trailing}</span> : null}
     </div>
   );
 }
