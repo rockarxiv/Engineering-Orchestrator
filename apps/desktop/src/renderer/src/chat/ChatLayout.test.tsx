@@ -5,7 +5,7 @@ import { NO_GIT_STATE, type ItemSummary } from "@eo/core";
 import { mountKeyOf } from "./ChatCanvas";
 import { chatViewFor, movedAddressOf, tabKeyOf } from "./views/registry";
 import { setBridge } from "../ipc/bridge";
-import { THEME_STORAGE_KEY, setThemeChoice } from "./theme";
+import { THEME_STORAGE_KEY, THEME_TOKENS, setThemeChoice } from "./theme";
 
 /**
  * The chat-centric layout — the window, and the only layout there is
@@ -3188,9 +3188,17 @@ describe("the chat layout's colours", () => {
     expect(rootColour("--color-canvas")).toBe("#2e3440");
     expect(rootColour("--color-accent")).toBe("#88c0d0");
     expect(rootColour("--chat-deep")).toBe("#272c36");
+    // The status and kind colours are the theme's too (EO-684), so a board's
+    // dots and chips change with it, and with no reload.
+    expect(rootColour("--color-running")).toBe("#a3be8c");
+    expect(rootColour("--color-kind-agent")).toBe("oklch(79% 0.08 188)");
+    act(() => setThemeChoice({ kind: "preset", id: "tokyo-night" }));
+    expect(rootColour("--color-running")).toBe("#9ece6a");
+    expect(rootColour("--color-kind-script")).toBe("oklch(78% 0.1 40)");
 
     cleanup();
-    expect(rootColour("--color-canvas")).toBe("");
+    // Every property the theme set is gone, leaving the root as styles.css draws it.
+    for (const token of THEME_TOKENS) expect(rootColour(token), token).toBe("");
   });
 
   it("offers presets and a custom pick in Settings, applied the moment they are chosen", async () => {

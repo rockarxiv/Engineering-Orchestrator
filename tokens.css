@@ -41,8 +41,8 @@
   --color-canvas-raised: oklch(28% 0.018 262);
   --color-canvas-hover: oklch(32% 0.019 262);
   --color-canvas-active: oklch(36% 0.02 262);
-  --color-line: oklch(31% 0.016 262);
-  --color-line-strong: oklch(42% 0.018 262);
+  --color-line: oklch(37.2% 0.0163 262);
+  --color-line-strong: oklch(47.8% 0.0144 262);
   --color-ink: oklch(94% 0.006 262);
   --color-ink-muted: oklch(76% 0.01 262);
   --color-ink-subtle: oklch(66% 0.012 262);

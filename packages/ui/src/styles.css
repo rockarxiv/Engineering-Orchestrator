@@ -165,10 +165,13 @@
   --color-canvas-hover: oklch(32% 0.019 262);
   --color-canvas-active: oklch(36% 0.02 262);
 
-  /* Hairlines that barely register — the reference's borders are almost
-     invisible and the lightness step does the separating. */
-  --color-line: oklch(31% 0.016 262);
-  --color-line-strong: oklch(42% 0.018 262);
+  /* Outlines, relative to the raised surface — the lightest one a line is
+     drawn on: the line is it mixed 14% toward the ink in OKLab, which shows
+     at 1.4:1 against it, and the strong line the same at 30%. Every theme
+     derives them the same way (chat/theme.ts), stepping the line further
+     where 14% falls short of 1.4:1. */
+  --color-line: oklch(37.2% 0.0163 262);
+  --color-line-strong: oklch(47.8% 0.0144 262);
 
   --color-ink: oklch(94% 0.006 262);
   --color-ink-muted: oklch(76% 0.01 262);
@@ -202,6 +205,10 @@
   /*
    * Run status, as its own scale rather than reused semantics.
    *
+   * These are Slate's values. Each theme draws the scale in its own palette
+   * (chat/theme.ts), keeping what every colour means and the hue it sits
+   * near; a custom theme keeps these.
+   *
    * `running` is not `success` and `paused` is not `warning`: a run in
    * flight has not succeeded, and a ticket waiting on a person is not a
    * problem. Reusing those tokens is how a dashboard ends up looking
@@ -220,9 +227,9 @@
   /*
    * Step kind: who a pipeline step belongs to, as a chip on the step.
    *
-   * A fixed scale like the status scale above, and for the same reason:
-   * no theme sets it, so a kind reads the same in every window. It is
-   * never the accent (a step's kind is not something you can do) and it
+   * Themed like the status scale above: each theme draws it in its own
+   * palette, near these hues, so a kind means the same in every window. It
+   * is never the accent (a step's kind is not something you can do) and it
    * stays 35° of hue clear of running, reviewing, paused and danger, so a
    * chip is not read as a state. A person's step is drawn in `paused`,
    * which is already how a step waiting on a person is coloured, and EO's

@@ -24,10 +24,20 @@ import { useLayoutEffect, useMemo, useSyncExternalStore, type CSSProperties } fr
  * That is what lets a person pick any colour without picking an
  * unreadable one.
  *
- * The status scale (running, reviewing, waiting, failed) is never themed.
- * It means the same thing in every theme, and the accent stays an action
- * (ARCHITECTURE.md, "Genre: utilitarian", rule 6) — which is why a custom accent too close to a status
- * hue is flagged rather than refused (`statusClash`).
+ * The status scale (running, reviewing, waiting, failed) and the step
+ * kinds' colours (agent, script) are themed too, but only their values:
+ * what each means and roughly where it sits on the wheel are the same in
+ * every theme, and each preset draws them in its own palette, so Claude's
+ * green is warm and Nord's soft. A custom theme keeps Slate's. The accent
+ * stays an action (ARCHITECTURE.md, "Genre: utilitarian", rule 6) — which
+ * is why a custom accent too close to a status or kind hue is flagged
+ * rather than refused (`statusClash`).
+ *
+ * The outlines are relative to the raised surface, the lightest one a line
+ * is drawn on: `--color-line` is that surface mixed 14% toward the ink in
+ * OKLab, stepped further until it shows at 1.4:1, and `--color-line-strong`
+ * the same at 30%. A line picked as its own grey ended up 1.0–1.2:1 against
+ * a panel, and in Nord and Catppuccin the panel's own colour.
  *
  * A per-device preference rather than a setting on the record, because
  * it is about how *this* window is coloured, not a fact about the work.
@@ -36,7 +46,7 @@ import { useLayoutEffect, useMemo, useSyncExternalStore, type CSSProperties } fr
  * hand on their furniture.
  */
 
-/** Every token a theme sets. The status colours are deliberately not among them. */
+/** Every token a theme sets: the ground, line, ink, accent and focus, and the status and kind colours. */
 export const THEME_TOKENS = [
   "--chat-deep",
   "--color-canvas",
@@ -57,6 +67,14 @@ export const THEME_TOKENS = [
   "--color-accent-soft",
   "--color-focus",
   "--color-scrim",
+  "--color-running",
+  "--color-success",
+  "--color-reviewing",
+  "--color-paused",
+  "--color-warning",
+  "--color-danger",
+  "--color-kind-agent",
+  "--color-kind-script",
 ] as const;
 
 export type ThemeToken = (typeof THEME_TOKENS)[number];
@@ -89,8 +107,6 @@ function preset(colours: {
   raised: string;
   hover: string;
   active: string;
-  line: string;
-  lineStrong: string;
   ink: string;
   inkMuted: string;
   inkSubtle: string;
@@ -102,7 +118,16 @@ function preset(colours: {
   accentSoft: string;
   focus: string;
   scrim: string;
+  /** Running, also success. */
+  running: string;
+  reviewing: string;
+  /** Paused, also warning. */
+  paused: string;
+  danger: string;
+  agent: string;
+  script: string;
 }): Palette {
+  const { line, lineStrong } = outlinesFor(colours.raised, colours.ink);
   return {
     "--chat-deep": colours.deep,
     "--color-canvas": colours.canvas,
@@ -110,8 +135,8 @@ function preset(colours: {
     "--color-canvas-raised": colours.raised,
     "--color-canvas-hover": colours.hover,
     "--color-canvas-active": colours.active,
-    "--color-line": colours.line,
-    "--color-line-strong": colours.lineStrong,
+    "--color-line": line,
+    "--color-line-strong": lineStrong,
     "--color-ink": colours.ink,
     "--color-ink-muted": colours.inkMuted,
     "--color-ink-subtle": colours.inkSubtle,
@@ -123,8 +148,36 @@ function preset(colours: {
     "--color-accent-soft": colours.accentSoft,
     "--color-focus": colours.focus,
     "--color-scrim": colours.scrim,
+    ...statusColours(colours),
   };
 }
+
+/** The status and kind tokens, from the six colours they are drawn in. */
+function statusColours(colours: { running: string; reviewing: string; paused: string; danger: string; agent: string; script: string }) {
+  return {
+    "--color-running": colours.running,
+    "--color-success": colours.running,
+    "--color-reviewing": colours.reviewing,
+    "--color-paused": colours.paused,
+    "--color-warning": colours.paused,
+    "--color-danger": colours.danger,
+    "--color-kind-agent": colours.agent,
+    "--color-kind-script": colours.script,
+  } as const;
+}
+
+/**
+ * The design system's own status and kind colours (`packages/ui/src/styles.css`):
+ * Slate's, and every custom theme's.
+ */
+const SLATE_STATUS = statusColours({
+  running: "oklch(71% 0.15 150)",
+  reviewing: "oklch(66% 0.16 305)",
+  paused: "oklch(79% 0.13 75)",
+  danger: "oklch(67% 0.18 22)",
+  agent: "oklch(76% 0.11 205)",
+  script: "oklch(78% 0.1 345)",
+});
 
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
 const round = (value: number, places: number) => Number(value.toFixed(places));
@@ -135,6 +188,11 @@ function oklch(l: number, c: number, h: number): string {
 }
 
 /* ── contrast, as `scripts/design-tokens.mjs` measures it ───────────── */
+
+// Up here because the presets are built when the module loads, and their
+// outlines are measured.
+const toLinear = (channel: number) => (channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4);
+const toGamma = (channel: number) => (channel <= 0.0031308 ? 12.92 * channel : 1.055 * channel ** (1 / 2.4) - 0.055);
 
 /** A colour as linear-light sRGB, from `#rrggbb` or `oklch(L% C H)`; null for anything else. */
 function linearRgb(value: string): [number, number, number] | null {
@@ -176,6 +234,44 @@ function readableOn(l: number, c: number, h: number, ground: string, min: number
     if ((contrastRatio(candidate, ground) ?? 0) >= min) return candidate;
   }
   return oklch(98, c, h);
+}
+
+/** A colour as OKLCH (lightness 0–1), from `#rrggbb` or `oklch(L% C H)`; null for anything else. */
+function asOklch(value: string): { l: number; c: number; h: number } | null {
+  const lch = /^oklch\(\s*([\d.]+)%\s+([\d.]+)\s+([\d.]+)\s*\)$/.exec(value.trim());
+  if (lch) return { l: Number(lch[1]) / 100, c: Number(lch[2]), h: Number(lch[3]) };
+  return /^#[0-9a-f]{6}$/i.test(value.trim()) ? hexToOklch(value) : null;
+}
+
+/** `from` mixed `share` of the way toward `to` in OKLab — `color-mix(in oklab, …)` — as `oklch(L% C H)`. */
+function mixOklab(from: string, to: string, share: number): string {
+  const a = asOklch(from);
+  const b = asOklch(to);
+  // Every surface and ink a palette is written with is one of the two forms.
+  if (!a || !b) throw new Error(`Cannot mix ${from} with ${to}`);
+  const lab = ({ l, c, h }: { l: number; c: number; h: number }) => [l, c * Math.cos((h * Math.PI) / 180), c * Math.sin((h * Math.PI) / 180)] as const;
+  const [l1, a1, b1] = lab(a);
+  const [l2, a2, b2] = lab(b);
+  const L = l1 + (l2 - l1) * share;
+  const A = a1 + (a2 - a1) * share;
+  const B = b1 + (b2 - b1) * share;
+  return `oklch(${round(L * 100, 1)}% ${round(Math.hypot(A, B), 4)} ${round(wrap((Math.atan2(B, A) * 180) / Math.PI), 1)})`;
+}
+
+/** The least a line shows against the raised surface it is drawn on. */
+const MIN_LINE_CONTRAST = 1.4;
+
+/**
+ * A palette's outlines, from its raised surface and its ink: the line 14%
+ * of the way to the ink, or as much further as it takes to show at 1.4:1,
+ * and the strong line 30% of the way.
+ */
+function outlinesFor(raised: string, ink: string): { line: string; lineStrong: string } {
+  let line = mixOklab(raised, ink, 0.14);
+  for (let share = 15; share < 30 && (contrastRatio(line, raised) ?? 0) < MIN_LINE_CONTRAST; share += 1) {
+    line = mixOklab(raised, ink, share / 100);
+  }
+  return { line, lineStrong: mixOklab(raised, ink, 0.3) };
 }
 
 /**
@@ -239,6 +335,10 @@ export function paletteFor(seed: ThemeSeed): Palette {
   const light = oklch(98, 0.01, ah);
   const dark = oklch(18, 0.02, ah);
   const button = buttonFor(a, ah, canvas, light, dark);
+  // Ink carries a trace of the ground, as the design system's does, and
+  // no more: enough chroma to belong to the room, not enough to tint text.
+  const ink = oklch(94, Math.min(g * 0.4, 0.012), gh);
+  const { line, lineStrong } = outlinesFor(raised, ink);
   return {
     // One step below the canvas, so the conversation reads as the lit middle.
     "--chat-deep": `color-mix(in oklab, ${canvas}, black 22%)`,
@@ -247,11 +347,9 @@ export function paletteFor(seed: ThemeSeed): Palette {
     "--color-canvas-raised": raised,
     "--color-canvas-hover": oklch(32, g * 1.18, gh),
     "--color-canvas-active": oklch(36, g * 1.25, gh),
-    "--color-line": oklch(31, g, gh),
-    "--color-line-strong": oklch(42, g * 1.12, gh),
-    // Ink carries a trace of the ground, as the design system's does, and
-    // no more: enough chroma to belong to the room, not enough to tint text.
-    "--color-ink": oklch(94, Math.min(g * 0.4, 0.012), gh),
+    "--color-line": line,
+    "--color-line-strong": lineStrong,
+    "--color-ink": ink,
     "--color-ink-muted": readableOn(76, Math.min(g * 0.6, 0.02), gh, raised, 4.5),
     "--color-ink-subtle": readableOn(66, Math.min(g * 0.75, 0.025), gh, raised, 4.5),
     "--color-idle": readableOn(58, Math.min(g * 0.75, 0.025), gh, raised, 3),
@@ -262,11 +360,17 @@ export function paletteFor(seed: ThemeSeed): Palette {
     "--color-accent-soft": readableOn(80, a * 0.67, ah, accentSubtle, 4.5),
     "--color-focus": readableOn(70, a * 0.83, ah, raised, 3),
     "--color-scrim": `oklch(12% ${round(g * 1.25, 4)} ${round(wrap(gh), 1)} / 0.7)`,
+    // The status and kind colours are the design system's: a seed says
+    // nothing about them, and Slate's hold on any ground the seeds make.
+    ...SLATE_STATUS,
   };
 }
 
 /** The design system's own slate, as a seed: where the pickers start when nothing else says. */
 const SLATE_SEED: ThemeSeed = { ground: { h: 262, c: 0.016 }, accent: { h: 258, c: 0.18 } };
+
+/** Slate's outlines, from its raised surface and its ink, as `styles.css` writes them out. */
+const SLATE_OUTLINES = outlinesFor("oklch(28% 0.018 262)", "oklch(94% 0.006 262)");
 
 /**
  * The presets, default first.
@@ -293,8 +397,6 @@ export const THEME_PRESETS: readonly ThemePreset[] = [
       raised: "#30302e",
       hover: "#383835",
       active: "#3f3e3b",
-      line: "#3a3936",
-      lineStrong: "#52504b",
       ink: "#f0eee6",
       inkMuted: "#c3c1b8",
       inkSubtle: "#9c9a92",
@@ -307,6 +409,12 @@ export const THEME_PRESETS: readonly ThemePreset[] = [
       accentSoft: "#e8a68a",
       focus: "#d97757",
       scrim: "rgb(15 14 13 / 0.7)",
+      running: "oklch(75% 0.15 142)",
+      reviewing: "oklch(72% 0.14 308)",
+      paused: "oklch(81% 0.14 76)",
+      danger: "oklch(67% 0.19 20)",
+      agent: "oklch(78% 0.11 200)",
+      script: "oklch(78% 0.12 346)",
     }),
   },
   {
@@ -320,8 +428,8 @@ export const THEME_PRESETS: readonly ThemePreset[] = [
       "--color-canvas-raised": "oklch(28% 0.018 262)",
       "--color-canvas-hover": "oklch(32% 0.019 262)",
       "--color-canvas-active": "oklch(36% 0.02 262)",
-      "--color-line": "oklch(31% 0.016 262)",
-      "--color-line-strong": "oklch(42% 0.018 262)",
+      "--color-line": SLATE_OUTLINES.line,
+      "--color-line-strong": SLATE_OUTLINES.lineStrong,
       "--color-ink": "oklch(94% 0.006 262)",
       "--color-ink-muted": "oklch(76% 0.01 262)",
       "--color-ink-subtle": "oklch(66% 0.012 262)",
@@ -333,6 +441,7 @@ export const THEME_PRESETS: readonly ThemePreset[] = [
       "--color-accent-soft": "oklch(80% 0.12 258)",
       "--color-focus": "oklch(70% 0.15 258)",
       "--color-scrim": "oklch(12% 0.02 262 / 0.7)",
+      ...SLATE_STATUS,
     },
   },
   {
@@ -345,8 +454,6 @@ export const THEME_PRESETS: readonly ThemePreset[] = [
       raised: "#1a1b1d",
       hover: "#212224",
       active: "#28292c",
-      line: "#232326",
-      lineStrong: "#36373b",
       ink: "#f7f8f8",
       inkMuted: "#b4b7bd",
       inkSubtle: "#8a8f98",
@@ -359,6 +466,12 @@ export const THEME_PRESETS: readonly ThemePreset[] = [
       accentSoft: "#a3aaf2",
       focus: "#7c85e6",
       scrim: "rgb(0 0 0 / 0.7)",
+      running: "oklch(74% 0.16 150)",
+      reviewing: "oklch(70% 0.15 300)",
+      paused: "oklch(80% 0.14 78)",
+      danger: "oklch(66% 0.2 22)",
+      agent: "oklch(77% 0.12 198)",
+      script: "oklch(77% 0.13 345)",
     }),
   },
   {
@@ -371,8 +484,6 @@ export const THEME_PRESETS: readonly ThemePreset[] = [
       raised: "#2d333b",
       hover: "#373e47",
       active: "#3f4650",
-      line: "#373e47",
-      lineStrong: "#545d68",
       ink: "#cdd9e5",
       inkMuted: "#adbac7",
       inkSubtle: "#909daa",
@@ -385,6 +496,12 @@ export const THEME_PRESETS: readonly ThemePreset[] = [
       accentSoft: "#6cb6ff",
       focus: "#539bf5",
       scrim: "rgb(28 33 40 / 0.75)",
+      running: "#57ab5a",
+      reviewing: "#986ee2",
+      paused: "#c69026",
+      danger: "#e5534b",
+      agent: "#39c5cf",
+      script: "#e275ad",
     }),
   },
   {
@@ -397,8 +514,6 @@ export const THEME_PRESETS: readonly ThemePreset[] = [
       raised: "#3b4252",
       hover: "#434c5e",
       active: "#4c566a",
-      line: "#3b4252",
-      lineStrong: "#4c566a",
       ink: "#eceff4",
       inkMuted: "#d8dee9",
       inkSubtle: "#a7b1c2",
@@ -412,6 +527,15 @@ export const THEME_PRESETS: readonly ThemePreset[] = [
       // A ring a step lighter than the button it goes round.
       focus: "#d8e9ef",
       scrim: "rgb(36 41 51 / 0.75)",
+      running: "#a3be8c",
+      reviewing: "oklch(75% 0.07 333)",
+      paused: "#ebcb8b",
+      danger: "oklch(72% 0.13 18)",
+      // Near the frost accent, which is a known open point (EO-683): the
+      // accent is a button and the agent a chip, and they are kept apart by
+      // shape rather than by hue here.
+      agent: "oklch(79% 0.08 188)",
+      script: "oklch(74% 0.085 285)",
     }),
   },
   {
@@ -424,8 +548,6 @@ export const THEME_PRESETS: readonly ThemePreset[] = [
       raised: "#313244",
       hover: "#3b3d51",
       active: "#45475a",
-      line: "#313244",
-      lineStrong: "#45475a",
       ink: "#cdd6f4",
       inkMuted: "#bac2de",
       inkSubtle: "#a6adc8",
@@ -437,6 +559,12 @@ export const THEME_PRESETS: readonly ThemePreset[] = [
       accentSoft: "#b4befe",
       focus: "#b4befe",
       scrim: "rgb(17 17 27 / 0.75)",
+      running: "#a6e3a1",
+      reviewing: "#cba6f7",
+      paused: "#f9e2af",
+      danger: "#f38ba8",
+      agent: "#94e2d5",
+      script: "oklch(80% 0.1 48)",
     }),
   },
   {
@@ -449,8 +577,6 @@ export const THEME_PRESETS: readonly ThemePreset[] = [
       raised: "#24283b",
       hover: "#292e42",
       active: "#2f3549",
-      line: "#292e42",
-      lineStrong: "#3b4261",
       ink: "#c0caf5",
       inkMuted: "#a9b1d6",
       inkSubtle: "#868eb8",
@@ -463,6 +589,12 @@ export const THEME_PRESETS: readonly ThemePreset[] = [
       // A ring a step lighter than the button it goes round.
       focus: "#a9c8ff",
       scrim: "rgb(13 14 20 / 0.75)",
+      running: "#9ece6a",
+      reviewing: "#bb9af7",
+      paused: "#e0af68",
+      danger: "#f7768e",
+      agent: "#73daca",
+      script: "oklch(78% 0.1 40)",
     }),
   },
 ];
@@ -471,19 +603,25 @@ export const DEFAULT_PRESET_ID = "claude";
 
 export type ThemeChoice = { kind: "preset"; id: string } | { kind: "custom"; seed: ThemeSeed };
 
-/** The status hues the accent has to stay clear of, by what each means. */
+/**
+ * The status and kind hues the accent has to stay clear of, by what each
+ * means. Slate's: each theme draws them in its own palette, but near
+ * these hues, which is where a person has learnt to read them.
+ */
 const STATUS_HUES: readonly { hue: number; means: string }[] = [
   { hue: 150, means: "running" },
   { hue: 305, means: "waiting for review" },
   { hue: 75, means: "waiting on a person" },
   { hue: 22, means: "failed" },
+  { hue: 205, means: "an agent's step" },
+  { hue: 345, means: "a script's step" },
 ];
 
-/** The separation ARCHITECTURE.md, "What the checker enforces", asks between the accent and any status colour. */
+/** The separation ARCHITECTURE.md, "What the checker enforces", asks between the accent and any status or kind colour. */
 const MIN_SEPARATION = 35;
 
 /**
- * The status an accent is too close to, or null. A clash is only a clash
+ * The status or step kind an accent is too close to, or null. A clash is only a clash
  * with colour in it: a near-grey accent has no hue to mistake.
  */
 export function statusClash(accent: ThemeSeed["accent"]): string | null {
@@ -496,9 +634,6 @@ export function statusClash(accent: ThemeSeed["accent"]): string | null {
 }
 
 /* ── #rrggbb ⇄ OKLCH, for the custom pickers ─────────────────────────── */
-
-const toLinear = (channel: number) => (channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4);
-const toGamma = (channel: number) => (channel <= 0.0031308 ? 12.92 * channel : 1.055 * channel ** (1 / 2.4) - 0.055);
 
 /** A `#rrggbb` colour as OKLCH: lightness 0–1, chroma, hue in degrees. */
 export function hexToOklch(hex: string): { l: number; c: number; h: number } | null {
