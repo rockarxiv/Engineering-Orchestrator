@@ -214,7 +214,7 @@ import { noneWorkspaceKind } from "./noneKind.js";
 import { folderWorkspaceKind } from "./folderKind.js";
 import { scratchWorkspaceKind } from "./scratchKind.js";
 import { resolveItemWorkspace, skillRunScope } from "./workspaceResolution.js";
-import { findReusableThread, itemFilesHash, staleAttachmentsRefusal, threadSpendNotice } from "./threadReuse.js";
+import { EMPTY_ITEM_FILES_HASH, findReusableThread, itemFilesHash, staleAttachmentsRefusal, threadSpendNotice } from "./threadReuse.js";
 import {
   rerunContract,
   findPendingInterpretations,
@@ -6087,6 +6087,11 @@ export function createRunSupervisor(
     // intent is still standing, and the next tick finds the changed tools
     // through `resumeBlockedReason` and starts the fresh session.
     if (continuation && (continuation.from.agentAttachmentsHash ?? EMPTY_ATTACHMENTS_HASH) !== attachments) return;
+    // The same for the item's own files (EO-703): a continuation is told
+    // nothing about the item, so one whose files changed during preflight
+    // turns back too, and the next tick refuses its thread with a comment
+    // (`resumeBlockedReason`) and starts the fresh one.
+    if (continuation && (continuation.from.itemFilesHash ?? EMPTY_ITEM_FILES_HASH) !== itemFilesHash(db, item.id)) return;
     if (resuming && (resuming.run.agentAttachmentsHash ?? EMPTY_ATTACHMENTS_HASH) !== attachments) {
       staleReuse = staleAttachmentsRefusal(agent);
       resuming = null;
@@ -9874,6 +9879,21 @@ export function createRunSupervisor(
         `session keeps the tools it was started with, so the conversation couldn't be carried over — starting a ` +
         `fresh run instead, which is how it picks the new ones up. Nothing is lost: the new run is given the ` +
         `newest word from every step and everything you have said since.`
+      );
+    }
+
+    // The item's own files, on the rule `findReusableThread` applies to an
+    // automatic dispatch (EO-703). A resumed thread is told nothing about
+    // the item again, so a file put on it while the run was parked or
+    // interrupted would never reach the agent, and one taken off would
+    // still be listed in what it was told. Null reads as no files, as it
+    // does there.
+    if (runItem && (run.itemFilesHash ?? EMPTY_ITEM_FILES_HASH) !== itemFilesHash(db, runItem.id)) {
+      return (
+        `The files on this item have changed since this run started. A conversation already under way is not ` +
+        `told about the item again, so it couldn't be carried over — starting a fresh run instead, which is how ` +
+        `it sees the files as they are now. Nothing is lost: the new run is given the newest word from every step ` +
+        `and everything you have said since.`
       );
     }
 

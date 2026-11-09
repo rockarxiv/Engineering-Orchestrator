@@ -886,6 +886,36 @@ describe("a human reply resuming a parked run", () => {
     expect(prompt).not.toContain(ITEM_BODY);
   });
 
+  it("starts a fresh run that lists the file, with a comment, when a file was put on the item while the run was parked (EO-703)", async () => {
+    updateRun(handle.db, parkedRun().id, { startedAt: 1_000, endedAt: 1_000 });
+    const fileId = uuidv7();
+    addItemAttachments(handle.db, item.id, [{ id: fileId, storagePath: `/tmp/eo/attachments/${fileId}`, name: "mock.png", mimeType: "image/png", size: 8 }]);
+    postComment(handle.db, { itemId: item.id, author: { type: "human" }, body: "The mock is on the item now." });
+
+    await supervisorFor({ result: validImplementResult }).resumeItem(item.id);
+
+    expect(turns.map((turn) => turn.kind)).toEqual(["start"]);
+    expect(turns[0]?.prompt).toContain(`- ID: ${fileId}; name: mock.png; MIME type: image/png`);
+    expect(turns[0]?.prompt).toContain("The mock is on the item now.");
+    const notes = listCommentsForItem(handle.db, item.id).filter((comment) => comment.authorType === "engine").map((comment) => comment.body);
+    expect(notes).toHaveLength(1);
+    expect(notes[0]).toContain("The files on this item have changed");
+  });
+
+  it("still resumes the parked thread when the item's files are the ones it was told about (EO-703)", async () => {
+    const fileId = uuidv7();
+    addItemAttachments(handle.db, item.id, [{ id: fileId, storagePath: `/tmp/eo/attachments/${fileId}`, name: "mock.png", mimeType: "image/png", size: 8 }]);
+    updateRun(handle.db, parkedRun({ itemFilesHash: itemFilesHash(handle.db, item.id) }).id, { startedAt: 1_000, endedAt: 1_000 });
+    postComment(handle.db, { itemId: item.id, author: { type: "human" }, body: "Go ahead." });
+
+    await supervisorFor({ result: validImplementResult }).resumeItem(item.id);
+
+    expect(turns.map((turn) => turn.kind)).toEqual(["resume"]);
+    expect(turns[0]?.threadId).toBe(PRIOR_THREAD);
+    // The resumed run records the list its thread holds, so the next dispatch can carry it on too.
+    expect(listRunsForItem(handle.db, item.id).at(-1)?.itemFilesHash).toBe(itemFilesHash(handle.db, item.id));
+  });
+
   it("carries a reply that landed in the same millisecond the run ended", async () => {
     // Ids rather than the clock: the run row is minted first, the reply
     // second, so `(createdAt, id)` can tell them apart where `createdAt`

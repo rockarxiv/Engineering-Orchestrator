@@ -530,6 +530,28 @@ describe("findReusableThread, with the item's own files (EO-703)", () => {
     expect(ask().kind).toBe("refused");
   });
 
+  it("does not fall back to an older thread across a change to the files: add, run, remove", () => {
+    // Thread A is born with no files; a file is added and thread B is
+    // born with it; the file is removed. A's list matches again, but
+    // every turn since A has worked from another one.
+    dispatched({ threadId: "session-a" });
+    const id = addFile();
+    dispatched({ threadId: "session-b" });
+    removeItemAttachment(handle.db, id);
+
+    const decision = ask();
+    expect(decision.kind).toBe("refused");
+    expect(decision.kind === "refused" ? decision.reason : "").toContain("The files on this item have changed");
+  });
+
+  it("still falls back past a newer thread refused for something else, where the files never changed", () => {
+    addFile();
+    const older = dispatched({ threadId: "session-a" });
+    dispatched({ threadId: "session-b", cwd: "/tmp/eo/worktrees/elsewhere" });
+
+    expect(ask()).toEqual({ kind: "resume", run: older });
+  });
+
   it("is not moved by a file on another item, or by a comment's file on this one", () => {
     const prior = dispatched();
     addFile(createTestItem(handle.db, { type: "story", title: "Another story", stepId: "todo" }));

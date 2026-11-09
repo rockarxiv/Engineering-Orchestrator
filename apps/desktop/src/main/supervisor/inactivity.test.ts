@@ -1,4 +1,5 @@
-import type { AgentEvent, AgentProvider, AgentProviderStartOptions, Item } from "@eo/core";
+import { uuidv7, type AgentEvent, type AgentProvider, type AgentProviderStartOptions, type Item } from "@eo/core";
+import { addItemAttachments } from "../db/repos/attachmentsRepo.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { listCommentsForItem } from "../db/repos/commentsRepo.js";
 import { listRunsForItem } from "../db/repos/runsRepo.js";
@@ -173,6 +174,41 @@ describe("a run whose backend goes quiet", () => {
     expect(resume.mock.calls[0]?.[1]).toContain("The computer went to sleep while you were working");
     const continuation = listRunsForItem(handle.db, item.id).find((run) => run.id !== stopped.id && run.action === "implement");
     expect(continuation).toMatchObject({ threadId: "the-quiet-thread", attempt: stopped.attempt, initiationId: stopped.initiationId });
+  });
+
+  it("is not carried on in its own thread once a file was put on the item after it was stopped, and says why (EO-703)", async () => {
+    const supervisor = supervisorWith(quietAfter([{ type: "output", text: "Writing the tests." }]));
+    const ticking = supervisor.runOnce();
+    await vi.waitFor(() => expect(supervisor.activeRunCount()).toBe(1));
+    await vi.waitFor(() => expect(listRunEvents(handle.db, listRunsForItem(handle.db, item.id)[0]!.id).map((event) => event.type)).toContain("output"));
+    supervisor.watchLiveRuns();
+    clock += 60 * MINUTE;
+    supervisor.watchLiveRuns();
+    passTime(supervisor, LIMIT + MINUTE);
+    await ticking;
+    expect(listRunsForItem(handle.db, item.id)[0]).toMatchObject({ status: "cancelled", interruption: "sleep" });
+
+    // A mock put on the item before the run is carried on: a resumed
+    // thread is told nothing about the item again.
+    const fileId = uuidv7();
+    addItemAttachments(handle.db, item.id, [{ id: fileId, storagePath: `/tmp/eo/attachments/${fileId}`, name: "mock.png", mimeType: "image/png", size: 8 }]);
+
+    const resume = vi.fn<AgentProvider["resume"]>(async function* () {
+      yield { type: "result", data: validImplementResult as unknown as Record<string, unknown> };
+    });
+    const contexts: string[] = [];
+    const start = vi.fn<AgentProvider["start"]>(async function* (input) {
+      contexts.push(input.context);
+      yield { type: "result", data: validImplementResult as unknown as Record<string, unknown> };
+    });
+    const carrying = supervisorWith(start, resume);
+    await carrying.runOnce();
+    await carrying.waitForIdle();
+
+    expect(resume).not.toHaveBeenCalled();
+    expect(start).toHaveBeenCalledOnce();
+    expect(contexts[0]).toContain(`- ID: ${fileId}; name: mock.png; MIME type: image/png`);
+    expect(listCommentsForItem(handle.db, item.id).some((comment) => comment.authorType === "engine" && comment.body.includes("The files on this item have changed"))).toBe(true);
   });
 
   it("is parked with why, not failed, when its backend ends the stopped turn with an error of its own", async () => {

@@ -507,6 +507,13 @@ export function findReusableThread(db: Db, query: ThreadReuseQuery): ThreadReuse
     const reason = refusalFor(run, agent, cwd, wantedHash, wantedAttachments, wantedFiles);
     if (reason === null) return { kind: "resume", run };
     refusal ??= reason;
+    // Nothing older than a thread born with another list of the item's
+    // files is weighed up (EO-703). Every thread before it is on the far
+    // side of a change to the files: add one, run, remove it, and the
+    // oldest thread's list matches again while every turn since has
+    // worked from another. Resuming it would carry on a conversation from
+    // before that work as though nothing had happened.
+    if ((run.itemFilesHash ?? EMPTY_ITEM_FILES_HASH) !== wantedFiles) break;
   }
 
   // A refusal outranks an absence even when the absence is newer: a
