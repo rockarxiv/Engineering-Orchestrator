@@ -1,4 +1,4 @@
-import type { PathsFrom } from "@eo/core";
+import { MAX_COMMENT_ATTACHMENTS, type PathsFrom } from "@eo/core";
 import { checkUploadPaths, storeUploads } from "./pathUploads.js";
 import type { AttachmentStorage } from "./storage.js";
 
@@ -42,6 +42,12 @@ export async function checkItemUploads(
 ): Promise<ItemUploads> {
   if (from === undefined) return { ok: false, problem: NO_GRANT_PROBLEM };
   if (!storage) return { ok: false, problem: "This installation has nowhere to keep a file." };
+  // The limit is per call, as a comment's is: a plan's feature and
+  // stories together, not eight each.
+  const named = lists.reduce((total, paths) => total + paths.length, 0);
+  if (named > MAX_COMMENT_ATTACHMENTS) {
+    return { ok: false, problem: `One call may name at most ${MAX_COMMENT_ATTACHMENTS} files by path, and this one names ${named}${lists.length > 1 ? " across the feature and its stories" : ""}.` };
+  }
   const problems: string[] = [];
   for (const paths of lists) {
     if (paths.length === 0) continue;

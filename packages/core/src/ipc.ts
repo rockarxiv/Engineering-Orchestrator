@@ -275,7 +275,9 @@ export const CommentPathsSchema = z.array(z.string().min(1)).max(MAX_COMMENT_ATT
  * Files on the machine running EO, put on an item as its own files when
  * it is filed or edited (EO-704) — `work:submitItem`, `work:submitPlan`
  * (on the feature and on each story) and `items:update`. The same list
- * and the same limit as a comment's, read under the same grant.
+ * and the same limit as a comment's, read under the same grant — eight
+ * in one call, which on a plan the handler counts across the feature's
+ * list and every story's together.
  */
 export const ItemPathsSchema = CommentPathsSchema;
 

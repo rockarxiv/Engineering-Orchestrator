@@ -315,6 +315,17 @@ describe("work_submit_plan with paths", () => {
     nothingFiled();
   });
 
+  it("refuses more than eight files across the feature and its stories together, before anything is stored", async () => {
+    const featureFiles = Array.from({ length: 8 }, (_unused, index) => file(elsewhere, `feature-${index}.txt`, `f${index}`));
+    const storyFile = file(elsewhere, "story.txt", "s");
+
+    const answer = await external("work_submit_plan", plan(featureFiles, [[storyFile]]));
+
+    expect(answer.text).toContain("One call may name at most 8 files by path, and this one names 9 across the feature and its stories.");
+    expect(answer.text).toContain("Nothing has changed");
+    nothingFiled();
+  });
+
   it("holds the system agent to its turn's directory on the plan too", async () => {
     file(turnDir, "spec.pdf", "%PDF-1.4");
     const outside = file(elsewhere, "secret.txt", "not yours");

@@ -3058,7 +3058,8 @@ const ITEM_PATHS_RULE =
   "A client of EO's MCP server names any absolute path to a regular file the person's account can read; a " +
   "relative path is refused. EO's own system agent, over eo_admin, names only files inside the directory its turn " +
   "runs in — a path relative to it or an absolute one beneath it, reached through no symbolic link — and a turn " +
-  "that runs in no directory can name none. At most 8 files per paths list, each within 20 MB; EO works out each " +
+  "that runs in no directory can name none. At most 8 files in one call — on a plan, the feature's and every " +
+  "story's paths together — each within 20 MB; EO works out each " +
   "file's type and size itself. A path that is missing, not a regular file, too large or not one this caller may " +
   "name refuses the whole call, naming the path and the reason, and nothing is created or changed. ";
 

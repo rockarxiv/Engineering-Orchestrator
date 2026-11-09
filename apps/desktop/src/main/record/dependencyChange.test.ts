@@ -21,7 +21,9 @@ import {
 import { saveGroup } from "../db/repos/groupsRepo.js";
 import { createStep, setStepOwner } from "../db/repos/pipelineStepsRepo.js";
 import { createTestItem, openMigratedTestDb } from "../db/testHelpers.js";
-import { clearHandlerRegistry, dispatchIpc } from "../ipc/registry.js";
+import { clearHandlerRegistry, dispatchIpc, registerHandler } from "../ipc/registry.js";
+import { updateItemCommand } from "../ipc/itemAttachmentCommands.js";
+import { answerToolCall } from "../mcpHost/server.js";
 import { fakePlatform } from "../testing/platform.js";
 import { updateItemFields } from "../ipc/domainCommands.js";
 import { approveWorkProposalThroughRecord } from "../ipc/conversationTurns.js";
@@ -155,6 +157,32 @@ describe("a project the organisation holds", () => {
     expect(dependsOn(recordDb, release)).toEqual([]);
     expect(dependsOn(anna.handle, release)).toEqual([]);
     expect(listCommentsForItem(recordDb.db, release.id).filter((comment) => comment.authorType === "engine")).toHaveLength(0);
+  });
+
+  /**
+   * Through the external MCP host, which stamps `pathsFrom` on every
+   * `items:update` (EO-704): the grant is not an edit, so a call that
+   * only changes the edges still goes to the record — and one that also
+   * names a file to add is still refused, naming it.
+   */
+  it("makes a dependency-only change asked through the external MCP host, and refuses one that also adds a file", async () => {
+    const { release, story } = await organisationItems();
+    const storage = new AttachmentStorage(join(root, "anna-files"));
+    registerHandler("items:update", (payload) => updateItemCommand(anna.handle.db, anna.record, payload, storage), { exposeErrorDetails: true });
+    try {
+      const text = async (args: Record<string, unknown>) =>
+        ((await answerToolCall({ name: "item_update", arguments: { itemId: release.id, ...args } }, "external", false)).content[0] as { text: string }).text;
+
+      const withFile = await text({ addDependsOn: [story.key], paths: [join(root, "mock.png")] });
+      expect(withFile).toContain("`paths`");
+      expect(dependsOn(recordDb, release)).toEqual([]);
+
+      await text({ addDependsOn: [story.key] });
+      expect(dependsOn(recordDb, release)).toEqual([story.id]);
+      expect(dependsOn(anna.handle, release)).toEqual([story.id]);
+    } finally {
+      clearHandlerRegistry();
+    }
   });
 
   it("refuses a change that also edits other fields, since the two would land on two machines", async () => {

@@ -7,6 +7,7 @@ import {
   formatIssues,
   gitStateOf,
   MAX_COMMENT_ATTACHMENTS,
+  PATHS_FROM_KEY,
   jiraStateOf,
   missingSpecFields,
   namedBranchOf,
@@ -2202,8 +2203,12 @@ export async function updateItemFields(
   const item = getItem(db, itemId);
   if (!item) return { updated: false, problem: "That ticket no longer exists." };
 
+  // `pathsFrom` is not an edit: it is the grant EO's MCP hosts stamp on
+  // every call of this channel (EO-704), files or none. And an empty
+  // list of files to add or remove asks for nothing.
   const others = Object.entries(input)
-    .filter(([name, value]) => value !== undefined && !["itemId", "actingDeviceId", "addDependsOn", "removeDependsOn"].includes(name))
+    .filter(([name, value]) => value !== undefined && !["itemId", "actingDeviceId", "addDependsOn", "removeDependsOn", PATHS_FROM_KEY].includes(name))
+    .filter(([name, value]) => !(["paths", "removeAttachmentIds"].includes(name) && Array.isArray(value) && value.length === 0))
     .map(([name]) => `\`${name}\``);
   if (others.length > 0) {
     return {
