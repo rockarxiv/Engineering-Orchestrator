@@ -191,6 +191,7 @@ const DETAIL = {
     typeKey: "report",
     spec: { period: "29 Sep – 5 Oct", audience: "Leadership", must_cover: ["What shipped", "What slipped and why"] },
     createdAt: 1,
+    attachments: [],
   },
   decision: [
     { key: "approve", label: "Approve", tone: "success", requiresComment: false, targetName: "Filed" },

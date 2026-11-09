@@ -112,7 +112,7 @@ describe("a notification opening its item", () => {
         return {
           ok: true,
           data: {
-            item: { id: "t1", key: "EO-1", type: "story", parentId: null, repositoryId: null, repositoryName: null, projectId: null, title: "Rate limit the API", stepId: "todo", priority: 0, git: NO_GIT_STATE, workspace: { kind: "git-worktree", mode: "isolated", label: null }, jiraKey: null, jiraUrl: null, updatedAt: 1, needsAttention: false, openDependencyCount: 0, latestRunStatus: null, body: null, acceptanceCriteria: [], createdAt: 1 },
+            item: { id: "t1", key: "EO-1", type: "story", parentId: null, repositoryId: null, repositoryName: null, projectId: null, title: "Rate limit the API", stepId: "todo", priority: 0, git: NO_GIT_STATE, workspace: { kind: "git-worktree", mode: "isolated", label: null }, jiraKey: null, jiraUrl: null, updatedAt: 1, needsAttention: false, openDependencyCount: 0, latestRunStatus: null, body: null, acceptanceCriteria: [], createdAt: 1, attachments: [] },
             comments: [],
             transitions: [],
             runs: [],

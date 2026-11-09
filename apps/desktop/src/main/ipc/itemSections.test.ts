@@ -73,12 +73,15 @@ function statementsDuring(read: () => void): string[] {
  * `needsAttention` asks whether any comment on it has an open mention of
  * a person, which is a fact about the item (invariant 6) and not a read
  * of its thread. Nor is when it entered its step (EO-570): one `max`
- * over its arrivals, not its history of moves.
+ * over its arrivals, not its history of moves. Nor are the item's own
+ * files (EO-702), which are part of what it is, as its description is:
+ * the item's own section reads those, and only those (`comment_id is null`).
  */
 const SECTION_READS: Record<string, RegExp> = {
   thread: /from "comments" left join "jira_comment_links"/,
   awaiting: /from "comment_mentions" inner join "comments"/,
-  attachments: /from "attachments"/,
+  attachments: /from "attachments"(?![\s\S]*"attachments"\."comment_id" is null)/,
+  ownFiles: /from "attachments"[\s\S]*"attachments"\."comment_id" is null/,
   transitions: /from "transitions" where/,
   dependsOn: /from "item_deps"/,
   runs: /from "runs"/,
@@ -262,6 +265,8 @@ describe("the query path", () => {
     // one run, by LIMIT, and this item's edges, by WHERE — and no run
     // history and no table of edges is read to answer them: not this
     // item's, and not the rest of the board's.
+    // Its own files, once, and no comment's.
+    expect(reads(ownOnly, "ownFiles")).toHaveLength(1);
     expect(runHistories(ownOnly)).toEqual([]);
     expect(everyEdge(ownOnly)).toEqual([]);
     expect(reads(ownOnly, "runs")).toHaveLength(1);
