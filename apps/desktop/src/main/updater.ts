@@ -68,6 +68,14 @@ export interface UpdaterDeps {
   onStatusChange?: () => void;
   /** Injected so a test can assert on a fixed last-checked time. */
   now?: () => number;
+  /**
+   * A build EO cannot install over: macOS, whose builds are ad-hoc
+   * signed (EO-698). It still checks, but `download` and `installStaged`
+   * do nothing, and every status says `manual: true` so the renderer
+   * sends the person to the release page instead. Decided by the caller
+   * from the platform, so the renderer never has to.
+   */
+  manual?: boolean;
 }
 
 /**
@@ -108,6 +116,11 @@ export const UPDATE_INTERVAL_MS = 6 * 60 * 60 * 1000;
  * more often than a frame is drawn is work nobody can see.
  */
 export const PROGRESS_THROTTLE_MS = 250;
+
+/** The status as a build updated by hand reports it (EO-698), or as it was everywhere else. */
+function marked(status: UpdateStatus, manual: boolean | undefined): UpdateStatus {
+  return manual ? { ...status, manual: true } : status;
+}
 
 /** A controller for a build that will never update, answering the reason forever. */
 function inert(status: UpdateStatus): UpdateController {
@@ -176,7 +189,7 @@ export function startAutoUpdate(deps: UpdaterDeps): UpdateController {
 
   if (!deps.isPackaged) {
     log("auto-update disabled: not a packaged build");
-    return inert({ state: "unsupported" });
+    return inert(marked({ state: "unsupported" }, deps.manual));
   }
 
   const updater = deps.updater;
@@ -185,7 +198,7 @@ export function startAutoUpdate(deps: UpdaterDeps): UpdateController {
     // Not `unsupported`: this *is* an installed build, and saying
     // "updates apply to installed builds" to somebody running one would
     // be a lie with no way out of it.
-    return inert({ state: "error", message: "The updater could not be loaded, so this build cannot check for updates.", lastCheckedAt: null });
+    return inert(marked({ state: "error", message: "The updater could not be loaded, so this build cannot check for updates.", lastCheckedAt: null }, deps.manual));
   }
 
   log(deps.token ? "checking for updates with the GitHub token from the environment" : "checking for updates from the public release feed");
@@ -201,10 +214,11 @@ export function startAutoUpdate(deps: UpdaterDeps): UpdateController {
   updater.autoInstallOnAppQuit = false;
 
   let lastCheckedAt: number | null = null;
-  let status: UpdateStatus = { state: "idle", lastCheckedAt: null };
+  let status: UpdateStatus = marked({ state: "idle", lastCheckedAt: null }, deps.manual);
   let lastProgressAt: number | null = null;
 
-  const set = (next: UpdateStatus): UpdateStatus => {
+  const set = (unmarked: UpdateStatus): UpdateStatus => {
+    const next = marked(unmarked, deps.manual);
     const previous = status;
     status = next;
 
@@ -264,7 +278,7 @@ export function startAutoUpdate(deps: UpdaterDeps): UpdateController {
 
   updater.on("update-available", (info) => {
     lastCheckedAt = now();
-    log(`update available: ${info.version} (nothing will be downloaded until it is asked for)`);
+    log(`update available: ${info.version} (${deps.manual ? "it is downloaded by hand from its release page" : "nothing will be downloaded until it is asked for"})`);
     set({ state: "available", version: info.version, lastCheckedAt });
   });
 
@@ -314,6 +328,10 @@ export function startAutoUpdate(deps: UpdaterDeps): UpdateController {
     // caller should get back unchanged rather than a thrown error.
     const available = read();
     if (available.state !== "available") return available;
+    // Never on a build EO cannot install over (EO-698): the person
+    // downloads it from the release page instead, and a file fetched here
+    // would be one nothing can ever install.
+    if (deps.manual) return available;
 
     const { version } = available;
     set({ state: "downloading", percent: 0, lastCheckedAt });
@@ -348,6 +366,9 @@ export function startAutoUpdate(deps: UpdaterDeps): UpdateController {
     download,
     isStaged: () => read().state === "downloaded",
     installStaged: () => {
+      // Nothing is ever staged on such a build, so nobody should get here;
+      // and if somebody did, electron-updater cannot install over it.
+      if (deps.manual) return;
       log("installing the downloaded update and restarting");
       // Silent, and reopen EO afterwards. With no arguments the Windows
       // installer — `oneClick: false` — opens its full wizard and EO

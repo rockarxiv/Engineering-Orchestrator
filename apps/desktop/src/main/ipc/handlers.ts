@@ -116,7 +116,7 @@ import {
 } from "./repositoryCommands.js";
 import { createWorkspaceCommand, listWorkspacesCommand, removeWorkspaceCommand, updateWorkspaceCommand } from "./workspaceCommands.js";
 import { getDailyCost, getItemCost } from "./costHandlers.js";
-import { checkForUpdates, createInstallRequest, downloadUpdate, installUpdate, updateStatus, type UpdateContext } from "./updateCommands.js";
+import { checkForUpdates, createInstallRequest, downloadUpdate, installUpdate, openReleasePage, updateStatus, type UpdateContext } from "./updateCommands.js";
 import { submitPlan } from "./planCommands.js";
 import { submitItem } from "./itemCommands.js";
 import { exportItemOutput, setItemOutput } from "./outputCommands.js";
@@ -545,6 +545,9 @@ export function registerAllHandlers(db: Db, engine: EngineHandle | undefined, re
   registerHandler("updates:check", () => checkForUpdates(updates), opts);
   registerHandler("updates:download", () => downloadUpdate(updates), opts);
   registerHandler("updates:install", () => installUpdate(updates), opts);
+  // EO-698: macOS sends the person to the release page. Nothing crosses
+  // from the renderer — the address is built here, not handed over.
+  registerHandler("updates:openReleasePage", () => openReleasePage(updates, (url) => platform.openExternal(url)), opts);
   registerHandler(
     "dialog:pickDirectory",
     async (payload) => ({ path: await platform.pickDirectory({ title: payload.title ?? "Choose a folder" }) }),

@@ -27,30 +27,44 @@ import { z } from "zod";
  */
 const lastCheckedAt = z.number().int().nonnegative().nullable();
 
+/**
+ * Present, and `true`, only on a build EO cannot install over (EO-698).
+ *
+ * That is macOS today: its builds are ad-hoc signed, and electron-updater
+ * will not replace an app without a Developer ID signature. Such a build
+ * still checks, but never downloads or installs; the person downloads the
+ * new version from its release page. The main process decides it and
+ * says so here, on every state, so the renderer never has to guess the
+ * platform — and so Settings can leave Updates out before anything has
+ * been found. Absent everywhere else, which is how Windows and Linux read
+ * exactly as they did before it existed.
+ */
+const manual = z.literal(true).optional();
+
 export const UpdateStatusSchema = z.discriminatedUnion("state", [
   /** Running from source. There is no installed build for an update to replace. */
-  z.object({ state: z.literal("unsupported") }),
+  z.object({ state: z.literal("unsupported"), manual }),
   /** Nothing in flight. `lastCheckedAt` is null before the first check of this process. */
-  z.object({ state: z.literal("idle"), lastCheckedAt }),
-  z.object({ state: z.literal("checking"), lastCheckedAt }),
+  z.object({ state: z.literal("idle"), lastCheckedAt, manual }),
+  z.object({ state: z.literal("checking"), lastCheckedAt, manual }),
   /** Looked, and this is the newest there is. */
-  z.object({ state: z.literal("up-to-date"), lastCheckedAt }),
+  z.object({ state: z.literal("up-to-date"), lastCheckedAt, manual }),
   /** There is a newer release, and nothing has been fetched. Downloading is the person's decision. */
-  z.object({ state: z.literal("available"), version: z.string().min(1), lastCheckedAt }),
+  z.object({ state: z.literal("available"), version: z.string().min(1), lastCheckedAt, manual }),
   /**
    * Fetching, somewhere between 0 and 100. Deliberately carries no
    * version: the percentage is the only thing that changes here, and
    * the name of what is being fetched was already said by `available`.
    */
-  z.object({ state: z.literal("downloading"), percent: z.number().min(0).max(100), lastCheckedAt }),
+  z.object({ state: z.literal("downloading"), percent: z.number().min(0).max(100), lastCheckedAt, manual }),
   /** Staged on disk, waiting for a restart that has to be asked for. */
-  z.object({ state: z.literal("downloaded"), version: z.string().min(1), lastCheckedAt }),
+  z.object({ state: z.literal("downloaded"), version: z.string().min(1), lastCheckedAt, manual }),
   /**
    * A check or a download failed, in words. This is where an unreachable
    * feed and an architecture with no matching artifact finally surface —
    * the section offers a retry, and never a restart.
    */
-  z.object({ state: z.literal("error"), message: z.string(), lastCheckedAt }),
+  z.object({ state: z.literal("error"), message: z.string(), lastCheckedAt, manual }),
 ]);
 
 export type UpdateStatus = z.infer<typeof UpdateStatusSchema>;

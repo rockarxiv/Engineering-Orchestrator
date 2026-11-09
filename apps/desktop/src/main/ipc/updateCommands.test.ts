@@ -1,7 +1,18 @@
 import { beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import { createShutdownCoordinator, type ShutdownChoice, type ShutdownCoordinatorOptions } from "../shutdownCoordinator.js";
-import type { UpdateController } from "../updater.js";
-import { checkForUpdates, createInstallRequest, downloadUpdate, installUpdate, quitOrInstall, updateStatus, type InstallRequest, type UpdateContext } from "./updateCommands.js";
+import { startAutoUpdate, type InjectedUpdater, type UpdateController } from "../updater.js";
+import {
+  checkForUpdates,
+  createInstallRequest,
+  downloadUpdate,
+  installUpdate,
+  openReleasePage,
+  quitOrInstall,
+  releasePageUrl,
+  updateStatus,
+  type InstallRequest,
+  type UpdateContext,
+} from "./updateCommands.js";
 
 /**
  * Restarting into an update, through the coordinator rather than around
@@ -258,5 +269,83 @@ describe("restarting into a staged update", () => {
     await vi.waitFor(() => expect(controller.installStaged).toHaveBeenCalledOnce());
     expect(plainQuit).not.toHaveBeenCalled();
     expect(options.showActiveRunsDialog).toHaveBeenCalledOnce();
+  });
+});
+
+/**
+ * macOS (EO-698): the channels still answer, but nothing reaches
+ * electron-updater's download or install, and the card's button opens the
+ * release page through the main process.
+ */
+describe("a build updated by hand", () => {
+  /** electron-updater's slice, finding 0.5.0 on every check. */
+  function macController() {
+    const listeners = new Map<string, ((info: { version: string }) => void)[]>();
+    const updater = {
+      autoDownload: true,
+      autoInstallOnAppQuit: true,
+      checkForUpdates: vi.fn(async () => {
+        for (const listener of listeners.get("update-available") ?? []) listener({ version: "0.5.0" });
+        return null;
+      }),
+      downloadUpdate: vi.fn(async () => []),
+      quitAndInstall: vi.fn(),
+      on: vi.fn((event: string, listener: (info: { version: string }) => void) => {
+        listeners.set(event, [...(listeners.get(event) ?? []), listener]);
+        return updater;
+      }),
+    };
+    const controller = startAutoUpdate({ isPackaged: true, updater: updater as unknown as InjectedUpdater, log: () => {}, now: () => 7, manual: true });
+    return { updater, controller };
+  }
+
+  it("checks, but updates:download and updates:install never reach downloadUpdate or quitAndInstall", async () => {
+    const { updater, controller } = macController();
+    const requestClose = vi.fn(() => true);
+    const plainQuit = vi.fn();
+    const installRequest = createInstallRequest();
+    const context: UpdateContext = { controller: () => controller, requestClose, installRequest };
+
+    expect(await checkForUpdates(context)).toEqual({ state: "available", version: "0.5.0", lastCheckedAt: 7, manual: true });
+    expect(await downloadUpdate(context)).toEqual({ state: "available", version: "0.5.0", lastCheckedAt: 7, manual: true });
+    expect(installUpdate(context)).toEqual({ requested: false });
+    quitOrInstall(() => controller, installRequest, plainQuit)();
+
+    expect(updater.checkForUpdates).toHaveBeenCalled();
+    expect(updater.downloadUpdate).not.toHaveBeenCalled();
+    expect(updater.quitAndInstall).not.toHaveBeenCalled();
+    expect(requestClose).not.toHaveBeenCalled();
+    expect(plainQuit).toHaveBeenCalledOnce();
+    controller.stop();
+  });
+
+  it("opens the available version's release page, built here from no argument at all", async () => {
+    const { controller } = macController();
+    const context: UpdateContext = { controller: () => controller, requestClose: () => true, installRequest: createInstallRequest() };
+    await checkForUpdates(context);
+    const opened: string[] = [];
+
+    // The handler's whole signature: the renderer has nothing to pass.
+    expect(openReleasePage.length).toBe(2);
+    expect(await openReleasePage(context, async (url) => void opened.push(url))).toEqual({ opened: true });
+    expect(opened).toEqual(["https://github.com/rockarxiv/Engineering-Orchestrator/releases/tag/v0.5.0"]);
+    controller.stop();
+  });
+
+  it("opens nothing when no newer version has been found", async () => {
+    const opened: string[] = [];
+    const openExternal = async (url: string) => void opened.push(url);
+
+    const idle: UpdateContext = { controller: () => controllerIn(false), requestClose: () => true, installRequest: createInstallRequest() };
+    expect(await openReleasePage(idle, openExternal)).toEqual({ opened: false });
+    const none: UpdateContext = { controller: () => undefined, requestClose: () => true, installRequest: createInstallRequest() };
+    expect(await openReleasePage(none, openExternal)).toEqual({ opened: false });
+    expect(opened).toEqual([]);
+  });
+
+  it("builds the page from the repository electron-builder publishes to, in any of its spellings", () => {
+    expect(releasePageUrl("1.2.3")).toBe("https://github.com/rockarxiv/Engineering-Orchestrator/releases/tag/v1.2.3");
+    expect(releasePageUrl("1.2.3", "git+https://github.com/someone/else.git")).toBe("https://github.com/someone/else/releases/tag/v1.2.3");
+    expect(releasePageUrl("1.2.3", "https://github.com/someone/else/")).toBe("https://github.com/someone/else/releases/tag/v1.2.3");
   });
 });

@@ -432,6 +432,58 @@ describe("auto-update", () => {
 });
 
 /**
+ * macOS (EO-698). The builds are ad-hoc signed and electron-updater
+ * cannot install over them, so EO checks, says so on every status, and
+ * never downloads or installs; the person takes the .dmg from the
+ * release page.
+ */
+describe("a build updated by hand", () => {
+  it("still checks at start and on the interval, and marks every status it reports", async () => {
+    vi.useFakeTimers();
+    const { updater, emit, injected } = fakeUpdater();
+    const controller = startAutoUpdate({ isPackaged: true, updater: injected, log: () => {}, now: () => 5, manual: true });
+
+    expect(updater.checkForUpdates).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(UPDATE_INTERVAL_MS);
+    expect(updater.checkForUpdates).toHaveBeenCalledTimes(2);
+
+    const checking = controller.check();
+    emit("update-available", { version: "0.5.0" });
+    expect(await checking).toEqual({ state: "available", version: "0.5.0", lastCheckedAt: 5, manual: true });
+    expect(controller.status()).toEqual({ state: "available", version: "0.5.0", lastCheckedAt: 5, manual: true });
+    controller.stop();
+  });
+
+  it("never downloads or installs, whatever it is asked", async () => {
+    const { updater, emit, injected } = fakeUpdater();
+    const controller = startAutoUpdate({ isPackaged: true, updater: injected, log: () => {}, now: () => 5, manual: true });
+    const checking = controller.check();
+    emit("update-available", { version: "0.5.0" });
+    await checking;
+
+    expect(await controller.download()).toEqual({ state: "available", version: "0.5.0", lastCheckedAt: 5, manual: true });
+    expect(controller.isStaged()).toBe(false);
+    controller.installStaged();
+
+    expect(updater.downloadUpdate).not.toHaveBeenCalled();
+    expect(updater.quitAndInstall).not.toHaveBeenCalled();
+    controller.stop();
+  });
+
+  it("marks the dead ends too, so Settings leaves Updates out before anything is found", () => {
+    expect(startAutoUpdate({ isPackaged: false, log: () => {}, manual: true }).status()).toEqual({ state: "unsupported", manual: true });
+    expect(startAutoUpdate({ isPackaged: true, log: () => {}, manual: true }).status()).toMatchObject({ state: "error", manual: true });
+  });
+
+  it("is not marked anywhere else", () => {
+    const { injected } = fakeUpdater();
+    const controller = startAutoUpdate({ isPackaged: true, updater: injected, log: () => {} });
+    expect(controller.status()).not.toHaveProperty("manual");
+    controller.stop();
+  });
+});
+
+/**
  * The window between "the app is running" and "electron-updater has
  * loaded".
  *

@@ -181,6 +181,7 @@ describe("the two halves of the contract", () => {
         "updates:check",
         "updates:download",
         "updates:install",
+        "updates:openReleasePage",
         "updates:status",
         "view:current",
         "view:publish",

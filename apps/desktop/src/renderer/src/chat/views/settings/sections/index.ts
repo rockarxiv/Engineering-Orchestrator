@@ -24,6 +24,8 @@ export interface SettingsSectionDef {
   machine?: boolean;
   /** Drawn only for an administrator reading an organisation's record (EO-329). */
   organisation?: boolean;
+  /** Not drawn where EO is updated by hand from the release page — macOS (EO-698). */
+  installsUpdates?: boolean;
   Component: ComponentType;
 }
 
@@ -46,5 +48,5 @@ export const SETTINGS_SECTIONS: readonly SettingsSectionDef[] = [
   { id: "archive", label: "Archive", Component: ArchiveSection },
   // Debug mode (EO-392). Machine-only: what it records is what this desktop hands its backends.
   { id: "debug", label: "Debug", machine: true, Component: DebugSection },
-  { id: "updates", label: "Updates", machine: true, Component: UpdatesSection },
+  { id: "updates", label: "Updates", machine: true, installsUpdates: true, Component: UpdatesSection },
 ];
