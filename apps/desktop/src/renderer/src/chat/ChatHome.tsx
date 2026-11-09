@@ -12,7 +12,20 @@ import { DEEP, GroupLabel, useWaitingOnYou } from "./parts";
 /** How many rows each list shows before pointing at the full screen. */
 const LIMIT = 6;
 
-const DROW = "grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-x-[9px] gap-y-1 rounded-[10px] bg-canvas px-2.5 py-2 text-[12.5px] hover:bg-canvas-subtle";
+const ROW = "grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-x-[9px] gap-y-1 rounded-[10px] px-2.5 py-2 text-[12.5px]";
+
+/** A row that is waiting on nobody here and is not running: neutral. */
+const DROW = `${ROW} bg-canvas hover:bg-canvas-subtle`;
+
+/**
+ * A row wears the state of what it lists, the way a board card does
+ * (EO-687, EO-693): the canvas mixed 9% toward the state's colour, a
+ * little more under the pointer, inside a 1px edge of the line mixed 40%
+ * toward it. The status tokens are themed (EO-684), so this follows the
+ * theme. Written out whole so Tailwind finds every class.
+ */
+const WAITING_ROW = `${ROW} bg-[color:color-mix(in_oklab,var(--color-canvas),var(--color-paused)_9%)] shadow-[inset_0_0_0_1px_color-mix(in_oklab,var(--color-line),var(--color-paused)_40%)] hover:bg-[color:color-mix(in_oklab,var(--color-canvas),var(--color-paused)_14%)]`;
+const WORKING_ROW = `${ROW} bg-[color:color-mix(in_oklab,var(--color-canvas),var(--color-running)_9%)] shadow-[inset_0_0_0_1px_color-mix(in_oklab,var(--color-line),var(--color-running)_40%)] hover:bg-[color:color-mix(in_oklab,var(--color-canvas),var(--color-running)_14%)]`;
 
 /**
  * The home's right column, beside the conversation at `/chat` (ARCHITECTURE.md, "The chat-centric layout"):
@@ -68,8 +81,8 @@ export function ChatDrawer() {
             const Icon = where?.Icon;
             return (
               <li key={row.commentId}>
-                <Link to={`/items/${row.itemId}`} className={DROW}>
-                  {Icon ? <Icon size={14} className="text-ink-subtle" /> : <span className="h-3.5 w-3.5" />}
+                <Link to={`/items/${row.itemId}`} className={WAITING_ROW}>
+                  {Icon ? <Icon size={14} className="text-paused" /> : <span className="h-3.5 w-3.5" />}
                   <span className="truncate text-ink">{row.itemTitle}</span>
                   <span className="font-mono text-[11.5px] text-ink-subtle">{row.itemKey}</span>
                   <span className="col-start-2 col-end-4 truncate text-[11.5px] text-ink-subtle">
@@ -97,7 +110,7 @@ export function ChatDrawer() {
         <ul className="flex flex-col gap-1.5">
           {working.slice(0, LIMIT).map((item) => (
             <li key={item.id}>
-              <Link to={`/items/${item.id}`} className={DROW}>
+              <Link to={`/items/${item.id}`} className={WORKING_ROW}>
                 {/* Running is state, so it wears the run colour and not the accent. */}
                 <span aria-hidden className="h-[7px] w-[7px] animate-pulse rounded-full bg-running motion-reduce:animate-none" />
                 <span className="truncate text-ink">

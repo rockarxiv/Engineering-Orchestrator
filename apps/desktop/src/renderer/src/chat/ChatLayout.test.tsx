@@ -364,6 +364,31 @@ describe("the chat layout's home", () => {
     expect(within(overview).getByText("Anna · Approve")).toBeInTheDocument();
   });
 
+  // EO-693: a row wears the state of what it lists, from the themed status
+  // tokens — amber for what waits on you, green for what is running.
+  it("tints what waits on you amber and what is working green, and leaves what waits on others neutral", async () => {
+    open("/");
+    const overview = await screen.findByRole("region", { name: "Overview" });
+
+    const waiting = (await within(overview).findByText("Week of 29 September")).closest("a")!;
+    expect(waiting).toHaveClass(
+      "bg-[color:color-mix(in_oklab,var(--color-canvas),var(--color-paused)_9%)]",
+      "shadow-[inset_0_0_0_1px_color-mix(in_oklab,var(--color-line),var(--color-paused)_40%)]",
+    );
+    expect(waiting.querySelector("svg")).toHaveClass("text-paused");
+
+    const working = within(overview).getByText(/Contoso licence renewal/).closest("a")!;
+    expect(working).toHaveClass(
+      "bg-[color:color-mix(in_oklab,var(--color-canvas),var(--color-running)_9%)]",
+      "shadow-[inset_0_0_0_1px_color-mix(in_oklab,var(--color-line),var(--color-running)_40%)]",
+    );
+    expect(working.querySelector(".animate-pulse.bg-running")).toBeInTheDocument();
+
+    const other = within(overview).getByText("Anna · Approve").closest("a")!;
+    expect(other).toHaveClass("bg-canvas");
+    expect(other.className).not.toMatch(/color-mix|shadow-/);
+  });
+
   // EO-430: the inbox is the Inbox, the rail's count and the Overview's list —
   // not a card under the assistant's newest turn, which read as its own words.
   it.each([
