@@ -85,7 +85,8 @@ export function PausedRail({
                     return (
                       <>
                         <span className="block pt-1.5 text-ink-subtle">Reason</span>
-                        <span className="line-clamp-3 block text-ink">
+                        {/* No display utility beside line-clamp-3: it needs its own display:-webkit-box, and `block` would win and lift the clamp (EO-692). */}
+                        <span className="line-clamp-3 text-ink">
                           <ReferenceText>{reason.body}</ReferenceText>
                         </span>
                         <span className="block pt-1.5 text-ink-subtle">Blocked on</span>
@@ -107,7 +108,7 @@ export function PausedRail({
                   {notes[item.id] ? (
                     <>
                       <span className="block pt-1.5 text-ink-subtle">Your note</span>
-                      <span className="line-clamp-3 block text-ink">
+                      <span className="line-clamp-3 text-ink">
                         <ReferenceText>{notes[item.id] ?? ""}</ReferenceText>
                       </span>
                     </>
