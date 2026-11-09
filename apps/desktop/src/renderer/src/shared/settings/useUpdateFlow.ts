@@ -72,6 +72,14 @@ export interface UpdateFlow {
   retry(): Promise<void>;
   /** The only path to `updates:install`. The main process may still ask about running agents first. */
   restart(): Promise<void>;
+  /**
+   * EO cannot install over this build — macOS (EO-698) — so it is updated
+   * by downloading the new version from its release page. The main
+   * process decides it and says so on the status.
+   */
+  manual: boolean;
+  /** Open the available version's release page in the browser. The main process builds the address. */
+  openReleasePage(): Promise<void>;
   /** Later: hide the card for this version until EO next starts. */
   dismiss(version: string): void;
 }
@@ -116,6 +124,7 @@ export function useUpdateFlow(): UpdateFlow {
   const checkCall = useMutation({ mutationFn: () => ipcQuery("updates:check", undefined), onSuccess: store });
   const downloadCall = useMutation({ mutationFn: () => ipcQuery("updates:download", undefined), onSuccess: store });
   const installCall = useMutation({ mutationFn: () => ipcQuery("updates:install", undefined) });
+  const releasePageCall = useMutation({ mutationFn: () => ipcQuery("updates:openReleasePage", undefined) });
 
   async function check(): Promise<void> {
     remember({ intent: "check" });
@@ -147,7 +156,7 @@ export function useUpdateFlow(): UpdateFlow {
   return {
     status,
     percent: status.state === "downloading" ? status.percent : null,
-    busy: sequencing || checkCall.isPending || downloadCall.isPending || installCall.isPending,
+    busy: sequencing || checkCall.isPending || downloadCall.isPending || installCall.isPending || releasePageCall.isPending,
     intent: flow.intent,
     announced: flow.announced,
     dismissed: flow.dismissed,
@@ -155,6 +164,10 @@ export function useUpdateFlow(): UpdateFlow {
     download,
     retry: () => (memory.intent === "download" ? download() : check()),
     restart,
+    manual: status.manual === true,
+    openReleasePage: async () => {
+      await releasePageCall.mutateAsync();
+    },
     dismiss: (version) => {
       if (!memory.dismissed.includes(version)) remember({ dismissed: [...memory.dismissed, version] });
     },

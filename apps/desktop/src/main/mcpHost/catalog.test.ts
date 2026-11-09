@@ -621,6 +621,10 @@ const NOT_CATALOGUED_MACHINE: Partial<Record<MachineChannel, string>> = {
   "updates:check": "replacing the binary is the person's decision, and install exits the process the client is talking to",
   "updates:download": "replacing the binary is the person's decision, and install exits the process the client is talking to",
   "updates:install": "replacing the binary is the person's decision, and install exits the process the client is talking to",
+  // The macOS half of the same decision (EO-698): it opens a browser on
+  // the machine somebody is sitting at, and nobody is at the far end of
+  // an MCP connection to read the page.
+  "updates:openReleasePage": "opens a browser on this machine for a person to download the new version",
 
   // Open a native modal parented to a window. No window is guaranteed
   // when an MCP client calls, and nobody is there to click.

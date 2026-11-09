@@ -15,6 +15,10 @@ import { Button } from "./kit";
  * version shows it again, and Settings → Updates offers the update
  * whatever was pressed here. Nothing is drawn where there is no machine,
  * the rule that hides Settings → Updates there (EO-319).
+ *
+ * On macOS, where EO cannot install over itself, the status says
+ * `manual` and the card's one button opens the version's release page
+ * instead of downloading (EO-698).
  */
 export function UpdateCard() {
   return machineAvailable() ? <Card /> : null;
@@ -60,9 +64,16 @@ function Card() {
           <p className="text-[13px]">EO {status.version} is available</p>
           <div className="flex justify-end gap-2">
             {later}
-            <Button variant="primary" disabled={busy} onClick={() => void flow.download()}>
-              Download
-            </Button>
+            {/* EO cannot install over a Mac build (EO-698): the release page is where its .dmg is. */}
+            {flow.manual ? (
+              <Button variant="primary" disabled={busy} onClick={() => void flow.openReleasePage()}>
+                Download from GitHub
+              </Button>
+            ) : (
+              <Button variant="primary" disabled={busy} onClick={() => void flow.download()}>
+                Download
+              </Button>
+            )}
           </div>
         </>
       ) : null}

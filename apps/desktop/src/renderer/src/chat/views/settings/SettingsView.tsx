@@ -1,6 +1,7 @@
 import { useSearchParams } from "react-router-dom";
 import { machineAvailable } from "../../../ipc/bridge";
 import { useMe } from "../../../query/hooks";
+import { useUpdatedByHand } from "../../../shared/settings/updates";
 import { useViewParameters } from "../../../shared/view/ViewPublisher";
 import { NavItem, ViewHeader } from "../../kit";
 import { SETTINGS_SECTIONS, type SettingsSectionDef } from "./sections";
@@ -18,8 +19,12 @@ export function SettingsView() {
   const [searchParams, setSearchParams] = useSearchParams();
   const requested = searchParams.get("section");
   const me = useMe();
+  // On macOS EO cannot install over itself, so Updates is not offered and
+  // `?section=updates` falls through to the first section (EO-698).
+  const updatedByHand = useUpdatedByHand();
   const sections = SETTINGS_SECTIONS.filter(
-    (candidate: SettingsSectionDef) => (machineAvailable() || !candidate.machine) && (!candidate.organisation || (me.organisation && me.admin)),
+    (candidate: SettingsSectionDef) =>
+      (machineAvailable() || !candidate.machine) && (!candidate.organisation || (me.organisation && me.admin)) && !(candidate.installsUpdates && updatedByHand),
   );
   // The address says which section is open, and the list writes to it.
   // So a link that names a section opens it — the gear's "Colours" while

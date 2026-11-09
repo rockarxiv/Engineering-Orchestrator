@@ -682,6 +682,11 @@ export function startMain(platform: Platform): RunningMain {
     deps: {
       isPackaged: platform.isPackaged,
       ...(updateToken ? { token: updateToken } : {}),
+      // EO-698: the Mac builds are ad-hoc signed and electron-updater
+      // cannot install over them, so there EO checks and never downloads,
+      // and the renderer sends the person to the release page. Decided
+      // here and carried on the status, so the renderer never sniffs it.
+      manual: process.platform === "darwin",
       // The one push that carries state rather than saying "ask again"
       // — see the argument beside `updates:progress` in the contract.
       // The updater's event stream is the only copy of a download's

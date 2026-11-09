@@ -1,4 +1,5 @@
 import type { IpcResponse, UpdateStatus } from "@eo/core";
+import desktopPackage from "../../../package.json" with { type: "json" };
 import type { UpdateController } from "../updater.js";
 
 /**
@@ -116,6 +117,36 @@ export function installUpdate(context: UpdateContext): IpcResponse<"updates:inst
   if (alreadyRequested) return { requested: true };
   context.installRequest.withdraw();
   return { requested: false };
+}
+
+/**
+ * The GitHub release page of `version` (EO-698).
+ *
+ * Built from the `repository` in the desktop app's package.json, which is
+ * where electron-builder works out the GitHub repository it publishes to
+ * — so the page opened is the one the release was published on, and a
+ * move of the repository is one edit, not two. The tag is `v<version>`,
+ * the tag the release workflow runs on.
+ */
+export function releasePageUrl(version: string, repositoryUrl: string = desktopPackage.repository.url): string {
+  const repository = repositoryUrl.replace(/^git\+/, "").replace(/\.git$/, "").replace(/\/+$/, "");
+  return `${repository}/releases/tag/v${encodeURIComponent(version)}`;
+}
+
+/**
+ * Open the available version's release page in the person's browser —
+ * the macOS path, where EO cannot install over itself (EO-698).
+ *
+ * The renderer hands over nothing: the version is the one this process's
+ * own status names, and the address is built above. So the channel can
+ * open that one page and no other, and opens nothing at all unless a
+ * newer version has been found.
+ */
+export async function openReleasePage(context: UpdateContext, openExternal: (url: string) => Promise<void>): Promise<IpcResponse<"updates:openReleasePage">> {
+  const status = context.controller()?.status();
+  if (status?.state !== "available") return { opened: false };
+  await openExternal(releasePageUrl(status.version));
+  return { opened: true };
 }
 
 /**

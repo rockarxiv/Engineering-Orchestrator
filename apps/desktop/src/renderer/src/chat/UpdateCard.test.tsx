@@ -54,6 +54,8 @@ function fakeMain(initial: UpdateStatus) {
           }
           case "updates:install":
             return { ok: true, data: { requested: true } };
+          case "updates:openReleasePage":
+            return { ok: true, data: { opened: true } };
           default:
             return { ok: true, data: {} };
         }
@@ -259,5 +261,24 @@ describe("the update card", () => {
     await act(async () => {});
     noCard();
     expect(main.calls).not.toContain("updates:status");
+  });
+
+  it("on macOS sends the person to the release page, and never downloads or installs (EO-698)", async () => {
+    const main = fakeMain({ ...AVAILABLE, manual: true });
+    renderWindow();
+    const shown = await findCard();
+    expect(within(shown).getByText("EO 0.5.0 is available")).toBeInTheDocument();
+    expect(within(shown).queryByRole("button", { name: "Download" })).not.toBeInTheDocument();
+
+    fireEvent.click(within(shown).getByRole("button", { name: "Download from GitHub" }));
+    await waitFor(() => expect(main.calls).toContain("updates:openReleasePage"));
+    // The renderer hands the main process nothing to open: the address is built there.
+    expect(window.eo.ipc.invoke).toHaveBeenCalledWith("updates:openReleasePage", undefined);
+    expect(main.calls).not.toContain("updates:download");
+    expect(main.calls).not.toContain("updates:install");
+
+    // Later behaves as it does everywhere else.
+    fireEvent.click(within(card()).getByRole("button", { name: "Later" }));
+    noCard();
   });
 });

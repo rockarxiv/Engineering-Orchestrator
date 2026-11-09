@@ -6429,6 +6429,16 @@ export const machineContract = {
    */
   "updates:install": channel(z.void(), z.object({ requested: z.boolean() })),
   /**
+   * Open the GitHub release page of the available version in the
+   * person's browser — the macOS path, where EO cannot install (EO-698).
+   *
+   * Takes nothing on purpose. The URL is built in the main process from
+   * the repository EO publishes to and the version its own status names,
+   * so this channel cannot be used to open an arbitrary link. `opened`
+   * is false when no version is available to open a page for.
+   */
+  "updates:openReleasePage": channel(z.void(), z.object({ opened: z.boolean() })),
+  /**
    * Native directory picker. A renderer cannot open one — it has no
    * filesystem access by design (F-02) — so choosing a repository has to
    * come back through here. `null` means the user cancelled.
