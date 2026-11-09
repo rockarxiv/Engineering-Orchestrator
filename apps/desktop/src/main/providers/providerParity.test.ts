@@ -525,6 +525,12 @@ const CAPABILITIES = [
     same: { bearers: ["turn-bearer-1", "turn-bearer-2"], releasedBeforeTheTurnWasOver: [false, false], releasedOnceItWas: [1, 1] },
   },
   {
+    name: "uploading files from the turn's directory",
+    what:
+      "a system agent's comment_post may name files by path only inside the directory its turn runs in (EO-700), so the bearer for EO's administrative server that each turn's CLI is launched with — fresh or resumed — is leased for that turn's own directory",
+    same: { launchedWithBearerLeasedFor: ["/tmp/wt-start", "/tmp/wt-resume"] },
+  },
+  {
     name: "warm start under the admin bearer",
     what: "a system agent's turn adopts the process started ahead of it although the bearer minted for the turn is not the one that process was spawned with, runs under that process's bearer until it is over, and every bearer minted on the way — the warm-up's, a repeated warm-up's, the turn's own, a warm-up dropped unused — is let go of exactly once (EO-444)",
     same: { launches: 2, turnRanOnTheWarmOne: true, eachSpawnedWithAToken: true, warmBearerLetGoBeforeTheTurnWasOver: false, bearersLetGo: "each exactly once" },
@@ -1518,6 +1524,22 @@ const repositoryMcpWithSecret = { ...repositoryMcp, env: { INDEX_TOKEN: SECRET }
  * EO's administrative server as a host that mints a bearer per turn
  * (EO-444), and the record of what was minted and let go of.
  */
+/**
+ * Bearers leased for a directory (EO-700): each minted bearer remembers
+ * the directory it was asked for, so a launch can be read back as the
+ * directory its bearer was leased for.
+ */
+function directoryLeases() {
+  const leasedFor = new Map<string, string | undefined>();
+  const admin = (directory?: string) => {
+    const token = `turn-bearer-${leasedFor.size + 1}`;
+    leasedFor.set(token, directory);
+    return { server: { url: "http://127.0.0.1:9/mcp", envName: "EO_ADMIN_TOKEN" }, environment: { EO_ADMIN_TOKEN: token }, release: () => {} };
+  };
+  const observation = (bearers: (string | undefined)[]) => ({ launchedWithBearerLeasedFor: bearers.map((bearer) => (bearer === undefined ? null : (leasedFor.get(bearer) ?? null))) });
+  return { admin, observation };
+}
+
 function adminLeases() {
   let minted = 0;
   let released = 0;
@@ -1692,6 +1714,15 @@ const CLAUDE: Record<CapabilityName, Proof> = {
       calls.map((call) => (call.options["env"] as Record<string, string> | undefined)?.["EO_ADMIN_TOKEN"]),
       [started, resumed],
     );
+  },
+
+  "uploading files from the turn's directory": async () => {
+    const leases = directoryLeases();
+    const { runQuery, calls } = scripted([sdk.init(), sdk.says("done"), sdk.result()]);
+    const provider = createClaudeProvider({ runQuery, enableCommentTool: false, admin: leases.admin });
+    await collect(provider.start({ ...startOpts, cwd: "/tmp/wt-start" }));
+    await collect(provider.resume("sess-1", "carry on", { cwd: "/tmp/wt-resume" }));
+    return leases.observation(calls.map((call) => (call.options["env"] as Record<string, string> | undefined)?.["EO_ADMIN_TOKEN"]));
   },
 
   start: async () => {
@@ -2675,9 +2706,9 @@ function codexOver(scenario: FakeAppServerScenario, options: Parameters<typeof c
   const provider = createCodexProvider({
     executablePath: STUB_EXECUTABLE,
     ...options,
-    createCodex: (repository, searchHook, attachFrom, memoryScopes, environmentVariables, writeBridge, withheld) =>
+    createCodex: (repository, searchHook, attachFrom, memoryScopes, environmentVariables, writeBridge, withheld, adminDirectory) =>
       new CodexClient({
-        ...codexClientOptions({ executablePath: STUB_EXECUTABLE, ...options }, repository, searchHook, attachFrom, memoryScopes, environmentVariables, writeBridge, withheld),
+        ...codexClientOptions({ executablePath: STUB_EXECUTABLE, ...options }, repository, searchHook, attachFrom, memoryScopes, environmentVariables, writeBridge, withheld, adminDirectory),
         spawn: fake.spawn,
         shutdownGraceMs: 200,
         killGraceMs: 100,
@@ -2796,6 +2827,18 @@ const CODEX: Record<CapabilityName, Proof> = {
       [...fresh.fake.launches, ...again.fake.launches].map((launch) => (launch.options.env as Record<string, string> | undefined)?.["EO_ADMIN_TOKEN"]),
       [started, resumed],
     );
+  },
+
+  "uploading files from the turn's directory": async () => {
+    const leases = directoryLeases();
+    const fresh = codexOver({ after: { "turn/start": [note.turnStarted(), note.agentMessage("done"), note.turnCompleted()] } }, { admin: leases.admin });
+    await collect(fresh.provider.start({ ...startOpts, cwd: "/tmp/wt-start" }));
+    const again = codexOver(
+      { after: { "turn/start": [note.turnStarted("turn-1", "thr-persisted"), note.agentMessage("continued", "m", "turn-1", "thr-persisted"), note.turnCompleted("completed", null, "turn-1", "thr-persisted")] } },
+      { admin: leases.admin },
+    );
+    await collect(again.provider.resume("thr-persisted", "carry on", { cwd: "/tmp/wt-resume" }));
+    return leases.observation([...fresh.fake.launches, ...again.fake.launches].map((launch) => (launch.options.env as Record<string, string> | undefined)?.["EO_ADMIN_TOKEN"]));
   },
 
   start: async () => {
@@ -3840,7 +3883,7 @@ describe.each(CAPABILITIES)("$name: $what", (capability) => {
 });
 
 describe("the shared list", () => {
-  it("is the twelve capabilities EO-380 names and the ones EO-385, EO-387, EO-392, EO-395, EO-412, EO-421, EO-444, EO-468, EO-470, EO-477, EO-478, EO-479, EO-487, EO-488, EO-490, EO-493, EO-494, EO-534, EO-543, EO-578, EO-587, EO-597, EO-633 and the streaming chat added, each once", () => {
+  it("is the twelve capabilities EO-380 names and the ones EO-385, EO-387, EO-392, EO-395, EO-412, EO-421, EO-444, EO-468, EO-470, EO-477, EO-478, EO-479, EO-487, EO-488, EO-490, EO-493, EO-494, EO-534, EO-543, EO-578, EO-587, EO-597, EO-633, EO-700 and the streaming chat added, each once", () => {
     // Pinned so that taking one off the list is a decision somebody
     // made in this file rather than a line that went missing.
     expect(CAPABILITIES.map((capability) => capability.name)).toEqual([
@@ -3869,6 +3912,7 @@ describe("the shared list", () => {
       "reasoning on request",
       "warm start",
       "admin bearer per turn",
+      "uploading files from the turn's directory",
       "warm start under the admin bearer",
       "warm start on a process that died",
       "work in progress",

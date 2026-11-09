@@ -1,4 +1,6 @@
-import { rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { IpcChannel, IpcPayload, IpcRequest, IpcResponse, IpcResult, Item, Uuid } from "@eo/core";
 import type { ManagedDirectory } from "../managed/directory.js";
@@ -14,6 +16,9 @@ import { setSetting } from "../db/repos/settingsRepo.js";
 import { MANAGED_PERSON_ID_KEY, MANAGED_PERSON_NAME_KEY } from "../identity/viewer.js";
 import { getItem } from "../db/repos/itemsRepo.js";
 import { getComment, listCommentsForItem, openMentionsForHuman } from "../db/repos/commentsRepo.js";
+import { listAttachmentsForComment } from "../db/repos/attachmentsRepo.js";
+import { AttachmentStorage } from "../attachments/storage.js";
+import { answerToolCall } from "../mcpHost/server.js";
 import { itemsWithQueuedMoves, pendingCommands, queuedCommandCount } from "../db/repos/recordCommandsRepo.js";
 import { clearHandlerRegistry, dispatchIpc } from "../ipc/registry.js";
 import { registerAllHandlers } from "../ipc/handlers.js";
@@ -272,7 +277,7 @@ describe("pinning a comment on a managed desktop", () => {
 
     // Days later, reading the thread back, somebody decides this is the
     // part that matters. `comments:setPinned` is the control.
-    const pinned = await asThePerson("comments:setPinned", { commentId: said.commentId, pinned: true });
+    const pinned = await asThePerson("comments:setPinned", { commentId: said.commentId as string, pinned: true });
 
     expect(pinned).toMatchObject({ pinned: true, found: true });
     expect(pendingCommands(deviceDb.db).map((entry) => entry.kind)).toEqual(["pin"]);
@@ -290,13 +295,43 @@ describe("pinning a comment on a managed desktop", () => {
   it("queues taking the pin off again", async () => {
     const item = await anItemOnTheBoard();
     const said = await asThePerson("comments:post", { itemId: item.id, body: "Not so important after all." });
-    await asThePerson("comments:setPinned", { commentId: said.commentId, pinned: true });
+    await asThePerson("comments:setPinned", { commentId: said.commentId as string, pinned: true });
     await device.sync();
 
-    await asThePerson("comments:setPinned", { commentId: said.commentId, pinned: false });
+    await asThePerson("comments:setPinned", { commentId: said.commentId as string, pinned: false });
     await device.sync();
 
     expect(getComment(recordDb.db, said.commentId as Uuid)?.pinned).toBe(false);
+  });
+});
+
+describe("files a client names by path on a managed desktop (EO-700)", () => {
+  it("are uploaded to the record the way a person's upload from this desktop is, carried on the comment every device sees", async () => {
+    // The record's store and this desktop's — the one the handlers keep
+    // their attachments in — as `startMain` wires them.
+    const recordFiles = mkdtempSync(join(tmpdir(), "eo-record-files-"));
+    const outside = mkdtempSync(join(tmpdir(), "eo-client-files-"));
+    directories.push(recordFiles, outside);
+    serving = { ...serving, attachments: new AttachmentStorage(recordFiles) };
+    device.stop();
+    device = createDeviceRecord({ db: deviceDb.db, deviceId: () => "anna-laptop", transport: () => transport, attachments: new AttachmentStorage(join(platform.userDataPath, "attachments")) });
+    const item = await anItemOnTheBoard();
+    const mock = join(outside, "mock.png");
+    writeFileSync(mock, Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3]));
+
+    // A client of the external MCP host, which may name any file the person can read.
+    const answer = await answerToolCall({ name: "comment_post", arguments: { itemId: item.id, body: "The mock.", paths: [mock] } }, "external", false);
+    expect(answer.isError).toBe(false);
+    expect(pendingCommands(deviceDb.db).map((entry) => entry.kind)).toEqual(["comment", "attachment"]);
+
+    await device.sync();
+
+    const [comment] = listCommentsForItem(recordDb.db, item.id);
+    expect(comment?.body).toBe("The mock.");
+    const onRecord = listAttachmentsForComment(recordDb.db, comment!.id);
+    expect(onRecord.map((file) => [file.name, file.mimeType, file.size])).toEqual([["mock.png", "image/png", 11]]);
+    expect((await serving.attachments!.read(onRecord[0]!.path))?.equals(readFileSync(mock))).toBe(true);
+    expect(queuedCommandCount(deviceDb.db)).toBe(0);
   });
 });
 

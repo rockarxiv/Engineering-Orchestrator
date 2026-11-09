@@ -14,6 +14,7 @@ import {
   pipelineMachineSpecificWarnings,
   testCaseMachineSpecificWarnings,
   PostCommentInputSchema,
+  CommentPathsSchema,
   replacementToolName,
   WEBHOOK_UNATTENDED_AGENT_REFUSAL,
   WEBHOOK_UNATTENDED_CARD_KIND,
@@ -3129,7 +3130,16 @@ const UNGATED_WRITE_TOOLS: readonly ToolSpec[] = [
     description:
       "Say something on a ticket. This is the only way to communicate in EO: mention an agent by name to hand it the " +
       "work, or mention the human to ask a question. Use parentId to file an answer under the question it answers, " +
-      "which is how a reply reaches whoever was waiting.",
+      "which is how a reply reaches whoever was waiting. " +
+      "paths puts files on the comment in the same call: files on the machine running EO, uploaded and carried " +
+      "beside any attachmentIds, and read by an agent later dispatched on the ticket exactly as a file a person " +
+      "dropped in. A client of EO's MCP server names any absolute path to a regular file the person's account can " +
+      "read; a relative path is refused. EO's own system agent, over eo_admin, names only files inside the " +
+      "directory its turn runs in — a path relative to it or an absolute one beneath it, reached through no " +
+      "symbolic link — and a turn that runs in no directory can name none. A comment carries at most 8 files, " +
+      "paths and attachmentIds together, each within 20 MB; EO works out each file's type and size itself. A path " +
+      "that is missing, not a regular file, too large or not one this caller may name refuses the whole call, " +
+      "naming the path and the reason, and nothing is posted.",
     kind: "write",
     annotations: { openWorldHint: false },
     // Everything the channel takes except `delivery`, which is a
@@ -3140,8 +3150,12 @@ const UNGATED_WRITE_TOOLS: readonly ToolSpec[] = [
     // channel into a running turn is a worse version of that risk, not a
     // safer one. Omitted from the schema rather than refused at the
     // handler, so it is not something a tool can even ask for.
-    input: PostCommentInputSchema.omit({ delivery: true }),
+    // And `paths` (EO-700), which the channel honours only where the host
+    // that took the call stamped where they may be read from — see
+    // `withPathsFrom` in server.ts.
+    input: PostCommentInputSchema.omit({ delivery: true }).extend({ paths: CommentPathsSchema.optional() }),
     render: renderCommentPosted,
+    refusal: (data) => (data.commentId === null ? renderCommentPosted(data) : null),
   }),
   channelTool({
     name: "comment_pin",

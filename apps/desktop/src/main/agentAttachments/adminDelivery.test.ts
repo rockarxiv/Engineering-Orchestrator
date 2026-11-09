@@ -104,10 +104,17 @@ describe("delivering EO's administrative server", () => {
     // One call both backends make — Claude for its environment, Codex
     // for its configuration and environment — so the agent's id reaches
     // the host the same way whichever runs the turn.
-    const lease = vi.fn((_agentId?: string) => ({ token: ENDPOINT.token, release: () => {} }));
+    const lease = vi.fn((_agentId?: string, _directory?: string | null) => ({ token: ENDPOINT.token, release: () => {} }));
     const lookup = () => ({ url: ENDPOINT.url, lease });
     adminDispatchFor({ ...systemAgent, id: "the-system-agent" as Agent["id"] }, lookup);
-    expect(lease).toHaveBeenCalledWith("the-system-agent");
+    expect(lease).toHaveBeenCalledWith("the-system-agent", undefined);
+  });
+
+  it("leases the turn's credential for the directory the turn runs in, the only place a comment it posts may name files from (EO-700)", () => {
+    const lease = vi.fn((_agentId?: string, _directory?: string | null) => ({ token: ENDPOINT.token, release: () => {} }));
+    const lookup = () => ({ url: ENDPOINT.url, lease });
+    adminDispatchFor({ ...systemAgent, id: "the-system-agent" as Agent["id"] }, lookup, "/work/turn");
+    expect(lease).toHaveBeenCalledWith("the-system-agent", "/work/turn");
   });
 
   it("asks the host again on every dispatch rather than remembering one", () => {

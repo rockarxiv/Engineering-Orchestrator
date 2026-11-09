@@ -278,8 +278,12 @@ export interface ClaudeProviderOptions {
    * called when the turn's query ends, however it ended, because the CLI
    * leaves without closing its session and the host's cap would
    * otherwise fill with turns that are over.
+   *
+   * Handed the directory the turn runs in (EO-700), which is the only
+   * place a comment the agent posts through the server may name files
+   * from. Undefined for a turn that says none.
    */
-  admin?: () => AdminMcpDispatch | null;
+  admin?: (directory?: string) => AdminMcpDispatch | null;
   /**
    * What to say about a broad search of the checkout, when there is
    * something to say (EO-165, KAN-126).
@@ -2532,7 +2536,7 @@ export function createClaudeProvider(options: ClaudeProviderOptions = {}): Agent
         // One queue per turn, built before the options it is wired into
         // and handed to the stream that drains it (EO-168).
         const interceptions = interceptionQueue();
-        const admin = options.admin?.() ?? null;
+        const admin = options.admin?.(opts.cwd) ?? null;
         const sdkOptions = withAdminLease(admin, () => turnOptions(startSpec(opts, interceptions.record), admin));
         // The agent's own instructions replace the SDK's default framing,
         // and this is the only place they are sent: `assembleContext` no
@@ -2560,7 +2564,7 @@ export function createClaudeProvider(options: ClaudeProviderOptions = {}): Agent
         // counted the same way — its firings are this row's, not the
         // ones the session opened with (EO-168).
         const interceptions = interceptionQueue();
-        const admin = options.admin?.() ?? null;
+        const admin = options.admin?.(resumeOpts?.cwd) ?? null;
         const sdkOptions = withAdminLease(admin, () => turnOptions(resumeSpec(threadId, resumeOpts, interceptions.record), admin));
         return open(sdk, withAttachmentNote(message, resumeOpts?.attachments), sdkOptions, interceptions, admin, resumeOpts?.warmKey, resumeOpts?.signal, resumeOpts?.streamDeltas === true);
       }));
@@ -2584,7 +2588,7 @@ export function createClaudeProvider(options: ClaudeProviderOptions = {}): Agent
         // for nothing, and either way is not wanted now.
         if (turnsStarted !== startedBefore) return;
         const interceptions = interceptionQueue();
-        admin = options.admin?.() ?? null;
+        admin = options.admin?.(turn.cwd) ?? null;
         const lease = admin;
         const sdkOptions =
           turn.kind === "start"

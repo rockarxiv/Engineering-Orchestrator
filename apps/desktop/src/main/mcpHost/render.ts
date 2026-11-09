@@ -1734,6 +1734,7 @@ export function renderRuntimeDescription(
 // apart for a reader.
 
 export function renderCommentPosted(data: IpcResponse<"comments:post">): string {
+  if (data.commentId === null) return data.problem ?? "Nothing was posted.";
   return data.resumedRun
     ? `Comment posted (${data.commentId}). Someone was waiting on this, so their run has resumed.`
     : `Comment posted (${data.commentId}).`;

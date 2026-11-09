@@ -107,8 +107,13 @@ export interface AdminMcpEndpoint {
    * presses or a reply it posts through this credential is recorded as
    * that agent's, not the person's. A lease taken for no agent acts for
    * the person, as every lease did before.
+   *
+   * `directory` is the one the turn runs in (EO-700): the only place a
+   * `comment_post` through this credential may name files from, checked
+   * as `attachment_add` checks a path. Absent or null, the turn names
+   * none.
    */
-  lease: (agentId?: string) => AdminMcpLease;
+  lease: (agentId?: string, directory?: string | null) => AdminMcpLease;
 }
 
 export interface AdminMcpStatus {
@@ -182,6 +187,8 @@ export function createAdminMcpHost(options: AdminMcpOptions): AdminMcpHost {
    * authenticates and no call can arrive to ask.
    */
   const agents = new Map<string, string>();
+  /** The directory each turn runs in, where it said one (EO-700). Gone with the lease, as `agents` is. */
+  const directories = new Map<string, string>();
 
   /** Constant-time per token: a lookup's timing would otherwise say how much of a guess was right. */
   function current(presented: string): boolean {
@@ -190,16 +197,18 @@ export function createAdminMcpHost(options: AdminMcpOptions): AdminMcpHost {
     return found;
   }
 
-  function lease(agentId?: string): AdminMcpLease {
+  function lease(agentId?: string, directory?: string | null): AdminMcpLease {
     const token = newToken();
     const owner = randomUUID();
     leases.set(token, owner);
     if (agentId !== undefined) agents.set(owner, agentId);
+    if (directory !== undefined && directory !== null) directories.set(owner, directory);
     return {
       token,
       release: () => {
         if (!leases.delete(token)) return;
         agents.delete(owner);
+        directories.delete(owner);
         void protocol?.closeSessionsOf(owner);
       },
     };
@@ -239,6 +248,10 @@ export function createAdminMcpHost(options: AdminMcpOptions): AdminMcpHost {
         // And which system agent that turn is (EO-585), so a press or a
         // reply made through it is recorded as the agent's own.
         actingAgent: (owner) => agents.get(owner) ?? null,
+        // And where that turn may name files from for `comment_post`
+        // (EO-700): the directory it runs in, and nowhere for a turn that
+        // has none or a session that belongs to no turn.
+        pathsFrom: (owner) => ({ kind: "directory", directory: owner === null ? null : (directories.get(owner) ?? null) }),
       });
       if (!started.ok) {
         problem = started.problem;
@@ -275,6 +288,7 @@ export function createAdminMcpHost(options: AdminMcpOptions): AdminMcpHost {
       // is gone is a copy nobody is thinking about any more.
       leases.clear();
       agents.clear();
+      directories.clear();
       // The listener first, so nothing arrives at a half-closed protocol
       // host — the order `mcpHost/index.ts` closes in, for the same reason.
       await openListener?.close();

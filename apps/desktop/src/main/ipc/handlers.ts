@@ -141,7 +141,7 @@ import {
   pauseEngine,
   moveItem,
   moveItemToVersion,
-  postHumanComment,
+  postCommentCommand,
   readSettings,
   resumeEngine,
   resumeHeldItem,
@@ -1393,7 +1393,7 @@ export function registerAllHandlers(db: Db, engine: EngineHandle | undefined, re
 
   registerHandler("work:submitPlan", (payload) => submitPlan(db, engine, payload), opts);
   registerHandler("work:submitItem", (payload) => submitItem(db, engine, payload), opts);
-  registerHandler("comments:post", (payload) => postHumanComment(db, engine, payload, attachmentStorage), opts);
+  registerHandler("comments:post", (payload) => postCommentCommand(db, engine, payload, attachmentStorage), opts);
   registerHandler("comments:setPinned", (payload) => setPinned(db, payload), opts);
   registerHandler(
     "comments:delete",

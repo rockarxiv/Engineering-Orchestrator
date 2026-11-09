@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DbHandle } from "../db/client.js";
 import { createAgent, createRoute, createStep, listCommentsForItem } from "../db/repos/index.js";
 import { createTestItem, openMigratedTestDb } from "../db/testHelpers.js";
-import { decideItem, postHumanComment } from "../ipc/domainCommands.js";
+import { decideItem, postCommentCommand } from "../ipc/domainCommands.js";
 import { getItemDetail } from "../ipc/domainQueries.js";
 import { clearHandlerRegistry, registerHandler } from "../ipc/registry.js";
 import { ON_YOUR_BEHALF_TRIAL } from "../trials/onBehalf.js";
@@ -57,7 +57,7 @@ beforeEach(() => {
     config: { allowedTools: ["mcp__eo_admin"] },
   }).id;
   registerHandler("items:decide", (payload) => decideItem(handle.db, undefined, payload), opts);
-  registerHandler("comments:post", (payload) => postHumanComment(handle.db, undefined, payload), opts);
+  registerHandler("comments:post", (payload) => postCommentCommand(handle.db, undefined, payload), opts);
   host = createAdminMcpHost({ db: handle.db, version: "0.0.0-test" });
 });
 

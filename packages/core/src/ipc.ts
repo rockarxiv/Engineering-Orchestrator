@@ -237,6 +237,39 @@ const ACTING_DEVICE = { actingDeviceId: z.string().max(100).nullable().optional(
 const ACTING_AGENT = { actingAgentId: z.string().max(100).optional() };
 
 /**
+ * Where the files a comment names by path may be read from (EO-700).
+ *
+ * Never a caller's word, for `ACTING_AGENT`'s reason: it is the door that
+ * knows who is asking, so it is the door that says it. EO's MCP hosts
+ * stamp it on `comments:post` (`withPathsFrom`) — the external host
+ * `anywhere`, because its client acts on a credential the person handed
+ * it, and the administrative host `directory`, the directory the system
+ * agent's turn runs in, or null for a turn that has none. Every door
+ * takes it off what a client sent (`withActingAgent`), so absent means
+ * no door granted any: the renderer, which stages a person's files
+ * itself, and an organisation server's HTTP door, whose callers are on
+ * other machines and have no business naming files on this one.
+ */
+export const PathsFromSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("anywhere") }),
+  z.object({ kind: z.literal("directory"), directory: z.string().nullable() }),
+]);
+export type PathsFrom = z.infer<typeof PathsFromSchema>;
+
+/** The field EO's MCP hosts stamp the grant in, spelled once. */
+export const PATHS_FROM_KEY = "pathsFrom";
+
+/** How many files one comment may carry, by path and by staged id together — the composer's eight (`MAX_ATTACHMENT_COUNT` in the desktop's storage layer). */
+export const MAX_COMMENT_ATTACHMENTS = 8;
+
+/**
+ * Files on the machine running EO, uploaded and carried on the comment
+ * being posted, beside any `attachmentIds` (EO-700). Honoured only where
+ * a door stamped `pathsFrom`.
+ */
+export const CommentPathsSchema = z.array(z.string().min(1)).max(MAX_COMMENT_ATTACHMENTS);
+
+/**
  * Narrowing an item list in EO's own query rather than after it (EO-539).
  *
  * `tickets_list` on a busy project answered with every item, each
@@ -1199,9 +1232,22 @@ export const recordContract = {
    * `delivery` is null unless the person asked for one — an ordinary
    * comment answers exactly as it always did (EO-176).
    */
+  /*
+   * `paths` and `problem` are EO-700's: files named by path, uploaded on
+   * the same call, and the sentence saying why a call naming one was
+   * refused. A refusal is an answer rather than a throw because a throw
+   * reaches a caller as "Internal error" in a packaged build, and the
+   * path and the reason are the whole of what the caller needs. Then
+   * `commentId` is null and nothing was written.
+   */
   "comments:post": channel(
-    PostCommentInputSchema.extend({ ...ACTING_DEVICE, ...ACTING_AGENT }),
-    z.object({ commentId: z.string(), resumedRun: z.boolean(), delivery: CommentDeliverySchema.nullable().default(null) }),
+    PostCommentInputSchema.extend({ paths: CommentPathsSchema.optional(), [PATHS_FROM_KEY]: PathsFromSchema.optional(), ...ACTING_DEVICE, ...ACTING_AGENT }),
+    z.object({
+      commentId: z.string().nullable(),
+      resumedRun: z.boolean(),
+      delivery: CommentDeliverySchema.nullable().default(null),
+      problem: z.string().nullable().default(null),
+    }),
   ),
   /** Stages a pasted or dropped file. MIME and byte size are recomputed by main. */
   "attachments:stage": channel(
@@ -7367,8 +7413,23 @@ export function withActingAgent(channel: string, payload: unknown, agentId: stri
   if (payload === null || typeof payload !== "object" || Array.isArray(payload)) return payload;
   const rest = { ...(payload as Record<string, unknown>) };
   delete rest[ACTING_AGENT_KEY];
+  // And any claim to a place files may be read from (EO-700), which is
+  // the same kind of fact — the door's, never the caller's — so every
+  // door that strips the one strips the other without being told twice.
+  delete rest[PATHS_FROM_KEY];
   if (agentId !== undefined && isAgentActedChannel(channel)) rest[ACTING_AGENT_KEY] = agentId;
   return rest;
+}
+
+/**
+ * The payload with the grant to read files by path put on it, where the
+ * channel takes one (EO-700) — `comments:post` alone. Stamped by EO's MCP
+ * hosts, below every tool and after `withActingAgent` has taken off
+ * whatever a client sent under the same name.
+ */
+export function withPathsFrom(channel: string, payload: unknown, from: PathsFrom): unknown {
+  if (channel !== "comments:post" || payload === null || typeof payload !== "object" || Array.isArray(payload)) return payload;
+  return { ...(payload as Record<string, unknown>), [PATHS_FROM_KEY]: from };
 }
 
 /**
