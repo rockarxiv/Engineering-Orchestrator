@@ -359,8 +359,8 @@ describe("the board's columns", () => {
     expect(chip("Done", await column("Done"))).toHaveLength(0);
 
     // A column an agent, a person or a script owns is a lane in its kind's colour (EO-685):
-    // a 3px cap, the raised surface mixed 14% toward it on a line mixed 22% toward it,
-    // and its mono owner line leaning 35% toward it.
+    // a 3px cap and its mono owner line leaning 35% toward it, on the same neutral raised
+    // surface and hairline as EO's own column, with no fill or outline tint (EO-694).
     for (const [name, colour, cap, owner] of [
       ["To Do", "--color-kind-agent", "border-t-kind-agent", "implementer"],
       ["Pending Approval", "--color-paused", "border-t-paused", "you"],
@@ -372,11 +372,11 @@ describe("the board's columns", () => {
         expect.arrayContaining([
           "border-t-[3px]",
           cap,
-          `bg-[color:color-mix(in_oklab,var(--color-canvas-raised),var(${colour})_14%)]`,
-          `border-[color:color-mix(in_oklab,var(--color-line),var(${colour})_22%)]`,
+          "bg-canvas-raised",
+          "border-line",
         ]),
       );
-      expect(classes, name).not.toContain("bg-canvas-raised");
+      expect(region.className, name).not.toContain("color-mix");
       const line = within(region).getByText(owner);
       expect(line.className, name).toContain("font-mono");
       expect(line.className, name).toContain(`text-[color:color-mix(in_oklab,var(--color-ink-subtle),var(${colour})_35%)]`);
