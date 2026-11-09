@@ -4,6 +4,8 @@ import { USER_ATTENTION_TARGET, type HandOffTargets, type PipelineStepView, type
 import { cn } from "@eo/ui";
 import { StepKindChip, stepLane } from "../kit";
 import { BOX_PAD_X, layoutPipeline, type LaidArrow, type Rect } from "./layout";
+import { WORK_STATE_FILL, WORK_STATE_WORDS, WORK_STATES } from "../../shared/items/workState";
+import { loadTotal, type StepLoad } from "./load";
 
 /**
  * A pipeline, drawn as the graph it is (EO-400): its steps as boxes from
@@ -26,7 +28,9 @@ import { BOX_PAD_X, layoutPipeline, type LaidArrow, type Rect } from "./layout";
  * in the strong line, and an end is outlined as before. On a
  * draft for an existing pipeline, a step that pipeline has not got yet is
  * outlined dashed in the neutral ink and tagged "new" — never the accent,
- * since a new step is not something to press.
+ * since a new step is not something to press. A step that holds work has
+ * a load strip along its bottom edge, in the state colours of what is on
+ * it (EO-686): owner on the step, state on the work.
  *
  * The drawing is as wide as its boxes, labels and lanes need and no
  * narrower. In a column too narrow for it, it scrolls sideways inside
@@ -35,11 +39,56 @@ import { BOX_PAD_X, layoutPipeline, type LaidArrow, type Rect } from "./layout";
 
 const px = (rect: Rect) => ({ left: rect.x, top: rect.y, width: rect.width, height: rect.height });
 
-/** The state colours, only where a route is about a state: waiting on you, or failure. */
-function toneOf(route: StepRouteView): { line: string; text: string } {
-  if (route.target === USER_ATTENTION_TARGET || route.tone === "warning") return { line: "text-paused", text: "text-paused" };
-  if (route.tone === "danger") return { line: "text-danger", text: "text-danger" };
-  return { line: "text-line-strong", text: "text-ink-muted" };
+/**
+ * What a route's colour says (EO-686). Amber means only "this lands with
+ * you": a route out to a person is amber, its end marker solid on a light
+ * amber fill. A failure is red. A send-back is ordinary rework, so it is
+ * neutral — the subtle ink, fainter still on its line — and its dashes
+ * already say which way it runs. Everything else, the route on to the
+ * next step included, is the plain line and the muted ink.
+ *
+ * The legend above the Graph view draws its samples from these, so the
+ * key and the drawing cannot disagree.
+ */
+export const ROUTE_TONE = {
+  next: { line: "text-line-strong", text: "text-ink-muted", marker: "border-dashed" },
+  back: { line: "text-ink-subtle/70", text: "text-ink-subtle", marker: "border-dashed" },
+  person: { line: "text-paused", text: "text-paused", marker: "border-solid bg-[color:color-mix(in_oklab,var(--color-canvas),var(--color-paused)_16%)]" },
+  failed: { line: "text-danger", text: "text-danger", marker: "border-dashed" },
+} as const;
+
+type RouteTone = (typeof ROUTE_TONE)[keyof typeof ROUTE_TONE];
+
+/** A route to a person is amber even when it is a failure: what matters to whoever looks is that it is theirs now. */
+function toneOf(arrow: LaidArrow): RouteTone {
+  if (arrow.route.target === USER_ATTENTION_TARGET) return ROUTE_TONE.person;
+  if (arrow.route.tone === "danger") return ROUTE_TONE.failed;
+  if (arrow.back) return ROUTE_TONE.back;
+  return ROUTE_TONE.next;
+}
+
+/**
+ * What stands on a step, by state (EO-686): a 3px bar along the bottom of
+ * its box, 12px in from each side, one segment per state as wide as its
+ * share of the count. Inside the box's bottom padding, so the layout has
+ * nothing to make room for.
+ */
+function LoadStrip({ load }: { load: StepLoad }) {
+  const present = WORK_STATES.filter((state) => (load[state] ?? 0) > 0);
+  const said = present.map((state) => `${load[state]} ${WORK_STATE_WORDS[state]}`).join(", ");
+  return (
+    <span data-load-strip role="img" aria-label={said} className="absolute bottom-1.5 left-3 right-3 flex h-[3px] gap-[2px]">
+      {present.map((state) => (
+        <span
+          key={state}
+          data-load={state}
+          title={`${load[state]} ${WORK_STATE_WORDS[state]}`}
+          style={{ flexGrow: load[state] }}
+          className={cn("h-full basis-0 rounded-full", WORK_STATE_FILL[state])}
+        />
+      ))}
+    </span>
+  );
 }
 
 /** The graph in one sentence, for anyone not looking at it. */
@@ -57,7 +106,7 @@ export function PipelineDrawing({
   elsewhere,
   entryStepId,
   entryNote = null,
-  counts,
+  loads,
   stepHref,
   selectedStepId = null,
   onSelectStep,
@@ -72,8 +121,8 @@ export function PipelineDrawing({
   entryStepId: string | null;
   /** What work must have to enter (EO-610), in the words a refusal would use, drawn on the entry step. */
   entryNote?: string | null;
-  /** How much stands on each step now, by step id. Absent where nothing can stand on one yet: a draft. */
-  counts?: ReadonlyMap<string, number>;
+  /** What stands on each step now and in what state, by step id: "N here" and the load strip. Absent where nothing can stand on one yet: a draft. */
+  loads?: ReadonlyMap<string, StepLoad>;
   /** Where "N here" goes: the board narrowed to that step. */
   stepHref?: (stepId: string) => string;
   /** The step whose details are open beside the drawing (EO-524), drawn as chosen. */
@@ -103,7 +152,7 @@ export function PipelineDrawing({
       <div className="relative shrink-0" style={{ width: layout.width, height: layout.height }}>
         <svg aria-hidden width={layout.width} height={layout.height} viewBox={`0 0 ${layout.width} ${layout.height}`} className="pointer-events-none absolute left-0 top-0">
           {layout.arrows.map((arrow) => (
-            <g key={arrow.route.id} data-route={arrow.route.id} className={toneOf(arrow.route).line}>
+            <g key={arrow.route.id} data-route={arrow.route.id} className={toneOf(arrow).line}>
               <path
                 d={arrow.path}
                 fill="none"
@@ -119,7 +168,9 @@ export function PipelineDrawing({
 
         <ol aria-label="Pipeline graph" aria-describedby={describedBy}>
           {layout.steps.map(({ step, box }) => {
-            const here = counts?.get(step.id) ?? 0;
+            const load = loads?.get(step.id);
+            const here = loadTotal(load);
+            const noted = step.id === entryStepId && entryNote !== null;
             const added = newStepIds?.has(step.id) ?? false;
             const chosen = step.id === selectedStepId;
             const lane = stepLane(step);
@@ -131,6 +182,8 @@ export function PipelineDrawing({
                 style={{ ...px(box), paddingLeft: BOX_PAD_X, paddingRight: BOX_PAD_X }}
                 className={cn(
                   "absolute flex flex-col justify-center gap-0.5 rounded-[10px] border",
+                  // Two lines leave little room below: keep the load strip clear of the note, whether or not one is drawn yet.
+                  noted && "pb-[7px]",
                   // A terminal step is an end: outlined, not filled. Every other step is raised on a hairline, in its owner's lane.
                   step.isTerminal ? "border-line-strong" : cn(lane.surface, lane.edge),
                   // New in this draft: dashed, in the neutral ink rather than the accent (ARCHITECTURE.md, "Genre: utilitarian", rule 6).
@@ -180,11 +233,12 @@ export function PipelineDrawing({
                     {step.isTerminal ? <span className="sr-only">end</span> : <StepKindChip step={step} />}
                   </span>
                 </span>
-                {step.id === entryStepId && entryNote !== null ? (
-                  <span title={entryNote} className="truncate text-[11px] text-ink-subtle">
+                {noted ? (
+                  <span title={entryNote ?? undefined} className="truncate text-[11px] leading-[13px] text-ink-subtle">
                     {entryNote}
                   </span>
                 ) : null}
+                {load !== undefined && here > 0 ? <LoadStrip load={load} /> : null}
               </li>
             );
           })}
@@ -192,7 +246,7 @@ export function PipelineDrawing({
 
         <ul aria-label="Routes">
           {layout.arrows.map((arrow) => {
-            const tone = toneOf(arrow.route);
+            const tone = toneOf(arrow);
             return (
               <li key={arrow.route.id} className="contents">
                 <span
@@ -211,7 +265,7 @@ export function PipelineDrawing({
                     aria-hidden
                     title={arrow.marker.text}
                     style={px(arrow.marker.rect)}
-                    className={cn("absolute truncate rounded-full border border-dashed border-current px-[7px] text-[11px] leading-[16px]", tone.text)}
+                    className={cn("absolute truncate rounded-full border border-current px-[7px] text-[11px] leading-[16px]", tone.marker, tone.text)}
                   >
                     {arrow.marker.text}
                   </span>

@@ -101,7 +101,7 @@ describe("a step in the pipeline drawing (EO-680)", () => {
   });
 
   it("puts \"N here\" and the chip at the right of the row, the count a link to the narrowed board", () => {
-    const { box } = draw({ counts: new Map([["todo", 2]]), stepHref: (id) => `/board?step=${id}` });
+    const { box } = draw({ loads: new Map([["todo", { running: 1, idle: 1 }]]), stepHref: (id) => `/board?step=${id}` });
 
     const link = within(box("todo")).getByRole("link", { name: "2 here" });
     expect(link).toHaveAttribute("href", "/board?step=todo");
@@ -190,5 +190,63 @@ describe("a step in the pipeline drawing (EO-680)", () => {
 
     expect(graph.querySelectorAll("[data-new-step]")).toHaveLength(0);
     expect(within(graph).queryByText("new")).not.toBeInTheDocument();
+  });
+});
+
+describe("the load strip on a step (EO-686)", () => {
+  it("is a 3px bar 12px in from each side, a segment per state in the state's colour, as wide as its count", () => {
+    const { box } = draw({ loads: new Map([["todo", { idle: 1, running: 3, danger: 2, reviewing: 1, paused: 1 }]]), stepHref: (id) => `/board?step=${id}` });
+
+    const strip = box("todo").querySelector<HTMLElement>("[data-load-strip]")!;
+    expect(strip.className.split(" ")).toEqual(expect.arrayContaining(["absolute", "left-3", "right-3", "h-[3px]"]));
+    const segments = [...strip.children] as HTMLElement[];
+    // What wants looking at first, first.
+    expect(segments.map((one) => [one.getAttribute("data-load"), one.style.flexGrow, one.getAttribute("title")])).toEqual([
+      ["danger", "2", "2 failed"],
+      ["paused", "1", "1 waiting"],
+      ["reviewing", "1", "1 in review"],
+      ["running", "3", "3 running"],
+      ["idle", "1", "1 idle"],
+    ]);
+    expect(segments.map((one) => one.className.match(/\bbg-[a-z]+/)?.[0])).toEqual(["bg-danger", "bg-paused", "bg-reviewing", "bg-running", "bg-idle"]);
+    expect(within(box("todo")).getByRole("link", { name: "8 here" })).toBeInTheDocument();
+  });
+
+  it("is drawn on no step that holds nothing, and on none at all in a draft", () => {
+    const { graph } = draw({ loads: new Map([["qa", {}]]) });
+    expect(graph.querySelectorAll("[data-load-strip]")).toHaveLength(0);
+  });
+});
+
+describe("a route's colour (EO-686)", () => {
+  const routes: StepRouteView[] = [
+    ...ROUTES,
+    { ...ROUTES[0]!, id: "back", fromStepId: "merge", resultKey: "conflict", label: "Conflicts", tone: "warning", target: "todo" },
+    { ...ROUTES[0]!, id: "you", fromStepId: "todo", resultKey: "failed", label: "Could not open", tone: "danger", target: "user_attention" },
+    { ...ROUTES[0]!, id: "red", fromStepId: "qa", resultKey: "broken", label: "Broke", tone: "danger", target: "todo" },
+    { ...ROUTES[0]!, id: "end", fromStepId: "qa", resultKey: "dropped", label: "Dropped", tone: "warning", target: "terminal" },
+  ];
+
+  it("is amber only where it lands with you, red for a failure, neutral for a send-back and plain otherwise", () => {
+    const { container } = render(
+      <MemoryRouter>
+        <PipelineDrawing steps={STEPS} routes={routes} entryStepId="worktree" />
+      </MemoryRouter>,
+    );
+    const line = (id: string) => container.querySelector(`[data-route="${id}"]`)!;
+
+    expect(line("you")).toHaveClass("text-paused");
+    expect(screen.getByText("Could not open")).toHaveClass("text-paused");
+    expect(line("red")).toHaveClass("text-danger");
+    expect(screen.getByText("Broke")).toHaveClass("text-danger");
+    expect(line("back")).toHaveClass("text-ink-subtle/70");
+    expect(screen.getByText("Conflicts")).toHaveClass("text-ink-subtle");
+    expect(line("r0")).toHaveClass("text-line-strong");
+    // A warning out to the end is not waiting on anyone: plain, and its marker dashed as ever.
+    expect(line("end")).toHaveClass("text-line-strong");
+    expect(screen.getByText("the end")).toHaveClass("border-dashed", "text-ink-muted");
+    // Where it lands with you, the marker is solid on a light amber fill.
+    expect(screen.getByText("you")).toHaveClass("border-solid", "text-paused");
+    expect(screen.getByText("you").className).toContain("bg-[color:color-mix(in_oklab,var(--color-canvas),var(--color-paused)_16%)]");
   });
 });
