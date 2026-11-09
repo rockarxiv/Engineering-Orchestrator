@@ -60,15 +60,17 @@ export function PausedRail({
       <div
         ref={setNodeRef}
         className={cn(
-          // A board column's raised, hairline-outlined panel (BoardColumn.tsx), so the rail reads as one of them.
-          "flex min-w-0 flex-col gap-2.5 rounded-[14px] border border-line bg-canvas-raised px-3.5 py-3",
+          // A board column's shape (BoardColumn.tsx), but waiting on you owns this region (EO-688):
+          // the raised surface tinted 7% toward amber, edged by the hairline mixed 45% toward it.
+          "flex min-w-0 flex-col gap-2.5 rounded-[14px] border px-3.5 py-3",
+          PAUSED_PANEL,
           isOver && "bg-accent-subtle/40 shadow-[inset_0_0_0_1.5px_var(--color-accent)]",
         )}
       >
         <div className="flex items-center gap-2">
           <Pause size={13} className="shrink-0 text-paused" aria-hidden />
           <h2 className="text-[15px] font-semibold text-ink">Paused</h2>
-          <span className="text-[12.5px] tabular-nums text-ink-subtle">{paused.length}</span>
+          <span className="text-[12.5px] font-semibold tabular-nums text-paused">{paused.length}</span>
           <IconButton label="Hide paused tasks" icon={<X size={14} />} onClick={onClose} className="-my-1 ml-auto h-7 w-7" />
         </div>
         <p className="-mt-1 text-[12px] text-ink-subtle">{anyHeld ? "Waiting for input, or held by you." : "Waiting for input."}</p>
@@ -78,7 +80,10 @@ export function PausedRail({
             {paused.map((item) =>
               item.heldAt === null ? (
                 <RailCard key={item.id} item={item} onOpen={onOpen}>
-                  <span className="block text-paused">Paused <Elapsed since={item.updatedAt} /> ago</span>
+                  <span className="block text-ink-muted">
+                    <PausedDot />
+                    Paused <Elapsed since={item.updatedAt} /> ago
+                  </span>
                   {(() => {
                     const reason = reasonFor(item.id);
                     if (!reason) return null;
@@ -103,7 +108,10 @@ export function PausedRail({
                 </RailCard>
               ) : (
                 <RailCard key={item.id} item={item} held onOpen={onOpen}>
-                  <span className="block text-paused">Held by you <Elapsed since={item.heldAt} /> ago</span>
+                  <span className="block text-ink-muted">
+                    <PausedDot />
+                    Held by you <Elapsed since={item.heldAt} /> ago
+                  </span>
                   <span className="block text-ink-muted">Staying on {item.stepName} until you resume it.</span>
                   {notes[item.id] ? (
                     <>
@@ -114,7 +122,7 @@ export function PausedRail({
                     </>
                   ) : null}
                   {resumeBlockedId === item.id ? (
-                    <span role="status" className="block pt-1.5 text-paused">
+                    <span role="status" className="block pt-1.5 text-ink">
                       A run is in flight on this {vocabulary.item.toLowerCase()}, so the hold stayed. Try again once it has stopped.
                     </span>
                   ) : null}
@@ -168,6 +176,18 @@ export function PausedRail({
   );
 }
 
+/** The rail's panel: the raised surface 7% toward amber, on a hairline 45% toward it (EO-688). */
+const PAUSED_PANEL =
+  "bg-[color:color-mix(in_oklab,var(--color-canvas-raised),var(--color-paused)_7%)] border-[color:color-mix(in_oklab,var(--color-line),var(--color-paused)_45%)]";
+
+/**
+ * The amber that starts a paused or held line. The sentence itself is ink:
+ * amber marks that this lands with you, it is not the colour of the words.
+ */
+function PausedDot() {
+  return <span aria-hidden data-paused-dot className="mr-1.5 inline-block h-1.5 w-1.5 rounded-full bg-paused align-[1px]" />;
+}
+
 /**
  * One card in the rail. The card opens its item; everything inside it is
  * inert except what asks not to be — the key and, on a held card, Resume.
@@ -176,12 +196,9 @@ function RailCard({ item, held = false, onOpen, children }: { item: ItemSummary;
   const { branch } = item.git;
   return (
     <article
-      className={cn(
-        // A board card's surface (BoardCard.tsx), one step up from the raised panel.
-        "relative rounded-[10px] border border-line bg-canvas-hover px-[9px] py-2 text-[11.5px] hover:bg-canvas-active",
-        // A hold is yours, an agent's pause is not: the leading rule says which at a glance.
-        held && "border-l-2 border-l-paused",
-      )}
+      // A board card's surface (BoardCard.tsx), one step up from the raised panel.
+      // Paused and held cards look alike: the Held label and the line inside say which.
+      className="relative rounded-[10px] border border-line bg-canvas-hover px-[9px] py-2 text-[11.5px] hover:bg-canvas-active"
     >
       <button
         type="button"
@@ -193,8 +210,8 @@ function RailCard({ item, held = false, onOpen, children }: { item: ItemSummary;
         <span className="flex items-center gap-2 text-[11px] text-ink-subtle">
           <KeyLink itemKey={item.key} itemId={item.id} />
           {held ? (
-            <span className="ml-auto flex items-center gap-1 text-paused">
-              <Hand size={10} aria-hidden />
+            <span className="ml-auto flex items-center gap-1 text-ink-muted">
+              <Hand size={10} className="text-paused" aria-hidden />
               Held
             </span>
           ) : (

@@ -1193,7 +1193,7 @@ describe("the paused rail", () => {
     const rail = await screen.findByRole("complementary", { name: "Paused tasks" });
     const todo = await column("To Do");
     const panel = within(rail).getByRole("heading", { level: 2, name: "Paused" }).closest("div")!.parentElement!;
-    for (const token of ["rounded-[14px]", "border", "border-line", "bg-canvas-raised"]) {
+    for (const token of ["rounded-[14px]", "border"]) {
       expect(todo.className.split(" "), token).toContain(token);
       expect(panel.className.split(" "), token).toContain(token);
     }
@@ -1210,6 +1210,54 @@ describe("the paused rail", () => {
     for (const token of ["border", "border-line", "bg-canvas-hover", "hover:bg-canvas-active"]) {
       expect(boardCard.className.split(" "), token).toContain(token);
       expect(railCard.className.split(" "), token).toContain(token);
+    }
+  });
+
+  /**
+   * Waiting on you owns its region (EO-688): one amber-tinted, amber-edged
+   * panel with its count in amber, and inside it the amber is a dot before
+   * each paused or held line and the icons, never the words.
+   */
+  it("is one amber-edged panel whose paused and held lines are ink, each after an amber dot", async () => {
+    mockIpc({
+      items: [
+        item({ id: "t1", latestRunStatus: "awaiting_input", title: "Asked" }),
+        item({ id: "t2", key: "EO-2", title: "Parked", heldAt: Date.now() }),
+      ],
+    });
+    renderBoard();
+
+    const rail = await screen.findByRole("complementary", { name: "Paused tasks" });
+    const heading = within(rail).getByRole("heading", { level: 2, name: "Paused" });
+    const panel = heading.closest("div")!.parentElement!;
+    const classes = panel.className.split(" ");
+    expect(classes).toContain("bg-[color:color-mix(in_oklab,var(--color-canvas-raised),var(--color-paused)_7%)]");
+    expect(classes).toContain("border-[color:color-mix(in_oklab,var(--color-line),var(--color-paused)_45%)]");
+    expect(classes).not.toContain("bg-canvas-raised");
+    expect(classes).not.toContain("border-line");
+
+    const count = within(rail).getByText("2");
+    expect(count.className.split(" ")).toEqual(expect.arrayContaining(["text-paused", "font-semibold"]));
+
+    for (const line of [within(rail).getByText(/^Paused .* ago$/), within(rail).getByText(/^Held by you .* ago$/)]) {
+      expect(line.className.split(" ")).toContain("text-ink-muted");
+      const dot = line.firstElementChild!;
+      expect(dot).toHaveAttribute("data-paused-dot");
+      expect(dot).toHaveAttribute("aria-hidden", "true");
+      expect(dot.className.split(" ")).toEqual(expect.arrayContaining(["h-1.5", "w-1.5", "rounded-full", "bg-paused"]));
+    }
+
+    // No words in the rail are amber; only the icons and the dots are.
+    for (const element of rail.querySelectorAll(".text-paused")) {
+      if (element === count) continue;
+      expect(element.tagName.toLowerCase(), element.outerHTML).toBe("svg");
+    }
+    expect(within(rail).getByText("Held").className.split(" ")).toContain("text-ink-muted");
+
+    // Neither card keeps the 2px amber left bar.
+    for (const title of ["Asked", "Parked"]) {
+      const card = within(rail).getByText(title).closest("article")!;
+      expect(card.className).not.toMatch(/border-l-/);
     }
   });
 
