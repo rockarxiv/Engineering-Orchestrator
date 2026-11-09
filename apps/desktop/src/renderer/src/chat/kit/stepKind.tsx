@@ -99,6 +99,16 @@ export function ownerLine(step: StepOwnerFields): string {
   }
 }
 
+/** The kind's dot alone, as the chip draws it: also the Graph view's legend's key to the owners (EO-686). */
+export function StepKindDot({ type }: { type: PipelineStepView["type"] }) {
+  return <span aria-hidden data-step-kind-dot className={cn("size-[7px] shrink-0 rounded-full", KIND[type].dot)} />;
+}
+
+/** The word the chip says for a kind: "agent", "person", "script", "EO". */
+export function stepKindLabel(type: PipelineStepView["type"]): string {
+  return KIND[type].label;
+}
+
 /** The kind chip. A terminal step is an end, not a kind of work, so it is given none by its caller. */
 export function StepKindChip({ step, className }: { step: StepOwnerFields; className?: string }) {
   const kind = KIND[step.type];
@@ -111,7 +121,7 @@ export function StepKindChip({ step, className }: { step: StepOwnerFields; class
         className,
       )}
     >
-      <span aria-hidden data-step-kind-dot className={cn("size-[7px] shrink-0 rounded-full", kind.dot)} />
+      <StepKindDot type={step.type} />
       {kind.label}
     </span>
   );

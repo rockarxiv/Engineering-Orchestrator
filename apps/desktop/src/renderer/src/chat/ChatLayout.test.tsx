@@ -1388,6 +1388,10 @@ describe("the canvas", () => {
     await waitFor(() => expect(drawn(card)).toEqual(drawn(canvas)));
     expect(drawn(card).boxes).toHaveLength(4);
     expect(drawn(card).arrows).toHaveLength(5);
+    // The key to the lines and dots is the Graph view's, above its drawing; the draft card has none (EO-686).
+    const legend = within(canvas).getByRole("list", { name: "Legend" });
+    expect(legend.nextElementSibling).toBe(canvas.querySelector("[data-pipeline-drawing]"));
+    expect(within(card).queryByRole("list", { name: "Legend" })).not.toBeInTheDocument();
   });
 
   it("draws an item from its type, without printing its criteria twice, and decides on it there", async () => {

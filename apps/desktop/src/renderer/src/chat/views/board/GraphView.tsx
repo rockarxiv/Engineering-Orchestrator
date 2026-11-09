@@ -4,6 +4,8 @@ import { usePipelineData, usePipelines } from "../../../query/hooks";
 import { useProjects } from "../../../query/useRepositories";
 import { useViewParameters } from "../../../shared/view/ViewPublisher";
 import { EmptyState, ErrorLine, Loading, ViewHeader } from "../../kit";
+import { GraphLegend } from "../../graph/GraphLegend";
+import { stepLoads } from "../../graph/load";
 import { PipelineDrawing } from "../../graph/PipelineDrawing";
 import { usePipelineName } from "../shared";
 import { PipelineViews } from "../shared";
@@ -35,15 +37,8 @@ export function GraphView({ pipelineId }: { pipelineId: string }) {
   // Which step's details are open, for the assistant (`view:current`): an id, resolved there.
   useViewParameters({ selection: selected === null ? [] : [selected.id] });
 
-  // What stands on each step now: held work is parked, not in play.
-  const counts = useMemo(() => {
-    const tally = new Map<string, number>();
-    for (const item of items) {
-      if (item.pipelineId !== pipelineId || item.heldAt !== null || item.stepId === null) continue;
-      tally.set(item.stepId, (tally.get(item.stepId) ?? 0) + 1);
-    }
-    return tally;
-  }, [items, pipelineId]);
+  // What stands on each step now, and in what state: held work is parked, not in play.
+  const loads = useMemo(() => stepLoads(items, pipelineId), [items, pipelineId]);
 
   // Where work enters, as the pipeline says — not merely the first step drawn.
   const { active } = useProjects();
@@ -72,13 +67,14 @@ export function GraphView({ pipelineId }: { pipelineId: string }) {
         <EmptyState title="No steps yet.">{EMPTY_PIPELINE_TEXT}</EmptyState>
       ) : (
         <div className="flex min-w-0 flex-col gap-4">
+          <GraphLegend />
           <PipelineDrawing
             steps={ordered}
             routes={routes}
             elsewhere={elsewhere}
             entryStepId={entry}
             entryNote={entrySentence}
-            counts={counts}
+            loads={loads}
             stepHref={stepHref}
             selectedStepId={selected?.id ?? null}
             onSelectStep={(stepId) => setSelectedId((current) => (current === stepId ? null : stepId))}

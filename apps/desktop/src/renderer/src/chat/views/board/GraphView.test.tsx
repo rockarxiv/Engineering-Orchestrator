@@ -346,14 +346,16 @@ describe("the pipeline's graph", () => {
     expect(screen.getByText(/Review on Approved goes to Merge · Merge It/)).toBeInTheDocument();
   });
 
-  it("draws a route that waits on you in the paused colour and a failure in the danger colour", async () => {
+  it("draws a route out to you in amber, a failure in red, a send-back neutral and the next step plain (EO-686)", async () => {
     mockIpc({
       routes: [
         route("r1", "todo", "done", "Implemented", "review"),
-        // Waiting on you by where it goes, whatever tone it was given.
+        // Out to you by where it goes, whatever tone it was given — a failure included.
         route("r2", "todo", "needs_user_input", "Needs input", "user_attention", "info"),
         route("r3", "todo", "blocked", "Blocked", "todo", "warning"),
         route("r4", "review", "failed", "Failed", "todo", "danger"),
+        route("r5", "review", "changes_requested", "Changes requested", "todo", "warning"),
+        route("r6", "review", "broken", "Could not open", "user_attention", "danger"),
       ],
     });
     const { container } = renderGraph();
@@ -361,13 +363,78 @@ describe("the pipeline's graph", () => {
     await screen.findByText("Implemented");
     const line = (id: string) => container.querySelector(`[data-route="${id}"]`)!;
     expect(line("r1")).toHaveClass("text-line-strong");
-    expect(line("r2")).toHaveClass("text-paused");
-    expect(line("r3")).toHaveClass("text-paused");
-    expect(line("r4")).toHaveClass("text-danger");
-    expect(screen.getByText("Needs input")).toHaveClass("text-paused");
-    expect(screen.getByText("you")).toHaveClass("text-paused");
-    expect(screen.getByText("Failed")).toHaveClass("text-danger");
     expect(screen.getByText("Implemented")).toHaveClass("text-ink-muted");
+    for (const [id, label] of [
+      ["r2", "Needs input"],
+      ["r6", "Could not open"],
+    ] as const) {
+      expect(line(id)).toHaveClass("text-paused");
+      expect(screen.getByText(label)).toHaveClass("text-paused");
+    }
+    // A send-back, to its own step or an earlier one, is rework, not waiting: neutral and dashed.
+    for (const [id, label] of [
+      ["r3", "Blocked"],
+      ["r5", "Changes requested"],
+    ] as const) {
+      expect(line(id)).toHaveClass("text-ink-subtle/70");
+      expect(line(id).querySelector("path")).toHaveAttribute("stroke-dasharray", "4 3");
+      expect(screen.getByText(label)).toHaveClass("text-ink-subtle");
+      expect(screen.getByText(label).className).not.toMatch(/paused|danger/);
+    }
+    expect(line("r4")).toHaveClass("text-danger");
+    expect(screen.getByText("Failed")).toHaveClass("text-danger");
+    // Where it lands with you: a solid marker on a light amber fill.
+    for (const marker of screen.getAllByText("you")) {
+      expect(marker).toHaveClass("text-paused", "border-solid");
+      expect(marker.className).toContain("bg-[color:color-mix(in_oklab,var(--color-canvas),var(--color-paused)_16%)]");
+      expect(marker).not.toHaveClass("border-dashed");
+    }
+  });
+
+  it("strips each step that holds work by the state of what is on it, and leaves an empty step bare (EO-686)", async () => {
+    mockIpc({
+      items: [
+        item({ id: "t1", key: "EO-1", latestRunStatus: "running" }),
+        item({ id: "t2", key: "EO-2", latestRunStatus: "queued" }),
+        item({ id: "t3", key: "EO-3", latestRunStatus: "failed" }),
+        item({ id: "t4", key: "EO-4", latestRunStatus: "awaiting_input" }),
+        item({ id: "t5", key: "EO-5", latestRunStatus: "succeeded" }),
+        item({ id: "t6", key: "EO-6", latestRunStatus: null }),
+        // Held work is parked, and counted nowhere.
+        item({ id: "t7", key: "EO-7", latestRunStatus: "failed", heldAt: 5 }),
+      ],
+    });
+    const { container } = renderGraph();
+
+    await screen.findByRole("link", { name: "6 here" });
+    const box = (id: string) => container.querySelector<HTMLElement>(`[data-step="${id}"]`)!;
+    const strip = box("review").querySelector<HTMLElement>("[data-load-strip]")!;
+    expect(strip).toHaveAttribute("aria-label", "1 failed, 1 waiting, 2 running, 2 idle");
+    expect([...strip.children].map((segment) => [segment.getAttribute("data-load"), (segment as HTMLElement).style.flexGrow])).toEqual([
+      ["failed", "1"],
+      ["waiting", "1"],
+      ["running", "2"],
+      ["idle", "2"],
+    ]);
+    expect(box("todo").querySelector("[data-load-strip]")).toBeNull();
+    expect(box("done").querySelector("[data-load-strip]")).toBeNull();
+  });
+
+  it("says above the drawing what its lines and dots mean (EO-686)", async () => {
+    mockIpc();
+    renderGraph();
+
+    const legend = await screen.findByRole("list", { name: "Legend" });
+    expect(within(legend).getAllByRole("listitem").map((entry) => entry.textContent)).toEqual(
+      expect.arrayContaining(["next", "sends back", "lands with you", "failed", "step owner:", "agent", "person", "script", "EO"]),
+    );
+    const sample = (word: string) => legend.querySelector(`[data-legend-route="${word}"] svg`)!;
+    expect(sample("next")).toHaveClass("text-line-strong");
+    expect(sample("sends back")).toHaveClass("text-ink-subtle/70");
+    expect(sample("sends back").querySelector("path")).toHaveAttribute("stroke-dasharray", "4 3");
+    expect(sample("lands with you")).toHaveClass("text-paused");
+    expect(sample("failed")).toHaveClass("text-danger");
+    expect(legend.querySelector('[data-legend-owner="EO"] [data-step-kind-dot]')!.className).toContain("border-ink-subtle");
   });
 
   it("draws nothing for a target in no pipeline at all", async () => {
