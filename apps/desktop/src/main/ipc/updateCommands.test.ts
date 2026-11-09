@@ -237,4 +237,26 @@ describe("restarting into a staged update", () => {
     await vi.waitFor(() => expect(plainQuit).toHaveBeenCalledOnce());
     expect(controller.installStaged).not.toHaveBeenCalled();
   });
+
+  it("keeps an accepted restart when it is pressed again while agents drain, and installs once", async () => {
+    activeRuns = 2;
+    choice = "close-when-finished";
+    let idle!: () => void;
+    options.engine.waitForIdle = vi.fn(() => new Promise<void>((resolve) => (idle = resolve)));
+    const coordinator = createShutdownCoordinator(options);
+
+    expect(press(coordinator)).toEqual({ requested: true });
+    await vi.waitFor(() => expect(options.engine.waitForIdle).toHaveBeenCalledOnce());
+
+    // The renderer re-enables the button once the first answer arrives.
+    // The second press joins the close the first one started, and must
+    // not cancel it.
+    expect(press(coordinator)).toEqual({ requested: true });
+    expect(installRequest.isRequested()).toBe(true);
+
+    idle();
+    await vi.waitFor(() => expect(controller.installStaged).toHaveBeenCalledOnce());
+    expect(plainQuit).not.toHaveBeenCalled();
+    expect(options.showActiveRunsDialog).toHaveBeenCalledOnce();
+  });
 });

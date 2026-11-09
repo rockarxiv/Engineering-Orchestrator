@@ -100,11 +100,20 @@ export async function downloadUpdate(context: UpdateContext): Promise<IpcRespons
  * with no agents running reaches `quit` without anybody being asked
  * anything. A press while a close is already under way for another
  * reason is not what leads to that quit, so it is withdrawn and refused.
+ *
+ * A second press while the first one's close is still under way — the
+ * person chose *Close when finished* and agents are draining — is not
+ * another reason, it is the same one. It leaves the first request
+ * standing and answers as that press did. The request can only still be
+ * set during a close that an earlier press started: it is withdrawn when
+ * a press is refused, and when the coordinator stays open.
  */
 export function installUpdate(context: UpdateContext): IpcResponse<"updates:install"> {
   if (!context.controller()?.isStaged()) return { requested: false };
+  const alreadyRequested = context.installRequest.isRequested();
   context.installRequest.request();
   if (context.requestClose()) return { requested: true };
+  if (alreadyRequested) return { requested: true };
   context.installRequest.withdraw();
   return { requested: false };
 }
