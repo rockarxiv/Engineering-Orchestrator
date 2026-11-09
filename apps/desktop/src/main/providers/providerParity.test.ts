@@ -27,14 +27,15 @@ import {
   type Skill,
   type SkillScope,
   type ThreadNotFoundError,
+  type Uuid,
 } from "@eo/core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { assembleSeedContext, type ContextRepositoryInput } from "@eo/engine";
 import { readToolDirectoryServers, writeToolDirectory } from "../agentAttachments/pluginDirectory.js";
 import { attachmentEnvironment } from "../agentAttachments/serverEnvironment.js";
 import { attachmentsForRun } from "../db/repos/agentAttachmentsRepo.js";
-import { listAgents, saveMcpServer, setAgentAttachment } from "../db/repos/index.js";
-import { openMigratedTestDb } from "../db/testHelpers.js";
+import { insertAttachments, listAgents, saveMcpServer, setAgentAttachment } from "../db/repos/index.js";
+import { createTestItem, openMigratedTestDb, openMigratedTestDbAt } from "../db/testHelpers.js";
 import { codexServerSecretReader } from "../engine.js";
 import { storeMcpServerSecret } from "../mcp/serverSecrets.js";
 import { startAgentWriteBridge } from "../mcp/writeBridge.js";
@@ -168,6 +169,11 @@ const OPTIONAL_NOTE_SCHEMA = { type: "object", properties: { verdict: { type: "s
  * what each backend's proof returns — so two backends that both pass
  * have, by construction, produced the same thing.
  */
+/** The item's own files the "reading the item's own files" row reads (EO-703): a text file and an image, by id. */
+const ITEM_TEXT_ID = "019a0000-0000-7000-8000-000000000703";
+const ITEM_IMAGE_ID = "019a0000-0000-7000-8000-000000000704";
+const ITEM_TEXT_BYTES = "The limit is 100 requests a minute.";
+
 /** A file posted with a message, and the one sentence both backends must say about it (EO-395). */
 const SCREENSHOT = { id: "attachment-1", kind: "image", name: "screen.png", mimeType: "image/png", size: 8, origin: "eo", synchronizationState: "local" } as const;
 const FILE_NOTE =
@@ -686,6 +692,20 @@ const CAPABILITIES = [
     },
   },
   {
+    name: "reading the item's own files",
+    what: "a working agent's prompt lists the item's own files beside its description, each by id, under a line naming attachment_read in the spelling every eo tool in it has (EO-703); the `eo` server the backend is told to start opens the database EO pointed it at, and attachment_read on it answers an item image as image content and an item text file as its text; the transcript records each call under the tool's bare name with the answer the agent was told joined to it",
+    same: {
+      promptListsTheFiles: { namesTheTool: true, listsEach: [true, true] },
+      answered: [{ type: "text", text: ITEM_TEXT_BYTES }, { type: "image", mimeType: "image/png" }],
+      recorded: [
+        { name: "attachment_read", args: { attachmentId: ITEM_TEXT_ID } },
+        { name: "attachment_read", args: { attachmentId: ITEM_IMAGE_ID } },
+      ],
+      toldWhatEoSaid: [ITEM_TEXT_BYTES, "[image]"],
+      outcome: { kind: "result", data: "done" },
+    },
+  },
+  {
     name: "environment variables",
     what: "a run's environment variables are in the CLI's environment, an edited value reaches the next spawn of the same provider, and none displaces a name EO sets for the run",
     same: {
@@ -1157,6 +1177,93 @@ function attachmentCalls(events: readonly AgentEvent[]): unknown {
   return {
     call: calls[0] ? { name: calls[0].name, args: calls[0].args } : null,
     answers: answers.map((answer) => ({ joinedToTheCall: answer.callId !== undefined && ids.has(answer.callId) })),
+    outcome: outcomeOf(events),
+  };
+}
+
+/**
+ * Drives one backend through reading the item's own files (EO-703).
+ *
+ * The files are rows with no comment in a real database on disk, made by
+ * the migrations, and the prompt is the seed EO assembles for an item
+ * holding them. `launch` starts a turn with that prompt and the database
+ * EO would point the `eo` server at, and hands back the environment the
+ * backend was told to start the server with and the first user turn it
+ * sent; the reads are then made against the real service built from that
+ * environment, so they find the files only if the adapter delivered the
+ * database. `report` runs a turn in which the backend reports each call
+ * and the answer it got.
+ */
+async function itemFilesIn(
+  launch: (turn: Record<string, unknown>, dbPath: string) => Promise<{ env: Record<string, string> | undefined; said: string | null }>,
+  report: (calls: { id: string; tool: string; args: unknown; result: EoToolResult }[]) => Promise<AgentEvent[]>,
+): Promise<unknown> {
+  const directory = scratchDirectory();
+  const dbPath = join(directory, "eo.db");
+  const handle = openMigratedTestDbAt(dbPath);
+  const files = [
+    { id: ITEM_TEXT_ID, name: "limits.txt", mimeType: "text/plain", bytes: Buffer.from(ITEM_TEXT_BYTES) },
+    { id: ITEM_IMAGE_ID, name: "mock.png", mimeType: "image/png", bytes: Buffer.from([137, 80, 78, 71]) },
+  ];
+  try {
+    const item = createTestItem(handle.db, { type: "story", title: "A story", body: "Do the thing.", stepId: "todo" });
+    insertAttachments(
+      handle.db,
+      files.map((file) => {
+        const storagePath = join(directory, file.name);
+        writeFileSync(storagePath, file.bytes);
+        return { id: file.id as Uuid, itemId: item.id, commentId: null, storagePath, name: file.name, mimeType: file.mimeType, size: file.bytes.length };
+      }),
+    );
+  } finally {
+    handle.close();
+  }
+  const context = assembleSeedContext({
+    action: "implement",
+    item: {
+      key: "EO-1",
+      title: "A story",
+      body: "Do the thing.",
+      acceptanceCriteria: [],
+      actionOverrides: new Map(),
+      workspaceKind: "git",
+      files: files.map((file) => ({ id: file.id as Uuid, name: file.name, mimeType: file.mimeType, size: file.bytes.length, origin: "eo" as const, synchronizationState: "local" as const })),
+    },
+    sectionRenderers: [],
+    dependencyKeys: [],
+    stepComments: [],
+    humanComments: [],
+    omitted: { total: 0, byAuthorAndKind: [], attachments: [] },
+  }).fullText;
+
+  const launched = await launch({ context }, dbPath);
+  const eo = (createEoMcpService as (options: Record<string, unknown>) => { handle(request: unknown): Promise<{ result: EoToolResult }>; close(): void })({
+    dbPath: launched.env?.["EO_MCP_DB_PATH"],
+  });
+  const calls: { id: string; tool: string; args: unknown; result: EoToolResult }[] = [];
+  try {
+    for (const [index, file] of files.entries()) {
+      const args = { attachmentId: file.id };
+      const { result } = await eo.handle({ jsonrpc: "2.0", id: index, method: "tools/call", params: { name: "attachment_read", arguments: args } });
+      calls.push({ id: `call-${String(index)}`, tool: "attachment_read", args, result });
+    }
+  } finally {
+    eo.close();
+  }
+  const events = await report(calls);
+  const recorded = events.filter((event): event is Extract<AgentEvent, { type: "tool_call" }> => event.type === "tool_call" && event.name === "attachment_read");
+  const results = events.filter((event): event is Extract<AgentEvent, { type: "tool_result" }> => event.type === "tool_result");
+  return {
+    promptListsTheFiles: {
+      namesTheTool: launched.said?.includes(`\`${eoToolName("attachment_read")}\``) === true,
+      listsEach: files.map((file) => launched.said?.includes(`- ID: ${file.id}; name: ${file.name}; MIME type: ${file.mimeType}`) === true),
+    },
+    answered: calls.map(({ result }) => {
+      const block = result.content[0] as { type: string; text?: string; mimeType?: string } | undefined;
+      return block?.type === "image" ? { type: block.type, mimeType: block.mimeType } : block;
+    }),
+    recorded: recorded.map((call) => ({ name: call.name, args: call.args })),
+    toldWhatEoSaid: recorded.map((call) => results.find((candidate) => candidate.callId !== undefined && candidate.callId === call.callId)?.output ?? null),
     outcome: outcomeOf(events),
   };
 }
@@ -2507,6 +2614,28 @@ const CLAUDE: Record<CapabilityName, Proof> = {
     );
   },
 
+  "reading the item's own files": async () => {
+    // Claude's delivery: the database goes in the inline `eo` server's
+    // environment, and a call is advertised under Claude's spelling and
+    // answered on the user message after it with the service's content
+    // blocks as they are — an image stays an image block.
+    const eoEnvironment = (call: SdkCall | undefined) => (call?.options["mcpServers"] as Record<string, { env?: Record<string, string> }> | undefined)?.["eo"]?.env;
+    const over = (runQuery: never, dbPath?: string) => createClaudeProvider({ runQuery, enableCommentTool: false, eoMcp: { serverPath: "/app/eoServer.mjs", ...(dbPath ? { dbPath } : {}) } });
+    const answered = (id: string, content: unknown) =>
+      ({ type: "user", message: { role: "user", content: [{ type: "tool_result", tool_use_id: id, is_error: false, content }] }, parent_tool_use_id: null, session_id: "sess-1" }) as unknown as SDKMessage;
+    return itemFilesIn(
+      async (turn, dbPath) => {
+        const started = scripted([sdk.init(), sdk.result()]);
+        await collect(over(started.runQuery, dbPath).start({ ...startOpts, ...turn } as never));
+        return { env: eoEnvironment(started.calls[0]), said: await firstSaid(started.calls[0]) };
+      },
+      async (calls) => {
+        const turn = [sdk.init(), ...calls.flatMap((call) => [sdk.calls(call.id, eoToolName(call.tool), call.args), answered(call.id, call.result.content)]), sdk.result()];
+        return collect(over(scripted(turn).runQuery).start(startOpts));
+      },
+    );
+  },
+
   "scoped skills": async () => {
     // Claude's delivery is the directory EO generates for the run
     // (EO-107), narrowed to the run's scope before it is written — by
@@ -3635,6 +3764,39 @@ const CODEX: Record<CapabilityName, Proof> = {
     );
   },
 
+  "reading the item's own files": async () => {
+    // Codex's delivery: the database is one more `mcp_servers.eo.env.<NAME>`
+    // override on the app-server's command line, read back off the
+    // launch. A call and its answer arrive together as one completed
+    // `mcpToolCall` item under `eo`, carrying the service's content.
+    const eoEnvironment = (args: readonly string[] | undefined): Record<string, string> =>
+      Object.fromEntries(
+        (args ?? [])
+          .filter((argument) => argument.startsWith("mcp_servers.eo.env."))
+          .map((argument) => argument.slice("mcp_servers.eo.env.".length))
+          .map((pair) => [pair.slice(0, pair.indexOf("=")), JSON.parse(pair.slice(pair.indexOf("=") + 1)) as string]),
+      );
+    const said = (fake: ReturnType<typeof codexOver>["fake"]) => (fake.paramsOf("turn/start")?.["input"] as { text: string }[] | undefined)?.map((part) => part.text).join("") ?? null;
+    return itemFilesIn(
+      async (turn, dbPath) => {
+        const started = codexOver({ after: { "turn/start": [note.turnStarted(), note.agentMessage("ok"), note.turnCompleted()] } }, { eoMcp: { serverPath: "/app/eoServer.mjs", dbPath } });
+        await collect(started.provider.start({ ...startOpts, ...turn } as never));
+        return { env: eoEnvironment(started.fake.launches[0]?.args), said: said(started.fake) };
+      },
+      async (calls) => {
+        const turn = [
+          note.turnStarted(),
+          ...calls.map((call) =>
+            note.item({ type: "mcpToolCall", id: call.id, server: "eo", tool: call.tool, status: "completed", arguments: call.args, result: { content: call.result.content, structuredContent: null }, error: null, durationMs: 1 }),
+          ),
+          note.agentMessage("done"),
+          note.turnCompleted(),
+        ];
+        return collect(codexOver({ after: { "turn/start": turn } }, { eoMcp: { serverPath: "/app/eoServer.mjs" } }).provider.start(startOpts));
+      },
+    );
+  },
+
   "scoped skills": async () => {
     // Codex's delivery (EO-207): the adapter holds every attached skill
     // and narrows them by the turn's `skillScope`, writing the folders
@@ -3883,7 +4045,7 @@ describe.each(CAPABILITIES)("$name: $what", (capability) => {
 });
 
 describe("the shared list", () => {
-  it("is the twelve capabilities EO-380 names and the ones EO-385, EO-387, EO-392, EO-395, EO-412, EO-421, EO-444, EO-468, EO-470, EO-477, EO-478, EO-479, EO-487, EO-488, EO-490, EO-493, EO-494, EO-534, EO-543, EO-578, EO-587, EO-597, EO-633, EO-700 and the streaming chat added, each once", () => {
+  it("is the twelve capabilities EO-380 names and the ones EO-385, EO-387, EO-392, EO-395, EO-412, EO-421, EO-444, EO-468, EO-470, EO-477, EO-478, EO-479, EO-487, EO-488, EO-490, EO-493, EO-494, EO-534, EO-543, EO-578, EO-587, EO-597, EO-633, EO-700, EO-703 and the streaming chat added, each once", () => {
     // Pinned so that taking one off the list is a decision somebody
     // made in this file rather than a line that went missing.
     expect(CAPABILITIES.map((capability) => capability.name)).toEqual([
@@ -3932,6 +4094,7 @@ describe("the shared list", () => {
       "memory used in an answer",
       "agent writes through EO",
       "repository_checkout",
+      "reading the item's own files",
       "environment variables",
       "a resumed run's own usage",
       "environment variables filling server names",

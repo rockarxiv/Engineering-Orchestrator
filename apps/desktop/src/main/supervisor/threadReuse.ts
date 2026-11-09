@@ -1,7 +1,8 @@
+import { createHash } from "node:crypto";
 import { isThreadPerConversationAction, UNSCOPED_RUN, type Agent, type Run, type Uuid } from "@eo/core";
 import { agentAttachmentsHash, EMPTY_ATTACHMENTS_HASH } from "../agentAttachments/fingerprint.js";
 import type { Db } from "../db/client.js";
-import { getItem, listRunsForItem } from "../db/repos/index.js";
+import { getItem, listItemAttachments, listRunsForItem } from "../db/repos/index.js";
 import { promptHash } from "../roles/prompts.js";
 import { skillRunScope } from "./workspaceResolution.js";
 
@@ -53,6 +54,28 @@ export type ThreadReuse =
   | { kind: "resume"; run: Run }
   | { kind: "refused"; reason: string }
   | { kind: "no-thread"; reason: string };
+
+/**
+ * The item's own files, as a fingerprint (EO-703).
+ *
+ * A dispatch lists them beside the description, and a resumed thread is
+ * given no item section at all — so a thread knows the list it was born
+ * with and nothing later. This is what the run row records, and what
+ * `findReusableThread` compares, the way it compares instructions.
+ *
+ * Of the ids, sorted. An attachment's bytes never change under its id —
+ * a different file is a different row — so the set of ids is the list.
+ */
+function hashIds(ids: readonly string[]): string {
+  return createHash("sha256").update([...ids].sort().join("\n")).digest("hex");
+}
+
+export function itemFilesHash(db: Db, itemId: Uuid): string {
+  return hashIds(listItemAttachments(db, itemId).map((file) => file.id));
+}
+
+/** An item with no files of its own — what a null on a run row reads as. */
+export const EMPTY_ITEM_FILES_HASH = hashIds([]);
 
 /** Neither backend can be handed a session that was never opened. */
 function isGuardPlaceholder(run: Run): boolean {
@@ -162,7 +185,7 @@ function neverRan(agent: Agent): string {
  * a person reading three refusals for one thread learns less than they
  * do from the first.
  */
-function refusalFor(run: Run, agent: Agent, cwd: string, wantedHash: string, wantedAttachments: string): string | null {
+function refusalFor(run: Run, agent: Agent, cwd: string, wantedHash: string, wantedAttachments: string, wantedFiles: string): string | null {
   // A row predating A-07 recorded no backend at all. `resumeBlockedReason`
   // trusts one of these and resumes it, because there a person is waiting
   // on a reply and a wrong guess costs them their answer. Here the whole
@@ -244,6 +267,20 @@ function refusalFor(run: Run, agent: Agent, cwd: string, wantedHash: string, wan
       `The MCP servers or skills attached to ${agent.name} have changed since its last run on this ticket. A ` +
       `provider session keeps the tools it was started with, so the conversation couldn't be carried over — this ` +
       `ticket is starting fresh, which is how it picks the new ones up.`
+    );
+  }
+
+  // The item's own files, on the instructions' rule (EO-703). A fresh
+  // dispatch lists them beside the description and a resumed thread is
+  // told nothing about the item again, so a file added mid-work would be
+  // invisible to every turn of a thread that started before it — and one
+  // removed would still be listed. Null reads as none, for the reason the
+  // tool surface's does: no thread was told about any before the column.
+  if ((run.itemFilesHash ?? EMPTY_ITEM_FILES_HASH) !== wantedFiles) {
+    return (
+      `The files on this item have changed since ${agent.name}'s last run here. A conversation already under way ` +
+      `is not told about the item again, so it couldn't be carried over — this run starts fresh, which is how ` +
+      `it sees the files as they are now.`
     );
   }
 
@@ -432,6 +469,7 @@ export function findReusableThread(db: Db, query: ThreadReuseQuery): ThreadReuse
   // same function the dispatch uses, so the two cannot disagree.
   const item = getItem(db, itemId);
   const wantedAttachments = agentAttachmentsHash(db, agent.id, item ? skillRunScope(db, item) : UNSCOPED_RUN);
+  const wantedFiles = itemFilesHash(db, itemId);
 
   const mine = listRunsForItem(db, itemId)
     // Whoever else has run on this item has their own conversation,
@@ -466,7 +504,7 @@ export function findReusableThread(db: Db, query: ThreadReuseQuery): ThreadReuse
       absence ??= excluded;
       continue;
     }
-    const reason = refusalFor(run, agent, cwd, wantedHash, wantedAttachments);
+    const reason = refusalFor(run, agent, cwd, wantedHash, wantedAttachments, wantedFiles);
     if (reason === null) return { kind: "resume", run };
     refusal ??= reason;
   }

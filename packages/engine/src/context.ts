@@ -151,6 +151,18 @@ export interface ContextItemInput {
    * slug rather than a null.
    */
   workspaceKind: string;
+  /**
+   * The item's own files (EO-703): attachments no comment owns, part of
+   * what the item is as its description is.
+   *
+   * Optional, and absent reads as none, so a caller with nothing to say
+   * passes nothing. Rendered by `renderItemFilesSection` as metadata
+   * only — the bytes stay behind `attachment_read` — and in the fixed
+   * part of every assembly, which truncation never touches: a file the
+   * item is built against cannot be the thing that falls out of a long
+   * thread.
+   */
+  files?: readonly AttributedAttachment[];
 }
 
 /**
@@ -415,6 +427,8 @@ export interface AssembledContext {
   /** Null unless this is an `assist` dispatch — the pointer at the tool that reads the screen (EO-192). */
   screenSection: string | null;
   itemSection: string;
+  /** Null unless the item has files of its own (EO-703). */
+  itemFilesSection: string | null;
   /** Null unless this item was created by an event from outside EO (EO-334). */
   untrustedPayloadSection: string | null;
   parentFeatureSection: string | null;
@@ -448,6 +462,38 @@ function renderItemSection(item: ContextItemInput): string {
   const lines = [`# ${item.key}: ${item.title}`];
   if (item.body) lines.push("", item.body);
   return lines.join("\n");
+}
+
+/**
+ * One attachment's metadata line, in the one format every listing here
+ * uses (a comment's files, and the item's own).
+ */
+function attachmentLine(attachment: AttributedAttachment, indent = ""): string {
+  return `${indent}- ID: ${attachment.id}; name: ${attachment.name}; MIME type: ${attachment.mimeType}; size: ${attachment.size} bytes; origin: ${attachment.origin}; synchronization state: ${attachment.synchronizationState}`;
+}
+
+/**
+ * The item's own files, beside its description (EO-703).
+ *
+ * Metadata only, under a line naming the tool that reads them — no bytes
+ * are inlined, for the reason a comment's files are not: an agent reads
+ * a file when it bears on the work, and pays for it only then. Null for
+ * an item with none, so such an item's prompt is what it always was.
+ *
+ * Every assembly renders it among its fixed sections, the ones truncation
+ * never takes from. The list is part of the item, and an agent told about
+ * half of what it is built against has been told something false.
+ */
+function renderItemFilesSection(item: ContextItemInput): string | null {
+  const files = item.files ?? [];
+  if (files.length === 0) return null;
+  return [
+    "## The item's own files",
+    "",
+    `Part of this item, as its description is, and listed whole. Metadata only; read one with \`${ATTACHMENT_READ}\` when its content bears on the work:`,
+    "",
+    ...files.map((file) => attachmentLine(file)),
+  ].join("\n");
 }
 
 /**
@@ -542,9 +588,7 @@ function renderAttributedComment(comment: AttributedComment, indent = "", headSu
   // Indented so a reply reads as attached to what it answers rather
   // than as the next thing anyone happened to say (D-05).
   const body = indent === "" ? text : text.split("\n").map((line) => `${indent}${line}`).join("\n");
-  const attachmentLines = comment.attachments.map((attachment) =>
-    `${indent}- ID: ${attachment.id}; name: ${attachment.name}; MIME type: ${attachment.mimeType}; size: ${attachment.size} bytes; origin: ${attachment.origin}; synchronization state: ${attachment.synchronizationState}`,
-  );
+  const attachmentLines = comment.attachments.map((attachment) => attachmentLine(attachment, indent));
   return [head, body, ...(attachmentLines.length > 0 ? [`${indent}Attachments (metadata only; use \`${ATTACHMENT_READ}\` for content):`, ...attachmentLines] : [])].join("\n");
 }
 
@@ -1149,6 +1193,9 @@ export function assembleContext(input: AssembleContextInput): AssembledContext {
   });
   const screenSection = renderScreenSection(input.action);
   const itemSection = renderItemSection(input.item);
+  // Beside the item and its criteria, and among the fixed sections, so it
+  // is never what truncation takes (EO-703).
+  const itemFilesSection = renderItemFilesSection(input.item);
   // Its own section rather than part of the item's, which is the design in as
   // many words: a webhook payload is never the item's own description.
   const untrustedPayloadSection = renderUntrustedPayloadSection(input.untrustedPayload);
@@ -1181,6 +1228,7 @@ export function assembleContext(input: AssembleContextInput): AssembledContext {
     screenSection,
     itemSection,
     ...contributed.after("item"),
+    itemFilesSection,
     untrustedPayloadSection,
     parentFeatureSection,
     dependenciesSection,
@@ -1205,6 +1253,7 @@ export function assembleContext(input: AssembleContextInput): AssembledContext {
     screenSection,
     itemSection,
     ...contributed.after("item"),
+    itemFilesSection,
     untrustedPayloadSection,
     parentFeatureSection,
     commentThreadSection,
@@ -1220,6 +1269,7 @@ export function assembleContext(input: AssembleContextInput): AssembledContext {
     screenSection,
     projectsSection,
     itemSection,
+    itemFilesSection,
     untrustedPayloadSection,
     parentFeatureSection,
     commentThreadSection,
@@ -1744,6 +1794,7 @@ export function assembleSeedContext(input: AssembleSeedContextInput): AssembledS
     ...contributed.after("planMode"),
     renderItemSection(input.item),
     ...contributed.after("item"),
+    renderItemFilesSection(input.item),
     renderUntrustedPayloadSection(input.untrustedPayload),
     renderSeedRepositories(input.repositories ?? [], input.repositoryName),
     renderParentKey(input.parentKey),

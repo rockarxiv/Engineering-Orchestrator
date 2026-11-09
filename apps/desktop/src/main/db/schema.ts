@@ -1941,6 +1941,11 @@ export const runs = sqliteTable("runs", {
   // surface rather than as an unknown one: nothing could be attached
   // before this column existed. `findReusableThread` is the one reader.
   agentAttachmentsHash: text("agent_attachments_hash"),
+  // Hash of the item's own files this run's thread was told about
+  // (EO-703). A resumed thread is not told again, so `findReusableThread`
+  // refuses one born with a different list. Null reads as none: nothing
+  // could be told about before this column existed.
+  itemFilesHash: text("item_files_hash"),
   // The backend had no such session when this run tried to resume it
   // (EO-93). Marks the *thread*, not the run: `thread_id` is left exactly
   // as it was — the run really was handed that session — and this is what

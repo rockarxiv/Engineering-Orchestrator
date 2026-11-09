@@ -168,7 +168,7 @@ const ATTACHMENT_READ_TOOL = {
   description: ATTACHMENT_READ_DESCRIPTION,
   inputSchema: {
     type: "object",
-    properties: { attachmentId: { type: "string", description: "The stable attachment ID shown beside its owning comment." } },
+    properties: { attachmentId: { type: "string", description: "The stable attachment ID shown beside its owning comment, or among the item's own files." } },
     required: ["attachmentId"],
     additionalProperties: false,
   },
@@ -875,6 +875,14 @@ function renderItem(db, requestedKey, { withThread = false } = {}) {
   }
   const criteria = Array.isArray(spec.acceptance_criteria) ? spec.acceptance_criteria.filter((item) => typeof item === "string") : [];
   if (criteria.length > 0) lines.push("", "## Acceptance criteria", "", ...criteria.map((item) => `- ${item}`));
+
+  // The item's own files (EO-703): the ones no comment owns, part of
+  // what the item is beside its description. Metadata only, in the
+  // format a comment's files are listed in; `attachment_read` takes the id.
+  const files = queryAll(db, "SELECT * FROM attachments WHERE item_id = ? AND comment_id IS NULL ORDER BY created_at, id", item.id);
+  if (files.length > 0) {
+    lines.push("", "## Files", "", "Part of the item itself. Read one with `attachment_read`.", "", ...files.map((file) => attachmentMetadata(file)));
+  }
 
   if (item.parent_id !== null) {
     const parent = queryOne(db, "SELECT t.key, it.slug AS type, t.step_id, t.title FROM items t JOIN item_types it ON it.id = t.type_id WHERE t.id = ?", item.parent_id);

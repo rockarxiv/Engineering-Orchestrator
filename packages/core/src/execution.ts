@@ -118,6 +118,17 @@ export interface Run {
    */
   agentAttachmentsHash: string | null;
   /**
+   * Hash of the item's own files as this run's thread was told about
+   * them (EO-703) — the list a dispatch's context carries beside the
+   * description. A resumed thread is not told again, so a thread born
+   * with one list is not resumed once the item holds another.
+   *
+   * Null reads as no files, for `agentAttachmentsHash`'s reason: a row
+   * predating the column belongs to a thread that was never told about
+   * any, which is the truth about it rather than a gap.
+   */
+  itemFilesHash: string | null;
+  /**
    * The backend had no such session when this run tried to resume
    * `threadId` (EO-93).
    *

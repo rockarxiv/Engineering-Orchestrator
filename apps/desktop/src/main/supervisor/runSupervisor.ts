@@ -214,7 +214,7 @@ import { noneWorkspaceKind } from "./noneKind.js";
 import { folderWorkspaceKind } from "./folderKind.js";
 import { scratchWorkspaceKind } from "./scratchKind.js";
 import { resolveItemWorkspace, skillRunScope } from "./workspaceResolution.js";
-import { findReusableThread, staleAttachmentsRefusal, threadSpendNotice } from "./threadReuse.js";
+import { findReusableThread, itemFilesHash, staleAttachmentsRefusal, threadSpendNotice } from "./threadReuse.js";
 import {
   rerunContract,
   findPendingInterpretations,
@@ -6033,6 +6033,12 @@ export function createRunSupervisor(
     // `notACandidate` excludes a run that has none — but `Run.threadId`
     // cannot say so in the type, and the difference between narrowing it
     // here and asserting it is `resume(null!, ...)` reaching a provider.
+    // The item's files as this dispatch is about to tell the agent about
+    // them (EO-703). Read before the context is, so a file that lands
+    // while it is being assembled is missing from this hash rather than
+    // claimed by it — the next dispatch then refuses the thread and the
+    // file is seen, which is the safe side to be wrong on.
+    const itemFiles = itemFilesHash(db, item.id);
     let resuming = continuation
       ? { run: continuation.from, threadId: continuation.threadId }
       : reuse?.kind === "resume" && reuse.run.threadId !== null
@@ -6122,6 +6128,10 @@ export function createRunSupervisor(
       // configuration on resume either, so this row is the only record
       // of the tool surface the session opened with.
       agentAttachmentsHash: attachments,
+      // And the item's own files this thread was told about (EO-703). A
+      // continuation tells it nothing new, so its thread keeps the list
+      // the interrupted run's was born with.
+      itemFilesHash: continuation ? continuation.from.itemFilesHash : itemFiles,
       initiationId,
       attempt: nextAttempt,
     });
@@ -8315,6 +8325,9 @@ export function createRunSupervisor(
         // hole the moment somebody tidied that one up.
         instructionsHash: run.instructionsHash,
         agentAttachmentsHash: run.agentAttachmentsHash,
+        // And the item's files the thread was told about (EO-703), on the
+        // same terms: a resume tells it nothing about the item again.
+        itemFilesHash: run.itemFilesHash,
         initiationId: run.initiationId,
         // The same attempt, carried on: an interruption is not a try the
         // agent spent (`RunInterruption`), so `countAttempts` leaves the
@@ -10278,6 +10291,11 @@ export function createRunSupervisor(
       // automatic dispatch would weigh this row up against an agent that
       // has servers attached and refuse a thread that was fine.
       agentAttachmentsHash: priorRun.agentAttachmentsHash,
+      // The item's files the thread was told about (EO-703), carried
+      // over for the same reason: a reply resumes the thread and tells it
+      // nothing about the item, so a file added while it was parked is
+      // what the next automatic dispatch refuses the thread over.
+      itemFilesHash: priorRun.itemFilesHash,
       initiationId: priorRun.initiationId,
       attempt: priorRun.attempt + 1,
       cwd: priorRun.cwd,

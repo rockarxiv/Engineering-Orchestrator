@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { DbHandle } from "../db/client.js";
 import type { CreateRunInput } from "../db/repos/runsRepo.js";
 import {
+  addItemAttachments,
   archiveAgent,
   createAgent,
   createProject,
@@ -23,6 +24,7 @@ import { createFakeProvider, type FakeProviderScript } from "../providers/fake.j
 import { validImplementResult } from "../providers/fixtures.js";
 import { promptHash } from "../roles/prompts.js";
 import { createRunSupervisor, type RunSupervisorOptions } from "./runSupervisor.js";
+import { itemFilesHash } from "./threadReuse.js";
 import { startTestWriteBridge, type TestWriteBridge } from "../testing/agentWrites.js";
 import { fakeWorkspaceKind, installedKinds, kindsPreparing } from "./testWorkspaceKinds.js";
 import { NOTHING_ATTACHED } from "./workspaceKind.js";
@@ -401,6 +403,40 @@ describe("dispatch on a reused thread", () => {
     const notes = engineNotes();
     expect(notes).toHaveLength(1);
     expect(notes[0]).toContain("instructions have changed");
+  });
+
+  it("starts fresh and posts one comment when a file was added to the item, and lists it (EO-703)", async () => {
+    enableReuse();
+    priorRun();
+    // A resumed thread is told nothing about the item again, so a file
+    // put on it mid-work would never reach the agent.
+    const fileId = uuidv7();
+    addItemAttachments(handle.db, item.id, [{ id: fileId, storagePath: `/tmp/eo/attachments/${fileId}`, name: "mock.png", mimeType: "image/png", size: 8 }]);
+
+    await supervisorFor({ result: validImplementResult }).runOnce();
+
+    expect(turns.map((turn) => turn.kind)).toEqual(["start"]);
+    expect(turns[0]?.prompt).toContain(`- ID: ${fileId}; name: mock.png; MIME type: image/png`);
+    const notes = engineNotes();
+    expect(notes).toHaveLength(1);
+    expect(notes[0]).toContain("The files on this item have changed");
+    // And the new thread records the list it was told, so the dispatch
+    // after it resumes rather than starting fresh again.
+    expect(listRunsForItem(handle.db, item.id).at(-1)?.itemFilesHash).toBe(itemFilesHash(handle.db, item.id));
+  });
+
+  it("resumes a thread born with the item's files, and does not list them again (EO-703)", async () => {
+    enableReuse();
+    const fileId = uuidv7();
+    addItemAttachments(handle.db, item.id, [{ id: fileId, storagePath: `/tmp/eo/attachments/${fileId}`, name: "mock.png", mimeType: "image/png", size: 8 }]);
+    priorRun({ itemFilesHash: itemFilesHash(handle.db, item.id) });
+    newComment();
+
+    await supervisorFor({ result: validImplementResult }).runOnce();
+
+    expect(turns.map((turn) => turn.kind)).toEqual(["resume"]);
+    expect(turns[0]?.prompt).not.toContain(fileId);
+    expect(engineNotes()).toEqual([]);
   });
 
   it("records the thread, the backend and the worktree the resumed run is continuing", async () => {
