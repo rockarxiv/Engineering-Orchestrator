@@ -111,6 +111,13 @@ export const ItemWatchViewSchema = z.object({
   checks: z.number(),
   consecutiveFailures: z.number(),
   lastError: z.string().nullable(),
+  /**
+   * A check is running right now on this device (EO-699). The row alone
+   * cannot say so: a check moves `nextCheckAt` an interval on before it
+   * runs, and one that comes back waiting with nothing new never makes a
+   * run of its own. Absent from a server older than this field.
+   */
+  checking: z.boolean().optional(),
 });
 export type ItemWatchView = z.infer<typeof ItemWatchViewSchema>;
 

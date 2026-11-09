@@ -802,6 +802,8 @@ describe("a card on a step that keeps checking (EO-699)", () => {
         item({ id: "t1", key: "EO-1", title: "Fresh", latestRunStatus: null, watch: watching({ lastCheckedAt: null, nextCheckAt: NOW + 3 * MINUTE, checks: 0 }) }),
         item({ id: "t2", key: "EO-2", title: "Busy", latestRunStatus: "running", watch: watching({ lastCheckedAt: NOW - HOUR }) }),
         item({ id: "t3", key: "EO-3", title: "Broken", latestRunStatus: "failed", watch: watching({ nextCheckAt: NOW + 5 * MINUTE, consecutiveFailures: 2, lastError: "rate limit exceeded" }) }),
+        // A quiet check in flight: its next check already moved on, its last run long succeeded.
+        item({ id: "t4", key: "EO-4", title: "Quietly", latestRunStatus: "succeeded", watch: watching({ nextCheckAt: NOW + 24 * HOUR, checking: true }) }),
       ],
     });
     renderBoard();
@@ -819,6 +821,11 @@ describe("a card on a step that keeps checking (EO-699)", () => {
     expect(within(broken).getByText("Check failed · retrying in 5m").parentElement!.querySelector(".bg-paused")).not.toBeNull();
     const detail = within(broken).getByText("2 in a row · rate limit exceeded");
     expect(detail.className.split(" ")).toContain("truncate");
+
+    const quietly = screen.getByText("Quietly").closest("article")!;
+    expect(within(quietly).getByText("Checking now").parentElement!.querySelector(".bg-running")).not.toBeNull();
+    expect(within(quietly).getByText("Last check 20h ago · OK")).toBeInTheDocument();
+    expect(within(quietly).queryByText(/Next check in/)).not.toBeInTheDocument();
   });
 
   it("keeps a card on a step that runs once as it was, and a watching card's surface as its work state says", async () => {

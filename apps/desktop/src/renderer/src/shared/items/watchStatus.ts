@@ -11,12 +11,13 @@ import { itemWatchLines, runStatusKeyOf, type ItemSummary } from "@eo/core";
  * are failing.
  *
  * - `waiting` — between checks: a clock, "Next check in 4h".
- * - `checking` — a check is in flight, or one is due and EO is about to
- *   run it: the running dot, "Checking now". A check only has a run of its
- *   own once it has something to record, so a due check is read as one in
- *   flight rather than as a negative countdown.
- * - `failing` — the last check failed: the amber dot, "Check failed ·
- *   retrying in 5m".
+ * - `checking` — a check is running (`watch.checking`, or a run of its own
+ *   that is running), or one is due and EO is about to run it: the running
+ *   dot, "Checking now" — never a countdown past nought. Under it, the last
+ *   check, or the failures so far while checks are failing.
+ * - `failing` — the last check failed and the retry is still ahead: the
+ *   amber dot, "Check failed · retrying in 5m", over how many failed in a
+ *   row and the last error.
  *
  * `label` and `detail` are each one line; `title` carries the full times.
  */
@@ -42,20 +43,16 @@ export function watchStatusOf(item: Pick<ItemSummary, "watch" | "latestRunStatus
 
   const title = itemWatchLines(watch).join("\n");
   const failures = watch.consecutiveFailures;
-  const lastCheck =
-    watch.lastCheckedAt === null ? "Not checked yet" : `Last check ${agoWords(now - watch.lastCheckedAt)} · ${failures > 0 ? "failed" : "OK"}`;
-  const due = watch.nextCheckAt <= now;
+  const history =
+    failures > 0
+      ? `${failures === 1 ? "Failed once" : `${failures} in a row`}${watch.lastError === null ? "" : ` · ${watch.lastError}`}`
+      : watch.lastCheckedAt === null
+        ? "Not checked yet"
+        : `Last check ${agoWords(now - watch.lastCheckedAt)} · OK`;
 
-  if (run === "running" || (due && failures === 0)) return { kind: "checking", label: "Checking now", detail: lastCheck, title };
-  if (failures > 0) {
-    return {
-      kind: "failing",
-      label: `Check failed · retrying ${due ? "now" : `in ${untilWords(watch.nextCheckAt - now)}`}`,
-      detail: `${failures === 1 ? "Failed once" : `${failures} in a row`}${watch.lastError === null ? "" : ` · ${watch.lastError}`}`,
-      title,
-    };
-  }
-  return { kind: "waiting", label: `Next check in ${untilWords(watch.nextCheckAt - now)}`, detail: lastCheck, title };
+  if (watch.checking === true || run === "running" || watch.nextCheckAt <= now) return { kind: "checking", label: "Checking now", detail: history, title };
+  if (failures > 0) return { kind: "failing", label: `Check failed · retrying in ${untilWords(watch.nextCheckAt - now)}`, detail: history, title };
+  return { kind: "waiting", label: `Next check in ${untilWords(watch.nextCheckAt - now)}`, detail: history, title };
 }
 
 /**

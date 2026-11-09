@@ -32,6 +32,7 @@ import { itemWatchView, WAKE_GRACE_MS, WATCH_ROUTED_REASON, WATCH_VERIFICATION_F
 import { createServerPlatform } from "../platform/server.js";
 import { sourceTreeResources } from "../testing/platform.js";
 import { listItemSummaries } from "../ipc/domainQueries.js";
+import { watchStatusOf } from "../../renderer/src/shared/items/watchStatus.js";
 
 /**
  * Keep checking, end to end (EO-456, ARCHITECTURE.md, "A step",
@@ -1117,6 +1118,76 @@ describe("the board's card carries the watch (EO-699)", () => {
     expect(cardOf(item.id)?.watch).toEqual(page);
     expect(cardOf(item.id)?.watch).toMatchObject({ lastCheckedAt: START, nextCheckAt: START + 5 * MINUTE, consecutiveFailures: 0, lastError: null });
     expect(cardOf(elsewhere.id)?.watch).toBeNull();
+  });
+
+  it("says a quiet check is running while it runs, and counts down to the next once it is done", async () => {
+    seed({ everyMinutes: 1440, giveUpAfterHours: 168 });
+    let answer: (outcome: BuiltinOutcome) => void = () => {};
+    let started: () => void = () => {};
+    const running = new Promise<void>((resolve) => (started = resolve));
+    const check = vi.fn<BuiltinRunner>(
+      () =>
+        new Promise<BuiltinOutcome>((resolve) => {
+          answer = resolve;
+          started();
+        }),
+    );
+    const changed: string[] = [];
+    const tick = supervisorWith(check, { onItemChanged: (itemId) => changed.push(itemId) }).runOnce();
+    await running;
+
+    // The check has already moved the next one a day on, and has no run of its own.
+    const during = cardOf(item.id)!;
+    expect(during.watch).toMatchObject({ checking: true, lastCheckedAt: null, nextCheckAt: START + 1440 * MINUTE });
+    expect(listRunsForItem(handle.db, item.id)).toEqual([]);
+    expect(watchStatusOf(during, START)).toMatchObject({ kind: "checking", label: "Checking now", detail: "Not checked yet" });
+    // Said to open windows as it starts, so the board shows it.
+    expect(changed).toContain(item.id);
+
+    answer(waiting());
+    await tick;
+
+    const after = cardOf(item.id)!;
+    expect(after.watch).toMatchObject({ checking: false, lastCheckedAt: START });
+    expect(listRunsForItem(handle.db, item.id).map((run) => run.status)).toEqual(["succeeded"]);
+    expect(watchStatusOf(after, START)).toMatchObject({ kind: "waiting", label: "Next check in 1d", detail: "Last check just now · OK" });
+  });
+
+  it("says a retry is running while it runs, not the retry after it", async () => {
+    seed();
+    const supervisor = supervisorWith(vi.fn<BuiltinRunner>(async () => ({ ok: false, reason: "rate limit exceeded" })));
+    await supervisor.runOnce();
+    clock = START + 60 * MINUTE;
+
+    let answer: (outcome: BuiltinOutcome) => void = () => {};
+    let started: () => void = () => {};
+    const running = new Promise<void>((resolve) => (started = resolve));
+    const tick = supervisorWith(
+      vi.fn<BuiltinRunner>(
+        () =>
+          new Promise<BuiltinOutcome>((resolve) => {
+            answer = resolve;
+            started();
+          }),
+      ),
+    ).runOnce();
+    await running;
+
+    const during = cardOf(item.id)!;
+    expect(during.watch).toMatchObject({ checking: true, consecutiveFailures: 1, nextCheckAt: clock + 5 * MINUTE });
+    expect(watchStatusOf(during, clock)).toMatchObject({ kind: "checking", label: "Checking now", detail: "Failed once · rate limit exceeded" });
+
+    answer({ ok: false, reason: "still limited" });
+    await tick;
+    expect(watchStatusOf(cardOf(item.id)!, clock)).toMatchObject({ kind: "failing", detail: "2 in a row · still limited" });
+    expect(cardOf(item.id)?.watch?.checking).toBe(false);
+  });
+
+  it("says nothing is running once a check's runner throws", async () => {
+    seed();
+    await supervisorWith(vi.fn<BuiltinRunner>(async () => { throw new Error("boom"); })).runOnce();
+
+    expect(cardOf(item.id)?.watch).toMatchObject({ checking: false, consecutiveFailures: 1, lastError: "boom" });
   });
 
   it("carries a failing watch's count and error", async () => {

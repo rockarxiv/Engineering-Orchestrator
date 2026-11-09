@@ -37,7 +37,27 @@ describe("a watching card's status line", () => {
     });
   });
 
-  it("while a check is in flight, says it is checking now over the last check", () => {
+  it("while a quiet check is in flight, says it is checking now rather than counting down to the check after it", () => {
+    // A check moves the next check an interval on before it runs, and a quiet one makes no run: the flag is what says it is running.
+    const inFlight = watch({ lastCheckedAt: NOW - 24 * HOUR, nextCheckAt: NOW + 24 * HOUR, checking: true });
+    expect(watchStatusOf(card(inFlight), NOW)).toMatchObject({ kind: "checking", label: "Checking now", detail: "Last check 1d ago · OK" });
+    // And once it is done, the countdown again.
+    expect(watchStatusOf(card({ ...inFlight, checking: false, lastCheckedAt: NOW, nextCheckAt: NOW + 24 * HOUR }), NOW)).toMatchObject({
+      kind: "waiting",
+      label: "Next check in 1d",
+      detail: "Last check just now · OK",
+    });
+  });
+
+  it("while a retry is in flight, says it is checking now over the failures so far, not a retry countdown", () => {
+    expect(watchStatusOf(card(watch({ nextCheckAt: NOW + 4 * HOUR, consecutiveFailures: 2, lastError: "503", checking: true }), "failed"), NOW)).toMatchObject({
+      kind: "checking",
+      label: "Checking now",
+      detail: "2 in a row · 503",
+    });
+  });
+
+  it("while a check with a run of its own is in flight, says it is checking now over the last check", () => {
     expect(watchStatusOf(card(watch({ lastCheckedAt: NOW - HOUR, nextCheckAt: NOW + 23 * HOUR }), "running"), NOW)).toMatchObject({
       kind: "checking",
       label: "Checking now",
@@ -54,10 +74,14 @@ describe("a watching card's status line", () => {
     expect(watchStatusOf(card(watch({ nextCheckAt: NOW + MINUTE, consecutiveFailures: 1, lastError: null }), "failed"), NOW)?.detail).toBe("Failed once");
   });
 
-  it("never counts down past nought: a due check reads as checking now, a due retry as retrying now", () => {
+  it("never counts down past nought: a due check, or a due retry, reads as checking now", () => {
     expect(watchStatusOf(card(watch({ nextCheckAt: NOW - 10 * MINUTE })), NOW)).toMatchObject({ kind: "checking", label: "Checking now" });
     expect(watchStatusOf(card(watch({ nextCheckAt: NOW })), NOW)).toMatchObject({ kind: "checking", label: "Checking now" });
-    expect(watchStatusOf(card(watch({ nextCheckAt: NOW - MINUTE, consecutiveFailures: 3, lastError: "503" }), "failed"), NOW)?.label).toBe("Check failed · retrying now");
+    expect(watchStatusOf(card(watch({ nextCheckAt: NOW - MINUTE, consecutiveFailures: 3, lastError: "503" }), "failed"), NOW)).toMatchObject({
+      kind: "checking",
+      label: "Checking now",
+      detail: "3 in a row · 503",
+    });
     expect(watchStatusOf(card(watch({ nextCheckAt: NOW + 30_000 })), NOW)?.label).toBe("Next check in 1m");
   });
 
