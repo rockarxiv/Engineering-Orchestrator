@@ -749,6 +749,130 @@ describe("a card", () => {
   });
 });
 
+/**
+ * State on work (EO-687): how the work on a column is going, as a load
+ * strip and a line of counts under its head, and as each card's tint
+ * and edge. Failed, waiting, in review, running, idle — in that order.
+ */
+describe("how the work on a column is going (EO-687)", () => {
+  const strip = (region: HTMLElement) =>
+    [...region.querySelector("[data-load-strip]")!.children].map((segment) => [segment.getAttribute("data-state"), (segment as HTMLElement).style.flexGrow]);
+  const summary = (region: HTMLElement) => [...within(region).getByLabelText("By state").children].map((entry) => entry.textContent);
+
+  it("shows a load strip and a summary that match the column's cards, and an empty strip and no summary on an empty column", async () => {
+    mockIpc({
+      items: [
+        item({ id: "t1", key: "EO-1", title: "Broke", latestRunStatus: "failed" }),
+        item({ id: "t2", key: "EO-2", title: "Asked", latestRunStatus: "awaiting_input" }),
+        item({ id: "t3", key: "EO-3", title: "Escalated", needsAttention: true }),
+        item({ id: "t4", key: "EO-4", title: "Working", latestRunStatus: "running" }),
+        item({ id: "t5", key: "EO-5", title: "Not yet" }),
+        item({ id: "t6", key: "EO-6", title: "Judged", stepId: "review", stepName: "Review", latestRunStatus: "running" }),
+      ],
+    });
+    renderBoard();
+
+    // Counts every item on the step, the fifth past "Show more" too.
+    const todo = await column("To Do");
+    await within(todo).findByText("Not yet");
+    expect(within(todo).queryByText("Broke")).not.toBeInTheDocument();
+    expect(strip(todo)).toEqual([
+      ["danger", "1"],
+      ["paused", "2"],
+      ["running", "1"],
+      ["idle", "1"],
+    ]);
+    expect(summary(todo)).toEqual(["1 failed", "2 waiting", "1 running", "1 idle"]);
+    const head = within(todo).getByRole("heading", { level: 2, name: "To Do" }).closest("header")!;
+    expect(head).toContainElement(within(todo).getByLabelText("By state"));
+    const line = within(todo).getByLabelText("By state");
+    expect(line.className.split(" ")).toEqual(expect.arrayContaining(["text-[11px]", "text-ink-muted"]));
+    expect([...line.children].map((entry) => entry.firstElementChild!.className.split(" ").find((token) => token.startsWith("bg-")))).toEqual([
+      "bg-danger",
+      "bg-paused",
+      "bg-running",
+      "bg-idle",
+    ]);
+    const bar = todo.querySelector("[data-load-strip]")!;
+    expect(bar.className.split(" ")).toContain("h-[4px]");
+    expect([...bar.children].map((segment) => segment.className.split(" ").find((token) => token.startsWith("bg-")))).toEqual([
+      "bg-danger",
+      "bg-paused",
+      "bg-running",
+      "bg-idle",
+    ]);
+
+    // A running review is in review.
+    const review = await column("Review");
+    expect(strip(review)).toEqual([["reviewing", "1"]]);
+    expect(summary(review)).toEqual(["1 in review"]);
+
+    // An empty column: one bar in the line colour, and nothing to count.
+    const empty = await column("Pending Approval");
+    expect(strip(empty)).toEqual([["empty", ""]]);
+    expect(empty.querySelector("[data-load-strip]")!.firstElementChild!.className.split(" ")).toEqual(expect.arrayContaining(["bg-line", "flex-1"]));
+    expect(within(empty).queryByLabelText("By state")).not.toBeInTheDocument();
+  });
+
+  it("tints a running, an in-review, a waiting and a failed card with a 1px edge in its state, and leaves an idle one plain", async () => {
+    mockIpc({
+      items: [
+        item({ id: "t1", key: "EO-1", title: "Broke", latestRunStatus: "failed" }),
+        item({ id: "t2", key: "EO-2", title: "Escalated", needsAttention: true }),
+        item({ id: "t3", key: "EO-3", title: "Working", latestRunStatus: "running" }),
+        item({ id: "t4", key: "EO-4", title: "Not yet" }),
+        item({ id: "t5", key: "EO-5", title: "Judged", stepId: "review", stepName: "Review" }),
+      ],
+    });
+    renderBoard();
+
+    const card = async (title: string) => (await screen.findByText(title)).closest("article")!;
+    for (const [title, colour, mix] of [
+      ["Broke", "--color-danger", 14],
+      ["Escalated", "--color-paused", 11],
+      ["Judged", "--color-reviewing", 11],
+      ["Working", "--color-running", 11],
+    ] as const) {
+      const classes = (await card(title)).className.split(" ");
+      expect(classes, title).toEqual(
+        expect.arrayContaining([
+          "border",
+          `bg-[color:color-mix(in_oklab,var(--color-canvas-hover),var(${colour})_${mix}%)]`,
+          `border-[color:color-mix(in_oklab,var(--color-line),var(${colour})_60%)]`,
+        ]),
+      );
+      expect(classes, title).not.toContain("bg-canvas-hover");
+      expect(classes, title).not.toContain("border-line");
+    }
+    const idle = (await card("Not yet")).className;
+    expect(idle.split(" ")).toEqual(expect.arrayContaining(["border", "border-line", "bg-canvas-hover", "hover:bg-canvas-active"]));
+    expect(idle).not.toContain("color-mix");
+
+    // Nothing keeps the old inset ring or a left bar.
+    for (const title of ["Broke", "Escalated", "Judged", "Working", "Not yet"]) {
+      const classes = (await card(title)).className;
+      expect(classes, title).not.toContain("shadow-[inset");
+      expect(classes, title).not.toMatch(/border-l-/);
+    }
+    // Waiting on you is still said, to a screen reader.
+    expect(within(await card("Escalated")).getByLabelText("Waiting on you")).toBeInTheDocument();
+  });
+
+  it("writes a branch in the subtle ink and a high priority in ink, with an arrow, not amber", async () => {
+    mockIpc({ items: [item({ priority: 1, workspace: { kind: "git-worktree", mode: "isolated", label: "eo/EO-1" } })] });
+    renderBoard();
+
+    const branch = (await screen.findByText("eo/EO-1")).parentElement!;
+    expect(branch.className.split(" ")).toEqual(expect.arrayContaining(["font-mono", "text-ink-subtle"]));
+    expect(branch.className).not.toContain("text-reviewing");
+
+    const high = screen.getByText("High");
+    expect(high.className.split(" ")).toEqual(expect.arrayContaining(["text-ink", "font-semibold"]));
+    expect(high.className).not.toContain("text-paused");
+    expect(high.querySelector("svg")).not.toBeNull();
+  });
+});
+
 describe("the project's word on the board", () => {
   it("leaves the type off the cards when the project has one word for its work", async () => {
     mockIpc();
@@ -1227,8 +1351,7 @@ describe("the paused rail", () => {
       expect(todo.className.split(" "), token).toContain(token);
       expect(panel.className.split(" "), token).toContain(token);
     }
-    // Raised on a hairline as an unowned column is; To Do's own colours are its agent's lane (EO-685).
-    for (const token of ["border-line", "bg-canvas-raised"]) expect(panel.className.split(" "), token).toContain(token);
+    // Its colours are its own: amber-edged (EO-688, held by the next test), as To Do's are its agent's lane (EO-685).
     const tokens = (element: Element) => element.className.split(" ").filter((token) => token.startsWith("text-[") || token.startsWith("font-"));
     expect(tokens(within(rail).getByRole("heading", { level: 2, name: "Paused" }))).toEqual(tokens(within(todo).getByRole("heading", { level: 2, name: "To Do" })));
 

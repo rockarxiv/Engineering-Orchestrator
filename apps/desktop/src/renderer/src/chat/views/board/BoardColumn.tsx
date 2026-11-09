@@ -7,6 +7,7 @@ import { ownerOf } from "../../parts";
 import { NotFullyTested } from "../../modules/NotFullyTested";
 import { BoardCard } from "./BoardCard";
 import { descriptionFor } from "../../../shared/pipeline/dashboard";
+import { WORK_STATE_FILL, WORK_STATE_WORDS, workLoad, workStateOf, type WorkStep } from "../../../shared/items/workState";
 
 /**
  * A column of the board: one step, who owns it, what it does, what can
@@ -18,6 +19,10 @@ import { descriptionFor } from "../../../shared/pipeline/dashboard";
  * drawing uses (EO-680), and a step an agent, a person or a script owns
  * is a lane in that kind's colour (EO-685): a 3px cap, a light tint and
  * a line leaning toward it. EO's own columns and the ends stay grey.
+ *
+ * Under its head, a load strip and a line of counts say how the work on
+ * it is going (EO-687): failed, waiting, in review, running, idle — the
+ * same states its cards are tinted by. Owner on structure, state on work.
  */
 
 /** Who a human step waits on, as the picker's own vocabulary (EO-323): a person and a group are different promises. */
@@ -55,6 +60,45 @@ function countLabel(count: number, vocabulary: ChromeVocabulary): string {
   return `${count} ${(count === 1 ? vocabulary.item : vocabulary.items).toLowerCase()}`;
 }
 
+/**
+ * What is on a column, by work state (EO-687): a 4px strip in segments
+ * sized by count, and under it "● 1 failed ● 2 waiting", one entry per
+ * state there is. An empty column has one bar in the line colour and no
+ * counts. Counts every item on the step, not only the cards shown.
+ */
+function Load({ items, step }: { items: ItemSummary[]; step: WorkStep | null }) {
+  const load = workLoad(items.map((item) => workStateOf(item, step)));
+  return (
+    <>
+      <div aria-hidden data-load-strip className="mt-1.5 flex h-[4px] gap-[2px] overflow-hidden rounded-[3px]">
+        {load.length === 0 ? (
+          <span data-state="empty" className="h-full flex-1 bg-line" />
+        ) : (
+          load.map(({ state, count }) => (
+            <span
+              key={state}
+              data-state={state}
+              title={`${count} ${WORK_STATE_WORDS[state]}`}
+              style={{ flexGrow: count, flexBasis: 0 }}
+              className={cn("h-full min-w-[6px] rounded-[2px]", WORK_STATE_FILL[state])}
+            />
+          ))
+        )}
+      </div>
+      {load.length === 0 ? null : (
+        <p aria-label="By state" className="flex flex-wrap gap-x-2.5 gap-y-0.5 text-[11px] tabular-nums text-ink-muted">
+          {load.map(({ state, count }) => (
+            <span key={state} className="inline-flex items-center gap-[5px]">
+              <span aria-hidden className={cn("size-[6px] shrink-0 rounded-full", WORK_STATE_FILL[state])} />
+              {count} {WORK_STATE_WORDS[state]}
+            </span>
+          ))}
+        </p>
+      )}
+    </>
+  );
+}
+
 /** How many cards a column shows at first, and how many more each "Show more" adds (EO-634). */
 export const CARDS_PER_STEP = 4;
 
@@ -64,7 +108,7 @@ export const CARDS_PER_STEP = 4;
  * here is shown wherever it sorts. How far a column is opened is this
  * column's own, and goes when the board does.
  */
-function Cards({ items, handlers }: { items: ItemSummary[]; handlers: CardHandlers }) {
+function Cards({ items, step, handlers }: { items: ItemSummary[]; step: WorkStep | null; handlers: CardHandlers }) {
   const [limit, setLimit] = useState(CARDS_PER_STEP);
   const shown: ItemSummary[] = [];
   let counted = 0;
@@ -80,6 +124,7 @@ function Cards({ items, handlers }: { items: ItemSummary[]; handlers: CardHandle
         <BoardCard
           key={item.id}
           item={item}
+          state={workStateOf(item, step)}
           mixed={handlers.mixed}
           queued={handlers.queued.has(item.id)}
           canHandOff={handlers.canHandOff}
@@ -199,10 +244,11 @@ export function StepColumn({
             ))}
           </Select>
         ) : null}
+        <Load items={items} step={step} />
       </header>
 
       <div className="flex min-w-0 flex-col gap-2">
-        <Cards items={items} handlers={handlers} />
+        <Cards items={items} step={step} handlers={handlers} />
         {items.length === 0 ? (
           // Drawn, so a drag can see where it may land.
           <p
@@ -232,9 +278,11 @@ export function GhostColumn({ label, items, handlers }: { label: string; items: 
       <header className="flex min-w-0 flex-col gap-1 px-0.5">
         <h2 className="truncate text-[15px] font-semibold text-ink-muted">{label}</h2>
         <p className="text-[11.5px] text-ink-subtle">Removed from the pipeline. These finish here.</p>
+        {/* Its step is gone from the pipeline, so nothing here reads as in review. */}
+        <Load items={items} step={null} />
       </header>
       <div className="flex min-w-0 flex-col gap-2">
-        <Cards items={items} handlers={handlers} />
+        <Cards items={items} step={null} handlers={handlers} />
       </div>
     </section>
   );

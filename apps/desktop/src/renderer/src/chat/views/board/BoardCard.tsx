@@ -1,10 +1,11 @@
 import { memo, type ReactNode } from "react";
 import { useDraggable } from "@dnd-kit/core";
-import { CircleSlash, Eye, Forward, GitBranch, Layers } from "lucide-react";
+import { ArrowUp, CircleSlash, Eye, Forward, GitBranch, Layers } from "lucide-react";
 import { NONE_KIND, firstName, versionLabel, type ItemSummary, type WorkspaceBadge } from "@eo/core";
 import { cn } from "@eo/ui";
 import { useItemAuthority } from "../../../shared/admin/authority";
 import { runStatusOf, type RunStatus } from "../../../shared/items/status";
+import type { WorkState } from "../../../shared/items/workState";
 import { Elapsed } from "../../../shared/items/Elapsed";
 import { PREVIEW_BANNER } from "../../../shared/items/previewBanner";
 import { priorityLabel, showsPriorityBadge } from "../../../shared/pipeline/priority";
@@ -35,6 +36,25 @@ const RUN_DOT: Record<RunStatus["tone"], string> = {
 };
 
 /**
+ * A card's surface in its work state (EO-687): the hover surface mixed
+ * 11% toward the state's colour (14% for failed, which has to be seen
+ * first), a little more under the pointer, on a hairline mixed 60%
+ * toward it. Idle cards keep the plain surface. Written out whole, state
+ * by state, so Tailwind finds every class.
+ */
+const CARD_SURFACE: Record<WorkState, string> = {
+  danger:
+    "border-[color:color-mix(in_oklab,var(--color-line),var(--color-danger)_60%)] bg-[color:color-mix(in_oklab,var(--color-canvas-hover),var(--color-danger)_14%)] hover:bg-[color:color-mix(in_oklab,var(--color-canvas-hover),var(--color-danger)_20%)]",
+  paused:
+    "border-[color:color-mix(in_oklab,var(--color-line),var(--color-paused)_60%)] bg-[color:color-mix(in_oklab,var(--color-canvas-hover),var(--color-paused)_11%)] hover:bg-[color:color-mix(in_oklab,var(--color-canvas-hover),var(--color-paused)_17%)]",
+  reviewing:
+    "border-[color:color-mix(in_oklab,var(--color-line),var(--color-reviewing)_60%)] bg-[color:color-mix(in_oklab,var(--color-canvas-hover),var(--color-reviewing)_11%)] hover:bg-[color:color-mix(in_oklab,var(--color-canvas-hover),var(--color-reviewing)_17%)]",
+  running:
+    "border-[color:color-mix(in_oklab,var(--color-line),var(--color-running)_60%)] bg-[color:color-mix(in_oklab,var(--color-canvas-hover),var(--color-running)_11%)] hover:bg-[color:color-mix(in_oklab,var(--color-canvas-hover),var(--color-running)_17%)]",
+  idle: "border-line bg-canvas-hover hover:bg-canvas-active",
+};
+
+/**
  * Memoised (EO-565): every prop is a value or a handler the board keeps
  * stable, so a push that changes one card redraws that card and leaves
  * the rest of the board as it was. A prop added here has to be stable
@@ -42,6 +62,7 @@ const RUN_DOT: Record<RunStatus["tone"], string> = {
  */
 export const BoardCard = memo(function BoardCard({
   item,
+  state = "idle",
   mixed,
   queued,
   canHandOff,
@@ -52,6 +73,8 @@ export const BoardCard = memo(function BoardCard({
   onOpen,
 }: {
   item: ItemSummary;
+  /** How its work is going (EO-687), worked out by its column, which knows the step it stands on: its tint and its edge. */
+  state?: WorkState;
   /** Whether the project's work goes by more than one word, read once by the board rather than by every card (EO-565). */
   mixed: boolean;
   /** This desktop has moved it and the record has not confirmed (EO-324, ARCHITECTURE.md, "The record"): dashed, and says "queued". */
@@ -80,9 +103,9 @@ export const BoardCard = memo(function BoardCard({
       aria-busy={moving}
       {...(item.origin === null ? {} : { title: originHover(item.origin) })}
       className={cn(
-        "relative rounded-[10px] border border-line bg-canvas-hover px-[9px] py-2 hover:bg-canvas-active",
-        // Waiting on you is a state, so it is drawn in the paused scale.
-        item.needsAttention && "shadow-[inset_0_0_0_1.5px_var(--color-paused)]",
+        "relative rounded-[10px] border px-[9px] py-2",
+        // Waiting on you is a state, so it is drawn in the paused scale, as the card's tint.
+        CARD_SURFACE[state],
         (queued || moving) && "border border-dashed border-line-strong",
         moving && "opacity-70",
         isDragging && "opacity-40",
@@ -206,7 +229,13 @@ export function CardBody({
             blocked ×{item.openDependencyCount}
           </span>
         ) : null}
-        {showsPriorityBadge(item.priority) ? <span className="text-paused">{priorityLabel(item.priority)}</span> : null}
+        {/* Not amber (EO-687): amber means only "this lands with a person". */}
+        {showsPriorityBadge(item.priority) ? (
+          <span className="flex items-center gap-0.5 font-semibold text-ink">
+            {item.priority > 0 ? <ArrowUp size={10} className="shrink-0" aria-hidden /> : null}
+            {priorityLabel(item.priority)}
+          </span>
+        ) : null}
         <span className="ml-auto flex min-w-0 items-center gap-2">
           <AssigneeSlot item={item} claiming={claiming} {...(onClaim ? { onClaim } : {})} />
           {/* Time on this step, not since the last edit (EO-570): an
@@ -302,7 +331,8 @@ function WorkspaceLine({ workspace }: { workspace: WorkspaceBadge }) {
     );
   }
   return (
-    <p className="flex min-w-0 items-center gap-1 font-mono text-[11px] text-reviewing">
+    // Ink, not the review violet (EO-687): a branch name is machine text, and violet means only "in review".
+    <p className="flex min-w-0 items-center gap-1 font-mono text-[11px] text-ink-subtle">
       <GitBranch size={10} className="shrink-0" aria-hidden />
       <span className="truncate">{workspace.label}</span>
     </p>
