@@ -106,6 +106,7 @@ function page(comments: CommentView[]): ItemPage {
       spec: {},
       origin: null,
       createdAt: 1,
+      attachments: [],
     },
     comments,
     transitions: [],

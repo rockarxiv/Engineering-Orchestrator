@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { LOCAL_PERSON_ID, RecordPipelineSchema, withDeviceIdentity, type EntryRule, type IpcChannel, type IpcPayload, type IpcResponse, type IpcResult, type Item, type Uuid } from "@eo/core";
+import { LOCAL_PERSON_ID, uuidv7, RecordPipelineSchema, withDeviceIdentity, type EntryRule, type IpcChannel, type IpcPayload, type IpcResponse, type IpcResult, type Item, type Uuid } from "@eo/core";
 import { buildTickInput } from "../supervisor/buildTickInput.js";
 import type { DbHandle } from "../db/client.js";
 import { attachWorkspace, createTestItem, openMigratedTestDb } from "../db/testHelpers.js";
@@ -34,8 +34,10 @@ import { getPipeline, listRoutesForPipeline, replacePipelineGraph, setStepOwner 
 import { listPipelinesUpdatedSince, upsertReplicaPipeline } from "../db/repos/projectMoveRepo.js";
 import { MANAGED_PERSON_ID_KEY, MANAGED_PERSON_NAME_KEY } from "../identity/viewer.js";
 import { createRunEventBuffer } from "../db/repos/runEventBuffer.js";
-import { listAttachmentsForComment } from "../db/repos/attachmentsRepo.js";
+import { addItemAttachments, getAttachment, listAttachmentsForComment, listItemAttachments, removeItemAttachment } from "../db/repos/attachmentsRepo.js";
 import { AttachmentStorage } from "../attachments/storage.js";
+import { addItemAttachmentsCommand, removeItemAttachmentCommand } from "../ipc/itemAttachmentCommands.js";
+import { deleteAttachmentCommand } from "../ipc/attachmentCommands.js";
 import { forgetCommands, itemsWithQueuedMoves, pendingCommands, queuedCommandCount } from "../db/repos/recordCommandsRepo.js";
 import { createLocalRecord, type LocalItemRecord } from "./localRecord.js";
 import { createDeviceRecord, type DeviceRecord } from "./deviceRecord.js";
@@ -782,6 +784,91 @@ describe("a file attached to a comment", () => {
   function pendingKinds(): string[] {
     return pendingCommands(annaDb.db).map((entry) => entry.kind);
   }
+});
+
+describe("an item's own file (EO-702)", () => {
+  /** Put on the item from its page: staged, then added with no comment. */
+  async function addToItem(machine: Desktop, itemId: string, name: string, contents: string): Promise<Uuid> {
+    const staged = await machine.files.stageData({ name, dataBase64: Buffer.from(contents).toString("base64") });
+    const prepared = await machine.files.prepare([staged.id]);
+    addItemAttachments(machine.handle.db, itemId as Uuid, prepared);
+    await machine.files.finish(prepared);
+    return prepared[0]!.id;
+  }
+
+  it("reaches the record and the other desktop with no comment to come first, and its removal follows", async () => {
+    const item = onTheRecord();
+    await anna.record.sync();
+    await dana.record.sync();
+
+    const fileId = await addToItem(anna, item.id, "mock.png", "the mock");
+    await anna.record.sync();
+
+    // On the record: the item's own, bytes behind it.
+    const onRecord = listItemAttachments(recordDb.db, item.id as Uuid);
+    expect(onRecord.map((file) => [file.id, file.name, file.commentId])).toEqual([[fileId, "mock.png", null]]);
+    expect((await serving.attachments!.read(onRecord[0]!.path))?.toString()).toBe("the mock");
+
+    await dana.record.sync();
+
+    // On Dana's: the item's own too, fetched, and in nobody's thread.
+    const onDana = listItemAttachments(danaDb.db, item.id as Uuid);
+    expect(onDana.map((file) => [file.id, file.name, file.commentId])).toEqual([[fileId, "mock.png", null]]);
+    expect((await dana.files.read(onDana[0]!.path))?.toString()).toBe("the mock");
+    expect(listCommentsForItem(danaDb.db, item.id).flatMap((comment) => comment.attachments ?? [])).toEqual([]);
+
+    // Anna takes it off again.
+    const removed = removeItemAttachment(annaDb.db, fileId);
+    expect(removed).toBeDefined();
+    await anna.files.removeManaged(removed!);
+    await anna.record.sync();
+
+    expect(listItemAttachments(recordDb.db, item.id as Uuid)).toEqual([]);
+    expect(await serving.attachments!.read(onRecord[0]!.path)).toBeNull();
+
+    await dana.record.sync();
+
+    expect(listItemAttachments(danaDb.db, item.id as Uuid)).toEqual([]);
+    expect(await dana.files.read(onDana[0]!.path)).toBeNull();
+    // And neither desktop sends anything back about it.
+    expect(queuedCommandCount(annaDb.db)).toBe(0);
+    expect(queuedCommandCount(danaDb.db)).toBe(0);
+  });
+
+  it("will not let a removal naming one item take a file off another", async () => {
+    const item = onTheRecord("Has the mock");
+    const other = onTheRecord("Another one");
+    await anna.record.sync();
+    const fileId = await addToItem(anna, item.id, "mock.png", "the mock");
+    await anna.record.sync();
+
+    const answer = await serveApply(serving, {
+      deviceId: dana.deviceId,
+      commands: [{ kind: "attachmentRemoval", id: uuidv7(), itemId: other.id, attachmentId: fileId, name: "mock.png", mimeType: "image/png" }],
+    });
+
+    expect(answer.results[0]).toMatchObject({ applied: false, problem: "That file belongs to another item, so this record removed nothing." });
+    expect(listItemAttachments(recordDb.db, item.id as Uuid).map((file) => file.id)).toEqual([fileId]);
+  });
+
+  it("is not brought back when it was removed before the file was sent", async () => {
+    const item = onTheRecord();
+    await anna.record.sync();
+
+    anna.online = false;
+    const fileId = await addToItem(anna, item.id, "draft.txt", "never mind");
+    const removed = removeItemAttachment(annaDb.db, fileId);
+    await anna.files.removeManaged(removed!);
+    expect(pendingCommands(annaDb.db).map((entry) => entry.kind)).toEqual(["attachment", "attachmentRemoval"]);
+
+    anna.online = true;
+    await anna.record.sync();
+    await dana.record.sync();
+
+    expect(queuedCommandCount(annaDb.db)).toBe(0);
+    expect(listItemAttachments(recordDb.db, item.id as Uuid)).toEqual([]);
+    expect(listItemAttachments(danaDb.db, item.id as Uuid)).toEqual([]);
+  });
 });
 
 /**
@@ -2497,6 +2584,81 @@ describe("a human step owned by a group", () => {
         problem: expect.stringContaining("Anna holds it"),
       });
       expect(getItem(recordDb.db, item.id)?.title).toBe("Launch post");
+    });
+
+    /** An item file staged and put on through the item page's own command (EO-702). */
+    async function putOn(machine: Desktop, item: Item, name: string): Promise<{ id: Uuid; problem: string | null }> {
+      const staged = await machine.files.stageData({ name, dataBase64: Buffer.from(`${name} bytes`).toString("base64") });
+      const added = await addItemAttachmentsCommand(machine.handle.db, machine.files, { itemId: item.id, attachmentIds: [staged.id] });
+      return { id: staged.id as Uuid, problem: added.problem };
+    }
+
+    it("refuses an item file from a holder the record says was taken over, and takes it back off their copy (EO-702)", async () => {
+      const item = await waitingOnDesign();
+      await heldBy(anna, item);
+      // Dana takes it over; Anna's desktop has not heard yet.
+      takeOverItem(danaDb.db, { itemId: item.id, fromPersonId: annaPerson.id });
+      await dana.record.sync();
+      expect(getItem(recordDb.db, item.id)?.assigneeId).toBe(danaPerson.id);
+      expect(seenBy(anna, item.id)?.assigneeId).toBe(annaPerson.id);
+
+      // Her own copy still says she holds it, so her desktop lets her.
+      const added = await putOn(anna, item, "mock.png");
+      expect(added.problem).toBeNull();
+      const path = getAttachment(annaDb.db, added.id)!.path;
+
+      await anna.record.sync();
+
+      // The record judged it against its own copy, and kept nothing.
+      expect(listItemAttachments(recordDb.db, item.id as Uuid)).toEqual([]);
+      expect(listItemAttachments(annaDb.db, item.id as Uuid)).toEqual([]);
+      expect(await anna.files.read(path)).toBeNull();
+      expect(inboxOf(anna)).toContainEqual(expect.stringContaining(`Your edit on ${item.key} was not applied`));
+      await dana.record.sync();
+      expect(listItemAttachments(danaDb.db, item.id as Uuid)).toEqual([]);
+    });
+
+    it("refuses a removal from a holder the record says was taken over, and fetches the file back (EO-702)", async () => {
+      const item = await waitingOnDesign();
+      await heldBy(anna, item);
+      const added = await putOn(anna, item, "spec.pdf");
+      await everybodySyncs();
+      expect(listItemAttachments(recordDb.db, item.id as Uuid).map((file) => file.id)).toEqual([added.id]);
+
+      takeOverItem(danaDb.db, { itemId: item.id, fromPersonId: annaPerson.id });
+      await dana.record.sync();
+      expect(await removeItemAttachmentCommand(annaDb.db, anna.files, { attachmentId: added.id })).toEqual({ removed: true, problem: null });
+
+      await anna.record.sync();
+      await anna.record.sync();
+
+      // Still on the record, and back on Anna's copy, bytes and all.
+      expect(listItemAttachments(recordDb.db, item.id as Uuid).map((file) => file.id)).toEqual([added.id]);
+      const back = listItemAttachments(annaDb.db, item.id as Uuid);
+      expect(back.map((file) => [file.id, file.name])).toEqual([[added.id, "spec.pdf"]]);
+      expect((await anna.files.read(back[0]!.path))?.toString()).toBe("spec.pdf bytes");
+      expect(inboxOf(anna)).toContainEqual(expect.stringContaining(`Your edit on ${item.key} was not applied`));
+    });
+
+    it("does not let the other member remove an item file through the generic delete either (EO-702)", async () => {
+      const item = await waitingOnDesign();
+      await heldBy(anna, item);
+      const added = await putOn(anna, item, "mock.png");
+      await everybodySyncs();
+      expect(listItemAttachments(danaDb.db, item.id as Uuid).map((file) => file.id)).toEqual([added.id]);
+
+      const answer = await deleteAttachmentCommand(danaDb.db, dana.files, { attachmentId: added.id });
+
+      expect(answer.deleted).toBe(false);
+      expect(answer.problem).toContain("Anna holds it");
+      expect(listItemAttachments(danaDb.db, item.id as Uuid).map((file) => file.id)).toEqual([added.id]);
+      expect(pendingCommands(danaDb.db)).toEqual([]);
+      // …nor, asking the record directly, as a browser it serves would.
+      expect(await deleteAttachmentCommand(recordDb.db, serving.attachments as AttachmentStorage, { attachmentId: added.id, actingDeviceId: dana.deviceId })).toMatchObject({
+        deleted: false,
+        problem: expect.stringContaining("Anna holds it"),
+      });
+      expect(listItemAttachments(recordDb.db, item.id as Uuid)).toHaveLength(1);
     });
 
     it("lets the other member take it over from the holder they were warned about, and tells the holder", async () => {

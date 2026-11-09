@@ -3833,3 +3833,45 @@ describe("0155: entry rules", () => {
     }
   });
 });
+
+describe("0158: an attachment owned by the item (EO-702)", () => {
+  it("keeps every comment's file on its comment and lets a file belong to no comment", () => {
+    const handle = openDb(":memory:");
+    const tempDir = mkdtempSync(join(tmpdir(), "eo-item-attachments-"));
+    try {
+      writeMigrationSetBefore(tempDir, "0158_item_attachments");
+      runMigrations(handle.db, tempDir);
+      const item = createTestItem(handle.db, { type: "story", title: "Has a file", stepId: "todo" });
+      const comment = postComment(handle.db, { itemId: item.id, author: { type: "human" }, body: "Here is the mock." });
+      handle.db.run(
+        sql`INSERT INTO attachments (id, item_id, comment_id, storage_path, name, mime_type, size, managed, created_at, jira_sync_error)
+            VALUES ('a1', ${item.id}, ${comment.id}, '/files/a1.png', 'mock.png', 'image/png', 42, 0, 7, 'Jira said no')`,
+      );
+      handle.db.run(sql`INSERT INTO jira_attachment_links (attachment_id, jira_attachment_id) VALUES ('a1', 'remote-1')`);
+      const before = handle.db.all(sql`SELECT * FROM attachments`);
+      // Not yet: before 0158 a file has to hang on a comment.
+      expect(() =>
+        handle.db.run(sql`INSERT INTO attachments (id, item_id, comment_id, storage_path, name, mime_type, size, created_at) VALUES ('early', ${item.id}, NULL, '/x', 'x', 'text/plain', 1, 1)`),
+      ).toThrow();
+
+      runMigrations(handle.db, join(dirname(fileURLToPath(import.meta.url)), "migrations"));
+
+      // Every row exactly as it was, its Jira link with it, and still on its comment.
+      expect(handle.db.all(sql`SELECT * FROM attachments`)).toEqual(before);
+      expect(handle.db.all(sql`SELECT * FROM jira_attachment_links`)).toEqual([{ attachment_id: "a1", jira_attachment_id: "remote-1" }]);
+      expect(listCommentsForItem(handle.db, item.id)[0]?.attachments?.map((file) => file.id)).toEqual(["a1"]);
+      expect(handle.db.all<{ name: string }>(sql`SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'attachments' AND name NOT LIKE 'sqlite_%' ORDER BY name`).map((row) => row.name)).toEqual([
+        "idx_attachments_comment",
+        "idx_attachments_item",
+      ]);
+
+      // And a file may now belong to the item itself.
+      handle.db.run(sql`INSERT INTO attachments (id, item_id, comment_id, storage_path, name, mime_type, size, created_at) VALUES ('own', ${item.id}, NULL, '/x', 'spec.pdf', 'application/pdf', 1, 8)`);
+      expect(handle.db.all(sql`SELECT comment_id FROM attachments WHERE id = 'own'`)).toEqual([{ comment_id: null }]);
+      expect(handle.db.all(sql`SELECT count(*) AS n FROM attachment_removals`)).toEqual([{ n: 0 }]);
+    } finally {
+      handle.close();
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+});

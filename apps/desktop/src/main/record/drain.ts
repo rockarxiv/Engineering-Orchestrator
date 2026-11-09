@@ -37,7 +37,14 @@ import { publishSection } from "../db/repos/publishedSectionsRepo.js";
 import { applySectionDocument } from "../managed/configuration.js";
 import { appendSyncedRunEvents, hasOwnRunEventsAfter, listRunEventsFrom, highestRunEventSeq } from "../db/repos/runEventsRepo.js";
 import { attributeMirroredRun, createRun, getRun, markRunSynced, runsNeedingSync, runSyncBookmark, updateRun } from "../db/repos/runsRepo.js";
-import { getAttachment, insertAttachments } from "../db/repos/attachmentsRepo.js";
+import {
+  attachmentWasRemoved,
+  forgetAttachmentRemoval,
+  getAttachment,
+  insertAttachments,
+  noteAttachmentRemoved,
+  removeItemAttachment,
+} from "../db/repos/attachmentsRepo.js";
 import { pending, pendingWithKeyPrefix, remember, rememberLatest, settled, triedAgain, type PendingKind } from "../db/repos/recordPendingRepo.js";
 import { backfillDone, backfillsOutstanding, rememberBackfill, wantBackfill } from "../db/repos/recordBackfillsRepo.js";
 import { getAgent, recordStampOf } from "../db/repos/agentsRepo.js";
@@ -120,6 +127,7 @@ const START: RecordCursors = {
   runs: EMPTY_CURSOR,
   runEvents: EMPTY_EVENT_CURSOR,
   attachments: EMPTY_CURSOR,
+  attachmentRemovals: EMPTY_CURSOR,
   projects: EMPTY_CURSOR,
   itemTypes: EMPTY_CURSOR,
   pipelines: EMPTY_CURSOR,
@@ -317,7 +325,7 @@ export async function drainToRecord(options: DrainOptions): Promise<DrainResult>
       // was not answered, so it has not happened, and the next pass
       // sends it again — the record's side is idempotent by id.
       if (said === undefined) continue;
-      settle(options, entry, said, result);
+      await settle(options, entry, said, result);
       settled.push(entry.id);
       changed = true;
     }
@@ -389,7 +397,7 @@ export async function drainToRecord(options: DrainOptions): Promise<DrainResult>
       if (changed) options.onChange?.();
       return result;
     }
-    result.pulled += applyChanges(options, pull.data);
+    result.pulled += await applyChanges(options, pull.data);
     // And then what could not be placed before, because this page may
     // be exactly what it was waiting for: a run whose transcript came
     // down one page ahead of it, an item whose comments did. After the
@@ -461,7 +469,7 @@ async function payOffBackfills(options: DrainOptions, result: DrainResult): Prom
         result.offline = pull.unreachable;
         return false;
       }
-      result.pulled += applyChanges(options, pull.data);
+      result.pulled += await applyChanges(options, pull.data);
       result.pulled += retryPending(options);
       cursors = pull.data.cursors;
       rememberBackfill(db, owed.projectId, cursors);
@@ -515,10 +523,11 @@ function noteFiles(options: DrainOptions, comment: RecordCommentCommand, now: nu
 function wantFile(
   options: DrainOptions,
   attachmentId: string,
-  about: { itemId: string; commentId: string; name: string; mimeType: string },
+  about: { itemId: string; commentId: string | null; name: string; mimeType: string },
   now: number,
 ): void {
   if (getAttachment(options.db, attachmentId as Uuid) !== undefined) return;
+  if (attachmentWasRemoved(options.db, attachmentId as Uuid)) return;
   remember(options.db, "attachment", attachmentId, { id: attachmentId, ...about }, `the bytes of ${about.name}`, now);
 }
 
@@ -544,7 +553,8 @@ async function fetchFiles(options: DrainOptions, result: DrainResult): Promise<b
   for (const row of pending<WantedFile>(db, "attachment", MAX_FILES_PER_PASS)) {
     if (fetched >= MAX_FILES_PER_PASS) break;
     const want = row.payload;
-    if (getAttachment(db, want.id as Uuid) !== undefined) {
+    // Here already, or taken off its item since it was mentioned (EO-702).
+    if (getAttachment(db, want.id as Uuid) !== undefined || attachmentWasRemoved(db, want.id as Uuid)) {
       settled(db, [row.id]);
       continue;
     }
@@ -564,7 +574,9 @@ async function fetchFiles(options: DrainOptions, result: DrainResult): Promise<b
     }
     // The comment has to be here before a row can point at it. It may
     // not be: the metadata stream is paged separately from the comments.
-    if (getComment(db, want.commentId as Uuid) === undefined) {
+    // One of the item's own files (EO-702) needs its item instead.
+    const owner = want.commentId === null ? getItem(db, want.itemId as Uuid) : getComment(db, want.commentId as Uuid);
+    if (owner === undefined) {
       triedAgain(db, [row.id]);
       continue;
     }
@@ -573,7 +585,7 @@ async function fetchFiles(options: DrainOptions, result: DrainResult): Promise<b
       mimeType: answer.data.mimeType,
       data: Buffer.from(answer.data.dataBase64, "base64"),
     });
-    insertAttachments(db, [{ ...stored, id: want.id as Uuid, itemId: want.itemId as Uuid, commentId: want.commentId as Uuid }]);
+    insertAttachments(db, [{ ...stored, id: want.id as Uuid, itemId: want.itemId as Uuid, commentId: want.commentId as Uuid | null }]);
     settled(db, [row.id]);
     result.files += 1;
   }
@@ -740,7 +752,8 @@ function knownAgent(db: Db, agentId: string | null): Uuid | null {
 interface WantedFile {
   id: string;
   itemId: string;
-  commentId: string;
+  /** Null for one of the item's own files (EO-702). Absent on a want written before there were any. */
+  commentId: string | null;
   name: string;
   mimeType: string;
 }
@@ -864,7 +877,7 @@ async function readAttachment(options: DrainOptions, attachmentId: string): Prom
  * and leaving it to be sent again would be asking the same question
  * until somebody moved the item back.
  */
-function settle(options: DrainOptions, entry: QueuedCommand, said: RecordCommandResult, result: DrainResult): void {
+async function settle(options: DrainOptions, entry: QueuedCommand, said: RecordCommandResult, result: DrainResult): Promise<void> {
   const { db, local } = options;
   if (said.applied) {
     result.sent += 1;
@@ -949,6 +962,19 @@ function settle(options: DrainOptions, entry: QueuedCommand, said: RecordCommand
     // waits on a group leaves an item unclaimed, and the record's holder
     // is the one it should show.
     if (said.holder !== null) setReplicaAssignee(db, entry.itemId, said.holder.person);
+    // An item file (EO-702) put on or taken off by somebody the record
+    // says may not change the item: put on, it comes off this copy again,
+    // bytes and all; taken off, it is fetched back from the record, which
+    // still has it — this copy's row and bytes went when it was removed.
+    if (entry.command.kind === "attachment" && entry.command.commentId === null) {
+      const taken = removeItemAttachment(db, entry.command.attachmentId as Uuid, { announce: false });
+      if (taken !== undefined) await options.attachments?.removeManaged?.(taken);
+    }
+    if (entry.command.kind === "attachmentRemoval") {
+      const { attachmentId, itemId, name, mimeType } = entry.command;
+      forgetAttachmentRemoval(db, attachmentId as Uuid);
+      wantFile(options, attachmentId, { itemId, commentId: null, name: name || "the file", mimeType }, options.now?.() ?? Date.now());
+    }
     return;
   }
 
@@ -1034,7 +1060,7 @@ function actOf(command: RecordCommand): StepAct {
  * prerequisite to wait for: a project depends on nothing, and a graph
  * carries its own steps and routes with it.
  */
-function applyChanges(options: DrainOptions, changes: RecordChanges): number {
+async function applyChanges(options: DrainOptions, changes: RecordChanges): Promise<number> {
   const now = options.now?.() ?? Date.now();
   let applied = 0;
 
@@ -1204,6 +1230,18 @@ function applyChanges(options: DrainOptions, changes: RecordChanges): number {
   // it was there to prevent.
   for (const file of changes.attachments) {
     wantFile(options, file.id, { itemId: file.itemId, commentId: file.commentId, name: file.name, mimeType: file.mimeType }, now);
+  }
+  // Item files somebody took off elsewhere (EO-702): the row and the
+  // bytes go here too, and a fetch not yet finished is not finished.
+  // Not sent back — the record is where this came from.
+  for (const removal of changes.attachmentRemovals) {
+    const removed = removeItemAttachment(options.db, removal.attachmentId as Uuid, { announce: false, now: removal.ts });
+    if (removed === undefined) {
+      noteAttachmentRemoved(options.db, removal.attachmentId as Uuid, removal.itemId as Uuid, removal.ts);
+      continue;
+    }
+    await options.attachments?.removeManaged?.(removed);
+    applied += 1;
   }
   for (const group of changes.runEvents) {
     const first = group.events[0];

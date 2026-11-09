@@ -17,6 +17,7 @@ import { enqueueCommand, enqueueWatchCommand } from "../db/repos/recordCommandsR
 import { asRecordWatch } from "../db/repos/itemWatchesRepo.js";
 import { onWatchWritten } from "../db/watchEvents.js";
 import { onSideCallRecorded } from "../db/sideCallEvents.js";
+import { onItemAttachmentsChanged } from "../db/itemAttachmentEvents.js";
 import type { SideCallRow } from "../db/repos/sideCallsRepo.js";
 
 /**
@@ -191,7 +192,36 @@ export function queueOutbound(options: OutboundOptions): () => void {
     queue([sideCallCommand(call, call.itemId)], call.itemId);
   });
 
+  // The item's own files (EO-702), put on it and taken off it. A file
+  // travels as a comment's does — metadata now, bytes filled in by the
+  // drain as it sends — with no comment to come first; a removal is its
+  // own command, because nothing else would ever tell the record.
+  const stopWatchingItemFiles = onItemAttachmentsChanged(db, {
+    added: (itemId, files) => {
+      if (!options.linked(itemId)) return;
+      queue(
+        files.map((file) => ({
+          kind: "attachment" as const,
+          id: uuidv7(),
+          itemId,
+          commentId: null,
+          attachmentId: file.id,
+          name: file.name,
+          mimeType: file.mimeType,
+          size: file.size,
+          dataBase64: "",
+        })),
+        itemId,
+      );
+    },
+    removed: (file) => {
+      if (!options.linked(file.itemId)) return;
+      queue([{ kind: "attachmentRemoval", id: uuidv7(), itemId: file.itemId, attachmentId: file.id, name: file.name, mimeType: file.mimeType }], file.itemId);
+    },
+  });
+
   return () => {
+    stopWatchingItemFiles();
     stopWatchingVersionMoves();
     stopWatchingSideCalls();
     stopWatchingWatches();

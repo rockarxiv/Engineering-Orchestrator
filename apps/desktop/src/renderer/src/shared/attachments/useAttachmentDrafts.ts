@@ -141,6 +141,9 @@ export function useAttachmentDrafts() {
       // person is told the sum.
       const left = rejected.length + result.omitted;
       if (left > 0) setProblem(overCapacity(left));
+      // A chosen file main could not stage — over 20 MB, not a file — in
+      // main's own sentence (EO-702). It staged none of them.
+      if (result.problem) setProblem(result.problem);
     } catch (error) {
       setProblem(error instanceof Error ? error.message : String(error));
     } finally {

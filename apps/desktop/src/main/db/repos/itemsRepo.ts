@@ -30,6 +30,7 @@ import { assigneeOnArrival, type StepOwnership } from "./peopleRepo.js";
 import { boundStepFieldSql, ensureCurrentVersion, versionForArrival } from "./pipelineVersionsRepo.js";
 import { FOLD_CASE_SQL_FUNCTION, foldCase } from "../textFold.js";
 import {
+  attachmentRemovals,
   attachments,
   sideCalls,
   projects,
@@ -1419,9 +1420,15 @@ export function deleteItem(db: Db, id: Uuid): { deletedItemIds: Uuid[] } {
       .all()
       .map((row) => row.id);
 
+    // Every file on these items — their comments' and their own
+    // (EO-702) — before the comments a file may name. And the note of
+    // any of the item's own files removed earlier, which is only there
+    // for the record to page and means nothing once the item is gone.
+    tx.delete(attachments).where(inArray(attachments.itemId, ids)).run();
+    tx.delete(attachmentRemovals).where(inArray(attachmentRemovals.itemId, ids)).run();
+
     if (commentIds.length > 0) {
       tx.delete(commentMentions).where(inArray(commentMentions.commentId, commentIds)).run();
-      tx.delete(attachments).where(inArray(attachments.commentId, commentIds)).run();
       tx.delete(comments).where(inArray(comments.itemId, ids)).run();
     }
 

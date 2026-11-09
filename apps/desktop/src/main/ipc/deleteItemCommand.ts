@@ -1,7 +1,7 @@
 import { jiraStateOf, type IpcPayload, type IpcResponse, type Item, type Uuid } from "@eo/core";
 import type { AttachmentStorage } from "../attachments/storage.js";
 import type { Db } from "../db/client.js";
-import { deleteItem, getItem, getProject, listAttachmentsForComments, listCommentsForItem, listRunsForItem, listItems, itemWithDescendants } from "../db/repos/index.js";
+import { deleteItem, getItem, getProject, listAttachmentsForItem, listRunsForItem, listItems, itemWithDescendants } from "../db/repos/index.js";
 import { isProjectThread } from "../projects/projectThread.js";
 import { jiraFor, type JiraContext } from "../packs/developer/jira/connection.js";
 import { branchPrefix } from "../packs/developer/workspace/branchPrefix.js";
@@ -199,10 +199,8 @@ export async function removeItemsAndTheirWork(
   // Collected before the rows go, because the rows are how a file is
   // found; removed after, because a file removed for a delete that then
   // failed would be a comment pointing at nothing.
-  const doomedAttachments = listAttachmentsForComments(
-    db,
-    work.doomed.flatMap((entry) => listCommentsForItem(db, entry.id).map((comment) => comment.id)),
-  );
+  // Every file on them: their comments' and their own (EO-702).
+  const doomedAttachments = work.doomed.flatMap((entry) => listAttachmentsForItem(db, entry.id));
   // One transaction for every root and whatever the caller adds, so a
   // project is never left half-emptied by a delete that failed partway.
   const deletedItemIds = db.transaction(() => {

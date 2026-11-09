@@ -28,9 +28,9 @@ export type CommentAuthorType = "human" | "agent" | "engine" | "module";
  * posted what the agent produced rather than what the approver corrected
  * (ARCHITECTURE.md, "The output is a comment").
  *
- * A kind rather than a table, and deliberately: `attachments.commentId`
- * is NOT NULL, so an output that carries files already had to hang on a
- * comment, and making it a comment keeps invariant 4 — comments are the
+ * A kind rather than a table, and deliberately: a file an output carries
+ * hangs on a comment (only an item's own files — part of what the item
+ * is, EO-702 — hang on no comment), and making it a comment keeps invariant 4 — comments are the
  * only communication channel — instead of opening a second one beside it
  * (ARCHITECTURE.md, "The output is a comment").
  *
@@ -50,7 +50,8 @@ export interface AgentAttachment {
   /** Stable UUIDv7 identity for persisted attachments. Absent only on legacy fixtures. */
   id?: Uuid;
   itemId?: Uuid;
-  commentId?: Uuid;
+  /** Null for one of the item's own files rather than a comment's (EO-702). */
+  commentId?: Uuid | null;
   kind: "image" | "file";
   /** Absolute path resolved and validated by the main process. */
   path: string;

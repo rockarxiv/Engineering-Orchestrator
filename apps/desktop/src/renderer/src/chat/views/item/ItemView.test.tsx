@@ -93,6 +93,7 @@ function detail(overrides: Partial<ItemDetailData> = {}): ItemDetailData {
       spec: { acceptance_criteria: ["429 after 100 req/min"] },
       origin: null,
       createdAt: 1,
+      attachments: [],
     },
     comments: [],
     transitions: [],
@@ -2055,3 +2056,103 @@ function FrameListeners() {
   useInvalidateOnPush("runs:changed", itemsKey);
   return null;
 }
+
+describe("the item's own files (EO-702)", () => {
+  const MOCK = { id: "f1", itemId: "t1", commentId: null, kind: "image" as const, name: "mock.png", mimeType: "image/png", size: 2048, syncStatus: "local" as const, syncError: null };
+  const SPEC = { id: "f2", itemId: "t1", commentId: null, kind: "file" as const, name: "spec.pdf", mimeType: "application/pdf", size: 10, syncStatus: "local" as const, syncError: null };
+  const SAID = { id: "f3", itemId: "t1", commentId: "c1", kind: "file" as const, name: "said.txt", mimeType: "text/plain", size: 3 };
+  const free = { "items:authority": { authority: null } };
+
+  function withFiles(files = [MOCK, SPEC]): ItemDetailData {
+    const data = detail({ comments: [comment({ attachments: [SAID] })] });
+    return { ...data, item: { ...data.item, attachments: files } };
+  }
+
+  let staged = 0;
+  const staging = {
+    ...free,
+    "attachments:stage": (payload: unknown) => {
+      const { name } = payload as { name: string };
+      staged += 1;
+      return { attachment: { id: `draft-${staged}`, kind: "file", name, mimeType: "text/plain", size: 1 } };
+    },
+    "items:addAttachments": { attachments: [], problem: null },
+  };
+
+  it("draws them under the description: an image as a thumbnail, anything else as a row that opens", async () => {
+    const { calls, onCall } = recorder();
+    renderItem(withFiles(), onCall, { ...free, "attachments:preview": { dataUrl: "data:image/png;base64,AAAA" } });
+
+    const section = await screen.findByRole("region", { name: "Attachments" });
+    expect(await within(section).findByRole("img", { name: "mock.png" })).toHaveAttribute("src", "data:image/png;base64,AAAA");
+    fireEvent.click(within(section).getByRole("button", { name: "Open spec.pdf" }));
+    await waitFor(() => expect(payloadOf(calls, "attachments:open")).toEqual({ attachmentId: "f2" }));
+    // A comment's file stays on its comment, and is not offered for removal here.
+    expect(within(section).queryByText("said.txt")).toBeNull();
+    expect(within(section).queryByRole("button", { name: "Remove said.txt" })).toBeNull();
+  });
+
+  it("removes one only once the person has confirmed", async () => {
+    const { calls, onCall } = recorder();
+    renderItem(withFiles(), onCall, { ...free, "items:removeAttachment": { removed: true, problem: null } });
+
+    const section = await screen.findByRole("region", { name: "Attachments" });
+    fireEvent.click(await within(section).findByRole("button", { name: "Remove spec.pdf" }));
+    const dialog = await screen.findByRole("dialog", { name: "Remove this file?" });
+    expect(dialog).toHaveTextContent("spec.pdf");
+    expect(payloadOf(calls, "items:removeAttachment")).toBeUndefined();
+
+    fireEvent.click(within(dialog).getByRole("button", { name: "Keep it" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(payloadOf(calls, "items:removeAttachment")).toBeUndefined();
+
+    fireEvent.click(within(section).getByRole("button", { name: "Remove spec.pdf" }));
+    fireEvent.click(within(await screen.findByRole("dialog", { name: "Remove this file?" })).getByRole("button", { name: "Remove" }));
+    await waitFor(() => expect(payloadOf(calls, "items:removeAttachment")).toEqual({ attachmentId: "f2" }));
+  });
+
+  it("puts dropped files on the item, and pasted ones", async () => {
+    staged = 0;
+    const { calls, onCall } = recorder();
+    renderItem(withFiles([]), onCall, staging);
+
+    const section = await screen.findByRole("region", { name: "Attachments" });
+    fireEvent.drop(section, { dataTransfer: { files: [new File(["a"], "a.txt"), new File(["b"], "b.txt")] } });
+    await waitFor(() => expect(payloadOf(calls, "items:addAttachments")).toEqual({ itemId: "t1", attachmentIds: ["draft-1", "draft-2"] }));
+
+    fireEvent.paste(section, { clipboardData: { files: [new File(["c"], "shot.png")] } });
+    await waitFor(() =>
+      expect(calls.filter((call) => call.channel === "items:addAttachments").map((call) => call.payload)).toContainEqual({ itemId: "t1", attachmentIds: ["draft-3"] }),
+    );
+  });
+
+  it("says which picked file main could not stage, in main's own sentence", async () => {
+    const { calls, onCall } = recorder();
+    renderItem(withFiles([]), onCall, {
+      ...free,
+      "attachments:pick": { attachments: [], omitted: 0, problem: "huge.bin is larger than the 20 MB attachment limit." },
+    });
+
+    const section = await screen.findByRole("region", { name: "Attachments" });
+    fireEvent.click(within(section).getByRole("button", { name: "Add files" }));
+
+    expect(await within(section).findByRole("alert")).toHaveTextContent("huge.bin is larger than the 20 MB attachment limit.");
+    expect(payloadOf(calls, "items:addAttachments")).toBeUndefined();
+  });
+
+  it("refuses past eight in one go and a file over 20 MB, in the sentences a comment uses", async () => {
+    staged = 0;
+    const { calls, onCall } = recorder();
+    renderItem(withFiles([]), onCall, staging);
+
+    const section = await screen.findByRole("region", { name: "Attachments" });
+    fireEvent.drop(section, { dataTransfer: { files: Array.from({ length: 9 }, (_unused, index) => new File(["x"], `f${index}.txt`)) } });
+    expect(await within(section).findByRole("alert")).toHaveTextContent("A message can carry at most 8 files, so one was left out.");
+    await waitFor(() => expect((payloadOf(calls, "items:addAttachments") as { attachmentIds: string[] } | undefined)?.attachmentIds).toHaveLength(8));
+
+    const huge = new File(["x"], "huge.bin");
+    Object.defineProperty(huge, "size", { value: 20 * 1024 * 1024 + 1 });
+    fireEvent.drop(section, { dataTransfer: { files: [huge] } });
+    expect(await within(section).findByText("huge.bin is larger than the 20 MB attachment limit.")).toBeInTheDocument();
+  });
+});

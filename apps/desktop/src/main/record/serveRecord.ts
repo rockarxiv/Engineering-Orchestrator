@@ -75,6 +75,11 @@ import {
   insertAttachments,
   listAttachmentsForComment,
   listAttachmentsSince,
+  listAttachmentRemovalsSince,
+  noteAttachmentRemoved,
+  removeItemAttachment,
+  attachmentWasRemoved,
+  type AttachmentRecord,
   type CreateAttachmentRecord,
 } from "../db/repos/attachmentsRepo.js";
 import type { LocalItemRecord } from "./localRecord.js";
@@ -195,6 +200,8 @@ export interface RecordAttachmentStore {
   storeImported(input: { name: string; mimeType?: string; data: Uint8Array }): Promise<Omit<CreateAttachmentRecord, "itemId" | "commentId">>;
   /** Reads a file back out, or null when the record holds the row and not the bytes. */
   read(path: string): Promise<Buffer | null>;
+  /** Deletes a removed item file's bytes (EO-702). */
+  removeManaged?(attachment: Pick<AttachmentRecord, "managed" | "path">): Promise<void>;
 }
 
 /**
@@ -1014,13 +1021,51 @@ async function applyOne(context: ServeRecordContext, deviceId: string, command: 
       if (context.attachments === undefined) {
         return refused("This EO server was started without anywhere to keep attachments.");
       }
-      if (getComment(db, command.commentId as Uuid) === undefined) {
+      // One of the item's own files (EO-702) needs only its item, which
+      // the record has by now — that much is asked of every command above.
+      if (command.commentId !== null && getComment(db, command.commentId as Uuid) === undefined) {
         return refused("This record has no such comment — send the comment before its files.");
       }
       // Already here, which is what a replayed queue looks like. By the
       // attachment's own id, exactly as a comment is by its own.
       if (getAttachment(db, command.attachmentId as Uuid) !== undefined) return ok;
+      // …or removed already: a removal queued behind a file a slow
+      // replay is still sending. Taking it in now would bring it back.
+      if (attachmentWasRemoved(db, command.attachmentId as Uuid)) return ok;
+      // One of the item's own files is part of what the item is, so it
+      // is changed on its description's terms (EO-702): on a step that
+      // waits on a group, only by the person the record has holding it.
+      // Judged here, against the record's own copy — the device asked a
+      // replica that can be a takeover behind.
+      if (command.commentId === null) {
+        const refusal = judgeOnGroupStep(db, item, personOfDevice(db, deviceId)?.id ?? null, "change");
+        if (refusal !== null) return notPermitted(refusal);
+      }
       return storeAttachment(context, command);
+    }
+
+    case "attachmentRemoval": {
+      // One of the item's own files, taken off it on a desktop (EO-702).
+      // A comment's file is refused by `removeItemAttachment` itself: it
+      // goes only with its comment. Noted even when the record never had
+      // the file, so a removal is never the thing that is lost.
+      const held = getAttachment(db, command.attachmentId as Uuid);
+      // Only the item the command names: naming one item is not a way to
+      // take a file off another.
+      if (held !== undefined && held.itemId !== command.itemId) {
+        return refused("That file belongs to another item, so this record removed nothing.");
+      }
+      if (held !== undefined && held.commentId !== null) return refused(`${held.name} is on a comment, and goes only with that comment.`);
+      // The same rule as putting one on, against the record's own copy.
+      const refusal = judgeOnGroupStep(db, item, personOfDevice(db, deviceId)?.id ?? null, "change");
+      if (refusal !== null) return notPermitted(refusal);
+      const removed = removeItemAttachment(db, command.attachmentId as Uuid, { announce: false, itemId: command.itemId as Uuid });
+      if (removed === undefined) {
+        noteAttachmentRemoved(db, command.attachmentId as Uuid, command.itemId as Uuid, Date.now());
+        return ok;
+      }
+      await context.attachments?.removeManaged?.(removed);
+      return ok;
     }
 
     case "claim": {
@@ -1438,8 +1483,12 @@ async function keepAdoptedFile(context: ServeRecordContext, file: RecordAdoptedA
   if (context.attachments === undefined) {
     return `${file.name}: this EO server was started without anywhere to keep attachments`;
   }
-  if (getComment(db, file.commentId as Uuid) === undefined) {
+  if (file.commentId !== null && getComment(db, file.commentId as Uuid) === undefined) {
     return `${file.name}: this record has no comment for it to hang off`;
+  }
+  // One of the item's own files (EO-702) hangs off the item instead.
+  if (file.commentId === null && getItem(db, file.itemId as Uuid) === undefined) {
+    return `${file.name}: this record has no item for it to belong to`;
   }
   if (getAttachment(db, file.id as Uuid) !== undefined) return null;
   let stored;
@@ -1452,7 +1501,7 @@ async function keepAdoptedFile(context: ServeRecordContext, file: RecordAdoptedA
   } catch (error) {
     return `${file.name}: this record could not keep it (${String(error)})`;
   }
-  insertAttachments(db, [{ ...stored, id: file.id as Uuid, itemId: file.itemId as Uuid, commentId: file.commentId as Uuid }]);
+  insertAttachments(db, [{ ...stored, id: file.id as Uuid, itemId: file.itemId as Uuid, commentId: file.commentId as Uuid | null }]);
   return null;
 }
 
@@ -1511,6 +1560,9 @@ export function serveChanges(
   // next device leased one of these items carries its watch on from here.
   const watches = listItemWatchesUpdatedSince(db, cursors.watches, limit, within);
   const files = listAttachmentsSince(db, cursors.attachments, limit, within);
+  // Item files somebody took off (EO-702): a removed row is gone, so the
+  // list above cannot say so.
+  const removals = listAttachmentRemovalsSince(db, cursors.attachmentRemovals, limit, within);
   const events = listRunEventsSince(db, cursors.runEvents, limit, within);
   // The projects the record holds and the graphs their items stand on
   // (EO-325). Without the first, a moved project's items arrive on
@@ -1612,6 +1664,7 @@ export function serveChanges(
       size: file.size,
       createdAt: file.createdAt,
     })),
+    attachmentRemovals: removals,
     runs: runs.map((run) =>
       // The record's copy is the one everybody else is catching up to,
       // so the command's id names the run and the pull it came from
@@ -1665,6 +1718,7 @@ export function serveChanges(
       watches: endOf(watches, cursors.watches, (watch) => ({ ts: watch.updatedAt, id: watch.id })),
       runEvents: endOf(events, cursors.runEvents, (event) => ({ ts: event.position, runId: event.runId, seq: event.seq })),
       attachments: endOf(files, cursors.attachments, (file) => ({ ts: file.createdAt, id: file.id })),
+      attachmentRemovals: endOf(removals, cursors.attachmentRemovals, (removal) => ({ ts: removal.ts, id: removal.attachmentId })),
       projects: endOf(movedProjects, cursors.projects, (project) => ({ ts: project.updatedAt, id: project.id })),
       itemTypes: endOf(types, cursors.itemTypes, (type) => ({ ts: type.createdAt, id: type.id })),
       pipelines: endOf(graphs, cursors.pipelines, (pipeline) => ({ ts: pipeline.updatedAt, id: pipeline.id })),
@@ -1686,6 +1740,7 @@ export function serveChanges(
       watches.length === limit ||
       events.length === limit ||
       files.length === limit ||
+      removals.length === limit ||
       movedProjects.length === limit ||
       types.length === limit ||
       graphs.length === limit ||
@@ -1809,7 +1864,7 @@ async function storeAttachment(
       // already here.
       id: command.attachmentId as Uuid,
       itemId: command.itemId as Uuid,
-      commentId: command.commentId as Uuid,
+      commentId: command.commentId as Uuid | null,
     },
   ]);
   return ok;

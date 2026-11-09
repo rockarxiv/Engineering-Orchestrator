@@ -232,6 +232,9 @@ const NOT_CATALOGUED: Partial<Record<RecordChannel, string>> = {
   "attachments:stage": "composer draft lifecycle",
   "attachments:discard": "composer draft lifecycle",
   "attachments:preview": "a whole image inlined for the renderer's viewer",
+  // EO-702: takes ids of drafts the renderer staged; a client names files by path on the item tools instead.
+  "items:addAttachments": "composer draft lifecycle",
+  "items:removeAttachment": "the item page's remove, behind its confirmation",
 
   // The assistant's room, whose whole subject is the screen somebody
   // is looking at. An external client is on no screen, so the route

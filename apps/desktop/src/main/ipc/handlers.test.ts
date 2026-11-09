@@ -90,7 +90,7 @@ describe("registering every handler under plain Node", () => {
     await registerEverything();
 
     await expect(dispatchIpc("dialog:pickDirectory", {})).resolves.toEqual({ ok: true, data: { path: null } });
-    await expect(dispatchIpc("attachments:pick", undefined)).resolves.toEqual({ ok: true, data: { attachments: [], omitted: 0 } });
+    await expect(dispatchIpc("attachments:pick", undefined)).resolves.toEqual({ ok: true, data: { attachments: [], omitted: 0, problem: null } });
   });
 
   it("answers view:current from the platform's window, not BrowserWindow's", async () => {

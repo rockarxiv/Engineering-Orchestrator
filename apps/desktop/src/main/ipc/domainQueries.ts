@@ -92,6 +92,7 @@ import {
   workspaceLabel,
   isJiraConnected,
   listAttachmentsForItem,
+  listItemAttachments,
   pendingPushesForItem,
   finishedItemIds,
   stepForItem,
@@ -977,6 +978,20 @@ function ownFieldsSection(db: Db, { item, step }: ItemDetailContext) {
       // than a set of fields picked out here.
       spec: item.spec,
       createdAt: item.createdAt,
+      // The item's own files (EO-702), beside its description because
+      // that is what they are part of. A comment's files stay on the
+      // comment, in the thread.
+      attachments: listItemAttachments(db, item.id).map((attachment) => ({
+        id: attachment.id,
+        itemId: attachment.itemId,
+        commentId: null,
+        kind: attachment.kind,
+        name: attachment.name,
+        mimeType: attachment.mimeType,
+        size: attachment.size,
+        syncStatus: attachment.jiraSyncError ? ("error" as const) : attachment.jiraAttachmentId ? ("synchronized" as const) : ("local" as const),
+        syncError: attachment.jiraSyncError,
+      })),
       // Outside the summary spread, because it belongs to neither
       // branch of it: the rail reads the switch off the item's own row
       // (EO-122 stores it there, and there is no dynamic inheritance to

@@ -1263,7 +1263,8 @@ export function readItemMentions(db: Db, itemIds: readonly Uuid[]): RecordAdopte
 export interface MovedFile {
   id: Uuid;
   itemId: Uuid;
-  commentId: Uuid;
+  /** Null for one of the item's own files (EO-702), which moves with its item. */
+  commentId: Uuid | null;
   name: string;
   mimeType: string;
   size: number;
@@ -1283,7 +1284,7 @@ export function projectAttachments(db: Db, itemIds: readonly Uuid[]): MovedFile[
     .map((row) => ({
       id: row.id as Uuid,
       itemId: row.itemId as Uuid,
-      commentId: row.commentId as Uuid,
+      commentId: row.commentId as Uuid | null,
       name: row.name,
       mimeType: row.mimeType,
       size: row.size,

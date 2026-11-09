@@ -410,7 +410,12 @@ export const RecordAttachmentCommandSchema = z.object({
   kind: z.literal("attachment"),
   id: z.string(),
   itemId: z.string(),
-  commentId: z.string(),
+  /**
+   * The comment it hangs off, or null for one of the item's own files
+   * (EO-702) — part of what the item is, as its description is, rather
+   * than something said on its thread.
+   */
+  commentId: z.string().nullable().default(null),
   attachmentId: z.string(),
   name: z.string(),
   mimeType: z.string(),
@@ -418,6 +423,30 @@ export const RecordAttachmentCommandSchema = z.object({
   /** Empty while queued; the drain fills it from this machine's store as it sends. */
   dataBase64: z.string().default(""),
 });
+
+/**
+ * One of an item's own files, taken off it (EO-702).
+ *
+ * Its own command because an attachment is otherwise never removed on
+ * one machine and told to another: a comment's files go with the
+ * comment. An item file is part of the item's definition and a person
+ * may take one away, so the record has to hear it and say so to every
+ * replica — see `RecordChangesSchema.attachmentRemovals`. Idempotent: a
+ * removal of a file the record no longer holds is applied as nothing.
+ */
+export const RecordAttachmentRemovalCommandSchema = z.object({
+  kind: z.literal("attachmentRemoval"),
+  id: z.string(),
+  itemId: z.string(),
+  attachmentId: z.string(),
+  /**
+   * What the file was, so a device whose removal the record refuses can
+   * fetch it back by name — its own row and bytes are already gone.
+   */
+  name: z.string().default(""),
+  mimeType: z.string().default(""),
+});
+export type RecordAttachmentRemovalCommand = z.infer<typeof RecordAttachmentRemovalCommandSchema>;
 
 /**
  * Somebody pinned a comment, or took the pin off (EO-324).
@@ -649,6 +678,7 @@ export const RecordCommandSchema = z.discriminatedUnion("kind", [
   RecordPinCommandSchema,
   RecordMentionCommandSchema,
   RecordAttachmentCommandSchema,
+  RecordAttachmentRemovalCommandSchema,
   RecordTransitionCommandSchema,
   RecordCommentCommandSchema,
   RecordRunCommandSchema,
@@ -1312,6 +1342,12 @@ export const RecordCursorsSchema = z.object({
    */
   attachments: RecordCursorSchema.default({ ts: 0, id: "" }),
   /**
+   * Item files somebody removed (EO-702), paged on when the record took
+   * the removal. A removed row is gone, so nothing in `attachments` can
+   * say so; this is the list that does.
+   */
+  attachmentRemovals: RecordCursorSchema.default({ ts: 0, id: "" }),
+  /**
    * The projects the record holds (EO-325).
    *
    * New here because a project stopped being a purely local idea: one
@@ -1471,8 +1507,13 @@ export const RecordChangesSchema = z.object({
    * all when it pulled the comment before the file had landed.
    */
   attachments: z
-    .array(RecordAttachmentSchema.extend({ itemId: z.string(), commentId: z.string(), createdAt: z.number() }))
+    .array(RecordAttachmentSchema.extend({ itemId: z.string(), commentId: z.string().nullable(), createdAt: z.number() }))
     .default([]),
+  /**
+   * Item files removed since the cursor (EO-702): each replica deletes
+   * its row and its bytes, and forgets a fetch it had not finished.
+   */
+  attachmentRemovals: z.array(z.object({ attachmentId: z.string(), itemId: z.string(), ts: z.number() })).default([]),
   /** Pins added or taken off since the cursor — see `RecordCursorsSchema.pins`. */
   pins: z.array(z.object({ commentId: z.string(), itemId: z.string(), pinned: z.boolean(), ts: z.number() })).default([]),
   /**
@@ -1948,7 +1989,8 @@ export type RecordAdoptedMention = z.infer<typeof RecordAdoptedMentionSchema>;
  */
 export const RecordAdoptedAttachmentSchema = RecordAttachmentSchema.extend({
   itemId: z.string(),
-  commentId: z.string(),
+  /** Null for one of the item's own files (EO-702). */
+  commentId: z.string().nullable().default(null),
   createdAt: z.number(),
   dataBase64: z.string().max(MAX_ATTACHMENT_BASE64_CHARS),
 });

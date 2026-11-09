@@ -5,9 +5,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Uuid } from "@eo/core";
 import { AttachmentStorage } from "../attachments/storage.js";
 import type { DbHandle } from "../db/client.js";
+import { attachmentRemovals } from "../db/schema.js";
 import {
+  addItemAttachments,
   createRun,
   getItem,
+  listAttachmentsForItem,
+  listItemAttachments,
+  removeItemAttachment,
   listAgents,
   postComment,
   projectForWorkspace,
@@ -194,6 +199,32 @@ describe("items:delete", () => {
 
     expect(result).toMatchObject({ deleted: true, deletedCount: 2 });
     expect(paths.some(existsSync)).toBe(false);
+  });
+
+  it("removes the item's own files and their bytes, and those of its stories (EO-702)", async () => {
+    const eo = repository();
+    const feature = createTestItem(handle.db, { type: "feature", title: "Rate limiting", stepId: null, workspaceId: eo.id });
+    const story = createTestItem(handle.db, { type: "story", title: "The limiter", stepId: "todo", workspaceId: eo.id, parentId: feature.id });
+    const own = async (itemId: Uuid, name: string): Promise<string> => {
+      const draft = await attachmentStorage.stageData({ name, dataBase64: Buffer.from(name).toString("base64") });
+      const records = await attachmentStorage.prepare([draft.id]);
+      addItemAttachments(handle.db, itemId, records);
+      await attachmentStorage.finish(records);
+      return records[0]!.storagePath;
+    };
+    const paths = await Promise.all([own(feature.id, "mock.png"), own(story.id, "spec.pdf"), addAttachment(story.id, "said.txt")]);
+    // A removal noted earlier goes with the item too.
+    await own(story.id, "gone.txt");
+    removeItemAttachment(handle.db, listItemAttachments(handle.db, story.id).find((file) => file.name === "gone.txt")!.id);
+    expect(paths.every(existsSync)).toBe(true);
+
+    const result = await deleteItemCommand(handle.db, fakeEngine(), offline(), { ...NOTHING_EXTRA, itemId: feature.id }, attachmentStorage, worktreeRoot);
+
+    expect(result).toMatchObject({ deleted: true, deletedCount: 2 });
+    expect(paths.some(existsSync)).toBe(false);
+    expect(listAttachmentsForItem(handle.db, feature.id)).toEqual([]);
+    expect(listAttachmentsForItem(handle.db, story.id)).toEqual([]);
+    expect(handle.db.select().from(attachmentRemovals).all()).toEqual([]);
   });
 
   it("says so rather than failing when the item is already gone", async () => {

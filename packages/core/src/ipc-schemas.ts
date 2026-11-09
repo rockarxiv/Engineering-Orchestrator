@@ -293,7 +293,8 @@ export type AttachmentDraft = z.infer<typeof AttachmentDraftSchema>;
 /** Durable attachment metadata safe to expose to the renderer (no local path). */
 export const AttachmentViewSchema = AttachmentDraftSchema.extend({
   itemId: z.string(),
-  commentId: z.string(),
+  /** Null for one of the item's own files rather than a comment's (EO-702). */
+  commentId: z.string().nullable(),
   syncStatus: z.enum(["local", "pending", "synchronized", "error"]).optional(),
   syncError: z.string().nullable().optional(),
 });
@@ -510,6 +511,14 @@ export const ItemDetailSchema = z.object({
      */
     spec: z.record(z.string(), z.unknown()).nullable(),
     createdAt: z.number(),
+    /**
+     * The item's own files (EO-702): a mock it is built against, a spec
+     * PDF, a screenshot of the bug — part of what the item is, as its
+     * description is. Owned by no comment, so they are not anything
+     * anybody said, and no comment's deletion or trimming takes them.
+     * Comment files stay on their comments.
+     */
+    attachments: z.array(AttachmentViewSchema).default([]),
     /**
      * Whether this item talks to Jira at all (EO-122).
      *
