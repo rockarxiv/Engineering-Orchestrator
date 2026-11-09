@@ -177,6 +177,7 @@ export function PipelineDrawing({
           {layout.steps.map(({ step, box }) => {
             const load = loads?.get(step.id);
             const here = loadTotal(load);
+            const noted = step.id === entryStepId && entryNote !== null;
             const added = newStepIds?.has(step.id) ?? false;
             const chosen = step.id === selectedStepId;
             const lane = stepLane(step);
@@ -188,6 +189,8 @@ export function PipelineDrawing({
                 style={{ ...px(box), paddingLeft: BOX_PAD_X, paddingRight: BOX_PAD_X }}
                 className={cn(
                   "absolute flex flex-col justify-center gap-0.5 rounded-[10px] border",
+                  // Two lines leave little room below: keep the load strip clear of the note, whether or not one is drawn yet.
+                  noted && "pb-[7px]",
                   // A terminal step is an end: outlined, not filled. Every other step is raised on a hairline, in its owner's lane.
                   step.isTerminal ? "border-line-strong" : cn(lane.surface, lane.edge),
                   // New in this draft: dashed, in the neutral ink rather than the accent (ARCHITECTURE.md, "Genre: utilitarian", rule 6).
@@ -237,8 +240,8 @@ export function PipelineDrawing({
                     {step.isTerminal ? <span className="sr-only">end</span> : <StepKindChip step={step} />}
                   </span>
                 </span>
-                {step.id === entryStepId && entryNote !== null ? (
-                  <span title={entryNote} className="truncate text-[11px] text-ink-subtle">
+                {noted ? (
+                  <span title={entryNote ?? undefined} className="truncate text-[11px] leading-[13px] text-ink-subtle">
                     {entryNote}
                   </span>
                 ) : null}
