@@ -277,6 +277,13 @@ export function createModuleRunnerLookup(options: ModuleRegistryOptions): (actio
       // eight minutes, and a failure that looks like the module's.
       const step = stepForItem(options.db, context.item);
 
+      // `ctx.run`, `ctx.workspace` and `ctx.project` (EO-711): read once,
+      // here, after the workspace is prepared — the directory it was
+      // prepared as is what `ctx.workspace` describes — and sent with
+      // the run. Absent where the launcher has no reader, which a module
+      // reads as nothing known.
+      const snapshot = await options.launcher.items?.context({ item: context.item, runId: context.runId, workspace: prepared.workspace });
+
       // The transcript, through the run's own reporter rather than a
       // buffer of this module's own (EO-77). `run_events.seq` is
       // allocated in memory per buffer, so a second one over the same run
@@ -314,6 +321,7 @@ export function createModuleRunnerLookup(options: ModuleRegistryOptions): (actio
         // secrets and the inputs above, because the answer arrives
         // between two runs — that is the whole point of it.
         answer: answerToLastAsk(options.db, context.item.id),
+        ...(snapshot === undefined ? {} : { context: snapshot }),
         env,
         // Which of those are environment variables (EO-485): not
         // secret, so left in the transcript rather than redacted.

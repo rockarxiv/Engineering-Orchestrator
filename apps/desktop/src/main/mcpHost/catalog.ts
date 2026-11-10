@@ -3574,7 +3574,15 @@ const UNGATED_WRITE_TOOLS: readonly ToolSpec[] = [
       "[{ key, title, type, pipelineName, stepName, parentKey }], the tickets await ctx.items(filter) searches, filtered (type, stepId, " +
       "stepName, pipelineId, parentKey, keys, text, createdSince, updatedSince, atTerminalStep) and paged (offset, limit) as EO does; an entry " +
       "may carry stepId, pipelineId, createdAt, updatedAt and atTerminalStep for the filters reading them. attachments — { ID: { name, " +
-      "mimeType, content } }, content a string or bytes, what await ctx.readAttachment(id) answers with its bytes. answer — " +
+      "mimeType, content } }, content a string or bytes, what await ctx.readAttachment(id) answers with its bytes. run — ctx.run: " +
+      "{ step ({ id, name }), pipeline ({ id, name }), attempt, cameFrom ({ step, result }: the step and result that sent the ticket here), " +
+      "trial, watch ({ startedAt, waitingMs, intervalMs }, on a step that keeps checking) }. workspace — ctx.workspace: { kind, id, name, " +
+      "git ({ repositoryName, mainCheckout, baseBranch, testCommand, lintCommand, buildCommand, forge ({ kind, remote, draft, " +
+      "opensPullRequests }) }, null off a git repository) }; git.worktreePath is always harness.cwd, as it is ctx.cwd on a real run. " +
+      "project — ctx.project (null unless scripted): { id, name, keyPrefix, workspaces ([{ kind, id, name }]), itemTypes ([{ id, slug, " +
+      "label, container, fields }]), pipelines ([{ id, name, steps ([{ id, name, kind }]) }]) }. Left out is null, false or []. Step and " +
+      "pipeline ids and names, workspace ids, names and paths and the project's name and key prefix differ between installations: a " +
+      "module reads them but must not branch on them. answer — " +
       "ctx.answer(). inputs — the step's values. timeoutMs — ctx.timeoutMs. createItem — [{ key } or { reason }], the answers ctx.createItem gets in order (NEW-1, NEW-2… when none is scripted). Nothing real happens: no process is " +
       "spawned, comments are recorded in `comments` and never posted, files given to ctx.attach are recorded in " +
       "`attachments` as [{ key, caption, paths }] and never copied, items given to ctx.createItem are recorded in `created` as [{ idempotencyKey, key, type, title, body, spec, pipeline, " +

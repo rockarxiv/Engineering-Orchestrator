@@ -2,14 +2,16 @@ import { readFile } from "node:fs/promises";
 import { z } from "zod";
 import { ItemListFiltersSchema, type Item, type Run, type Uuid } from "@eo/core";
 import type { Db } from "../db/client.js";
-import { getAttachment, getItemByKey } from "../db/repos/index.js";
+import { asGitWorkspace, getAttachment, getItem, getItemByKey, getWorkspace } from "../db/repos/index.js";
 import {
   moduleItemSummaries,
+  moduleRunContext,
   moduleItemView,
   moduleRunsView,
   moduleTransitionsView,
   type ModuleItemPage,
   type ModuleItemView,
+  type ModuleRunContext,
   type ModuleRunView,
   type ModuleTransitionView,
 } from "../ipc/domainQueries.js";
@@ -41,6 +43,12 @@ export interface ModuleItemReader {
   items(projectId: string | null, filter: unknown): ModuleItemPage | { refused: string };
   /** One attachment with its bytes, null where no attachment has the id, or why its file cannot be read (EO-710). */
   readAttachment(id: string): Promise<ModuleAttachmentContent | null | { refused: string }>;
+  /**
+   * `ctx.run`, `ctx.workspace` and `ctx.project` for a run about to start
+   * on `item` in the directory `workspace` was prepared as (EO-711). Read
+   * once and sent with the run, so a module reads them without `await`.
+   */
+  context(input: { item: Item; runId: string; workspace: { cwd: string; kind: string; workspaceId: string | null } }): Promise<ModuleRunContext>;
 }
 
 /** One file and what it holds (EO-710). */
@@ -89,9 +97,20 @@ export interface ModuleItemReaderOptions {
    * `result` answers; absent, that is every run.
    */
   resultKey?: (run: Run, item: Item) => string | null | undefined;
+  /**
+   * Which forge a repository's remote points at, for a repository that
+   * does not say (EO-711) — the developer pack's reading of the remote
+   * URL, handed in for `targetBranch`'s reason. Absent, an unconfigured
+   * forge is null.
+   */
+  forgeKind?: (repoPath: string, remote: string) => Promise<"github" | "gitlab" | null>;
 }
 
 export function moduleItemReader(db: Db, options: ModuleItemReaderOptions = {}): ModuleItemReader {
+  const resultKey = (run: Run, of: Item): string | null => {
+    const claimed = options.resultKey?.(run, of);
+    return claimed === undefined ? reportedRunResultKey(run) : claimed;
+  };
   return {
     read: async (key) => {
       const item = getItemByKey(db, key);
@@ -113,10 +132,7 @@ export function moduleItemReader(db: Db, options: ModuleItemReaderOptions = {}):
     runs: (key) => {
       const item = getItemByKey(db, key);
       if (item === undefined) return null;
-      return moduleRunsView(db, item, (run, of) => {
-        const claimed = options.resultKey?.(run, of);
-        return claimed === undefined ? reportedRunResultKey(run) : claimed;
-      });
+      return moduleRunsView(db, item, resultKey);
     },
     transitions: (key) => {
       const item = getItemByKey(db, key);
@@ -142,6 +158,21 @@ export function moduleItemReader(db: Db, options: ModuleItemReaderOptions = {}):
         return { refused: `${attachment.name} can no longer be read from this machine.` };
       }
       return { id: attachment.id, name: attachment.name, mimeType: attachment.mimeType, size: content.byteLength, content };
+    },
+    context: async ({ item, runId, workspace }) => {
+      const git = workspace.workspaceId === null ? undefined : asGitWorkspace(getWorkspace(db, workspace.workspaceId as Uuid));
+      let guessedForgeKind: "github" | "gitlab" | null = null;
+      if (git !== undefined && git.config.forgeKind === null && options.forgeKind !== undefined) {
+        try {
+          guessedForgeKind = await options.forgeKind(git.config.repoPath, git.config.forgeRemote);
+        } catch {
+          // A remote that could not be read leaves the forge unknown.
+          guessedForgeKind = null;
+        }
+      }
+      // Read again after the wait, as `read` does.
+      const current = getItem(db, item.id as Uuid) ?? item;
+      return moduleRunContext(db, { item: current, runId, workspace, now: Date.now() }, { resultKey, guessedForgeKind });
     },
   };
 }

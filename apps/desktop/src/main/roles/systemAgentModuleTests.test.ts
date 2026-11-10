@@ -36,7 +36,7 @@ describe("the configure section of the system agent's prompt", () => {
 
   it("teaches the harness: harness.run, its fixtures and what it answers", () => {
     const section = configureSection();
-    for (const term of ["harness.run(fixtures)", "harness.cwd", "`exec`", "`item`", "`itemByKey`", "`answer`", "`inputs`", "`timeoutMs`", "`createItem`", "{ outcome, comments, attachments, created, logs, execs }", "node:assert"]) {
+    for (const term of ["harness.run(fixtures)", "harness.cwd", "`exec`", "`item`", "`itemByKey`", "`answer`", "`inputs`", "`timeoutMs`", "`createItem`", "`run`", "`workspace`", "`project`", "{ outcome, comments, attachments, created, logs, execs }", "node:assert"]) {
       expect(section).toContain(term);
     }
   });
@@ -64,6 +64,6 @@ describe("the configure section of the system agent's prompt", () => {
     const accepted = /It takes ([a-zA-Z, ]+) and timeoutMs\./.exec(host)?.[1];
     expect(accepted).toBeDefined();
     const names = [...accepted!.split(/,\s*/), "timeoutMs"].map((name) => name.trim());
-    expect(names.sort()).toEqual(["answer", "attachments", "createItem", "exec", "inputs", "item", "itemByKey", "items", "runs", "timeoutMs", "transitions"]);
+    expect(names.sort()).toEqual(["answer", "attachments", "createItem", "exec", "inputs", "item", "itemByKey", "items", "project", "run", "runs", "timeoutMs", "transitions", "workspace"]);
   });
 });

@@ -2008,8 +2008,12 @@ describe("what a module can reach", () => {
       // The board, searched (EO-710).
       "items",
       "log",
+      // The project the item belongs to, sent with the run (EO-711).
+      "project",
       // A file's bytes, an item's runs and its step moves (EO-710).
       "readAttachment",
+      // The run itself — its step, attempt and what sent the item here (EO-711).
+      "run",
       "runs",
       "ticket",
       "ticketByKey",
@@ -2018,6 +2022,8 @@ describe("what a module can reach", () => {
       "timeoutMs",
       // An item's step moves (EO-710).
       "transitions",
+      // The workspace the run is in (EO-711).
+      "workspace",
     ]);
   });
 });

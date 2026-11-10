@@ -7,6 +7,7 @@ import type { StepAnswer } from "../roles/answers.js";
 import { killTree } from "../process/killTree.js";
 import { searchPath } from "../process/searchPath.js";
 import type { ModuleItemReader } from "./moduleItemRead.js";
+import type { ModuleRunContext } from "../ipc/domainQueries.js";
 
 /**
  * Running one module, from the outside (KAN-105).
@@ -292,6 +293,12 @@ export interface RunModuleRequest {
    * module as null — the same answer as "nothing has been asked".
    */
   answer?: StepAnswer | null;
+  /**
+   * What `ctx.run`, `ctx.workspace` and `ctx.project` answer (EO-711),
+   * built by the caller from the run it is starting. Absent, `ctx.run`
+   * and `ctx.workspace` hold nulls and `ctx.project` is null.
+   */
+  context?: ModuleRunContext;
   /** Aborted when a person cancels the run, or EO shuts down. Kills the tree. */
   signal?: AbortSignal;
   /** Where the module's output goes as it arrives. */
@@ -1248,6 +1255,11 @@ export function runModule(launcher: ModuleHostLauncher, request: RunModuleReques
         // than the row: one shape, built in one place, by the side that
         // owns the rules about who counts as having answered.
         answer: request.answer ?? null,
+        // `ctx.run`, `ctx.workspace` and `ctx.project` (EO-711): a
+        // snapshot, sent rather than asked for on fd 6, because none of
+        // it changes while the run does and a module reads it without
+        // `await`.
+        context: request.context ?? null,
         cwd: request.cwd,
         env: request.env,
       }),
