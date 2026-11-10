@@ -205,6 +205,8 @@ export const SkillAuthorSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("consolidation"), consolidationId: z.string() }),
   z.object({ kind: z.literal("agent"), agentId: z.string() }),
   z.object({ kind: z.literal("record") }),
+  /** EO itself (EO-720): archiving an agent's skill nobody loads. Never a person's write, so a lock refuses it. */
+  z.object({ kind: z.literal("eo") }),
 ]);
 export type SkillAuthor = z.infer<typeof SkillAuthorSchema>;
 
@@ -223,6 +225,8 @@ export function skillAuthorLabel(author: SkillAuthor): string {
       return `system agent ${author.agentId}`;
     case "record":
       return "the organisation's record";
+    case "eo":
+      return "EO";
   }
 }
 
@@ -327,8 +331,9 @@ export type SkillLoadedEvent = z.infer<typeof SkillLoadedEventSchema>;
  * stored (EO-715). Runs, not events.
  *
  * `deliveriesSinceLoad` is the current stretch of runs given the skill
- * since it was last loaded — every run that was given it, where it has
- * never been loaded. What staleness and automatic archival count.
+ * since it was last loaded or restored — every run that was given it,
+ * where it has been neither (EO-720). What staleness and automatic
+ * archival count (`skillState`).
  */
 export const SkillUsageSchema = z.object({
   runsDelivered: z.number().int().nonnegative(),
@@ -341,8 +346,49 @@ export type SkillUsage = z.infer<typeof SkillUsageSchema>;
 /** A skill never delivered and never loaded. */
 export const NO_SKILL_USAGE: SkillUsage = { runsDelivered: 0, runsLoaded: 0, lastLoadedAt: null, deliveriesSinceLoad: 0 };
 
-/** One skill as the catalogue lists it: the skill, and its usage. */
-export const SkillListEntrySchema = SkillSchema.extend({ usage: SkillUsageSchema });
+// ── Staleness and automatic archival (EO-720) ────────────────────
+
+/**
+ * Where a skill stands (EO-720). `archived` is the row's own `archivedAt`;
+ * `stale` is derived from its usage and the guardrails each time it is
+ * asked, never stored: an agent-written, unlocked skill given to
+ * `staleAfterRuns` runs in a row without one loading it. Loading it, or a
+ * restore, starts the stretch again, so it is `active` again.
+ */
+export const SkillStateSchema = z.enum(["active", "stale", "archived"]);
+export type SkillState = z.infer<typeof SkillStateSchema>;
+
+/** The two guardrails staleness and automatic archival count against, in runs rather than days: an idle project ages nothing. */
+export interface SkillAgeing {
+  staleAfterRuns: number;
+  archiveAfterRuns: number;
+}
+
+export const DEFAULT_SKILL_STALE_AFTER_RUNS = 20;
+export const DEFAULT_SKILL_ARCHIVE_AFTER_RUNS = 50;
+
+/**
+ * Whether a skill ages at all (EO-720): an agent's, and not locked. A
+ * person's skill and a locked one are only reported — their usage is
+ * shown like any other's — and never marked stale or archived by EO.
+ */
+export function skillAgesAutomatically(skill: Pick<Skill, "createdBy" | "locked">): boolean {
+  return skill.createdBy === "agent" && !skill.locked;
+}
+
+/** Where a skill stands, from its row, its usage and the guardrails in force (EO-720). */
+export function skillState(skill: Pick<Skill, "createdBy" | "locked" | "archivedAt">, usage: SkillUsage, ageing: SkillAgeing): SkillState {
+  if (skill.archivedAt !== null) return "archived";
+  return skillAgesAutomatically(skill) && usage.deliveriesSinceLoad >= ageing.staleAfterRuns ? "stale" : "active";
+}
+
+/** Whether EO archives this skill on its next pass (EO-720): a live skill that ages, given `archiveAfterRuns` runs in a row with no load. */
+export function skillDueForArchive(skill: Pick<Skill, "createdBy" | "locked" | "archivedAt">, usage: SkillUsage, ageing: SkillAgeing): boolean {
+  return skill.archivedAt === null && skillAgesAutomatically(skill) && usage.deliveriesSinceLoad >= ageing.archiveAfterRuns;
+}
+
+/** One skill as the catalogue lists it: the skill, its usage, and where it stands (EO-720). */
+export const SkillListEntrySchema = SkillSchema.extend({ usage: SkillUsageSchema, state: SkillStateSchema });
 export type SkillListEntry = z.infer<typeof SkillListEntrySchema>;
 
 /**

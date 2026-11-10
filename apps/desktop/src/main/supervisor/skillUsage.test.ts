@@ -13,8 +13,9 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { DbHandle } from "../db/client.js";
 import { setAgentAttachment } from "../db/repos/agentAttachmentsRepo.js";
 import { listAgents } from "../db/repos/agentsRepo.js";
-import { listRunEvents, listRunsForItem } from "../db/repos/index.js";
-import { saveSkill } from "../db/repos/skillsRepo.js";
+import { createProject, listCommentsForItem, listRunEvents, listRunsForItem, listSkillVersions } from "../db/repos/index.js";
+import { getSkill, saveSkill } from "../db/repos/skillsRepo.js";
+import { findProjectThread } from "../projects/projectThread.js";
 import { createTestItem, openMigratedTestDb } from "../db/testHelpers.js";
 import { listSkillsCommand } from "../ipc/skillCommands.js";
 import { createFakeProvider } from "../providers/fake.js";
@@ -157,5 +158,49 @@ describe("skill usage on a dispatch", () => {
   it("records nothing for a run given no skill, whatever it loads", async () => {
     attachSkill("House style");
     expect(await dispatch(saying([{ type: "skill_loaded", slug: "house-style" }]))).toEqual([]);
+  });
+});
+
+/** EO's pass after a run (EO-720): an agent's skill given past the guardrail without a load is archived, and the project's thread told. */
+describe("archiving unused agent skills after a dispatch", () => {
+  let handle: DbHandle;
+  let writes: TestWriteBridge;
+
+  beforeEach(async () => {
+    writes = await startTestWriteBridge();
+    handle = openMigratedTestDb();
+  });
+
+  afterEach(async () => {
+    await writes.close();
+    handle.close();
+  });
+
+  it("archives an agent's skill nobody loads after the run that crosses the guardrail, and says so on the project thread", async () => {
+    const project = createProject(handle.db, { name: "Shop", keyPrefix: "SHOP" });
+    const item = createTestItem(handle.db, { type: "story", title: "On a project", stepId: "todo", projectId: project.id });
+    const implementer = listAgents(handle.db).find((agent) => agent.role === "implementer")!;
+    const saved = saveSkill(handle.db, SkillDraftSchema.parse({ name: "Release", description: "How to release.", body: "Tag it." }), Date.now(), { kind: "consolidation", consolidationId: "c-1" });
+    if (!saved.ok) throw new Error(saved.problems.join("\n"));
+    setAgentAttachment(handle.db, { agentId: implementer.id, kind: "skill", id: saved.skill.id, attached: true });
+
+    const fake = createFakeProvider({ result: validImplementResult });
+    const provider: AgentProvider = {
+      ...fake,
+      async *start(opts) {
+        yield { type: "skills_delivered", slugs: ["release"] };
+        yield* fake.start(opts);
+      },
+    };
+    const supervisor = createRunSupervisor({ db: handle.db, provider, limits: LIMITS, agentWriteBridge: writes.agentWriteBridge, guards: { skillStaleAfterRuns: 1, skillArchiveAfterRuns: 1 } });
+    writes.serve(supervisor);
+    await supervisor.runOnce();
+
+    expect(listRunsForItem(handle.db, item.id)).toHaveLength(1);
+    expect(getSkill(handle.db, saved.skill.id)!.archivedAt).not.toBeNull();
+    expect(listSkillVersions(handle.db, saved.skill.id)[0]).toMatchObject({ action: "archive", author: { kind: "eo" } });
+    const notes = listCommentsForItem(handle.db, findProjectThread(handle.db, project.id)!.id);
+    expect(notes).toHaveLength(1);
+    expect(notes[0]!.body).toContain("`release`");
   });
 });

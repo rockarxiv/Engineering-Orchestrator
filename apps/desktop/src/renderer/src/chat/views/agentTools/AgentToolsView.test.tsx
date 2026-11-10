@@ -71,6 +71,7 @@ const PLAYBOOK: SkillListEntry = {
   updatedAt: 0,
   archivedAt: null, createdBy: "person", locked: false,
   usage: { runsDelivered: 0, runsLoaded: 0, lastLoadedAt: null, deliveriesSinceLoad: 0 },
+  state: "active",
 };
 
 const REVIEWER = { id: "019fb8c6-0000-7000-8000-0000000000c1", name: "Reviewer", role: "reviewer", provider: "claude", model: null, enabled: true, archivedAt: null };
@@ -471,6 +472,33 @@ describe("the agent tools catalogue", () => {
     const person = await screen.findByRole("region", { name: "PR review" });
     expect(person).toHaveTextContent(`Delivered to 12 runs, loaded by 3 runs, last loaded ${new Date(at).toLocaleString()} · 4 runs without a load since`);
     expect(screen.getByRole("region", { name: "Release" })).toHaveTextContent("Not delivered to a run yet");
+  });
+
+  /** Where each skill stands (EO-720), beside the numbers that put it there. */
+  it("shows each skill's state, active, stale or archived, beside its usage", async () => {
+    mockIpc({
+      "skills:list": {
+        ok: true,
+        data: {
+          skills: [
+            PLAYBOOK,
+            { ...PLAYBOOK, id: "019fb8c6-0000-7000-8000-0000000000b2", slug: "release", name: "Release", createdBy: "agent", state: "stale", usage: { runsDelivered: 25, runsLoaded: 0, lastLoadedAt: null, deliveriesSinceLoad: 25 } },
+            { ...PLAYBOOK, id: "019fb8c6-0000-7000-8000-0000000000b3", slug: "old", name: "Old", createdBy: "agent", state: "archived", archivedAt: 5, usage: { runsDelivered: 50, runsLoaded: 0, lastLoadedAt: null, deliveriesSinceLoad: 50 } },
+          ],
+        },
+      },
+    });
+    renderIn(<AgentTools />);
+
+    fireEvent.click(await screen.findByRole("tab", { name: /^Skills\s*2$/ }));
+    const usageRow = (name: string) => within(screen.getByRole("region", { name })).getByText(/Delivered to|Not delivered/).parentElement!;
+    await screen.findByRole("region", { name: "PR review" });
+    expect(usageRow("PR review")).toHaveTextContent("Active");
+    expect(usageRow("Release")).toHaveTextContent("Stale");
+    expect(usageRow("Release")).toHaveTextContent("25 runs without a load since");
+
+    fireEvent.click(screen.getByRole("button", { name: "Show archived (1)" }));
+    expect(usageRow("Old")).toHaveTextContent("Archived");
   });
 
   it("lists a skill's history and restores an earlier version", async () => {

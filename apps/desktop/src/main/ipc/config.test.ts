@@ -243,6 +243,20 @@ describe("guardrails", () => {
     expect(GuardConfigSchema.safeParse({ ...DEFAULT_GUARD_CONFIG, memoryScopeMaxChars: 2.5 }).success).toBe(false);
   });
 
+  /** An agent's unused skill (EO-720): stale after 20 runs without a load and archived after 50, filled in for an older config, and never archived before it is stale. */
+  it("ages an agent's unused skill by 20 and 50 runs by default, and refuses an archive count below the stale count", () => {
+    setSetting(handle.db, "engine.guards", { globalConcurrency: 2 });
+    expect(readGuards(handle.db)).toMatchObject({ skillStaleAfterRuns: 20, skillArchiveAfterRuns: 50 });
+    expect(GuardConfigSchema.safeParse({ ...DEFAULT_GUARD_CONFIG, skillStaleAfterRuns: 0 }).success).toBe(false);
+
+    const refused = writeGuards(handle.db, { ...DEFAULT_GUARD_CONFIG, skillStaleAfterRuns: 30, skillArchiveAfterRuns: 10 });
+    expect(refused.saved).toBe(false);
+    expect(refused.problems.join(" ")).toMatch(/archived after 10 runs .* stale at 30/);
+
+    expect(writeGuards(handle.db, { ...DEFAULT_GUARD_CONFIG, skillStaleAfterRuns: 5, skillArchiveAfterRuns: 8 }).saved).toBe(true);
+    expect(readGuards(handle.db)).toMatchObject({ skillStaleAfterRuns: 5, skillArchiveAfterRuns: 8 });
+  });
+
   it("says it saved, and what the limits now are", () => {
     const written = writeGuards(handle.db, { ...DEFAULT_GUARD_CONFIG, dailyBudgetCents: 500 });
 

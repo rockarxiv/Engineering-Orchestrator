@@ -165,7 +165,7 @@ function appendVersion(
     .run();
 }
 
-/** The id a version row keeps beside its author's kind; null for a person and the record. */
+/** The id a version row keeps beside its author's kind; null for a person, the record and EO. */
 function authorIdOf(author: SkillAuthor): string | null {
   switch (author.kind) {
     case "run":
@@ -176,6 +176,7 @@ function authorIdOf(author: SkillAuthor): string | null {
       return author.agentId;
     case "person":
     case "record":
+    case "eo":
       return null;
   }
 }
@@ -190,6 +191,7 @@ function toAuthor(kind: string, id: string | null): SkillAuthor {
   if (kind === "run" && id !== null) return { kind: "run", runId: id };
   if (kind === "consolidation" && id !== null) return { kind: "consolidation", consolidationId: id };
   if (kind === "agent" && id !== null) return { kind: "agent", agentId: id };
+  if (kind === "eo") return { kind: "eo" };
   return { kind: "record" };
 }
 

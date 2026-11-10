@@ -1456,7 +1456,9 @@ const CATALOGUE_READ_TOOLS: readonly ToolSpec[] = [
       "calls. Each answers with its slug, what it is for, whether it is delivered at all, whether the model is " +
       "offered it to choose, who created it (`createdBy`: a person or an agent) and whether a person has locked it " +
       "(`locked`) so no agent can change it, and how it has been used (`usage`): the runs it was delivered to, the runs " +
-      "that loaded it, when it was last loaded, and the runs it has been delivered to since its last load. The full body " +
+      "that loaded it, when it was last loaded, and the runs it has been delivered to since its last load or restore; and " +
+      "where it stands (`state`): active, stale — an agent's unlocked skill delivered to many runs in a row with no load — " +
+      "or archived. The full body " +
       "of each travels in the structured reply rather than in the text. This is " +
       "the catalogue: agent_attachments_list is what says which agents get which. Pass includeArchived to see " +
       "retired ones, which attachments can still point at.",

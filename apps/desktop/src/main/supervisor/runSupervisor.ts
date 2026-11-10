@@ -72,6 +72,8 @@ import {
   DEFAULT_MEMORY_DELIVERY_CHARS,
   DEFAULT_MEMORY_SCOPE_MAX_CHARS,
   DEFAULT_MEMORY_SCOPE_MAX_ENTRIES,
+  DEFAULT_SKILL_ARCHIVE_AFTER_RUNS,
+  DEFAULT_SKILL_STALE_AFTER_RUNS,
   type MemoryReadScope,
   actionAnswerSummary,
   actionSchemaName,
@@ -278,6 +280,7 @@ import { runSubject } from "../modules/runName.js";
 import { createSideCallSlots } from "../sideCalls/slots.js";
 import { endAllProcessTrees } from "../process/processTree.js";
 import { createMemoryConsolidator, type MemoryConsolidatorOptions } from "../memory/consolidator.js";
+import { archiveUnusedSkills } from "../skills/archival.js";
 import { currentWatch, markCheckInFlight, ownerMention, recordQuietCheck, waitingLine, watchArrival, watchHold, watchRoundTrips, WATCH_ROUTED_REASON, WATCH_VERIFICATION_FAILED_REASON } from "./watches.js";
 import { agentMentionChain } from "./escalation.js";
 
@@ -897,6 +900,12 @@ export interface GuardConfig {
   memoryScopeMaxEntries: number;
   memoryScopeMaxChars: number;
   /**
+   * How many runs in a row an agent's unlocked skill may be given without
+   * a load before it is stale, and before EO archives it (EO-720).
+   */
+  skillStaleAfterRuns: number;
+  skillArchiveAfterRuns: number;
+  /**
    * Whether trial items whose conversation is still testing a draft are
    * offered a slot before live work (EO-582). The order only.
    */
@@ -927,6 +936,8 @@ export const DEFAULT_GUARDS: GuardConfig = {
   memoryDeliveryChars: DEFAULT_MEMORY_DELIVERY_CHARS,
   memoryScopeMaxEntries: DEFAULT_MEMORY_SCOPE_MAX_ENTRIES,
   memoryScopeMaxChars: DEFAULT_MEMORY_SCOPE_MAX_CHARS,
+  skillStaleAfterRuns: DEFAULT_SKILL_STALE_AFTER_RUNS,
+  skillArchiveAfterRuns: DEFAULT_SKILL_ARCHIVE_AFTER_RUNS,
   trialsFirst: true,
 };
 
@@ -2798,6 +2809,31 @@ export function createRunSupervisor(
       record.appendRunEvent(runId, LEARNING_REVIEW_EVENT, learningReviewEvent(outcome));
     } catch (error) {
       console.warn(`[eo] how the learning review of run ${runId} ended could not be recorded: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  /**
+   * EO's pass over the agent skills nobody loads (EO-720), after a run on
+   * a project: those within the project's reach given `skillArchiveAfterRuns`
+   * runs in a row without a load are archived, and its thread is told.
+   * The guardrails are read now, so a change to them takes effect here.
+   */
+  async function archiveAfterRun(item: Item): Promise<void> {
+    if (shuttingDown) return;
+    const projectId = (getItem(db, item.id) ?? item).projectId;
+    if (projectId === null) return;
+    try {
+      const guards = readGuards();
+      const result = await archiveUnusedSkills({
+        db,
+        projectId,
+        ageing: { staleAfterRuns: guards.skillStaleAfterRuns, archiveAfterRuns: guards.skillArchiveAfterRuns },
+        projectThread: (id) => record.projectThread(id),
+        now,
+      });
+      if ("problem" in result) console.warn(`[eo] agent skills due to be archived were left as they are: ${result.problem}`);
+    } catch (error) {
+      console.warn(`[eo] the pass archiving unused agent skills failed: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
 
@@ -5107,6 +5143,8 @@ export function createRunSupervisor(
       // learning review on a fork of the run's thread, or the extraction
       // it falls back to (EO-717).
       await reviewAfterRun(run.id, item, agent);
+      // The run moved the counts of the skills it was given (EO-720).
+      await archiveAfterRun(item);
     } finally {
       drivenRuns.delete(run.id);
       // A run with no lease gives its slot back here, not in a release:

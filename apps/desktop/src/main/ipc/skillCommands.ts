@@ -1,8 +1,9 @@
-import { skillAuthorFromActingAgent, type IpcPayload, type IpcResponse, type SkillScope, type Uuid } from "@eo/core";
+import { skillAuthorFromActingAgent, skillState, type IpcPayload, type IpcResponse, type SkillScope, type Uuid } from "@eo/core";
 import type { Db } from "../db/client.js";
 import { archiveSkill, getProject, getSkill, getWorkspace, listSkills, listSkillVersions, restoreSkillVersion, saveSkill, setSkillEnabled, setSkillLocked } from "../db/repos/index.js";
 import { releaseHeldSkillCopies } from "../db/repos/skillsRepo.js";
 import { skillUsageById, usageOfSkill } from "../db/repos/skillUsageRepo.js";
+import { readGuards } from "./configCommands.js";
 
 /**
  * The skill catalogue, over IPC (EO-105).
@@ -19,9 +20,17 @@ import { skillUsageById, usageOfSkill } from "../db/repos/skillUsageRepo.js";
 
 export function listSkillsCommand(db: Db, input: IpcPayload<"skills:list">): IpcResponse<"skills:list"> {
   // Each with its usage (EO-715), counted from `run_events` as the list is
-  // read — every skill, whoever wrote it.
+  // read — every skill, whoever wrote it — and where it stands against
+  // the guardrails in force now (EO-720).
   const usage = skillUsageById(db);
-  return { skills: listSkills(db, input.includeArchived ?? false).map((skill) => ({ ...skill, usage: usageOfSkill(usage, skill.id) })) };
+  const guards = readGuards(db);
+  const ageing = { staleAfterRuns: guards.skillStaleAfterRuns, archiveAfterRuns: guards.skillArchiveAfterRuns };
+  return {
+    skills: listSkills(db, input.includeArchived ?? false).map((skill) => {
+      const used = usageOfSkill(usage, skill.id);
+      return { ...skill, usage: used, state: skillState(skill, used, ageing) };
+    }),
+  };
 }
 
 /**

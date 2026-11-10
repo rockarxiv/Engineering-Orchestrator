@@ -1,4 +1,4 @@
-import { backendAllowed, bindingRefusal, DEFAULT_MEMORY_DELIVERY_CHARS, DEFAULT_MEMORY_SCOPE_MAX_CHARS, DEFAULT_MEMORY_SCOPE_MAX_ENTRIES, isBuiltinRole, isDispatchable, isPreviewAgent, rolesStaffedFor, settledWatch, staffingAgents, stepHoldsItemsMessage, stepWorkspaceChoice, timeLimitBoundProblem, withMemoryNoteGrant } from "@eo/core";
+import { backendAllowed, bindingRefusal, DEFAULT_MEMORY_DELIVERY_CHARS, DEFAULT_MEMORY_SCOPE_MAX_CHARS, DEFAULT_MEMORY_SCOPE_MAX_ENTRIES, DEFAULT_SKILL_ARCHIVE_AFTER_RUNS, DEFAULT_SKILL_STALE_AFTER_RUNS, isBuiltinRole, isDispatchable, isPreviewAgent, rolesStaffedFor, settledWatch, staffingAgents, stepHoldsItemsMessage, stepWorkspaceChoice, timeLimitBoundProblem, withMemoryNoteGrant } from "@eo/core";
 import type { ActionDefinitionDraft, Agent, AgentRemovalImpact, EntryRule, GuardConfigView, IpcPayload, IpcResponse, ItemTypeEntry, Registry, Uuid, PipelineStep, StepRoute, StepWatch } from "@eo/core";
 import { hasBlockingProblem, outsideReachByStep, validatePipeline, type WorkflowProblem } from "@eo/engine";
 import type { Db } from "../db/client.js";
@@ -117,6 +117,10 @@ export const DEFAULT_GUARD_CONFIG: GuardConfigView = {
   // that brings the scope back to about half.
   memoryScopeMaxEntries: DEFAULT_MEMORY_SCOPE_MAX_ENTRIES,
   memoryScopeMaxChars: DEFAULT_MEMORY_SCOPE_MAX_CHARS,
+  // An agent's skill nobody loads (EO-720): stale after 20 runs given it
+  // in a row without a load, archived after 50.
+  skillStaleAfterRuns: DEFAULT_SKILL_STALE_AFTER_RUNS,
+  skillArchiveAfterRuns: DEFAULT_SKILL_ARCHIVE_AFTER_RUNS,
   // On (EO-582): a test-fix loop waits on one trial run at a time, and
   // behind a queue of live work it would stall for hours. The order of
   // dispatch only — concurrency is untouched.
@@ -207,6 +211,11 @@ export function writeGuards(db: Db, input: IpcPayload<"guards:set">): IpcRespons
         : timeLimitBoundProblem({ stepName: step.name, timeoutMs: step.timeoutMs, runTimeoutMs: input.wallClockTimeoutMs }),
     )
     .filter((problem): problem is string => problem !== null);
+  // A skill is stale before it is archived (EO-720); the other way round,
+  // it would be archived without ever having been shown as stale.
+  if (input.skillArchiveAfterRuns < input.skillStaleAfterRuns) {
+    problems.push(`A skill is archived after ${input.skillArchiveAfterRuns} runs without a load, which is before it would go stale at ${input.skillStaleAfterRuns}. Make the archive count at least the stale count.`);
+  }
 
   if (problems.length > 0) return { saved: false, guards: readGuards(db), problems };
 

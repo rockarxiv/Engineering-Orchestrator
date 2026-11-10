@@ -1,7 +1,7 @@
 import { sql } from "drizzle-orm";
 import { NO_SKILL_USAGE, SKILL_LOADED_EVENT, SKILLS_DELIVERED_EVENT, type SkillUsage } from "@eo/core";
 import type { Db } from "../client.js";
-import { runEvents } from "../schema.js";
+import { runEvents, skillVersions } from "../schema.js";
 
 /**
  * How each skill has been used (EO-715): the runs given it, the runs that
@@ -50,9 +50,11 @@ export function skillLoadsQuery() {
 
 /**
  * The runs given each skill, and how many of them were given it after
- * its newest load — all of them, for a skill never loaded. Both kinds of
- * row are read through their partial indexes, for the reason
- * `skillLoadsQuery` gives.
+ * its newest load or restore — all of them, for a skill that has had
+ * neither. A restore starts the stretch again (EO-720): a person bringing
+ * a skill back from the archive is not to see it archived again by the
+ * runs that archived it. Both kinds of run event are read through their
+ * partial indexes, for the reason `skillLoadsQuery` gives.
  */
 export function skillDeliveriesQuery() {
   return sql`
@@ -62,8 +64,15 @@ export function skillDeliveriesQuery() {
     loads as materialized (
       select ts, payload from ${runEvents} where type = ${sql.raw(`'${SKILL_LOADED_EVENT}'`)}
     ),
+    restores as (
+      select ${skillVersions.skillId} as id, ${skillVersions.createdAt} as at from ${skillVersions} where ${skillVersions.action} = 'restore'
+    ),
     newest as (
-      select json_extract(payload, '$.skillId') as id, max(ts) as at from loads group by 1
+      select id, max(at) as at from (
+        select json_extract(payload, '$.skillId') as id, ts as at from loads
+        union all
+        select id, at from restores
+      ) group by 1
     )
     select given.value as "id",
       count(distinct d.run_id) as "runs",

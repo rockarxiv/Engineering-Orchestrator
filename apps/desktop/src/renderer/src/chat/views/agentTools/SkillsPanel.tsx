@@ -11,6 +11,7 @@ import {
   type SkillListEntry,
   type SkillUsage,
   type SkillScope,
+  type SkillState,
   type SkillVersion,
 } from "@eo/core";
 import { ipcQuery } from "../../../query/client";
@@ -229,6 +230,22 @@ export function skillUsageText(usage: SkillUsage): string {
   return `Delivered to ${runs(usage.runsDelivered)}, loaded by ${runs(usage.runsLoaded)}, ${last} · ${runs(usage.deliveriesSinceLoad)} without a load since`;
 }
 
+const SKILL_STATE_TITLE: Record<SkillState, string> = {
+  active: "Delivered to the agents it is attached to.",
+  stale: "Given to many runs in a row and loaded by none. EO archives it if that goes on; a run loading it makes it active again.",
+  archived: "Delivered to nobody. Restore a version from its history to bring it back.",
+};
+
+/** Where a skill stands (EO-720), beside the numbers that put it there. */
+function SkillStateChip({ state }: { state: SkillState }) {
+  const label = state === "active" ? "Active" : state === "stale" ? "Stale" : "Archived";
+  return (
+    <Chip tone={state === "active" ? "neutral" : "paused"} title={SKILL_STATE_TITLE[state]}>
+      {label}
+    </Chip>
+  );
+}
+
 function SkillCard({
   skill,
   pending,
@@ -255,7 +272,7 @@ function SkillCard({
           <div className="flex min-w-0 flex-wrap items-center gap-1.5">
             <h3 className="mr-0.5 truncate text-[14px] font-medium text-ink">{skill.name}</h3>
             <code className="font-mono text-[11.5px] text-ink-subtle">{skill.slug}</code>
-            {skill.archivedAt !== null ? <Chip tone="paused">Archived</Chip> : skill.enabled ? null : <Chip>Disabled</Chip>}
+            {skill.archivedAt === null && !skill.enabled ? <Chip>Disabled</Chip> : null}
             {/* Who created it, and whether a person locked it (EO-714). */}
             <Chip>{skill.createdBy === "agent" ? "Written by an agent" : "Written by a person"}</Chip>
             {skill.locked ? <Chip>Locked</Chip> : null}
@@ -269,7 +286,11 @@ function SkillCard({
           </div>
           <p className="text-[12.5px] text-ink-muted">{skill.description}</p>
           {/* How it has been used (EO-715), for every skill whoever wrote it. */}
-          <p className="text-[11.5px] text-ink-subtle">{skillUsageText(skill.usage)}</p>
+          {/* …and where that leaves it (EO-720): active, stale or archived. */}
+          <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+            <SkillStateChip state={skill.state} />
+            <p className="text-[11.5px] text-ink-subtle">{skillUsageText(skill.usage)}</p>
+          </div>
         </div>
         <div className="flex shrink-0 items-center gap-1">
           <Button size="sm" onClick={onEdit}>

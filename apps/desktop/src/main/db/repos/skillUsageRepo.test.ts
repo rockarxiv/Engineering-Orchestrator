@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DbHandle } from "../client.js";
 import { createTestItem, openMigratedTestDb } from "../testHelpers.js";
 import { skillDeliveriesQuery, skillLoadsQuery, skillsLoadedByRun, skillUsageById, usageOfSkill } from "./skillUsageRepo.js";
-import { appendRunEvent, createRun } from "./index.js";
+import { appendRunEvent, archiveSkill, createRun, listSkillVersions, restoreSkillVersion, saveSkill } from "./index.js";
 
 /** How each skill was given to runs and loaded by them, counted from run_events (EO-715). */
 describe("skill usage by id", () => {
@@ -64,6 +64,21 @@ describe("skill usage by id", () => {
     at(2_000, two, SKILLS_DELIVERED_EVENT, delivered(["a"]));
     at(2_100, two, SKILL_LOADED_EVENT, loaded("a"));
     expect(usageOfSkill(skillUsageById(handle.db), "a").deliveriesSinceLoad).toBe(0);
+  });
+
+  it("starts the stretch again when a skill is restored (EO-720)", () => {
+    const skill = saveSkill(handle.db, { slug: "a-skill", name: "A", description: "A.", body: "A.", files: [] }, 500);
+    if (!skill.ok) throw new Error(skill.problems.join(" "));
+    const id = skill.skill.id;
+    const [one, two, three] = [newRun(), newRun(), newRun()];
+    at(1_000, one, SKILLS_DELIVERED_EVENT, delivered([id]));
+    at(2_000, two, SKILLS_DELIVERED_EVENT, delivered([id]));
+    archiveSkill(handle.db, id, 2_500);
+    const created = listSkillVersions(handle.db, id).find((version) => version.action === "create")!;
+    restoreSkillVersion(handle.db, id, created.id, 3_000);
+    expect(usageOfSkill(skillUsageById(handle.db), id).deliveriesSinceLoad).toBe(0);
+    at(4_000, three, SKILLS_DELIVERED_EVENT, delivered([id]));
+    expect(usageOfSkill(skillUsageById(handle.db), id)).toMatchObject({ runsDelivered: 3, deliveriesSinceLoad: 1 });
   });
 
   it("stores no count: the skills table has no usage column", () => {
