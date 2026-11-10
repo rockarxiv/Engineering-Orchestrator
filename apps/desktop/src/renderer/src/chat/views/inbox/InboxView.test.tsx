@@ -470,7 +470,7 @@ describe("messages from EO in the inbox (EO-725)", () => {
     expect(screen.queryByRole("button", { name: /^Select message from EO/ })).toBeNull();
   });
 
-  it("answers with one of its options in one press, and opens its actions", async () => {
+  it("answers with one of its options in one press, and opens its actions, naming the message pressed", async () => {
     const calls: { channel: string; payload: unknown }[] = [];
     renderInbox({ items: [], messages: [message()], summary: summary({ blockingCount: 0 }) }, (channel, payload) => calls.push({ channel, payload }));
 
@@ -479,7 +479,7 @@ describe("messages from EO in the inbox (EO-725)", () => {
     expect(calls.some((call) => call.channel === "comments:post")).toBe(false);
 
     fireEvent.click(screen.getByRole("button", { name: "Fix with assistant" }));
-    await waitFor(() => expect(calls.find((call) => call.channel === "assist:openUpdateConflict")?.payload).toEqual({ conflictId: "conflict-1", commentId: null }));
+    await waitFor(() => expect(calls.find((call) => call.channel === "assist:openUpdateConflict")?.payload).toEqual({ conflictId: "conflict-1", commentId: "m1" }));
   });
 
   it("dismisses one", async () => {

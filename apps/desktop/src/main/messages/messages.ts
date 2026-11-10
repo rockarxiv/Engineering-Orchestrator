@@ -1,6 +1,6 @@
-import { answerOptions, type IpcPayload, type IpcResponse, type Message, type MessageSend } from "@eo/core";
+import { answerOptions, LOCAL_PERSON_ID, type IpcPayload, type IpcResponse, type Message, type MessageSend } from "@eo/core";
 import type { Db } from "../db/client.js";
-import { getMessage, insertMessage, listOpenMessages, listPeople, markMessageHandled, sweepHandledMessages } from "../db/repos/index.js";
+import { getMessage, insertMessage, listOpenMessages, listPeople, markMessageHandled, markMessagesAboutResolved, sweepHandledMessages } from "../db/repos/index.js";
 import { actingCaller } from "../identity/acting.js";
 import { viewerIds } from "../identity/viewer.js";
 import { emitPush } from "../ipc/push.js";
@@ -90,6 +90,32 @@ export function resolveMessage(db: Db, messageId: string, now: number = Date.now
   const resolved = markMessageHandled(db, messageId, "resolved", null, now);
   if (resolved) emitPush("messages:changed", {});
   return resolved;
+}
+
+/**
+ * Marks resolved by EO every open message a source sent about one subject
+ * (`MessageSend.subject`, EO-727) — the conflict it asked about resolved,
+ * the scope it said was stuck consolidated since. Only those this
+ * database wrote: a replica's copy has no subject, and hears of the
+ * resolution from the record that sent it. Answers how many it closed.
+ */
+export function resolveMessagesAbout(db: Db, source: string, subject: string, now: number = Date.now()): number {
+  const resolved = markMessagesAboutResolved(db, source, subject, now);
+  if (resolved.length > 0) emitPush("messages:changed", {});
+  return resolved.length;
+}
+
+/**
+ * Sends a message from code that runs where the project it is about is
+ * held (EO-727) — the organisation's record for one it holds, this
+ * desktop for one it keeps — without a round trip: to each admin on the
+ * record (`sendMessageToAdmins`), else to this machine's person.
+ * `ItemRecord.sendMessage` makes the same choice for a caller that may
+ * be on either side.
+ */
+export function sendMessageHere(db: Db, input: Omit<MessageSend, "recipientId">, isTheRecord: boolean, now: number = Date.now()): Message[] {
+  const message = { ...input, recipientId: LOCAL_PERSON_ID };
+  return isTheRecord ? sendMessageToAdmins(db, message, now) : [sendMessage(db, message, now)];
 }
 
 /**

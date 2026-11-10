@@ -24,11 +24,11 @@ import {
   createRun,
   createStep,
   getItem,
+  getMessage,
   getPipelineOrigin,
   getUpdateConflict,
   listAgents,
   listCommentsForItem,
-  listMentionsForComment,
   listPipelineVersions,
   listRoutesForPipeline,
   listStepsForPipeline,
@@ -108,7 +108,7 @@ function heldUpdate(): { conflictId: string; noticeId: string } {
   handle.db.run(sql`UPDATE pipelines SET project_id = ${shop.id} WHERE id = 'default'`);
   applyTemplateUpdates(handle.db, history, { isTheRecord: false });
   const conflict = openUpdateConflict(handle.db, "default")!;
-  return { conflictId: conflict.id, noticeId: conflict.noticeCommentIds[0]! };
+  return { conflictId: conflict.id, noticeId: conflict.noticeIds[0]! };
 }
 
 /** The tool, called as the system agent's client calls it. */
@@ -447,7 +447,7 @@ describe("resolving a held update from its chat", () => {
     // nobody approved — which is every one of EO's.
     expect(await watchAnswer(live.steps.find((step) => step.id === "pull_request_watch")!.inputs)).toBe("ready");
     // The notice closes.
-    expect(listMentionsForComment(handle.db, noticeId as Uuid).map((mention) => mention.status)).not.toContain("open");
+    expect(getMessage(handle.db, noticeId)?.handledHow).toBe("resolved");
     // And the same conflict is never raised again.
     expect(applyTemplateUpdates(handle.db, loadTemplateHistory(GALLERY_DIRECTORY), { isTheRecord: false })).toEqual([]);
     expect(openUpdateConflict(handle.db, "default")).toBeUndefined();
@@ -517,7 +517,7 @@ describe("Keep my pipeline", () => {
     // Not one step or route changed, and no version was filed.
     expect(graphOf()).toEqual(before.graph);
     expect(listPipelineVersions(handle.db, "default")).toHaveLength(before.versions);
-    expect(listMentionsForComment(handle.db, noticeId as Uuid).map((mention) => mention.status)).not.toContain("open");
+    expect(getMessage(handle.db, noticeId)?.handledHow).toBe("resolved");
     // Never raised again for this version, and pressing again is refused.
     expect(applyTemplateUpdates(handle.db, loadTemplateHistory(GALLERY_DIRECTORY), { isTheRecord: false })).toEqual([]);
     expect((await call("assist:applyCard", { conversationId: chat.id, messageId: keep })).applied).toBe(false);

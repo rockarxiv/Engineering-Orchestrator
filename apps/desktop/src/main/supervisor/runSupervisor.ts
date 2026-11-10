@@ -372,7 +372,7 @@ export interface RunSupervisorOptions {
    * EO-578), the workspace files it is given, and how often every scope
    * is looked at.
    */
-  memoryConsolidation?: Pick<MemoryConsolidatorOptions, "systemAgent" | "repositoryFiles" | "intervalMs" | "projectThread" | "store">;
+  memoryConsolidation?: Pick<MemoryConsolidatorOptions, "systemAgent" | "repositoryFiles" | "intervalMs" | "projectThread" | "sendMessage" | "store">;
   /**
    * Where the `eo` server hands every write an agent asks for — `comment`,
    * `attachment_add`, `memory_note` — to this supervisor (EO-543,
@@ -2051,6 +2051,9 @@ export function createRunSupervisor(
     // record's accessor, so a project the organisation holds has its
     // thread made there, and the run artifacts' store for the drafts.
     projectThread: (projectId) => record.projectThread(projectId),
+    // The message saying a scope is stuck (EO-727): the record's sender,
+    // so on the organisation's record it reaches each admin.
+    sendMessage: (input) => record.sendMessage(input),
     ...(artifactStore ? { store: artifactStore } : {}),
     // A project an organisation's record holds is consolidated where the
     // record schedules work, never on a desktop holding a replica of it
@@ -2844,6 +2847,7 @@ export function createRunSupervisor(
         ageing: { staleAfterRuns: guards.skillStaleAfterRuns, archiveAfterRuns: guards.skillArchiveAfterRuns },
         projectThread: (id) => record.projectThread(id),
         postComment: (comment) => record.postComment(comment),
+        sendMessage: (message) => record.sendMessage(message),
         now,
       });
     } catch (error) {

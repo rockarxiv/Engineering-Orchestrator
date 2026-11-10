@@ -2,6 +2,7 @@ import {
   SKILLS_SETTLED_EVENT,
   DEFAULT_MEMORY_SCOPE_MAX_CHARS,
   DEFAULT_MEMORY_SCOPE_MAX_ENTRIES,
+  LOCAL_PERSON_ID,
   MAX_RECORD_CONSOLIDATIONS_PAGE,
   MEMORY_NOTE_PROJECT_SCOPE,
   SOMEONE_ELSE,
@@ -853,6 +854,7 @@ async function archiveSettledSkills(context: ServeRecordContext, projects: Reado
         ageing,
         projectThread: (id) => context.record.projectThread(id),
         postComment: (comment) => context.record.postComment(comment),
+        sendMessage: (message) => context.record.sendMessage(message),
       });
     } catch (error) {
       console.warn(`[eo] the pass archiving unused agent skills of project ${projectId} failed: ${error instanceof Error ? error.message : String(error)}`);
@@ -1479,15 +1481,16 @@ export async function serveAdopt(
     if (kept === null) accepted.attachments += 1;
     else accepted.skipped.push(kept);
   }
-  tellThreadOfUncarriedTools(context, payload.project.id as Uuid);
+  tellOfUncarriedTools(context, payload.project.id as Uuid);
   emitPush("items:changed", {});
   emitPush("config:changed", {});
   return { accepted, problem: null };
 }
 
 /**
- * Tells the moved project's thread which of its agents' tools did not
- * come with them (EO-513, invariant 8).
+ * Tells the organisation's admins which of the moved project's agents'
+ * tools did not come with them (EO-513, EO-727, invariant 8): one
+ * message about the project, to each admin (`sendMessageToAdmins`).
  *
  * A move carries the project's own skills and its workspaces'. What an
  * agent is attached to beyond those — a global skill, which is the
@@ -1495,27 +1498,28 @@ export async function serveAdopt(
  * another project's skill, an MCP server this record has no row for — is
  * not on the record, so the agent works here without it, and so does
  * every replica that takes the agent from here. That is said rather than
- * left to be discovered, once the project is live and its thread is
- * here: every agent, and every tool by the name the sender gave it.
+ * left to be discovered, once the project is live here: every agent, and
+ * every tool by the name the sender gave it.
  *
  * Nothing to say before the page that makes the project live, and
  * nothing twice: what is said is forgotten, and a re-sent page finds
- * nothing kept. A thread that cannot be opened keeps it for the next page.
+ * nothing kept.
  */
-function tellThreadOfUncarriedTools(context: ServeRecordContext, projectId: Uuid): void {
+function tellOfUncarriedTools(context: ServeRecordContext, projectId: Uuid): void {
   const { db } = context;
-  // The comment and the forgetting commit together, or neither does — see
-  // `sayUncarriedTools`. A comment that cannot be written fails this
+  // The message and the forgetting commit together, or neither does — see
+  // `sayUncarriedTools`. A message that cannot be written fails this
   // request, which the device sends again, and the warning is still kept.
   sayUncarriedTools(db, projectId, (uncarried) => {
-    const thread = openProjectThread(db, projectId);
-    if (!thread.ok) return false;
-    postComment(db, { itemId: thread.item.id, author: { type: "engine" }, body: uncarriedToolsSentence(uncarried) });
+    sendMessageToAdmins(db, { recipientId: LOCAL_PERSON_ID, projectId, source: UNCARRIED_TOOLS_SOURCE, body: uncarriedToolsSentence(uncarried) });
     return true;
   });
 }
 
-/** The comment `sayUncarriedTools` posts: one line per agent, naming each tool. */
+/** The source of the message saying what a move could not carry (EO-727). */
+export const UNCARRIED_TOOLS_SOURCE = "uncarried_tools";
+
+/** The message `sayUncarriedTools` sends: one line per agent, naming each tool. */
 export function uncarriedToolsSentence(uncarried: readonly UncarriedTools[]): string {
   const lines = uncarried.map((agent) => {
     const tools = [

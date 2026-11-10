@@ -31,6 +31,7 @@ export {
   listOpenMessageIds,
   listOpenMessages,
   markMessageHandled,
+  markMessagesAboutResolved,
   messageChangedAt,
   sweepHandledMessages,
   upsertReplicaMessage,

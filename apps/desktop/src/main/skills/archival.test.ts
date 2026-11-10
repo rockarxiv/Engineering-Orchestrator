@@ -1,4 +1,4 @@
-import { SKILL_LOADED_EVENT, SKILLS_DELIVERED_EVENT, SKILLS_SETTLED_EVENT, skillState, type SkillAgeing, type Uuid } from "@eo/core";
+import { LOCAL_PERSON_ID, SKILL_LOADED_EVENT, SKILLS_DELIVERED_EVENT, SKILLS_SETTLED_EVENT, skillState, type SkillAgeing, type Uuid } from "@eo/core";
 import { sql } from "drizzle-orm";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { DbHandle } from "../db/client.js";
@@ -15,7 +15,7 @@ import {
   setSkillLocked,
 } from "../db/repos/index.js";
 import { skillUsageById, usageOfSkill } from "../db/repos/skillUsageRepo.js";
-import { createTestItem, openMigratedTestDb } from "../db/testHelpers.js";
+import { createTestItem, messagesFrom, openMigratedTestDb } from "../db/testHelpers.js";
 import { findProjectThread, openProjectThread } from "../projects/projectThread.js";
 import { markReplica } from "../db/recordRole.js";
 import { publishSection } from "../db/repos/publishedSectionsRepo.js";
@@ -228,31 +228,76 @@ describe("archiving unused agent skills", () => {
     expect(notes()).toHaveLength(1);
   });
 
-  it("says once on the project thread that a published section kept due skills, and again only for a skill newly due", async () => {
+  it("sends one message about the project when a published section kept due skills, again only for a skill newly due, and never asks for the thread", async () => {
     const first = skill("release", "agent");
     const second = skill("changelog", "agent");
     const stop = markReplica(handle.db, () => true);
+    const held = () => messagesFrom(handle.db, "skill_archival_held");
+    // Pressed by a pass that asked for the project thread.
+    const refused = (with_: SkillAgeing = ageing) =>
+      archiveUnusedSkills({
+        db: handle.db,
+        projectId,
+        reach: "all",
+        ageing: with_,
+        projectThread: () => {
+          throw new Error("a held archive never asks for the project thread");
+        },
+      });
     try {
       publishSection(handle.db, { section: "packs", publishedAt: Date.now(), publishedBy: null, publishedByName: "Dana" });
       runs(5, [first]);
       runs(2, [second]);
-      const told = await pass();
-      expect(told).toMatchObject({ archived: [], problem: expect.stringContaining("published the packs section") });
+      const told = await refused();
+      expect(told).toMatchObject({ archived: [], told: true, problem: expect.stringContaining("published the packs section") });
       expect(getSkill(handle.db, first)!.archivedAt).toBeNull();
-      expect(notes()).toHaveLength(1);
-      expect(notes()[0]!.body).toContain("`release`");
-      expect(notes()[0]!.id).toBe(told.noteId);
+      expect(held()).toHaveLength(1);
+      expect(held()[0]).toMatchObject({ recipientId: LOCAL_PERSON_ID, projectId, handledAt: null });
+      expect(held()[0]!.body).toContain("`release`");
 
       // The same refusal is not said after every run.
       runs(1, [first]);
-      expect((await pass()).noteId).toBeNull();
-      expect(notes()).toHaveLength(1);
+      expect(await refused()).toMatchObject({ told: false });
+      expect(held()).toHaveLength(1);
 
       // Another skill falling due is.
       runs(3, [second]);
-      await pass();
-      expect(notes()).toHaveLength(2);
-      expect(notes()[1]!.body).toContain("`changelog`");
+      await refused();
+      expect(held()).toHaveLength(2);
+      expect(held()[1]!.body).toContain("`changelog`");
+      expect(findProjectThread(handle.db, projectId)).toBeUndefined();
+    } finally {
+      stop();
+    }
+  });
+
+  it("says a held archive again on the next pass when its message could not be sent", async () => {
+    const id = skill("release", "agent");
+    const stop = markReplica(handle.db, () => true);
+    try {
+      publishSection(handle.db, { section: "packs", publishedAt: Date.now(), publishedBy: null, publishedByName: "Dana" });
+      runs(5, [id]);
+      const sent: string[] = [];
+      let reachable = false;
+      const passWith = () =>
+        archiveUnusedSkills({
+          db: handle.db,
+          projectId,
+          reach: "all",
+          ageing,
+          projectThread: (thread) => Promise.resolve(openProjectThread(handle.db, thread)),
+          sendMessage: async (message) => {
+            if (!reachable) return { ok: false, problem: "Your organisation's record could not be reached." };
+            sent.push(message.body);
+            return { ok: true, messages: [] };
+          },
+        });
+
+      expect(await passWith()).toMatchObject({ told: false, problem: expect.stringContaining("could not be reached") });
+      reachable = true;
+      expect(await passWith()).toMatchObject({ told: true });
+      expect(sent).toHaveLength(1);
+      expect(sent[0]).toContain("`release`");
     } finally {
       stop();
     }

@@ -3,10 +3,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { sql } from "drizzle-orm";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { FOLDER_KIND, ipcContract, SKILL_LOADED_EVENT, SKILLS_DELIVERED_EVENT, SKILLS_SETTLED_EVENT, McpServerDraftSchema, SkillDraftSchema, type IpcPayload, type SkillScope, type Uuid } from "@eo/core";
+import { FOLDER_KIND, LOCAL_PERSON_ID, ipcContract, SKILL_LOADED_EVENT, SKILLS_DELIVERED_EVENT, SKILLS_SETTLED_EVENT, McpServerDraftSchema, SkillDraftSchema, type IpcPayload, type SkillScope, type Uuid } from "@eo/core";
 import { buildTickInput } from "../supervisor/buildTickInput.js";
 import type { DbHandle } from "../db/client.js";
-import { openMigratedTestDb } from "../db/testHelpers.js";
+import { messagesFrom, openMigratedTestDb } from "../db/testHelpers.js";
 import { createAgent } from "../db/repos/agentsRepo.js";
 import { getAgentAttachments, setAgentAttachment } from "../db/repos/agentAttachmentsRepo.js";
 import { addWorkspaceToProject, createProject, getProject } from "../db/repos/projectsRepo.js";
@@ -18,12 +18,12 @@ import { saveMcpServer } from "../db/repos/mcpServersRepo.js";
 import { setSetting } from "../db/repos/settingsRepo.js";
 import { listCommentsForItem } from "../db/repos/commentsRepo.js";
 import { countProjectRows, readProjectAgents, writeAdoptedPage, writeAdoptedProject } from "../db/repos/projectMoveRepo.js";
-import { findProjectThread, openProjectThread } from "../projects/projectThread.js";
+import { findProjectThread } from "../projects/projectThread.js";
 import { MANAGED_PERSON_ID_KEY } from "../identity/viewer.js";
 import { createLocalRecord, type LocalItemRecord } from "./localRecord.js";
 import { createDeviceRecord, type DeviceRecord } from "./deviceRecord.js";
 import { moveProjectToRecord } from "./adopt.js";
-import { serveAdopt, serveApply, serveChanges, serveProjectThread, type ServeRecordContext } from "./serveRecord.js";
+import { serveAdopt, serveApply, serveChanges, serveMessages, serveProjectThread, serveSendMessage, type ServeRecordContext } from "./serveRecord.js";
 import { archiveReachOf, archiveUnusedSkills } from "../skills/archival.js";
 import { skillUsageById, usageOfSkill } from "../db/repos/skillUsageRepo.js";
 import { createRun } from "../db/repos/runsRepo.js";
@@ -70,7 +70,8 @@ beforeEach(() => {
     record: theRecord,
     offerWork: (deviceId, capacity) => theRecord.offerWork({ deviceId, capacity, tickInput: buildTickInput(recordDb.db, LIMITS, false) }),
   };
-  const person = createPerson(recordDb.db, { name: "Anna", email: "anna@example.com" });
+  // An admin: whom the record's messages about a project go to (EO-727).
+  const person = createPerson(recordDb.db, { name: "Anna", email: "anna@example.com", isAdmin: true });
   annaPersonId = person.id;
   anna = desktop(annaDb, issueDevice(recordDb.db, { personId: person.id, name: "anna-desk", tokenHash: "h1", secretsKeyHash: null }).id);
   laptop = desktop(laptopDb, issueDevice(recordDb.db, { personId: person.id, name: "anna-laptop", tokenHash: "h2", secretsKeyHash: null }).id);
@@ -97,7 +98,11 @@ function desktop(handle: DbHandle, deviceId: string): Desktop {
             ? await serveApply(serving, payload as IpcPayload<"record:apply">)
             : channel === "record:projectThread"
               ? await serveProjectThread(serving, payload as IpcPayload<"record:projectThread">)
-              : null;
+              : channel === "record:messages"
+                ? serveMessages(serving, { ...(payload as IpcPayload<"record:messages">), deviceId })
+                : channel === "record:sendMessage"
+                  ? serveSendMessage(serving, { ...(payload as IpcPayload<"record:sendMessage">), deviceId })
+                  : null;
       return answer === null ? { ok: false, error: { message: `EO has no channel called "${channel}".` } } : { ok: true, data: answer as never };
     },
   };
@@ -222,7 +227,7 @@ describe("handing a project to the record carries its own skills (EO-513)", () =
 });
 
 describe("an attachment that cannot be carried over (EO-513)", () => {
-  it("is said on the project's thread on the record, naming the agent and the skill", async () => {
+  it("is one message to the organisation's admins about the project, naming the agent and the skill, and on no thread", async () => {
     const { support, own, projectSkill, globalSkill } = supportWithItsOwnSkills();
     // A skill of another project's, and a server the record has no row for.
     const other = createProject(annaDb.db, { name: "Billing", keyPrefix: "BIL", managed: false });
@@ -239,28 +244,25 @@ describe("an attachment that cannot be carried over (EO-513)", () => {
     expect(getSkill(recordDb.db, globalSkill)).toBeUndefined();
     expect(getSkill(recordDb.db, elsewhere)).toBeUndefined();
 
-    const thread = findProjectThread(recordDb.db, support.id);
-    expect(thread).toBeDefined();
-    const said = listCommentsForItem(recordDb.db, thread!.id as Uuid);
+    expect(findProjectThread(recordDb.db, support.id)).toBeUndefined();
+    const said = messagesFrom(recordDb.db, "uncarried_tools");
     expect(said).toHaveLength(1);
-    expect(said[0]).toMatchObject({ authorType: "engine" });
+    expect(said[0]).toMatchObject({ recipientId: annaPersonId, projectId: support.id, handledAt: null });
     expect(said[0]!.body).toContain("Support implementer");
     expect(said[0]!.body).toContain('the skill "House style"');
     expect(said[0]!.body).toContain('the skill "Invoice format"');
     expect(said[0]!.body).toContain('the MCP server "help-desk"');
     expect(said[0]!.body).not.toContain("Refund policy");
 
-    // …and the replica that takes the project is told the same, on the same thread.
+    // …and the admin's other desktop pulls the same message, with no thread.
     await laptop.record.sync();
-    const there = findProjectThread(laptopDb.db, support.id);
-    expect(there?.id).toBe(thread!.id);
-    expect(listCommentsForItem(laptopDb.db, there!.id as Uuid).map((comment) => comment.body)).toEqual([said[0]!.body]);
+    expect(messagesFrom(laptopDb.db, "uncarried_tools").map((message) => message.id)).toEqual([said[0]!.id]);
+    expect(findProjectThread(laptopDb.db, support.id)).toBeUndefined();
   });
 
   it("is said once, however many times the last page is sent", async () => {
     const { support } = supportWithItsOwnSkills();
     expect(await move(support.id)).toEqual({});
-    const thread = findProjectThread(recordDb.db, support.id)!;
 
     // The commit's answer lost and the request sent again.
     const again = await serveAdopt(serving, ipcContract["record:adopt"].request.parse({
@@ -273,7 +275,7 @@ describe("an attachment that cannot be carried over (EO-513)", () => {
     }));
     expect(again.problem).toBeNull();
 
-    expect(listCommentsForItem(recordDb.db, thread.id as Uuid)).toHaveLength(1);
+    expect(messagesFrom(recordDb.db, "uncarried_tools")).toHaveLength(1);
   });
 
   it("attaches a skill that arrives on a later page than the agent, and says nothing about it", () => {
@@ -337,26 +339,26 @@ describe("the windows a move has to hold through (EO-513, review)", () => {
     expect(next.skills.map((one) => one.projectId)).toEqual([support.id, support.id]);
   });
 
-  it("keeps the warning when its comment cannot be written, and says it when the request is sent again", async () => {
+  it("keeps the warning when its message cannot be written, and says it when the request is sent again", async () => {
     const { support } = supportWithItsOwnSkills();
-    // The record refuses the warning's comment, once.
-    recordDb.db.run(sql`CREATE TRIGGER refuse_warning BEFORE INSERT ON comments WHEN NEW.body LIKE '%did not move%' BEGIN SELECT RAISE(ABORT, 'the disk is full'); END`);
+    // The record refuses the warning's message, once.
+    recordDb.db.run(sql`CREATE TRIGGER refuse_warning BEFORE INSERT ON messages WHEN NEW.body LIKE '%did not move%' BEGIN SELECT RAISE(ABORT, 'the disk is full'); END`);
 
     const failed = await move(support.id);
 
     expect(failed.problem).toContain("the disk is full");
-    const thread = findProjectThread(recordDb.db, support.id);
-    expect(thread === undefined ? [] : listCommentsForItem(recordDb.db, thread.id as Uuid)).toEqual([]);
+    expect(messagesFrom(recordDb.db, "uncarried_tools")).toEqual([]);
 
     // The last request, sent again once the record can write.
     recordDb.db.run(sql`DROP TRIGGER refuse_warning`);
     const again = await serveAdopt(serving, ipcContract["record:adopt"].request.parse({ deviceId: anna.deviceId, project: wireProject(support.id), keyNextValue: 0, final: true, abandon: false, page: {} }));
     expect(again.problem).toBeNull();
 
-    const said = listCommentsForItem(recordDb.db, findProjectThread(recordDb.db, support.id)!.id as Uuid);
+    const said = messagesFrom(recordDb.db, "uncarried_tools");
     expect(said).toHaveLength(1);
     expect(said[0]!.body).toContain("Support implementer");
     expect(said[0]!.body).toContain('the skill "House style"');
+    expect(findProjectThread(recordDb.db, support.id)).toBeUndefined();
   });
 });
 
@@ -400,10 +402,9 @@ describe("a skill a person locked, against the record's copies (EO-714)", () => 
     expect(listSkillVersions(recordDb.db, projectSkill)).toEqual(history);
   });
 
-  it("holds the record's newer copy off a replica's locked skill, tells the person on the project's thread, and writes it once unlocked", async () => {
+  it("holds the record's newer copy off a replica's locked skill, tells the person in one message, and writes it once unlocked", async () => {
     const { support, projectSkill } = supportWithItsOwnSkills();
     await move(support.id);
-    expect(openProjectThread(recordDb.db, support.id).ok).toBe(true);
     await laptop.record.sync();
     expect(setSkillLocked(laptopDb.db, projectSkill, true).ok).toBe(true);
     const mine = getSkill(laptopDb.db, projectSkill);
@@ -417,17 +418,19 @@ describe("a skill a person locked, against the record's copies (EO-714)", () => 
     expect(getSkill(laptopDb.db, projectSkill)).toEqual(mine);
     expect(listSkillVersions(laptopDb.db, projectSkill)).toEqual(history);
     expect(listHeldSkillCopies(laptopDb.db).map((held) => held.skill.body)).toEqual(["Edited on the record."]);
-    const thread = findProjectThread(laptopDb.db, support.id)!;
-    const said = listCommentsForItem(laptopDb.db, thread.id as Uuid).filter((comment) => comment.body.includes("a person locked it here"));
+    const said = messagesFrom(laptopDb.db, "held_skill_copy");
     expect(said).toHaveLength(1);
-    expect(said[0]).toMatchObject({ kind: "escalation" });
+    expect(said[0]!.body).toContain("a person locked it here");
+    // Kept on this machine, whose lock it is: about no project, since the record holds this one.
+    expect(said[0]).toMatchObject({ recipientId: LOCAL_PERSON_ID, projectId: null, handledAt: null });
+    expect(findProjectThread(laptopDb.db, support.id)).toBeUndefined();
 
     // Unlocked, it arrives — and the person is not told twice.
     expect(setSkillLocked(laptopDb.db, projectSkill, false).ok).toBe(true);
     await laptop.record.sync();
     expect(getSkill(laptopDb.db, projectSkill)?.body).toBe("Edited on the record.");
     expect(listHeldSkillCopies(laptopDb.db)).toEqual([]);
-    expect(listCommentsForItem(laptopDb.db, thread.id as Uuid).filter((comment) => comment.body.includes("a person locked it here"))).toHaveLength(1);
+    expect(messagesFrom(laptopDb.db, "held_skill_copy")).toHaveLength(1);
   });
 });
 

@@ -340,8 +340,12 @@ export const pipelineUpdateConflicts = sqliteTable(
     resolvedAt: integer("resolved_at"),
     /** How it was closed: `superseded` by a newer version, or what a later story records. */
     resolution: text("resolution"),
-    /** The comments the conflict notice was posted as, one per project thread (EO-533, migration 0136). */
-    noticeCommentIds: text("notice_comment_ids", { mode: "json" }).notNull().default([]),
+    /**
+     * What the conflict notice was sent as: its messages (EO-727), or — for
+     * one noticed before then — its comments, one per project thread
+     * (EO-533, migration 0136). The column keeps its first name.
+     */
+    noticeIds: text("notice_comment_ids", { mode: "json" }).notNull().default([]),
     /** The assistant chat Fix with assistant opened for it, so a second press shows the same chat. No foreign key: a removed chat is simply started again. */
     chatId: text("chat_id"),
     /** On the record, the device the chat's first turn was handed to (EO-533, migration 0136). */
@@ -3301,6 +3305,12 @@ export const messages = sqliteTable(
     handledHow: text("handled_how"),
     /** The option an answer chose. */
     answer: text("answer"),
+    /**
+     * What it is about within its source, so EO can resolve it once that
+     * is settled (EO-727): a conflict's id, a memory scope's key. Kept only
+     * where it was written; a replica's copy has none.
+     */
+    subject: text("subject"),
   },
-  (table) => [index("idx_messages_recipient_open").on(table.recipientId, table.handledAt)],
+  (table) => [index("idx_messages_recipient_open").on(table.recipientId, table.handledAt), index("idx_messages_source_subject").on(table.source, table.subject)],
 );

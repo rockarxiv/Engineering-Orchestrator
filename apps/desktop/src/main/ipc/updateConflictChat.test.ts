@@ -9,6 +9,7 @@ import {
   createStep,
   deleteItem,
   getItem,
+  getMessage,
   getUpdateConflict,
   listCommentsForItem,
   listMentionsForComment,
@@ -23,7 +24,6 @@ import { createTestItem, openMigratedTestDb } from "../db/testHelpers.js";
 import { loadTemplateHistory } from "../gallery/history.js";
 import { backfillPipelineOrigins } from "../gallery/origins.js";
 import { applyTemplateUpdates } from "../gallery/templateUpdates.js";
-import { findProjectThread } from "../projects/projectThread.js";
 import { createFakeProvider } from "../providers/fake.js";
 import { SHOWN_ASSIST_KEY, assistAgent, assistBoards, listAssistThreads, postAssistReply, shownAssistConversation } from "../roles/assist.js";
 import { ASSIST_ACTION, ASSIST_STEP } from "../roles/conversationSteps.js";
@@ -78,7 +78,7 @@ function heldUpdate(adopted = true): { conflictId: string; noticeId: string; pro
   }
   applyTemplateUpdates(handle.db, history, { isTheRecord: false });
   const conflict = openUpdateConflict(handle.db, "default")!;
-  return { conflictId: conflict.id, noticeId: conflict.noticeCommentIds[0]!, projectId: shop.id as Uuid, noticeIds: conflict.noticeCommentIds, projectIds };
+  return { conflictId: conflict.id, noticeId: conflict.noticeIds[0]!, projectId: shop.id as Uuid, noticeIds: conflict.noticeIds, projectIds };
 }
 
 function engineStub(): EngineHandle & { notifyStateChange: ReturnType<typeof vi.fn> } {
@@ -194,11 +194,10 @@ describe("pressing Fix with assistant", () => {
     expect(getUpdateConflict(handle.db, conflictId)?.chatId).toBe(fresh.conversation!.id);
   });
 
-  it("opens the chat of a pipeline no project adopted on the project whose notice was pressed, and the same chat from the other's", async () => {
+  it("opens the chat of a pipeline no project adopted on the project whose message was pressed, and the same chat from the other's", async () => {
     const { conflictId, noticeIds, projectIds } = heldUpdate(false);
     expect(noticeIds).toHaveLength(2);
-    const blogThread = findProjectThread(handle.db, projectIds[1]!)!;
-    const onBlog = noticeIds.find((id) => listCommentsForItem(handle.db, blogThread.id as Uuid).some((comment) => comment.id === id))!;
+    const onBlog = noticeIds.find((id) => getMessage(handle.db, id)?.projectId === projectIds[1])!;
     const onShop = noticeIds.find((id) => id !== onBlog)!;
 
     const opened = await press(conflictId, onBlog);
