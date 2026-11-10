@@ -3673,18 +3673,28 @@ describe("skills on a Codex turn", () => {
     expect(events).toContainEqual({ type: "skills_delivered", slugs: ["pr-review"] });
   });
 
-  it("gives a fork its skills back and serves them, but sends its message as written (EO-721)", async () => {
+  it("gives a fork its skills back, serves them and tells it how to load them, as a resume does (EO-721)", async () => {
+    // A fork copies a thread that may have been opened before `skill_read`,
+    // whose first turn said to read a `SKILL.md` that is no longer written.
     const { codex, thread } = stubCodex([{ type: "item.completed", item: { id: "i", type: "agent_message", text: "reviewed" } }]);
     const handed: unknown[][] = [];
+    const sections: string[] = [];
     const provider = createCodexProvider({ createCodex: (...args: unknown[]) => (handed.push(args), codex as never), attachedSkills: [skill()] });
 
-    const forked = await provider.fork!("thr_original", "Review this run.", { cwd: worktree });
+    const forked = await provider.fork!("thr_original", "Review this run.", { cwd: worktree, onSkillsSection: (section) => sections.push(section) });
     if (!forked.ok) throw new Error(forked.message);
     await collect(forked.events);
 
-    expect(promptOf(thread)).toBe("Review this run.");
+    const prompt = promptOf(thread);
+    expect(prompt.startsWith("Review this run.\n\n## Skills")).toBe(true);
+    expect(prompt).toContain("- `pr-review` — How this house reviews a pull request.");
+    expect(prompt).toContain("`skill_read`");
+    expect(prompt).not.toContain("SKILL.md");
+    expect(prompt).not.toContain(BODY);
+    expect(sections).toEqual([prompt.slice("Review this run.\n\n".length)]);
     expect(handed[0]?.[8]).toEqual(["pr-review"]);
     expect(existsSync(join(worktree, ".agent", "skills", "pr-review", "checklist.md"))).toBe(true);
+    expect(existsSync(join(worktree, ".agent", "skills", "pr-review", "SKILL.md"))).toBe(false);
   });
 
   it("adds no section to a resumed turn given no skills", async () => {

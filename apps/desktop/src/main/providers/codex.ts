@@ -2594,10 +2594,11 @@ export function createCodexProvider(options: CodexProviderOptions = {}): AgentPr
       // "no rollout found for thread id" — measured on 0.166.0 — so it is
       // translated the same way and answered as `thread_not_found`.
       //
-      // The skills are given back as on a resume (EO-721), but no Skills
-      // section is added: a fork's turn is EO's own message, sent as
-      // written, and loading a skill is not what it is for.
-      const skills = { ...resumedSkills(forkOpts), section: "" };
+      // The skills are given back as on a resume (EO-721), Skills section
+      // included: a fork copies a thread that may predate `skill_read` and
+      // still say to read a `SKILL.md` that is no longer written.
+      const skills = resumedSkills(forkOpts);
+      forkOpts?.onSkillsSection?.(skills.section);
       return openedFork(threadId, reachableTurn((reach) => lostThreadTranslated(threadId, message, forkOpts, reach, true, skills)));
     },
 
