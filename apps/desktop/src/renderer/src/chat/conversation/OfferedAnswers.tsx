@@ -27,6 +27,9 @@ export function OfferedAnswers({ message, conversationId, onDone }: { message: D
           <Button
             key={option}
             size="sm"
+            // A small button grown to fit: an answer can be a sentence or
+            // more, and wraps inside its chip rather than out of it (EO-722).
+            className="h-auto min-h-[26px] max-w-full justify-start py-[5px] text-left leading-4 wrap-anywhere whitespace-normal"
             disabled={answer.isPending}
             onClick={() => {
               setProblem(null);
