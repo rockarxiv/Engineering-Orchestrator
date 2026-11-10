@@ -78,6 +78,7 @@ import {
   listAttachmentRemovalsSince,
   noteAttachmentRemoved,
   removeItemAttachment,
+  queueAttachmentUpload,
   attachmentWasRemoved,
   type AttachmentRecord,
   type CreateAttachmentRecord,
@@ -1059,6 +1060,10 @@ async function applyOne(context: ServeRecordContext, deviceId: string, command: 
       // The same rule as putting one on, against the record's own copy.
       const refusal = judgeOnGroupStep(db, item, personOfDevice(db, deviceId)?.id ?? null, "change");
       if (refusal !== null) return notPermitted(refusal);
+      // Not announced — the device is where it came from — but told to
+      // Jira (EO-705): the record owns the item's tracker, so the
+      // deletion, and the tombstone it leaves against the record's own
+      // pulls, start here and nowhere else.
       const removed = removeItemAttachment(db, command.attachmentId as Uuid, { announce: false, itemId: command.itemId as Uuid });
       if (removed === undefined) {
         noteAttachmentRemoved(db, command.attachmentId as Uuid, command.itemId as Uuid, Date.now());
@@ -1856,17 +1861,25 @@ async function storeAttachment(
       notPermitted: null,
     };
   }
-  insertAttachments(context.db, [
-    {
-      ...stored,
-      // The device's id for the file, kept, so that the two sides are
-      // talking about one attachment — and so that a replay finds it
-      // already here.
-      id: command.attachmentId as Uuid,
-      itemId: command.itemId as Uuid,
-      commentId: command.commentId as Uuid | null,
-    },
-  ]);
+  context.db.transaction((tx) => {
+    insertAttachments(tx as unknown as Db, [
+      {
+        ...stored,
+        // The device's id for the file, kept, so that the two sides are
+        // talking about one attachment — and so that a replay finds it
+        // already here.
+        id: command.attachmentId as Uuid,
+        itemId: command.itemId as Uuid,
+        commentId: command.commentId as Uuid | null,
+      },
+    ]);
+    // One of the item's own files is the Jira issue's file (EO-705), and
+    // the record owns the tracker: the desktop that added it queued no
+    // upload of its own, so this is the one. In the same write as the
+    // row, so a file is never kept here without it. A comment's file is
+    // left as it was.
+    if (command.commentId === null) queueAttachmentUpload(tx as unknown as Db, command.attachmentId as Uuid);
+  });
   return ok;
 }
 

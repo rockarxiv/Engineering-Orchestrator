@@ -16,7 +16,7 @@ import {
 } from "../db/repos/commentsRepo.js";
 import { listTransitionsForItem } from "../db/repos/transitionsRepo.js";
 import { listRunEvents } from "../db/repos/runEventsRepo.js";
-import { items as itemsTable, pipelines, pipelineSteps, runEvents, runs as runsTable } from "../db/schema.js";
+import { items as itemsTable, outbox as outboxTable, pipelines, pipelineSteps, runEvents, runs as runsTable } from "../db/schema.js";
 import { asc, eq } from "drizzle-orm";
 import { createRun, getRun, runsNeedingSync, updateRun } from "../db/repos/runsRepo.js";
 import { grantLease } from "../db/repos/leasesRepo.js";
@@ -34,7 +34,7 @@ import { getPipeline, listRoutesForPipeline, replacePipelineGraph, setStepOwner 
 import { listPipelinesUpdatedSince, upsertReplicaPipeline } from "../db/repos/projectMoveRepo.js";
 import { MANAGED_PERSON_ID_KEY, MANAGED_PERSON_NAME_KEY } from "../identity/viewer.js";
 import { createRunEventBuffer } from "../db/repos/runEventBuffer.js";
-import { addItemAttachments, getAttachment, listAttachmentsForComment, listItemAttachments, removeItemAttachment } from "../db/repos/attachmentsRepo.js";
+import { addItemAttachments, getAttachment, listAttachmentsForComment, listItemAttachments, removeItemAttachment, setJiraAttachmentId } from "../db/repos/attachmentsRepo.js";
 import { AttachmentStorage } from "../attachments/storage.js";
 import { addItemAttachmentsCommand, removeItemAttachmentCommand } from "../ipc/itemAttachmentCommands.js";
 import { deleteAttachmentCommand } from "../ipc/attachmentCommands.js";
@@ -902,6 +902,11 @@ describe("a tracker a managed desktop does not own", () => {
     return item;
   }
 
+  /** Stands for the outbox having sent what was queued. */
+  function forgetPushes(handle: DbHandle, itemId: string): void {
+    handle.db.delete(outboxTable).where(eq(outboxTable.itemId, itemId)).run();
+  }
+
   /** What this machine has promised to tell Jira about the item. */
   function pushes(handle: DbHandle, itemId: string): string[] {
     return pendingPushesForItem(handle.db, itemId as Uuid, "jira").map((entry) => entry.kind);
@@ -958,6 +963,37 @@ describe("a tracker a managed desktop does not own", () => {
     expect(pushes(annaDb, item.id)).toEqual([]);
     expect(pushes(danaDb, item.id)).toEqual([]);
     expect(pushes(recordDb, item.id)).toEqual(["comment"]);
+  });
+
+  it("hears about an item file, and its removal, once, from the record (EO-705)", async () => {
+    const item = await jiraSyncedItem();
+
+    const staged = await anna.files.stageData({ name: "mock.png", dataBase64: Buffer.from("the mock").toString("base64") });
+    expect((await addItemAttachmentsCommand(annaDb.db, anna.files, { itemId: item.id, attachmentIds: [staged.id] })).problem).toBeNull();
+    const fileId = staged.id as Uuid;
+    expect(pushes(annaDb, item.id)).toEqual([]);
+
+    await anna.record.sync();
+    await dana.record.sync();
+
+    expect(pushes(annaDb, item.id)).toEqual([]);
+    expect(pushes(danaDb, item.id)).toEqual([]);
+    expect(pushes(recordDb, item.id)).toEqual(["attachment_upload"]);
+
+    // The record's outbox uploads it, and the Jira id stays there.
+    forgetPushes(recordDb, item.id);
+    setJiraAttachmentId(recordDb.db, fileId, "jira-file-1");
+
+    expect((await removeItemAttachmentCommand(annaDb.db, anna.files, { attachmentId: fileId })).removed).toBe(true);
+    expect(pushes(annaDb, item.id)).toEqual([]);
+    await anna.record.sync();
+    await dana.record.sync();
+
+    expect(listItemAttachments(recordDb.db, item.id as Uuid)).toEqual([]);
+    expect(listItemAttachments(danaDb.db, item.id as Uuid)).toEqual([]);
+    expect(pendingPushesForItem(recordDb.db, item.id as Uuid, "jira")).toMatchObject([{ kind: "attachment_delete", payload: { jiraAttachmentId: "jira-file-1" } }]);
+    expect(pushes(annaDb, item.id)).toEqual([]);
+    expect(pushes(danaDb, item.id)).toEqual([]);
   });
 });
 

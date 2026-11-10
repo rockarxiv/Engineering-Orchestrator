@@ -2,12 +2,17 @@ import { existsSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import type { Uuid } from "@eo/core";
+import { uuidv7, type Uuid } from "@eo/core";
 import { AttachmentStorage, MAX_ATTACHMENT_BYTES } from "../../../attachments/storage.js";
 import type { DbHandle } from "../../../db/client.js";
 import {
+  addItemAttachments,
   getAttachment,
+  insertAttachments,
+  removeItemAttachment,
   listAttachmentsForItem,
+  listCommentsForItem,
+  listItemAttachments,
   pendingPushesForItem,
   postComment,
   projectForWorkspace,
@@ -17,8 +22,15 @@ import {
   setJiraSync,
 } from "../../../db/repos/index.js";
 import { createJiraConnection } from "../../../db/repos/jiraConnectionsRepo.js";
+import { attachmentWasRemoved } from "../../../db/repos/attachmentsRepo.js";
 import { attachWorkspace, createTestItem, openMigratedTestDb } from "../../../db/testHelpers.js";
 import { deleteAttachmentCommand } from "../../../ipc/attachmentCommands.js";
+import { addItemAttachmentsCommand, removeItemAttachmentCommand } from "../../../ipc/itemAttachmentCommands.js";
+import { markReplica } from "../../../db/recordRole.js";
+import { createPerson } from "../../../db/repos/peopleRepo.js";
+import { issueDevice } from "../../../db/repos/devicesRepo.js";
+import { createLocalRecord } from "../../../record/localRecord.js";
+import { serveApply, type ServeRecordContext } from "../../../record/serveRecord.js";
 import { drainChannel } from "../../../outbox/drain.js";
 import type { FetchLike, JiraAttachment } from "./client.js";
 import { createJiraClient } from "./index.js";
@@ -184,6 +196,7 @@ describe("inbound reconciliation", () => {
     expect(first).toMatchObject({ added: 10, removed: 0, skipped: 1, problems: [] });
     expect(listAttachmentsForItem(handle.db, item.id)).toHaveLength(10);
     expect(listAttachmentsForItem(handle.db, item.id)[0]?.name).toBe("unsafe.txt");
+    expect(listItemAttachments(handle.db, item.id), "pulled files are the item's own (EO-705)").toHaveLength(10);
 
     const second = await syncJiraAttachments(handle.db, client, item, storage);
     expect(second.added).toBe(0);
@@ -225,5 +238,239 @@ describe("inbound reconciliation", () => {
     expect(listAttachmentsForItem(handle.db, item.id)).toEqual([]);
     const managedRoot = join(directory, "files", "files");
     expect(existsSync(managedRoot) ? readdirSync(managedRoot).filter((name) => name.includes("part")) : []).toEqual([]);
+  });
+});
+
+/**
+ * Jira's issue files are the item's own files (EO-705), both ways.
+ */
+describe("item attachments and Jira issue attachments", () => {
+  interface FakeJira {
+    remote: JiraAttachment[];
+    uploads: string[];
+    deletes: string[];
+    fetchImpl: FetchLike;
+  }
+
+  function fakeJira(issueKey: string): FakeJira {
+    const fake: FakeJira = { remote: [], uploads: [], deletes: [], fetchImpl: async () => new Response(null) };
+    let next = 0;
+    fake.fetchImpl = async (url, init) => {
+      const path = new URL(url).pathname;
+      if (path.endsWith(`/issue/${issueKey}/attachments`)) {
+        next += 1;
+        const id = `uploaded-${next}`;
+        fake.uploads.push(id);
+        const entry = { id, filename: `upload-${next}`, mimeType: "text/plain", size: 5, contentUrl: `https://jira.example/content/${id}`, created: "" };
+        fake.remote.push(entry);
+        return new Response(JSON.stringify([{ id, filename: entry.filename, mimeType: entry.mimeType, size: entry.size, content: entry.contentUrl }]), { status: 200 });
+      }
+      const deleted = /\/attachment\/([^/]+)$/.exec(path);
+      if (deleted && init?.method === "DELETE") {
+        fake.deletes.push(deleted[1]!);
+        fake.remote = fake.remote.filter((entry) => entry.id !== deleted[1]);
+        return new Response(null, { status: 204 });
+      }
+      if (path.includes(`/issue/${issueKey}`)) {
+        return new Response(JSON.stringify({ fields: { attachment: fake.remote.map((entry) => ({ id: entry.id, filename: entry.filename, mimeType: entry.mimeType, size: entry.size, content: entry.contentUrl })) } }), { status: 200 });
+      }
+      return new Response(new TextEncoder().encode("bytes!"), { status: 200 });
+    };
+    return fake;
+  }
+
+  function mirrored(jiraKey: string) {
+    const workspace = attachWorkspace(handle.db, { name: "api", keyPrefix: "API", repoPath: "/tmp/api" });
+    const project = projectForWorkspace(handle.db, workspace.id)!;
+    const site = createJiraConnection(handle.db, { baseUrl: "https://jira.example", flavour: "datacenter" });
+    saveJiraBinding(handle.db, project.id, { connectionId: site.id, projectKey: "API" });
+    storeToken({ directory, store }, site.id, "pat");
+    const item = createTestItem(handle.db, { type: "story", title: "Files", stepId: "todo", workspaceId: workspace.id, projectId: project.id, jiraKey });
+    const fake = fakeJira(jiraKey);
+    const client = createJiraClient({ baseUrl: "https://jira.example", flavour: "datacenter", email: null, token: "pat" }, fake.fetchImpl);
+    const sender = createJiraSender({ credentials: { directory, store }, fetchImpl: fake.fetchImpl });
+    return { item, fake, client, drain: (at: number) => drainChannel(handle.db, "jira", sender, at) };
+  }
+
+  async function addItemFile(itemId: string, name: string) {
+    const draft = await storage.stageData({ name, dataBase64: Buffer.from("hello").toString("base64") });
+    const answer = await addItemAttachmentsCommand(handle.db, storage, { itemId, attachmentIds: [draft.id] });
+    expect(answer.problem).toBeNull();
+    return draft.id as Uuid;
+  }
+
+  it("pulls a Jira issue file onto the item, with no comment and nothing queued back", async () => {
+    const { item, fake, client } = mirrored("API-20");
+    fake.remote.push({ id: "spec", filename: "spec.pdf", mimeType: "application/pdf", size: 6, contentUrl: "https://jira.example/content/spec", created: "" });
+
+    const result = await syncJiraAttachments(handle.db, client, item, storage);
+
+    expect(result).toMatchObject({ added: 1, problems: [] });
+    expect(listItemAttachments(handle.db, item.id)).toMatchObject([{ name: "spec.pdf", commentId: null, jiraAttachmentId: "spec" }]);
+    expect(listCommentsForItem(handle.db, item.id), "no note is posted to own the file any more").toEqual([]);
+    expect(pendingPushesForItem(handle.db, item.id, "jira")).toEqual([]);
+  });
+
+  it("uploads an item file added in EO, and removing it in EO removes it in Jira", async () => {
+    const { item, fake, client, drain } = mirrored("API-21");
+    const id = await addItemFile(item.id, "mock.png");
+    expect(pendingPushesForItem(handle.db, item.id, "jira")).toMatchObject([{ kind: "attachment_upload", payload: { attachmentId: id } }]);
+
+    await drain(Date.now());
+    expect(fake.uploads).toEqual(["uploaded-1"]);
+    expect(getAttachment(handle.db, id)).toMatchObject({ commentId: null, jiraAttachmentId: "uploaded-1", jiraSyncError: null });
+    // The uploaded file is now in Jira's listing; a pull must recognise
+    // it as the item file it came from, not import it a second time.
+    await syncJiraAttachments(handle.db, client, item, storage);
+    expect(listAttachmentsForItem(handle.db, item.id)).toHaveLength(1);
+
+    expect(await removeItemAttachmentCommand(handle.db, storage, { attachmentId: id })).toEqual({ removed: true, problem: null });
+    expect(pendingPushesForItem(handle.db, item.id, "jira")).toMatchObject([{ kind: "attachment_delete", payload: { jiraAttachmentId: "uploaded-1" } }]);
+
+    // The tombstone: a pull landing before the outbox drains sees the
+    // file still in Jira and must not bring it back.
+    const during = await syncJiraAttachments(handle.db, client, item, storage);
+    expect(during.added).toBe(0);
+    expect(listAttachmentsForItem(handle.db, item.id)).toEqual([]);
+
+    await drain(Date.now() + 1);
+    expect(fake.deletes).toEqual(["uploaded-1"]);
+    expect(pendingPushesForItem(handle.db, item.id, "jira")).toEqual([]);
+    expect((await syncJiraAttachments(handle.db, client, item, storage)).added).toBe(0);
+  });
+
+  it("removes an item file in EO when it is removed in Jira, without echoing a deletion back", async () => {
+    const { item, fake, client } = mirrored("API-22");
+    fake.remote.push({ id: "shot", filename: "bug.png", mimeType: "image/png", size: 6, contentUrl: "https://jira.example/content/shot", created: "" });
+    await syncJiraAttachments(handle.db, client, item, storage);
+    const pulled = listItemAttachments(handle.db, item.id)[0]!;
+
+    fake.remote = [];
+    const result = await syncJiraAttachments(handle.db, client, item, storage);
+
+    expect(result.removed).toBe(1);
+    expect(getAttachment(handle.db, pulled.id)).toBeUndefined();
+    expect(existsSync(pulled.path)).toBe(false);
+    // Removed the way the item page removes one, so the organisation
+    // record is told…
+    expect(attachmentWasRemoved(handle.db, pulled.id)).toBe(true);
+    // …and Jira is not: it is where the removal came from.
+    expect(pendingPushesForItem(handle.db, item.id, "jira")).toEqual([]);
+  });
+
+  it("leaves a Jira file already on a comment where it is, and does not duplicate it on the item", async () => {
+    const { item, fake, client } = mirrored("API-23");
+    // What a pull before EO-705 left: the file on the engine's note.
+    const note = postComment(handle.db, { itemId: item.id, author: { type: "engine" }, kind: "note", body: "Attachments synchronized from Jira.", jiraCommentId: "attachments:API-23" });
+    const old = await storage.storeImported({ name: "old.txt", mimeType: "text/plain", data: new TextEncoder().encode("bytes!") });
+    insertAttachments(handle.db, [{ ...old, itemId: item.id, commentId: note.id, jiraAttachmentId: "old" }]);
+    fake.remote.push({ id: "old", filename: "old.txt", mimeType: "text/plain", size: 6, contentUrl: "https://jira.example/content/old", created: "" });
+    fake.remote.push({ id: "new", filename: "new.txt", mimeType: "text/plain", size: 6, contentUrl: "https://jira.example/content/new", created: "" });
+
+    const result = await syncJiraAttachments(handle.db, client, item, storage);
+
+    expect(result.added).toBe(1);
+    expect(getAttachment(handle.db, old.id)).toMatchObject({ commentId: note.id, jiraAttachmentId: "old" });
+    expect(listItemAttachments(handle.db, item.id).map((file) => file.jiraAttachmentId)).toEqual(["new"]);
+    expect(listCommentsForItem(handle.db, item.id)).toHaveLength(1);
+
+    // A deletion in Jira still reaches it on its comment.
+    fake.remote = fake.remote.filter((entry) => entry.id !== "old");
+    expect((await syncJiraAttachments(handle.db, client, item, storage)).removed).toBe(1);
+    expect(getAttachment(handle.db, old.id)).toBeUndefined();
+    expect(listItemAttachments(handle.db, item.id)).toHaveLength(1);
+  });
+
+  /**
+   * Organisation mode. The record owns the item's tracker (`recordRole.ts`),
+   * so a file a desktop puts on or takes off reaches Jira from the record
+   * when the record accepts the command — and from nowhere else.
+   */
+  function onTheRecord() {
+    const serving: ServeRecordContext = { db: handle.db, record: createLocalRecord(handle.db), attachments: storage, offerWork: async () => [] };
+    const person = createPerson(handle.db, { name: "Anna", email: "anna@example.com" });
+    const deviceId = issueDevice(handle.db, { personId: person.id, name: "anna-laptop", tokenHash: "hash-of-anna", secretsKeyHash: null }).id;
+    return {
+      put: (itemId: string, attachmentId: string) =>
+        serveApply(serving, {
+          deviceId,
+          commands: [{ kind: "attachment", id: uuidv7(), itemId, commentId: null, attachmentId, name: "mock.png", mimeType: "image/png", size: 5, dataBase64: Buffer.from("hello").toString("base64") }],
+        }),
+      take: (itemId: string, attachmentId: string) =>
+        serveApply(serving, {
+          deviceId,
+          commands: [{ kind: "attachmentRemoval", id: uuidv7(), itemId, attachmentId, name: "mock.png", mimeType: "image/png" }],
+        }),
+    };
+  }
+
+  it("uploads an item file a desktop sends the record, and the record's pull does not import it again", async () => {
+    const { item, fake, client, drain } = mirrored("API-25");
+    const record = onTheRecord();
+    const fileId = uuidv7();
+
+    expect((await record.put(item.id, fileId)).results[0]).toMatchObject({ applied: true });
+    expect(pendingPushesForItem(handle.db, item.id, "jira")).toMatchObject([{ kind: "attachment_upload", payload: { attachmentId: fileId } }]);
+    // A replayed queue is one file and one upload.
+    await record.put(item.id, fileId);
+    expect(pendingPushesForItem(handle.db, item.id, "jira")).toHaveLength(1);
+
+    await drain(Date.now());
+    expect(fake.uploads).toEqual(["uploaded-1"]);
+    expect(getAttachment(handle.db, fileId as Uuid)).toMatchObject({ commentId: null, jiraAttachmentId: "uploaded-1" });
+    expect((await syncJiraAttachments(handle.db, client, item, storage)).added).toBe(0);
+    expect(listItemAttachments(handle.db, item.id)).toHaveLength(1);
+  });
+
+  it("deletes in Jira an item file a desktop took off, with the pending deletion keeping the record's pull from bringing it back", async () => {
+    const { item, fake, client, drain } = mirrored("API-26");
+    const record = onTheRecord();
+    const fileId = uuidv7();
+    await record.put(item.id, fileId);
+    await drain(Date.now());
+    expect(getAttachment(handle.db, fileId as Uuid)?.jiraAttachmentId).toBe("uploaded-1");
+
+    expect((await record.take(item.id, fileId)).results[0]).toMatchObject({ applied: true });
+    expect(getAttachment(handle.db, fileId as Uuid)).toBeUndefined();
+    expect(pendingPushesForItem(handle.db, item.id, "jira")).toMatchObject([{ kind: "attachment_delete", payload: { jiraAttachmentId: "uploaded-1" } }]);
+
+    // Jira still lists it until the outbox drains: the tombstone holds.
+    expect(fake.remote.map((entry) => entry.id)).toEqual(["uploaded-1"]);
+    expect((await syncJiraAttachments(handle.db, client, item, storage)).added).toBe(0);
+    expect(listItemAttachments(handle.db, item.id)).toEqual([]);
+
+    await drain(Date.now() + 1);
+    expect(fake.deletes).toEqual(["uploaded-1"]);
+    expect(pendingPushesForItem(handle.db, item.id, "jira")).toEqual([]);
+  });
+
+  it("leaves Jira to the record on a replica: no deletion queued, and no reconciliation of its own", async () => {
+    const { item, fake, client } = mirrored("API-27");
+    const stored = await storage.storeImported({ name: "spec.txt", mimeType: "text/plain", data: new TextEncoder().encode("hello") });
+    insertAttachments(handle.db, [{ ...stored, itemId: item.id, commentId: null, jiraAttachmentId: "linked" }]);
+    fake.remote.push({ id: "elsewhere", filename: "new.txt", mimeType: "text/plain", size: 6, contentUrl: "https://jira.example/content/elsewhere", created: "" });
+    const release = markReplica(handle.db, () => true);
+    try {
+      // The record's own upload, seen from a replica that holds no link
+      // for it, would otherwise come back as a new file and go up again.
+      expect(await syncJiraAttachments(handle.db, client, item, storage)).toMatchObject({ added: 0, removed: 0 });
+      expect(listItemAttachments(handle.db, item.id).map((file) => file.jiraAttachmentId)).toEqual(["linked"]);
+      expect(removeItemAttachment(handle.db, stored.id)).toBeDefined();
+    } finally {
+      release();
+    }
+    expect(pendingPushesForItem(handle.db, item.id, "jira")).toEqual([]);
+  });
+
+  it("queues no upload for an item file added on a replica, whose files reach Jira from the record", async () => {
+    const { item } = mirrored("API-24");
+    const stored = await storage.storeImported({ name: "spec.txt", mimeType: "text/plain", data: new TextEncoder().encode("hello") });
+    const release = markReplica(handle.db, () => true);
+    try {
+      expect(addItemAttachments(handle.db, item.id, [stored])).toHaveLength(1);
+    } finally {
+      release();
+    }
+    expect(pendingPushesForItem(handle.db, item.id, "jira")).toEqual([]);
   });
 });

@@ -4,6 +4,7 @@ import type { AgentAttachment, RecordCursor, Uuid } from "@eo/core";
 import type { Db } from "../client.js";
 import { attachmentRemovals, attachments, comments, jiraAttachmentLinks, outbox, items } from "../schema.js";
 import { notifyItemAttachmentsAdded, notifyItemAttachmentRemoved } from "../itemAttachmentEvents.js";
+import { isReplica } from "../recordRole.js";
 import { jiraStateFor } from "./itemsRepo.js";
 import { enqueueOutbox } from "./outboxRepo.js";
 
@@ -184,10 +185,20 @@ export function listItemAttachments(db: Db, itemId: Uuid): AttachmentRecord[] {
  * writes when a file arrives *from* the record goes through
  * `insertAttachments` instead, which announces nothing: telling the
  * record about its own file would be an echo.
+ *
+ * A mirrored item's files are the Jira issue's files (EO-705), so each
+ * is queued for upload in the same transaction, on the terms a comment's
+ * file is: not on a replica, whose files reach the tracker from the
+ * record, and not for a file that came from Jira — it carries its Jira
+ * id, and `queueAttachmentUpload` skips a linked file.
  */
 export function addItemAttachments(db: Db, itemId: Uuid, records: Omit<CreateAttachmentRecord, "itemId" | "commentId">[]): AttachmentRecord[] {
   if (records.length === 0) return [];
-  insertAttachments(db, records.map((record) => ({ ...record, itemId, commentId: null })));
+  const ours = !isReplica(db, itemId);
+  db.transaction((tx) => {
+    insertAttachments(tx as unknown as Db, records.map((record) => ({ ...record, itemId, commentId: null })));
+    if (ours) for (const record of records) queueAttachmentUpload(tx as unknown as Db, record.id);
+  });
   const added = records.map((record) => getAttachment(db, record.id)).filter((record): record is AttachmentRecord => record !== undefined);
   notifyItemAttachmentsAdded(db, itemId, added);
   return added;
@@ -201,14 +212,26 @@ export function addItemAttachments(db: Db, itemId: Uuid, records: Omit<CreateAtt
  *
  * `announce` is false where the removal came *from* the record, so it
  * is not sent back to it.
+ *
+ * The removal also goes to Jira (EO-705): the pending `attachment_delete`
+ * is the tombstone that keeps a pull, landing before the outbox drains,
+ * from bringing the file back. Told by whoever owns the item's tracker —
+ * a solo desktop, or the record when it accepts a device's removal — so
+ * never from a replica, whose removal reaches Jira from the record
+ * (`recordRole.ts`). `tellJira: false` where nothing should go: a
+ * removal that came *from* Jira, which would be an echo, and one a
+ * replica applies on the record's word.
  */
-export function removeItemAttachment(db: Db, id: Uuid, options: { announce?: boolean; now?: number; itemId?: Uuid } = {}): AttachmentRecord | undefined {
+export function removeItemAttachment(db: Db, id: Uuid, options: { announce?: boolean; now?: number; itemId?: Uuid; tellJira?: boolean } = {}): AttachmentRecord | undefined {
   const removed = db.transaction((tx) => {
     const row = selectAttachments(tx as unknown as Db).where(eq(attachments.id, id)).get();
     if (!row || row.commentId !== null) return undefined;
     // Named by item as well as by id, where the caller was told which
     // item: a removal for one item never takes another item's file.
     if (options.itemId !== undefined && row.itemId !== options.itemId) return undefined;
+    // Asked of `db`, not `tx`: the replica mark is kept against the
+    // database object, and a transaction handle is a different one.
+    if (options.tellJira !== false && !isReplica(db, row.itemId as Uuid)) queueAttachmentDeletion(tx as unknown as Db, row);
     tx.delete(attachments).where(eq(attachments.id, id)).run();
     noteAttachmentRemoved(tx as unknown as Db, id, row.itemId as Uuid, options.now ?? Date.now());
     return toRecord(row);
