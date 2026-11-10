@@ -1,5 +1,6 @@
 import { renderSkillMarkdown, type InterruptibleStream, type Skill } from "@eo/core";
 import { describe, expect, it, vi } from "vitest";
+import { worktreeSkillMarkdown } from "../agentAttachments/worktreeSkills.js";
 import { claudeSkillLoaded, codexSkillsRead, leadingWith, NO_SKILL_TEXTS, skillsOffered, skillTextsOf } from "./skillUsage.js";
 
 /** How each adapter reads a skill delivered and a skill loaded (EO-715). */
@@ -18,9 +19,14 @@ describe("skill usage detection", () => {
     expect(claudeSkillLoaded("Skill", null)).toEqual([]);
   });
 
-  /** Two delivered skills, as the files Codex reads hold them. */
-  const skill = (slug: string, description: string, body: string): Skill => ({
-    id: `skill-${slug}`,
+  /**
+   * Codex detection is a best-effort inference from what Codex reports
+   * (the rule settled for EO-715); Claude's above is exact. These hold it
+   * to that rule: the skill's id in the output, or the skill's path named
+   * — by the command or as a grep-style prefix — with a line of the file.
+   */
+  const skill = (id: string, slug: string, description: string, body: string): Skill => ({
+    id,
     slug,
     name: slug,
     description,
@@ -35,44 +41,57 @@ describe("skill usage detection", () => {
     createdBy: "person",
     locked: false,
   });
-  const HOUSE = skill("house-style", "How this house reviews a change.", "# House style\n\nRead the whole diff before you judge any of it.\n\n## Steps\n\nRun the tests yourself, every time, before approving.\n");
-  const REVIEW = skill("review", "How to review.", "# Review\n\n## Steps\n\nLeave one comment per finding, never a wall of text.\n");
-  const TEXTS = skillTextsOf([HOUSE, REVIEW]);
-  const FILE = renderSkillMarkdown(HOUSE);
+  const HOUSE = skill("0199aaaa-0000-7000-8000-000000000001", "house-style", "How this house reviews a change.", "# House style\n\nRead the whole diff before you judge any of it.\n\nRun the tests.\n");
+  const REVIEW = skill("0199aaaa-0000-7000-8000-000000000002", "review", "How to review.", "# Review\n\nLeave one comment per finding.\n");
+  // Two short skills that differ in nothing a person wrote but the slug.
+  const A = skill("0199aaaa-0000-7000-8000-00000000000a", "a", "Same.", "Read the diff.\n");
+  const B = skill("0199aaaa-0000-7000-8000-00000000000b", "b", "Same.", "Read the diff.\n");
+  const TEXTS = skillTextsOf([HOUSE, REVIEW, A, B]);
+  const FILE = worktreeSkillMarkdown(HOUSE);
   const PATH = ".agent/skills/house-style/SKILL.md";
   const loads = (...slugs: string[]) => slugs.map((slug) => ({ type: "skill_loaded", slug }));
 
-  it("holds each skill to its own lines: its description, and long lines no other skill given shares", () => {
-    expect(TEXTS.lines.get('description: "How this house reviews a change."')).toBe("house-style");
-    expect(TEXTS.lines.get('description: "How to review."')).toBe("review");
-    expect(TEXTS.lines.get("Read the whole diff before you judge any of it.")).toBe("house-style");
-    // Short, or in both files: in every other markdown file too.
-    expect(TEXTS.lines.has("## Steps")).toBe(false);
-    expect(TEXTS.lines.has("---")).toBe(false);
-    const twins = skillTextsOf([skill("a", "A.", "The same long line in both of these skills.\n"), skill("b", "B.", "The same long line in both of these skills.\n")]);
-    expect(twins.lines.has("The same long line in both of these skills.")).toBe(false);
+  it("delivers the skill's id in the file Codex reads, and in nothing else EO writes", () => {
+    expect(FILE).toContain(`eo-skill-id: "${HOUSE.id}"`);
+    expect(renderSkillMarkdown(HOUSE)).not.toContain(HOUSE.id);
   });
 
   it.each([
+    // The frontmatter shown: the id says which file, whatever the command.
     ["cat", `bash -lc 'cat ${PATH}'`, FILE],
-    ["sed -n, the opening lines", `bash -lc "sed -n '1,4p' ${PATH}"`, FILE.split("\n").slice(0, 4).join("\n")],
-    ["tail, the closing lines", `tail -n 2 ${PATH}`, FILE.trimEnd().split("\n").slice(-2).join("\n")],
-    ["nl, numbered", `nl -ba ${PATH}`, FILE.split("\n").map((line, at) => `${String(at + 1).padStart(6)}\t${line}`).join("\n")],
-    ["rg, path and line prefixed", `rg -n . .agent/skills`, `${PATH}:7:Read the whole diff before you judge any of it.`],
-    ["grep, line prefixed", `grep -n judge ${PATH}`, "7:Read the whole diff before you judge any of it."],
+    ["head", `head -8 ${PATH}`, FILE.split("\n").slice(0, 8).join("\n")],
     ["python", `python3 -c "print(open('${PATH}').read())"`, FILE],
-    ["xargs", `ls .agent/skills/*/SKILL.md | xargs cat`, FILE],
+    ["xargs", "ls .agent/skills/*/SKILL.md | xargs cat", FILE],
+    ["find -exec", "find . -name SKILL.md -exec cat {} +", FILE],
     ["a subshell", `echo "$(cat ${PATH})"`, FILE],
     ["among other output", `cat README.md ${PATH} package.json`, `# EO\n${FILE}{ "name": "eo" }`],
-  ])("counts a Codex load when the output shows the skill's file: %s", (_, command, output) => {
+    // The frontmatter left out: the path named, and a line of the file shown.
+    ["tail", `tail -n 3 ${PATH}`, "Read the whole diff before you judge any of it.\n\nRun the tests."],
+    ["grep with the line in the command", `grep -n 'Run the tests.' ${PATH}`, "9:Run the tests."],
+    ["nl", `nl -ba ${PATH} | tail -2`, "    11\tRun the tests."],
+    ["sed past the frontmatter", `sed -n '9,11p' /tmp/wt/${PATH}`, "Run the tests."],
+    // The path as a grep-style prefix on the line.
+    ["grep -r, path prefixed", "grep -rn 'tests' .agent/skills", `${PATH}:11:Run the tests.`],
+    ["grep context, path prefixed", "grep -rn -B1 'tests' .agent/", `${PATH}-10-\n${PATH}:11:Run the tests.`],
+  ])("counts a Codex load from %s", (_, command, output) => {
     expect(codexSkillsRead(command, output, TEXTS)).toEqual(loads("house-style"));
   });
 
-  it("counts each skill a command shows once, however many of its lines it shows", () => {
-    expect(codexSkillsRead("cat .agent/skills/*/SKILL.md", `${FILE}${FILE}${renderSkillMarkdown(REVIEW)}`, TEXTS)).toEqual(loads("house-style", "review"));
+  it("tells two skills with the same words apart by their ids, and by the path named", () => {
+    const a = worktreeSkillMarkdown(A);
+    expect(codexSkillsRead("cat .agent/skills/a/SKILL.md", a, TEXTS)).toEqual(loads("a"));
+    // A partial read of a short line both share: the path says whose.
+    expect(codexSkillsRead("tail -n 1 .agent/skills/b/SKILL.md", "Read the diff.", TEXTS)).toEqual(loads("b"));
+    expect(codexSkillsRead("grep -rn diff .agent/skills", ".agent/skills/a/SKILL.md:9:Read the diff.", TEXTS)).toEqual(loads("a"));
+    // Both shown: both loaded, once each.
+    expect(codexSkillsRead("cat .agent/skills/*/SKILL.md", `${a}${worktreeSkillMarkdown(B)}${a}`, TEXTS)).toEqual(loads("a", "b"));
   });
 
   it.each([
+    // The skill's words in another file: no id, and no path named.
+    ["a README holding a skill's line", "cat README.md", "# EO\nRead the whole diff before you judge any of it.\n"],
+    ["a search finding it in the README", "rg -n 'Read the whole diff' .", "README.md:3:Read the whole diff before you judge any of it."],
+    ["a short shared line elsewhere", "cat NOTES.md", "Read the diff."],
     // The path mentioned, nothing of the file shown.
     ["echo", `bash -lc 'echo ${PATH}'`, PATH],
     ["ls", `bash -lc 'ls ${PATH}'`, PATH],
@@ -81,14 +100,10 @@ describe("skill usage detection", () => {
     ["--help", `cat --help ${PATH}`, "Usage: cat [OPTION]... [FILE]...\nConcatenate FILE(s) to standard output."],
     ["an option's value", `sed -n -e ${PATH} /dev/null`, ""],
     ["a missing file beside it", `cat ${PATH}.bak`, `cat: ${PATH}.bak: No such file or directory`],
-    ["a listing", `rg --files .agent/skills`, `${PATH}\n.agent/skills/review/SKILL.md`],
-    ["a write", `sed -i 's/a/b/' ${PATH}`, ""],
+    ["a listing", "rg --files .agent/skills", `${PATH}\n.agent/skills/review/SKILL.md`],
     ["output kept from the agent", `cat ${PATH} > /dev/null`, ""],
-    // Only lines every markdown file has.
-    ["generic lines", "cat CONTRIBUTING.md", "---\n## Steps\n# House style"],
-    // The skill's words typed by the agent, not read: in the command itself.
-    ["the agent echoing a line", "echo 'Read the whole diff before you judge any of it.'", "Read the whole diff before you judge any of it."],
-    ["a heredoc holding a line", "cat <<'EOF'\nRead the whole diff before you judge any of it.\nEOF", "Read the whole diff before you judge any of it."],
+    // Another skill's path named: its line is not this skill's.
+    ["the other skill's file", "tail -n 1 .agent/skills/review/SKILL.md", "Read the whole diff before you judge any of it."],
   ])("counts no Codex load from %s", (_, command, output) => {
     expect(codexSkillsRead(command, output, TEXTS)).toEqual([]);
   });

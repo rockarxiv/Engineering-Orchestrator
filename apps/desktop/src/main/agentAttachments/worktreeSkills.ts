@@ -1,6 +1,6 @@
 import { lstatSync, mkdirSync, readFileSync, readdirSync, rmSync, rmdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import type { Skill } from "@eo/core";
+import { renderSkillMarkdown, type Skill } from "@eo/core";
 import { isDeliverable, skillFiles, type PluginFile } from "./pluginDirectory.js";
 import { skillsPromptSection } from "./skillsPrompt.js";
 
@@ -287,6 +287,16 @@ export function deliverableSkills(skills: readonly Skill[]): Skill[] {
 }
 
 /**
+ * A skill's `SKILL.md` as Codex is given it: the plugin directory's file,
+ * with the skill's id under `metadata` (EO-715). Codex has no skill tool,
+ * so a load is told by what a command shows of the file, and the id is
+ * the part of it no other file holds — whatever command read it.
+ */
+export function worktreeSkillMarkdown(skill: Skill): string {
+  return renderSkillMarkdown({ ...skill, skillIdMarker: skill.id });
+}
+
+/**
  * Every file the worktree's `.agent` directory holds, as content rather
  * than as writes — paths relative to `.agent`.
  *
@@ -297,7 +307,7 @@ export function deliverableSkills(skills: readonly Skill[]): Skill[] {
  */
 export function worktreeSkillFiles(skills: readonly Skill[]): PluginFile[] {
   return deliverableSkills(skills)
-    .flatMap((skill) => skillFiles(skill))
+    .flatMap((skill) => skillFiles(skill, worktreeSkillMarkdown(skill)))
     .sort((a, b) => a.path.localeCompare(b.path));
 }
 

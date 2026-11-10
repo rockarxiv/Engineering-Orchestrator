@@ -1,5 +1,6 @@
-import { renderSkillMarkdown, type AgentEvent, type InterruptibleStream, type Skill } from "@eo/core";
+import type { AgentEvent, InterruptibleStream, Skill } from "@eo/core";
 import { TOOL_PLUGIN_NAME } from "../agentAttachments/pluginDirectory.js";
+import { WORKTREE_SKILLS_PATH, worktreeSkillMarkdown } from "../agentAttachments/worktreeSkills.js";
 
 /**
  * What each adapter reports about EO's skills on a turn (EO-715): which
@@ -31,85 +32,117 @@ export function claudeSkillLoaded(name: string, input: unknown): AgentEvent[] {
   return slug === "" ? [] : [{ type: "skill_loaded", slug }];
 }
 
-/**
- * The shortest body line that counts as a skill's own. Shorter lines —
- * `---`, a heading, `## Steps` — are in every other markdown file too.
- */
-const MIN_SKILL_LINE_CHARS = 20;
-
 /** How much of one command's output is looked through: no skill read is longer. */
 const MAX_OUTPUT_CHARS = 2_000_000;
 
-/** How far into an output line a prefix may run — `path:12:`, `   12\t` — before the skill's line. */
-const MAX_PREFIX_CHARS = 512;
-
 /**
- * The lines of each skill a turn was given that only that skill's
- * `SKILL.md` holds (EO-715), by slug: what the file's text looks like
- * when a command shows it. Its `description:` line always, which EO
- * wrote and which names the skill; every other line of the file at least
- * `MIN_SKILL_LINE_CHARS` long, trimmed, that no other skill given in the
- * same turn shares.
+ * One delivered skill as a command's output would show it (EO-715): the
+ * id EO wrote into its frontmatter, the path it is read from, and every
+ * line of the file as delivered (`worktreeSkillMarkdown`), trimmed.
  */
-export interface SkillTexts {
-  /** Distinctive line → the slug of the one skill whose `SKILL.md` holds it. */
-  readonly lines: ReadonlyMap<string, string>;
+interface SkillText {
+  id: string;
+  /** `.agent/skills/<slug>/SKILL.md`. */
+  path: string;
+  lines: ReadonlySet<string>;
 }
 
-export const NO_SKILL_TEXTS: SkillTexts = { lines: new Map() };
+/** The skills a turn was given, by slug, as `codexSkillsRead` holds a command's output to them. */
+export interface SkillTexts {
+  readonly bySlug: ReadonlyMap<string, SkillText>;
+}
 
-/** The `SkillTexts` of the skills a turn actually delivered. */
+export const NO_SKILL_TEXTS: SkillTexts = { bySlug: new Map() };
+
+/** The `SkillTexts` of the skills a turn actually delivered, from the files as Codex was given them. */
 export function skillTextsOf(skills: readonly Skill[]): SkillTexts {
-  const owners = new Map<string, Set<string>>();
+  const bySlug = new Map<string, SkillText>();
   for (const skill of skills) {
-    for (const raw of renderSkillMarkdown(skill).split("\n")) {
-      const line = raw.trim();
-      if (!line.startsWith("description: ") && line.length < MIN_SKILL_LINE_CHARS) continue;
-      const held = owners.get(line) ?? new Set<string>();
-      held.add(skill.slug);
-      owners.set(line, held);
-    }
+    const lines = new Set(
+      worktreeSkillMarkdown(skill)
+        .split("\n")
+        .map((line) => line.trim())
+        .filter((line) => line !== ""),
+    );
+    bySlug.set(skill.slug, { id: skill.id, path: `${WORKTREE_SKILLS_PATH}/${skill.slug}/SKILL.md`, lines });
   }
-  const lines = new Map<string, string>();
-  for (const [line, slugs] of owners) if (slugs.size === 1) lines.set(line, [...slugs][0]!);
-  return { lines };
+  return { bySlug };
+}
+
+const escaped = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/**
+ * The path where a command names it: the whole of `.agent/skills/<slug>/SKILL.md`,
+ * relative or under any directory, and not a longer name it begins
+ * (`SKILL.md.bak`) or ends (`foo.agent/…`).
+ */
+function namesPath(text: string, path: string): boolean {
+  return new RegExp(`(?:^|[^A-Za-z0-9_.-])${escaped(path)}(?![A-Za-z0-9_.-])`).test(text);
 }
 
 /**
- * Codex: a command whose output shows a skill's `SKILL.md` loaded it.
- * Codex has no skill tool — the prompt names each skill and says to read
- * that file (EO-207) — so a read is the load, and a read is told by its
- * result rather than by guessing at what a command line would do: the
- * output the backend returned to the agent holds a line only that skill's
- * file holds (`SkillTexts`), whole or after a prefix like grep's
- * `path:12:` or `cat -n`'s number.
+ * An output line as grep, rg or `cat -n` print it: whatever path prefix
+ * it carries (`<dir>/.agent/skills/<slug>/SKILL.md:12:` or `…-12-` or
+ * `…:`), and the line itself with any line number taken off.
+ */
+const GREP_PREFIX = /^(.*?\.agent\/skills\/[a-z0-9]+(?:-[a-z0-9]+)*\/SKILL\.md)[:-](?:\d+[:-])?/;
+const NUMBER_PREFIX = /^\s*\d+[:\t-]/;
+
+function outputLine(raw: string): { prefixPath: string | null; texts: string[] } {
+  const prefixed = GREP_PREFIX.exec(raw);
+  const rest = prefixed ? raw.slice(prefixed[0].length) : raw;
+  const texts = [rest.trim()];
+  const numbered = NUMBER_PREFIX.exec(rest);
+  if (numbered) texts.push(rest.slice(numbered[0].length).trim());
+  if (prefixed) texts.push(raw.trim());
+  return { prefixPath: prefixed?.[1] ?? null, texts: texts.filter((text) => text !== "") };
+}
+
+/**
+ * Codex: which of the turn's skills a command loaded, from what Codex
+ * reports — the command line and the output it returned to the agent.
  *
- * However the command read it — `cat`, `sed -n`, `rg`, `python3 -c
- * "open(…)"`, `xargs`, a subshell — the skill's text came back, and that
- * is what is counted (invariant 5). A command that only mentions the
- * path — `echo` or `ls` of it, a comment, a heredoc, `--help`, the path
- * as an option's value — returns no line of the skill, and is no load.
- * Nor is a line the command itself holds: an agent echoing a skill's
- * words back has typed them, not read them. One event per skill however
- * many of its lines the output shows.
+ * **A best-effort inference, not an observation.** Claude's load is
+ * exact: the agent calls the `Skill` tool, and that call is the load.
+ * Codex has no skill tool — the prompt names each skill and says to read
+ * its file (EO-207) — and nothing Codex reports says which file a line of
+ * output came from. So this infers, by the rule a person settled for
+ * EO-715, leaning towards counting a read rather than missing one: these
+ * counts decide which agent skills are archived as unused (EO-720), and a
+ * missed read can archive a skill agents rely on where a false one only
+ * keeps a skill a little longer.
+ *
+ * - The output holds the skill's id, which EO writes into the frontmatter
+ *   of every `SKILL.md` it delivers on Codex and no other file holds: a
+ *   load, whatever the command was — `cat`, `head`, `sed`, `python`,
+ *   `xargs`, `find -exec`.
+ * - A read that leaves the frontmatter out counts when the command names
+ *   that skill's `SKILL.md` path and the output shows a line of the file,
+ *   or when an output line carries the path as a grep-style prefix and
+ *   shows a line of the file after it.
+ *
+ * Accepted gaps, as settled: a partial read that neither shows the
+ * frontmatter nor names the path goes uncounted, and a contrived command
+ * that names the path while printing other content with the same lines
+ * can over-count. One event per skill however often the output shows it.
  */
 export function codexSkillsRead(command: string, output: string, texts: SkillTexts): AgentEvent[] {
-  if (texts.lines.size === 0 || output === "") return [];
-  const slugs = new Set<string>();
-  const shown = (candidate: string): void => {
-    const line = candidate.trim();
-    const slug = texts.lines.get(line);
-    if (slug !== undefined && !command.includes(line)) slugs.add(slug);
-  };
-  for (const raw of output.slice(0, MAX_OUTPUT_CHARS).split("\n")) {
-    shown(raw);
-    // After a prefix: every `:` or tab in the line's opening stretch.
-    const head = raw.slice(0, MAX_PREFIX_CHARS);
-    for (let at = 0; at < head.length; at += 1) {
-      if (head[at] === ":" || head[at] === "\t") shown(raw.slice(at + 1));
+  if (texts.bySlug.size === 0 || output === "") return [];
+  const shown = output.slice(0, MAX_OUTPUT_CHARS);
+  const loaded = new Set<string>();
+  const lines = shown.split("\n").map(outputLine);
+  for (const [slug, skill] of texts.bySlug) {
+    if (shown.includes(skill.id)) {
+      loaded.add(slug);
+      continue;
     }
+    const named = namesPath(command, skill.path);
+    const showsALine = lines.some(
+      (line) => (named || (line.prefixPath !== null && namesPath(line.prefixPath, skill.path))) && line.texts.some((text) => skill.lines.has(text)),
+    );
+    if (showsALine) loaded.add(slug);
   }
-  return [...slugs].sort().map((slug) => ({ type: "skill_loaded", slug }));
+  return [...loaded].sort().map((slug) => ({ type: "skill_loaded", slug }));
 }
 
 /**

@@ -310,8 +310,8 @@ export type SkillsDeliveredEvent = z.infer<typeof SkillsDeliveredEventSchema>;
 
 /**
  * The run event that records a run loading one of the skills it was
- * given: a `Skill` call naming it on Claude, a command whose output
- * shows its `SKILL.md` on Codex. Once per skill per run; a load of a skill the run
+ * given: a `Skill` call naming it on Claude, a command inferred to have
+ * read its `SKILL.md` on Codex. Once per skill per run; a load of a skill the run
  * was not given records nothing.
  */
 export const SKILL_LOADED_EVENT = "skill_loaded";

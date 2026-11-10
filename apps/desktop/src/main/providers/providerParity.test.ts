@@ -15,7 +15,6 @@ import {
   MEMORY_READ_TOOL_NAME,
   outputSchemaFor,
   REPOSITORY_CHECKOUT_TOOL_NAME,
-  renderSkillMarkdown,
   validateActionResult,
   type AgentEvent,
   type AgentProvider,
@@ -33,6 +32,7 @@ import {
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { assembleSeedContext, type ContextRepositoryInput } from "@eo/engine";
 import { readToolDirectoryServers, writeToolDirectory } from "../agentAttachments/pluginDirectory.js";
+import { worktreeSkillMarkdown } from "../agentAttachments/worktreeSkills.js";
 import { attachmentEnvironment } from "../agentAttachments/serverEnvironment.js";
 import { attachmentsForRun } from "../db/repos/agentAttachmentsRepo.js";
 import { insertAttachments, listAgents, saveMcpServer, setAgentAttachment } from "../db/repos/index.js";
@@ -592,6 +592,11 @@ const CAPABILITIES = [
       resumed: ["build-in-w", "e2e-for-p", "house-style"],
     },
   },
+  // Claude's half of this row is exact — a `Skill` call is the load.
+  // Codex's is a best-effort inference from what Codex reports (the
+  // command and its output), by the rule a person settled for EO-715:
+  // see `codexSkillsRead`. The observation is one; how sure each
+  // backend can be of it is not.
   {
     name: "skill load detection",
     what: "a turn given skills says which (EO-715) — the ones actually delivered, on a start and again on a resume — and says a skill was loaded when the backend did it, not when the agent says so: a Skill call naming eo-attachments:<slug> on Claude, a command whose output shows .agent/skills/<slug>/SKILL.md on Codex, however it read the file, each call once; a skill that is not EO's, a call that reads anything else, or one that only mentions the name or the path, is no load",
@@ -3862,14 +3867,18 @@ const CODEX: Record<CapabilityName, Proof> = {
   },
 
   "skill load detection": async () => {
-    // Given: the folders written under `.agent/skills`. Loaded: a command
-    // whose output, as the app-server returns it, shows a skill's
-    // SKILL.md — however the command read it, python included, whose
-    // `commandActions` Codex can only call `unknown`. A command that only
+    // Given: the folders written under `.agent/skills`. Loaded: by the
+    // rule settled for EO-715, a best-effort inference from what Codex
+    // reports — the skill's id, which EO writes into each SKILL.md it
+    // delivers here, in a command's output, however the command read it
+    // (python included, whose `commandActions` Codex can only call
+    // `unknown`); or a read leaving the frontmatter out that names the
+    // skill's path and shows a line of the file. A command that only
     // mentions the path — echoing or listing it, a comment, a heredoc,
-    // `--help`, an option's value, a file beside it — shows none of it.
+    // `--help`, an option's value, a file beside it — or another file
+    // holding the skill's words, is no load.
     const cwd = scratchDirectory();
-    const fileOf = (slug: string) => renderSkillMarkdown(SCOPED_SKILLS.find((skill) => skill.slug === slug)!);
+    const fileOf = (slug: string) => worktreeSkillMarkdown(SCOPED_SKILLS.find((skill) => skill.slug === slug)!);
     const unknown = (text: string) => [{ type: "unknown", command: text }];
     const command = (id: string, text: string, output: string, commandActions: unknown[] = unknown(text)) =>
       note.item({ type: "commandExecution", id, command: `/bin/bash -lc ${JSON.stringify(text)}`, cwd, processId: null, source: "agent", commandActions, aggregatedOutput: output, exitCode: 0, status: "completed", durationMs: 1 });
@@ -3877,7 +3886,8 @@ const CODEX: Record<CapabilityName, Proof> = {
       note.turnStarted(),
       command("cmd-1", "cat .agent/skills/house-style/SKILL.md", fileOf("house-style"), [{ type: "read", command: "cat .agent/skills/house-style/SKILL.md", name: "SKILL.md", path: `${cwd}/.agent/skills/house-style/SKILL.md` }]),
       command("cmd-2", "cat README.md", "# A repository\n"),
-      command("cmd-3", `sed -n '1,80p' ${cwd}/.agent/skills/house-style/SKILL.md`, fileOf("house-style")),
+      command("cmd-3", `tail -n 1 ${cwd}/.agent/skills/house-style/SKILL.md`, "# house-style"),
+      command("cmd-3b", "cat README.md", "# A repository\n\n# house-style\ndescription: \"How to e2e-for-p.\""),
       command("cmd-4", "ls .agent/skills/", "build-in-w\ne2e-for-p\nhouse-style"),
       command("cmd-5", "echo .agent/skills/e2e-for-p/SKILL.md", ".agent/skills/e2e-for-p/SKILL.md"),
       command("cmd-6", "ls .agent/skills/e2e-for-p/SKILL.md", ".agent/skills/e2e-for-p/SKILL.md"),

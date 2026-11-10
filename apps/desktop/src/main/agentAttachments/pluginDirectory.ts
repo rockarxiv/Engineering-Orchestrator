@@ -256,7 +256,7 @@ function readServerEntry(value: unknown): GeneratedMcpServer | null {
  * and both roots want the same `skills/<slug>/…` shape, so the two
  * deliveries share this rather than agreeing about a layout twice.
  */
-export function skillFiles(skill: Skill): PluginFile[] {
+export function skillFiles(skill: Skill, skillMarkdown: string = renderSkillMarkdown(skill)): PluginFile[] {
   if (!isSafeRelativePath(skill.slug) || skill.slug.includes("/")) return [];
   const directory = `skills/${skill.slug}`;
   const files: PluginFile[] = [
@@ -265,7 +265,9 @@ export function skillFiles(skill: Skill): PluginFile[] {
       // The frontmatter's `name` is the slug and not the display name —
       // `skillFrontmatter` carries the reasoning, and it is the line that
       // decides whether the skill can be invoked at all.
-      content: renderSkillMarkdown(skill),
+      // A delivery may hand its own rendering — Codex's carries the
+      // skill's id (`worktreeSkillMarkdown`, EO-715).
+      content: skillMarkdown,
     },
   ];
   for (const file of skill.files) {

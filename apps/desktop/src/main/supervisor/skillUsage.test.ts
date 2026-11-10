@@ -1,4 +1,4 @@
-import { renderSkillMarkdown, SKILL_LOADED_EVENT, SkillDraftSchema, SKILLS_DELIVERED_EVENT, type Agent, type AgentEvent, type AgentProvider, type Item, type Skill } from "@eo/core";
+import { SKILL_LOADED_EVENT, SkillDraftSchema, SKILLS_DELIVERED_EVENT, type Agent, type AgentEvent, type AgentProvider, type Item, type Skill } from "@eo/core";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { DbHandle } from "../db/client.js";
 import { setAgentAttachment } from "../db/repos/agentAttachmentsRepo.js";
@@ -9,6 +9,7 @@ import { createTestItem, openMigratedTestDb } from "../db/testHelpers.js";
 import { listSkillsCommand } from "../ipc/skillCommands.js";
 import { createFakeProvider } from "../providers/fake.js";
 import { codexSkillsRead, skillTextsOf } from "../providers/skillUsage.js";
+import { worktreeSkillMarkdown } from "../agentAttachments/worktreeSkills.js";
 import { validImplementResult } from "../providers/fixtures.js";
 import { startTestWriteBridge, type TestWriteBridge } from "../testing/agentWrites.js";
 import { createRunSupervisor } from "./runSupervisor.js";
@@ -110,17 +111,20 @@ describe("skill usage on a dispatch", () => {
 
   it("counts a Codex read of the skill's file by any means as a load, and a mention of its path as none", async () => {
     const house = getSkill(handle.db, attachSkill("House style"))!;
-    const file = renderSkillMarkdown(house);
+    // The file as Codex is given it, the skill's id in its frontmatter.
+    const file = worktreeSkillMarkdown(house);
     const path = ".agent/skills/house-style/SKILL.md";
     const usage = () => listSkillsCommand(handle.db, {}).skills.find((skill) => skill.slug === "house-style")!.usage;
 
-    // Mentions only: the stretch of runs without a load goes on.
+    // Mentions only, and the skill's words in another file: the stretch of
+    // runs without a load goes on.
     await dispatch(
       saying([
         { type: "skills_delivered", slugs: ["house-style"] },
         ...codexCommand([house], `/bin/bash -lc 'cat --help ${path}'`, "Usage: cat [OPTION]... [FILE]..."),
         ...codexCommand([house], `/bin/bash -lc 'echo ignored #; cat ${path}'`, "ignored"),
         ...codexCommand([house], `/bin/bash -lc "cat <<'EOF'\ncat ${path}\nEOF"`, `cat ${path}`),
+        ...codexCommand([house], "/bin/bash -lc 'cat README.md'", `# Notes\n${house.body}\n`),
       ]),
     );
     expect(usage()).toMatchObject({ runsDelivered: 1, runsLoaded: 0, lastLoadedAt: null, deliveriesSinceLoad: 1 });
