@@ -175,9 +175,20 @@ export const note = {
   reasoning: (summary: string[], id = "rs-1", turnId = "turn-1", threadId = "thr-fake") => note.item({ type: "reasoning", id, summary, content: [] }, turnId, threadId),
   /** `model/rerouted`: the turn moved to another model (EO-374). */
   rerouted: (fromModel: string, toModel: string, turnId = "turn-1", threadId = "thr-fake") => ({ method: "model/rerouted", params: { threadId, turnId, fromModel, toModel, reason: "highRiskCyberActivity" } }),
-  tokenUsage: (total: { input: number; cached?: number; output: number }, turnId = "turn-1", threadId = "thr-fake") => {
-    const breakdown = { totalTokens: total.input + total.output, inputTokens: total.input, cachedInputTokens: total.cached ?? 0, cacheWriteInputTokens: 0, outputTokens: total.output, reasoningOutputTokens: 0 };
-    return { method: "thread/tokenUsage/updated", params: { threadId, turnId, tokenUsage: { total: breakdown, last: breakdown, modelContextWindow: 258_400 } } };
+  /**
+   * The thread's running total, and what the model response it follows
+   * used (`last`) — the whole total unless said, as on a new thread's
+   * first response. A fork's first reading carries the original's total
+   * with only its own response in `last` (EO-733).
+   */
+  tokenUsage: (
+    total: { input: number; cached?: number; output: number },
+    turnId = "turn-1",
+    threadId = "thr-fake",
+    last: { input: number; cached?: number; output: number } = total,
+  ) => {
+    const breakdown = (usage: typeof total) => ({ totalTokens: usage.input + usage.output, inputTokens: usage.input, cachedInputTokens: usage.cached ?? 0, cacheWriteInputTokens: 0, outputTokens: usage.output, reasoningOutputTokens: 0 });
+    return { method: "thread/tokenUsage/updated", params: { threadId, turnId, tokenUsage: { total: breakdown(total), last: breakdown(last), modelContextWindow: 258_400 } } };
   },
   turnCompleted: (status: "completed" | "failed" | "interrupted" = "completed", error: string | null = null, turnId = "turn-1", threadId = "thr-fake", codexErrorInfo: unknown = null) => ({
     method: "turn/completed",

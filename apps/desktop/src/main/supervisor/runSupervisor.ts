@@ -2875,6 +2875,14 @@ export function createRunSupervisor(
     reviewTurns.set(run.id, review);
     const loaded = new Set(skillsLoadedByRun(db, run.id));
     const skills = reviewableSkills(db, review.skills).map((skill) => ({ slug: skill.slug, description: skill.description, loaded: loaded.has(skill.id), locked: skill.locked }));
+    // The fork's running total starts where the run left the thread, on
+    // either backend, and the row is its own spend (EO-733) — taken off by
+    // the rule a resumed run's is, wherever that rule lives. A Claude
+    // session reading is the tally's to take it off, as for a resumed run
+    // (`driveToCompletion`). A Codex reading is a turn's, which the tally
+    // adds and never takes anything off: its client reports a turn's
+    // share of the thread's total already (`TurnTranslator.turnUsage`),
+    // for a fork as for a resume, so `earlierOnThread` is not read for it.
     const usage = createUsageTally({ earlierOnThread: sessionTotalBefore(usageHistoryOnThread(db, run.threadId, uuidv7() as Uuid)) });
     let model: string | null = null;
     /** Whether the backend said anything about spend: a fork that reported none leaves no row claiming it cost nothing. */

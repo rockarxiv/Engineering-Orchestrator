@@ -208,6 +208,32 @@ describe("a Codex turn over a stubbed app-server", () => {
     });
   });
 
+  it("reports a fork's own tokens, not the original's total the copy carries (EO-733)", async () => {
+    // `thread/fork` copies the original's running total into the copy and
+    // restates nothing before the turn, so the fork's first reading holds
+    // everything the original spent. What that reading's own response
+    // used (`last`) is what says where the copy stood.
+    const fake = fakeAppServer({
+      forkId: "thr-fork",
+      after: {
+        "turn/start": [
+          note.turnStarted("turn-1", "thr-fork"),
+          note.tokenUsage({ input: 1_200, cached: 500, output: 60 }, "turn-1", "thr-fork", { input: 200, cached: 100, output: 10 }),
+          note.agentMessage("ok", "msg-1", "turn-1", "thr-fork"),
+          note.tokenUsage({ input: 1_500, cached: 700, output: 80 }, "turn-1", "thr-fork", { input: 300, cached: 200, output: 20 }),
+          note.turnCompleted("completed", null, "turn-1", "thr-fork"),
+        ],
+      },
+    });
+    const events = await drain((await client(fake).forkThread("thr-original", { workingDirectory: repository() }).runStreamed("review")).events);
+
+    expect(events.at(-1)).toEqual({
+      type: "turn.completed",
+      usage: { input_tokens: 500, cached_input_tokens: 300, cache_write_input_tokens: 0, output_tokens: 30, reasoning_output_tokens: 0 },
+      model: "gpt-6.1-sol",
+    });
+  });
+
   it("names the model the app-server opened the thread on, not the one EO asked for (EO-374)", async () => {
     // Asked for nothing, the CLI picks its own default; asked for one, it
     // may still answer with another. The answer is what a turn is priced at.

@@ -1135,8 +1135,13 @@ type Breakdown = { inputTokens?: unknown; cachedInputTokens?: unknown; cacheWrit
  * notifications here: the usage, the plan and the outcome.
  */
 export class TurnTranslator {
-  /** The thread's running total before this turn began; zero for a new thread. */
-  private baseline: Usage = zeroUsage();
+  /**
+   * The thread's running total before this turn began (EO-733). Stated
+   * by the app-server ahead of the turn on a resume; read off the turn's
+   * first reading otherwise (`thread/tokenUsage/updated`). Null until
+   * one of the two has said.
+   */
+  private baseline: Usage | null = null;
   private total: Usage | null = null;
   private plan: { step: string; status: string }[] | null = null;
   private warnings = 0;
@@ -1240,16 +1245,31 @@ export class TurnTranslator {
         return item === "ignored" ? { events: [], recognised: true } : item === null ? { events: [], recognised: false } : { events: [{ type: "item.completed", item }], recognised: true };
       }
 
-      // A running total, per thread. Read twice over: the last one before
-      // this turn is where it started — a resume restates the thread's
-      // total before anything else happens — and the last one during it
-      // is where it ended.
+      // A running total, per thread. Read twice over: where the thread
+      // stood before this turn, and the last one during it is where it
+      // ended — the turn's own share is the difference (`turnUsage`).
+      //
+      // Where it stood is said two ways. A resume restates the thread's
+      // total before anything else happens, under the turn before. A fork
+      // says nothing of it (EO-733): `thread/fork` copies the original's
+      // total into the copy and no reading restates it, measured at
+      // 0.166.0, so the fork's first reading carries everything the
+      // original had spent. Every reading also says what its own model
+      // response used (`last`), and it is sent once per response, after
+      // it — so the turn's first reading less its `last` is where the
+      // thread stood before the turn, on a fork as on a resume, and nought
+      // on a new thread. One rule for both: what a resumed turn and a
+      // fork record is the thread's total less where it stood.
       case "thread/tokenUsage/updated": {
-        const total = usageOf((params["tokenUsage"] as { total?: Breakdown } | undefined)?.total);
+        const reading = params["tokenUsage"] as { total?: Breakdown; last?: Breakdown } | undefined;
+        const total = usageOf(reading?.total);
         if (!this.isOurTurn(params["turnId"])) {
           this.baseline = total;
           return { events: [], recognised: true };
         }
+        // A reading that says nothing of its own response leaves where the
+        // thread stood as it was: nought, unless something stated it.
+        this.baseline ??= reading?.last === undefined ? zeroUsage() : less(total, usageOf(reading.last));
         this.total = total;
         return { events: [{ type: "turn.usage", usage: this.turnUsage(), ...this.modelNamed() }], recognised: true };
       }
@@ -1384,19 +1404,15 @@ export class TurnTranslator {
    * at 0.161.0, a resumed `exec` turn's `turn.completed` carried the
    * whole thread's input, history included. `mapThreadEvent` records it
    * as one turn's cost and the run's figure is the sum of them, so on
-   * a resumed thread that counted every earlier turn again. The
-   * app-server states the running total before the turn begins, which
-   * is what makes the turn's own share readable at all.
+   * a resumed thread that counted every earlier turn again. On a resume
+   * the app-server states the running total before the turn begins; on a
+   * fork the turn's first reading says it (`baseline`, EO-733). Either
+   * is what makes the turn's own share readable at all, and a fork's
+   * share is taken by the same subtraction as a resume's.
    */
   private turnUsage(): Usage {
-    const end = this.total ?? this.baseline;
-    return {
-      input_tokens: Math.max(0, end.input_tokens - this.baseline.input_tokens),
-      cached_input_tokens: Math.max(0, end.cached_input_tokens - this.baseline.cached_input_tokens),
-      cache_write_input_tokens: Math.max(0, end.cache_write_input_tokens - this.baseline.cache_write_input_tokens),
-      output_tokens: Math.max(0, end.output_tokens - this.baseline.output_tokens),
-      reasoning_output_tokens: Math.max(0, end.reasoning_output_tokens - this.baseline.reasoning_output_tokens),
-    };
+    const start = this.baseline ?? zeroUsage();
+    return less(this.total ?? start, start);
   }
 
   /**
@@ -1492,6 +1508,17 @@ function zeroUsage(): Usage {
 
 function count(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
+/** One reading less another, figure by figure, never below nought. */
+function less(end: Usage, start: Usage): Usage {
+  return {
+    input_tokens: Math.max(0, end.input_tokens - start.input_tokens),
+    cached_input_tokens: Math.max(0, end.cached_input_tokens - start.cached_input_tokens),
+    cache_write_input_tokens: Math.max(0, end.cache_write_input_tokens - start.cache_write_input_tokens),
+    output_tokens: Math.max(0, end.output_tokens - start.output_tokens),
+    reasoning_output_tokens: Math.max(0, end.reasoning_output_tokens - start.reasoning_output_tokens),
+  };
 }
 
 function usageOf(breakdown: Breakdown | undefined): Usage {

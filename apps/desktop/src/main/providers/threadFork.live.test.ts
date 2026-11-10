@@ -215,6 +215,11 @@ describe.skipIf(!CODEX_OPTED_IN)("forking a Codex thread, against the real app-s
         });
       },
     });
-    expectAFork(await forkScenario(provider, repository(), capture.bodies));
+    const observed = await forkScenario(provider, repository(), capture.bodies);
+    expectAFork(observed);
+    // The copy carries the original's token totals and no reading
+    // restates them, measured at 0.166.0: the fork's turn — one request,
+    // 11 in and 3 out — is still reported as its own (EO-733).
+    expect(observed.forkEvents.filter((event) => event.type === "usage")).toEqual([expect.objectContaining({ scope: "turn", tokensIn: 11, tokensOut: 3 })]);
   });
 });
