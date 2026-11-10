@@ -614,7 +614,15 @@ export function renderInbox(data: IpcResponse<"inbox:list">): string {
     ? "**Every ticket that could be moving is waiting on a person.** The pipeline is idle."
     : `${data.summary.openCount} open, ${data.summary.blockingCount} blocking.`;
 
-  if (data.items.length === 0) return `${header}\n\nNothing is waiting on anyone.`;
+  if (data.items.length === 0 && data.messages.length === 0) return `${header}\n\nNothing is waiting on anyone.`;
+
+  // EO's own messages to the person (EO-725): about no item, so there is
+  // no thread to reply on. They are answered or dismissed in EO's Inbox.
+  const messages = data.messages.map((message) => {
+    const options = offeredLines(message.options, "  ").map((line) => (line.trim() === "" ? "" : `\n${line}`)).join("");
+    const first = message.body.split("\n")[0] ?? "";
+    return `- MESSAGE from EO (no ticket; ${message.source}, ${stamp(message.createdAt)}): ${first}${options}\n  Answered or dismissed by the person in EO's Inbox, not with comment_post. Message id ${message.id}.`;
+  });
 
   const items = data.items.map((item) => {
     const options = offeredLines(item.options, "  ").map((line) => (line.trim() === "" ? "" : `\n${line}`)).join("");
@@ -622,7 +630,7 @@ export function renderInbox(data: IpcResponse<"inbox:list">): string {
     return `- ${item.blocking ? "**BLOCKING** " : ""}${item.itemKey} — ${item.itemTitle}\n  ${item.authorName} (${item.kind}, ${stamp(item.createdAt)}): ${first}${options}\n  Reply with comment_post using itemId ${item.itemId} and parentId ${item.commentId}.`;
   });
 
-  return `${header}\n\n${items.join("\n")}`;
+  return `${header}\n\n${[...messages, ...items].join("\n")}`;
 }
 
 export function renderRunEvents(data: IpcResponse<"runs:listEvents">): string {

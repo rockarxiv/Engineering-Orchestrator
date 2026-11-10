@@ -1,8 +1,8 @@
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
-import { AtSign, BellOff, Clock, GitBranch, GitPullRequest, HelpCircle, Inbox, UserCheck } from "lucide-react";
-import { answerOptions, matchesInboxFilter, waitingOnLabel, type ChromeVocabulary, type InboxItem, type IpcRequest } from "@eo/core";
+import { AtSign, BellOff, Clock, GitBranch, GitPullRequest, HelpCircle, Inbox, MessageSquare, UserCheck } from "lucide-react";
+import { answerOptions, matchesInboxFilter, waitingOnLabel, type ChromeVocabulary, type InboxItem, type IpcRequest, type Message, type ViewFilter } from "@eo/core";
 import { Markdown, cn } from "@eo/ui";
 import { inboxViewFilter } from "../../../shared/inbox/inbox";
 import { PREVIEW_BANNER } from "../../../shared/items/previewBanner";
@@ -31,8 +31,28 @@ const FILTERS: readonly { value: Filter; label: string }[] = [
   { value: "unassigned", label: "Unassigned" },
 ];
 
-function matches(item: InboxItem, filter: Filter): boolean {
-  return matchesInboxFilter(item, inboxViewFilter(filter));
+/**
+ * One row of the list: a question on an item, or a message EO sent you
+ * about no item (EO-725, ARCHITECTURE.md §7.1). Both are waiting on you and
+ * are listed together, newest first; only an item question has an item to
+ * open and a thread to reply on.
+ */
+type Row = { kind: "item"; id: string; createdAt: number; item: InboxItem } | { kind: "message"; id: string; createdAt: number; message: Message };
+
+/**
+ * Whether a row survives the tab and the search box. A message is under
+ * All only: Blocking, Mentions, FYI and Unassigned are about an item's
+ * run and step, and a message has neither.
+ */
+function rowMatches(row: Row, view: ViewFilter): boolean {
+  if (row.kind === "item") return matchesInboxFilter(row.item, view);
+  if ((view.facets["category"] ?? "all") !== "all") return false;
+  const needle = view.text.trim().toLowerCase();
+  return needle === "" || row.message.body.toLowerCase().includes(needle);
+}
+
+function matches(row: Row, filter: Filter): boolean {
+  return rowMatches(row, inboxViewFilter(filter));
 }
 
 /** The round glyph in front of each row, by what the comment is. Amber only when a run is stopped on it. */
@@ -94,6 +114,7 @@ export function InboxView() {
 
   useInvalidateOnPush("items:changed", inboxKey);
   useInvalidateOnPush("runs:changed", inboxKey);
+  useInvalidateOnPush("messages:changed", inboxKey);
 
   const reply = useMutation({
     mutationFn: (input: IpcRequest<"comments:post">) => ipcQuery("comments:post", input),
@@ -107,29 +128,44 @@ export function InboxView() {
   // Which rows have an answer on its way, by the comment answered: that
   // row waits, and any other can still be answered.
   const answering = useInFlight<string>();
+  // A message is answered or dismissed through its own channel (EO-725):
+  // it has no item, so there is no comment to post. Settles once the
+  // inbox has been read again, for the reply's reason above.
+  const handleMessage = useMutation({
+    mutationFn: (input: { messageId: string; answer: string | null }) =>
+      input.answer === null ? ipcQuery("messages:dismiss", { messageId: input.messageId }) : ipcQuery("messages:answer", { messageId: input.messageId, answer: input.answer }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: inboxKey }),
+  });
   const setDnd = useMutation({
     mutationFn: (input: IpcRequest<"settings:set">) => ipcQuery("settings:set", input),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: settingsKey }),
   });
 
-  const items = useMemo(() => inbox.data?.items ?? [], [inbox.data]);
+  const rows = useMemo<Row[]>(
+    () => [
+      ...(inbox.data?.items ?? []).map((item): Row => ({ kind: "item", id: item.commentId, createdAt: item.createdAt, item })),
+      // Absent from an answer written before messages existed — a mocked one, say.
+      ...(inbox.data?.messages ?? []).map((message): Row => ({ kind: "message", id: message.id, createdAt: message.createdAt, message })),
+    ],
+    [inbox.data],
+  );
   // Newest first; the oldest unanswered is called out on its own line.
-  const sorted = useMemo(() => [...items].sort((a, b) => b.createdAt - a.createdAt), [items]);
+  const sorted = useMemo(() => [...rows].sort((a, b) => b.createdAt - a.createdAt), [rows]);
   const counts = useMemo(
-    () => Object.fromEntries(FILTERS.map(({ value }) => [value, value === "all" ? items.length : items.filter((item) => matches(item, value)).length])) as Record<Filter, number>,
-    [items],
+    () => Object.fromEntries(FILTERS.map(({ value }) => [value, value === "all" ? rows.length : rows.filter((row) => matches(row, value)).length])) as Record<Filter, number>,
+    [rows],
   );
   const visible = useMemo(() => {
     const view = inboxViewFilter(filter, search);
-    return sorted.filter((item) => matchesInboxFilter(item, view));
+    return sorted.filter((row) => rowMatches(row, view));
   }, [sorted, filter, search]);
 
   // The *effective* selection (EO-192): nothing clicked shows the first
   // row, so that row is the one reported — ids only.
-  const highlighted = visible.find((item) => item.commentId === selectedId) ?? visible[0];
+  const highlighted = visible.find((row) => row.id === selectedId) ?? visible[0];
   useViewParameters({
     filter: inboxViewFilter(filter, search),
-    selection: highlighted === undefined ? [] : [highlighted.commentId],
+    selection: highlighted === undefined ? [] : [highlighted.id],
   });
 
   const summary = inbox.data?.summary;
@@ -205,11 +241,11 @@ export function InboxView() {
               <SearchInput label="Filter inbox" value={search} onChange={setSearch} className="mx-1" />
 
               {/* A screenful at a time (EO-565). */}
-              <VirtualRows label="Waiting" data={visible} rowKey={(item) => item.commentId} className="flex min-w-0 flex-col [&>li+li]:pt-0.5">
-                {(item, index) => {
-                  const day = dayOf(item.createdAt);
+              <VirtualRows label="Waiting" data={visible} rowKey={(row) => row.id} className="flex min-w-0 flex-col [&>li+li]:pt-0.5">
+                {(row, index) => {
+                  const day = dayOf(row.createdAt);
                   const firstOfDay = index === 0 || dayOf(visible[index - 1]!.createdAt) !== day;
-                  const on = highlighted?.commentId === item.commentId;
+                  const on = highlighted?.id === row.id;
                   return (
                     <>
                       {firstOfDay ? (
@@ -217,13 +253,17 @@ export function InboxView() {
                           <GroupLabel>{day === today ? "Today" : "Earlier"}</GroupLabel>
                         </div>
                       ) : null}
-                      <InboxRow
-                        item={item}
-                        on={on}
-                        mixed={vocabulary.mixed}
-                        answering={answering.pending.has(item.commentId)}
-                        onSelect={() => setSelectedId(item.commentId)}
-                      />
+                      {row.kind === "item" ? (
+                        <InboxRow
+                          item={row.item}
+                          on={on}
+                          mixed={vocabulary.mixed}
+                          answering={answering.pending.has(row.id)}
+                          onSelect={() => setSelectedId(row.id)}
+                        />
+                      ) : (
+                        <MessageRow message={row.message} on={on} answering={answering.pending.has(row.id)} onSelect={() => setSelectedId(row.id)} />
+                      )}
                     </>
                   );
                 }}
@@ -233,27 +273,36 @@ export function InboxView() {
               {sorted.length > 1 && oldest ? (
                 <p className="flex items-center gap-1.5 border-t border-line/60 px-2 pt-2 text-[11.5px] text-ink-subtle">
                   <Clock size={12} />
-                  Oldest unanswered: <ItemKeyLink itemKey={oldest.itemKey} />, {age(oldest.createdAt)}
+                  Oldest unanswered: {oldest.kind === "item" ? <ItemKeyLink itemKey={oldest.item.itemKey} /> : "a message from EO"}, {age(oldest.createdAt)}
                 </p>
               ) : null}
             </Card>
 
             {highlighted ? (
               <div ref={detail} className="min-w-0 @3xl:sticky @3xl:top-0 @3xl:self-start">
-                <InboxDetail
-                  key={highlighted.commentId}
-                  item={highlighted}
-                  vocabulary={vocabulary}
-                  busy={answering.pending.has(highlighted.commentId)}
-                  onOpenItem={(itemId) => void navigate(`/items/${itemId}`)}
-                  // Filed under the comment being answered (D-05): one
-                  // question at a time, so the answer has a parent.
-                  onReply={(body) =>
-                    answering.run(highlighted.commentId, true, () =>
-                      reply.mutateAsync({ itemId: highlighted.itemId, body, mentions: [], pinned: false, parentId: highlighted.commentId }),
-                    )
-                  }
-                />
+                {highlighted.kind === "item" ? (
+                  <InboxDetail
+                    key={highlighted.id}
+                    item={highlighted.item}
+                    vocabulary={vocabulary}
+                    busy={answering.pending.has(highlighted.id)}
+                    onOpenItem={(itemId) => void navigate(`/items/${itemId}`)}
+                    // Filed under the comment being answered (D-05): one
+                    // question at a time, so the answer has a parent.
+                    onReply={(body) =>
+                      answering.run(highlighted.id, true, () =>
+                        reply.mutateAsync({ itemId: highlighted.item.itemId, body, mentions: [], pinned: false, parentId: highlighted.id }),
+                      )
+                    }
+                  />
+                ) : (
+                  <MessageDetail
+                    key={highlighted.id}
+                    message={highlighted.message}
+                    busy={answering.pending.has(highlighted.id)}
+                    onHandle={(answer) => answering.run(highlighted.id, true, () => handleMessage.mutateAsync({ messageId: highlighted.id, answer }))}
+                  />
+                )}
               </div>
             ) : null}
           </div>
@@ -326,6 +375,102 @@ function InboxRow({
         </div>
       </div>
     </div>
+  );
+}
+
+/** A message's first line: what a row and a title can show of it. */
+function firstLine(body: string): string {
+  return body.split("\n").find((line) => line.trim() !== "")?.replace(/^#+\s*/, "").trim() ?? "";
+}
+
+/** A message from EO, as a row: no item, no step, no `!` — EO is asking you something. */
+function MessageRow({ message, on, answering, onSelect }: { message: Message; on: boolean; answering: boolean; onSelect: () => void }) {
+  const title = firstLine(message.body);
+  return (
+    <div className={cn("relative rounded-[10px] px-2.5 py-2", on ? "bg-canvas-raised" : "hover:bg-canvas-subtle", answering && "opacity-60")}>
+      <button
+        type="button"
+        aria-label={`Select message from EO: ${title}`}
+        aria-current={on}
+        aria-busy={answering}
+        onClick={onSelect}
+        className="absolute inset-0 rounded-[10px] focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus"
+      />
+      <div className="pointer-events-none relative flex min-w-0 items-start gap-2.5">
+        <span aria-hidden className="grid h-[26px] w-[26px] shrink-0 place-items-center rounded-lg bg-canvas-raised text-ink-subtle">
+          <MessageSquare size={13} />
+        </span>
+        <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+          <div className="flex min-w-0 items-baseline gap-2">
+            <span className="truncate text-[13px] font-medium text-ink">{title}</span>
+            <span className="ml-auto shrink-0 text-[11px] text-ink-subtle">{answering ? "Sending…" : age(message.createdAt)}</span>
+          </div>
+          <div className="flex min-w-0 items-center gap-1.5 whitespace-nowrap text-[11.5px] text-ink-subtle">
+            <span className="truncate">Message from EO</span>
+            <span aria-hidden>·</span>
+            <span className="truncate">Waiting on you</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * A message from EO, open (EO-725): what it says, its actions, its
+ * answers — one press each, since there is no thread to add guidance to —
+ * and Dismiss, which closes it without answering.
+ */
+function MessageDetail({ message, busy, onHandle }: { message: Message; busy: boolean; onHandle: (answer: string | null) => Promise<unknown> }) {
+  const [problem, setProblem] = useState<string | null>(null);
+  const answers = answerOptions(message.options);
+
+  async function handle(answer: string | null) {
+    if (busy) return;
+    setProblem(null);
+    try {
+      await onHandle(answer);
+    } catch (error) {
+      setProblem(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  return (
+    <Card label="Message from EO" className="gap-3.5">
+      <div className="flex min-w-0 flex-wrap items-center gap-2">
+        <Chip>message</Chip>
+        <span className="ml-auto text-[11.5px] text-ink-subtle">{age(message.createdAt)}</span>
+      </div>
+      <h2 className="text-[16px] font-semibold text-ink">Message from EO</h2>
+
+      <blockquote className="rounded-[12px] bg-canvas-subtle px-3.5 py-2.5 text-[13px] leading-relaxed text-ink">
+        <Markdown>{message.body}</Markdown>
+      </blockquote>
+
+      <CommentActions options={message.options} commentId={null} />
+
+      {answers.length > 0 ? (
+        <div className="flex flex-wrap gap-1.5" role="group" aria-label="Answers">
+          {answers.map((answer) => (
+            <Button key={answer} size="sm" variant="secondary" disabled={busy} onClick={() => void handle(answer)}>
+              {answer}
+            </Button>
+          ))}
+        </div>
+      ) : null}
+
+      <div className="flex flex-wrap items-center gap-2">
+        <Button variant="ghost" className="ml-auto" disabled={busy} onClick={() => void handle(null)}>
+          {busy ? "Sending…" : "Dismiss"}
+        </Button>
+      </div>
+
+      {problem ? (
+        <ErrorLine>
+          <ItemText>{problem}</ItemText>
+        </ErrorLine>
+      ) : null}
+    </Card>
   );
 }
 

@@ -135,6 +135,11 @@ const NOT_CATALOGUED: Partial<Record<RecordChannel, string>> = {
   // not be handed to a client whose transcript leaves the machine.
   "people:me": "answers about the caller, and an agent reached through this host is not one",
   "mentions:open": "every open question on the record, with the person each waits on — reconnaissance rather than work",
+  // EO's messages to a person (EO-725, ARCHITECTURE.md §7.1). inbox_list
+  // shows them; answering or dismissing one is the person's, in the Inbox —
+  // agents never send or handle a message (invariant 4).
+  "messages:answer": "a message from EO is answered by the person it was sent to, never by an agent (invariant 4)",
+  "messages:dismiss": "a message from EO is dismissed by the person it was sent to, never by an agent (invariant 4)",
   "people:invite": "adding somebody to the organisation is the person's authority, delegated to eo_admin if to anything (invariant 11)",
   "people:setAdmin": "granting the flag that grants everything else",
   "devices:list": "which machines hold a key, and when each was last seen, is reconnaissance rather than work",

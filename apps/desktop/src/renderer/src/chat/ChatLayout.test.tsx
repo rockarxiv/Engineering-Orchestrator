@@ -2086,6 +2086,14 @@ describe("what is waiting on you, in the chat layout", () => {
     await waitFor(() => expect(within(overview).queryByText("Assistance")).not.toBeInTheDocument());
     expect(within(rail()).getByText("1 waiting on you")).toBeInTheDocument();
   });
+
+  it("counts EO's open messages beside the parked runs (EO-725)", async () => {
+    const message = { id: "m1", recipientId: "p1", projectId: null, jobId: null, source: "job_guard", body: "Run it now?", options: null, createdAt: 0, handledAt: null, handledHow: null, answer: null };
+    open("/chat", bridge({ "inbox:list": { ...INBOX, messages: [message, { ...message, id: "m2" }] } }));
+
+    await screen.findByRole("region", { name: "Overview" });
+    expect(await within(rail()).findByText("3 waiting on you")).toBeInTheDocument();
+  });
 });
 
 describe("the chat layout's rail", () => {

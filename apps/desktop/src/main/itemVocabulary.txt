@@ -187,6 +187,7 @@ apps/desktop/src/main/mcpHost/http.test.ts: const structured = result.structured
 apps/desktop/src/main/mcpHost/http.test.ts: const structured = result.structuredContent as { ticket?: { key?: string }; comments?: unknown[] };
 apps/desktop/src/main/mcpHost/http.test.ts: const structured = twin.structuredContent as { ticket?: { key?: string } };
 apps/desktop/src/main/mcpHost/http.test.ts: expect(structured.ticket?.key).toBe(item.key);
+apps/desktop/src/main/mcpHost/inboxMessages.test.ts: expect(outcome.text).toContain(`MESSAGE from EO (no ticket; template_conflict`);
 apps/desktop/src/main/mcpHost/itemKeys.ts: const KEY_ACCEPTED_PROPERTY = "The ticket's id, or its key such as EO-486.";
 apps/desktop/src/main/mcpHost/itemKeys.ts: export const KEY_ACCEPTED_SENTENCE = "The ticket may be named by its key, such as EO-486, wherever its id is asked for.";
 apps/desktop/src/main/mcpHost/itemSections.test.ts: // `ticket` is `item` in the spelling clients registered against.
@@ -254,6 +255,7 @@ apps/desktop/src/main/mcpHost/render.ts: lines.push(`- Branch: ${branch === null
 apps/desktop/src/main/mcpHost/render.ts: lines.push(`- ticket ${report.item.itemId}, every run against it: ${money(report.item.costCents)}${sideCallShare(report.item.sideCalls)}${nothing}`);
 apps/desktop/src/main/mcpHost/render.ts: return [`${done}. ${project.name} (id: ${project.id}, key prefix: ${project.keyPrefix}) — ${project.itemCount} ticket(s).`, repositories].join("\n");
 apps/desktop/src/main/mcpHost/render.ts: return `${repository.name} (id: ${repository.id}, base branch ${repository.baseBranch}${jira})${description}\n  ${repository.repoPath} — ${repository.itemCount} ticket(s)\n  ${commands}${jiraSettings(repository.jira)}`;
+apps/desktop/src/main/mcpHost/render.ts: return `- MESSAGE from EO (no ticket; ${message.source}, ${stamp(message.createdAt)}): ${first}${options}\n  Answered or dismissed by the person in EO's Inbox, not with comment_post. Message id ${message.id}.`;
 apps/desktop/src/main/mcpHost/render.ts: return `Decision recorded. The ticket moved ${where}.${comment}`;
 apps/desktop/src/main/mcpHost/render.ts: return `Hold cleared. The ticket is dispatchable again from the step it was already on.${cancelled}`;
 apps/desktop/src/main/mcpHost/render.ts: return `Ticket held where it is. The scheduler will not pick it up until it is resumed.${cancelled}`;

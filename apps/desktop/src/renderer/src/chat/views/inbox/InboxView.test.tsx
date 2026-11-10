@@ -3,7 +3,7 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import { MemoryRouter, useLocation } from "react-router-dom";
 import { describe, expect, it, vi } from "vitest";
 import { ThemeProvider } from "@eo/ui";
-import { developerRegistry, toRegistryView, type InboxItem, type InboxSummary } from "@eo/core";
+import { developerRegistry, toRegistryView, type InboxItem, type InboxSummary, type Message } from "@eo/core";
 import { createQueryClient } from "../../../query/client";
 import { ItemReferenceProvider } from "../../conversation/ItemReferenceProvider";
 import { ViewPublisher } from "../../../shared/view/ViewPublisher";
@@ -42,12 +42,29 @@ function item(overrides: Partial<InboxItem> = {}): InboxItem {
   };
 }
 
+function message(overrides: Partial<Message> = {}): Message {
+  return {
+    id: "m1",
+    recipientId: "p1",
+    projectId: null,
+    jobId: null,
+    source: "template_conflict",
+    body: "The template update could not be applied.\n\nKeep your pipeline as it is?",
+    options: ["Keep mine", { kind: "open", label: "Fix with assistant", opens: { type: "updateConflictChat", conflictId: "conflict-1" } }],
+    createdAt: NOW - 60_000,
+    handledAt: null,
+    handledHow: null,
+    answer: null,
+    ...overrides,
+  };
+}
+
 function summary(overrides: Partial<InboxSummary> = {}): InboxSummary {
   return { openCount: 1, blockingCount: 1, everythingBlocked: false, ...overrides };
 }
 
 function renderInbox(
-  data: { items: InboxItem[]; summary: InboxSummary },
+  data: { items: InboxItem[]; messages?: Message[]; summary: InboxSummary },
   onCall?: (channel: string, payload: unknown) => void,
   settings = { doNotDisturb: false },
   fits?: number,
@@ -58,6 +75,7 @@ function renderInbox(
     if (channel === "settings:get") return { ok: true, data: settings };
     if (channel === "settings:set") return { ok: true, data: payload };
     if (channel === "comments:post") return { ok: true, data: { commentId: "new", resumedRun: true } };
+    if (channel === "messages:answer" || channel === "messages:dismiss") return { ok: true, data: { message: data.messages?.[0] } };
     if (channel === "items:list") return { ok: true, data: { items: data.items.map((entry) => ({ id: entry.itemId, key: entry.itemKey })) } };
     if (channel === "items:listArchived") return { ok: true, data: { items: [] } };
     if (channel === "projects:list") return { ok: true, data: { projects: [], activeProjectId: null } };
@@ -427,5 +445,55 @@ describe("what the inbox publishes", () => {
 
     await waitFor(() => expect(calls.find((call) => call.channel === "assist:openUpdateConflict")?.payload).toEqual({ conflictId: "conflict-1", commentId: "notice-1" }));
     expect(calls.some((call) => call.channel === "comments:post")).toBe(false);
+  });
+});
+
+describe("messages from EO in the inbox (EO-725)", () => {
+  it("lists an open message beside item questions, newest first, and counts it", async () => {
+    renderInbox({ items: [item({ itemTitle: "Older question", createdAt: NOW - 10 * 60_000 })], messages: [message()], summary: summary({ openCount: 2 }) });
+
+    const rows = await waitFor(() => {
+      const found = within(rowList()).getAllByRole("button", { name: /^Select / });
+      expect(found).toHaveLength(2);
+      return found;
+    });
+    expect(rows[0]).toHaveAccessibleName("Select message from EO: The template update could not be applied.");
+    expect(rows[1]).toHaveAccessibleName(/Older question/);
+    expect(screen.getByText("2 open")).toBeInTheDocument();
+  });
+
+  it("is under All only: the other tabs are about an item's run and step", async () => {
+    renderInbox({ items: [], messages: [message()], summary: summary({ blockingCount: 0 }) });
+
+    await screen.findByRole("button", { name: /^Select message from EO/ });
+    fireEvent.click(screen.getByRole("tab", { name: /Blocking/ }));
+    expect(screen.queryByRole("button", { name: /^Select message from EO/ })).toBeNull();
+  });
+
+  it("answers with one of its options in one press, and opens its actions", async () => {
+    const calls: { channel: string; payload: unknown }[] = [];
+    renderInbox({ items: [], messages: [message()], summary: summary({ blockingCount: 0 }) }, (channel, payload) => calls.push({ channel, payload }));
+
+    fireEvent.click(await screen.findByRole("button", { name: "Keep mine" }));
+    await waitFor(() => expect(calls.find((call) => call.channel === "messages:answer")?.payload).toEqual({ messageId: "m1", answer: "Keep mine" }));
+    expect(calls.some((call) => call.channel === "comments:post")).toBe(false);
+
+    fireEvent.click(screen.getByRole("button", { name: "Fix with assistant" }));
+    await waitFor(() => expect(calls.find((call) => call.channel === "assist:openUpdateConflict")?.payload).toEqual({ conflictId: "conflict-1", commentId: null }));
+  });
+
+  it("dismisses one", async () => {
+    const calls: { channel: string; payload: unknown }[] = [];
+    renderInbox({ items: [], messages: [message({ options: null })], summary: summary({ blockingCount: 0 }) }, (channel, payload) => calls.push({ channel, payload }));
+
+    fireEvent.click(await screen.findByRole("button", { name: "Dismiss" }));
+    await waitFor(() => expect(calls.find((call) => call.channel === "messages:dismiss")?.payload).toEqual({ messageId: "m1" }));
+  });
+
+  it("publishes the message as the selection, by its id", async () => {
+    const calls: { channel: string; payload: unknown }[] = [];
+    renderInbox({ items: [], messages: [message()], summary: summary({ blockingCount: 0 }) }, (channel, payload) => calls.push({ channel, payload }));
+
+    await waitFor(() => expect(lastPublished(calls)["selection"]).toEqual(["m1"]));
   });
 });

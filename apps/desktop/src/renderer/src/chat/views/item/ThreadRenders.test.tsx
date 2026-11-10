@@ -24,7 +24,8 @@ vi.mock("../../CommentActions", async (importOriginal) => {
   return {
     ...actual,
     CommentActions: (props: Parameters<typeof actual.CommentActions>[0]) => {
-      counts.comments.set(props.commentId, (counts.comments.get(props.commentId) ?? 0) + 1);
+      const id = props.commentId ?? "";
+      counts.comments.set(id, (counts.comments.get(id) ?? 0) + 1);
       return actual.CommentActions(props);
     },
   };

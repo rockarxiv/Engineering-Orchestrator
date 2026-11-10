@@ -1683,7 +1683,9 @@ const READ_TOOLS: readonly ToolSpec[] = [
     description:
       "What is waiting on a person right now — agents that asked a question and parked their run until someone " +
       "answers. Re-read this after anything that might have finished; it is the fastest way to see whether the " +
-      "pipeline is moving. Takes the same optional projectId as tickets_list.",
+      "pipeline is moving. Takes the same optional projectId as tickets_list. Beside the tickets' questions, messages " +
+      "lists what EO itself needs the person to answer or act on that is about no ticket — each marked as a message " +
+      "with no ticket, and answered or dismissed by the person in EO's Inbox rather than by a comment.",
     kind: "read",
     list: "items",
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },

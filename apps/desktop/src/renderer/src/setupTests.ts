@@ -111,7 +111,7 @@ const EMPTY_RESPONSES: Record<string, unknown> = {
   "items:listArchived": { items: [] },
   "pipelineSteps:list": { steps: [], routes: [] },
   "agents:list": { agents: [] },
-  "inbox:list": { items: [] },
+  "inbox:list": { items: [], messages: [] },
   "runs:listEvents": { events: [], nextSeq: null },
   "engine:status": { paused: false, activeRunCount: 0, finishingRunCount: 0 },
   "attachments:pick": { attachments: [], omitted: 0 },
