@@ -435,6 +435,68 @@ describe("reconcile", () => {
     expect(notes.some((body) => body.includes("The files on this item have changed"))).toBe(true);
   });
 
+  it("starts fresh, saying why once, when a file lands while the recovery is being prepared", async () => {
+    const interrupted = createRun(handle.db, {
+      itemId: item.id,
+      agentId: implementer.id,
+      action: "implement",
+      status: "queued",
+      threadId: "thr_crashed",
+      provider: implementer.provider,
+      instructionsHash: promptHash(implementer.instructions),
+      agentAttachmentsHash: agentAttachmentsHash(handle.db, implementer.id, UNSCOPED_RUN),
+      itemFilesHash: itemFilesHash(handle.db, item.id),
+      cwd: CWD,
+    });
+    updateRun(handle.db, interrupted.id, { status: "running", startedAt: Date.now() });
+    // Put on the item while the workspace is being attached — after the
+    // thread passed `resumeBlockedReason`, before the backend is reached.
+    const fileId = uuidv7();
+    let landed = false;
+    const kinds = installedKinds(
+      fakeWorkspaceKind({
+        cwd: CWD,
+        attach: async () => {
+          if (!landed) {
+            landed = true;
+            addItemAttachments(handle.db, item.id, [{ id: fileId, storagePath: `/tmp/eo/attachments/${fileId}`, name: "mock.png", mimeType: "image/png", size: 8 }]);
+          }
+          return NOTHING_ATTACHED;
+        },
+      }),
+    );
+    const turns: { kind: "start" | "resume"; context: string }[] = [];
+    const inner = createFakeProvider({ result: validImplementResult });
+    const supervisor = createRunSupervisor({
+      db: handle.db,
+      provider: {
+        start: (opts) => {
+          turns.push({ kind: "start", context: opts.context });
+          return inner.start(opts);
+        },
+        resume: (threadId, message, opts) => {
+          turns.push({ kind: "resume", context: message });
+          return inner.resume(threadId, message, opts);
+        },
+      },
+      limits: LIMITS,
+      kinds,
+    });
+
+    await supervisor.reconcile();
+    await supervisor.waitForIdle();
+
+    expect(landed).toBe(true);
+    expect(turns.map((turn) => turn.kind)).toEqual(["start"]);
+    expect(turns[0]?.context).toContain(`- ID: ${fileId}; name: mock.png; MIME type: image/png`);
+    const notes = handle.db.select().from(comments).all().map((comment) => comment.body);
+    expect(notes.filter((body) => body.includes("The files on this item changed while"))).toHaveLength(1);
+    const runs = listRunsForItem(handle.db, item.id);
+    expect(runs).toHaveLength(3);
+    expect(runs[1]).toMatchObject({ status: "cancelled", threadId: null });
+    expect(runs[2]?.status).toBe("succeeded");
+  });
+
   it("carries the crashed run's list of the item's files into the continuation", async () => {
     const fileId = uuidv7();
     addItemAttachments(handle.db, item.id, [{ id: fileId, storagePath: `/tmp/eo/attachments/${fileId}`, name: "mock.png", mimeType: "image/png", size: 8 }]);

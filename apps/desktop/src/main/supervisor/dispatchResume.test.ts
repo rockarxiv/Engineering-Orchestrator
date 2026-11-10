@@ -938,6 +938,40 @@ describe("a human reply resuming a parked run", () => {
     expect(notes[0]).toContain("The files on this item have changed");
   });
 
+  it("starts fresh with the reply and the file, saying why once, when a file lands while the reply is being prepared (EO-703)", async () => {
+    const parked = updateRun(handle.db, parkedRun().id, { startedAt: 1_000, endedAt: 1_000 });
+    postComment(handle.db, { itemId: item.id, author: { type: "human" }, body: "Use the importer, not the parser." });
+    // Put on the item while the workspace is being attached — after the
+    // thread passed `resumeBlockedReason`, before the backend is reached.
+    const fileId = uuidv7();
+    let landed = false;
+    const kinds = installedKinds(
+      fakeWorkspaceKind({
+        cwd: CWD,
+        attach: async () => {
+          if (!landed) {
+            landed = true;
+            addItemAttachments(handle.db, item.id, [{ id: fileId, storagePath: `/tmp/eo/attachments/${fileId}`, name: "mock.png", mimeType: "image/png", size: 8 }]);
+          }
+          return NOTHING_ATTACHED;
+        },
+      }),
+    );
+
+    await supervisorFor({ result: validImplementResult }, { kinds }).resumeItem(item.id);
+
+    expect(landed).toBe(true);
+    expect(turns.map((turn) => turn.kind)).toEqual(["start"]);
+    expect(turns[0]?.prompt).toContain(`- ID: ${fileId}; name: mock.png; MIME type: image/png`);
+    // The reply is not lost behind the row that never reached a backend.
+    expect(turns[0]?.prompt).toContain("Use the importer, not the parser.");
+    const notes = listCommentsForItem(handle.db, item.id).filter((comment) => comment.authorType === "engine").map((comment) => comment.body);
+    expect(notes).toHaveLength(1);
+    expect(notes[0]).toContain("The files on this item changed while");
+    const closed = listRunsForItem(handle.db, item.id).find((run) => run.id !== parked.id && run.status === "cancelled");
+    expect(closed).toMatchObject({ threadId: null });
+  });
+
   it("still resumes the parked thread when the item's files are the ones it was told about (EO-703)", async () => {
     const fileId = uuidv7();
     addItemAttachments(handle.db, item.id, [{ id: fileId, storagePath: `/tmp/eo/attachments/${fileId}`, name: "mock.png", mimeType: "image/png", size: 8 }]);

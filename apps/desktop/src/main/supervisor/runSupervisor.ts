@@ -1271,6 +1271,17 @@ interface DispatchOptions {
    * nothing, and the caller tries again with a fresh session.
    */
   continueThread?: { from: Run; threadId: string; message: string };
+  /**
+   * The thread this work would have carried on was refused already, and
+   * this says why (EO-703).
+   *
+   * Set by a resume that found, at its own provider boundary, that the
+   * item's files changed while it was being prepared. No thread is
+   * weighed up — the caller has decided — and the sentence is posted on
+   * the fresh run as a refusal is, once, so the next dispatch does not
+   * explain the same change a second time.
+   */
+  freshBecause?: string;
 }
 
 /**
@@ -6026,9 +6037,13 @@ export function createRunSupervisor(
     const continuation =
       opts.continueThread && (opts.continueThread.from.cwd === null || opts.continueThread.from.cwd === workspace.cwd) ? opts.continueThread : null;
     const reuse =
-      continuation === null && reusesThreadPerItem(registry, agent, action)
+      continuation === null && opts.freshBecause === undefined && reusesThreadPerItem(registry, agent, action)
         ? findReusableThread(db, { itemId: item.id, agent, cwd: workspace.cwd })
         : null;
+    // A caller that refused the thread itself says why (EO-703), and that
+    // sentence is this dispatch's refusal: posted on the run below, and
+    // handed to the backend with the fresh context.
+    if (opts.freshBecause !== undefined) staleReuse = opts.freshBecause;
     // `findReusableThread` never offers a candidate without a thread —
     // `notACandidate` excludes a run that has none — but `Run.threadId`
     // cannot say so in the type, and the difference between narrowing it
@@ -8448,6 +8463,27 @@ export function createRunSupervisor(
         return false;
       }
 
+      // The item's files changed while that resolved (EO-703).
+      // `resumeBlockedReason` passed this thread before the await; the
+      // resume below tells it nothing about the item, so carrying it on
+      // now would leave a file unseen. Nothing has been sent: the row is
+      // closed and a fresh dispatch of the same work takes the lock this
+      // recovery holds, with the full context and the reason posted once.
+      if (!itemFilesUnchangedFor(run)) {
+        closeForChangedFiles(newRun, run.itemId);
+        const fresh = dispatchRun(item, agent, run.action, {
+          ...(run.initiationId !== null ? { initiationId: run.initiationId } : {}),
+          transitionOnSuccess: !isManualAction(run.action),
+          holdingItemLock: true, // this recovery's own claim, not a second one
+          freshBecause: itemFilesChangedWhilePreparing(agent),
+        }).finally(() => {
+          inFlight.delete(fresh);
+          hold();
+        });
+        inFlight.add(fresh);
+        return true;
+      }
+
       for (const notice of recoveredAttachment.notices) {
         postComment(db, {
           itemId: run.itemId,
@@ -9859,6 +9895,46 @@ export function createRunSupervisor(
    * predates A-07, so it is trusted rather than restarted — that is the
    * old behaviour, and it was right whenever the provider hadn't changed.
    */
+  /**
+   * Whether the item's files are still the ones a thread was told about
+   * (EO-703) — asked at a resume's provider boundary, after the awaits
+   * `resumeBlockedReason` was answered before.
+   */
+  function itemFilesUnchangedFor(run: Run): boolean {
+    return (run.itemFilesHash ?? EMPTY_ITEM_FILES_HASH) === itemFilesHash(db, run.itemId);
+  }
+
+  /** What a resume that finds the item's files changed at its boundary says (EO-703). */
+  function itemFilesChangedWhilePreparing(agent: Agent): string {
+    return (
+      `The files on this item changed while ${agent.name}'s conversation was being picked back up. A conversation ` +
+      `already under way is not told about the item again, so it couldn't be carried over — starting a fresh run ` +
+      `instead, which is how it sees the files as they are now. Nothing is lost: the new run is given the newest ` +
+      `word from every step and everything you have said since.`
+    );
+  }
+
+  /**
+   * Closes a resume's run that never reached a backend because the item's
+   * files changed under it (EO-703).
+   *
+   * Its thread id is cleared: the row opened no session of its own, and
+   * left holding one it would be the agent's last run (`lastRunOf`) — the
+   * watermark a fresh seed counts what the person said from, which would
+   * put the reply this run was carrying behind it.
+   */
+  function closeForChangedFiles(run: Run, itemId: Uuid): void {
+    updateRun(db, run.id, {
+      status: "cancelled",
+      endedAt: now(),
+      threadId: null,
+      interruption: "restart",
+      error: "The item's files changed before this resume reached the backend, so nothing was started; a fresh run was dispatched instead.",
+    });
+    releaseRunControl(run.id);
+    announceRun(run.id, itemId, "cancelled");
+  }
+
   function resumeBlockedReason(run: Run, agent: Agent): string | null {
     if (run.provider !== null && run.provider !== agent.provider) {
       return (
@@ -10418,6 +10494,26 @@ export function createRunSupervisor(
       releaseRunControl(run.id);
       announceRun(run.id, itemId, "cancelled");
       closeParkOfOutOfProjectAgent(itemAtBoundary, priorRun, agentAtBoundary);
+      return;
+    }
+
+    // The item's files changed while that resolved, or while the memory
+    // was chosen (EO-703). `resumeBlockedReason` passed this thread
+    // before those awaits, and the resume below tells it nothing about
+    // the item. Nothing has been sent: the row is closed without a thread
+    // of its own, so the reply stays unanswered, and a fresh dispatch of
+    // the same work — under this reply's own claim, with the full
+    // context and the reply in it — says why, once.
+    if (!itemFilesUnchangedFor(priorRun)) {
+      closeForChangedFiles(run, itemId);
+      const freshInitiationId = followUpComments(db, itemId, agent.id, priorRun).at(-1)?.id ?? `reauthorized:${priorRun.id}`;
+      const freshPromise = dispatchRun(item, agent, priorRun.action, {
+        initiationId: freshInitiationId,
+        holdingItemLock: true, // this reply's own claim, not a second one
+        freshBecause: itemFilesChangedWhilePreparing(agent),
+      }).finally(() => inFlight.delete(freshPromise));
+      inFlight.add(freshPromise);
+      await freshPromise;
       return;
     }
 
