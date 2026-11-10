@@ -1,33 +1,44 @@
-import { Fragment, createContext, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
+import { Fragment, createContext, memo, useContext, useEffect, useMemo, useState, type ComponentPropsWithoutRef, type ReactNode } from "react";
 import { Check, Copy } from "lucide-react";
+import ReactMarkdown, { type Components, type ExtraProps, type Options } from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { cn } from "../cn.js";
-import { tableCells, toBlocks } from "./markdownBlocks.js";
-
-export { tableCells };
 
 /*
- * A deliberately small markdown renderer.
+ * The one markdown renderer: react-markdown with remark-gfm (EO-707,
+ * ARCHITECTURE.md §21.10), dressed in the reading surface's classes.
  *
  * It produces React elements and never touches dangerouslySetInnerHTML,
  * which is the whole security argument: agent output is model output,
  * and with no HTML string anywhere in the pipeline, injection isn't
- * something we sanitize against — it cannot occur. A parser bug here
- * renders text oddly; it can never execute script. That property is
- * worth more than full CommonMark coverage for a comment thread.
+ * something we sanitize against — it cannot occur. react-markdown shows
+ * raw HTML in the source as the literal text it was, and nothing here
+ * adds a plugin that would parse it. A parser bug renders text oddly; it
+ * can never execute script.
  *
- * Supported, because it is what agents and humans actually write in
- * comments: fenced code, inline code, bold, italic, strikethrough, links,
- * bullet and numbered lists, blockquotes, headings, tables, rules and
- * paragraphs. Anything else is shown as the literal text it was — never
- * silently dropped.
+ * What it parses is CommonMark and GitHub's extensions to it — tables,
+ * strikethrough, autolinked URLs, task lists — so lists, emphasis and
+ * fences behave as they do everywhere else a person writes markdown.
+ * Strikethrough takes two tildes only: one tilde is a home directory in
+ * the prose EO's agents write far more often than it is a deletion.
+ *
+ * Three things are EO's own, in `remarkEo` below, and run on the parsed
+ * tree before anything is drawn:
+ *
+ * - Only http(s) links become anchors, opened in a new window without
+ *   handing over the opener. A link to any other scheme — `javascript:`,
+ *   `mailto:`, a relative path — is shown as the source text it was
+ *   typed as, and so is an image: nothing in a comment loads anything.
+ * - Item keys in prose become references through
+ *   `MarkdownItemReferenceProvider`. Never inside code, which has no text
+ *   to find them in, and never inside an explicit link, which already
+ *   says where it goes.
  *
  * A fenced block carries its language and a Copy button, and is lightly
  * highlighted by `highlight` below — a tokenizer that hands back text
  * runs with a class each, so it is as incapable of injecting markup as
  * the rest of this file.
  */
-
-const INLINE = /(`[^`]+`|\*\*[^*]+\*\*|~~[^~]+~~|\*[^*]+\*|_[^_]+_|\[[^\]]+\]\([^)\s]+\))/g;
 
 export type MarkdownItemReferenceRenderer = (itemKey: string) => ReactNode;
 
@@ -64,8 +75,8 @@ export function MarkdownItemReferenceProvider({ children, matcher, renderItemRef
 }
 
 /** Only http(s) links become anchors — a `javascript:` URL renders as plain text. */
-function safeHref(href: string): string | null {
-  return /^https?:\/\//i.test(href) ? href : null;
+function isSafeHref(href: string | undefined): href is string {
+  return href !== undefined && /^https?:\/\//i.test(href);
 }
 
 export type ItemReferenceTextPart =
@@ -128,57 +139,156 @@ export function splitItemReferenceText(text: string, matcher: ItemReferenceMatch
   return parts;
 }
 
-function renderItemReferences(text: string, keyPrefix: string, referenceContext: MarkdownItemReferenceContextValue | null): ReactNode[] {
-  if (!referenceContext) return [text];
+/**
+ * The little of a markdown syntax tree `remarkEo` reads, declared here
+ * rather than taken from `@types/mdast`, which would be a dependency of
+ * its own for four fields.
+ */
+interface MarkdownNode {
+  type: string;
+  children?: MarkdownNode[];
+  url?: string;
+  data?: object;
+  position?: { start: { offset?: number | undefined }; end: { offset?: number | undefined } } | undefined;
+}
 
-  return splitItemReferenceText(text, referenceContext.matcher).map((part, index) => {
-    const key = `${keyPrefix}-ticket-${index}`;
-    return part.kind === "item" ? (
-      <Fragment key={key}>{referenceContext.renderItemReference(part.value)}</Fragment>
+/**
+ * The element a prose text node is drawn as when item references are on:
+ * `ItemReferenceText`, which splits it against the catalog at draw time.
+ * Marking the text, rather than splitting it here, keeps the parse free
+ * of the catalog — a new catalog redraws the text, and parses nothing.
+ */
+const ITEM_TEXT = "eo-item-text";
+
+/** The source a node was parsed from, exactly as typed. */
+function sourceOf(node: MarkdownNode, source: string): string | null {
+  const start = node.position?.start.offset;
+  const end = node.position?.end.offset;
+  return start === undefined || end === undefined ? null : source.slice(start, end);
+}
+
+/**
+ * EO's pass over the parsed tree: unsafe links and every image become the
+ * text they were typed as, and — with `itemReferences` — prose text is
+ * marked for `ItemReferenceText`. A hand-written walk: one recursion over
+ * children needs no tree-walking package.
+ */
+function remarkEo(options: { itemReferences: boolean }) {
+  return (tree: MarkdownNode, file: { value: unknown }) => {
+    const source = String(file.value);
+    const walk = (parent: MarkdownNode) => {
+      const children = parent.children;
+      if (!children) return;
+      children.forEach((child, index) => {
+        const literal =
+          (child.type === "link" && !isSafeHref(child.url)) || child.type === "image" || child.type === "imageReference" ? sourceOf(child, source) : null;
+        if (literal !== null) {
+          // Plain text, and never marked: an explicit link names no item.
+          children[index] = { type: "text", value: literal } as MarkdownNode;
+        } else if (child.type === "text") {
+          if (options.itemReferences) child.data = { ...child.data, hName: ITEM_TEXT };
+        } else if (child.type !== "link" && child.type !== "linkReference") {
+          walk(child);
+        }
+      });
+    };
+    walk(tree);
+  };
+}
+
+/** Stable, so react-markdown is handed the same plugins on every draw. */
+const REMARK_PLUGINS: Options["remarkPlugins"] = [[remarkGfm, { singleTilde: false }], [remarkEo, { itemReferences: false }]];
+const REMARK_PLUGINS_WITH_ITEM_REFERENCES: Options["remarkPlugins"] = [[remarkGfm, { singleTilde: false }], [remarkEo, { itemReferences: true }]];
+
+/** A prose text node, with the catalog's keys drawn as references. */
+function ItemReferenceText({ children }: { children?: ReactNode }) {
+  const referenceContext = useContext(MarkdownItemReferenceContext);
+  if (!referenceContext || typeof children !== "string") return <>{children}</>;
+  return (
+    <>
+      {splitItemReferenceText(children, referenceContext.matcher).map((part, index) =>
+        part.kind === "item" ? <Fragment key={index}>{referenceContext.renderItemReference(part.value)}</Fragment> : part.value,
+      )}
+    </>
+  );
+}
+
+type Drawn<Tag extends keyof React.JSX.IntrinsicElements> = ComponentPropsWithoutRef<Tag> & ExtraProps;
+
+/**
+ * A heading somebody typed into a comment is display type like any other
+ * heading, and this is where the editorial voice shows up inside the
+ * writing rather than around it.
+ */
+const HEADING = "font-display text-lg text-ink";
+
+/** The text of a code element, the one trailing newline the parser adds taken off. */
+function codeText(node: ExtraProps["node"]): { code: string; lang: string | undefined } {
+  const code = node?.children[0];
+  if (code?.type !== "element") return { code: "", lang: undefined };
+  const text = code.children.map((child) => (child.type === "text" ? child.value : "")).join("");
+  const classes = code.properties["className"];
+  const language = Array.isArray(classes) ? classes.map(String).find((name) => name.startsWith("language-")) : undefined;
+  return { code: text.replace(/\n$/, ""), lang: language?.slice("language-".length) };
+}
+
+/**
+ * How each element is drawn. Every one takes what react-markdown hands it
+ * but the `node`, which is the syntax tree and not a DOM attribute.
+ */
+const COMPONENTS = {
+  a: ({ node: _node, href, children }: Drawn<"a">) =>
+    // `remarkEo` has already turned an unsafe inline link into text; this
+    // catches the rest — a reference-style link, a footnote's anchor.
+    isSafeHref(href) ? (
+      <a href={href} target="_blank" rel="noreferrer noopener" className="text-accent underline underline-offset-2">
+        {children}
+      </a>
     ) : (
-      part.value
-    );
-  });
-}
+      <>{children}</>
+    ),
+  code: ({ node: _node, className, ...props }: Drawn<"code">) => <code className={cn("rounded-sm bg-canvas-active px-1 py-px font-mono text-sm", className)} {...props} />,
+  pre: ({ node }: Drawn<"pre">) => {
+    const { code, lang } = codeText(node);
+    return <CodeBlock code={code} lang={lang} />;
+  },
+  hr: () => <hr className="border-0 border-t border-line" />,
+  h1: ({ node: _node, ...props }: Drawn<"h1">) => <h1 {...props} className={HEADING} />,
+  h2: ({ node: _node, ...props }: Drawn<"h2">) => <h2 {...props} className={HEADING} />,
+  h3: ({ node: _node, ...props }: Drawn<"h3">) => <h3 {...props} className={HEADING} />,
+  h4: ({ node: _node, ...props }: Drawn<"h4">) => <h4 {...props} className={HEADING} />,
+  h5: ({ node: _node, ...props }: Drawn<"h5">) => <h5 {...props} className={HEADING} />,
+  h6: ({ node: _node, ...props }: Drawn<"h6">) => <h6 {...props} className={HEADING} />,
+  blockquote: ({ node: _node, ...props }: Drawn<"blockquote">) => <blockquote {...props} className="border-l-2 border-line-strong pl-3 text-ink-muted" />,
+  ul: ({ node: _node, className, ...props }: Drawn<"ul">) => <ul {...props} className={cn("list-disc pl-5", className)} />,
+  ol: ({ node: _node, className, ...props }: Drawn<"ol">) => <ol {...props} className={cn("list-decimal pl-5", className)} />,
+  table: ({ node: _node, ...props }: Drawn<"table">) => (
+    <div className="max-w-full overflow-x-auto">
+      <table {...props} className="w-full border-collapse text-[0.9em]" />
+    </div>
+  ),
+  tbody: ({ node: _node, ...props }: Drawn<"tbody">) => <tbody {...props} className="[&>tr]:border-b [&>tr]:border-line" />,
+  th: ({ node: _node, style, ...props }: Drawn<"th">) => (
+    <th {...props} style={{ textAlign: "left", ...style }} className="border-b border-line-strong px-2 py-1.5 font-semibold text-ink" />
+  ),
+  td: ({ node: _node, style, ...props }: Drawn<"td">) => <td {...props} style={{ textAlign: "left", ...style }} className="px-2 py-1.5 align-top" />,
+  // Not an HTML element: what `remarkEo` marks prose text as.
+  [ITEM_TEXT]: ItemReferenceText,
+} as Components;
 
-function renderInline(text: string, keyPrefix: string, referenceContext: MarkdownItemReferenceContextValue | null): ReactNode[] {
-  return text.split(INLINE).filter(Boolean).map((piece, index) => {
-    const key = `${keyPrefix}-${index}`;
-
-    if (piece.startsWith("`") && piece.endsWith("`") && piece.length > 2) {
-      return (
-        <code key={key} className="rounded-sm bg-canvas-active px-1 py-px font-mono text-sm">
-          {piece.slice(1, -1)}
-        </code>
-      );
-    }
-    if (piece.startsWith("**") && piece.endsWith("**") && piece.length > 4) {
-      return <strong key={key}>{renderItemReferences(piece.slice(2, -2), key, referenceContext)}</strong>;
-    }
-    if (piece.startsWith("~~") && piece.endsWith("~~") && piece.length > 4) {
-      return <del key={key}>{renderItemReferences(piece.slice(2, -2), key, referenceContext)}</del>;
-    }
-    if ((piece.startsWith("*") && piece.endsWith("*") && piece.length > 2) || (piece.startsWith("_") && piece.endsWith("_") && piece.length > 2)) {
-      return <em key={key}>{renderItemReferences(piece.slice(1, -1), key, referenceContext)}</em>;
-    }
-
-    const link = /^\[([^\]]+)\]\(([^)\s]+)\)$/.exec(piece);
-    if (link) {
-      const href = safeHref(link[2]!);
-      // An unsafe scheme falls through to its literal text rather than
-      // becoming a link that does something unexpected.
-      return href ? (
-        <a key={key} href={href} target="_blank" rel="noreferrer noopener" className="text-accent underline underline-offset-2">
-          {link[1]}
-        </a>
-      ) : (
-        <span key={key}>{piece}</span>
-      );
-    }
-
-    return <Fragment key={key}>{renderItemReferences(piece, key, referenceContext)}</Fragment>;
-  });
-}
+/**
+ * The parse, kept per source (EO-551): a chat redraws its rows while a
+ * turn streams, and the words of a finished message do not change under
+ * it. Memoised on the source alone — the plugins and components are
+ * constants — so a new `className` or a new catalog parses nothing.
+ */
+const ParsedMarkdown = memo(function ParsedMarkdown({ source, itemReferences }: { source: string; itemReferences: boolean }) {
+  return (
+    <ReactMarkdown remarkPlugins={itemReferences ? REMARK_PLUGINS_WITH_ITEM_REFERENCES : REMARK_PLUGINS} components={COMPONENTS}>
+      {source}
+    </ReactMarkdown>
+  );
+});
 
 export interface MarkdownProps {
   children: string;
@@ -186,11 +296,9 @@ export interface MarkdownProps {
 }
 
 export function Markdown({ children, className }: MarkdownProps) {
-  // Parsed once per source, not once per render (EO-551): a chat redraws
-  // its rows while a turn streams, and the words of a finished message do
-  // not change under it.
-  const blocks = useMemo(() => toBlocks(children), [children]);
-  const itemReferenceContext = useContext(MarkdownItemReferenceContext);
+  // Item references are found only under a provider; outside one, prose
+  // text is left as the parser made it.
+  const itemReferences = useContext(MarkdownItemReferenceContext) !== null;
 
   return (
     /*
@@ -206,80 +314,7 @@ export function Markdown({ children, className }: MarkdownProps) {
      * where the eye loses the line it is on.
      */
     <div className={cn("flex max-w-[65ch] flex-col gap-3 text-read leading-[1.6]", className)}>
-      {blocks.map((block, index) => {
-        const key = `b${index}`;
-        switch (block.kind) {
-          case "code":
-            return <CodeBlock key={key} code={block.lines.join("\n")} lang={block.lang} />;
-          case "rule":
-            return <hr key={key} className="border-0 border-t border-line" />;
-          case "table": {
-            const [head, ...rows] = block.lines;
-            const align = block.align ?? [];
-            return (
-              <div key={key} className="max-w-full overflow-x-auto">
-                <table className="w-full border-collapse text-[0.9em]">
-                  <thead>
-                    <tr>
-                      {tableCells(head ?? "").map((cell, cellIndex) => (
-                        <th key={cellIndex} style={{ textAlign: align[cellIndex] ?? "left" }} className="border-b border-line-strong px-2 py-1.5 font-semibold text-ink">
-                          {renderInline(cell, `${key}-h${cellIndex}`, itemReferenceContext)}
-                        </th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {rows.map((row, rowIndex) => (
-                      <tr key={rowIndex} className="border-b border-line">
-                        {tableCells(row).map((cell, cellIndex) => (
-                          <td key={cellIndex} style={{ textAlign: align[cellIndex] ?? "left" }} className="px-2 py-1.5 align-top">
-                            {renderInline(cell, `${key}-${rowIndex}-${cellIndex}`, itemReferenceContext)}
-                          </td>
-                        ))}
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            );
-          }
-          case "heading": {
-            const Tag = (["h1", "h2", "h3", "h4"] as const)[(block.level ?? 1) - 1] ?? "h4";
-            return (
-              // A heading somebody typed into a comment is display type
-              // like any other heading, and this is where the editorial
-              // voice shows up inside the writing rather than around it.
-              <Tag key={key} className="font-display text-lg text-ink">
-                {renderInline(block.lines[0] ?? "", key, itemReferenceContext)}
-              </Tag>
-            );
-          }
-          case "quote":
-            return (
-              <blockquote key={key} className="border-l-2 border-line-strong pl-3 text-ink-muted">
-                {renderInline(block.lines.join(" "), key, itemReferenceContext)}
-              </blockquote>
-            );
-          case "ul":
-            return (
-              <ul key={key} className="list-disc pl-5">
-                {block.lines.map((item, itemIndex) => (
-                  <li key={`${key}-${itemIndex}`}>{renderInline(item, `${key}-${itemIndex}`, itemReferenceContext)}</li>
-                ))}
-              </ul>
-            );
-          case "ol":
-            return (
-              <ol key={key} className="list-decimal pl-5">
-                {block.lines.map((item, itemIndex) => (
-                  <li key={`${key}-${itemIndex}`}>{renderInline(item, `${key}-${itemIndex}`, itemReferenceContext)}</li>
-                ))}
-              </ol>
-            );
-          default:
-            return <p key={key}>{renderInline(block.lines.join(" "), key, itemReferenceContext)}</p>;
-        }
-      })}
+      <ParsedMarkdown source={children} itemReferences={itemReferences} />
     </div>
   );
 }

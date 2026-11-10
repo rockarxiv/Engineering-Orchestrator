@@ -1282,7 +1282,7 @@ Installers are built per platform: a `.dmg` for macOS on each architecture, one 
 
 ## 21. The stack
 
-Electron 45 · TypeScript (strict) · React 19 · Tailwind CSS v4 · Base UI · @dnd-kit · TanStack Query · react-router · react-virtuoso · SQLite through better-sqlite3 and Drizzle · Zod, and ajv for schemas that arrive as data · the Model Context Protocol SDK · pnpm workspaces and Turborepo · Vitest and Playwright.
+Electron 45 · TypeScript (strict) · React 19 · Tailwind CSS v4 · Base UI · @dnd-kit · TanStack Query · react-router · react-virtuoso · react-markdown with remark-gfm · SQLite through better-sqlite3 and Drizzle · Zod, and ajv for schemas that arrive as data · the Model Context Protocol SDK · pnpm workspaces and Turborepo · Vitest and Playwright.
 
 Each choice below is stated with what it was chosen over, because the reasons are the part that cannot be read off the code.
 
@@ -1349,6 +1349,12 @@ Agents and modules are child processes of the main process, and their trees are 
 ### 21.9 Packaging
 
 electron-vite builds, electron-builder packages. The agent CLIs are excluded from the installer and fetched on demand (§12.6). A runner that bundles unsigned command-line tools is close to a worked example of what antivirus heuristics flag, so installers want signing: notarisation on macOS and an Authenticode certificate on Windows.
+
+### 21.10 react-markdown and remark-gfm, not a hand-written parser
+
+Everything a person or an agent writes is drawn by one renderer, `Markdown` in `packages/ui`, and it parses with react-markdown and remark-gfm (EO-707). It replaced a hand-written parser of line patterns and one inline regular expression, which got ordinary markdown wrong in ways people met daily: a numbered list with a blank line between its items became several lists each restarting at 1, and an identifier such as `max_retry_count` lost its underscores to italics. Patching it would have meant growing it, case by case, into a CommonMark parser nobody set out to maintain. Where the two disagree, CommonMark and GFM win: an underlined line is a heading, a `~~~` fence is code, and a line under a table with no blank line between is one more row of it.
+
+The safety argument did not need the homemade parser either. react-markdown builds React elements and never uses `dangerouslySetInnerHTML`, and it shows raw HTML in the source as the text it was; no plugin that parses HTML is added. What is EO's own is one small remark pass over the parsed tree, written by hand rather than with a tree-walking package: a link to anything but http(s), and every image, is shown as the source it was typed as, and prose text is marked for item references, which are found at draw time so that a new catalog redraws text without parsing again. A source is parsed once (EO-551), by an inner component memoised on it with constant plugins and components. Strikethrough takes two tildes only, because one tilde is a home directory far more often than it is a deletion.
 
 ---
 
