@@ -1862,6 +1862,9 @@ function readItemsFilter(value) {
   } catch {
     return { reason: shape };
   }
+  // Checked again on what came out: a `toJSON` decides what is sent, so
+  // `{ toJSON() { return null; } }` is an object going in and null out.
+  if (filter === null || typeof filter !== "object" || PRIMORDIALS.isArray(filter)) return { reason: shape };
   for (const name of PRIMORDIALS.keys(filter)) {
     if (!Object.hasOwn(ITEMS_FILTER_KINDS, name)) {
       return { reason: `ctx.items() does not take ${PRIMORDIALS.jsonStringify(name)}. It takes ${PRIMORDIALS.keys(ITEMS_FILTER_KINDS).join(", ")}.` };

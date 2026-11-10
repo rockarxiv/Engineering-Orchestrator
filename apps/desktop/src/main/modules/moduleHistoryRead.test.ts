@@ -162,12 +162,13 @@ describe("what a module reads beyond the item", () => {
   });
 
   it("refuses a filter it cannot read, with a reason and no throw", async () => {
-    const read = answered(await runOn(story, `const loop = {}; loop.self = loop; return [await ctx.items({ colour: "red" }), await ctx.items({ limit: 0 }), await ctx.items(loop), await ctx.items("all")];`)) as {
+    const read = answered(await runOn(story, `const loop = {}; loop.self = loop; return [await ctx.items({ colour: "red" }), await ctx.items({ limit: 0 }), await ctx.items(loop), await ctx.items("all"), await ctx.items({ toJSON() { return null; } }), await ctx.items({ toJSON() { return [1]; } }), await ctx.items({ toJSON() { return undefined; } })];`)) as {
       found: boolean;
       reason: string;
     }[];
 
-    expect(read.map((entry) => entry.found)).toEqual([false, false, false, false]);
+    expect(read.map((entry) => entry.found)).toEqual([false, false, false, false, false, false, false]);
+    for (const entry of read.slice(4)) expect(entry.reason).toContain("ctx.items() takes one object of filters");
     expect(read[0]?.reason).toContain('does not take "colour"');
     expect(read[1]?.reason).toContain("limit");
   });

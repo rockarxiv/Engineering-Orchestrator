@@ -606,6 +606,7 @@ describe("runModuleTests", () => {
           titled: await ctx.items({ text: "LOGIN" }),
           paged: await ctx.items({ limit: 1, offset: 1 }),
           refused: await ctx.items({ colour: "red" }),
+          serialisedToNull: await ctx.items({ toJSON() { return null; } }),
           file: { ...file.attachment, content: [...file.attachment.content] },
           text: file.attachment.content.toString("utf8"),
           missing: await ctx.readAttachment("att-2"),
@@ -646,6 +647,8 @@ describe("runModuleTests", () => {
             assert.deepEqual({ ...read.paged, items: read.paged.items.map((item) => item.key) }, { found: true, items: ["EO-2"], total: 3, nextOffset: 2 });
             assert.equal(read.refused.found, false);
             assert.match(read.refused.reason, /does not take "colour"/);
+            assert.equal(read.serialisedToNull.found, false);
+            assert.match(read.serialisedToNull.reason, /takes one object of filters/);
             assert.deepEqual(read.file, { id: "att-1", name: "log.txt", mimeType: "text/plain", size: 6, content: [...Buffer.from("héllo")] });
             assert.equal(read.text, "héllo");
             assert.deepEqual(read.missing, { found: false, reason: 'No attachment has the id "att-2".' });
