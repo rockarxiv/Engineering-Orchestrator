@@ -400,7 +400,7 @@ Then stale workspaces are released. Nothing dispatches against unreconciled stat
 
 A backend session can be resumed by id, so a role may keep **one conversation per item**. The registry says which: the implementer does (a rejection, a clarification and a mention all continue the same thread, with its context intact), the reviewer does not (each review is a fresh read), and the system agent keeps one per conversation. For a role nobody shipped, it is a setting on the agent.
 
-A session keeps the instructions it started with, so a thread is not reused when the agent's instructions or attachments have changed since: the next dispatch opens a new thread and a comment says why. A thread the backend has lost is treated the same way — a fresh thread, a full context, and a comment — rather than failing the run.
+A session keeps the instructions it started with, so a thread is not reused when the agent's instructions or attachments have changed since: the next dispatch opens a new thread and a comment says why. The item's own files (§7.1) are treated the same way (EO-703): a run records a hash of the list its thread was told about (`runs.item_files_hash`), a resumed turn is told nothing about the item again, so a file added or removed mid-work makes the next turn fresh, with a comment, and the new thread is given the list as it is now — on every path a thread is carried on by: an automatic dispatch, a reply to a parked run, and a run carried on after a restart, a quit or a sleep. A dispatch whose item's files change while it is being prepared turns back before anything is written, and the next tick decides again against the files as they are; a reply or a restart recovery that finds them changed at its own provider boundary closes its unstarted row without a thread of its own, so the reply still reads as unanswered, and dispatches the same work fresh, saying why once. An older thread is never fallen back to across such a change, even where its list matches again, and even past a thread that could not itself be carried on, such as one the backend has lost. A thread the backend has lost is treated the same way — a fresh thread, a full context, and a comment — rather than failing the run.
 
 ### 6.5 Telling a quiet agent from a stuck one
 
@@ -474,7 +474,7 @@ Nothing a person said may be unreachable, and nobody should re-litigate a settle
 **A step-owning agent is seeded**, and given tools to reach the rest:
 
 ```
-the item — title, body, structured fields
+the item — title, body, structured fields, and its own files
 + the workspace it is in, and which others the project spans
 + dependency item KEYS
 + the newest comment from every step the item has passed through
@@ -483,12 +483,12 @@ the item — title, body, structured fields
   ids of the attachments those comments carried
 ```
 
-The rest is one `comment_search` or `comment_read` away; `item_detail` on a dependency key answers with what that item shipped; `attachment_read` reaches any file by id. The seed is bounded by the shape of the item — one comment per step plus what a person has said since — rather than by a budget.
+The rest is one `comment_search` or `comment_read` away; `item_detail` on a dependency key answers with what that item shipped; `attachment_read` reaches any file by id. The item's own files (§7.1) are listed beside its description in both shapes — metadata only, under a line naming `attachment_read`, and never truncated, since the list is part of the item; an item with none adds nothing (EO-703). `item_detail` lists them too. The seed is bounded by the shape of the item — one comment per step plus what a person has said since — rather than by a budget.
 
 **A conversational agent is given the whole thread**, because for it the conversation *is* the work:
 
 ```
-the item — title, body, structured fields
+the item — title, body, structured fields, and its own files
 + its parent's title and body, and the parent's pinned comments
 + this item's full comment thread
 + dependency item summaries

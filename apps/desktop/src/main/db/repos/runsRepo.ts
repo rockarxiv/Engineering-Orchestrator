@@ -36,6 +36,7 @@ function toDomain(row: typeof runs.$inferSelect): Run {
     runtimeSource: row.runtimeSource as RunRuntimeSource | null,
     instructionsHash: row.instructionsHash,
     agentAttachmentsHash: row.agentAttachmentsHash,
+    itemFilesHash: row.itemFilesHash,
     threadLost: row.threadLost,
     interruption: row.interruption as Run["interruption"],
     cwd: row.cwd,
@@ -113,6 +114,8 @@ export interface CreateRunInput {
    * the distinction is for.
    */
   agentAttachmentsHash?: string | null;
+  /** Hash of the item's own files this run's thread was told about (EO-703) — carried over on a resume, like the two above. */
+  itemFilesHash?: string | null;
   cwd?: string | null;
   pid?: number | null;
   initiationId?: string | null;
@@ -157,6 +160,7 @@ export function createRun(db: Db, input: CreateRunInput): Run {
       runtimeSource: input.runtimeSource ?? null,
       instructionsHash: input.instructionsHash ?? null,
       agentAttachmentsHash: input.agentAttachmentsHash ?? null,
+      itemFilesHash: input.itemFilesHash ?? null,
       cwd: input.cwd ?? null,
       pid: input.pid ?? null,
       initiationId: input.initiationId ?? null,

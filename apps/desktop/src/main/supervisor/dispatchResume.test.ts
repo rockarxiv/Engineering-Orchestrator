@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { DbHandle } from "../db/client.js";
 import type { CreateRunInput } from "../db/repos/runsRepo.js";
 import {
+  addItemAttachments,
   archiveAgent,
   createAgent,
   createProject,
@@ -23,6 +24,7 @@ import { createFakeProvider, type FakeProviderScript } from "../providers/fake.j
 import { validImplementResult } from "../providers/fixtures.js";
 import { promptHash } from "../roles/prompts.js";
 import { createRunSupervisor, type RunSupervisorOptions } from "./runSupervisor.js";
+import { itemFilesHash } from "./threadReuse.js";
 import { startTestWriteBridge, type TestWriteBridge } from "../testing/agentWrites.js";
 import { fakeWorkspaceKind, installedKinds, kindsPreparing } from "./testWorkspaceKinds.js";
 import { NOTHING_ATTACHED } from "./workspaceKind.js";
@@ -401,6 +403,76 @@ describe("dispatch on a reused thread", () => {
     const notes = engineNotes();
     expect(notes).toHaveLength(1);
     expect(notes[0]).toContain("instructions have changed");
+  });
+
+  it("starts fresh and posts one comment when a file was added to the item, and lists it (EO-703)", async () => {
+    enableReuse();
+    priorRun();
+    // A resumed thread is told nothing about the item again, so a file
+    // put on it mid-work would never reach the agent.
+    const fileId = uuidv7();
+    addItemAttachments(handle.db, item.id, [{ id: fileId, storagePath: `/tmp/eo/attachments/${fileId}`, name: "mock.png", mimeType: "image/png", size: 8 }]);
+
+    await supervisorFor({ result: validImplementResult }).runOnce();
+
+    expect(turns.map((turn) => turn.kind)).toEqual(["start"]);
+    expect(turns[0]?.prompt).toContain(`- ID: ${fileId}; name: mock.png; MIME type: image/png`);
+    const notes = engineNotes();
+    expect(notes).toHaveLength(1);
+    expect(notes[0]).toContain("The files on this item have changed");
+    // And the new thread records the list it was told, so the dispatch
+    // after it resumes rather than starting fresh again.
+    expect(listRunsForItem(handle.db, item.id).at(-1)?.itemFilesHash).toBe(itemFilesHash(handle.db, item.id));
+  });
+
+  it("does not carry on a thread when a file lands on the item while the dispatch is being prepared (EO-703)", async () => {
+    enableReuse();
+    priorRun();
+    newComment();
+    // Put on the item while the context is being assembled — after the
+    // thread was weighed up and chosen, before the provider is reached.
+    const fileId = uuidv7();
+    let landed = false;
+    const landsMidPreflight: SectionRenderer = {
+      id: "landsMidPreflight",
+      after: "item",
+      render: () => {
+        if (!landed) {
+          landed = true;
+          addItemAttachments(handle.db, item.id, [{ id: fileId, storagePath: `/tmp/eo/attachments/${fileId}`, name: "mock.png", mimeType: "image/png", size: 8 }]);
+        }
+        return null;
+      },
+    };
+    const supervisor = supervisorFor({ result: validImplementResult }, { sectionRenderers: [CRITERIA_SECTION, landsMidPreflight] });
+
+    // The dispatch turns back having written nothing…
+    await supervisor.runOnce();
+    expect(landed).toBe(true);
+    expect(turns).toEqual([]);
+    expect(listRunsForItem(handle.db, item.id)).toHaveLength(1);
+
+    // …and the next one refuses the thread, says why, and lists the file.
+    await supervisor.runOnce();
+    expect(turns.map((turn) => turn.kind)).toEqual(["start"]);
+    expect(turns[0]?.prompt).toContain(`- ID: ${fileId}; name: mock.png; MIME type: image/png`);
+    const notes = engineNotes();
+    expect(notes).toHaveLength(1);
+    expect(notes[0]).toContain("The files on this item have changed");
+  });
+
+  it("resumes a thread born with the item's files, and does not list them again (EO-703)", async () => {
+    enableReuse();
+    const fileId = uuidv7();
+    addItemAttachments(handle.db, item.id, [{ id: fileId, storagePath: `/tmp/eo/attachments/${fileId}`, name: "mock.png", mimeType: "image/png", size: 8 }]);
+    priorRun({ itemFilesHash: itemFilesHash(handle.db, item.id) });
+    newComment();
+
+    await supervisorFor({ result: validImplementResult }).runOnce();
+
+    expect(turns.map((turn) => turn.kind)).toEqual(["resume"]);
+    expect(turns[0]?.prompt).not.toContain(fileId);
+    expect(engineNotes()).toEqual([]);
   });
 
   it("records the thread, the backend and the worktree the resumed run is continuing", async () => {
@@ -848,6 +920,70 @@ describe("a human reply resuming a parked run", () => {
     // one this replaced never had — and none of what the thread holds.
     expect(prompt).toContain('perform the "implement" action');
     expect(prompt).not.toContain(ITEM_BODY);
+  });
+
+  it("starts a fresh run that lists the file, with a comment, when a file was put on the item while the run was parked (EO-703)", async () => {
+    updateRun(handle.db, parkedRun().id, { startedAt: 1_000, endedAt: 1_000 });
+    const fileId = uuidv7();
+    addItemAttachments(handle.db, item.id, [{ id: fileId, storagePath: `/tmp/eo/attachments/${fileId}`, name: "mock.png", mimeType: "image/png", size: 8 }]);
+    postComment(handle.db, { itemId: item.id, author: { type: "human" }, body: "The mock is on the item now." });
+
+    await supervisorFor({ result: validImplementResult }).resumeItem(item.id);
+
+    expect(turns.map((turn) => turn.kind)).toEqual(["start"]);
+    expect(turns[0]?.prompt).toContain(`- ID: ${fileId}; name: mock.png; MIME type: image/png`);
+    expect(turns[0]?.prompt).toContain("The mock is on the item now.");
+    const notes = listCommentsForItem(handle.db, item.id).filter((comment) => comment.authorType === "engine").map((comment) => comment.body);
+    expect(notes).toHaveLength(1);
+    expect(notes[0]).toContain("The files on this item have changed");
+  });
+
+  it("starts fresh with the reply and the file, saying why once, when a file lands while the reply is being prepared (EO-703)", async () => {
+    const parked = updateRun(handle.db, parkedRun().id, { startedAt: 1_000, endedAt: 1_000 });
+    postComment(handle.db, { itemId: item.id, author: { type: "human" }, body: "Use the importer, not the parser." });
+    // Put on the item while the workspace is being attached — after the
+    // thread passed `resumeBlockedReason`, before the backend is reached.
+    const fileId = uuidv7();
+    let landed = false;
+    const kinds = installedKinds(
+      fakeWorkspaceKind({
+        cwd: CWD,
+        attach: async () => {
+          if (!landed) {
+            landed = true;
+            addItemAttachments(handle.db, item.id, [{ id: fileId, storagePath: `/tmp/eo/attachments/${fileId}`, name: "mock.png", mimeType: "image/png", size: 8 }]);
+          }
+          return NOTHING_ATTACHED;
+        },
+      }),
+    );
+
+    await supervisorFor({ result: validImplementResult }, { kinds }).resumeItem(item.id);
+
+    expect(landed).toBe(true);
+    expect(turns.map((turn) => turn.kind)).toEqual(["start"]);
+    expect(turns[0]?.prompt).toContain(`- ID: ${fileId}; name: mock.png; MIME type: image/png`);
+    // The reply is not lost behind the row that never reached a backend.
+    expect(turns[0]?.prompt).toContain("Use the importer, not the parser.");
+    const notes = listCommentsForItem(handle.db, item.id).filter((comment) => comment.authorType === "engine").map((comment) => comment.body);
+    expect(notes).toHaveLength(1);
+    expect(notes[0]).toContain("The files on this item changed while");
+    const closed = listRunsForItem(handle.db, item.id).find((run) => run.id !== parked.id && run.status === "cancelled");
+    expect(closed).toMatchObject({ threadId: null });
+  });
+
+  it("still resumes the parked thread when the item's files are the ones it was told about (EO-703)", async () => {
+    const fileId = uuidv7();
+    addItemAttachments(handle.db, item.id, [{ id: fileId, storagePath: `/tmp/eo/attachments/${fileId}`, name: "mock.png", mimeType: "image/png", size: 8 }]);
+    updateRun(handle.db, parkedRun({ itemFilesHash: itemFilesHash(handle.db, item.id) }).id, { startedAt: 1_000, endedAt: 1_000 });
+    postComment(handle.db, { itemId: item.id, author: { type: "human" }, body: "Go ahead." });
+
+    await supervisorFor({ result: validImplementResult }).resumeItem(item.id);
+
+    expect(turns.map((turn) => turn.kind)).toEqual(["resume"]);
+    expect(turns[0]?.threadId).toBe(PRIOR_THREAD);
+    // The resumed run records the list its thread holds, so the next dispatch can carry it on too.
+    expect(listRunsForItem(handle.db, item.id).at(-1)?.itemFilesHash).toBe(itemFilesHash(handle.db, item.id));
   });
 
   it("carries a reply that landed in the same millisecond the run ended", async () => {

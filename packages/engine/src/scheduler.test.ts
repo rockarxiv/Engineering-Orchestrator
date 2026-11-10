@@ -95,6 +95,7 @@ function makeRun(itemId: string, agentId: string, status: RunStatus = "running")
     runtimeSource: null,
     instructionsHash: null,
     agentAttachmentsHash: null,
+    itemFilesHash: null,
     threadLost: false,
     interruption: null,
     cwd: null,

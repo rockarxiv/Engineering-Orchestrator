@@ -1,11 +1,12 @@
-import { McpServerDraftSchema, parsedResultOf, type Agent, type Item, UNSCOPED_RUN } from "@eo/core";
+import { McpServerDraftSchema, parsedResultOf, type Agent, type Item, UNSCOPED_RUN, uuidv7 } from "@eo/core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { agentAttachmentsHash } from "../agentAttachments/fingerprint.js";
 import { archiveAgent, createAgent, listAgents } from "../db/repos/agentsRepo.js";
 import { setAgentAttachment } from "../db/repos/agentAttachmentsRepo.js";
 import { saveMcpServer } from "../db/repos/mcpServersRepo.js";
 import { promptHash } from "../roles/prompts.js";
-import { findReusableThread } from "./threadReuse.js";
+import { findReusableThread, itemFilesHash } from "./threadReuse.js";
+import { addItemAttachments } from "../db/repos/attachmentsRepo.js";
 import { comments } from "../db/schema.js";
 import { createRun, getRun, listRunsForItem, updateRun } from "../db/repos/runsRepo.js";
 import { getItem } from "../db/repos/itemsRepo.js";
@@ -400,6 +401,125 @@ describe("reconcile", () => {
     const decision = findReusableThread(handle.db, { itemId: item.id, agent: implementer, cwd: CWD });
     expect(decision.kind).toBe("refused");
     expect(decision.kind === "resume" ? "" : decision.reason).toContain("MCP servers or skills attached");
+  });
+
+  /**
+   * A file put on the item while EO was not running (EO-703). The
+   * continuation would be a resume, and a resume tells the thread nothing
+   * about the item, so the interrupted thread is not carried on: the run
+   * is handed back with a comment saying why, and the scheduler's fresh
+   * run is given the file.
+   */
+  it("does not carry on an interrupted thread once the item's files have changed, and says why", async () => {
+    const interrupted = createRun(handle.db, {
+      itemId: item.id,
+      agentId: implementer.id,
+      action: "implement",
+      status: "queued",
+      threadId: "thr_crashed",
+      provider: implementer.provider,
+      instructionsHash: promptHash(implementer.instructions),
+      agentAttachmentsHash: agentAttachmentsHash(handle.db, implementer.id, UNSCOPED_RUN),
+      itemFilesHash: itemFilesHash(handle.db, item.id),
+      cwd: CWD,
+    });
+    updateRun(handle.db, interrupted.id, { status: "running", startedAt: Date.now() });
+    const fileId = uuidv7();
+    addItemAttachments(handle.db, item.id, [{ id: fileId, storagePath: `/tmp/eo/attachments/${fileId}`, name: "mock.png", mimeType: "image/png", size: 8 }]);
+
+    const summary = await createRunSupervisor({ db: handle.db, provider: createFakeProvider({ result: validImplementResult }), limits: LIMITS }).reconcile();
+
+    expect(summary).toMatchObject({ resumed: 0, orphaned: 1 });
+    expect(listRunsForItem(handle.db, item.id).map((run) => run.id)).toEqual([interrupted.id]);
+    const notes = handle.db.select().from(comments).all().map((comment) => comment.body);
+    expect(notes.some((body) => body.includes("The files on this item have changed"))).toBe(true);
+  });
+
+  it("starts fresh, saying why once, when a file lands while the recovery is being prepared", async () => {
+    const interrupted = createRun(handle.db, {
+      itemId: item.id,
+      agentId: implementer.id,
+      action: "implement",
+      status: "queued",
+      threadId: "thr_crashed",
+      provider: implementer.provider,
+      instructionsHash: promptHash(implementer.instructions),
+      agentAttachmentsHash: agentAttachmentsHash(handle.db, implementer.id, UNSCOPED_RUN),
+      itemFilesHash: itemFilesHash(handle.db, item.id),
+      cwd: CWD,
+    });
+    updateRun(handle.db, interrupted.id, { status: "running", startedAt: Date.now() });
+    // Put on the item while the workspace is being attached — after the
+    // thread passed `resumeBlockedReason`, before the backend is reached.
+    const fileId = uuidv7();
+    let landed = false;
+    const kinds = installedKinds(
+      fakeWorkspaceKind({
+        cwd: CWD,
+        attach: async () => {
+          if (!landed) {
+            landed = true;
+            addItemAttachments(handle.db, item.id, [{ id: fileId, storagePath: `/tmp/eo/attachments/${fileId}`, name: "mock.png", mimeType: "image/png", size: 8 }]);
+          }
+          return NOTHING_ATTACHED;
+        },
+      }),
+    );
+    const turns: { kind: "start" | "resume"; context: string }[] = [];
+    const inner = createFakeProvider({ result: validImplementResult });
+    const supervisor = createRunSupervisor({
+      db: handle.db,
+      provider: {
+        start: (opts) => {
+          turns.push({ kind: "start", context: opts.context });
+          return inner.start(opts);
+        },
+        resume: (threadId, message, opts) => {
+          turns.push({ kind: "resume", context: message });
+          return inner.resume(threadId, message, opts);
+        },
+      },
+      limits: LIMITS,
+      kinds,
+    });
+
+    await supervisor.reconcile();
+    await supervisor.waitForIdle();
+
+    expect(landed).toBe(true);
+    expect(turns.map((turn) => turn.kind)).toEqual(["start"]);
+    expect(turns[0]?.context).toContain(`- ID: ${fileId}; name: mock.png; MIME type: image/png`);
+    const notes = handle.db.select().from(comments).all().map((comment) => comment.body);
+    expect(notes.filter((body) => body.includes("The files on this item changed while"))).toHaveLength(1);
+    const runs = listRunsForItem(handle.db, item.id);
+    expect(runs).toHaveLength(3);
+    expect(runs[1]).toMatchObject({ status: "cancelled", threadId: null });
+    expect(runs[2]?.status).toBe("succeeded");
+  });
+
+  it("carries the crashed run's list of the item's files into the continuation", async () => {
+    const fileId = uuidv7();
+    addItemAttachments(handle.db, item.id, [{ id: fileId, storagePath: `/tmp/eo/attachments/${fileId}`, name: "mock.png", mimeType: "image/png", size: 8 }]);
+    const bornWith = itemFilesHash(handle.db, item.id);
+    const interrupted = createRun(handle.db, {
+      itemId: item.id,
+      agentId: implementer.id,
+      action: "implement",
+      status: "queued",
+      threadId: "thr_crashed",
+      provider: implementer.provider,
+      instructionsHash: promptHash(implementer.instructions),
+      agentAttachmentsHash: agentAttachmentsHash(handle.db, implementer.id, UNSCOPED_RUN),
+      itemFilesHash: bornWith,
+      cwd: CWD,
+    });
+    updateRun(handle.db, interrupted.id, { status: "running", startedAt: Date.now() });
+
+    await createRunSupervisor({ db: handle.db, provider: createFakeProvider({ result: validImplementResult }), limits: LIMITS }).reconcile();
+
+    const resumed = listRunsForItem(handle.db, item.id).find((run) => run.id !== interrupted.id)!;
+    expect(resumed.itemFilesHash).toBe(bornWith);
+    await vi.waitFor(() => expect(getRun(handle.db, resumed.id)?.status).toBe("succeeded"));
   });
 
   it("is idempotent — running it twice changes nothing the second time", async () => {

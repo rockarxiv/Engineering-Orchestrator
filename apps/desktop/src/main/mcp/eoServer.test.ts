@@ -240,6 +240,47 @@ describe("the shared EO MCP service", () => {
     });
   });
 
+  it("lists the item's own files in item_detail, apart from a comment's, and reads them with attachment_read (EO-703)", async () => {
+    const comment = postComment(handle.db, { itemId: item.id, author: { type: "human" }, body: "A screenshot." });
+    const fixtures = [
+      { id: uuidv7(), name: "limits.txt", mimeType: "text/plain", bytes: Buffer.from("100 a minute"), commentId: null },
+      { id: uuidv7(), name: "mock.png", mimeType: "image/png", bytes: Buffer.from([137, 80, 78, 71]), commentId: null },
+      { id: uuidv7(), name: "shot.png", mimeType: "image/png", bytes: Buffer.from([137, 80, 78, 71]), commentId: comment.id },
+    ];
+    for (const fixture of fixtures) {
+      const path = join(directory, fixture.name);
+      writeFileSync(path, fixture.bytes);
+      insertAttachments(handle.db, [{ id: fixture.id, itemId: item.id, commentId: fixture.commentId, storagePath: path, name: fixture.name, mimeType: fixture.mimeType, size: fixture.bytes.length }]);
+    }
+    const [text, image, onComment] = fixtures;
+
+    const responses = await callServer(dbPath, [INITIALIZE, INITIALIZED,
+      { jsonrpc: "2.0", id: 30, method: "tools/call", params: { name: "item_detail", arguments: { key: item.key } } },
+      { jsonrpc: "2.0", id: 31, method: "tools/call", params: { name: "attachment_read", arguments: { attachmentId: text!.id } } },
+      { jsonrpc: "2.0", id: 32, method: "tools/call", params: { name: "attachment_read", arguments: { attachmentId: image!.id } } },
+    ]);
+
+    const detail = (resultFor(responses, 30)["content"] as { text: string }[])[0]?.text ?? "";
+    const files = detail.slice(detail.indexOf("## Files"));
+    expect(detail).toContain("## Files");
+    expect(files).toContain("attachment_read");
+    expect(files).toContain(`- ID: ${text!.id}; name: limits.txt; MIME type: text/plain; size: 12 bytes; origin: eo; synchronization state: local`);
+    expect(files).toContain(`- ID: ${image!.id}; name: mock.png; MIME type: image/png`);
+    expect(detail).not.toContain(onComment!.id);
+    expect(detail).not.toContain(directory);
+
+    expect((resultFor(responses, 31)["content"] as { type: string; text: string }[])[0]).toEqual({ type: "text", text: "100 a minute" });
+    expect((resultFor(responses, 32)["content"] as { type: string; mimeType: string }[])[0]).toMatchObject({ type: "image", mimeType: "image/png" });
+  });
+
+  it("says nothing about files in item_detail for an item with none (EO-703)", async () => {
+    const responses = await callServer(dbPath, [INITIALIZE, INITIALIZED,
+      { jsonrpc: "2.0", id: 33, method: "tools/call", params: { name: "item_detail", arguments: { key: item.key } } },
+    ]);
+
+    expect((resultFor(responses, 33)["content"] as { text: string }[])[0]?.text ?? "").not.toContain("## Files");
+  });
+
   it("returns typed, path-free errors for missing and unreadable IDs", async () => {
     const comment = postComment(handle.db, { itemId: item.id, author: { type: "human" }, body: "Gone." });
     const unreadableId = uuidv7();

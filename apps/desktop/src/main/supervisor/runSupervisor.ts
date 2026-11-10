@@ -214,7 +214,7 @@ import { noneWorkspaceKind } from "./noneKind.js";
 import { folderWorkspaceKind } from "./folderKind.js";
 import { scratchWorkspaceKind } from "./scratchKind.js";
 import { resolveItemWorkspace, skillRunScope } from "./workspaceResolution.js";
-import { findReusableThread, staleAttachmentsRefusal, threadSpendNotice } from "./threadReuse.js";
+import { EMPTY_ITEM_FILES_HASH, findReusableThread, itemFilesHash, staleAttachmentsRefusal, threadSpendNotice } from "./threadReuse.js";
 import {
   rerunContract,
   findPendingInterpretations,
@@ -1271,6 +1271,17 @@ interface DispatchOptions {
    * nothing, and the caller tries again with a fresh session.
    */
   continueThread?: { from: Run; threadId: string; message: string };
+  /**
+   * The thread this work would have carried on was refused already, and
+   * this says why (EO-703).
+   *
+   * Set by a resume that found, at its own provider boundary, that the
+   * item's files changed while it was being prepared. No thread is
+   * weighed up — the caller has decided — and the sentence is posted on
+   * the fresh run as a refusal is, once, so the next dispatch does not
+   * explain the same change a second time.
+   */
+  freshBecause?: string;
 }
 
 /**
@@ -6026,13 +6037,23 @@ export function createRunSupervisor(
     const continuation =
       opts.continueThread && (opts.continueThread.from.cwd === null || opts.continueThread.from.cwd === workspace.cwd) ? opts.continueThread : null;
     const reuse =
-      continuation === null && reusesThreadPerItem(registry, agent, action)
+      continuation === null && opts.freshBecause === undefined && reusesThreadPerItem(registry, agent, action)
         ? findReusableThread(db, { itemId: item.id, agent, cwd: workspace.cwd })
         : null;
+    // A caller that refused the thread itself says why (EO-703), and that
+    // sentence is this dispatch's refusal: posted on the run below, and
+    // handed to the backend with the fresh context.
+    if (opts.freshBecause !== undefined) staleReuse = opts.freshBecause;
     // `findReusableThread` never offers a candidate without a thread —
     // `notACandidate` excludes a run that has none — but `Run.threadId`
     // cannot say so in the type, and the difference between narrowing it
     // here and asserting it is `resume(null!, ...)` reaching a provider.
+    // The item's files as this dispatch is about to tell the agent about
+    // them (EO-703). Read before the context is, so a file that lands
+    // while it is being assembled is missing from this hash rather than
+    // claimed by it — the next dispatch then refuses the thread and the
+    // file is seen, which is the safe side to be wrong on.
+    const itemFiles = itemFilesHash(db, item.id);
     let resuming = continuation
       ? { run: continuation.from, threadId: continuation.threadId }
       : reuse?.kind === "resume" && reuse.run.threadId !== null
@@ -6081,6 +6102,22 @@ export function createRunSupervisor(
     // intent is still standing, and the next tick finds the changed tools
     // through `resumeBlockedReason` and starts the fresh session.
     if (continuation && (continuation.from.agentAttachmentsHash ?? EMPTY_ATTACHMENTS_HASH) !== attachments) return;
+    // The same for the item's own files (EO-703): a continuation is told
+    // nothing about the item, so one whose files changed during preflight
+    // turns back too, and the next tick refuses its thread with a comment
+    // (`resumeBlockedReason`) and starts the fresh one.
+    if (continuation && (continuation.from.itemFilesHash ?? EMPTY_ITEM_FILES_HASH) !== itemFilesHash(db, item.id)) return;
+    // And any other dispatch whose item's files changed during preflight
+    // (EO-703). A resumed thread was chosen for the list as it stood
+    // before the awaits above and is sent a follow-up that says nothing
+    // about the item, so carrying it on now would leave the new file
+    // unseen; a fresh context may have been read before the file landed.
+    // Rebuilding here would be an await below the boundary, so the
+    // dispatch turns back having written nothing. The next tick weighs the
+    // thread up against the files as they are — refusing it with a
+    // comment where it was born with another list — and assembles the
+    // full context that lists them.
+    if (!continuation && itemFilesHash(db, item.id) !== itemFiles) return;
     if (resuming && (resuming.run.agentAttachmentsHash ?? EMPTY_ATTACHMENTS_HASH) !== attachments) {
       staleReuse = staleAttachmentsRefusal(agent);
       resuming = null;
@@ -6122,6 +6159,10 @@ export function createRunSupervisor(
       // configuration on resume either, so this row is the only record
       // of the tool surface the session opened with.
       agentAttachmentsHash: attachments,
+      // And the item's own files this thread was told about (EO-703). A
+      // continuation tells it nothing new, so its thread keeps the list
+      // the interrupted run's was born with.
+      itemFilesHash: continuation ? continuation.from.itemFilesHash : itemFiles,
       initiationId,
       attempt: nextAttempt,
     });
@@ -8315,6 +8356,9 @@ export function createRunSupervisor(
         // hole the moment somebody tidied that one up.
         instructionsHash: run.instructionsHash,
         agentAttachmentsHash: run.agentAttachmentsHash,
+        // And the item's files the thread was told about (EO-703), on the
+        // same terms: a resume tells it nothing about the item again.
+        itemFilesHash: run.itemFilesHash,
         initiationId: run.initiationId,
         // The same attempt, carried on: an interruption is not a try the
         // agent spent (`RunInterruption`), so `countAttempts` leaves the
@@ -8417,6 +8461,27 @@ export function createRunSupervisor(
         });
         hold();
         return false;
+      }
+
+      // The item's files changed while that resolved (EO-703).
+      // `resumeBlockedReason` passed this thread before the await; the
+      // resume below tells it nothing about the item, so carrying it on
+      // now would leave a file unseen. Nothing has been sent: the row is
+      // closed and a fresh dispatch of the same work takes the lock this
+      // recovery holds, with the full context and the reason posted once.
+      if (!itemFilesUnchangedFor(run)) {
+        closeForChangedFiles(newRun, run.itemId);
+        const fresh = dispatchRun(item, agent, run.action, {
+          ...(run.initiationId !== null ? { initiationId: run.initiationId } : {}),
+          transitionOnSuccess: !isManualAction(run.action),
+          holdingItemLock: true, // this recovery's own claim, not a second one
+          freshBecause: itemFilesChangedWhilePreparing(agent),
+        }).finally(() => {
+          inFlight.delete(fresh);
+          hold();
+        });
+        inFlight.add(fresh);
+        return true;
       }
 
       for (const notice of recoveredAttachment.notices) {
@@ -9830,6 +9895,46 @@ export function createRunSupervisor(
    * predates A-07, so it is trusted rather than restarted — that is the
    * old behaviour, and it was right whenever the provider hadn't changed.
    */
+  /**
+   * Whether the item's files are still the ones a thread was told about
+   * (EO-703) — asked at a resume's provider boundary, after the awaits
+   * `resumeBlockedReason` was answered before.
+   */
+  function itemFilesUnchangedFor(run: Run): boolean {
+    return (run.itemFilesHash ?? EMPTY_ITEM_FILES_HASH) === itemFilesHash(db, run.itemId);
+  }
+
+  /** What a resume that finds the item's files changed at its boundary says (EO-703). */
+  function itemFilesChangedWhilePreparing(agent: Agent): string {
+    return (
+      `The files on this item changed while ${agent.name}'s conversation was being picked back up. A conversation ` +
+      `already under way is not told about the item again, so it couldn't be carried over — starting a fresh run ` +
+      `instead, which is how it sees the files as they are now. Nothing is lost: the new run is given the newest ` +
+      `word from every step and everything you have said since.`
+    );
+  }
+
+  /**
+   * Closes a resume's run that never reached a backend because the item's
+   * files changed under it (EO-703).
+   *
+   * Its thread id is cleared: the row opened no session of its own, and
+   * left holding one it would be the agent's last run (`lastRunOf`) — the
+   * watermark a fresh seed counts what the person said from, which would
+   * put the reply this run was carrying behind it.
+   */
+  function closeForChangedFiles(run: Run, itemId: Uuid): void {
+    updateRun(db, run.id, {
+      status: "cancelled",
+      endedAt: now(),
+      threadId: null,
+      interruption: "restart",
+      error: "The item's files changed before this resume reached the backend, so nothing was started; a fresh run was dispatched instead.",
+    });
+    releaseRunControl(run.id);
+    announceRun(run.id, itemId, "cancelled");
+  }
+
   function resumeBlockedReason(run: Run, agent: Agent): string | null {
     if (run.provider !== null && run.provider !== agent.provider) {
       return (
@@ -9861,6 +9966,21 @@ export function createRunSupervisor(
         `session keeps the tools it was started with, so the conversation couldn't be carried over — starting a ` +
         `fresh run instead, which is how it picks the new ones up. Nothing is lost: the new run is given the ` +
         `newest word from every step and everything you have said since.`
+      );
+    }
+
+    // The item's own files, on the rule `findReusableThread` applies to an
+    // automatic dispatch (EO-703). A resumed thread is told nothing about
+    // the item again, so a file put on it while the run was parked or
+    // interrupted would never reach the agent, and one taken off would
+    // still be listed in what it was told. Null reads as no files, as it
+    // does there.
+    if (runItem && (run.itemFilesHash ?? EMPTY_ITEM_FILES_HASH) !== itemFilesHash(db, runItem.id)) {
+      return (
+        `The files on this item have changed since this run started. A conversation already under way is not ` +
+        `told about the item again, so it couldn't be carried over — starting a fresh run instead, which is how ` +
+        `it sees the files as they are now. Nothing is lost: the new run is given the newest word from every step ` +
+        `and everything you have said since.`
       );
     }
 
@@ -10278,6 +10398,11 @@ export function createRunSupervisor(
       // automatic dispatch would weigh this row up against an agent that
       // has servers attached and refuse a thread that was fine.
       agentAttachmentsHash: priorRun.agentAttachmentsHash,
+      // The item's files the thread was told about (EO-703), carried
+      // over for the same reason: a reply resumes the thread and tells it
+      // nothing about the item, so a file added while it was parked is
+      // what the next automatic dispatch refuses the thread over.
+      itemFilesHash: priorRun.itemFilesHash,
       initiationId: priorRun.initiationId,
       attempt: priorRun.attempt + 1,
       cwd: priorRun.cwd,
@@ -10369,6 +10494,26 @@ export function createRunSupervisor(
       releaseRunControl(run.id);
       announceRun(run.id, itemId, "cancelled");
       closeParkOfOutOfProjectAgent(itemAtBoundary, priorRun, agentAtBoundary);
+      return;
+    }
+
+    // The item's files changed while that resolved, or while the memory
+    // was chosen (EO-703). `resumeBlockedReason` passed this thread
+    // before those awaits, and the resume below tells it nothing about
+    // the item. Nothing has been sent: the row is closed without a thread
+    // of its own, so the reply stays unanswered, and a fresh dispatch of
+    // the same work — under this reply's own claim, with the full
+    // context and the reply in it — says why, once.
+    if (!itemFilesUnchangedFor(priorRun)) {
+      closeForChangedFiles(run, itemId);
+      const freshInitiationId = followUpComments(db, itemId, agent.id, priorRun).at(-1)?.id ?? `reauthorized:${priorRun.id}`;
+      const freshPromise = dispatchRun(item, agent, priorRun.action, {
+        initiationId: freshInitiationId,
+        holdingItemLock: true, // this reply's own claim, not a second one
+        freshBecause: itemFilesChangedWhilePreparing(agent),
+      }).finally(() => inFlight.delete(freshPromise));
+      inFlight.add(freshPromise);
+      await freshPromise;
       return;
     }
 

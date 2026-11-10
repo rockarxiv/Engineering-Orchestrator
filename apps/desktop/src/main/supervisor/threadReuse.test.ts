@@ -1,13 +1,13 @@
-import { McpServerDraftSchema, SkillDraftSchema, type Agent, type Item, type SkillScope, UNSCOPED_RUN } from "@eo/core";
+import { McpServerDraftSchema, SkillDraftSchema, type Agent, type Item, type SkillScope, UNSCOPED_RUN, uuidv7 } from "@eo/core";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { DbHandle } from "../db/client.js";
 import type { CreateRunInput } from "../db/repos/runsRepo.js";
-import { createRun, listAgents, saveMcpServer, saveSkill, setAgentAttachment, updateAgent, updateRun } from "../db/repos/index.js";
+import { addItemAttachments, createRun, insertAttachments, listAgents, postComment, removeItemAttachment, saveMcpServer, saveSkill, setAgentAttachment, updateAgent, updateRun } from "../db/repos/index.js";
 import { agentAttachmentsHash, EMPTY_ATTACHMENTS_HASH } from "../agentAttachments/fingerprint.js";
 import { attachWorkspace, createTestItem, openMigratedTestDb } from "../db/testHelpers.js";
 import { promptHash } from "../roles/prompts.js";
 import type { ThreadReuse } from "./threadReuse.js";
-import { findReusableThread } from "./threadReuse.js";
+import { EMPTY_ITEM_FILES_HASH, findReusableThread, itemFilesHash } from "./threadReuse.js";
 import { skillRunScope } from "./workspaceResolution.js";
 
 /**
@@ -456,6 +456,141 @@ describe("findReusableThread", () => {
 
       expect(reasonFor(ask(), "refused")).toContain("/tmp/eo/worktrees/EO-89");
     });
+  });
+});
+
+/**
+ * A thread is not carried across a change to the item's own files
+ * (EO-703). A dispatch lists them beside the description and a resumed
+ * thread is told nothing about the item again, so a file added mid-work
+ * would never be seen, and one removed would still be listed.
+ */
+describe("findReusableThread, with the item's own files (EO-703)", () => {
+  const CWD = "/tmp/eo/worktrees/EO-703";
+
+  let handle: DbHandle;
+  let item: Item;
+  let implementer: Agent;
+
+  beforeEach(() => {
+    handle = openMigratedTestDb();
+    item = createTestItem(handle.db, { type: "story", title: "A story", stepId: "todo" });
+    implementer = listAgents(handle.db).find((agent) => agent.role === "implementer")!;
+  });
+
+  afterEach(() => {
+    handle.close();
+  });
+
+  const addFile = (on: Item = item) => {
+    const id = uuidv7();
+    addItemAttachments(handle.db, on.id, [{ id, storagePath: `/tmp/eo/attachments/${id}`, name: "mock.png", mimeType: "image/png", size: 8 }]);
+    return id;
+  };
+
+  /** A run recorded the way `dispatchRun` records one: with the item's files as they are now. */
+  const dispatched = (overrides: Partial<CreateRunInput> = {}) =>
+    createRun(handle.db, {
+      itemId: item.id,
+      agentId: implementer.id,
+      action: "implement",
+      status: "succeeded",
+      threadId: "session-1",
+      provider: implementer.provider,
+      instructionsHash: promptHash(implementer.instructions),
+      agentAttachmentsHash: agentAttachmentsHash(handle.db, implementer.id, UNSCOPED_RUN),
+      itemFilesHash: itemFilesHash(handle.db, item.id),
+      cwd: CWD,
+      ...overrides,
+    });
+
+  const ask = () => findReusableThread(handle.db, { itemId: item.id, agent: implementer, cwd: CWD });
+
+  it("resumes a thread born with the files the item still holds", () => {
+    addFile();
+    const prior = dispatched();
+
+    expect(ask()).toEqual({ kind: "resume", run: prior });
+  });
+
+  it("refuses the thread once a file is added to the item, and says why", () => {
+    dispatched();
+    addFile();
+
+    const decision = ask();
+    expect(decision.kind).toBe("refused");
+    expect(decision.kind === "refused" ? decision.reason : "").toContain("The files on this item have changed");
+  });
+
+  it("refuses the thread once a file is removed from the item", () => {
+    const id = addFile();
+    dispatched();
+    removeItemAttachment(handle.db, id);
+
+    expect(ask().kind).toBe("refused");
+  });
+
+  it("does not fall back to an older thread across a change to the files: add, run, remove", () => {
+    // Thread A is born with no files; a file is added and thread B is
+    // born with it; the file is removed. A's list matches again, but
+    // every turn since A has worked from another one.
+    dispatched({ threadId: "session-a" });
+    const id = addFile();
+    dispatched({ threadId: "session-b" });
+    removeItemAttachment(handle.db, id);
+
+    const decision = ask();
+    expect(decision.kind).toBe("refused");
+    expect(decision.kind === "refused" ? decision.reason : "").toContain("The files on this item have changed");
+  });
+
+  it("does not fall back across the change past a thread that is itself excluded: add, run, lose it, remove", () => {
+    // B cannot be carried on — its thread is gone — but it still stands
+    // for turns that worked from a list A never had.
+    dispatched({ threadId: "session-a" });
+    const id = addFile();
+    const b = dispatched({ threadId: "session-b" });
+    updateRun(handle.db, b.id, { threadLost: true });
+    removeItemAttachment(handle.db, id);
+
+    const decision = ask();
+    expect(decision.kind).toBe("refused");
+    expect(decision.kind === "refused" ? decision.reason : "").toContain("The files on this item have changed");
+  });
+
+  it("still falls back past a dry run born with another list, which is not the item's history", () => {
+    const older = dispatched({ threadId: "session-a" });
+    const id = addFile();
+    dispatched({ threadId: "session-dry", dryRun: true });
+    removeItemAttachment(handle.db, id);
+
+    expect(ask()).toEqual({ kind: "resume", run: older });
+  });
+
+  it("still falls back past a newer thread refused for something else, where the files never changed", () => {
+    addFile();
+    const older = dispatched({ threadId: "session-a" });
+    dispatched({ threadId: "session-b", cwd: "/tmp/eo/worktrees/elsewhere" });
+
+    expect(ask()).toEqual({ kind: "resume", run: older });
+  });
+
+  it("is not moved by a file on another item, or by a comment's file on this one", () => {
+    const prior = dispatched();
+    addFile(createTestItem(handle.db, { type: "story", title: "Another story", stepId: "todo" }));
+    const comment = postComment(handle.db, { itemId: item.id, author: { type: "human" }, body: "A screenshot." });
+    insertAttachments(handle.db, [{ id: uuidv7(), itemId: item.id, commentId: comment.id, storagePath: "/tmp/eo/attachments/c", name: "shot.png", mimeType: "image/png", size: 8 }]);
+
+    expect(ask()).toEqual({ kind: "resume", run: prior });
+  });
+
+  it("reads a run written before the column as born with no files", () => {
+    const prior = dispatched({ itemFilesHash: null });
+    expect(itemFilesHash(handle.db, item.id)).toBe(EMPTY_ITEM_FILES_HASH);
+    expect(ask()).toEqual({ kind: "resume", run: prior });
+
+    addFile();
+    expect(ask().kind).toBe("refused");
   });
 });
 

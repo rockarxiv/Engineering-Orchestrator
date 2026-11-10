@@ -10,6 +10,7 @@ import {
   listAgents,
   listCommentsForItem,
   listDependencies,
+  listItemAttachments,
   listRunEvents,
   listRunsForItem,
   listStepsForPipeline,
@@ -86,6 +87,17 @@ function itemView(db: Db, item: Item): ContextItemInput {
     // no disk — so a pack's section about a kind of disk is rendered on
     // exactly the runs that are handed one.
     workspaceKind: resolveItemWorkspace(db, item).kind,
+    // The item's own files (EO-703), as the metadata a comment's files
+    // are rendered with — every one of them, since the engine renders
+    // the list among the sections truncation never takes from.
+    files: listItemAttachments(db, item.id).map((file) => ({
+      id: file.id,
+      name: file.name,
+      mimeType: file.mimeType,
+      size: file.size,
+      origin: file.managed ? ("eo" as const) : ("legacy" as const),
+      synchronizationState: "local" as const,
+    })),
   };
 }
 
