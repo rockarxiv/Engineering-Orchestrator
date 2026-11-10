@@ -23,6 +23,7 @@ export * from "./comment-tool.js";
 export * from "./attachment-tool.js";
 export * from "./repository-checkout-tool.js";
 export * from "./skill-read-tool.js";
+export * from "./skill-write-tools.js";
 export * from "./agent-writes.js";
 export * from "./deprecations.js";
 export * from "./live-output.js";

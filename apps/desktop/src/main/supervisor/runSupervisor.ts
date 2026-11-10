@@ -61,6 +61,13 @@ import {
   RepositoryCheckoutArgsSchema,
   SKILL_READ_TOOL_NAME,
   SkillReadArgsSchema,
+  SKILL_CREATE_TOOL_NAME,
+  SKILL_FILE_REMOVE_TOOL_NAME,
+  SKILL_FILE_WRITE_TOOL_NAME,
+  SKILL_PATCH_TOOL_NAME,
+  SKILL_VIEW_TOOL_NAME,
+  SKILL_WRITE_TOOLS,
+  type SkillWriteTool,
   memoryNoteEnabled,
   DEFAULT_MEMORY_DELIVERY_CHARS,
   DEFAULT_MEMORY_SCOPE_MAX_CHARS,
@@ -214,6 +221,7 @@ import {
   stepForItem,
   memoryDeliveredToRun,
   getSkill,
+  skillsLoadedByRun,
 } from "../db/repos/index.js";
 import { budgetRefusal, occurrenceOverBudget, pauseForBudget } from "../jobs/budget.js";
 import { readPolicy } from "../policy/policy.js";
@@ -265,6 +273,7 @@ import { writeAgentComment } from "./agentComments.js";
 import { projectMovedToTheRecord } from "../db/repos/projectsRepo.js";
 import { extractionEvent, extractMemory, runProduce } from "../memory/extraction.js";
 import { learningReviewEvent, learningReviewPrompt, learningReviewSkip, type LearningReviewOutcome } from "../memory/learningReview.js";
+import { answerReviewSkillTool, reviewableSkills, reviewSkillState, type ReviewSkillState } from "../memory/reviewSkills.js";
 import { runSubject } from "../modules/runName.js";
 import { createSideCallSlots } from "../sideCalls/slots.js";
 import { endAllProcessTrees } from "../process/processTree.js";
@@ -2476,6 +2485,15 @@ export function createRunSupervisor(
           return await checkoutForAgent(item, request.args);
         case SKILL_READ_TOOL_NAME:
           return readSkillForAgent(runId, request.args);
+        // The learning review's alone (EO-718), and a run's turn is never
+        // one: its credential names no writes, so the `eo` server lists
+        // none of these, and a call that reaches here anyway is refused.
+        case SKILL_VIEW_TOOL_NAME:
+        case SKILL_CREATE_TOOL_NAME:
+        case SKILL_PATCH_TOOL_NAME:
+        case SKILL_FILE_WRITE_TOOL_NAME:
+        case SKILL_FILE_REMOVE_TOOL_NAME:
+          return { ok: false, code: "TOOL_NOT_SERVED", problem: `Only the learning review is served ${request.tool}, so nothing was written.` };
       }
     } catch (error) {
       return { ok: false, code: "WRITE_FAILED", problem: `EO could not write it, so nothing was written: ${error instanceof Error ? error.message : String(error)}` };
@@ -2509,21 +2527,26 @@ export function createRunSupervisor(
 
   /**
    * The learning reviews under way, by the run each reviews (EO-717):
-   * the item, and the entries the review's `memory_note` calls wrote, in
-   * order, for its `learning_review` event.
+   * the item, the entries the review's `memory_note` calls wrote, in
+   * order, for its `learning_review` event, and what its skill tools
+   * have read and written (EO-718).
    */
-  const reviewTurns = new Map<Uuid, { itemId: Uuid; entryIds: string[] }>();
+  const reviewTurns = new Map<Uuid, { itemId: Uuid; entryIds: string[]; skills: ReviewSkillState }>();
 
   /**
-   * A write a learning review asked for (EO-717): `memory_note` alone,
-   * made as the reviewed run — the note's source — and marked as
-   * extracted, as the notes the review replaces were. Anything else is
-   * refused, whatever the credential says, so a review cannot post,
-   * attach or check anything out.
+   * A write a learning review asked for (EO-717): `memory_note`, made as
+   * the reviewed run — the note's source — and marked as extracted, as
+   * the notes the review replaces were; and the skill tools (EO-718),
+   * answered for this review in `memory/reviewSkills.ts`, each write
+   * authored by the reviewed run. Anything else is refused, whatever the
+   * credential says, so a review cannot post, attach or check anything
+   * out.
    */
   async function reviewWrite(itemId: string, request: AgentWriteRequest, writes: readonly AgentWriteTool[]): Promise<AgentWriteAnswer> {
-    if (request.tool !== MEMORY_NOTE_TOOL_NAME || !writes.includes(request.tool)) {
-      return { ok: false, code: "TOOL_NOT_SERVED", problem: `This turn is not served ${request.tool}, so nothing was written.` };
+    const tool = request.tool;
+    const skillTool = (SKILL_WRITE_TOOLS as readonly string[]).includes(tool);
+    if ((tool !== MEMORY_NOTE_TOOL_NAME && !skillTool) || !writes.includes(tool)) {
+      return { ok: false, code: "TOOL_NOT_SERVED", problem: `This turn is not served ${tool}, so nothing was written.` };
     }
     const found = [...reviewTurns].find(([, review]) => review.itemId === itemId);
     if (found === undefined) return { ok: false, code: "NO_RUN", problem: "No learning review of this desktop's is under way on this item now, so nothing was written." };
@@ -2531,6 +2554,7 @@ export function createRunSupervisor(
     const item = getItem(db, itemId as Uuid);
     if (!item) return { ok: false, code: "NO_RUN", problem: "EO no longer has the item this run is on, so nothing was written." };
     try {
+      if (skillTool) return answerReviewSkillTool(db, review.skills, tool as SkillWriteTool, request.args, now());
       const answer = await noteMemory(item, runId, request.args, true);
       const entryId = answer.ok ? answer.data["entryId"] : undefined;
       if (typeof entryId === "string") review.entryIds.push(entryId);
@@ -2762,7 +2786,7 @@ export function createRunSupervisor(
       if (learningReviewSkip(run, current, runProduce(db, run), scopes) !== null) return;
       outcome = await reviewOnFork(run, current, agent, scopes);
     } catch (error) {
-      outcome = { kind: "failed", entryIds: [], reason: `The learning review could not be run: ${error instanceof Error ? error.message : String(error)}`, forkThreadId: null };
+      outcome = { kind: "failed", entryIds: [], skillIds: [], reason: `The learning review could not be run: ${error instanceof Error ? error.message : String(error)}`, forkThreadId: null };
     }
     if (outcome.kind === "fell_back") {
       console.warn(`[eo] the learning review of run ${runId} fell back to memory extraction: ${outcome.reason}`);
@@ -2792,8 +2816,11 @@ export function createRunSupervisor(
     const startedAt = now();
     const controller = new AbortController();
     reviewControllers.add(controller);
-    const review = { itemId: item.id, entryIds: [] as string[] };
+    const skillScope = skillRunScope(db, item);
+    const review = { itemId: item.id, entryIds: [] as string[], skills: reviewSkillState({ runId: run.id, agentId: agent.id, scope: skillScope }) };
     reviewTurns.set(run.id, review);
+    const loaded = new Set(skillsLoadedByRun(db, run.id));
+    const skills = reviewableSkills(db, review.skills).map((skill) => ({ slug: skill.slug, description: skill.description, loaded: loaded.has(skill.id), locked: skill.locked }));
     const usage = createUsageTally({ earlierOnThread: sessionTotalBefore(usageHistoryOnThread(db, run.threadId, uuidv7() as Uuid)) });
     let model: string | null = null;
     /** Whether the backend said anything about spend: a fork that reported none leaves no row claiming it cost nothing. */
@@ -2819,19 +2846,23 @@ export function createRunSupervisor(
     }, LEARNING_REVIEW_TIMEOUT_MS);
     try {
       const forked = await Promise.race([
-        provider.fork(run.threadId, learningReviewPrompt(scopes), {
+        provider.fork(run.threadId, learningReviewPrompt(scopes, { skills, canCreate: skillScope.projectId !== null }), {
           ...(run.cwd ? { cwd: run.cwd } : {}),
           // `memory_read` over the run's scopes, and a credential for
-          // `memory_note` alone: no other write tool is listed, and the
-          // bridge refuses any other write made with it.
+          // `memory_note` and the skill tools (EO-718) alone: no other
+          // write tool is listed, and the bridge refuses any other write
+          // made with it. No other turn's credential names the skill
+          // tools, so no other turn is served them.
           ...memoryOption(item),
-          writeBridge: bridge.tokenFor(item.id, [MEMORY_NOTE_TOOL_NAME]),
+          writeBridge: bridge.tokenFor(item.id, [MEMORY_NOTE_TOOL_NAME, ...SKILL_WRITE_TOOLS]),
           // And not EO's administrative server, which either adapter
           // otherwise gives every turn of the system agent's (invariant
           // 11): a review of its run writes memory and nothing else.
           withoutAdminServer: true,
-          // Nor skills: this review writes memory alone (EO-717); writing
-          // skills is EO-718's.
+          // Nor skills as a run is given them: the review reads skills
+          // with `skill_view` (EO-718), which is how EO knows what it read
+          // before it lets it write — a `Skill` call or a `skill_read`
+          // would be a load, counted as the run's use, and no read.
           withoutSkills: true,
           ...turnBudget(item, agent),
           signal: controller.signal,
@@ -2863,7 +2894,9 @@ export function createRunSupervisor(
         if (failure === null) failure = error instanceof Error ? error.message : String(error);
       }
       if (timedOut || shuttingDown || failure !== null) return failedReview(forkThreadId);
-      return review.entryIds.length > 0 ? { kind: "written", entryIds: [...review.entryIds], forkThreadId } : { kind: "nothing_to_save", forkThreadId };
+      return review.entryIds.length > 0 || review.skills.written.length > 0
+        ? { kind: "written", entryIds: [...review.entryIds], skillIds: [...review.skills.written], forkThreadId }
+        : { kind: "nothing_to_save", forkThreadId };
     } finally {
       clearTimeout(timer);
       reviewControllers.delete(controller);
@@ -2877,7 +2910,7 @@ export function createRunSupervisor(
         : shuttingDown
           ? "EO shut down while the learning review was under way."
           : `The learning review's turn failed: ${failure ?? "it ended without saying why."}`;
-      return { kind: "failed", entryIds: [...review.entryIds], reason, forkThreadId: threadId };
+      return { kind: "failed", entryIds: [...review.entryIds], skillIds: [...review.skills.written], reason, forkThreadId: threadId };
     }
 
     /**

@@ -4,6 +4,7 @@ import { COMMENT_TOOL_NAME } from "./comment-tool.js";
 import { MEMORY_NOTE_TOOL_NAME } from "./memory.js";
 import { REPOSITORY_CHECKOUT_TOOL_NAME } from "./repository-checkout-tool.js";
 import { SKILL_READ_TOOL_NAME } from "./skill-read-tool.js";
+import { SKILL_WRITE_TOOLS } from "./skill-write-tools.js";
 
 /**
  * How an agent's write reaches EO (EO-543, ARCHITECTURE.md §13.1).
@@ -14,7 +15,9 @@ import { SKILL_READ_TOOL_NAME } from "./skill-read-tool.js";
  * needs what only the main process has — the git kind that makes a
  * reference checkout — and goes the same way, as does `skill_read`
  * (EO-721), which writes nothing but is answered from which skills the
- * run was given, which only the main process knows.
+ * run was given, which only the main process knows. So do the learning
+ * review's skill tools (EO-718, `skill-write-tools.ts`), which only a
+ * review's credential is served.
  * Each is handed, as it is called, to the main process over the agent
  * write bridge (`mcp/writeBridge.ts`); the main process applies the
  * rules, writes, and answers with what happened. The tool's answer *is*
@@ -31,7 +34,7 @@ import { SKILL_READ_TOOL_NAME } from "./skill-read-tool.js";
  */
 
 /** The `eo` server's tools that write, or act, through the bridge. */
-export const AGENT_WRITE_TOOLS = [COMMENT_TOOL_NAME, ATTACHMENT_ADD_TOOL_NAME, MEMORY_NOTE_TOOL_NAME, REPOSITORY_CHECKOUT_TOOL_NAME, SKILL_READ_TOOL_NAME] as const;
+export const AGENT_WRITE_TOOLS = [COMMENT_TOOL_NAME, ATTACHMENT_ADD_TOOL_NAME, MEMORY_NOTE_TOOL_NAME, REPOSITORY_CHECKOUT_TOOL_NAME, SKILL_READ_TOOL_NAME, ...SKILL_WRITE_TOOLS] as const;
 export type AgentWriteTool = (typeof AGENT_WRITE_TOOLS)[number];
 
 /**
@@ -47,7 +50,7 @@ export const AgentWriteBridgeAddressSchema = z.object({
   /**
    * The only writes this address takes (EO-717), where a turn is served
    * fewer than its agent's grant — the learning review, served
-   * `memory_note` alone. The `eo` server lists no other write tool and
+   * `memory_note` and the skill tools (EO-718), which no other turn is. The `eo` server lists no other write tool and
    * refuses a call to one, and the bridge refuses any other write made
    * with this credential, which carries the same list under its MAC.
    * Absent, the agent's grant decides, as it always has.
