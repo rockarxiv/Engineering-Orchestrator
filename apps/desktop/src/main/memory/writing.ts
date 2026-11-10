@@ -59,7 +59,7 @@ const MEMORY_READ = eoToolName(MEMORY_READ_TOOL_NAME);
  * an agent is not tempted to put such a fact in the project's scope for
  * good, nor a lasting one in a scope that ends.
  */
-function scopeLines(scopes: readonly MemoryScopeInfo[]): string[] {
+export function scopeLines(scopes: readonly MemoryScopeInfo[]): string[] {
   return [
     ...scopes.filter((info) => info.scope.kind === "project").map((info) => `- \`${MEMORY_NOTE_PROJECT_SCOPE}\` — what is true across the whole project, ${info.name}.`),
     ...scopes.filter((info) => info.scope.kind === "workspace").map((info) => `- \`${info.scope.id}\` — what is true only of the workspace ${info.name}.`),

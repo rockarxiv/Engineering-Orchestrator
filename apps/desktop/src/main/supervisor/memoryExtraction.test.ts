@@ -4,6 +4,7 @@ import { join } from "node:path";
 import {
   FOLDER_KIND,
   MEMORY_EXTRACT_TIMEOUT_MS,
+  LEARNING_REVIEW_EVENT,
   MEMORY_EXTRACTED_EVENT,
   MEMORY_NOTE_TOOL_NAME,
   type AgentEvent,
@@ -98,10 +99,17 @@ describe("memory extraction after a run", () => {
     return { provider, asked };
   }
 
+  /**
+   * Since EO-717 extraction is the fallback for a thread that cannot be
+   * forked, so the agent's backend here is one that cannot fork: every
+   * run below is reviewed by `memory_extract`, as every run was before.
+   */
   function supervisorOver(agent: AgentProvider, sideCallProvider: AgentProvider | null) {
+    const forkless: AgentProvider = { ...agent };
+    delete forkless.fork;
     const supervisor = createRunSupervisor({
       db: handle.db,
-      provider: agent,
+      provider: forkless,
       limits: LIMITS,
       agentWriteBridge: writes.agentWriteBridge,
       ...(sideCallProvider ? { sideCalls: { provider: () => sideCallProvider, smallModel: async () => null } } : {}),
@@ -115,6 +123,9 @@ describe("memory extraction after a run", () => {
 
   /** The `memory_extracted` events on the run's log: how its extraction ended (EO-511). */
   const extractedEvents = () => listRunEvents(handle.db, onlyRun().id).filter((event) => event.type === MEMORY_EXTRACTED_EVENT).map((event) => event.payload);
+
+  /** The `learning_review` events on the run's log (EO-717). */
+  const reviewEvents = () => listRunEvents(handle.db, onlyRun().id).filter((event) => event.type === LEARNING_REVIEW_EVENT).map((event) => event.payload);
 
   /** Where the item stands once its implement run succeeds, extraction or none. */
   const moved = () => getItem(handle.db, item.id)?.stepId;
@@ -158,6 +169,8 @@ describe("memory extraction after a run", () => {
     expect(listMemories(handle.db, workspace)).toEqual([expect.objectContaining({ body: "The CSV export lives behind the reports menu.", source: extracted })]);
     const entryIds = [...listMemories(handle.db, project), ...listMemories(handle.db, workspace)].filter((entry) => entry.source.type === "run").map((entry) => entry.id);
     expect(extractedEvents()).toEqual([{ type: MEMORY_EXTRACTED_EVENT, outcome: "written", entryIds: expect.arrayContaining(entryIds), dropped: [], reason: null }]);
+    // The review fell back to this, and says why (EO-717).
+    expect(reviewEvents()).toEqual([{ type: LEARNING_REVIEW_EVENT, outcome: "fell_back", entryIds: [], reason: "The fake backend cannot fork a thread.", forkThreadId: null }]);
     expect(moved()).toBe(AFTER_IMPLEMENT);
   });
 

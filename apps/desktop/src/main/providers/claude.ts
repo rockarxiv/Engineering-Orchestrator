@@ -2534,7 +2534,8 @@ export function createClaudeProvider(options: ClaudeProviderOptions = {}): Agent
   /** A turn on a session already written: the session itself, or (`fork`) a copy of it the CLI makes for this turn. */
   const resumed = (threadId: string, message: string, resumeOpts: AgentProviderResumeOptions | undefined, fork: boolean): InterruptibleStream<AgentEvent> =>
     leadingWith(
-      offeredSkills(resumeOpts?.toolDirectory),
+      // None for a turn given no skills (EO-717).
+      offeredSkills(resumeOpts?.withoutSkills === true ? undefined : resumeOpts?.toolDirectory),
       translatingLostSession(
         threadId,
         deferred(async () => {
@@ -2543,11 +2544,16 @@ export function createClaudeProvider(options: ClaudeProviderOptions = {}): Agent
           // counted the same way — its firings are this row's, not the
           // ones the session opened with (EO-168).
           const interceptions = interceptionQueue();
-          const admin = options.admin?.(resumeOpts?.cwd) ?? null;
+          // No bearer for a turn not served the administrative server
+          // (EO-717): without one the server it names cannot be called.
+          const admin = resumeOpts?.withoutAdminServer === true ? null : (options.admin?.(resumeOpts?.cwd) ?? null);
           const sdkOptions = withAdminLease(admin, () => turnOptions(resumeSpec(threadId, resumeOpts, interceptions.record), admin));
           // Before `open`, which keys a warm query on these options: a
           // warm resume of this session is never adopted by a fork of it.
           if (fork) sdkOptions.forkSession = true;
+          // And none enabled, whatever the directory or the ambient
+          // configuration would have enabled (EO-717).
+          if (resumeOpts?.withoutSkills === true) sdkOptions.skills = [];
           return open(sdk, withAttachmentNote(message, resumeOpts?.attachments), sdkOptions, interceptions, admin, resumeOpts?.warmKey, resumeOpts?.signal, resumeOpts?.streamDeltas === true);
         }),
       ),

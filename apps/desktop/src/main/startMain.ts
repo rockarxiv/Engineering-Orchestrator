@@ -844,7 +844,7 @@ export function startMain(platform: Platform): RunningMain {
   // The agent write bridge (EO-543), which cannot fail startup either: a
   // turn with no bridge has write tools that answer that nothing was
   // written, because nothing could write it — never that it was.
-  const writeBridgeStarted = startAgentWriteBridge((itemId, request) => engine.handleAgentWrite(itemId, request)).then(
+  const writeBridgeStarted = startAgentWriteBridge((itemId, request, writes) => engine.handleAgentWrite(itemId, request, writes)).then(
     (bridge) => {
       agentWriteBridge = bridge;
     },

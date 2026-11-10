@@ -557,9 +557,12 @@ export function parseWriteBridge(raw) {
   } catch {
     return null;
   }
-  return validObject(parsed) && typeof parsed.url === "string" && parsed.url !== "" && typeof parsed.token === "string" && parsed.token !== ""
-    ? { url: parsed.url, token: parsed.token }
-    : null;
+  if (!(validObject(parsed) && typeof parsed.url === "string" && parsed.url !== "" && typeof parsed.token === "string" && parsed.token !== "")) return null;
+  // The only writes this turn is served, where the address names them
+  // (EO-717): kept whole or not at all, since an unreadable list must not
+  // turn into "whatever the agent's grant says".
+  if (parsed.writes === undefined) return { url: parsed.url, token: parsed.token };
+  return Array.isArray(parsed.writes) && parsed.writes.every((tool) => typeof tool === "string") ? { url: parsed.url, token: parsed.token, writes: [...parsed.writes] } : null;
 }
 
 /**
@@ -1555,6 +1558,7 @@ async function answerEoTool({
   enableMemoryNote = false,
   enableSkillRead = false,
   writeBridge = null,
+  enableRepositoryCheckout = writeBridge !== null,
 }) {
   if (CONFIG_TOOL_NAMES.includes(name)) {
     if (!enableConfigTools) return toolError("TOOL_DISABLED", `The ${name} tool is not enabled for this role.`);
@@ -1692,6 +1696,7 @@ async function answerEoTool({
 
   if (name === REPOSITORY_CHECKOUT_TOOL_NAME) {
     if (!writeBridge) return toolError("TOOL_DISABLED", "This run is on no ticket EO can check a repository out for.");
+    if (!enableRepositoryCheckout) return toolError("TOOL_DISABLED", "This turn is not served repository_checkout.");
     return repositoryCheckout(args, writeBridge);
   }
 
@@ -1783,17 +1788,26 @@ export function createEoMcpService({
   // server's to say — the main process holds it for the turn (EO-543).
   const attach = runId && runDirectory ? { runId, directory: runDirectory } : null;
   const readable = Array.isArray(memoryScopes) ? parseMemoryScopes(JSON.stringify(memoryScopes)) : [];
-  const writable = enableMemoryNote === true && readable.length > 0;
   const bridge = validObject(writeBridge) ? writeBridge : null;
+  // A turn whose address names the writes it is served (EO-717) — the
+  // learning review, served `memory_note` alone — lists those and no
+  // other write tool, whatever the agent's grant: the review writes
+  // memory for an agent whose own turns may not, and posts nothing.
+  // EO's bridge refuses any other write on that credential as well.
+  const served = bridge !== null && Array.isArray(bridge.writes) ? bridge.writes : null;
+  const serves = (tool) => served === null || served.includes(tool);
+  const writable = readable.length > 0 && (served === null ? enableMemoryNote === true : served.includes(MEMORY_NOTE_TOOL_NAME));
+  const commenting = enableCommentTool && serves("comment");
+  const attaching = attach !== null && serves("attachment_add") ? attach : null;
   const listed = {
-    enableCommentTool,
+    enableCommentTool: commenting,
     enableConfigTools,
     enableFullThread,
-    enableAttachmentAdd: attach !== null,
+    enableAttachmentAdd: attaching !== null,
     enableMemoryRead: readable.length > 0,
     enableMemoryNote: writable,
-    enableRepositoryCheckout: bridge !== null,
-    enableSkillRead: Array.isArray(skillSlugs) && skillSlugs.length > 0,
+    enableRepositoryCheckout: bridge !== null && serves(REPOSITORY_CHECKOUT_TOOL_NAME),
+    enableSkillRead: Array.isArray(skillSlugs) && skillSlugs.length > 0 && serves(SKILL_READ_TOOL_NAME),
   };
 
   return {
@@ -1810,14 +1824,15 @@ export function createEoMcpService({
           name: request.params?.name,
           args: request.params?.arguments ?? {},
           db,
-          enableCommentTool,
+          enableCommentTool: commenting,
           enableConfigTools,
           enableFullThread,
           runtimeRoot,
-          attach,
+          attach: attaching,
           memoryScopes: readable,
           enableMemoryNote: writable,
           enableSkillRead: listed.enableSkillRead,
+          enableRepositoryCheckout: listed.enableRepositoryCheckout,
           writeBridge: bridge,
         });
         return { jsonrpc: "2.0", id: request.id, result };

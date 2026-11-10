@@ -28,6 +28,29 @@ async function bridgeAnswering(answer: (itemId: string, request: AgentWriteReque
 const NOTED: AgentWriteAnswer = { ok: true, text: "EO noted this.", data: { entryId: "m-1" } };
 
 describe("the agent write bridge", () => {
+  it("opens a credential minted for some writes to those alone, and tells the handler which (EO-717)", async () => {
+    const seen: (readonly string[] | null | undefined)[] = [];
+    const bridge = await startAgentWriteBridge(async (_itemId, _request, writes) => {
+      seen.push(writes);
+      return NOTED;
+    });
+    open.push(bridge);
+
+    const scoped = bridge.tokenFor("item-1", ["memory_note"]);
+    expect(scoped.writes).toEqual(["memory_note"]);
+    expect(await sendAgentWrite(scoped, { tool: "memory_note", args: { scope: "project", text: "A fact." } })).toEqual(NOTED);
+    for (const tool of ["comment", "attachment_add", "repository_checkout"] as const) {
+      expect(await sendAgentWrite(scoped, { tool, args: {} }), tool).toMatchObject({ ok: false, code: "TOOL_NOT_SERVED" });
+    }
+    // The list is signed: one widened by hand is not a credential this bridge minted.
+    const widened = { ...scoped, token: scoped.token.replace("~memory_note.", "~memory_note,comment.") };
+    expect(await sendAgentWrite(widened, { tool: "comment", args: { body: "x" } })).toMatchObject({ ok: false, code: "UNRECOGNISED_CREDENTIAL" });
+    // An unscoped credential is what it always was.
+    expect(bridge.tokenFor("item-1").writes).toBeUndefined();
+    expect(await sendAgentWrite(bridge.tokenFor("item-1"), { tool: "comment", args: { body: "x" } })).toEqual(NOTED);
+    expect(seen).toEqual([["memory_note"], null]);
+  });
+
   it("answers a write with the handler's own answer, for the item its credential was minted for", async () => {
     const { bridge, asked } = await bridgeAnswering(() => Promise.resolve(NOTED));
 

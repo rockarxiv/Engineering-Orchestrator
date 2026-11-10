@@ -41,7 +41,19 @@ export type AgentWriteTool = (typeof AGENT_WRITE_TOOLS)[number];
  * writes down, so a credential outlives neither the process that minted
  * it nor its reach into one item.
  */
-export const AgentWriteBridgeAddressSchema = z.object({ url: z.string().min(1), token: z.string().min(1) });
+export const AgentWriteBridgeAddressSchema = z.object({
+  url: z.string().min(1),
+  token: z.string().min(1),
+  /**
+   * The only writes this address takes (EO-717), where a turn is served
+   * fewer than its agent's grant — the learning review, served
+   * `memory_note` alone. The `eo` server lists no other write tool and
+   * refuses a call to one, and the bridge refuses any other write made
+   * with this credential, which carries the same list under its MAC.
+   * Absent, the agent's grant decides, as it always has.
+   */
+  writes: z.array(z.enum(AGENT_WRITE_TOOLS)).optional(),
+});
 export type AgentWriteBridgeAddress = z.infer<typeof AgentWriteBridgeAddressSchema>;
 
 /** What the `eo` server sends: which tool, and the arguments the agent gave it, untouched. */

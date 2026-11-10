@@ -18,6 +18,7 @@ import {
   validateActionResult,
   type AgentEvent,
   type AgentForkResult,
+  type AgentProviderResumeOptions,
   type AgentProvider,
   type AgentWriteAnswer,
   type AgentWriteRequest,
@@ -301,6 +302,16 @@ const CAPABILITIES = [
       outcome: { kind: "result", data: "reviewed" },
       missing: { ok: false, reason: "thread_not_found", threadId: "thr-gone" },
       otherRefusal: { ok: false, reason: "failed", threadId: "thr-gone" },
+    },
+  },
+  {
+    name: "the learning review's tools",
+    what: "a fork handed a write credential for memory_note alone has the backend start the `eo` server that lists memory_note and memory_read and no other write tool — for an agent its own grant gives comment, attachment_add and no memory_note — and the credential reaches it whole; and a fork told it is without the administrative server, for an agent otherwise given it on every turn, mints no bearer and configures no `eo_admin`, where a resume of that agent's thread is given both; and a fork told it is given no skills is offered none and enabled none, where a resume of the same thread is offered the agent's (EO-717)",
+    same: {
+      served: ["memory_note", "memory_read"],
+      credential: { writes: ["memory_note"] },
+      admin: { bearersMinted: 0, bearerInTheEnvironment: false, serverConfigured: false, bearerOnAResume: true },
+      skills: { offered: [], enabled: false, offeredOnAResume: true },
     },
   },
   {
@@ -1123,6 +1134,50 @@ function listsAttachmentAdd(env: Record<string, string> | undefined): boolean {
   }
 }
 
+/**
+ * The learning review's turn (EO-717): a fork, for an agent whose grant
+ * lists `comment` and not `memory_note`, with a directory to attach from,
+ * the run's memory scopes and a credential for `memory_note` alone.
+ */
+const REVIEW_EO_MCP = { serverPath: "/app/eoServer.mjs", enableCommentTool: true, enableMemoryNote: false };
+const REVIEW_CREDENTIAL = { url: "http://127.0.0.1:1/agent-write", token: "item-1~memory_note.signed", writes: ["memory_note" as const] };
+const REVIEW_FORK = (memoryScopes: unknown[]) => ({ cwd: "/tmp/wt", attachFrom: ATTACH_FROM, memoryScopes, writeBridge: REVIEW_CREDENTIAL, withoutAdminServer: true }) as AgentProviderResumeOptions;
+
+/** The skills a turn says it was given (`skills_delivered`), by slug. */
+const offeredIn = (events: readonly AgentEvent[]): string[] => events.flatMap((event) => (event.type === "skills_delivered" ? event.slugs : []));
+
+/** The administrative bearers an agent given `eo_admin` would be minted, counted (EO-717). */
+function countedAdmin() {
+  let minted = 0;
+  return {
+    admin: () => {
+      minted += 1;
+      return { server: { url: "http://127.0.0.1:9/mcp", envName: "EO_ADMIN_TOKEN" }, environment: { EO_ADMIN_TOKEN: `turn-bearer-${minted}` }, release: () => {} };
+    },
+    minted: () => minted,
+  };
+}
+
+/** The write and memory tools the `eo` server started from this environment lists, and the credential it was handed. */
+function reviewServed(env: Record<string, string> | undefined): unknown {
+  const bridge = env?.["EO_MCP_WRITE_BRIDGE"] === undefined ? null : (JSON.parse(env["EO_MCP_WRITE_BRIDGE"]) as { writes?: unknown });
+  const started = (createEoMcpService as (options: Record<string, unknown>) => { tools: { name: string }[]; close(): void })({
+    dbPath: undefined,
+    enableCommentTool: env?.["EO_MCP_COMMENT_ENABLED"] === "1",
+    runId: env?.["EO_MCP_RUN_ID"] ?? null,
+    runDirectory: env?.["EO_MCP_RUN_DIRECTORY"] ?? null,
+    memoryScopes: (parseMemoryScopes as (raw: unknown) => unknown[])(env?.["EO_MCP_MEMORY_SCOPES"]),
+    enableMemoryNote: env?.["EO_MCP_MEMORY_NOTE_ENABLED"] === "1",
+    writeBridge: bridge,
+  });
+  try {
+    const watched = ["comment", "attachment_add", "repository_checkout", "memory_note", "memory_read"];
+    return { served: started.tools.map((tool) => tool.name).filter((name) => watched.includes(name)).sort(), credential: { writes: bridge?.writes ?? null } };
+  } finally {
+    started.close();
+  }
+}
+
 /** One turn's memory (EO-478): the section, rendered by the one renderer both backends' turns are given, and the scopes `memory_read` is told. */
 const MEMORY_SCOPES = [
   { kind: "project", id: "project-p", name: "Payments" },
@@ -1928,6 +1983,44 @@ const CLAUDE: Record<CapabilityName, Proof> = {
       await refused(new Error("Claude Code process exited with code 1\nstderr: No conversation found with session ID: thr-gone")),
       await refused(new Error("Claude Code process exited with code 1\nstderr: overloaded_error")),
     );
+  },
+
+  "the learning review's tools": async () => {
+    // Claude's delivery: the `eo` server inline in `mcpServers`, its
+    // environment carrying the credential as the turn was handed it.
+    // The administrative server's URL is in the agent's generated
+    // `.mcp.json`, which a fork is not pointed at; its bearer is in the
+    // CLI's environment, minted per turn.
+    const counted = countedAdmin();
+    const { runQuery, calls } = scripted([sdk.init({ session_id: "sess-fork" }), sdk.result({ result: "Nothing to save.", session_id: "sess-fork" })]);
+    const provider = createClaudeProvider({ runQuery, eoMcp: REVIEW_EO_MCP, admin: counted.admin });
+    const forked = await provider.fork!("thr-persisted", "review the run", REVIEW_FORK([...MEMORY_SCOPES]));
+    if (forked.ok) await collect(forked.events);
+    const forkMinted = counted.minted();
+    const resumed = scripted([sdk.result()]);
+    await collect(createClaudeProvider({ runQuery: resumed.runQuery, eoMcp: REVIEW_EO_MCP, admin: counted.admin }).resume("thr-persisted", "carry on", { cwd: "/tmp/wt" }));
+    const envOf = (call: SdkCall | undefined) => call?.options["env"] as Record<string, string> | undefined;
+    // Skills reach Claude through the generated directory: a fork pointed
+    // at one, told it is given none.
+    const toolDirectory = join(scratchDirectory(), "plugin");
+    writeToolDirectory(toolDirectory, attachmentsForRun({ servers: [], skills: SCOPED_SKILLS }, SCOPED_RUN));
+    const skilled = scripted([sdk.init({ session_id: "sess-fork" }), sdk.result({ session_id: "sess-fork" })]);
+    const skilledFork = await createClaudeProvider({ runQuery: skilled.runQuery }).fork!("thr-persisted", "review the run", { cwd: "/tmp/wt", toolDirectory, skillScope: SCOPED_RUN, withoutSkills: true });
+    const skilledEvents = skilledFork.ok ? await collect(skilledFork.events) : [];
+    const resumedSkilled = scripted([sdk.result()]);
+    const resumedEvents = await collect(createClaudeProvider({ runQuery: resumedSkilled.runQuery }).resume("thr-persisted", "carry on", { cwd: "/tmp/wt", toolDirectory, skillScope: SCOPED_RUN }));
+    const enabled = skilled.calls[0]?.options["skills"];
+    return {
+      skills: { offered: offeredIn(skilledEvents), enabled: enabled === "all" || (Array.isArray(enabled) && enabled.length > 0), offeredOnAResume: offeredIn(resumedEvents).length > 0 },
+      ...(reviewServed((calls[0]?.options["mcpServers"] as Record<string, { env?: Record<string, string> }> | undefined)?.["eo"]?.env) as object),
+      admin: {
+        bearersMinted: forkMinted,
+        bearerInTheEnvironment: envOf(calls[0])?.["EO_ADMIN_TOKEN"] !== undefined,
+        serverConfigured:
+          Object.keys((calls[0]?.options["mcpServers"] as Record<string, unknown> | undefined) ?? {}).includes(ADMIN_MCP_SERVER_NAME) || calls[0]?.options["plugins"] !== undefined,
+        bearerOnAResume: envOf(resumed.calls[0])?.["EO_ADMIN_TOKEN"] !== undefined,
+      },
+    };
   },
 
   "non-fatal warning": async () => {
@@ -2930,9 +3023,9 @@ function codexOver(scenario: FakeAppServerScenario, options: Parameters<typeof c
   const provider = createCodexProvider({
     executablePath: STUB_EXECUTABLE,
     ...options,
-    createCodex: (repository, searchHook, attachFrom, memoryScopes, environmentVariables, writeBridge, withheld, adminDirectory) =>
+    createCodex: (repository, searchHook, attachFrom, memoryScopes, environmentVariables, writeBridge, withheld, adminDirectory, skillSlugs, withoutAdmin) =>
       new CodexClient({
-        ...codexClientOptions({ executablePath: STUB_EXECUTABLE, ...options }, repository, searchHook, attachFrom, memoryScopes, environmentVariables, writeBridge, withheld, adminDirectory),
+        ...codexClientOptions({ executablePath: STUB_EXECUTABLE, ...options }, repository, searchHook, attachFrom, memoryScopes, environmentVariables, writeBridge, withheld, adminDirectory, skillSlugs, withoutAdmin),
         spawn: fake.spawn,
         shutdownGraceMs: 200,
         killGraceMs: 100,
@@ -3105,6 +3198,64 @@ const CODEX: Record<CapabilityName, Proof> = {
       await refused(-32600, "no rollout found for thread id thr-gone"),
       await refused(-32603, "database is locked"),
     );
+  },
+
+  "the learning review's tools": async () => {
+    // Codex's delivery: the `eo` server configured on the app-server's
+    // command line, one `mcp_servers.eo.env.<NAME>` per variable, and
+    // `eo_admin` beside it with its bearer in the environment.
+    const counted = countedAdmin();
+    const { fake, provider } = codexOver(
+      {
+        forkId: "thr-fork",
+        after: { "turn/start": [note.turnStarted("turn-1", "thr-fork"), note.agentMessage("Nothing to save.", "m", "turn-1", "thr-fork"), note.turnCompleted("completed", null, "turn-1", "thr-fork")] },
+      },
+      { eoMcp: REVIEW_EO_MCP, admin: counted.admin },
+    );
+    const forked = await provider.fork!("thr-persisted", "review the run", REVIEW_FORK([...MEMORY_SCOPES]));
+    if (forked.ok) await collect(forked.events);
+    const forkMinted = counted.minted();
+    const again = codexOver(
+      { after: { "turn/start": [note.turnStarted("turn-1", "thr-persisted"), note.agentMessage("continued", "m", "turn-1", "thr-persisted"), note.turnCompleted("completed", null, "turn-1", "thr-persisted")] } },
+      { eoMcp: REVIEW_EO_MCP, admin: counted.admin },
+    );
+    await collect(again.provider.resume("thr-persisted", "carry on", { cwd: "/tmp/wt" }));
+    const launch = fake.launches[0];
+    const envOf = (one: typeof launch) => one?.options.env as Record<string, string> | undefined;
+    // Skills reach Codex from the agent's own attachments, written into
+    // the worktree and served by `skill_read`: a fork of an agent given
+    // some, told it is given none.
+    const cwd = scratchDirectory();
+    const plain = (thread: string) => [note.turnStarted("turn-1", thread), note.agentMessage("ok", "m", "turn-1", thread), note.turnCompleted("completed", null, "turn-1", thread)];
+    const skilled = codexOver({ forkId: "thr-fork", after: { "turn/start": plain("thr-fork") } }, { eoMcp: REVIEW_EO_MCP, attachedSkills: SCOPED_SKILLS });
+    const skilledFork = await skilled.provider.fork!("thr-persisted", "review the run", { cwd, skillScope: SCOPED_RUN, withoutSkills: true });
+    const skilledEvents = skilledFork.ok ? await collect(skilledFork.events) : [];
+    // Read before the resume below, which writes them into the same worktree.
+    const skilledEnabled =
+      (skilled.fake.launches[0]?.args ?? []).some((argument) => argument.startsWith("mcp_servers.eo.env.EO_MCP_SKILLS=")) || existsSync(join(cwd, ".agent", "skills"));
+    const resumedSkilled = codexOver({ after: { "turn/start": plain("thr-persisted") } }, { eoMcp: REVIEW_EO_MCP, attachedSkills: SCOPED_SKILLS });
+    const resumedEvents = await collect(resumedSkilled.provider.resume("thr-persisted", "carry on", { cwd, skillScope: SCOPED_RUN }));
+    return {
+      skills: {
+        offered: offeredIn(skilledEvents),
+        enabled: skilledEnabled,
+        offeredOnAResume: offeredIn(resumedEvents).length > 0,
+      },
+      ...(reviewServed(
+        Object.fromEntries(
+          (launch?.args ?? [])
+            .filter((argument) => argument.startsWith("mcp_servers.eo.env."))
+            .map((argument) => argument.slice("mcp_servers.eo.env.".length))
+            .map((pair) => [pair.slice(0, pair.indexOf("=")), JSON.parse(pair.slice(pair.indexOf("=") + 1)) as string]),
+        ),
+      ) as object),
+      admin: {
+        bearersMinted: forkMinted,
+        bearerInTheEnvironment: envOf(launch)?.["EO_ADMIN_TOKEN"] !== undefined,
+        serverConfigured: (launch?.args ?? []).some((argument) => argument.startsWith(`mcp_servers.${ADMIN_MCP_SERVER_NAME}.`)),
+        bearerOnAResume: envOf(again.fake.launches[0])?.["EO_ADMIN_TOKEN"] !== undefined,
+      },
+    };
   },
 
   "non-fatal warning": async () => {
@@ -4198,7 +4349,7 @@ describe.each(CAPABILITIES)("$name: $what", (capability) => {
 });
 
 describe("the shared list", () => {
-  it("is the twelve capabilities EO-380 names and the ones EO-385, EO-387, EO-392, EO-395, EO-412, EO-421, EO-444, EO-468, EO-470, EO-477, EO-478, EO-479, EO-487, EO-488, EO-490, EO-493, EO-494, EO-534, EO-543, EO-578, EO-587, EO-597, EO-633, EO-700, EO-703, EO-716 and the streaming chat added, each once", () => {
+  it("is the twelve capabilities EO-380 names and the ones EO-385, EO-387, EO-392, EO-395, EO-412, EO-421, EO-444, EO-468, EO-470, EO-477, EO-478, EO-479, EO-487, EO-488, EO-490, EO-493, EO-494, EO-534, EO-543, EO-578, EO-587, EO-597, EO-633, EO-700, EO-703, EO-716, EO-717 and the streaming chat added, each once", () => {
     // Pinned so that taking one off the list is a decision somebody
     // made in this file rather than a line that went missing.
     expect(CAPABILITIES.map((capability) => capability.name)).toEqual([
@@ -4206,6 +4357,7 @@ describe("the shared list", () => {
       "resume",
       "lost thread",
       "thread forking",
+      "the learning review's tools",
       "non-fatal warning",
       "interrupt with usage on escalation",
       "steering",

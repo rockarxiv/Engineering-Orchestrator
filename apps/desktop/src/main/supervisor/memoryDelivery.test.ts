@@ -431,10 +431,20 @@ describe("memory on a dispatch", () => {
       },
     };
 
-    /** The ways a run writes a note: the steps it takes, and the side calls that write it. */
+    /**
+     * The ways a run writes a note: the steps it takes, and the side calls
+     * that write it. Extraction writes for a backend that cannot fork the
+     * run's thread (EO-717), so that way's backend cannot.
+     */
     const WAYS = {
-      memory_note: { steps: [noteCall], sideCalls: undefined },
-      extraction: { steps: [], sideCalls: { provider: () => extracting, smallModel: async () => null } },
+      memory_note: { steps: [noteCall], sideCalls: undefined, forks: true },
+      extraction: { steps: [], sideCalls: { provider: () => extracting, smallModel: async () => null }, forks: false },
+    };
+    const forking = (fake: AgentProvider, forks: boolean): AgentProvider => {
+      if (forks) return fake;
+      const forkless: AgentProvider = { ...fake };
+      delete forkless.fork;
+      return forkless;
     };
 
     const deliveredOn = (run: { id: Uuid }) => listRunEvents(handle.db, run.id).filter((event) => event.type === MEMORY_DELIVERED_EVENT).map((event) => event.payload);
@@ -457,10 +467,10 @@ describe("memory on a dispatch", () => {
       item = updateItem(handle.db, item.id, { spec: { acceptance_criteria: ["It exports."] } });
     });
 
-    for (const [way, { steps, sideCalls }] of Object.entries(WAYS)) {
+    for (const [way, { steps, sideCalls, forks }] of Object.entries(WAYS)) {
       it(`does not come back to a later run on a new thread, written by ${way}`, async () => {
         const persons = remember(project, "A PERSON'S ENTRY.");
-        const { provider, starts } = startsRecorded(createFakeProvider({ steps, result: LONG_RESULT }));
+        const { provider, starts } = startsRecorded(forking(createFakeProvider({ steps, result: LONG_RESULT }), forks));
         const supervisor = supervisorWith(provider, sideCalls);
 
         await supervisor.runOnce();
@@ -479,7 +489,7 @@ describe("memory on a dispatch", () => {
         const parks = { toolCall: { name: "comment", args: { body: "@user need input", mentions: ["user"], blocking: true } } };
         // Fifty words of prose for extraction to be asked; a run that
         // called `memory_note` is not asked about at all.
-        const fake = createFakeProvider({ steps: [...steps, { output: "word ".repeat(60).trim() }, parks], result: LONG_RESULT });
+        const fake = forking(createFakeProvider({ steps: [...steps, { output: "word ".repeat(60).trim() }, parks], result: LONG_RESULT }), forks);
         const resumed: { threadId: string; message: string }[] = [];
         const provider: AgentProvider = {
           ...fake,
