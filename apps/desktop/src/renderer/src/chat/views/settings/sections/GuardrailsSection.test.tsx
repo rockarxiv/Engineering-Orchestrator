@@ -25,6 +25,8 @@ const GUARDS = {
   memoryDeliveryChars: 4_000,
   memoryScopeMaxEntries: 200,
   memoryScopeMaxChars: 40_000,
+  skillStaleAfterRuns: 20,
+  skillArchiveAfterRuns: 50,
   trialsFirst: true,
   trialRoundsPerDraft: 8,
   trialBudgetCentsPerDraft: null,
@@ -164,6 +166,20 @@ describe("the guardrails section", () => {
     fireEvent.change(entries, { target: { value: "150" } });
     fireEvent.blur(entries);
     await waitFor(() => expect(written(calls, "guards:set").at(-1)).toMatchObject({ memoryScopeMaxEntries: 150, memoryScopeMaxChars: 40_000 }));
+  });
+
+  it("shows when an agent's unused skill goes stale and is archived, and saves a change (EO-720)", async () => {
+    const { calls } = renderWith(<GuardrailsSection />);
+    const guardrails = await screen.findByRole("region", { name: "Guardrails" });
+
+    const stale = await within(guardrails).findByLabelText("Runs without a load before a skill is stale");
+    const archive = within(guardrails).getByLabelText("Runs without a load before a skill is archived");
+    expect(stale).toHaveValue(20);
+    expect(archive).toHaveValue(50);
+    expect(within(guardrails).getByText(/Skills a person wrote, and locked skills, are never archived by EO/)).toBeInTheDocument();
+    fireEvent.change(archive, { target: { value: "80" } });
+    fireEvent.blur(archive);
+    await waitFor(() => expect(written(calls, "guards:set").at(-1)).toMatchObject({ skillStaleAfterRuns: 20, skillArchiveAfterRuns: 80 }));
   });
 
   it("says a default applies to the daily budget and what clearing it costs (EO-211)", async () => {

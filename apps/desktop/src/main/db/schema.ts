@@ -2212,7 +2212,8 @@ export const runEvents = sqliteTable(
     // entry's uses are counted from. `idx_run_events_skills_delivered`
     // and `idx_run_events_skill_loaded` (EO-715, migration 0161) are the
     // same for skills: the rows a skill's deliveries and loads are
-    // counted from. `idx_run_events_model` (EO-541,
+    // counted from; `idx_run_events_skills_settled` (EO-720, migration
+    // 0162) the runs that have finished with what they were given. `idx_run_events_model` (EO-541,
     // migration 0133) is partial too: the `thread_started` and `usage`
     // rows a run's model is read from.
   ],

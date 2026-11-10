@@ -199,6 +199,18 @@ export function GuardrailsSection() {
             </div>
           </NotedField>
 
+          {/* EO-720: counted in runs, not days, so an idle project ages nothing. */}
+          <NotedField note="An agent-written skill that is given to this many runs in a row without one of them loading it is marked stale, and then archived — delivered to nobody, with a note on the project's thread. A load starts the count again. Skills a person wrote, and locked skills, are never archived by EO.">
+            <div className="grid max-w-[28rem] grid-cols-2 gap-3">
+              <Field label="Runs without a load before a skill is stale">
+                <DraftInput type="number" min={1} {...field(value.skillStaleAfterRuns, (raw) => ({ skillStaleAfterRuns: atLeastOne(raw) }))} />
+              </Field>
+              <Field label="Runs without a load before a skill is archived">
+                <DraftInput type="number" min={1} {...field(value.skillArchiveAfterRuns, (raw) => ({ skillArchiveAfterRuns: atLeastOne(raw) }))} />
+              </Field>
+            </div>
+          </NotedField>
+
           {/* EO-184: on by default, and the note says what turning it off costs. */}
           <NotedField note="Only when somebody answers in their own words instead of choosing one of the answers on offer. Off, the step simply runs again and asks again.">
             <Checkbox

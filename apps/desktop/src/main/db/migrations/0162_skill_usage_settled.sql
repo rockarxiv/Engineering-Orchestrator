@@ -1,0 +1,13 @@
+-- Which runs have finished with the skills they were given (EO-720). The
+-- supervisor appends one `skills_settled` run event when a run that was
+-- given skills ends, after every `skill_loaded` it could write, and a
+-- skill's stretch of runs without a load counts only those runs: a run
+-- still going, or one whose transcript is still arriving at the
+-- organisation's record a page at a time, may yet load it. Runs recorded
+-- before the event existed are settled by the installation that ran them
+-- when it next reconciles, not here: only it can say their transcripts are
+-- whole. Partial, like
+-- `idx_run_events_skills_delivered` (0161), and by run, which is what the
+-- count joins on. An index only: no row of `run_events` is written,
+-- changed or removed (invariant 3).
+CREATE INDEX `idx_run_events_skills_settled` ON `run_events` (`run_id`) WHERE `type` = 'skills_settled';

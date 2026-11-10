@@ -1329,6 +1329,20 @@ export const GuardConfigSchema = z.object({
    */
   memoryScopeMaxChars: z.number().int().positive().max(1_000_000),
   /**
+   * How many runs in a row an agent-written, unlocked skill may be given
+   * without one loading it before it is shown as stale (EO-720,
+   * ARCHITECTURE.md §13.3). Counted in runs, not days, since its last
+   * load or restore. 20 by default; required for
+   * `watchRoundTripsPerItem`'s reason.
+   */
+  skillStaleAfterRuns: z.number().int().positive().max(10_000),
+  /**
+   * How many such runs before EO archives it, and it is delivered to
+   * nobody (EO-720). 50 by default. A person's skill and a locked one are
+   * never archived by EO, whatever their counts.
+   */
+  skillArchiveAfterRuns: z.number().int().positive().max(10_000),
+  /**
    * Whether trial items are offered a slot ahead of live work while the
    * conversation testing their draft is open (EO-582, ARCHITECTURE.md,
    * "Trial pipelines").

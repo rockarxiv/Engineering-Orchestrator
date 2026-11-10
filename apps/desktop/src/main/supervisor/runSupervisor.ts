@@ -48,9 +48,11 @@ import {
   MEMORY_USED_EVENT,
   SKILL_LOADED_EVENT,
   SKILLS_DELIVERED_EVENT,
+  SKILLS_SETTLED_EVENT,
   type SkillLoadAgentEvent,
   type SkillLoadedEvent,
   type SkillsDeliveredEvent,
+  type SkillsSettledEvent,
   type SkillsOfferedEvent,
   MEMORY_EXTRACTED_EVENT,
   LEARNING_REVIEW_EVENT,
@@ -72,6 +74,8 @@ import {
   DEFAULT_MEMORY_DELIVERY_CHARS,
   DEFAULT_MEMORY_SCOPE_MAX_CHARS,
   DEFAULT_MEMORY_SCOPE_MAX_ENTRIES,
+  DEFAULT_SKILL_ARCHIVE_AFTER_RUNS,
+  DEFAULT_SKILL_STALE_AFTER_RUNS,
   type MemoryReadScope,
   actionAnswerSummary,
   actionSchemaName,
@@ -222,6 +226,7 @@ import {
   memoryDeliveredToRun,
   getSkill,
   skillsLoadedByRun,
+  ownRunsToSettle,
 } from "../db/repos/index.js";
 import { budgetRefusal, occurrenceOverBudget, pauseForBudget } from "../jobs/budget.js";
 import { readPolicy } from "../policy/policy.js";
@@ -278,6 +283,7 @@ import { runSubject } from "../modules/runName.js";
 import { createSideCallSlots } from "../sideCalls/slots.js";
 import { endAllProcessTrees } from "../process/processTree.js";
 import { createMemoryConsolidator, type MemoryConsolidatorOptions } from "../memory/consolidator.js";
+import { archiveReachOf, archiveUnusedSkills } from "../skills/archival.js";
 import { currentWatch, markCheckInFlight, ownerMention, recordQuietCheck, waitingLine, watchArrival, watchHold, watchRoundTrips, WATCH_ROUTED_REASON, WATCH_VERIFICATION_FAILED_REASON } from "./watches.js";
 import { agentMentionChain } from "./escalation.js";
 
@@ -897,6 +903,12 @@ export interface GuardConfig {
   memoryScopeMaxEntries: number;
   memoryScopeMaxChars: number;
   /**
+   * How many runs in a row an agent's unlocked skill may be given without
+   * a load before it is stale, and before EO archives it (EO-720).
+   */
+  skillStaleAfterRuns: number;
+  skillArchiveAfterRuns: number;
+  /**
    * Whether trial items whose conversation is still testing a draft are
    * offered a slot before live work (EO-582). The order only.
    */
@@ -927,6 +939,8 @@ export const DEFAULT_GUARDS: GuardConfig = {
   memoryDeliveryChars: DEFAULT_MEMORY_DELIVERY_CHARS,
   memoryScopeMaxEntries: DEFAULT_MEMORY_SCOPE_MAX_ENTRIES,
   memoryScopeMaxChars: DEFAULT_MEMORY_SCOPE_MAX_CHARS,
+  skillStaleAfterRuns: DEFAULT_SKILL_STALE_AFTER_RUNS,
+  skillArchiveAfterRuns: DEFAULT_SKILL_ARCHIVE_AFTER_RUNS,
   trialsFirst: true,
 };
 
@@ -2801,6 +2815,42 @@ export function createRunSupervisor(
     }
   }
 
+  /**
+   * EO's pass over the agent skills nobody loads (EO-720), after a run on
+   * a project: those within the project's reach given `skillArchiveAfterRuns`
+   * runs in a row without a load are archived, and its thread is told.
+   * The guardrails are read now, so a change to them takes effect here.
+   *
+   * For a project the organisation's record holds, a desktop archives
+   * only its own global skills: the project's are the record's, which
+   * runs its pass when this run's settled transcript reaches it
+   * (`serveApply`) — an archive in this replica would be undone by the
+   * record's next copy. The note goes through the record, onto the
+   * project's one thread. What the pass could not do it says there
+   * itself, or leaves for the next pass (`archival.ts`).
+   */
+  async function archiveAfterRun(item: Item): Promise<void> {
+    if (shuttingDown) return;
+    settleOwnSkillUsage();
+    const projectId = (getItem(db, item.id) ?? item).projectId;
+    if (projectId === null) return;
+
+    try {
+      const guards = readGuards();
+      await archiveUnusedSkills({
+        db,
+        projectId,
+        reach: archiveReachOf(db, projectId, runsWhere === "server"),
+        ageing: { staleAfterRuns: guards.skillStaleAfterRuns, archiveAfterRuns: guards.skillArchiveAfterRuns },
+        projectThread: (id) => record.projectThread(id),
+        postComment: (comment) => record.postComment(comment),
+        now,
+      });
+    } catch (error) {
+      console.warn(`[eo] the pass archiving unused agent skills failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
   /** The review turn on a fork of the run's thread, read to its end or its time limit. A fork that cannot be opened is `fell_back`. */
   async function reviewOnFork(run: Run, item: Item, agent: Agent, scopes: readonly MemoryScopeInfo[]): Promise<LearningReviewOutcome> {
     const backend = runsOn(agent, item).provider;
@@ -4077,6 +4127,53 @@ export function createRunSupervisor(
     buffer.append(runId, SKILL_LOADED_EVENT, loaded);
   }
 
+  /**
+   * Closes a run's skill usage (EO-720): one `skills_settled` event, after
+   * every `skill_loaded` this run could write, for a run that was given
+   * any. Only a settled run counts towards a skill's stretch without a
+   * load, and the organisation's record runs its archival pass when one
+   * arrives — by then every load of the run has, since a transcript
+   * reaches it in order. Through the run's buffer where it still has one,
+   * for `recordSent`'s reason.
+   */
+  function settleSkillUsage(runId: Uuid): void {
+    const given = runSkills.get(runId);
+    if (given === undefined || given.bySlug.size === 0) return;
+    const settled: SkillsSettledEvent = { type: SKILLS_SETTLED_EVENT };
+    try {
+      const buffer = activeEventBuffers.get(runId);
+      if (buffer) {
+        buffer.append(runId, SKILLS_SETTLED_EVENT, settled);
+        buffer.flush();
+      } else {
+        record.appendRunEvent(runId, SKILLS_SETTLED_EVENT, settled);
+      }
+    } catch (error) {
+      console.warn(`[eo] the end of run ${runId}'s skill usage could not be recorded: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  /**
+   * Settles every run this installation ran and finished that has not
+   * settled (EO-720, `ownRunsToSettle`): those recorded before
+   * `skills_settled` existed, and those whose process died before
+   * `settleSkillUsage` could write it. Not a run being driven now — its
+   * own end settles it. On reconciling, so an upgraded installation counts
+   * its earlier runs at once, and before each archival pass. The events
+   * reach the record like any other line of the run.
+   */
+  function settleOwnSkillUsage(): void {
+    try {
+      for (const runId of ownRunsToSettle(db)) {
+        if (drivenRuns.has(runId)) continue;
+        const settled: SkillsSettledEvent = { type: SKILLS_SETTLED_EVENT };
+        record.appendRunEvent(runId, SKILLS_SETTLED_EVENT, settled);
+      }
+    } catch (error) {
+      console.warn(`[eo] runs that ended without settling their skill usage could not be settled: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
   async function processStream(
     stream: InterruptibleStream<AgentEvent>,
     ctx: {
@@ -5098,6 +5195,7 @@ export function createRunSupervisor(
         closeAbandonedRun(run.id, item.id);
         lastKnownThreadIds.delete(run.id);
         runActivity.delete(run.id);
+        settleSkillUsage(run.id);
         runSkills.delete(run.id);
         capturedRuns.delete(run.id);
       }
@@ -5107,6 +5205,8 @@ export function createRunSupervisor(
       // learning review on a fork of the run's thread, or the extraction
       // it falls back to (EO-717).
       await reviewAfterRun(run.id, item, agent);
+      // The run moved the counts of the skills it was given (EO-720).
+      await archiveAfterRun(item);
     } finally {
       drivenRuns.delete(run.id);
       // A run with no lease gives its slot back here, not in a release:
@@ -9096,6 +9196,10 @@ export function createRunSupervisor(
     // Awaiting it would put a git operation on the path between a person
     // pressing Resume and the first agent moving.
     void releaseStale();
+
+    // The runs that ended with skills given and no settled event — from
+    // before the event existed, or orphaned just above (EO-720).
+    settleOwnSkillUsage();
 
     return summary;
   }
