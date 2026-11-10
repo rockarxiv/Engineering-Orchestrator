@@ -226,6 +226,7 @@ import {
   memoryDeliveredToRun,
   getSkill,
   skillsLoadedByRun,
+  ownRunsToSettle,
 } from "../db/repos/index.js";
 import { budgetRefusal, occurrenceOverBudget, pauseForBudget } from "../jobs/budget.js";
 import { readPolicy } from "../policy/policy.js";
@@ -2830,6 +2831,7 @@ export function createRunSupervisor(
    */
   async function archiveAfterRun(item: Item): Promise<void> {
     if (shuttingDown) return;
+    settleOwnSkillUsage();
     const projectId = (getItem(db, item.id) ?? item).projectId;
     if (projectId === null) return;
 
@@ -4148,6 +4150,27 @@ export function createRunSupervisor(
       }
     } catch (error) {
       console.warn(`[eo] the end of run ${runId}'s skill usage could not be recorded: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  /**
+   * Settles every run this installation ran and finished that has not
+   * settled (EO-720, `ownRunsToSettle`): those recorded before
+   * `skills_settled` existed, and those whose process died before
+   * `settleSkillUsage` could write it. Not a run being driven now — its
+   * own end settles it. On reconciling, so an upgraded installation counts
+   * its earlier runs at once, and before each archival pass. The events
+   * reach the record like any other line of the run.
+   */
+  function settleOwnSkillUsage(): void {
+    try {
+      for (const runId of ownRunsToSettle(db)) {
+        if (drivenRuns.has(runId)) continue;
+        const settled: SkillsSettledEvent = { type: SKILLS_SETTLED_EVENT };
+        record.appendRunEvent(runId, SKILLS_SETTLED_EVENT, settled);
+      }
+    } catch (error) {
+      console.warn(`[eo] runs that ended without settling their skill usage could not be settled: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
 
@@ -9173,6 +9196,10 @@ export function createRunSupervisor(
     // Awaiting it would put a git operation on the path between a person
     // pressing Resume and the first agent moving.
     void releaseStale();
+
+    // The runs that ended with skills given and no settled event — from
+    // before the event existed, or orphaned just above (EO-720).
+    settleOwnSkillUsage();
 
     return summary;
   }

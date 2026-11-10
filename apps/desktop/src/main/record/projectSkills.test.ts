@@ -525,8 +525,9 @@ describe("an agent's skill nobody loads, on a project the record holds (EO-720)"
     // second — while two settled runs without a load bring the count to the line.
     const before = newRun("succeeded");
     await page(before, item.id, 1, [SKILLS_DELIVERED_EVENT, SKILLS_SETTLED_EVENT], skillId);
+    // Ended days ago — a desktop reconnecting after a long time away — and no less incomplete for it.
     const split = newRun("succeeded");
-    recordDb.db.run(sql`update runs set ended_at = ${Date.now()} where id = ${split}`);
+    recordDb.db.run(sql`update runs set ended_at = ${Date.now() - 3 * 24 * 60 * 60 * 1000} where id = ${split}`);
     await page(split, item.id, 1, [SKILLS_DELIVERED_EVENT], skillId);
     const after = newRun("succeeded");
     await page(after, item.id, 1, [SKILLS_DELIVERED_EVENT, SKILLS_SETTLED_EVENT], skillId);

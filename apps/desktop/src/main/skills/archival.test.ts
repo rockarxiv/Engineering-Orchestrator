@@ -14,7 +14,7 @@ import {
   saveSkill,
   setSkillLocked,
 } from "../db/repos/index.js";
-import { SKILL_SETTLE_GRACE_MS, skillUsageById, usageOfSkill } from "../db/repos/skillUsageRepo.js";
+import { skillUsageById, usageOfSkill } from "../db/repos/skillUsageRepo.js";
 import { createTestItem, openMigratedTestDb } from "../db/testHelpers.js";
 import { findProjectThread, openProjectThread } from "../projects/projectThread.js";
 import { markReplica } from "../db/recordRole.js";
@@ -115,14 +115,14 @@ describe("archiving unused agent skills", () => {
     expect((await pass()).archived).toEqual([]);
   });
 
-  it("stops waiting on a finished run that never settled once its grace has passed", async () => {
+  it("waits on a finished run that never settled however long ago it ended, until it settles", async () => {
     const id = skill("release", "agent");
     runs(5, [id]);
-    unsettled([id], "succeeded");
+    const late = unsettled([id], "succeeded");
+    handle.db.run(sql`update runs set ended_at = 1 where id = ${late}`);
     expect((await pass()).archived).toEqual([]);
-    const later = Date.now() + SKILL_SETTLE_GRACE_MS + 1;
-    const result = await archiveUnusedSkills({ db: handle.db, projectId, reach: "all", ageing, projectThread: (project) => Promise.resolve(openProjectThread(handle.db, project)), now: () => later });
-    expect(result.archived.map((archived) => archived.id)).toEqual([id]);
+    appendRunEvent(handle.db, late, SKILLS_SETTLED_EVENT, { type: SKILLS_SETTLED_EVENT });
+    expect((await pass()).archived.map((archived) => archived.id)).toEqual([id]);
   });
 
   it("archives only the global skills where the project's are another installation's to archive", async () => {

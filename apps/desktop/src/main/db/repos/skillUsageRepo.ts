@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { NO_SKILL_USAGE, SKILL_LOADED_EVENT, SKILLS_DELIVERED_EVENT, SKILLS_SETTLED_EVENT, type SkillUsage } from "@eo/core";
+import { NO_SKILL_USAGE, SKILL_LOADED_EVENT, SKILLS_DELIVERED_EVENT, SKILLS_SETTLED_EVENT, type SkillUsage, type Uuid } from "@eo/core";
 import type { Db } from "../client.js";
 import { runEvents, runs, skillVersions } from "../schema.js";
 
@@ -92,23 +92,16 @@ export function skillDeliveriesQuery() {
 }
 
 /**
- * How long after a run ended its transcript may still be arriving at the
- * organisation's record without its `skills_settled` (EO-720): a desktop
- * sends one a page at a time, and a run's load may be on a page still to
- * come. Past it, a run with no settled event is taken never to have one —
- * it ended before EO wrote them, or its process died before it could —
- * and no longer holds anything back.
+ * The skills a run that has not settled was given (EO-720). Such a run may
+ * yet load any of them — it is still going, or its transcript is still
+ * reaching this database a page at a time — so none of them is archived
+ * meanwhile, whatever the settled runs say. Released only by the run's own
+ * `skills_settled`, never by time: the installation that ran it writes
+ * one for every run it finished (`ownRunsToSettle`), so a run recorded
+ * before the event existed, or one whose process died, settles too once
+ * its whole transcript is known to be there.
  */
-export const SKILL_SETTLE_GRACE_MS = 24 * 60 * 60 * 1000;
-
-/**
- * The skills a run that may yet load them was given (EO-720): a run that
- * has not settled, and whose row says it is still queued, running or
- * waiting on a person, or ended less than `SKILL_SETTLE_GRACE_MS` ago —
- * its transcript, loads included, may still be on its way. None of them
- * is archived meanwhile, whatever the settled runs say.
- */
-export function skillsGivenToRunsInFlight(db: Db, now: number = Date.now()): Set<string> {
+export function skillsGivenToRunsInFlight(db: Db): Set<string> {
   const rows = db.all<{ id: string }>(sql`
     with deliveries as materialized (
       select run_id, payload from ${runEvents} where type = ${sql.raw(`'${SKILLS_DELIVERED_EVENT}'`)}
@@ -118,12 +111,38 @@ export function skillsGivenToRunsInFlight(db: Db, now: number = Date.now()): Set
     )
     select distinct given.value as "id"
     from deliveries d
-    join ${runs} r on r.id = d.run_id
     join json_each(d.payload, '$.skillIds') given
     where d.run_id not in (select run_id from settled)
-      and (r.status in ('queued', 'running', 'awaiting_input') or coalesce(r.ended_at, r.started_at) > ${now - SKILL_SETTLE_GRACE_MS})
   `);
   return new Set(rows.map((row) => row.id));
+}
+
+/**
+ * The runs this installation ran and finished that were given skills and
+ * have not settled (EO-720): ones that ended before `skills_settled`
+ * existed, and ones whose process died before it could write one. Its own
+ * lines carry no device id, and it holds every line of its own runs, so
+ * their transcripts are complete here; a transcript mirrored from another
+ * machine (`appendSyncedRunEvents` gives each line its device) is never
+ * taken to be, and is that machine's to settle. Finished is a status no
+ * further turn of the run writes under.
+ */
+export function ownRunsToSettle(db: Db): Uuid[] {
+  const rows = db.all<{ id: string }>(sql`
+    with deliveries as materialized (
+      select run_id, device_id from ${runEvents} where type = ${sql.raw(`'${SKILLS_DELIVERED_EVENT}'`)}
+    ),
+    settled as materialized (
+      select run_id from ${runEvents} where type = ${sql.raw(`'${SKILLS_SETTLED_EVENT}'`)}
+    )
+    select distinct d.run_id as "id"
+    from deliveries d
+    join ${runs} r on r.id = d.run_id
+    where d.device_id is null
+      and r.status in ('succeeded', 'failed', 'cancelled', 'orphaned', 'awaiting_input')
+      and d.run_id not in (select run_id from settled)
+  `);
+  return rows.map((row) => row.id as Uuid);
 }
 
 /**

@@ -14,7 +14,8 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { DbHandle } from "../db/client.js";
 import { setAgentAttachment } from "../db/repos/agentAttachmentsRepo.js";
 import { listAgents } from "../db/repos/agentsRepo.js";
-import { createProject, listCommentsForItem, listRunEvents, listRunsForItem, listSkillVersions } from "../db/repos/index.js";
+import { appendRunEvent, createProject, createRun, listCommentsForItem, listRunEvents, listRunsForItem, listSkillVersions, ownRunsToSettle } from "../db/repos/index.js";
+import { skillUsageById, usageOfSkill } from "../db/repos/skillUsageRepo.js";
 import { getSkill, saveSkill } from "../db/repos/skillsRepo.js";
 import { findProjectThread } from "../projects/projectThread.js";
 import { createTestItem, openMigratedTestDb } from "../db/testHelpers.js";
@@ -207,5 +208,48 @@ describe("archiving unused agent skills after a dispatch", () => {
     const notes = listCommentsForItem(handle.db, findProjectThread(handle.db, project.id)!.id);
     expect(notes).toHaveLength(1);
     expect(notes[0]!.body).toContain("`release`");
+  });
+
+  /** An installation upgraded with runs recorded before `skills_settled` existed: they count, once settled on reconciling. */
+  it("counts the runs recorded before settling existed, deliveries and loads, so an upgrade keeps a skill's stretch", async () => {
+    const project = createProject(handle.db, { name: "Shop", keyPrefix: "SHOP" });
+    const item = createTestItem(handle.db, { type: "story", title: "On a project", stepId: "todo", projectId: project.id });
+    const implementer = listAgents(handle.db).find((agent) => agent.role === "implementer")!;
+    const saved = saveSkill(handle.db, SkillDraftSchema.parse({ name: "Release", description: "How to release.", body: "Tag it." }), Date.now(), { kind: "consolidation", consolidationId: "c-1" });
+    if (!saved.ok) throw new Error(saved.problems.join("\n"));
+    const skillId = saved.skill.id;
+    setAgentAttachment(handle.db, { agentId: implementer.id, kind: "skill", id: skillId, attached: true });
+
+    // Before the upgrade: one run that loaded it, then four that did not — none of them settled.
+    const legacy = (load: boolean) => {
+      const runId = createRun(handle.db, { itemId: item.id, agentId: implementer.id, action: "implement", status: "succeeded" }).id;
+      appendRunEvent(handle.db, runId, SKILLS_DELIVERED_EVENT, { type: SKILLS_DELIVERED_EVENT, skillIds: [skillId], slugs: ["release"] });
+      if (load) appendRunEvent(handle.db, runId, SKILL_LOADED_EVENT, { type: SKILL_LOADED_EVENT, skillId, slug: "release" });
+      return runId;
+    };
+    legacy(true);
+    for (let index = 0; index < 4; index++) legacy(false);
+    expect(usageOfSkill(skillUsageById(handle.db), skillId)).toMatchObject({ runsDelivered: 5, runsLoaded: 1, deliveriesSinceLoad: 0 });
+
+    const fake = createFakeProvider({ result: validImplementResult });
+    const provider: AgentProvider = {
+      ...fake,
+      async *start(opts) {
+        yield { type: "skills_delivered", slugs: ["release"] };
+        yield* fake.start(opts);
+      },
+    };
+    const supervisor = createRunSupervisor({ db: handle.db, provider, limits: LIMITS, agentWriteBridge: writes.agentWriteBridge, guards: { skillStaleAfterRuns: 2, skillArchiveAfterRuns: 5 } });
+    writes.serve(supervisor);
+    await supervisor.reconcile();
+
+    // Settled on reconciling: their deliveries and their load count as they did.
+    expect(ownRunsToSettle(handle.db)).toEqual([]);
+    expect(usageOfSkill(skillUsageById(handle.db), skillId)).toMatchObject({ runsDelivered: 5, runsLoaded: 1, deliveriesSinceLoad: 4 });
+    expect(getSkill(handle.db, skillId)!.archivedAt).toBeNull();
+
+    // The fifth run in a row without a load archives it.
+    await supervisor.runOnce();
+    expect(getSkill(handle.db, skillId)!.archivedAt).not.toBeNull();
   });
 });

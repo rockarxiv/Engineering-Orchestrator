@@ -29,10 +29,10 @@ import type { ProjectThreadAnswer } from "../projects/projectThread.js";
  * workspaces' skills only for a project it holds itself — never a
  * record-held project's, which the record's next copy would bring back.
  *
- * Only settled runs age a skill (`skillDeliveriesQuery`), and a skill a
- * run that may yet load it was given — one still going, or one whose
+ * Only settled runs age a skill (`skillDeliveriesQuery`), and a skill
+ * given to a run that has not settled — one still going, or one whose
  * transcript is still arriving — is not archived meanwhile
- * (`skillsGivenToRunsInFlight`).
+ * (`skillsGivenToRunsInFlight`), however long that takes.
  *
  * The archives and the one note naming them are written in one
  * transaction: a note that could not be written leaves every skill as it
@@ -92,9 +92,9 @@ export type ArchiveUnusedSkillsResult =
   | { archived: []; noteId: string | null; problem: string };
 
 /** The live skills of this project's reach that are due to be archived now. */
-function dueSkills(db: Db, projectId: Uuid, reach: ArchiveReach, ageing: SkillAgeing, now: number): Skill[] {
+function dueSkills(db: Db, projectId: Uuid, reach: ArchiveReach, ageing: SkillAgeing): Skill[] {
   const usage = skillUsageById(db);
-  const inFlight = skillsGivenToRunsInFlight(db, now);
+  const inFlight = skillsGivenToRunsInFlight(db);
   return listSkills(db).filter((skill) => {
     if (inFlight.has(skill.id) || !skillDueForArchive(skill, usageOfSkill(usage, skill.id), ageing)) return false;
     const owner = skillOwner(db, skill.id)?.projectId ?? null;
@@ -109,7 +109,7 @@ function refusalToldKey(projectId: Uuid): string {
 
 export async function archiveUnusedSkills(input: ArchiveUnusedSkillsInput): Promise<ArchiveUnusedSkillsResult> {
   const { db, projectId, reach, ageing } = input;
-  if (dueSkills(db, projectId, reach, ageing, (input.now ?? Date.now)()).length === 0) return { archived: [], noteId: null };
+  if (dueSkills(db, projectId, reach, ageing).length === 0) return { archived: [], noteId: null };
 
   let thread: ProjectThreadAnswer;
   try {
@@ -125,7 +125,7 @@ export async function archiveUnusedSkills(input: ArchiveUnusedSkillsInput): Prom
   // Asked again after the await, and inside the transaction that writes:
   // a person may have loaded, restored, locked or archived one meanwhile.
   const result = db.transaction((): ArchiveUnusedSkillsResult => {
-    const due = dueSkills(db, projectId, reach, ageing, now());
+    const due = dueSkills(db, projectId, reach, ageing);
     if (due.length === 0) return { archived: [], noteId: null };
 
     const lock = sectionLockFor(db, "skills:archive");

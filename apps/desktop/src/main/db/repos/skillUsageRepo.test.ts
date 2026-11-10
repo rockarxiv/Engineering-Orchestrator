@@ -3,8 +3,8 @@ import { sql } from "drizzle-orm";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DbHandle } from "../client.js";
 import { createTestItem, openMigratedTestDb } from "../testHelpers.js";
-import { SKILL_SETTLE_GRACE_MS, skillDeliveriesQuery, skillLoadsQuery, skillsGivenToRunsInFlight, skillsLoadedByRun, skillUsageById, usageOfSkill } from "./skillUsageRepo.js";
-import { appendRunEvent, archiveSkill, createRun, listSkillVersions, restoreSkillVersion, saveSkill } from "./index.js";
+import { ownRunsToSettle, skillDeliveriesQuery, skillLoadsQuery, skillsGivenToRunsInFlight, skillsLoadedByRun, skillUsageById, usageOfSkill } from "./skillUsageRepo.js";
+import { appendRunEvent, appendSyncedRunEvents, archiveSkill, createRun, listSkillVersions, restoreSkillVersion, saveSkill } from "./index.js";
 
 /** How each skill was given to runs and loaded by them, counted from run_events (EO-715). */
 describe("skill usage by id", () => {
@@ -89,20 +89,30 @@ describe("skill usage by id", () => {
     expect(usageOfSkill(skillUsageById(handle.db), id)).toMatchObject({ runsDelivered: 3, deliveriesSinceLoad: 1 });
   });
 
-  it("counts a run in the stretch only once it has settled, and holds back the skills of one that may yet load them (EO-720)", () => {
+  it("counts a run in the stretch only once it has settled, and holds back the skills of an unsettled run however old (EO-720)", () => {
     const [one, two] = [newRun(), newRun()];
     at(1_000, one, SKILLS_DELIVERED_EVENT, delivered(["a"]));
     at(2_000, two, SKILLS_DELIVERED_EVENT, delivered(["a"]));
     settle(2_500, one);
     expect(usageOfSkill(skillUsageById(handle.db), "a")).toMatchObject({ runsDelivered: 2, deliveriesSinceLoad: 1 });
-    // `two` is succeeded with no end time and no settled event: nothing says it may still be arriving.
-    expect([...skillsGivenToRunsInFlight(handle.db, 3_000)]).toEqual([]);
-    handle.db.run(sql`update runs set ended_at = 2_900 where id = ${two}`);
-    expect([...skillsGivenToRunsInFlight(handle.db, 3_000)]).toEqual(["a"]);
-    expect([...skillsGivenToRunsInFlight(handle.db, 2_900 + SKILL_SETTLE_GRACE_MS + 1)]).toEqual([]);
+    // Finished long ago and never settled: still held back, since nothing says its transcript is all here.
+    handle.db.run(sql`update runs set ended_at = 1 where id = ${two}`);
+    expect([...skillsGivenToRunsInFlight(handle.db)]).toEqual(["a"]);
     settle(3_000, two);
     expect(usageOfSkill(skillUsageById(handle.db), "a").deliveriesSinceLoad).toBe(2);
-    expect([...skillsGivenToRunsInFlight(handle.db, 3_000)]).toEqual([]);
+    expect([...skillsGivenToRunsInFlight(handle.db)]).toEqual([]);
+  });
+
+  it("names this installation's own finished runs that have not settled, and never a run still going or one mirrored from another machine (EO-720)", () => {
+    const [legacy, going, settled, mirrored] = [newRun(), newRun(), newRun(), newRun()];
+    at(1_000, legacy, SKILLS_DELIVERED_EVENT, delivered(["a"]));
+    at(1_100, legacy, SKILL_LOADED_EVENT, loaded("a"));
+    handle.db.run(sql`update runs set status = 'running' where id = ${going}`);
+    at(1_200, going, SKILLS_DELIVERED_EVENT, delivered(["a"]));
+    at(1_300, settled, SKILLS_DELIVERED_EVENT, delivered(["a"]));
+    settle(1_400, settled);
+    appendSyncedRunEvents(handle.db, mirrored, "laptop", [{ seq: 0, ts: 1_500, type: SKILLS_DELIVERED_EVENT, payload: delivered(["a"]) }]);
+    expect(ownRunsToSettle(handle.db)).toEqual([legacy]);
   });
 
   it("stores no count: the skills table has no usage column", () => {
