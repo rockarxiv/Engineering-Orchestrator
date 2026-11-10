@@ -1866,6 +1866,31 @@ export const skills = sqliteTable("skills", {
 ]);
 
 /**
+ * A copy of a skill from the organisation's record that a person's lock
+ * kept out (EO-714) — a published skill whose slug a locked skill here
+ * holds, or the record's newer copy of a skill a person locked here.
+ *
+ * Held rather than dropped: it is written the moment the lock no longer
+ * stands in its way (`releaseHeldSkillCopies`, on an unlock and on every
+ * pull), and the person is told once, on a project thread, what is held
+ * and what to do (`told_at`). One row per skill: a newer copy replaces
+ * the one held.
+ */
+export const heldSkillCopies = sqliteTable("held_skill_copies", {
+  /** The arriving skill's id. */
+  skillId: text("skill_id").primaryKey(),
+  /** `Skill`, as the record sent it. */
+  copy: text("copy", { mode: "json" }).notNull(),
+  /** The project the record gave it, for a record-held project's skill; null for a published section's, whose project its scope says. */
+  projectId: text("project_id"),
+  /** The sentence saying why it was held and what lets it in — the comment's body. */
+  problem: text("problem").notNull(),
+  heldAt: integer("held_at").notNull(),
+  /** When a person was told, or null while no thread could be found to tell them on. */
+  toldAt: integer("told_at"),
+});
+
+/**
  * Every write to a skill, as the skill stood after it (EO-714).
  *
  * Append-only, as `run_events` is: a row is never updated or deleted

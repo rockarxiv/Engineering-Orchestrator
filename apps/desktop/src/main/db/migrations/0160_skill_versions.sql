@@ -41,3 +41,15 @@ SELECT
 	NULL,
 	`s`.`updated_at`
 FROM `skills` AS `s`;
+--> statement-breakpoint
+-- A copy of a skill from the organisation's record that a person's lock
+-- kept out (EO-714): held here rather than dropped, written as soon as
+-- the lock is lifted, and told to the person once on a project thread.
+CREATE TABLE `held_skill_copies` (
+	`skill_id` text PRIMARY KEY NOT NULL,
+	`copy` text NOT NULL,
+	`project_id` text,
+	`problem` text NOT NULL,
+	`held_at` integer NOT NULL,
+	`told_at` integer
+);

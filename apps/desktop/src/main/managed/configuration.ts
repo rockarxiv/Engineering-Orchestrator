@@ -4,7 +4,7 @@ import { getAgentAttachments, replaceReplicaAttachments } from "../db/repos/agen
 import { listAgents, revisionOf, takesRecordCopy, updateAgent, upsertReplicaAgent } from "../db/repos/agentsRepo.js";
 import { listModules, upsertReplicaModule } from "../db/repos/modulesRepo.js";
 import { listModuleTests, replaceReplicaModuleTests } from "../db/repos/moduleTestsRepo.js";
-import { listSkills, upsertReplicaSkill } from "../db/repos/skillsRepo.js";
+import { holdSkillCopy, listSkills, upsertReplicaSkill } from "../db/repos/skillsRepo.js";
 
 /**
  * What a publish carries, and what a device does with it (EO-329,
@@ -155,12 +155,14 @@ export function applySectionDocument(db: Db, document: SectionDocument | null): 
   let written = 0;
 
   for (const skill of document.skills) {
-    // A skill a person locked here is not archived to make room for one
-    // of the same slug (EO-714): that one is not taken, and the log says
-    // why, as a held template update's closing does.
+    // A lock a person set here keeps the organisation's copy out (EO-714):
+    // a newer copy of the skill they locked, or one whose slug their
+    // locked skill holds. Held rather than dropped — written once the lock
+    // is lifted, and told to the person on a project thread by the drain
+    // (`tellHeldSkillCopies`).
     const taken = upsertReplicaSkill(db, skill);
     if (!taken.ok) {
-      console.log(`[eo] ${taken.problem}`);
+      holdSkillCopy(db, skill, undefined, taken.problem);
       continue;
     }
     written += 1;

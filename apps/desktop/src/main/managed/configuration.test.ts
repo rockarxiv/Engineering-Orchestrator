@@ -6,6 +6,7 @@ import { openMigratedTestDb } from "../db/testHelpers.js";
 import { addModuleTests, createAgent, deleteAgent, deleteModuleTest, getAgent, getModule, getSkill, getSkillBySlug, listModuleTests, saveModule, saveSkill, setSkillLocked } from "../db/repos/index.js";
 import { listAgentDetails } from "../ipc/configCommands.js";
 import { applySectionDocument, sectionDocument } from "./configuration.js";
+import { listHeldSkillCopies, releaseHeldSkillCopies } from "../db/repos/skillsRepo.js";
 
 /**
  * A deleted agent, published (EO-350).
@@ -238,5 +239,14 @@ describe("publishing a skill over a person's locked one", () => {
     expect(getSkill(replica.db, mine.skill.id)).toEqual(before);
     expect(getSkillBySlug(replica.db, "house-style")?.body).toBe("Ours.");
     expect(getSkillBySlug(replica.db, "release-notes")).toBeDefined();
+    // Held rather than dropped, and written once the person unlocks theirs and renames it.
+    const theirs = listHeldSkillCopies(replica.db);
+    expect(theirs.map((held) => [held.skill.slug, held.skill.body])).toEqual([["house-style", "Theirs."]]);
+    expect(theirs[0]?.problem).toContain("a person locked");
+    setSkillLocked(replica.db, mine.skill.id, false);
+    saveSkill(replica.db, { ...draft, id: mine.skill.id, slug: "our-house-style" });
+    expect(releaseHeldSkillCopies(replica.db)).toHaveLength(1);
+    expect(getSkillBySlug(replica.db, "house-style")?.body).toBe("Theirs.");
+    expect(getSkill(replica.db, mine.skill.id)?.body).toBe("Ours.");
   });
 });

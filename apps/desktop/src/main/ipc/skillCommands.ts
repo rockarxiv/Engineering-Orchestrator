@@ -1,6 +1,7 @@
 import { skillAuthorFromActingAgent, type IpcPayload, type IpcResponse, type SkillScope, type Uuid } from "@eo/core";
 import type { Db } from "../db/client.js";
 import { archiveSkill, getProject, getSkill, getWorkspace, listSkills, listSkillVersions, restoreSkillVersion, saveSkill, setSkillEnabled, setSkillLocked } from "../db/repos/index.js";
+import { releaseHeldSkillCopies } from "../db/repos/skillsRepo.js";
 
 /**
  * The skill catalogue, over IPC (EO-105).
@@ -41,6 +42,8 @@ export function saveSkillCommand(db: Db, input: IpcPayload<"skills:save">): IpcR
   const { actingAgentId, ...draft } = input;
   const result = saveSkill(db, draft, Date.now(), skillAuthorFromActingAgent(actingAgentId));
   if (!result.ok) return { saved: false, skill: null, problem: result.problems.join("\n") };
+  // A rename can free the slug a held copy from the record wanted (EO-714).
+  releaseHeldSkillCopies(db);
   return { saved: true, skill: result.skill, problem: null };
 }
 
@@ -74,6 +77,9 @@ export function archiveSkillCommand(db: Db, input: IpcPayload<"skills:archive">)
 /** Locks or unlocks a skill (EO-714) — a person's act, which every door but the administrative MCP host's carries. */
 export function setSkillLockedCommand(db: Db, input: IpcPayload<"skills:setLocked">): IpcResponse<"skills:setLocked"> {
   const result = setSkillLocked(db, input.id, input.locked);
+  // Unlocked, it no longer keeps out what the record sent while it was
+  // locked (EO-714): that is written now, not on the next pull.
+  if (result.ok && !input.locked) releaseHeldSkillCopies(db);
   return result.ok ? { skill: result.skill, problem: null } : { skill: null, problem: result.problem };
 }
 

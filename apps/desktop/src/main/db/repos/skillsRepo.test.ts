@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { SKILL_LOCKED_PROBLEM, SkillDraftSchema, uuidv7, type RecordSkill, type SkillAuthor, type SkillDraft, type SkillScope } from "@eo/core";
+import { SKILL_LOCKED_PROBLEM, SkillDraftSchema, uuidv7, type RecordSkill, type Skill, type SkillAuthor, type SkillDraft, type SkillScope } from "@eo/core";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { DbHandle } from "../client.js";
 import { openMigratedTestDb } from "../testHelpers.js";
@@ -7,8 +7,11 @@ import {
   archiveSkill,
   getSkill,
   getSkillBySlug,
+  holdSkillCopy,
+  listHeldSkillCopies,
   listSkills,
   listSkillVersions,
+  releaseHeldSkillCopies,
   readProjectSkills,
   restoreSkillVersion,
   saveSkill,
@@ -550,6 +553,94 @@ describe("skill versions", () => {
     expect(getSkill(handle.db, local.id)).toEqual(before);
     expect(listSkillVersions(handle.db, local.id)).toHaveLength(versions);
     expect(getSkill(handle.db, "019fb8c6-0000-7000-8000-00000000ffff")).toBeUndefined();
+  });
+
+  /** The record's copy of a skill a person locked here (EO-714). */
+  function recordCopy(overrides: Partial<Skill> = {}): Skill {
+    return {
+      id: "019fb8c6-0000-7000-8000-00000000abcd",
+      slug: "record-skill",
+      name: "Record skill",
+      description: "From the record.",
+      body: "One.",
+      files: [],
+      disableModelInvocation: false,
+      enabled: true,
+      scope: { kind: "global" },
+      createdAt: 1,
+      updatedAt: 1,
+      archivedAt: null,
+      createdBy: "person",
+      locked: false,
+      ...overrides,
+    };
+  }
+
+  it("refuses the record's newer copy of a skill a person locked here, leaving the row and its history as they were", () => {
+    upsertReplicaSkill(handle.db, recordCopy());
+    expect(setSkillLocked(handle.db, recordCopy().id, true, 5).ok).toBe(true);
+    const before = getSkill(handle.db, recordCopy().id);
+    const history = listSkillVersions(handle.db, recordCopy().id);
+
+    const taken = upsertReplicaSkill(handle.db, recordCopy({ body: "Two.", updatedAt: 2 }));
+
+    expect(taken.ok).toBe(false);
+    if (taken.ok) return;
+    expect(taken.problem).toContain("a person locked it here");
+    expect(getSkill(handle.db, recordCopy().id)).toEqual(before);
+    expect(listSkillVersions(handle.db, recordCopy().id)).toEqual(history);
+  });
+
+  it("takes a copy that arrives locked itself, which the record could only have let a person write", () => {
+    upsertReplicaSkill(handle.db, recordCopy({ locked: true }));
+
+    expect(upsertReplicaSkill(handle.db, recordCopy({ locked: true, body: "A person's edit.", updatedAt: 2 })).ok).toBe(true);
+    expect(getSkill(handle.db, recordCopy().id)?.body).toBe("A person's edit.");
+  });
+
+  it("refuses a moved copy over a skill a person locked on the record, writing nothing", () => {
+    const moved: RecordSkill = { ...recordCopy({ scope: { kind: "project", projectId: "proj-moved" } }), projectId: "proj-moved" };
+    writeMovedSkill(handle.db, moved, "proj-moved");
+    expect(setSkillLocked(handle.db, moved.id, true, 5).ok).toBe(true);
+    const before = getSkill(handle.db, moved.id);
+    const history = listSkillVersions(handle.db, moved.id);
+
+    const written = writeMovedSkill(handle.db, { ...moved, body: "Two.", updatedAt: 2 }, "proj-moved");
+
+    expect(written.ok).toBe(false);
+    if (written.ok) return;
+    expect(written.problem).toContain("a person locked the skill");
+    expect(getSkill(handle.db, moved.id)).toEqual(before);
+    expect(listSkillVersions(handle.db, moved.id)).toEqual(history);
+  });
+
+  it("holds a refused copy and writes it once the lock is lifted", () => {
+    upsertReplicaSkill(handle.db, recordCopy());
+    setSkillLocked(handle.db, recordCopy().id, true, 5);
+    const newer = recordCopy({ body: "Two.", updatedAt: 6 });
+    const taken = upsertReplicaSkill(handle.db, newer);
+    if (taken.ok) throw new Error("not refused");
+    holdSkillCopy(handle.db, newer, undefined, taken.problem, 7);
+    // An older copy read out of order does not replace the one held.
+    holdSkillCopy(handle.db, recordCopy({ body: "Stale.", updatedAt: 2 }), undefined, taken.problem, 8);
+
+    expect(releaseHeldSkillCopies(handle.db)).toEqual([]);
+    expect(listHeldSkillCopies(handle.db).map((held) => held.skill.body)).toEqual(["Two."]);
+
+    setSkillLocked(handle.db, recordCopy().id, false, 9);
+    expect(releaseHeldSkillCopies(handle.db)).toEqual([recordCopy().id]);
+    expect(getSkill(handle.db, recordCopy().id)?.body).toBe("Two.");
+    expect(listHeldSkillCopies(handle.db)).toEqual([]);
+  });
+
+  it("lets a held copy go once a newer one has been written", () => {
+    upsertReplicaSkill(handle.db, recordCopy());
+    holdSkillCopy(handle.db, recordCopy({ body: "Held.", updatedAt: 2 }), undefined, "held", 7);
+    upsertReplicaSkill(handle.db, recordCopy({ body: "Newest.", updatedAt: 3 }));
+
+    expect(listHeldSkillCopies(handle.db)).toEqual([]);
+    expect(releaseHeldSkillCopies(handle.db)).toEqual([]);
+    expect(getSkill(handle.db, recordCopy().id)?.body).toBe("Newest.");
   });
 
   it("says who archived a skill the organisation's catalogue made stand aside", () => {

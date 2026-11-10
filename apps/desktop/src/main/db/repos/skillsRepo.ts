@@ -6,6 +6,7 @@ import {
   PERSON_SKILL_AUTHOR,
   readSkillDraft,
   SKILL_LOCKED_PROBLEM,
+  SkillSchema,
   SkillVersionActionSchema,
   uuidv7,
   type RecordCursor,
@@ -20,7 +21,7 @@ import {
   type Uuid,
 } from "@eo/core";
 import type { Db } from "../client.js";
-import { projects, skills, skillVersions, workspaces } from "../schema.js";
+import { heldSkillCopies, projects, skills, skillVersions, workspaces } from "../schema.js";
 
 /**
  * The skill catalogue's rows (EO-105).
@@ -223,7 +224,7 @@ export type SkillWriteResult = { ok: true; skill: Skill } | { ok: false; problem
 
 /** Why this author may not write to this skill, or null (EO-714): a lock refuses every author that is not a person. */
 function lockRefusal(skill: Skill, author: SkillAuthor): string | null {
-  return skill.locked && isAgentSkillAuthor(author) ? SKILL_LOCKED_PROBLEM : null;
+  return skill.locked && author.kind !== "person" ? SKILL_LOCKED_PROBLEM : null;
 }
 
 /**
@@ -390,20 +391,23 @@ export function upsertReplicaSkill(db: Db, skill: Skill, projectId?: string | nu
 export type ReplicaSkillResult = { ok: true } | { ok: false; problem: string };
 
 function upsertReplicaSkillIn(db: Db, skill: Skill, projectId?: string | null): ReplicaSkillResult {
+  const here = getSkill(db, skill.id);
+  const locked = copyLockRefusal(here, skill);
+  if (locked !== null) return { ok: false, problem: locked };
   const blocker = slugHolder(db, skill.id, skill.slug);
   if (blocker?.locked === true) {
     return {
       ok: false,
       problem:
-        `The organisation's skill "${skill.slug}" was not taken onto this machine: a person locked this machine's own skill of that slug, ` +
-        "so it was not archived to make room and nothing was written. Unlock or rename it, and the organisation's next publication brings the skill.",
+        `EO did not take your organisation's skill "${skill.slug}" onto this machine: a person locked this machine's own skill "${skill.slug}", ` +
+        "so it was not archived to make room, and nothing was written. The organisation's skill is held here, and arrives as soon as you " +
+        "unlock or rename yours on the Skills screen.",
     };
   }
   if (blocker !== undefined) standAside(db, blocker.id, skill.slug);
   // The record's word where it gave one (EO-513) — a moved workspace's
   // skill names a workspace this machine may not have — and otherwise
   // what this machine's own workspaces say.
-  const here = getSkill(db, skill.id);
   const project =
     projectId !== undefined
       ? projectId
@@ -448,7 +452,92 @@ function upsertReplicaSkillIn(db: Db, skill: Skill, projectId?: string | null): 
     })
     .run();
   versionCopy(db, here, skill.id);
+  // Whatever was held for it is spent: this copy is the newest (EO-714).
+  db.delete(heldSkillCopies).where(eq(heldSkillCopies.skillId, skill.id)).run();
   return { ok: true };
+}
+
+/**
+ * Why a copy from the record may not be written over this row, or null
+ * (EO-714). The record is not a person, so a lock set here refuses its
+ * copy as it refuses any author that is not one.
+ *
+ * Except a copy that arrives locked itself. The record holds the same
+ * lock and refuses every author but a person under it, so what it sends
+ * locked was written by a person — refusing it would keep a person's own
+ * edit, made on another machine, off this one for good.
+ */
+function copyLockRefusal(here: Skill | undefined, copy: Skill): string | null {
+  if (here === undefined || !here.locked || copy.locked) return null;
+  return (
+    `EO did not write your organisation's newer copy of the skill "${here.slug}" over this machine's: a person locked it here, ` +
+    "so nothing was written. The newer copy is held here, and replaces yours as soon as you unlock it on the Skills screen."
+  );
+}
+
+// ── Copies a lock kept out, held rather than dropped (EO-714) ──────
+
+/** A held copy, as the person is told of it. */
+export interface HeldSkillCopy {
+  skill: Skill;
+  /** The project the record gave it, or null for a published section's. */
+  projectId: string | null;
+  problem: string;
+  heldAt: number;
+  toldAt: number | null;
+}
+
+function toHeld(row: typeof heldSkillCopies.$inferSelect): HeldSkillCopy | undefined {
+  const skill = SkillSchema.safeParse(row.copy);
+  return skill.success ? { skill: skill.data, projectId: row.projectId, problem: row.problem, heldAt: row.heldAt, toldAt: row.toldAt } : undefined;
+}
+
+/**
+ * Keeps a copy the lock refused, to write once the lock no longer stands
+ * in its way. A newer copy of the same skill replaces the one held; an
+ * older one, read out of order, does not.
+ */
+export function holdSkillCopy(db: Db, skill: Skill, projectId: string | undefined, problem: string, at: number = Date.now()): void {
+  const held = db.select().from(heldSkillCopies).where(eq(heldSkillCopies.skillId, skill.id)).get();
+  const current = held === undefined ? undefined : toHeld(held);
+  if (current !== undefined && current.skill.updatedAt > skill.updatedAt) return;
+  db.insert(heldSkillCopies)
+    .values({ skillId: skill.id, copy: skill, projectId: projectId ?? null, problem, heldAt: at, toldAt: null })
+    .onConflictDoUpdate({ target: heldSkillCopies.skillId, set: { copy: skill, projectId: projectId ?? null, problem } })
+    .run();
+}
+
+/** Every held copy, oldest first. */
+export function listHeldSkillCopies(db: Db): HeldSkillCopy[] {
+  return db
+    .select()
+    .from(heldSkillCopies)
+    .orderBy(asc(heldSkillCopies.heldAt), asc(heldSkillCopies.skillId))
+    .all()
+    .flatMap((row) => toHeld(row) ?? []);
+}
+
+/** Says a person has been told of this held copy, so they are told once. */
+export function markHeldSkillCopyTold(db: Db, skillId: string, at: number = Date.now()): void {
+  db.update(heldSkillCopies).set({ toldAt: at }).where(eq(heldSkillCopies.skillId, skillId)).run();
+}
+
+/**
+ * Writes every held copy the lock no longer keeps out — after a person
+ * unlocks or renames their skill, and on every pull — and answers with
+ * the ids written.
+ *
+ * Not compared with the row's `updated_at`: unlocking stamps it, so a
+ * copy held before the unlock would always look older than the row it
+ * was held for. A newer copy from the record needs no comparison either
+ * — writing one lets the held copy go (`upsertReplicaSkillIn`).
+ */
+export function releaseHeldSkillCopies(db: Db): string[] {
+  const released: string[] = [];
+  for (const held of listHeldSkillCopies(db)) {
+    if (upsertReplicaSkill(db, held.skill, held.projectId ?? undefined).ok) released.push(held.skill.id);
+  }
+  return released;
 }
 
 /**
@@ -563,8 +652,14 @@ export function skillOwner(db: Db, id: string): { projectId: string | null; scop
  * a move is not allowed to retire it. The caller refuses a clash by name
  * before this is reached.
  */
-export function writeMovedSkill(db: Db, skill: RecordSkill, projectId: string): void {
+export function writeMovedSkill(db: Db, skill: RecordSkill, projectId: string): ReplicaSkillResult {
   const before = getSkill(db, skill.id);
+  // A person's lock on the record refuses the moved copy, as it refuses
+  // any author that is not a person (EO-714) — said by the caller, which
+  // ends the move with the sentence.
+  if (before !== undefined && before.locked && !skill.locked) {
+    return { ok: false, problem: `a person locked the skill "${skill.slug}" on this record, so the moved copy was not written over it; unlock it there and move the project again` };
+  }
   const columns = {
     slug: skill.slug,
     name: skill.name,
@@ -588,6 +683,7 @@ export function writeMovedSkill(db: Db, skill: RecordSkill, projectId: string): 
     .onConflictDoUpdate({ target: skills.id, set: columns })
     .run();
   versionCopy(db, before, skill.id);
+  return { ok: true };
 }
 
 /**
