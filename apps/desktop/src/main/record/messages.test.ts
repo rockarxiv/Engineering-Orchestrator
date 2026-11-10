@@ -10,6 +10,7 @@ import { issueDevice } from "../db/repos/devicesRepo.js";
 import { createPerson } from "../db/repos/peopleRepo.js";
 import {
   createProject,
+  getItem,
   getJob,
   getMessage,
   getProject,
@@ -18,6 +19,7 @@ import {
   listOccurrences,
   listOpenMessages,
   markMessageHandled,
+  pendingCommands,
   recordOccurrence,
   sweepHandledMessages,
 } from "../db/repos/index.js";
@@ -36,7 +38,7 @@ import { JOB_MESSAGE_SOURCE } from "../jobs/ownerMessage.js";
 import { fakePlatform } from "../testing/platform.js";
 import { createDeviceRecord, type DeviceRecord } from "./deviceRecord.js";
 import { createLocalRecord } from "./localRecord.js";
-import { serveChanges, serveHandleMessage, serveMessages, serveSendMessage, type ServeRecordContext } from "./serveRecord.js";
+import { serveApply, serveChanges, serveHandleMessage, serveMessages, serveSendMessage, type ServeRecordContext } from "./serveRecord.js";
 import type { RecordTransport } from "./syncStatus.js";
 
 /**
@@ -109,6 +111,8 @@ function desktop(personId: Uuid, name: string): Desktop {
       switch (channel) {
         case "record:changes":
           return { ok: true, data: serveChanges(serving, payload as IpcPayload<"record:changes">) as never };
+        case "record:apply":
+          return { ok: true, data: (await serveApply(serving, { ...(payload as IpcPayload<"record:apply">), deviceId })) as never };
         case "record:sendMessage":
           return { ok: true, data: serveSendMessage(serving, { ...(payload as IpcPayload<"record:sendMessage">), deviceId }) as never };
         case "record:handleMessage":
@@ -486,21 +490,74 @@ describe("a job's guard about a project the organisation's record holds", () => 
     expect(listOccurrences(recordDb.db, job.id as Uuid).map((occurrence) => occurrence.status)).toEqual(["fired", "skipped"]);
   });
 
-  it("is sent through the record when a desktop's run trips the job's budget, to the owner", async () => {
+  /** An item the job filed, on the record and pulled down to every desktop. */
+  async function filedItem(job: Job) {
+    const item = createTestItem(recordDb.db, { type: "story", title: "Monday report for 2026-06-01", stepId: "todo", projectId: job.projectId as Uuid });
+    const occurrence = recordOccurrence(recordDb.db, { jobId: job.id as Uuid, dueAt: MONDAY_0800, status: "fired", firedAt: MONDAY_0800, itemId: item.id });
+    await syncAll();
+    const there = getItem(annaDesk.handle.db, item.id);
+    if (there === undefined) throw new Error("the item did not reach Anna's desktop");
+    return { item: there, occurrence };
+  }
+
+  it("is written on the record, to the owner, when a desktop's run trips the job's budget", async () => {
     const job = await carlsJob();
-    const occurrence = recordOccurrence(recordDb.db, { jobId: job.id as Uuid, dueAt: MONDAY_0800, status: "fired", firedAt: MONDAY_0800 });
-    const item = createTestItem(annaDesk.handle.db, { type: "story", title: "Monday report for 2026-06-01", stepId: "todo" });
+    const { item, occurrence } = await filedItem(job);
 
     // Anna's desktop ran the leased item and found it over budget.
-    await pauseForBudget(annaDesk.handle.db, { job, occurrence, budgetCents: 400, spentCents: 500 }, item, (input) => annaDesk.record.sendMessage(input));
+    pauseForBudget(annaDesk.handle.db, { job, occurrence, budgetCents: 400, spentCents: 500 }, item);
+    await annaDesk.record.sync();
 
     const written = onTheRecord();
     expect(written).toHaveLength(1);
-    expect(written[0]).toMatchObject({ recipientId: carlId, jobId: job.id, source: JOB_MESSAGE_SOURCE.budget });
+    expect(written[0]).toMatchObject({ recipientId: carlId, jobId: job.id, projectId: job.projectId, source: JOB_MESSAGE_SOURCE.budget });
     expect(written[0]?.body).toContain(`"Monday report" is paused`);
+    expect(written[0]?.body).toContain(item.key);
     // Carl's, not Anna's: nothing kept on the desktop that sent it.
     expect(heldOn(annaDesk)).toEqual([]);
     await carl.record.sync();
     expect(heldOn(carl)).toEqual([written[0]?.id]);
+  });
+
+  it("still reaches the owner when the record could not be reached at the trip, once it can", async () => {
+    const job = await carlsJob();
+    const { item, occurrence } = await filedItem(job);
+    annaDesk.online = false;
+
+    pauseForBudget(annaDesk.handle.db, { job, occurrence, budgetCents: 400, spentCents: 500 }, item);
+    await annaDesk.record.sync();
+
+    // Nothing on the record yet, and the message is not lost: it waits in
+    // the desktop's queue of commands for the record.
+    expect(onTheRecord()).toEqual([]);
+    expect(pendingCommands(annaDesk.handle.db).map((command) => command.kind)).toEqual(["sendMessage"]);
+
+    annaDesk.online = true;
+    await annaDesk.record.sync();
+    await annaDesk.record.sync();
+
+    const written = onTheRecord();
+    expect(written.map((message) => [message.recipientId, message.source])).toEqual([[carlId, JOB_MESSAGE_SOURCE.budget]]);
+    expect(pendingCommands(annaDesk.handle.db)).toEqual([]);
+    await carl.record.sync();
+    expect(listInbox(carl.handle.db).messages.map((message) => message.id)).toEqual([written[0]?.id]);
+  });
+
+  it("is written once, however many times a lost acknowledgement makes the desktop send it", async () => {
+    const job = await carlsJob();
+    const { item, occurrence } = await filedItem(job);
+    annaDesk.online = false;
+    pauseForBudget(annaDesk.handle.db, { job, occurrence, budgetCents: 400, spentCents: 500 }, item);
+    const queued = pendingCommands(annaDesk.handle.db).map((entry) => entry.command);
+
+    // The same command arriving twice, as it does when the first answer
+    // never got back to the desktop.
+    const deviceId = issueDevice(recordDb.db, { personId: annaId, name: "anna-replay", tokenHash: "hash-anna-replay", secretsKeyHash: null }).id;
+    const first = await serveApply(serving, { deviceId, commands: queued });
+    const second = await serveApply(serving, { deviceId, commands: queued });
+
+    expect(first.results.map((result) => result.applied)).toEqual([true]);
+    expect(second.results.map((result) => result.applied)).toEqual([true]);
+    expect(onTheRecord()).toHaveLength(1);
   });
 });

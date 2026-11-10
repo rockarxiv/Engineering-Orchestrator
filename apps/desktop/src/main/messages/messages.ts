@@ -60,7 +60,7 @@ export type MessageHandlingAnswer = { ok: true; message: Message } | { ok: false
  * instead (EO-729): a job's guards are the owner's to act on, as they
  * are on a desktop, and the owner is a person this record knows.
  */
-export function sendMessageToAdmins(db: Db, input: MessageSend, now: number = Date.now()): Message[] {
+export function sendMessageToAdmins(db: Db, input: MessageSend, now: number = Date.now(), firstId?: string): Message[] {
   const jobOwner = input.jobId == null ? undefined : getJob(db, input.jobId as Uuid)?.ownerId;
   const people = listPeople(db);
   const admins = people.filter((person) => person.isAdmin);
@@ -70,7 +70,9 @@ export function sendMessageToAdmins(db: Db, input: MessageSend, now: number = Da
       : admins.length > 0
         ? admins.map((person) => person.id)
         : [input.recipientId];
-  const sent = db.transaction(() => recipients.map((recipientId) => insertMessage(db, { ...input, recipientId }, now)));
+  // The first recipient's copy takes the id a queued command minted, so
+  // its replay can tell the message was already written (EO-729).
+  const sent = db.transaction(() => recipients.map((recipientId, index) => insertMessage(db, { ...input, recipientId }, now, index === 0 ? firstId : undefined)));
   emitPush("messages:changed", {});
   return sent;
 }

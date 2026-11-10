@@ -6305,9 +6305,7 @@ export function createRunSupervisor(
       if (alreadyRefused(item.id, initiationId)) return;
       // The pause first: it is what stops the next occurrence, and the
       // park below is what says so where this item's person is looking.
-      // Not awaited: the message goes through the record that holds the
-      // job's project, and the park below is what stops this dispatch.
-      void pauseForBudget(db, overBudget, item, (input) => record.sendMessage(input));
+      pauseForBudget(db, overBudget, item);
       refuseDispatch(item, agent, action, budgetRefusal(overBudget), initiationId, nextAttempt);
       return;
     }

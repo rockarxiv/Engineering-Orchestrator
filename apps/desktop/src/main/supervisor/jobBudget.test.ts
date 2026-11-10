@@ -129,7 +129,6 @@ describe("an occurrence whose item has spent the job's budget", () => {
     spend(filed, 60);
 
     await supervisor().runOnce();
-    await settled();
 
     const messages = messagesAboutJob(handle.db, report.id);
     expect(messages).toHaveLength(1);
@@ -150,7 +149,6 @@ describe("an occurrence whose item has spent the job's budget", () => {
     await supervisor().runOnce();
     await supervisor().runOnce();
     await supervisor().runOnce();
-    await settled();
 
     expect(listRunsForItem(handle.db, filed.id)).toHaveLength(2);
     expect(messagesAboutJob(handle.db, report.id)).toHaveLength(1);
@@ -205,8 +203,3 @@ describe("an occurrence whose item has spent the job's budget", () => {
     expect(getJob(handle.db, report.id as Uuid)?.pausedAt).toBeNull();
   });
 });
-
-/** Lets the budget's message, sent through the record and not awaited by the dispatch, land. */
-async function settled(): Promise<void> {
-  await new Promise((resolve) => setTimeout(resolve, 0));
-}

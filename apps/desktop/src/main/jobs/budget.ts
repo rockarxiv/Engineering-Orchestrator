@@ -1,7 +1,7 @@
 import type { Item, Job, JobOccurrence, JobPauseReason, Uuid } from "@eo/core";
 import type { Db } from "../db/client.js";
 import { getJob, listOccurrences, occurrenceForItem, setJobPaused, sumCostCentsForItem, sumCostCentsForItems } from "../db/repos/index.js";
-import { JOB_MESSAGE_SOURCE, messageJobOwnerThrough, type JobMessageSender } from "./ownerMessage.js";
+import { JOB_MESSAGE_SOURCE, messageJobOwnerAboutItem } from "./ownerMessage.js";
 
 /**
  * Per-job budgets, and pause (EO-307,
@@ -98,26 +98,32 @@ export function budgetRefusal(trip: JobBudgetTrip): string {
  * The job's owner is sent a message (EO-729): the guard is about the
  * job, which is no item, so it ends in a message to the person who must
  * act (invariant #8) — the item it parked carries its own comment.
- * `send` is the record's `sendMessage`, because this runs on whichever
- * desktop dispatched the item: a project the organisation's record holds
- * has its messages written there (EO-726), and any other here.
+ * This runs on whichever desktop dispatched the item, so a project the
+ * organisation's record holds has the message queued for the record,
+ * which writes it whenever it can be reached (`messageJobOwnerAboutItem`).
  */
-export function pauseForBudget(db: Db, trip: JobBudgetTrip, item: Item, send: JobMessageSender): Promise<void> {
-  if (trip.job.pausedAt !== null) return Promise.resolve();
+export function pauseForBudget(db: Db, trip: JobBudgetTrip, item: Item): void {
+  if (trip.job.pausedAt !== null) return;
   // Said here, where it is known (EO-308, ARCHITECTURE.md, "The inbox, the archive and jobs"). The
   // chip on the Jobs
   // list is drawn from it, and nothing downstream can work it out: a
   // job a person paused after an expensive occurrence has exactly the
   // same spend as this one.
-  pauseJob(db, trip.job.id as Uuid, Date.now(), "budget");
-  return messageJobOwnerThrough(
-    send,
-    trip.job,
-    `"${trip.job.name}" is paused: ${item.key} has spent ${trip.spentCents}¢ of the ${trip.budgetCents}¢ this job ` +
-      `allows one occurrence, so nothing more was dispatched for it. Resume the job when you have decided what to ` +
-      `do about the budget.`,
-    { source: JOB_MESSAGE_SOURCE.budget },
-  );
+  // In one transaction with the message, because the pause is what keeps
+  // this guard from firing again: a pause without its message would be a
+  // job stopped with nobody told.
+  db.transaction(() => {
+    pauseJob(db, trip.job.id as Uuid, Date.now(), "budget");
+    messageJobOwnerAboutItem(
+      db,
+      trip.job,
+      item.id as Uuid,
+      `"${trip.job.name}" is paused: ${item.key} has spent ${trip.spentCents}¢ of the ${trip.budgetCents}¢ this job ` +
+        `allows one occurrence, so nothing more was dispatched for it. Resume the job when you have decided what to ` +
+        `do about the budget.`,
+      { source: JOB_MESSAGE_SOURCE.budget },
+    );
+  });
 }
 
 /**

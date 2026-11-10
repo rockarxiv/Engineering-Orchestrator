@@ -43,10 +43,11 @@ function toDomain(row: Row): Message {
 }
 
 /** Writes one open message. Throws on a malformed one — a sender is EO's own code, so that is a programmer error. */
-export function insertMessage(db: Db, input: MessageSend, now: number = Date.now()): Message {
+/** `id` is minted here unless the sender minted it — a queued command's message, written once whatever the replays (EO-729). */
+export function insertMessage(db: Db, input: MessageSend, now: number = Date.now(), id: string = uuidv7()): Message {
   const parsed = MessageSendSchema.parse(input);
   const row: Row = {
-    id: uuidv7(),
+    id,
     recipientId: parsed.recipientId,
     projectId: parsed.projectId ?? null,
     jobId: parsed.jobId ?? null,

@@ -1,7 +1,9 @@
-import type { Job, Message, MessageSend } from "@eo/core";
+import { uuidv7, type Job, type Message, type MessageSend, type Uuid } from "@eo/core";
 import type { Db } from "../db/client.js";
+import { isReplica } from "../db/recordRole.js";
+import { enqueueCommand } from "../db/repos/recordCommandsRepo.js";
 import { signedInPersonId } from "../identity/viewer.js";
-import { sendMessage, type MessageSendAnswer } from "../messages/messages.js";
+import { sendMessage } from "../messages/messages.js";
 
 /**
  * What a job's guard says, and to whom (EO-729, ARCHITECTURE.md §7.1).
@@ -65,8 +67,8 @@ export function jobOwnerMessage(job: Job, body: string, message: JobMessage): Me
  * is written: a solo desktop or a project it kept, or the organisation's
  * record itself for one it holds — whose messages its recipients'
  * desktops pull (EO-726). The one guard that runs on a desktop about a
- * project the record holds, the budget trip, sends through the record
- * instead (`messageJobOwnerThrough`).
+ * project the record holds, the budget trip, queues its message for the
+ * record instead (`messageJobOwnerAboutItem`).
  *
  * Returns the message, because a guard that offers something has to say
  * *what* it offered: a skip records the offer's id on its occurrence.
@@ -76,23 +78,24 @@ export function messageJobOwner(db: Db, job: Job, body: string, message: JobMess
   return sendMessage(db, message.staysHere === true ? { ...send, recipientId: signedInPersonId(db), projectId: null } : send);
 }
 
-/** What `ItemRecord.sendMessage` is, for a caller that holds a record. */
-export type JobMessageSender = (input: MessageSend) => Promise<MessageSendAnswer>;
-
 /**
- * Sends a guard's message through the record that holds the job's
- * project (EO-726): the organisation's for a project it holds, this
- * database for any other.
+ * Sends a guard's message from the desktop that was about to dispatch an
+ * item the job filed — the budget trip, the one guard that runs there.
  *
- * Never rejects. A record that cannot be reached is said in the log —
- * the guard that calls this has already ended in a comment on the item
- * it stopped, so the work is not silently dropped (invariant 8).
+ * For an item this database holds, here at once. For one the
+ * organisation's record holds, the message is the record's to write
+ * (EO-726), so it is queued as a record command beside the item's other
+ * commands (`sendMessage`): written down now, sent by the drain whenever
+ * the record can be reached, and written there once under the id minted
+ * here, however many times a lost acknowledgement makes the drain send
+ * it. The guard pauses the job and does not fire again, so a message that
+ * a record out of reach refused would otherwise never reach anybody.
  */
-export async function messageJobOwnerThrough(send: JobMessageSender, job: Job, body: string, message: JobMessage): Promise<void> {
-  try {
-    const sent = await send(jobOwnerMessage(job, body, message));
-    if (!sent.ok) console.error(`[eo] the message about the job "${job.name}" was not sent: ${sent.problem}`);
-  } catch (error) {
-    console.error(`[eo] the message about the job "${job.name}" was not sent:`, error);
+export function messageJobOwnerAboutItem(db: Db, job: Job, itemId: Uuid, body: string, message: JobMessage): void {
+  if (!isReplica(db, itemId)) {
+    messageJobOwner(db, job, body, message);
+    return;
   }
+  const command = { kind: "sendMessage" as const, id: uuidv7(), itemId, messageId: uuidv7(), message: jobOwnerMessage(job, body, message) };
+  enqueueCommand(db, command, itemId, Date.now());
 }

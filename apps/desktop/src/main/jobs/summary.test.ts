@@ -10,7 +10,6 @@ import { catchUpJob } from "./catchUp.js";
 import { fireJob } from "./fire.js";
 import { createJob, updateJob } from "./jobs.js";
 import { jobSummary, nextRunAt, occurrenceRows } from "./summary.js";
-import { sendMessage } from "../messages/messages.js";
 
 /**
  * What the Jobs list and the Job page read off a job (EO-308,
@@ -179,7 +178,7 @@ describe("why a paused job is paused", () => {
 
     const trip = occurrenceOverBudget(handle.db, item.id)!;
     expect(trip).not.toBeNull();
-    void pauseForBudget(handle.db, trip, item, async (input) => ({ ok: true, messages: [sendMessage(handle.db, input)] }));
+    pauseForBudget(handle.db, trip, item);
 
     expect(getJob(handle.db, monday.id as Uuid)?.pausedReason).toBe("budget");
     expect(budgeted.pausedReason).toBeNull();

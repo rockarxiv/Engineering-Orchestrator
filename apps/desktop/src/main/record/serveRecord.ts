@@ -1349,6 +1349,17 @@ async function applyOne(context: ServeRecordContext, deviceId: string, command: 
       return ok;
     }
 
+    case "sendMessage": {
+      // A message a device owed a person about this item (EO-729): a
+      // job's budget trip. Written as any message about a project this
+      // record holds — to the job's owner, or else each admin — under
+      // the id the device minted, so a replay after a lost
+      // acknowledgement finds it written and writes nothing twice.
+      if (getMessage(db, command.messageId) !== undefined) return ok;
+      sendMessageToAdmins(db, command.message, Date.now(), command.messageId);
+      return ok;
+    }
+
     default:
       return refused("This record does not understand that command.");
   }
