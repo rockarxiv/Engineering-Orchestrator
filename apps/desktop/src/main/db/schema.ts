@@ -3216,17 +3216,18 @@ export const memoryConsolidations = sqliteTable(
  * One skill a memory consolidation proposed (EO-483, ARCHITECTURE.md,
  * "What an agent is given").
  *
- * Posted on the project's thread as the comment `comment_id` names,
- * offering Save and Discard; nothing is saved from it until a person
- * presses Save. A discarded row is kept so a later consolidation never
- * posts a proposal with its scope and slug again (EO-512), until a person
- * replies "Propose again" under it, which deletes it.
+ * Since EO-719 a row is a proposal the consolidation applied, `saved`
+ * from the start, with the notice it posted on the project's thread as
+ * `comment_id`. Rows from before then were posted offering Save and
+ * Discard: an `open` one is waiting on a press nothing acts on any more,
+ * and a `discarded` one still keeps a later consolidation from applying a
+ * proposal with its scope and slug (EO-512).
  */
 export const skillProposals = sqliteTable(
   "skill_proposals",
   {
     id: text("id").primaryKey(), // uuidv7, minted client-side
-    /** The consolidation that proposed it, whose id the entries Save retires are tagged with. */
+    /** The consolidation that proposed it, whose id the entries it moved into the skill are tagged with. */
     consolidationId: text("consolidation_id").notNull(),
     scopeKind: text("scope_kind").notNull(),
     scopeId: text("scope_id").notNull(),
@@ -3234,7 +3235,7 @@ export const skillProposals = sqliteTable(
     kind: text("kind").notNull(),
     /** An improvement's target, by the slug it was proposed against. */
     targetSlug: text("target_slug"),
-    /** That skill's id when it was posted, or null when it was gone. */
+    /** That skill's id when it was proposed, or null when it was gone. */
     targetSkillId: text("target_skill_id"),
     slug: text("slug").notNull(),
     name: text("name").notNull(),
@@ -3243,18 +3244,18 @@ export const skillProposals = sqliteTable(
     body: text("body").notNull(),
     evidenceEntryIds: text("evidence_entry_ids", { mode: "json" }).$type<string[]>().notNull().default([]),
     evidenceItemIds: text("evidence_item_ids", { mode: "json" }).$type<string[]>().notNull().default([]),
-    /** The entries that hold the evidence as the consolidation left them: what Save moves into the skill. */
+    /** The entries that hold the evidence as the consolidation left them: what applying it moves into the skill. */
     coveringEntryIds: text("covering_entry_ids", { mode: "json" }).$type<string[]>().notNull().default([]),
     /** `skillProposalFingerprint`: scope, slug and normalised description. */
     fingerprint: text("fingerprint").notNull(),
     /** `SkillProposalStatus`. */
     status: text("status").notNull(),
-    /** Why it was posted without Save — its slug was taken, or its target gone — or null. */
+    /** Before EO-719, why it was posted without Save — its slug was taken, or its target gone — or null. */
     unsaveable: text("unsaveable"),
     commentId: text("comment_id").references((): AnySQLiteColumn => comments.id, { onDelete: "set null" }),
-    /** The skill Save created or improved. */
+    /** The skill it created or improved. */
     skillId: text("skill_id"),
-    /** The entries Save retired as `moved_to_skill`. */
+    /** The entries it retired as `moved_to_skill`. */
     movedEntryIds: text("moved_entry_ids", { mode: "json" }).$type<string[]>().notNull().default([]),
     createdAt: integer("created_at").notNull(),
     decidedAt: integer("decided_at"),

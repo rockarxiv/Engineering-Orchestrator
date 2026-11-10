@@ -85,7 +85,6 @@ import {
 import { branchPrefix, setBranchPrefix } from "../packs/developer/workspace/branchPrefix.js";
 import { unansweredQuestions } from "../roles/clarificationQuestions.js";
 import { answerSkipOffer } from "../jobs/answer.js";
-import { answerSkillProposal } from "../memory/skillProposals.js";
 import { actingAgentFor, standInBody, withOnYourBehalfNote } from "../trials/onBehalf.js";
 import { agentStopAnswerRefusal, answerTrialStop } from "../trials/loop.js";
 import { decisionRefusal, dispatchBlocker } from "@eo/engine";
@@ -370,24 +369,10 @@ export async function postHumanComment(
     engine?.notifyStateChange();
   }
 
-  // Save or Discard on a skill a memory consolidation proposed (EO-483),
-  // or Propose again on one that was discarded (EO-512).
-  // The person's press is the whole gate: nothing of a proposal is saved
-  // or attached until this, and it answers in the thread either way. A
-  // reply the system agent posts over `eo_admin` arrives here too, as
-  // the person's, and is acted on deliberately — see `answerSkillProposal`
-  // (EO-514).
   // Keep going, publish anyway or discard, under a stop on testing a
   // draft (EO-586): the person's answer, read here because only here is it
   // known to be the person's — an agent's was refused above.
   if (standIn.agent === null) answerTrialStop(db, { ...(engine ? { engine } : {}), ...(attachmentStorage ? { attachmentStorage } : {}) }, comment);
-
-  const proposal = answerSkillProposal(db, comment);
-  if (proposal !== null) {
-    emitPush("items:changed", { itemId });
-    // The Skills screen, the agents' attachments and the memory panel.
-    if (proposal.outcome === "saved") emitPush("config:changed", {});
-  }
 
   // Check *after* posting: the reply is what the run is waiting for, so
   // it has to be in the thread before the agent reads it back.

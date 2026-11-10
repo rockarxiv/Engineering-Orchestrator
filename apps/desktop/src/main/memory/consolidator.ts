@@ -32,7 +32,6 @@ import {
   getWorkspace,
   lastRestoredAt,
   listAgents,
-  listDiscardedSkillProposals,
   listSkills,
   markConsolidationStuckNoticed,
   memoryScopeProjectId,
@@ -50,7 +49,7 @@ import type { ApplyConsolidationResult, ScopeTally } from "../db/repos/memoryCon
 import { openProjectThread, type ProjectThreadAnswer } from "../projects/projectThread.js";
 import { agentReasoningEffort } from "../providers/smallModels.js";
 import type { SideCaller, SideCallRequest } from "../sideCalls/sideCall.js";
-import { postSkillProposals, type ProposalFileStore } from "./skillProposals.js";
+import { applySkillProposals, discardedSkillProposals, type ProposalFileStore } from "./skillProposals.js";
 import {
   consolidationAnswerSchema,
   consolidationDue,
@@ -67,6 +66,7 @@ import {
   crossBatchMergeInput,
   MEMORY_CONSOLIDATE_SYSTEM,
   MEMORY_CROSS_BATCH_MERGE_SYSTEM,
+  EXISTING_SKILLS_MAX,
   MEMORY_PROPOSE_SKILLS_SYSTEM,
   peopleAloneOverCap,
   peopleOverCapNote,
@@ -259,7 +259,7 @@ interface Sequence {
    * The entries its consolidations wrote by folding two or more into one,
    * or by rewriting one that was (EO-575): what the skills proposed after
    * it may cite without saying whether only the procedure is in them, so
-   * Save leaves them in memory (`coveringEntries`).
+   * applying a skill leaves them in memory (`coveringEntries`).
    */
   folded: Set<string>;
   batches: number;
@@ -383,9 +383,9 @@ function scopeFacts(db: Db, scope: MemoryScope, workspacesElsewhere = false): { 
  */
 function existingSkills(db: Db, scope: MemoryScope): ExistingSkill[] {
   return listSkills(db).flatMap((skill) => {
-    if (skill.scope.kind === "global") return [{ slug: skill.slug, description: skill.description, scopeLabel: "global", body: skill.body }];
+    if (skill.scope.kind === "global") return [{ id: skill.id, slug: skill.slug, description: skill.description, scopeLabel: "global", body: skill.body }];
     const here = skill.scope.kind === "project" ? scope.kind === "project" && skill.scope.projectId === scope.id : scope.kind === "workspace" && skill.scope.workspaceId === scope.id;
-    return here ? [{ slug: skill.slug, description: skill.description, scopeLabel: `this ${scope.kind}`, body: skill.body }] : [];
+    return here ? [{ id: skill.id, slug: skill.slug, description: skill.description, scopeLabel: `this ${scope.kind}`, body: skill.body }] : [];
   });
 }
 
@@ -971,17 +971,18 @@ export function createMemoryConsolidator(options: MemoryConsolidatorOptions): Me
 
   /**
    * Skill proposals, asked for in a call of their own once a consolidation
-   * of the scope has succeeded (EO-483, EO-575), and posted under it.
+   * of the scope has succeeded (EO-483, EO-575), and applied under it
+   * (EO-719).
    *
    * The call is given the scope's agent-written entries as the
    * consolidation left them — never a person's — the skills a proposal may
    * improve, and every proposal a person discarded in the scope, and
    * answers with at most three proposals. The consolidation has done what
    * it was for by now and stays applied whatever happens here: a call that
-   * fails, or a proposal that cannot be posted, is a sentence added to its
-   * note and nothing posted, never its failure. An evidence entry the
-   * run's consolidations folded from several (`folded`) is one Save leaves
-   * in memory, since it may hold other facts. Not asked once EO is
+   * fails, or a proposal that cannot be applied, is a sentence added to its
+   * note, never its failure. An evidence entry the run's consolidations
+   * folded from several (`folded`) is one applying a skill leaves in
+   * memory, since it may hold other facts. Not asked once EO is
    * stopping or paused, nor for a project handed to a record meanwhile, nor
    * for a scope with no agent-written entry left to cite.
    */
@@ -1007,6 +1008,8 @@ export function createMemoryConsolidator(options: MemoryConsolidatorOptions): Me
     try {
       const entries = agentEntries(scope);
       if (entries.length === 0) return;
+      // What an improvement's target slug means is what the call was shown.
+      const shown = existingSkills(db, scope);
       const answer = await sideCallOf(consolidationId, controller, {
         schema: skillProposalsAnswerSchema(entries, {
           scope,
@@ -1017,8 +1020,8 @@ export function createMemoryConsolidator(options: MemoryConsolidatorOptions): Me
           scopeLabel: facts.label,
           scope,
           entries,
-          skills: existingSkills(db, scope),
-          discarded: listDiscardedSkillProposals(db, scope),
+          skills: shown,
+          discarded: discardedSkillProposals(db, scope),
           now: now(),
         }),
         projectId: facts.projectId,
@@ -1032,9 +1035,9 @@ export function createMemoryConsolidator(options: MemoryConsolidatorOptions): Me
       // handed to a record while the call ran is the record's to propose for.
       if (heldElsewhereNow(scope)) return;
       // Evidence names entries as the consolidation left them; one it
-      // folded from several may hold more than the procedure, and Save
+      // folded from several may hold more than the procedure, and applying it
       // leaves it in memory rather than lose what else it says.
-      const posted = await postSkillProposals({
+      const posted = await applySkillProposals({
         db,
         consolidationId,
         scope,
@@ -1042,6 +1045,9 @@ export function createMemoryConsolidator(options: MemoryConsolidatorOptions): Me
         projectId: facts.projectId,
         proposals: answer.value.skills,
         folded,
+        // Only those the call was shown: one past the cap, or made while it
+        // ran, is not a target its draft was written for.
+        shown: new Map(shown.slice(0, EXISTING_SKILLS_MAX).map((skill) => [skill.slug, skill.id])),
         projectThread,
         ...(options.store ? { store: options.store } : {}),
         now: now(),

@@ -67,7 +67,7 @@ export function memoryWhen(at: number): string {
 export function retiredReasonLabel(reason: MemoryRetirementReason | null): string {
   if (reason === "edited") return "Replaced by an edit";
   if (reason === "consolidated") return "Folded into a consolidation";
-  // Save on a skill a consolidation proposed (EO-483); restoring that
+  // A skill a consolidation proposed was applied (EO-483, EO-719); restoring that
   // consolidation puts it back.
   if (reason === "moved_to_skill") return "Moved into a skill";
   // An agent's note named it as the entry it corrects or repeats (EO-594).

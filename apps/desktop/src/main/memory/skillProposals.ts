@@ -1,22 +1,8 @@
-import {
-  renderSkillMarkdown,
-  SKILL_PROPOSAL_DISCARD,
-  SKILL_PROPOSAL_PROPOSE_AGAIN,
-  SKILL_PROPOSAL_SAVE,
-  skillProposalFingerprint,
-  type Comment,
-  type MemoryScope,
-  type SkillProposal,
-  type Skill,
-  type SkillScope,
-  type Uuid,
-} from "@eo/core";
+import { renderSkillMarkdown, skillProposalFingerprint, type MemoryScope, type Skill, type SkillAuthor, type SkillProposal, type SkillScope, type Uuid } from "@eo/core";
 import type { Db } from "../db/client.js";
 import {
   decideSkillProposal,
-  forgetDiscardedSkillProposals,
   getAgent,
-  getComment,
   getConsolidation,
   getItem,
   getMemory,
@@ -25,56 +11,62 @@ import {
   getSkill,
   getSkillBySlug,
   getWorkspace,
-  knownSkillProposal,
+  listDiscardedSkillProposals,
+  listSkills,
+  listSkillVersions,
   postComment,
   recordSkillProposal,
   retireMemory,
   saveSkill,
   setAgentAttachment,
-  skillProposalForComment,
+  skillProposalDiscarded,
   type CreateAttachmentRecord,
+  type DiscardedSkillProposal,
   type SkillProposalRecord,
 } from "../db/repos/index.js";
-import { projectMovedToTheRecord } from "../db/repos/projectsRepo.js";
 import { emitPush } from "../ipc/push.js";
 import { sectionLockFor } from "../managed/locks.js";
 import type { ProjectThreadAnswer } from "../projects/projectThread.js";
 import { unifiedDiff } from "../skills/unifiedDiff.js";
 
 /**
- * Memory consolidation proposes skills (EO-483, ARCHITECTURE.md, "What an
- * agent is given").
+ * Memory consolidation's skill proposals, applied (EO-483, EO-719,
+ * ARCHITECTURE.md, "Proposing skills").
  *
  * When a consolidation finds a procedure that keeps appearing in a
- * scope's memory, it may propose up to three skills. Each is posted here
- * on the project's thread as its own comment: what the skill is for, the
- * entries and items it was seen in, the SKILL.md draft as an attachment
- * (and, for an improvement, the diff against the skill as it is), and
- * two answers — Save and Discard. It mentions the person, so it is in
- * their inbox.
+ * scope's memory, its proposal call may answer with up to three skills.
+ * Each is applied here as it arrives, with no person's approval: a new
+ * one is created — `created_by` 'agent', in the proposal's scope, attached
+ * to the agents whose runs wrote the evidence — and an improvement writes
+ * a new version of its target. Every write is a `skill_versions` row
+ * authored by the consolidation, and the evidence entries are retired as
+ * `moved_to_skill` with its id, so restoring it brings them back.
  *
- * **Nothing is saved until a person presses Save.** A skill changes what
- * agents are dispatched with, and no step-owning agent may decide that
- * (invariant 11); the consolidation is a side call EO makes, and its
- * answer is a proposal and nothing more. The answer arrives the way
- * every answer to an offered option does — a reply on the thread, with
- * the option's text — and `answerSkillProposal` is what acts on it,
- * called on every human comment as `answerSkipOffer` is.
+ * Skills are instructions, which agents may write (invariant 11). What
+ * answers for one is its history, a person's lock and archiving it, so:
+ * a locked target refuses the write; and a person archiving a skill a
+ * consolidation created is the person discarding it — a later proposal
+ * with its scope and slug is not applied unless a person restores it.
+ *
+ * Each proposal, applied or not, is a notice on the project's thread:
+ * what was created or changed, or why nothing was, the evidence, and the
+ * draft (and, for an improvement, its diff). It asks nothing and offers
+ * no answer; nothing acts on a reply to it.
  */
 
-/** Where the files a proposal attaches are kept — `AttachmentStorage`, structurally, as the supervisor's `ArtifactStore` takes it. */
+/** Where the files a notice attaches are kept — `AttachmentStorage`, structurally, as the supervisor's `ArtifactStore` takes it. */
 export interface ProposalFileStore {
   storeImported(input: { name: string; mimeType?: string; data: Uint8Array }): Promise<Omit<CreateAttachmentRecord, "itemId" | "commentId">>;
   rollback?(records: Omit<CreateAttachmentRecord, "itemId" | "commentId">[]): Promise<void>;
 }
 
-export interface PostSkillProposalsInput {
+export interface ApplySkillProposalsInput {
   db: Db;
   consolidationId: string;
   scope: MemoryScope;
   /** What the scope is called — `the workspace "api"`. */
   scopeLabel: string;
-  /** The project whose thread they are posted on: the scope's own, or its workspace's. */
+  /** The project whose thread the notices are posted on: the scope's own, or its workspace's. */
   projectId: Uuid | null;
   proposals: readonly SkillProposal[];
   /**
@@ -82,18 +74,29 @@ export interface PostSkillProposalsInput {
    * folding two or more entries into one (EO-575), or by rewriting one
    * that was. Evidence names entries as those consolidations left them, so
    * an entry among these may hold the procedure together with whatever
-   * else was folded in; Save leaves it in memory (`coveringEntries`).
+   * else was folded in; applying a proposal leaves it in memory
+   * (`coveringEntries`).
    */
   folded: readonly string[];
+  /**
+   * The skills the proposal call was shown, slug to id, as they were when
+   * it was asked. An improvement names its target by slug; this is the
+   * skill that slug meant then, so one renamed while the call ran is
+   * refused as renamed rather than followed to whatever holds the slug now.
+   */
+  shown?: ReadonlyMap<string, string>;
   projectThread: (projectId: Uuid) => Promise<ProjectThreadAnswer>;
   store?: ProposalFileStore;
   now: number;
 }
 
-/** What became of each proposal: posted, or the sentence saying why not. */
-export interface PostedProposals {
-  posted: SkillProposalRecord[];
-  /** For the consolidation's own note: a proposal that was not posted, and why. */
+/** What became of each proposal. */
+export interface AppliedProposals {
+  /** The proposals applied, as recorded. */
+  applied: SkillProposalRecord[];
+  /** The proposals not applied, and why — each said in its notice too. */
+  refused: { slug: string; problem: string }[];
+  /** For the consolidation's own note: a proposal held back or not acted on, and why. */
   notes: string[];
 }
 
@@ -109,48 +112,102 @@ function sameScope(skill: SkillScope, scope: MemoryScope): boolean {
 }
 
 /**
- * Why a proposal cannot be saved as it stands, or null: a new skill's
- * slug already belongs to another skill — archived ones too, since the
- * slug is unique whatever a row's state — or an improvement's target is
- * not the skill it was posted against (`improvementTarget`). Asked when
- * it is posted, and again when Save is pressed.
+ * Whether a person discarded this skill: a consolidation created it, in
+ * this scope, and it is archived, by a person — or by the system agent,
+ * which acts with the person's authority. Restoring it makes it live, and
+ * so not discarded; archiving it again discards it again.
  */
-function whyUnsaveable(
-  db: Db,
-  proposal: { kind: "new" | "improvement"; slug: string; targetSlug: string | null; targetSkillId: string | null },
-  scope: MemoryScope,
-): string | null {
-  if (proposal.kind === "new") {
-    const taken = getSkillBySlug(db, proposal.slug);
-    if (!taken) return null;
-    return `The slug \`${proposal.slug}\` is already taken by ${taken.archivedAt === null ? "another skill" : "an archived skill"}, so this cannot be saved as a new skill.`;
-  }
-  const target = improvementTarget(db, proposal, scope);
-  return target.ok ? null : target.problem;
+function discardedByArchive(db: Db, skill: Skill, scope: MemoryScope): boolean {
+  if (skill.archivedAt === null || skill.createdBy !== "agent" || !sameScope(skill.scope, scope)) return false;
+  const versions = listSkillVersions(db, skill.id);
+  // Newest first: the create is the last of them.
+  const created = [...versions].reverse().find((version) => version.action === "create");
+  if (created?.author.kind !== "consolidation") return false;
+  const archived = versions.find((version) => version.action === "archive");
+  return archived?.author.kind === "person" || archived?.author.kind === "agent";
 }
 
 /**
- * The skill an improvement applies to: the one it was posted against,
- * by the id recorded then — never by its slug again. A slug is the one
- * thing about a skill a person can rename, and another skill may take
- * it up; the draft and diff a person read were for this row.
- *
- * So the row has to be there, live, still carry the slug the proposal
- * named, and be global or in the proposal's scope. A renamed target is
- * refused rather than followed: the draft was written for the skill as
- * it was named, and its frontmatter and diff say that name.
+ * What a scope's proposal call is told not to propose again (EO-512):
+ * every proposal a person discarded with the Discard answer proposals
+ * used to offer, and every skill a consolidation created in the scope
+ * that a person archived. One per slug, newest first.
  */
-function improvementTarget(
-  db: Db,
-  proposal: { slug: string; targetSlug: string | null; targetSkillId: string | null },
-  scope: MemoryScope,
-): { ok: true; skill: Skill } | { ok: false; problem: string } {
-  const named = proposal.targetSlug ?? proposal.slug;
-  const target = proposal.targetSkillId === null ? undefined : getSkill(db, proposal.targetSkillId);
-  if (!target || target.archivedAt !== null) return { ok: false, problem: `The skill it improves, \`${named}\`, no longer exists, so there is nothing to apply it to.` };
+export function discardedSkillProposals(db: Db, scope: MemoryScope): DiscardedSkillProposal[] {
+  const bySlug = new Map<string, DiscardedSkillProposal>();
+  const archived = listSkills(db, true)
+    .filter((skill) => discardedByArchive(db, skill, scope))
+    .sort((a, b) => (b.archivedAt ?? 0) - (a.archivedAt ?? 0));
+  for (const skill of archived) bySlug.set(skill.slug, { slug: skill.slug, description: skill.description });
+  for (const proposal of listDiscardedSkillProposals(db, scope)) if (!bySlug.has(proposal.slug)) bySlug.set(proposal.slug, proposal);
+  return [...bySlug.values()];
+}
+
+/**
+ * Why a proposal is held back without a notice, as the consolidation's
+ * note says it, or null: a person discarded its scope and slug — a new
+ * skill whose slug is a consolidation's skill a person archived, or any
+ * proposal whose slug a person discarded with the Discard answer
+ * proposals used to offer. Nothing is posted for it: the person has
+ * already said no, and a notice every consolidation would only say it
+ * again. An improvement to an archived skill is not held back here; it
+ * is refused with a notice saying why (`improvementTarget`).
+ */
+function heldBack(db: Db, scope: MemoryScope, proposal: SkillProposal): string | null {
+  if (proposal.kind === "new") {
+    const skill = getSkillBySlug(db, proposal.slug);
+    if (skill && discardedByArchive(db, skill, scope)) {
+      return `The skill proposal \`${proposal.slug}\` was not applied: a person archived the skill \`${proposal.slug}\` a consolidation created in this scope, and it stays discarded unless a person restores it.`;
+    }
+  }
+  const slugs = proposal.kind === "improvement" ? [...new Set([proposal.slug, proposal.target])] : [proposal.slug];
+  for (const slug of slugs) {
+    if (skillProposalDiscarded(db, scope, slug)) return `The skill proposal \`${proposal.slug}\` was discarded before, so it was not applied.`;
+  }
+  return null;
+}
+
+/** Why an archived target is not written to: a person's discard, if it is one, or an archive. */
+function archivedProblem(db: Db, skill: Skill, scope: MemoryScope): string {
+  return discardedByArchive(db, skill, scope)
+    ? `A person archived the skill \`${skill.slug}\`, which a consolidation created, and that discards it: it is not changed again unless a person restores it on the Skills screen.`
+    : `The skill it improves, \`${skill.slug}\`, is archived, so it was left as it is; a person can restore it on the Skills screen.`;
+}
+
+/**
+ * The skill an improvement's target slug means: the one the proposal call
+ * was shown under it, by id. With no snapshot of what it was shown (a
+ * caller that passes none), the skill holding the slug now.
+ */
+function targetIdOf(db: Db, named: string, shown: ReadonlyMap<string, string> | undefined): string | undefined {
+  return shown ? shown.get(named) : getSkillBySlug(db, named)?.id;
+}
+
+/**
+ * The skill an improvement applies to, or why there is none to apply it
+ * to: `targetId` is the skill its target slug meant when the proposal call
+ * was asked. So the row has to be there, live, unlocked, still carry the
+ * slug the proposal named, and be global or in the proposal's scope. A
+ * renamed target is refused rather than followed: the draft was written
+ * for the skill as it was named, and its diff says that name.
+ */
+function improvementTarget(db: Db, named: string, targetId: string | undefined, scope: MemoryScope): { ok: true; skill: Skill } | { ok: false; problem: string } {
+  const target = targetId === undefined ? undefined : getSkill(db, targetId);
+  if (!target) {
+    // Not one the call was shown. Whatever holds the slug now is only
+    // looked at to say why: an archived skill (which the call is never
+    // shown), or one made while the call ran, which its draft was not
+    // written for and which is never written to.
+    const now = getSkillBySlug(db, named);
+    if (now && now.archivedAt !== null) return { ok: false, problem: archivedProblem(db, now, scope) };
+    if (now) return { ok: false, problem: `The skill \`${named}\` was made while the proposal was being written, so this draft was not written for it and it was left as it is.` };
+    return { ok: false, problem: `There is no skill \`${named}\` for it to improve, so there is nothing to apply it to.` };
+  }
+  if (target.archivedAt !== null) return { ok: false, problem: archivedProblem(db, target, scope) };
   if (target.slug !== named) {
     return { ok: false, problem: `The skill it improves was \`${named}\` and has since been renamed \`${target.slug}\`, so this draft is no longer for it.` };
   }
+  if (target.locked) return { ok: false, problem: `A person locked the skill \`${target.slug}\`, so only a person can change it.` };
   if (target.scope.kind !== "global" && !sameScope(target.scope, scope)) {
     return { ok: false, problem: `The skill it improves, \`${target.slug}\`, is scoped to another ${target.scope.kind}, so this scope cannot change it.` };
   }
@@ -158,7 +215,8 @@ function improvementTarget(
 }
 
 /**
- * The entries Save moves into the skill, and those it leaves in memory.
+ * The entries applying a proposal moves into the skill, and those it
+ * leaves in memory.
  *
  * Evidence is named after the consolidation (EO-575), from the entries as
  * it left them. An evidence entry it did not fold is the note the
@@ -167,7 +225,7 @@ function improvementTarget(
  * (the ledger is in UTC) — a fact the skill does not hold, which retiring
  * the entry would lose — and nothing EO keeps says which of the folded
  * entries held the procedure. So it is left in memory, conservatively,
- * and counted in `mixed`, so the proposal can say the procedure stays
+ * and counted in `mixed`, so the notice can say the procedure stays
  * there too.
  */
 export function coveringEntries(evidence: readonly string[], folded: readonly string[]): { covering: string[]; mixed: string[] } {
@@ -176,7 +234,7 @@ export function coveringEntries(evidence: readonly string[], folded: readonly st
   return { covering: unique.filter((id) => !merged.has(id)), mixed: unique.filter((id) => merged.has(id)) };
 }
 
-/** The agents whose runs wrote these entries — who Save attaches a new skill to. */
+/** The agents whose runs wrote these entries — who a new skill is attached to. */
 export function evidenceAgents(db: Db, entryIds: readonly string[]): { id: string; name: string }[] {
   const agents = new Map<string, string>();
   for (const id of entryIds) {
@@ -204,106 +262,121 @@ function listOf(names: readonly string[]): string {
   return `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]!}`;
 }
 
-/** The SKILL.md a proposal would make: for an improvement, the target as it is with the proposed body. */
-function draftFile(db: Db, record: Pick<SkillProposalRecord, "kind" | "slug" | "name" | "description" | "body" | "targetSkillId">): { file: string; current: string | null } {
-  const target = record.kind === "improvement" && record.targetSkillId !== null ? getSkill(db, record.targetSkillId) : undefined;
+/** The SKILL.md a proposal makes: for an improvement, the target as it is with the proposed body. */
+function draftFile(proposal: SkillProposal, target: Skill | undefined): { file: string; current: string | null } {
   if (target) {
     const frontmatter = { slug: target.slug, name: target.name, description: target.description, disableModelInvocation: target.disableModelInvocation };
-    return { file: renderSkillMarkdown({ ...frontmatter, body: record.body }), current: renderSkillMarkdown({ ...frontmatter, body: target.body }) };
+    return { file: renderSkillMarkdown({ ...frontmatter, body: proposal.body }), current: renderSkillMarkdown({ ...frontmatter, body: target.body }) };
   }
-  return { file: renderSkillMarkdown({ slug: record.slug, name: record.name, description: record.description, disableModelInvocation: false, body: record.body }), current: null };
+  return { file: renderSkillMarkdown({ slug: proposal.slug, name: proposal.name, description: proposal.description, disableModelInvocation: false, body: proposal.body }), current: null };
 }
 
-/** What the comment says. */
-export function proposalCommentBody(
+/** What became of one proposal, as its notice says it. */
+export type ProposalOutcome = { applied: true; attachedTo: readonly string[]; moved: number } | { applied: false; problem: string };
+
+/** What a proposal's notice says. */
+export function proposalNoticeBody(
   db: Db,
-  record: Pick<SkillProposalRecord, "kind" | "slug" | "description" | "evidenceEntryIds" | "evidenceItemIds" | "coveringEntryIds" | "unsaveable">,
+  proposal: Pick<SkillProposal, "kind" | "slug" | "description"> & { evidenceEntryIds: readonly string[]; evidenceItemIds: readonly string[] },
+  outcome: ProposalOutcome,
   context: {
     scopeLabel: string;
     attached: boolean;
     draft: string;
     diff: string | null;
-    /** Evidence entries a consolidation folded together with others, which Save leaves in memory. */
-    mixed?: number;
-    /** The thread is the organisation's, so a press may come from another device. */
-    shared?: boolean;
+    /** Evidence entries a consolidation folded together with others, which applying it leaves in memory. */
+    mixed: number;
   },
 ): string {
-  const lines: string[] = [
-    record.kind === "new"
-      ? `**A skill for ${context.scopeLabel}: \`${record.slug}\`**`
-      : `**An improvement to the skill \`${record.slug}\`, from ${context.scopeLabel}**`,
-    "",
-    `> ${record.description}`,
-    "",
+  const heading = outcome.applied
+    ? proposal.kind === "new"
+      ? `**Memory consolidation created the skill \`${proposal.slug}\` for ${context.scopeLabel}**`
+      : `**Memory consolidation changed the skill \`${proposal.slug}\`, from ${context.scopeLabel}**`
+    : proposal.kind === "new"
+      ? `**Memory consolidation proposed the skill \`${proposal.slug}\` for ${context.scopeLabel}, and it was not created**`
+      : `**Memory consolidation proposed a change to the skill \`${proposal.slug}\`, from ${context.scopeLabel}, and it was not applied**`;
+  const lines: string[] = [heading, "", `> ${proposal.description}`, ""];
+  if (!outcome.applied) lines.push(`${outcome.problem} Nothing was changed, and no memory entry was moved.`, "");
+  lines.push(
     `Memory consolidation found this procedure again and again in ${context.scopeLabel}'s memory. As a skill, an agent chooses it by the line above and reads its steps when it needs them, and those lines leave every dispatch's memory.`,
     "",
     "**Evidence**",
     "",
-  ];
-  for (const id of record.evidenceEntryIds) {
+  );
+  for (const id of proposal.evidenceEntryIds) {
     const entry = getMemory(db, id);
     const item = entry?.source.type === "run" && entry.source.itemId !== null ? getItem(db, entry.source.itemId as Uuid) : undefined;
+    // An item key in a comment is drawn as a link to the item.
     const where = item ? ` — from ${item.key}` : "";
     lines.push(`- Memory entry \`${id}\`${where}: "${oneLine(entry?.body ?? "(no longer there)", 140)}"`);
   }
-  const keys = record.evidenceItemIds.flatMap((id) => getItem(db, id as Uuid)?.key ?? []);
+  const keys = proposal.evidenceItemIds.flatMap((id) => getItem(db, id as Uuid)?.key ?? []);
   if (keys.length > 0) lines.push("", `Seen on ${listOf(keys)}.`);
   lines.push("");
-  if (context.attached) {
-    lines.push(context.diff === null ? "The draft is attached as `SKILL.md`." : "The draft is attached as `SKILL.md`, and what it changes in the skill as it is now as `SKILL.md.diff`.");
-  } else {
-    // No file store on this installation: the draft travels in the body
-    // instead, so the comment still carries all of it.
-    lines.push("The draft, as `SKILL.md`:", "", "````markdown", context.draft.trimEnd(), "````");
-    if (context.diff !== null) lines.push("", "What it changes in the skill as it is now:", "", "````diff", context.diff.trimEnd(), "````");
-  }
-  lines.push("");
-  if (record.unsaveable !== null) {
-    lines.push(`**This cannot be saved.** ${record.unsaveable} Discard it, and it is not proposed again.`);
-  } else {
-    const agents = evidenceAgents(db, record.evidenceEntryIds).map((agent) => agent.name);
-    const save =
-      record.kind === "new"
-        ? `**Save** creates it in ${context.scopeLabel}${agents.length > 0 ? ` and attaches it to ${listOf(agents)}` : ""}`
-        : `**Save** replaces \`${record.slug}\`'s body with this one, leaving its scope and the agents it is attached to as they are`;
-    const moved = record.coveringEntryIds.length;
-    lines.push(
-      `${save}${moved > 0 ? `, and moves the ${entries(moved)} holding this procedure out of memory into it — restoring the consolidation brings them back` : ""}. **Discard** drops it, and it is not proposed again.`,
-    );
-    const mixed = context.mixed ?? 0;
-    if (mixed > 0) {
+
+  if (outcome.applied) {
+    const done =
+      proposal.kind === "new"
+        ? outcome.attachedTo.length > 0
+          ? `It is in ${context.scopeLabel}, attached to ${listOf(outcome.attachedTo)}, whose runs wrote the evidence.`
+          : `It is in ${context.scopeLabel}, attached to no agent — none of the runs that wrote its evidence has an agent any more.`
+        : `Only its body was replaced; its name, description, files, scope and the agents it is attached to are as they were.`;
+    const moved =
+      outcome.moved > 0
+        ? ` Moved the ${entries(outcome.moved)} holding this procedure out of memory into it; restoring the consolidation brings ${outcome.moved === 1 ? "it" : "them"} back.`
+        : "";
+    lines.push(`${done}${moved}`);
+    if (context.mixed > 0) {
       lines.push(
         "",
-        `${mixed === 1 ? "One memory entry holds" : `${mixed} memory entries hold`} this procedure folded together with other entries, so Save leaves ${mixed === 1 ? "it" : "them"} in memory as ${mixed === 1 ? "it is" : "they are"} rather than lose any other fact ${mixed === 1 ? "it holds" : "they hold"}.`,
+        `${context.mixed === 1 ? "One memory entry holds" : `${context.mixed} memory entries hold`} this procedure folded together with other entries, so ${context.mixed === 1 ? "it was" : "they were"} left in memory rather than lose any other fact ${context.mixed === 1 ? "it holds" : "they hold"}.`,
       );
     }
+    lines.push("");
   }
-  if (context.shared) {
+
+  if (context.attached) {
+    lines.push(
+      context.diff === null
+        ? `The ${outcome.applied ? "skill" : "draft"} is attached as \`SKILL.md\`.`
+        : `The ${outcome.applied ? "skill as it now is" : "draft"} is attached as \`SKILL.md\`, and what ${outcome.applied ? "it changed" : "it would change"} as \`SKILL.md.diff\`.`,
+    );
+  } else {
+    // No file store on this installation: the draft travels in the body
+    // instead, so the notice still carries all of it.
+    lines.push(`The ${outcome.applied ? "skill" : "draft"}, as \`SKILL.md\`:`, "", "````markdown", context.draft.trimEnd(), "````");
+    if (context.diff !== null) lines.push("", `What ${outcome.applied ? "it changed" : "it would change"}:`, "", "````diff", context.diff.trimEnd(), "````");
+  }
+
+  if (outcome.applied) {
     lines.push(
       "",
-      "These are the memory, skills and agents of the device that consolidated it, so Save and Discard are carried out there — pressed on another device, they take effect when that one next syncs, and EO answers here.",
+      proposal.kind === "new"
+        ? "Its history is on the Skills screen. Lock it there to keep agents from changing it, or archive it: a skill consolidation created that a person archives is not created again unless a person restores it."
+        : "Its history is on the Skills screen, where a person can restore the version before this one, or lock the skill to keep agents from changing it.",
     );
   }
   return lines.join("\n");
 }
 
 /**
- * Posts a consolidation's proposals on the project's thread, one comment
- * each. Never throws: what could not be posted is a sentence in `notes`,
+ * Applies a consolidation's proposals, each with a notice on the project's
+ * thread. Never throws: what could not be done is a sentence in `notes`,
  * which the consolidation keeps on its row.
  *
- * A proposal a person discarded before — the same scope and slug,
- * whatever its description says (EO-512) — posts nothing, and neither
- * does one still waiting on the thread for an answer, as
- * `skillProposalFingerprint` folds it. Asked first, so nothing is staged
- * for one already known, and asked again in the transaction that posts
- * it (`postOne`): finding the thread and storing the draft are awaited,
- * and a person may discard a proposal with the same slug meanwhile.
+ * A proposal a person discarded — its scope and slug discarded before
+ * EO-719, or, for a new one, a skill a consolidation created there
+ * archived by a person — is held back with no notice (`heldBack`); an
+ * improvement to an archived skill is refused with one. Asked first, and again in the
+ * transaction that applies it: finding the thread and storing the draft
+ * are awaited, and a person may archive meanwhile.
+ *
+ * A scope with no project thread to say it on has nothing applied: a
+ * skill write nobody is told of on the thread is not one EO makes.
  */
-export async function postSkillProposals(input: PostSkillProposalsInput): Promise<PostedProposals> {
+export async function applySkillProposals(input: ApplySkillProposalsInput): Promise<AppliedProposals> {
   const { db } = input;
-  const result: PostedProposals = { posted: [], notes: [] };
+  const result: AppliedProposals = { applied: [], refused: [], notes: [] };
   const fresh = input.proposals.filter((proposal) => {
     const held = heldBack(db, input.scope, proposal);
     if (held !== null) result.notes.push(held);
@@ -311,8 +384,9 @@ export async function postSkillProposals(input: PostSkillProposalsInput): Promis
   });
   if (fresh.length === 0) return result;
 
+  const some = fresh.length === 1 ? "A skill was" : `${fresh.length} skills were`;
   if (input.projectId === null) {
-    result.notes.push(`${fresh.length === 1 ? "A skill was" : `${fresh.length} skills were`} proposed, but ${input.scopeLabel} is on no project, so there is no project thread to post ${fresh.length === 1 ? "it" : "them"} on.`);
+    result.notes.push(`${some} proposed and none applied: ${input.scopeLabel} is on no project, so there is no project thread to say so on.`);
     return result;
   }
   let thread: ProjectThreadAnswer;
@@ -322,70 +396,72 @@ export async function postSkillProposals(input: PostSkillProposalsInput): Promis
     thread = { ok: false, problem: error instanceof Error ? error.message : String(error) };
   }
   if (!thread.ok) {
-    result.notes.push(`${fresh.length === 1 ? "A skill was" : `${fresh.length} skills were`} proposed and could not be posted: ${thread.problem}`);
+    result.notes.push(`${some} proposed and none applied: the project thread to say so on could not be opened: ${thread.problem}`);
     return result;
   }
-  const threadItem = thread.item;
-  const shared = projectMovedToTheRecord(db, input.projectId);
+  const threadItemId = thread.item.id as Uuid;
 
   for (const proposal of fresh) {
     try {
-      const posted = await postOne(input, proposal, threadItem.id as Uuid, shared);
-      if ("held" in posted) result.notes.push(posted.held);
-      else result.posted.push(posted);
+      const done = await applyOne(input, proposal, threadItemId);
+      if ("held" in done) result.notes.push(done.held);
+      else if ("record" in done) result.applied.push(done.record);
+      else {
+        result.refused.push({ slug: proposal.slug, problem: done.problem });
+        result.notes.push(`The skill proposal \`${proposal.slug}\` was not applied: ${done.problem}`);
+      }
     } catch (error) {
-      result.notes.push(`The skill proposal \`${proposal.slug}\` could not be posted: ${error instanceof Error ? error.message : String(error)}`);
+      result.notes.push(`The skill proposal \`${proposal.slug}\` could not be applied: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
+  if (result.applied.length > 0) emitPush("config:changed", {});
   return result;
 }
 
 /**
- * Why a proposal is not posted, as the consolidation's note says it, or
- * null: one with its scope and slug was discarded, or one with its
- * fingerprint is still waiting for an answer.
+ * Why a proposal cannot be applied as it stands, or null. Asked before
+ * its files are stored, and again in the transaction that applies it.
  */
-function heldBack(db: Db, scope: MemoryScope, proposal: SkillProposal): string | null {
-  const known = knownSkillProposal(db, scope, { slug: proposal.slug, fingerprint: skillProposalFingerprint(proposal) });
-  if (known === "discarded") return `The skill proposal \`${proposal.slug}\` was discarded before, so it was not posted again.`;
-  if (known === "open") return `The skill proposal \`${proposal.slug}\` is already on the project's notes, waiting for an answer, so it was not posted again.`;
-  return null;
+function whyNotApplied(db: Db, input: ApplySkillProposalsInput, proposal: SkillProposal, targetId: string | undefined): string | null {
+  // Restored while the proposal call ran: the memory it was drawn from is
+  // back as it was, and an entry retired now under that consolidation's
+  // id could never be restored again — its restore has been spent.
+  if (getConsolidation(db, input.consolidationId)?.status === "restored") {
+    return "The consolidation that proposed it was restored while it was being proposed, so the memory it was drawn from is back as it was.";
+  }
+  // A published configuration binds here as it does on the Skills screen:
+  // applying a proposal is a skill save and an attachment, by another door.
+  for (const channel of ["skills:save", "agentAttachments:set"] as const) {
+    const lock = sectionLockFor(db, channel);
+    if (lock) return `Your organisation has published the ${lock.section} section${lock.publishedBy ? ` (${lock.publishedBy})` : ""}, so skills are changed there.`;
+  }
+  const scope = input.scope;
+  if (scope.kind === "project" ? !getProject(db, scope.id as Uuid) : !getWorkspace(db, scope.id as Uuid)) return `The ${scope.kind} it is for no longer exists.`;
+  if (proposal.kind === "new") {
+    // The slug is unique whatever a row's state, archived ones too.
+    const taken = getSkillBySlug(db, proposal.slug);
+    return taken ? `The slug \`${proposal.slug}\` is already taken by ${taken.archivedAt === null ? "another skill" : "an archived skill"}.` : null;
+  }
+  const target = improvementTarget(db, proposal.target, targetId, scope);
+  return target.ok ? null : target.problem;
 }
 
-/** Posts one proposal, or answers why it was held back after all — with nothing posted, and its staged files removed. */
-async function postOne(
-  input: PostSkillProposalsInput,
-  proposal: SkillProposal,
-  threadItemId: Uuid,
-  shared: boolean,
-): Promise<SkillProposalRecord | { held: string }> {
-  const { db } = input;
-  const targetSlug = proposal.kind === "improvement" ? proposal.target : null;
-  // Resolved by slug once, here, and recorded by id: from now on the
-  // proposal is about this row, whatever is later called `targetSlug`.
-  const target = targetSlug === null ? undefined : getSkillBySlug(db, targetSlug);
-  const targetSkillId = target && target.archivedAt === null ? target.id : null;
-  const unsaveable = whyUnsaveable(db, { kind: proposal.kind, slug: proposal.slug, targetSlug, targetSkillId }, input.scope);
-  const followed = coveringEntries(proposal.evidence.entryIds, input.folded);
-  const fields = {
-    consolidationId: input.consolidationId,
-    scope: input.scope,
-    kind: proposal.kind,
-    targetSlug,
-    targetSkillId,
-    slug: proposal.slug,
-    name: proposal.name,
-    description: proposal.description,
-    body: proposal.body,
-    evidenceEntryIds: [...new Set(proposal.evidence.entryIds)],
-    evidenceItemIds: [...new Set(proposal.evidence.itemIds)],
-    coveringEntryIds: followed.covering,
-    fingerprint: skillProposalFingerprint(proposal),
-    unsaveable,
-    createdAt: input.now,
-  };
+type OneOutcome = { record: SkillProposalRecord } | { problem: string } | { held: string };
 
-  const { file, current } = draftFile(db, fields);
+/** Applies one proposal, or says why not, with its notice; or answers why it was held back after all, with nothing posted and its staged files removed. */
+async function applyOne(input: ApplySkillProposalsInput, proposal: SkillProposal, threadItemId: Uuid): Promise<OneOutcome> {
+  const { db } = input;
+  const author: SkillAuthor = { kind: "consolidation", consolidationId: input.consolidationId };
+  const targetSlug = proposal.kind === "improvement" ? proposal.target : null;
+  // The skill the target slug meant when the proposal call was asked, held
+  // by id from here on: a slug is the one thing a person can rename.
+  const targetId = targetSlug === null ? undefined : targetIdOf(db, targetSlug, input.shown);
+  const target = targetId === undefined ? undefined : getSkill(db, targetId);
+  const followed = coveringEntries(proposal.evidence.entryIds, input.folded);
+  const evidenceEntryIds = [...new Set(proposal.evidence.entryIds)];
+  const evidenceItemIds = [...new Set(proposal.evidence.itemIds)];
+
+  const { file, current } = draftFile(proposal, proposal.kind === "improvement" ? target : undefined);
   const diff = current === null ? null : unifiedDiff(current, file, { from: `a/${proposal.slug}/SKILL.md`, to: `b/${proposal.slug}/SKILL.md` });
   const stored: Omit<CreateAttachmentRecord, "itemId" | "commentId">[] = [];
   if (input.store) {
@@ -398,229 +474,93 @@ async function postOne(
     }
   }
 
-  const body = proposalCommentBody(db, fields, { scopeLabel: input.scopeLabel, attached: stored.length > 0, draft: file, diff, mixed: followed.mixed.length, shared });
-  let posted: SkillProposalRecord | { held: string };
+  let done: OneOutcome;
   try {
-    posted = db.transaction((): SkillProposalRecord | { held: string } => {
-      // Asked again here, in the same synchronous stretch as the write
-      // (EO-512): the thread and the files above were awaited, and a
-      // Discard on one with this slug, answered meanwhile, holds this
-      // one back as surely as one answered before it was proposed.
+    done = db.transaction((): OneOutcome => {
+      // Asked again here, in the same synchronous stretch as the write:
+      // the thread and the files above were awaited.
       const held = heldBack(db, input.scope, proposal);
       if (held !== null) return { held };
-      const comment = postComment(db, {
-        itemId: threadItemId,
-        author: { type: "engine" },
-        kind: "question",
-        body,
-        mentions: [{ type: "human" }],
-        // Discard is offered even where Save is not: answering is what
-        // closes the mention, and "drop it" is an answer.
-        options: unsaveable === null ? [SKILL_PROPOSAL_SAVE, SKILL_PROPOSAL_DISCARD] : [SKILL_PROPOSAL_DISCARD],
-        attachmentRecords: stored,
-        // EO's own sentence, quoting what agents wrote: nothing in it summons anyone.
-        parseBodyMentions: false,
+      let problem = whyNotApplied(db, input, proposal, targetId);
+      const live = targetId === undefined ? undefined : getSkill(db, targetId);
+      // The diff was made against the target as it was before the files
+      // were stored; changed since, it would say something untrue.
+      if (problem === null && proposal.kind === "improvement" && live?.body !== target?.body) {
+        problem = `The skill \`${proposal.target}\` was changed while this was being applied, so it was left as it is.`;
+      }
+      let skillId: string | null = null;
+      const attachedTo: string[] = [];
+      if (problem === null) {
+        const saved =
+          proposal.kind === "new"
+            ? saveSkill(db, { slug: proposal.slug, name: proposal.name, description: proposal.description, body: proposal.body, files: [], scope: skillScopeOf(input.scope) }, input.now, author)
+            : // The body, and only the body: its slug, name, description,
+              // files, switches, scope and attachments stay as they are.
+              saveSkill(db, { id: live!.id, slug: null, name: live!.name, description: live!.description, body: proposal.body, files: live!.files }, input.now, author);
+        if (saved.ok) skillId = saved.skill.id;
+        else problem = saved.problems.join(" ");
+      }
+      if (skillId === null) {
+        const why = problem ?? "It could not be written.";
+        postNotice(proposalNoticeBody(db, { ...proposal, evidenceEntryIds, evidenceItemIds }, { applied: false, problem: why }, { scopeLabel: input.scopeLabel, attached: stored.length > 0, draft: file, diff, mixed: 0 }));
+        return { problem: why };
+      }
+      if (proposal.kind === "new") {
+        for (const agent of evidenceAgents(db, evidenceEntryIds)) {
+          if (setAgentAttachment(db, { agentId: agent.id, kind: "skill", id: skillId, attached: true }, input.now).ok) attachedTo.push(agent.name);
+        }
+      }
+      const moved: string[] = [];
+      for (const id of followed.covering) {
+        if (retireMemory(db, id, { reason: "moved_to_skill", consolidationId: input.consolidationId, now: input.now }).ok) moved.push(id);
+      }
+      const comment = postNotice(
+        proposalNoticeBody(
+          db,
+          { ...proposal, evidenceEntryIds, evidenceItemIds },
+          { applied: true, attachedTo, moved: moved.length },
+          { scopeLabel: input.scopeLabel, attached: stored.length > 0, draft: file, diff, mixed: followed.mixed.length },
+        ),
+      );
+      const record = recordSkillProposal(db, {
+        consolidationId: input.consolidationId,
+        scope: input.scope,
+        kind: proposal.kind,
+        targetSlug,
+        targetSkillId: proposal.kind === "improvement" ? skillId : null,
+        slug: proposal.slug,
+        name: proposal.name,
+        description: proposal.description,
+        body: proposal.body,
+        evidenceEntryIds,
+        evidenceItemIds,
+        coveringEntryIds: followed.covering,
+        fingerprint: skillProposalFingerprint(proposal),
+        unsaveable: null,
+        commentId: comment,
+        createdAt: input.now,
       });
-      return recordSkillProposal(db, { ...fields, commentId: comment.id });
+      decideSkillProposal(db, record.id, { status: "saved", skillId, movedEntryIds: moved, now: input.now });
+      return { record: { ...record, status: "saved", skillId, movedEntryIds: moved, decidedAt: input.now } };
     });
   } catch (error) {
     await input.store?.rollback?.(stored).catch(() => undefined);
     throw error;
   }
   // Held back: the files staged for it belong to no comment.
-  if ("held" in posted) await input.store?.rollback?.(stored).catch(() => undefined);
-  return posted;
-}
+  if ("held" in done) await input.store?.rollback?.(stored).catch(() => undefined);
+  return done;
 
-// ── Answering ────────────────────────────────────────────────────
-
-export type SkillProposalAnswer =
-  | { outcome: "saved"; proposal: SkillProposalRecord; skillId: string; attachedTo: string[]; moved: string[] }
-  | { outcome: "discarded"; proposal: SkillProposalRecord }
-  /** A person asked for a discarded one to be allowed again, and its discard records were removed (EO-512). */
-  | { outcome: "allowed"; proposal: SkillProposalRecord; removed: number }
-  | { outcome: "refused"; proposal: SkillProposalRecord; problem: string };
-
-/** Which answer this reply is, by its first line, as `answerSkipOffer` reads one. */
-function chosen(body: string): typeof SKILL_PROPOSAL_SAVE | typeof SKILL_PROPOSAL_DISCARD | typeof SKILL_PROPOSAL_PROPOSE_AGAIN | null {
-  const first = (body.split("\n", 1)[0] ?? "").trim().replace(/[.!]+$/, "").replace(/\s+/g, " ").toLowerCase();
-  if (first === SKILL_PROPOSAL_SAVE.toLowerCase()) return SKILL_PROPOSAL_SAVE;
-  if (first === SKILL_PROPOSAL_DISCARD.toLowerCase()) return SKILL_PROPOSAL_DISCARD;
-  if (first === SKILL_PROPOSAL_PROPOSE_AGAIN.toLowerCase()) return SKILL_PROPOSAL_PROPOSE_AGAIN;
-  return null;
-}
-
-/** What EO says when it records a Discard: that it holds, and how a person lifts it (EO-512). */
-function discardedSentence(slug: string): string {
-  return `Discarded. A later consolidation of this scope will not propose \`${slug}\` again, however it words the description. To let it be proposed again, reply **${SKILL_PROPOSAL_PROPOSE_AGAIN}** here.`;
-}
-
-/**
- * Acts on a person's answer to a skill proposal, if that is what this
- * comment is. Called on every human comment; answers null for all but a
- * reply, on the proposal's own thread, filed under the proposal, whose
- * first line is an option the proposal offered, while it is still open —
- * or whose first line is "Propose again", while it is discarded, which
- * removes the scope's discard records for its slug (EO-512).
- *
- * Every answer it acts on ends in a reply from EO under the proposal
- * saying what was done, or why nothing was (invariant 8).
- *
- * "Human" is the whole test of who may press, and it admits the system
- * agent on purpose (EO-514, ARCHITECTURE.md, "Proposing skills"). Its
- * `comment_post` over `eo_admin` writes through `postHumanComment`, as
- * the person, and nothing here can tell it from the person's own reply.
- * That is allowed rather than refused: invariant 11 makes deciding what
- * agents are dispatched with the system agent's job, it already holds
- * `skill_save` and `agent_attachments_set` and could make the same skill
- * without the proposal, and the entries a Save retires come back with
- * the consolidation, as the ones a consolidation retires by itself do. A
- * step-owning agent's words reach the thread as the agent's, so the
- * press stays out of its reach.
- */
-export function answerSkillProposal(db: Db, comment: Comment, now: number = Date.now()): SkillProposalAnswer | null {
-  if (comment.parentId === null || comment.authorType !== "human") return null;
-  const choice = chosen(comment.body);
-  if (choice === null) return null;
-  const proposal = skillProposalForComment(db, comment.parentId);
-  if (!proposal) return null;
-  const offer = getComment(db, comment.parentId as Uuid);
-  // Answered where it was asked — the check `answerSkipOffer` makes, for its reasons.
-  if (!offer || offer.itemId !== comment.itemId) return null;
-
-  if (choice === SKILL_PROPOSAL_PROPOSE_AGAIN) {
-    if (proposal.status !== "discarded") return null;
-    // Every discard record for the slug, this one among them: any one
-    // left would still hold it back. A copy of this reply arriving twice
-    // finds no row the second time, and answers null.
-    const removed = db.transaction(() => {
-      const count = forgetDiscardedSkillProposals(db, proposal.scope, proposal.slug);
-      if (count > 0) reply(db, offer, `Allowed again. A later consolidation of this scope may propose \`${proposal.slug}\` again, and it is posted here as a new proposal if it does.`);
-      return count;
-    });
-    return removed > 0 ? { outcome: "allowed", proposal, removed } : null;
+  /** A note, not a question: it asks nothing, offers no answer and mentions nobody. */
+  function postNotice(body: string): string {
+    return postComment(db, {
+      itemId: threadItemId,
+      author: { type: "engine" },
+      kind: "note",
+      body,
+      attachmentRecords: stored,
+      // EO's own sentence, quoting what agents wrote: nothing in it summons anyone.
+      parseBodyMentions: false,
+    }).id;
   }
-
-  // Only with what it offered, and only while it is open.
-  if (proposal.status !== "open" || !offer.options?.includes(choice)) return null;
-
-  if (choice === SKILL_PROPOSAL_DISCARD) {
-    if (!decideSkillProposal(db, proposal.id, { status: "discarded", now })) return null;
-    reply(db, offer, discardedSentence(proposal.slug));
-    return { outcome: "discarded", proposal: { ...proposal, status: "discarded", decidedAt: now } };
-  }
-
-  const refused = (problem: string): SkillProposalAnswer => {
-    reply(db, offer, `Nothing was saved. ${problem}`);
-    return { outcome: "refused", proposal, problem };
-  };
-  // A published configuration binds here as it does on the Skills screen:
-  // Save is a skill save and an attachment, by another door.
-  for (const channel of ["skills:save", "agentAttachments:set"] as const) {
-    const lock = sectionLockFor(db, channel);
-    if (lock) return refused(`Your organisation has published the ${lock.section} section${lock.publishedBy ? ` (${lock.publishedBy})` : ""}, so skills are changed there.`);
-  }
-  // Restored since it was posted: the memory it was drawn from is back as
-  // it was before, and an entry retired now under that consolidation's id
-  // could never be restored again — its restore has been spent. So
-  // nothing is written; a later consolidation may propose it afresh.
-  const proposing = getConsolidation(db, proposal.consolidationId);
-  if (proposing?.status === "restored") {
-    return refused("The consolidation that proposed it has since been restored, so the memory it was drawn from is back as it was; a later consolidation can propose it again.");
-  }
-  const unsaveable = whyUnsaveable(db, proposal, proposal.scope);
-  if (unsaveable !== null) return refused(unsaveable);
-  if (proposal.scope.kind === "project" ? !getProject(db, proposal.scope.id as Uuid) : !getWorkspace(db, proposal.scope.id as Uuid)) {
-    return refused(`The ${proposal.scope.kind} it is for no longer exists.`);
-  }
-
-  try {
-    return db.transaction((): SkillProposalAnswer => {
-      let skillId: string;
-      const attachedTo: string[] = [];
-      if (proposal.kind === "new") {
-        const saved = saveSkill(db, { slug: proposal.slug, name: proposal.name, description: proposal.description, body: proposal.body, files: [], scope: skillScopeOf(proposal.scope) }, now);
-        if (!saved.ok) throw new Refusal(saved.problems.join(" "));
-        skillId = saved.skill.id;
-        for (const agent of evidenceAgents(db, proposal.evidenceEntryIds)) {
-          if (setAgentAttachment(db, { agentId: agent.id, kind: "skill", id: skillId, attached: true }, now).ok) attachedTo.push(agent.name);
-        }
-      } else {
-        // By the recorded id, asked again inside the transaction.
-        const found = improvementTarget(db, proposal, proposal.scope);
-        if (!found.ok) throw new Refusal(found.problem);
-        const target = found.skill;
-        // The body, and only the body: its slug, name, description,
-        // files, switches, scope and attachments stay as they are.
-        const saved = saveSkill(db, { id: target.id, slug: null, name: target.name, description: target.description, body: proposal.body, files: target.files }, now);
-        if (!saved.ok) throw new Refusal(saved.problems.join(" "));
-        skillId = saved.skill.id;
-      }
-      const moved: string[] = [];
-      for (const id of proposal.coveringEntryIds) {
-        if (retireMemory(db, id, { reason: "moved_to_skill", consolidationId: proposal.consolidationId, now }).ok) moved.push(id);
-      }
-      decideSkillProposal(db, proposal.id, { status: "saved", skillId, movedEntryIds: moved, now });
-      reply(db, offer, savedSentence(proposal, attachedTo, moved));
-      return { outcome: "saved", proposal: { ...proposal, status: "saved", skillId, movedEntryIds: moved, decidedAt: now }, skillId, attachedTo, moved };
-    });
-  } catch (error) {
-    if (error instanceof Refusal) return refused(error.message);
-    // The transaction took everything back, and the proposal is still
-    // open: said, so the person knows to answer again (invariant 8). A
-    // throw here would be lost on a mirrored answer, which is never
-    // placed twice.
-    return refused(`Saving it failed: ${error instanceof Error ? error.message : String(error)} Answer Save again to retry.`);
-  }
-}
-
-/**
- * The same, for an answer written on another machine and copied here
- * (EO-483) — a reply pulled from the organisation's record, or one the
- * record received from a device.
- *
- * A proposal is posted on the project's thread, which every device and
- * the record share, but its row — and the memory, skills and agents Save
- * changes — are the database that consolidated it. So the press is
- * carried out where that row is, whichever machine it was made on: the
- * reply reaches it through the record like any other comment, and this
- * is called as it is written down. Every other database holds no row for
- * the proposal and answers null, and the row's own `open` status is what
- * keeps a reply that arrives twice from acting twice. EO's answer is an
- * ordinary comment here, so it travels back to the thread everyone sees.
- *
- * Never throws: it runs in the middle of a sync, which a proposal must
- * not stop.
- */
-export function answerCopiedSkillProposal(db: Db, comment: Comment): SkillProposalAnswer | null {
-  try {
-    const answer = answerSkillProposal(db, comment);
-    if (answer?.outcome === "saved") emitPush("config:changed", {});
-    if (answer !== null) emitPush("items:changed", { itemId: comment.itemId });
-    return answer;
-  } catch (error) {
-    console.warn(`[eo] an answer to a skill proposal could not be acted on: ${error instanceof Error ? error.message : String(error)}`);
-    return null;
-  }
-}
-
-class Refusal extends Error {}
-
-function savedSentence(proposal: SkillProposalRecord, attachedTo: readonly string[], moved: readonly string[]): string {
-  const what =
-    proposal.kind === "new"
-      ? `Saved the skill \`${proposal.slug}\`${attachedTo.length > 0 ? ` and attached it to ${listOf(attachedTo)}` : ", attached to no agent — none of the runs that wrote its evidence has an agent any more"}.`
-      : `Updated the skill \`${proposal.slug}\`'s body; its scope and the agents it is attached to are unchanged.`;
-  const left = proposal.coveringEntryIds.length - moved.length;
-  const memory =
-    moved.length > 0
-      ? ` Moved ${entries(moved.length)} out of memory into it; restoring the consolidation that proposed it brings them back.${left > 0 ? ` ${entries(left)} had already been retired or edited, and were left as they are.` : ""}`
-      : proposal.coveringEntryIds.length > 0
-        ? " The memory entries it came from had already been retired or edited, so none were moved."
-        : "";
-  return `${what}${memory}`;
-}
-
-function reply(db: Db, offer: Comment, body: string): void {
-  postComment(db, { itemId: offer.itemId, author: { type: "engine" }, kind: "note", body, parentId: offer.id, parseBodyMentions: false });
 }

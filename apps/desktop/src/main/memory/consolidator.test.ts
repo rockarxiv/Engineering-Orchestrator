@@ -1992,7 +1992,7 @@ describe("automatic memory consolidation", () => {
       expect(order.at(-2)).toBe("candidates");
     });
 
-    it("tell Save to leave in memory what the run's batches and cross-batch pass folded from several, and a rewrite of it, and to move what they did not fold", async () => {
+    it("leave in memory, when applied, what the run's batches and cross-batch pass folded from several, and a rewrite of it, and move what they did not fold", async () => {
       const at = Date.now() - DAY;
       const entries = Array.from({ length: 40 }, (_, index) => byAgent(workspace, `Note ${index}: ${"y".repeat(80)}`, at + index * 1_000));
       const [a, b, untouched] = [entries[0]!, entries[1]!, entries[5]!];
@@ -2017,8 +2017,8 @@ describe("automatic memory consolidation", () => {
 
       expect(proposeSkills).toHaveBeenCalledTimes(1);
       const [offer] = posted().filter((comment) => comment.parentId === null);
-      expect(offer!.body).toContain("moves the 1 entry holding this procedure out of memory");
-      expect(offer!.body).toContain("One memory entry holds this procedure folded together with other entries, so Save leaves it in memory");
+      expect(offer!.body).toContain("Moved the 1 entry holding this procedure out of memory");
+      expect(offer!.body).toContain("One memory entry holds this procedure folded together with other entries, so it was left in memory");
     });
   });
 

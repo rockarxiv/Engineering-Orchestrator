@@ -50,8 +50,8 @@ export function containerScopeName(item: { key: string; title: string }): string
  * - `retired` — a person took it out of use.
  * - `consolidated` — EO folded it into a shorter set (EO-480), named by
  *   `consolidationId`.
- * - `moved_to_skill` — a person saved a skill a consolidation proposed,
- *   and what this entry said is in that skill now (EO-483). Tagged with
+ * - `moved_to_skill` — a consolidation's skill proposal was applied, and
+ *   what this entry said is in that skill now (EO-483, EO-719). Tagged with
  *   the proposing consolidation's id, so restoring that consolidation
  *   brings it back.
  * - `superseded` — an agent's note named it as the entry it corrects or
@@ -791,9 +791,11 @@ const proposalFields = {
  * that exists — in the same scope, or a global one — named by its slug
  * in `target`. An improvement without a target is not one.
  *
- * Nothing is saved from it until a person presses Save on the comment it
- * is posted as: a skill changes what agents are dispatched with, and no
- * step-owning agent may decide that (invariant 11).
+ * Applied as it arrives, with no person's approval (EO-719): a skill is
+ * instructions, which agents may write (invariant 11). What answers for
+ * it is the skill's version history, a person's lock, and archiving it —
+ * which, for a skill a consolidation created, keeps its scope and slug
+ * from being created again.
  */
 export const SkillProposalSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("new"), ...proposalFields }),
@@ -809,8 +811,8 @@ export type SkillProposal = z.infer<typeof SkillProposalSchema>;
 /**
  * A proposal's fingerprint: its scope, its slug and its description
  * normalised — lowercased, with punctuation and runs of space folded —
- * so the same proposal worded a little differently is still the one
- * waiting on the thread.
+ * so the same proposal worded a little differently has the same one.
+ * Kept on every proposal's row.
  *
  * A discarded one is not matched by it (EO-512): a person who discarded
  * a proposal turned down its scope and slug, and a model rewords a
@@ -826,22 +828,15 @@ export function skillProposalFingerprint(proposal: { scope: MemoryScope; slug: s
   return `${proposal.scope.kind}:${proposal.scope.id}:${proposal.slug.trim().toLowerCase()}:${description}`;
 }
 
-/** What a person decided about a proposal: nothing yet, Save, or Discard. */
+/**
+ * What became of a proposal: `saved` once a consolidation applied it
+ * (EO-719). `open` and `discarded` are only on rows written before then,
+ * when a person answered Save or Discard; a `discarded` one still holds
+ * its scope and slug back.
+ */
 export const SKILL_PROPOSAL_STATUSES = ["open", "saved", "discarded"] as const;
 export const SkillProposalStatusSchema = z.enum(SKILL_PROPOSAL_STATUSES);
 export type SkillProposalStatus = z.infer<typeof SkillProposalStatusSchema>;
-
-/** The two answers a proposal offers. */
-export const SKILL_PROPOSAL_SAVE = "Save";
-export const SKILL_PROPOSAL_DISCARD = "Discard";
-
-/**
- * The reply, under a discarded proposal, that removes its discard record
- * (EO-512): a later consolidation of the scope may then propose that slug
- * again. Not an offered option — it is what EO's own "Discarded." reply
- * tells a person to write.
- */
-export const SKILL_PROPOSAL_PROPOSE_AGAIN = "Propose again";
 
 /**
  * A consolidation's answer: its operations, and nothing else (EO-575).

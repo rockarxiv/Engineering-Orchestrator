@@ -64,7 +64,6 @@ import type { ItemRecord } from "./record.js";
 import type { RemoteRecord } from "./remoteRecord.js";
 import { asRunCommand, runCommandId, runPatchFrom } from "./runCommand.js";
 import type { RecordAttachmentStore } from "./serveRecord.js";
-import { answerCopiedSkillProposal } from "../memory/skillProposals.js";
 import { writeArrivedMemory } from "../db/repos/memoriesRepo.js";
 import { getSkill, holdSkillCopy, releaseHeldSkillCopies, upsertReplicaSkill } from "../db/repos/skillsRepo.js";
 import { tellHeldSkillCopies } from "../skills/heldSkills.js";
@@ -1620,11 +1619,7 @@ function apply(options: DrainOptions, kind: HeldKind, payload: unknown, now: num
       // thing about it that changes afterwards is the pin, which
       // arrives on its own list.
       if (getComment(db, comment.commentId as Uuid) !== undefined) return placed;
-      const mirrored = mirrorRecordComment(db, local, comment);
-      // Save or Discard pressed on another device, on a skill proposal
-      // this machine's consolidation posted (EO-483): carried out here,
-      // where the proposal and the memory it would change are.
-      if (mirrored.authorType === "human" && mirrored.parentId !== null) answerCopiedSkillProposal(db, mirrored);
+      mirrorRecordComment(db, local, comment);
       return placed;
     }
 

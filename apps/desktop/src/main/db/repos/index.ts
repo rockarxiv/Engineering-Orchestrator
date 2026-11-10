@@ -188,13 +188,11 @@ export {
 } from "./memoryConsolidationsRepo.js";
 export {
   decideSkillProposal,
-  forgetDiscardedSkillProposals,
   getSkillProposal,
-  knownSkillProposal,
   listDiscardedSkillProposals,
   listSkillProposalsOf,
   recordSkillProposal,
-  skillProposalForComment,
+  skillProposalDiscarded,
   type DiscardedSkillProposal,
   type RecordSkillProposalInput,
   type SkillProposalRecord,

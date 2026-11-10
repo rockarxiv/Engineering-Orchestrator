@@ -192,8 +192,8 @@ describe("handing a project to the record carries its own skills (EO-513)", () =
     expect(getAgentAttachments(annaDb.db, own.id).skillIds.sort()).toEqual([projectSkill, workspaceSkill, globalSkill].sort());
   });
 
-  it("carries a skill saved from a consolidation proposal like any other of the project's", async () => {
-    // Save on a proposal creates the skill in the proposal's scope and
+  it("carries a skill created from a consolidation proposal like any other of the project's", async () => {
+    // Applying a proposal creates the skill in the proposal's scope and
     // attaches it to the agents whose runs wrote the evidence (EO-483);
     // what reaches the move is that row and that attachment.
     const support = createProject(annaDb.db, { name: "Support", keyPrefix: "SUP", managed: false });
