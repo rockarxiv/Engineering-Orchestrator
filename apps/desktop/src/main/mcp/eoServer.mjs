@@ -492,6 +492,10 @@ const SKILL_READ_DESCRIPTION =
 
 const SKILL_READ_TOOL = {
   name: SKILL_READ_TOOL_NAME,
+  // A read: EO answers with instructions it already holds and changes
+  // nothing. The load is read off the call by the adapter, not written by
+  // the tool.
+  annotations: READS_ANNOTATIONS,
   description: SKILL_READ_DESCRIPTION,
   inputSchema: {
     type: "object",

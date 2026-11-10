@@ -1307,6 +1307,7 @@ describe("every eo tool's annotations", () => {
     enableMemoryRead: true,
     enableMemoryNote: true,
     enableRepositoryCheckout: true,
+    enableSkillRead: true,
   });
 
   /** The tools that change nothing. Written out, so a tool added tomorrow is a decision rather than a default. */
@@ -1317,6 +1318,7 @@ describe("every eo tool's annotations", () => {
     "comment_read",
     "comment_search",
     "memory_read",
+    "skill_read",
     "thread_read",
     "pipeline_list",
     "pipeline_read",
