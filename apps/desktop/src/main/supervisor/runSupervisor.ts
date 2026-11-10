@@ -78,6 +78,7 @@ import {
   DEFAULT_SKILL_ARCHIVE_AFTER_RUNS,
   DEFAULT_SKILL_STALE_AFTER_RUNS,
   type MemoryReadScope,
+  type LearningReviewKind,
   actionAnswerSummary,
   actionSchemaName,
   definedActionFor,
@@ -278,7 +279,7 @@ import type { AgentWriteBridge, AgentWriteHandler } from "../mcp/writeBridge.js"
 import { writeAgentComment } from "./agentComments.js";
 import { projectMovedToTheRecord } from "../db/repos/projectsRepo.js";
 import { extractionEvent, extractMemory, runProduce } from "../memory/extraction.js";
-import { learningReviewEvent, learningReviewPrompt, learningReviewSkip, type LearningReviewOutcome } from "../memory/learningReview.js";
+import { learningReviewEvent, learningReviewFor, learningReviewPrompt, learningReviewSkillsPrompt, type LearningReviewOutcome } from "../memory/learningReview.js";
 import { answerReviewSkillTool, reviewableSkills, reviewSkillState, type ReviewSkillState } from "../memory/reviewSkills.js";
 import { runSubject } from "../modules/runName.js";
 import { createSideCallSlots } from "../sideCalls/slots.js";
@@ -2792,28 +2793,38 @@ export function createRunSupervisor(
    * why. Every review that was asked for appends one `learning_review`
    * event; a run it skips (as extraction skips it) appends none. Never
    * throws.
+   *
+   * A run that called `memory_note` itself gets the skill half alone
+   * (EO-731): no `memory_note` on its fork, and, where its thread cannot
+   * be forked, nothing in its place — extraction writes memory alone,
+   * and the run wrote its own.
    */
   async function reviewAfterRun(runId: Uuid, item: Item, agent: Agent): Promise<void> {
     if (shuttingDown) return;
     let outcome: LearningReviewOutcome;
+    let review: LearningReviewKind = "full";
     try {
       const run = getRun(db, runId);
       if (!run) return;
       const current = getItem(db, item.id) ?? item;
       const scopes = turnMemoryScopes(item);
-      if (learningReviewSkip(run, current, runProduce(db, run), scopes) !== null) return;
-      outcome = await reviewOnFork(run, current, agent, scopes);
+      const asked = learningReviewFor(run, current, runProduce(db, run), scopes);
+      if ("skip" in asked) return;
+      review = asked.review;
+      outcome = await reviewOnFork(run, current, agent, scopes, review);
     } catch (error) {
       outcome = { kind: "failed", entryIds: [], skillIds: [], reason: `The learning review could not be run: ${error instanceof Error ? error.message : String(error)}`, forkThreadId: null };
     }
-    if (outcome.kind === "fell_back") {
+    if (outcome.kind === "fell_back" && review === "full") {
       console.warn(`[eo] the learning review of run ${runId} fell back to memory extraction: ${outcome.reason}`);
       await extractAfterRun(runId, item, agent);
+    } else if (outcome.kind === "fell_back") {
+      console.warn(`[eo] the skill review of run ${runId} could not be run, and nothing ran in its place: ${outcome.reason}`);
     } else if (outcome.kind === "failed") {
       console.warn(`[eo] the learning review of run ${runId} failed: ${outcome.reason}`);
     }
     try {
-      record.appendRunEvent(runId, LEARNING_REVIEW_EVENT, learningReviewEvent(outcome));
+      record.appendRunEvent(runId, LEARNING_REVIEW_EVENT, learningReviewEvent(outcome, review));
     } catch (error) {
       console.warn(`[eo] how the learning review of run ${runId} ended could not be recorded: ${error instanceof Error ? error.message : String(error)}`);
     }
@@ -2856,8 +2867,13 @@ export function createRunSupervisor(
     }
   }
 
-  /** The review turn on a fork of the run's thread, read to its end or its time limit. A fork that cannot be opened is `fell_back`. */
-  async function reviewOnFork(run: Run, item: Item, agent: Agent, scopes: readonly MemoryScopeInfo[]): Promise<LearningReviewOutcome> {
+  /**
+   * The review turn on a fork of the run's thread, read to its end or its
+   * time limit. A fork that cannot be opened is `fell_back`. A
+   * `skills_only` review (EO-731) is sent the skill part alone and handed
+   * a credential naming the skill tools and not `memory_note`.
+   */
+  async function reviewOnFork(run: Run, item: Item, agent: Agent, scopes: readonly MemoryScopeInfo[], kind: LearningReviewKind): Promise<LearningReviewOutcome> {
     const backend = runsOn(agent, item).provider;
     if (run.threadId === null) return { kind: "fell_back", reason: "The run has no thread to fork." };
     if (run.provider !== null && run.provider !== backend) {
@@ -2895,6 +2911,7 @@ export function createRunSupervisor(
     reviewTurns.set(run.id, review);
     const loaded = new Set(skillsLoadedByRun(db, run.id));
     const skills = reviewableSkills(db, review.skills).map((skill) => ({ slug: skill.slug, description: skill.description, loaded: loaded.has(skill.id), locked: skill.locked }));
+    const offered = { skills, canCreate: skillScope.projectId !== null };
     // The fork's running total starts where the run left the thread, on
     // either backend, and the row is its own spend (EO-733) — taken off by
     // the rule a resumed run's is, wherever that rule lives. A Claude
@@ -2928,15 +2945,18 @@ export function createRunSupervisor(
     }, LEARNING_REVIEW_TIMEOUT_MS);
     try {
       const forked = await Promise.race([
-        provider.fork!(run.threadId, learningReviewPrompt(scopes, { skills, canCreate: skillScope.projectId !== null }), {
+        provider.fork!(run.threadId, kind === "full" ? learningReviewPrompt(scopes, offered) : learningReviewSkillsPrompt(offered), {
           ...(run.cwd ? { cwd: run.cwd } : {}),
           // `memory_read` over the run's scopes, and a credential for
           // `memory_note` and the skill tools (EO-718) alone: no other
           // write tool is listed, and the bridge refuses any other write
           // made with it. No other turn's credential names the skill
-          // tools, so no other turn is served them.
+          // tools, so no other turn is served them. A skill-only review
+          // (EO-731) has the skill tools alone: the run it reviews wrote
+          // its own notes, so `memory_note` is neither listed to it nor
+          // taken from it.
           ...memoryOption(item),
-          writeBridge: bridge.tokenFor(item.id, [MEMORY_NOTE_TOOL_NAME, ...SKILL_WRITE_TOOLS]),
+          writeBridge: bridge.tokenFor(item.id, kind === "full" ? [MEMORY_NOTE_TOOL_NAME, ...SKILL_WRITE_TOOLS] : [...SKILL_WRITE_TOOLS]),
           // And not EO's administrative server, which either adapter
           // otherwise gives every turn of the system agent's (invariant
           // 11): a review of its run writes memory and nothing else.

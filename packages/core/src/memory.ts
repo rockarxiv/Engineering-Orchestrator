@@ -513,8 +513,9 @@ export const LEARNING_REVIEW_TIMEOUT_MS = 5 * 60_000;
  * The run event that records how a run's learning review ended (EO-717),
  * appended to the run's log once the review — or the extraction it fell
  * back to — has returned. Not written for a run the review was never
- * asked about: one cancelled, interrupted, on a preview, with no memory
- * scope, or that called `memory_note` itself.
+ * asked about: one cancelled, interrupted, on a preview, or with no
+ * memory scope. A run that called `memory_note` itself is asked about
+ * skills alone (EO-731), and its event says so.
  */
 export const LEARNING_REVIEW_EVENT = "learning_review";
 
@@ -526,16 +527,32 @@ export const LEARNING_REVIEW_EVENT = "learning_review";
  *   failed, was stopped at `LEARNING_REVIEW_TIMEOUT_MS`, or EO shut down
  *   under it. `entryIds` are any notes written before it stopped.
  * - `fell_back` — the thread could not be forked (no thread, a lost one,
- *   a backend that cannot fork, or the fork refused), so `memory_extract`
- *   ran instead and its `memory_extracted` event says how that went.
+ *   a backend that cannot fork, or the fork refused). After a full
+ *   review `memory_extract` ran instead and its `memory_extracted` event
+ *   says how that went; after a skill-only one nothing ran in its place,
+ *   since extraction writes memory alone and the run wrote its own.
  */
 export const LEARNING_REVIEW_OUTCOMES = ["written", "nothing_to_save", "failed", "fell_back"] as const;
 export const LearningReviewOutcomeSchema = z.enum(LEARNING_REVIEW_OUTCOMES);
 export type LearningReviewOutcome = z.infer<typeof LearningReviewOutcomeSchema>;
 
+/**
+ * Which learning review a run was asked for (EO-731):
+ * - `full` — memory and skills: served `memory_read`, `memory_note` and
+ *   the skill tools.
+ * - `skills_only` — the skill half alone, for a run that called
+ *   `memory_note` itself: served `memory_read` and the skill tools, and
+ *   not `memory_note`.
+ */
+export const LEARNING_REVIEW_KINDS = ["full", "skills_only"] as const;
+export const LearningReviewKindSchema = z.enum(LEARNING_REVIEW_KINDS);
+export type LearningReviewKind = z.infer<typeof LearningReviewKindSchema>;
+
 export const LearningReviewEventSchema = z.object({
   type: z.literal(LEARNING_REVIEW_EVENT),
   outcome: LearningReviewOutcomeSchema,
+  /** Which review it was (EO-731). Defaulted for an event written before there was more than one: those were all full. */
+  review: LearningReviewKindSchema.default("full"),
   /** The memory entries the review turn wrote, in the order written. */
   entryIds: z.array(z.string()),
   /**

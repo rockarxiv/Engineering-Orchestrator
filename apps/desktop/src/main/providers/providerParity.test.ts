@@ -317,10 +317,11 @@ const CAPABILITIES = [
   },
   {
     name: "the learning review's skill tools",
-    what: "a fork handed a write credential naming memory_note and the skill tools has the backend start the `eo` server that lists skill_view, skill_create, skill_patch, skill_file_write and skill_file_remove, with the credential whole; and a resume of the same agent's thread — a run's own turn, its credential naming no writes — lists none of them, whatever the agent's grant (EO-718)",
+    what: "a fork handed a write credential naming memory_note and the skill tools has the backend start the `eo` server that lists skill_view, skill_create, skill_patch, skill_file_write and skill_file_remove, with the credential whole; and a resume of the same agent's thread — a run's own turn, its credential naming no writes — lists none of them, whatever the agent's grant (EO-718); and a skill-only review's fork, its credential naming the skill tools and not memory_note, lists the skill tools and memory_read and not memory_note, for an agent whose grant gives memory_note (EO-731)",
     same: {
       fork: { skillTools: [...SKILL_WRITE_TOOLS].sort(), credential: { writes: ["memory_note", ...SKILL_WRITE_TOOLS] } },
       resume: { skillTools: [], bridged: true },
+      skillsOnly: { skillTools: [...SKILL_WRITE_TOOLS].sort(), memory: ["memory_read"], credential: { writes: [...SKILL_WRITE_TOOLS] } },
     },
   },
   {
@@ -1188,11 +1189,16 @@ const REVIEW_FORK = (memoryScopes: unknown[]) => ({ cwd: "/tmp/wt", attachFrom: 
  */
 const SKILL_REVIEW_CREDENTIAL = { url: "http://127.0.0.1:1/agent-write", token: "item-1~skills.signed", writes: ["memory_note" as const, ...SKILL_WRITE_TOOLS] };
 const RUN_CREDENTIAL = { url: "http://127.0.0.1:1/agent-write", token: "item-1.signed" };
+/** A skill-only review's credential (EO-731), for a run that wrote its own notes: the skill tools and not memory_note. */
+const SKILLS_ONLY_CREDENTIAL = { url: "http://127.0.0.1:1/agent-write", token: "item-1~skills-only.signed", writes: [...SKILL_WRITE_TOOLS] };
 /** An agent granted every write a grant can give: comment and memory_note. */
 const GRANTED_EO_MCP = { serverPath: "/app/eoServer.mjs", enableCommentTool: true, enableMemoryNote: true };
 
-/** The skill tools the `eo` server started from this environment lists, and the writes its credential names — or, for a run's turn, that it was handed one at all. */
-function skillToolsServed(env: Record<string, string> | undefined, withCredential: boolean): unknown {
+/**
+ * The skill tools the `eo` server started from this environment lists, and the writes its credential names — or, for a run's turn, that it was handed one at all.
+ * With `withMemory`, the memory tools it lists as well (EO-731).
+ */
+function skillToolsServed(env: Record<string, string> | undefined, withCredential: boolean, withMemory = false): unknown {
   const bridge = env?.["EO_MCP_WRITE_BRIDGE"] === undefined ? null : (JSON.parse(env["EO_MCP_WRITE_BRIDGE"]) as { writes?: unknown });
   const started = (createEoMcpService as (options: Record<string, unknown>) => { tools: { name: string }[]; close(): void })({
     dbPath: undefined,
@@ -1201,8 +1207,10 @@ function skillToolsServed(env: Record<string, string> | undefined, withCredentia
     writeBridge: bridge,
   });
   try {
-    const skillTools = started.tools.map((tool) => tool.name).filter((name) => (SKILL_WRITE_TOOLS as readonly string[]).includes(name)).sort();
-    return withCredential ? { skillTools, credential: { writes: bridge?.writes ?? null } } : { skillTools, bridged: bridge !== null };
+    const names = started.tools.map((tool) => tool.name);
+    const skillTools = names.filter((name) => (SKILL_WRITE_TOOLS as readonly string[]).includes(name)).sort();
+    const memory = withMemory ? { memory: names.filter((name) => name === "memory_note" || name === "memory_read").sort() } : {};
+    return withCredential ? { skillTools, ...memory, credential: { writes: bridge?.writes ?? null } } : { skillTools, bridged: bridge !== null };
   } finally {
     started.close();
   }
@@ -2157,8 +2165,21 @@ const CLAUDE: Record<CapabilityName, Proof> = {
         writeBridge: RUN_CREDENTIAL,
       }),
     );
+    const skillsOnlyTurn = scripted([sdk.init({ session_id: "sess-fork" }), sdk.result({ result: "Patched a skill.", session_id: "sess-fork" })]);
+    const skillsOnly = await createClaudeProvider({ runQuery: skillsOnlyTurn.runQuery, eoMcp: GRANTED_EO_MCP }).fork!("thr-persisted", "review the run for skills", {
+      cwd: "/tmp/wt",
+      memoryScopes: [...MEMORY_SCOPES],
+      writeBridge: SKILLS_ONLY_CREDENTIAL,
+      withoutAdminServer: true,
+      withoutSkills: true,
+    });
+    if (skillsOnly.ok) await collect(skillsOnly.events);
     const eoEnv = (call: SdkCall | undefined) => (call?.options["mcpServers"] as Record<string, { env?: Record<string, string> }> | undefined)?.["eo"]?.env;
-    return { fork: skillToolsServed(eoEnv(forkTurn.calls[0]), true), resume: skillToolsServed(eoEnv(resumed.calls[0]), false) };
+    return {
+      fork: skillToolsServed(eoEnv(forkTurn.calls[0]), true),
+      resume: skillToolsServed(eoEnv(resumed.calls[0]), false),
+      skillsOnly: skillToolsServed(eoEnv(skillsOnlyTurn.calls[0]), true, true),
+    };
   },
 
   "non-fatal warning": async () => {
@@ -3456,6 +3477,15 @@ const CODEX: Record<CapabilityName, Proof> = {
     if (forked.ok) await collect(forked.events);
     const resuming = codexOver({ after: { "turn/start": plain("thr-persisted") } }, { eoMcp: GRANTED_EO_MCP });
     await collect(resuming.provider.resume("thr-persisted", "carry on", { cwd: "/tmp/wt", memoryScopes: [...MEMORY_SCOPES], writeBridge: RUN_CREDENTIAL }));
+    const skillsOnlyForking = codexOver({ forkId: "thr-fork", after: { "turn/start": plain("thr-fork") } }, { eoMcp: GRANTED_EO_MCP });
+    const skillsOnly = await skillsOnlyForking.provider.fork!("thr-persisted", "review the run for skills", {
+      cwd: "/tmp/wt",
+      memoryScopes: [...MEMORY_SCOPES],
+      writeBridge: SKILLS_ONLY_CREDENTIAL,
+      withoutAdminServer: true,
+      withoutSkills: true,
+    });
+    if (skillsOnly.ok) await collect(skillsOnly.events);
     const eoEnv = (launch: (typeof forking.fake.launches)[number] | undefined) =>
       Object.fromEntries(
         (launch?.args ?? [])
@@ -3463,7 +3493,11 @@ const CODEX: Record<CapabilityName, Proof> = {
           .map((argument) => argument.slice("mcp_servers.eo.env.".length))
           .map((pair) => [pair.slice(0, pair.indexOf("=")), JSON.parse(pair.slice(pair.indexOf("=") + 1)) as string]),
       );
-    return { fork: skillToolsServed(eoEnv(forking.fake.launches[0]), true), resume: skillToolsServed(eoEnv(resuming.fake.launches[0]), false) };
+    return {
+      fork: skillToolsServed(eoEnv(forking.fake.launches[0]), true),
+      resume: skillToolsServed(eoEnv(resuming.fake.launches[0]), false),
+      skillsOnly: skillToolsServed(eoEnv(skillsOnlyForking.fake.launches[0]), true, true),
+    };
   },
 
   "non-fatal warning": async () => {
