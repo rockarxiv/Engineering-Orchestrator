@@ -25,6 +25,7 @@ import {
   isDeliverableMcpServer,
   type AgentEvent,
   type AgentProvider,
+  type AgentForkResult,
   type AgentProviderResumeOptions,
   type AgentPrewarmTurn,
   type AgentProviderStartOptions,
@@ -49,6 +50,7 @@ import {
 import type { AdminMcpDispatch } from "../agentAttachments/adminDelivery.js";
 import { deliverableSkills, writeWorktreeSkills, worktreeSkillsPromptSection, type WorktreeSkillDelivery } from "../agentAttachments/worktreeSkills.js";
 import { codexSkillsRead, NO_SKILL_TEXTS, skillsOffered, skillTextsOf, type SkillTexts } from "./skillUsage.js";
+import { openedFork } from "./threadFork.js";
 import { agentMcpStdioConfig, eoMcpStdioConfig, type EoMcpServiceConfig } from "../mcp/serviceConfig.js";
 import { codexModelPrice, codexTurnCostCents, codexTurnCostMicrocents } from "./codexPricing.js";
 import { personCodexHome } from "./codexHome.js";
@@ -302,7 +304,7 @@ export interface CodexProviderOptions {
     withheldEnvironmentVariables?: readonly string[],
     /** The directory the turn runs in, for the administrative bearer (EO-700). Handed only to an agent given that server. */
     adminDirectory?: string,
-  ) => Pick<CodexClient, "startThread" | "resumeThread"> & Partial<Pick<CodexClient, "prewarm">>;
+  ) => Pick<CodexClient, "startThread" | "resumeThread"> & Partial<Pick<CodexClient, "prewarm" | "forkThread">>;
   /**
    * Seam for tests — the client a side call runs on (EO-477), built from
    * `codexSideCallClientOptions` in production. Its own seam because a
@@ -2408,7 +2410,7 @@ export function createCodexProvider(options: CodexProviderOptions = {}): AgentPr
     }
   }
 
-  async function* resumedTurn(threadId: string, message: string, resumeOpts: AgentProviderResumeOptions | undefined, reach: (turn: CodexTurn) => void): AsyncIterable<AgentEvent> {
+  async function* resumedTurn(threadId: string, message: string, resumeOpts: AgentProviderResumeOptions | undefined, reach: (turn: CodexTurn) => void, fork: boolean): AsyncIterable<AgentEvent> {
     // This agent's skills, put back where its own first turn said they
     // would be (EO-207).
     //
@@ -2457,7 +2459,14 @@ export function createCodexProvider(options: CodexProviderOptions = {}): AgentPr
     }
 
     async function* resumedWith(hook: TurnSearchHook | null): AsyncIterable<AgentEvent> {
-      const thread = clientFor(resumeOpts?.repositoryMcp, hook, resumeOpts?.attachFrom, resumeOpts?.memoryScopes, resumeOpts?.environmentVariables, resumeOpts?.writeBridge, resumeOpts?.withheldEnvironmentVariables, resumeOpts?.cwd).resumeThread(
+      const client = clientFor(resumeOpts?.repositoryMcp, hook, resumeOpts?.attachFrom, resumeOpts?.memoryScopes, resumeOpts?.environmentVariables, resumeOpts?.writeBridge, resumeOpts?.withheldEnvironmentVariables, resumeOpts?.cwd);
+      // A fork opens with `thread/fork` instead, and the turn runs on the
+      // copy it answers with (EO-716). A client built without it (a test's
+      // stand-in) cannot fork, and says so rather than resuming the
+      // original, which is the one thing a fork must never write to.
+      const openThread = fork ? client.forkThread?.bind(client) : client.resumeThread.bind(client);
+      if (!openThread) throw new Error("This Codex client cannot fork a thread.");
+      const thread = openThread(
         threadId,
         threadOptionsFrom(
           {
@@ -2536,7 +2545,16 @@ export function createCodexProvider(options: CodexProviderOptions = {}): AgentPr
     },
 
     resume(threadId: string, message: string, resumeOpts?: AgentProviderResumeOptions): InterruptibleStream<AgentEvent> {
-      return reachableTurn((reach) => lostThreadTranslated(threadId, message, resumeOpts, reach));
+      return reachableTurn((reach) => lostThreadTranslated(threadId, message, resumeOpts, reach, false));
+    },
+
+    fork(threadId: string, message: string, forkOpts?: AgentProviderResumeOptions): Promise<AgentForkResult> {
+      // The app-server's own fork: `thread/fork` copies the thread and
+      // answers with the copy's id, and the turn is started on the copy
+      // (EO-716). A missing thread is refused in the words a resume's is,
+      // "no rollout found for thread id" — measured on 0.166.0 — so it is
+      // translated the same way and answered as `thread_not_found`.
+      return openedFork(threadId, reachableTurn((reach) => lostThreadTranslated(threadId, message, forkOpts, reach, true)));
     },
 
     dropWarm(): void {
@@ -2714,7 +2732,7 @@ export function createCodexProvider(options: CodexProviderOptions = {}): AgentPr
     }
   }
 
-  async function* lostThreadTranslated(threadId: string, message: string, resumeOpts: AgentProviderResumeOptions | undefined, reach: (turn: CodexTurn) => void): AsyncIterable<AgentEvent> {
+  async function* lostThreadTranslated(threadId: string, message: string, resumeOpts: AgentProviderResumeOptions | undefined, reach: (turn: CodexTurn) => void, fork: boolean): AsyncIterable<AgentEvent> {
     // "This thread is gone" told apart from every other way a resume
     // can fail (EO-93). Only the recognised sentence is translated;
     // anything else leaves here exactly as it arrived, which is what
@@ -2726,7 +2744,7 @@ export function createCodexProvider(options: CodexProviderOptions = {}): AgentPr
     // which `resumedTurn` re-throws with the backend's own words so
     // that both arrive here.
     try {
-      yield* resumedTurn(threadId, message, resumeOpts, reach);
+      yield* resumedTurn(threadId, message, resumeOpts, reach, fork);
     } catch (error) {
       if (!isMissingCodexSession(error)) throw error;
       throw new ThreadNotFoundError({ threadId, provider: PROVIDER, cause: error });

@@ -12,6 +12,7 @@ import {
   withAliasedToolNames,
   type AgentEvent,
   type AgentProvider,
+  type AgentForkResult,
   type AgentProviderResumeOptions,
   type AgentPrewarmTurn,
   PREWARM_IDLE_MS,
@@ -39,6 +40,7 @@ import { withAttachmentNote } from "./attachmentNote.js";
 import { withSkillsSection } from "../agentAttachments/skillsPrompt.js";
 import { readToolDirectoryServers, TOOL_PLUGIN_NAME, toolDirectoryMcpConfigPath, toolDirectoryServerToolPrefixes, toolDirectorySkillNames, toolDirectorySkillsPromptSection } from "../agentAttachments/pluginDirectory.js";
 import { claudeSkillLoaded, leadingWith, skillsOffered } from "./skillUsage.js";
+import { openedFork } from "./threadFork.js";
 import type { SearchNudge } from "./searchNudge.js";
 import type { AdminMcpDispatch } from "../agentAttachments/adminDelivery.js";
 
@@ -2529,6 +2531,28 @@ export function createClaudeProvider(options: ClaudeProviderOptions = {}): Agent
     return stream(prompt, sdkOptions, sdk, interceptions, processes, admin?.release, adopted, showWords);
   };
 
+  /** A turn on a session already written: the session itself, or (`fork`) a copy of it the CLI makes for this turn. */
+  const resumed = (threadId: string, message: string, resumeOpts: AgentProviderResumeOptions | undefined, fork: boolean): InterruptibleStream<AgentEvent> =>
+    leadingWith(
+      offeredSkills(resumeOpts?.toolDirectory),
+      translatingLostSession(
+        threadId,
+        deferred(async () => {
+          const sdk = await sdkFor();
+          // A resumed turn intercepts exactly as a fresh one does, and is
+          // counted the same way — its firings are this row's, not the
+          // ones the session opened with (EO-168).
+          const interceptions = interceptionQueue();
+          const admin = options.admin?.(resumeOpts?.cwd) ?? null;
+          const sdkOptions = withAdminLease(admin, () => turnOptions(resumeSpec(threadId, resumeOpts, interceptions.record), admin));
+          // Before `open`, which keys a warm query on these options: a
+          // warm resume of this session is never adopted by a fork of it.
+          if (fork) sdkOptions.forkSession = true;
+          return open(sdk, withAttachmentNote(message, resumeOpts?.attachments), sdkOptions, interceptions, admin, resumeOpts?.warmKey, resumeOpts?.signal, resumeOpts?.streamDeltas === true);
+        }),
+      ),
+    );
+
   return {
     start(opts: AgentProviderStartOptions): InterruptibleStream<AgentEvent> {
       // The skills the directory offers, named in the turn that opens the
@@ -2572,16 +2596,16 @@ export function createClaudeProvider(options: ClaudeProviderOptions = {}): Agent
       // and cannot assume a thread it stored is still there (EO-93).
       // A resumed turn is handed the directory's skills again, so it is
       // given them as a fresh one is (EO-715).
-      return leadingWith(offeredSkills(resumeOpts?.toolDirectory), translatingLostSession(threadId, deferred(async () => {
-        const sdk = await sdkFor();
-        // A resumed turn intercepts exactly as a fresh one does, and is
-        // counted the same way — its firings are this row's, not the
-        // ones the session opened with (EO-168).
-        const interceptions = interceptionQueue();
-        const admin = options.admin?.(resumeOpts?.cwd) ?? null;
-        const sdkOptions = withAdminLease(admin, () => turnOptions(resumeSpec(threadId, resumeOpts, interceptions.record), admin));
-        return open(sdk, withAttachmentNote(message, resumeOpts?.attachments), sdkOptions, interceptions, admin, resumeOpts?.warmKey, resumeOpts?.signal, resumeOpts?.streamDeltas === true);
-      })));
+      return resumed(threadId, message, resumeOpts, false);
+    },
+
+    fork(threadId: string, message: string, forkOpts?: AgentProviderResumeOptions): Promise<AgentForkResult> {
+      // The SDK's own fork: `resume` with `forkSession`, which has the CLI
+      // copy the session into a new one, say the copy's id in `init`, and
+      // write this turn to the copy alone (EO-716). A missing session is
+      // refused in the same words a resume's is, so it is translated the
+      // same way and answered as `thread_not_found`.
+      return openedFork(threadId, resumed(threadId, message, forkOpts, true));
     },
 
     dropWarm,

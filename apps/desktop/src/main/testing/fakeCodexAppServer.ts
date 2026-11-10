@@ -19,6 +19,8 @@ import { nodeScript } from "./nodeScript.js";
 export interface FakeAppServerScenario {
   /** The id `thread/start` answers with. */
   threadId?: string;
+  /** The id `thread/fork` answers with: the copy's (EO-716). */
+  forkId?: string;
   /** The id `turn/start` answers with. */
   turnId?: string;
   /**
@@ -33,8 +35,8 @@ export interface FakeAppServerScenario {
    * What to send after answering a method, in order. `{ exit }` ends the
    * process there, writing `stderr` first; `{ request }` sends a
    * server→client request. The string `"$THREAD"` anywhere in a
-   * notification becomes the id of the thread this process opened or
-   * resumed, so one scenario serves both. `{ wait }` pauses that many
+   * notification becomes the id of the thread this process opened,
+   * resumed or forked into, so one scenario serves all three. `{ wait }` pauses that many
    * milliseconds before the next entry — a notification the real server
    * sends a moment later, with a request free to arrive in between.
    * `{ fireHook }` posts that `PreToolUse` payload to the listener EO
@@ -73,6 +75,7 @@ const defaults = (message) => {
     case "initialize": return { userAgent: "fake/0.0.0", codexHome: "/tmp/fake-codex-home", platformFamily: "unix", platformOs: "linux" };
     case "thread/start": return { thread: { id: scenario.threadId || "thr-fake" }, model: message.params.model || scenario.model || "gpt-6.1-sol", modelProvider: "openai" };
     case "thread/resume": return { thread: { id: message.params.threadId }, model: message.params.model || scenario.model || "gpt-6.1-sol", modelProvider: "openai" };
+    case "thread/fork": return { thread: { id: scenario.forkId || "thr-fork" }, model: message.params.model || scenario.model || "gpt-6.1-sol", modelProvider: "openai" };
     case "turn/start": return { turn: { id: scenario.turnId || "turn-1", items: [], status: "inProgress", error: null } };
     default: return {};
   }
@@ -83,6 +86,7 @@ lines.on("line", async (line) => {
   const message = JSON.parse(line);
   if (message.method === undefined || message.id === undefined) return;
   if (message.method === "thread/resume") thread = message.params.threadId;
+  if (message.method === "thread/fork") thread = scenario.forkId || "thr-fork";
   const reply = (scenario.replies || {})[message.method];
   if (reply && reply.error) send({ id: message.id, error: reply.error });
   else send({ id: message.id, result: reply ? reply.result : defaults(message) });

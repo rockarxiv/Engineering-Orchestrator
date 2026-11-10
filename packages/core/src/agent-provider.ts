@@ -1196,7 +1196,46 @@ export interface AgentProvider {
    * `providerParity.test.ts` holds the real two to the same answer.
    */
   sideCall?: (opts: AgentSideCallOptions) => AsyncIterable<AgentEvent>;
+  /**
+   * Copies a thread into a new one carrying the same history, and sends
+   * `message` as a turn on the copy (EO-716) — Claude's `forkSession`
+   * (`resume` with `forkSession: true`), Codex's `thread/fork`.
+   *
+   * The original thread is not written to: nothing said on the fork,
+   * and nothing the fork's turn does to its own history, is seen by a
+   * later `resume` of `threadId`. That is the whole point — a review of
+   * a finished run reads everything the run saw without the item's own
+   * thread carrying the review into its next dispatch.
+   *
+   * Resolves once the backend has opened the fork, with its id and the
+   * turn's events (beginning with that `thread_started`, as `start`'s
+   * do). A thread that cannot be forked — gone, or refused — resolves to
+   * a failure naming it, and never rejects: the caller's fallback is a
+   * branch, not a catch. What goes wrong once the fork's turn is under
+   * way arrives in its stream, as any turn's does.
+   *
+   * `opts` are a resume's, for a resume's reasons: the fork's turn
+   * spawns the backend again, in the same worktree, with the same tool
+   * surface the thread was opened with.
+   *
+   * Optional because a backend can lack it — the demo provider has no
+   * threads to copy. Both real adapters implement it, and
+   * `providerParity.test.ts` holds them to it (invariant 12).
+   */
+  fork?: (threadId: string, message: string, opts?: AgentProviderResumeOptions) => Promise<AgentForkResult>;
 }
+
+/**
+ * What `AgentProvider.fork` answers (EO-716).
+ *
+ * `thread_not_found` is the backend saying it has no such thread — the
+ * same answer a resume of it would have thrown as `ThreadNotFoundError`.
+ * `failed` is every other way the fork was not opened, with the
+ * backend's words in `message`.
+ */
+export type AgentForkResult =
+  | { ok: true; threadId: string; events: InterruptibleStream<AgentEvent> }
+  | { ok: false; reason: "thread_not_found" | "failed"; threadId: string; message: string };
 
 /**
  * The brand `isThreadNotFound` recognises.

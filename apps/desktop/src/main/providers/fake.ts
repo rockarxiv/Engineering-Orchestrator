@@ -1,6 +1,7 @@
 import {
   AGENT_WRITE_TOOLS,
   type AgentEvent,
+  type AgentForkResult,
   type AgentProvider,
   type AgentProviderResumeOptions,
   type AgentProviderStartOptions,
@@ -218,6 +219,22 @@ export function createFakeProvider(script: FakeProviderScript): AgentProvider {
     async *resume(threadId: string, _message: string, opts?: AgentProviderResumeOptions): AsyncIterable<AgentEvent> {
       const startIndex = nextIndexByThread.get(threadId) ?? 0;
       yield* runFrom(threadId, startIndex, opts?.signal, opts?.writeBridge);
+    },
+    // A fork is a new thread that carries on from where the forked one
+    // got to (EO-716): its own progress, copied, so what it plays is
+    // never played again by a resume of the original. A thread this
+    // provider never started is refused, as a real backend refuses one.
+    async fork(threadId: string, _message: string, opts?: AgentProviderResumeOptions): Promise<AgentForkResult> {
+      const from = nextIndexByThread.get(threadId);
+      if (from === undefined) return { ok: false, reason: "thread_not_found", threadId, message: `The fake provider has no thread "${threadId}" to fork.` };
+      threadCounter += 1;
+      const forkId = `fake-thread-${threadCounter}`;
+      nextIndexByThread.set(forkId, from);
+      async function* events(): AsyncIterable<AgentEvent> {
+        yield { type: "thread_started", threadId: forkId };
+        yield* runFrom(forkId, from!, opts?.signal, opts?.writeBridge);
+      }
+      return { ok: true, threadId: forkId, events: events() };
     },
     // A side call plays the whole script once, from the start, on a
     // thread nobody can resume (EO-477): no `thread_started`, because a
