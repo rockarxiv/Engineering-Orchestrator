@@ -42,3 +42,5 @@ catalog:
   "@dnd-kit/modifiers": 9.0.0
   "@dnd-kit/utilities": 3.2.2
   "react-virtuoso": 4.18.11
+  "react-markdown": 10.1.0
+  "remark-gfm": 4.0.1

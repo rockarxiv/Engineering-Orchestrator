@@ -43,6 +43,13 @@ describe("Markdown safety", () => {
     expect(screen.getByText(/click me/)).toBeInTheDocument();
   });
 
+  it("refuses a javascript: target given by reference, rendering the link's words as text", () => {
+    const { container } = render(<Markdown>{"[click me][r]\n\n[r]: javascript:alert(1)"}</Markdown>);
+
+    expect(screen.queryByRole("link")).toBeNull();
+    expect(container.querySelector("p")).toHaveTextContent("click me");
+  });
+
   it("links http(s) targets, opening them without handing over the opener", () => {
     render(<Markdown>{`see [the docs](https://example.com/x)`}</Markdown>);
 
@@ -142,6 +149,112 @@ describe("Markdown rendering", () => {
   it("renders empty input without throwing", () => {
     const { container } = render(<Markdown>{""}</Markdown>);
     expect(container.firstChild).toBeTruthy();
+  });
+});
+
+describe("Markdown as CommonMark and GFM read it (EO-707)", () => {
+  it("keeps a loose numbered list one list", () => {
+    const { container } = render(<Markdown>{"1. a\n\n2. b\n\n3. c"}</Markdown>);
+
+    expect(container.querySelectorAll("ol")).toHaveLength(1);
+    expect(container.querySelectorAll("ol > li")).toHaveLength(3);
+  });
+
+  it("keeps an item's continuation line in the item and the list unbroken", () => {
+    const { container } = render(<Markdown>{"1. first\n   still the first\n2. second"}</Markdown>);
+
+    expect(container.querySelectorAll("ol")).toHaveLength(1);
+    expect(container.querySelectorAll("ol > li")).toHaveLength(2);
+    expect(container.querySelector("li")).toHaveTextContent("first still the first");
+  });
+
+  it("starts a numbered list at the number typed", () => {
+    const { container } = render(<Markdown>{"3. a\n4. b"}</Markdown>);
+
+    expect(container.querySelector("ol")).toHaveAttribute("start", "3");
+    expect(container.querySelectorAll("ol > li")).toHaveLength(2);
+  });
+
+  it("leaves underscores inside a word alone", () => {
+    const { container } = render(<Markdown>{"something_something_something and max_retry_count"}</Markdown>);
+
+    expect(container.querySelector("em")).toBeNull();
+    expect(container.querySelector("p")).toHaveTextContent("something_something_something and max_retry_count");
+  });
+
+  it("still reads emphasis and strong emphasis standing on their own", () => {
+    const { container } = render(<Markdown>{"_one_ and *two* and **three**"}</Markdown>);
+
+    expect([...container.querySelectorAll("em")].map((element) => element.textContent)).toEqual(["one", "two"]);
+    expect(container.querySelector("strong")).toHaveTextContent("three");
+  });
+
+  it("strikes through with two tildes and not with one", () => {
+    const { container } = render(<Markdown>{"~~gone~~ but ~/a and ~/b stay"}</Markdown>);
+
+    expect([...container.querySelectorAll("del")].map((element) => element.textContent)).toEqual(["gone"]);
+    expect(container.querySelector("p")).toHaveTextContent("gone but ~/a and ~/b stay");
+  });
+
+  it("draws a tilde fence as a code block", () => {
+    const { container } = render(<Markdown>{"~~~sh\npnpm dev\n~~~"}</Markdown>);
+
+    expect(container.querySelectorAll("pre")).toHaveLength(1);
+    expect(container.querySelector("pre code")?.textContent).toBe("pnpm dev");
+    expect(screen.getByText("sh")).toBeInTheDocument();
+  });
+
+  it("draws level five and six headings as headings", () => {
+    render(<Markdown>{"##### Five\n\n###### Six"}</Markdown>);
+
+    expect(screen.getByRole("heading", { level: 5, name: "Five" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 6, name: "Six" })).toBeInTheDocument();
+  });
+
+  it("shows an image as the text it was typed as, and loads nothing", () => {
+    const { container } = render(<Markdown>{"![a chart](https://example.com/chart.png)"}</Markdown>);
+
+    expect(container.querySelector("img")).toBeNull();
+    expect(container.querySelector("p")).toHaveTextContent("![a chart](https://example.com/chart.png)");
+  });
+
+  it.each([
+    ["an inline image in an inline link", "[![secret](https://example.com/leak)](https://example.com)", "![secret](https://example.com/leak)"],
+    ["a reference image in an inline link", "[![secret][img]](https://example.com)\n\n[img]: https://example.com/leak", "![secret][img]"],
+    ["an inline image in a reference link", "[![secret](https://example.com/leak)][site]\n\n[site]: https://example.com", "![secret](https://example.com/leak)"],
+    ["a reference image in a reference link", "[![secret][img]][site]\n\n[img]: https://example.com/leak\n[site]: https://example.com", "![secret][img]"],
+  ])("shows %s as the text it was typed as, and loads nothing", (_name, source, literal) => {
+    const { container } = render(<Markdown>{source}</Markdown>);
+
+    expect(container.querySelector("img")).toBeNull();
+    // Still a link, drawn as the image's source text.
+    expect(screen.getByRole("link")).toHaveAttribute("href", "https://example.com");
+    expect(screen.getByRole("link")).toHaveTextContent(literal);
+  });
+
+  it("does not find item references inside a link's text, even around an image", () => {
+    renderWithItemReferences("[EO-1 ![x](https://example.com/leak)](https://example.com)");
+
+    expect(screen.getAllByRole("link")).toHaveLength(1);
+    expect(screen.getByRole("link")).toHaveAttribute("href", "https://example.com");
+    expect(document.querySelector("img")).toBeNull();
+  });
+
+  it("links a bare http(s) URL, and shows a bare email address as text", () => {
+    const { container } = render(<Markdown>{"see https://example.com/x or write to someone@example.com"}</Markdown>);
+
+    expect(screen.getByRole("link", { name: "https://example.com/x" })).toHaveAttribute("target", "_blank");
+    expect(screen.getAllByRole("link")).toHaveLength(1);
+    expect(container.querySelector("p")).toHaveTextContent("write to someone@example.com");
+  });
+
+  it("shows raw HTML and a javascript: link as plain text", () => {
+    const { container } = render(<Markdown>{`<img src=x onerror="alert(1)">\n\n[x](javascript:alert(1))`}</Markdown>);
+
+    expect(container.querySelector("img")).toBeNull();
+    expect(container.querySelector("a")).toBeNull();
+    expect(screen.getByText(`<img src=x onerror="alert(1)">`)).toBeInTheDocument();
+    expect(screen.getByText("[x](javascript:alert(1))")).toBeInTheDocument();
   });
 });
 
@@ -303,7 +416,9 @@ describe("MarkdownItemReferenceProvider", () => {
 
 describe("Markdown tables, rules and code blocks", () => {
   it("renders a table with its header, rows and alignment", () => {
-    render(<Markdown>{"Before\n| Step | Owner | Count |\n| --- | :---: | ---: |\n| Draft | **Anna** | 3 |\n| Ship | `bot` | 12 |\nAfter"}</Markdown>);
+    // The blank line ends the table: in GFM a line with no pipe directly under
+    // a table is one more row of it (EO-707).
+    render(<Markdown>{"Before\n| Step | Owner | Count |\n| --- | :---: | ---: |\n| Draft | **Anna** | 3 |\n| Ship | `bot` | 12 |\n\nAfter"}</Markdown>);
     const table = screen.getByRole("table");
     expect(screen.getAllByRole("columnheader").map((cell) => cell.textContent)).toEqual(["Step", "Owner", "Count"]);
     expect(screen.getAllByRole("row")).toHaveLength(3);
@@ -314,11 +429,13 @@ describe("Markdown tables, rules and code blocks", () => {
     expect(screen.getByText("After")).toBeInTheDocument();
   });
 
-  it("does not make a table of a line with a pipe over a bare rule, and draws an underlined line as text over a rule", () => {
+  // A line underlined with `---` is a heading in CommonMark (EO-707); the
+  // older parser drew it as text over a rule.
+  it("does not make a table of a line with a pipe over a bare rule, and draws an underlined line as a heading", () => {
     const { container } = render(<Markdown>{"Total |\n---\n\nHeading\n---"}</Markdown>);
     expect(screen.queryByRole("table")).toBeNull();
-    expect(container.querySelectorAll("hr")).toHaveLength(2);
-    expect(screen.getByText("Heading")).toBeInTheDocument();
+    expect(container.querySelectorAll("hr")).toHaveLength(0);
+    expect(screen.getAllByRole("heading", { level: 2 }).map((heading) => heading.textContent)).toEqual(["Total |", "Heading"]);
   });
 
   it("keeps a line with a pipe and no separator under it as prose", () => {
