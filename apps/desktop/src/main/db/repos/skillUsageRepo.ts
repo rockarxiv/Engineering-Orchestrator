@@ -1,7 +1,7 @@
 import { sql } from "drizzle-orm";
-import { NO_SKILL_USAGE, SKILL_LOADED_EVENT, SKILLS_DELIVERED_EVENT, type SkillUsage } from "@eo/core";
+import { NO_SKILL_USAGE, SKILL_LOADED_EVENT, SKILLS_DELIVERED_EVENT, SKILLS_SETTLED_EVENT, type SkillUsage } from "@eo/core";
 import type { Db } from "../client.js";
-import { runEvents, skillVersions } from "../schema.js";
+import { runEvents, runs, skillVersions } from "../schema.js";
 
 /**
  * How each skill has been used (EO-715): the runs given it, the runs that
@@ -49,9 +49,13 @@ export function skillLoadsQuery() {
 }
 
 /**
- * The runs given each skill, and how many of them were given it after
- * its newest load or restore — all of them, for a skill that has had
- * neither. A restore starts the stretch again (EO-720): a person bringing
+ * The runs given each skill, and how many of the finished ones were given
+ * it after its newest load or restore — every finished one, for a skill
+ * that has had neither. Finished is settled (EO-720): a run that has
+ * appended `skills_settled`, which it does after every load it could
+ * make, so a run still going — or one whose transcript is still reaching
+ * the organisation's record a page at a time — never ages a skill it may
+ * yet load. A restore starts the stretch again (EO-720): a person bringing
  * a skill back from the archive is not to see it archived again by the
  * runs that archived it. Both kinds of run event are read through their
  * partial indexes, for the reason `skillLoadsQuery` gives.
@@ -63,6 +67,9 @@ export function skillDeliveriesQuery() {
     ),
     loads as materialized (
       select ts, payload from ${runEvents} where type = ${sql.raw(`'${SKILL_LOADED_EVENT}'`)}
+    ),
+    settled as materialized (
+      select run_id from ${runEvents} where type = ${sql.raw(`'${SKILLS_SETTLED_EVENT}'`)}
     ),
     restores as (
       select ${skillVersions.skillId} as id, ${skillVersions.createdAt} as at from ${skillVersions} where ${skillVersions.action} = 'restore'
@@ -76,12 +83,47 @@ export function skillDeliveriesQuery() {
     )
     select given.value as "id",
       count(distinct d.run_id) as "runs",
-      count(distinct case when newest.at is null or d.ts > newest.at then d.run_id end) as "since"
+      count(distinct case when (newest.at is null or d.ts > newest.at) and d.run_id in (select run_id from settled) then d.run_id end) as "since"
     from deliveries d
     join json_each(d.payload, '$.skillIds') given
     left join newest on newest.id = given.value
     group by given.value
   `;
+}
+
+/**
+ * How long after a run ended its transcript may still be arriving at the
+ * organisation's record without its `skills_settled` (EO-720): a desktop
+ * sends one a page at a time, and a run's load may be on a page still to
+ * come. Past it, a run with no settled event is taken never to have one —
+ * it ended before EO wrote them, or its process died before it could —
+ * and no longer holds anything back.
+ */
+export const SKILL_SETTLE_GRACE_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * The skills a run that may yet load them was given (EO-720): a run that
+ * has not settled, and whose row says it is still queued, running or
+ * waiting on a person, or ended less than `SKILL_SETTLE_GRACE_MS` ago —
+ * its transcript, loads included, may still be on its way. None of them
+ * is archived meanwhile, whatever the settled runs say.
+ */
+export function skillsGivenToRunsInFlight(db: Db, now: number = Date.now()): Set<string> {
+  const rows = db.all<{ id: string }>(sql`
+    with deliveries as materialized (
+      select run_id, payload from ${runEvents} where type = ${sql.raw(`'${SKILLS_DELIVERED_EVENT}'`)}
+    ),
+    settled as materialized (
+      select run_id from ${runEvents} where type = ${sql.raw(`'${SKILLS_SETTLED_EVENT}'`)}
+    )
+    select distinct given.value as "id"
+    from deliveries d
+    join ${runs} r on r.id = d.run_id
+    join json_each(d.payload, '$.skillIds') given
+    where d.run_id not in (select run_id from settled)
+      and (r.status in ('queued', 'running', 'awaiting_input') or coalesce(r.ended_at, r.started_at) > ${now - SKILL_SETTLE_GRACE_MS})
+  `);
+  return new Set(rows.map((row) => row.id));
 }
 
 /**

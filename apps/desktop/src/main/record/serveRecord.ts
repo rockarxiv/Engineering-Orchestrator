@@ -1,5 +1,5 @@
 import {
-  SKILLS_DELIVERED_EVENT,
+  SKILLS_SETTLED_EVENT,
   DEFAULT_MEMORY_SCOPE_MAX_CHARS,
   DEFAULT_MEMORY_SCOPE_MAX_ENTRIES,
   MAX_RECORD_CONSOLIDATIONS_PAGE,
@@ -191,7 +191,7 @@ export interface ServeRecordContext {
   /**
    * The guardrails an agent's unused skill is aged by (EO-720), read per
    * request. A project this record holds has its skills archived here,
-   * where they are written, when a device's runs report delivering them
+   * where they are written, when a device's run settles its skill usage
    * (`serveApply`). Absent, no pass runs — a test that is not about it.
    */
   skillAgeing?: () => SkillAgeing;
@@ -749,17 +749,18 @@ export async function serveApply(
   payload: IpcPayload<"record:apply">,
 ): Promise<IpcResponse<"record:apply">> {
   const results: RecordCommandResult[] = [];
-  // The projects whose skills a run of this batch reported delivering (EO-720).
-  const delivered = new Set<Uuid>();
+  // The projects a run of this batch settled its skill usage on (EO-720):
+  // its transcript reaches here in order, so by then every load it made has.
+  const settled = new Set<Uuid>();
   for (const command of payload.commands) {
     const result = await applyOne(context, payload.deviceId, command);
     results.push(result);
-    if (result.applied && command.kind === "runEvents" && command.events.some((event) => event.type === SKILLS_DELIVERED_EVENT)) {
+    if (result.applied && command.kind === "runEvents" && command.events.some((event) => event.type === SKILLS_SETTLED_EVENT)) {
       const projectId = getItem(context.db, command.itemId as Uuid)?.projectId ?? null;
-      if (projectId !== null && heldHere(context.db, projectId)) delivered.add(projectId);
+      if (projectId !== null && heldHere(context.db, projectId)) settled.add(projectId);
     }
   }
-  await archiveDeliveredSkills(context, delivered);
+  await archiveSettledSkills(context, settled);
   // A device's work landing on the record is a change every other
   // device and every open browser has to hear about — that is the whole
   // of "two desktops see the same board" (EO-324). Announced here
@@ -775,19 +776,28 @@ export async function serveApply(
 }
 
 /**
- * The pass over unused agent skills (EO-720) for each project whose runs
- * just reported delivering skills: the record is where those skills are
+ * The pass over unused agent skills (EO-720) for each project a run of
+ * the batch settled on: the record is where those projects' skills are
  * written, so it is where they are archived, as a version authored by EO,
  * with the note on the project's thread — and the archived copy reaches
- * every replica on its next pull. A pass that fails is said in the log
- * and changes nothing; the next delivery asks again.
+ * every replica on its next pull. Triggered by a run's `skills_settled`,
+ * never by its delivery: a transcript arrives a page at a time, and the
+ * run's loads are in it only once the settled event is. A pass that fails
+ * is said in the log and changes nothing; the next settled run asks again.
  */
-async function archiveDeliveredSkills(context: ServeRecordContext, projects: ReadonlySet<Uuid>): Promise<void> {
+async function archiveSettledSkills(context: ServeRecordContext, projects: ReadonlySet<Uuid>): Promise<void> {
   const ageing = context.skillAgeing?.();
   if (ageing === undefined) return;
   for (const projectId of projects) {
     try {
-      await archiveUnusedSkills({ db: context.db, projectId, ageing, projectThread: (id) => context.record.projectThread(id) });
+      await archiveUnusedSkills({
+        db: context.db,
+        projectId,
+        reach: "all",
+        ageing,
+        projectThread: (id) => context.record.projectThread(id),
+        postComment: (comment) => context.record.postComment(comment),
+      });
     } catch (error) {
       console.warn(`[eo] the pass archiving unused agent skills of project ${projectId} failed: ${error instanceof Error ? error.message : String(error)}`);
     }

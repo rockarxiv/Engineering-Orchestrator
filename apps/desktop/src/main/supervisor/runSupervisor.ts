@@ -48,9 +48,11 @@ import {
   MEMORY_USED_EVENT,
   SKILL_LOADED_EVENT,
   SKILLS_DELIVERED_EVENT,
+  SKILLS_SETTLED_EVENT,
   type SkillLoadAgentEvent,
   type SkillLoadedEvent,
   type SkillsDeliveredEvent,
+  type SkillsSettledEvent,
   type SkillsOfferedEvent,
   MEMORY_EXTRACTED_EVENT,
   LEARNING_REVIEW_EVENT,
@@ -280,7 +282,7 @@ import { runSubject } from "../modules/runName.js";
 import { createSideCallSlots } from "../sideCalls/slots.js";
 import { endAllProcessTrees } from "../process/processTree.js";
 import { createMemoryConsolidator, type MemoryConsolidatorOptions } from "../memory/consolidator.js";
-import { archiveUnusedSkills, archivesSkillsOf } from "../skills/archival.js";
+import { archiveReachOf, archiveUnusedSkills } from "../skills/archival.js";
 import { currentWatch, markCheckInFlight, ownerMention, recordQuietCheck, waitingLine, watchArrival, watchHold, watchRoundTrips, WATCH_ROUTED_REASON, WATCH_VERIFICATION_FAILED_REASON } from "./watches.js";
 import { agentMentionChain } from "./escalation.js";
 
@@ -2818,24 +2820,28 @@ export function createRunSupervisor(
    * runs in a row without a load are archived, and its thread is told.
    * The guardrails are read now, so a change to them takes effect here.
    *
-   * Not for a project the organisation's record holds, on a desktop: its
-   * skills are the record's, which runs the pass when this run's events
-   * reach it (`serveApply`) — an archive in this replica would be undone
-   * by the record's next copy. What the pass could not do it says on the
-   * project's thread itself, or leaves for the next pass (`archival.ts`).
+   * For a project the organisation's record holds, a desktop archives
+   * only its own global skills: the project's are the record's, which
+   * runs its pass when this run's settled transcript reaches it
+   * (`serveApply`) — an archive in this replica would be undone by the
+   * record's next copy. The note goes through the record, onto the
+   * project's one thread. What the pass could not do it says there
+   * itself, or leaves for the next pass (`archival.ts`).
    */
   async function archiveAfterRun(item: Item): Promise<void> {
     if (shuttingDown) return;
     const projectId = (getItem(db, item.id) ?? item).projectId;
     if (projectId === null) return;
-    if (!archivesSkillsOf(db, projectId, runsWhere === "server")) return;
+
     try {
       const guards = readGuards();
       await archiveUnusedSkills({
         db,
         projectId,
+        reach: archiveReachOf(db, projectId, runsWhere === "server"),
         ageing: { staleAfterRuns: guards.skillStaleAfterRuns, archiveAfterRuns: guards.skillArchiveAfterRuns },
         projectThread: (id) => record.projectThread(id),
+        postComment: (comment) => record.postComment(comment),
         now,
       });
     } catch (error) {
@@ -4119,6 +4125,32 @@ export function createRunSupervisor(
     buffer.append(runId, SKILL_LOADED_EVENT, loaded);
   }
 
+  /**
+   * Closes a run's skill usage (EO-720): one `skills_settled` event, after
+   * every `skill_loaded` this run could write, for a run that was given
+   * any. Only a settled run counts towards a skill's stretch without a
+   * load, and the organisation's record runs its archival pass when one
+   * arrives — by then every load of the run has, since a transcript
+   * reaches it in order. Through the run's buffer where it still has one,
+   * for `recordSent`'s reason.
+   */
+  function settleSkillUsage(runId: Uuid): void {
+    const given = runSkills.get(runId);
+    if (given === undefined || given.bySlug.size === 0) return;
+    const settled: SkillsSettledEvent = { type: SKILLS_SETTLED_EVENT };
+    try {
+      const buffer = activeEventBuffers.get(runId);
+      if (buffer) {
+        buffer.append(runId, SKILLS_SETTLED_EVENT, settled);
+        buffer.flush();
+      } else {
+        record.appendRunEvent(runId, SKILLS_SETTLED_EVENT, settled);
+      }
+    } catch (error) {
+      console.warn(`[eo] the end of run ${runId}'s skill usage could not be recorded: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
   async function processStream(
     stream: InterruptibleStream<AgentEvent>,
     ctx: {
@@ -5140,6 +5172,7 @@ export function createRunSupervisor(
         closeAbandonedRun(run.id, item.id);
         lastKnownThreadIds.delete(run.id);
         runActivity.delete(run.id);
+        settleSkillUsage(run.id);
         runSkills.delete(run.id);
         capturedRuns.delete(run.id);
       }

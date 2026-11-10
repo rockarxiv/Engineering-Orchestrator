@@ -3,6 +3,7 @@ import {
   SKILL_READ_TOOL_NAME,
   SkillDraftSchema,
   SKILLS_DELIVERED_EVENT,
+  SKILLS_SETTLED_EVENT,
   type Agent,
   type AgentEvent,
   type AgentProvider,
@@ -196,7 +197,11 @@ describe("archiving unused agent skills after a dispatch", () => {
     writes.serve(supervisor);
     await supervisor.runOnce();
 
-    expect(listRunsForItem(handle.db, item.id)).toHaveLength(1);
+    const [run] = listRunsForItem(handle.db, item.id);
+    expect(run).toBeDefined();
+    // The run closed its skill usage after everything else it wrote about skills.
+    const types = listRunEvents(handle.db, run!.id).map((event) => event.type).filter((type) => type.startsWith("skill"));
+    expect(types).toEqual([SKILLS_DELIVERED_EVENT, SKILLS_SETTLED_EVENT]);
     expect(getSkill(handle.db, saved.skill.id)!.archivedAt).not.toBeNull();
     expect(listSkillVersions(handle.db, saved.skill.id)[0]).toMatchObject({ action: "archive", author: { kind: "eo" } });
     const notes = listCommentsForItem(handle.db, findProjectThread(handle.db, project.id)!.id);

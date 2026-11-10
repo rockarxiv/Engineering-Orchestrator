@@ -1,4 +1,5 @@
-import { SKILL_LOADED_EVENT, SKILLS_DELIVERED_EVENT, skillState, type SkillAgeing, type Uuid } from "@eo/core";
+import { SKILL_LOADED_EVENT, SKILLS_DELIVERED_EVENT, SKILLS_SETTLED_EVENT, skillState, type SkillAgeing, type Uuid } from "@eo/core";
+import { sql } from "drizzle-orm";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { DbHandle } from "../db/client.js";
 import {
@@ -13,7 +14,7 @@ import {
   saveSkill,
   setSkillLocked,
 } from "../db/repos/index.js";
-import { skillUsageById, usageOfSkill } from "../db/repos/skillUsageRepo.js";
+import { SKILL_SETTLE_GRACE_MS, skillUsageById, usageOfSkill } from "../db/repos/skillUsageRepo.js";
 import { createTestItem, openMigratedTestDb } from "../db/testHelpers.js";
 import { findProjectThread, openProjectThread } from "../projects/projectThread.js";
 import { markReplica } from "../db/recordRole.js";
@@ -49,16 +50,25 @@ describe("archiving unused agent skills", () => {
     return saved.skill.id;
   }
 
-  /** `count` runs, each given these skills; the last of them loading `loads`. */
+  /** `count` finished runs, each given these skills and settled; the last of them loading `loads`. */
   function runs(count: number, skillIds: string[], loads: string[] = []): void {
     for (let index = 0; index < count; index++) {
       const id = createRun(handle.db, { itemId, agentId: null, action: "implement", status: "succeeded" }).id;
       appendRunEvent(handle.db, id, SKILLS_DELIVERED_EVENT, { type: SKILLS_DELIVERED_EVENT, skillIds, slugs: skillIds });
       if (index === count - 1) for (const skillId of loads) appendRunEvent(handle.db, id, SKILL_LOADED_EVENT, { type: SKILL_LOADED_EVENT, skillId, slug: skillId });
+      appendRunEvent(handle.db, id, SKILLS_SETTLED_EVENT, { type: SKILLS_SETTLED_EVENT });
     }
   }
 
-  const pass = (with_: SkillAgeing = ageing) => archiveUnusedSkills({ db: handle.db, projectId, ageing: with_, projectThread: (id) => Promise.resolve(openProjectThread(handle.db, id)) });
+  /** One run given these skills that has not settled: `running`, or finished with its transcript cut short. */
+  function unsettled(skillIds: string[], status: "running" | "succeeded"): Uuid {
+    const id = createRun(handle.db, { itemId, agentId: null, action: "implement", status }).id;
+    if (status === "succeeded") handle.db.run(sql`update runs set ended_at = ${Date.now()} where id = ${id}`);
+    appendRunEvent(handle.db, id, SKILLS_DELIVERED_EVENT, { type: SKILLS_DELIVERED_EVENT, skillIds, slugs: skillIds });
+    return id;
+  }
+
+  const pass = (with_: SkillAgeing = ageing) => archiveUnusedSkills({ db: handle.db, projectId, reach: "all", ageing: with_, projectThread: (id) => Promise.resolve(openProjectThread(handle.db, id)) });
   const stateOf = (id: string, with_: SkillAgeing = ageing) => skillState(getSkill(handle.db, id)!, usageOfSkill(skillUsageById(handle.db), id), with_);
   const notes = () => {
     const thread = findProjectThread(handle.db, projectId);
@@ -80,6 +90,49 @@ describe("archiving unused agent skills", () => {
     expect(listSkills(handle.db).map((live) => live.id)).not.toContain(id);
     const [newest] = listSkillVersions(handle.db, id);
     expect(newest).toMatchObject({ action: "archive", author: { kind: "eo" } });
+  });
+
+  it("counts only runs that have settled, and archives nothing a run still going was given", async () => {
+    const id = skill("release", "agent");
+    runs(4, [id]);
+    // Finished, but its transcript is not all here: it may yet hold a load.
+    unsettled([id], "succeeded");
+    expect(usageOfSkill(skillUsageById(handle.db), id)).toMatchObject({ runsDelivered: 5, deliveriesSinceLoad: 4 });
+    expect((await pass()).archived).toEqual([]);
+
+    runs(1, [id]);
+    // A run still going was given it, and may load it before it ends.
+    const going = unsettled([id], "running");
+    expect(usageOfSkill(skillUsageById(handle.db), id).deliveriesSinceLoad).toBe(5);
+    expect((await pass()).archived).toEqual([]);
+    expect(notes()).toEqual([]);
+
+    // It did load it, and settled: the stretch starts again.
+    appendRunEvent(handle.db, going, SKILL_LOADED_EVENT, { type: SKILL_LOADED_EVENT, skillId: id, slug: id });
+    appendRunEvent(handle.db, going, SKILLS_SETTLED_EVENT, { type: SKILLS_SETTLED_EVENT });
+    handle.db.run(sql`update runs set status = 'succeeded' where id = ${going}`);
+    expect(usageOfSkill(skillUsageById(handle.db), id).deliveriesSinceLoad).toBe(0);
+    expect((await pass()).archived).toEqual([]);
+  });
+
+  it("stops waiting on a finished run that never settled once its grace has passed", async () => {
+    const id = skill("release", "agent");
+    runs(5, [id]);
+    unsettled([id], "succeeded");
+    expect((await pass()).archived).toEqual([]);
+    const later = Date.now() + SKILL_SETTLE_GRACE_MS + 1;
+    const result = await archiveUnusedSkills({ db: handle.db, projectId, reach: "all", ageing, projectThread: (project) => Promise.resolve(openProjectThread(handle.db, project)), now: () => later });
+    expect(result.archived.map((archived) => archived.id)).toEqual([id]);
+  });
+
+  it("archives only the global skills where the project's are another installation's to archive", async () => {
+    const own = skill("release", "agent");
+    const global = skill("format", "agent", null);
+    runs(5, [own, global]);
+    const result = await archiveUnusedSkills({ db: handle.db, projectId, reach: "global", ageing, projectThread: (id) => Promise.resolve(openProjectThread(handle.db, id)) });
+    expect(result.archived.map((archived) => archived.id)).toEqual([global]);
+    expect(getSkill(handle.db, own)!.archivedAt).toBeNull();
+    expect(notes()).toHaveLength(1);
   });
 
   it("makes a stale skill active again when a run loads it, and counts from zero", async () => {
@@ -156,7 +209,7 @@ describe("archiving unused agent skills", () => {
     // A thread item this database has no row for: the note's insert fails
     // after both archives were written, inside the same transaction.
     const nowhere = { id: "019fb8c6-0000-7000-8000-00000000dead" } as never;
-    await expect(archiveUnusedSkills({ db: handle.db, projectId, ageing, projectThread: () => Promise.resolve({ ok: true, item: nowhere }) })).rejects.toThrow();
+    await expect(archiveUnusedSkills({ db: handle.db, projectId, reach: "all", ageing, projectThread: () => Promise.resolve({ ok: true, item: nowhere }) })).rejects.toThrow();
     for (const id of [first, second]) {
       expect(getSkill(handle.db, id)!.archivedAt).toBeNull();
       expect(listSkillVersions(handle.db, id).map((version) => version.action)).toEqual(["create"]);
@@ -200,7 +253,7 @@ describe("archiving unused agent skills", () => {
   it("archives nothing when there is no project thread to say so on", async () => {
     const id = skill("release", "agent");
     runs(5, [id]);
-    const result = await archiveUnusedSkills({ db: handle.db, projectId, ageing, projectThread: () => Promise.resolve({ ok: false, problem: "It is moving." }) });
+    const result = await archiveUnusedSkills({ db: handle.db, projectId, reach: "all", ageing, projectThread: () => Promise.resolve({ ok: false, problem: "It is moving." }) });
     expect(result).toMatchObject({ archived: [], problem: expect.stringContaining("It is moving.") });
     expect(getSkill(handle.db, id)!.archivedAt).toBeNull();
   });

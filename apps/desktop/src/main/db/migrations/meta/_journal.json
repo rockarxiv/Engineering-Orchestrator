@@ -1135,6 +1135,13 @@
       "when": 1797696000000,
       "tag": "0161_skill_usage",
       "breakpoints": true
+    },
+    {
+      "idx": 162,
+      "version": "6",
+      "when": 1797782400000,
+      "tag": "0162_skill_usage_settled",
+      "breakpoints": true
     }
   ]
 }

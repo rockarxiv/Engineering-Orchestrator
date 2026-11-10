@@ -327,12 +327,25 @@ export const SkillLoadedEventSchema = z.object({
 export type SkillLoadedEvent = z.infer<typeof SkillLoadedEventSchema>;
 
 /**
- * How a skill has been used, derived from those two events and never
+ * The run event that closes a run's skill usage (EO-720): appended once,
+ * when a run that was given skills ends, after every `skill_loaded` it
+ * could write. Its transcript arrives at the organisation's record in
+ * order, so the record holding it holds every load of that run. Only a
+ * run that has it counts towards a skill's stretch without a load.
+ */
+export const SKILLS_SETTLED_EVENT = "skills_settled";
+export const SkillsSettledEventSchema = z.object({ type: z.literal(SKILLS_SETTLED_EVENT) });
+export type SkillsSettledEvent = z.infer<typeof SkillsSettledEventSchema>;
+
+/**
+ * How a skill has been used, derived from those three events and never
  * stored (EO-715). Runs, not events.
  *
- * `deliveriesSinceLoad` is the current stretch of runs given the skill
- * since it was last loaded or restored — every run that was given it,
- * where it has been neither (EO-720). What staleness and automatic
+ * `deliveriesSinceLoad` is the current stretch of finished runs given
+ * the skill since it was last loaded or restored — every finished run
+ * that was given it, where it has been neither (EO-720). A run counts
+ * once it has settled (`SKILLS_SETTLED_EVENT`), so one that may yet load
+ * the skill never ages it. What staleness and automatic
  * archival count (`skillState`).
  */
 export const SkillUsageSchema = z.object({

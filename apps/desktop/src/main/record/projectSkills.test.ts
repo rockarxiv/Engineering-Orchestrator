@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { sql } from "drizzle-orm";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { FOLDER_KIND, ipcContract, SKILLS_DELIVERED_EVENT, McpServerDraftSchema, SkillDraftSchema, type IpcPayload, type SkillScope, type Uuid } from "@eo/core";
+import { FOLDER_KIND, ipcContract, SKILL_LOADED_EVENT, SKILLS_DELIVERED_EVENT, SKILLS_SETTLED_EVENT, McpServerDraftSchema, SkillDraftSchema, type IpcPayload, type SkillScope, type Uuid } from "@eo/core";
 import { buildTickInput } from "../supervisor/buildTickInput.js";
 import type { DbHandle } from "../db/client.js";
 import { openMigratedTestDb } from "../db/testHelpers.js";
@@ -23,9 +23,11 @@ import { MANAGED_PERSON_ID_KEY } from "../identity/viewer.js";
 import { createLocalRecord, type LocalItemRecord } from "./localRecord.js";
 import { createDeviceRecord, type DeviceRecord } from "./deviceRecord.js";
 import { moveProjectToRecord } from "./adopt.js";
-import { serveAdopt, serveApply, serveChanges, type ServeRecordContext } from "./serveRecord.js";
-import { archivesSkillsOf } from "../skills/archival.js";
+import { serveAdopt, serveApply, serveChanges, serveProjectThread, type ServeRecordContext } from "./serveRecord.js";
+import { archiveReachOf, archiveUnusedSkills } from "../skills/archival.js";
+import { skillUsageById, usageOfSkill } from "../db/repos/skillUsageRepo.js";
 import { createRun } from "../db/repos/runsRepo.js";
+import { appendRunEvent } from "../db/repos/index.js";
 import { createTestItem } from "../db/testHelpers.js";
 import type { RecordTransport } from "./syncStatus.js";
 
@@ -88,7 +90,14 @@ afterEach(() => {
 function desktop(handle: DbHandle, deviceId: string): Desktop {
   const transport: RecordTransport = {
     async request(channel, payload) {
-      const answer = channel === "record:changes" ? serveChanges(serving, payload as IpcPayload<"record:changes">) : null;
+      const answer =
+        channel === "record:changes"
+          ? serveChanges(serving, payload as IpcPayload<"record:changes">)
+          : channel === "record:apply"
+            ? await serveApply(serving, payload as IpcPayload<"record:apply">)
+            : channel === "record:projectThread"
+              ? await serveProjectThread(serving, payload as IpcPayload<"record:projectThread">)
+              : null;
       return answer === null ? { ok: false, error: { message: `EO has no channel called "${channel}".` } } : { ok: true, data: answer as never };
     },
   };
@@ -458,7 +467,8 @@ function emptyPage(part: Partial<IpcPayload<"record:adopt">["page"]>): IpcPayloa
 }
 
 describe("an agent's skill nobody loads, on a project the record holds (EO-720)", () => {
-  it("is archived on the record when a device's runs report it, and stays archived on a replica's next pull", async () => {
+  /** Support, moved to the record, with an agent-written skill of its own. */
+  async function movedWithAnAgentSkill() {
     const support = createProject(annaDb.db, { name: "Support", keyPrefix: "SUP", managed: false });
     const saved = saveSkill(
       annaDb.db,
@@ -467,41 +477,116 @@ describe("an agent's skill nobody loads, on a project the record holds (EO-720)"
       { kind: "consolidation", consolidationId: "c-1" },
     );
     if (!saved.ok) throw new Error(saved.problems.join("\n"));
-    const skillId = saved.skill.id;
     expect(await move(support.id)).toEqual({});
-    await laptop.record.sync();
-    expect(getSkill(laptopDb.db, skillId)!.archivedAt).toBeNull();
+    return { support, skillId: saved.skill.id };
+  }
 
-    // A desktop does not archive a moved project's skills in its replica:
-    // the record's next copy would bring them back.
-    expect(archivesSkillsOf(annaDb.db, support.id, false)).toBe(false);
-    expect(archivesSkillsOf(recordDb.db, support.id, true)).toBe(true);
+  /** One page of a run's transcript reaching the record, with the run row as the device has it then. */
+  function page(runId: Uuid, itemId: Uuid, from: number, types: string[], skillId: string) {
+    const payloadOf = (type: string) =>
+      type === SKILLS_DELIVERED_EVENT
+        ? { type, skillIds: [skillId], slugs: ["refund-policy"] }
+        : type === SKILL_LOADED_EVENT
+          ? { type, skillId, slug: "refund-policy" }
+          : { type };
+    return serveApply(serving, {
+      deviceId: anna.deviceId,
+      commands: [{ kind: "runEvents", id: `${runId}:events:${String(from)}`, runId, itemId, events: types.map((type, index) => ({ seq: from + index, ts: Date.now(), type, payload: payloadOf(type) })) }],
+    });
+  }
 
-    // Anna's runs on the project reach the record, each reporting the skill delivered.
+  it("archives on the record only once a run's transcript has settled, and never a skill a run still arriving may have loaded", async () => {
+    const { support, skillId } = await movedWithAnAgentSkill();
     serving.skillAgeing = () => ({ staleAfterRuns: 1, archiveAfterRuns: 2 });
     const item = createTestItem(recordDb.db, { type: "story", title: "A refund", stepId: "todo", projectId: support.id });
-    const report = (ts: number) => {
-      const runId = createRun(recordDb.db, { itemId: item.id, agentId: null, action: "implement", status: "succeeded" }).id;
-      return serveApply(serving, {
-        deviceId: anna.deviceId,
-        commands: [{ kind: "runEvents", id: `c-${ts}`, runId, itemId: item.id, events: [{ seq: 1, ts, type: SKILLS_DELIVERED_EVENT, payload: { type: SKILLS_DELIVERED_EVENT, skillIds: [skillId], slugs: ["refund-policy"] } }] }],
-      });
-    };
-    await report(Date.now());
-    expect(getSkill(recordDb.db, skillId)!.archivedAt).toBeNull();
-    await report(Date.now() + 1);
+    const newRun = (status: "running" | "succeeded") => createRun(recordDb.db, { itemId: item.id, agentId: null, action: "implement", status }).id;
+    const archived = () => getSkill(recordDb.db, skillId)!.archivedAt !== null;
 
-    expect(getSkill(recordDb.db, skillId)!.archivedAt).not.toBeNull();
+    // One run, finished and settled, that never loaded it.
+    const first = newRun("succeeded");
+    await page(first, item.id, 1, [SKILLS_DELIVERED_EVENT, SKILLS_SETTLED_EVENT], skillId);
+    expect(archived()).toBe(false);
+
+    // A second, still running: its delivery arrives on one page…
+    const going = newRun("running");
+    await page(going, item.id, 1, [SKILLS_DELIVERED_EVENT], skillId);
+    expect(archived()).toBe(false);
+    // …a third run settles meanwhile, which would be the second without a load — but the one going may yet load it…
+    const third = newRun("succeeded");
+    await page(third, item.id, 1, [SKILLS_DELIVERED_EVENT, SKILLS_SETTLED_EVENT], skillId);
+    expect(archived()).toBe(false);
+    // …and does, on a later page.
+    recordDb.db.run(sql`update runs set status = 'succeeded', ended_at = ${Date.now()} where id = ${going}`);
+    await page(going, item.id, 2, [SKILL_LOADED_EVENT, SKILLS_SETTLED_EVENT], skillId);
+    expect(archived()).toBe(false);
+    expect(usageOfSkill(skillUsageById(recordDb.db), skillId).deliveriesSinceLoad).toBe(0);
+
+    // A finished run whose transcript arrives in two pages, its load on the
+    // second — while two settled runs without a load bring the count to the line.
+    const before = newRun("succeeded");
+    await page(before, item.id, 1, [SKILLS_DELIVERED_EVENT, SKILLS_SETTLED_EVENT], skillId);
+    const split = newRun("succeeded");
+    recordDb.db.run(sql`update runs set ended_at = ${Date.now()} where id = ${split}`);
+    await page(split, item.id, 1, [SKILLS_DELIVERED_EVENT], skillId);
+    const after = newRun("succeeded");
+    await page(after, item.id, 1, [SKILLS_DELIVERED_EVENT, SKILLS_SETTLED_EVENT], skillId);
+    expect(usageOfSkill(skillUsageById(recordDb.db), skillId).deliveriesSinceLoad).toBe(2);
+    expect(archived()).toBe(false);
+    await page(split, item.id, 2, [SKILL_LOADED_EVENT, SKILLS_SETTLED_EVENT], skillId);
+    expect(archived()).toBe(false);
+    expect(usageOfSkill(skillUsageById(recordDb.db), skillId).deliveriesSinceLoad).toBe(0);
+
+    // Two settled runs in a row with nothing still arriving: archived, once.
+    for (const run of [newRun("succeeded"), newRun("succeeded")]) await page(run, item.id, 1, [SKILLS_DELIVERED_EVENT, SKILLS_SETTLED_EVENT], skillId);
+    expect(archived()).toBe(true);
     expect(listSkillVersions(recordDb.db, skillId)[0]).toMatchObject({ action: "archive", author: { kind: "eo" } });
     const notes = listCommentsForItem(recordDb.db, findProjectThread(recordDb.db, support.id)!.id as Uuid);
     expect(notes).toHaveLength(1);
     expect(notes[0]!.body).toContain("`refund-policy`");
 
+    // The archived copy reaches a replica, and stays archived there.
     await laptop.record.sync();
     expect(getSkill(laptopDb.db, skillId)!.archivedAt).not.toBeNull();
     expect(listSkills(laptopDb.db).map((one) => one.id)).not.toContain(skillId);
-    // A later pull with nothing new leaves it as the record has it.
     await laptop.record.sync();
     expect(getSkill(laptopDb.db, skillId)!.archivedAt).not.toBeNull();
+  });
+
+  it("leaves a moved project's skills to the record, but archives the desktop's own global skill, with the note on the project's one thread", async () => {
+    const { support, skillId } = await movedWithAnAgentSkill();
+    const global = saveSkill(annaDb.db, SkillDraftSchema.parse({ name: "House style", description: "How this house writes.", body: "Write plainly." }), Date.now(), { kind: "consolidation", consolidationId: "c-2" });
+    if (!global.ok) throw new Error(global.problems.join("\n"));
+    const globalId = global.skill.id;
+    // Global skills are not carried: the record has no copy to archive.
+    expect(getSkill(recordDb.db, globalId)).toBeUndefined();
+
+    // Anna's runs on the moved project, here on her desktop, each given both and loading neither.
+    const item = createTestItem(annaDb.db, { type: "story", title: "A refund", stepId: "todo", projectId: support.id });
+    for (let index = 0; index < 3; index++) {
+      const runId = createRun(annaDb.db, { itemId: item.id, agentId: null, action: "implement", status: "succeeded" }).id;
+      appendRunEvent(annaDb.db, runId, SKILLS_DELIVERED_EVENT, { type: SKILLS_DELIVERED_EVENT, skillIds: [skillId, globalId], slugs: ["refund-policy", "house-style"] });
+      appendRunEvent(annaDb.db, runId, SKILLS_SETTLED_EVENT, { type: SKILLS_SETTLED_EVENT });
+    }
+
+    const reach = archiveReachOf(annaDb.db, support.id, false);
+    expect(reach).toBe("global");
+    expect(archiveReachOf(recordDb.db, support.id, true)).toBe("all");
+    const result = await archiveUnusedSkills({
+      db: annaDb.db,
+      projectId: support.id,
+      reach,
+      ageing: { staleAfterRuns: 1, archiveAfterRuns: 3 },
+      projectThread: (id) => anna.record.projectThread(id),
+      postComment: (comment) => anna.record.postComment(comment),
+    });
+
+    expect(result.archived.map((one) => one.id)).toEqual([globalId]);
+    expect(getSkill(annaDb.db, skillId)!.archivedAt).toBeNull();
+    expect(listSkillVersions(annaDb.db, globalId)[0]).toMatchObject({ action: "archive", author: { kind: "eo" } });
+    // The note is on the project's thread, which is the record's: it reaches the record.
+    await anna.record.sync();
+    const notes = listCommentsForItem(recordDb.db, findProjectThread(recordDb.db, support.id)!.id as Uuid);
+    expect(notes.map((one) => one.body).filter((body) => body.includes("`house-style`"))).toHaveLength(1);
+    expect(notes.some((one) => one.body.includes("`refund-policy`"))).toBe(false);
   });
 });
