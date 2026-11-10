@@ -141,6 +141,12 @@ const REACHED_BY_A_DESKTOP: Partial<Record<keyof typeof ipcContract, string>> = 
   "record:projectThread": "record/remoteRecord.ts — a desktop asks the record for a moved project's thread when a person opens its notes",
   // EO-600. Asked by `items:update` on a desktop whose project the
   // organisation holds: what its items wait for is the record's to change.
+  // EO-726. A message about a project the organisation holds lives on
+  // its record: sent, answered and dismissed there, and pulled by its
+  // recipients' desktops.
+  "record:sendMessage": "record/remoteRecord.ts — a desktop asks the record to send EO's message about a project it holds to each admin",
+  "record:handleMessage": "record/remoteRecord.ts — a desktop asks the record to mark a message it holds answered or dismissed when a person presses in the Inbox",
+  "record:messages": "record/drain.ts — the device pulls its person's messages the record holds",
   "record:changeDependencies": "record/remoteRecord.ts — a desktop asks the record to change what an item waits for when a person or item_update sends addDependsOn or removeDependsOn",
   // EO-533. Asked by `assist:openUpdateConflict` on a desktop whose
   // admin pressed Fix with assistant on a notice the record posted.

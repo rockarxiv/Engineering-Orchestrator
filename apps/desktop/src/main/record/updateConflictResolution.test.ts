@@ -50,6 +50,9 @@ import {
   serveApply,
   serveChangeDependencies,
   serveChanges,
+  serveHandleMessage,
+  serveMessages,
+  serveSendMessage,
   serveRelease,
   serveRenew,
   serveResolveUpdateConflict,
@@ -139,6 +142,12 @@ function desktop(handle: DbHandle, deviceId: string): Desktop {
           return { ok: true, data: (await serveChangeDependencies(serving, { ...(payload as IpcPayload<"record:changeDependencies">), deviceId })) as never };
         case "record:changes":
           return { ok: true, data: serveChanges(serving, payload as IpcPayload<"record:changes">) as never };
+        case "record:sendMessage":
+          return { ok: true, data: serveSendMessage(serving, { ...(payload as IpcPayload<"record:sendMessage">), deviceId }) as never };
+        case "record:handleMessage":
+          return { ok: true, data: serveHandleMessage(serving, { ...(payload as IpcPayload<"record:handleMessage">), deviceId }) as never };
+        case "record:messages":
+          return { ok: true, data: serveMessages(serving, { ...(payload as IpcPayload<"record:messages">), deviceId }) as never };
         case "record:apply":
           return { ok: true, data: (await serveApply(serving, payload as IpcPayload<"record:apply">)) as never };
         case "record:work":

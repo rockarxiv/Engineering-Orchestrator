@@ -6,7 +6,8 @@ import type { PostCommentInput } from "../db/repos/commentsRepo.js";
 import { drainToRecord, type DrainResult } from "./drain.js";
 import { recordFor, type LocalItemRecord } from "./localRecord.js";
 import type { ItemRecord, MemoryWriteRequest, OfferWorkInput, TransitionCommand, WorkOffer } from "./record.js";
-import { getConsolidation, getUpdateConflict, memoryEntryProjectId, memoryScopeProjectId } from "../db/repos/index.js";
+import { getConsolidation, getMessage, getUpdateConflict, memoryEntryProjectId, memoryScopeProjectId } from "../db/repos/index.js";
+import { sendMessageToAdmins } from "../messages/messages.js";
 import { heldByTheRecord } from "../gallery/templateUpdates.js";
 import { createRemoteRecord, type RemoteRecord } from "./remoteRecord.js";
 import { markReplica } from "../db/recordRole.js";
@@ -525,6 +526,27 @@ export function createDeviceRecord(options: DeviceRecordOptions): DeviceRecord {
     // thread the organisation would never see.
     projectThread: (projectId: Uuid) =>
       (options.isTheRecord !== true && projectMovedToTheRecord(db, projectId) ? remote : local).projectThread(projectId),
+
+    // A message about a project (EO-726) is the organisation's record's
+    // when the record holds the project, for `projectThread`'s reason:
+    // addressed there to each admin, and refused rather than written
+    // here when it cannot be reached — a desktop that has signed out
+    // included. On the record itself it goes to the admins at once.
+    // Anything else is this database's, to the recipient named.
+    sendMessage: async (input) => {
+      const projectId = input.projectId ?? null;
+      if (projectId === null) return local.sendMessage(input);
+      if (options.isTheRecord === true) return { ok: true, messages: sendMessageToAdmins(db, input) };
+      return (projectMovedToTheRecord(db, projectId as Uuid) ? remote : local).sendMessage(input);
+    },
+    // …and answered or dismissed where it lives: a message this replica
+    // copied from the record, about a project the record holds, on the
+    // record; any other here.
+    handleMessage: (request) => {
+      const projectId = getMessage(db, request.messageId)?.projectId ?? null;
+      const onTheRecord = options.isTheRecord !== true && projectId !== null && projectMovedToTheRecord(db, projectId as Uuid);
+      return (onTheRecord ? remote : local).handleMessage(request);
+    },
 
     // The record that holds the conflict (EO-533). One this database
     // holds is its own — a desktop's pipeline, or the server's — and is

@@ -11,7 +11,7 @@ import {
   type MessageSend,
 } from "@eo/core";
 import type { Db } from "../client.js";
-import { messages } from "../schema.js";
+import { jobs, messages, projects } from "../schema.js";
 
 /**
  * What EO asks a person outside any item (EO-725, ARCHITECTURE.md §7.1).
@@ -128,4 +128,112 @@ export function sweepHandledMessages(db: Db, now: number = Date.now()): number {
       )`).changes;
     return expired + overCap;
   });
+}
+
+/**
+ * When a message last changed: when it was handled, or when it was sent
+ * while it is open. What `record:messages` pages on (EO-726).
+ */
+export function messageChangedAt(message: Pick<Message, "createdAt" | "handledAt">): number {
+  return message.handledAt ?? message.createdAt;
+}
+
+/**
+ * One person's messages changed strictly after the cursor, oldest change
+ * first — the record's half of `record:messages` (EO-726). Ordered by
+ * `(changed, id)` and asked for strictly after the pair, as every list
+ * the record pages is.
+ */
+export function listMessagesChangedSince(db: Db, recipientId: string, cursor: { ts: number; id: string }, limit: number): Message[] {
+  const changed = sql`coalesce(${messages.handledAt}, ${messages.createdAt})`;
+  return db
+    .select()
+    .from(messages)
+    .where(and(eq(messages.recipientId, recipientId), sql`(${changed} > ${cursor.ts} OR (${changed} = ${cursor.ts} AND ${messages.id} > ${cursor.id}))`))
+    .orderBy(changed, messages.id)
+    .limit(limit)
+    .all()
+    .map(toDomain);
+}
+
+/**
+ * A message as the organisation's record has it, written on a replica
+ * (EO-726): inserted, or every field overwritten — the record's copy is
+ * the true one, so a press that lost a race on another desktop is
+ * undone here rather than kept.
+ *
+ * `waiting` when its project has not reached this replica yet, which a
+ * foreign key would refuse; the drain holds it until it has. A job this
+ * replica does not hold is dropped from the row rather than holding it,
+ * since jobs do not travel.
+ */
+export function upsertReplicaMessage(db: Db, message: Message): "written" | "waiting" {
+  const has = (table: typeof projects | typeof jobs, id: string): boolean => db.select({ id: table.id }).from(table).where(eq(table.id, id)).get() !== undefined;
+  if (message.projectId !== null && !has(projects, message.projectId)) return "waiting";
+  const row: Row = {
+    id: message.id,
+    recipientId: message.recipientId,
+    projectId: message.projectId,
+    jobId: message.jobId !== null && has(jobs, message.jobId) ? message.jobId : null,
+    source: message.source,
+    body: message.body,
+    options: message.options,
+    createdAt: message.createdAt,
+    handledAt: message.handledAt,
+    handledHow: message.handledHow,
+    answer: message.answer,
+  };
+  db.insert(messages)
+    .values(row)
+    .onConflictDoUpdate({
+      target: messages.id,
+      set: {
+        recipientId: row.recipientId,
+        projectId: row.projectId,
+        jobId: row.jobId,
+        source: row.source,
+        body: row.body,
+        options: row.options,
+        createdAt: row.createdAt,
+        handledAt: row.handledAt,
+        handledHow: row.handledHow,
+        answer: row.answer,
+      },
+    })
+    .run();
+  return "written";
+}
+
+/** The ids of every open message addressed to this person — what `record:messages` answers as `open` (EO-726). */
+export function listOpenMessageIds(db: Db, recipientId: string): string[] {
+  return db
+    .select({ id: messages.id })
+    .from(messages)
+    .where(and(eq(messages.recipientId, recipientId), isNull(messages.handledAt)))
+    .all()
+    .map((row) => row.id);
+}
+
+/**
+ * Removes the open copies on a replica of messages the organisation's
+ * record no longer holds open (EO-726): those about a project it holds
+ * (`onTheRecord`) and not among `stillOpen`. A message handled elsewhere
+ * and then swept by the record's retention never pages again, so this is
+ * the only way such a copy stops being open here. Answers how many went.
+ */
+export function forgetMessagesGoneFromTheRecord(db: Db, stillOpen: ReadonlySet<string>, onTheRecord: (projectId: string) => boolean): number {
+  const gone = db
+    .select({ id: messages.id, projectId: messages.projectId })
+    .from(messages)
+    .where(isNull(messages.handledAt))
+    .all()
+    .filter((row) => row.projectId !== null && onTheRecord(row.projectId) && !stillOpen.has(row.id))
+    .map((row) => row.id);
+  if (gone.length === 0) return 0;
+  return db.delete(messages).where(inArray(messages.id, gone)).run().changes;
+}
+
+/** Deletes one message's row, where the record answered that it no longer has it (EO-726). */
+export function forgetMessage(db: Db, id: string): boolean {
+  return db.delete(messages).where(eq(messages.id, id)).run().changes > 0;
 }

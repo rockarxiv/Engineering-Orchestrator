@@ -22,7 +22,19 @@ export {
   type CreateAttachmentRecord,
 } from "./attachmentsRepo.js";
 export { extensionsForItem, extensionsForItems, setItemExtension } from "./itemExtensionsRepo.js";
-export { getMessage, insertMessage, listOpenMessages, markMessageHandled, sweepHandledMessages } from "./messagesRepo.js";
+export {
+  forgetMessage,
+  forgetMessagesGoneFromTheRecord,
+  getMessage,
+  insertMessage,
+  listMessagesChangedSince,
+  listOpenMessageIds,
+  listOpenMessages,
+  markMessageHandled,
+  messageChangedAt,
+  sweepHandledMessages,
+  upsertReplicaMessage,
+} from "./messagesRepo.js";
 export { createdItemFor, getItemOrigin, itemGeneration, itemsCreatedByRun, recordItemOrigin, upsertItemOrigin, type ItemOrigin } from "./itemOriginsRepo.js";
 export {
   getUpdateConflict,

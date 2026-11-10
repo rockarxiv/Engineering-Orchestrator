@@ -1,6 +1,6 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { ArchivedItemListFiltersSchema, ItemListFiltersSchema, toRegistryView, type AgentRemovalImpact, type IpcChannel, type IpcResponse, type Uuid } from "@eo/core";
+import { ArchivedItemListFiltersSchema, ItemListFiltersSchema, toRegistryView, type AgentRemovalImpact, type IpcChannel, type IpcResponse, type Message, type Uuid } from "@eo/core";
 import { AttachmentStorage } from "../attachments/storage.js";
 import type { Db } from "../db/client.js";
 import { archiveAgentCommand, customiseAgent, deleteAgentCommand, listAgentDetails, projectStaffing, readGuards, saveAgent, setAgentBinding, savePipeline, validatePipelineCommand, writeGuards } from "./configCommands.js";
@@ -231,7 +231,7 @@ import { connectJira, disconnectJira, jiraFields, listJiraConnectionsCommand, re
 import { importJiraIssue, previewJiraIssue, searchJira } from "./jiraImportCommands.js";
 import { detectForge } from "./forgeCommands.js";
 import { actingCaller, actingReader, scopedProjectId } from "../identity/acting.js";
-import { answerMessageCommand, dismissMessageCommand, messageRecipientsFor } from "../messages/messages.js";
+import { messageRecipientsFor, type MessageHandling } from "../messages/messages.js";
 import { emitPush } from "./push.js";
 import { recordFor } from "../record/localRecord.js";
 import type { ItemRecord } from "../record/record.js";
@@ -247,6 +247,9 @@ import {
   serveMemory,
   serveMemoryConsolidations,
   serveChangeDependencies,
+  serveHandleMessage,
+  serveMessages,
+  serveSendMessage,
   serveProjectThread,
   serveUpdateConflictChat,
   serveUpdateConflict,
@@ -418,7 +421,16 @@ export interface HandlerResources {
    */
   record?: Pick<
     ItemRecord,
-    "projectThread" | "updateConflictChat" | "updateConflict" | "resolveUpdateConflict" | "templateStatus" | "writeMemory" | "memoryConsolidations" | "restoreMemoryConsolidation" | "changeDependencies"
+    | "projectThread"
+    | "updateConflictChat"
+    | "updateConflict"
+    | "resolveUpdateConflict"
+    | "templateStatus"
+    | "writeMemory"
+    | "memoryConsolidations"
+    | "restoreMemoryConsolidation"
+    | "changeDependencies"
+    | "handleMessage"
   >;
 }
 
@@ -582,8 +594,20 @@ export function registerAllHandlers(db: Db, engine: EngineHandle | undefined, re
   // EO's messages to a person outside any item (EO-725): answered with one
   // of their options or dismissed, by their recipient only. Each pushes
   // `messages:changed` itself.
-  registerHandler("messages:answer", (payload) => answerMessageCommand(db, payload), opts);
-  registerHandler("messages:dismiss", (payload) => dismissMessageCommand(db, payload), opts);
+  // On whichever installation holds the message (EO-726): the
+  // organisation's record for one about a project it holds, so the
+  // recipient's other desktops hear of it.
+  const handleMessage = async (request: MessageHandling): Promise<{ message: Message }> => {
+    const handled = await (resources.record ?? recordFor(db)).handleMessage(request);
+    if (!handled.ok) throw new Error(handled.problem);
+    return { message: handled.message };
+  };
+  registerHandler(
+    "messages:answer",
+    (payload) => handleMessage({ messageId: payload.messageId, how: "answered", answer: payload.answer, actingDeviceId: payload.actingDeviceId }),
+    opts,
+  );
+  registerHandler("messages:dismiss", (payload) => handleMessage({ messageId: payload.messageId, how: "dismissed", answer: null, actingDeviceId: payload.actingDeviceId }), opts);
   registerHandler("mentions:open", (payload) => openMentionsCommand(db, payload), opts);
   registerHandler("agents:list", () => listAgentViews(db), opts);
   registerHandler("pipelineSteps:list", (payload) => listPipelineStepViews(db, payload), opts);
@@ -1918,6 +1942,12 @@ export function registerAllHandlers(db: Db, engine: EngineHandle | undefined, re
   // A device asking to change what an item of a project this record
   // holds waits for: the graph is the record's to judge (EO-600).
   registerHandler("record:changeDependencies", (payload) => serveChangeDependencies(serving, payload), opts);
+  // A device sending a message about a project this record holds, a
+  // person on one answering or dismissing it, and a device pulling its
+  // person's: messages about the record's projects live here (EO-726).
+  registerHandler("record:sendMessage", (payload) => serveSendMessage(serving, payload), opts);
+  registerHandler("record:handleMessage", (payload) => serveHandleMessage(serving, payload), opts);
+  registerHandler("record:messages", (payload) => serveMessages(serving, payload), opts);
   // A device whose admin pressed Fix with assistant on a notice about a
   // conflict this record holds: the chat is the record's to make, once
   // for every admin (EO-533).

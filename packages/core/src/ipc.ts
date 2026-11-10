@@ -19,12 +19,13 @@ import { OrganisationPolicySchema, PersonBudgetSchema, PublishedMcpServerSchema,
 import { PublishedSectionNameSchema, PublishedSectionSchema, SectionLockSchema, sectionLockedMessage, type SectionLock } from "./sections.js";
 import { SuggestionViewSchema } from "./suggestions.js";
 import { DebugAgentSchema } from "./debug.js";
-import { MessageSchema } from "./messages.js";
+import { MessageSchema, MessageSendSchema } from "./messages.js";
 import {
   RecordAdoptCountsSchema,
   RecordAdoptPageSchema,
   RecordChangesSchema,
   RecordCommandResultSchema,
+  RecordCursorSchema,
   RecordCursorsSchema,
   RecordCommandSchema,
   RecordCommentCommandSchema,
@@ -6054,6 +6055,81 @@ export const recordContract = {
    * and the person the asking device belongs to — a replica's idea of
    * who holds it may be a takeover behind.
    */
+  /**
+   * A message EO on a device has for the people a project the record
+   * holds is answered by (EO-726, ARCHITECTURE.md §7.1): written on the
+   * record, one to each of its admins, never only on the desktop that
+   * sent it.
+   *
+   * **Asking, not telling**, for `record:projectThread`'s reason: who the
+   * admins are is the record's fact, and a message written on a replica
+   * reaches nobody else. The record answers the copies addressed to the
+   * asking device's person, which that desktop keeps at once; the other
+   * recipients take theirs on `record:messages`. A record that cannot be
+   * reached sends nothing, and the sender is told so.
+   */
+  "record:sendMessage": channel(
+    z.object({ deviceId: z.string().min(1), message: MessageSendSchema }),
+    z.object({
+      /** How many were written: one per admin. Nought when `problem` is set. */
+      sent: z.number().int().nonnegative(),
+      /** The ones addressed to the asking device's person. */
+      mine: z.array(MessageSchema),
+      problem: z.string().nullable(),
+    }),
+  ),
+  /**
+   * A person on a device answering or dismissing a message the record
+   * holds (EO-726). The record marks it handled — only its recipient's,
+   * the person the asking device belongs to, and only while it is open —
+   * and every other desktop of theirs hears on `record:messages`.
+   *
+   * Answers the message as the record now has it, whenever it is the
+   * asker's, so a press that lost a race still leaves the desktop's copy
+   * true; `problem` says why nothing was done.
+   */
+  "record:handleMessage": channel(
+    z.object({
+      deviceId: z.string().min(1),
+      messageId: z.string().min(1),
+      how: z.enum(["answered", "dismissed"]),
+      answer: z.string().nullable().default(null),
+    }),
+    z.object({ message: MessageSchema.nullable(), problem: z.string().nullable() }),
+  ),
+  /**
+   * The asking device's person's messages changed on the record since
+   * the cursor — sent, answered, dismissed or resolved (EO-726) — paged
+   * on when each last changed: when it was handled, or sent while open.
+   *
+   * Its own channel rather than a list in `record:changes`, because a
+   * message is one person's and that pull names nobody: this one is
+   * stamped with the asking device at the door, so a desktop is given
+   * only what is addressed to whoever it belongs to.
+   */
+  "record:messages": channel(
+    z.object({
+      deviceId: z.string().min(1),
+      cursor: RecordCursorSchema.default({ ts: 0, id: "" }),
+      limit: z.number().int().positive().max(1000).default(500),
+    }),
+    z.object({
+      messages: z.array(MessageSchema),
+      cursor: RecordCursorSchema,
+      more: z.boolean(),
+      /**
+       * Every message still open on the record for the asking device's
+       * person, by id, whatever the cursor. The feed says what changed,
+       * and a handled message the record has since deleted never changes
+       * again: a desktop that was away while one was answered elsewhere
+       * and then swept would hold it open for ever. So it removes any open
+       * copy of a record-held message not named here. Safe on any page:
+       * a copy handled there and not yet paged is only handled, and its
+       * page writes it back as such.
+       */
+      open: z.array(z.string()),
+    }),
+  ),
   "record:changeDependencies": channel(
     z.object({
       deviceId: z.string().min(1),
@@ -7379,6 +7455,11 @@ export const DEVICE_SCOPED_CHANNELS = [
   // asks for, and the record names that device's person in the comment
   // that says so (EO-600).
   "record:changeDependencies",
+  // A message's recipients are the record's admins, and a reply or a
+  // pull is only ever the asking device's person's (EO-726).
+  "record:sendMessage",
+  "record:handleMessage",
+  "record:messages",
 ] as const satisfies readonly RecordChannel[];
 
 /** Whether this channel's payload names the device that is asking. */

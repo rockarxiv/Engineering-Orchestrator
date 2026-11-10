@@ -1,6 +1,6 @@
 import { answerOptions, type IpcPayload, type IpcResponse, type Message, type MessageSend } from "@eo/core";
 import type { Db } from "../db/client.js";
-import { getMessage, insertMessage, listOpenMessages, markMessageHandled, sweepHandledMessages } from "../db/repos/index.js";
+import { getMessage, insertMessage, listOpenMessages, listPeople, markMessageHandled, sweepHandledMessages } from "../db/repos/index.js";
 import { actingCaller } from "../identity/acting.js";
 import { viewerIds } from "../identity/viewer.js";
 import { emitPush } from "../ipc/push.js";
@@ -25,6 +25,60 @@ export function sendMessage(db: Db, input: MessageSend, now: number = Date.now()
   const message = insertMessage(db, input, now);
   emitPush("messages:changed", {});
   return message;
+}
+
+/**
+ * What a sender is answered through `ItemRecord.sendMessage` (EO-726):
+ * the messages written where this installation can see them — on a
+ * desktop asking the organisation's record, only those addressed to its
+ * own person — or why none was sent.
+ */
+export type MessageSendAnswer = { ok: true; messages: Message[] } | { ok: false; problem: string };
+
+/** A person answering or dismissing a message, as `ItemRecord.handleMessage` takes it (EO-726). */
+export interface MessageHandling {
+  messageId: string;
+  how: "answered" | "dismissed";
+  /** The option chosen; null for a dismissal. */
+  answer: string | null;
+  /** Who is pressing, as the `messages:*` channels carry it. */
+  actingDeviceId?: string | null | undefined;
+}
+
+export type MessageHandlingAnswer = { ok: true; message: Message } | { ok: false; problem: string };
+
+/**
+ * A message about a project the organisation's record holds, written on
+ * the record (EO-726, ARCHITECTURE.md §7.1): one to each of its admins,
+ * who are whom the equivalent mention on the project's thread went to
+ * (`conflictNoticeMentions`). The recipient the sender named is a
+ * desktop's own person, which means nothing here; it is used only by a
+ * record with no admin yet, rather than telling nobody.
+ */
+export function sendMessageToAdmins(db: Db, input: MessageSend, now: number = Date.now()): Message[] {
+  const admins = listPeople(db).filter((person) => person.isAdmin);
+  const recipients = admins.length > 0 ? admins.map((person) => person.id) : [input.recipientId];
+  const sent = db.transaction(() => recipients.map((recipientId) => insertMessage(db, { ...input, recipientId }, now)));
+  emitPush("messages:changed", {});
+  return sent;
+}
+
+/**
+ * Answers or dismisses a message this database holds (EO-726), as a
+ * typed answer rather than the throw the `messages:*` channels make of
+ * it: what `ItemRecord.handleMessage` does where this is the record.
+ */
+export function handleMessageHere(db: Db, request: MessageHandling, now: number = Date.now()): MessageHandlingAnswer {
+  try {
+    const payload = { messageId: request.messageId, ...(request.actingDeviceId === undefined ? {} : { actingDeviceId: request.actingDeviceId }) };
+    const { message } =
+      request.how === "answered"
+        ? answerMessageCommand(db, { ...payload, answer: request.answer ?? "" }, now)
+        : dismissMessageCommand(db, payload, now);
+    return { ok: true, message };
+  } catch (error) {
+    return { ok: false, problem: error instanceof Error ? error.message : String(error) };
+  }
 }
 
 /**
@@ -57,7 +111,7 @@ export function openMessagesFor(db: Db, actingDeviceId: string | null | undefine
 }
 
 /** The message, if it is open and the caller's to handle. Throws the sentence the person is shown otherwise. */
-function openMessageOf(db: Db, messageId: string, actingDeviceId: string | null | undefined): Message {
+export function openMessageOf(db: Db, messageId: string, actingDeviceId: string | null | undefined): Message {
   const message = getMessage(db, messageId);
   if (!message || !messageRecipientsFor(db, actingDeviceId).includes(message.recipientId)) {
     throw new Error("That message is not one of yours, or it has been deleted.");

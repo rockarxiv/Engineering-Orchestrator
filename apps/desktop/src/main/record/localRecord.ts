@@ -19,6 +19,7 @@ import { serverPlacedItemIds } from "../db/repos/jobsRepo.js";
 import { overPersonBudgetForItem, readPolicy } from "../policy/policy.js";
 import { parkForPersonBudget } from "../policy/personBudget.js";
 import { openProjectThread } from "../projects/projectThread.js";
+import { handleMessageHere, sendMessage } from "../messages/messages.js";
 import { changeDependenciesOf, summariseDependencyChange } from "../roles/itemDependencies.js";
 import { openUpdateConflictChat } from "../roles/updateConflictChat.js";
 import { describeUpdateConflict, resolveUpdateConflictHere } from "../gallery/updateConflictDetail.js";
@@ -346,6 +347,17 @@ export function createLocalRecord(db: Db, options: LocalRecordOptions = {}): Loc
     // (EO-471) — and the same function a server runs when a device asks.
     async projectThread(projectId) {
       return openProjectThread(db, projectId);
+    },
+
+    // Here, because this database holds the message (EO-726): a solo
+    // desktop's, a kept project's, or the record's own. `DeviceRecord`
+    // addresses a record-held project's to its admins before it gets here.
+    async sendMessage(input) {
+      return { ok: true, messages: [sendMessage(db, input)] };
+    },
+
+    async handleMessage(request) {
+      return handleMessageHere(db, request);
     },
 
     // Here, because this database holds the conflict (EO-533) — a
