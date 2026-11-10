@@ -67,14 +67,16 @@ function recentUpdate(db: Db, origin: PipelineOrigin, history: TemplateHistory, 
  * This pipeline's held update, with where pressing it goes: the chat Fix
  * with assistant opened, while that chat still exists — a person may
  * remove it, and the next press then starts another — or the notice
- * that offers the button, where nobody has pressed it yet.
+ * that offers the button, where nobody has pressed it yet and it is a
+ * comment on a project thread. A notice sent as a message (EO-727) is on
+ * no item, so the head opens the chat its button would.
  */
 function heldUpdate(db: Db, pipelineId: string): PipelineTemplateWaiting | null {
   const conflict = openUpdateConflict(db, pipelineId);
   if (conflict === undefined) return null;
 
   const chat = conflict.chatId === null ? undefined : getItem(db, conflict.chatId as Uuid);
-  const noticeId = conflict.noticeCommentIds.find((id) => getComment(db, id as Uuid) !== undefined);
+  const noticeId = conflict.noticeIds.find((id) => getComment(db, id as Uuid) !== undefined);
   const notice = noticeId === undefined ? undefined : getComment(db, noticeId as Uuid);
   return {
     conflictId: conflict.id,

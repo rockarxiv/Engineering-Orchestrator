@@ -1455,14 +1455,14 @@ function attachLateTools(db: Db, projectId: string): void {
  * Says what the moved project's agents were attached to and this record
  * could not attach, and forgets it only once it has been said (EO-513).
  *
- * Only for a project that is live here: until then its thread may still
+ * Only for a project that is live here: until then the move may still
  * be on its way, and what is kept waits for the page that makes it live.
  * Checked again first, so nothing is said about a tool that has arrived
- * since. `say` posts it — on the project's thread, see `serveAdopt` — and
- * answers whether it could.
+ * since. `say` sends it — a message to the organisation's admins, see
+ * `serveAdopt` (EO-727) — and answers whether it could.
  *
  * **One transaction, the saying and the forgetting** (EO-513, review).
- * Forgotten first and said second, a comment that failed to go in — or a
+ * Forgotten first and said second, a message that failed to go in — or a
  * process that stopped between the two — lost the warning for good, and
  * a retried request found nothing to say. Here a `say` that throws takes
  * the forgetting back with it, and one that answers false leaves it kept:

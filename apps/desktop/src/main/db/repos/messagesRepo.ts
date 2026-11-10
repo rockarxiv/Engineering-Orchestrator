@@ -57,6 +57,7 @@ export function insertMessage(db: Db, input: MessageSend, now: number = Date.now
     handledAt: null,
     handledHow: null,
     answer: null,
+    subject: parsed.subject ?? null,
   };
   db.insert(messages).values(row).run();
   return toDomain(row);
@@ -101,6 +102,21 @@ export function markMessageHandled(
     .returning()
     .get();
   return row ? toDomain(row) : undefined;
+}
+
+/**
+ * Resolves every open message of a source about one subject (EO-727):
+ * what they asked about was settled some other way. Answers those it
+ * closed; one already handled is left as it was.
+ */
+export function markMessagesAboutResolved(db: Db, source: string, subject: string, now: number = Date.now()): Message[] {
+  return db
+    .update(messages)
+    .set({ handledAt: now, handledHow: "resolved", answer: null })
+    .where(and(eq(messages.source, source), eq(messages.subject, subject), isNull(messages.handledAt)))
+    .returning()
+    .all()
+    .map(toDomain);
 }
 
 /**
@@ -182,6 +198,8 @@ export function upsertReplicaMessage(db: Db, message: Message): "written" | "wai
     handledAt: message.handledAt,
     handledHow: message.handledHow,
     answer: message.answer,
+    // The record's to resolve, never a replica's.
+    subject: null,
   };
   db.insert(messages)
     .values(row)

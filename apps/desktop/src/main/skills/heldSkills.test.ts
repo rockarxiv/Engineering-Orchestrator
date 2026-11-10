@@ -1,16 +1,16 @@
-import type { Skill, Uuid } from "@eo/core";
+import { LOCAL_PERSON_ID, type Skill, type Uuid } from "@eo/core";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { DbHandle } from "../db/client.js";
-import { listCommentsForItem, openMentionsForHuman } from "../db/repos/commentsRepo.js";
 import { createProject } from "../db/repos/projectsRepo.js";
 import { holdSkillCopy, listHeldSkillCopies, saveSkill, setSkillLocked, upsertReplicaSkill } from "../db/repos/skillsRepo.js";
-import { openMigratedTestDb } from "../db/testHelpers.js";
+import { messagesFrom, openMigratedTestDb } from "../db/testHelpers.js";
+import { listInbox } from "../ipc/domainQueries.js";
 import { findProjectThread } from "../projects/projectThread.js";
 import { tellHeldSkillCopies } from "./heldSkills.js";
 
 /**
- * A copy a person's lock kept out, told to them (EO-714): an escalation
- * mentioning the person, on a project thread, once.
+ * A copy a person's lock kept out, told to them (EO-714, EO-727): one
+ * message to this machine's person, once, and never on a project thread.
  */
 let handle: DbHandle;
 
@@ -53,13 +53,17 @@ function heldBehind(scope: Skill["scope"] = { kind: "global" }): string {
   return taken.problem;
 }
 
-function threadComments(projectId: string) {
-  const thread = findProjectThread(handle.db, projectId as Uuid);
-  return thread === undefined ? [] : listCommentsForItem(handle.db, thread.id as Uuid);
+function told() {
+  return messagesFrom(handle.db, "held_skill_copy");
+}
+
+/** No project thread was made for any of these projects. */
+function expectNoThread(...projectIds: string[]): void {
+  for (const projectId of projectIds) expect(findProjectThread(handle.db, projectId as Uuid)).toBeUndefined();
 }
 
 describe("telling a person what their lock kept out", () => {
-  it("posts one escalation that mentions the person on every project's thread for a global skill, and only once", () => {
+  it("sends one message to the person for a global skill, about no project, and only once", () => {
     const shop = createProject(handle.db, { name: "Shop", keyPrefix: "SHOP" });
     const api = createProject(handle.db, { name: "API", keyPrefix: "API" });
     const problem = heldBehind();
@@ -67,37 +71,31 @@ describe("telling a person what their lock kept out", () => {
     expect(tellHeldSkillCopies(handle.db, 50)).toBe(1);
     expect(tellHeldSkillCopies(handle.db, 60)).toBe(0);
 
-    for (const project of [shop, api]) {
-      const comments = threadComments(project.id);
-      expect(comments).toHaveLength(1);
-      expect(comments[0]).toMatchObject({ kind: "escalation", body: problem, authorType: "engine" });
-      expect(comments[0]?.body).toContain("a person locked");
-      expect(comments[0]?.body).toContain("unlock or rename");
-    }
+    expect(told()).toEqual([expect.objectContaining({ recipientId: LOCAL_PERSON_ID, projectId: null, body: problem, createdAt: 50, handledAt: null })]);
+    expect(told()[0]?.body).toContain("a person locked");
+    expect(told()[0]?.body).toContain("unlock or rename");
     expect(listHeldSkillCopies(handle.db)[0]?.toldAt).toBe(50);
-    // In the person's inbox: an open mention on each thread.
-    expect(openMentionsForHuman(handle.db, "anybody")).toHaveLength(2);
+    // In the person's inbox, as a message.
+    expect(listInbox(handle.db).messages.map((message) => message.id)).toEqual([told()[0]!.id]);
+    expectNoThread(shop.id, api.id);
   });
 
-  it("tells only the project a locked project skill belongs to", () => {
+  it("is about the project a locked project skill belongs to", () => {
     const shop = createProject(handle.db, { name: "Shop", keyPrefix: "SHOP" });
     const api = createProject(handle.db, { name: "API", keyPrefix: "API" });
     heldBehind({ kind: "project", projectId: shop.id });
 
     tellHeldSkillCopies(handle.db);
 
-    expect(threadComments(shop.id)).toHaveLength(1);
-    expect(threadComments(api.id)).toEqual([]);
+    expect(told()).toEqual([expect.objectContaining({ projectId: shop.id })]);
+    expectNoThread(shop.id, api.id);
   });
 
-  it("keeps a copy untold while there is no thread to tell it on, and tells it once there is", () => {
+  it("tells a copy at once on a machine with no project, rather than waiting for a thread", () => {
     heldBehind();
 
-    expect(tellHeldSkillCopies(handle.db)).toBe(0);
-    expect(listHeldSkillCopies(handle.db)[0]?.toldAt).toBeNull();
-
-    const shop = createProject(handle.db, { name: "Shop", keyPrefix: "SHOP" });
     expect(tellHeldSkillCopies(handle.db)).toBe(1);
-    expect(threadComments(shop.id)).toHaveLength(1);
+    expect(told()).toHaveLength(1);
+    expect(listHeldSkillCopies(handle.db)[0]?.toldAt).not.toBeNull();
   });
 });

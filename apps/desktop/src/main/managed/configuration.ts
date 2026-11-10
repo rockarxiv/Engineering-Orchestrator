@@ -158,7 +158,7 @@ export function applySectionDocument(db: Db, document: SectionDocument | null): 
     // A lock a person set here keeps the organisation's copy out (EO-714):
     // a newer copy of the skill they locked, or one whose slug their
     // locked skill holds. Held rather than dropped — written once the lock
-    // is lifted, and told to the person on a project thread by the drain
+    // is lifted, and told to the person in a message by the drain
     // (`tellHeldSkillCopies`).
     const taken = upsertReplicaSkill(db, skill);
     if (!taken.ok) {

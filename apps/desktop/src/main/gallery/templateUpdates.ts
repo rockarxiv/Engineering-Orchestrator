@@ -1,4 +1,4 @@
-import { DEFAULT_WORKSPACE_MODE, uuidv7, type CommentOption, type MentionTarget, type PipelineExport, type PipelineStep, type StepRoute, type Uuid } from "@eo/core";
+import { DEFAULT_WORKSPACE_MODE, uuidv7, type CommentOption, type PipelineExport, type PipelineStep, type StepRoute, type Uuid } from "@eo/core";
 import { hasBlockingProblem, mergeThreeWay, type ComparableGraph, type ComparedStepField, type KeyChange } from "@eo/engine";
 import type { Db } from "../db/client.js";
 import {
@@ -7,7 +7,6 @@ import {
   getPipelineOrigin,
   getStep,
   getTemplateSnapshot,
-  listPeople,
   listPipelines,
   listRoutesForPipeline,
   listStepsForPipeline,
@@ -27,8 +26,10 @@ import {
   type PipelineOrigin,
   type PipelineUpdateConflict,
 } from "../db/repos/index.js";
+import { TEMPLATE_CONFLICT_SOURCE } from "../db/repos/pipelineUpdateConflictsRepo.js";
 import { projectMovedToTheRecord } from "../db/repos/projectsRepo.js";
 import { storedGraphProblems } from "../ipc/configCommands.js";
+import { sendMessageHere } from "../messages/messages.js";
 import { openProjectThread } from "../projects/projectThread.js";
 import { compareTemplateVersions, type TemplateHistory, type TemplateVersion } from "./history.js";
 
@@ -50,7 +51,8 @@ import { compareTemplateVersions, type TemplateHistory, type TemplateVersion } f
  * - **Held.** A key conflicts, or the merge does not validate: nothing
  *   is applied, not even the parts that do not conflict, and an open
  *   update conflict records the version and each conflicting key with
- *   its three values. The pipeline keeps working as it is.
+ *   its three values. The pipeline keeps working as it is. A message
+ *   asks the person to resolve it, with Fix with assistant (EO-727).
  *
  * This replaces the guarded SQL migration (0114, 0123) as the way a
  * template's improvement reaches an installed pipeline. A migration
@@ -80,10 +82,11 @@ export type TemplateUpdateResult =
   | { pipelineId: string; outcome: "conflict"; slug: string; from: string; to: string; conflictId: string }
   /**
    * Nothing written, and asked again on the next launch: the project
-   * thread the notice goes to could not be secured — a project moving
-   * to the organisation's record, say. An update applied without its
-   * notice would never be announced, since the base it moves is what
-   * says there is nothing left to do.
+   * thread an applied update's notice goes to could not be secured — a
+   * project moving to the organisation's record, say. An update applied
+   * without its notice would never be announced, since the base it moves
+   * is what says there is nothing left to do. A held update is never
+   * deferred: its notice is a message, written with it (EO-727).
    */
   | { pipelineId: string; outcome: "deferred"; slug: string; from: string; to: string; reason: string };
 
@@ -120,11 +123,11 @@ export const HELD_BY_THE_RECORD_RESOLUTION = "held by the record";
  * organisation's record took the pipeline over (EO-534).
  *
  * Obsolete rather than open: the record compares the pipeline now, holds
- * its own conflict and posts its own notice, and that is the update the
+ * its own conflict and sends its own notice, and that is the update the
  * assistant reads and a person resolves. Left open, the desktop's would
- * keep its own notice in the person's inbox — with a Fix with assistant
+ * keep its own message in the person's inbox — with a Fix with assistant
  * opening a chat about an update nobody may resolve here — and nothing
- * could ever close it. Resolving it dismisses that notice's mentions
+ * could ever close it. Resolving it marks that notice's messages resolved
  * (`resolveUpdateConflict`), and says why in the resolution it records.
  * The base it held is left alone: the pipeline's base is the record's.
  */
@@ -205,15 +208,14 @@ function updatePipeline(db: Db, pipelineId: string, history: TemplateHistory, no
   // told (EO-533).
   const open = openUpdateConflict(db, pipelineId);
   if (open !== undefined && open.toVersion === template.version) {
-    return announceHeldUpdate(db, open, isTheRecord, { pipelineId, slug: origin.slug, from: open.fromVersion, to: open.toVersion });
+    return announceHeldUpdate(db, open, isTheRecord, { pipelineId, slug: origin.slug, from: open.fromVersion, to: open.toVersion }, now);
   }
 
   const compared = compareWithTemplate(db, pipelineId, template);
   if (compared === null) return null;
   const notes = releaseNotes(history, origin, template);
   const summary = { pipelineId, slug: origin.slug, from: origin.version, to: template.version };
-  const held = (outcome: HoldOutcome): TemplateUpdateResult =>
-    outcome.ok ? { ...summary, outcome: "conflict", conflictId: outcome.conflictId } : { ...summary, outcome: "deferred", reason: outcome.problem };
+  const held = (conflictId: string): TemplateUpdateResult => ({ ...summary, outcome: "conflict", conflictId });
 
   if (!compared.merge.ok) return held(holdUpdate(db, compared, notes, compared.merge.comparison.conflicts, [], now, isTheRecord));
 
@@ -280,24 +282,22 @@ function updatePipeline(db: Db, pipelineId: string, history: TemplateHistory, no
   return { ...summary, outcome: "applied", version: written.version, changes: taken };
 }
 
-type HoldOutcome = { ok: true; conflictId: string } | { ok: false; problem: string };
-
 /**
  * Records the held update, closing an older one it supersedes, and tells
- * the person (EO-533). Answers the new row's id.
+ * the person (EO-533, EO-727). Answers the new row's id.
  *
- * The notice is one comment on each project thread the update concerns
- * (`noticeThreads`): it mentions the person — on the organisation's
- * record, its admins — so it is in their inbox, names the pipeline, the
- * template and both versions, lists what conflicts in plain words, and
- * has exactly one button, Fix with assistant (`conflictNoticeOptions`).
+ * The notice is a message about each project the update concerns
+ * (`noticeProjects`), to the person — on the organisation's record, to
+ * each admin (`sendMessageHere`) — so it is in their inbox. It names the
+ * pipeline, the template and both versions, lists what conflicts in
+ * plain words, and has exactly one button, Fix with assistant
+ * (`conflictNoticeOptions`). Its subject is the conflict, so resolving
+ * the conflict resolves it (`resolveUpdateConflict`).
  *
- * Secured before anything is written, and written in one transaction
- * with the row, for the reason an applied update's notice is: an open
- * conflict at this version is what tells the next launch there is
- * nothing to compare, so a conflict recorded without its notice would
- * never be announced. A thread that cannot be opened now defers the
- * whole hold to the next launch instead.
+ * Written in one transaction with the row, for the reason an applied
+ * update's notice is: an open conflict at this version is what tells the
+ * next launch there is nothing to compare, so a conflict recorded
+ * without its notice would never be announced.
  *
  * Never twice for one version: where this pipeline's update to this
  * version was already announced (`updateConflictNoticed`), the row is
@@ -311,18 +311,17 @@ function holdUpdate(
   problems: string[],
   now: number,
   isTheRecord: boolean,
-): HoldOutcome {
+): string {
   const pipelineId = compared.origin.pipelineId;
   const noticed = updateConflictNoticed(db, pipelineId, compared.template.version);
-  const threads = noticed ? ({ ok: true, itemIds: [] } as const) : noticeThreads(db, pipelineId, isTheRecord);
-  if (!threads.ok) return { ok: false, problem: threads.problem };
+  const projects = noticed ? [] : noticeProjects(db, pipelineId, isTheRecord);
 
   const conflictId = db.transaction(() => {
     const older = openUpdateConflict(db, pipelineId);
     if (older !== undefined) resolveUpdateConflict(db, older.id, "superseded", now);
     const templateId = storeTemplateSnapshot(db, compared.template.document);
     const id = uuidv7() as string;
-    const noticeCommentIds = postConflictNotices(db, threads.itemIds, id, isTheRecord, {
+    const noticeIds = sendConflictNotices(db, projects, id, isTheRecord, now, {
       pipelineId,
       title: compared.template.document.template.title,
       fromVersion: compared.origin.version,
@@ -344,24 +343,26 @@ function holdUpdate(
         notes,
         conflicts,
         problems,
-        noticeCommentIds,
+        noticeIds,
       },
       now,
       id,
     ).id;
   });
-  if (!noticed && threads.itemIds.length === 0) {
-    console.log(`[eo] the ${compared.origin.slug} ${compared.template.version} update to pipeline ${pipelineId} is held; no project has work on it, so no project thread was told.`);
+  if (!noticed && projects.length === 0) {
+    console.log(`[eo] the ${compared.origin.slug} ${compared.template.version} update to pipeline ${pipelineId} is held; no project has work on it, so nobody was told.`);
   }
-  return { ok: true, conflictId };
+  return conflictId;
 }
 
-/** The notice on each thread, one comment apiece, each mentioning the person (`conflictNoticeMentions`). Answers their ids. */
-function postConflictNotices(db: Db, itemIds: readonly Uuid[], conflictId: string, isTheRecord: boolean, facts: ConflictNoticeFacts): string[] {
+/** The notice: one message about each project, with Fix with assistant, its subject the conflict. Answers their ids. */
+function sendConflictNotices(db: Db, projectIds: readonly Uuid[], conflictId: string, isTheRecord: boolean, now: number, facts: ConflictNoticeFacts): string[] {
+  if (projectIds.length === 0) return [];
   const body = conflictNoticeBody(db, facts);
   const options = conflictNoticeOptions(conflictId);
-  const mentions = conflictNoticeMentions(db, isTheRecord);
-  return itemIds.map((itemId) => postComment(db, { itemId, author: { type: "engine" }, kind: "note", body, options, mentions, parseBodyMentions: false }).id as string);
+  return projectIds.flatMap((projectId) =>
+    sendMessageHere(db, { projectId, source: TEMPLATE_CONFLICT_SOURCE, subject: conflictId, body, options }, isTheRecord, now).map((message) => message.id),
+  );
 }
 
 /**
@@ -371,21 +372,19 @@ function postConflictNotices(db: Db, itemIds: readonly Uuid[], conflictId: strin
  * Two ways a conflict is held unannounced. It was recorded before
  * notices existed — every conflict EO-532 held, which migration 0136
  * gave an empty notice list — or, when it was held, its pipeline had no
- * project and no work on any, so there was no thread to tell. Either
- * way the notice is posted now, once a thread is there, built from what
- * the conflict recorded; a thread that cannot be opened now leaves it
- * for the next launch, as a fresh hold would be.
+ * project and no work on any, so there was nobody's project to say it
+ * about. Either way the notice is sent now, once there is one, built
+ * from what the conflict recorded.
  *
  * Never a second notice: a conflict that has one, or whose pipeline was
  * already told about this version, is left alone.
  */
-function announceHeldUpdate(db: Db, conflict: PipelineUpdateConflict, isTheRecord: boolean, summary: Omit<Extract<TemplateUpdateResult, { outcome: "conflict" }>, "outcome" | "conflictId">): TemplateUpdateResult | null {
-  if (conflict.noticeCommentIds.length > 0 || updateConflictNoticed(db, conflict.pipelineId, conflict.toVersion)) return null;
-  const threads = noticeThreads(db, conflict.pipelineId, isTheRecord);
-  if (!threads.ok) return { ...summary, outcome: "deferred", reason: threads.problem };
-  if (threads.itemIds.length === 0) return null;
+function announceHeldUpdate(db: Db, conflict: PipelineUpdateConflict, isTheRecord: boolean, summary: Omit<Extract<TemplateUpdateResult, { outcome: "conflict" }>, "outcome" | "conflictId">, now: number): TemplateUpdateResult | null {
+  if (conflict.noticeIds.length > 0 || updateConflictNoticed(db, conflict.pipelineId, conflict.toVersion)) return null;
+  const projects = noticeProjects(db, conflict.pipelineId, isTheRecord);
+  if (projects.length === 0) return null;
   db.transaction(() => {
-    const ids = postConflictNotices(db, threads.itemIds, conflict.id, isTheRecord, {
+    const ids = sendConflictNotices(db, projects, conflict.id, isTheRecord, now, {
       pipelineId: conflict.pipelineId,
       title: getTemplateSnapshot(db, conflict.templateId)?.template?.title ?? conflict.templateSlug,
       fromVersion: conflict.fromVersion,
@@ -406,22 +405,6 @@ export const FIX_WITH_ASSISTANT = "Fix with assistant";
 /** The conflict notice's options: exactly one, an action that opens the conflict's assistant chat, never an answer. */
 export function conflictNoticeOptions(conflictId: string): CommentOption[] {
   return [{ kind: "open", label: FIX_WITH_ASSISTANT, opens: { type: "updateConflictChat", conflictId } }];
-}
-
-/**
- * Who the conflict notice asks (EO-533).
- *
- * On a desktop, the person: `{ type: "human" }`, which `postComment`
- * resolves to whoever this machine is. On the organisation's record —
- * where a pipeline the record holds is compared — the organisation's
- * admins, each by name, since a server has no person of its own to put
- * it in front of. A record with no admin yet falls back to the same
- * unnamed person rather than telling nobody.
- */
-function conflictNoticeMentions(db: Db, isTheRecord: boolean): MentionTarget[] {
-  if (!isTheRecord) return [{ type: "human" }];
-  const admins = listPeople(db).filter((person) => person.isAdmin);
-  return admins.length > 0 ? admins.map((person) => ({ type: "human", personId: person.id })) : [{ type: "human" }];
 }
 
 /** Who a conflict is described to: the person it is about, or the assistant asked to resolve it for them. */
@@ -657,23 +640,30 @@ function updateNoticeBody(db: Db, pipelineId: string, notice: UpdateNotice): str
 }
 
 /**
- * The project threads an applied update is announced on, each opened
- * (made, if it has none yet) — or why one could not be.
- *
- * The thread of the project that owns the pipeline; for one no project
- * has adopted, of each project with work on it. On a desktop, a project
- * moved to the organisation's record is the record's to post on, and is
- * left out. Every one must open: an update announced on some of its
- * threads and not others would leave a project never told.
+ * The projects an update is told about (EO-533): the project that owns
+ * the pipeline; for one no project has adopted, each project with work
+ * on it. On a desktop, a project moved to the organisation's record is
+ * the record's to tell about, and is left out. None for a pipeline that
+ * is gone.
  */
-function noticeThreads(db: Db, pipelineId: string, isTheRecord: boolean): { ok: true; itemIds: Uuid[] } | { ok: false; problem: string } {
+function noticeProjects(db: Db, pipelineId: string, isTheRecord: boolean): Uuid[] {
   const pipeline = getPipeline(db, pipelineId);
-  if (pipeline === undefined) return { ok: false, problem: "the pipeline no longer exists" };
-  const projects = (pipeline.projectId !== null ? [pipeline.projectId as Uuid] : projectsWithWorkOnPipeline(db, pipelineId).filter((id): id is Uuid => id !== null)).filter(
+  if (pipeline === undefined) return [];
+  return (pipeline.projectId !== null ? [pipeline.projectId as Uuid] : projectsWithWorkOnPipeline(db, pipelineId).filter((id): id is Uuid => id !== null)).filter(
     (projectId) => isTheRecord || !projectMovedToTheRecord(db, projectId),
   );
+}
+
+/**
+ * The project threads an applied update is announced on, each opened
+ * (made, if it has none yet) — or why one could not be: the thread of
+ * each of its `noticeProjects`. Every one must open: an update announced
+ * on some of its threads and not others would leave a project never told.
+ */
+function noticeThreads(db: Db, pipelineId: string, isTheRecord: boolean): { ok: true; itemIds: Uuid[] } | { ok: false; problem: string } {
+  if (getPipeline(db, pipelineId) === undefined) return { ok: false, problem: "the pipeline no longer exists" };
   const itemIds: Uuid[] = [];
-  for (const projectId of projects) {
+  for (const projectId of noticeProjects(db, pipelineId, isTheRecord)) {
     const thread = openProjectThread(db, projectId);
     if (!thread.ok) return { ok: false, problem: thread.problem };
     itemIds.push(thread.item.id as Uuid);

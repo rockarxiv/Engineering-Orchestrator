@@ -447,7 +447,8 @@ function MessageDetail({ message, busy, onHandle }: { message: Message; busy: bo
         <Markdown>{message.body}</Markdown>
       </blockquote>
 
-      <CommentActions options={message.options} commentId={null} />
+      {/* The message's id places the chat as a pressed notice's comment did (EO-727). */}
+      <CommentActions options={message.options} commentId={message.id} />
 
       {answers.length > 0 ? (
         <div className="flex flex-wrap gap-1.5" role="group" aria-label="Answers">

@@ -1,4 +1,4 @@
-import { skillDueForArchive, type Comment, type SectionLock, type Skill, type SkillAgeing, type SkillAuthor, type Uuid } from "@eo/core";
+import { LOCAL_PERSON_ID, skillDueForArchive, type Comment, type MessageSend, type SectionLock, type Skill, type SkillAgeing, type SkillAuthor, type Uuid } from "@eo/core";
 import type { Db } from "../db/client.js";
 import { postComment, type PostCommentInput } from "../db/repos/commentsRepo.js";
 import { projectMovedToTheRecord } from "../db/repos/projectsRepo.js";
@@ -7,6 +7,7 @@ import { archiveSkill, listSkills, skillOwner } from "../db/repos/skillsRepo.js"
 import { skillsGivenToRunsInFlight, skillUsageById, usageOfSkill } from "../db/repos/skillUsageRepo.js";
 import { emitPush } from "../ipc/push.js";
 import { sectionLockFor } from "../managed/locks.js";
+import { sendMessage as sendMessageHere, type MessageSendAnswer } from "../messages/messages.js";
 import type { ProjectThreadAnswer } from "../projects/projectThread.js";
 
 /**
@@ -42,12 +43,17 @@ import type { ProjectThreadAnswer } from "../projects/projectThread.js";
  *
  * A pass that cannot archive what is due says so too (invariant 8): an
  * organisation's published section, which keeps skill writes on the
- * record, is said once on the project's thread — again only when another
- * skill falls due under it. A thread that cannot be opened, which happens
- * only while the project is moving to the record or is gone, archives
- * nothing and writes nothing: the skills stay live, nothing is dropped,
- * and the next pass asks again.
+ * record, is said once in a message about the project (EO-727) — again
+ * only when another skill falls due under it — and a message that could
+ * not be sent is tried again on the next pass. A thread that cannot be
+ * opened for the note of what was archived, which happens only while the
+ * project is moving to the record or is gone, archives nothing and writes
+ * nothing: the skills stay live, nothing is dropped, and the next pass
+ * asks again.
  */
+
+/** The source of the message saying a published section kept EO from archiving skills (EO-727). */
+export const ARCHIVAL_HELD_SOURCE = "skill_archival_held";
 
 export const EO_SKILL_AUTHOR: SkillAuthor = { kind: "eo" };
 
@@ -83,13 +89,20 @@ export interface ArchiveUnusedSkillsInput {
    * that archives. This database's own `postComment` where absent.
    */
   postComment?: (input: PostCommentInput) => Comment;
+  /**
+   * `ItemRecord.sendMessage`, so the message saying a published section
+   * kept skills from being archived about a record-held project is
+   * written on the record, to each admin (EO-727). This database's own
+   * table, to this machine's person, where absent.
+   */
+  sendMessage?: (input: MessageSend) => Promise<MessageSendAnswer>;
   now?: () => number;
 }
 
 export type ArchiveUnusedSkillsResult =
   | { archived: Skill[]; noteId: string | null }
-  /** Some were due and none was archived: why, and the comment that said so, where one was written now. */
-  | { archived: []; noteId: string | null; problem: string };
+  /** Some were due and none was archived: why, and whether a message saying so was sent now. */
+  | { archived: []; noteId: null; told: boolean; problem: string };
 
 /** The live skills of this project's reach that are due to be archived now. */
 function dueSkills(db: Db, projectId: Uuid, reach: ArchiveReach, ageing: SkillAgeing): Skill[] {
@@ -109,7 +122,13 @@ function refusalToldKey(projectId: Uuid): string {
 
 export async function archiveUnusedSkills(input: ArchiveUnusedSkillsInput): Promise<ArchiveUnusedSkillsResult> {
   const { db, projectId, reach, ageing } = input;
-  if (dueSkills(db, projectId, reach, ageing).length === 0) return { archived: [], noteId: null };
+  const dueNow = dueSkills(db, projectId, reach, ageing);
+  if (dueNow.length === 0) return { archived: [], noteId: null };
+
+  // Skill writes are the record's under a published section: nothing is
+  // archived here, and the project thread is not asked for.
+  const held = sectionLockFor(db, "skills:archive");
+  if (held) return tellRefusal(input, dueNow, held);
 
   let thread: ProjectThreadAnswer;
   try {
@@ -128,8 +147,9 @@ export async function archiveUnusedSkills(input: ArchiveUnusedSkillsInput): Prom
     const due = dueSkills(db, projectId, reach, ageing);
     if (due.length === 0) return { archived: [], noteId: null };
 
+    // Published while the thread was opened: said by the next pass.
     const lock = sectionLockFor(db, "skills:archive");
-    if (lock) return tellRefusal(db, post, projectId, threadItemId, due, lock);
+    if (lock) return { archived: [], noteId: null, told: false, problem: refusalProblem(lock) };
 
     const archived: Skill[] = [];
     for (const skill of due) {
@@ -156,15 +176,21 @@ function note(post: (input: PostCommentInput) => Comment, itemId: Uuid, body: st
   }).id;
 }
 
+function refusalProblem(lock: SectionLock): string {
+  return `Your organisation has published the ${lock.section} section${lock.publishedBy ? ` (${lock.publishedBy})` : ""}, so skills are changed there and EO archived nothing here.`;
+}
+
 /**
- * The published section that kept due skills from being archived, said on
- * the project's thread — once for these skills, and again only when one
- * falls due that was not among those told of.
+ * The published section that kept due skills from being archived, said in
+ * a message about the project (EO-727) — once for these skills, and again
+ * only when one falls due that was not among those told of. Remembered as
+ * told only once the message is written.
  */
-function tellRefusal(db: Db, post: (input: PostCommentInput) => Comment, projectId: Uuid, threadItemId: Uuid, due: readonly Skill[], lock: SectionLock): ArchiveUnusedSkillsResult {
-  const problem = `Your organisation has published the ${lock.section} section${lock.publishedBy ? ` (${lock.publishedBy})` : ""}, so skills are changed there and EO archived nothing here.`;
+async function tellRefusal(input: ArchiveUnusedSkillsInput, due: readonly Skill[], lock: SectionLock): Promise<ArchiveUnusedSkillsResult> {
+  const { db, projectId } = input;
+  const problem = refusalProblem(lock);
   const told = new Set(getSetting<string[]>(db, refusalToldKey(projectId), []));
-  if (due.every((skill) => told.has(skill.id))) return { archived: [], noteId: null, problem };
+  if (due.every((skill) => told.has(skill.id))) return { archived: [], noteId: null, told: false, problem };
   const which = due.length === 1 ? "An agent-written skill is" : `${due.length} agent-written skills are`;
   const body = [
     `${which} due to be archived — given to runs in a row without one of them loading ${due.length === 1 ? "it" : "them"} — but ${problem.charAt(0).toLowerCase()}${problem.slice(1)}`,
@@ -173,9 +199,16 @@ function tellRefusal(db: Db, post: (input: PostCommentInput) => Comment, project
     "",
     `${due.length === 1 ? "It is" : "They are"} still delivered. An admin can archive ${due.length === 1 ? "it" : "them"} where the section is published.`,
   ].join("\n");
-  const noteId = note(post, threadItemId, body);
+  const send = input.sendMessage ?? ((message: MessageSend): Promise<MessageSendAnswer> => Promise.resolve({ ok: true, messages: [sendMessageHere(db, message)] }));
+  let sent: MessageSendAnswer;
+  try {
+    sent = await send({ recipientId: LOCAL_PERSON_ID, projectId, source: ARCHIVAL_HELD_SOURCE, body });
+  } catch (error) {
+    sent = { ok: false, problem: error instanceof Error ? error.message : String(error) };
+  }
+  if (!sent.ok) return { archived: [], noteId: null, told: false, problem: `${problem} The message saying so could not be sent, and the next pass will try again: ${sent.problem}` };
   setSetting(db, refusalToldKey(projectId), due.map((skill) => skill.id));
-  return { archived: [], noteId, problem };
+  return { archived: [], noteId: null, told: true, problem };
 }
 
 /** The one note a pass that archived anything posts: every skill it archived, and how to bring one back. */

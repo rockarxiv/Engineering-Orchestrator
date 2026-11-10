@@ -15,10 +15,10 @@ import {
   createStep,
   currentVersion,
   getItem,
+  getMessage,
   getPipelineOrigin,
   getUpdateConflict,
   listCommentsForItem,
-  listMentionsForComment,
   listRoutesForPipeline,
   listStepsForPipeline,
   openUpdateConflict,
@@ -27,7 +27,7 @@ import {
   versionSnapshot,
 } from "../db/repos/index.js";
 import { pipelines } from "../db/schema.js";
-import { openMigratedTestDb } from "../db/testHelpers.js";
+import { messagesFrom, openMigratedTestDb } from "../db/testHelpers.js";
 import { loadTemplateHistory } from "../gallery/history.js";
 import { backfillPipelineOrigins } from "../gallery/origins.js";
 import { applyTemplateUpdates } from "../gallery/templateUpdates.js";
@@ -178,7 +178,7 @@ async function call<K extends IpcChannel>(channel: K, payload: unknown): Promise
  * opened pull requests to the project's Merge pipeline, in a project the
  * organisation holds, with the pipelines section published — so every
  * desktop's copy is the record's. The record holds the 1.3 update and
- * posts the notice, which Anna's desktop pulls.
+ * sends the notice to its admin, which Anna's desktop pulls.
  */
 async function heldOnTheRecord(): Promise<{ conflictId: string; projectId: Uuid }> {
   const db = recordDb.db;
@@ -199,11 +199,19 @@ async function heldOnTheRecord(): Promise<{ conflictId: string; projectId: Uuid 
   return { conflictId: conflict.id, projectId: project.id as Uuid };
 }
 
+/** The notice on Anna's desktop: the record's message to her, pulled, and no project thread. */
+function annaNotice(projectId: Uuid) {
+  expect(findProjectThread(anna.handle.db, projectId)).toBeUndefined();
+  const [notice, ...more] = messagesFrom(anna.handle.db, "template_conflict").filter((message) => message.projectId === projectId);
+  expect(notice).toBeDefined();
+  expect(more).toEqual([]);
+  return notice!;
+}
+
 /** Fix with assistant on Anna's desktop: the record's chat, copied here with its brief. */
 async function openChat(conflictId: string, projectId: Uuid): Promise<Item> {
-  const thread = findProjectThread(anna.handle.db, projectId)!;
-  const [notice] = listCommentsForItem(anna.handle.db, thread.id as Uuid);
-  const opened = await openUpdateConflictAssist(anna.handle.db, { notifyStateChange: vi.fn() } as unknown as EngineHandle, { conflictId, commentId: notice!.id }, anna.record);
+  const notice = annaNotice(projectId);
+  const opened = await openUpdateConflictAssist(anna.handle.db, { notifyStateChange: vi.fn() } as unknown as EngineHandle, { conflictId, commentId: notice.id }, anna.record);
   expect(opened.problem).toBeNull();
   return getItem(anna.handle.db, opened.conversation!.id as Uuid)!;
 }
@@ -313,14 +321,14 @@ describe("a template update the organisation's record holds", () => {
     const conflict = getUpdateConflict(recordDb.db, conflictId)!;
     expect(conflict).toMatchObject({ resolution: "published" });
     expect(getPipelineOrigin(recordDb.db, "default")).toMatchObject({ version: "1.3", baseId: conflict.templateId });
-    expect(listMentionsForComment(recordDb.db, conflict.noticeCommentIds[0]! as Uuid).map((mention) => mention.status)).not.toContain("open");
+    expect(getMessage(recordDb.db, conflict.noticeIds[0]!)?.handledHow).toBe("resolved");
     // Never raised again on the record.
     expect(applyTemplateUpdates(recordDb.db, loadTemplateHistory(GALLERY_DIRECTORY), { isTheRecord: true })).toEqual([]);
 
     // Anna's copy follows the record's graph, and her notice closes, on the next pull.
     await anna.record.sync();
     expect(routeOf(anna.handle, "merge_request", "opened")).toBe("pull_request_watch");
-    expect(listMentionsForComment(anna.handle.db, conflict.noticeCommentIds[0]! as Uuid).map((mention) => mention.status)).not.toContain("open");
+    expect(getMessage(anna.handle.db, conflict.noticeIds[0]!)?.handledHow).toBe("resolved");
   });
 
   it("publishes a draft's entry rules on the record, and they reach the desktop (EO-610)", async () => {
@@ -394,15 +402,14 @@ describe("a template update the organisation's record holds", () => {
 });
 
 describe("a pipeline's head, for a pipeline the organisation's record holds (EO-536)", () => {
-  it("says what the record holds: its origin and its held update, pointing at the notice Anna's desktop pulled", async () => {
+  it("says what the record holds: its origin and its held update, which opens the chat since its notice is a message on no item", async () => {
     const { conflictId, projectId } = await heldOnTheRecord();
-    const thread = findProjectThread(anna.handle.db, projectId)!;
-    const [notice] = listCommentsForItem(anna.handle.db, thread.id as Uuid);
+    annaNotice(projectId);
 
     const status = await call("pipeline:templateStatus", { pipelineId: "default" });
 
     expect(status.origin).toEqual(expect.objectContaining({ slug: "software-feature-to-merge", version: "1.0" }));
-    expect(status.waiting).toEqual(expect.objectContaining({ conflictId, toVersion: "1.3", conflicts: 1, chatId: null, notice: { itemId: thread.id, commentId: notice!.id } }));
+    expect(status.waiting).toEqual(expect.objectContaining({ conflictId, toVersion: "1.3", conflicts: 1, chatId: null, notice: null }));
     expect(status.problem).toBeNull();
 
     // Once Fix with assistant has opened the chat, the head goes to it.

@@ -53,6 +53,13 @@ export const MessageSendSchema = z.object({
   source: z.string().min(1),
   body: z.string().min(1),
   options: z.array(CommentOptionSchema).nullable().optional(),
+  /**
+   * What it is about within its source — a conflict's id, a memory
+   * scope's key — so EO can resolve it once that is settled some other
+   * way (`resolveMessagesAbout` in main, EO-727). Absent for a message
+   * nothing resolves.
+   */
+  subject: z.string().min(1).nullable().optional(),
 });
 export type MessageSend = z.input<typeof MessageSendSchema>;
 

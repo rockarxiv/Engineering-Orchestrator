@@ -107,7 +107,7 @@ export function retryAt(state: ScopeConsolidationState): number | null {
 }
 
 /**
- * Whether the note saying a scope's consolidation is stuck is owed now
+ * Whether the message saying a scope's consolidation is stuck is owed now
  * (EO-577): its failures in a row have reached `CONSOLIDATION_STUCK_AFTER`
  * and none of them has had the note yet. Said once per run of failures —
  * a success, which ends the run, is what lets it be said again. The row
@@ -122,7 +122,7 @@ export function stuckNoticeOwed(state: ScopeConsolidationState): ScopeConsolidat
 }
 
 /**
- * The note on the project thread saying a scope's consolidation is stuck
+ * The message saying a scope's consolidation is stuck
  * (EO-577): which scope, what it holds against its caps, how many times
  * in a row it has failed and why the last one did — and that nothing
  * else is held up by it.
@@ -148,7 +148,7 @@ export function stuckNoticeBody(input: {
   if (input.retryAt !== null) lines.push(`- **Next attempt:** ${new Date(input.retryAt).toISOString().replace("T", " ").slice(0, 16)} UTC, and a day apart after that until one succeeds.`);
   lines.push(
     "",
-    "The scope keeps working as it is: agents are still given its memory and can still write to it, and no delivery waits on this. Retiring or editing entries by hand in Memory makes it smaller in the meantime. This note is not repeated until a consolidation of the scope succeeds.",
+    "The scope keeps working as it is: agents are still given its memory and can still write to it, and no delivery waits on this. Retiring or editing entries by hand in Memory makes it smaller in the meantime. This message is not repeated until a consolidation of the scope succeeds, which resolves it.",
   );
   return lines.join("\n");
 }

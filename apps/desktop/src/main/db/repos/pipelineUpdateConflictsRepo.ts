@@ -3,7 +3,12 @@ import { uuidv7, type Uuid } from "@eo/core";
 import type { KeyChange } from "@eo/engine";
 import type { Db } from "../client.js";
 import { pipelineUpdateConflicts } from "../schema.js";
+import { emitPush } from "../../ipc/push.js";
 import { dismissOpenMentionsForComment } from "./commentsRepo.js";
+import { markMessagesAboutResolved } from "./messagesRepo.js";
+
+/** The source of a held update's notice (`MessageSend.source`, EO-727); its subject is the conflict's id. */
+export const TEMPLATE_CONFLICT_SOURCE = "template_conflict";
 
 /**
  * Template updates a pipeline could not take (EO-532, ARCHITECTURE.md,
@@ -34,19 +39,20 @@ export interface PipelineUpdateConflict {
   resolvedAt: number | null;
   resolution: string | null;
   /**
-   * The comments the conflict notice was posted as (EO-533): one per
-   * project thread it went to. Empty where nobody could be told — a
-   * pipeline with no project and no work on any.
+   * What the conflict notice was sent as (EO-533, EO-727): its messages,
+   * one per project it concerns and recipient — or, for a conflict noticed
+   * before messages, its comments on the project threads. Empty where
+   * nobody could be told — a pipeline with no project and no work on any.
    */
-  noticeCommentIds: string[];
+  noticeIds: string[];
   /** The assistant chat Fix with assistant opened for it, or null before the first press (EO-533). */
   chatId: string | null;
   /** On the record, the device the chat's first turn was handed to; null before then and on a desktop (EO-533). */
   chatTurnDeviceId: string | null;
 }
 
-export type RecordUpdateConflictInput = Omit<PipelineUpdateConflict, "id" | "createdAt" | "resolvedAt" | "resolution" | "noticeCommentIds" | "chatId" | "chatTurnDeviceId"> & {
-  noticeCommentIds?: string[];
+export type RecordUpdateConflictInput = Omit<PipelineUpdateConflict, "id" | "createdAt" | "resolvedAt" | "resolution" | "noticeIds" | "chatId" | "chatTurnDeviceId"> & {
+  noticeIds?: string[];
 };
 
 function toConflict(row: typeof pipelineUpdateConflicts.$inferSelect): PipelineUpdateConflict {
@@ -64,7 +70,7 @@ function toConflict(row: typeof pipelineUpdateConflicts.$inferSelect): PipelineU
     createdAt: row.createdAt,
     resolvedAt: row.resolvedAt,
     resolution: row.resolution,
-    noticeCommentIds: Array.isArray(row.noticeCommentIds) ? (row.noticeCommentIds as unknown[]).filter((id): id is string => typeof id === "string") : [],
+    noticeIds: Array.isArray(row.noticeIds) ? (row.noticeIds as unknown[]).filter((id): id is string => typeof id === "string") : [],
     chatId: row.chatId,
     chatTurnDeviceId: row.chatTurnDeviceId,
   };
@@ -72,7 +78,7 @@ function toConflict(row: typeof pipelineUpdateConflicts.$inferSelect): PipelineU
 
 /** Records an open update conflict. The caller closes any older open one first (`resolveUpdateConflict`). */
 export function recordUpdateConflict(db: Db, input: RecordUpdateConflictInput, at: number = Date.now(), id: string = uuidv7()): PipelineUpdateConflict {
-  const recorded = { id, ...input, noticeCommentIds: input.noticeCommentIds ?? [], chatId: null, chatTurnDeviceId: null, createdAt: at, resolvedAt: null, resolution: null };
+  const recorded = { id, ...input, noticeIds: input.noticeIds ?? [], chatId: null, chatTurnDeviceId: null, createdAt: at, resolvedAt: null, resolution: null };
   db.insert(pipelineUpdateConflicts).values(recorded).run();
   return recorded;
 }
@@ -97,12 +103,12 @@ export function updateConflictNoticed(db: Db, pipelineId: string, toVersion: str
     .from(pipelineUpdateConflicts)
     .where(and(eq(pipelineUpdateConflicts.pipelineId, pipelineId), eq(pipelineUpdateConflicts.toVersion, toVersion)))
     .all()
-    .some((row) => toConflict(row).noticeCommentIds.length > 0);
+    .some((row) => toConflict(row).noticeIds.length > 0);
 }
 
-/** Records the comments a conflict's notice was posted as, where it is announced after it was held (EO-533). */
-export function setUpdateConflictNotices(db: Db, id: string, commentIds: readonly string[]): void {
-  db.update(pipelineUpdateConflicts).set({ noticeCommentIds: [...commentIds] }).where(eq(pipelineUpdateConflicts.id, id)).run();
+/** Records the messages a conflict's notice was sent as, where it is announced after it was held (EO-533, EO-727). */
+export function setUpdateConflictNotices(db: Db, id: string, noticeIds: readonly string[]): void {
+  db.update(pipelineUpdateConflicts).set({ noticeIds: [...noticeIds] }).where(eq(pipelineUpdateConflicts.id, id)).run();
 }
 
 /**
@@ -160,23 +166,30 @@ export function listUpdateConflicts(db: Db, pipelineId: string): PipelineUpdateC
  * Closes an open update conflict, saying how. A closed one is never
  * reopened.
  *
- * Its notice closes with it (EO-533): every mention the notice put in
- * somebody's inbox is dismissed in the same write, however the conflict
- * was resolved — a draft published from its chat, the person keeping
- * their own version, or a newer template version superseding it. A
- * notice asking for something already settled would be a `!` with
- * nothing behind it.
+ * Its notice closes with it (EO-533, EO-727): every message it sent is
+ * marked resolved in the same write, however the conflict was resolved —
+ * a draft published from its chat, the person keeping their own version,
+ * or a newer template version superseding it — and the mentions of a
+ * notice posted on project threads before messages are dismissed. A
+ * notice asking for something already settled would sit in the inbox
+ * with nothing behind it.
  */
 export function resolveUpdateConflict(db: Db, id: string, resolution: string, at: number = Date.now()): void {
-  db.transaction(() => {
+  const resolvedMessages = db.transaction(() => {
     const closed = db
       .update(pipelineUpdateConflicts)
       .set({ resolvedAt: at, resolution })
       .where(and(eq(pipelineUpdateConflicts.id, id), isNull(pipelineUpdateConflicts.resolvedAt)))
       .returning()
       .all();
+    let resolved = 0;
     for (const row of closed) {
-      for (const commentId of toConflict(row).noticeCommentIds) dismissOpenMentionsForComment(db, commentId as Uuid);
+      // A message id names no comment, so this only reaches a notice
+      // posted on a thread before EO-727.
+      for (const noticeId of toConflict(row).noticeIds) dismissOpenMentionsForComment(db, noticeId as Uuid);
+      resolved += markMessagesAboutResolved(db, TEMPLATE_CONFLICT_SOURCE, row.id, at).length;
     }
+    return resolved;
   });
+  if (resolvedMessages > 0) emitPush("messages:changed", {});
 }

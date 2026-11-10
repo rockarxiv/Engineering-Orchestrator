@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   isDispatchable,
+  LOCAL_PERSON_ID,
   MEMORY_CONSOLIDATE_MAX_OUTPUT_TOKENS,
   MEMORY_CONSOLIDATE_TIMEOUT_MS,
   MEMORY_CONSOLIDATION_INTERVAL_MS,
@@ -10,6 +11,7 @@ import {
   type MemoryConsolidationTrigger,
   type MemoryEntryView,
   type MemoryScope,
+  type MessageSend,
   sideCallModelOfSystemAgent,
   type SideCallModelChoice,
   type SideCallResult,
@@ -35,7 +37,6 @@ import {
   listSkills,
   markConsolidationStuckNoticed,
   memoryScopeProjectId,
-  postComment,
   projectWorkspaceList,
   recordSkippedConsolidation,
   runsDeliveredFromScopeSince,
@@ -46,6 +47,7 @@ import {
   workspaceLabel,
 } from "../db/repos/index.js";
 import type { ApplyConsolidationResult, ScopeTally } from "../db/repos/memoryConsolidationsRepo.js";
+import { resolveMessagesAbout, sendMessage as sendMessageHere, type MessageSendAnswer } from "../messages/messages.js";
 import { openProjectThread, type ProjectThreadAnswer } from "../projects/projectThread.js";
 import { agentReasoningEffort } from "../providers/smallModels.js";
 import type { SideCaller, SideCallRequest } from "../sideCalls/sideCall.js";
@@ -148,6 +150,13 @@ export interface MemoryConsolidatorOptions {
    * database's own tables.
    */
   projectThread?: (projectId: Uuid) => Promise<ProjectThreadAnswer>;
+  /**
+   * Sends the message saying a scope's consolidation is stuck (EO-727):
+   * `ItemRecord.sendMessage`, so on the organisation's record one about a
+   * project it holds goes to each admin. Absent is this database's own
+   * table, to this machine's person.
+   */
+  sendMessage?: (input: MessageSend) => Promise<MessageSendAnswer>;
   /** Where a proposal's SKILL.md and diff are kept. Absent, the draft travels in the comment's body. */
   store?: ProposalFileStore;
   /**
@@ -216,6 +225,9 @@ const REPOSITORY_FILE_MAX_CHARS = 30_000;
 const REPOSITORY_FILE_NAMES = ["CLAUDE.md", "AGENTS.md"] as const;
 
 const keyOf = (scope: MemoryScope) => `${scope.kind}:${scope.id}`;
+
+/** The source of the message saying a scope's consolidation is stuck (EO-727); its subject is the scope's key. */
+export const CONSOLIDATION_STUCK_SOURCE = "consolidation_stuck";
 
 const PAUSED_NOTE = "EO was paused while this consolidation ran, so it was stopped and changed nothing. It is asked again once EO is resumed.";
 const PAUSED_BETWEEN_NOTE = "EO was paused before this batch of the consolidation started, so it changed nothing; the batches before it stay applied. It is asked again once EO is resumed.";
@@ -396,6 +408,7 @@ export function createMemoryConsolidator(options: MemoryConsolidatorOptions): Me
   const repositoryFiles = options.repositoryFiles ?? ((scope: MemoryScope) => readRepositoryFiles(db, scope));
   const intervalMs = options.intervalMs ?? DEFAULT_INTERVAL_MS;
   const projectThread = options.projectThread ?? ((projectId: Uuid) => Promise.resolve(openProjectThread(db, projectId)));
+  const sendMessage = options.sendMessage ?? ((input: MessageSend): Promise<MessageSendAnswer> => Promise.resolve({ ok: true, messages: [sendMessageHere(db, input)] }));
   /** Whether pipeline work is waiting or going; a question that cannot be answered is "yes", so consolidation waits rather than takes the slot. */
   const pipelineBusy = (): boolean => {
     try {
@@ -1061,37 +1074,36 @@ export function createMemoryConsolidator(options: MemoryConsolidatorOptions): Me
   }
 
   /**
-   * Says, once, that a scope's consolidation is stuck (EO-577): at its
-   * third failure in a row, a note on its project's thread naming the
-   * scope, what it holds against its caps and why the last one failed.
-   * A note, not a question — nothing waits on it and nobody is asked
-   * anything; the scope keeps working as it is. Marked on the failure it
-   * was said at, so the same run of failures is not said again; a success
-   * ends the run. A scope on no project has no thread, and has it said in
-   * that failure's own note instead. Never throws.
+   * Says, once, that a scope's consolidation is stuck (EO-577, EO-727):
+   * at its third failure in a row, a message to the project's person — on
+   * the organisation's record, each admin — naming the scope, what it
+   * holds against its caps and why the last one failed. Nothing waits on
+   * it; the scope keeps working as it is. Marked on the failure it was
+   * said at, so the same run of failures is not said again, and only once
+   * the message is written: one that could not be sent is tried again at
+   * the next failure. Its subject is the scope, and once the run of
+   * failures has ended — a later consolidation of the scope succeeded —
+   * EO marks it resolved. Never throws.
    */
   async function noticeIfStuck(scope: MemoryScope): Promise<void> {
     try {
       const state = consolidationState(db, scope);
+      if (state.failuresSince.length === 0) {
+        resolveMessagesAbout(db, CONSOLIDATION_STUCK_SOURCE, keyOf(scope), now());
+        return;
+      }
       const owed = stuckNoticeOwed(state);
       if (owed === null) return;
       const facts = scopeFacts(db, scope, options.workspacesElsewhere);
       const tally = tallyOf(scope);
       if (facts === null || tally === undefined || heldElsewhereNow(scope)) return;
       const body = stuckNoticeBody({ scopeLabel: facts.label, tally, caps: options.caps(), failures: consecutiveFailures(state).length, last: owed, retryAt: retryAt(state) });
-      if (facts.projectId === null) {
-        appendConsolidationNote(db, owed.id, `Consolidation of ${facts.label} is stuck, failing ${consecutiveFailures(state).length} times in a row; it is on no project, so there is no project thread to say so on.`);
-        markConsolidationStuckNoticed(db, owed.id, now());
+      const sent = await sendMessage({ recipientId: LOCAL_PERSON_ID, projectId: facts.projectId, source: CONSOLIDATION_STUCK_SOURCE, subject: keyOf(scope), body });
+      if (!sent.ok) {
+        // Not marked: the next failure tries again.
+        appendConsolidationNote(db, owed.id, `Consolidation of this scope is stuck, and the message saying so could not be sent: ${sent.problem}`);
         return;
       }
-      const thread = await projectThread(facts.projectId);
-      if (!thread.ok) {
-        // Not marked: the next failure tries the thread again.
-        appendConsolidationNote(db, owed.id, `Consolidation of this scope is stuck, and the note saying so could not be posted on the project thread: ${thread.problem}`);
-        return;
-      }
-      // EO's own sentence, quoting a backend's: nothing in it summons anyone.
-      postComment(db, { itemId: thread.item.id, author: { type: "engine" }, kind: "note", body, parseBodyMentions: false });
       markConsolidationStuckNoticed(db, owed.id, now());
     } catch (error) {
       console.warn(`[eo] that memory consolidation is stuck could not be said: ${messageOf(error)}`);

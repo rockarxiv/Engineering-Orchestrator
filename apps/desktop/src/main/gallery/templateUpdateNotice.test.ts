@@ -2,36 +2,36 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { sql } from "drizzle-orm";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { LOCAL_PERSON_ID, type Uuid } from "@eo/core";
+import { LOCAL_PERSON_ID, type Message, type Uuid } from "@eo/core";
 import type { DbHandle } from "../db/client.js";
 import {
   createPipeline,
   createStep,
   getPipelineOrigin,
-  listCommentsForItem,
+  getMessage,
   listMentionsForComment,
   listPeople,
   listUpdateConflicts,
-  needsAttention,
-  openMentionsForHuman,
   openUpdateConflict,
   postComment,
   recordUpdateConflict,
   resolveUpdateConflict,
+  setUpdateConflictNotices,
 } from "../db/repos/index.js";
 import { createPerson } from "../db/repos/peopleRepo.js";
 import { createProject } from "../db/repos/projectsRepo.js";
-import { createTestItem, openMigratedTestDb } from "../db/testHelpers.js";
+import { createTestItem, messagesFrom, openMigratedTestDb } from "../db/testHelpers.js";
 import { listInbox } from "../ipc/domainQueries.js";
-import { findProjectThread } from "../projects/projectThread.js";
+import { findProjectThread, openProjectThread } from "../projects/projectThread.js";
 import { loadTemplateHistory, type TemplateHistory, type TemplateVersion } from "./history.js";
 import { backfillPipelineOrigins } from "./origins.js";
 import { applyTemplateUpdates, conflictNoticeOptions, FIX_WITH_ASSISTANT, updateConflictBrief } from "./templateUpdates.js";
 
 /**
- * The conflict notice (EO-533): a held template update is told to the
- * person as one comment on the project thread, in their inbox, with one
- * button — Fix with assistant — and it closes when the conflict does.
+ * The conflict notice (EO-533, EO-727): a held template update is told to
+ * the person as a message about each project it concerns, in their inbox,
+ * with one button — Fix with assistant — and resolved when the conflict
+ * is. Never a comment on a project thread.
  */
 
 const GALLERY_DIRECTORY = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "resources", "gallery");
@@ -71,9 +71,14 @@ function adoptedBy(name: string, keyPrefix: string): Uuid {
   return project.id as Uuid;
 }
 
-function noticesOn(projectId: Uuid) {
-  const thread = findProjectThread(handle.db, projectId);
-  return thread === undefined ? [] : listCommentsForItem(handle.db, thread.id as Uuid);
+/** The conflict notices sent about a project, open or handled, oldest first. */
+function noticesOn(projectId: Uuid): Message[] {
+  return messagesFrom(handle.db, "template_conflict").filter((message) => message.projectId === projectId);
+}
+
+/** No project thread was made for any of these projects, so nothing was posted on one. */
+function expectNoThread(...projectIds: Uuid[]): void {
+  for (const projectId of projectIds) expect(findProjectThread(handle.db, projectId)).toBeUndefined();
 }
 
 function withVersion(version: string, notes: string): TemplateHistory {
@@ -83,16 +88,17 @@ function withVersion(version: string, notes: string): TemplateHistory {
 }
 
 describe("recording an update conflict", () => {
-  it("posts one comment on the owning project's thread that mentions the person and names the pipeline, template, versions and conflict", () => {
+  it("sends one message about the owning project to the person, naming the pipeline, template, versions and conflict, and posts on no thread", () => {
     customisedDelivery();
     const projectId = adoptedBy("Shop", "SHOP");
 
     applyTemplateUpdates(handle.db, history, { isTheRecord: false });
 
-    const comments = noticesOn(projectId);
-    expect(comments).toHaveLength(1);
-    const notice = comments[0]!;
-    expect(notice.authorType).toBe("engine");
+    const notices = noticesOn(projectId);
+    expect(notices).toHaveLength(1);
+    const notice = notices[0]!;
+    expect(notice.recipientId).toBe(LOCAL_PERSON_ID);
+    expect(notice.handledAt).toBeNull();
     expect(notice.body).toContain("**Delivery**");
     expect(notice.body).toContain("*Software feature to merge*");
     expect(notice.body).toContain("from 1.0 to 1.3");
@@ -106,19 +112,14 @@ describe("recording an update conflict", () => {
     const conflict = openUpdateConflict(handle.db, "default")!;
     expect(notice.options).toEqual([{ kind: "open", label: FIX_WITH_ASSISTANT, opens: { type: "updateConflictChat", conflictId: conflict.id } }]);
     expect(notice.options).toEqual(conflictNoticeOptions(conflict.id));
-    expect(conflict.noticeCommentIds).toEqual([notice.id]);
+    expect(conflict.noticeIds).toEqual([notice.id]);
 
-    // In the person's inbox, and raising `!` on the thread.
-    expect(listMentionsForComment(handle.db, notice.id as Uuid)).toEqual([expect.objectContaining({ targetType: "human", targetId: LOCAL_PERSON_ID, status: "open" })]);
-    expect(openMentionsForHuman(handle.db).map((open) => open.comment.id)).toContain(notice.id);
-    const inbox = listInbox(handle.db, projectId);
-    const row = inbox.items.find((item) => item.commentId === notice.id);
-    expect(row).toBeDefined();
-    expect(row?.options).toEqual(notice.options);
-    expect(needsAttention(handle.db, notice.itemId)).toBe(true);
+    // In the person's inbox, as a message.
+    expect(listInbox(handle.db, projectId).messages.map((message) => message.id)).toEqual([notice.id]);
+    expectNoThread(projectId);
   });
 
-  it("posts on the thread of each project with items on a pipeline no project has adopted", () => {
+  it("sends one about each project with items on a pipeline no project has adopted", () => {
     customisedDelivery();
     const shop = createProject(handle.db, { name: "Shop", keyPrefix: "SHOP" });
     const blog = createProject(handle.db, { name: "Blog", keyPrefix: "BLOG" });
@@ -132,10 +133,11 @@ describe("recording an update conflict", () => {
     expect(noticesOn(blog.id as Uuid)).toHaveLength(1);
     expect(noticesOn(idle.id as Uuid)).toHaveLength(0);
     const conflict = openUpdateConflict(handle.db, "default")!;
-    expect(conflict.noticeCommentIds).toHaveLength(2);
+    expect(conflict.noticeIds).toHaveLength(2);
+    expectNoThread(shop.id as Uuid, blog.id as Uuid, idle.id as Uuid);
   });
 
-  it("mentions the organisation's admins on the record", () => {
+  it("sends it to each of the organisation's admins on the record", () => {
     customisedDelivery();
     const projectId = adoptedBy("Shop", "SHOP");
     const anna = createPerson(handle.db, { name: "Anna", email: "anna@example.com", isAdmin: true });
@@ -144,42 +146,68 @@ describe("recording an update conflict", () => {
 
     applyTemplateUpdates(handle.db, history, { isTheRecord: true });
 
-    const notice = noticesOn(projectId)[0]!;
-    const targets = listMentionsForComment(handle.db, notice.id as Uuid).map((mention) => mention.targetId);
+    const recipients = noticesOn(projectId).map((message) => message.recipientId);
     const admins = listPeople(handle.db).filter((person) => person.isAdmin).map((person) => person.id);
-    expect(targets.sort()).toEqual([...admins].sort());
-    expect(targets).toEqual(expect.arrayContaining([anna.id, ben.id]));
-    expect(targets).not.toContain(carl.id);
+    expect(recipients.sort()).toEqual([...admins].sort());
+    expect(recipients).toEqual(expect.arrayContaining([anna.id, ben.id]));
+    expect(recipients).not.toContain(carl.id);
+    expect(openUpdateConflict(handle.db, "default")?.noticeIds.sort()).toEqual(noticesOn(projectId).map((message) => message.id).sort());
+    expectNoThread(projectId);
   });
 
-  it("is deferred, recording nothing, while the thread cannot be opened, and notified once it can", () => {
+  it("is held and told at once while the project's thread could not be opened, rather than deferred", () => {
     customisedDelivery();
     const projectId = adoptedBy("Moving", "MOVE");
     handle.db.run(sql`UPDATE projects SET adopting_at = 123 WHERE id = ${projectId}`);
+    expect(openProjectThread(handle.db, projectId).ok).toBe(false);
 
-    expect(applyTemplateUpdates(handle.db, history, { isTheRecord: false })).toEqual([expect.objectContaining({ outcome: "deferred" })]);
-    expect(listUpdateConflicts(handle.db, "default")).toEqual([]);
-
-    handle.db.run(sql`UPDATE projects SET adopting_at = NULL WHERE id = ${projectId}`);
     expect(applyTemplateUpdates(handle.db, history, { isTheRecord: false })).toEqual([expect.objectContaining({ outcome: "conflict" })]);
     expect(noticesOn(projectId)).toHaveLength(1);
+    expectNoThread(projectId);
   });
 });
 
 describe("when the conflict resolves", () => {
-  it("closes the notice's mention, whatever resolved it", () => {
+  it("marks the notice resolved, whatever resolved it", () => {
     customisedDelivery();
     const projectId = adoptedBy("Shop", "SHOP");
     applyTemplateUpdates(handle.db, history, { isTheRecord: false });
     const notice = noticesOn(projectId)[0]!;
     const conflict = openUpdateConflict(handle.db, "default")!;
 
+    resolveUpdateConflict(handle.db, conflict.id, "published", 500);
+
+    expect(getMessage(handle.db, notice.id)).toMatchObject({ handledHow: "resolved", handledAt: 500 });
+    expect(listInbox(handle.db, projectId).messages).toEqual([]);
+  });
+
+  it("leaves a notice the person dismissed as they left it", () => {
+    customisedDelivery();
+    const projectId = adoptedBy("Shop", "SHOP");
+    applyTemplateUpdates(handle.db, history, { isTheRecord: false });
+    const notice = noticesOn(projectId)[0]!;
+    handle.db.run(sql`UPDATE messages SET handled_at = 10, handled_how = 'dismissed' WHERE id = ${notice.id}`);
+
+    resolveUpdateConflict(handle.db, openUpdateConflict(handle.db, "default")!.id, "published", 500);
+
+    expect(getMessage(handle.db, notice.id)).toMatchObject({ handledHow: "dismissed", handledAt: 10 });
+  });
+
+  it("still dismisses the mention of a notice posted on a project thread before messages", () => {
+    customisedDelivery();
+    const projectId = adoptedBy("Shop", "SHOP");
+    applyTemplateUpdates(handle.db, history, { isTheRecord: false });
+    const conflict = openUpdateConflict(handle.db, "default")!;
+    // A notice as EO-533 posted it, which EO-730 has not migrated yet.
+    const thread = openProjectThread(handle.db, projectId);
+    if (!thread.ok) throw new Error(thread.problem);
+    const old = postComment(handle.db, { itemId: thread.item.id, author: { type: "engine" }, kind: "note", body: "Held.", options: conflictNoticeOptions(conflict.id), mentions: [{ type: "human" }], parseBodyMentions: false });
+    setUpdateConflictNotices(handle.db, conflict.id, [...conflict.noticeIds, old.id]);
+
     resolveUpdateConflict(handle.db, conflict.id, "published");
 
-    expect(listMentionsForComment(handle.db, notice.id as Uuid).map((mention) => mention.status)).toEqual(["dismissed"]);
-    expect(openMentionsForHuman(handle.db).map((open) => open.comment.id)).not.toContain(notice.id);
-    expect(listInbox(handle.db, projectId).items.map((item) => item.commentId)).not.toContain(notice.id);
-    expect(needsAttention(handle.db, notice.itemId)).toBe(false);
+    expect(listMentionsForComment(handle.db, old.id as Uuid).map((mention) => mention.status)).toEqual(["dismissed"]);
+    expect(getMessage(handle.db, conflict.noticeIds[0]!)?.handledHow).toBe("resolved");
   });
 
   it("never notifies the same template version twice, however many launches and resolutions", () => {
@@ -198,11 +226,11 @@ describe("when the conflict resolves", () => {
     applyTemplateUpdates(handle.db, history, { isTheRecord: false });
 
     expect(listUpdateConflicts(handle.db, "default")).toHaveLength(2);
-    expect(openUpdateConflict(handle.db, "default")?.noticeCommentIds).toEqual([]);
+    expect(openUpdateConflict(handle.db, "default")?.noticeIds).toEqual([]);
     expect(noticesOn(projectId)).toHaveLength(1);
   });
 
-  it("closes the old notice and posts a new one when a newer version supersedes it", () => {
+  it("resolves the old notice and sends a new one when a newer version supersedes it", () => {
     customisedDelivery();
     const projectId = adoptedBy("Shop", "SHOP");
     applyTemplateUpdates(handle.db, history, { isTheRecord: false });
@@ -212,10 +240,11 @@ describe("when the conflict resolves", () => {
 
     const notices = noticesOn(projectId);
     expect(notices).toHaveLength(2);
-    expect(listMentionsForComment(handle.db, first.id as Uuid).map((mention) => mention.status)).toEqual(["dismissed"]);
-    const second = notices.find((comment) => comment.id !== first.id)!;
+    expect(getMessage(handle.db, first.id)?.handledHow).toBe("resolved");
+    const second = notices.find((message) => message.id !== first.id)!;
     expect(second.body).toContain("from 1.0 to 1.4");
-    expect(listMentionsForComment(handle.db, second.id as Uuid).map((mention) => mention.status)).toEqual(["open"]);
+    expect(second.handledAt).toBeNull();
+    expectNoThread(projectId);
   });
 });
 
@@ -278,20 +307,21 @@ describe("a held update nobody was told about", () => {
     expect(notices[0]!.body).toContain("from 1.0 to 1.3");
     expect(notices[0]!.body).toContain("**Merge Request**'s 'opened' route: it went to **Done**; you have it going to **Merge PR**; the template sends it to **Watching pull request**.");
     expect(notices[0]!.options).toEqual(conflictNoticeOptions(held.id));
-    expect(listMentionsForComment(handle.db, notices[0]!.id as Uuid).map((mention) => mention.status)).toEqual(["open"]);
+    expect(notices[0]!.handledAt).toBeNull();
     // The same row, now announced; nothing compared or held again.
     expect(listUpdateConflicts(handle.db, "default").map((conflict) => conflict.id)).toEqual([held.id]);
-    expect(openUpdateConflict(handle.db, "default")?.noticeCommentIds).toEqual([notices[0]!.id]);
+    expect(openUpdateConflict(handle.db, "default")?.noticeIds).toEqual([notices[0]!.id]);
 
     expect(applyTemplateUpdates(handle.db, history, { isTheRecord: false })).toEqual([]);
     expect(noticesOn(projectId)).toHaveLength(1);
+    expectNoThread(projectId);
   });
 
   it("is announced once work arrives on a pipeline that had no project and no work when it was held", () => {
     customisedDelivery();
     expect(applyTemplateUpdates(handle.db, history, { isTheRecord: false })).toEqual([expect.objectContaining({ outcome: "conflict" })]);
     const held = openUpdateConflict(handle.db, "default")!;
-    expect(held.noticeCommentIds).toEqual([]);
+    expect(held.noticeIds).toEqual([]);
     // Nobody to tell yet, so nothing on the next launch either.
     expect(applyTemplateUpdates(handle.db, history, { isTheRecord: false })).toEqual([]);
 
@@ -306,15 +336,21 @@ describe("a held update nobody was told about", () => {
 
     applyTemplateUpdates(handle.db, history, { isTheRecord: false });
     expect(noticesOn(shop.id as Uuid)).toHaveLength(1);
+    expectNoThread(shop.id as Uuid);
   });
 });
 
 describe("an ordinary remark on the project thread", () => {
-  it("leaves an unresolved conflict's notice open — a remark beside it, or a reply under it — until the conflict resolves", () => {
+  it("leaves a notice posted there before messages open — a remark beside it, or a reply under it — until the conflict resolves", () => {
     customisedDelivery();
     const projectId = adoptedBy("Shop", "SHOP");
     applyTemplateUpdates(handle.db, history, { isTheRecord: false });
-    const notice = noticesOn(projectId)[0]!;
+    const conflict = openUpdateConflict(handle.db, "default")!;
+    // A notice as EO-533 posted it, with its one action button.
+    const thread = openProjectThread(handle.db, projectId);
+    if (!thread.ok) throw new Error(thread.problem);
+    const notice = postComment(handle.db, { itemId: thread.item.id, author: { type: "engine" }, kind: "note", body: "Held.", options: conflictNoticeOptions(conflict.id), mentions: [{ type: "human" }], parseBodyMentions: false });
+    setUpdateConflictNotices(handle.db, conflict.id, [...conflict.noticeIds, notice.id]);
     // And a plain question beside it, which a remark does answer.
     const question = postComment(handle.db, { itemId: notice.itemId, author: { type: "engine" }, kind: "question", body: "Which repository?", mentions: [{ type: "human" }] });
 
@@ -323,11 +359,8 @@ describe("an ordinary remark on the project thread", () => {
 
     expect(listMentionsForComment(handle.db, question.id as Uuid).map((mention) => mention.status)).toEqual(["addressed"]);
     expect(listMentionsForComment(handle.db, notice.id as Uuid).map((mention) => mention.status)).toEqual(["open"]);
-    expect(listInbox(handle.db, projectId).items.map((item) => item.commentId)).toContain(notice.id);
-    expect(needsAttention(handle.db, notice.itemId)).toBe(true);
 
-    resolveUpdateConflict(handle.db, openUpdateConflict(handle.db, "default")!.id, "published");
+    resolveUpdateConflict(handle.db, conflict.id, "published");
     expect(listMentionsForComment(handle.db, notice.id as Uuid).map((mention) => mention.status)).toEqual(["dismissed"]);
-    expect(needsAttention(handle.db, notice.itemId)).toBe(false);
   });
 });

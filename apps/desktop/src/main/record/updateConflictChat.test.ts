@@ -20,7 +20,7 @@ import {
   listRunsForItem,
   openUpdateConflict,
 } from "../db/repos/index.js";
-import { openMigratedTestDb } from "../db/testHelpers.js";
+import { messagesFrom, openMigratedTestDb } from "../db/testHelpers.js";
 import { loadTemplateHistory } from "../gallery/history.js";
 import { backfillPipelineOrigins } from "../gallery/origins.js";
 import { applyTemplateUpdates } from "../gallery/templateUpdates.js";
@@ -34,7 +34,7 @@ import { ASSIST_ACTION, ASSIST_STEP } from "../roles/conversationSteps.js";
 import { createRunSupervisor } from "../supervisor/runSupervisor.js";
 import { createDeviceRecord, type DeviceRecord } from "./deviceRecord.js";
 import { createLocalRecord } from "./localRecord.js";
-import { serveApply, serveChanges, serveRelease, serveRenew, serveSpend, serveUpdateConflictChat, serveWork, type ServeRecordContext } from "./serveRecord.js";
+import { serveApply, serveChanges, serveMessages, serveRelease, serveRenew, serveSpend, serveUpdateConflictChat, serveWork, type ServeRecordContext } from "./serveRecord.js";
 import type { RecordTransport } from "./syncStatus.js";
 
 /**
@@ -100,6 +100,8 @@ function desktop(handle: DbHandle, deviceId = "device"): Desktop {
           return { ok: true, data: (await serveUpdateConflictChat(serving, payload as IpcPayload<"record:updateConflictChat">)) as never };
         case "record:changes":
           return { ok: true, data: serveChanges(serving, payload as IpcPayload<"record:changes">) as never };
+        case "record:messages":
+          return { ok: true, data: serveMessages(serving, { ...(payload as IpcPayload<"record:messages">), deviceId }) as never };
         case "record:apply":
           return { ok: true, data: (await serveApply(serving, payload as IpcPayload<"record:apply">)) as never };
         case "record:work":
@@ -122,7 +124,7 @@ function desktop(handle: DbHandle, deviceId = "device"): Desktop {
 /**
  * EO's own Delivery on the record, customised before EO-461 and held by
  * a project the organisation owns: the record compares it, holds the 1.3
- * update and posts the notice — which both desktops then pull.
+ * update and sends the notice to each admin — which both desktops then pull.
  */
 async function heldOnTheRecord(): Promise<{ conflictId: string; projectId: Uuid }> {
   const db = recordDb.db;
@@ -138,19 +140,19 @@ async function heldOnTheRecord(): Promise<{ conflictId: string; projectId: Uuid 
   db.run(sql`UPDATE pipelines SET project_id = ${project.id} WHERE id = 'default'`);
   applyTemplateUpdates(db, history, { isTheRecord: true });
   const conflict = openUpdateConflict(db, "default")!;
-  expect(conflict.noticeCommentIds).toHaveLength(1);
+  // One to each admin.
+  expect(conflict.noticeIds).toHaveLength(2);
   await anna.record.sync();
   await laptop.record.sync();
   return { conflictId: conflict.id, projectId: project.id as Uuid };
 }
 
-/** The notice as a desktop's replica holds it. */
+/** The notice as a desktop's replica holds it: the message to its person, pulled from the record, and no project thread. */
 function noticeOn(machine: Desktop, projectId: Uuid) {
-  const thread = findProjectThread(machine.handle.db, projectId);
-  expect(thread).toBeDefined();
-  const [notice] = listCommentsForItem(machine.handle.db, thread!.id as Uuid);
-  expect(notice).toBeDefined();
-  return notice!;
+  expect(findProjectThread(machine.handle.db, projectId)).toBeUndefined();
+  const notices = messagesFrom(machine.handle.db, "template_conflict").filter((message) => message.projectId === projectId);
+  expect(notices).toHaveLength(1);
+  return notices[0]!;
 }
 
 /**

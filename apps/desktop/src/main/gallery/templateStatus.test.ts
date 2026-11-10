@@ -199,7 +199,7 @@ describe("after an applied update", () => {
 });
 
 describe("with an update held", () => {
-  it("counts the conflicts, and points at the notice while no chat has been opened", () => {
+  it("counts the conflicts, and points at no notice, since a notice sent as a message is on no item (EO-727)", () => {
     customisedDelivery();
     adopted();
     applyTemplateUpdates(handle.db, history, { isTheRecord: false });
@@ -216,11 +216,11 @@ describe("with an update held", () => {
       conflicts: 1,
       problems: 0,
       chatId: null,
-      notice: { itemId: expect.any(String), commentId: conflict.noticeCommentIds[0] },
+      notice: null,
     });
   });
 
-  it("points at the chat once Fix with assistant has opened one, and at the notice again once that chat is gone", () => {
+  it("points at the chat once Fix with assistant has opened one, and at none again once that chat is gone", () => {
     customisedDelivery();
     adopted();
     applyTemplateUpdates(handle.db, history, { isTheRecord: false });

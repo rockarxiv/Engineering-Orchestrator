@@ -1,9 +1,12 @@
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { Item } from "@eo/core";
+import type { Item, Message } from "@eo/core";
+import { asc, eq } from "drizzle-orm";
 import { openDb, type Db, type DbHandle } from "./client.js";
 import { runMigrations } from "./migrate.js";
 import { createItem, type CreateItemInput } from "./repos/itemsRepo.js";
+import { getMessage } from "./repos/messagesRepo.js";
+import { messages } from "./schema.js";
 import { createDefaultProject } from "./repos/projectsRepo.js";
 import { createGitWorkspace, getGitWorkspace, type GitWorkspace } from "./repos/workspacesRepo.js";
 import { settleDailyBudgetNotice } from "../guardDefaultNotice.js";
@@ -115,4 +118,15 @@ export function attachWorkspace(
   // handed must be the attached one rather than the detached row the
   // insert returned a moment earlier.
   return getGitWorkspace(db, workspace.id) ?? workspace;
+}
+
+/** Every message a source sent, open or handled, oldest first (EO-727). */
+export function messagesFrom(db: Db, source: string): Message[] {
+  return db
+    .select({ id: messages.id })
+    .from(messages)
+    .where(eq(messages.source, source))
+    .orderBy(asc(messages.createdAt), asc(messages.id))
+    .all()
+    .flatMap((row) => getMessage(db, row.id) ?? []);
 }

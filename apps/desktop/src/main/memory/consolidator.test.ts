@@ -2,6 +2,7 @@ import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  LOCAL_PERSON_ID,
   MAX_MEMORY_NOTE_CHARS,
   MEMORY_CONSOLIDATE_MAX_OUTPUT_TOKENS,
   MEMORY_CONSOLIDATE_TIMEOUT_MS,
@@ -13,6 +14,7 @@ import {
   type MemoryConsolidationOperations,
   type MemoryEntryView,
   type MemoryScope,
+  type MessageSend,
   type SideCallResult,
   type Uuid,
 } from "@eo/core";
@@ -47,7 +49,7 @@ import { buildEligibilityInput } from "../supervisor/buildTickInput.js";
 import { findProjectThread } from "../projects/projectThread.js";
 import { applyConsolidation, runsDeliveredFromScopeQuery } from "../db/repos/memoryConsolidationsRepo.js";
 import { DEFAULT_GUARD_CONFIG, writeGuards } from "../ipc/configCommands.js";
-import { attachWorkspace, createTestItem, openMigratedTestDb } from "../db/testHelpers.js";
+import { attachWorkspace, createTestItem, messagesFrom, openMigratedTestDb } from "../db/testHelpers.js";
 import { listConsolidationsCommand, restoreConsolidationCommand } from "../ipc/memoryCommands.js";
 import { recordFor } from "../record/localRecord.js";
 import { createSideCaller, type SideCallRequest } from "../sideCalls/sideCall.js";
@@ -147,6 +149,8 @@ describe("automatic memory consolidation", () => {
       heldElsewhere?: MemoryConsolidatorOptions["heldElsewhere"];
       onPendingChanged?: MemoryConsolidatorOptions["onPendingChanged"];
       proposeSkills?: (request: SideCallRequest<unknown>) => Promise<SideCallResult<unknown>>;
+      projectThread?: MemoryConsolidatorOptions["projectThread"];
+      sendMessage?: MemoryConsolidatorOptions["sendMessage"];
     } = {},
   ): MemoryConsolidator {
     const proposeSkills = options.proposeSkills ?? (async () => ({ ok: true as const, value: { skills: [] } }));
@@ -161,6 +165,8 @@ describe("automatic memory consolidation", () => {
       ...(options.neighbours ? { neighbours: options.neighbours } : {}),
       ...(options.heldElsewhere ? { heldElsewhere: options.heldElsewhere } : {}),
       ...(options.onPendingChanged ? { onPendingChanged: options.onPendingChanged } : {}),
+      ...(options.projectThread ? { projectThread: options.projectThread } : {}),
+      ...(options.sendMessage ? { sendMessage: options.sendMessage } : {}),
     });
     return consolidator;
   }
@@ -1489,11 +1495,7 @@ describe("automatic memory consolidation", () => {
       let answer: AnyAnswer = { ok: false, reason: "schema", message: "The answer did not match the shape asked for: retire: Required" };
       const sideCall = vi.fn(async (request: AnyRequest): Promise<AnyAnswer> => (answer.ok ? { ok: true, value: { ...NOTHING, merge: [{ from: idsIn(request.input), body: "One.", contradictsRepositoryFile: false }] } } : answer));
       const runner = consolidatorWith(sideCall as never, { now: () => clock });
-      const thread = () => findProjectThread(handle.db, projectId as Uuid);
-      const notices = () => {
-        const found = thread();
-        return found ? listCommentsForItem(handle.db, found.id).filter((comment) => comment.body.includes("is stuck")) : [];
-      };
+      const notices = () => messagesFrom(handle.db, "consolidation_stuck");
       /** Waits out `wait`: not due a millisecond before, due at it, and asked. */
       const failAgainAfter = async (wait: number) => {
         clock += wait - 1;
@@ -1515,27 +1517,28 @@ describe("automatic memory consolidation", () => {
       expect(notices()).toEqual([]);
       await failAgainAfter(4 * 60 * 60 * 1000);
 
-      // The third in a row: one note on the project thread, naming the scope, its size against its caps and the last reason.
+      // The third in a row: one message to the person about the project, naming the scope, its size against its caps and the last reason.
       expect(notices()).toHaveLength(1);
       const [notice] = notices();
-      expect(notice).toMatchObject({ kind: "note", authorType: "engine", options: null });
+      expect(notice).toMatchObject({ recipientId: LOCAL_PERSON_ID, projectId, options: null, handledAt: null });
       expect(notice!.body).toContain('Memory consolidation of the workspace "api" is stuck: it has failed 3 times in a row.');
       expect(notice!.body).toContain("10 entries against a cap of 10");
       expect(notice!.body).toContain("against a cap of 40,000");
       expect(notice!.body).toContain("`schema` — The answer did not match the shape asked for: retire: Required");
-      // Non-blocking: a note, offering nothing to answer and summoning nobody.
-      expect(handle.db.all(sql`select 1 from comment_mentions where comment_id = ${notice!.id}`)).toEqual([]);
+      // Never on the project thread.
+      expect(findProjectThread(handle.db, projectId as Uuid)).toBeUndefined();
 
       // The fourth waits a day, and is not said again.
       await failAgainAfter(24 * 60 * 60 * 1000);
       await failAgainAfter(24 * 60 * 60 * 1000);
       expect(notices()).toHaveLength(1);
 
-      // A success ends the run…
+      // A success ends the run, and resolves the message…
       answer = { ok: true, value: NOTHING };
       await failAgainAfter(24 * 60 * 60 * 1000);
       expect(listConsolidations(handle.db, workspace)[0]).toMatchObject({ status: "succeeded" });
       expect(listMemories(handle.db, workspace)).toHaveLength(1);
+      expect(notices()).toEqual([expect.objectContaining({ id: notice!.id, handledHow: "resolved", handledAt: clock })]);
 
       // …so three more in a row, from an hour again, are said again.
       answer = { ok: false, reason: "timeout", message: "The call took longer than its 90000 ms and was stopped." };
@@ -1549,6 +1552,48 @@ describe("automatic memory consolidation", () => {
       await failAgainAfter(4 * 60 * 60 * 1000);
       expect(notices()).toHaveLength(2);
       expect(notices()[1]!.body).toContain("`timeout` — The call took longer than its 90000 ms and was stopped.");
+      expect(notices()[1]!.handledAt).toBeNull();
+      expect(findProjectThread(handle.db, projectId as Uuid)).toBeUndefined();
+    });
+
+    it("sends the stuck message through the sender it is given, and says it the next failure when that sender refuses", async () => {
+      notes(workspace, 10);
+      let clock = Date.now();
+      const sideCall = vi.fn(async (): Promise<AnyAnswer> => ({ ok: false, reason: "schema", message: "The answer did not match the shape asked for." }));
+      let refuse = true;
+      const sent: MessageSend[] = [];
+      const runner = consolidatorWith(sideCall as never, {
+        now: () => clock,
+        projectThread: () => {
+          throw new Error("the stuck message never asks for a project thread");
+        },
+        sendMessage: async (input) => {
+          if (refuse) return { ok: false, problem: "Your organisation's record could not be reached." };
+          sent.push(input);
+          return { ok: true, messages: [] };
+        },
+      });
+      const failAgainAfter = async (wait: number) => {
+        clock += wait;
+        expect(runner.check()).toEqual([{ scope: workspace, trigger: "cap" }]);
+        const calls = sideCall.mock.calls.length;
+        runner.poke();
+        await vi.waitFor(() => expect(sideCall.mock.calls.length).toBe(calls + 1));
+        await runner.idle();
+      };
+
+      runner.start();
+      await runner.idle();
+      await failAgainAfter(60 * 60 * 1000);
+      await failAgainAfter(4 * 60 * 60 * 1000);
+      // Refused at the third: not marked, and said why on the failure.
+      expect(sent).toEqual([]);
+      expect(listConsolidations(handle.db, workspace)[0]?.note).toContain("the message saying so could not be sent: Your organisation's record could not be reached.");
+
+      refuse = false;
+      await failAgainAfter(24 * 60 * 60 * 1000);
+      expect(sent).toEqual([expect.objectContaining({ projectId, source: "consolidation_stuck", subject: `workspace:${workspace.id}` })]);
+      expect(messagesFrom(handle.db, "consolidation_stuck")).toEqual([]);
     });
 
     it("records on each consolidation how long its calls held the global slot, the skill proposal call's included, and none for duplicates folded without a model", async () => {

@@ -1210,8 +1210,8 @@ async function applyChanges(options: DrainOptions, changes: RecordChanges): Prom
     applied += 1;
   }
   // What a lock kept out before, written now the lock no longer stands in
-  // its way; and what it still keeps out, told to the person once, on a
-  // project thread (EO-714).
+  // its way; and what it still keeps out, told to the person once, in a
+  // message (EO-714, EO-727).
   applied += releaseHeldSkillCopies(options.db).length;
   tellHeldSkillCopies(options.db, now);
   /**

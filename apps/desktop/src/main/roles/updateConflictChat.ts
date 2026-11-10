@@ -1,6 +1,6 @@
 import type { Item, Uuid } from "@eo/core";
 import type { Db } from "../db/client.js";
-import { getComment, getItem, getPipeline, getUpdateConflict, handUpdateConflictTurn, setUpdateConflictChat } from "../db/repos/index.js";
+import { getComment, getItem, getMessage, getPipeline, getUpdateConflict, handUpdateConflictTurn, setUpdateConflictChat } from "../db/repos/index.js";
 import { updateConflictBrief } from "../gallery/templateUpdates.js";
 import { openBriefedChat } from "./briefedChat.js";
 import { ASSIST_STEP } from "./conversationSteps.js";
@@ -43,7 +43,11 @@ export type ConflictChatAnswerer = { kind: "here"; agentId: string } | { kind: "
 export interface UpdateConflictChatRequest {
   conflictId: string;
   answeredBy: ConflictChatAnswerer;
-  /** The notice pressed, which places the chat of a pipeline no project has adopted. */
+  /**
+   * The notice pressed, which places the chat of a pipeline no project has
+   * adopted: its message's id (EO-727), or its comment's for a notice
+   * posted on a project thread before messages.
+   */
   commentId: string | null;
   /** Where to place it when neither the pipeline nor the notice says: the project on screen on a desktop, none on the record. */
   fallbackProjectId: Uuid | null;
@@ -102,7 +106,14 @@ export function openUpdateConflictChat(db: Db, request: UpdateConflictChatReques
 function chatProjectFor(db: Db, pipelineId: string, request: UpdateConflictChatRequest): Uuid | null {
   const owner = getPipeline(db, pipelineId)?.projectId ?? null;
   if (owner !== null) return owner as Uuid;
-  const notice = request.commentId === null ? undefined : getComment(db, request.commentId as Uuid);
-  const noticeProject = notice ? (getItem(db, notice.itemId)?.projectId ?? null) : null;
-  return (noticeProject as Uuid | null) ?? request.fallbackProjectId;
+  return (noticeProject(db, request.commentId) as Uuid | null) ?? request.fallbackProjectId;
+}
+
+/** The project of the notice pressed: the message's, or the thread's a comment is on. */
+function noticeProject(db: Db, noticeId: string | null): string | null {
+  if (noticeId === null) return null;
+  const message = getMessage(db, noticeId);
+  if (message !== undefined) return message.projectId;
+  const comment = getComment(db, noticeId as Uuid);
+  return comment ? (getItem(db, comment.itemId)?.projectId ?? null) : null;
 }
