@@ -1,6 +1,8 @@
 import { specFields, withShapeDefaults, type IpcPayload, type IpcResponse, type Item, type SpecShape, type Uuid } from "@eo/core";
 import type { Db } from "../db/client.js";
-import { hasJiraPullPending, postComment, resolveItemType } from "../db/repos/index.js";
+import { addItemAttachments, hasJiraPullPending, postComment, resolveItemType } from "../db/repos/index.js";
+import { checkItemUploads, rollbackItemUploads, storeItemUploads } from "../attachments/itemUploads.js";
+import type { AttachmentStorage } from "../attachments/storage.js";
 import { requestJiraPullDrain } from "../packs/developer/jira/pullSchedule.js";
 import { applyNewItem } from "../roles/discussion.js";
 import { activeProjectId } from "./repositoryCommands.js";
@@ -31,8 +33,21 @@ export function submitItem(
   db: Db,
   engine: EngineHandle | undefined,
   input: IpcPayload<"work:submitItem">,
+  /**
+   * The item's own files, already checked and stored (EO-704) — written
+   * in the transaction that creates the item, so nothing is dispatched
+   * on it before they are there. See `submitItemCommand`.
+   */
+  files: Parameters<typeof addItemAttachments>[2] = [],
 ): IpcResponse<"work:submitItem"> {
   const projectId = (input.projectId ?? activeProjectId(db)) as Uuid | null;
+
+  // Files named by path arrive here already stored, as `files`
+  // (EO-704). A caller that skipped `submitItemCommand` would have them
+  // dropped in silence, which invariant 8 forbids.
+  if ((input.paths?.length ?? 0) > 0 && files.length === 0) {
+    return { created: false, key: null, problem: "The files this names by path were not uploaded, so nothing was created." };
+  }
 
   // The type is a slug now rather than one of two words (KAN-146), so
   // the first thing this channel does is find the row it names. Two
@@ -72,34 +87,39 @@ export function submitItem(
   // leaf type was held to a bug's bar or to nothing at all. The refusals a
   // person reads are unchanged, because the words are on the shapes now.
 
-  const applied = applyNewItem(
-    db,
-    projectId,
-    {
-      type: { packSlug: type.type.packSlug, slug: type.type.slug },
-      title: input.title,
-      body: input.body,
-      spec: { ...specFromPayload(type.type.specShape, input), ...(input.spec ?? {}) },
-      depends_on: input.dependsOn,
-      // Who asked for it, where the record knows (EO-326, ARCHITECTURE.md, "Identity"). The
-      // local person on a desktop, which is what `createItem` fills in
-      // by itself and what this channel has always recorded.
-      createdBy: actingPersonId(db, input.actingDeviceId),
-      ...(input.parent === undefined ? {} : { parent: input.parent }),
-      ...(input.pipeline === undefined ? {} : { pipeline: input.pipeline }),
-      ...(input.repository === undefined ? {} : { repository: input.repository }),
-      ...(input.priority === undefined ? {} : { priority: input.priority }),
-    },
-    null,
-    // What the caller said about Jira, carried whole (EO-123). Neither
-    // is defaulted here: an absent key leaves the item unlinked, and
-    // an absent switch is inherited from the parent by `createItem`,
-    // so filling either in would be this layer inventing an answer.
-    {
-      ...(input.jiraKey === undefined ? {} : { key: input.jiraKey }),
-      ...(input.jiraSync === undefined ? {} : { sync: input.jiraSync }),
-    },
-  );
+  const applied = db.transaction(() => {
+    const made = applyNewItem(
+      db,
+      projectId,
+      {
+        type: { packSlug: type.type.packSlug, slug: type.type.slug },
+        title: input.title,
+        body: input.body,
+        spec: { ...specFromPayload(type.type.specShape, input), ...(input.spec ?? {}) },
+        depends_on: input.dependsOn,
+        // Who asked for it, where the record knows (EO-326, ARCHITECTURE.md, "Identity"). The
+        // local person on a desktop, which is what `createItem` fills in
+        // by itself and what this channel has always recorded.
+        createdBy: actingPersonId(db, input.actingDeviceId),
+        ...(input.parent === undefined ? {} : { parent: input.parent }),
+        ...(input.pipeline === undefined ? {} : { pipeline: input.pipeline }),
+        ...(input.repository === undefined ? {} : { repository: input.repository }),
+        ...(input.priority === undefined ? {} : { priority: input.priority }),
+      },
+      null,
+      // What the caller said about Jira, carried whole (EO-123). Neither
+      // is defaulted here: an absent key leaves the item unlinked, and
+      // an absent switch is inherited from the parent by `createItem`,
+      // so filling either in would be this layer inventing an answer.
+      {
+        ...(input.jiraKey === undefined ? {} : { key: input.jiraKey }),
+        ...(input.jiraSync === undefined ? {} : { sync: input.jiraSync }),
+      },
+    );
+    const item = made.ok ? made.created[0] : undefined;
+    if (item && files.length > 0) addItemAttachments(db, item.id, files);
+    return made;
+  });
 
   if (!applied.ok) return { created: false, key: null, problem: applied.reason };
 
@@ -118,6 +138,39 @@ export function submitItem(
   if (hasJiraPullPending(db)) requestJiraPullDrain();
 
   return { created: true, key: applied.created[0]?.key ?? null, problem: null };
+}
+
+/**
+ * `work:submitItem` as the channel answers it, with the files it names
+ * by path (EO-704).
+ *
+ * Every path is checked, under the grant the door stamped, before
+ * anything is written, and a refusal names each path and why. The
+ * files are then stored, and the item and its files are written in one
+ * transaction by `submitItem`; an item refused after that takes the
+ * stored files back, so a refused call leaves nothing behind.
+ */
+export async function submitItemCommand(
+  db: Db,
+  engine: EngineHandle | undefined,
+  input: IpcPayload<"work:submitItem">,
+  attachmentStorage?: AttachmentStorage,
+): Promise<IpcResponse<"work:submitItem">> {
+  const paths = input.paths ?? [];
+  if (paths.length === 0) return submitItem(db, engine, input);
+  const granted = await checkItemUploads(input.pathsFrom, [paths], attachmentStorage);
+  if (!granted.ok) return { created: false, key: null, problem: granted.problem };
+  const stored = await storeItemUploads(granted, [paths]);
+  if (!stored.ok) return { created: false, key: null, problem: stored.problem };
+  let answer: IpcResponse<"work:submitItem">;
+  try {
+    answer = submitItem(db, engine, input, stored.records[0] ?? []);
+  } catch (error) {
+    await rollbackItemUploads(granted.storage, stored.records);
+    throw error;
+  }
+  if (!answer.created) await rollbackItemUploads(granted.storage, stored.records);
+  return answer;
 }
 
 /**

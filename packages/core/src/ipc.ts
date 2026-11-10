@@ -242,7 +242,8 @@ const ACTING_AGENT = { actingAgentId: z.string().max(100).optional() };
  *
  * Never a caller's word, for `ACTING_AGENT`'s reason: it is the door that
  * knows who is asking, so it is the door that says it. EO's MCP hosts
- * stamp it on `comments:post` (`withPathsFrom`) — the external host
+ * stamp it on `comments:post` and the item channels that take `paths`
+ * (`withPathsFrom`, `PATHS_CHANNELS`) — the external host
  * `anywhere`, because its client acts on a credential the person handed
  * it, and the administrative host `directory`, the directory the system
  * agent's turn runs in, or null for a turn that has none. Every door
@@ -269,6 +270,23 @@ export const MAX_COMMENT_ATTACHMENTS = 8;
  * a door stamped `pathsFrom`.
  */
 export const CommentPathsSchema = z.array(z.string().min(1)).max(MAX_COMMENT_ATTACHMENTS);
+
+/**
+ * Files on the machine running EO, put on an item as its own files when
+ * it is filed or edited (EO-704) — `work:submitItem`, `work:submitPlan`
+ * (on the feature and on each story) and `items:update`. The same list
+ * and the same limit as a comment's, read under the same grant — eight
+ * in one call, which on a plan the handler counts across the feature's
+ * list and every story's together.
+ */
+export const ItemPathsSchema = CommentPathsSchema;
+
+/**
+ * The channels that take `paths` and so are stamped with `pathsFrom`
+ * (EO-700, EO-704). A channel not listed here is never stamped, so a
+ * grant cannot reach a handler that would not know what to do with it.
+ */
+export const PATHS_CHANNELS: ReadonlySet<string> = new Set(["comments:post", "work:submitItem", "work:submitPlan", "items:update"]);
 
 /**
  * Narrowing an item list in EO's own query rather than after it (EO-539).
@@ -1064,7 +1082,17 @@ export const recordContract = {
        * says nothing is 0 whatever the feature's is.
        */
       priority: ItemPrioritySchema.optional(),
-      stories: z.array(RefineStorySchema).min(1),
+      /**
+       * Each story as a plan's story is, plus `paths` (EO-704): files to
+       * put on that story as its own. Added here rather than on
+       * `RefineStorySchema`, which is also what the product owner's
+       * proposals are read with, and no agent inside a conversation
+       * names files on this machine.
+       */
+      stories: z.array(RefineStorySchema.extend({ paths: ItemPathsSchema.optional() })).min(1),
+      /** Files to put on the feature as its own (EO-704). Honoured only where a door stamped `pathsFrom`. */
+      paths: ItemPathsSchema.optional(),
+      [PATHS_FROM_KEY]: PathsFromSchema.optional(),
       /**
        * The Jira issue the *feature* already is (EO-124).
        *
@@ -1172,6 +1200,13 @@ export const recordContract = {
       touches: z.array(z.string().min(1)).default([]),
       /** Existing item *keys* this waits for. Unlike a plan's indices, these already exist. */
       dependsOn: z.array(z.string()).default([]),
+      /**
+       * Files to put on the item as its own, in the same transaction as
+       * the item (EO-704). Honoured only where a door stamped
+       * `pathsFrom`; a path that may not be read refuses the whole call.
+       */
+      paths: ItemPathsSchema.optional(),
+      [PATHS_FROM_KEY]: PathsFromSchema.optional(),
       /**
        * The Jira issue this item already is (EO-123).
        *
@@ -1482,6 +1517,16 @@ export const recordContract = {
        */
       addDependsOn: z.array(z.string().min(1)).optional(),
       removeDependsOn: z.array(z.string().min(1)).optional(),
+      /**
+       * Files to add to the item as its own (EO-704), and ids of its own
+       * files to take off it. Judged whole with the rest of the call: a
+       * path that may not be read, or an id that is not one of this
+       * item's own files — a comment's file included — refuses all of it.
+       * `paths` is honoured only where a door stamped `pathsFrom`.
+       */
+      paths: ItemPathsSchema.optional(),
+      removeAttachmentIds: z.array(z.string().min(1)).max(100).optional(),
+      [PATHS_FROM_KEY]: PathsFromSchema.optional(),
     }),
     z.object({
       updated: z.boolean(),
@@ -7472,12 +7517,12 @@ export function withActingAgent(channel: string, payload: unknown, agentId: stri
 
 /**
  * The payload with the grant to read files by path put on it, where the
- * channel takes one (EO-700) — `comments:post` alone. Stamped by EO's MCP
- * hosts, below every tool and after `withActingAgent` has taken off
- * whatever a client sent under the same name.
+ * channel takes one (EO-700, EO-704) — those in `PATHS_CHANNELS`. Stamped
+ * by EO's MCP hosts, below every tool and after `withActingAgent` has
+ * taken off whatever a client sent under the same name.
  */
 export function withPathsFrom(channel: string, payload: unknown, from: PathsFrom): unknown {
-  if (channel !== "comments:post" || payload === null || typeof payload !== "object" || Array.isArray(payload)) return payload;
+  if (!PATHS_CHANNELS.has(channel) || payload === null || typeof payload !== "object" || Array.isArray(payload)) return payload;
   return { ...(payload as Record<string, unknown>), [PATHS_FROM_KEY]: from };
 }
 

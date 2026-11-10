@@ -117,8 +117,8 @@ import {
 import { createWorkspaceCommand, listWorkspacesCommand, removeWorkspaceCommand, updateWorkspaceCommand } from "./workspaceCommands.js";
 import { getDailyCost, getItemCost } from "./costHandlers.js";
 import { checkForUpdates, createInstallRequest, downloadUpdate, installUpdate, openReleasePage, updateStatus, type UpdateContext } from "./updateCommands.js";
-import { submitPlan } from "./planCommands.js";
-import { submitItem } from "./itemCommands.js";
+import { submitPlanCommand } from "./planCommands.js";
+import { submitItemCommand } from "./itemCommands.js";
 import { exportItemOutput, setItemOutput } from "./outputCommands.js";
 import { detectMcpClients, getMcpStatus, registerMcpWith, regenerateMcpToken, setMcpConfig, type McpContext } from "./mcpCommands.js";
 import { DEFAULT_PORT } from "../mcpHost/gate.js";
@@ -147,7 +147,6 @@ import {
   resumeHeldItem,
   setArchived,
   setPinned,
-  updateItemFields,
   writeSettings,
   type EngineHandle,
 } from "./domainCommands.js";
@@ -202,7 +201,7 @@ import { askFromCanvas, canvasState, closeCanvas, openInCanvas, popOutCanvas } f
 import { getDebugMode, listDebugAgents, openDebugWindow, setDebugMode } from "./debugCommands.js";
 import { publishView, readCurrentView } from "./currentView.js";
 import { attachmentPath, attachmentPreview, deleteAttachmentCommand, pickAttachmentsCommand, saveAttachmentTo } from "./attachmentCommands.js";
-import { addItemAttachmentsCommand, removeItemAttachmentCommand } from "./itemAttachmentCommands.js";
+import { addItemAttachmentsCommand, removeItemAttachmentCommand, updateItemCommand } from "./itemAttachmentCommands.js";
 import { getAttachment } from "../db/repos/index.js";
 import { deleteCommentCommand } from "./deleteCommentCommand.js";
 import { deleteItemCommand } from "./deleteItemCommand.js";
@@ -1389,8 +1388,10 @@ export function registerAllHandlers(db: Db, engine: EngineHandle | undefined, re
     opts,
   );
 
-  registerHandler("work:submitPlan", (payload) => submitPlan(db, engine, payload), opts);
-  registerHandler("work:submitItem", (payload) => submitItem(db, engine, payload), opts);
+  // With the item files named by path (EO-704), checked and stored
+  // before the items are written, and written with them.
+  registerHandler("work:submitPlan", (payload) => submitPlanCommand(db, engine, payload, attachmentStorage), opts);
+  registerHandler("work:submitItem", (payload) => submitItemCommand(db, engine, payload, attachmentStorage), opts);
   registerHandler("comments:post", (payload) => postCommentCommand(db, engine, payload, attachmentStorage), opts);
   registerHandler("comments:setPinned", (payload) => setPinned(db, payload), opts);
   registerHandler(
@@ -1407,8 +1408,9 @@ export function registerAllHandlers(db: Db, engine: EngineHandle | undefined, re
   );
   // What an item waits for goes to whichever record owns it (EO-600):
   // on a project the organisation's record holds, the record makes the
-  // change. Everything else is this database's, as it always was.
-  registerHandler("items:update", (payload) => updateItemFields(db, resources.record ?? recordFor(db), payload), opts);
+  // change. Everything else is this database's, as it always was —
+  // item files added by path and removed by id included (EO-704).
+  registerHandler("items:update", (payload) => updateItemCommand(db, resources.record ?? recordFor(db), payload, attachmentStorage), opts);
   registerHandler("items:move", (payload) => moveItem(db, engine, payload), opts);
   registerHandler("items:moveToVersion", (payload) => moveItemToVersion(db, engine, payload), opts);
   // A person answering rather than dragging (EO-310). It goes near the

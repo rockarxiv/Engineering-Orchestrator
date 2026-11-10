@@ -541,6 +541,10 @@ export function renderItem(data: IpcResponse<"items:getSections">, request?: Ipc
 
     if (typeof item.body === "string" && item.body.trim() !== "") lines.push("", "## Description", "", item.body);
     if (item.acceptanceCriteria.length > 0) lines.push("", "## Acceptance criteria", "", ...item.acceptanceCriteria.map((item) => `- ${item}`));
+    // The item's own files (EO-704), with the ids item_update's
+    // removeAttachmentIds takes. A comment's files stay on its comment.
+    const files = item.attachments ?? [];
+    if (files.length > 0) lines.push("", "## Files", "", ...files.map((file) => `- attachment ${file.id}: ${file.name} (${file.mimeType}, ${file.size} bytes)`));
     if (item.parentKey !== null) lines.push("", `## Parent`, "", `${item.parentKey} — ${item.parentTitle ?? ""}`.trimEnd());
   }
   if (dependsOn !== undefined && dependsOn.length > 0) {

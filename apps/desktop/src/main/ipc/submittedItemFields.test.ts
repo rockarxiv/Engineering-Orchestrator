@@ -1,5 +1,9 @@
 import { jiraStateOf, ipcContract, type DiscussionOutput, type IpcPayload, type Item, type Uuid } from "@eo/core";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { AttachmentStorage } from "../attachments/storage.js";
 import type { Db, DbHandle } from "../db/client.js";
 import {
   addWorkspaceToProject,
@@ -10,6 +14,7 @@ import {
   listAgents,
   listCommentsForItem,
   listDependencies,
+  listItemAttachments,
   updateRun,
 } from "../db/repos/index.js";
 import { listPipelines } from "../db/repos/pipelineStepsRepo.js";
@@ -22,7 +27,7 @@ import { ASSIST_ACTION } from "../roles/conversationSteps.js";
 import { PROPOSAL_KIND } from "../roles/proposal.js";
 import { updateItemText } from "./domainCommands.js";
 import { submitPlan } from "./planCommands.js";
-import { submitItem } from "./itemCommands.js";
+import { submitItem, submitItemCommand } from "./itemCommands.js";
 
 /**
  * A bug carries acceptance criteria too, and no path drops a field in
@@ -44,16 +49,30 @@ import { submitItem } from "./itemCommands.js";
  */
 
 let handle: DbHandle;
+/** Where the `paths` probes' file and the attachment store live (EO-704). */
+let scratch: string;
+let storage: AttachmentStorage;
 
 const CRITERIA = ["Clicking logout ends the session.", "The header shows the sign-in link afterwards."];
 
 beforeEach(() => {
   handle = openMigratedTestDb();
+  scratch = mkdtempSync(join(tmpdir(), "eo-submitted-fields-"));
+  storage = new AttachmentStorage(join(scratch, "store"));
 });
 
 afterEach(() => {
   handle.close();
+  rmSync(scratch, { recursive: true, force: true });
 });
+
+/** A file the `paths` probes name, and whether the item came to carry it as its own. */
+function probeFile(): string {
+  const path = join(scratch, "mock.png");
+  writeFileSync(path, "a mock");
+  return path;
+}
+const carriesProbeFile = (item: Item): boolean => listItemAttachments(handle.db, item.id).some((file) => file.name === "mock.png");
 
 function bug(overrides: Partial<IpcPayload<"work:submitItem">> = {}): IpcPayload<"work:submitItem"> {
   return {
@@ -322,6 +341,19 @@ const PROBES: Record<keyof IpcPayload<"work:submitItem">, FieldProbe> = {
     send: () => ({ environment: "An environment nothing else here uses" }),
     carried: (_world, item) => item.spec?.["environment"] === "An environment nothing else here uses",
   },
+  /** The item's own files, named by path (EO-704): on the item, not in a note. */
+  paths: {
+    send: () => ({ paths: [probeFile()], pathsFrom: { kind: "anywhere" } }),
+    carried: (_world, item) => carriesProbeFile(item),
+  },
+  /**
+   * The door's grant to read them (EO-700, EO-704) — stamped by EO's MCP
+   * hosts, never a caller's. What it lands in is the files it let in.
+   */
+  pathsFrom: {
+    send: () => ({ pathsFrom: { kind: "anywhere" }, paths: [probeFile()] }),
+    carried: (_world, item) => carriesProbeFile(item),
+  },
 };
 
 describe("no field this channel accepts is dropped in silence", () => {
@@ -378,10 +410,10 @@ describe("no field this channel accepts is dropped in silence", () => {
 
   for (const type of ["story", "bug"] as const) {
     for (const [field, probe] of Object.entries(PROBES)) {
-      it(`stores or answers for \`${field}\` on a ${type}`, () => {
+      it(`stores or answers for \`${field}\` on a ${type}`, async () => {
         const world = build();
 
-        const result = submitItem(handle.db, undefined, { ...base(world, type), ...probe.send(world) });
+        const result = await submitItemCommand(handle.db, undefined, { ...base(world, type), ...probe.send(world) }, storage);
 
         expect(result.created).toBe(true);
         const item = getItemByKey(handle.db, result.key!)!;

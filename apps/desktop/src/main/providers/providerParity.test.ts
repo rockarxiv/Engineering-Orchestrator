@@ -527,7 +527,7 @@ const CAPABILITIES = [
   {
     name: "uploading files from the turn's directory",
     what:
-      "a system agent's comment_post may name files by path only inside the directory its turn runs in (EO-700), so the bearer for EO's administrative server that each turn's CLI is launched with — fresh or resumed — is leased for that turn's own directory",
+      "a system agent's comment_post, work_submit_item, work_submit_plan and item_update may name files by path only inside the directory its turn runs in (EO-700, EO-704), so the bearer for EO's administrative server that each turn's CLI is launched with — fresh or resumed — is leased for that turn's own directory",
     same: { launchedWithBearerLeasedFor: ["/tmp/wt-start", "/tmp/wt-resume"] },
   },
   {
