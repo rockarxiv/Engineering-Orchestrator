@@ -3568,7 +3568,13 @@ const UNGATED_WRITE_TOOLS: readonly ToolSpec[] = [
       "({ id, number }), git ({ branch, baseBranch, namedBranch, attachedAt, pullRequest, reference, targetBranch }), extensions, " +
       "parent, children, dependsOn, dependedOnBy (each { key, title, type, stepName, finished }) and attachments ([{ id, name, " +
       "mimeType, size, commentId, createdAt }]); a field left out is null, false, [] or {}. itemByKey — { KEY: item } in the same " +
-      "shape, for ctx.itemByKey and ctx.commentOn. answer — " +
+      "shape, for ctx.itemByKey and ctx.commentOn. runs — { KEY: [{ id, step ({ id, name }), action, agentName, status, resultKey, answer, error, " +
+      "attempt, startedAt, endedAt, costCents }] }, what await ctx.runs(key) answers. transitions — { KEY: [{ from, to (each { id, name }), " +
+      "actor, reason, at }] }, what await ctx.transitions(key) answers; a key the case knows but scripted none for answers []. items — " +
+      "[{ key, title, type, pipelineName, stepName, parentKey }], the tickets await ctx.items(filter) searches, filtered (type, stepId, " +
+      "stepName, pipelineId, parentKey, keys, text, createdSince, updatedSince, atTerminalStep) and paged (offset, limit) as EO does; an entry " +
+      "may carry stepId, pipelineId, createdAt, updatedAt and atTerminalStep for the filters reading them. attachments — { ID: { name, " +
+      "mimeType, content } }, content a string or bytes, what await ctx.readAttachment(id) answers with its bytes. answer — " +
       "ctx.answer(). inputs — the step's values. timeoutMs — ctx.timeoutMs. createItem — [{ key } or { reason }], the answers ctx.createItem gets in order (NEW-1, NEW-2… when none is scripted). Nothing real happens: no process is " +
       "spawned, comments are recorded in `comments` and never posted, files given to ctx.attach are recorded in " +
       "`attachments` as [{ key, caption, paths }] and never copied, items given to ctx.createItem are recorded in `created` as [{ idempotencyKey, key, type, title, body, spec, pipeline, " +

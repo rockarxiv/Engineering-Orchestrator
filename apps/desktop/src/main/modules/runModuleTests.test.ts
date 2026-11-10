@@ -588,6 +588,94 @@ describe("runModuleTests", () => {
     expect(run.cases[0]).toMatchObject({ passed: true, failure: null });
   });
 
+  /**
+   * The four reads EO-710 added, each scripted by its fixture and asserted
+   * on in the case: an item's runs and step moves, the board searched and
+   * paged, and a file's bytes.
+   */
+  it("takes runs, transitions, items and attachments fixtures, and a case can script and assert on each read", async () => {
+    const module = `
+      export default async function (ctx) {
+        const file = await ctx.readAttachment("att-1");
+        return { ok: true, result: "merged", detail: JSON.stringify({
+          runs: await ctx.runs("EO-1"),
+          none: await ctx.runs("EO-9"),
+          unknown: await ctx.transitions("EO-404"),
+          transitions: await ctx.transitions("EO-1"),
+          children: await ctx.items({ parentKey: "EO-0" }),
+          titled: await ctx.items({ text: "LOGIN" }),
+          paged: await ctx.items({ limit: 1, offset: 1 }),
+          refused: await ctx.items({ colour: "red" }),
+          serialisedToNull: await ctx.items({ toJSON() { return null; } }),
+          file: { ...file.attachment, content: [...file.attachment.content] },
+          text: file.attachment.content.toString("utf8"),
+          missing: await ctx.readAttachment("att-2"),
+        }) };
+      }`;
+    const run = await runModuleTests(launcher, {
+      module: { code: module, manifest: manifest() },
+      tests: [
+        testCase(`import assert from "node:assert/strict";
+          const review = { id: "r-1", step: { id: "review", name: "Review" }, action: "review", agentName: "Reviewer", status: "succeeded",
+            resultKey: "changes_requested", answer: { verdict: "reject", blocking_issues: ["No tests."] }, error: null, attempt: 1, startedAt: 10, endedAt: 20, costCents: 3 };
+          const moves = [
+            { from: { id: "todo", name: "Implement" }, to: { id: "review", name: "Review" }, actor: "Implementer", reason: "run succeeded", at: 1 },
+            { from: { id: "review", name: "Review" }, to: { id: "todo", name: "Implement" }, actor: "Reviewer", reason: "changes requested", at: 2 },
+          ];
+          export default async function (harness) {
+            const run = await harness.run({
+              item: { key: "EO-1" },
+              itemByKey: { "EO-9": {} },
+              runs: { "EO-1": [review] },
+              transitions: { "EO-1": moves },
+              items: [
+                { key: "EO-1", title: "Fix the login form", type: "story", pipelineName: "Software", stepName: "Implement", parentKey: "EO-0" },
+                { key: "EO-2", title: "Write the docs", type: "story", pipelineName: "Software", stepName: "Review", parentKey: "EO-0" },
+                { key: "EO-3", title: "Elsewhere", type: "story", stepName: "Done", parentKey: null },
+              ],
+              attachments: { "att-1": { name: "log.txt", mimeType: "text/plain", content: "héllo" } },
+            });
+            assert.equal(run.outcome.ok, true, run.outcome.reason);
+            const read = JSON.parse(run.outcome.detail);
+            assert.deepEqual(read.runs, { found: true, runs: [review] });
+            assert.deepEqual(read.none, { found: true, runs: [] });
+            assert.deepEqual(read.unknown, { found: false, reason: 'No ticket has the key "EO-404".' });
+            assert.deepEqual(read.transitions, { found: true, transitions: moves });
+            assert.deepEqual(read.children.items.map((item) => [item.key, item.stepName]), [["EO-1", "Implement"], ["EO-2", "Review"]]);
+            assert.deepEqual(read.children.items[0], { key: "EO-1", title: "Fix the login form", type: "story", pipelineName: "Software", stepName: "Implement", parentKey: "EO-0" });
+            assert.deepEqual(read.titled.items.map((item) => item.key), ["EO-1"]);
+            assert.deepEqual({ ...read.paged, items: read.paged.items.map((item) => item.key) }, { found: true, items: ["EO-2"], total: 3, nextOffset: 2 });
+            assert.equal(read.refused.found, false);
+            assert.match(read.refused.reason, /does not take "colour"/);
+            assert.equal(read.serialisedToNull.found, false);
+            assert.match(read.serialisedToNull.reason, /takes one object of filters/);
+            assert.deepEqual(read.file, { id: "att-1", name: "log.txt", mimeType: "text/plain", size: 6, content: [...Buffer.from("héllo")] });
+            assert.equal(read.text, "héllo");
+            assert.deepEqual(read.missing, { found: false, reason: 'No attachment has the id "att-2".' });
+          }`),
+      ],
+    });
+    expect(run.cases[0]).toMatchObject({ passed: true, failure: null });
+  });
+
+  it("refuses a runs, transitions, items or attachments fixture of the wrong shape", async () => {
+    const run = await runModuleTests(launcher, {
+      module: { code: `export default async function () { return { ok: true, result: "merged" }; }`, manifest: manifest() },
+      tests: [
+        testCase(`export default async function (harness) { await harness.run({ runs: [] }); }`, "runs"),
+        testCase(`export default async function (harness) { await harness.run({ transitions: { "EO-1": {} } }); }`, "transitions"),
+        testCase(`export default async function (harness) { await harness.run({ items: {} }); }`, "items"),
+        testCase(`export default async function (harness) { await harness.run({ attachments: { "a": { content: 3 } } }); }`, "attachments"),
+      ],
+    });
+    expect(run.cases.map((entry) => entry.failure)).toEqual([
+      expect.stringContaining("harness.run's runs is an object of item keys to lists"),
+      expect.stringContaining("harness.run's transitions is an object of item keys to lists"),
+      expect.stringContaining("harness.run's items is a list of items"),
+      expect.stringContaining("harness.run's attachments is an object of attachment ids to files"),
+    ]);
+  });
+
   it("runs a case with no secrets in its environment, in a fresh directory that is removed afterwards", async () => {
     const previous = process.env.EO_TEST_SECRET;
     process.env.EO_TEST_SECRET = "hunter2";

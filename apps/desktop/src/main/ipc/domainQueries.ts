@@ -60,6 +60,8 @@ import {
   currentOutputOf,
   type CommentWindow,
   listRunsForItem,
+  boundGraphForItem,
+  getStep,
   listItemsIncludingArchived,
   jiraBaseUrlFor,
   listWorkspaces,
@@ -1035,6 +1037,142 @@ export function moduleItemView(db: Db, item: Item, targetBranch: string | null):
       commentId: attachment.commentId,
       createdAt: attachment.createdAt,
     })),
+  };
+}
+
+/** A step a module's history names (EO-710): its id, and its name as the item's own version gives it — null where no version EO holds has it any more. */
+export interface ModuleStepRef {
+  id: string;
+  name: string | null;
+}
+
+/** One run on an item, as `ctx.runs()` answers it (EO-710). */
+export interface ModuleRunView {
+  id: string;
+  step: ModuleStepRef | null;
+  action: string;
+  /** "EO" where EO ran the step itself — a builtin or a module — as `ticket_get` names it. */
+  agentName: string;
+  status: string;
+  /** The declared result the run produced, as the code that routed it reads it; null where it produced none. */
+  resultKey: string | null;
+  /** The run's whole structured answer, as validated; null before it answered. */
+  answer: unknown;
+  error: string | null;
+  attempt: number;
+  startedAt: number | null;
+  endedAt: number | null;
+  costCents: number | null;
+}
+
+/** One step move, as `ctx.transitions()` answers it (EO-710). */
+export interface ModuleTransitionView {
+  /** Null for the move that put the item on its first step. */
+  from: ModuleStepRef | null;
+  to: ModuleStepRef;
+  /** The agent's name where an agent moved it; otherwise as the row says it — "human", "engine" … */
+  actor: string;
+  reason: string | null;
+  at: number;
+}
+
+/** One item as `ctx.items()` lists it (EO-710). `ctx.itemByKey()` reads one whole. */
+export interface ModuleItemSummary {
+  key: string;
+  title: string;
+  type: string;
+  pipelineName: string | null;
+  /** The step's name by the item's own version, or a container's progress — what a card reads. */
+  stepName: string;
+  parentKey: string | null;
+}
+
+/** A page of `ModuleItemSummary`, and where the next one starts — null on the last. */
+export interface ModuleItemPage {
+  items: ModuleItemSummary[];
+  total: number;
+  nextOffset: number | null;
+}
+
+/**
+ * Names a step id the way the item's own version names it (EO-327), and
+ * the live row where that version has no such step — a run or a move
+ * made on another pipeline, before the item was handed on.
+ */
+function moduleStepNamer(db: Db, item: Item): (id: string) => ModuleStepRef {
+  const bound = boundGraphForItem(db, item);
+  return (id) => ({ id, name: (bound?.steps.find((step) => step.id === id) ?? getStep(db, id))?.name ?? null });
+}
+
+/**
+ * Every run on an item, oldest first, as a module reads them (EO-710).
+ *
+ * The runs `ticket_get` lists, with what a module needs that a screen
+ * reads elsewhere: the step each was dispatched from, the result key it
+ * produced and its whole answer. `resultKey` is the caller's, because
+ * which key a run produced is a pack's reading of its answer — a review's
+ * `verdict` is `approved` or `changes_requested` — and this file may not
+ * reach into a pack (invariant #13).
+ */
+export function moduleRunsView(db: Db, item: Item, resultKey: (run: Run, item: Item) => string | null): ModuleRunView[] {
+  const agentsById = agentIndex(db);
+  const stepRef = moduleStepNamer(db, item);
+  return listRunsForItem(db, item.id).map((run) => ({
+    id: run.id,
+    step: run.stepId === null ? null : stepRef(run.stepId),
+    action: run.action,
+    agentName: run.agentId === null ? "EO" : (agentsById.get(run.agentId)?.name ?? "unknown agent"),
+    status: run.status,
+    resultKey: run.result === null ? null : resultKey(run, item),
+    answer: parsedResultOf(run.result) ?? null,
+    error: run.error,
+    attempt: run.attempt,
+    startedAt: run.startedAt,
+    endedAt: run.endedAt,
+    costCents: run.costCents,
+  }));
+}
+
+/** Every step move an item made, oldest first, as a module reads them (EO-710) — `ticket_get`'s transitions, with the steps named. */
+export function moduleTransitionsView(db: Db, item: Item): ModuleTransitionView[] {
+  const agentsById = agentIndex(db);
+  const stepRef = moduleStepNamer(db, item);
+  return listTransitionsForItem(db, item.id).map((transition) => ({
+    from: transition.fromStepId === null ? null : stepRef(transition.fromStepId),
+    to: stepRef(transition.toStepId),
+    actor: agentsById.get(transition.actor)?.name ?? transition.actor,
+    reason: transition.reason,
+    at: transition.ts,
+  }));
+}
+
+/**
+ * A page of one project's items, narrowed by what `items_list` takes,
+ * as a module reads them (EO-710).
+ *
+ * `listItemSummaries` is the read — the board's and `items_list`'s —
+ * so a filter means here exactly what it means there; this keeps the
+ * six fields a module is told and pages them in a fixed order, oldest
+ * first, so the next page starts where this one stopped.
+ */
+export function moduleItemSummaries(db: Db, projectId: Uuid | null, filters: ItemListFilters, page: { offset: number; limit: number }): ModuleItemPage {
+  const pipelineNames = new Map(listPipelines(db, undefined, true).map((pipeline) => [pipeline.id as string, pipeline.name]));
+  // By id, which is a UUIDv7 and so the order the items were made in.
+  const rows = listItemSummaries(db, projectId, filters).items
+    .slice()
+    .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  const end = page.offset + page.limit;
+  return {
+    items: rows.slice(page.offset, end).map((summary) => ({
+      key: summary.key,
+      title: summary.title,
+      type: summary.type,
+      pipelineName: summary.pipelineId === null ? null : (pipelineNames.get(summary.pipelineId) ?? null),
+      stepName: summary.stepName,
+      parentKey: summary.parentKey,
+    })),
+    total: rows.length,
+    nextOffset: end < rows.length ? end : null,
   };
 }
 

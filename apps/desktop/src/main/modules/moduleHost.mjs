@@ -154,6 +154,19 @@
  *   - `itemByKey`: `{ "EO-2": { title: … }, … }`, the other items
  *     `ctx.itemByKey()` finds and `ctx.commentOn()` may comment on, each
  *     a partial of the same shape.
+ *   - `runs` and `transitions`: `{ "EO-1": [ … ], … }`, what
+ *     `ctx.runs()` and `ctx.transitions()` answer for each key, each entry
+ *     a partial of `runShape` or `transitionShape` (EO-710). A key the
+ *     case knows — the running item's, or one in `itemByKey` — and
+ *     scripted none for answers `[]`; any other answers `found: false`.
+ *   - `items`: `[{ key, title, type, pipelineName, stepName, parentKey }, …]`,
+ *     what `ctx.items()` searches, narrowed by its filter as EO's query
+ *     narrows and paged. An entry may also carry `stepId`, `pipelineId`,
+ *     `createdAt`, `updatedAt` and `atTerminalStep`, which only the
+ *     filters read; one without them matches no filter on them.
+ *   - `attachments`: `{ "att-1": { name, mimeType, content }, … }`, the
+ *     files `ctx.readAttachment()` finds, `content` a string (as UTF-8)
+ *     or bytes.
  *   - `answer`: what `ctx.answer()` answers, `{ text, offered, matched }`
  *     or null (the default).
  *   - `inputs`: the step's values, laid over the manifest's defaults and
@@ -1756,6 +1769,170 @@ function itemShape(value) {
   });
 }
 
+// ── An item's history, the board and a file's bytes (EO-710) ──
+//
+// Four reads beyond the item itself, each asked of the main process on
+// the channel `ctx.item()` uses and each answered in a shape built here,
+// from the parent's answer on a real run and from a fixture in a test
+// case alike — so a field a real run has is a field a fixture has, and
+// anything a fixture leaves out is null.
+
+/** A step a run or a move names: its id, and its name as the item's own version gives it. */
+function stepRefShape(value) {
+  return Object.freeze({ id: asText(value.id), name: asText(value.name) });
+}
+
+/** One run on an item, oldest first in the list `ctx.runs()` answers. */
+function runShape(value) {
+  return Object.freeze({
+    id: asText(value.id),
+    step: shapedOrNull(value.step, stepRefShape),
+    action: asText(value.action),
+    agentName: asText(value.agentName),
+    status: asText(value.status),
+    resultKey: asText(value.resultKey),
+    answer: frozenData(value.answer ?? null),
+    error: asText(value.error),
+    attempt: asNumber(value.attempt),
+    startedAt: asNumber(value.startedAt),
+    endedAt: asNumber(value.endedAt),
+    costCents: asNumber(value.costCents),
+  });
+}
+
+/** One step move, oldest first in the list `ctx.transitions()` answers. `from` is null for the item's first step. */
+function transitionShape(value) {
+  return Object.freeze({
+    from: shapedOrNull(value.from, stepRefShape),
+    to: shapedOrNull(value.to, stepRefShape),
+    actor: asText(value.actor),
+    reason: asText(value.reason),
+    at: asNumber(value.at),
+  });
+}
+
+/** One item as `ctx.items()` lists it. `ctx.itemByKey()` reads one whole. */
+function itemSummaryShape(value) {
+  return Object.freeze({
+    key: asText(value.key),
+    title: asText(value.title),
+    type: asText(value.type),
+    pipelineName: asText(value.pipelineName),
+    stepName: asText(value.stepName),
+    parentKey: asText(value.parentKey),
+  });
+}
+
+/** What `ctx.items()` may be narrowed by — `items_list`'s filters — and the page. */
+const ITEMS_FILTER_KINDS = Object.freeze({
+  stepId: "text",
+  stepName: "text",
+  pipelineId: "text",
+  type: "text",
+  parentKey: "text",
+  keys: "keys",
+  text: "text",
+  createdSince: "count",
+  updatedSince: "count",
+  atTerminalStep: "boolean",
+  offset: "count",
+  limit: "limit",
+});
+
+/** The most items one page holds, and how many when a module does not say. `MODULE_ITEMS_PAGE_*` in `moduleItemRead.ts`, which this file cannot import. */
+const ITEMS_PAGE_MAX = 500;
+const ITEMS_PAGE_DEFAULT = 100;
+
+/**
+ * A module's `ctx.items()` filter, checked and copied as plain data, or
+ * the sentence saying what is wrong with it.
+ *
+ * Checked here, before anything is asked, so a test case and a real run
+ * refuse one filter with the same words; the parent checks it again.
+ * Copied through JSON so that what is sent is data — a filter holding a
+ * cycle or a getter must answer with a reason, not stop the run.
+ */
+function readItemsFilter(value) {
+  if (value === undefined || value === null) return { filter: {} };
+  const shape = 'ctx.items() takes one object of filters, like { parentKey: "EO-42" } or { text: "login", limit: 20 }.';
+  if (typeof value !== "object" || Array.isArray(value)) return { reason: shape };
+  let filter;
+  try {
+    filter = PRIMORDIALS.jsonParse(PRIMORDIALS.jsonStringify(value));
+  } catch {
+    return { reason: shape };
+  }
+  // Checked again on what came out: a `toJSON` decides what is sent, so
+  // `{ toJSON() { return null; } }` is an object going in and null out.
+  if (filter === null || typeof filter !== "object" || PRIMORDIALS.isArray(filter)) return { reason: shape };
+  for (const name of PRIMORDIALS.keys(filter)) {
+    if (!Object.hasOwn(ITEMS_FILTER_KINDS, name)) {
+      return { reason: `ctx.items() does not take ${PRIMORDIALS.jsonStringify(name)}. It takes ${PRIMORDIALS.keys(ITEMS_FILTER_KINDS).join(", ")}.` };
+    }
+    const kind = ITEMS_FILTER_KINDS[name];
+    const entry = filter[name];
+    const fits =
+      kind === "text"
+        ? typeof entry === "string" && entry !== ""
+        : kind === "keys"
+          ? PRIMORDIALS.isArray(entry) && entry.length > 0 && entry.length <= 1000 && entry.every((key) => typeof key === "string" && key !== "")
+          : kind === "boolean"
+            ? typeof entry === "boolean"
+            : kind === "limit"
+              ? Number.isInteger(entry) && entry >= 1 && entry <= ITEMS_PAGE_MAX
+              : Number.isInteger(entry) && entry >= 0;
+    if (!fits) {
+      const wanted =
+        kind === "text"
+          ? "a non-empty string"
+          : kind === "keys"
+            ? 'a list of 1 to 1000 keys, like ["EO-42"]'
+            : kind === "boolean"
+              ? "true or false"
+              : kind === "limit"
+                ? `a whole number from 1 to ${ITEMS_PAGE_MAX}`
+                : "a whole number, 0 or more";
+      return { reason: `ctx.items()'s ${name} is ${wanted}.` };
+    }
+  }
+  return { filter };
+}
+
+/** A page of item summaries, as `ctx.items()` answers it. */
+function itemsPageShape(value) {
+  const page = value !== null && typeof value === "object" ? value : {};
+  return Object.freeze({
+    found: true,
+    items: frozenList(page.items, itemSummaryShape),
+    total: asNumber(page.total) ?? 0,
+    nextOffset: asNumber(page.nextOffset),
+  });
+}
+
+/**
+ * One file and its bytes, as `ctx.readAttachment()` answers it.
+ *
+ * `content` is a fresh Buffer on every read — a Buffer is a Uint8Array,
+ * so it is bytes for any code that wants bytes and `.toString("utf8")`
+ * for text — and the one thing here not frozen, because a typed array
+ * holding anything cannot be.
+ */
+function attachmentContentShape(value, content) {
+  return Object.freeze({
+    found: true,
+    attachment: Object.freeze({
+      id: asText(value.id),
+      name: asText(value.name),
+      mimeType: asText(value.mimeType),
+      size: content.byteLength,
+      content,
+    }),
+  });
+}
+
+/** The sentence for an attachment id that is not one. */
+const ATTACHMENT_ID_SHAPE = "An attachment id is a string, as ctx.item().attachments lists it.";
+
 /**
  * The line a module's transcript carries the first time it calls one of
  * the old names (KAN-162).
@@ -1814,7 +1991,7 @@ function makeReadChannel(key) {
   return (question) => {
     if (failure !== null) return { failed: failure };
     const id = uuid();
-    emit({ type: "read", id, what: question.what, key: question.key });
+    emit(question.filter === undefined ? { type: "read", id, what: question.what, key: question.key } : { type: "read", id, what: question.what, key: question.key, filter: question.filter });
     for (;;) {
       for (let end = indexOf(buffered, "\n"); end !== -1; end = indexOf(buffered, "\n")) {
         const framed = verified(slice(buffered, 0, end));
@@ -1944,6 +2121,49 @@ function makeItemReads(ask, runningKey) {
     return Object.freeze({ found: true, key: at.key });
   };
 
+  /**
+   * An item's runs or its step moves (EO-710): the list, oldest first,
+   * or the reason there is none — the same reasons `ctx.itemByKey()`
+   * gives, for the same key.
+   */
+  const history = (what, key, shape) => {
+    const at = question(what, key);
+    if (at.payload === undefined) return Object.freeze({ found: false, reason: at.reason });
+    const list = at.payload[what];
+    if (!PRIMORDIALS.isArray(list)) return Object.freeze({ found: false, reason: `No ticket has the key "${at.key}".` });
+    return Object.freeze({ found: true, [what]: frozenList(list, shape) });
+  };
+
+  /** The parent's answer to a question that is not about one item's key, or the sentence why there is none. */
+  const plain = (asked) => {
+    const answer = ask(asked);
+    if (answer.failed !== undefined) return { reason: `EO's ticket store could not be read: ${answer.failed}` };
+    const payload = answer.payload !== null && typeof answer.payload === "object" ? answer.payload : {};
+    if (typeof payload.unavailable === "string") return { reason: payload.unavailable };
+    if (typeof payload.refused === "string") return { reason: payload.refused };
+    return { payload };
+  };
+
+  /** A page of the running item's project's items (EO-710). */
+  const items = (value) => {
+    const read = readItemsFilter(value);
+    if (read.reason !== undefined) return Object.freeze({ found: false, reason: read.reason });
+    const at = plain({ what: "items", key: runningKey, filter: read.filter });
+    if (at.payload === undefined) return Object.freeze({ found: false, reason: at.reason });
+    return itemsPageShape(at.payload.items);
+  };
+
+  /** One file on any item, and its bytes (EO-710). */
+  const readAttachment = (id) => {
+    if (typeof id !== "string" || id.trim() === "") return Object.freeze({ found: false, reason: ATTACHMENT_ID_SHAPE });
+    const asked = id.trim();
+    const at = plain({ what: "attachment", key: asked });
+    if (at.payload === undefined) return Object.freeze({ found: false, reason: at.reason });
+    const file = at.payload.attachment;
+    if (file === null || typeof file !== "object") return Object.freeze({ found: false, reason: `No attachment has the id "${asked}".` });
+    return attachmentContentShape(file, Buffer.from(typeof file.content === "string" ? file.content : "", "base64"));
+  };
+
   return {
     /** The item this step is running on. Its key came in on the request. */
     item: () => read(runningKey),
@@ -1958,6 +2178,14 @@ function makeItemReads(ask, runningKey) {
       return read(key);
     },
     resolve,
+    // Asynchronous by contract (EO-710), though answered the way the
+    // two reads above are: a later EO is free to answer them without
+    // holding the module still, and a module that awaits them now will
+    // not have to change.
+    runs: async (key) => history("runs", key, runShape),
+    transitions: async (key) => history("transitions", key, transitionShape),
+    items: async (filter) => items(filter),
+    readAttachment: async (id) => readAttachment(id),
   };
 }
 
@@ -2538,6 +2766,11 @@ async function main() {
     answer: makeAnswer(request.answer ?? null),
     item: reads.item,
     itemByKey: reads.itemByKey,
+    // An item's history, the board and a file's bytes (EO-710).
+    runs: reads.runs,
+    transitions: reads.transitions,
+    items: reads.items,
+    readAttachment: reads.readAttachment,
     /**
      * The names a module approved before KAN-162 still calls.
      *
@@ -2609,7 +2842,68 @@ async function main() {
 // under "Test mode". What follows is the machinery behind it.
 
 /** Every fixture `harness.run` takes. A name outside this is a typo, and is refused rather than ignored. */
-const FIXTURE_NAMES = new Set(["exec", "item", "itemByKey", "answer", "inputs", "timeoutMs", "createItem"]);
+const FIXTURE_NAMES = new Set(["exec", "item", "itemByKey", "runs", "transitions", "items", "attachments", "answer", "inputs", "timeoutMs", "createItem"]);
+
+/**
+ * The `runs` or `transitions` a case scripted, `{ KEY: [entry, …] }`,
+ * checked, or a TypeError saying what is wrong with them (EO-710).
+ */
+function readHistoryFixture(value, name, example) {
+  if (value === undefined) return new Map();
+  const shape = `harness.run's ${name} is an object of item keys to lists: { "EO-2": [${example}] }.`;
+  if (value === null || typeof value !== "object" || Array.isArray(value)) throw new TypeError(shape);
+  const lists = new Map();
+  for (const [key, list] of Object.entries(value)) {
+    if (!Array.isArray(list) || list.some((entry) => entry === null || typeof entry !== "object" || Array.isArray(entry))) throw new TypeError(shape);
+    lists.set(key, list);
+  }
+  return lists;
+}
+
+/** The `items` a case scripted — the board `ctx.items()` searches — checked (EO-710). */
+function readItemsFixture(value) {
+  if (value === undefined) return [];
+  const shape = 'harness.run\'s items is a list of items, each like { key: "EO-2", title: "…", stepName: "Review", parentKey: "EO-1" }.';
+  if (!Array.isArray(value) || value.some((entry) => entry === null || typeof entry !== "object" || Array.isArray(entry))) throw new TypeError(shape);
+  return value;
+}
+
+/** The `attachments` a case scripted, `{ ID: { name, mimeType, content } }`, as bytes, checked (EO-710). */
+function readAttachmentsFixture(value) {
+  if (value === undefined) return new Map();
+  const shape = 'harness.run\'s attachments is an object of attachment ids to files: { "att-1": { name: "log.txt", mimeType: "text/plain", content: "…" } }, content a string or bytes.';
+  if (value === null || typeof value !== "object" || Array.isArray(value)) throw new TypeError(shape);
+  const files = new Map();
+  for (const [id, file] of Object.entries(value)) {
+    if (file === null || typeof file !== "object" || Array.isArray(file)) throw new TypeError(shape);
+    const content = file.content;
+    if (content !== undefined && typeof content !== "string" && !(content instanceof Uint8Array)) throw new TypeError(shape);
+    files.set(id, { ...file, id, bytes: typeof content === "string" ? Buffer.from(content, "utf8") : Buffer.from(content ?? []) });
+  }
+  return files;
+}
+
+/**
+ * Whether a scripted item matches a `ctx.items()` filter, as EO's own
+ * query would match it (EO-710). A fixture entry may carry what a
+ * summary does not — `stepId`, `pipelineId`, `createdAt`, `updatedAt`,
+ * `atTerminalStep` — for the filters that read them; an entry without
+ * one does not match a filter on it.
+ */
+function fixtureItemMatches(entry, filter) {
+  const fold = (text) => (typeof text === "string" ? text.toLocaleLowerCase() : null);
+  if (filter.stepId !== undefined && entry.stepId !== filter.stepId) return false;
+  if (filter.stepName !== undefined && fold(entry.stepName) !== fold(filter.stepName)) return false;
+  if (filter.pipelineId !== undefined && entry.pipelineId !== filter.pipelineId) return false;
+  if (filter.type !== undefined && entry.type !== filter.type) return false;
+  if (filter.parentKey !== undefined && entry.parentKey !== filter.parentKey) return false;
+  if (filter.keys !== undefined && !filter.keys.includes(entry.key)) return false;
+  if (filter.text !== undefined && !(fold(entry.title) ?? "").includes(fold(filter.text))) return false;
+  if (filter.createdSince !== undefined && !(typeof entry.createdAt === "number" && entry.createdAt >= filter.createdSince)) return false;
+  if (filter.updatedSince !== undefined && !(typeof entry.updatedAt === "number" && entry.updatedAt >= filter.updatedSince)) return false;
+  if (filter.atTerminalStep !== undefined && (entry.atTerminalStep === true) !== filter.atTerminalStep) return false;
+  return true;
+}
 
 /** The `createItem` answers a case handed `harness.run`, checked, or a TypeError saying what is wrong with them (EO-433). */
 function readCreationAnswers(value) {
@@ -3469,14 +3763,18 @@ async function testMain(request) {
 
   const run = async (fixtures = {}) => {
     if (fixtures === null || typeof fixtures !== "object" || Array.isArray(fixtures)) {
-      throw new TypeError("harness.run takes one object of fixtures: { exec, item, itemByKey, answer, inputs, createItem, timeoutMs }.");
+      throw new TypeError("harness.run takes one object of fixtures: { exec, item, itemByKey, runs, transitions, items, attachments, answer, inputs, createItem, timeoutMs }.");
     }
     const unknown = Object.keys(fixtures).filter((name) => !FIXTURE_NAMES.has(name));
     if (unknown.length > 0) {
-      throw new TypeError(`harness.run does not take ${unknown.map((name) => JSON.stringify(name)).join(", ")}. It takes exec, item, itemByKey, answer, inputs, createItem and timeoutMs.`);
+      throw new TypeError(`harness.run does not take ${unknown.map((name) => JSON.stringify(name)).join(", ")}. It takes exec, item, itemByKey, runs, transitions, items, attachments, answer, inputs, createItem and timeoutMs.`);
     }
     const script = readScript(fixtures.exec);
     const creationAnswers = readCreationAnswers(fixtures.createItem);
+    const scriptedRuns = readHistoryFixture(fixtures.runs, "runs", '{ action: "review", resultKey: "approved", answer: { … } }');
+    const scriptedTransitions = readHistoryFixture(fixtures.transitions, "transitions", '{ from: { id: "implement", name: "Implement" }, to: { id: "review", name: "Review" }, actor: "Implementer", reason: "run succeeded" }');
+    const scriptedItems = readItemsFixture(fixtures.items);
+    const scriptedAttachments = readAttachmentsFixture(fixtures.attachments);
     if (fixtures.timeoutMs !== undefined && !(Number.isFinite(fixtures.timeoutMs) && fixtures.timeoutMs > 0)) {
       throw new TypeError("harness.run's timeoutMs is a positive number of milliseconds.");
     }
@@ -3523,6 +3821,33 @@ async function testMain(request) {
       warned = true;
       emit({ type: "output", text: `${CONTEXT_DEPRECATION_LINE}\n` });
     };
+    // An item's history (EO-710): what the case scripted for the key, an
+    // empty list for an item the case knows and scripted none for, and
+    // the reason `ctx.itemByKey()` would give for any other key.
+    const history = (lists, what, shape) => async (key) => {
+      if (typeof key !== "string" || key.trim() === "") return Object.freeze({ found: false, reason: 'A ticket key is a string, like "EO-42".' });
+      const asked = key.trim();
+      const list = lists.get(asked) ?? (known.has(asked) ? [] : undefined);
+      if (list === undefined) return Object.freeze({ found: false, reason: `No ticket has the key "${asked}".` });
+      return Object.freeze({ found: true, [what]: frozenList(list, shape) });
+    };
+    // The board (EO-710): the scripted items, narrowed by the filter as
+    // EO's query narrows them, in the order the case gave, and paged.
+    const searchItems = async (value) => {
+      const read = readItemsFilter(value);
+      if (read.reason !== undefined) return Object.freeze({ found: false, reason: read.reason });
+      const { offset = 0, limit = ITEMS_PAGE_DEFAULT, ...filter } = read.filter;
+      const matched = scriptedItems.filter((entry) => fixtureItemMatches(entry, filter));
+      const end = offset + limit;
+      return itemsPageShape({ items: matched.slice(offset, end), total: matched.length, nextOffset: end < matched.length ? end : null });
+    };
+    const readScriptedAttachment = async (id) => {
+      if (typeof id !== "string" || id.trim() === "") return Object.freeze({ found: false, reason: ATTACHMENT_ID_SHAPE });
+      const file = scriptedAttachments.get(id.trim());
+      if (file === undefined) return Object.freeze({ found: false, reason: `No attachment has the id "${id.trim()}".` });
+      return attachmentContentShape(file, Buffer.from(file.bytes));
+    };
+
     const reads = {
       resolve: (key) => {
         const at = lookup(key);
@@ -3621,6 +3946,10 @@ async function testMain(request) {
       answer: makeAnswer(fixtures.answer ?? null),
       item: readRunning,
       itemByKey: read,
+      runs: history(scriptedRuns, "runs", runShape),
+      transitions: history(scriptedTransitions, "transitions", transitionShape),
+      items: searchItems,
+      readAttachment: readScriptedAttachment,
       ticket: () => {
         deprecated();
         return readRunning();
