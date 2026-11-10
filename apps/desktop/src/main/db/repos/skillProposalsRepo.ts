@@ -1,18 +1,19 @@
-import { and, desc, eq, isNotNull, or } from "drizzle-orm";
+import { and, desc, eq } from "drizzle-orm";
 import { uuidv7, type MemoryScope, type MemoryScopeKind, type SkillProposalStatus, type Uuid } from "@eo/core";
 import type { Db } from "../client.js";
-import { memoryConsolidations, skillProposals } from "../schema.js";
+import { skillProposals } from "../schema.js";
 
 /**
  * Skills a memory consolidation proposed (EO-483, ARCHITECTURE.md,
  * "What an agent is given").
  *
- * The one module that writes `skill_proposals`. A row is written when a
- * proposal is posted, and decided once — saved or discarded — when a
- * person answers the comment. A discarded row is removed only when a
- * person asks for the proposal to be allowed again (EO-512). Nothing here saves a skill or retires an
- * entry; that is `memory/skillProposals.ts`, which calls `decide` in the
- * same transaction as the work it records.
+ * The one module that writes `skill_proposals`. Since EO-719 a row is
+ * written for each proposal a consolidation applied, `saved` from the
+ * start, in the same transaction as the skill write, the retired entries
+ * and the notice it records (`memory/skillProposals.ts`). Rows written
+ * before then may still be `open` — waiting on a Save nobody can press
+ * any more — or `discarded`: a person's Discard, which still holds its
+ * scope and slug back. Nothing here saves a skill or retires an entry.
  */
 
 type Row = typeof skillProposals.$inferSelect;
@@ -104,12 +105,6 @@ export function getSkillProposal(db: Db, id: string): SkillProposalRecord | unde
   return row ? toRecord(row) : undefined;
 }
 
-/** The proposal a comment was posted for, if it was posted for one. */
-export function skillProposalForComment(db: Db, commentId: string): SkillProposalRecord | undefined {
-  const row = db.select().from(skillProposals).where(eq(skillProposals.commentId, commentId)).get();
-  return row ? toRecord(row) : undefined;
-}
-
 /** A consolidation's proposals, in the order they were posted. */
 export function listSkillProposalsOf(db: Db, consolidationId: string): SkillProposalRecord[] {
   return db
@@ -122,38 +117,21 @@ export function listSkillProposalsOf(db: Db, consolidationId: string): SkillProp
 }
 
 /**
- * Why a proposal is not posted again, or null.
- *
- * - `discarded` — a person discarded one with the same scope and slug
- *   (EO-512). Matched by slug alone, not by the fingerprint: the model
- *   rewords a description freely, and what the person turned down was
- *   the skill, not its wording. It holds until a person removes the
- *   discard record (`forgetDiscardedSkillProposals`).
- * - `open` — one with the same fingerprint is still on the thread
- *   waiting for an answer. One whose comment was deleted, or whose
- *   consolidation was restored, is not waiting for anything, so it does
- *   not hold a new one back.
+ * Whether a person discarded a proposal with this scope and slug, with
+ * the Discard answer proposals offered before EO-719 (EO-512). Matched by
+ * slug alone, not by the fingerprint: the model rewords a description
+ * freely, and what the person turned down was the skill, not its
+ * wording. Nothing removes such a record now that "Propose again" is
+ * gone, so it holds for good.
  */
-export function knownSkillProposal(db: Db, scope: MemoryScope, proposal: { slug: string; fingerprint: string }): "discarded" | "open" | null {
-  const rows = db
-    .select({ status: skillProposals.status, consolidationStatus: memoryConsolidations.status })
-    .from(skillProposals)
-    .leftJoin(memoryConsolidations, eq(memoryConsolidations.id, skillProposals.consolidationId))
-    .where(
-      and(
-        eq(skillProposals.scopeKind, scope.kind),
-        eq(skillProposals.scopeId, scope.id),
-        or(
-          and(eq(skillProposals.status, "discarded"), eq(skillProposals.slug, proposal.slug)),
-          and(eq(skillProposals.status, "open"), eq(skillProposals.fingerprint, proposal.fingerprint), isNotNull(skillProposals.commentId)),
-        ),
-      ),
-    )
-    .all();
-  if (rows.some((row) => row.status === "discarded")) return "discarded";
-  // One whose consolidation was restored can no longer be saved (see
-  // `answerSkillProposal`), so it is not waiting for anything either.
-  return rows.some((row) => row.consolidationStatus !== "restored") ? "open" : null;
+export function skillProposalDiscarded(db: Db, scope: MemoryScope, slug: string): boolean {
+  return (
+    db
+      .select({ id: skillProposals.id })
+      .from(skillProposals)
+      .where(and(eq(skillProposals.scopeKind, scope.kind), eq(skillProposals.scopeId, scope.id), eq(skillProposals.status, "discarded"), eq(skillProposals.slug, slug)))
+      .get() !== undefined
+  );
 }
 
 /** A proposal a person discarded, as a consolidation is told of it. */
@@ -179,24 +157,7 @@ export function listDiscardedSkillProposals(db: Db, scope: MemoryScope): Discard
   return [...bySlug.values()];
 }
 
-/**
- * Removes the discard records for a slug in a scope (EO-512) — every
- * one, since any of them alone would still hold the slug back — so a
- * later consolidation may propose it again. Answers how many it removed.
- *
- * A person's act and only theirs: `answerSkillProposal` calls it on a
- * "Propose again" reply under a discarded proposal.
- */
-export function forgetDiscardedSkillProposals(db: Db, scope: MemoryScope, slug: string): number {
-  return db
-    .delete(skillProposals)
-    .where(
-      and(eq(skillProposals.scopeKind, scope.kind), eq(skillProposals.scopeId, scope.id), eq(skillProposals.slug, slug), eq(skillProposals.status, "discarded")),
-    )
-    .run().changes;
-}
-
-/** Records a person's answer. Only an open proposal is decided; answers whether this call decided it. */
+/** Records what became of a proposal: `saved` once a consolidation applied it. Only an open proposal is decided; answers whether this call decided it. */
 export function decideSkillProposal(
   db: Db,
   id: string,

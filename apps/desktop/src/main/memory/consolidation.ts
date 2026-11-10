@@ -453,9 +453,9 @@ export const MEMORY_PROPOSE_SKILLS_SYSTEM = [
   "- `kind` is `new`, or `improvement` when one of the existing skills you are shown already covers the procedure and the entries add to it or correct it. An improvement names that skill's slug in `target`, uses the same slug, and gives the skill's whole new body. A new skill never reuses an existing skill's slug.",
   "- `slug` is lowercase letters and digits with single hyphens. `name` is what a person calls it. `description` is one line saying when to use it: it is what a model chooses the skill by.",
   "- `scope` is exactly the scope you are told the entries are of.",
-  "- `evidence.entryIds` are the ids of the given entries the procedure was seen in, and `evidence.itemIds` the items those entries came from, as each entry is labelled. If a person saves the skill, its evidence entries leave memory for it, so name only entries that hold the procedure and nothing else worth keeping.",
+  "- `evidence.entryIds` are the ids of the given entries the procedure was seen in, and `evidence.itemIds` the items those entries came from, as each entry is labelled. The skill is created or changed as you propose it, with no person's approval, and its evidence entries leave memory for it, so name only entries that hold the procedure and nothing else worth keeping.",
   `- \`body\` is the SKILL.md body, in markdown, with these sections as headings: ${SKILL_PROPOSAL_SECTIONS.map((section) => `\`## ${section}\``).join(", ")} — when to use it, what to do, and how to know it worked.`,
-  "- Never propose again what a person discarded: not under the same slug, and not as the same procedure under another slug or in other words.",
+  "- Never propose again what a person discarded, or a skill a person archived: not under the same slug, and not as the same procedure under another slug or in other words.",
   "- Do not invent anything an entry does not say.",
 ].join("\n");
 
@@ -476,6 +476,7 @@ function isoDay(at: number): string {
 
 /** An existing skill a proposal may improve: one in the scope, or a global one. */
 export interface ExistingSkill {
+  id: string;
   slug: string;
   description: string;
   /** `global`, or this scope. */
@@ -483,7 +484,7 @@ export interface ExistingSkill {
   body: string;
 }
 
-/** A proposal a person discarded in the scope, which the skill proposal call is told not to make again (EO-512). */
+/** A proposal a person discarded in the scope, or a skill a consolidation created there that a person archived: what the skill proposal call is told not to make again (EO-512, EO-719). */
 export interface DiscardedProposal {
   slug: string;
   description: string;
@@ -586,7 +587,7 @@ export function skillProposalsInput(input: {
   entries: readonly MemoryEntryView[];
   /** Existing skills in the scope or global, which a proposal may improve (EO-483). */
   skills: readonly ExistingSkill[];
-  /** Proposals a person discarded in the scope, newest first (EO-512). */
+  /** Proposals a person discarded in the scope, and consolidation-created skills a person archived there, newest first (EO-512, EO-719). */
   discarded: readonly DiscardedProposal[];
   now: number;
 }): string {
@@ -613,7 +614,7 @@ export function skillProposalsInput(input: {
     lines.push(
       "",
       "## Skill proposals a person discarded",
-      "A person turned these down. Do not propose them again — not under the same slug, and not as the same procedure under another slug or in other words. EO will not post a proposal with one of these slugs.",
+      "A person turned these down: discarded the proposal, or archived the skill a consolidation made. Do not propose them again — not under the same slug, and not as the same procedure under another slug or in other words. EO will not apply a proposal with one of these slugs.",
       "",
     );
     for (const proposal of input.discarded) lines.push(`- \`${proposal.slug}\`: ${proposal.description}`);

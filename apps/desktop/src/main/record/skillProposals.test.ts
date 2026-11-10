@@ -1,5 +1,4 @@
 import type { Comment, IpcChannel, IpcPayload, IpcResponse, IpcResult, MemoryEntryView, MemoryScope, SideCallResult, Uuid } from "@eo/core";
-import { SKILL_PROPOSAL_DISCARD, SKILL_PROPOSAL_PROPOSE_AGAIN, SKILL_PROPOSAL_SAVE } from "@eo/core";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { DbHandle } from "../db/client.js";
 import { issueDevice } from "../db/repos/devicesRepo.js";
@@ -14,7 +13,7 @@ import {
   listAgents,
   listCommentsForItem,
   listMemories,
-  skillProposalForComment,
+  listSkillVersions,
 } from "../db/repos/index.js";
 import { createTestItem, openMigratedTestDb } from "../db/testHelpers.js";
 import { postHumanComment } from "../ipc/domainCommands.js";
@@ -28,16 +27,16 @@ import { serveApply, serveChanges, serveProjectThread, type ServeRecordContext }
 import type { RecordTransport } from "./syncStatus.js";
 
 /**
- * A skill proposal on a project the organisation holds (EO-483,
- * ARCHITECTURE.md, "What an agent is given", "The record").
+ * A skill proposal on a project the organisation holds (EO-483, EO-719,
+ * ARCHITECTURE.md, "Proposing skills", "The record").
  *
- * The proposal is posted on the project's thread, which the record and
- * every desktop share; its row, and the memory, skills and agents Save
- * changes, are the desktop whose consolidation made it. So a press on
- * another device has to reach that desktop and be carried out there,
- * once — and EO's answer has to come back to the thread everyone sees.
- * One record and two desktops in one process, through the `serve*`
- * functions `server/http.ts` puts behind its door.
+ * The proposal is applied on the desktop whose consolidation made it —
+ * the memory, skills and agents it changes are that desktop's — and its
+ * notice is posted on the project's thread, which the record and every
+ * desktop share. The notice asks nothing, so a reply to it from another
+ * device, with the words proposals used to offer, changes nothing
+ * anywhere. One record and two desktops in one process, through the
+ * `serve*` functions `server/http.ts` puts behind its door.
  */
 
 type Answer = SideCallResult<unknown>;
@@ -164,75 +163,45 @@ async function proposed(): Promise<{ projectId: Uuid; evidence: MemoryEntryView[
 
   const thread = findProjectThread(laptop.handle.db, project.id as Uuid);
   expect(findProjectThread(recordDb.db, project.id as Uuid)?.id).toBe(thread?.id);
-  const offer = listCommentsForItem(laptop.handle.db, thread!.id as Uuid).find((comment) => comment.options?.includes(SKILL_PROPOSAL_SAVE));
-  if (!offer) throw new Error("the proposal did not reach the laptop");
-  // The row is the desk's alone.
-  expect(skillProposalForComment(desk.handle.db, offer.id)).toBeDefined();
-  expect(skillProposalForComment(laptop.handle.db, offer.id)).toBeUndefined();
-  expect(offer.body).toContain("carried out there");
+  const offer = listCommentsForItem(laptop.handle.db, thread!.id as Uuid).find((comment) => comment.body.includes("created the skill `run-e2e`"));
+  if (!offer) throw new Error("the notice did not reach the laptop");
   return { projectId: project.id as Uuid, evidence, offer };
-}
-
-async function pressOnLaptop(offer: Comment, option: string): Promise<void> {
-  await postHumanComment(laptop.handle.db, undefined, { itemId: offer.itemId, body: option, parentId: offer.id, mentions: [], pinned: false, attachmentIds: [] });
-  await syncAll();
 }
 
 function answersOn(handle: DbHandle, offer: Comment): Comment[] {
   return listCommentsForItem(handle.db, offer.itemId as Uuid).filter((comment) => comment.parentId === offer.id && comment.authorType === "engine");
 }
 
-describe("answering a skill proposal from another device", () => {
-  it("is Save carried out once on the desktop whose consolidation proposed it, with EO's answer back on every copy of the thread", async () => {
+describe("a skill proposal on a project the organisation holds", () => {
+  it("is applied on the desktop whose consolidation proposed it, and its notice reaches every copy of the thread, offering nothing", async () => {
     const { projectId, evidence, offer } = await proposed();
 
-    await pressOnLaptop(offer, SKILL_PROPOSAL_SAVE);
-
     const skill = getSkillBySlug(desk.handle.db, "run-e2e");
-    expect(skill).toBeDefined();
+    expect(skill).toMatchObject({ createdBy: "agent", scope: { kind: "project", projectId } });
+    expect(listSkillVersions(desk.handle.db, skill!.id).map((version) => version.author.kind)).toEqual(["consolidation"]);
     const implementer = listAgents(desk.handle.db).find((agent) => agent.role === "implementer")!;
     expect(getAgentAttachments(desk.handle.db, implementer.id).skillIds).toEqual([skill!.id]);
     const active = listMemories(desk.handle.db, { kind: "project", id: projectId }).map((entry) => entry.id);
     for (const entry of evidence) expect(active).not.toContain(entry.id);
-    expect(skillProposalForComment(desk.handle.db, offer.id)).toMatchObject({ status: "saved" });
-    // Nothing on the laptop or the record: neither holds the proposal.
-    expect(getSkillBySlug(laptop.handle.db, "run-e2e")).toBeUndefined();
-    expect(getSkillBySlug(recordDb.db, "run-e2e")).toBeUndefined();
 
-    for (const where of [desk.handle, recordDb, laptop.handle]) {
-      const said = answersOn(where, offer);
-      expect(said).toHaveLength(1);
-      expect(said[0]!.body).toContain("Saved the skill `run-e2e`");
-    }
-
-    // The same press arriving again — a replay, a second sync — does nothing more.
-    await syncAll();
-    expect(answersOn(desk.handle, offer)).toHaveLength(1);
-  });
-
-  it("is Discard recorded on the desktop whose consolidation proposed it, so its fingerprint holds there", async () => {
-    const { offer } = await proposed();
-
-    await pressOnLaptop(offer, SKILL_PROPOSAL_DISCARD);
-
-    expect(skillProposalForComment(desk.handle.db, offer.id)).toMatchObject({ status: "discarded" });
-    expect(getSkillBySlug(desk.handle.db, "run-e2e")).toBeUndefined();
-    for (const where of [desk.handle, recordDb, laptop.handle]) {
-      expect(answersOn(where, offer).map((comment) => comment.body)).toEqual([expect.stringContaining("will not propose `run-e2e` again")]);
+    expect(offer.kind).toBe("note");
+    expect(offer.options ?? []).toEqual([]);
+    for (const where of [desk.handle, recordDb]) {
+      expect(listCommentsForItem(where.db, offer.itemId as Uuid).find((comment) => comment.id === offer.id)).toBeDefined();
     }
   });
 
-  it("is Propose again carried out on the desktop that holds the discard record, which removes it (EO-512)", async () => {
+  it("changes nothing when somebody replies Save, Discard or Propose again to it from another device", async () => {
     const { offer } = await proposed();
-    await pressOnLaptop(offer, SKILL_PROPOSAL_DISCARD);
+    const skill = getSkillBySlug(desk.handle.db, "run-e2e")!;
 
-    await pressOnLaptop(offer, SKILL_PROPOSAL_PROPOSE_AGAIN);
-
-    expect(skillProposalForComment(desk.handle.db, offer.id)).toBeUndefined();
-    for (const where of [desk.handle, recordDb, laptop.handle]) {
-      expect(answersOn(where, offer).map((comment) => comment.body)).toEqual([expect.stringContaining("Discarded."), expect.stringContaining("Allowed again.")]);
+    for (const word of ["Save", "Discard", "Propose again"]) {
+      await postHumanComment(laptop.handle.db, undefined, { itemId: offer.itemId, body: word, parentId: offer.id, mentions: [], pinned: false, attachmentIds: [] });
     }
     await syncAll();
-    expect(answersOn(desk.handle, offer)).toHaveLength(2);
+
+    expect(getSkillBySlug(desk.handle.db, "run-e2e")).toEqual(skill);
+    expect(listSkillVersions(desk.handle.db, skill.id)).toHaveLength(1);
+    for (const where of [desk.handle, recordDb, laptop.handle]) expect(answersOn(where, offer)).toEqual([]);
   });
 });

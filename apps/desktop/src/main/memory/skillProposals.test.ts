@@ -2,9 +2,6 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  SKILL_PROPOSAL_DISCARD,
-  SKILL_PROPOSAL_PROPOSE_AGAIN,
-  SKILL_PROPOSAL_SAVE,
   type Comment,
   type MemoryEntryView,
   type MemoryScope,
@@ -19,7 +16,6 @@ import {
   addMemory,
   createRun,
   getAgentAttachments,
-  getItem,
   getSkill,
   getSkillBySlug,
   listAgents,
@@ -28,13 +24,16 @@ import {
   listConsolidations,
   listMemories,
   listMentionsForComment,
-  listSkills,
   restoreConsolidation,
   saveSkill,
   setAgentAttachment,
   archiveSkill,
   decideSkillProposal,
+  listSkillProposalsOf,
+  listSkillVersions,
   recordSkillProposal,
+  restoreSkillVersion,
+  setSkillLocked,
 } from "../db/repos/index.js";
 import { attachWorkspace, createTestItem, openMigratedTestDb } from "../db/testHelpers.js";
 import { postHumanComment } from "../ipc/domainCommands.js";
@@ -45,11 +44,10 @@ import { createMemoryConsolidator } from "./consolidator.js";
 import { coveringEntries, type ProposalFileStore } from "./skillProposals.js";
 
 /**
- * Memory consolidation proposes skills (EO-483): what a proposal posts on
- * the project's thread, and what Save and Discard on it do — through the
- * reply path a person's press actually takes (`comments:post`). The
- * proposals come from a call of their own, made once a consolidation has
- * succeeded (EO-575).
+ * Memory consolidation's skill proposals (EO-483, EO-719): applied as they
+ * arrive, with no person's reply, each with a notice on the project's
+ * thread that asks nothing. The proposals come from a call of their own,
+ * made once a consolidation has succeeded (EO-575).
  */
 type Answer = SideCallResult<unknown>;
 type AnyRequest = SideCallRequest<unknown>;
@@ -190,115 +188,37 @@ describe("skills proposed by memory consolidation", () => {
     return found.id as Uuid;
   }
 
-  function proposals(): Comment[] {
+  function notices(): Comment[] {
     const at = findProjectThread(handle.db, projectId);
     return at ? listCommentsForItem(handle.db, at.id as Uuid).filter((comment) => comment.authorType === "engine" && comment.parentId === null) : [];
   }
 
-  function press(offer: Comment, option: string) {
-    return postHumanComment(handle.db, undefined, { itemId: offer.itemId, body: option, parentId: offer.id, mentions: [], pinned: false, attachmentIds: [] });
+  function reply(notice: Comment, body: string) {
+    return postHumanComment(handle.db, undefined, { itemId: notice.itemId, body, parentId: notice.id, mentions: [], pinned: false, attachmentIds: [] });
   }
 
-  function replyTo(offer: Comment): Comment | undefined {
-    return listCommentsForItem(handle.db, offer.itemId as Uuid).find((comment) => comment.parentId === offer.id && comment.authorType === "engine");
+  function answersTo(notice: Comment): Comment[] {
+    return listCommentsForItem(handle.db, notice.itemId as Uuid).filter((comment) => comment.parentId === notice.id && comment.authorType === "engine");
   }
 
-  describe("posting", () => {
-    it("posts each proposal as one comment on the project thread that mentions the person, lists its evidence with the items, attaches SKILL.md and offers Save and Discard", async () => {
-      const { evidence, request } = await consolidate((sent) => [proposal(sent.evidence)]);
+  const improving = (target: string): Partial<SkillProposal> => ({ kind: "improvement", target, slug: target }) as Partial<SkillProposal>;
 
-      // What the consolidation is told it may propose against.
+  function existing(slug = "run-e2e", body = "## Steps\nRun `pnpm e2e`.") {
+    const saved = saveSkill(handle.db, { slug, name: "Run the e2e suite", description: "Run the e2e suite.", body, files: [{ path: "notes.md", content: "x" }] });
+    if (!saved.ok) throw new Error(saved.problems.join(" "));
+    return saved.skill;
+  }
+
+  describe("a new skill", () => {
+    it("is created with no reply — the agent's, in the proposal's scope, attached to the agents whose runs wrote the evidence, its first version the consolidation's", async () => {
+      const { request } = await consolidate((sent) => [proposal(sent.evidence)]);
+      const [consolidation] = listConsolidations(handle.db, workspace);
+
+      // What the proposal call is told it may propose against.
       expect(request.input).toContain(`"kind":"workspace","id":"${workspace.id}"`);
       expect(request.input).toContain(`from item ${itemId}`);
       expect(request.input).toContain("## Existing skills");
-      // Nothing was discarded yet, so there is nothing to be told about.
       expect(request.input).not.toContain("## Skill proposals a person discarded");
-
-      const posted = proposals();
-      expect(posted).toHaveLength(1);
-      const [offer] = posted;
-      expect(offer!.itemId).toBe(thread());
-      expect(offer!.kind).toBe("question");
-      expect(offer!.options).toEqual([SKILL_PROPOSAL_SAVE, SKILL_PROPOSAL_DISCARD]);
-      expect(listMentionsForComment(handle.db, offer!.id)).toEqual([expect.objectContaining({ targetType: "human", status: "open" })]);
-
-      expect(offer!.body).toContain("`run-e2e`");
-      expect(offer!.body).toContain("Run or debug this repository's e2e suite under a virtual display.");
-      for (const entry of evidence) expect(offer!.body).toContain(entry.id);
-      // Item keys in a comment are drawn as links to the item.
-      expect(offer!.body).toContain(`from ${itemKey}`);
-      expect(offer!.body).toContain(`Seen on ${itemKey}.`);
-      expect(offer!.body).toMatch(/attaches it to (Implementer and Reviewer|Reviewer and Implementer)/);
-
-      const files = listAttachmentsForComment(handle.db, offer!.id);
-      expect(files.map((file) => file.name)).toEqual(["SKILL.md"]);
-      const draft = readFileSync(files[0]!.path, "utf8");
-      expect(draft).toContain('name: "run-e2e"');
-      expect(draft).toContain(`description: "Run or debug this repository's e2e suite under a virtual display."`);
-      for (const section of ["## Trigger", "## Steps", "## Verification"]) expect(draft).toContain(section);
-    });
-
-    it("saves and attaches nothing, and retires nothing, until a person presses Save", async () => {
-      const before = listSkills(handle.db, true).length;
-      const { evidence } = await consolidate((sent) => [proposal(sent.evidence)]);
-
-      expect(listSkills(handle.db, true)).toHaveLength(before);
-      expect(getSkillBySlug(handle.db, "run-e2e")).toBeUndefined();
-      expect(getAgentAttachments(handle.db, implementerId).skillIds).toEqual([]);
-      const active = listMemories(handle.db, workspace).map((entry) => entry.id);
-      for (const entry of evidence) expect(active).toContain(entry.id);
-    });
-
-    it("posts at most what it was given, one comment per proposal", async () => {
-      await consolidate((sent) => [
-        proposal(sent.evidence),
-        proposal(sent.evidence, { slug: "debug-e2e", description: "Debug one failing e2e spec." }),
-      ]);
-      expect(proposals()).toHaveLength(2);
-    });
-
-    it("posts a proposal whose slug is taken without Save, and says why", async () => {
-      const taken = saveSkill(handle.db, { slug: "run-e2e", name: "Someone's", description: "Already here.", body: "Body.", files: [] });
-      expect(taken.ok).toBe(true);
-      await consolidate((sent) => [proposal(sent.evidence)]);
-
-      const [offer] = proposals();
-      expect(offer!.options).toEqual([SKILL_PROPOSAL_DISCARD]);
-      expect(offer!.body).toContain("This cannot be saved.");
-      expect(offer!.body).toContain("The slug `run-e2e` is already taken");
-      // Typing Save anyway does nothing: it was not offered.
-      await press(offer!, SKILL_PROPOSAL_SAVE);
-      expect(getSkillBySlug(handle.db, "run-e2e")!.description).toBe("Already here.");
-      expect(replyTo(offer!)).toBeUndefined();
-    });
-
-    it("posts an improvement whose target is gone without Save, and says why", async () => {
-      await consolidate((sent) => [proposal(sent.evidence, { kind: "improvement", target: "run-tests", slug: "run-tests" } as Partial<SkillProposal>)]);
-
-      const [offer] = proposals();
-      expect(offer!.options).toEqual([SKILL_PROPOSAL_DISCARD]);
-      expect(offer!.body).toContain("The skill it improves, `run-tests`, no longer exists");
-    });
-
-    it("posts nothing and notes nothing for an answer that proposes no skill", async () => {
-      // An empty `skills` posts nothing and says nothing.
-      memory();
-      await run(
-        () => ({ retire: [], merge: [], rewrite: [] }),
-        () => [],
-      );
-      expect(proposals()).toEqual([]);
-      expect(listConsolidations(handle.db, workspace)[0]).toMatchObject({ status: "succeeded", note: null });
-    });
-  });
-
-  describe("Save on a new skill", () => {
-    it("creates it in the proposal's scope, attaches it to the agents whose runs wrote the evidence, and retires the evidence with a tag the consolidation's restore brings back", async () => {
-      const { evidence, facts } = await consolidate((sent) => [proposal(sent.evidence)]);
-      const [offer] = proposals();
-      const [consolidation] = listConsolidations(handle.db, workspace);
-
-      await press(offer!, SKILL_PROPOSAL_SAVE);
 
       const skill = getSkillBySlug(handle.db, "run-e2e");
       expect(skill).toMatchObject({
@@ -307,28 +227,127 @@ describe("skills proposed by memory consolidation", () => {
         body: E2E_BODY,
         scope: { kind: "workspace", workspaceId: workspace.id },
         enabled: true,
+        createdBy: "agent",
+        locked: false,
       });
+      const versions = listSkillVersions(handle.db, skill!.id);
+      expect(versions).toHaveLength(1);
+      expect(versions[0]).toMatchObject({ action: "create", author: { kind: "consolidation", consolidationId: consolidation!.id } });
       expect(getAgentAttachments(handle.db, implementerId).skillIds).toEqual([skill!.id]);
       expect(getAgentAttachments(handle.db, reviewerId).skillIds).toEqual([skill!.id]);
       const other = listAgents(handle.db).filter((agent) => agent.id !== implementerId && agent.id !== reviewerId);
       for (const agent of other) expect(getAgentAttachments(handle.db, agent.id).skillIds).toEqual([]);
+      expect(listSkillProposalsOf(handle.db, consolidation!.id)).toEqual([expect.objectContaining({ slug: "run-e2e", status: "saved", skillId: skill!.id })]);
+    });
+
+    it("retires the evidence as moved_to_skill with the consolidation's id, and restoring the consolidation brings it back, leaving the skill", async () => {
+      const { evidence, facts } = await consolidate((sent) => [proposal(sent.evidence)]);
+      const [consolidation] = listConsolidations(handle.db, workspace);
+      const skill = getSkillBySlug(handle.db, "run-e2e")!;
 
       const all = listMemories(handle.db, workspace, { includeRetired: true });
       for (const entry of evidence) {
         expect(all.find((candidate) => candidate.id === entry.id)).toMatchObject({ retiredReason: "moved_to_skill", consolidationId: consolidation!.id });
       }
-      expect(replyTo(offer!)!.body).toContain("Saved the skill `run-e2e`");
-      expect(listMentionsForComment(handle.db, offer!.id)[0]).toMatchObject({ status: "addressed" });
 
-      // Restoring the consolidation puts the moved entries back with the
-      // ones it folded, and retires what it wrote. The skill stays.
       const restored = restoreConsolidation(handle.db, consolidation!.id, { caps: CAPS });
       expect(restored.ok).toBe(true);
       const active = listMemories(handle.db, workspace).map((entry) => entry.id).sort();
       expect(active).toEqual([...evidence, ...facts].map((entry) => entry.id).sort());
-      expect(getSkill(handle.db, skill!.id)?.archivedAt).toBeNull();
+      expect(getSkill(handle.db, skill.id)?.archivedAt).toBeNull();
     });
 
+    it("is told on the project thread in a notice that asks nothing: what was created, the evidence with its items, and the skill attached", async () => {
+      const { evidence } = await consolidate((sent) => [proposal(sent.evidence)]);
+
+      const posted = notices();
+      expect(posted).toHaveLength(1);
+      const [notice] = posted;
+      expect(notice!.itemId).toBe(thread());
+      expect(notice!.kind).toBe("note");
+      expect(notice!.options ?? []).toEqual([]);
+      expect(listMentionsForComment(handle.db, notice!.id)).toEqual([]);
+
+      expect(notice!.body).toContain("created the skill `run-e2e`");
+      expect(notice!.body).toContain("Run or debug this repository's e2e suite under a virtual display.");
+      for (const entry of evidence) expect(notice!.body).toContain(entry.id);
+      // Item keys in a comment are drawn as links to the item.
+      expect(notice!.body).toContain(`from ${itemKey}`);
+      expect(notice!.body).toContain(`Seen on ${itemKey}.`);
+      expect(notice!.body).toMatch(/attached to (Implementer and Reviewer|Reviewer and Implementer)/);
+      expect(notice!.body).toContain("Moved the 2 entries holding this procedure out of memory into it; restoring the consolidation brings them back.");
+      for (const word of ["**Save**", "**Discard**", "Propose again"]) expect(notice!.body).not.toContain(word);
+
+      const files = listAttachmentsForComment(handle.db, notice!.id);
+      expect(files.map((file) => file.name)).toEqual(["SKILL.md"]);
+      const draft = readFileSync(files[0]!.path, "utf8");
+      expect(draft).toContain('name: "run-e2e"');
+      for (const section of ["## Trigger", "## Steps", "## Verification"]) expect(draft).toContain(section);
+    });
+
+    it("changes nothing, and EO says nothing, when somebody replies Save, Discard or Propose again to the notice", async () => {
+      await consolidate((sent) => [proposal(sent.evidence)]);
+      const [notice] = notices();
+      const skill = getSkillBySlug(handle.db, "run-e2e")!;
+      const memoryBefore = listMemories(handle.db, workspace, { includeRetired: true });
+
+      for (const word of ["Save", "Discard", "Propose again"]) await reply(notice!, word);
+
+      expect(getSkillBySlug(handle.db, "run-e2e")).toEqual(skill);
+      expect(listSkillVersions(handle.db, skill.id)).toHaveLength(1);
+      expect(listMemories(handle.db, workspace, { includeRetired: true })).toEqual(memoryBefore);
+      expect(answersTo(notice!)).toEqual([]);
+    });
+
+    it("applies each proposal of an answer, one notice each", async () => {
+      await consolidate((sent) => [proposal(sent.evidence), proposal(sent.evidence, { slug: "debug-e2e", description: "Debug one failing e2e spec." })]);
+      expect(notices()).toHaveLength(2);
+      expect(getSkillBySlug(handle.db, "run-e2e")).toBeDefined();
+      expect(getSkillBySlug(handle.db, "debug-e2e")).toBeDefined();
+    });
+
+    it("is not created when its slug is taken, and the notice says why", async () => {
+      existing("run-e2e");
+      const { evidence } = await consolidate((sent) => [proposal(sent.evidence)]);
+
+      expect(getSkillBySlug(handle.db, "run-e2e")!.description).toBe("Run the e2e suite.");
+      const [notice] = notices();
+      expect(notice!.body).toContain("and it was not created");
+      expect(notice!.body).toContain("The slug `run-e2e` is already taken by another skill.");
+      expect(notice!.body).toContain("Nothing was changed, and no memory entry was moved.");
+      const active = listMemories(handle.db, workspace).map((entry) => entry.id);
+      for (const entry of evidence) expect(active).toContain(entry.id);
+      expect(getAgentAttachments(handle.db, implementerId).skillIds).toEqual([]);
+    });
+
+    it("posts nothing and notes nothing for an answer that proposes no skill", async () => {
+      memory();
+      await run(
+        () => ({ retire: [], merge: [], rewrite: [] }),
+        () => [],
+      );
+      expect(notices()).toEqual([]);
+      expect(listConsolidations(handle.db, workspace)[0]).toMatchObject({ status: "succeeded", note: null });
+    });
+
+    it("is not applied when the consolidation was restored while the proposal call ran", async () => {
+      const given = memory();
+      await run(
+        () => ({ retire: [], merge: [{ body: "The ledger is in UTC.", from: given.facts.map((entry) => entry.id), contradictsRepositoryFile: false }], rewrite: [] }),
+        () => {
+          const [consolidation] = listConsolidations(handle.db, workspace);
+          expect(restoreConsolidation(handle.db, consolidation!.id, { caps: CAPS }).ok).toBe(true);
+          return [proposal(given.evidence)];
+        },
+      );
+      expect(getSkillBySlug(handle.db, "run-e2e")).toBeUndefined();
+      expect(notices()[0]!.body).toContain("was restored while it was being proposed");
+      const active = listMemories(handle.db, workspace).map((entry) => entry.id);
+      for (const entry of given.evidence) expect(active).toContain(entry.id);
+    });
+  });
+
+  describe("the evidence it moves", () => {
     it("moves an entry the consolidation rewrote, named as evidence by the proposal call after it, and the consolidation's restore puts back what it replaced", async () => {
       const given = memory();
       const rewritten = "To run e2e here: start Xvfb on :99 (`Xvfb :99 &`, `export DISPLAY=:99`), then `pnpm e2e`.";
@@ -347,9 +366,7 @@ describe("skills proposed by memory consolidation", () => {
         },
       );
 
-      const [offer] = proposals();
-      expect(offer!.body).toContain("moves the 2 entries holding this procedure out of memory");
-      await press(offer!, SKILL_PROPOSAL_SAVE);
+      expect(notices()[0]!.body).toContain("Moved the 2 entries holding this procedure out of memory");
       expect(listMemories(handle.db, workspace).map((entry) => entry.body)).toEqual(["The ledger is in UTC."]);
 
       // Restored, the scope is the set from before the consolidation: the
@@ -374,11 +391,9 @@ describe("skills proposed by memory consolidation", () => {
         () => [proposal(listMemories(handle.db, workspace).filter((entry) => entry.body === mixed))],
       );
 
-      const [offer] = proposals();
-      expect(offer!.body).toContain("One memory entry holds this procedure folded together with other entries, so Save leaves it in memory");
-      expect(offer!.body).not.toContain("moves the");
-      await press(offer!, SKILL_PROPOSAL_SAVE);
-
+      const [notice] = notices();
+      expect(notice!.body).toContain("One memory entry holds this procedure folded together with other entries, so it was left in memory");
+      expect(notice!.body).not.toContain("Moved the");
       expect(getSkillBySlug(handle.db, "run-e2e")).toBeDefined();
       // The unrelated fact is still in memory, in the entry that holds it.
       expect(listMemories(handle.db, workspace).map((entry) => entry.body)).toEqual([mixed]);
@@ -399,181 +414,157 @@ describe("skills proposed by memory consolidation", () => {
         () => [proposal(listMemories(handle.db, workspace).filter((entry) => entry.body === folded))],
       );
 
-      await press(proposals()[0]!, SKILL_PROPOSAL_SAVE);
       expect(getSkillBySlug(handle.db, "run-e2e")).toBeDefined();
       expect(listMemories(handle.db, workspace).map((entry) => entry.body).sort()).toEqual([folded, "The ledger is in UTC."].sort());
     });
-
-    it("refuses, writing nothing, once the consolidation that proposed it has been restored — and a later one may propose it again", async () => {
-      const { evidence } = await consolidate((sent) => [proposal(sent.evidence)]);
-      const [consolidation] = listConsolidations(handle.db, workspace);
-      expect(restoreConsolidation(handle.db, consolidation!.id, { caps: CAPS }).ok).toBe(true);
-      const before = listMemories(handle.db, workspace, { includeRetired: true });
-
-      const [offer] = proposals();
-      await press(offer!, SKILL_PROPOSAL_SAVE);
-
-      expect(replyTo(offer!)!.body).toContain("has since been restored");
-      expect(getSkillBySlug(handle.db, "run-e2e")).toBeUndefined();
-      expect(getAgentAttachments(handle.db, implementerId).skillIds).toEqual([]);
-      expect(listMemories(handle.db, workspace, { includeRetired: true })).toEqual(before);
-      for (const entry of evidence) expect(listMemories(handle.db, workspace).map((active) => active.id)).toContain(entry.id);
-
-      // Not "still waiting": a later consolidation posts it afresh.
-      await consolidate((sent) => [proposal(sent.evidence)], memory(Date.now() + 1_000));
-      expect(proposals()).toHaveLength(2);
-    });
-
-    it("is answered once: a second press changes nothing", async () => {
-      await consolidate((sent) => [proposal(sent.evidence)]);
-      const [offer] = proposals();
-      await press(offer!, SKILL_PROPOSAL_SAVE);
-      await press(offer!, SKILL_PROPOSAL_SAVE);
-      expect(listCommentsForItem(handle.db, offer!.itemId as Uuid).filter((comment) => comment.parentId === offer!.id && comment.authorType === "engine")).toHaveLength(1);
-    });
-
-    it("refuses, saying why, when the slug was taken after it was posted", async () => {
-      await consolidate((sent) => [proposal(sent.evidence)]);
-      const [offer] = proposals();
-      saveSkill(handle.db, { slug: "run-e2e", name: "Meanwhile", description: "Made by hand.", body: "Body.", files: [] });
-
-      await press(offer!, SKILL_PROPOSAL_SAVE);
-      expect(getSkillBySlug(handle.db, "run-e2e")!.description).toBe("Made by hand.");
-      expect(replyTo(offer!)!.body).toContain("Nothing was saved.");
-      expect(getAgentAttachments(handle.db, implementerId).skillIds).toEqual([]);
-    });
   });
 
-  describe("Save on an improvement", () => {
-    it("is bound to the skill it was posted against: renamed, with another skill now holding its slug, it refuses and changes neither skill nor memory", async () => {
-      const a = saveSkill(handle.db, { slug: "run-e2e", name: "Run e2e", description: "Run the e2e suite.", body: "A's body.", files: [] });
-      if (!a.ok) throw new Error(a.problems.join(" "));
-      await consolidate((sent) => [proposal(sent.evidence, { kind: "improvement", target: "run-e2e", slug: "run-e2e" } as Partial<SkillProposal>)]);
-      const [offer] = proposals();
-      expect(offer!.options).toContain(SKILL_PROPOSAL_SAVE);
-
-      // A is renamed, and B takes the slug it left.
-      const renamed = saveSkill(handle.db, { id: a.skill.id, slug: "run-e2e-old", name: a.skill.name, description: a.skill.description, body: a.skill.body, files: [] });
-      expect(renamed.ok).toBe(true);
-      const b = saveSkill(handle.db, { slug: "run-e2e", name: "Someone else's", description: "Unrelated.", body: "B's body.", files: [] });
-      if (!b.ok) throw new Error(b.problems.join(" "));
-      const memoryBefore = listMemories(handle.db, workspace, { includeRetired: true });
-
-      await press(offer!, SKILL_PROPOSAL_SAVE);
-
-      expect(getSkill(handle.db, b.skill.id)).toEqual(b.skill);
-      expect(getSkill(handle.db, a.skill.id)!.body).toBe("A's body.");
-      expect(listMemories(handle.db, workspace, { includeRetired: true })).toEqual(memoryBefore);
-      expect(replyTo(offer!)!.body).toContain("Nothing was saved.");
-      expect(replyTo(offer!)!.body).toContain("has since been renamed `run-e2e-old`");
-    });
-
-    it("refuses when its target was archived and another skill took the slug", async () => {
-      const a = saveSkill(handle.db, { slug: "run-e2e", name: "Run e2e", description: "Run the e2e suite.", body: "A's body.", files: [] });
-      if (!a.ok) throw new Error(a.problems.join(" "));
-      await consolidate((sent) => [proposal(sent.evidence, { kind: "improvement", target: "run-e2e", slug: "run-e2e" } as Partial<SkillProposal>)]);
-      saveSkill(handle.db, { id: a.skill.id, slug: "run-e2e-archived", name: a.skill.name, description: a.skill.description, body: a.skill.body, files: [] });
-      archiveSkill(handle.db, a.skill.id);
-      const b = saveSkill(handle.db, { slug: "run-e2e", name: "B", description: "B.", body: "B's body.", files: [] });
-      if (!b.ok) throw new Error("no B");
-
-      await press(proposals()[0]!, SKILL_PROPOSAL_SAVE);
-      expect(getSkill(handle.db, b.skill.id)!.body).toBe("B's body.");
-      expect(replyTo(proposals()[0]!)!.body).toContain("no longer exists");
-    });
-
-    it("updates the target's body and leaves its scope and attachments as they were, with the diff attached beside the draft", async () => {
-      const existing = saveSkill(handle.db, { slug: "run-e2e", name: "Run the e2e suite", description: "Run the e2e suite.", body: "## Steps\nRun `pnpm e2e`.", files: [{ path: "notes.md", content: "x" }] });
-      if (!existing.ok) throw new Error(existing.problems.join(" "));
-      const target = existing.skill;
+  describe("an improvement", () => {
+    it("writes a new version of its target authored by the consolidation, replacing only its body, with the diff attached beside the skill", async () => {
+      const target = existing();
       // Attached to another agent only, and global.
       const designer = listAgents(handle.db).find((agent) => agent.id !== implementerId && agent.id !== reviewerId)!;
       setAgentAttachment(handle.db, { agentId: designer.id, kind: "skill", id: target.id, attached: true });
 
-      await consolidate((sent) => [proposal(sent.evidence, { kind: "improvement", target: "run-e2e", slug: "run-e2e" } as Partial<SkillProposal>)]);
-      const [offer] = proposals();
-      expect(offer!.options).toEqual([SKILL_PROPOSAL_SAVE, SKILL_PROPOSAL_DISCARD]);
-      expect(listAttachmentsForComment(handle.db, offer!.id).map((file) => file.name)).toEqual(["SKILL.md", "SKILL.md.diff"]);
-      expect(offer!.body).toContain("leaving its scope and the agents it is attached to as they are");
-
-      await press(offer!, SKILL_PROPOSAL_SAVE);
+      const { evidence } = await consolidate((sent) => [proposal(sent.evidence, improving("run-e2e"))]);
+      const [consolidation] = listConsolidations(handle.db, workspace);
 
       const after = getSkill(handle.db, target.id)!;
       expect(after.body).toBe(E2E_BODY);
-      expect(after).toMatchObject({ slug: "run-e2e", name: target.name, description: target.description, scope: target.scope, files: target.files, enabled: true });
+      expect(after).toMatchObject({ slug: "run-e2e", name: target.name, description: target.description, scope: target.scope, files: target.files, enabled: true, createdBy: "person" });
+      const [latest] = listSkillVersions(handle.db, target.id);
+      expect(latest).toMatchObject({ action: "edit", body: E2E_BODY, author: { kind: "consolidation", consolidationId: consolidation!.id } });
       expect(getAgentAttachments(handle.db, designer.id).skillIds).toEqual([target.id]);
       expect(getAgentAttachments(handle.db, implementerId).skillIds).toEqual([]);
       expect(getAgentAttachments(handle.db, reviewerId).skillIds).toEqual([]);
-      expect(replyTo(offer!)!.body).toContain("Updated the skill `run-e2e`'s body");
+      const retired = listMemories(handle.db, workspace, { includeRetired: true });
+      for (const entry of evidence) expect(retired.find((candidate) => candidate.id === entry.id)).toMatchObject({ retiredReason: "moved_to_skill", consolidationId: consolidation!.id });
+
+      const [notice] = notices();
+      expect(notice!.body).toContain("changed the skill `run-e2e`");
+      expect(notice!.body).toContain("Only its body was replaced");
+      expect(notice!.options ?? []).toEqual([]);
+      const files = listAttachmentsForComment(handle.db, notice!.id);
+      expect(files.map((file) => file.name)).toEqual(["SKILL.md", "SKILL.md.diff"]);
+      const diff = readFileSync(files[1]!.path, "utf8");
+      expect(diff).toContain("-Run `pnpm e2e`.");
+      expect(diff).toContain("+## Trigger");
     });
 
-    it("refuses when the target was archived after it was posted", async () => {
-      const existing = saveSkill(handle.db, { slug: "run-e2e", name: "Run", description: "Run.", body: "Body.", files: [] });
-      if (!existing.ok) throw new Error("no skill");
-      await consolidate((sent) => [proposal(sent.evidence, { kind: "improvement", target: "run-e2e", slug: "run-e2e" } as Partial<SkillProposal>)]);
-      archiveSkill(handle.db, existing.skill.id);
+    it("is not applied to a locked target, and the notice says a person locked it", async () => {
+      const target = existing();
+      setSkillLocked(handle.db, target.id, true);
+      const { evidence } = await consolidate((sent) => [proposal(sent.evidence, improving("run-e2e"))]);
 
-      await press(proposals()[0]!, SKILL_PROPOSAL_SAVE);
-      expect(getSkill(handle.db, existing.skill.id)!.body).toBe("Body.");
-      expect(replyTo(proposals()[0]!)!.body).toContain("no longer exists");
+      expect(getSkill(handle.db, target.id)!.body).toBe(target.body);
+      expect(listSkillVersions(handle.db, target.id).map((version) => version.action)).toEqual(["lock", "create"]);
+      const [notice] = notices();
+      expect(notice!.body).toContain("and it was not applied");
+      expect(notice!.body).toContain("A person locked the skill `run-e2e`, so only a person can change it.");
+      const active = listMemories(handle.db, workspace).map((entry) => entry.id);
+      for (const entry of evidence) expect(active).toContain(entry.id);
+    });
+
+    it("is not applied to an archived target, and the notice says it is archived", async () => {
+      const target = existing();
+      archiveSkill(handle.db, target.id);
+      await consolidate((sent) => [proposal(sent.evidence, improving("run-e2e"))]);
+
+      expect(getSkill(handle.db, target.id)!.body).toBe(target.body);
+      expect(notices()[0]!.body).toContain("The skill it improves, `run-e2e`, is archived");
+    });
+
+    it("is not applied to a target renamed while the proposal call ran, though another skill took its slug, and the notice says so", async () => {
+      const a = existing();
+      let b: string | undefined;
+      await consolidate((sent) => {
+        // A is renamed, and B takes the slug it left.
+        expect(saveSkill(handle.db, { id: a.id, slug: "run-e2e-old", name: a.name, description: a.description, body: a.body, files: a.files }).ok).toBe(true);
+        const other = saveSkill(handle.db, { slug: "run-e2e", name: "Someone else's", description: "Unrelated.", body: "B's body.", files: [] });
+        if (!other.ok) throw new Error(other.problems.join(" "));
+        b = other.skill.id;
+        return [proposal(sent.evidence, improving("run-e2e"))];
+      });
+
+      expect(getSkill(handle.db, a.id)!.body).toBe(a.body);
+      expect(getSkill(handle.db, b!)!.body).toBe("B's body.");
+      expect(notices()[0]!.body).toContain("has since been renamed `run-e2e-old`");
+    });
+
+    it("is not applied to a target that does not exist, and the notice says so", async () => {
+      await consolidate((sent) => [proposal(sent.evidence, improving("run-tests"))]);
+      expect(getSkillBySlug(handle.db, "run-tests")).toBeUndefined();
+      expect(notices()[0]!.body).toContain("There is no skill `run-tests` for it to improve");
     });
   });
 
-  describe("Discard", () => {
-    it("records the fingerprint, and a later consolidation that returns the same proposal posts nothing for it", async () => {
+  describe("a person archiving a skill consolidation created", () => {
+    /** The first consolidation creates `run-e2e`; the person archives it. */
+    async function created() {
       await consolidate((sent) => [proposal(sent.evidence)]);
-      const [offer] = proposals();
-      await press(offer!, SKILL_PROPOSAL_DISCARD);
-      expect(replyTo(offer!)!.body).toContain("will not propose `run-e2e` again");
-      expect(getSkillBySlug(handle.db, "run-e2e")).toBeUndefined();
+      const skill = getSkillBySlug(handle.db, "run-e2e")!;
+      expect(archiveSkill(handle.db, skill.id).ok).toBe(true);
+      return skill;
+    }
 
-      // A later consolidation, worded with different capitals and
-      // punctuation, proposes it again.
-      // Written after the first one settled the scope, so it is due again.
-      await consolidate((sent) => [proposal(sent.evidence, { description: "run or debug this repository's E2E suite, under a virtual display!" })], memory(Date.now() + 1_000));
-      expect(proposals()).toHaveLength(1);
+    it("discards it: a later consolidation proposing the same scope and slug creates nothing, posts nothing and says why on its note", async () => {
+      const skill = await created();
+
+      const { request } = await consolidate((sent) => [proposal(sent.evidence, { description: "Use when Playwright cannot find an X server." })], memory(Date.now() + 1_000));
+      expect(notices()).toHaveLength(1);
+      expect(getSkill(handle.db, skill.id)!.archivedAt).not.toBeNull();
       const [later] = listConsolidations(handle.db, workspace);
-      expect(later!.note).toContain("was discarded before");
-    });
-
-    it("holds back a proposal with the same scope and slug whatever its description says (EO-512)", async () => {
-      await consolidate((sent) => [proposal(sent.evidence)]);
-      await press(proposals()[0]!, SKILL_PROPOSAL_DISCARD);
-
-      // Reworded from end to end: no fingerprint of the description could match it.
-      await consolidate(
-        (sent) => [proposal(sent.evidence, { name: "E2E under Xvfb", description: "Use when Playwright cannot find an X server: start Xvfb, then rerun the failing spec." })],
-        memory(Date.now() + 1_000),
-      );
-      expect(proposals()).toHaveLength(1);
-      const [later] = listConsolidations(handle.db, workspace);
-      expect(later!.note).toContain("`run-e2e` was discarded before");
-    });
-
-    it("tells a later proposal call for the scope what was discarded, by slug and description, and not to propose it again", async () => {
-      await consolidate((sent) => [proposal(sent.evidence)]);
-      await press(proposals()[0]!, SKILL_PROPOSAL_DISCARD);
-
-      const { request } = await consolidate(() => [], memory(Date.now() + 1_000));
+      expect(later!.note).toContain("a person archived the skill `run-e2e` a consolidation created in this scope");
+      // And the proposal call was told not to propose it.
       const told = request.input.slice(request.input.indexOf("## Skill proposals a person discarded"));
       expect(told).toMatch(/^## Skill proposals a person discarded\n/);
-      expect(told).toContain("Do not propose them again");
       expect(told).toContain("- `run-e2e`: Run or debug this repository's e2e suite under a virtual display.");
     });
 
-    it("holds back a reworded one whose slug a person discards while it is being posted (EO-512)", async () => {
-      await consolidate((sent) => [proposal(sent.evidence)]);
-      const [earlier] = proposals();
+    it("holds back an improvement to it as well", async () => {
+      const skill = await created();
+      await consolidate((sent) => [proposal(sent.evidence, improving("run-e2e"))], memory(Date.now() + 1_000));
+      expect(notices()).toHaveLength(1);
+      expect(listSkillVersions(handle.db, skill.id).map((version) => version.action)).toEqual(["archive", "create"]);
+    });
 
-      // The draft is stored between the first check and the write: the
-      // person presses Discard on the earlier one, still open, right then.
+    it("stops holding once a person restores it: proposals for it are applied again", async () => {
+      const skill = await created();
+      const [first] = listSkillVersions(handle.db, skill.id).reverse();
+      expect(restoreSkillVersion(handle.db, skill.id, first!.id).ok).toBe(true);
+
+      const { request } = await consolidate((sent) => [proposal(sent.evidence, improving("run-e2e"))], memory(Date.now() + 1_000));
+      expect(request.input).not.toContain("## Skill proposals a person discarded");
+      expect(notices()).toHaveLength(2);
+      expect(listSkillVersions(handle.db, skill.id)[0]).toMatchObject({ action: "edit", author: { kind: "consolidation" } });
+    });
+
+    it("does not count when the consolidation-created skill was archived by an agent, nor for a person's own skill", async () => {
+      const own = existing("debug-e2e");
+      archiveSkill(handle.db, own.id);
+      await consolidate((sent) => [proposal(sent.evidence)]);
+      const skill = getSkillBySlug(handle.db, "run-e2e")!;
+      expect(archiveSkill(handle.db, skill.id, Date.now(), { kind: "run", runId: implementerRun }).ok).toBe(true);
+
+      const { request } = await consolidate((sent) => [proposal(sent.evidence, improving("run-e2e")), proposal(sent.evidence, improving("debug-e2e"))], memory(Date.now() + 1_000));
+      expect(request.input).not.toContain("## Skill proposals a person discarded");
+      // Not held back: each is refused for its archived target, in a notice.
+      const later = notices().slice(1);
+      expect(later).toHaveLength(2);
+      for (const notice of later) expect(notice.body).toContain("is archived");
+    });
+
+    it("holds back one whose target a person archives while it is being applied, and removes its staged files", async () => {
+      await consolidate((sent) => [proposal(sent.evidence)]);
+      const skill = getSkillBySlug(handle.db, "run-e2e")!;
+
       const staged: string[] = [];
-      let discarded = false;
+      let archived = false;
       const pausing: ProposalFileStore = {
         async storeImported(file) {
-          if (!discarded) {
-            discarded = true;
-            await press(earlier!, SKILL_PROPOSAL_DISCARD);
+          if (!archived) {
+            archived = true;
+            archiveSkill(handle.db, skill.id);
           }
           const record = await storage.storeImported(file);
           staged.push(record.storagePath);
@@ -581,106 +572,60 @@ describe("skills proposed by memory consolidation", () => {
         },
         rollback: (records) => storage.rollback(records),
       };
-      // Reworded, so the fingerprint of the open one did not hold it back when it was first asked.
-      await consolidate(
-        (sent) => [proposal(sent.evidence, { description: "Use when Playwright cannot find an X server: start Xvfb, then rerun the failing spec." })],
-        memory(Date.now() + 1_000),
-        pausing,
-      );
+      await consolidate((sent) => [proposal(sent.evidence, improving("run-e2e"))], memory(Date.now() + 1_000), pausing);
 
-      expect(discarded).toBe(true);
-      expect(proposals()).toHaveLength(1);
+      expect(archived).toBe(true);
+      expect(notices()).toHaveLength(1);
       const [later] = listConsolidations(handle.db, workspace);
-      expect(later!.note).toContain("`run-e2e` was discarded before");
-      // Its draft was staged, and removed again: it belongs to no comment.
-      expect(staged).toHaveLength(1);
+      expect(later!.note).toContain("a person archived the skill `run-e2e`");
+      expect(staged.length).toBeGreaterThan(0);
       for (const path of staged) expect(existsSync(path)).toBe(false);
-    });
-
-    it("tells the proposal call of every discarded proposal, however many there are (EO-512)", async () => {
-      const slugs = Array.from({ length: 45 }, (_, at) => `old-procedure-${at + 1}`);
-      slugs.forEach((slug, at) => {
-        const description = `Do old procedure ${at + 1}.`;
-        const record = recordSkillProposal(handle.db, {
-          consolidationId: "earlier",
-          scope: workspace,
-          kind: "new",
-          targetSlug: null,
-          targetSkillId: null,
-          slug,
-          name: slug,
-          description,
-          body: E2E_BODY,
-          evidenceEntryIds: [],
-          evidenceItemIds: [],
-          coveringEntryIds: [],
-          fingerprint: `${slug}:${description}`,
-          unsaveable: null,
-          commentId: null,
-          createdAt: at,
-        });
-        decideSkillProposal(handle.db, record.id, { status: "discarded", now: at });
-      });
-
-      const { request } = await consolidate(() => []);
-      for (const [at, slug] of slugs.entries()) expect(request.input).toContain(`- \`${slug}\`: Do old procedure ${at + 1}.`);
-    });
-
-    it("says on the thread how to allow it again, and a Propose again reply removes the discard record so a later one is posted", async () => {
-      await consolidate((sent) => [proposal(sent.evidence)]);
-      const [offer] = proposals();
-      await press(offer!, SKILL_PROPOSAL_DISCARD);
-      expect(replyTo(offer!)!.body).toContain(`reply **${SKILL_PROPOSAL_PROPOSE_AGAIN}** here`);
-
-      await press(offer!, SKILL_PROPOSAL_PROPOSE_AGAIN);
-      const answers = listCommentsForItem(handle.db, offer!.itemId as Uuid).filter((comment) => comment.parentId === offer!.id && comment.authorType === "engine");
-      expect(answers.map((comment) => comment.body)).toEqual([expect.stringContaining("Discarded."), expect.stringContaining("Allowed again.")]);
-      // Pressed twice, it removes nothing more and says nothing more.
-      await press(offer!, SKILL_PROPOSAL_PROPOSE_AGAIN);
-      expect(listCommentsForItem(handle.db, offer!.itemId as Uuid).filter((comment) => comment.parentId === offer!.id && comment.authorType === "engine")).toHaveLength(2);
-
-      const { request } = await consolidate(
-        (sent) => [proposal(sent.evidence, { description: "Run the e2e suite with a virtual display." })],
-        memory(Date.now() + 1_000),
-      );
-      expect(request.input).not.toContain("## Skill proposals a person discarded");
-      expect(proposals()).toHaveLength(2);
-      // The old comment has no record behind it any more: Save on it does nothing.
-      await press(offer!, SKILL_PROPOSAL_SAVE);
-      expect(getSkillBySlug(handle.db, "run-e2e")).toBeUndefined();
-    });
-
-    it("does nothing on Propose again under a proposal nobody discarded", async () => {
-      await consolidate((sent) => [proposal(sent.evidence)]);
-      const [offer] = proposals();
-      await press(offer!, SKILL_PROPOSAL_PROPOSE_AGAIN);
-      expect(replyTo(offer!)).toBeUndefined();
-      // Still open: Discard still works.
-      await press(offer!, SKILL_PROPOSAL_DISCARD);
-      expect(replyTo(offer!)!.body).toContain("Discarded.");
-    });
-
-    it("does not hold back a different proposal in the same scope", async () => {
-      await consolidate((sent) => [proposal(sent.evidence)]);
-      await press(proposals()[0]!, SKILL_PROPOSAL_DISCARD);
-      await consolidate((sent) => [proposal(sent.evidence, { slug: "debug-e2e" })], memory(Date.now() + 1_000));
-      expect(proposals()).toHaveLength(2);
     });
   });
 
-  it("acts on nothing that is not a reply to a proposal on its own thread", async () => {
-    await consolidate((sent) => [proposal(sent.evidence)]);
-    const [offer] = proposals();
-    // "Save" on the item, citing the proposal as its parent: not answered where it was asked.
-    await postHumanComment(handle.db, undefined, { itemId, body: SKILL_PROPOSAL_SAVE, parentId: offer!.id, mentions: [], pinned: false, attachmentIds: [] });
-    // "Save" on the thread, filed under nothing.
-    await postHumanComment(handle.db, undefined, { itemId: offer!.itemId, body: SKILL_PROPOSAL_SAVE, parentId: null, mentions: [], pinned: false, attachmentIds: [] });
-    expect(getSkillBySlug(handle.db, "run-e2e")).toBeUndefined();
-    expect(getItem(handle.db, itemId)).toBeDefined();
+  describe("a proposal a person discarded before EO-719", () => {
+    function discardedBefore(slug: string, description: string, at: number) {
+      const record = recordSkillProposal(handle.db, {
+        consolidationId: "earlier",
+        scope: workspace,
+        kind: "new",
+        targetSlug: null,
+        targetSkillId: null,
+        slug,
+        name: slug,
+        description,
+        body: E2E_BODY,
+        evidenceEntryIds: [],
+        evidenceItemIds: [],
+        coveringEntryIds: [],
+        fingerprint: `${slug}:${description}`,
+        unsaveable: null,
+        commentId: null,
+        createdAt: at,
+      });
+      decideSkillProposal(handle.db, record.id, { status: "discarded", now: at });
+    }
+
+    it("still holds its scope and slug back, whatever the description says", async () => {
+      discardedBefore("run-e2e", "Run the e2e suite.", 1);
+      await consolidate((sent) => [proposal(sent.evidence)]);
+      expect(getSkillBySlug(handle.db, "run-e2e")).toBeUndefined();
+      expect(notices()).toEqual([]);
+      expect(listConsolidations(handle.db, workspace)[0]!.note).toContain("`run-e2e` was discarded before");
+    });
+
+    it("is told to the proposal call, every one, however many there are (EO-512)", async () => {
+      const slugs = Array.from({ length: 45 }, (_, at) => `old-procedure-${at + 1}`);
+      slugs.forEach((slug, at) => discardedBefore(slug, `Do old procedure ${at + 1}.`, at));
+
+      const { request } = await consolidate(() => []);
+      expect(request.input).toContain("Do not propose them again");
+      for (const [at, slug] of slugs.entries()) expect(request.input).toContain(`- \`${slug}\`: Do old procedure ${at + 1}.`);
+    });
   });
 });
 
-describe("the entries Save moves (EO-483, EO-575)", () => {
+describe("the entries applying a proposal moves (EO-483, EO-575)", () => {
   it("is the evidence, less any entry a consolidation folded from several, which stays in memory", () => {
     expect(coveringEntries(["a", "b"], [])).toEqual({ covering: ["a", "b"], mixed: [] });
     expect(coveringEntries(["a", "ab", "a"], ["ab", "cd"])).toEqual({ covering: ["a"], mixed: ["ab"] });

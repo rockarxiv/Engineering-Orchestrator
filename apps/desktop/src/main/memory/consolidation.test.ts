@@ -487,7 +487,7 @@ describe("what the skill proposal call is told (EO-575)", () => {
       scopeLabel: 'the workspace "api"',
       scope,
       entries: [entry("a", "Run `pnpm e2e` under Xvfb.", "item-1"), entry("b", "The ledger is in UTC.", null)],
-      skills: [{ slug: "run-tests", description: "Run the tests.", scopeLabel: "global", body: "## Steps\nRun them." }],
+      skills: [{ id: "skill-1", slug: "run-tests", description: "Run the tests.", scopeLabel: "global", body: "## Steps\nRun them." }],
       discarded: [{ slug: "release", description: "Cut a release." }],
       now: NOW,
     });

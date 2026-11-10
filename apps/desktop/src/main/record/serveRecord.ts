@@ -88,7 +88,6 @@ import type { DispatchLease } from "../db/repos/leasesRepo.js";
 import type { WorkOffer } from "./record.js";
 import { asRunCommand, runPatchFrom } from "./runCommand.js";
 import { emitPush } from "../ipc/push.js";
-import { answerCopiedSkillProposal } from "../memory/skillProposals.js";
 import { arbitrateClaim, writeAssignment, writeTakeover } from "./assignment.js";
 import { groupStepOf, holderView, isDecision, isStepClearance, judgeOnGroupStep } from "./stepAuthority.js";
 import { planVersionMove, writeVersionMove } from "./versionMove.js";
@@ -914,7 +913,7 @@ async function applyOne(context: ServeRecordContext, deviceId: string, command: 
       // that grew a duplicate per reconnect would be invariant #4's one
       // channel quietly corrupting itself.
       if (getComment(db, command.commentId as Uuid) !== undefined) return ok;
-      const said = postComment(db, {
+      postComment(db, {
         id: command.commentId as Uuid,
         itemId: command.itemId as Uuid,
         author: authorOf(command.authorType, command.authorId),
@@ -975,11 +974,6 @@ async function applyOne(context: ServeRecordContext, deviceId: string, command: 
       // are written when the bytes land — an attachment row pointing at
       // a file the record does not hold is a broken link on the admin's
       // board and an error on anybody who opens it.
-      //
-      // Save or Discard from a device, on a skill proposal the record's
-      // own consolidation posted (EO-483): carried out here, where the
-      // proposal is. Anywhere else this answers null.
-      if (said.authorType === "human" && said.parentId !== null) answerCopiedSkillProposal(db, said);
       return ok;
     }
 
