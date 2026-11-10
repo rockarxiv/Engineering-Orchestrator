@@ -170,7 +170,7 @@ describe("memory extraction after a run", () => {
     const entryIds = [...listMemories(handle.db, project), ...listMemories(handle.db, workspace)].filter((entry) => entry.source.type === "run").map((entry) => entry.id);
     expect(extractedEvents()).toEqual([{ type: MEMORY_EXTRACTED_EVENT, outcome: "written", entryIds: expect.arrayContaining(entryIds), dropped: [], reason: null }]);
     // The review fell back to this, and says why (EO-717).
-    expect(reviewEvents()).toEqual([{ type: LEARNING_REVIEW_EVENT, outcome: "fell_back", entryIds: [], reason: "The fake backend cannot fork a thread.", forkThreadId: null }]);
+    expect(reviewEvents()).toEqual([{ type: LEARNING_REVIEW_EVENT, outcome: "fell_back", entryIds: [], skillIds: [], reason: "The fake backend cannot fork a thread.", forkThreadId: null }]);
     expect(moved()).toBe(AFTER_IMPLEMENT);
   });
 

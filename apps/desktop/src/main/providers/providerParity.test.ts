@@ -31,6 +31,7 @@ import {
   type ThreadNotFoundError,
   type Uuid,
   SKILL_READ_TOOL_NAME,
+  SKILL_WRITE_TOOLS,
 } from "@eo/core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { assembleSeedContext, type ContextRepositoryInput } from "@eo/engine";
@@ -312,6 +313,14 @@ const CAPABILITIES = [
       credential: { writes: ["memory_note"] },
       admin: { bearersMinted: 0, bearerInTheEnvironment: false, serverConfigured: false, bearerOnAResume: true },
       skills: { offered: [], enabled: false, offeredOnAResume: true },
+    },
+  },
+  {
+    name: "the learning review's skill tools",
+    what: "a fork handed a write credential naming memory_note and the skill tools has the backend start the `eo` server that lists skill_view, skill_create, skill_patch, skill_file_write and skill_file_remove, with the credential whole; and a resume of the same agent's thread — a run's own turn, its credential naming no writes — lists none of them, whatever the agent's grant (EO-718)",
+    same: {
+      fork: { skillTools: [...SKILL_WRITE_TOOLS].sort(), credential: { writes: ["memory_note", ...SKILL_WRITE_TOOLS] } },
+      resume: { skillTools: [], bridged: true },
     },
   },
   {
@@ -1142,6 +1151,34 @@ function listsAttachmentAdd(env: Record<string, string> | undefined): boolean {
 const REVIEW_EO_MCP = { serverPath: "/app/eoServer.mjs", enableCommentTool: true, enableMemoryNote: false };
 const REVIEW_CREDENTIAL = { url: "http://127.0.0.1:1/agent-write", token: "item-1~memory_note.signed", writes: ["memory_note" as const] };
 const REVIEW_FORK = (memoryScopes: unknown[]) => ({ cwd: "/tmp/wt", attachFrom: ATTACH_FROM, memoryScopes, writeBridge: REVIEW_CREDENTIAL, withoutAdminServer: true }) as AgentProviderResumeOptions;
+
+/**
+ * The learning review's skill tools (EO-718): a credential naming them,
+ * on a fork; and the credential a run's own turn is handed, naming no
+ * writes, on a resume — for an agent granted every write a grant can
+ * give, so nothing but the credential decides.
+ */
+const SKILL_REVIEW_CREDENTIAL = { url: "http://127.0.0.1:1/agent-write", token: "item-1~skills.signed", writes: ["memory_note" as const, ...SKILL_WRITE_TOOLS] };
+const RUN_CREDENTIAL = { url: "http://127.0.0.1:1/agent-write", token: "item-1.signed" };
+/** An agent granted every write a grant can give: comment and memory_note. */
+const GRANTED_EO_MCP = { serverPath: "/app/eoServer.mjs", enableCommentTool: true, enableMemoryNote: true };
+
+/** The skill tools the `eo` server started from this environment lists, and the writes its credential names — or, for a run's turn, that it was handed one at all. */
+function skillToolsServed(env: Record<string, string> | undefined, withCredential: boolean): unknown {
+  const bridge = env?.["EO_MCP_WRITE_BRIDGE"] === undefined ? null : (JSON.parse(env["EO_MCP_WRITE_BRIDGE"]) as { writes?: unknown });
+  const started = (createEoMcpService as (options: Record<string, unknown>) => { tools: { name: string }[]; close(): void })({
+    dbPath: undefined,
+    memoryScopes: (parseMemoryScopes as (raw: unknown) => unknown[])(env?.["EO_MCP_MEMORY_SCOPES"]),
+    enableMemoryNote: env?.["EO_MCP_MEMORY_NOTE_ENABLED"] === "1",
+    writeBridge: bridge,
+  });
+  try {
+    const skillTools = started.tools.map((tool) => tool.name).filter((name) => (SKILL_WRITE_TOOLS as readonly string[]).includes(name)).sort();
+    return withCredential ? { skillTools, credential: { writes: bridge?.writes ?? null } } : { skillTools, bridged: bridge !== null };
+  } finally {
+    started.close();
+  }
+}
 
 /** The skills a turn says it was given (`skills_delivered`), by slug. */
 const offeredIn = (events: readonly AgentEvent[]): string[] => events.flatMap((event) => (event.type === "skills_delivered" ? event.slugs : []));
@@ -2021,6 +2058,30 @@ const CLAUDE: Record<CapabilityName, Proof> = {
         bearerOnAResume: envOf(resumed.calls[0])?.["EO_ADMIN_TOKEN"] !== undefined,
       },
     };
+  },
+
+  "the learning review's skill tools": async () => {
+    // Claude's delivery: the `eo` server inline in `mcpServers`, its
+    // environment carrying the turn's credential.
+    const forkTurn = scripted([sdk.init({ session_id: "sess-fork" }), sdk.result({ result: "Patched a skill.", session_id: "sess-fork" })]);
+    const forked = await createClaudeProvider({ runQuery: forkTurn.runQuery, eoMcp: GRANTED_EO_MCP }).fork!("thr-persisted", "review the run", {
+      cwd: "/tmp/wt",
+      memoryScopes: [...MEMORY_SCOPES],
+      writeBridge: SKILL_REVIEW_CREDENTIAL,
+      withoutAdminServer: true,
+      withoutSkills: true,
+    });
+    if (forked.ok) await collect(forked.events);
+    const resumed = scripted([sdk.result()]);
+    await collect(
+      createClaudeProvider({ runQuery: resumed.runQuery, eoMcp: GRANTED_EO_MCP }).resume("thr-persisted", "carry on", {
+        cwd: "/tmp/wt",
+        memoryScopes: [...MEMORY_SCOPES],
+        writeBridge: RUN_CREDENTIAL,
+      }),
+    );
+    const eoEnv = (call: SdkCall | undefined) => (call?.options["mcpServers"] as Record<string, { env?: Record<string, string> }> | undefined)?.["eo"]?.env;
+    return { fork: skillToolsServed(eoEnv(forkTurn.calls[0]), true), resume: skillToolsServed(eoEnv(resumed.calls[0]), false) };
   },
 
   "non-fatal warning": async () => {
@@ -3258,6 +3319,31 @@ const CODEX: Record<CapabilityName, Proof> = {
     };
   },
 
+  "the learning review's skill tools": async () => {
+    // Codex's delivery: the `eo` server configured on the app-server's
+    // command line, one `mcp_servers.eo.env.<NAME>` per variable.
+    const plain = (thread: string) => [note.turnStarted("turn-1", thread), note.agentMessage("ok", "m", "turn-1", thread), note.turnCompleted("completed", null, "turn-1", thread)];
+    const forking = codexOver({ forkId: "thr-fork", after: { "turn/start": plain("thr-fork") } }, { eoMcp: GRANTED_EO_MCP });
+    const forked = await forking.provider.fork!("thr-persisted", "review the run", {
+      cwd: "/tmp/wt",
+      memoryScopes: [...MEMORY_SCOPES],
+      writeBridge: SKILL_REVIEW_CREDENTIAL,
+      withoutAdminServer: true,
+      withoutSkills: true,
+    });
+    if (forked.ok) await collect(forked.events);
+    const resuming = codexOver({ after: { "turn/start": plain("thr-persisted") } }, { eoMcp: GRANTED_EO_MCP });
+    await collect(resuming.provider.resume("thr-persisted", "carry on", { cwd: "/tmp/wt", memoryScopes: [...MEMORY_SCOPES], writeBridge: RUN_CREDENTIAL }));
+    const eoEnv = (launch: (typeof forking.fake.launches)[number] | undefined) =>
+      Object.fromEntries(
+        (launch?.args ?? [])
+          .filter((argument) => argument.startsWith("mcp_servers.eo.env."))
+          .map((argument) => argument.slice("mcp_servers.eo.env.".length))
+          .map((pair) => [pair.slice(0, pair.indexOf("=")), JSON.parse(pair.slice(pair.indexOf("=") + 1)) as string]),
+      );
+    return { fork: skillToolsServed(eoEnv(forking.fake.launches[0]), true), resume: skillToolsServed(eoEnv(resuming.fake.launches[0]), false) };
+  },
+
   "non-fatal warning": async () => {
     // Both of the app-server's warnings (EO-369): one about the
     // configuration, said before there is a turn, and one during it.
@@ -4349,7 +4435,7 @@ describe.each(CAPABILITIES)("$name: $what", (capability) => {
 });
 
 describe("the shared list", () => {
-  it("is the twelve capabilities EO-380 names and the ones EO-385, EO-387, EO-392, EO-395, EO-412, EO-421, EO-444, EO-468, EO-470, EO-477, EO-478, EO-479, EO-487, EO-488, EO-490, EO-493, EO-494, EO-534, EO-543, EO-578, EO-587, EO-597, EO-633, EO-700, EO-703, EO-716, EO-717 and the streaming chat added, each once", () => {
+  it("is the twelve capabilities EO-380 names and the ones EO-385, EO-387, EO-392, EO-395, EO-412, EO-421, EO-444, EO-468, EO-470, EO-477, EO-478, EO-479, EO-487, EO-488, EO-490, EO-493, EO-494, EO-534, EO-543, EO-578, EO-587, EO-597, EO-633, EO-700, EO-703, EO-716, EO-717, EO-718 and the streaming chat added, each once", () => {
     // Pinned so that taking one off the list is a decision somebody
     // made in this file rather than a line that went missing.
     expect(CAPABILITIES.map((capability) => capability.name)).toEqual([
@@ -4358,6 +4444,7 @@ describe("the shared list", () => {
       "lost thread",
       "thread forking",
       "the learning review's tools",
+      "the learning review's skill tools",
       "non-fatal warning",
       "interrupt with usage on escalation",
       "steering",

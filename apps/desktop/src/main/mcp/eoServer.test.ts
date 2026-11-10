@@ -16,7 +16,13 @@ import {
   MEMORY_READ_TOOL_NAME,
   memoryNoteEnabled,
   REPOSITORY_CHECKOUT_TOOL_NAME,
+  SKILL_CREATE_TOOL_NAME,
+  SKILL_FILE_REMOVE_TOOL_NAME,
+  SKILL_FILE_WRITE_TOOL_NAME,
+  SKILL_PATCH_TOOL_NAME,
   SKILL_READ_TOOL_NAME,
+  SKILL_VIEW_TOOL_NAME,
+  SKILL_WRITE_TOOLS,
   summarizeInstructions,
   uuidv7,
 } from "@eo/core";
@@ -1330,6 +1336,67 @@ describe("memory_note on the shared EO MCP service (EO-479)", () => {
       await bridge.close();
     }
   });
+
+  /**
+   * The learning review's skill tools (EO-718): listed on a turn whose
+   * credential names them and on no other — not for any grant, not on a
+   * credential that names no writes — and handed to EO whole when called.
+   */
+  it("lists the skill tools only on a credential that names them, and hands their calls to EO", async () => {
+    const own = service as unknown as Record<string, unknown>;
+    expect(own["SKILL_WRITE_TOOLS"]).toEqual([...SKILL_WRITE_TOOLS]);
+    expect([own["SKILL_VIEW_TOOL_NAME"], own["SKILL_CREATE_TOOL_NAME"], own["SKILL_PATCH_TOOL_NAME"], own["SKILL_FILE_WRITE_TOOL_NAME"], own["SKILL_FILE_REMOVE_TOOL_NAME"]]).toEqual([
+      SKILL_VIEW_TOOL_NAME,
+      SKILL_CREATE_TOOL_NAME,
+      SKILL_PATCH_TOOL_NAME,
+      SKILL_FILE_WRITE_TOOL_NAME,
+      SKILL_FILE_REMOVE_TOOL_NAME,
+    ]);
+    const { asked, bridge } = await scriptedBridge(() => ({ ok: true, text: "done", data: {} }));
+    try {
+      const environment = (writes: Parameters<AgentWriteBridge["tokenFor"]>[1], allowedTools: string[] = [...SKILL_WRITE_TOOLS.map(eoToolName), eoToolName(MEMORY_NOTE_TOOL_NAME)]) =>
+        eoMcpStdioConfig({
+          serverPath,
+          dbPath,
+          enableCommentTool: true,
+          memoryScopes: [projectScope],
+          enableMemoryNote: memoryNoteEnabled({ config: { allowedTools } }),
+          writeBridge: bridge.tokenFor(item.id, writes),
+        }).env;
+      const review = await listed(environment([MEMORY_NOTE_TOOL_NAME, ...SKILL_WRITE_TOOLS]));
+      for (const tool of SKILL_WRITE_TOOLS) expect(review, tool).toContain(tool);
+      // A run's own turn — a credential naming no writes — is served none,
+      // even for an agent whose allowlist names every one of them.
+      const run = await listed(environment(undefined));
+      for (const tool of SKILL_WRITE_TOOLS) expect(run, tool).not.toContain(tool);
+      // Nor a credential naming other writes.
+      const notes = await listed(environment([MEMORY_NOTE_TOOL_NAME]));
+      for (const tool of SKILL_WRITE_TOOLS) expect(notes, tool).not.toContain(tool);
+
+      const tool = (id: number, name: string, args: unknown) => ({ jsonrpc: "2.0", id, method: "tools/call", params: { name, arguments: args } });
+      const calls = [
+        tool(3, SKILL_VIEW_TOOL_NAME, { slug: "csv-exports", file: "references/a.md" }),
+        tool(4, SKILL_CREATE_TOOL_NAME, { slug: "csv-exports", description: "When.", body: "How." }),
+        tool(5, SKILL_PATCH_TOOL_NAME, { slug: "csv-exports", old_text: "a", new_text: "b" }),
+        tool(6, SKILL_FILE_WRITE_TOOL_NAME, { slug: "csv-exports", path: "references/a.md", content: "x" }),
+        tool(7, SKILL_FILE_REMOVE_TOOL_NAME, { slug: "csv-exports", path: "references/a.md" }),
+        tool(8, SKILL_PATCH_TOOL_NAME, { slug: "csv-exports", old_text: "a" }),
+        tool(9, SKILL_VIEW_TOOL_NAME, { slug: "csv-exports", mentions: ["x"] }),
+      ];
+      const served = await callServer(dbPath, [INITIALIZE, INITIALIZED, ...calls], false, environment([MEMORY_NOTE_TOOL_NAME, ...SKILL_WRITE_TOOLS]));
+      for (const id of [3, 4, 5, 6, 7]) expect(textOf(served, id), String(id)).toEqual({ isError: false, text: "done" });
+      for (const id of [8, 9]) expect(textOf(served, id), String(id)).toMatchObject({ isError: true, text: expect.stringContaining("INVALID_ARGUMENT") });
+      expect(asked.map((entry) => entry.request.tool)).toEqual([...SKILL_WRITE_TOOLS]);
+      expect(asked[0]!.request.args).toEqual({ slug: "csv-exports", file: "references/a.md" });
+
+      asked.length = 0;
+      const refused = await callServer(dbPath, [INITIALIZE, INITIALIZED, ...calls.slice(0, 5)], false, environment(undefined));
+      for (const id of [3, 4, 5, 6, 7]) expect(textOf(refused, id), String(id)).toMatchObject({ isError: true, text: expect.stringContaining("TOOL_DISABLED") });
+      expect(asked).toEqual([]);
+    } finally {
+      await bridge.close();
+    }
+  });
 });
 
 /**
@@ -1348,7 +1415,7 @@ describe("memory_note on the shared EO MCP service (EO-479)", () => {
  */
 describe("every eo tool's annotations", () => {
   type Annotated = { name: string; annotations?: Record<string, unknown> };
-  const list = (service as unknown as { eoToolList(options: Record<string, boolean>): Annotated[] }).eoToolList({
+  const list = (service as unknown as { eoToolList(options: Record<string, unknown>): Annotated[] }).eoToolList({
     enableCommentTool: true,
     enableConfigTools: true,
     enableFullThread: true,
@@ -1357,6 +1424,7 @@ describe("every eo tool's annotations", () => {
     enableMemoryNote: true,
     enableRepositoryCheckout: true,
     enableSkillRead: true,
+    skillTools: [...SKILL_WRITE_TOOLS],
   });
 
   /** The tools that change nothing. Written out, so a tool added tomorrow is a decision rather than a default. */
@@ -1368,6 +1436,7 @@ describe("every eo tool's annotations", () => {
     "comment_search",
     "memory_read",
     "skill_read",
+    "skill_view",
     "thread_read",
     "pipeline_list",
     "pipeline_read",
@@ -1384,13 +1453,14 @@ describe("every eo tool's annotations", () => {
     expect(missing.map((tool) => tool.name)).toEqual([]);
   });
 
-  it("marks readOnlyHint on exactly the read-only tools, and destructiveHint on none", () => {
+  it("marks readOnlyHint on exactly the read-only tools, and destructiveHint on the learning review's skill changes alone", () => {
     const readOnly = list.filter((tool) => tool.annotations?.["readOnlyHint"] === true).map((tool) => tool.name);
 
     expect(readOnly.sort()).toEqual([...READ_ONLY].sort());
-    // Nothing here takes anything away: comments, files and notes are
-    // added, and a checkout is EO's own copy to read.
-    expect(list.filter((tool) => tool.annotations?.["destructiveHint"] !== false).map((tool) => tool.name)).toEqual([]);
+    // Nothing else here takes anything away: comments, files and notes
+    // are added, and a checkout is EO's own copy to read. A skill change
+    // replaces what it said (EO-718), though every version is kept.
+    expect(list.filter((tool) => tool.annotations?.["destructiveHint"] !== false).map((tool) => tool.name)).toEqual([SKILL_PATCH_TOOL_NAME, SKILL_FILE_WRITE_TOOL_NAME, SKILL_FILE_REMOVE_TOOL_NAME]);
   });
 
   it("says repository_checkout reaches beyond EO, and nothing else does", () => {

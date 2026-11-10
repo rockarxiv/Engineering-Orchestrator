@@ -536,6 +536,139 @@ async function skillRead(args, writeBridge) {
   return writeThroughEo(writeBridge, SKILL_READ_TOOL_NAME, args);
 }
 
+// ── The learning review's skill tools (EO-718) ────────────────
+
+/**
+ * `SKILL_WRITE_TOOLS` and its names in `@eo/core`, duplicated for the
+ * reason `MEMORY_NOTE_TOOL_NAME` is and pinned to them by
+ * `eoServer.test.ts`.
+ *
+ * Listed only on a turn whose write credential names them — the learning
+ * review's fork, and no other turn of any agent. Unlike every other write
+ * tool here, no grant lists them: a credential that names no writes
+ * names none of these.
+ */
+export const SKILL_VIEW_TOOL_NAME = "skill_view";
+export const SKILL_CREATE_TOOL_NAME = "skill_create";
+export const SKILL_PATCH_TOOL_NAME = "skill_patch";
+export const SKILL_FILE_WRITE_TOOL_NAME = "skill_file_write";
+export const SKILL_FILE_REMOVE_TOOL_NAME = "skill_file_remove";
+export const SKILL_WRITE_TOOLS = [SKILL_VIEW_TOOL_NAME, SKILL_CREATE_TOOL_NAME, SKILL_PATCH_TOOL_NAME, SKILL_FILE_WRITE_TOOL_NAME, SKILL_FILE_REMOVE_TOOL_NAME];
+
+/**
+ * A change to what a skill says: the text it replaces is gone from the
+ * skill, though every version is kept and a person can restore it.
+ */
+const REVISES_ANNOTATIONS = Object.freeze({ readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false });
+
+const SKILL_SLUG_PROPERTY = { type: "string", description: "The skill's slug, as the review prompt lists it." };
+
+const SKILL_TOOLS = [
+  {
+    name: SKILL_VIEW_TOOL_NAME,
+    annotations: READS_ANNOTATIONS,
+    description:
+      "Read one of the skills this run's agent is given: with only `slug`, its description, who wrote it, whether a person " +
+      "locked it, its files and its body; with `file` as well, that one file's content. A skill must be read here before " +
+      "skill_patch changes it, and a file before skill_file_write overwrites it or skill_file_remove removes it.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        slug: SKILL_SLUG_PROPERTY,
+        file: { type: "string", description: "One of the skill's files, by its path relative to the skill's folder. Omit it to read the body." },
+      },
+      required: ["slug"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: SKILL_CREATE_TOOL_NAME,
+    annotations: APPENDS_ANNOTATIONS,
+    description:
+      "Create a skill for this project and give it to this run's agent. `slug` names the kind of task it is for, in lowercase " +
+      "words joined by hyphens — never a ticket, an error string or a date. `description` says when an agent should load " +
+      "it; `body` says how the task is done. Refused where the slug is taken; patch that skill instead.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        slug: { type: "string", description: "Lowercase letters and digits with single hyphens between them, naming the kind of task." },
+        description: { type: "string", description: "When an agent should load this skill." },
+        body: { type: "string", description: "The instructions, in markdown." },
+      },
+      required: ["slug", "description", "body"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: SKILL_PATCH_TOOL_NAME,
+    annotations: REVISES_ANNOTATIONS,
+    description:
+      "Change a skill's body: `old_text`, which the body holds exactly once, becomes `new_text`. Refused unless this review " +
+      "read the skill with skill_view first, and for a skill a person locked.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        slug: SKILL_SLUG_PROPERTY,
+        old_text: { type: "string", description: "Text the body holds exactly once, copied exactly." },
+        new_text: { type: "string", description: "What it becomes. Empty removes it." },
+      },
+      required: ["slug", "old_text", "new_text"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: SKILL_FILE_WRITE_TOOL_NAME,
+    annotations: REVISES_ANNOTATIONS,
+    description:
+      "Write one file in a skill's folder, such as `references/<topic>.md`, adding it or replacing it whole. Replacing a " +
+      "file is refused unless this review read it with skill_view first, and any write to a skill a person locked is refused.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        slug: SKILL_SLUG_PROPERTY,
+        path: { type: "string", description: "Relative to the skill's folder, in letters, digits, dots, hyphens, underscores and forward slashes." },
+        content: { type: "string", description: "The file's whole content." },
+      },
+      required: ["slug", "path", "content"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: SKILL_FILE_REMOVE_TOOL_NAME,
+    annotations: REVISES_ANNOTATIONS,
+    description: "Remove one file from a skill's folder. Refused unless this review read that file with skill_view first, and for a skill a person locked.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        slug: SKILL_SLUG_PROPERTY,
+        path: { type: "string", description: "The file's path, relative to the skill's folder." },
+      },
+      required: ["slug", "path"],
+      additionalProperties: false,
+    },
+  },
+];
+
+/** Each skill tool's arguments, by name: which it takes, and which of them it needs. */
+const SKILL_TOOL_ARGS = Object.fromEntries(SKILL_TOOLS.map((tool) => [tool.name, { keys: Object.keys(tool.inputSchema.properties), required: tool.inputSchema.required }]));
+
+/**
+ * A skill tool: handed to EO, which answers it for the review this turn
+ * is — what the review may read, what it has read, a person's lock — and
+ * writes it as the reviewed run. This service checks only that the call
+ * is the shape the tool advertises.
+ */
+async function skillTool(name, args, writeBridge) {
+  const { keys, required } = SKILL_TOOL_ARGS[name];
+  const shaped =
+    validObject(args) &&
+    hasOnlyKeys(args, keys) &&
+    keys.every((key) => args[key] === undefined || typeof args[key] === "string") &&
+    required.every((key) => typeof args[key] === "string");
+  if (!shaped) return toolError("INVALID_ARGUMENT", `${name} takes ${keys.map((key) => `\`${key}\``).join(", ")} as strings, and nothing else.`);
+  return writeThroughEo(writeBridge, name, args);
+}
+
 // ── Writes (EO-543) ───────────────────────────────────────────
 
 /**
@@ -683,6 +816,7 @@ export function eoToolList({
   enableMemoryNote = false,
   enableRepositoryCheckout = false,
   enableSkillRead = false,
+  skillTools = [],
 } = {}) {
   return [
     // EO's own name first, because a model reads a tool list in order
@@ -711,6 +845,9 @@ export function eoToolList({
     // a turn that was told its scopes (EO-479): without them there is
     // nowhere a note could go.
     ...(enableMemoryNote ? [MEMORY_NOTE_TOOL] : []),
+    // Only on the learning review's turn (EO-718), whose credential names
+    // them: the tools it writes skills with.
+    ...SKILL_TOOLS.filter((tool) => skillTools.includes(tool.name)),
     // The unbounded read. Gated for the same reason the seeded context
     // exists: an agent that can pull a whole thread in one call has
     // undone the seed, and the two decisions are made from one predicate
@@ -1557,6 +1694,7 @@ async function answerEoTool({
   memoryScopes = [],
   enableMemoryNote = false,
   enableSkillRead = false,
+  skillTools = [],
   writeBridge = null,
   enableRepositoryCheckout = writeBridge !== null,
 }) {
@@ -1705,6 +1843,11 @@ async function answerEoTool({
     return skillRead(args, writeBridge);
   }
 
+  if (SKILL_WRITE_TOOLS.includes(name)) {
+    if (!skillTools.includes(name)) return toolError("TOOL_DISABLED", `Only the learning review is served ${name}.`);
+    return skillTool(name, args, writeBridge);
+  }
+
   if (name === MEMORY_READ_TOOL_NAME) return memoryRead(args, db, memoryScopes);
 
   if (name === MEMORY_NOTE_TOOL_NAME) {
@@ -1808,6 +1951,10 @@ export function createEoMcpService({
     enableMemoryNote: writable,
     enableRepositoryCheckout: bridge !== null && serves(REPOSITORY_CHECKOUT_TOOL_NAME),
     enableSkillRead: Array.isArray(skillSlugs) && skillSlugs.length > 0 && serves(SKILL_READ_TOOL_NAME),
+    // Named by the credential or not at all (EO-718): a turn whose
+    // credential names no writes — every turn but the learning review's —
+    // is served none of them, whatever its agent's grant.
+    skillTools: served === null ? [] : SKILL_WRITE_TOOLS.filter((tool) => served.includes(tool)),
   };
 
   return {
@@ -1832,6 +1979,7 @@ export function createEoMcpService({
           memoryScopes: readable,
           enableMemoryNote: writable,
           enableSkillRead: listed.enableSkillRead,
+          skillTools: listed.skillTools,
           enableRepositoryCheckout: listed.enableRepositoryCheckout,
           writeBridge: bridge,
         });

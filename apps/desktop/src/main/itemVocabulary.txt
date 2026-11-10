@@ -270,6 +270,8 @@ apps/desktop/src/main/mcpHost/submittedPriority.test.ts: * A ticket an agent cre
 apps/desktop/src/main/mcpHost/submittedPriority.test.ts: /** Each listed ticket's priority by its title, whichever vocabulary the answer is spelled in. */
 apps/desktop/src/main/mcpHost/submittedPriority.test.ts: it("creates the ticket with the priority it was sent, and 0 without one", async () => {
 apps/desktop/src/main/mcpHost/submittedPriority.test.ts: it("leaves every ticket at 0 when the plan says nothing", async () => {
+apps/desktop/src/main/memory/learningReview.test.ts: expect(prompt).toContain("named after the kind of task — never after a ticket, an error string or a date");
+apps/desktop/src/main/memory/learningReview.ts: ? `4. Only then create a new skill with \`${SKILL_CREATE}\`, named after the kind of task — never after a ticket, an error string or a date.`
 apps/desktop/src/main/memory/writing.test.ts: expect(block).not.toMatch(/\b(ticket|story|feature|branch|worktree|repository)\b/i);
 apps/desktop/src/main/modules/moduleComments.ts: if (!target) return `no ticket has the key "${comment.key}".`;
 apps/desktop/src/main/modules/moduleHistoryRead.test.ts: { found: false, reason: 'A ticket key is a string, like "EO-42".' },

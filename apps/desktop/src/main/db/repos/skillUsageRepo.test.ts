@@ -3,7 +3,7 @@ import { sql } from "drizzle-orm";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DbHandle } from "../client.js";
 import { createTestItem, openMigratedTestDb } from "../testHelpers.js";
-import { skillDeliveriesQuery, skillLoadsQuery, skillUsageById, usageOfSkill } from "./skillUsageRepo.js";
+import { skillDeliveriesQuery, skillLoadsQuery, skillsLoadedByRun, skillUsageById, usageOfSkill } from "./skillUsageRepo.js";
 import { appendRunEvent, createRun } from "./index.js";
 
 /** How each skill was given to runs and loaded by them, counted from run_events (EO-715). */
@@ -46,6 +46,16 @@ describe("skill usage by id", () => {
     // Never loaded: every run given it is in the stretch.
     expect(usageOfSkill(usage, "b")).toEqual({ runsDelivered: 3, runsLoaded: 0, lastLoadedAt: null, deliveriesSinceLoad: 3 });
     expect(usageOfSkill(usage, "never")).toEqual({ runsDelivered: 0, runsLoaded: 0, lastLoadedAt: null, deliveriesSinceLoad: 0 });
+  });
+
+  it("names the skills one run loaded, each once, in the order it first loaded them (EO-718)", () => {
+    const [one, two] = [newRun(), newRun()];
+    at(1_000, one, SKILL_LOADED_EVENT, loaded("b"));
+    at(1_100, one, SKILL_LOADED_EVENT, loaded("a"));
+    at(1_200, one, SKILL_LOADED_EVENT, loaded("b"));
+    at(1_300, two, SKILL_LOADED_EVENT, loaded("c"));
+    expect(skillsLoadedByRun(handle.db, one)).toEqual(["b", "a"]);
+    expect(skillsLoadedByRun(handle.db, newRun())).toEqual([]);
   });
 
   it("starts the stretch again when a skill is loaded", () => {

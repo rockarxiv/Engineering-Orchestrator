@@ -519,8 +519,8 @@ export const LEARNING_REVIEW_TIMEOUT_MS = 5 * 60_000;
 export const LEARNING_REVIEW_EVENT = "learning_review";
 
 /**
- * - `written` — the review turn wrote at least one note; `entryIds` are
- *   the entries it wrote.
+ * - `written` — the review turn wrote at least one note or skill;
+ *   `entryIds` are the entries it wrote and `skillIds` the skills.
  * - `nothing_to_save` — the turn ended and wrote nothing.
  * - `failed` — the fork was opened and its turn did not end well: it
  *   failed, was stopped at `LEARNING_REVIEW_TIMEOUT_MS`, or EO shut down
@@ -538,6 +538,13 @@ export const LearningReviewEventSchema = z.object({
   outcome: LearningReviewOutcomeSchema,
   /** The memory entries the review turn wrote, in the order written. */
   entryIds: z.array(z.string()),
+  /**
+   * The skills the review turn created or changed (EO-718), each once, in
+   * the order first written. Every one of those writes is a
+   * `skill_versions` row naming the run. Defaulted for an event written
+   * before reviews wrote skills.
+   */
+  skillIds: z.array(z.string()).default([]),
   /** Why it failed or fell back, in a sentence; null otherwise. */
   reason: z.string().nullable(),
   /** The fork's thread, where one was opened; null on a fallback. Never the item's own thread. */

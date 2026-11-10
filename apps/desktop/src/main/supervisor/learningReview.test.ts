@@ -8,6 +8,13 @@ import {
   MEMORY_EXTRACTED_EVENT,
   MEMORY_NOTE_DEFINITION,
   MEMORY_NOTE_TOOL_NAME,
+  SKILL_CREATE_TOOL_NAME,
+  SKILL_FILE_REMOVE_TOOL_NAME,
+  SKILL_FILE_WRITE_TOOL_NAME,
+  SKILL_LOCKED_PROBLEM,
+  SKILL_PATCH_TOOL_NAME,
+  SKILL_VIEW_TOOL_NAME,
+  SKILL_WRITE_TOOLS,
   SYSTEM_ROLE,
   type AgentEvent,
   type AgentForkResult,
@@ -33,12 +40,19 @@ import {
   listRunEvents,
   listRunsForItem,
   listSideCalls,
+  getSkill,
+  listSkills,
+  listSkillVersions,
   postComment,
+  saveSkill,
+  setAgentAttachment,
+  setSkillLocked,
 } from "../db/repos/index.js";
 import { createTestItem, openMigratedTestDb } from "../db/testHelpers.js";
 import { sendAgentWrite } from "../mcp/writeBridge.js";
 import { createFakeProvider, type FakeProviderScript } from "../providers/fake.js";
 import { startTestWriteBridge, type TestWriteBridge } from "../testing/agentWrites.js";
+import { getAgentAttachments } from "../db/repos/agentAttachmentsRepo.js";
 import { openAssistConversation } from "../roles/assist.js";
 import { createRunSupervisor } from "./runSupervisor.js";
 
@@ -156,9 +170,10 @@ describe("the learning review after a run", () => {
   const eventsOf = (runId: Uuid, type: string) => listRunEvents(handle.db, runId).filter((event) => event.type === type).map((event) => event.payload);
   const reviewEvents = (runId = onlyRun().id) => eventsOf(runId, LEARNING_REVIEW_EVENT);
   const extractCalls = () => listSideCalls(handle.db).filter((call) => call.purpose === "memory_extract");
+  const resolveSkillIds = (agentId: string) => getAgentAttachments(handle.db, agentId).skillIds;
   const note = (text: string): AgentWriteRequest => ({ tool: MEMORY_NOTE_TOOL_NAME, args: { scope: "project", text } });
 
-  it("forks the run's thread and sends one review turn served memory_note alone, whose notes are recorded with their ids", async () => {
+  it("forks the run's thread and sends one review turn served memory_note and the skill tools alone, whose notes are recorded with their ids", async () => {
     const { provider, forks, answers } = reviewing({ result: RESULT }, { writes: [note("Seed the fixtures database before the integration tests.")] });
     const side = extractor();
 
@@ -174,7 +189,7 @@ describe("the learning review after a run", () => {
     // A credential for memory_note alone, memory_read's scopes, and none
     // of the run's other tools: no attached servers, no index, nothing to
     // attach from.
-    expect(forks[0]!.opts.writeBridge?.writes).toEqual([MEMORY_NOTE_TOOL_NAME]);
+    expect(forks[0]!.opts.writeBridge?.writes).toEqual([MEMORY_NOTE_TOOL_NAME, ...SKILL_WRITE_TOOLS]);
     expect(forks[0]!.opts.memoryScopes).toEqual(expect.arrayContaining([expect.objectContaining({ kind: "project", id: project.id })]));
     expect(forks[0]!.opts.toolDirectory).toBeUndefined();
     expect(forks[0]!.opts.repositoryMcp).toBeUndefined();
@@ -188,7 +203,7 @@ describe("the learning review after a run", () => {
     expect(written).toEqual([
       expect.objectContaining({ body: "Seed the fixtures database before the integration tests.", source: { type: "run", runId: run.id, itemId: item.id, extracted: true } }),
     ]);
-    expect(reviewEvents()).toEqual([{ type: LEARNING_REVIEW_EVENT, outcome: "written", entryIds: [written[0]!.id], reason: null, forkThreadId: `fork-of-${run.threadId}` }]);
+    expect(reviewEvents()).toEqual([{ type: LEARNING_REVIEW_EVENT, outcome: "written", entryIds: [written[0]!.id], skillIds: [], reason: null, forkThreadId: `fork-of-${run.threadId}` }]);
     // It replaces extraction: no memory_extract call and no memory_extracted event.
     expect(side.asked).toEqual([]);
     expect(eventsOf(run.id, MEMORY_EXTRACTED_EVENT)).toEqual([]);
@@ -206,7 +221,7 @@ describe("the learning review after a run", () => {
     await supervisorOver(provider).runOnce();
 
     expect(forks).toHaveLength(1);
-    expect(reviewEvents()).toEqual([{ type: LEARNING_REVIEW_EVENT, outcome: "nothing_to_save", entryIds: [], reason: null, forkThreadId: expect.any(String) }]);
+    expect(reviewEvents()).toEqual([{ type: LEARNING_REVIEW_EVENT, outcome: "nothing_to_save", entryIds: [], skillIds: [], reason: null, forkThreadId: expect.any(String) }]);
     expect(listMemories(handle.db, project)).toEqual([]);
     expect(extractCalls()).toEqual([]);
   });
@@ -271,7 +286,7 @@ describe("the learning review after a run", () => {
     const extracted = listMemories(handle.db, project);
     expect(extracted.map((entry) => entry.body)).toEqual(["Extracted: seed the fixtures first."]);
     expect(eventsOf(run.id, MEMORY_EXTRACTED_EVENT)).toEqual([expect.objectContaining({ outcome: "written", entryIds: [extracted[0]!.id] })]);
-    expect(reviewEvents()).toEqual([{ type: LEARNING_REVIEW_EVENT, outcome: "fell_back", entryIds: [], reason: `thread_not_found: No thread "${run.threadId}".`, forkThreadId: null }]);
+    expect(reviewEvents()).toEqual([{ type: LEARNING_REVIEW_EVENT, outcome: "fell_back", entryIds: [], skillIds: [], reason: `thread_not_found: No thread "${run.threadId}".`, forkThreadId: null }]);
   });
 
   it("falls back on a backend that cannot fork", async () => {
@@ -311,7 +326,7 @@ describe("the learning review after a run", () => {
     await tick;
 
     const written = listMemories(handle.db, project);
-    expect(reviewEvents()).toEqual([{ type: LEARNING_REVIEW_EVENT, outcome: "failed", entryIds: [written[0]!.id], reason: expect.stringContaining("limit"), forkThreadId: expect.any(String) }]);
+    expect(reviewEvents()).toEqual([{ type: LEARNING_REVIEW_EVENT, outcome: "failed", entryIds: [written[0]!.id], skillIds: [], reason: expect.stringContaining("limit"), forkThreadId: expect.any(String) }]);
     expect(side.asked).toEqual([]);
     expect(getItem(handle.db, item.id)?.stepId).toBe(AFTER_IMPLEMENT);
     expect(listSideCalls(handle.db).filter((call) => call.purpose === "learning_review")).toEqual([expect.objectContaining({ outcome: "failed", reason: "timeout" })]);
@@ -346,7 +361,7 @@ describe("the learning review after a run", () => {
     expect(listRunsForItem(handle.db, waiting.id).length).toBeGreaterThan(0);
   });
 
-  it("forks the system agent's run too, without EO's administrative server, served memory_note alone", async () => {
+  it("forks the system agent's run too, without EO's administrative server, served memory_note and the skill tools alone", async () => {
     const conversation = openAssistConversation(handle.db, project.id as Uuid);
     deleteItem(handle.db, item.id);
     const systemAgent = listAgents(handle.db).find((agent) => agent.role === SYSTEM_ROLE)!;
@@ -366,9 +381,9 @@ describe("the learning review after a run", () => {
     expect(side.asked).toEqual([]);
     // Without the administrative server either adapter otherwise gives
     // every turn of the system agent's, and with a credential for
-    // memory_note alone: any other write is refused.
+    // memory_note and the skill tools alone: any other write is refused.
     expect(forks[0]!.opts.withoutAdminServer).toBe(true);
-    expect(forks[0]!.opts.writeBridge?.writes).toEqual([MEMORY_NOTE_TOOL_NAME]);
+    expect(forks[0]!.opts.writeBridge?.writes).toEqual([MEMORY_NOTE_TOOL_NAME, ...SKILL_WRITE_TOOLS]);
     expect(answers).toEqual([expect.objectContaining({ ok: false, code: "TOOL_NOT_SERVED" }), expect.objectContaining({ ok: true })]);
     expect(listCommentsForItem(handle.db, conversation.id).filter((comment) => comment.body === "From the system agent's review.")).toEqual([]);
     const written = listMemories(handle.db, project);
@@ -438,6 +453,155 @@ describe("the learning review after a run", () => {
       expect(run).toBeDefined();
       expect(forks).toEqual([]);
       expect(reviewEvents(run!.id)).toEqual([]);
+    });
+  });
+  /**
+   * The review writes skills (EO-718): read before write, a person's lock,
+   * and every write a version naming the run.
+   */
+  describe("writing skills", () => {
+    const implementer = () => listAgents(handle.db).find((agent) => agent.role === "implementer")!;
+    /** A person's skill, attached to the implementer, with one supporting file. */
+    function personSkill(slug = "csv-exports") {
+      const saved = saveSkill(handle.db, {
+        slug,
+        name: slug,
+        description: "Use when adding a CSV export.",
+        body: "Quote every field.\nWrite a header row.",
+        files: [{ path: "references/columns.md", content: "id, amount" }],
+      });
+      if (!saved.ok) throw new Error(saved.problems.join(" "));
+      setAgentAttachment(handle.db, { agentId: implementer().id, kind: "skill", id: saved.skill.id, attached: true });
+      return saved.skill;
+    }
+    const view = (slug: string, file?: string): AgentWriteRequest => ({ tool: SKILL_VIEW_TOOL_NAME, args: file === undefined ? { slug } : { slug, file } });
+    const patch = (slug: string, old_text: string, new_text: string): AgentWriteRequest => ({ tool: SKILL_PATCH_TOOL_NAME, args: { slug, old_text, new_text } });
+    const writeFile = (slug: string, path: string, content: string): AgentWriteRequest => ({ tool: SKILL_FILE_WRITE_TOOL_NAME, args: { slug, path, content } });
+    const removeFile = (slug: string, path: string): AgentWriteRequest => ({ tool: SKILL_FILE_REMOVE_TOOL_NAME, args: { slug, path } });
+
+    it("refuses a patch or a file overwrite of what the review has not read, telling it to read first, and takes the same write once it has", async () => {
+      const skill = personSkill();
+      const { provider, forks, answers } = reviewing(
+        { result: RESULT },
+        {
+          writes: [
+            patch("csv-exports", "Quote every field.", "Quote every field, and escape quotes by doubling them."),
+            writeFile("csv-exports", "references/columns.md", "id, amount, currency"),
+            removeFile("csv-exports", "references/columns.md"),
+            view("csv-exports"),
+            patch("csv-exports", "Quote every field.", "Quote every field, and escape quotes by doubling them."),
+            view("csv-exports", "references/columns.md"),
+            writeFile("csv-exports", "references/columns.md", "id, amount, currency"),
+            writeFile("csv-exports", "references/encoding.md", "UTF-8 with a BOM, for Excel."),
+            removeFile("csv-exports", "references/encoding.md"),
+          ],
+        },
+      );
+
+      await supervisorOver(provider).runOnce();
+
+      const run = onlyRun();
+      // The prompt lists the skill it may change.
+      expect(forks[0]!.message).toContain("`csv-exports`");
+      expect(answers.slice(0, 3)).toEqual([
+        { ok: false, code: "SKILL_NOT_READ", problem: expect.stringMatching(/has not read the skill `csv-exports`.*Read it first/) },
+        { ok: false, code: "SKILL_NOT_READ", problem: expect.stringMatching(/has not read `references\/columns\.md`.*Read it first/) },
+        { ok: false, code: "SKILL_NOT_READ", problem: expect.stringMatching(/has not read `references\/columns\.md`.*Read it first/) },
+      ]);
+      expect(answers[3]).toEqual(expect.objectContaining({ ok: true, text: expect.stringContaining("Quote every field.") }));
+      expect(answers.slice(4)).toEqual([
+        expect.objectContaining({ ok: true }),
+        expect.objectContaining({ ok: true, text: "id, amount" }),
+        expect.objectContaining({ ok: true }),
+        expect.objectContaining({ ok: true }),
+        // What it wrote itself it has seen.
+        expect.objectContaining({ ok: true }),
+      ]);
+      const now = getSkill(handle.db, skill.id)!;
+      expect(now.body).toBe("Quote every field, and escape quotes by doubling them.\nWrite a header row.");
+      expect(now.files).toEqual([{ path: "references/columns.md", content: "id, amount, currency" }]);
+      // A person's skill stays a person's.
+      expect(now.createdBy).toBe("person");
+      // Every write is one version, authored by the run: patch, overwrite, add, remove.
+      const versions = listSkillVersions(handle.db, skill.id).filter((version) => version.author.kind === "run");
+      expect(versions).toHaveLength(4);
+      for (const version of versions) expect(version.author).toEqual({ kind: "run", runId: run.id });
+      expect(reviewEvents()).toEqual([expect.objectContaining({ outcome: "written", entryIds: [], skillIds: [skill.id] })]);
+    });
+
+    it("refuses every write to a skill a person locked, saying a person locked it", async () => {
+      const skill = personSkill();
+      setSkillLocked(handle.db, skill.id, true);
+      const { provider, answers } = reviewing(
+        { result: RESULT },
+        {
+          writes: [
+            view("csv-exports"),
+            view("csv-exports", "references/columns.md"),
+            patch("csv-exports", "Quote every field.", "Quote nothing."),
+            writeFile("csv-exports", "references/columns.md", "x"),
+            writeFile("csv-exports", "references/new.md", "x"),
+            removeFile("csv-exports", "references/columns.md"),
+            { tool: SKILL_CREATE_TOOL_NAME, args: { slug: "csv-exports", description: "Over it.", body: "Over it." } },
+          ],
+        },
+      );
+
+      await supervisorOver(provider).runOnce();
+
+      expect(answers.slice(0, 2)).toEqual([expect.objectContaining({ ok: true }), expect.objectContaining({ ok: true })]);
+      for (const answer of answers.slice(2)) expect(answer).toEqual({ ok: false, code: "SKILL_LOCKED", problem: SKILL_LOCKED_PROBLEM });
+      expect(SKILL_LOCKED_PROBLEM).toContain("A person locked this skill");
+      expect(getSkill(handle.db, skill.id)).toEqual(expect.objectContaining({ body: skill.body, files: skill.files }));
+      expect(listSkillVersions(handle.db, skill.id).filter((version) => version.author.kind === "run")).toEqual([]);
+      expect(reviewEvents()).toEqual([expect.objectContaining({ outcome: "nothing_to_save", skillIds: [] })]);
+    });
+
+    it("creates a skill as the agent's, scoped to the item's project and given to the reviewed run's agent, versioned as the run", async () => {
+      const { provider, answers } = reviewing(
+        { result: RESULT },
+        {
+          writes: [
+            { tool: SKILL_CREATE_TOOL_NAME, args: { slug: "csv-exports", description: "Use when adding a CSV export.", body: "Quote every field." } },
+            // Taken now: patch it instead.
+            { tool: SKILL_CREATE_TOOL_NAME, args: { slug: "csv-exports", description: "Again.", body: "Again." } },
+            // It wrote it, so it has read it.
+            patch("csv-exports", "Quote every field.", "Quote every field; double the quotes inside one."),
+          ],
+        },
+      );
+
+      await supervisorOver(provider).runOnce();
+
+      const run = onlyRun();
+      expect(answers).toEqual([
+        expect.objectContaining({ ok: true }),
+        { ok: false, code: "SKILL_EXISTS", problem: expect.stringContaining("patch it instead") },
+        expect.objectContaining({ ok: true }),
+      ]);
+      const created = listSkills(handle.db).find((skill) => skill.slug === "csv-exports")!;
+      expect(created).toEqual(expect.objectContaining({ createdBy: "agent", scope: { kind: "project", projectId: project.id }, locked: false, body: "Quote every field; double the quotes inside one." }));
+      expect(run.agentId).toBe(implementer().id);
+      expect(resolveSkillIds(implementer().id)).toContain(created.id);
+      expect(listSkillVersions(handle.db, created.id).map((version) => [version.action, version.author])).toEqual([
+        ["edit", { kind: "run", runId: run.id }],
+        ["create", { kind: "run", runId: run.id }],
+      ]);
+      expect(reviewEvents()).toEqual([expect.objectContaining({ outcome: "written", skillIds: [created.id] })]);
+    });
+
+    it("serves the skill tools to no run's own turn: a call from one is refused and writes nothing", async () => {
+      personSkill();
+      const { provider } = reviewing({
+        steps: [{ toolCall: { name: SKILL_CREATE_TOOL_NAME, args: { slug: "from-a-run", description: "x", body: "x" } } }],
+        result: RESULT,
+      });
+      const supervisor = supervisorOver(provider);
+
+      await supervisor.runOnce();
+
+      expect(listSkills(handle.db).map((skill) => skill.slug)).toEqual(["csv-exports"]);
+      expect(await supervisor.handleAgentWrite(item.id, view("csv-exports"))).toEqual(expect.objectContaining({ ok: false }));
     });
   });
 });

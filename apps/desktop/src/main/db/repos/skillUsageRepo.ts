@@ -74,3 +74,16 @@ export function skillDeliveriesQuery() {
     group by given.value
   `;
 }
+
+/**
+ * The skills one run loaded (EO-718), by id, in the order it first loaded
+ * them: what the learning review is told it should patch first.
+ */
+export function skillsLoadedByRun(db: Db, runId: string): string[] {
+  const rows = db.all<{ id: string | null }>(sql`
+    select json_extract(payload, '$.skillId') as "id" from ${runEvents}
+    where type = ${sql.raw(`'${SKILL_LOADED_EVENT}'`)} and run_id = ${runId}
+    order by seq
+  `);
+  return [...new Set(rows.flatMap((row) => (typeof row.id === "string" ? [row.id] : [])))];
+}
