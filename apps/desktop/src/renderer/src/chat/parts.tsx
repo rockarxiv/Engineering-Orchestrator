@@ -57,16 +57,19 @@ export function WaitingCount({ count, label }: { count: number; label: string })
  * never fetched here: opening the room creates it, and only the column
  * decides to.
  */
-export function useWaitingOnYou(): { rows: InboxItem[]; blocking: number } {
+export function useWaitingOnYou(): { rows: InboxItem[]; blocking: number; messages: number } {
   const inbox = useQuery({ queryKey: inboxKey, queryFn: () => ipcQuery("inbox:list", undefined) });
   // Shared with the inbox's own listener (EO-560): however many of these
   // are on screen, a push asks `inbox:list` once.
   useInvalidateOnPush("items:changed", inboxKey);
+  useInvalidateOnPush("messages:changed", inboxKey);
   const room = useQuery<{ conversation: DiscussionView }>({ queryKey: assistRoomKey, enabled: false });
   const threadId = room.data?.conversation.id ?? null;
   return useMemo(() => {
     const rows = (inbox.data?.items ?? []).filter((row) => row.itemId !== threadId);
-    return { rows, blocking: rows.filter((row) => row.blocking).length };
+    // EO's open messages to you (EO-725): each one is waiting on you to
+    // answer or act, as a parked run is.
+    return { rows, blocking: rows.filter((row) => row.blocking).length, messages: inbox.data?.messages?.length ?? 0 };
   }, [inbox.data, threadId]);
 }
 

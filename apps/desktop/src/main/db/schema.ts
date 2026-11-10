@@ -3266,3 +3266,41 @@ export const skillProposals = sqliteTable(
     uniqueIndex("idx_skill_proposals_comment").on(table.commentId),
   ],
 );
+
+/**
+ * What EO asks a person outside any item (EO-725, ARCHITECTURE.md §7.1,
+ * migration 0163).
+ *
+ * Comments stay an item's conversation (invariant 4). When EO needs a
+ * person to answer or act on something that belongs to no item — a
+ * template update it could not apply, a job guard — it sends a message
+ * here instead of posting on a made-up thread. Agents never send or read
+ * one.
+ *
+ * Open while `handledAt` is null. Handled is one of `answered` (with the
+ * option chosen in `answer`), `dismissed` or `resolved` by EO, and a
+ * handled message is deleted 7 days later, with at most 100 handled kept
+ * per person (`sweepHandledMessages`).
+ */
+export const messages = sqliteTable(
+  "messages",
+  {
+    id: text("id").primaryKey(), // uuidv7
+    /** The person who must act. No foreign key: a person on an organisation's record need not have a row here. */
+    recipientId: text("recipient_id").notNull(),
+    projectId: text("project_id").references((): AnySQLiteColumn => projects.id, { onDelete: "cascade" }),
+    jobId: text("job_id").references((): AnySQLiteColumn => jobs.id, { onDelete: "cascade" }),
+    /** A stable string naming what sent it, e.g. `template_conflict`. */
+    source: text("source").notNull(),
+    body: text("body").notNull(), // markdown
+    /** `CommentOption[]` as JSON, or null: the same answers and actions a comment offers. */
+    options: text("options", { mode: "json" }),
+    createdAt: integer("created_at").notNull(),
+    handledAt: integer("handled_at"),
+    /** `MessageHandledHow`: `answered`, `dismissed` or `resolved`. */
+    handledHow: text("handled_how"),
+    /** The option an answer chose. */
+    answer: text("answer"),
+  },
+  (table) => [index("idx_messages_recipient_open").on(table.recipientId, table.handledAt)],
+);

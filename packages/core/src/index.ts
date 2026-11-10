@@ -13,6 +13,7 @@ export * from "./registry/developer.js";
 export * from "./registry/vocabulary.js";
 export * from "./execution.js";
 export * from "./comments.js";
+export * from "./messages.js";
 export * from "./mentions.js";
 export * from "./agent-capabilities.js";
 export * from "./agent-provider.js";

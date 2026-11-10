@@ -47,7 +47,9 @@ export function ChatRail({ onNewPipeline }: { onNewPipeline: () => void }) {
   const { person: me } = useMe();
 
   // Kept live by `useWaitingOnYou` itself, the same cache entry as the top bar's bell.
-  const { blocking } = useWaitingOnYou();
+  const { blocking: parked, messages } = useWaitingOnYou();
+  // Parked runs and EO's open messages: both need you before anything moves.
+  const blocking = parked + messages;
 
   const jobs = useQuery({ queryKey: jobsKey(projectId), queryFn: () => ipcQuery("jobs:list", { projectId }) });
   const hasJobs = (jobs.data?.jobs ?? []).length > 0;

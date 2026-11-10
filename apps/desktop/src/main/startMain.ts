@@ -3,6 +3,8 @@ import { startAgentWriteBridge, type AgentWriteBridge } from "./mcp/writeBridge.
 import { join } from "node:path";
 import { aliasNotice, aliasRetirementReached, type JobRunsOn } from "@eo/core";
 import { announceSweep, startArchiveSweep } from "./archive/schedule.js";
+import { startMessageSweep } from "./messages/messages.js";
+import { onPush } from "./ipc/push.js";
 import { AttachmentStorage } from "./attachments/storage.js";
 import { getSchemaVersion, isNewDatabase, openDb, runMigrations } from "./db/index.js";
 import { syncItemTypes } from "./db/repos/index.js";
@@ -33,7 +35,7 @@ import { createAdminMcpHost } from "./mcpHost/admin.js";
 import { approvedModuleTestWriteRefusal } from "./roles/assist.js";
 import { recordScenarioApprovalWithdrawal, scenarioModuleWriteRefusal } from "./roles/scenario.js";
 import { createMcpHost } from "./mcpHost/index.js";
-import { createInboxNotifier, notificationFor, notificationForJobGuard, shouldInterrupt } from "./notifications.js";
+import { createInboxNotifier, notificationFor, notificationForJobGuard, notificationForMessage, shouldInterrupt } from "./notifications.js";
 import { startOutboxDrain } from "./outbox/drainLoop.js";
 import { retireForgeQueue } from "./outbox/retireForgeQueue.js";
 import { retireConversationRooms } from "./ipc/retireConversationRooms.js";
@@ -218,10 +220,23 @@ export function startMain(platform: Platform): RunningMain {
           emitPush("navigate", { to: `/items/${item.itemId}` });
         },
       }),
+    // A message from EO (EO-725) has no item: clicking it opens the Inbox.
+    notifyMessage: (message) =>
+      platform.notify({
+        ...notificationForMessage(message),
+        onClick: () => {
+          platform.showWindow();
+          emitPush("navigate", { to: "/inbox" });
+        },
+      }),
     // The dock or taskbar count, the platform's since EO-318 for the
     // same reason the toast above is.
     setBadge: (count) => platform.setBadgeCount(count),
   });
+  // A message sent, answered, dismissed or swept changes the badge, and a
+  // new one notifies; no item changed, so the engine's hook above does not
+  // hear it.
+  onPush("messages:changed", () => notifier.scheduleRefresh());
 
   const managedRuntimeRoot = runtimeRoot(userDataPath);
   startManagedRuntimeReconciliation({
@@ -601,6 +616,9 @@ export function startMain(platform: Platform): RunningMain {
   // `announceSweep` logs it and pushes `items:changed` (EO-384), so a
   // window open across the sweep stops counting what it put away.
   const stopArchiveSweep = startArchiveSweep(db, { onSwept: announceSweep });
+  // EO-725: a handled message is deleted 7 days after it was handled, and
+  // nobody keeps more than 100 handled ones. Open ones are never touched.
+  const stopMessageSweep = startMessageSweep(db);
 
   // EO-304's loop, now that EO-306 has given it something to fire: a
   // `schedule` job's occurrences, caught up within their grace or
@@ -711,6 +729,7 @@ export function startMain(platform: Platform): RunningMain {
   const stopBackgroundServices = (): void => {
     stopOutboxDrain();
     stopArchiveSweep();
+    stopMessageSweep();
     stopJobScheduler();
     stopJiraPull();
     stopTrialLoop();

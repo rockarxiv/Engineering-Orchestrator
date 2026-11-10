@@ -1,0 +1,110 @@
+import { answerOptions, type IpcPayload, type IpcResponse, type Message, type MessageSend } from "@eo/core";
+import type { Db } from "../db/client.js";
+import { getMessage, insertMessage, listOpenMessages, markMessageHandled, sweepHandledMessages } from "../db/repos/index.js";
+import { actingCaller } from "../identity/acting.js";
+import { viewerIds } from "../identity/viewer.js";
+import { emitPush } from "../ipc/push.js";
+import { startInterval } from "../schedule/interval.js";
+
+/**
+ * What EO asks a person outside any item (EO-725, ARCHITECTURE.md §7.1).
+ *
+ * The sender API. EO code that needs a person to answer or act on
+ * something no item is about — a template update it could not apply, a
+ * job guard — calls `sendMessage`, and `resolveMessage` once what it
+ * asked about was settled some other way. Never an agent: agents never
+ * send or read messages, so an item's thread stays the whole context the
+ * next agent gets (invariant 4).
+ *
+ * Every change pushes `messages:changed`, which every window's inbox and
+ * the dock badge and OS notification (`createInboxNotifier`) listen on.
+ */
+
+/** Sends one message to a person. Throws on a malformed one: a sender is EO's own code. */
+export function sendMessage(db: Db, input: MessageSend, now: number = Date.now()): Message {
+  const message = insertMessage(db, input, now);
+  emitPush("messages:changed", {});
+  return message;
+}
+
+/**
+ * Marks an open message resolved by EO: what it asked about was settled
+ * some other way, so nobody need answer it any more. Undefined, and
+ * nothing pushed, when it was already handled or is gone.
+ */
+export function resolveMessage(db: Db, messageId: string, now: number = Date.now()): Message | undefined {
+  const resolved = markMessageHandled(db, messageId, "resolved", null, now);
+  if (resolved) emitPush("messages:changed", {});
+  return resolved;
+}
+
+/**
+ * Whose messages a caller reads and handles.
+ *
+ * A request a door stamped is its person's, or nobody's for an
+ * operator's key. Unstamped — a desktop's own window — is both of this
+ * machine's identities, as the inbox's item questions are (`viewerIds`).
+ */
+export function messageRecipientsFor(db: Db, actingDeviceId: string | null | undefined): string[] {
+  const caller = actingCaller(db, actingDeviceId);
+  if (caller.served) return caller.person ? [caller.person.id] : [];
+  return viewerIds(db);
+}
+
+/** The open messages the caller is the recipient of, newest first. */
+export function openMessagesFor(db: Db, actingDeviceId: string | null | undefined): Message[] {
+  return listOpenMessages(db, messageRecipientsFor(db, actingDeviceId));
+}
+
+/** The message, if it is open and the caller's to handle. Throws the sentence the person is shown otherwise. */
+function openMessageOf(db: Db, messageId: string, actingDeviceId: string | null | undefined): Message {
+  const message = getMessage(db, messageId);
+  if (!message || !messageRecipientsFor(db, actingDeviceId).includes(message.recipientId)) {
+    throw new Error("That message is not one of yours, or it has been deleted.");
+  }
+  if (message.handledAt !== null) throw new Error(`That message was already ${message.handledHow ?? "handled"}.`);
+  return message;
+}
+
+/** `messages:answer`: the recipient answers with one of the message's offered answers. */
+export function answerMessageCommand(db: Db, payload: IpcPayload<"messages:answer">, now: number = Date.now()): IpcResponse<"messages:answer"> {
+  const message = openMessageOf(db, payload.messageId, payload.actingDeviceId);
+  if (!answerOptions(message.options).includes(payload.answer)) {
+    throw new Error(`"${payload.answer}" is not one of the answers this message offers.`);
+  }
+  return { message: handled(db, message.id, "answered", payload.answer, now) };
+}
+
+/** `messages:dismiss`: the recipient closes it without answering. */
+export function dismissMessageCommand(db: Db, payload: IpcPayload<"messages:dismiss">, now: number = Date.now()): IpcResponse<"messages:dismiss"> {
+  const message = openMessageOf(db, payload.messageId, payload.actingDeviceId);
+  return { message: handled(db, message.id, "dismissed", null, now) };
+}
+
+function handled(db: Db, messageId: string, how: "answered" | "dismissed", answer: string | null, now: number): Message {
+  const message = markMessageHandled(db, messageId, how, answer, now);
+  // Handled between the read above and this write — by EO resolving it,
+  // or a second window. Said, rather than claiming this press did it.
+  if (!message) throw new Error("That message was handled in the meantime.");
+  emitPush("messages:changed", {});
+  return message;
+}
+
+/** Once a day: a handled message is kept 7 days, so checking more often buys nothing. */
+const DAILY_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * The retention sweep, at launch and then daily (`sweepHandledMessages`).
+ * Pushes only when it deleted something; nothing open is ever deleted, so
+ * no inbox changes, but a window showing a handled one should hear.
+ */
+export function startMessageSweep(db: Db, options: { intervalMs?: number } = {}): () => void {
+  const loop = startInterval({
+    name: "message sweep",
+    tick: () => {
+      if (sweepHandledMessages(db) > 0) emitPush("messages:changed", {});
+    },
+    readIntervalMs: () => options.intervalMs ?? DAILY_MS,
+  });
+  return loop.stop;
+}

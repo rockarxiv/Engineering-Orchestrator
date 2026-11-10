@@ -19,6 +19,7 @@ import { OrganisationPolicySchema, PersonBudgetSchema, PublishedMcpServerSchema,
 import { PublishedSectionNameSchema, PublishedSectionSchema, SectionLockSchema, sectionLockedMessage, type SectionLock } from "./sections.js";
 import { SuggestionViewSchema } from "./suggestions.js";
 import { DebugAgentSchema } from "./debug.js";
+import { MessageSchema } from "./messages.js";
 import {
   RecordAdoptCountsSchema,
   RecordAdoptPageSchema,
@@ -1024,7 +1025,36 @@ export const recordContract = {
    */
   "inbox:list": channel(
     z.object({ projectId: z.string().nullable().optional(), ...ACTING_DEVICE }).default({}),
-    z.object({ items: z.array(InboxItemSchema), summary: InboxSummarySchema }),
+    z.object({
+      items: z.array(InboxItemSchema),
+      /**
+       * The open messages EO sent the person asking (EO-725, ARCHITECTURE.md
+       * §7.1): what needs them that belongs to no item. Beside the item
+       * questions rather than among them, because a message has no item, no
+       * thread to reply on and no `!` marker. Newest first. Counted in
+       * `summary.openCount`. A project read keeps the messages about that
+       * project and the ones about none.
+       */
+      messages: z.array(MessageSchema),
+      summary: InboxSummarySchema,
+    }),
+  ),
+  /**
+   * Answers an open message with one of its offered answers (EO-725).
+   *
+   * Only the message's recipient may, and only while it is open: a
+   * message already answered, dismissed or resolved is refused, as is an
+   * answer the message did not offer. The message drops out of the open
+   * list and is kept, handled, until the retention sweep removes it.
+   */
+  "messages:answer": channel(
+    z.object({ messageId: z.string(), answer: z.string().min(1), ...ACTING_DEVICE }),
+    z.object({ message: MessageSchema }),
+  ),
+  /** Dismisses an open message without answering it (EO-725). Its recipient's only, like `messages:answer`. */
+  "messages:dismiss": channel(
+    z.object({ messageId: z.string(), ...ACTING_DEVICE }),
+    z.object({ message: MessageSchema }),
   ),
   /**
    * Every unaddressed mention the caller may see, across projects
@@ -7435,6 +7465,10 @@ export const ACTOR_SCOPED_CHANNELS = [
   "items:list",
   "items:listArchived",
   "inbox:list",
+  // EO-725. A message is its recipient's to answer or dismiss, and only the
+  // door knows who is asking.
+  "messages:answer",
+  "messages:dismiss",
   "mentions:open",
   "items:move",
   // EO-567. The comment it posts names who asked, which only the door knows.
@@ -7733,6 +7767,13 @@ export const ipcPushContract = {
   // first.
   "items:changed": z.object({ itemId: z.string().optional() }),
   "runs:changed": z.object({ runId: z.string(), itemId: z.string(), status: z.string() }),
+  /**
+   * A message was sent, answered, dismissed, resolved or swept (EO-725):
+   * ask `inbox:list` again. Carries nothing, by the rule above — a message
+   * names no item, so `items:changed` would make every window refetch
+   * everything drawn from items for a row only the inbox shows.
+   */
+  "messages:changed": z.object({}),
   /**
    * The list of assistant chats changed and nothing else did (EO-439):
    * ask `assist:list` again. Carries nothing, by the rule above.

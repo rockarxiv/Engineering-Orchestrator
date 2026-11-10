@@ -423,9 +423,13 @@ A person can send a message to a running agent, to be delivered now or at the ne
 
 ## 7. Comments, attention and escalation
 
-### 7.1 One channel
+### 7.1 One channel for an item's conversation
 
-**Everything anyone says — a person, an agent, the engine, a module — is a comment on an item.** A question is a comment that mentions someone. An answer is a comment. A reviewer's feedback is a comment. An engine guard is a comment. The thing a step produced is a comment. There is no inbox table, no side channel between agents, and no separate conversation store: a conversation with the assistant is the comment thread of an item on an off-board step.
+**Comments are the only channel for an item's conversation — anything an agent says, or is told, about an item** (invariant 4). Whatever a person, an agent, the engine or a module says about an item is a comment on it. A question is a comment that mentions someone. An answer is a comment. A reviewer's feedback is a comment. An engine guard is a comment. The thing a step produced is a comment. There is no side channel between agents and no separate conversation store: a conversation with the assistant is the comment thread of an item on an off-board step.
+
+**EO's messages to a person that belong to no item go through messages** (§7.9). Agents never send or read messages, so an item's thread stays the whole context the next agent gets: an answer to an agent's question about an item can matter to the next agent on it, and it is in the thread. What EO asks a person about a whole project or a job is not anybody's item, and keeping it would be worthless once answered — what was decided lives in the result.
+
+**Every guard ends in a comment on the item it stopped, or, where there is no item, in a message to the person who must act** (invariant 8). Nothing silently drops work.
 
 **Each project has one thread.** Something that belongs to a project rather than to any one item — a proposed skill, a note about the repository — still has to be a comment on an item, so each project gets one off-board item as its **project thread**, shown as *Project notes* in the project's settings and opened in the ordinary item view. It is made the first time anything asks for it, through one accessor (`ItemRecord.projectThread`, which `openProjectThread` in `apps/desktop/src/main/projects/projectThread.ts` implements on the record's tables); a unique index holds every project to one. Its key is the project's own — `SHOP-NOTES` — rather than a number from a counter, because a counter is one database's and the thread may be made on a desktop or on the organisation's record and travel between them. It sits on its own off-board, non-terminal step (`project-thread`), so it appears on no board, in no column and in no archive listing, and the archive sweep never takes it. Its comments are ordinary comments: a mention on one reaches the inbox and the `!` count like any other. Deleting it is refused while its project exists; deleting the project takes it. In organisation mode it belongs to the record, like the project's other items: a desktop holding a moved project asks the record for it (`record:projectThread`) and copies the answer into its replica. It is the job thread's arrangement (§9.2), given to a project.
 
@@ -468,7 +472,7 @@ Optionally, the system agent *interprets* a person's reply before the step resum
 
 The `!` on an item is computed from open mentions aimed at a person. It is never stored, because a stored flag drifts the moment something is dismissed or resolved. The item **stays in its column**: moving it to a "needs a person" column would lose which step it is stuck on. And attention is not priority — an urgent item running fine needs nothing from anyone, and a low-priority one can be completely stuck.
 
-**The inbox is a view**: open mentions aimed at a person, newest first. It answers "what can only I do?", which, since agents run unattended for hours, is the reason to open the app. Being a desktop app, EO also raises a native notification on a new blocking mention, badges the dock with the open count, and says so loudly when every item in flight is waiting on the person.
+**The inbox is a view**: open mentions aimed at a person, and the open messages EO sent them (§7.9), newest first. It answers "what can only I do?", which, since agents run unattended for hours, is the reason to open the app. Being a desktop app, EO also raises a native notification on a new blocking mention, badges the dock with the open count, and says so loudly when every item in flight is waiting on the person.
 
 ### 7.5 What an agent is given
 
@@ -559,6 +563,18 @@ Transitions live in `transitions` and words live in `comments`. They are merged 
 ### 7.8 The output is a comment
 
 What a step produced — the report, the reply, the draft — is a comment of kind `output`, with attachments. The current output of an item is the latest such comment, derived the way attention is. A person's edit posts a new output comment and the one it replaces stays in the thread. The next step's context receives the current output, so a send step sends what the approver corrected. No new table, and one channel. The item's own files (§7.1) are not outputs and do not make a second one: they belong to the item's definition, beside its description, and anything a step produces is still a comment.
+
+### 7.9 Messages
+
+**A message is EO needing a person to answer or act on something that is not an item's conversation** (EO-724). Only that: a template update EO could not apply, a consolidation that is stuck, tools a project move could not carry, skill writes held by an organisation's published settings, a job's guards. A report that asks nothing — a skill created, changed or archived, a template update applied — is not a message; it is shown on the thing it is about.
+
+A message is a row in `messages`: its recipient (a person), the project or job it concerns where it concerns one, `source` — a stable string naming what sent it, such as `template_conflict` — a markdown body, and options in the same shapes a comment offers (`CommentOption`: answers, and actions that open something). EO code sends one through `sendMessage` (`apps/desktop/src/main/messages/messages.ts`) and marks one resolved through `resolveMessage` when what it asked about was settled another way; every change pushes `messages:changed`. It is open until handled — answered with one of its answers (`messages:answer`, which records the answer), dismissed (`messages:dismiss`), or resolved by EO — and `handled_at` and `handled_how` say which. Only its recipient may answer or dismiss it, and only while it is open.
+
+**Messages appear in the same Inbox as item questions** (`inbox:list` carries them beside its items), are counted in the same inbox count, dock badge and OS notification — each open message notifies once — and are listed by the MCP `inbox_list` tool, marked as messages with no item. They have no `!` marker, because there is no item to put one on. A project's inbox read keeps the messages about that project and those about none.
+
+**A message is deleted 7 days after it was handled, and each person keeps at most 100 handled messages**, the oldest handled going first (`sweepHandledMessages`, run at launch and daily). An open message is never deleted by age. This is not `run_events` (invariant 3): a handled message says nothing the result of answering it does not.
+
+The project and job threads (§7.1, §9.2) predate messages. Their senders move to messages one by one, and when all have moved the threads are migrated and retired.
 
 ---
 

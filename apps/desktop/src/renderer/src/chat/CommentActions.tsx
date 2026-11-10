@@ -17,7 +17,7 @@ import { useOpenUpdateConflictChat } from "./updateConflictChat";
  * template update: Fix with assistant on the conflict notice
  * (`useOpenUpdateConflictChat`).
  */
-export function CommentActions({ options, commentId, className }: { options: readonly CommentOption[] | null; commentId: string; className?: string }) {
+export function CommentActions({ options, commentId, className }: { options: readonly CommentOption[] | null; commentId: string | null; className?: string }) {
   const actions = actionOptions(options);
   const { open, isPending, problem } = useOpenUpdateConflictChat();
 
