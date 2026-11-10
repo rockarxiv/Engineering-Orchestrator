@@ -2455,7 +2455,8 @@ export function createCodexProvider(options: CodexProviderOptions = {}): AgentPr
    * what was actually written before `resume` returns — as `start` does.
    */
   function resumedSkills(resumeOpts: AgentProviderResumeOptions | undefined): { slugs: string[]; section: string } {
-    if (!resumeOpts?.cwd) return { slugs: [], section: "" };
+    // None, and nothing written, for a turn given no skills (EO-717).
+    if (!resumeOpts?.cwd || resumeOpts.withoutSkills === true) return { slugs: [], section: "" };
     const restored = writeWorktreeSkills(resumeOpts.cwd, skillsForRun(options.attachedSkills ?? [], resumeOpts.skillScope));
     warnAboutUndeliveredSkills(restored, resumeOpts.cwd);
     return { slugs: restored.delivered.map((skill) => skill.slug), section: worktreeSkillsPromptSection(restored.delivered) };

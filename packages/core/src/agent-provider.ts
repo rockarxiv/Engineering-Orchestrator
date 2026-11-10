@@ -994,6 +994,15 @@ export interface AgentProviderResumeOptions extends AgentTurnOverrides {
    * `providerParity.test.ts` holds them to it.
    */
   withoutAdminServer?: boolean;
+  /**
+   * This turn is given no skills (EO-717): none written, none offered,
+   * no Skills section, and no `skill_read` to load one with. For the
+   * learning review, which may use `memory_read` and `memory_note` and
+   * nothing else; a resume or fork otherwise gives the agent's skills
+   * back. Both adapters honour it, and `providerParity.test.ts` holds
+   * them to it.
+   */
+  withoutSkills?: boolean;
 }
 
 /**

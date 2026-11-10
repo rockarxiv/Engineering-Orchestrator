@@ -2534,7 +2534,8 @@ export function createClaudeProvider(options: ClaudeProviderOptions = {}): Agent
   /** A turn on a session already written: the session itself, or (`fork`) a copy of it the CLI makes for this turn. */
   const resumed = (threadId: string, message: string, resumeOpts: AgentProviderResumeOptions | undefined, fork: boolean): InterruptibleStream<AgentEvent> =>
     leadingWith(
-      offeredSkills(resumeOpts?.toolDirectory),
+      // None for a turn given no skills (EO-717).
+      offeredSkills(resumeOpts?.withoutSkills === true ? undefined : resumeOpts?.toolDirectory),
       translatingLostSession(
         threadId,
         deferred(async () => {
@@ -2550,6 +2551,9 @@ export function createClaudeProvider(options: ClaudeProviderOptions = {}): Agent
           // Before `open`, which keys a warm query on these options: a
           // warm resume of this session is never adopted by a fork of it.
           if (fork) sdkOptions.forkSession = true;
+          // And none enabled, whatever the directory or the ambient
+          // configuration would have enabled (EO-717).
+          if (resumeOpts?.withoutSkills === true) sdkOptions.skills = [];
           return open(sdk, withAttachmentNote(message, resumeOpts?.attachments), sdkOptions, interceptions, admin, resumeOpts?.warmKey, resumeOpts?.signal, resumeOpts?.streamDeltas === true);
         }),
       ),

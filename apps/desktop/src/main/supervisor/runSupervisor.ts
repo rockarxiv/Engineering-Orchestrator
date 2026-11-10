@@ -2830,6 +2830,9 @@ export function createRunSupervisor(
           // otherwise gives every turn of the system agent's (invariant
           // 11): a review of its run writes memory and nothing else.
           withoutAdminServer: true,
+          // Nor skills: this review writes memory alone (EO-717); writing
+          // skills is EO-718's.
+          withoutSkills: true,
           ...turnBudget(item, agent),
           signal: controller.signal,
         }),

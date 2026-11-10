@@ -306,11 +306,12 @@ const CAPABILITIES = [
   },
   {
     name: "the learning review's tools",
-    what: "a fork handed a write credential for memory_note alone has the backend start the `eo` server that lists memory_note and memory_read and no other write tool — for an agent its own grant gives comment, attachment_add and no memory_note — and the credential reaches it whole; and a fork told it is without the administrative server, for an agent otherwise given it on every turn, mints no bearer and configures no `eo_admin`, where a resume of that agent's thread is given both (EO-717)",
+    what: "a fork handed a write credential for memory_note alone has the backend start the `eo` server that lists memory_note and memory_read and no other write tool — for an agent its own grant gives comment, attachment_add and no memory_note — and the credential reaches it whole; and a fork told it is without the administrative server, for an agent otherwise given it on every turn, mints no bearer and configures no `eo_admin`, where a resume of that agent's thread is given both; and a fork told it is given no skills is offered none and enabled none, where a resume of the same thread is offered the agent's (EO-717)",
     same: {
       served: ["memory_note", "memory_read"],
       credential: { writes: ["memory_note"] },
       admin: { bearersMinted: 0, bearerInTheEnvironment: false, serverConfigured: false, bearerOnAResume: true },
+      skills: { offered: [], enabled: false, offeredOnAResume: true },
     },
   },
   {
@@ -1141,6 +1142,9 @@ function listsAttachmentAdd(env: Record<string, string> | undefined): boolean {
 const REVIEW_EO_MCP = { serverPath: "/app/eoServer.mjs", enableCommentTool: true, enableMemoryNote: false };
 const REVIEW_CREDENTIAL = { url: "http://127.0.0.1:1/agent-write", token: "item-1~memory_note.signed", writes: ["memory_note" as const] };
 const REVIEW_FORK = (memoryScopes: unknown[]) => ({ cwd: "/tmp/wt", attachFrom: ATTACH_FROM, memoryScopes, writeBridge: REVIEW_CREDENTIAL, withoutAdminServer: true }) as AgentProviderResumeOptions;
+
+/** The skills a turn says it was given (`skills_delivered`), by slug. */
+const offeredIn = (events: readonly AgentEvent[]): string[] => events.flatMap((event) => (event.type === "skills_delivered" ? event.slugs : []));
 
 /** The administrative bearers an agent given `eo_admin` would be minted, counted (EO-717). */
 function countedAdmin() {
@@ -1996,7 +2000,18 @@ const CLAUDE: Record<CapabilityName, Proof> = {
     const resumed = scripted([sdk.result()]);
     await collect(createClaudeProvider({ runQuery: resumed.runQuery, eoMcp: REVIEW_EO_MCP, admin: counted.admin }).resume("thr-persisted", "carry on", { cwd: "/tmp/wt" }));
     const envOf = (call: SdkCall | undefined) => call?.options["env"] as Record<string, string> | undefined;
+    // Skills reach Claude through the generated directory: a fork pointed
+    // at one, told it is given none.
+    const toolDirectory = join(scratchDirectory(), "plugin");
+    writeToolDirectory(toolDirectory, attachmentsForRun({ servers: [], skills: SCOPED_SKILLS }, SCOPED_RUN));
+    const skilled = scripted([sdk.init({ session_id: "sess-fork" }), sdk.result({ session_id: "sess-fork" })]);
+    const skilledFork = await createClaudeProvider({ runQuery: skilled.runQuery }).fork!("thr-persisted", "review the run", { cwd: "/tmp/wt", toolDirectory, skillScope: SCOPED_RUN, withoutSkills: true });
+    const skilledEvents = skilledFork.ok ? await collect(skilledFork.events) : [];
+    const resumedSkilled = scripted([sdk.result()]);
+    const resumedEvents = await collect(createClaudeProvider({ runQuery: resumedSkilled.runQuery }).resume("thr-persisted", "carry on", { cwd: "/tmp/wt", toolDirectory, skillScope: SCOPED_RUN }));
+    const enabled = skilled.calls[0]?.options["skills"];
     return {
+      skills: { offered: offeredIn(skilledEvents), enabled: enabled === "all" || (Array.isArray(enabled) && enabled.length > 0), offeredOnAResume: offeredIn(resumedEvents).length > 0 },
       ...(reviewServed((calls[0]?.options["mcpServers"] as Record<string, { env?: Record<string, string> }> | undefined)?.["eo"]?.env) as object),
       admin: {
         bearersMinted: forkMinted,
@@ -3207,7 +3222,25 @@ const CODEX: Record<CapabilityName, Proof> = {
     await collect(again.provider.resume("thr-persisted", "carry on", { cwd: "/tmp/wt" }));
     const launch = fake.launches[0];
     const envOf = (one: typeof launch) => one?.options.env as Record<string, string> | undefined;
+    // Skills reach Codex from the agent's own attachments, written into
+    // the worktree and served by `skill_read`: a fork of an agent given
+    // some, told it is given none.
+    const cwd = scratchDirectory();
+    const plain = (thread: string) => [note.turnStarted("turn-1", thread), note.agentMessage("ok", "m", "turn-1", thread), note.turnCompleted("completed", null, "turn-1", thread)];
+    const skilled = codexOver({ forkId: "thr-fork", after: { "turn/start": plain("thr-fork") } }, { eoMcp: REVIEW_EO_MCP, attachedSkills: SCOPED_SKILLS });
+    const skilledFork = await skilled.provider.fork!("thr-persisted", "review the run", { cwd, skillScope: SCOPED_RUN, withoutSkills: true });
+    const skilledEvents = skilledFork.ok ? await collect(skilledFork.events) : [];
+    // Read before the resume below, which writes them into the same worktree.
+    const skilledEnabled =
+      (skilled.fake.launches[0]?.args ?? []).some((argument) => argument.startsWith("mcp_servers.eo.env.EO_MCP_SKILLS=")) || existsSync(join(cwd, ".agent", "skills"));
+    const resumedSkilled = codexOver({ after: { "turn/start": plain("thr-persisted") } }, { eoMcp: REVIEW_EO_MCP, attachedSkills: SCOPED_SKILLS });
+    const resumedEvents = await collect(resumedSkilled.provider.resume("thr-persisted", "carry on", { cwd, skillScope: SCOPED_RUN }));
     return {
+      skills: {
+        offered: offeredIn(skilledEvents),
+        enabled: skilledEnabled,
+        offeredOnAResume: offeredIn(resumedEvents).length > 0,
+      },
       ...(reviewServed(
         Object.fromEntries(
           (launch?.args ?? [])

@@ -179,6 +179,9 @@ describe("the learning review after a run", () => {
     expect(forks[0]!.opts.toolDirectory).toBeUndefined();
     expect(forks[0]!.opts.repositoryMcp).toBeUndefined();
     expect(forks[0]!.opts.attachFrom).toBeUndefined();
+    // Nor skills, nor EO's administrative server, whichever backend it is on.
+    expect(forks[0]!.opts.withoutSkills).toBe(true);
+    expect(forks[0]!.opts.withoutAdminServer).toBe(true);
 
     expect(answers).toEqual([expect.objectContaining({ ok: true })]);
     const written = listMemories(handle.db, project);
