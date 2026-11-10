@@ -306,6 +306,8 @@ export interface CodexProviderOptions {
     adminDirectory?: string,
     /** The skills the turn was given, by slug, for `skill_read` (EO-721). Handed only on a turn given some. */
     skillSlugs?: readonly string[],
+    /** The turn is not served the administrative server, whoever the agent is (EO-717, `withoutAdminServer`). */
+    withoutAdmin?: boolean,
   ) => Pick<CodexClient, "startThread" | "resumeThread"> & Partial<Pick<CodexClient, "prewarm" | "forkThread">>;
   /**
    * Seam for tests — the client a side call runs on (EO-477), built from
@@ -1545,11 +1547,13 @@ export function buildCodexOptions(
   withheldEnvironmentVariables?: readonly string[],
   adminDirectory?: string,
   skillSlugs?: readonly string[],
+  /** Not served the administrative server, and no bearer minted for it (EO-717). */
+  withoutAdmin = false,
 ): Pick<CodexClientOptions, "executablePath" | "config" | "env" | "afterTurn" | "perTurnEnv"> {
   // Asked once per client, and let go of again if the options cannot be
   // built (EO-444): no process will be spawned to let it go after. For
   // the directory the turn runs in (EO-700).
-  const admin = options.admin?.(adminDirectory) ?? null;
+  const admin = withoutAdmin ? null : (options.admin?.(adminDirectory) ?? null);
   try {
     return codexOptionsWith(options, admin, repositoryMcp, searchHook, attachFrom, memoryScopes, environmentVariables, writeBridge, withheldEnvironmentVariables, skillSlugs);
   } catch (error) {
@@ -1787,9 +1791,10 @@ export function codexClientOptions(
   withheldEnvironmentVariables?: readonly string[],
   adminDirectory?: string,
   skillSlugs?: readonly string[],
+  withoutAdmin = false,
 ): CodexClientOptions {
   return {
-    ...buildCodexOptions(options, repositoryMcp, searchHook, attachFrom, memoryScopes, environmentVariables, writeBridge, withheldEnvironmentVariables, adminDirectory, skillSlugs),
+    ...buildCodexOptions(options, repositoryMcp, searchHook, attachFrom, memoryScopes, environmentVariables, writeBridge, withheldEnvironmentVariables, adminDirectory, skillSlugs, withoutAdmin),
     ...(options.onUnmappedEvent ? { onUnmappedNotification: options.onUnmappedEvent } : {}),
   };
 }
@@ -2208,7 +2213,8 @@ export function createCodexProvider(options: CodexProviderOptions = {}): AgentPr
       withheldEnvironmentVariables?: readonly string[],
       adminDirectory?: string,
       skillSlugs?: readonly string[],
-    ) => new CodexClient(codexClientOptions(options, repositoryMcp, searchHook, attachFrom, memoryScopes, environmentVariables, writeBridge, withheldEnvironmentVariables, adminDirectory, skillSlugs)));
+      withoutAdmin?: boolean,
+    ) => new CodexClient(codexClientOptions(options, repositoryMcp, searchHook, attachFrom, memoryScopes, environmentVariables, writeBridge, withheldEnvironmentVariables, adminDirectory, skillSlugs, withoutAdmin)));
 
   /**
    * What marks EO's hook as trusted, learned once per command line.
@@ -2276,8 +2282,13 @@ export function createCodexProvider(options: CodexProviderOptions = {}): AgentPr
     withheldEnvironmentVariables?: readonly string[],
     adminDirectory?: string,
     skillSlugs?: readonly string[],
+    withoutAdmin = false,
   ) {
     const hook = searchHook ? { command: searchHook.command, env: searchHook.env, trust: searchHook.trust } : undefined;
+    // A turn not served the administrative server (EO-717): told so,
+    // with every argument, since the server would otherwise be given to
+    // any client built for this agent whatever its directory.
+    if (withoutAdmin) return createCodex(repositoryMcp, hook, attachFrom, memoryScopes, environmentVariables, writeBridge, withheldEnvironmentVariables, undefined, skillSlugs, true);
     // And the skills `skill_read` serves only on a turn given some
     // (EO-721) — every argument before them with it, as they are.
     if (skillSlugs && skillSlugs.length > 0) {
@@ -2495,6 +2506,7 @@ export function createCodexProvider(options: CodexProviderOptions = {}): AgentPr
         resumeOpts?.withheldEnvironmentVariables,
         resumeOpts?.cwd,
         skillSlugs,
+        resumeOpts?.withoutAdminServer === true,
       );
       // A fork opens with `thread/fork` instead, and the turn runs on the
       // copy it answers with (EO-716). A client built without it (a test's

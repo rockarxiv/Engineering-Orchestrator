@@ -2543,7 +2543,9 @@ export function createClaudeProvider(options: ClaudeProviderOptions = {}): Agent
           // counted the same way — its firings are this row's, not the
           // ones the session opened with (EO-168).
           const interceptions = interceptionQueue();
-          const admin = options.admin?.(resumeOpts?.cwd) ?? null;
+          // No bearer for a turn not served the administrative server
+          // (EO-717): without one the server it names cannot be called.
+          const admin = resumeOpts?.withoutAdminServer === true ? null : (options.admin?.(resumeOpts?.cwd) ?? null);
           const sdkOptions = withAdminLease(admin, () => turnOptions(resumeSpec(threadId, resumeOpts, interceptions.record), admin));
           // Before `open`, which keys a warm query on these options: a
           // warm resume of this session is never adopted by a fork of it.

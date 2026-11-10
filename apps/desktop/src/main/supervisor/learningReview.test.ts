@@ -343,19 +343,34 @@ describe("the learning review after a run", () => {
     expect(listRunsForItem(handle.db, waiting.id).length).toBeGreaterThan(0);
   });
 
-  it("falls back for the system agent, whose every turn is served EO's administrative tools", async () => {
+  it("forks the system agent's run too, without EO's administrative server, served memory_note alone", async () => {
     const conversation = openAssistConversation(handle.db, project.id as Uuid);
     deleteItem(handle.db, item.id);
     const systemAgent = listAgents(handle.db).find((agent) => agent.role === SYSTEM_ROLE)!;
     postComment(handle.db, { itemId: conversation.id, author: { type: "human" }, body: "How do we bill this?", mentions: [{ type: "agent", agentId: systemAgent.id }] });
-    const { provider, forks } = reviewing({ result: { message: "word ".repeat(60).trim() } });
+    const { provider, forks, answers } = reviewing(
+      { result: { message: "word ".repeat(60).trim() } },
+      { writes: [{ tool: "comment", args: { body: "From the system agent's review." } }, note("Billing is monthly, in arrears.")] },
+    );
+    const side = extractor();
 
-    await supervisorOver(provider).runOnce();
+    await supervisorOver(provider, side.provider).runOnce();
 
     const [run] = listRunsForItem(handle.db, conversation.id);
     expect(run?.agentId).toBe(systemAgent.id);
-    expect(forks).toEqual([]);
-    expect(reviewEvents(run!.id)).toEqual([expect.objectContaining({ outcome: "fell_back", reason: expect.stringContaining("administrative tools") })]);
+    // Its own thread, forked — not a fallback.
+    expect(forks.map((fork) => fork.threadId)).toEqual([run!.threadId]);
+    expect(side.asked).toEqual([]);
+    // Without the administrative server either adapter otherwise gives
+    // every turn of the system agent's, and with a credential for
+    // memory_note alone: any other write is refused.
+    expect(forks[0]!.opts.withoutAdminServer).toBe(true);
+    expect(forks[0]!.opts.writeBridge?.writes).toEqual([MEMORY_NOTE_TOOL_NAME]);
+    expect(answers).toEqual([expect.objectContaining({ ok: false, code: "TOOL_NOT_SERVED" }), expect.objectContaining({ ok: true })]);
+    expect(listCommentsForItem(handle.db, conversation.id).filter((comment) => comment.body === "From the system agent's review.")).toEqual([]);
+    const written = listMemories(handle.db, project);
+    expect(written.map((entry) => entry.body)).toEqual(["Billing is monthly, in arrears."]);
+    expect(reviewEvents(run!.id)).toEqual([expect.objectContaining({ outcome: "written", entryIds: [written[0]!.id] })]);
   });
 
   describe("is not asked for, as extraction is not", () => {

@@ -306,8 +306,12 @@ const CAPABILITIES = [
   },
   {
     name: "the learning review's tools",
-    what: "a fork handed a write credential for memory_note alone has the backend start the `eo` server that lists memory_note and memory_read and no other write tool — for an agent its own grant gives comment, attachment_add and no memory_note — and the credential reaches it whole (EO-717)",
-    same: { served: ["memory_note", "memory_read"], credential: { writes: ["memory_note"] } },
+    what: "a fork handed a write credential for memory_note alone has the backend start the `eo` server that lists memory_note and memory_read and no other write tool — for an agent its own grant gives comment, attachment_add and no memory_note — and the credential reaches it whole; and a fork told it is without the administrative server, for an agent otherwise given it on every turn, mints no bearer and configures no `eo_admin`, where a resume of that agent's thread is given both (EO-717)",
+    same: {
+      served: ["memory_note", "memory_read"],
+      credential: { writes: ["memory_note"] },
+      admin: { bearersMinted: 0, bearerInTheEnvironment: false, serverConfigured: false, bearerOnAResume: true },
+    },
   },
   {
     name: "non-fatal warning",
@@ -1136,7 +1140,19 @@ function listsAttachmentAdd(env: Record<string, string> | undefined): boolean {
  */
 const REVIEW_EO_MCP = { serverPath: "/app/eoServer.mjs", enableCommentTool: true, enableMemoryNote: false };
 const REVIEW_CREDENTIAL = { url: "http://127.0.0.1:1/agent-write", token: "item-1~memory_note.signed", writes: ["memory_note" as const] };
-const REVIEW_FORK = (memoryScopes: unknown[]) => ({ cwd: "/tmp/wt", attachFrom: ATTACH_FROM, memoryScopes, writeBridge: REVIEW_CREDENTIAL }) as AgentProviderResumeOptions;
+const REVIEW_FORK = (memoryScopes: unknown[]) => ({ cwd: "/tmp/wt", attachFrom: ATTACH_FROM, memoryScopes, writeBridge: REVIEW_CREDENTIAL, withoutAdminServer: true }) as AgentProviderResumeOptions;
+
+/** The administrative bearers an agent given `eo_admin` would be minted, counted (EO-717). */
+function countedAdmin() {
+  let minted = 0;
+  return {
+    admin: () => {
+      minted += 1;
+      return { server: { url: "http://127.0.0.1:9/mcp", envName: "EO_ADMIN_TOKEN" }, environment: { EO_ADMIN_TOKEN: `turn-bearer-${minted}` }, release: () => {} };
+    },
+    minted: () => minted,
+  };
+}
 
 /** The write and memory tools the `eo` server started from this environment lists, and the credential it was handed. */
 function reviewServed(env: Record<string, string> | undefined): unknown {
@@ -1968,10 +1984,28 @@ const CLAUDE: Record<CapabilityName, Proof> = {
   "the learning review's tools": async () => {
     // Claude's delivery: the `eo` server inline in `mcpServers`, its
     // environment carrying the credential as the turn was handed it.
+    // The administrative server's URL is in the agent's generated
+    // `.mcp.json`, which a fork is not pointed at; its bearer is in the
+    // CLI's environment, minted per turn.
+    const counted = countedAdmin();
     const { runQuery, calls } = scripted([sdk.init({ session_id: "sess-fork" }), sdk.result({ result: "Nothing to save.", session_id: "sess-fork" })]);
-    const forked = await createClaudeProvider({ runQuery, eoMcp: REVIEW_EO_MCP }).fork!("thr-persisted", "review the run", REVIEW_FORK([...MEMORY_SCOPES]));
+    const provider = createClaudeProvider({ runQuery, eoMcp: REVIEW_EO_MCP, admin: counted.admin });
+    const forked = await provider.fork!("thr-persisted", "review the run", REVIEW_FORK([...MEMORY_SCOPES]));
     if (forked.ok) await collect(forked.events);
-    return reviewServed((calls[0]?.options["mcpServers"] as Record<string, { env?: Record<string, string> }> | undefined)?.["eo"]?.env);
+    const forkMinted = counted.minted();
+    const resumed = scripted([sdk.result()]);
+    await collect(createClaudeProvider({ runQuery: resumed.runQuery, eoMcp: REVIEW_EO_MCP, admin: counted.admin }).resume("thr-persisted", "carry on", { cwd: "/tmp/wt" }));
+    const envOf = (call: SdkCall | undefined) => call?.options["env"] as Record<string, string> | undefined;
+    return {
+      ...(reviewServed((calls[0]?.options["mcpServers"] as Record<string, { env?: Record<string, string> }> | undefined)?.["eo"]?.env) as object),
+      admin: {
+        bearersMinted: forkMinted,
+        bearerInTheEnvironment: envOf(calls[0])?.["EO_ADMIN_TOKEN"] !== undefined,
+        serverConfigured:
+          Object.keys((calls[0]?.options["mcpServers"] as Record<string, unknown> | undefined) ?? {}).includes(ADMIN_MCP_SERVER_NAME) || calls[0]?.options["plugins"] !== undefined,
+        bearerOnAResume: envOf(resumed.calls[0])?.["EO_ADMIN_TOKEN"] !== undefined,
+      },
+    };
   },
 
   "non-fatal warning": async () => {
@@ -2974,9 +3008,9 @@ function codexOver(scenario: FakeAppServerScenario, options: Parameters<typeof c
   const provider = createCodexProvider({
     executablePath: STUB_EXECUTABLE,
     ...options,
-    createCodex: (repository, searchHook, attachFrom, memoryScopes, environmentVariables, writeBridge, withheld, adminDirectory) =>
+    createCodex: (repository, searchHook, attachFrom, memoryScopes, environmentVariables, writeBridge, withheld, adminDirectory, skillSlugs, withoutAdmin) =>
       new CodexClient({
-        ...codexClientOptions({ executablePath: STUB_EXECUTABLE, ...options }, repository, searchHook, attachFrom, memoryScopes, environmentVariables, writeBridge, withheld, adminDirectory),
+        ...codexClientOptions({ executablePath: STUB_EXECUTABLE, ...options }, repository, searchHook, attachFrom, memoryScopes, environmentVariables, writeBridge, withheld, adminDirectory, skillSlugs, withoutAdmin),
         spawn: fake.spawn,
         shutdownGraceMs: 200,
         killGraceMs: 100,
@@ -3153,24 +3187,42 @@ const CODEX: Record<CapabilityName, Proof> = {
 
   "the learning review's tools": async () => {
     // Codex's delivery: the `eo` server configured on the app-server's
-    // command line, one `mcp_servers.eo.env.<NAME>` per variable.
+    // command line, one `mcp_servers.eo.env.<NAME>` per variable, and
+    // `eo_admin` beside it with its bearer in the environment.
+    const counted = countedAdmin();
     const { fake, provider } = codexOver(
       {
         forkId: "thr-fork",
         after: { "turn/start": [note.turnStarted("turn-1", "thr-fork"), note.agentMessage("Nothing to save.", "m", "turn-1", "thr-fork"), note.turnCompleted("completed", null, "turn-1", "thr-fork")] },
       },
-      { eoMcp: REVIEW_EO_MCP },
+      { eoMcp: REVIEW_EO_MCP, admin: counted.admin },
     );
     const forked = await provider.fork!("thr-persisted", "review the run", REVIEW_FORK([...MEMORY_SCOPES]));
     if (forked.ok) await collect(forked.events);
-    return reviewServed(
-      Object.fromEntries(
-        (fake.launches[0]?.args ?? [])
-          .filter((argument) => argument.startsWith("mcp_servers.eo.env."))
-          .map((argument) => argument.slice("mcp_servers.eo.env.".length))
-          .map((pair) => [pair.slice(0, pair.indexOf("=")), JSON.parse(pair.slice(pair.indexOf("=") + 1)) as string]),
-      ),
+    const forkMinted = counted.minted();
+    const again = codexOver(
+      { after: { "turn/start": [note.turnStarted("turn-1", "thr-persisted"), note.agentMessage("continued", "m", "turn-1", "thr-persisted"), note.turnCompleted("completed", null, "turn-1", "thr-persisted")] } },
+      { eoMcp: REVIEW_EO_MCP, admin: counted.admin },
     );
+    await collect(again.provider.resume("thr-persisted", "carry on", { cwd: "/tmp/wt" }));
+    const launch = fake.launches[0];
+    const envOf = (one: typeof launch) => one?.options.env as Record<string, string> | undefined;
+    return {
+      ...(reviewServed(
+        Object.fromEntries(
+          (launch?.args ?? [])
+            .filter((argument) => argument.startsWith("mcp_servers.eo.env."))
+            .map((argument) => argument.slice("mcp_servers.eo.env.".length))
+            .map((pair) => [pair.slice(0, pair.indexOf("=")), JSON.parse(pair.slice(pair.indexOf("=") + 1)) as string]),
+        ),
+      ) as object),
+      admin: {
+        bearersMinted: forkMinted,
+        bearerInTheEnvironment: envOf(launch)?.["EO_ADMIN_TOKEN"] !== undefined,
+        serverConfigured: (launch?.args ?? []).some((argument) => argument.startsWith(`mcp_servers.${ADMIN_MCP_SERVER_NAME}.`)),
+        bearerOnAResume: envOf(again.fake.launches[0])?.["EO_ADMIN_TOKEN"] !== undefined,
+      },
+    };
   },
 
   "non-fatal warning": async () => {

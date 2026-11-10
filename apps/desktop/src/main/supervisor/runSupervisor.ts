@@ -2784,10 +2784,6 @@ export function createRunSupervisor(
     if (run.provider !== null && run.provider !== backend) {
       return { kind: "fell_back", reason: `The run's thread is on ${run.provider}, and ${agent.name} now runs on ${backend}.` };
     }
-    // Either adapter starts EO's administrative server again on any turn
-    // of the system agent's, a fork's included (invariant 11), and a
-    // review may write nothing but memory.
-    if (isSystemAgent(agent)) return { kind: "fell_back", reason: "The system agent's turns are served EO's administrative tools, which a learning review may not be." };
     const provider = providerFor(agent, item);
     if (!provider.fork) return { kind: "fell_back", reason: `The ${backend} backend cannot fork a thread.` };
     const bridge = options.agentWriteBridge?.() ?? null;
@@ -2830,6 +2826,10 @@ export function createRunSupervisor(
           // bridge refuses any other write made with it.
           ...memoryOption(item),
           writeBridge: bridge.tokenFor(item.id, [MEMORY_NOTE_TOOL_NAME]),
+          // And not EO's administrative server, which either adapter
+          // otherwise gives every turn of the system agent's (invariant
+          // 11): a review of its run writes memory and nothing else.
+          withoutAdminServer: true,
           ...turnBudget(item, agent),
           signal: controller.signal,
         }),

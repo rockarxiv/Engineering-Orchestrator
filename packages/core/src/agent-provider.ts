@@ -984,6 +984,16 @@ export interface AgentProviderResumeOptions extends AgentTurnOverrides {
   writeBridge?: AgentWriteBridgeAddress;
   /** Cancels this resumed turn without making the persisted session eligible for reuse. */
   signal?: AbortSignal;
+  /**
+   * This turn is not served EO's administrative server (`eo_admin`),
+   * whoever the agent is, and no bearer for it is minted (EO-717). For
+   * the learning review on a fork of the system agent's thread, which
+   * may write memory and nothing else: the system agent's every other
+   * turn is given that server (invariant 11), and a review of its run is
+   * not one of its turns. Both adapters honour it, and
+   * `providerParity.test.ts` holds them to it.
+   */
+  withoutAdminServer?: boolean;
 }
 
 /**
