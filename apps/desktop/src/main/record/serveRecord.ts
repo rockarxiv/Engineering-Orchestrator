@@ -107,6 +107,8 @@ import {
   restoreConsolidation,
 } from "../db/repos/index.js";
 import { applyMemoryWrite } from "../memory/memoryWrites.js";
+import { getMessage, listMessagesChangedSince, messageChangedAt } from "../db/repos/messagesRepo.js";
+import { handleMessageHere, sendMessageToAdmins } from "../messages/messages.js";
 import { containerScopeOf } from "../memory/containerScope.js";
 import type { MemoryCaps, MemoryWriteRequest } from "./record.js";
 
@@ -425,6 +427,57 @@ export async function serveChangeDependencies(
     },
     comment: asRecordComment(db, comment),
     dependencies: summariseDependencyChange(outcome.applied),
+  };
+}
+
+/**
+ * A device sending a message about a project this record holds (EO-726):
+ * written here, one to each admin, and the copies addressed to the
+ * asking device's person answered so its desktop keeps them at once.
+ */
+export function serveSendMessage(context: ServeRecordContext, payload: IpcPayload<"record:sendMessage">): IpcResponse<"record:sendMessage"> {
+  const { db } = context;
+  const refuse = (problem: string): IpcResponse<"record:sendMessage"> => ({ sent: 0, mine: [], problem });
+  const person = personOfDevice(db, payload.deviceId);
+  if (person === undefined) return refuse("this record does not know the device that asked, so it sent nothing.");
+  const projectId = payload.message.projectId ?? null;
+  if (projectId === null || getProject(db, projectId as Uuid) === undefined) return refuse("this record does not hold that project, so it sent nothing.");
+  if (projectsMidAdoption(db).has(projectId)) return refuse("that project is still arriving on the record, so nothing was sent yet.");
+  const sent = sendMessageToAdmins(db, payload.message);
+  return { sent: sent.length, mine: sent.filter((message) => message.recipientId === person.id), problem: null };
+}
+
+/**
+ * A person on a device answering or dismissing a message this record
+ * holds (EO-726). Judged here, on this record's copy and the person the
+ * asking device belongs to — `actingDeviceId` is that device, which
+ * `openMessageOf` turns back into its person. The message is answered
+ * whenever it is theirs, so the desktop's copy ends up as this one is.
+ */
+export function serveHandleMessage(context: ServeRecordContext, payload: IpcPayload<"record:handleMessage">): IpcResponse<"record:handleMessage"> {
+  const { db } = context;
+  const person = personOfDevice(db, payload.deviceId);
+  const held = getMessage(db, payload.messageId);
+  const theirs = person !== undefined && held !== undefined && held.recipientId === person.id ? held : null;
+  const handled = handleMessageHere(db, { messageId: payload.messageId, how: payload.how, answer: payload.answer, actingDeviceId: payload.deviceId });
+  if (handled.ok) return { message: handled.message, problem: null };
+  return { message: theirs === null ? null : (getMessage(db, theirs.id) ?? null), problem: handled.problem };
+}
+
+/**
+ * The asking device's person's messages changed since its cursor
+ * (EO-726): sent, answered, dismissed or resolved. A device belonging to
+ * nobody this record knows is given none.
+ */
+export function serveMessages(context: ServeRecordContext, payload: IpcPayload<"record:messages">): IpcResponse<"record:messages"> {
+  const { db } = context;
+  const person = personOfDevice(db, payload.deviceId);
+  if (person === undefined) return { messages: [], cursor: payload.cursor, more: false };
+  const changed = listMessagesChangedSince(db, person.id, payload.cursor, payload.limit);
+  return {
+    messages: changed,
+    cursor: endOf(changed, payload.cursor, (message) => ({ ts: messageChangedAt(message), id: message.id })),
+    more: changed.length === payload.limit,
   };
 }
 

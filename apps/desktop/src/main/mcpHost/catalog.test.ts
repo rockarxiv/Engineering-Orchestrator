@@ -197,6 +197,10 @@ const NOT_CATALOGUED: Partial<Record<RecordChannel, string>> = {
   "record:projectThread": "a replica's request for a row to copy; an agent reads a thread with ticket_get once it has the item",
   // EO-600: a desktop asking the record to make the change items:update
   // was asked for, on an item the organisation holds.
+  // EO-726: EO's messages to a person, which agents never send or read (invariant 4).
+  "record:sendMessage": "EO's own message to the people who must act on a project, sent by a desktop's EO code; agents never send messages",
+  "record:handleMessage": "a person's answer or dismissal of a message EO sent them; agents never read or answer messages",
+  "record:messages": "a replica pulling its person's messages; agents never read messages",
   "record:changeDependencies": "a replica's request for the record to make a change items:update was asked for; an agent changes what an item waits for with item_update",
   // EO-533: a desktop asking the record for the chat about a conflict it
   // holds, on behalf of an admin pressing Fix with assistant.

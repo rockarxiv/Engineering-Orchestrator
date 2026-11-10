@@ -19,6 +19,8 @@ import type { UpdateConflictChatAnswer, UpdateConflictChatRequest } from "../rol
 import type { ResolveUpdateConflictAnswer, ResolveUpdateConflictRequest } from "../gallery/updateConflictDetail.js";
 import type { TemplateHistory } from "../gallery/history.js";
 import type { DependencyChangeSummary } from "../roles/itemDependencies.js";
+import type { MessageHandling, MessageHandlingAnswer, MessageSendAnswer } from "../messages/messages.js";
+import type { MessageSend } from "@eo/core";
 
 /**
  * The record: what owns item state and runs the only scheduler
@@ -216,6 +218,36 @@ export interface ItemRecord {
    * with the sentence saying so.
    */
   projectThread: (projectId: Uuid) => Promise<ProjectThreadAnswer>;
+  /**
+   * Sends a message — EO asking a person something that belongs to no
+   * item (EO-725, EO-726, ARCHITECTURE.md §7.1).
+   *
+   * **The accessor** for senders, as `projectThread` was for the thread
+   * a message replaces. A message about a project the organisation's
+   * record holds is written on the record, one to each of its admins
+   * whoever `recipientId` named, and never only in a desktop's own
+   * table: asking, like `projectThread`, because who the admins are is
+   * the record's fact and a row written on a replica reaches nobody
+   * else. The record's copies addressed to this desktop's person are
+   * kept here at once; every other recipient's desktops pull theirs.
+   * Anything else — a solo desktop, a project kept here — is written in
+   * this database to `recipientId`, and on the record itself a project's
+   * message goes to the admins without a round trip.
+   *
+   * Never rejects. A record that cannot be reached answers a refusal
+   * with the sentence saying so, and nothing is written anywhere.
+   */
+  sendMessage: (input: MessageSend) => Promise<MessageSendAnswer>;
+  /**
+   * A person answering or dismissing a message (EO-726): on whichever
+   * installation holds it. One about a project the organisation's record
+   * holds is marked handled there — the record is where it lives, and
+   * where its recipient's other desktops hear of it — and the record's
+   * answer is copied here. Any other is handled in this database.
+   *
+   * Never rejects: a refusal carries the sentence the person is shown.
+   */
+  handleMessage: (request: MessageHandling) => Promise<MessageHandlingAnswer>;
   /**
    * The assistant chat about one held template update (EO-533), made the
    * first time anybody presses Fix with assistant and the same chat on

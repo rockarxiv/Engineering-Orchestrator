@@ -30,7 +30,8 @@ export type PendingKind =
   | "runEvents"
   | "attachment"
   | "watch"
-  | "memory";
+  | "memory"
+  | "message";
 
 export interface PendingRow<T = unknown> {
   id: string;

@@ -8,6 +8,9 @@ import { mirrorRecordComment } from "./drain.js";
 import { recordAssistBoard } from "../roles/assist.js";
 import { upsertReplicaItem } from "../db/repos/replicaRepo.js";
 import { findProjectThread } from "../projects/projectThread.js";
+import { upsertReplicaMessage } from "../db/repos/messagesRepo.js";
+import { openMessageOf } from "../messages/messages.js";
+import { emitPush } from "../ipc/push.js";
 import { getRun, markRunSynced, runSyncBookmark } from "../db/repos/runsRepo.js";
 import { listRunEventsFrom } from "../db/repos/runEventsRepo.js";
 import { asRunCommand, runCommandId } from "./runCommand.js";
@@ -394,6 +397,65 @@ export function createRemoteRecord(options: RemoteRecordOptions): RemoteRecord {
      * here first. Two asks at once are two copies of one row by id, so
      * they leave one item.
      */
+    /**
+     * A message about a project the record holds, written there, one to
+     * each admin (EO-726). The copies addressed to this desktop's person
+     * are kept at once, so its inbox does not wait for the next pull;
+     * the other admins' desktops pull theirs.
+     */
+    async sendMessage(input) {
+      const answer = await ask("record:sendMessage", { deviceId: options.deviceId, message: input });
+      if (!answer.ok) {
+        return {
+          ok: false,
+          problem: answer.unreachable
+            ? `This project is on your organisation's record, which could not be reached, so its message was not sent: ${answer.problem}`
+            : `Your organisation's record did not send this project's message: ${answer.problem}`,
+        };
+      }
+      if (answer.data.problem !== null) return { ok: false, problem: answer.data.problem };
+      const kept = answer.data.mine.filter((message) => upsertReplicaMessage(db, message) === "written");
+      if (kept.length > 0) emitPush("messages:changed", {});
+      return { ok: true, messages: kept };
+    },
+
+    /**
+     * A press on a message the record holds (EO-726), sent to it. Held to
+     * being this desktop's person's and still open here first, so a
+     * press nobody may make is not a round trip; the record judges it
+     * again on its own copy, and whatever it answers — handled by this
+     * press, or by something that beat it there — is what this replica
+     * keeps.
+     */
+    async handleMessage(request) {
+      try {
+        openMessageOf(db, request.messageId, request.actingDeviceId);
+      } catch (error) {
+        return { ok: false, problem: error instanceof Error ? error.message : String(error) };
+      }
+      const answer = await ask("record:handleMessage", {
+        deviceId: options.deviceId,
+        messageId: request.messageId,
+        how: request.how,
+        answer: request.answer,
+      });
+      if (!answer.ok) {
+        return {
+          ok: false,
+          problem: answer.unreachable
+            ? `This message is on your organisation's record, which could not be reached, so it is still open: ${answer.problem}`
+            : `Your organisation's record did not take that: ${answer.problem}`,
+        };
+      }
+      const { message, problem } = answer.data;
+      if (message !== null) {
+        upsertReplicaMessage(db, message);
+        emitPush("messages:changed", {});
+      }
+      if (problem !== null || message === null) return { ok: false, problem: problem ?? "Your organisation's record no longer has that message." };
+      return { ok: true, message };
+    },
+
     async projectThread(projectId) {
       const held = findProjectThread(db, projectId);
       if (held !== undefined) return { ok: true, item: held };

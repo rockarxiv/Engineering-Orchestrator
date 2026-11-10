@@ -1,6 +1,7 @@
 import {
   EMPTY_CURSOR,
   EMPTY_EVENT_CURSOR,
+  RecordCursorSchema,
   RecordCursorsSchema,
   SOMEONE_ELSE,
   claimDroppedLine,
@@ -11,7 +12,9 @@ import {
   type RecordCommand,
   type RecordCommandResult,
   type RecordCommentCommand,
+  type RecordCursor,
   type RecordCursors,
+  type Message,
   type RecordAgent,
   type RecordItem,
   type RecordMemory,
@@ -26,6 +29,9 @@ import { signedInPersonId } from "../identity/viewer.js";
 import { getComment, setCommentPinned, settleMention } from "../db/repos/commentsRepo.js";
 import { getItem } from "../db/repos/itemsRepo.js";
 import { getSetting, setSetting } from "../db/repos/settingsRepo.js";
+import { upsertReplicaMessage } from "../db/repos/messagesRepo.js";
+import { emitPush } from "../ipc/push.js";
+import { z } from "zod";
 import { hasTransition } from "../db/repos/transitionsRepo.js";
 import { setReplicaAssignee, upsertReplicaItem } from "../db/repos/replicaRepo.js";
 import { getProject, upsertReplicaProject } from "../db/repos/projectsRepo.js";
@@ -409,6 +415,14 @@ export async function drainToRecord(options: DrainOptions): Promise<DrainResult>
     // the other order would cost a page nobody ever reads.
     setSetting(db, CURSOR_KEY, pull.data.cursors);
     if (!pull.data.more) break;
+  }
+
+  // ── 4a: this device's person's messages (EO-726) ──────────────────
+  //
+  // After the general pull, so the projects they are about are here.
+  if (!(await pullMessages(options, pullPageSize, result))) {
+    if (changed) options.onChange?.();
+    return result;
   }
 
   // ── 4b: the history of a project this device has only just heard of ─
@@ -1286,6 +1300,50 @@ async function applyChanges(options: DrainOptions, changes: RecordChanges): Prom
 }
 
 /**
+ * Where this device has read its person's messages up to (EO-726), with
+ * the device it was read as: a desktop signed in afresh — as somebody
+ * else, perhaps — starts again from the beginning rather than from
+ * where the last person's stood.
+ */
+const MESSAGES_CURSOR_KEY = "record.messagesCursor";
+
+function readMessagesCursor(db: Db, deviceId: string): RecordCursor {
+  const parsed = RecordCursorSchema.extend({ deviceId: z.string() }).safeParse(getSetting<unknown>(db, MESSAGES_CURSOR_KEY, null));
+  return parsed.success && parsed.data.deviceId === deviceId ? { ts: parsed.data.ts, id: parsed.data.id } : EMPTY_CURSOR;
+}
+
+/**
+ * The messages the record holds for this device's person, changed since
+ * the cursor (EO-726): new ones, and ones answered, dismissed or resolved
+ * anywhere — which is how a press on one desktop reaches the others.
+ *
+ * Answers false only when the record could not be reached. A record
+ * that refuses the channel — one older than messages — is passed over:
+ * there is nothing on it to pull.
+ */
+async function pullMessages(options: DrainOptions, pullPageSize: number, result: DrainResult): Promise<boolean> {
+  const { db, deviceId } = options;
+  const now = options.now?.() ?? Date.now();
+  let pulled = 0;
+  for (let page = 0; page < MAX_PULL_PAGES; page += 1) {
+    const pull = await options.record.ask("record:messages", { deviceId, cursor: readMessagesCursor(db, deviceId), limit: pullPageSize });
+    if (!pull.ok) {
+      result.offline = pull.unreachable;
+      if (pull.unreachable) return false;
+      break;
+    }
+    for (const message of pull.data.messages) pulled += place(options, "message", message.id, message, now) ? 1 : 0;
+    setSetting(db, MESSAGES_CURSOR_KEY, { ...pull.data.cursor, deviceId });
+    if (!pull.data.more) break;
+  }
+  result.pulled += pulled;
+  // The inbox, the badge and the OS notification listen for this, not
+  // for the board's push.
+  if (pulled > 0) emitPush("messages:changed", {});
+  return true;
+}
+
+/**
  * Everything the record has said, retried.
  *
  * The other half of `place`: what could not be written down last time
@@ -1306,7 +1364,7 @@ function retryPending(options: DrainOptions): number {
   // Parents before children, exactly as a fresh page is applied — and
   // `attachment` is deliberately not among them: that kind's row is a
   // want rather than a held write, and `fetchFiles` is what ends it.
-  for (const kind of ["agent", "agentTools", "item", "run", "transition", "comment", "runEvents", "pin", "mention", "watch", "memory"] as const) {
+  for (const kind of ["agent", "agentTools", "item", "run", "transition", "comment", "runEvents", "pin", "mention", "watch", "memory", "message"] as const) {
     const waiting = pending(db, kind, MAX_RETRIES_PER_PASS);
     const done: string[] = [];
     const again: string[] = [];
@@ -1358,7 +1416,7 @@ function place(options: DrainOptions, kind: HeldKind, key: string, payload: unkn
   // while it waits, and the copy to write when the wait ends is the
   // newest one (EO-476). Every other held row is the same row each time
   // it arrives.
-  if (kind === "agent" || kind === "memory") rememberLatest(options.db, kind, key, payload, outcome.waitingFor, now);
+  if (kind === "agent" || kind === "memory" || kind === "message") rememberLatest(options.db, kind, key, payload, outcome.waitingFor, now);
   else remember(options.db, kind, key, payload, outcome.waitingFor, now);
   return false;
 }
@@ -1562,6 +1620,15 @@ function apply(options: DrainOptions, kind: HeldKind, payload: unknown, now: num
       const waitingFor = memoryWaitingFor(db, entry);
       if (waitingFor !== null) return { placed: false, waitingFor };
       writeArrivedMemory(db, entry);
+      return placed;
+    }
+
+    case "message": {
+      // A message the record holds for this device's person (EO-726), as
+      // it now stands. Held until its project is here — a foreign key —
+      // with the newest copy, because a message changes while it waits.
+      const message = payload as Message;
+      if (upsertReplicaMessage(db, message) === "waiting") return { placed: false, waitingFor: `project ${message.projectId ?? ""}` };
       return placed;
     }
 
