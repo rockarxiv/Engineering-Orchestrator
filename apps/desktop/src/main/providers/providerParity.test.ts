@@ -17,6 +17,7 @@ import {
   REPOSITORY_CHECKOUT_TOOL_NAME,
   validateActionResult,
   type AgentEvent,
+  type AgentForkResult,
   type AgentProvider,
   type AgentWriteAnswer,
   type AgentWriteRequest,
@@ -290,6 +291,17 @@ const CAPABILITIES = [
     name: "lost thread",
     what: "a thread the backend no longer has is the one error the supervisor restarts on, and no other failure is",
     same: { threadNotFound: true, threadId: "thr-gone", namesItsBackend: true, anotherFailureIsLost: false },
+  },
+  {
+    name: "thread forking",
+    what: "a fork asks the backend for a copy of that thread rather than the thread itself, in that worktree, with the new message; the copy has an id of its own, named at the head of its turn; and a thread the backend does not have is a typed failure naming it, told apart from any other refusal — never a throw (EO-716)",
+    same: {
+      asked: { threadId: "thr-persisted", copied: true, cwd: "/tmp/wt", message: "review the run" },
+      fork: { ok: true, ownId: true, namedFirst: true },
+      outcome: { kind: "result", data: "reviewed" },
+      missing: { ok: false, reason: "thread_not_found", threadId: "thr-gone" },
+      otherRefusal: { ok: false, reason: "failed", threadId: "thr-gone" },
+    },
   },
   {
     name: "non-fatal warning",
@@ -1004,6 +1016,23 @@ function lostThread(backend: Backend, lost: unknown, other: unknown): unknown {
     threadId: (lost as ThreadNotFoundError).threadId,
     namesItsBackend: (lost as ThreadNotFoundError).provider === backend,
     anotherFailureIsLost: isThreadNotFound(other),
+  };
+}
+
+/** What a fork asked for and answered, the two refusals read as the caller reads them: by `ok`, `reason` and the thread named. */
+function forkObserved(asked: unknown, forked: AgentForkResult, events: readonly AgentEvent[], missing: AgentForkResult, other: AgentForkResult): unknown {
+  const refusal = (result: AgentForkResult) => (result.ok ? { ok: true } : { ok: false, reason: result.reason, threadId: result.threadId });
+  const first = events.find((event) => event.type === "thread_started");
+  return {
+    asked,
+    fork: {
+      ok: forked.ok,
+      ownId: forked.ok && forked.threadId !== "thr-persisted",
+      namedFirst: forked.ok && first?.type === "thread_started" && first.threadId === forked.threadId && events.findIndex((event) => event.type === "output") > events.indexOf(first),
+    },
+    outcome: outcomeOf(events),
+    missing: refusal(missing),
+    otherRefusal: refusal(other),
   };
 }
 
@@ -1880,6 +1909,21 @@ const CLAUDE: Record<CapabilityName, Proof> = {
       "claude",
       await thrownBy(resume(new Error("Claude Code process exited with code 1\nstderr: No conversation found with session ID: thr-gone"))),
       await thrownBy(resume(new Error("Claude Code process exited with code 1\nstderr: overloaded_error"))),
+    );
+  },
+
+  "thread forking": async () => {
+    // The SDK's fork: `resume` with `forkSession`, the copy's id said in `init`.
+    const { runQuery, calls } = scripted([sdk.init({ session_id: "sess-fork" }), sdk.says("reviewed"), sdk.result({ result: "reviewed", session_id: "sess-fork" })]);
+    const forked = await createClaudeProvider({ runQuery, enableCommentTool: false }).fork!("thr-persisted", "review the run", { cwd: "/tmp/wt" });
+    const events = forked.ok ? await collect(forked.events) : [];
+    const refused = (error: Error) => createClaudeProvider({ runQuery: refusing(error), enableCommentTool: false }).fork!("thr-gone", "review the run", { cwd: "/tmp/wt" });
+    return forkObserved(
+      { threadId: calls[0]?.options["resume"], copied: calls[0]?.options["forkSession"] === true, cwd: calls[0]?.options["cwd"], message: await firstSaid(calls[0]) },
+      forked,
+      events,
+      await refused(new Error("Claude Code process exited with code 1\nstderr: No conversation found with session ID: thr-gone")),
+      await refused(new Error("Claude Code process exited with code 1\nstderr: overloaded_error")),
     );
   },
 
@@ -3039,6 +3083,27 @@ const CODEX: Record<CapabilityName, Proof> = {
     return lostThread("codex", await thrownBy(resume(-32600, "no rollout found for thread id thr-gone")), await thrownBy(resume(-32603, "database is locked")));
   },
 
+  "thread forking": async () => {
+    // The app-server's fork: `thread/fork`, answered with the copy's id,
+    // and never `thread/resume` of the original.
+    const { fake, provider } = codexOver({
+      forkId: "thr-fork",
+      after: { "turn/start": [note.turnStarted("turn-1", "thr-fork"), note.agentMessage("reviewed", "m", "turn-1", "thr-fork"), note.turnCompleted("completed", null, "turn-1", "thr-fork")] },
+    });
+    const forked = await provider.fork!("thr-persisted", "review the run", { cwd: "/tmp/wt" });
+    const events = forked.ok ? await collect(forked.events) : [];
+    const asked = fake.paramsOf("thread/fork");
+    const said = fake.paramsOf("turn/start")?.["input"] as { text: string }[] | undefined;
+    const refused = (code: number, message: string) => codexOver({ replies: { "thread/fork": { error: { code, message } } } }).provider.fork!("thr-gone", "review the run", { cwd: "/tmp/wt" });
+    return forkObserved(
+      { threadId: asked?.["threadId"], copied: asked !== undefined && fake.paramsOf("thread/resume") === undefined, cwd: asked?.["cwd"], message: said?.[0]?.text },
+      forked,
+      events,
+      await refused(-32600, "no rollout found for thread id thr-gone"),
+      await refused(-32603, "database is locked"),
+    );
+  },
+
   "non-fatal warning": async () => {
     // Both of the app-server's warnings (EO-369): one about the
     // configuration, said before there is a turn, and one during it.
@@ -4138,13 +4203,14 @@ describe.each(CAPABILITIES)("$name: $what", (capability) => {
 });
 
 describe("the shared list", () => {
-  it("is the twelve capabilities EO-380 names and the ones EO-385, EO-387, EO-392, EO-395, EO-412, EO-421, EO-444, EO-468, EO-470, EO-477, EO-478, EO-479, EO-487, EO-488, EO-490, EO-493, EO-494, EO-534, EO-543, EO-578, EO-587, EO-597, EO-633, EO-700, EO-703 and the streaming chat added, each once", () => {
+  it("is the twelve capabilities EO-380 names and the ones EO-385, EO-387, EO-392, EO-395, EO-412, EO-421, EO-444, EO-468, EO-470, EO-477, EO-478, EO-479, EO-487, EO-488, EO-490, EO-493, EO-494, EO-534, EO-543, EO-578, EO-587, EO-597, EO-633, EO-700, EO-703, EO-716 and the streaming chat added, each once", () => {
     // Pinned so that taking one off the list is a decision somebody
     // made in this file rather than a line that went missing.
     expect(CAPABILITIES.map((capability) => capability.name)).toEqual([
       "start",
       "resume",
       "lost thread",
+      "thread forking",
       "non-fatal warning",
       "interrupt with usage on escalation",
       "steering",

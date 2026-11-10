@@ -203,3 +203,33 @@ describe("createFakeProvider — writes through EO", () => {
     expect(events.map((event) => event.type)).toEqual(["thread_started", "tool_call"]);
   });
 });
+
+describe("createFakeProvider — forking a thread (EO-716)", () => {
+  const script = { steps: [{ output: "one" }, { output: "two" }, { output: "three" }], result: "done" };
+
+  it("carries on from where the forked thread got to, on a thread of its own, and leaves the original where it was", async () => {
+    const provider = createFakeProvider(script);
+    // Read the opening turn as far as its first answer, then walk away.
+    const opening = provider.start({ instructions: "", context: "", cwd: "/tmp", signal: new AbortController().signal })[Symbol.asyncIterator]();
+    const started = (await opening.next()).value as AgentEvent;
+    await opening.next();
+    await opening.return?.();
+    const original = started.type === "thread_started" ? started.threadId : "";
+
+    const forked = await provider.fork!(original, "review it");
+    if (!forked.ok) throw new Error(forked.message);
+    expect(forked.threadId).not.toBe(original);
+    const onTheFork = await collect(forked.events);
+    expect(onTheFork[0]).toEqual({ type: "thread_started", threadId: forked.threadId });
+    expect(onTheFork.filter((event) => event.type === "output").map((event) => (event.type === "output" ? event.text : ""))).toEqual(["two", "three"]);
+
+    // The original is where the fork found it: its resume plays what the fork played, again.
+    const resumed = await collect(provider.resume(original, "carry on"));
+    expect(resumed.filter((event) => event.type === "output").map((event) => (event.type === "output" ? event.text : ""))).toEqual(["two", "three"]);
+  });
+
+  it("answers a thread it never started with a typed failure naming it", async () => {
+    const forked = await createFakeProvider(script).fork!("fake-thread-404", "review it");
+    expect(forked).toMatchObject({ ok: false, reason: "thread_not_found", threadId: "fake-thread-404" });
+  });
+});

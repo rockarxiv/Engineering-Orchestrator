@@ -210,6 +210,14 @@ export interface CodexThreadOptions {
    * nobody else's — every agent thread is one EO may carry on.
    */
   ephemeral?: boolean;
+  /**
+   * The thread named is copied with `thread/fork` and the turn runs on
+   * the copy, rather than on the thread itself with `thread/resume`
+   * (EO-716). Set by `forkThread`, and part of a warm process's key like
+   * every other option here, so a warm resume of the same thread is never
+   * adopted by a fork of it.
+   */
+  fork?: boolean;
 }
 
 export interface CodexTurnOptions {
@@ -444,6 +452,15 @@ export class CodexClient {
   }
 
   /**
+   * A copy of the thread, carrying its history, that the turn runs on
+   * (EO-716). The thread itself is not written to: `thread.started`
+   * names the copy, and every notification after it is the copy's.
+   */
+  forkThread(threadId: string, threadOptions: CodexThreadOptions = {}): CodexThread {
+    return { runStreamed: async (input, turnOptions = {}) => this.turn(threadId, { ...threadOptions, fork: true }, input, turnOptions) };
+  }
+
+  /**
    * Starts the app-server for a turn not yet asked for — spawned,
    * handshaken and with its thread opened — so that turn starts with
    * `turn/start` alone (`AgentProvider.prewarm`). The same call for the
@@ -564,8 +581,13 @@ export class CodexClient {
         // back to it — and full-history hydration is deprecated for
         // the paginated threads 0.161.0 writes (`ThreadResumeParams` is
         // unchanged at 0.163.0, 0.165.0 and 0.166.0).
-        await ask("thread/resume", { threadId: resumeId, ...threadParams, excludeTurns: true }, opened.connection)) as { thread?: { id?: unknown }; model?: unknown } | undefined;
-    const threadId = typeof answer?.thread?.id === "string" ? answer.thread.id : resumeId;
+        // `thread/fork` takes the same parameters (0.166.0's
+        // `ThreadForkParams`), and answers with the copy's id.
+        await ask(threadOptions.fork ? "thread/fork" : "thread/resume", { threadId: resumeId, ...threadParams, excludeTurns: true }, opened.connection)) as { thread?: { id?: unknown }; model?: unknown } | undefined;
+    // Never the thread asked for, on a fork: a copy that named no id of
+    // its own would otherwise be reported as the original, and the turn
+    // on it would be taken for one on the item's own thread.
+    const threadId = typeof answer?.thread?.id === "string" ? answer.thread.id : threadOptions.fork ? null : resumeId;
     // The model the thread actually runs on (EO-374). Not necessarily
     // the one asked for: with none named, the CLI picks its own default
     // — which at 0.161.0 was not the model `model/list` calls default.
@@ -576,7 +598,7 @@ export class CodexClient {
     // model leaves it unknown, so the turn is reported unpriced unless
     // a `model/rerouted` names one later.
     const model = typeof answer?.model === "string" && answer.model ? answer.model : null;
-    if (!threadId) throw new Error("thread/start returned no thread id");
+    if (!threadId) throw new Error(`${resumeId === null ? "thread/start" : threadOptions.fork ? "thread/fork" : "thread/resume"} returned no thread id`);
     return { pipe: opened, threadId, model };
   }
 

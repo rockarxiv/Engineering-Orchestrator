@@ -137,5 +137,8 @@ export function capturingProvider(provider: AgentProvider, context: SendContext,
       return provider.resume(threadId, message, opts);
     },
     ...(provider.describeSession ? { describeSession: (turn) => provider.describeSession!(turn) } : {}),
+    // Passed on, so debug mode does not take a backend's forking away
+    // (EO-716). What a fork's turn sends is not captured here.
+    ...(provider.fork ? { fork: (threadId: string, message: string, opts?: Parameters<NonNullable<AgentProvider["fork"]>>[2]) => provider.fork!(threadId, message, opts) } : {}),
   };
 }

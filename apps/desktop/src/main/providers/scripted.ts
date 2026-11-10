@@ -1,4 +1,4 @@
-import type { AgentEvent, AgentProvider, AgentProviderResumeOptions, AgentProviderStartOptions } from "@eo/core";
+import type { AgentEvent, AgentForkResult, AgentProvider, AgentProviderResumeOptions, AgentProviderStartOptions } from "@eo/core";
 import { createFakeProvider, type FakeProviderScript } from "./fake.js";
 
 export interface ScriptedRoute {
@@ -57,6 +57,22 @@ export function createScriptedProvider(routes: ScriptedRoute[], fallback: FakePr
       if (index === undefined) return;
       const innerThreadId = threadId.slice(threadId.indexOf(":") + 1);
       yield* providerFor(index).resume(innerThreadId, message, opts);
+    },
+
+    // Forked by the route's own provider, and the copy namespaced like
+    // any thread it starts, so a resume of the copy finds its way back.
+    async fork(threadId: string, message: string, opts?: AgentProviderResumeOptions): Promise<AgentForkResult> {
+      const index = routeByThreadId.get(threadId);
+      if (index === undefined) return { ok: false, reason: "thread_not_found", threadId, message: `No scripted route started thread "${threadId}".` };
+      const forked = await providerFor(index).fork!(threadId.slice(threadId.indexOf(":") + 1), message, opts);
+      if (!forked.ok) return { ...forked, threadId };
+      const forkId = `r${index}:${forked.threadId}`;
+      routeByThreadId.set(forkId, index);
+      const inner = forked.events;
+      async function* events(): AsyncIterable<AgentEvent> {
+        for await (const event of inner) yield event.type === "thread_started" ? { ...event, threadId: forkId } : event;
+      }
+      return { ok: true, threadId: forkId, events: events() };
     },
   };
 }
