@@ -41,7 +41,7 @@ describe("what the system agent's prompt says about machine-specific values", ()
   it("says where a value that differs between installations goes instead", () => {
     const section = portabilitySection();
     expect(section).toContain("**A step input with a sensible default**");
-    expect(section).toContain("**Read while the step runs**, from the checkout (`ctx.cwd`, git), from `ctx.workspace` (the base branch, the test command, the forge) or from the forge");
+    expect(section).toContain("**Read while the step runs**, from the checkout (`ctx.cwd`, git), from `ctx.workspace` (the base branch, the test command, the forge), from `ctx.project` (its item types and pipelines) or from the forge");
     expect(section).toContain("**A declared environment variable or secret**");
   });
 

@@ -439,8 +439,8 @@ a URL, how long to wait — goes in one of three places instead:
   overrides without touching code. A repository convention such as a
   default branch of \`main\` is fine written this way.
 - **Read while the step runs**, from the checkout (\`ctx.cwd\`, git),
-  from \`ctx.workspace\` (the base branch, the test command, the forge) or
-  from the forge.
+  from \`ctx.workspace\` (the base branch, the test command, the forge),
+  from \`ctx.project\` (its item types and pipelines) or from the forge.
 - **A declared environment variable or secret** — in a module, named in
   \`needs.env\`.
 

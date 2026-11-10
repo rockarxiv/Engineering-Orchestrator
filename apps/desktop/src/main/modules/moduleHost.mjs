@@ -2958,8 +2958,14 @@ async function main() {
 // The harness API this implements is documented in the file header,
 // under "Test mode". What follows is the machinery behind it.
 
-/** Every fixture `harness.run` takes. A name outside this is a typo, and is refused rather than ignored. */
-const FIXTURE_NAMES = new Set(["exec", "item", "itemByKey", "runs", "transitions", "items", "attachments", "run", "workspace", "project", "answer", "inputs", "timeoutMs", "createItem"]);
+/**
+ * Every fixture `harness.run` takes. A name outside this is a typo, and is refused rather than ignored.
+ *
+ * Exported for `roles/systemAgentModuleSurface.test.ts` (EO-712), which
+ * fails when a name here is missing from the system agent's prompt or
+ * from module_test_save's description.
+ */
+export const FIXTURE_NAMES = new Set(["exec", "item", "itemByKey", "runs", "transitions", "items", "attachments", "run", "workspace", "project", "answer", "inputs", "timeoutMs", "createItem"]);
 
 /**
  * The `runs` or `transitions` a case scripted, `{ KEY: [entry, …] }`,
