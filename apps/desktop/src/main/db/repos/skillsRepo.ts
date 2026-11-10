@@ -392,7 +392,13 @@ export type ReplicaSkillResult = { ok: true } | { ok: false; problem: string };
 
 function upsertReplicaSkillIn(db: Db, skill: Skill, projectId?: string | null): ReplicaSkillResult {
   const here = getSkill(db, skill.id);
-  const locked = copyLockRefusal(here, skill);
+  // The same copy again changes nothing a lock protects, so it is neither
+  // written nor refused (EO-714).
+  if (here?.locked === true && sameSkill(here, skill)) {
+    db.delete(heldSkillCopies).where(eq(heldSkillCopies.skillId, skill.id)).run();
+    return { ok: true };
+  }
+  const locked = copyLockRefusal(here);
   if (locked !== null) return { ok: false, problem: locked };
   const blocker = slugHolder(db, skill.id, skill.slug);
   if (blocker?.locked === true) {
@@ -460,18 +466,41 @@ function upsertReplicaSkillIn(db: Db, skill: Skill, projectId?: string | null): 
 /**
  * Why a copy from the record may not be written over this row, or null
  * (EO-714). The record is not a person, so a lock set here refuses its
- * copy as it refuses any author that is not one.
+ * copy as it refuses any author that is not one — whether or not the
+ * copy arrives locked itself: a lock on the record says nothing about who
+ * wrote what it holds, which an agent may have written before a person
+ * locked it there.
  *
- * Except a copy that arrives locked itself. The record holds the same
- * lock and refuses every author but a person under it, so what it sends
- * locked was written by a person — refusing it would keep a person's own
- * edit, made on another machine, off this one for good.
+ * A copy identical to the row is not a write at all (`sameSkill`), and is
+ * answered by the caller before this is asked: a publication applied
+ * again, or a page sent again, must not be refused over a lock.
  */
-function copyLockRefusal(here: Skill | undefined, copy: Skill): string | null {
-  if (here === undefined || !here.locked || copy.locked) return null;
+function copyLockRefusal(here: Skill | undefined): string | null {
+  if (here === undefined || !here.locked) return null;
   return (
     `EO did not write your organisation's newer copy of the skill "${here.slug}" over this machine's: a person locked it here, ` +
     "so nothing was written. The newer copy is held here, and replaces yours as soon as you unlock it on the Skills screen."
+  );
+}
+
+/**
+ * Whether two copies of a skill say the same in every column a copy
+ * writes that a person could see change (EO-714) — a rename or a new scope
+ * is a write as much as a new body is.
+ */
+function sameSkill(a: Skill, b: Skill): boolean {
+  return (
+    a.slug === b.slug &&
+    a.name === b.name &&
+    a.description === b.description &&
+    a.body === b.body &&
+    JSON.stringify(a.files) === JSON.stringify(b.files) &&
+    a.disableModelInvocation === b.disableModelInvocation &&
+    a.enabled === b.enabled &&
+    JSON.stringify(a.scope) === JSON.stringify(b.scope) &&
+    a.archivedAt === b.archivedAt &&
+    a.createdBy === b.createdBy &&
+    a.locked === b.locked
   );
 }
 
@@ -549,22 +578,7 @@ export function releaseHeldSkillCopies(db: Db): string[] {
 function versionCopy(db: Db, before: Skill | undefined, id: string): void {
   const after = getSkill(db, id);
   if (after === undefined) return;
-  // Every column such a copy writes that a person could see change — a
-  // rename or a new scope is a write as much as a new body is.
-  const same =
-    before !== undefined &&
-    before.slug === after.slug &&
-    before.name === after.name &&
-    before.description === after.description &&
-    before.body === after.body &&
-    JSON.stringify(before.files) === JSON.stringify(after.files) &&
-    before.disableModelInvocation === after.disableModelInvocation &&
-    before.enabled === after.enabled &&
-    JSON.stringify(before.scope) === JSON.stringify(after.scope) &&
-    before.archivedAt === after.archivedAt &&
-    before.createdBy === after.createdBy &&
-    before.locked === after.locked;
-  if (!same) appendVersion(db, after, "sync", { kind: "record" }, Date.now());
+  if (before === undefined || !sameSkill(before, after)) appendVersion(db, after, "sync", { kind: "record" }, Date.now());
 }
 
 // ── A project's own skills, as they travel with it (EO-513) ─────────
@@ -657,7 +671,9 @@ export function writeMovedSkill(db: Db, skill: RecordSkill, projectId: string): 
   // A person's lock on the record refuses the moved copy, as it refuses
   // any author that is not a person (EO-714) — said by the caller, which
   // ends the move with the sentence.
-  if (before !== undefined && before.locked && !skill.locked) {
+  if (before !== undefined && before.locked) {
+    // A page sent again carries the same copy, which is no write.
+    if (sameSkill(before, skill)) return { ok: true };
     return { ok: false, problem: `a person locked the skill "${skill.slug}" on this record, so the moved copy was not written over it; unlock it there and move the project again` };
   }
   const columns = {

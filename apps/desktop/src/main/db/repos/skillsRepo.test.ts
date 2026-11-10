@@ -467,13 +467,13 @@ describe("skill versions", () => {
       updatedAt: 1,
       archivedAt: null,
       createdBy: "agent" as const,
-      locked: true,
+      locked: false,
     };
     upsertReplicaSkill(handle.db, published);
     upsertReplicaSkill(handle.db, published);
     upsertReplicaSkill(handle.db, { ...published, body: "Two.", updatedAt: 2 });
 
-    expect(getSkill(handle.db, published.id)).toMatchObject({ createdBy: "agent", locked: true, body: "Two." });
+    expect(getSkill(handle.db, published.id)).toMatchObject({ createdBy: "agent", locked: false, body: "Two." });
     expect(listSkillVersions(handle.db, published.id).map((version) => [version.action, version.author.kind, version.body])).toEqual([
       ["sync", "record", "Two."],
       ["sync", "record", "One."],
@@ -591,11 +591,43 @@ describe("skill versions", () => {
     expect(listSkillVersions(handle.db, recordCopy().id)).toEqual(history);
   });
 
-  it("takes a copy that arrives locked itself, which the record could only have let a person write", () => {
+  it("refuses a copy that arrives locked itself over a skill locked here, since a lock on the record says nothing of who wrote it", () => {
+    // Locked on the record after an agent wrote it there; the same lock here.
     upsertReplicaSkill(handle.db, recordCopy({ locked: true }));
+    const before = getSkill(handle.db, recordCopy().id);
+    const history = listSkillVersions(handle.db, recordCopy().id);
 
-    expect(upsertReplicaSkill(handle.db, recordCopy({ locked: true, body: "A person's edit.", updatedAt: 2 })).ok).toBe(true);
-    expect(getSkill(handle.db, recordCopy().id)?.body).toBe("A person's edit.");
+    const taken = upsertReplicaSkill(handle.db, recordCopy({ locked: true, body: "An agent's edit, then locked.", updatedAt: 2 }));
+
+    expect(taken.ok).toBe(false);
+    if (taken.ok) return;
+    expect(taken.problem).toContain("a person locked it here");
+    expect(getSkill(handle.db, recordCopy().id)).toEqual(before);
+    expect(listSkillVersions(handle.db, recordCopy().id)).toEqual(history);
+  });
+
+  it("neither writes nor refuses the same copy again over a locked skill", () => {
+    upsertReplicaSkill(handle.db, recordCopy({ locked: true }));
+    const history = listSkillVersions(handle.db, recordCopy().id);
+
+    expect(upsertReplicaSkill(handle.db, recordCopy({ locked: true })).ok).toBe(true);
+    expect(listSkillVersions(handle.db, recordCopy().id)).toEqual(history);
+  });
+
+  it("refuses a moved copy that arrives locked itself over a skill locked on the record, but not the same page sent again", () => {
+    const moved: RecordSkill = { ...recordCopy({ locked: true, scope: { kind: "project", projectId: "proj-moved" } }), projectId: "proj-moved" };
+    expect(writeMovedSkill(handle.db, moved, "proj-moved").ok).toBe(true);
+    const before = getSkill(handle.db, moved.id);
+    const history = listSkillVersions(handle.db, moved.id);
+
+    expect(writeMovedSkill(handle.db, moved, "proj-moved").ok).toBe(true);
+    const written = writeMovedSkill(handle.db, { ...moved, body: "An agent's edit, then locked.", updatedAt: 2 }, "proj-moved");
+
+    expect(written.ok).toBe(false);
+    if (written.ok) return;
+    expect(written.problem).toContain("a person locked the skill");
+    expect(getSkill(handle.db, moved.id)).toEqual(before);
+    expect(listSkillVersions(handle.db, moved.id)).toEqual(history);
   });
 
   it("refuses a moved copy over a skill a person locked on the record, writing nothing", () => {
