@@ -42,7 +42,7 @@ describe("skillsPromptSection", () => {
     expect(differing).toEqual([
       [
         "Pick from those descriptions. When one of them fits what you are doing, invoke it with the Skill tool by the name shown and follow it;",
-        "Pick from those descriptions. When one of them fits what you are doing, read `.agent/skills/<slug>/SKILL.md` and follow it;",
+        "Pick from those descriptions. When one of them fits what you are doing, load it by its name with the `skill_read` tool EO serves you on the MCP server it registers as `eo` (every backend spells a tool id its own way, so find it by that server name), and follow what it answers;",
       ],
     ]);
   });

@@ -576,10 +576,9 @@ export interface SkillsOfferedEvent {
 /**
  * The agent loaded one of EO's skills (EO-715), read off what the backend
  * did rather than what the agent said: a `Skill` call naming
- * `eo-attachments:<slug>` on Claude, exactly; on Codex, inferred as best
- * it can be from a command and its output (`codexSkillsRead`) that the
- * command read `.agent/skills/<slug>/SKILL.md`. Emitted straight after the
- * `tool_call` it was read from. Whether the turn was given that skill is
+ * `eo-attachments:<slug>` on Claude, and a `skill_read` call to EO's `eo`
+ * server that EO answered on Codex (EO-721) — a tool call on both, and
+ * exact on both. Emitted straight after the `tool_call` it was read from. Whether the turn was given that skill is
  * the supervisor's question, not the adapter's.
  */
 export interface SkillLoadAgentEvent {

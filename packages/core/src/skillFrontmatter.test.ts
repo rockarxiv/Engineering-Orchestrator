@@ -24,12 +24,6 @@ describe("skillFrontmatter", () => {
     expect(written.split("\n")).toContain('  display-name: "PR review"');
   });
 
-  it("writes the skill's id under metadata only where a delivery asks for it (EO-715)", () => {
-    expect(skillFrontmatter(skill)).not.toContain("eo-skill-id");
-    const marked = skillFrontmatter({ ...skill, skillIdMarker: "0199-skill" }).split("\n");
-    expect(marked.slice(-4)).toEqual(['  display-name: "PR review"', '  eo-skill-id: "0199-skill"', "---", ""]);
-  });
-
   it("escapes a display name carrying a quote, a colon and a newline", () => {
     const written = skillFrontmatter({ ...skill, name: 'Ship: "now"\nor never' });
 

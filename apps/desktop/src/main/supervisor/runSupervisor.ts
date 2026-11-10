@@ -56,6 +56,8 @@ import {
   MEMORY_NOTE_TOOL_NAME,
   REPOSITORY_CHECKOUT_TOOL_NAME,
   RepositoryCheckoutArgsSchema,
+  SKILL_READ_TOOL_NAME,
+  SkillReadArgsSchema,
   memoryNoteEnabled,
   DEFAULT_MEMORY_DELIVERY_CHARS,
   DEFAULT_MEMORY_SCOPE_MAX_CHARS,
@@ -116,7 +118,7 @@ import {
 } from "@eo/core";
 import { agentAttachmentsHash, EMPTY_ATTACHMENTS_HASH } from "../agentAttachments/fingerprint.js";
 import { qualifiedServerName } from "../agentAttachments/pluginDirectory.js";
-import { deliverableSkills } from "../agentAttachments/worktreeSkills.js";
+import { deliverableSkills, skillReadAnswer } from "../agentAttachments/worktreeSkills.js";
 import { resolveAgentAttachmentsForRun } from "../db/repos/agentAttachmentsRepo.js";
 import type { Db } from "../db/client.js";
 import { startOfDay } from "../dateUtils.js";
@@ -207,6 +209,7 @@ import {
 
   stepForItem,
   memoryDeliveredToRun,
+  getSkill,
 } from "../db/repos/index.js";
 import { budgetRefusal, occurrenceOverBudget, pauseForBudget } from "../jobs/budget.js";
 import { readPolicy } from "../policy/policy.js";
@@ -2456,10 +2459,37 @@ export function createRunSupervisor(
           return await noteMemory(item, runId, request.args);
         case REPOSITORY_CHECKOUT_TOOL_NAME:
           return await checkoutForAgent(item, request.args);
+        case SKILL_READ_TOOL_NAME:
+          return readSkillForAgent(runId, request.args);
       }
     } catch (error) {
       return { ok: false, code: "WRITE_FAILED", problem: `EO could not write it, so nothing was written: ${error instanceof Error ? error.message : String(error)}` };
     }
+  }
+
+  /**
+   * A `skill_read` call (EO-721): the instructions of a skill this run
+   * was given, by slug, and where its supporting files are — or a refusal
+   * naming the skills it was given, for one it was not.
+   *
+   * Which skills those are is the run's `skills_delivered` (`runSkills`),
+   * the same record a load is held to; the load itself is read off the
+   * call by the adapter and recorded by `recordSkillUsage`, as Claude's
+   * `Skill` call is. A refusal records nothing.
+   */
+  function readSkillForAgent(runId: Uuid, args: unknown): AgentWriteAnswer {
+    const parsed = SkillReadArgsSchema.safeParse(args);
+    if (!parsed.success) return { ok: false, code: "INVALID_ARGUMENT", problem: "skill_read takes `slug`, a skill's name as your prompt lists it, and nothing else." };
+    const given = runSkills.get(runId);
+    const slugs = given === undefined ? [] : [...given.bySlug.keys()].sort();
+    const skillId = given?.bySlug.get(parsed.data.slug);
+    const skill = skillId === undefined ? undefined : getSkill(db, skillId);
+    if (skill === undefined) {
+      const which = slugs.length === 0 ? "EO gave this run no skills" : `The skills EO gave this run are ${slugs.map((slug) => `\`${slug}\``).join(", ")}`;
+      return { ok: false, code: "SKILL_NOT_GIVEN", problem: `EO did not give this run a skill called \`${parsed.data.slug}\`, so nothing was loaded. ${which}.` };
+    }
+    const answer = skillReadAnswer(skill);
+    return { ok: true, text: answer.text, data: answer.data };
   }
 
   /**

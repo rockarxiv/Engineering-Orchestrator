@@ -1,6 +1,6 @@
 import { lstatSync, mkdirSync, readFileSync, readdirSync, rmSync, rmdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { renderSkillMarkdown, type Skill } from "@eo/core";
+import { RESERVED_MCP_SERVER_NAME, SKILL_READ_TOOL_NAME, type Skill } from "@eo/core";
 import { isDeliverable, skillFiles, type PluginFile } from "./pluginDirectory.js";
 import { skillsPromptSection } from "./skillsPrompt.js";
 
@@ -17,16 +17,19 @@ import { skillsPromptSection } from "./skillsPrompt.js";
  * does not — and until this shipped EO said so in a comment rather than
  * fixing it.
  *
- * **Files in the worktree, choices in the prompt.** The files go to
- * `.agent/skills/<slug>/SKILL.md`, the same shape the generated
- * repository index already uses: a directory EO writes into the working
- * tree, which an agent finds by looking rather than by following a
- * per-run absolute path it was handed. One location, discovery by
- * listing, and a prompt section
- * that is a sentence instead of a path. It is a convenience rather than
- * a capability — the sandbox runs at `danger-full-access`, so a Codex
- * agent could already read the generated directory under `userData` — and
- * `workspace/excludes.ts` is what keeps it out of `git status`.
+ * **Instructions through a tool, supporting files in the worktree,
+ * choices in the prompt (EO-721).** A skill's instructions — its
+ * `SKILL.md` — are served by EO's `skill_read` tool on the `eo` server,
+ * so a load is a tool call EO sees, as exact as Claude's `Skill` call;
+ * EO-207 wrote the file into the worktree and EO-715 then had to infer a
+ * load from a shell command's output. What a skill's instructions point
+ * at, its supporting files, still go to `.agent/skills/<slug>/`, which
+ * `skill_read`'s answer names: a directory EO writes into the working
+ * tree, the same shape the generated repository index already uses. It
+ * is a convenience rather than a capability — the sandbox runs at
+ * `danger-full-access`, so a Codex agent could already read the generated
+ * directory under `userData` — and `workspace/excludes.ts` is what keeps
+ * it out of `git status`.
  *
  * **Skills only. The generated directory as a whole does not move.** It
  * also holds `.mcp.json`, which carries `Authorization: Bearer
@@ -42,9 +45,9 @@ import { skillsPromptSection } from "./skillsPrompt.js";
  * every supporting file in the context of every turn, whether or not the
  * turn is about any of them — and it is why a person can attach several
  * skills without paying for all of them. So the prompt lists slug and
- * description and says where to read; the model chooses from
- * descriptions and opens the file only once it has chosen. The same two
- * steps Claude's SDK drives, driven by the prompt instead.
+ * description and names the tool; the model chooses from descriptions
+ * and loads the body only once it has chosen. The same two steps
+ * Claude's SDK drives, driven by the prompt instead.
  *
  * **One worktree, several agents, one delivery.** Every action on an
  * item shares a checkout, so `.agent/skills` holds whatever the last
@@ -64,10 +67,10 @@ import { skillsPromptSection } from "./skillsPrompt.js";
  * whole and says so.
  *
  * **The two flags keep the meanings they already had.**
- * `disableModelInvocation` is "present on disk, absent from what the
- * model is choosing between", which maps exactly: written to
- * `.agent/skills`, left out of the prompt's list, so a skill a person
- * names deliberately still resolves. `enabled` and `archivedAt` are
+ * `disableModelInvocation` is "delivered, absent from what the model is
+ * choosing between", which maps exactly: `skill_read` serves it, the
+ * prompt's list leaves it out, so a skill a person names deliberately
+ * still resolves. `enabled` and `archivedAt` are
  * answered by `isDeliverable` — the same predicate the generated
  * directory asks, not a second rule that gets to disagree with it.
  */
@@ -287,28 +290,45 @@ export function deliverableSkills(skills: readonly Skill[]): Skill[] {
 }
 
 /**
- * A skill's `SKILL.md` as Codex is given it: the plugin directory's file,
- * with the skill's id under `metadata` (EO-715). Codex has no skill tool,
- * so a load is told by what a command shows of the file, and the id is
- * the part of it no other file holds — whatever command read it.
+ * One skill's supporting files as the worktree holds them — paths
+ * relative to `.agent` — and never its `SKILL.md` (EO-721): the
+ * instructions are `skill_read`'s answer, not a file to read.
+ *
+ * `skillFiles` is reused from the generated directory, so a supporting
+ * file lands at the same `skills/<slug>/<path>` there and here, and a
+ * body that says "see `checklist.md`" means the same file on both
+ * backends.
  */
-export function worktreeSkillMarkdown(skill: Skill): string {
-  return renderSkillMarkdown({ ...skill, skillIdMarker: skill.id });
+export function worktreeSupportingFiles(skill: Skill): PluginFile[] {
+  const instructions = `skills/${skill.slug}/SKILL.md`;
+  return skillFiles(skill).filter((file) => file.path !== instructions);
 }
 
 /**
  * Every file the worktree's `.agent` directory holds, as content rather
  * than as writes — paths relative to `.agent`.
- *
- * `skillFiles` is reused verbatim from the generated directory, which is
- * what makes a supporting file work here for free: it lands beside its
- * `SKILL.md` because that function puts it there, and a body that says
- * "see `checklist.md`" resolves as a sibling on disk either way.
  */
 export function worktreeSkillFiles(skills: readonly Skill[]): PluginFile[] {
   return deliverableSkills(skills)
-    .flatMap((skill) => skillFiles(skill, worktreeSkillMarkdown(skill)))
+    .flatMap(worktreeSupportingFiles)
     .sort((a, b) => a.path.localeCompare(b.path));
+}
+
+/**
+ * What `skill_read` answers for a skill the run was given (EO-721): its
+ * instructions, and — where it has supporting files — the folder in the
+ * working directory they were written to, and their names.
+ */
+export function skillReadAnswer(skill: Skill): { text: string; data: { slug: string; directory: string | null; files: string[] } } {
+  const prefix = `skills/${skill.slug}/`;
+  const files = worktreeSupportingFiles(skill).map((file) => file.path.slice(prefix.length));
+  const directory = files.length > 0 ? `${WORKTREE_SKILLS_PATH}/${skill.slug}` : null;
+  const body = skill.body.trim() === "" ? "This skill has no instructions beyond its description." : skill.body.trimEnd();
+  const where =
+    directory === null
+      ? ""
+      : `\n\n---\nThis skill's supporting files are in \`${directory}/\` in your working directory: ${files.map((file) => `\`${file}\``).join(", ")}. Read them as its instructions ask.`;
+  return { text: `${body}${where}`, data: { slug: skill.slug, directory, files } };
 }
 
 /** One skill that was attached and is not on disk, and why. */
@@ -348,9 +368,14 @@ export interface WorktreeSkillDelivery {
  * wrote is removed — including one written for a *different* agent on
  * the same item, which is what makes the delivery a statement about
  * this turn rather than an accumulation. Then any remaining folder
- * standing under a slug this dispatch wants is one EO did not write, so
- * that skill is not delivered and is named in `undelivered` rather than
- * written over. Then what is left is written, marker first.
+ * standing under a slug this dispatch wants to write supporting files
+ * for is one EO did not write, so that skill is not delivered and is
+ * named in `undelivered` rather than written over. Then what is left is
+ * written, marker first.
+ *
+ * A skill with no supporting files puts nothing on disk (EO-721): its
+ * instructions are `skill_read`'s answer, so it is delivered whatever
+ * the checkout holds.
  *
  * Never throws, and never swallows either. A read-only checkout or a
  * file sitting where `.agent` goes is a reason to dispatch without the
@@ -363,15 +388,24 @@ export function writeWorktreeSkills(worktreePath: string, skills: readonly Skill
   const root = join(worktreePath, WORKTREE_AGENT_DIRECTORY);
   const skillsRoot = join(root, WORKTREE_SKILLS_SUBDIRECTORY);
   // Computed before the try, so the failure path below can say which
-  // skills a filesystem error actually cost.
+  // skills a filesystem error actually cost. A slug `skillFiles` will not
+  // write under is no skill to deliver at all.
   const deliverable = deliverableSkills(skills).filter((skill) => skillFiles(skill).length > 0);
+  // Only a skill with supporting files needs the disk; the rest are
+  // delivered by `skill_read` alone (EO-721).
+  const withoutFiles = deliverable.filter((skill) => worktreeSupportingFiles(skill).length === 0);
+  const withFiles = deliverable.filter((skill) => worktreeSupportingFiles(skill).length > 0);
+  const answered = (delivered: Skill[], undelivered: UndeliveredSkill[]): WorktreeSkillDelivery => ({
+    delivered: deliverableSkills([...withoutFiles, ...delivered]),
+    undelivered,
+  });
 
   // Asked before anything is read, swept or written, because everything
   // below this line walks *through* those two directories: a link at
   // either would take the sweep and the write somewhere EO was never
   // given.
   const refusal = undeliverableRoot(root, skillsRoot);
-  if (refusal) return { delivered: [], undelivered: deliverable.map((skill) => ({ slug: skill.slug, reason: refusal })) };
+  if (refusal) return answered([], withFiles.map((skill) => ({ slug: skill.slug, reason: refusal })));
 
   try {
     for (const slug of eoOwnedSkillDirectories(skillsRoot)) rmSync(join(skillsRoot, slug), { recursive: true, force: true });
@@ -380,7 +414,7 @@ export function writeWorktreeSkills(worktreePath: string, skills: readonly Skill
     // EO's own went a line above.
     const undelivered: UndeliveredSkill[] = [];
     const delivered: Skill[] = [];
-    for (const skill of deliverable) {
+    for (const skill of withFiles) {
       // `occupied` rather than `existsSync`: a broken symbolic link
       // holds the name without resolving to anything, and answering
       // "nothing there" would have EO try to create the folder and fail
@@ -399,7 +433,7 @@ export function writeWorktreeSkills(worktreePath: string, skills: readonly Skill
     if (files.length === 0) {
       removeIfEmpty(skillsRoot);
       removeIfEmpty(root);
-      return { delivered: [], undelivered };
+      return answered([], undelivered);
     }
 
     for (const skill of delivered) {
@@ -414,15 +448,15 @@ export function writeWorktreeSkills(worktreePath: string, skills: readonly Skill
       mkdirSync(dirname(target), { recursive: true });
       writeFileSync(target, file.content, "utf8");
     }
-    return { delivered, undelivered };
+    return answered(delivered, undelivered);
   } catch (error) {
-    // Every deliverable skill, not only the one the write was on. A
+    // Every skill with files, not only the one the write was on. A
     // failure can land part-way through, and EO cannot say which files
-    // survived it — so nothing is reported as delivered, the prompt
+    // survived it — so none of them is reported as delivered, the prompt
     // offers none of them, and the sentence names them all. Whatever did
     // reach disk carries a marker and is swept by the next dispatch.
     const reason = `EO could not write ${WORKTREE_SKILLS_PATH} in the worktree: ${error instanceof Error ? error.message : String(error)}`;
-    return { delivered: [], undelivered: deliverable.map((skill) => ({ slug: skill.slug, reason })) };
+    return answered([], withFiles.map((skill) => ({ slug: skill.slug, reason })));
   }
 }
 
@@ -490,20 +524,24 @@ export function unmanagedAgentEntries(worktreePath: string): string[] {
 /**
  * The section a Codex turn starts with, or an empty string when there is
  * nothing to choose between. Rendered by `skillsPromptSection`, which
- * Claude's shares (EO-602); what is Codex's own is opening a skill by
- * reading its file.
+ * Claude's shares (EO-602); what is Codex's own is loading a skill with
+ * `skill_read` (EO-721), named by the server it is on rather than in
+ * either backend's spelling of a tool id (EO-203).
  *
  * Slug and description only. The body is deliberately absent — see the
  * note at the top of this file, and `worktreeSkills.test.ts`, which
  * attaches a skill with a distinctive body string and asserts that
  * string never reaches the turn.
  *
- * A skill carrying `disableModelInvocation` is on disk and not in here,
+ * A skill carrying `disableModelInvocation` is delivered and not in here,
  * which is what that flag has always meant. When every delivered skill
  * carries it there is no section at all rather than a heading with
  * nothing under it — the same rule as an agent with nothing attached.
  */
 export function worktreeSkillsPromptSection(delivered: readonly Skill[]): string {
   const offered = delivered.filter((skill) => !skill.disableModelInvocation).map((skill) => ({ name: skill.slug, description: skill.description }));
-  return skillsPromptSection(offered, `When one of them fits what you are doing, read \`${WORKTREE_SKILLS_PATH}/<slug>/SKILL.md\` and follow it;`);
+  return skillsPromptSection(
+    offered,
+    `When one of them fits what you are doing, load it by its name with the \`${SKILL_READ_TOOL_NAME}\` tool EO serves you on the MCP server it registers as \`${RESERVED_MCP_SERVER_NAME}\` (every backend spells a tool id its own way, so find it by that server name), and follow what it answers;`,
+  );
 }

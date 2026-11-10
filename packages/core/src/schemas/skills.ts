@@ -296,8 +296,8 @@ export type SkillVersion = z.infer<typeof SkillVersionSchema>;
  * The run event that records which skills a run was given: the ids, and
  * the slugs the backend offered them under. Written by the supervisor
  * from what the adapter reports it actually delivered — the plugin
- * directory's skills on Claude, the folders written under
- * `.agent/skills` on Codex — never from what the agent says. One per run
+ * directory's skills on Claude, the skills `writeWorktreeSkills`
+ * delivered on Codex — never from what the agent says. One per run
  * that was given any.
  */
 export const SKILLS_DELIVERED_EVENT = "skills_delivered";
@@ -310,8 +310,8 @@ export type SkillsDeliveredEvent = z.infer<typeof SkillsDeliveredEventSchema>;
 
 /**
  * The run event that records a run loading one of the skills it was
- * given: a `Skill` call naming it on Claude, a command inferred to have
- * read its `SKILL.md` on Codex. Once per skill per run; a load of a skill the run
+ * given: a `Skill` call naming it on Claude, a `skill_read` call EO
+ * answered on Codex (EO-721). Once per skill per run; a load of a skill the run
  * was not given records nothing.
  */
 export const SKILL_LOADED_EVENT = "skill_loaded";

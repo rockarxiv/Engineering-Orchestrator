@@ -49,7 +49,7 @@ import {
 } from "@eo/core";
 import type { AdminMcpDispatch } from "../agentAttachments/adminDelivery.js";
 import { deliverableSkills, writeWorktreeSkills, worktreeSkillsPromptSection, type WorktreeSkillDelivery } from "../agentAttachments/worktreeSkills.js";
-import { codexSkillsRead, NO_SKILL_TEXTS, skillsOffered, skillTextsOf, type SkillTexts } from "./skillUsage.js";
+import { codexSkillLoaded, skillsOffered } from "./skillUsage.js";
 import { openedFork } from "./threadFork.js";
 import { agentMcpStdioConfig, eoMcpStdioConfig, type EoMcpServiceConfig } from "../mcp/serviceConfig.js";
 import { codexModelPrice, codexTurnCostCents, codexTurnCostMicrocents } from "./codexPricing.js";
@@ -304,6 +304,8 @@ export interface CodexProviderOptions {
     withheldEnvironmentVariables?: readonly string[],
     /** The directory the turn runs in, for the administrative bearer (EO-700). Handed only to an agent given that server. */
     adminDirectory?: string,
+    /** The skills the turn was given, by slug, for `skill_read` (EO-721). Handed only on a turn given some. */
+    skillSlugs?: readonly string[],
   ) => Pick<CodexClient, "startThread" | "resumeThread"> & Partial<Pick<CodexClient, "prewarm" | "forkThread">>;
   /**
    * Seam for tests — the client a side call runs on (EO-477), built from
@@ -747,11 +749,7 @@ function threadOptionsFrom(
  * than silently dropping it — an SDK that adds an event type should show
  * up in the logs, not vanish.
  */
-export function mapThreadEvent(
-  event: ThreadEvent,
-  /** The skills the turn was given, as their files read (EO-715): what a command's output is held to. */
-  skillTexts: SkillTexts = NO_SKILL_TEXTS,
-): { mapped: AgentEvent[]; recognised: boolean } {
+export function mapThreadEvent(event: ThreadEvent): { mapped: AgentEvent[]; recognised: boolean } {
   switch (event.type) {
     case "thread.started":
       // With the model the app-server opened the thread on, when it named
@@ -823,7 +821,7 @@ export function mapThreadEvent(
       return { mapped: [], recognised: true };
 
     case "item.completed":
-      return mapCompletedItem(event.item, skillTexts);
+      return mapCompletedItem(event.item);
 
     // The words of an item as they are generated — transient, never
     // stored; `item.completed` is the record (`OutputDeltaEvent`).
@@ -891,7 +889,7 @@ async function lastReadingWhileStopping(
   }
 }
 
-function mapCompletedItem(item: ThreadItem, skillTexts: SkillTexts): { mapped: AgentEvent[]; recognised: boolean } {
+function mapCompletedItem(item: ThreadItem): { mapped: AgentEvent[]; recognised: boolean } {
   switch (item.type) {
     case "agent_message":
       // Carries the final answer — and, when an outputSchema was given,
@@ -921,11 +919,6 @@ function mapCompletedItem(item: ThreadItem, skillTexts: SkillTexts): { mapped: A
       return {
         mapped: [
           { type: "tool_call", name: "command_execution", callId: item.id, args: { command: item.command } },
-          // A command whose output shows a skill's `SKILL.md` loaded that
-          // skill (EO-715): Codex has no skill tool, so the read is the
-          // load — told by what came back, whole and before the bound
-          // below, never by a mention of the path.
-          ...codexSkillsRead(item.command, item.aggregated_output, skillTexts),
           toolResultEvent({
             name: "command_execution",
             callId: item.id,
@@ -963,10 +956,18 @@ function mapCompletedItem(item: ThreadItem, skillTexts: SkillTexts): { mapped: A
       // empty string.
       const structured = item.result?.structured_content;
       const output = failure ?? (content === "" && structured !== undefined && structured !== null ? JSON.stringify(structured) : content);
+      const ok = item.status === "completed" && failure === undefined;
+      // An EO tool's refusal carries `error` in its structured content
+      // (`toolError` in `mcp/eoServer.mjs`), however the call's status was
+      // reported: a `skill_read` EO refused loaded nothing.
+      const refused = typeof structured === "object" && structured !== null && "error" in structured;
       return {
         mapped: [
           { type: "tool_call", name, callId: item.id, args: item.arguments },
-          toolResultEvent({ name, callId: item.id, ok: item.status === "completed" && failure === undefined, status: item.status, output }),
+          // A `skill_read` EO answered loads that skill (EO-721): the call
+          // is the load, as a `Skill` call is on Claude.
+          ...codexSkillLoaded(item.server, item.tool, item.arguments, ok && !refused),
+          toolResultEvent({ name, callId: item.id, ok, status: item.status, output }),
         ],
         recognised: true,
       };
@@ -1543,13 +1544,14 @@ export function buildCodexOptions(
   writeBridge?: AgentWriteBridgeAddress,
   withheldEnvironmentVariables?: readonly string[],
   adminDirectory?: string,
+  skillSlugs?: readonly string[],
 ): Pick<CodexClientOptions, "executablePath" | "config" | "env" | "afterTurn" | "perTurnEnv"> {
   // Asked once per client, and let go of again if the options cannot be
   // built (EO-444): no process will be spawned to let it go after. For
   // the directory the turn runs in (EO-700).
   const admin = options.admin?.(adminDirectory) ?? null;
   try {
-    return codexOptionsWith(options, admin, repositoryMcp, searchHook, attachFrom, memoryScopes, environmentVariables, writeBridge, withheldEnvironmentVariables);
+    return codexOptionsWith(options, admin, repositoryMcp, searchHook, attachFrom, memoryScopes, environmentVariables, writeBridge, withheldEnvironmentVariables, skillSlugs);
   } catch (error) {
     admin?.release();
     throw error;
@@ -1566,6 +1568,7 @@ function codexOptionsWith(
   environmentVariables?: Readonly<Record<string, string>>,
   writeBridge?: AgentWriteBridgeAddress,
   withheldEnvironmentVariables?: readonly string[],
+  skillSlugs?: readonly string[],
 ): Pick<CodexClientOptions, "executablePath" | "config" | "env" | "afterTurn" | "perTurnEnv"> {
   const attached = deliveredServers(options.attachedServers ?? []);
   const mcpServers: Record<string, unknown> = {};
@@ -1629,6 +1632,8 @@ function codexOptionsWith(
       ...(memoryScopes && memoryScopes.length > 0 ? { memoryScopes } : {}),
       // And where it hands what the agent writes (EO-543), the turn's too.
       ...(writeBridge ? { writeBridge } : {}),
+      // And the skills it loads with `skill_read` (EO-721), the turn's too.
+      ...(skillSlugs && skillSlugs.length > 0 ? { skillSlugs } : {}),
     });
   }
   // And EO's own administrative server, for the one agent whose allowlist
@@ -1781,9 +1786,10 @@ export function codexClientOptions(
   writeBridge?: AgentWriteBridgeAddress,
   withheldEnvironmentVariables?: readonly string[],
   adminDirectory?: string,
+  skillSlugs?: readonly string[],
 ): CodexClientOptions {
   return {
-    ...buildCodexOptions(options, repositoryMcp, searchHook, attachFrom, memoryScopes, environmentVariables, writeBridge, withheldEnvironmentVariables, adminDirectory),
+    ...buildCodexOptions(options, repositoryMcp, searchHook, attachFrom, memoryScopes, environmentVariables, writeBridge, withheldEnvironmentVariables, adminDirectory, skillSlugs),
     ...(options.onUnmappedEvent ? { onUnmappedNotification: options.onUnmappedEvent } : {}),
   };
 }
@@ -2201,7 +2207,8 @@ export function createCodexProvider(options: CodexProviderOptions = {}): AgentPr
       writeBridge?: AgentWriteBridgeAddress,
       withheldEnvironmentVariables?: readonly string[],
       adminDirectory?: string,
-    ) => new CodexClient(codexClientOptions(options, repositoryMcp, searchHook, attachFrom, memoryScopes, environmentVariables, writeBridge, withheldEnvironmentVariables, adminDirectory)));
+      skillSlugs?: readonly string[],
+    ) => new CodexClient(codexClientOptions(options, repositoryMcp, searchHook, attachFrom, memoryScopes, environmentVariables, writeBridge, withheldEnvironmentVariables, adminDirectory, skillSlugs)));
 
   /**
    * What marks EO's hook as trusted, learned once per command line.
@@ -2268,8 +2275,14 @@ export function createCodexProvider(options: CodexProviderOptions = {}): AgentPr
     writeBridge?: AgentWriteBridgeAddress,
     withheldEnvironmentVariables?: readonly string[],
     adminDirectory?: string,
+    skillSlugs?: readonly string[],
   ) {
     const hook = searchHook ? { command: searchHook.command, env: searchHook.env, trust: searchHook.trust } : undefined;
+    // And the skills `skill_read` serves only on a turn given some
+    // (EO-721) — every argument before them with it, as they are.
+    if (skillSlugs && skillSlugs.length > 0) {
+      return createCodex(repositoryMcp, hook, attachFrom, memoryScopes, environmentVariables, writeBridge, withheldEnvironmentVariables, options.admin ? adminDirectory : undefined, skillSlugs);
+    }
     // And the directory the turn runs in only to an agent given EO's
     // administrative server (EO-700), whose bearer is leased for it.
     if (options.admin && adminDirectory !== undefined) {
@@ -2309,8 +2322,6 @@ export function createCodexProvider(options: CodexProviderOptions = {}): AgentPr
     warmKey?: string,
     /** What the turn may spend, in cents (`AgentTurnOverrides.budgetCents`). */
     budgetCents?: number,
-    /** The skills the turn was given (EO-715), for telling which of them a command read. */
-    skillTexts: SkillTexts = NO_SKILL_TEXTS,
   ) {
     const interceptions = (): SearchInterceptionEvent[] => searchHook?.drain() ?? [];
     const turn = await thread.runStreamed(input, {
@@ -2358,7 +2369,7 @@ export function createCodexProvider(options: CodexProviderOptions = {}): AgentPr
             return;
           }
         }
-        const { mapped: all, recognised } = mapThreadEvent(event, skillTexts);
+        const { mapped: all, recognised } = mapThreadEvent(event);
         if (!recognised) options.onUnmappedEvent?.(event);
         const mapped = streamDeltas ? all : all.filter((agentEvent) => agentEvent.type !== "output_delta");
 
@@ -2411,29 +2422,28 @@ export function createCodexProvider(options: CodexProviderOptions = {}): AgentPr
   }
 
   async function* resumedTurn(threadId: string, message: string, resumeOpts: AgentProviderResumeOptions | undefined, reach: (turn: CodexTurn) => void, fork: boolean): AsyncIterable<AgentEvent> {
-    // This agent's skills, put back where its own first turn said they
-    // would be (EO-207).
+    // This agent's skills, given again: their supporting files put back
+    // where `skill_read` says they are (EO-207, EO-721), and the slugs
+    // the `eo` server serves.
     //
     // Written again rather than assumed to have survived, because they
     // demonstrably do not. Every action on an item shares one worktree
     // and `.agent/skills` holds one delivery: an agent dispatched after
     // this thread's first turn sweeps what this one wrote and leaves its
-    // own. This thread is then resumed with a prompt naming skills by
-    // slug — `findReusableThread` keeps the conversation, and the
-    // conversation still says "read `.agent/skills/<slug>/SKILL.md`" —
-    // against a directory that now holds somebody else's. The agent
-    // reads a path that is not there, and nothing says why.
+    // own. This thread is then resumed — `findReusableThread` keeps the
+    // conversation — and a skill it loads names a folder that now holds
+    // somebody else's.
     //
     // No prompt section goes with it: the choices were named in the turn
     // that opened this thread and are in the conversation the CLI
-    // resumes. What has to be restored is the files.
-    let skillTexts = NO_SKILL_TEXTS;
+    // resumes. What has to be restored is the files and the tool.
+    let skillSlugs: string[] = [];
     if (resumeOpts?.cwd) {
       const restored = writeWorktreeSkills(resumeOpts.cwd, skillsForRun(options.attachedSkills ?? [], resumeOpts.skillScope));
       warnAboutUndeliveredSkills(restored, resumeOpts.cwd);
       // Given them again, as a fresh turn is (EO-715).
       yield* skillsOffered(restored.delivered.map((skill) => skill.slug));
-      skillTexts = skillTextsOf(restored.delivered);
+      skillSlugs = restored.delivered.map((skill) => skill.slug);
     }
 
     // Threads persist in ~/.codex/sessions, which is what makes resume
@@ -2459,7 +2469,17 @@ export function createCodexProvider(options: CodexProviderOptions = {}): AgentPr
     }
 
     async function* resumedWith(hook: TurnSearchHook | null): AsyncIterable<AgentEvent> {
-      const client = clientFor(resumeOpts?.repositoryMcp, hook, resumeOpts?.attachFrom, resumeOpts?.memoryScopes, resumeOpts?.environmentVariables, resumeOpts?.writeBridge, resumeOpts?.withheldEnvironmentVariables, resumeOpts?.cwd);
+      const client = clientFor(
+        resumeOpts?.repositoryMcp,
+        hook,
+        resumeOpts?.attachFrom,
+        resumeOpts?.memoryScopes,
+        resumeOpts?.environmentVariables,
+        resumeOpts?.writeBridge,
+        resumeOpts?.withheldEnvironmentVariables,
+        resumeOpts?.cwd,
+        skillSlugs,
+      );
       // A fork opens with `thread/fork` instead, and the turn runs on the
       // copy it answers with (EO-716). A client built without it (a test's
       // stand-in) cannot fork, and says so rather than resuming the
@@ -2479,7 +2499,7 @@ export function createCodexProvider(options: CodexProviderOptions = {}): AgentPr
         ),
       );
       const prompt = withAttachmentNote(message, resumeOpts?.attachments);
-      for await (const event of streamTurn(thread, prompt, resumeOpts?.outputSchema, resumeOpts?.signal, reach, hook, resumeOpts?.streamDeltas === true, resumeOpts?.warmKey, resumeOpts?.budgetCents, skillTexts)) {
+      for await (const event of streamTurn(thread, prompt, resumeOpts?.outputSchema, resumeOpts?.signal, reach, hook, resumeOpts?.streamDeltas === true, resumeOpts?.warmKey, resumeOpts?.budgetCents)) {
         // A turn that fails before it starts is reported as an event
         // rather than by exiting, and `mapThreadEvent` has already turned
         // it into an ordinary `error`. Re-thrown with the backend's own
@@ -2521,10 +2541,11 @@ export function createCodexProvider(options: CodexProviderOptions = {}): AgentPr
       // named — slug and description — in the turn they belong to
       // (EO-207). Written here rather than beside the generated tool
       // directory because this is the adapter that knows the delivery:
-      // Codex has no plugin loader, so the files go where an agent finds
-      // them by listing, and the choosing is done by the prompt. Nothing
-      // is written when nothing is attached, and never the bodies —
-      // `worktreeSkills.ts` carries why.
+      // Codex has no plugin loader, so the instructions are served by
+      // `skill_read` on the `eo` server (EO-721), the supporting files go
+      // where its answer says, and the choosing is done by the prompt.
+      // Nothing is written when nothing is attached, and never the bodies
+      // — `worktreeSkills.ts` carries why.
       // Only those whose scope takes this run in — its project, or the
       // workspace its step works in (EO-470). Claude's tool directory is
       // narrowed by the same rule before it is written.
@@ -2540,8 +2561,8 @@ export function createCodexProvider(options: CodexProviderOptions = {}): AgentPr
       // Which of them this turn is given (EO-715), said first: what was
       // written, not what was attached.
       const offered = skillsOffered(skills.delivered.map((skill) => skill.slug));
-      const texts = skillTextsOf(skills.delivered);
-      return reachableTurn((reach) => saidFirst(offered, startedTurn(opts, skillsSection, reach, texts)));
+      const slugs = skills.delivered.map((skill) => skill.slug);
+      return reachableTurn((reach) => saidFirst(offered, startedTurn(opts, skillsSection, reach, slugs)));
     },
 
     resume(threadId: string, message: string, resumeOpts?: AgentProviderResumeOptions): InterruptibleStream<AgentEvent> {
@@ -2579,7 +2600,17 @@ export function createCodexProvider(options: CodexProviderOptions = {}): AgentPr
               options.config,
             );
       try {
-        clientFor(undefined, null, turn.attachFrom, turn.memoryScopes, turn.environmentVariables, turn.writeBridge, turn.withheldEnvironmentVariables, turn.cwd).prewarm?.(turn.kind === "start" ? null : turn.threadId, thread, turn.warmKey);
+        // The skills the turn will be given, as `skill_read` lists them
+        // (EO-721): part of the launch, so a warm process started without
+        // them would never be the one the turn asks for. Read off the
+        // attachments, as the turn writes them; one the checkout refuses
+        // then costs the warm start and nothing else.
+        const skillSlugs = turn.cwd === undefined ? [] : deliverableSkills(skillsForRun(options.attachedSkills ?? [], turn.skillScope)).map((skill) => skill.slug);
+        clientFor(undefined, null, turn.attachFrom, turn.memoryScopes, turn.environmentVariables, turn.writeBridge, turn.withheldEnvironmentVariables, turn.cwd, skillSlugs).prewarm?.(
+          turn.kind === "start" ? null : turn.threadId,
+          thread,
+          turn.warmKey,
+        );
       } catch (error) {
         // A warm-up is a saving, never a requirement, as on Claude: the
         // turn builds its options again and says what was wrong.
@@ -2666,7 +2697,7 @@ export function createCodexProvider(options: CodexProviderOptions = {}): AgentPr
     },
   };
 
-  async function* startedTurn(opts: AgentProviderStartOptions, skillsSection: string, reach: (turn: CodexTurn) => void, skillTexts: SkillTexts): AsyncIterable<AgentEvent> {
+  async function* startedTurn(opts: AgentProviderStartOptions, skillsSection: string, reach: (turn: CodexTurn) => void, skillSlugs: readonly string[]): AsyncIterable<AgentEvent> {
     if (opts.tools && opts.tools.length > 0 && !options.eoMcp) {
       // Deliberately loud: silently dropping the comment tool would
       // look like an agent that simply never escalates. With the MCP
@@ -2719,7 +2750,7 @@ export function createCodexProvider(options: CodexProviderOptions = {}): AgentPr
       //   back on the originals. EO never uses that. An agent whose
       //   instructions were edited gets a fresh thread
       //   (`findReusableThread`), which is the only way the edit sticks.
-      const thread = clientFor(opts.repositoryMcp, hook, opts.attachFrom, opts.memoryScopes, opts.environmentVariables, opts.writeBridge, opts.withheldEnvironmentVariables, opts.cwd).startThread({
+      const thread = clientFor(opts.repositoryMcp, hook, opts.attachFrom, opts.memoryScopes, opts.environmentVariables, opts.writeBridge, opts.withheldEnvironmentVariables, opts.cwd, skillSlugs).startThread({
         ...threadOptionsFrom(opts, options.config),
         ...(opts.instructions ? { baseInstructions: opts.instructions } : {}),
       });
@@ -2728,7 +2759,7 @@ export function createCodexProvider(options: CodexProviderOptions = {}): AgentPr
       // `assembleContext` deliberately does not append them to the
       // context either, so they are said exactly once.
       const prompt = withAttachmentNote(withSkillsSection(opts.context, skillsSection), opts.attachments);
-      yield* streamTurn(thread, prompt, opts.outputSchema, opts.signal, reach, hook, opts.streamDeltas === true, opts.warmKey, opts.budgetCents, skillTexts);
+      yield* streamTurn(thread, prompt, opts.outputSchema, opts.signal, reach, hook, opts.streamDeltas === true, opts.warmKey, opts.budgetCents);
     }
   }
 
