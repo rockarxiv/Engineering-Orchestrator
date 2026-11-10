@@ -118,7 +118,7 @@ describe("the notification", () => {
    */
   it("does not interrupt anybody over a preview, and still does over real work", () => {
     const notified: string[] = [];
-    const notifier = createInboxNotifier(handle.db, { notify: (row) => void notified.push(row.itemId), setBadge: () => {} });
+    const notifier = createInboxNotifier(handle.db, { notify: (row) => void notified.push(row.itemId), notifyMessage: () => {}, setBadge: () => {} });
 
     // The first pass records what already exists rather than announcing
     // it, so everything below is a mention that arrived while EO was up.

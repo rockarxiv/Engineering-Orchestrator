@@ -1,4 +1,4 @@
-import type { InboxItem } from "@eo/core";
+import type { InboxItem, Message } from "@eo/core";
 import { CHANGE_PUSH_WINDOW_MS } from "./changeAnnouncers.js";
 import { coalescePerKey } from "./coalesce.js";
 import type { Db } from "./db/client.js";
@@ -17,6 +17,12 @@ export interface NotifierDeps {
    * file about what interrupts somebody and when.
    */
   notify: (item: InboxItem) => void;
+  /**
+   * Where a message EO sent the person is shown (EO-725). Its own
+   * callback because a message has no item to open: clicking one opens
+   * the Inbox, where it is answered.
+   */
+  notifyMessage: (message: Message) => void;
   /**
    * Where the count of what is waiting is shown — the dock or taskbar
    * badge under Electron.
@@ -46,6 +52,14 @@ export function notificationFor(item: InboxItem): { title: string; body: string 
     // The item is one click away for the rest of it.
     body: truncateForGlance(item.body),
   };
+}
+
+/**
+ * What a message from EO says when it interrupts somebody (EO-725).
+ * Truncated like a mention: the Inbox is one click away for the rest.
+ */
+export function notificationForMessage(message: Message): { title: string; body: string } {
+  return { title: "EO needs you", body: truncateForGlance(message.body) };
 }
 
 /**
@@ -110,15 +124,18 @@ function truncateForGlance(body: string): string {
  *   a count of what is waiting rather than an interruption.
  * - Do Not Disturb suppresses the notification only. The badge still
  *   updates — silencing an alert should not also hide the fact.
+ * - Every open message EO sent the person notifies, once, by message id
+ *   (EO-725): a message exists only because EO needs them to answer or
+ *   act, so there is no FYI kind of one.
  */
 export function createInboxNotifier(db: Db, deps: NotifierDeps) {
   const announced = new Set<string>();
   let primed = false;
 
-  const { notify, setBadge } = deps;
+  const { notify, notifyMessage, setBadge } = deps;
 
   function refresh(): void {
-    const { items, summary } = listInbox(db);
+    const { items, messages, summary } = listInbox(db);
     setBadge(summary.openCount);
 
     const doNotDisturb = getSetting(db, DND_KEY, false);
@@ -138,9 +155,15 @@ export function createInboxNotifier(db: Db, deps: NotifierDeps) {
       if (primed && !doNotDisturb) notify(item);
     }
 
-    // Forget answered mentions so a re-opened one can notify again, and
-    // so the set doesn't grow without bound.
-    const open = new Set(items.map((item) => item.commentId));
+    for (const message of messages) {
+      if (announced.has(message.id)) continue;
+      announced.add(message.id);
+      if (primed && !doNotDisturb) notifyMessage(message);
+    }
+
+    // Forget answered mentions and handled messages so a re-opened one
+    // can notify again, and so the set doesn't grow without bound.
+    const open = new Set([...items.map((item) => item.commentId), ...messages.map((message) => message.id)]);
     for (const id of announced) {
       if (!open.has(id)) announced.delete(id);
     }

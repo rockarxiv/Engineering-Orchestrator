@@ -231,6 +231,7 @@ import { connectJira, disconnectJira, jiraFields, listJiraConnectionsCommand, re
 import { importJiraIssue, previewJiraIssue, searchJira } from "./jiraImportCommands.js";
 import { detectForge } from "./forgeCommands.js";
 import { actingCaller, actingReader, scopedProjectId } from "../identity/acting.js";
+import { answerMessageCommand, dismissMessageCommand, messageRecipientsFor } from "../messages/messages.js";
 import { emitPush } from "./push.js";
 import { recordFor } from "../record/localRecord.js";
 import type { ItemRecord } from "../record/record.js";
@@ -574,9 +575,15 @@ export function registerAllHandlers(db: Db, engine: EngineHandle | undefined, re
   registerHandler("runs:live", (payload) => ({ turn: runLiveTurn(db, payload.runId) }), opts);
   registerHandler(
     "inbox:list",
-    (payload) => listInbox(db, boardProjectId(db, payload) as Uuid | null, actingReader(db, payload.actingDeviceId)),
+    (payload) =>
+      listInbox(db, boardProjectId(db, payload) as Uuid | null, actingReader(db, payload.actingDeviceId), messageRecipientsFor(db, payload.actingDeviceId)),
     opts,
   );
+  // EO's messages to a person outside any item (EO-725): answered with one
+  // of their options or dismissed, by their recipient only. Each pushes
+  // `messages:changed` itself.
+  registerHandler("messages:answer", (payload) => answerMessageCommand(db, payload), opts);
+  registerHandler("messages:dismiss", (payload) => dismissMessageCommand(db, payload), opts);
   registerHandler("mentions:open", (payload) => openMentionsCommand(db, payload), opts);
   registerHandler("agents:list", () => listAgentViews(db), opts);
   registerHandler("pipelineSteps:list", (payload) => listPipelineStepViews(db, payload), opts);

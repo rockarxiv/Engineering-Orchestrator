@@ -108,7 +108,8 @@ import {
   versionAuthorName,
 } from "../db/repos/index.js";
 import { actingCaller, visibleProjectIds } from "../identity/acting.js";
-import { viewerFor } from "../identity/viewer.js";
+import { viewerFor, viewerIds } from "../identity/viewer.js";
+import { listOpenMessages } from "../db/repos/messagesRepo.js";
 import { decisionsFor } from "./decisions.js";
 import { outputFor } from "./outputCommands.js";
 import { originIndex, originOfItem } from "../jobs/origin.js";
@@ -1894,6 +1895,13 @@ export function listInbox(
    * a managed project's inbox without anything looking broken.
    */
   viewer?: Uuid,
+  /**
+   * Whose messages (EO-725): the people this read answers for. Absent is
+   * the reader where one was named and this machine's identities
+   * otherwise; `inbox:list` passes `messageRecipientsFor`, which also
+   * knows an operator's key is nobody.
+   */
+  recipients: readonly string[] = viewer ? [viewer] : viewerIds(db),
 ): IpcResponse<"inbox:list"> {
   const states = new Map(
     listPipelineSteps(db).map((state) => [state.id, state]),
@@ -1913,6 +1921,12 @@ export function listInbox(
   );
 
   const items: InboxItem[] = openMentionRows(db, viewer, (item) => inScope.has(item.id), viewer).map(({ row }) => row);
+  // EO's messages to this person that belong to no item (EO-725). A
+  // project read keeps the ones about that project and the ones about
+  // none; an unscoped read — the badge and the notifications — keeps all.
+  const messages = listOpenMessages(db, recipients).filter(
+    (message) => projectId === undefined || message.projectId === null || message.projectId === projectId,
+  );
 
   // "Everything is blocked" means every item the engine could still
   // move is waiting on a human. Items already finished don't count —
@@ -1960,8 +1974,10 @@ export function listInbox(
 
   return {
     items,
+    messages,
     summary: {
-      openCount: real.length,
+      // A message is waiting on you as much as a question is, and counts.
+      openCount: real.length + messages.length,
       blockingCount: blockedItemIds.size,
       everythingBlocked,
     },

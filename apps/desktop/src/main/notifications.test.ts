@@ -1,4 +1,4 @@
-import type { Agent, InboxItem, Item } from "@eo/core";
+import { LOCAL_PERSON_ID, type Agent, type InboxItem, type Item, type Message } from "@eo/core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createChangeAnnouncers } from "./changeAnnouncers.js";
 import type { DbHandle } from "./db/client.js";
@@ -6,7 +6,8 @@ import { createRun, listAgents, postComment, setSetting, updateRun } from "./db/
 import { createTestItem, openMigratedTestDb } from "./db/testHelpers.js";
 import { DND_KEY } from "./ipc/domainCommands.js";
 import { listInbox } from "./ipc/domainQueries.js";
-import { createInboxNotifier, notificationFor, notificationForJobGuard, shouldInterrupt } from "./notifications.js";
+import { createInboxNotifier, notificationFor, notificationForJobGuard, notificationForMessage, shouldInterrupt } from "./notifications.js";
+import { dismissMessageCommand, sendMessage } from "./messages/messages.js";
 
 let handle: DbHandle;
 let item: Item;
@@ -14,8 +15,9 @@ let implementer: Agent;
 
 function makeNotifier() {
   const notify = vi.fn<(item: InboxItem) => void>();
+  const notifyMessage = vi.fn<(message: Message) => void>();
   const setBadge = vi.fn<(count: number) => void>();
-  return { notifier: createInboxNotifier(handle.db, { notify, setBadge }), notify, setBadge };
+  return { notifier: createInboxNotifier(handle.db, { notify, notifyMessage, setBadge }), notify, notifyMessage, setBadge };
 }
 
 /** An agent asking the human something, optionally with its run parked. */
@@ -136,6 +138,47 @@ describe("notifications", () => {
     askHuman("asking again", { blocking: true });
     notifier.refresh();
     expect(notify).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("messages from EO (EO-725)", () => {
+  const message = () => sendMessage(handle.db, { recipientId: LOCAL_PERSON_ID, source: "test", body: "Pick one", options: ["Yes", "No"] });
+
+  it("are counted on the badge beside the questions, and leave it once handled", () => {
+    const { notifier, setBadge } = makeNotifier();
+    askHuman("first?");
+    const sent = message();
+    notifier.refresh();
+    expect(setBadge).toHaveBeenLastCalledWith(2);
+
+    dismissMessageCommand(handle.db, { messageId: sent.id });
+    notifier.refresh();
+    expect(setBadge).toHaveBeenLastCalledWith(1);
+  });
+
+  it("notify once each, and not while Do Not Disturb is on", () => {
+    const { notifier, notifyMessage } = makeNotifier();
+    notifier.refresh();
+
+    const sent = message();
+    notifier.refresh();
+    notifier.refresh();
+    expect(notifyMessage).toHaveBeenCalledTimes(1);
+    expect(notifyMessage.mock.calls[0]?.[0]?.id).toBe(sent.id);
+    expect(notificationForMessage(sent)).toEqual({ title: "EO needs you", body: "Pick one" });
+
+    setSetting(handle.db, DND_KEY, true);
+    message();
+    notifier.refresh();
+    expect(notifyMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it("do not re-announce what was already open when the app started", () => {
+    message();
+    const { notifier, notifyMessage, setBadge } = makeNotifier();
+    notifier.refresh();
+    expect(notifyMessage).not.toHaveBeenCalled();
+    expect(setBadge).toHaveBeenLastCalledWith(1);
   });
 });
 
