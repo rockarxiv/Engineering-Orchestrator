@@ -10,6 +10,7 @@ import {
   LOCAL_PERSON_ID,
   parsedResultOf,
   qualifiedItemType,
+  specFields,
   type Agent,
   type Comment,
   type CommentView,
@@ -43,6 +44,8 @@ import { runEvents } from "../db/schema.js";
 import {
   itemsOnArchivedProjects,
   getPipeline,
+  getPipelineVersion,
+  listChildItemsIncludingArchived,
   pipelineHasWebhookEntry,
   getItem,
   getItemType,
@@ -868,6 +871,170 @@ export function getItemSections(db: Db, request: IpcPayload<"items:getSections">
     ...(thread === undefined ? {} : { currentOutput: thread.currentOutput }),
     ...(wanted.has("dependsOn") ? { dependsOn: dependsOnSection(db, item) } : {}),
     ...(own === undefined ? {} : { watch: own.watch, attachmentSync: own.attachmentSync }),
+  };
+}
+
+/** One item a module's item is related to (EO-709): enough to name it, and to know whether it is done. */
+export interface ModuleItemRelation {
+  key: string;
+  title: string;
+  type: string;
+  /** The step's name by the item's own version, or a container's progress — what a card reads. */
+  stepName: string;
+  finished: boolean;
+}
+
+/** One comment, as `ctx.item().comments` has always carried it (EO-74). */
+export interface ModuleItemComment {
+  id: string;
+  parentId: string | null;
+  author: { type: string; name: string | null };
+  kind: string;
+  body: string;
+  pinned: boolean;
+  createdAt: number;
+}
+
+/**
+ * Everything EO holds about one item, as a module reads it through
+ * `ctx.item()` and `ctx.itemByKey()` (EO-709).
+ *
+ * Built here, beside the sections `item_get` is built from and with the
+ * same helpers, because a module reading what EO holds has to read what
+ * the screens and the agents read — and because the module host used to
+ * answer these with SQL of its own, which no migration ever updated.
+ * The host normalises and freezes this; it adds nothing.
+ *
+ * The names a module approved before this story reads — `key` to
+ * `comments` — keep their meaning. Secrets are not here, and cannot be:
+ * nothing below reads the secrets store or an environment.
+ */
+export interface ModuleItemView {
+  id: string;
+  key: string;
+  type: string;
+  title: string;
+  body: string | null;
+  parentKey: string | null;
+  branch: string | null;
+  prUrl: string | null;
+  jiraKey: string | null;
+  createdAt: number;
+  updatedAt: number;
+  comments: ModuleItemComment[];
+  spec: Record<string, unknown>;
+  fields: { name: string; kind: string; required: boolean }[];
+  priority: number;
+  heldAt: number | null;
+  archivedAt: number | null;
+  trial: boolean;
+  createdBy: string | null;
+  pipeline: { id: string; name: string } | null;
+  step: { id: string; name: string; kind: string; ownerRole: string | null } | null;
+  pipelineVersion: { id: string; number: number } | null;
+  git: {
+    branch: string | null;
+    baseBranch: string | null;
+    namedBranch: boolean;
+    attachedAt: string | null;
+    pullRequest: string | null;
+    reference: string | null;
+    targetBranch: string | null;
+  };
+  extensions: Record<string, unknown>;
+  parent: ModuleItemRelation | null;
+  children: ModuleItemRelation[];
+  dependsOn: ModuleItemRelation[];
+  dependedOnBy: ModuleItemRelation[];
+  attachments: { id: string; name: string; mimeType: string; size: number; commentId: string | null; createdAt: number }[];
+}
+
+/**
+ * `ModuleItemView` for one item. `targetBranch` is worked out by the
+ * caller, because the code that decides it is the developer pack's
+ * (`pullRequestTargetBranch`) and asks the forge — which is not this
+ * file's to do, nor something every reader of an item should wait on.
+ */
+export function moduleItemView(db: Db, item: Item, targetBranch: string | null): ModuleItemView {
+  const agentsById = agentIndex(db);
+  const type = getItemType(db, item.typeId);
+  const pipeline = item.pipelineId === null ? undefined : getPipeline(db, item.pipelineId);
+  const step = stepForItem(db, item);
+  const version = item.pipelineVersionId === null ? undefined : getPipelineVersion(db, item.pipelineVersionId);
+  const { branch, pullRequest, baseBranch, namedBranch, attachedAt, reference } = gitStateOf(item);
+
+  const edges = listAllDependencies(db);
+  const byId = (id: string): Item[] => {
+    const found = getItem(db, id as Uuid);
+    return found === undefined ? [] : [found];
+  };
+  const parent = item.parentId === null ? [] : byId(item.parentId);
+  const children = listChildItemsIncludingArchived(db, item.id);
+  const dependsOn = edges.filter((edge) => edge.itemId === item.id).flatMap((edge) => byId(edge.dependsOnId));
+  const dependedOnBy = edges.filter((edge) => edge.dependsOnId === item.id).flatMap((edge) => byId(edge.itemId));
+  // Once for every related item, as the board reads a column of cards,
+  // and by each one's own version (EO-327).
+  const finished = finishedItemIds(db, [...parent, ...children, ...dependsOn, ...dependedOnBy]);
+  let stories: Item[] | undefined;
+  const relation = (related: Item): ModuleItemRelation => ({
+    key: related.key,
+    title: related.title,
+    type: related.type,
+    stepName: stepLabel(db, related),
+    finished: isFinished(db, related, finished, (stories ??= listItems(db))),
+  });
+
+  return {
+    id: item.id,
+    key: item.key,
+    type: item.type,
+    title: item.title,
+    body: item.body,
+    parentKey: parent[0]?.key ?? null,
+    branch,
+    prUrl: pullRequest,
+    jiraKey: jiraStateOf(item).key,
+    createdAt: item.createdAt,
+    updatedAt: item.updatedAt,
+    comments: listCommentsForItem(db, item.id).map((comment) => ({
+      id: comment.id,
+      parentId: comment.parentId,
+      // The agent's name where an agent wrote it, and null otherwise —
+      // what the host's own read answered, and a module may branch on.
+      author: { type: comment.authorType, name: (comment.authorId && agentsById.get(comment.authorId)?.name) || null },
+      kind: comment.kind,
+      body: comment.body,
+      pinned: comment.pinned,
+      createdAt: comment.createdAt,
+    })),
+    spec: item.spec ?? {},
+    // The type's fields, so a module can tell a field left unset from
+    // one set to `false` — the spec alone cannot say.
+    fields: (type === undefined ? [] : specFields(type.specShape)).map(({ name, kind, required }) => ({ name, kind, required })),
+    priority: item.priority,
+    heldAt: item.heldAt,
+    archivedAt: item.archivedAt,
+    trial: item.trialAt !== null,
+    createdBy: item.createdBy === null ? null : (getPerson(db, item.createdBy)?.name ?? null),
+    pipeline: pipeline === undefined ? null : { id: pipeline.id, name: pipeline.name },
+    step: step === undefined ? null : { id: step.id, name: step.name, kind: step.type, ownerRole: step.ownerRole },
+    pipelineVersion: version === undefined ? null : { id: version.id, number: version.number },
+    git: { branch, baseBranch, namedBranch, attachedAt, pullRequest, reference, targetBranch },
+    extensions: { ...item.extensions },
+    parent: parent[0] === undefined ? null : relation(parent[0]),
+    children: children.map(relation),
+    dependsOn: dependsOn.map(relation),
+    dependedOnBy: dependedOnBy.map(relation),
+    // Every file on the item, its comments' included; `commentId` says
+    // which. What a file holds is not here: reading one is its own call.
+    attachments: listAttachmentsForItem(db, item.id).map((attachment) => ({
+      id: attachment.id,
+      name: attachment.name,
+      mimeType: attachment.mimeType,
+      size: attachment.size,
+      commentId: attachment.commentId,
+      createdAt: attachment.createdAt,
+    })),
   };
 }
 

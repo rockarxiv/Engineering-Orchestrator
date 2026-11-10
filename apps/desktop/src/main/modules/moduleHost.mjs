@@ -13,13 +13,13 @@
  * main process holds the writable database handle, the IPC surface, the
  * forge credentials and every Electron API; a module runs over here, so
  * none of it is reachable through an object reference. That is worth
- * having and it is real. The one thing that crosses is a *read-only*
- * SQLite handle this process opens for itself (EO-74), closed over by
- * `ctx.item()` and `ctx.itemByKey()` — read-only because a writable
- * handle in a second process is a second writer, and because every write
- * EO makes goes through a repo that does work a raw statement skips.
- * `ctx.commentOn()` reads through the same handle to check the key it
- * was handed (EO-75), and writes nothing through it.
+ * having and it is real. Nothing of EO's database crosses either:
+ * `ctx.item()` and `ctx.itemByKey()` ask the main process, which reads
+ * with the code the screens read with and answers on fd 6 (EO-709), and
+ * `ctx.commentOn()` asks the same way whether the key it was handed
+ * names an item (EO-75). This process once opened the database
+ * read-only and answered with SQL of its own (EO-74); that SQL was a
+ * second reader no migration updated, and it is gone.
  *
  * It is **not a sandbox**. A module runs with the user's privileges and
  * Node's full builtin surface, so `node:fs` reads whatever the user can
@@ -47,14 +47,14 @@
  * The protocol is one JSON request on stdin, the module's own output as
  * newline-delimited JSON on fd 3, and one JSON response on fd 4.
  *
- * Writes go out over fd 3 rather than being done here (EO-75). The
- * handle above is read-only, and that is not merely caution: EO's
- * `postComment` resolves mentions, queues the Jira mirror and announces
+ * Writes go out over fd 3 rather than being done here (EO-75). There
+ * is no handle to write through over here, and that is not merely
+ * caution: EO's `postComment` resolves mentions, queues the Jira mirror and announces
  * the change to open windows, so a row inserted from this side would be
  * a comment that never reaches Jira and that no open window hears about.
  * fd 3 already carries typed JSON and already has `output` and `exec`
  * cases, so `ctx.comment()` is one more case rather than new plumbing —
- * and the parent, which owns the writable handle, does the posting.
+ * and the parent, which owns the database, does the posting.
  * `ctx.attach()` is the same again (EO-414): an `attach` event naming
  * paths, which the parent checks, copies into the attachment store and
  * posts as one comment with the files on it.
@@ -75,6 +75,11 @@
  * module was imported (`PRIMORDIALS` below), so replacing
  * `Socket.prototype.emit`, `JSON.parse` or `fs.read` afterwards changes
  * nothing this reader calls.
+ *
+ * Reads are the same again (EO-709): a `read` event on fd 3, and a
+ * signed line back on fd 6 — a fourth descriptor, because this one is
+ * waited on synchronously (`ctx.item()` takes no `await`) and fd 5 has
+ * an asynchronous read outstanding while a creation waits.
  *
  * The result gets its own descriptor rather than sharing stdout, and that
  * is not fastidiousness — a module *will* `console.log`, and console.log
@@ -136,12 +141,19 @@
  *     repeated calls take their answers in order. `code` defaults to 0,
  *     `stdout` and `stderr` to "". `needs.bin` is still enforced.
  *   - `item`: the item `ctx.item()` answers with, as a partial of its
- *     shape (`key`, `type`, `title`, `body`, `parentKey`, `branch`,
- *     `prUrl`, `jiraKey`, `createdAt`, `updatedAt`, `comments`); fields
- *     left out are null. Defaults to `{ key: "TEST-1" }`; `null` runs
- *     the module with no item.
+ *     shape (`itemShape`): `id`, `key`, `type`, `title`, `body`,
+ *     `parentKey`, `branch`, `prUrl`, `jiraKey`, `createdAt`,
+ *     `updatedAt`, `comments`, `spec`, `fields`, `priority`, `heldAt`,
+ *     `archivedAt`, `trial`, `createdBy`, `pipeline`, `step`,
+ *     `pipelineVersion`, `git`, `extensions`, `parent`, `children`,
+ *     `dependsOn`, `dependedOnBy` and `attachments`. Fields left out are
+ *     null, `false`, `[]` or `{}` (`spec`, `extensions`); `git` is
+ *     always an object, its fields null or `false` where left out.
+ *     Defaults to `{ key: "TEST-1" }`; `null` runs the module with no
+ *     item.
  *   - `itemByKey`: `{ "EO-2": { title: … }, … }`, the other items
- *     `ctx.itemByKey()` finds and `ctx.commentOn()` may comment on.
+ *     `ctx.itemByKey()` finds and `ctx.commentOn()` may comment on, each
+ *     a partial of the same shape.
  *   - `answer`: what `ctx.answer()` answers, `{ text, offered, matched }`
  *     or null (the default).
  *   - `inputs`: the step's values, laid over the manifest's defaults and
@@ -223,11 +235,10 @@
 
 import { spawn } from "node:child_process";
 import { createHmac, randomUUID } from "node:crypto";
-import { read as readDescriptor, writeSync } from "node:fs";
+import { read as readDescriptor, readSync, writeSync } from "node:fs";
 import { createRequire, isBuiltin, registerHooks, syncBuiltinESMExports } from "node:module";
 import { dirname, isAbsolute as isAbsolutePath, parse as parsePath, resolve as resolvePath, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { DatabaseSync } from "node:sqlite";
 import * as nodeUtil from "node:util";
 // The one import that is not a Node builtin, and the reason it is here
 // (EO-414): which files may go on a ticket is decided by the function the
@@ -242,8 +253,9 @@ import { checkAttachmentPath } from "../mcp/eoServer.mjs";
 /**
  * Keeps `node:sqlite`'s experimental warning out of every transcript.
  *
- * Importing it emits one on stderr, and this process's stderr *is* the
- * module's transcript — so without this, EO's own choice of SQLite
+ * Importing it emits one on stderr — this host does not use it, but
+ * `mcp/eoServer.mjs`, imported below for its attachment check, does —
+ * and this process's stderr *is* the module's transcript — so without this, EO's own choice of SQLite
  * binding would print two lines into `run_events` on every module run,
  * including the runs of modules that never read a ticket. `run_events`
  * is append-only (invariant #3), which makes it noise nothing can take
@@ -268,6 +280,8 @@ const TRANSCRIPT_FD = 3;
 const RESULT_FD = 4;
 /** The reply channel (EO-433): the parent's signed answer to each `ctx.createItem()`. */
 const REPLY_FD = 5;
+/** The read channel (EO-709): the parent's signed answer to each `ctx.item()` and `ctx.itemByKey()`, waited for. */
+const READ_FD = 6;
 
 /**
  * What the three channels are worked with, taken before any module runs
@@ -297,6 +311,8 @@ const hmacPrototype = Object.getPrototypeOf(createHmac("sha256", "eo"));
 const PRIMORDIALS = Object.freeze({
   write: writeSync,
   read: readDescriptor,
+  readSync,
+  wait: Atomics.wait,
   hmac: createHmac,
   hmacUpdate: uncurryThis(hmacPrototype.update),
   hmacDigest: uncurryThis(hmacPrototype.digest),
@@ -1570,38 +1586,11 @@ function makeExec(request, env) {
     });
 }
 
-// ── Reading a ticket ──────────────────────────────────────────
+// ── Reading an item ───────────────────────────────────────────
 
-/**
- * The handle both reads close over (EO-74).
- *
- * `mcp/eoServer.mjs` is the pattern, down to the line: a subprocess under
- * the same "`node:*` and nothing else" rule, `node:sqlite`'s
- * `DatabaseSync` rather than the native driver the main process uses —
- * which is bundled, and has exactly one import site by convention — and
- * `{ readOnly: true }`.
- *
- * Read-only is not decoration. A writable handle here would be a second
- * writer against a database another process owns, and every write EO
- * makes goes through a repo: `postComment` resolves mentions, queues the
- * Jira mirror and announces to open windows, so a raw INSERT from this
- * side would produce a comment that never reaches Jira and that nobody
- * is told about.
- *
- * Exported so its own test can prove the handle refuses a write, which
- * is the only way to assert a property of the handle rather than of the
- * caller.
- */
-export function openItemDatabase(path) {
-  if (typeof path !== "string" || path === "") return null;
-  return new DatabaseSync(path, { readOnly: true });
-}
-
-/** SQLite hands an integer back as a number or, past 2^53, a BigInt. */
+/** A number, or null for anything else — a missing date is missing, not zero. */
 function asNumber(value) {
-  if (typeof value === "number") return value;
-  if (typeof value === "bigint") return Number(value);
-  return null;
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
 /** Null rather than "null": a missing branch is missing, not the word. */
@@ -1609,46 +1598,31 @@ function asText(value) {
   return typeof value === "string" ? value : null;
 }
 
-// `it.slug AS type` since KAN-129: the type is an `item_types` row and
-// the column on the item is a foreign key. `ctx.item().type` is a
-// published field of the module SDK and goes on reading the same word it
-// always did — a module approved before this migration must not find a
-// field gone (invariant #12).
-//
-// And the Jira key through `item_extensions` since KAN-148, for the same
-// reason in the other direction: the column left the item row, and
-// `ctx.item().jiraKey` must not leave with it. A module with no Jira
-// binding has no row there, and the LEFT JOIN answers null — which is
-// what the column held for it.
-//
-// The branch and the pull request are the same story since KAN-169
-// (`ARCHITECTURE.md`, "One work entity"): two more columns that left the
-// item row for an extension of their own, and two more published fields
-// of the SDK that may not leave with them. An item on a workspace that
-// cuts no branch has no `git` row, and the LEFT JOIN answers null —
-// which is what both columns held for it. `pullRequest` in the payload
-// is `prUrl` on the way out, because that is the name a module already
-// approved is reading.
-const TICKET_SELECT = `SELECT t.id, t.key, it.slug AS type, t.title, t.body,
-              json_extract(git.data, '$.branch') AS branch,
-              json_extract(git.data, '$.pullRequest') AS pr_url,
-              json_extract(ext.data, '$.key') AS jira_key, t.created_at, t.updated_at,
-              parent.key AS parent_key
-         FROM items t
-         JOIN item_types it ON it.id = t.type_id
-    LEFT JOIN items parent ON parent.id = t.parent_id
-    LEFT JOIN item_extensions ext ON ext.item_id = t.id AND ext.extension = 'jira'
-    LEFT JOIN item_extensions git ON git.item_id = t.id AND git.extension = 'git'
-        WHERE t.key = ?`;
+/** A plain object or array as frozen data, all the way down, and a copy: nothing a module holds is shared with what it was built from. */
+function frozenData(value) {
+  if (Array.isArray(value)) return Object.freeze(value.map(frozenData));
+  if (value !== null && typeof value === "object") {
+    const copy = {};
+    for (const [name, entry] of Object.entries(value)) copy[name] = frozenData(entry);
+    return Object.freeze(copy);
+  }
+  return value === undefined ? null : value;
+}
 
-/** Existence, without building a whole ticket to prove it. */
-const KEY_SELECT = `SELECT t.key FROM items t WHERE t.key = ?`;
+/** An object's fields as frozen data, or `{}` — so `ctx.item().spec.automerge` reads undefined rather than throwing. */
+function frozenRecord(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value) ? frozenData(value) : Object.freeze({});
+}
 
-const COMMENT_SELECT = `SELECT c.id, c.parent_id, c.author_type, c.kind, c.body, c.pinned, c.created_at, a.name AS author_name
-         FROM comments c
-    LEFT JOIN agents a ON a.id = c.author_id
-        WHERE c.item_id = ?
-     ORDER BY c.created_at, c.id`;
+/** A list, each entry shaped, frozen; `[]` for anything that is not one. */
+function frozenList(value, shape) {
+  return Object.freeze((Array.isArray(value) ? value : []).map((entry) => shape(entry !== null && typeof entry === "object" ? entry : {})));
+}
+
+/** An object shaped, or null where there is none. */
+function shapedOrNull(value, shape) {
+  return value !== null && typeof value === "object" && !Array.isArray(value) ? shape(value) : null;
+}
 
 /**
  * One comment, as a program reads one rather than as a person does.
@@ -1657,69 +1631,128 @@ const COMMENT_SELECT = `SELECT c.id, c.parent_id, c.author_type, c.kind, c.body,
  * `mcp/eoServer.mjs` renders: that service writes prose for an agent to
  * read, and this is read by an `if`. `id` and `parentId` stay because a
  * reply is only a reply by pointing at what it answers — which is how a
- * module finds the answer to the question it asked. Attachments are
- * named nowhere: a module has no channel to receive bytes over, so
- * listing files it cannot open would be a promise this cannot keep.
+ * module finds the answer to the question it asked. A comment's files
+ * are in the item's `attachments`, each naming the comment it is on.
  */
-function commentShape(row) {
+function commentShape(value) {
+  const author = value.author !== null && typeof value.author === "object" ? value.author : {};
   return Object.freeze({
-    id: asText(row.id),
-    parentId: asText(row.parent_id),
-    author: Object.freeze({ type: asText(row.author_type), name: asText(row.author_name) }),
-    kind: asText(row.kind),
-    body: asText(row.body),
-    pinned: Boolean(row.pinned),
-    createdAt: asNumber(row.created_at),
+    id: asText(value.id),
+    parentId: asText(value.parentId),
+    author: Object.freeze({ type: asText(author.type), name: asText(author.name) }),
+    kind: asText(value.kind),
+    body: asText(value.body),
+    pinned: value.pinned === true,
+    createdAt: asNumber(value.createdAt),
+  });
+}
+
+/** Another item this one is related to (EO-709): enough to name it and to know whether it is done. */
+function relationShape(value) {
+  return Object.freeze({
+    key: asText(value.key),
+    title: asText(value.title),
+    type: asText(value.type),
+    stepName: asText(value.stepName),
+    finished: value.finished === true,
   });
 }
 
 /**
- * What a module is told about a ticket (EO-74).
+ * What a module is told about an item (EO-74, EO-709).
  *
- * ## What this replaced, and why it is wider
+ * ## Everything, because modules may read everything
  *
- * `ctx.item` — `ctx.ticket` when it was written — was a frozen
- * five-field value: key, type, title, branch,
- * prUrl — whose docstring argued that the narrowness was the point: "the
- * narrower this is, the less an exported module can come to depend on".
- * That argument still holds, and this is still a shape EO chose rather
- * than a row it copied. But it was drawn for a module that could state a
- * fact and stop, and a module that can comment and ask (EO-73) has to be
- * able to read the reply — so the thread comes with it, and with the
- * thread the fields a reply is usually about.
+ * This was once argued narrow on purpose — "the narrower this is, the
+ * less an exported module can come to depend on" — and widened a field
+ * at a time against that argument. The decision on ASK-67 overturned
+ * it: a module may read everything EO holds about an item, and only a
+ * secret's value stays limited to what the module declares in
+ * `needs.env`. A check that belongs in a module — merge only when the
+ * item's `automerge` field is set, refuse when the pull request targets
+ * the default branch — could not be written while the fields, the step
+ * and the branch it targets were held back.
  *
- * Widened deliberately, item by item: `body`, because a module writing
- * release notes or a PR description has nothing to write from without
- * it; `parentKey`, the feature a story belongs to, as a *key* rather
- * than the id, which means nothing on the machine that imported the
- * pipeline; `jiraKey`, so a module talking to Jira does not have to
- * guess; `createdAt` and `updatedAt`, because "has anything changed
- * since" is the question a waiting module asks; and `comments`, which is
- * the story.
+ * So the item comes whole: its id and key, its fields as stored
+ * (`spec`) with its type's field definitions (`fields`), so "not set"
+ * can be told from `false`; its priority and state; where it sits — the
+ * pipeline, the step and the pipeline version it entered on; its git
+ * state, including `targetBranch`, the branch its pull request is or
+ * will be opened against; every pack's extension data, keyed by
+ * extension; its parent, children and dependencies both ways; its
+ * files, without their content; and its thread.
  *
- * Left out just as deliberately. Row ids: `key` is the identity EO
- * publishes and `ctx.itemByKey` takes one, and handing over a primary
- * key invites the hand-written SQL this function exists to make
- * unnecessary. The pipeline and the step: where a ticket sits is the
- * engine's to decide (invariant #1), the names differ between
- * installations, and an exported module that branched on one would break
- * on arrival. And `spec`, `priority`, `heldAt`, `archivedAt`,
- * `repositoryId`, `projectId` — a module deploying or tagging has no use
- * for any of them, and every field here is one a migration has to keep.
+ * What a module must still not lean on is what differs between
+ * installations: pipeline and step ids and names, and the version
+ * number, are where *this* EO keeps the item, and an exported module
+ * that branched on one would break on arrival somewhere else.
+ *
+ * ## One shape, from two places
+ *
+ * The main process builds the answer (`moduleItemView`, beside what
+ * `item_get` is built from) and a test case writes a partial one; both
+ * come through here, so a field a real run has is a field the fixture
+ * has. A field left out is null, `false`, `[]` or `{}` — never missing,
+ * and never a throw. Every name a module approved before this read
+ * (`key` … `comments`) keeps its meaning; `branch` and `prUrl` are the
+ * same values as `git.branch` and `git.pullRequest`, and either spelling
+ * fills the other when a fixture gives only one.
  */
-function itemShape(row, comments) {
+function itemShape(value) {
+  const item = value !== null && typeof value === "object" ? value : {};
+  const git = item.git !== null && typeof item.git === "object" ? item.git : {};
+  const parent = shapedOrNull(item.parent, relationShape);
+  const branch = asText(item.branch) ?? asText(git.branch);
+  const pullRequest = asText(item.prUrl) ?? asText(git.pullRequest);
   return Object.freeze({
-    key: asText(row.key),
-    type: asText(row.type),
-    title: asText(row.title),
-    body: asText(row.body),
-    parentKey: asText(row.parent_key),
-    branch: asText(row.branch),
-    prUrl: asText(row.pr_url),
-    jiraKey: asText(row.jira_key),
-    createdAt: asNumber(row.created_at),
-    updatedAt: asNumber(row.updated_at),
-    comments: Object.freeze(comments.map(commentShape)),
+    id: asText(item.id),
+    key: asText(item.key),
+    type: asText(item.type),
+    title: asText(item.title),
+    body: asText(item.body),
+    parentKey: asText(item.parentKey) ?? parent?.key ?? null,
+    branch,
+    prUrl: pullRequest,
+    jiraKey: asText(item.jiraKey),
+    createdAt: asNumber(item.createdAt),
+    updatedAt: asNumber(item.updatedAt),
+    comments: frozenList(item.comments, commentShape),
+    spec: frozenRecord(item.spec),
+    fields: frozenList(item.fields, (field) => Object.freeze({ name: asText(field.name), kind: asText(field.kind), required: field.required === true })),
+    priority: asNumber(item.priority),
+    heldAt: asNumber(item.heldAt),
+    archivedAt: asNumber(item.archivedAt),
+    trial: item.trial === true,
+    createdBy: asText(item.createdBy),
+    pipeline: shapedOrNull(item.pipeline, (pipeline) => Object.freeze({ id: asText(pipeline.id), name: asText(pipeline.name) })),
+    step: shapedOrNull(item.step, (step) =>
+      Object.freeze({ id: asText(step.id), name: asText(step.name), kind: asText(step.kind), ownerRole: asText(step.ownerRole) }),
+    ),
+    pipelineVersion: shapedOrNull(item.pipelineVersion, (version) => Object.freeze({ id: asText(version.id), number: asNumber(version.number) })),
+    git: Object.freeze({
+      branch: asText(git.branch) ?? branch,
+      baseBranch: asText(git.baseBranch),
+      namedBranch: git.namedBranch === true,
+      attachedAt: asText(git.attachedAt),
+      pullRequest: asText(git.pullRequest) ?? pullRequest,
+      reference: asText(git.reference),
+      targetBranch: asText(git.targetBranch),
+    }),
+    extensions: frozenRecord(item.extensions),
+    parent,
+    children: frozenList(item.children, relationShape),
+    dependsOn: frozenList(item.dependsOn, relationShape),
+    dependedOnBy: frozenList(item.dependedOnBy, relationShape),
+    attachments: frozenList(item.attachments, (attachment) =>
+      Object.freeze({
+        id: asText(attachment.id),
+        name: asText(attachment.name),
+        mimeType: asText(attachment.mimeType),
+        size: asNumber(attachment.size),
+        commentId: asText(attachment.commentId),
+        createdAt: asNumber(attachment.createdAt),
+      }),
+    ),
   });
 }
 
@@ -1738,8 +1771,82 @@ const CONTEXT_DEPRECATION_LINE =
   "ctx.itemByKey(), which answer identically. The old names are retired after v0.1.";
 
 /**
+ * How a read reaches the parent and its answer comes back (EO-709).
+ *
+ * Out on fd 3 as a `read` event, back on fd 6 as one signed line — the
+ * format, the key and the checks are the creation channel's, so
+ * everything said above `makeCreationChannel` about what counts as an
+ * answer holds here too, and every function this calls was taken from
+ * `PRIMORDIALS` before the module was imported.
+ *
+ * What differs is that this one waits. `ctx.item()` is called without
+ * `await` — every module written so far does — so the answer has to be
+ * in hand before it returns: the read on fd 6 is synchronous, and the
+ * process does nothing else until the parent has answered. That is why
+ * reads have a descriptor of their own: a synchronous read on fd 5
+ * could take a creation's answer from under the asynchronous read
+ * waiting there for it.
+ *
+ * Answers `{ payload }`, or `{ failed }` with the sentence saying why
+ * no answer can come — after which every later read fails the same way
+ * at once, rather than waiting on a channel that has already ended.
+ */
+function makeReadChannel(key) {
+  const { readSync, hmac, hmacUpdate, hmacDigest, jsonParse, indexOf, slice, latin1, uuid, wait } = PRIMORDIALS;
+  let failure = typeof key === "string" && key !== "" ? null : "this run was given no way to check EO's answer.";
+  let buffered = "";
+  const chunk = Buffer.allocUnsafe(65536);
+  const sleeper = new Int32Array(new SharedArrayBuffer(4));
+
+  const verified = (line) => {
+    const space = indexOf(line, " ");
+    if (space <= 0) return null;
+    const signed = slice(line, space + 1);
+    if (slice(line, 0, space) !== hmacDigest(hmacUpdate(hmac("sha256", key), signed), "hex")) return null;
+    try {
+      const framed = jsonParse(signed);
+      return framed !== null && typeof framed === "object" && typeof framed.id === "string" ? framed : null;
+    } catch {
+      return null;
+    }
+  };
+
+  return (question) => {
+    if (failure !== null) return { failed: failure };
+    const id = uuid();
+    emit({ type: "read", id, what: question.what, key: question.key });
+    for (;;) {
+      for (let end = indexOf(buffered, "\n"); end !== -1; end = indexOf(buffered, "\n")) {
+        const framed = verified(slice(buffered, 0, end));
+        buffered = slice(buffered, end + 1);
+        if (framed !== null && framed.id === id) return { payload: framed.payload };
+      }
+      let bytesRead;
+      try {
+        bytesRead = readSync(READ_FD, chunk, 0, chunk.length, null);
+      } catch (error) {
+        // A descriptor that answers "nothing yet" instead of waiting —
+        // which it is belongs to the platform. A short sleep, not a
+        // spin, and ask again.
+        if (error && error.code === "EAGAIN") {
+          wait(sleeper, 0, 0, 2);
+          continue;
+        }
+        failure = `EO's answer could not be read: ${error instanceof Error ? error.message : String(error)}`;
+        return { failed: failure };
+      }
+      if (bytesRead === 0) {
+        failure = "EO stopped answering before this read was answered.";
+        return { failed: failure };
+      }
+      buffered += latin1(chunk, 0, bytesRead);
+    }
+  };
+}
+
+/**
  * `ctx.item()`, `ctx.itemByKey()` and the two deprecated names beside
- * them, over one lazily-opened handle.
+ * them, answered by the main process (EO-709).
  *
  * All four answer `{ found: true, item, ticket }` or
  * `{ found: false, reason }`, and none throws. A key nothing matches is
@@ -1748,9 +1855,16 @@ const CONTEXT_DEPRECATION_LINE =
  * would end the run in a stack trace instead, and an empty object would
  * read like an item that exists and has no title.
  *
- * One shape for both, including the unreadable-store case, because a
- * module that has to branch two ways to read an item will branch one
- * way and be wrong on the other.
+ * One shape for both, including the unreadable case, because a module
+ * that has to branch two ways to read an item will branch one way and
+ * be wrong on the other.
+ *
+ * The host used to answer these with SQL of its own against a read-only
+ * handle on EO's database. That SQL was a second reader nobody's
+ * migration updated, and it could only ever say what a few columns
+ * held; `ask` puts the question to the main process instead, which
+ * builds the answer with the code the screens and `item_get` use. So
+ * nothing here opens the database any more.
  *
  * ## Why the answer carries the item twice (KAN-162)
  *
@@ -1768,14 +1882,8 @@ const CONTEXT_DEPRECATION_LINE =
  * person reading a module's output learns the names are on a clock
  * before the release that removes them (invariant #12 — an absence is
  * never left to be discovered).
- *
- * Opened on first use rather than at startup: most modules never ask,
- * and one that never asks should not open EO's database at all.
  */
-function makeItemReads(dbPath, runningKey) {
-  let db = null;
-  let opened = false;
-  let problem = null;
+function makeItemReads(ask, runningKey) {
   let warned = false;
 
   /**
@@ -1792,66 +1900,48 @@ function makeItemReads(dbPath, runningKey) {
     emit({ type: "output", text: `${CONTEXT_DEPRECATION_LINE}\n` });
   };
 
-  const handle = () => {
-    if (opened) return db;
-    opened = true;
-    try {
-      db = openItemDatabase(dbPath);
-      if (db === null) problem = "This build of EO did not tell the module host where its database is, so no ticket can be read.";
-    } catch (error) {
-      problem = `EO's ticket store could not be opened: ${error instanceof Error ? error.message : String(error)}`;
-    }
-    return db;
-  };
-
   /**
-   * The key and the open handle, or the sentence that says why not.
+   * The parent's answer to one question, or the sentence that says why
+   * there is none.
    *
    * Shared by the read and by `ctx.commentOn`'s key check (EO-75) so the
    * two answer a bad key with the same words — a module told "no ticket
    * has the key" by one and something else by the other would be a
    * module that has to learn EO's phrasing twice.
    */
-  const locate = (key) => {
+  const question = (what, key) => {
     if (typeof key !== "string" || key.trim() === "") return { reason: 'A ticket key is a string, like "EO-42".' };
-    const open = handle();
-    if (open === null) return { reason: problem ?? "EO's ticket store is unavailable." };
-    return { db: open, key: key.trim() };
+    const asked = key.trim();
+    const answer = ask({ what, key: asked });
+    if (answer.failed !== undefined) return { reason: `EO's ticket store could not be read: ${answer.failed}` };
+    const payload = answer.payload !== null && typeof answer.payload === "object" ? answer.payload : {};
+    if (typeof payload.unavailable === "string") return { reason: payload.unavailable };
+    return { key: asked, payload };
   };
 
   const read = (key) => {
-    const at = locate(key);
-    if (at.db === undefined) return Object.freeze({ found: false, reason: at.reason });
-    try {
-      const row = at.db.prepare(TICKET_SELECT).get(at.key);
-      if (row === undefined) return Object.freeze({ found: false, reason: `No ticket has the key "${at.key}".` });
-      const item = itemShape(row, at.db.prepare(COMMENT_SELECT).all(row.id));
-      // `ticket` beside `item`, and the same object rather than a copy
-      // of it — see the note above on why the shape does not depend on
-      // which name was called.
-      return Object.freeze({ found: true, item, ticket: item });
-    } catch (error) {
-      return Object.freeze({ found: false, reason: `EO's ticket store could not be read: ${error instanceof Error ? error.message : String(error)}` });
-    }
+    const at = question("item", key);
+    if (at.payload === undefined) return Object.freeze({ found: false, reason: at.reason });
+    if (at.payload.item === null || typeof at.payload.item !== "object") return Object.freeze({ found: false, reason: `No ticket has the key "${at.key}".` });
+    const item = itemShape(at.payload.item);
+    // `ticket` beside `item`, and the same object rather than a copy
+    // of it — see the note above on why the shape does not depend on
+    // which name was called.
+    return Object.freeze({ found: true, item, ticket: item });
   };
 
   /**
-   * Whether a key names a ticket, without building the shape.
+   * Whether a key names an item, without building the shape.
    *
    * `ctx.commentOn` needs the answer and nothing else, and reading a
    * whole thread to discard it would make posting a comment cost what
-   * reading a ticket costs.
+   * reading an item costs.
    */
   const resolve = (key) => {
-    const at = locate(key);
-    if (at.db === undefined) return Object.freeze({ found: false, reason: at.reason });
-    try {
-      const row = at.db.prepare(KEY_SELECT).get(at.key);
-      if (row === undefined) return Object.freeze({ found: false, reason: `No ticket has the key "${at.key}".` });
-      return Object.freeze({ found: true, key: String(row.key) });
-    } catch (error) {
-      return Object.freeze({ found: false, reason: `EO's ticket store could not be read: ${error instanceof Error ? error.message : String(error)}` });
-    }
+    const at = question("exists", key);
+    if (at.payload === undefined) return Object.freeze({ found: false, reason: at.reason });
+    if (at.payload.exists !== true) return Object.freeze({ found: false, reason: `No ticket has the key "${at.key}".` });
+    return Object.freeze({ found: true, key: at.key });
   };
 
   return {
@@ -1868,14 +1958,6 @@ function makeItemReads(dbPath, runningKey) {
       return read(key);
     },
     resolve,
-    close: () => {
-      try {
-        db?.close();
-      } catch {
-        // The process is ending either way; a handle that will not close
-        // is not worth failing a finished module over.
-      }
-    },
   };
 }
 
@@ -1890,10 +1972,10 @@ function makeItemReads(dbPath, runningKey) {
  *
  * Neither writes the table, and that is the whole shape of this. EO's
  * `postComment` resolves mentions, queues the Jira mirror and announces
- * the change to open windows; a row inserted through the handle above
- * would be a comment that never reaches Jira and that no open window
- * hears about — which is also why that handle is read-only. So a comment
- * is an event on fd 3 and the parent posts it.
+ * the change to open windows; a row inserted from this side would be a
+ * comment that never reaches Jira and that no open window hears about —
+ * which is also why this side holds no handle on the database. So a
+ * comment is an event on fd 3 and the parent posts it.
  *
  * Both answer `{ posted: true }` or `{ posted: false, reason }` and
  * neither throws, matching the reads: a module that has to catch to find
@@ -2330,9 +2412,8 @@ function makeCreationChannel(key) {
  * side's to work out: the parent read the thread, applied the rules
  * about who counts as having answered and compared the reply with what
  * was offered, and sent the result on the request. Nothing here reads a
- * comment to build it — the handle over here is read-only and opened for
- * one ticket, and a second implementation of those rules living in this
- * file is exactly what having one reader was meant to end.
+ * comment to build it — a second implementation of those rules living
+ * in this file is exactly what having one reader was meant to end.
  *
  * Rebuilt from the request rather than passed through, for the reason
  * every other value a module touches is: `offered` reaches a module as a
@@ -2401,11 +2482,11 @@ async function main() {
   for (const [key, value] of Object.entries(env)) process.env[key] = value;
   const childEnv = { ...env, PATH: path };
 
-  // Closures over a read-only handle this process opens for itself, the
-  // way `mcp/eoServer.mjs` does (EO-74). A subset chosen by EO, never
-  // the row, and never a way to write one back — a write is asked for
-  // below and granted by the parent, never done here.
-  const reads = makeItemReads(request.dbPath, request.itemKey);
+  // Asked of the parent, which reads with the code the screens read
+  // with (EO-709), and waited for so `ctx.item()` needs no `await`.
+  // Never a way to write — a write is asked for below and granted by
+  // the parent, never done here.
+  const reads = makeItemReads(makeReadChannel(request.replyKey), request.itemKey);
   // The other direction (EO-75): an event on fd 3 the parent turns into
   // a real `postComment`, because a write from here would skip the
   // mentions, the Jira mirror and the push to open windows.
@@ -2519,11 +2600,6 @@ async function main() {
   } catch (error) {
     const refusal = guard.refusal();
     respond({ ok: false, reason: refusal ?? (error instanceof Error ? (error.stack ?? error.message) : String(error)) });
-  } finally {
-    // The module has returned, so nothing can ask for a ticket again.
-    // Held open past this it would keep EO's database mapped for as long
-    // as a stray timer keeps this process alive.
-    reads.close();
   }
 }
 
@@ -3219,45 +3295,33 @@ function dataUrl(code, mediaType) {
   return `data:${mediaType};base64,${Buffer.from(code, "utf8").toString("base64")}`;
 }
 
-/** One comment, from the partial shape a case writes. */
-function fixtureCommentRow(value, index) {
+/** One comment, from the partial shape a case writes, with the defaults a case has always had. */
+function fixtureComment(value, index) {
   const comment = value !== null && typeof value === "object" ? value : {};
   return {
     id: comment.id ?? `comment-${index + 1}`,
-    parent_id: comment.parentId ?? null,
-    author_type: comment.author?.type ?? "human",
-    author_name: comment.author?.name ?? null,
+    parentId: comment.parentId ?? null,
+    author: { type: comment.author?.type ?? "human", name: comment.author?.name ?? null },
     kind: comment.kind ?? "comment",
     body: comment.body ?? "",
     pinned: comment.pinned ?? false,
-    created_at: comment.createdAt ?? null,
+    createdAt: comment.createdAt ?? null,
   };
 }
 
 /**
  * An item from the partial shape a case writes, in the exact shape
  * `ctx.item()` answers with on a real run — `itemShape` builds both, so a
- * field a real run has is a field the fixture has, null where the case
- * did not say.
+ * field a real run has is a field the fixture has: every field EO-709
+ * added included, null, `false`, `[]` or `{}` where the case did not say.
  */
 function fixtureItem(value, key) {
   const item = value !== null && typeof value === "object" ? value : {};
-  const comments = Array.isArray(item.comments) ? item.comments.map(fixtureCommentRow) : [];
-  return itemShape(
-    {
-      key: typeof item.key === "string" ? item.key : key,
-      type: item.type ?? null,
-      title: item.title ?? null,
-      body: item.body ?? null,
-      parent_key: item.parentKey ?? null,
-      branch: item.branch ?? null,
-      pr_url: item.prUrl ?? null,
-      jira_key: item.jiraKey ?? null,
-      created_at: item.createdAt ?? null,
-      updated_at: item.updatedAt ?? null,
-    },
-    comments,
-  );
+  return itemShape({
+    ...item,
+    key: typeof item.key === "string" ? item.key : key,
+    comments: Array.isArray(item.comments) ? item.comments.map(fixtureComment) : [],
+  });
 }
 
 /** The type a value would satisfy, in a manifest's words. */

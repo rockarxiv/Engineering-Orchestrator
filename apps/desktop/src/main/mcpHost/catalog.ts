@@ -3562,8 +3562,13 @@ const UNGATED_WRITE_TOOLS: readonly ToolSpec[] = [
       "export is an async function taking the harness, asserting with node:assert. `await harness.run(fixtures)` runs " +
       "the module once against a scripted ctx and answers { outcome, comments, attachments, created, logs, execs }. Fixtures, all optional: " +
       "exec — [{ bin, args, code, stdout, stderr }], the answers ctx.exec gives, each answering one call matched on bin " +
-      "and args in order; a call nothing scripts fails the case. item — the ticket ctx.item() answers with (key, title, " +
-      "body, branch, prUrl, comments…). itemByKey — { KEY: item } for ctx.itemByKey and ctx.commentOn. answer — " +
+      "and args in order; a call nothing scripts fails the case. item — the ticket ctx.item() answers with, any of: id, key, type, title, " +
+      "body, parentKey, branch, prUrl, jiraKey, createdAt, updatedAt, comments, spec, fields ([{ name, kind, required }]), priority, " +
+      "heldAt, archivedAt, trial, createdBy, pipeline ({ id, name }), step ({ id, name, kind, ownerRole }), pipelineVersion " +
+      "({ id, number }), git ({ branch, baseBranch, namedBranch, attachedAt, pullRequest, reference, targetBranch }), extensions, " +
+      "parent, children, dependsOn, dependedOnBy (each { key, title, type, stepName, finished }) and attachments ([{ id, name, " +
+      "mimeType, size, commentId, createdAt }]); a field left out is null, false, [] or {}. itemByKey — { KEY: item } in the same " +
+      "shape, for ctx.itemByKey and ctx.commentOn. answer — " +
       "ctx.answer(). inputs — the step's values. timeoutMs — ctx.timeoutMs. createItem — [{ key } or { reason }], the answers ctx.createItem gets in order (NEW-1, NEW-2… when none is scripted). Nothing real happens: no process is " +
       "spawned, comments are recorded in `comments` and never posted, files given to ctx.attach are recorded in " +
       "`attachments` as [{ key, caption, paths }] and never copied, items given to ctx.createItem are recorded in `created` as [{ idempotencyKey, key, type, title, body, spec, pipeline, " +

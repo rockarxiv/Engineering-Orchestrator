@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -12,8 +12,9 @@ import { runMigrations } from "../db/migrate.js";
 import { attachWorkspace, createTestItem } from "../db/testHelpers.js";
 import { onCommentPosted } from "../db/commentEvents.js";
 import {
+  addDependency,
+  createItemType,
   createRun,
-  getItem,
   listAgents,
   listCommentsForItem,
   listMentionsForComment,
@@ -25,6 +26,7 @@ import {
 import type { StepAnswer } from "../roles/answers.js";
 import { resetSearchPathForTests, resolveSearchPath } from "../process/searchPath.js";
 import { postModuleComment } from "./moduleComments.js";
+import { moduleItemView } from "../ipc/domainQueries.js";
 import {
   MAX_COMMENTS_PER_RUN,
   MAX_COMMENT_CHARS,
@@ -39,7 +41,8 @@ import {
 } from "./runModule.js";
 // @ts-expect-error — the host is plain JavaScript, deliberately: it ships
 // unbundled because another process executes it by path.
-import { computedImportSites, moduleEnv, openItemDatabase, specifierSites } from "./moduleHost.mjs";
+import { computedImportSites, moduleEnv, specifierSites } from "./moduleHost.mjs";
+import { moduleItemReader } from "./moduleItemRead.js";
 
 
 /** Any `item_types` row: these fixtures never read the type's row, only the word on it. */
@@ -2250,7 +2253,7 @@ describe("what a module can read about an item", () => {
   let reply: Comment;
   let pinned: Comment;
 
-  const dbLauncher: ModuleHostLauncher = { ...launcher, get dbPath() { return dbPath; } };
+  const dbLauncher: ModuleHostLauncher = { ...launcher, get items() { return moduleItemReader(handle.db); } };
 
   beforeEach(() => {
     directory = mkdtempSync(join(tmpdir(), "eo module host "));
@@ -2327,6 +2330,26 @@ describe("what a module can read about an item", () => {
         { id: reply.id, parentId: note.id, author: { type: "human", name: null }, kind: "note", body: "Send it back.", pinned: false, createdAt: reply.createdAt },
         { id: pinned.id, parentId: null, author: { type: "engine", name: null }, kind: "decision", body: "Releases go out on Thursdays.", pinned: true, createdAt: pinned.createdAt },
       ],
+      // What EO-709 added. The developer pack's story type declares
+      // its fields; this item set none of them.
+      id: running.id,
+      spec: {},
+      fields: expect.arrayContaining([{ name: "acceptance_criteria", kind: "string list", required: true }]),
+      priority: running.priority,
+      heldAt: null,
+      archivedAt: null,
+      trial: false,
+      createdBy: expect.anything(),
+      pipeline: { id: "default", name: expect.any(String) },
+      step: { id: "todo", name: expect.any(String), kind: expect.any(String), ownerRole: expect.anything() },
+      pipelineVersion: running.pipelineVersionId === null ? null : { id: running.pipelineVersionId, number: expect.any(Number) },
+      git: { branch: "eo/EO-74", baseBranch: null, namedBranch: false, attachedAt: null, pullRequest: "https://forge.example/pull/74", reference: null, targetBranch: null },
+      extensions: { git: expect.objectContaining({ branch: "eo/EO-74" }), jira: expect.objectContaining({ key: "KAN-74" }) },
+      parent: { key: feature.key, title: "Give a module a voice", type: "feature", stepName: expect.any(String), finished: false },
+      children: [],
+      dependsOn: [],
+      dependedOnBy: [],
+      attachments: [],
     };
     // `ticket` beside `item`, and the same object under both keys
     // (KAN-162): a module approved before the rename reads `.ticket` off
@@ -2356,6 +2379,100 @@ describe("what a module can read about an item", () => {
     );
 
     expect(answered(outcome)).toMatchObject({ found: true, ticket: { key: elsewhere.key, title: "Somebody else's work", parentKey: null, comments: [] } });
+  });
+
+  /**
+   * The item's fields, and its type's definitions of them (EO-709): a
+   * module merging only when `automerge` is set has to tell `true` from
+   * "never set", which the spec alone cannot say.
+   */
+  it("gives a module the item's fields as stored and its type's field definitions", async () => {
+    createItemType(handle.db, {
+      projectId: running.projectId,
+      packSlug: "test",
+      slug: "change",
+      label: "Change",
+      plural: "Changes",
+      container: false,
+      specShape: { type: "object", properties: { automerge: { type: "boolean" }, summary: { type: "string" } }, required: ["summary"] },
+    });
+    const change = createTestItem(handle.db, {
+      type: { packSlug: "test", slug: "change" },
+      title: "Merge me",
+      stepId: "todo",
+      ...(running.projectId === null ? {} : { projectId: running.projectId }),
+      spec: { automerge: true, summary: "A small change." },
+    });
+
+    const outcome = await runAgainstDb(
+      `export default async function run(ctx) {
+        const item = ctx.item().item;
+        return { ok: true, result: "ok", detail: JSON.stringify({ automerge: item.spec.automerge === true, fields: item.fields }) };
+      }`,
+      change,
+    );
+
+    expect(answered(outcome)).toEqual({
+      automerge: true,
+      fields: [
+        { name: "automerge", kind: "boolean", required: false },
+        { name: "summary", kind: "string", required: true },
+      ],
+    });
+  });
+
+  it("answers another item by key in the same shape, with where it sits and what it is related to", async () => {
+    const blocker = createTestItem(handle.db, { type: "story", title: "Lay the groundwork", stepId: "todo", parentId: feature.id });
+    addDependency(handle.db, running.id, blocker.id);
+    addDependency(handle.db, elsewhere.id, running.id);
+
+    const outcome = await runAgainstDb(
+      `export default async function run(ctx) {
+        const story = ctx.itemByKey(${JSON.stringify(running.key)}).item;
+        const feature = ctx.itemByKey(${JSON.stringify(feature.key)}).item;
+        return { ok: true, result: "ok", detail: JSON.stringify({ own: Object.keys(ctx.item().item).sort(), other: Object.keys(story).sort(), story, children: feature.children }) };
+      }`,
+      elsewhere,
+    );
+
+    const read = answered(outcome) as { own: string[]; other: string[]; story: Record<string, unknown>; children: unknown[] };
+    expect(read.other).toEqual(read.own);
+    const relation = (item: Item, title: string, type = "story") => ({ key: item.key, title, type, stepName: expect.any(String), finished: false });
+    expect(read.story).toMatchObject({
+      key: running.key,
+      pipeline: { id: "default", name: expect.any(String) },
+      step: { id: "todo", name: expect.any(String) },
+      parent: relation(feature, "Give a module a voice", "feature"),
+      children: [],
+      dependsOn: [relation(blocker, "Lay the groundwork")],
+      dependedOnBy: [relation(elsewhere, "Somebody else's work")],
+    });
+    expect(read.children).toEqual(expect.arrayContaining([relation(running, "Let a module read a ticket"), relation(blocker, "Lay the groundwork")]));
+  });
+
+  /**
+   * Secret values stay limited to what a module declares (the decision
+   * on EO-708): the answer is built from the item, and nothing that
+   * builds it reads the secrets store or an environment.
+   */
+  it("puts no secret's and no environment variable's value in the answer", async () => {
+    process.env["EO_709_PROBE"] = "an-environment-value-709";
+    try {
+      const outcome = await runModule(dbLauncher, {
+        module: moduleWith(`export default async function run(ctx) { return { ok: true, result: "ok", detail: JSON.stringify([ctx.item(), ctx.itemByKey(${JSON.stringify(feature.key)})]) }; }`),
+        item: running,
+        cwd: process.cwd(),
+        env: { API_TOKEN: "a-secret-value-709", REGION: "a-variable-value-709" },
+        variables: ["REGION"],
+      });
+
+      expect(outcome.ok).toBe(true);
+      const detail = outcome.ok ? outcome.detail : "";
+      expect(detail).toContain(running.key);
+      for (const value of ["a-secret-value-709", "a-variable-value-709", "an-environment-value-709", "«API_TOKEN»", "«REGION»"]) expect(detail).not.toContain(value);
+    } finally {
+      delete process.env["EO_709_PROBE"];
+    }
   });
 
   /**
@@ -2451,22 +2568,37 @@ describe("what a module can read about an item", () => {
   });
 
   /**
-   * The handle itself, not the caller.
-   *
-   * `ctx` hands a module no way to reach the handle, so the only way to
-   * assert the property is to open one the way the host does and try to
-   * write through it. A writable handle here would be a second writer
-   * against a database the main process owns, and a write that skipped
-   * `postComment` would be a comment that never reached Jira and that
-   * nobody was told about.
+   * The answer is built in the main process (EO-709), not by SQL in the
+   * host: a reader that answers with something no database holds is
+   * what the module is handed, and the host's source holds no query.
    */
-  it("opens EO's database read-only, so a write through the handle fails", () => {
-    const db = openItemDatabase(dbPath) as { exec: (sql: string) => void; close: () => void };
+  it("answers from the main process's reader rather than from SQL of its own", async () => {
+    const asked: string[] = [];
+    const stub: ModuleHostLauncher = {
+      ...launcher,
+      items: {
+        read: (key) => {
+          asked.push(key);
+          return Promise.resolve(key === "ELSE-1" ? { ...moduleItemView(handle.db, running, "release/2.4"), key: "ELSE-1", title: "Only the reader knows this" } : null);
+        },
+        exists: (key) => key === "ELSE-1",
+      },
+    };
+    const outcome = await runModule(stub, {
+      module: moduleWith(`export default async function run(ctx) {
+        const found = ctx.itemByKey("ELSE-1");
+        return { ok: true, result: "ok", detail: JSON.stringify({ title: found.item.title, target: found.item.git.targetBranch, missing: ctx.itemByKey("NOPE-1") }) };
+      }`),
+      item: running,
+      cwd: process.cwd(),
+      env: {},
+    });
 
-    expect(() => db.exec(`UPDATE items SET title = 'rewritten'`)).toThrow(/readonly/i);
-    db.close();
-
-    expect(getItem(handle.db, running.id)?.title).toBe("Let a module read a ticket");
+    expect(answered(outcome)).toEqual({ title: "Only the reader knows this", target: "release/2.4", missing: { found: false, reason: 'No ticket has the key "NOPE-1".' } });
+    expect(asked).toEqual(["ELSE-1", "NOPE-1"]);
+    const source = readFileSync(join(here, "moduleHost.mjs"), "utf8");
+    expect(source).not.toMatch(/\bSELECT\b/);
+    expect(source).not.toMatch(/from "node:sqlite"/);
   });
 });
 
@@ -2491,7 +2623,7 @@ describe("what a module can say on an item", () => {
   let running: Item;
   let elsewhere: Item;
 
-  const dbLauncher: ModuleHostLauncher = { ...launcher, get dbPath() { return dbPath; } };
+  const dbLauncher: ModuleHostLauncher = { ...launcher, get items() { return moduleItemReader(handle.db); } };
 
   // The catalog name, which is what the Settings list shows and what the
   // step runner already names in its own failures — not `manifest.name`,

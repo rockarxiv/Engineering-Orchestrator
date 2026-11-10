@@ -520,6 +520,74 @@ describe("runModuleTests", () => {
     expect(run.cases[0]).toMatchObject({ passed: true, failure: null });
   });
 
+  /**
+   * Every field EO-709 added, scripted in both fixtures and asserted on
+   * in the case, and the shape a field left out takes: null, `false`,
+   * `[]` or `{}`, never missing.
+   */
+  it("takes every field of the item in the item and itemByKey fixtures, and leaves out none", async () => {
+    const module = `
+      export default async function (ctx) {
+        return { ok: true, result: "merged", detail: JSON.stringify({ item: ctx.item().item, other: ctx.itemByKey("EO-9").item, bare: ctx.itemByKey("EO-10").item }) };
+      }`;
+    const run = await runModuleTests(launcher, {
+      module: { code: module, manifest: manifest() },
+      tests: [
+        testCase(`import assert from "node:assert/strict";
+          const relation = { key: "EO-3", title: "Lay the groundwork", type: "story", stepName: "Review", finished: true };
+          const full = {
+            id: "0190-item", key: "EO-1", type: "story", title: "Ship it", body: "Body.", jiraKey: "KAN-1", createdAt: 1, updatedAt: 2,
+            comments: [{ id: "c-1", body: "Hello." }],
+            spec: { automerge: true, labels: ["a"] },
+            fields: [{ name: "automerge", kind: "boolean", required: false }],
+            priority: 3, heldAt: 4, archivedAt: 5, trial: true, createdBy: "Anna",
+            pipeline: { id: "p-1", name: "Software" },
+            step: { id: "merge", name: "Merge", kind: "module", ownerRole: "system" },
+            pipelineVersion: { id: "v-1", number: 2 },
+            git: { branch: "eo/EO-1", baseBranch: "release/2.4", namedBranch: true, attachedAt: "abc123", pullRequest: "https://forge.example/pull/1", reference: "JIRA-9", targetBranch: "release/2.4" },
+            extensions: { jira: { key: "KAN-1" } },
+            parent: { key: "EO-0", title: "The feature", type: "feature", stepName: "1 of 2 done", finished: false },
+            children: [relation], dependsOn: [relation], dependedOnBy: [relation],
+            attachments: [{ id: "a-1", name: "log.txt", mimeType: "text/plain", size: 12, commentId: "c-1", createdAt: 6 }],
+          };
+          export default async function (harness) {
+            const run = await harness.run({ item: full, itemByKey: { "EO-9": { ...full, key: "EO-9" }, "EO-10": {} } });
+            const { item, other, bare } = JSON.parse(run.outcome.detail);
+            for (const read of [item, other]) {
+              assert.equal(read.id, "0190-item");
+              assert.equal(read.spec.automerge, true);
+              assert.deepEqual(read.fields, [{ name: "automerge", kind: "boolean", required: false }]);
+              assert.equal(read.priority, 3);
+              assert.equal(read.heldAt, 4);
+              assert.equal(read.archivedAt, 5);
+              assert.equal(read.trial, true);
+              assert.equal(read.createdBy, "Anna");
+              assert.deepEqual(read.pipeline, { id: "p-1", name: "Software" });
+              assert.deepEqual(read.step, { id: "merge", name: "Merge", kind: "module", ownerRole: "system" });
+              assert.deepEqual(read.pipelineVersion, { id: "v-1", number: 2 });
+              assert.deepEqual(read.git, full.git);
+              assert.equal(read.branch, "eo/EO-1");
+              assert.equal(read.prUrl, "https://forge.example/pull/1");
+              assert.equal(read.parentKey, "EO-0");
+              assert.deepEqual(read.extensions, { jira: { key: "KAN-1" } });
+              assert.deepEqual(read.parent, full.parent);
+              assert.deepEqual([read.children, read.dependsOn, read.dependedOnBy], [[relation], [relation], [relation]]);
+              assert.deepEqual(read.attachments, full.attachments);
+            }
+            assert.equal(other.key, "EO-9");
+            assert.deepEqual(bare, {
+              id: null, key: "EO-10", type: null, title: null, body: null, parentKey: null, branch: null, prUrl: null, jiraKey: null,
+              createdAt: null, updatedAt: null, comments: [], spec: {}, fields: [], priority: null, heldAt: null, archivedAt: null,
+              trial: false, createdBy: null, pipeline: null, step: null, pipelineVersion: null,
+              git: { branch: null, baseBranch: null, namedBranch: false, attachedAt: null, pullRequest: null, reference: null, targetBranch: null },
+              extensions: {}, parent: null, children: [], dependsOn: [], dependedOnBy: [], attachments: [],
+            });
+          }`),
+      ],
+    });
+    expect(run.cases[0]).toMatchObject({ passed: true, failure: null });
+  });
+
   it("runs a case with no secrets in its environment, in a fresh directory that is removed afterwards", async () => {
     const previous = process.env.EO_TEST_SECRET;
     process.env.EO_TEST_SECRET = "hunter2";

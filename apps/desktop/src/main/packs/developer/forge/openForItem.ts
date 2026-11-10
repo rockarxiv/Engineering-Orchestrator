@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 import { gitStateOf, jiraStateOf, type Item, type Uuid } from "@eo/core";
 import { dependencyClosure } from "@eo/engine";
-import type { StackDependency } from "../workspace/stackDecision.js";
+import type { StackDependency, StackTargetDecision } from "../workspace/stackDecision.js";
 import type { Db } from "../../../db/client.js";
 import {
   getGitWorkspace,
@@ -753,16 +753,23 @@ interface OpenTarget {
 type SendTarget = OpenTarget | { kind: "escalate"; reason: string; options?: string[] };
 
 /**
- * Where this send should open its pull request against, resolved fresh
- * on every call (EO-10 / KAN-42's "target decision, at MR-open time").
+ * The stacking decision for `item`'s pull request, and the same-feature
+ * dependencies it was made from — the half of `resolveSendTarget` that
+ * says *which branch*, without the refs and the escalation wording that
+ * opening one also needs.
  *
- * Only `item`'s direct dependencies that share its non-null parent
- * feature matter to `resolveStackTarget`; merge state is fetched only
- * for those, both to avoid pointless forge/git calls for out-of-scope
- * dependencies and because a dependency without a recorded branch yet is
- * unambiguously not merged.
+ * Shared with `pullRequestTargetBranch`, which is what a module reads as
+ * `ctx.item().git.targetBranch` (EO-709): the branch a module is told the
+ * pull request goes into must be the branch this builtin would open it
+ * against, and two copies of this choice would be two answers.
  */
-async function resolveSendTarget(db: Db, workspace: GitWorkspace, item: Item, run: CliRunner, signal?: AbortSignal): Promise<SendTarget> {
+async function stackDecisionFor(
+  db: Db,
+  workspace: GitWorkspace,
+  item: Item,
+  run: CliRunner,
+  signal?: AbortSignal,
+): Promise<{ decision: StackTargetDecision; sameFeature: StackDependency[] }> {
   const edges = listAllDependencies(db);
   const sameFeature: StackDependency[] = [];
   // A base a person set on the ticket is the target whatever its
@@ -796,6 +803,46 @@ async function resolveSendTarget(db: Db, workspace: GitWorkspace, item: Item, ru
   }
 
   const decision = await resolveStackTargetWithAnswer(db, item, sameFeature, workspace.config.repoPath);
+  return { decision, sameFeature };
+}
+
+/**
+ * The branch `item`'s pull request is, or will be, opened against, or
+ * null where there is none to name (EO-709): no git workspace, or a
+ * stacking question EO would ask a person rather than answer.
+ *
+ * The item's own base branch where one is set, the branch of the
+ * same-feature dependency it stacks on, or the repository's base branch
+ * — decided by `stackDecisionFor`, the code `open_pull_request` opens
+ * with. Asks the forge about each unmerged same-feature dependency, as
+ * opening does; an item with none asks it nothing.
+ */
+export async function pullRequestTargetBranch(db: Db, item: Item, options: { run?: CliRunner; signal?: AbortSignal } = {}): Promise<string | null> {
+  const workspace = item.workspaceId === null ? undefined : getGitWorkspace(db, item.workspaceId);
+  if (!workspace) return null;
+  const { decision } = await stackDecisionFor(db, workspace, item, options.run ?? createCliRunner(), options.signal);
+  if (decision.kind === "escalate") return null;
+  if (decision.kind === "branch" || decision.kind === "named-base") return decision.branch;
+  if (decision.kind === "stack") {
+    const { branch } = gitStateOf(decision.dependency);
+    return branch;
+  }
+  return workspace.config.baseBranch;
+}
+
+/**
+ * Where this send should open its pull request against, resolved fresh
+ * on every call (EO-10 / KAN-42's "target decision, at MR-open time").
+ *
+ * Only `item`'s direct dependencies that share its non-null parent
+ * feature matter to `resolveStackTarget`; merge state is fetched only
+ * for those, both to avoid pointless forge/git calls for out-of-scope
+ * dependencies and because a dependency without a recorded branch yet is
+ * unambiguously not merged.
+ */
+async function resolveSendTarget(db: Db, workspace: GitWorkspace, item: Item, run: CliRunner, signal?: AbortSignal): Promise<SendTarget> {
+  const { decision, sameFeature } = await stackDecisionFor(db, workspace, item, run, signal);
+  const { namedBranch } = gitStateOf(item);
 
   if (decision.kind === "escalate") {
     const options = decision.choices.map((choice) => choice.key);
