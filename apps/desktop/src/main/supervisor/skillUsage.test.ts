@@ -1,14 +1,14 @@
-import { SKILL_LOADED_EVENT, SkillDraftSchema, SKILLS_DELIVERED_EVENT, type Agent, type AgentEvent, type AgentProvider, type Item } from "@eo/core";
+import { renderSkillMarkdown, SKILL_LOADED_EVENT, SkillDraftSchema, SKILLS_DELIVERED_EVENT, type Agent, type AgentEvent, type AgentProvider, type Item, type Skill } from "@eo/core";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { DbHandle } from "../db/client.js";
 import { setAgentAttachment } from "../db/repos/agentAttachmentsRepo.js";
 import { listAgents } from "../db/repos/agentsRepo.js";
 import { listRunEvents, listRunsForItem, transitionItem } from "../db/repos/index.js";
-import { saveSkill } from "../db/repos/skillsRepo.js";
+import { getSkill, saveSkill } from "../db/repos/skillsRepo.js";
 import { createTestItem, openMigratedTestDb } from "../db/testHelpers.js";
 import { listSkillsCommand } from "../ipc/skillCommands.js";
 import { createFakeProvider } from "../providers/fake.js";
-import { codexSkillsRead } from "../providers/skillUsage.js";
+import { codexSkillsRead, skillTextsOf } from "../providers/skillUsage.js";
 import { validImplementResult } from "../providers/fixtures.js";
 import { startTestWriteBridge, type TestWriteBridge } from "../testing/agentWrites.js";
 import { createRunSupervisor } from "./runSupervisor.js";
@@ -102,28 +102,37 @@ describe("skill usage on a dispatch", () => {
     expect(usage["never-offered"]).toEqual({ runsDelivered: 0, runsLoaded: 0, lastLoadedAt: null, deliveriesSinceLoad: 0 });
   });
 
-  /** What the Codex adapter says of one command (`codex.ts`): the call, then any skill it read. */
-  const codexCommand = (command: string): AgentEvent[] => [{ type: "tool_call", name: "command_execution", args: { command } }, ...codexSkillsRead(command)];
+  /** What the Codex adapter says of one command and its output (`codex.ts`): the call, then any skill it showed. */
+  const codexCommand = (skills: Skill[], command: string, output: string): AgentEvent[] => [
+    { type: "tool_call", name: "command_execution", args: { command } },
+    ...codexSkillsRead(command, output, skillTextsOf(skills)),
+  ];
 
-  it("counts a Codex search of the skill's file as a load, and a help invocation naming it as none", async () => {
-    attachSkill("House style");
+  it("counts a Codex read of the skill's file by any means as a load, and a mention of its path as none", async () => {
+    const house = getSkill(handle.db, attachSkill("House style"))!;
+    const file = renderSkillMarkdown(house);
+    const path = ".agent/skills/house-style/SKILL.md";
     const usage = () => listSkillsCommand(handle.db, {}).skills.find((skill) => skill.slug === "house-style")!.usage;
 
     // Mentions only: the stretch of runs without a load goes on.
     await dispatch(
       saying([
         { type: "skills_delivered", slugs: ["house-style"] },
-        ...codexCommand("/bin/bash -lc 'cat --help .agent/skills/house-style/SKILL.md'"),
-        ...codexCommand("/bin/bash -lc 'sed -n -e .agent/skills/house-style/SKILL.md /dev/null'"),
+        ...codexCommand([house], `/bin/bash -lc 'cat --help ${path}'`, "Usage: cat [OPTION]... [FILE]..."),
+        ...codexCommand([house], `/bin/bash -lc 'echo ignored #; cat ${path}'`, "ignored"),
+        ...codexCommand([house], `/bin/bash -lc "cat <<'EOF'\ncat ${path}\nEOF"`, `cat ${path}`),
       ]),
     );
     expect(usage()).toMatchObject({ runsDelivered: 1, runsLoaded: 0, lastLoadedAt: null, deliveriesSinceLoad: 1 });
 
-    // A real read by `rg`: loaded, and the stretch starts again. The first
-    // item is put out of the way, so the next dispatch is the new one's.
+    // A real read, by python: loaded, and the stretch starts again. The
+    // first item is put out of the way, so the next dispatch is the new one's.
     transitionItem(handle.db, { itemId: item.id, toStepId: "ready_to_merge", actor: "human" });
     const next = createTestItem(handle.db, { type: "story", title: "Another story", stepId: "todo" });
-    const events = await dispatch(saying([{ type: "skills_delivered", slugs: ["house-style"] }, ...codexCommand("/bin/bash -lc 'rg -n . .agent/skills/house-style/SKILL.md'")]), next);
+    const events = await dispatch(
+      saying([{ type: "skills_delivered", slugs: ["house-style"] }, ...codexCommand([house], `/bin/bash -lc "python3 -c \\"print(open('${path}').read())\\""`, file)]),
+      next,
+    );
     expect(events.map((event) => event.type)).toEqual([SKILLS_DELIVERED_EVENT, SKILL_LOADED_EVENT]);
     expect(usage()).toMatchObject({ runsDelivered: 2, runsLoaded: 1, deliveriesSinceLoad: 0 });
     expect(usage().lastLoadedAt).not.toBeNull();

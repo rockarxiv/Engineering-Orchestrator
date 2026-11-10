@@ -48,7 +48,7 @@ import {
 } from "@eo/core";
 import type { AdminMcpDispatch } from "../agentAttachments/adminDelivery.js";
 import { deliverableSkills, writeWorktreeSkills, worktreeSkillsPromptSection, type WorktreeSkillDelivery } from "../agentAttachments/worktreeSkills.js";
-import { codexSkillsRead, skillsOffered } from "./skillUsage.js";
+import { codexSkillsRead, NO_SKILL_TEXTS, skillsOffered, skillTextsOf, type SkillTexts } from "./skillUsage.js";
 import { agentMcpStdioConfig, eoMcpStdioConfig, type EoMcpServiceConfig } from "../mcp/serviceConfig.js";
 import { codexModelPrice, codexTurnCostCents, codexTurnCostMicrocents } from "./codexPricing.js";
 import { personCodexHome } from "./codexHome.js";
@@ -745,7 +745,11 @@ function threadOptionsFrom(
  * than silently dropping it — an SDK that adds an event type should show
  * up in the logs, not vanish.
  */
-export function mapThreadEvent(event: ThreadEvent): { mapped: AgentEvent[]; recognised: boolean } {
+export function mapThreadEvent(
+  event: ThreadEvent,
+  /** The skills the turn was given, as their files read (EO-715): what a command's output is held to. */
+  skillTexts: SkillTexts = NO_SKILL_TEXTS,
+): { mapped: AgentEvent[]; recognised: boolean } {
   switch (event.type) {
     case "thread.started":
       // With the model the app-server opened the thread on, when it named
@@ -817,7 +821,7 @@ export function mapThreadEvent(event: ThreadEvent): { mapped: AgentEvent[]; reco
       return { mapped: [], recognised: true };
 
     case "item.completed":
-      return mapCompletedItem(event.item);
+      return mapCompletedItem(event.item, skillTexts);
 
     // The words of an item as they are generated — transient, never
     // stored; `item.completed` is the record (`OutputDeltaEvent`).
@@ -885,7 +889,7 @@ async function lastReadingWhileStopping(
   }
 }
 
-function mapCompletedItem(item: ThreadItem): { mapped: AgentEvent[]; recognised: boolean } {
+function mapCompletedItem(item: ThreadItem, skillTexts: SkillTexts): { mapped: AgentEvent[]; recognised: boolean } {
   switch (item.type) {
     case "agent_message":
       // Carries the final answer — and, when an outputSchema was given,
@@ -915,11 +919,11 @@ function mapCompletedItem(item: ThreadItem): { mapped: AgentEvent[]; recognised:
       return {
         mapped: [
           { type: "tool_call", name: "command_execution", callId: item.id, args: { command: item.command } },
-          // A command reading a skill's `SKILL.md` is that skill loaded
-          // (EO-715): Codex has no skill tool, so the read is the load —
-          // a read, by the app-server's parse or the command's own words,
-          // never a mention of the path.
-          ...codexSkillsRead(item.command, item.reads),
+          // A command whose output shows a skill's `SKILL.md` loaded that
+          // skill (EO-715): Codex has no skill tool, so the read is the
+          // load — told by what came back, whole and before the bound
+          // below, never by a mention of the path.
+          ...codexSkillsRead(item.command, item.aggregated_output, skillTexts),
           toolResultEvent({
             name: "command_execution",
             callId: item.id,
@@ -2303,6 +2307,8 @@ export function createCodexProvider(options: CodexProviderOptions = {}): AgentPr
     warmKey?: string,
     /** What the turn may spend, in cents (`AgentTurnOverrides.budgetCents`). */
     budgetCents?: number,
+    /** The skills the turn was given (EO-715), for telling which of them a command read. */
+    skillTexts: SkillTexts = NO_SKILL_TEXTS,
   ) {
     const interceptions = (): SearchInterceptionEvent[] => searchHook?.drain() ?? [];
     const turn = await thread.runStreamed(input, {
@@ -2350,7 +2356,7 @@ export function createCodexProvider(options: CodexProviderOptions = {}): AgentPr
             return;
           }
         }
-        const { mapped: all, recognised } = mapThreadEvent(event);
+        const { mapped: all, recognised } = mapThreadEvent(event, skillTexts);
         if (!recognised) options.onUnmappedEvent?.(event);
         const mapped = streamDeltas ? all : all.filter((agentEvent) => agentEvent.type !== "output_delta");
 
@@ -2419,11 +2425,13 @@ export function createCodexProvider(options: CodexProviderOptions = {}): AgentPr
     // No prompt section goes with it: the choices were named in the turn
     // that opened this thread and are in the conversation the CLI
     // resumes. What has to be restored is the files.
+    let skillTexts = NO_SKILL_TEXTS;
     if (resumeOpts?.cwd) {
       const restored = writeWorktreeSkills(resumeOpts.cwd, skillsForRun(options.attachedSkills ?? [], resumeOpts.skillScope));
       warnAboutUndeliveredSkills(restored, resumeOpts.cwd);
       // Given them again, as a fresh turn is (EO-715).
       yield* skillsOffered(restored.delivered.map((skill) => skill.slug));
+      skillTexts = skillTextsOf(restored.delivered);
     }
 
     // Threads persist in ~/.codex/sessions, which is what makes resume
@@ -2462,7 +2470,7 @@ export function createCodexProvider(options: CodexProviderOptions = {}): AgentPr
         ),
       );
       const prompt = withAttachmentNote(message, resumeOpts?.attachments);
-      for await (const event of streamTurn(thread, prompt, resumeOpts?.outputSchema, resumeOpts?.signal, reach, hook, resumeOpts?.streamDeltas === true, resumeOpts?.warmKey, resumeOpts?.budgetCents)) {
+      for await (const event of streamTurn(thread, prompt, resumeOpts?.outputSchema, resumeOpts?.signal, reach, hook, resumeOpts?.streamDeltas === true, resumeOpts?.warmKey, resumeOpts?.budgetCents, skillTexts)) {
         // A turn that fails before it starts is reported as an event
         // rather than by exiting, and `mapThreadEvent` has already turned
         // it into an ordinary `error`. Re-thrown with the backend's own
@@ -2523,7 +2531,8 @@ export function createCodexProvider(options: CodexProviderOptions = {}): AgentPr
       // Which of them this turn is given (EO-715), said first: what was
       // written, not what was attached.
       const offered = skillsOffered(skills.delivered.map((skill) => skill.slug));
-      return reachableTurn((reach) => saidFirst(offered, startedTurn(opts, skillsSection, reach)));
+      const texts = skillTextsOf(skills.delivered);
+      return reachableTurn((reach) => saidFirst(offered, startedTurn(opts, skillsSection, reach, texts)));
     },
 
     resume(threadId: string, message: string, resumeOpts?: AgentProviderResumeOptions): InterruptibleStream<AgentEvent> {
@@ -2639,7 +2648,7 @@ export function createCodexProvider(options: CodexProviderOptions = {}): AgentPr
     },
   };
 
-  async function* startedTurn(opts: AgentProviderStartOptions, skillsSection: string, reach: (turn: CodexTurn) => void): AsyncIterable<AgentEvent> {
+  async function* startedTurn(opts: AgentProviderStartOptions, skillsSection: string, reach: (turn: CodexTurn) => void, skillTexts: SkillTexts): AsyncIterable<AgentEvent> {
     if (opts.tools && opts.tools.length > 0 && !options.eoMcp) {
       // Deliberately loud: silently dropping the comment tool would
       // look like an agent that simply never escalates. With the MCP
@@ -2701,7 +2710,7 @@ export function createCodexProvider(options: CodexProviderOptions = {}): AgentPr
       // `assembleContext` deliberately does not append them to the
       // context either, so they are said exactly once.
       const prompt = withAttachmentNote(withSkillsSection(opts.context, skillsSection), opts.attachments);
-      yield* streamTurn(thread, prompt, opts.outputSchema, opts.signal, reach, hook, opts.streamDeltas === true, opts.warmKey, opts.budgetCents);
+      yield* streamTurn(thread, prompt, opts.outputSchema, opts.signal, reach, hook, opts.streamDeltas === true, opts.warmKey, opts.budgetCents, skillTexts);
     }
   }
 

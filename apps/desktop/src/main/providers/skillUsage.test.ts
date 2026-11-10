@@ -1,6 +1,6 @@
-import type { InterruptibleStream } from "@eo/core";
+import { renderSkillMarkdown, type InterruptibleStream, type Skill } from "@eo/core";
 import { describe, expect, it, vi } from "vitest";
-import { claudeSkillLoaded, codexSkillsRead, leadingWith, skillsOffered } from "./skillUsage.js";
+import { claudeSkillLoaded, codexSkillsRead, leadingWith, NO_SKILL_TEXTS, skillsOffered, skillTextsOf } from "./skillUsage.js";
 
 /** How each adapter reads a skill delivered and a skill loaded (EO-715). */
 describe("skill usage detection", () => {
@@ -18,87 +18,83 @@ describe("skill usage detection", () => {
     expect(claudeSkillLoaded("Skill", null)).toEqual([]);
   });
 
-  it.each([
-    ["bash -lc 'cat .agent/skills/house-style/SKILL.md'", ["house-style"]],
-    ['bash -lc "sed -n 1,80p /tmp/wt/.agent/skills/house-style/SKILL.md"', ["house-style"]],
-    ["/bin/zsh -lc \"sed -n '1,200p' ./.agent/skills/house-style/SKILL.md\"", ["house-style"]],
-    ["head -40 .agent/skills/house-style/SKILL.md", ["house-style"]],
-    ["nl -ba .agent/skills/house-style/SKILL.md | head -50", ["house-style"]],
-    ["cd /tmp/wt && cat .agent/skills/a/SKILL.md .agent/skills/b-2/SKILL.md; cat ./.agent/skills/a/SKILL.md", ["a", "b-2"]],
-    ["sed -n p < .agent/skills/house-style/SKILL.md", ["house-style"]],
-    ["cat .agent/skills/house-style/SKILL.md > /tmp/copy.md", ["house-style"]],
-    // Searching the file reads it.
-    ["rg . .agent/skills/house-style/SKILL.md", ["house-style"]],
-    ["rg -n --color=never -e foo -- .agent/skills/house-style/SKILL.md", ["house-style"]],
-    ["grep -n '' .agent/skills/house-style/SKILL.md", ["house-style"]],
-    ["grep -A3 -i release .agent/skills/house-style/SKILL.md", ["house-style"]],
-    ["egrep -e a -e b .agent/skills/house-style/SKILL.md", ["house-style"]],
-    // Options and their values are skipped, not mistaken for the file or for its absence.
-    ["head -n 40 .agent/skills/house-style/SKILL.md", ["house-style"]],
-    ["tail -n40 .agent/skills/house-style/SKILL.md", ["house-style"]],
-    ["sed -n -e 1,20p .agent/skills/house-style/SKILL.md", ["house-style"]],
-    ["sed -nE '1,20p' .agent/skills/house-style/SKILL.md", ["house-style"]],
-    ["awk '{print}' .agent/skills/house-style/SKILL.md", ["house-style"]],
-    ["cat -- .agent/skills/house-style/SKILL.md", ["house-style"]],
-    ["bat --style=plain -r 1:40 .agent/skills/house-style/SKILL.md", ["house-style"]],
-  ])("reads a Codex load from %s", (command, slugs) => {
-    expect(codexSkillsRead(command)).toEqual(slugs.map((slug) => ({ type: "skill_loaded", slug })));
+  /** Two delivered skills, as the files Codex reads hold them. */
+  const skill = (slug: string, description: string, body: string): Skill => ({
+    id: `skill-${slug}`,
+    slug,
+    name: slug,
+    description,
+    body,
+    files: [],
+    disableModelInvocation: false,
+    enabled: true,
+    scope: { kind: "global" },
+    createdAt: 1,
+    updatedAt: 1,
+    archivedAt: null,
+    createdBy: "person",
+    locked: false,
+  });
+  const HOUSE = skill("house-style", "How this house reviews a change.", "# House style\n\nRead the whole diff before you judge any of it.\n\n## Steps\n\nRun the tests yourself, every time, before approving.\n");
+  const REVIEW = skill("review", "How to review.", "# Review\n\n## Steps\n\nLeave one comment per finding, never a wall of text.\n");
+  const TEXTS = skillTextsOf([HOUSE, REVIEW]);
+  const FILE = renderSkillMarkdown(HOUSE);
+  const PATH = ".agent/skills/house-style/SKILL.md";
+  const loads = (...slugs: string[]) => slugs.map((slug) => ({ type: "skill_loaded", slug }));
+
+  it("holds each skill to its own lines: its description, and long lines no other skill given shares", () => {
+    expect(TEXTS.lines.get('description: "How this house reviews a change."')).toBe("house-style");
+    expect(TEXTS.lines.get('description: "How to review."')).toBe("review");
+    expect(TEXTS.lines.get("Read the whole diff before you judge any of it.")).toBe("house-style");
+    // Short, or in both files: in every other markdown file too.
+    expect(TEXTS.lines.has("## Steps")).toBe(false);
+    expect(TEXTS.lines.has("---")).toBe(false);
+    const twins = skillTextsOf([skill("a", "A.", "The same long line in both of these skills.\n"), skill("b", "B.", "The same long line in both of these skills.\n")]);
+    expect(twins.lines.has("The same long line in both of these skills.")).toBe(false);
   });
 
   it.each([
-    // A mention is not a read.
-    "bash -lc 'echo .agent/skills/house-style/SKILL.md'",
-    "bash -lc 'ls .agent/skills/house-style/SKILL.md'",
-    "ls -la .agent/skills/",
-    "test -f .agent/skills/house-style/SKILL.md && echo yes",
-    "rg -n house-style .agent/skills/house-style/SKILL.md.bak",
-    // Not exactly that file.
-    "cat .agent/skills/house-style/SKILL.md.bak",
-    "cat .agent/skills/house-style/checklist.md",
-    "cat foo.agent/skills/house-style/SKILL.md",
-    "cat .agent/skills/House/SKILL.md",
-    "cat '.agent/skills/house-style/SKILL.md x'",
-    // Written, not read.
-    "cat > .agent/skills/house-style/SKILL.md",
-    "echo hi >> .agent/skills/house-style/SKILL.md",
-    "sed -i 's/a/b/' .agent/skills/house-style/SKILL.md",
-    // Named inside an argument that is not the file.
-    "grep -c x 'see .agent/skills/house-style/SKILL.md'",
-    // Help and version read no file.
-    "cat --help .agent/skills/house-style/SKILL.md",
-    "head --version .agent/skills/house-style/SKILL.md",
-    "rg -V .agent/skills/house-style/SKILL.md",
-    "rg -h .agent/skills/house-style/SKILL.md",
-    "bat --list-languages .agent/skills/house-style/SKILL.md",
-    // Listing files is not reading them.
-    "rg --files .agent/skills/house-style/SKILL.md",
-    // The path as an option's value, a script or a pattern, not a file operand.
-    "sed -n -e .agent/skills/house-style/SKILL.md /dev/null",
-    "sed .agent/skills/house-style/SKILL.md",
-    "sed -f .agent/skills/house-style/SKILL.md README.md",
-    "awk -f .agent/skills/house-style/SKILL.md README.md",
-    "rg .agent/skills/house-style/SKILL.md",
-    "rg -e .agent/skills/house-style/SKILL.md README.md",
-    "grep -f .agent/skills/house-style/SKILL.md README.md",
-    "grep --regexp=x --file .agent/skills/house-style/SKILL.md README.md",
-    "tail --pid .agent/skills/house-style/SKILL.md README.md",
-    "head -n .agent/skills/house-style/SKILL.md README.md",
-    // An in-place edit, however it is spelled.
-    "sed -ni 's/a/b/' .agent/skills/house-style/SKILL.md",
-    "sed --in-place=.orig 's/a/b/' .agent/skills/house-style/SKILL.md",
-    "cat --help < .agent/skills/house-style/SKILL.md",
-  ])("counts no Codex load from %s", (command) => {
-    expect(codexSkillsRead(command)).toEqual([]);
+    ["cat", `bash -lc 'cat ${PATH}'`, FILE],
+    ["sed -n, the opening lines", `bash -lc "sed -n '1,4p' ${PATH}"`, FILE.split("\n").slice(0, 4).join("\n")],
+    ["tail, the closing lines", `tail -n 2 ${PATH}`, FILE.trimEnd().split("\n").slice(-2).join("\n")],
+    ["nl, numbered", `nl -ba ${PATH}`, FILE.split("\n").map((line, at) => `${String(at + 1).padStart(6)}\t${line}`).join("\n")],
+    ["rg, path and line prefixed", `rg -n . .agent/skills`, `${PATH}:7:Read the whole diff before you judge any of it.`],
+    ["grep, line prefixed", `grep -n judge ${PATH}`, "7:Read the whole diff before you judge any of it."],
+    ["python", `python3 -c "print(open('${PATH}').read())"`, FILE],
+    ["xargs", `ls .agent/skills/*/SKILL.md | xargs cat`, FILE],
+    ["a subshell", `echo "$(cat ${PATH})"`, FILE],
+    ["among other output", `cat README.md ${PATH} package.json`, `# EO\n${FILE}{ "name": "eo" }`],
+  ])("counts a Codex load when the output shows the skill's file: %s", (_, command, output) => {
+    expect(codexSkillsRead(command, output, TEXTS)).toEqual(loads("house-style"));
   });
 
-  it("counts a Codex load from the app-server's read actions, on exactly the skill's file", () => {
-    expect(codexSkillsRead("/bin/bash -lc 'x'", ["/tmp/wt/.agent/skills/house-style/SKILL.md", ".agent/skills/review/SKILL.md"])).toEqual([
-      { type: "skill_loaded", slug: "house-style" },
-      { type: "skill_loaded", slug: "review" },
-    ]);
-    expect(codexSkillsRead("/bin/bash -lc 'x'", ["/tmp/wt/.agent/skills/house-style/SKILL.md.bak", "/tmp/wt/README.md"])).toEqual([]);
-    // Both kinds of evidence for one skill are one load.
-    expect(codexSkillsRead("cat .agent/skills/a/SKILL.md", ["/w/.agent/skills/a/SKILL.md"])).toEqual([{ type: "skill_loaded", slug: "a" }]);
+  it("counts each skill a command shows once, however many of its lines it shows", () => {
+    expect(codexSkillsRead("cat .agent/skills/*/SKILL.md", `${FILE}${FILE}${renderSkillMarkdown(REVIEW)}`, TEXTS)).toEqual(loads("house-style", "review"));
+  });
+
+  it.each([
+    // The path mentioned, nothing of the file shown.
+    ["echo", `bash -lc 'echo ${PATH}'`, PATH],
+    ["ls", `bash -lc 'ls ${PATH}'`, PATH],
+    ["a comment", `echo ignored #; cat ${PATH}`, "ignored"],
+    ["a heredoc", `cat <<'EOF'\ncat ${PATH}\nEOF`, `cat ${PATH}`],
+    ["--help", `cat --help ${PATH}`, "Usage: cat [OPTION]... [FILE]...\nConcatenate FILE(s) to standard output."],
+    ["an option's value", `sed -n -e ${PATH} /dev/null`, ""],
+    ["a missing file beside it", `cat ${PATH}.bak`, `cat: ${PATH}.bak: No such file or directory`],
+    ["a listing", `rg --files .agent/skills`, `${PATH}\n.agent/skills/review/SKILL.md`],
+    ["a write", `sed -i 's/a/b/' ${PATH}`, ""],
+    ["output kept from the agent", `cat ${PATH} > /dev/null`, ""],
+    // Only lines every markdown file has.
+    ["generic lines", "cat CONTRIBUTING.md", "---\n## Steps\n# House style"],
+    // The skill's words typed by the agent, not read: in the command itself.
+    ["the agent echoing a line", "echo 'Read the whole diff before you judge any of it.'", "Read the whole diff before you judge any of it."],
+    ["a heredoc holding a line", "cat <<'EOF'\nRead the whole diff before you judge any of it.\nEOF", "Read the whole diff before you judge any of it."],
+  ])("counts no Codex load from %s", (_, command, output) => {
+    expect(codexSkillsRead(command, output, TEXTS)).toEqual([]);
+  });
+
+  it("counts nothing on a turn given no skill", () => {
+    expect(codexSkillsRead(`cat ${PATH}`, FILE, NO_SKILL_TEXTS)).toEqual([]);
   });
 
   it("says the leading events first and keeps the turn reachable", async () => {

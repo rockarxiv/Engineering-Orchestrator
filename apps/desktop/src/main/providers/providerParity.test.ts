@@ -15,6 +15,7 @@ import {
   MEMORY_READ_TOOL_NAME,
   outputSchemaFor,
   REPOSITORY_CHECKOUT_TOOL_NAME,
+  renderSkillMarkdown,
   validateActionResult,
   type AgentEvent,
   type AgentProvider,
@@ -593,7 +594,7 @@ const CAPABILITIES = [
   },
   {
     name: "skill load detection",
-    what: "a turn given skills says which (EO-715) — the ones actually delivered, on a start and again on a resume — and says a skill was loaded when the backend did it, not when the agent says so: a Skill call naming eo-attachments:<slug> on Claude, a command reading exactly .agent/skills/<slug>/SKILL.md on Codex (by its own words or the app-server's parse of it), each call once; a skill that is not EO's, a call that reads anything else, or one that only mentions the name or the path, is no load",
+    what: "a turn given skills says which (EO-715) — the ones actually delivered, on a start and again on a resume — and says a skill was loaded when the backend did it, not when the agent says so: a Skill call naming eo-attachments:<slug> on Claude, a command whose output shows .agent/skills/<slug>/SKILL.md on Codex, however it read the file, each call once; a skill that is not EO's, a call that reads anything else, or one that only mentions the name or the path, is no load",
     same: {
       started: [
         { type: "skills_delivered", slugs: ["build-in-w", "e2e-for-p", "house-style"] },
@@ -3862,29 +3863,31 @@ const CODEX: Record<CapabilityName, Proof> = {
 
   "skill load detection": async () => {
     // Given: the folders written under `.agent/skills`. Loaded: a command
-    // reading one's SKILL.md, relative or absolute. Reading anything else
-    // in the worktree is not a load.
+    // whose output, as the app-server returns it, shows a skill's
+    // SKILL.md — however the command read it, python included, whose
+    // `commandActions` Codex can only call `unknown`. A command that only
+    // mentions the path — echoing or listing it, a comment, a heredoc,
+    // `--help`, an option's value, a file beside it — shows none of it.
     const cwd = scratchDirectory();
-    // A mention of the path — echoing it, listing it, reading a file
-    // beside it — is no load. The last read is one the command's words
-    // do not show and the app-server's own parse does (`commandActions`).
-    const command = (id: string, text: string, commandActions: unknown[] = []) =>
-      note.item({ type: "commandExecution", id, command: text, cwd, processId: null, source: "agent", commandActions, aggregatedOutput: "", exitCode: 0, status: "completed", durationMs: 1 });
-    const read = (path: string) => ({ type: "read", command: `cat ${path}`, name: "SKILL.md", path });
+    const fileOf = (slug: string) => renderSkillMarkdown(SCOPED_SKILLS.find((skill) => skill.slug === slug)!);
+    const unknown = (text: string) => [{ type: "unknown", command: text }];
+    const command = (id: string, text: string, output: string, commandActions: unknown[] = unknown(text)) =>
+      note.item({ type: "commandExecution", id, command: `/bin/bash -lc ${JSON.stringify(text)}`, cwd, processId: null, source: "agent", commandActions, aggregatedOutput: output, exitCode: 0, status: "completed", durationMs: 1 });
     const turn = [
       note.turnStarted(),
-      command("cmd-1", "/bin/bash -lc 'cat .agent/skills/house-style/SKILL.md'"),
-      command("cmd-2", "/bin/bash -lc 'cat README.md'"),
-      command("cmd-3", `/bin/bash -lc "sed -n '1,80p' ${cwd}/.agent/skills/house-style/SKILL.md"`),
-      command("cmd-4", "/bin/bash -lc 'ls .agent/skills/'"),
-      command("cmd-5", "/bin/bash -lc 'echo .agent/skills/e2e-for-p/SKILL.md'"),
-      command("cmd-6", "/bin/bash -lc 'ls .agent/skills/e2e-for-p/SKILL.md'"),
-      command("cmd-7", "/bin/bash -lc 'cat .agent/skills/e2e-for-p/SKILL.md.bak'"),
-      command("cmd-8", "/bin/bash -lc 'python3 -c \"print(open(SKILL).read())\"'", [read(`${cwd}/.agent/skills/e2e-for-p/SKILL.md`)]),
-      // Help and an option's value read no file; a search of the file reads it.
-      command("cmd-9", "/bin/bash -lc 'cat --help .agent/skills/house-style/SKILL.md'"),
-      command("cmd-10", "/bin/bash -lc 'sed -n -e .agent/skills/house-style/SKILL.md /dev/null'"),
-      command("cmd-11", "/bin/bash -lc 'rg . .agent/skills/e2e-for-p/SKILL.md'"),
+      command("cmd-1", "cat .agent/skills/house-style/SKILL.md", fileOf("house-style"), [{ type: "read", command: "cat .agent/skills/house-style/SKILL.md", name: "SKILL.md", path: `${cwd}/.agent/skills/house-style/SKILL.md` }]),
+      command("cmd-2", "cat README.md", "# A repository\n"),
+      command("cmd-3", `sed -n '1,80p' ${cwd}/.agent/skills/house-style/SKILL.md`, fileOf("house-style")),
+      command("cmd-4", "ls .agent/skills/", "build-in-w\ne2e-for-p\nhouse-style"),
+      command("cmd-5", "echo .agent/skills/e2e-for-p/SKILL.md", ".agent/skills/e2e-for-p/SKILL.md"),
+      command("cmd-6", "ls .agent/skills/e2e-for-p/SKILL.md", ".agent/skills/e2e-for-p/SKILL.md"),
+      command("cmd-7", "cat .agent/skills/e2e-for-p/SKILL.md.bak", "cat: .agent/skills/e2e-for-p/SKILL.md.bak: No such file or directory"),
+      command("cmd-8", "echo ignored #; cat .agent/skills/e2e-for-p/SKILL.md", "ignored"),
+      command("cmd-9", "cat <<'EOF'\ncat .agent/skills/e2e-for-p/SKILL.md\nEOF", "cat .agent/skills/e2e-for-p/SKILL.md"),
+      command("cmd-10", "cat --help .agent/skills/e2e-for-p/SKILL.md", "Usage: cat [OPTION]... [FILE]..."),
+      command("cmd-11", "sed -n -e .agent/skills/e2e-for-p/SKILL.md /dev/null", ""),
+      command("cmd-12", `python3 -c "print(open('.agent/skills/e2e-for-p/SKILL.md').read())"`, fileOf("e2e-for-p")),
+      command("cmd-13", "rg -n . .agent/skills/e2e-for-p", fileOf("e2e-for-p").split("\n").map((line, at) => `.agent/skills/e2e-for-p/SKILL.md:${at + 1}:${line}`).join("\n")),
       note.agentMessage("ok"),
       note.turnCompleted(),
     ];

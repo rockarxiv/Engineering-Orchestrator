@@ -80,13 +80,6 @@ export type CommandExecutionItem = {
   aggregated_output: string;
   exit_code?: number;
   status: "in_progress" | "completed" | "failed";
-  /**
-   * The files the app-server's own parse of the command says it reads —
-   * its `commandActions` of type `read`, by path (EO-715). Absent where
-   * it named none. Evidence of a read, which a path merely appearing in
-   * `command` is not.
-   */
-  reads?: string[];
 };
 export type FileChangeItem = {
   id: string;
@@ -1513,14 +1506,12 @@ export function translateItem(value: unknown): ThreadItem | "ignored" | null {
 
     case "commandExecution": {
       const exitCode = item["exitCode"];
-      const reads = readActionPaths(item["commandActions"]);
       return {
         id,
         type: "command_execution",
         command: stringOr(item["command"]),
         aggregated_output: stringOr(item["aggregatedOutput"]),
         ...(typeof exitCode === "number" ? { exit_code: exitCode } : {}),
-        ...(reads.length > 0 ? { reads } : {}),
         // `declined` has no counterpart in `exec`'s three, and is a
         // command that did not run — which is what `failed` meant there.
         status: item["status"] === "completed" ? "completed" : item["status"] === "inProgress" ? "in_progress" : "failed",
@@ -1571,15 +1562,6 @@ export function translateItem(value: unknown): ThreadItem | "ignored" | null {
     default:
       return typeof item.type === "string" && IGNORED_ITEMS.has(item.type) ? "ignored" : null;
   }
-}
-
-/** The paths of a command item's `read` actions, as the app-server parsed the command (EO-715). */
-function readActionPaths(actions: unknown): string[] {
-  if (!Array.isArray(actions)) return [];
-  return actions.flatMap((action: unknown) => {
-    const entry = (action ?? {}) as { type?: unknown; path?: unknown };
-    return entry.type === "read" && typeof entry.path === "string" && entry.path !== "" ? [entry.path] : [];
-  });
 }
 
 function stringOr(value: unknown): string {

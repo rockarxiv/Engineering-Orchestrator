@@ -575,18 +575,6 @@ describe("translateItem", () => {
     });
   });
 
-  it("keeps the paths the app-server says a command reads, and nothing it lists or searches (EO-715)", () => {
-    const base = { id: "c1", cwd: "/w", processId: null, source: "agent", durationMs: 1, type: "commandExecution", status: "completed", aggregatedOutput: "", exitCode: 0 };
-    const command = "/bin/bash -lc 'cat .agent/skills/a/SKILL.md; ls .agent/skills'";
-    const commandActions = [
-      { type: "read", command: "cat .agent/skills/a/SKILL.md", name: "SKILL.md", path: "/w/.agent/skills/a/SKILL.md" },
-      { type: "listFiles", command: "ls .agent/skills", path: ".agent/skills" },
-      { type: "unknown", command: "echo" },
-    ];
-    expect(translateItem({ ...base, command, commandActions })).toMatchObject({ type: "command_execution", reads: ["/w/.agent/skills/a/SKILL.md"] });
-    expect(translateItem({ ...base, command, commandActions: [] })).not.toHaveProperty("reads");
-  });
-
   it("maps a file change to its paths and kinds", () => {
     expect(
       translateItem({
