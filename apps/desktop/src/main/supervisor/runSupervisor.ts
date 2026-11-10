@@ -46,6 +46,12 @@ import {
   HUMAN_MESSAGE_EVENT,
   MEMORY_DELIVERED_EVENT,
   MEMORY_USED_EVENT,
+  SKILL_LOADED_EVENT,
+  SKILLS_DELIVERED_EVENT,
+  type SkillLoadAgentEvent,
+  type SkillLoadedEvent,
+  type SkillsDeliveredEvent,
+  type SkillsOfferedEvent,
   MEMORY_EXTRACTED_EVENT,
   MEMORY_NOTE_TOOL_NAME,
   REPOSITORY_CHECKOUT_TOOL_NAME,
@@ -110,6 +116,8 @@ import {
 } from "@eo/core";
 import { agentAttachmentsHash, EMPTY_ATTACHMENTS_HASH } from "../agentAttachments/fingerprint.js";
 import { qualifiedServerName } from "../agentAttachments/pluginDirectory.js";
+import { deliverableSkills } from "../agentAttachments/worktreeSkills.js";
+import { resolveAgentAttachmentsForRun } from "../db/repos/agentAttachmentsRepo.js";
 import type { Db } from "../db/client.js";
 import { startOfDay } from "../dateUtils.js";
 import { packMeaningInForce, proposedActionsProblem, registry, registryForProject } from "../registry.js";
@@ -3134,6 +3142,13 @@ export function createRunSupervisor(
       systemAgent: boolean;
     }
   >();
+  /**
+   * The skills each run in flight was given, by slug, and which of them it
+   * has loaded (EO-715) — what holds a `skill_loaded` event to the run's
+   * own delivery and to once per skill. Set by the run's first
+   * `skills_delivered`, dropped when the run is over.
+   */
+  const runSkills = new Map<string, { bySlug: Map<string, string>; loaded: Set<string> }>();
   /** When the computer last woke, as `onWake` or a late watchdog pass said. Silence before it is not the run's. */
   let lastWakeAt: number | null = null;
   let lastWatchdogPassAt: number | null = null;
@@ -3739,6 +3754,39 @@ export function createRunSupervisor(
    * recorded as what the agent did and nothing more —
    * `agentWriteBoundary.test.ts` holds this file to that.
    */
+  /**
+   * A run's skill usage, as run events (EO-715).
+   *
+   * `skills_delivered` once per run: the first report names what the run
+   * was given — slugs the adapter delivered, resolved to the ids of the
+   * agent's skills in the run's scope — and a later turn of the same run
+   * (a correction, a resume) is the same run given the same skills.
+   * `skill_loaded` once per skill per run, and only for a skill the run
+   * was given: a load of anything else records nothing.
+   */
+  function recordSkillUsage(runId: Uuid, buffer: RunEventBuffer, item: Item, agent: Agent, event: SkillsOfferedEvent | SkillLoadAgentEvent): void {
+    if (event.type === "skills_delivered") {
+      if (runSkills.has(runId)) return;
+      const scoped = deliverableSkills(resolveAgentAttachmentsForRun(db, agent.id, skillRunScope(db, item)).skills);
+      const bySlug = new Map<string, string>();
+      for (const slug of event.slugs) {
+        const skill = scoped.find((candidate) => candidate.slug === slug);
+        if (skill !== undefined) bySlug.set(slug, skill.id);
+      }
+      runSkills.set(runId, { bySlug, loaded: new Set() });
+      if (bySlug.size === 0) return;
+      const delivered: SkillsDeliveredEvent = { type: SKILLS_DELIVERED_EVENT, skillIds: [...bySlug.values()], slugs: [...bySlug.keys()] };
+      buffer.append(runId, SKILLS_DELIVERED_EVENT, delivered);
+      return;
+    }
+    const given = runSkills.get(runId);
+    const skillId = given?.bySlug.get(event.slug);
+    if (given === undefined || skillId === undefined || given.loaded.has(skillId)) return;
+    given.loaded.add(skillId);
+    const loaded: SkillLoadedEvent = { type: SKILL_LOADED_EVENT, skillId, slug: event.slug };
+    buffer.append(runId, SKILL_LOADED_EVENT, loaded);
+  }
+
   async function processStream(
     stream: InterruptibleStream<AgentEvent>,
     ctx: {
@@ -3922,6 +3970,13 @@ export function createRunSupervisor(
         // belong to arrives whole a moment later, and that is the record.
         if (event.type === "output_delta") {
           liveDrafts.append(ctx.runId, ctx.item.id, event.stream, event.text);
+          continue;
+        }
+        // What the adapter says about EO's skills (EO-715) is recorded as
+        // the run's own events, with the skills' ids, rather than as it
+        // came: a load is held to what the run was given.
+        if (event.type === "skills_delivered" || event.type === "skill_loaded") {
+          recordSkillUsage(ctx.runId, ctx.buffer, ctx.item, ctx.agent, event);
           continue;
         }
         const seq = ctx.buffer.append(ctx.runId, escalated && event.type === "error" ? WIND_DOWN_EVENT : event.type, event);
@@ -4753,6 +4808,7 @@ export function createRunSupervisor(
         closeAbandonedRun(run.id, item.id);
         lastKnownThreadIds.delete(run.id);
         runActivity.delete(run.id);
+        runSkills.delete(run.id);
         capturedRuns.delete(run.id);
       }
       // After the run is terminal and its item has moved, and before the

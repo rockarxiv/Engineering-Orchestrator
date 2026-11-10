@@ -9,6 +9,7 @@ import {
   isPackShipped,
   specFields,
   skillAuthorLabel,
+  type SkillUsage,
   skillMachineSpecificWarnings,
   reservedMcpServerName,
   versionLabel,
@@ -1265,6 +1266,18 @@ function skillLine(skill: Skill): string {
 }
 
 /**
+ * How a skill has been used (EO-715), from the runs' own events: the runs
+ * given it, the runs that loaded it, the last load, and the runs given it
+ * since — the stretch staleness is counted in.
+ */
+export function skillUsageLine(usage: SkillUsage): string {
+  if (usage.runsDelivered === 0) return "Usage: not delivered to any run yet.";
+  const runs = (count: number) => `${count} ${count === 1 ? "run" : "runs"}`;
+  const last = usage.lastLoadedAt === null ? "never loaded" : `last loaded ${new Date(usage.lastLoadedAt).toISOString()}`;
+  return `Usage: delivered to ${runs(usage.runsDelivered)}, loaded by ${runs(usage.runsLoaded)}, ${last}; delivered to ${runs(usage.deliveriesSinceLoad)} since its last load.`;
+}
+
+/**
  * The skills a person wrote, as a client reads them (EO-112).
  *
  * The description rather than the body. A description is what the model
@@ -1281,7 +1294,7 @@ function skillLine(skill: Skill): string {
  */
 export function renderSkills(data: IpcResponse<"skills:list">): string {
   return list(
-    data.skills.map((skill) => `- ${skillLine(skill)}`),
+    data.skills.map((skill) => `- ${skillLine(skill)}\n  ${skillUsageLine(skill.usage)}`),
     "No skills are catalogued.",
   );
 }

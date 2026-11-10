@@ -32,6 +32,7 @@ import {
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { assembleSeedContext, type ContextRepositoryInput } from "@eo/engine";
 import { readToolDirectoryServers, writeToolDirectory } from "../agentAttachments/pluginDirectory.js";
+import { worktreeSkillMarkdown } from "../agentAttachments/worktreeSkills.js";
 import { attachmentEnvironment } from "../agentAttachments/serverEnvironment.js";
 import { attachmentsForRun } from "../db/repos/agentAttachmentsRepo.js";
 import { insertAttachments, listAgents, saveMcpServer, setAgentAttachment } from "../db/repos/index.js";
@@ -591,6 +592,26 @@ const CAPABILITIES = [
       resumed: ["build-in-w", "e2e-for-p", "house-style"],
     },
   },
+  // Claude's half of this row is exact — a `Skill` call is the load.
+  // Codex's is a best-effort inference from what Codex reports (the
+  // command and its output), by the rule a person settled for EO-715:
+  // see `codexSkillsRead`. The observation is one; how sure each
+  // backend can be of it is not.
+  {
+    name: "skill load detection",
+    what: "a turn given skills says which (EO-715) — the ones actually delivered, on a start and again on a resume — and says a skill was loaded when the backend did it, not when the agent says so: a Skill call naming eo-attachments:<slug> on Claude, a command whose output shows .agent/skills/<slug>/SKILL.md on Codex, however it read the file, each call once; a skill that is not EO's, a call that reads anything else, or one that only mentions the name or the path, is no load",
+    same: {
+      started: [
+        { type: "skills_delivered", slugs: ["build-in-w", "e2e-for-p", "house-style"] },
+        { type: "skill_loaded", slug: "house-style" },
+        { type: "skill_loaded", slug: "house-style" },
+        { type: "skill_loaded", slug: "e2e-for-p" },
+        { type: "skill_loaded", slug: "e2e-for-p" },
+      ],
+      resumed: [{ type: "skills_delivered", slugs: ["build-in-w", "e2e-for-p", "house-style"] }],
+      withoutSkills: [],
+    },
+  },
   {
     name: "a side call returns structured output",
     what: "a side call (EO-477) answers its one question in the schema's shape, with no tools, no MCP servers and no thread kept to resume, in the empty directory it was given and under EO's lockdown — however much the provider it runs on was given as an agent",
@@ -796,6 +817,8 @@ const SCOPED_SKILLS: Skill[] = [
   scopedSkill("build-in-w", { kind: "workspace", workspaceId: "workspace-w" }),
   scopedSkill("build-in-v", { kind: "workspace", workspaceId: "workspace-v" }),
 ];
+/** The events a turn says about EO's skills (EO-715): what it was given and what it loaded. */
+const skillUsageOf = (events: readonly AgentEvent[]): AgentEvent[] => events.filter((event) => event.type === "skills_delivered" || event.type === "skill_loaded");
 /** The skill folders under a directory, by slug — the files a backend finds. */
 const skillFolders = (directory: string): string[] =>
   existsSync(directory) ? readdirSync(directory, { withFileTypes: true }).filter((entry) => entry.isDirectory()).map((entry) => entry.name).sort() : [];
@@ -2655,6 +2678,31 @@ const CLAUDE: Record<CapabilityName, Proof> = {
     return { offered: offeredBy(started.calls[0]), named, written: skillFolders(join(toolDirectory, "skills")), resumed: offeredBy(resumed.calls[0]) };
   },
 
+  "skill load detection": async () => {
+    // Given: the skills in the generated directory's allowlist. Loaded: a
+    // `Skill` call under the plugin's prefix. `ponytail` is a skill of
+    // the person's own setup, and a `Read` is not a load.
+    const toolDirectory = join(scratchDirectory(), "plugin");
+    writeToolDirectory(toolDirectory, attachmentsForRun({ servers: [], skills: SCOPED_SKILLS }, SCOPED_RUN));
+    const started = scripted([
+      sdk.init(),
+      sdk.calls("c1", "Skill", { skill: "eo-attachments:house-style" }),
+      sdk.calls("c2", "Read", { file_path: "/tmp/wt/README.md" }),
+      sdk.calls("c2b", "Bash", { command: "echo eo-attachments:e2e-for-p" }),
+      sdk.calls("c3", "Skill", { skill: "eo-attachments:house-style" }),
+      sdk.calls("c4", "Skill", { skill: "ponytail" }),
+      sdk.calls("c5", "Skill", { skill: "eo-attachments:e2e-for-p", args: "now" }),
+      sdk.calls("c6", "Skill", { skill: "eo-attachments:e2e-for-p" }),
+      sdk.result(),
+    ]);
+    const startedEvents = await collect(createClaudeProvider({ runQuery: started.runQuery, enableCommentTool: false }).start({ ...startOpts, toolDirectory, skillScope: SCOPED_RUN }));
+    const resumed = scripted([sdk.says("continued"), sdk.result({ result: "continued" })]);
+    const resumedEvents = await collect(createClaudeProvider({ runQuery: resumed.runQuery, enableCommentTool: false }).resume("sess-1", "carry on", { cwd: "/tmp/wt", toolDirectory, skillScope: SCOPED_RUN }));
+    const bare = scripted([sdk.init(), sdk.calls("c1", "Skill", { skill: "ponytail" }), sdk.result()]);
+    const bareEvents = await collect(createClaudeProvider({ runQuery: bare.runQuery, enableCommentTool: false }).start(startOpts));
+    return { started: skillUsageOf(startedEvents), resumed: skillUsageOf(resumedEvents), withoutSkills: skillUsageOf(bareEvents) };
+  },
+
   "a side call returns structured output": async () => {
     // Read off the options the SDK is handed, from a provider handed
     // everything an agent could be: EO's server, an allowlist, the
@@ -3818,6 +3866,51 @@ const CODEX: Record<CapabilityName, Proof> = {
     return { offered, named: offered, written, resumed: skillFolders(join(cwd, ".agent", "skills")) };
   },
 
+  "skill load detection": async () => {
+    // Given: the folders written under `.agent/skills`. Loaded: by the
+    // rule settled for EO-715, a best-effort inference from what Codex
+    // reports — the skill's id, which EO writes into each SKILL.md it
+    // delivers here, in a command's output, however the command read it
+    // (python included, whose `commandActions` Codex can only call
+    // `unknown`); or a read leaving the frontmatter out that names the
+    // skill's path and shows a line of the file. A command that only
+    // mentions the path — echoing or listing it, a comment, a heredoc,
+    // `--help`, an option's value, a file beside it — or another file
+    // holding the skill's words, is no load.
+    const cwd = scratchDirectory();
+    const fileOf = (slug: string) => worktreeSkillMarkdown(SCOPED_SKILLS.find((skill) => skill.slug === slug)!);
+    const unknown = (text: string) => [{ type: "unknown", command: text }];
+    const command = (id: string, text: string, output: string, commandActions: unknown[] = unknown(text)) =>
+      note.item({ type: "commandExecution", id, command: `/bin/bash -lc ${JSON.stringify(text)}`, cwd, processId: null, source: "agent", commandActions, aggregatedOutput: output, exitCode: 0, status: "completed", durationMs: 1 });
+    const turn = [
+      note.turnStarted(),
+      command("cmd-1", "cat .agent/skills/house-style/SKILL.md", fileOf("house-style"), [{ type: "read", command: "cat .agent/skills/house-style/SKILL.md", name: "SKILL.md", path: `${cwd}/.agent/skills/house-style/SKILL.md` }]),
+      command("cmd-2", "cat README.md", "# A repository\n"),
+      command("cmd-3", `tail -n 1 ${cwd}/.agent/skills/house-style/SKILL.md`, "# house-style"),
+      command("cmd-3b", "cat README.md", "# A repository\n\n# house-style\ndescription: \"How to e2e-for-p.\""),
+      command("cmd-4", "ls .agent/skills/", "build-in-w\ne2e-for-p\nhouse-style"),
+      command("cmd-5", "echo .agent/skills/e2e-for-p/SKILL.md", ".agent/skills/e2e-for-p/SKILL.md"),
+      command("cmd-6", "ls .agent/skills/e2e-for-p/SKILL.md", ".agent/skills/e2e-for-p/SKILL.md"),
+      command("cmd-7", "cat .agent/skills/e2e-for-p/SKILL.md.bak", "cat: .agent/skills/e2e-for-p/SKILL.md.bak: No such file or directory"),
+      command("cmd-8", "echo ignored #; cat .agent/skills/e2e-for-p/SKILL.md", "ignored"),
+      command("cmd-9", "cat <<'EOF'\ncat .agent/skills/e2e-for-p/SKILL.md\nEOF", "cat .agent/skills/e2e-for-p/SKILL.md"),
+      command("cmd-10", "cat --help .agent/skills/e2e-for-p/SKILL.md", "Usage: cat [OPTION]... [FILE]..."),
+      command("cmd-11", "sed -n -e .agent/skills/e2e-for-p/SKILL.md /dev/null", ""),
+      command("cmd-12", `python3 -c "print(open('.agent/skills/e2e-for-p/SKILL.md').read())"`, fileOf("e2e-for-p")),
+      command("cmd-13", "rg -n . .agent/skills/e2e-for-p", fileOf("e2e-for-p").split("\n").map((line, at) => `.agent/skills/e2e-for-p/SKILL.md:${at + 1}:${line}`).join("\n")),
+      note.agentMessage("ok"),
+      note.turnCompleted(),
+    ];
+    const started = codexOver({ after: { "turn/start": turn } }, { attachedSkills: SCOPED_SKILLS });
+    const startedEvents = await collect(started.provider.start({ ...startOpts, cwd, skillScope: SCOPED_RUN }));
+    const plain = [note.turnStarted(), note.agentMessage("ok"), note.turnCompleted()];
+    const resumed = codexOver({ after: { "turn/start": plain } }, { attachedSkills: SCOPED_SKILLS });
+    const resumedEvents = await collect(resumed.provider.resume("thr-persisted", "carry on", { cwd, skillScope: SCOPED_RUN }));
+    const bare = codexOver({ after: { "turn/start": plain } });
+    const bareEvents = await collect(bare.provider.start({ ...startOpts, cwd: scratchDirectory() }));
+    return { started: skillUsageOf(startedEvents), resumed: skillUsageOf(resumedEvents), withoutSkills: skillUsageOf(bareEvents) };
+  },
+
   "a side call returns structured output": async () => {
     // Read off the launch, the thread it opens and the model catalogue it
     // is handed, from a provider handed everything an agent could be:
@@ -4085,6 +4178,7 @@ describe("the shared list", () => {
       "unread turn",
       "backend memory off",
       "scoped skills",
+      "skill load detection",
       "a side call returns structured output",
       "a side call streams its answer's words",
       "a side call wound down reports what it spent",

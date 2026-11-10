@@ -177,6 +177,13 @@ describe("TranscriptEvent", () => {
     expect(screen.getByText(/idx_symbol/)).toBeInTheDocument();
   });
 
+  it("says which skills a run was given and which it loaded (EO-715)", () => {
+    render(<TranscriptEvent event={event(11, "skills_delivered", { type: "skills_delivered", skillIds: ["s-1", "s-2"], slugs: ["house-style", "review"] })} />);
+    expect(screen.getByText(/Given the skills/)).toHaveTextContent("Given the skills house-style, review");
+    render(<TranscriptEvent event={event(12, "skill_loaded", { type: "skill_loaded", skillId: "s-1", slug: "house-style" })} />);
+    expect(screen.getByText(/Loaded the skill/)).toHaveTextContent("Loaded the skill house-style");
+  });
+
   it("shows an unrecognised event rather than swallowing it", () => {
     render(<TranscriptEvent event={event(6, "some_future_kind", { detail: "surprise" })} />);
     expect(screen.getByText(/some_future_kind/)).toBeInTheDocument();

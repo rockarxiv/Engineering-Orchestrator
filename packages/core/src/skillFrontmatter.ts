@@ -91,6 +91,13 @@ export interface SkillFrontmatterInput {
   name: string;
   description: string;
   disableModelInvocation: boolean;
+  /**
+   * The skill's id, written under `metadata` as `eo-skill-id` where the
+   * delivery wants a read of the file to be recognisable by what it
+   * shows (EO-715): Codex has no skill tool, so EO tells a load by the
+   * id turning up in a command's output. Absent everywhere else.
+   */
+  skillIdMarker?: string;
 }
 
 /**
@@ -115,10 +122,15 @@ export interface SkillFrontmatterInput {
  * flag defaults to off everywhere, so writing `false` on every other
  * skill would be a line that says nothing.
  */
+/** The `metadata` key a delivered skill's id is written under, where it is (`SkillFrontmatterInput.skillIdMarker`). */
+export const SKILL_ID_MARKER_KEY = "eo-skill-id";
+
 export function skillFrontmatter(skill: SkillFrontmatterInput): string {
   const lines = ["---", `name: ${yamlQuoted(skill.slug)}`, `description: ${yamlQuoted(skill.description)}`];
   if (skill.disableModelInvocation) lines.push("disable-model-invocation: true");
-  lines.push("metadata:", `  display-name: ${yamlQuoted(skill.name)}`, "---");
+  lines.push("metadata:", `  display-name: ${yamlQuoted(skill.name)}`);
+  if (skill.skillIdMarker !== undefined) lines.push(`  ${SKILL_ID_MARKER_KEY}: ${yamlQuoted(skill.skillIdMarker)}`);
+  lines.push("---");
   return `${lines.join("\n")}\n`;
 }
 

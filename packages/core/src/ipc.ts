@@ -171,7 +171,7 @@ import {
   RepositoryIntelligenceConfigPatchSchema,
   RepositoryIntelligenceStatusSchema,
 } from "./schemas/repositoryIntelligence.js";
-import { SkillDraftSchema, SkillSchema, SkillVersionSchema } from "./schemas/skills.js";
+import { SkillDraftSchema, SkillListEntrySchema, SkillSchema, SkillVersionSchema } from "./schemas/skills.js";
 
 /**
  * An address in the app, as a canvas tab remembers it: the path and its
@@ -4162,7 +4162,8 @@ export const recordContract = {
     // point at, and are asked for deliberately — the same arrangement
     // `modules:list` and `mcpServers:list` use.
     z.object({ includeArchived: z.boolean().optional() }),
-    z.object({ skills: z.array(SkillSchema) }),
+    // Each with how it has been used (EO-715), counted from `run_events`.
+    z.object({ skills: z.array(SkillListEntrySchema) }),
   ),
   // `problem` rather than a throw: a slug that is not one, a supporting
   // file with `..` in its path and a slug another skill has are all

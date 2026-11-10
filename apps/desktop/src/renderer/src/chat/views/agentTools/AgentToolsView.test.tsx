@@ -1,6 +1,6 @@
 import { QueryClientProvider } from "@tanstack/react-query";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { developerRegistry, ORGANISATION_SECRET_LINE, toRegistryView, type McpServerView, type Skill } from "@eo/core";
+import { developerRegistry, ORGANISATION_SECRET_LINE, toRegistryView, type McpServerView, type SkillListEntry } from "@eo/core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createQueryClient } from "../../../query/client";
 import { setBridge } from "../../../ipc/bridge";
@@ -57,7 +57,7 @@ const LINEAR: McpServerView = {
   secretsSet: ["LINEAR_TOKEN"],
 };
 
-const PLAYBOOK: Skill = {
+const PLAYBOOK: SkillListEntry = {
   id: "019fb8c6-0000-7000-8000-0000000000b1",
   slug: "pr-review",
   name: "PR review",
@@ -70,6 +70,7 @@ const PLAYBOOK: Skill = {
   createdAt: 0,
   updatedAt: 0,
   archivedAt: null, createdBy: "person", locked: false,
+  usage: { runsDelivered: 0, runsLoaded: 0, lastLoadedAt: null, deliveriesSinceLoad: 0 },
 };
 
 const REVIEWER = { id: "019fb8c6-0000-7000-8000-0000000000c1", name: "Reviewer", role: "reviewer", provider: "claude", model: null, enabled: true, archivedAt: null };
@@ -448,6 +449,28 @@ describe("the agent tools catalogue", () => {
     fireEvent.click(lock);
 
     await waitFor(() => expect(payloadOf(calls, "skills:setLocked")).toEqual({ id: PLAYBOOK.id, locked: true }));
+  });
+
+  /** Usage, counted from the runs' events (EO-715), on a person's skill as on an agent's. */
+  it("shows how often each skill was delivered and loaded, whoever wrote it", async () => {
+    const at = new Date(2026, 0, 5).getTime();
+    mockIpc({
+      "skills:list": {
+        ok: true,
+        data: {
+          skills: [
+            { ...PLAYBOOK, usage: { runsDelivered: 12, runsLoaded: 3, lastLoadedAt: at, deliveriesSinceLoad: 4 } },
+            { ...PLAYBOOK, id: "019fb8c6-0000-7000-8000-0000000000b2", slug: "release", name: "Release", createdBy: "agent" },
+          ],
+        },
+      },
+    });
+    renderIn(<AgentTools />);
+
+    fireEvent.click(await screen.findByRole("tab", { name: /^Skills\s*2$/ }));
+    const person = await screen.findByRole("region", { name: "PR review" });
+    expect(person).toHaveTextContent(`Delivered to 12 runs, loaded by 3 runs, last loaded ${new Date(at).toLocaleString()} · 4 runs without a load since`);
+    expect(screen.getByRole("region", { name: "Release" })).toHaveTextContent("Not delivered to a run yet");
   });
 
   it("lists a skill's history and restores an earlier version", async () => {

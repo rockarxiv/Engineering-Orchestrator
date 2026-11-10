@@ -1,5 +1,5 @@
 import { useState, type ReactNode } from "react";
-import { AlertTriangle, ChevronRight, Coins, CornerDownLeft, CornerDownRight, FileDiff, Gauge, MessageSquare, Signpost, Terminal } from "lucide-react";
+import { AlertTriangle, BookOpen, ChevronRight, Coins, CornerDownLeft, CornerDownRight, FileDiff, Gauge, MessageSquare, Signpost, Terminal } from "lucide-react";
 import { outcomeProse, type RunEventView } from "@eo/core";
 import { cn } from "@eo/ui";
 import { RefText } from "../items/ItemReference";
@@ -187,6 +187,31 @@ export function TranscriptEvent({ event }: { event: RunEventView }) {
         </div>
       );
     }
+
+    // Which of EO's skills the run was given, and each one it loaded
+    // (EO-715) — what a skill's usage is counted from.
+    case "skills_delivered": {
+      const slugs = field(event.payload, "slugs");
+      const names = Array.isArray(slugs) ? slugs.map((slug) => asText(slug)) : [];
+      return (
+        <div className={cn(LINE, "text-ink-subtle")}>
+          <BookOpen aria-hidden size={12} className={ICON} />
+          <span className="min-w-0">
+            Given {names.length === 1 ? "the skill" : "the skills"} <span className="font-mono">{names.join(", ")}</span>
+          </span>
+        </div>
+      );
+    }
+
+    case "skill_loaded":
+      return (
+        <div className={cn(LINE, "text-ink-muted")}>
+          <BookOpen aria-hidden size={12} className={cn(ICON, "text-accent-soft")} />
+          <span className="min-w-0">
+            Loaded the skill <span className="font-mono">{asText(field(event.payload, "slug"))}</span>
+          </span>
+        </div>
+      );
 
     case "thread_started":
       return <div className="py-0.5 font-mono text-[11.5px] text-ink-subtle">thread {asText(field(event.payload, "threadId"))}</div>;

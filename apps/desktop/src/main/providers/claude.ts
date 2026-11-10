@@ -37,7 +37,8 @@ import { agentMcpStdioConfig, eoMcpStdioConfig, type EoMcpServiceConfig } from "
 import { toolResultEvent, toolResultText } from "./toolResult.js";
 import { withAttachmentNote } from "./attachmentNote.js";
 import { withSkillsSection } from "../agentAttachments/skillsPrompt.js";
-import { readToolDirectoryServers, toolDirectoryMcpConfigPath, toolDirectoryServerToolPrefixes, toolDirectorySkillNames, toolDirectorySkillsPromptSection } from "../agentAttachments/pluginDirectory.js";
+import { readToolDirectoryServers, TOOL_PLUGIN_NAME, toolDirectoryMcpConfigPath, toolDirectoryServerToolPrefixes, toolDirectorySkillNames, toolDirectorySkillsPromptSection } from "../agentAttachments/pluginDirectory.js";
+import { claudeSkillLoaded, leadingWith, skillsOffered } from "./skillUsage.js";
 import type { SearchNudge } from "./searchNudge.js";
 import type { AdminMcpDispatch } from "../agentAttachments/adminDelivery.js";
 
@@ -313,6 +314,11 @@ export interface ClaudeProviderOptions {
 }
 
 /** `mcp__eo__comment` -> `comment`: EO's own tools are recorded under their bare names on both backends. What a write tool did reaches EO over the agent write bridge, never from this (EO-543). */
+/** The skills a turn pointed at this directory is given, as the `skills_delivered` event says them (EO-715). */
+function offeredSkills(toolDirectory: string | undefined): AgentEvent[] {
+  return skillsOffered(toolDirectory ? toolDirectorySkillNames(toolDirectory).map((name) => name.slice(TOOL_PLUGIN_NAME.length + 1)) : []);
+}
+
 export function normaliseToolName(name: string): string {
   const prefix = `mcp__${EO_SERVER_NAME}__`;
   return name.startsWith(prefix) ? name.slice(prefix.length) : name;
@@ -613,6 +619,10 @@ export function mapSdkMessage(
           // backend's identifier for a call, and one thing to keep
           // right when a backend changes how it spells them.
           mapped.push({ type: "tool_call", name, args: block.input, callId: block.id });
+          // A `Skill` call naming one of EO's skills is that skill loaded
+          // (EO-715) — said here, from the call itself, so the count is
+          // what the backend did and not what the agent reports.
+          mapped.push(...claudeSkillLoaded(name, block.input));
           // A file-touching tool is also a file edit, which is what the
           // transcript and G-02 care about.
           const path = (block.input as { file_path?: unknown } | null)?.file_path;
@@ -2531,7 +2541,9 @@ export function createClaudeProvider(options: ClaudeProviderOptions = {}): Agent
       // Deferred rather than resolved here, because the SDK has to be
       // loaded before a query exists and `start` is not async. The
       // returned stream is what the caller drives.
-      return deferred(async () => {
+      // Which of EO's skills this turn is given (EO-715), said first: the
+      // allowlist read off the directory, the same list the SDK is handed.
+      return leadingWith(offeredSkills(opts.toolDirectory), deferred(async () => {
         const sdk = await sdkFor();
         // One queue per turn, built before the options it is wired into
         // and handed to the stream that drains it (EO-168).
@@ -2545,7 +2557,7 @@ export function createClaudeProvider(options: ClaudeProviderOptions = {}): Agent
         sdkOptions.systemPrompt = opts.instructions;
         const prompt = withAttachmentNote(withSkillsSection(opts.context, skillsSection), opts.attachments);
         return open(sdk, prompt, sdkOptions, interceptions, admin, opts.warmKey, opts.signal, opts.streamDeltas === true);
-      });
+      }));
     },
 
     resume(threadId: string, message: string, resumeOpts?: AgentProviderResumeOptions): InterruptibleStream<AgentEvent> {
@@ -2558,7 +2570,9 @@ export function createClaudeProvider(options: ClaudeProviderOptions = {}): Agent
       // The same sentence is what a session that has simply been cleaned
       // up produces, so this turn is wrapped: EO does not own ~/.claude
       // and cannot assume a thread it stored is still there (EO-93).
-      return translatingLostSession(threadId, deferred(async () => {
+      // A resumed turn is handed the directory's skills again, so it is
+      // given them as a fresh one is (EO-715).
+      return leadingWith(offeredSkills(resumeOpts?.toolDirectory), translatingLostSession(threadId, deferred(async () => {
         const sdk = await sdkFor();
         // A resumed turn intercepts exactly as a fresh one does, and is
         // counted the same way — its firings are this row's, not the
@@ -2567,7 +2581,7 @@ export function createClaudeProvider(options: ClaudeProviderOptions = {}): Agent
         const admin = options.admin?.(resumeOpts?.cwd) ?? null;
         const sdkOptions = withAdminLease(admin, () => turnOptions(resumeSpec(threadId, resumeOpts, interceptions.record), admin));
         return open(sdk, withAttachmentNote(message, resumeOpts?.attachments), sdkOptions, interceptions, admin, resumeOpts?.warmKey, resumeOpts?.signal, resumeOpts?.streamDeltas === true);
-      }));
+      })));
     },
 
     dropWarm,
