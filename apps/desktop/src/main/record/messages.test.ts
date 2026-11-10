@@ -560,4 +560,33 @@ describe("a job's guard about a project the organisation's record holds", () => 
     expect(second.results.map((result) => result.applied)).toEqual([true]);
     expect(onTheRecord()).toHaveLength(1);
   });
+
+  it("is not written again by a replay that arrives after the owner handled it and retention swept it", async () => {
+    const job = await carlsJob();
+    const { item, occurrence } = await filedItem(job);
+    annaDesk.online = false;
+    pauseForBudget(annaDesk.handle.db, { job, occurrence, budgetCents: 400, spentCents: 500 }, item);
+    const queued = pendingCommands(annaDesk.handle.db).map((entry) => entry.command);
+    const deviceId = issueDevice(recordDb.db, { personId: annaId, name: "anna-replay", tokenHash: "hash-anna-replay", secretsKeyHash: null }).id;
+
+    // The record writes it, and its answer never reaches Anna's desktop.
+    await serveApply(serving, { deviceId, commands: queued });
+    const written = onTheRecord();
+    expect(written).toHaveLength(1);
+    // Carl handles it on his desktop, and a week on the record sweeps it.
+    await carl.record.sync();
+    const dismissed = await carl.record.handleMessage({ messageId: written[0]!.id, how: "dismissed", answer: null });
+    if (!dismissed.ok) throw new Error(dismissed.problem);
+    sweepHandledMessages(recordDb.db, (dismissed.message.handledAt as number) + HANDLED_MESSAGE_RETENTION_MS + 1);
+    expect(onTheRecord()).toEqual([]);
+
+    // Anna's desktop comes back and the drain sends what it still holds.
+    annaDesk.online = true;
+    await annaDesk.record.sync();
+
+    expect(pendingCommands(annaDesk.handle.db)).toEqual([]);
+    expect(onTheRecord()).toEqual([]);
+    await carl.record.sync();
+    expect(listInbox(carl.handle.db).messages).toEqual([]);
+  });
 });

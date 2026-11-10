@@ -108,7 +108,14 @@ import {
   restoreConsolidation,
 } from "../db/repos/index.js";
 import { applyMemoryWrite } from "../memory/memoryWrites.js";
-import { getMessage, listMessagesChangedSince, listOpenMessageIds, messageChangedAt } from "../db/repos/messagesRepo.js";
+import {
+  getMessage,
+  hasQueuedMessageReceipt,
+  listMessagesChangedSince,
+  listOpenMessageIds,
+  messageChangedAt,
+  recordQueuedMessageReceipt,
+} from "../db/repos/messagesRepo.js";
 import { handleMessageHere, sendMessageToAdmins } from "../messages/messages.js";
 import { containerScopeOf } from "../memory/containerScope.js";
 import type { MemoryCaps, MemoryWriteRequest } from "./record.js";
@@ -1353,10 +1360,14 @@ async function applyOne(context: ServeRecordContext, deviceId: string, command: 
       // A message a device owed a person about this item (EO-729): a
       // job's budget trip. Written as any message about a project this
       // record holds — to the job's owner, or else each admin — under
-      // the id the device minted, so a replay after a lost
-      // acknowledgement finds it written and writes nothing twice.
-      if (getMessage(db, command.messageId) !== undefined) return ok;
-      sendMessageToAdmins(db, command.message, Date.now(), command.messageId);
+      // the id the device minted. A replay after a lost acknowledgement
+      // is known by the receipt written with it, not by the message: a
+      // handled message is swept, and the receipt never is.
+      if (hasQueuedMessageReceipt(db, command.messageId)) return ok;
+      db.transaction(() => {
+        recordQueuedMessageReceipt(db, command.messageId);
+        sendMessageToAdmins(db, command.message, Date.now(), command.messageId);
+      });
       return ok;
     }
 
