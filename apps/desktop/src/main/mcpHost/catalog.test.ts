@@ -906,6 +906,18 @@ describe("the MCP tool catalog", () => {
     expect(wrong.map((tool) => tool.name)).toEqual([]);
   });
 
+  it("states all four annotation hints on every tool", () => {
+    // A client fills a missing hint with the spec default, and the
+    // defaults are the cautious ones: no destructiveHint on a write reads
+    // as destructive, no openWorldHint as open world (EO-723). The type
+    // already demands all four; this holds the values to booleans too.
+    const HINTS = ["readOnlyHint", "destructiveHint", "idempotentHint", "openWorldHint"] as const;
+    const missing = TOOLS.filter((tool) => HINTS.some((hint) => typeof tool.annotations[hint] !== "boolean"));
+
+    expect(TOOLS.length).toBeGreaterThan(0);
+    expect(missing.map((tool) => tool.name)).toEqual([]);
+  });
+
   it("has something behind the gate at all", () => {
     // Reclassifying every gated tool as an ordinary write left this
     // whole file green. A catalog with an empty gate is the failure
@@ -1153,7 +1165,7 @@ describe("the MCP tool catalog", () => {
     expect(auto?.annotations.openWorldHint).toBe(true);
     // Not destructive, though: it removes nothing, and warning about it
     // alongside the deletes would blunt the warning that matters.
-    expect(auto?.annotations.destructiveHint).toBeUndefined();
+    expect(auto?.annotations.destructiveHint).toBe(false);
   });
 
   it("lets a client author a module without offering it any way to approve one", () => {
@@ -1466,7 +1478,7 @@ describe("the MCP tool catalog", () => {
     // away — an unpinned comment is still in the thread — and ticket_get
     // marks what is pinned, so it reads back and corrects.
     expect(pin?.kind).toBe("write");
-    expect(pin?.annotations.destructiveHint).toBeUndefined();
+    expect(pin?.annotations.destructiveHint).toBe(false);
     // Unpinning is this tool with a false in it, not a tool that is missing.
     expect(Object.keys((pin?.inputSchema["properties"] ?? {}) as Record<string, unknown>)).toEqual(
       expect.arrayContaining(["commentId", "pinned"]),
@@ -1623,7 +1635,7 @@ describe("the MCP tool catalog", () => {
       expect(TOOLS.find((tool) => tool.name === name)?.annotations.destructiveHint, name).toBe(true);
     }
     for (const name of ["mcp_server_save", "mcp_server_set_enabled", "skill_save", "skill_set_enabled", "agent_save"]) {
-      expect(TOOLS.find((tool) => tool.name === name)?.annotations.destructiveHint, name).toBeUndefined();
+      expect(TOOLS.find((tool) => tool.name === name)?.annotations.destructiveHint, name).toBe(false);
     }
   });
 
@@ -1718,7 +1730,7 @@ describe("the MCP tool catalog", () => {
     // one-way half and carries the hint; a hint here would put a warning
     // in front of the reversible act and teach a client to click through
     // the one that matters.
-    expect(TOOLS.find((tool) => tool.name === "agent_attachments_set")?.annotations.destructiveHint).toBeUndefined();
+    expect(TOOLS.find((tool) => tool.name === "agent_attachments_set")?.annotations.destructiveHint).toBe(false);
     expect(TOOLS.find((tool) => tool.name === "agent_attachments_set")?.annotations.idempotentHint).toBe(true);
   });
 

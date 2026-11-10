@@ -83,8 +83,34 @@ const ATTACHMENT_ADD_DESCRIPTION =
   "nobody and asks nothing. The answer is EO's own: the files it attached, or which file it refused and why, in " +
   "which case nothing was attached.";
 
+/**
+ * The four MCP annotation hints, every one stated (EO-723). A client
+ * fills a missing hint with the spec default, and the defaults are the
+ * cautious ones — a write with no `destructiveHint` reads as destructive,
+ * a tool with no `openWorldHint` as reaching the open world — so "not" is
+ * said with `false`, never by leaving a hint out. `eoServer.test.ts`
+ * holds every listed tool to all four.
+ */
+
+/** A read of EO's own database: changes nothing, the same answer twice, nothing beyond EO. */
+const READS_ANNOTATIONS = Object.freeze({ readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false });
+
+/**
+ * A write that adds to what EO holds — a comment, its files, a memory
+ * entry — and takes nothing away: a second call adds a second one.
+ */
+const APPENDS_ANNOTATIONS = Object.freeze({ readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false });
+
+/**
+ * `repository_checkout`: makes or refreshes a checkout on disk, so not
+ * read-only, from the repository's remote, so open world. Asking again
+ * for the same branch leaves the same checkout, so idempotent.
+ */
+const CHECKS_OUT_ANNOTATIONS = Object.freeze({ readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true });
+
 const ATTACHMENT_ADD_TOOL = {
   name: "attachment_add",
+  annotations: APPENDS_ANNOTATIONS,
   description: ATTACHMENT_ADD_DESCRIPTION,
   inputSchema: {
     type: "object",
@@ -103,6 +129,7 @@ const ATTACHMENT_ADD_TOOL = {
 
 const COMMENT_TOOL = {
   name: "comment",
+  annotations: APPENDS_ANNOTATIONS,
   description: COMMENT_DESCRIPTION,
   inputSchema: {
     type: "object",
@@ -128,18 +155,21 @@ const ITEM_DETAIL_INPUT_SCHEMA = {
 
 const ITEM_DETAIL_TOOL = {
   name: "item_detail",
+  annotations: READS_ANNOTATIONS,
   description: ITEM_DETAIL_DESCRIPTION,
   inputSchema: ITEM_DETAIL_INPUT_SCHEMA,
 };
 
 const TICKET_DETAIL_TOOL = {
   name: "ticket_detail",
+  annotations: READS_ANNOTATIONS,
   description: TICKET_DETAIL_DESCRIPTION,
   inputSchema: ITEM_DETAIL_INPUT_SCHEMA,
 };
 
 const THREAD_READ_TOOL = {
   name: "thread_read",
+  annotations: READS_ANNOTATIONS,
   description: THREAD_READ_DESCRIPTION,
   inputSchema: {
     type: "object",
@@ -151,6 +181,7 @@ const THREAD_READ_TOOL = {
 
 const COMMENT_SEARCH_TOOL = {
   name: "comment_search",
+  annotations: READS_ANNOTATIONS,
   description: COMMENT_SEARCH_DESCRIPTION,
   inputSchema: {
     type: "object",
@@ -165,6 +196,7 @@ const COMMENT_SEARCH_TOOL = {
 
 const ATTACHMENT_READ_TOOL = {
   name: "attachment_read",
+  annotations: READS_ANNOTATIONS,
   description: ATTACHMENT_READ_DESCRIPTION,
   inputSchema: {
     type: "object",
@@ -176,6 +208,7 @@ const ATTACHMENT_READ_TOOL = {
 
 const COMMENT_READ_TOOL = {
   name: "comment_read",
+  annotations: READS_ANNOTATIONS,
   description: COMMENT_READ_DESCRIPTION,
   inputSchema: {
     type: "object",
@@ -200,6 +233,7 @@ const MEMORY_READ_DESCRIPTION =
 
 const MEMORY_READ_TOOL = {
   name: MEMORY_READ_TOOL_NAME,
+  annotations: READS_ANNOTATIONS,
   description: MEMORY_READ_DESCRIPTION,
   inputSchema: {
     type: "object",
@@ -346,6 +380,7 @@ const MEMORY_NOTE_DESCRIPTION =
 
 const MEMORY_NOTE_TOOL = {
   name: MEMORY_NOTE_TOOL_NAME,
+  annotations: APPENDS_ANNOTATIONS,
   description: MEMORY_NOTE_DESCRIPTION,
   inputSchema: {
     type: "object",
@@ -407,6 +442,7 @@ const REPOSITORY_CHECKOUT_DESCRIPTION =
 
 const REPOSITORY_CHECKOUT_TOOL = {
   name: REPOSITORY_CHECKOUT_TOOL_NAME,
+  annotations: CHECKS_OUT_ANNOTATIONS,
   description: REPOSITORY_CHECKOUT_DESCRIPTION,
   inputSchema: {
     type: "object",
@@ -519,6 +555,7 @@ async function writeThroughEo(writeBridge, tool, args) {
 
 const PIPELINE_LIST_TOOL = {
   name: "pipeline_list",
+  annotations: READS_ANNOTATIONS,
   description:
     "List every pipeline that holds work, with its step count and where work enters it. Use it to see what " +
     "already exists before proposing a new pipeline or a change to one.",
@@ -527,6 +564,7 @@ const PIPELINE_LIST_TOOL = {
 
 const PIPELINE_READ_TOOL = {
   name: "pipeline_read",
+  annotations: READS_ANNOTATIONS,
   description:
     "Read one pipeline in full: every step, who owns it, what it runs, and where each declared result routes. " +
     "Read the pipeline you are changing before you change it.",
@@ -540,6 +578,7 @@ const PIPELINE_READ_TOOL = {
 
 const AGENTS_LIST_TOOL = {
   name: "agents_list",
+  annotations: READS_ANNOTATIONS,
   description:
     "List every configured agent: its role, backend, model, whether it is enabled, what it does, and which " +
     "pipeline steps it already owns. Use it to decide whether an agent that exists can own a step before " +
@@ -549,6 +588,7 @@ const AGENTS_LIST_TOOL = {
 
 const AGENT_READ_TOOL = {
   name: "agent_read",
+  annotations: READS_ANNOTATIONS,
   description:
     "Read one agent's full instructions. Use it when the one-line summary from `agents_list` is not enough to " +
     "judge whether it can do a job.",
@@ -562,6 +602,7 @@ const AGENT_READ_TOOL = {
 
 const RUNTIMES_LIST_TOOL = {
   name: "runtimes_list",
+  annotations: READS_ANNOTATIONS,
   description:
     "List the agent runtimes EO can run, and whether each is installed on this machine and enabled. EO ships a " +
     "fixed set; a runtime that is not installed can be installed, but only the person can agree to that.",

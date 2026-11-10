@@ -124,12 +124,20 @@ import { ITEM_ID_ARGUMENTS, itemIdArgumentsOf, KEY_ACCEPTED_SENTENCE, RESOLVE_KE
  */
 export type ToolKind = "read" | "write" | "dangerous";
 
-/** The subset of MCP's tool annotations EO has anything true to say with. */
+/**
+ * MCP's four tool annotation hints, every one stated (EO-723).
+ *
+ * A client fills a missing hint with the spec default, and the defaults
+ * are the cautious ones: an absent `destructiveHint` on a tool that is
+ * not read-only means destructive, an absent `openWorldHint` means open
+ * world. So "not destructive" is said with `false`, never by leaving the
+ * hint out, and the type makes leaving one out a compile error.
+ */
 export interface ToolAnnotations {
-  readOnlyHint?: boolean;
-  destructiveHint?: boolean;
-  idempotentHint?: boolean;
-  openWorldHint?: boolean;
+  readOnlyHint: boolean;
+  destructiveHint: boolean;
+  idempotentHint: boolean;
+  openWorldHint: boolean;
 }
 
 /** How a tool reaches EO. The only way it may. */
@@ -587,7 +595,7 @@ const PIPELINE_SAVE_TOOL: ToolSpec = withoutWebhookUnattended(
       // answers with the save's own reasons.
       input: PipelineSaveInputSchema.omit({ restoredFrom: true, actions: true }),
       kind: "write",
-      annotations: { idempotentHint: true, openWorldHint: false },
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
       render: renderPipelineSaved,
     }),
   ),
@@ -711,7 +719,7 @@ const MEMORY_CONSOLIDATION_RESTORE_TOOL: ToolSpec = {
     "retired, and those entries as they now stand — or the reason nothing was changed: no consolidation has that id, " +
     "it was already restored, it changed nothing, or the record that holds it could not be reached.",
   kind: "write",
-  annotations: { openWorldHint: false },
+  annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
   channels: ["memory:restoreConsolidation", "memory:search"],
   inputSchema: inputSchemaFor(
     z.object({ consolidationId: z.string().min(1).describe("The consolidation's id, as memory_consolidations_list answers it.") }),
@@ -748,7 +756,7 @@ const MEMORY_WRITE_TOOLS: readonly ToolSpec[] = [
         "not be reached.",
       input: z.object({ scope: MEMORY_SCOPE_INPUT, body: MEMORY_TOOL_BODY }),
       kind: "write",
-      annotations: { openWorldHint: false },
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
       render: renderMemoryWritten("Added to memory, as a person's entry."),
       refusal: (data) => (data.ok ? null : data.problem),
     }),
@@ -765,7 +773,7 @@ const MEMORY_WRITE_TOOLS: readonly ToolSpec[] = [
         "record that holds the project could not be reached.",
       input: z.object({ id: MEMORY_ENTRY_ID, body: MEMORY_TOOL_BODY }),
       kind: "write",
-      annotations: { openWorldHint: false },
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
       render: renderMemoryWritten("Edited. The old version is retired, and this is the entry now."),
       refusal: (data) => (data.ok ? null : data.problem),
     }),
@@ -779,7 +787,7 @@ const MEMORY_WRITE_TOOLS: readonly ToolSpec[] = [
       "has that id, it is already retired, or the record that holds the project could not be reached.",
     input: z.object({ id: MEMORY_ENTRY_ID }),
     kind: "write",
-    annotations: { openWorldHint: false },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     render: renderMemoryWritten("Retired. Runs are no longer given it; memory_restore puts it back."),
     refusal: (data) => (data.ok ? null : data.problem),
   }),
@@ -793,7 +801,7 @@ const MEMORY_WRITE_TOOLS: readonly ToolSpec[] = [
       "consolidation at once, use memory_consolidation_restore.",
     input: z.object({ id: MEMORY_ENTRY_ID }),
     kind: "write",
-    annotations: { openWorldHint: false },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     render: renderMemoryWritten("Restored. Runs are given it again."),
     refusal: (data) => (data.ok ? null : data.problem),
   }),
@@ -820,7 +828,7 @@ const GUIDE_TOOL: ToolSpec = {
     "`eo_unblock` is how to work out why nothing is moving. Read the relevant one before a first attempt rather than " +
     "after a refusal.",
   kind: "read",
-  annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
+  annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   channels: [],
   inputSchema: {
     type: "object",
@@ -918,7 +926,7 @@ const RUNTIME_STATUS_TOOL: ToolSpec = {
     "Read it before runtime_describe or runtime_install, and whenever an agent is not dispatching. A backend that " +
     "runs inside EO, like `fake`, has no CLI and says so rather than reporting one missing.",
   kind: "read",
-  annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
+  annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   list: "runtimes",
   channels: ["runtime:status"],
   inputSchema: inputSchemaFor(RuntimeStatusArgsSchema),
@@ -976,7 +984,7 @@ const RUNTIME_DESCRIBE_TOOL: ToolSpec = {
   // tool here answers from EO's own database or disk; this one is only
   // as available as npm is, and a client that plans around that has to
   // be told which.
-  annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
+  annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
   channels: ["runtime:status", "runtime:describe"],
   inputSchema: inputSchemaFor(RuntimeDescribeArgsSchema),
   async run(dispatch, args) {
@@ -1084,7 +1092,7 @@ const SPEND_READ_TOOL: ToolSpec = {
     "ticket reaches `perTicketBudgetCents`, and guardrails_get is where those limits are read. Pass `date` as " +
     '"YYYY-MM-DD" for an earlier day. The figures beside the reply are in whole cents, as every amount in EO is.',
   kind: "read",
-  annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
+  annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   channels: ["costs:getDaily", "costs:getForItem"],
   inputSchema: inputSchemaFor(LEGACY_SPEND_ARGS.advertised),
   async run(dispatch, args) {
@@ -1159,7 +1167,7 @@ const TRACKER_READ_TOOLS: readonly ToolSpec[] = [
       "jira_connect, which is what points a repository at one of these sites.",
     kind: "read",
     list: "connections",
-    annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     render: renderJiraConnections,
   }),
   channelTool({
@@ -1174,7 +1182,7 @@ const TRACKER_READ_TOOLS: readonly ToolSpec[] = [
       "repositories_list.",
     kind: "read",
     list: "steps",
-    annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
     render: renderJiraCheck,
   }),
   channelTool({
@@ -1188,7 +1196,7 @@ const TRACKER_READ_TOOLS: readonly ToolSpec[] = [
       "type name, like Epic or Story.",
     kind: "read",
     list: "fields",
-    annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
     render: renderJiraFields,
   }),
   channelTool({
@@ -1200,7 +1208,7 @@ const TRACKER_READ_TOOLS: readonly ToolSpec[] = [
       "project and which ones exist depends on where the issue currently sits.",
     kind: "read",
     list: "statuses",
-    annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
     render: renderJiraStatuses,
   }),
   channelTool({
@@ -1212,7 +1220,7 @@ const TRACKER_READ_TOOLS: readonly ToolSpec[] = [
       "and the issue did not move there\" — a queue that only grows is a path that is broken, and jira_test says " +
       "which part of it.",
     kind: "read",
-    annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     render: renderJiraOutbox,
   }),
   channelTool({
@@ -1226,7 +1234,7 @@ const TRACKER_READ_TOOLS: readonly ToolSpec[] = [
       "changes nothing. A self-hosted host EO cannot classify is reported rather than guessed — name it with " +
       "repository_update (forgeKind), because guessing is how work reaches the wrong kind of server.",
     kind: "read",
-    annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
     render: renderForgeDetection,
   }),
 ];
@@ -1266,7 +1274,7 @@ const JIRA_SAVE_CONFIG_TOOL: ToolSpec = {
     "it. `createByDefault` decides whether a new ticket mirrors without being asked. Read it back through " +
     "repositories_list, which reports all four, and prove the result with jira_test.",
   kind: "write",
-  annotations: { idempotentHint: true, openWorldHint: false },
+  annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   // Both halves declared, as `guardrails_set` and `agent_save` declare
   // theirs — which is also what accounts for `jira:saveConfig` in
   // catalog.test.ts's sweep rather than an exclusion.
@@ -1337,7 +1345,7 @@ const TRACKER_WRITE_TOOLS: readonly ToolSpec[] = [
       "from repositories_list and send it back with your change, because a step left out stops being mirrored. A " +
       "step with no mapping is a deliberate \"Jira has no opinion about this one\", which most steps are.",
     kind: "write",
-    annotations: { idempotentHint: true, openWorldHint: false },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     render: () => "Status map saved. It is the whole map now — repositories_list reports it, and a step missing from it moves nothing in Jira.",
     refusal: (data) => (data.ok ? null : `Nothing changed: ${data.problem ?? "EO refused."}`),
   }),
@@ -1351,7 +1359,7 @@ const TRACKER_WRITE_TOOLS: readonly ToolSpec[] = [
       "repositories_list reports the statuses that have requirements recorded, which fields they are, and which of " +
       "them already have a value. What you send here is sent with every later move into that status.",
     kind: "write",
-    annotations: { idempotentHint: true, openWorldHint: false },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     render: () => "Transition fields saved. Every later move into that status sends them.",
     refusal: (data) =>
       data.ok
@@ -1374,7 +1382,7 @@ const TRACKER_WRITE_TOOLS: readonly ToolSpec[] = [
     // anywhere else, and on the last repository of a site the token goes
     // too. A caller should be asked before that, even though the switch
     // does not stand in front of it.
-    annotations: { destructiveHint: true, idempotentHint: true, openWorldHint: false },
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
     render: (data) =>
       data.ok
         ? "Disconnected. The repository mirrors nowhere: its project key, extra fields and status map are gone, and the site's token with them if nothing else was using it."
@@ -1437,7 +1445,7 @@ const CATALOGUE_READ_TOOLS: readonly ToolSpec[] = [
       "than deleted because an attachment can still point at them.",
     kind: "read",
     list: "servers",
-    annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     render: renderMcpServers,
   }),
   channelTool({
@@ -1454,7 +1462,7 @@ const CATALOGUE_READ_TOOLS: readonly ToolSpec[] = [
       "retired ones, which attachments can still point at.",
     kind: "read",
     list: "skills",
-    annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     render: renderSkills,
   }),
   channelTool({
@@ -1467,7 +1475,7 @@ const CATALOGUE_READ_TOOLS: readonly ToolSpec[] = [
       "text; its body and files travel in the structured reply. skill_restore_version puts any of them back.",
     kind: "read",
     list: "versions",
-    annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     render: renderSkillVersions,
     refusal: (data) => data.problem,
   }),
@@ -1481,7 +1489,7 @@ const CATALOGUE_READ_TOOLS: readonly ToolSpec[] = [
       "Pass agentId for one agent, or omit it for every agent that has anything.",
     kind: "read",
     list: "attachments",
-    annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     render: renderAgentAttachments,
   }),
 ];
@@ -1524,7 +1532,7 @@ const RUN_EVENTS_TOOL: ToolSpec = {
     "the log so far and pages them by offset instead of by cursor.",
   kind: "read",
   list: "events",
-  annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
+  annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   channels: ["runs:listEvents"],
   inputSchema: inputSchemaFor(RunEventsArgsSchema),
   async run(dispatch, args) {
@@ -1601,7 +1609,7 @@ const READ_TOOLS: readonly ToolSpec[] = [
     // answers differently, with nothing dispatched in between. A model
     // that read `idempotentHint: true` as licence to reuse the first
     // answer would rebuild the staleness EO-192 exists to remove.
-    annotations: { readOnlyHint: true, idempotentHint: false, openWorldHint: false },
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     render: renderCurrentView,
   }),
   channelTool({
@@ -1613,7 +1621,7 @@ const READ_TOOLS: readonly ToolSpec[] = [
       "anything else — project_set_active is the only tool that moves their window, and it says so.",
     kind: "read",
     list: "projects",
-    annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     render: renderProjects,
   }),
   channelTool({
@@ -1626,7 +1634,7 @@ const READ_TOOLS: readonly ToolSpec[] = [
       "jira_save_status_map and jira_save_transition_fields are read back, since each answers only that it worked.",
     kind: "read",
     list: "repositories",
-    annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     render: renderRepositories,
   }),
   channelTool({
@@ -1640,7 +1648,7 @@ const READ_TOOLS: readonly ToolSpec[] = [
       "createdSince, updatedSince or atTerminalStep — every one given must hold.",
     kind: "read",
     list: "items",
-    annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     render: renderItems,
   }),
   channelTool({
@@ -1652,7 +1660,7 @@ const READ_TOOLS: readonly ToolSpec[] = [
       "type, parentKey, keys, text, createdSince and updatedSince, applied in EO's own query.",
     kind: "read",
     list: "items",
-    annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     render: renderItems,
   }),
   channelTool({
@@ -1664,7 +1672,7 @@ const READ_TOOLS: readonly ToolSpec[] = [
       "include with any of ticket, comments, runs, transitions, dependsOn and decision; commentsLimit, commentsSince " +
       "and pinnedOnly narrow the comments, and runsLimit the runs. What is left out is not read at all.",
     kind: "read",
-    annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     render: renderItem,
   }),
   channelTool({
@@ -1676,7 +1684,7 @@ const READ_TOOLS: readonly ToolSpec[] = [
       "pipeline is moving. Takes the same optional projectId as tickets_list.",
     kind: "read",
     list: "items",
-    annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     render: renderInbox,
   }),
   RUN_EVENTS_TOOL,
@@ -1693,7 +1701,7 @@ const READ_TOOLS: readonly ToolSpec[] = [
       "startedUntil (epoch milliseconds) — every one given must hold. runs_summary adds the same runs up.",
     kind: "read",
     list: "runs",
-    annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     render: renderRuns,
   }),
   channelTool({
@@ -1706,7 +1714,7 @@ const READ_TOOLS: readonly ToolSpec[] = [
       "Side calls are counted as the action side_call:<purpose>, so the cost is the whole of what was spent.",
     kind: "read",
     list: "groups",
-    annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     render: renderRunSummary,
   }),
   channelTool({
@@ -1726,7 +1734,7 @@ const READ_TOOLS: readonly ToolSpec[] = [
       "state: active is what runs are given now. memory_get reads one entry with its history.",
     kind: "read",
     list: "entries",
-    annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     render: renderMemorySearch,
   }),
   channelTool({
@@ -1738,7 +1746,7 @@ const READ_TOOLS: readonly ToolSpec[] = [
       "entries it corrects or repeats (superseded); the consolidation that wrote it, if one did; and the newest " +
       "consolidation that retired it, if one did, with whether that was restored.",
     kind: "read",
-    annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     render: renderMemoryEntry,
     refusal: (data) => (data.ok ? null : data.problem),
   }),
@@ -1753,7 +1761,7 @@ const READ_TOOLS: readonly ToolSpec[] = [
       "memories_search answers it: kind project, workspace or container, and its id.",
     kind: "read",
     list: "consolidations",
-    annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     render: renderMemoryConsolidations,
   }),
   channelTool({
@@ -1767,7 +1775,7 @@ const READ_TOOLS: readonly ToolSpec[] = [
       "project or workspace, and its id. Answers whether it started, was queued (and behind what), was already queued or " +
       "running, or was refused and why. How it ended is memory_consolidations_list's.",
     kind: "write",
-    annotations: { idempotentHint: true, openWorldHint: false },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     render: renderMemoryConsolidateNow,
     refusal: (data) => (data.outcome === "refused" ? data.message : null),
   }),
@@ -1779,7 +1787,7 @@ const READ_TOOLS: readonly ToolSpec[] = [
       "its runs are counted here even then. Re-read this after engine_pause or engine_resume, and whenever a ticket " +
       "seems not to be moving.",
     kind: "read",
-    annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     render: renderEngineStatus,
   }),
   channelTool({
@@ -1793,7 +1801,7 @@ const READ_TOOLS: readonly ToolSpec[] = [
       "step names an action its role has and routes every key that action declares, and a builtin step names a function that " +
       "exists and routes every result it has.",
     kind: "read",
-    annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     render: renderRegistry,
   }),
   channelTool({
@@ -1808,7 +1816,7 @@ const READ_TOOLS: readonly ToolSpec[] = [
       "assistant's chat.",
     kind: "read",
     list: "types",
-    annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     // The channel takes an explicit null for the installation's own
     // types, which no reader of a project means; a project or nothing.
     input: z.object({ projectId: z.string().min(1).optional() }),
@@ -1820,7 +1828,7 @@ const READ_TOOLS: readonly ToolSpec[] = [
     description: "The configured agents: which role each staffs, which backend and model it runs on, and whether it is enabled.",
     kind: "read",
     list: "agents",
-    annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     render: renderAgents,
   }),
   RUNTIME_STATUS_TOOL,
@@ -1831,7 +1839,7 @@ const READ_TOOLS: readonly ToolSpec[] = [
     description: "The pipelines on a project. Pass includeArchived to see deleted ones, which are archived rather than dropped.",
     kind: "read",
     list: "pipelines",
-    annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     render: renderPipelines,
   }),
   channelTool({
@@ -1841,7 +1849,7 @@ const READ_TOOLS: readonly ToolSpec[] = [
       "One pipeline's steps and the routes between them — where work enters, what each step is for, and which result " +
       "key sends a ticket where. The graph is data, so this is the whole of it.",
     kind: "read",
-    annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     render: renderPipeline,
   }),
   channelTool({
@@ -1852,7 +1860,7 @@ const READ_TOOLS: readonly ToolSpec[] = [
       "approved will stop a pipeline naming it from publishing.",
     kind: "read",
     list: "modules",
-    annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     render: renderModules,
   }),
   channelTool({
@@ -1864,7 +1872,7 @@ const READ_TOOLS: readonly ToolSpec[] = [
       "code or manifest files a version; renaming it files none. module_version_get reads one whole.",
     kind: "read",
     list: "versions",
-    annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     render: renderModuleVersions,
     refusal: (data) => data.problem,
   }),
@@ -1876,7 +1884,7 @@ const READ_TOOLS: readonly ToolSpec[] = [
       "with that code, by the number module_versions_list gives. Reading it changes nothing; module_version_restore " +
       "is what puts it back.",
     kind: "read",
-    annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     render: renderModuleVersion,
     refusal: (data) => (data.version === null ? data.problem : null),
   }),
@@ -1889,7 +1897,7 @@ const READ_TOOLS: readonly ToolSpec[] = [
       "Read this before settings_write — that tool writes only the keys you name, and this is what tells you what " +
       "the rest are set to.",
     kind: "read",
-    annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     render: renderSettings,
   }),
   channelTool({
@@ -1900,7 +1908,7 @@ const READ_TOOLS: readonly ToolSpec[] = [
       "Of the limits on a run, only the attempt limit applies to the system agent; what it spends still counts towards the budgets. " +
       "guardrails_set changes any of them, one field at a time — read this first to see what you are not changing.",
     kind: "read",
-    annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     render: renderGuards,
   }),
   SPEND_READ_TOOL,
@@ -1912,7 +1920,7 @@ const READ_TOOLS: readonly ToolSpec[] = [
       "uncommitted changes that exist nowhere else.",
     kind: "read",
     list: "worktrees",
-    annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     // The channel's own schema has `repositoryId` nullable but required,
     // so a client would have to be told to send an explicit null — and a
     // model told that will forget. Defaulting it means "every
@@ -1994,7 +2002,7 @@ const GUARDRAILS_SET_TOOL: ToolSpec = {
     "So is a run timeout shorter than a module step's own time limit — raise the step's limit first, or leave the " +
     "run timeout where it is.",
   kind: "write",
-  annotations: { idempotentHint: true, openWorldHint: false },
+  annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   channels: ["guards:get", "guards:set"],
   inputSchema: inputSchemaFor(LEGACY_GUARD_PATCH.advertised),
   async run(dispatch, args) {
@@ -2122,7 +2130,7 @@ const AGENT_SAVE_TOOL: ToolSpec = {
     "and a `system` agent is always global, so a project id on one is refused. New instructions take effect on the " +
     "next dispatch, not on a run already in flight.",
   kind: "write",
-  annotations: { openWorldHint: false },
+  annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
   channels: ["agents:listDetailed", "agents:save"],
   inputSchema: inputSchemaFor(AgentPatchSchema),
   async run(dispatch, args) {
@@ -2274,7 +2282,7 @@ const AGENT_ARCHIVE_TOOL: ToolSpec = channelTool({
     "ticket of any run it has in progress (confirming cancels it), and whether it is the last system agent. Tell " +
     "the person, and call again with confirm: true only once they have said to go ahead.",
   kind: "write",
-  annotations: { destructiveHint: true, openWorldHint: false },
+  annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
   render: () => "Agent archived. Nothing dispatches it now; the row is kept, so its runs and comments still resolve and agents_list still shows it.",
   refusal: (data, tool) => (data.archived ? null : unconfirmedAgentRemoval(data, "archived", tool)),
 });
@@ -2310,7 +2318,7 @@ const ROLE_ACTION_SAVE_TOOL: ToolSpec = channelTool({
     "the action must route each key it declares, so after adding a key give those steps a route for it with " +
     "pipeline_save. A definition applies to its own role and no other, and takes effect on the next dispatch.",
   kind: "write",
-  annotations: { idempotentHint: true, openWorldHint: false },
+  annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   render: (data) =>
     data.definition === null
       ? "Nothing was saved."
@@ -2365,7 +2373,7 @@ const PROJECT_SETUP_TOOLS: readonly ToolSpec[] = [
       "project_add_repository later; naming one twice spans it once, not twice. This does not change what the app " +
       "window is showing — project_set_active does.",
     kind: "write",
-    annotations: { openWorldHint: false },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     render: (data) => renderProjectWritten(data, "Created"),
     refusal: (data) => (data.ok ? null : `Nothing was created: ${data.problem ?? "it refused."} Nothing has changed.`),
   }),
@@ -2378,7 +2386,7 @@ const PROJECT_SETUP_TOOLS: readonly ToolSpec[] = [
       "mirrors into is no longer named here: a project has one Jira connection covering everything on it, " +
       "whichever repository the work is in, and jira_connect is what sets it.",
     kind: "write",
-    annotations: { idempotentHint: true, openWorldHint: false },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     render: (data) => renderProjectWritten(data, "Updated"),
     refusal: (data) => (data.ok ? null : `Nothing changed: ${data.problem ?? "it refused."}`),
   }),
@@ -2392,7 +2400,7 @@ const PROJECT_SETUP_TOOLS: readonly ToolSpec[] = [
       "one project at a time, so this takes it off whichever project held it. Refused for the Preview project: " +
       "Preview is EO's rehearsal, and a repository belongs on a real project. Read it back with projects_list.",
     kind: "write",
-    annotations: { idempotentHint: true, openWorldHint: false },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     render: (data) => renderProjectWritten(data, "Added"),
     refusal: (data) => (data.ok ? null : `Nothing was added: ${data.problem ?? "it refused."}`),
   }),
@@ -2406,7 +2414,7 @@ const PROJECT_SETUP_TOOLS: readonly ToolSpec[] = [
       "longer covers, so move or close them first. A repository belongs to one project at a time, so adding it to " +
       "another is what moves it; this leaves it belonging to none.",
     kind: "write",
-    annotations: { idempotentHint: true, openWorldHint: false },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     render: (data) => renderProjectWritten(data, "Removed"),
     refusal: (data) => (data.ok ? null : `Nothing was removed: ${data.problem ?? "it refused."} Nothing has changed.`),
   }),
@@ -2426,7 +2434,7 @@ const PROJECT_SETUP_TOOLS: readonly ToolSpec[] = [
       "ahead — that stops those runs, and says so on each ticket. A ticket somebody put on hold stays on hold through " +
       "an archive and a restore. A project on the organisation's record is refused: the record owns it.",
     kind: "write",
-    annotations: { idempotentHint: true, openWorldHint: false },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     render: (data) => {
       const stopped = data.running.length === 0 ? "" : ` Stopped the agent on ${data.running.map((entry) => entry.itemKey).join(", ")}.`;
       return (
@@ -2457,7 +2465,7 @@ const PROJECT_SETUP_TOOLS: readonly ToolSpec[] = [
       "having to resume them one by one. A ticket that was on hold before the archive is still on hold. " +
       "projects_list says which projects are archived.",
     kind: "write",
-    annotations: { idempotentHint: true, openWorldHint: false },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     render: (data) => `Restored "${data.name ?? "the project"}". ${data.unfinishedCount} unfinished ticket(s) are back in front of the scheduler.`,
     refusal: (data) => (data.restored ? null : `EO did not restore it: ${data.problem ?? "it refused."} Nothing has changed.`),
   }),
@@ -2482,7 +2490,7 @@ const PROJECT_SETUP_TOOLS: readonly ToolSpec[] = [
       "is the same question asked only of the git kind, and reports the Jira binding and forge settings this does not.",
     kind: "read",
     list: "workspaces",
-    annotations: { idempotentHint: true, readOnlyHint: true, openWorldHint: false },
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     render: renderWorkspaces,
   }),
   channelTool({
@@ -2500,7 +2508,7 @@ const PROJECT_SETUP_TOOLS: readonly ToolSpec[] = [
       "repository, and the window switches to it. `keyPrefix` is only for that case and is refused otherwise. A " +
       "`projectId` EO does not have is refused. A step then picks among them with pipeline_save.",
     kind: "write",
-    annotations: { openWorldHint: false },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     render: renderWorkspaceCreated,
     refusal: (data) => (data.ok ? null : `Nothing was attached: ${data.problem ?? "it refused."} Nothing has changed.`),
   }),
@@ -2513,7 +2521,7 @@ const PROJECT_SETUP_TOOLS: readonly ToolSpec[] = [
       "The kind itself never changes — a repository that became a folder would be the same row meaning something " +
       "else, with every ticket on it still pointing at it. Read it back with workspace_list.",
     kind: "write",
-    annotations: { idempotentHint: true, openWorldHint: false },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     render: renderWorkspaceUpdated,
     refusal: (data) => (data.ok ? null : `Nothing changed: ${data.problem ?? "it refused."}`),
   }),
@@ -2533,7 +2541,7 @@ const PROJECT_SETUP_TOOLS: readonly ToolSpec[] = [
       "prefix, which is what its tickets are numbered with: it is fixed at creation, omitting it derives one from " +
       "the name, and sending one for a repository joining a project is refused.",
     kind: "write",
-    annotations: { openWorldHint: false },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     render: renderRepositoryCreated,
     refusal: (data) => (data.ok ? null : `Nothing was attached: ${data.problem ?? "it refused."} Nothing has changed.`),
   }),
@@ -2549,7 +2557,7 @@ const PROJECT_SETUP_TOOLS: readonly ToolSpec[] = [
       "repository has no key prefix of its own: the prefix its tickets carry is its project's, and projects_list " +
       "reports it.",
     kind: "write",
-    annotations: { idempotentHint: true, openWorldHint: false },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     render: renderRepositoryUpdated,
     refusal: (data) => (data.ok ? null : `Nothing changed: ${data.problem ?? "it refused."}`),
   }),
@@ -2585,7 +2593,7 @@ const PROJECT_SET_ACTIVE_TOOL: ToolSpec = {
     "project regardless of which one is on screen. Take the id from projects_list; one EO does not have is refused " +
     "by name rather than quietly ignored.",
   kind: "write",
-  annotations: { idempotentHint: true, openWorldHint: false },
+  annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   channels: ["projects:list", "projects:setActive"],
   inputSchema: inputSchemaFor(ipcContract["projects:setActive"].request),
   async run(dispatch, args) {
@@ -2718,7 +2726,7 @@ const PIPELINE_MANAGE_TOOL: ToolSpec = {
     "ambiguous; read what exists from pipelines_list. `icon` is one of square-stack, boxes, database, monitor or " +
     "workflow, and any other name falls back to a generic glyph.",
   kind: "write",
-  annotations: { openWorldHint: false },
+  annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
   channels: ["pipelines:list", "pipelines:create", "pipelines:update"],
   inputSchema: inputSchemaFor(PipelineManageInput),
   async run(dispatch, args) {
@@ -2882,7 +2890,7 @@ const CATALOGUE_WRITE_TOOLS: readonly ToolSpec[] = [
       "A refusal comes back as a sentence with nothing saved. What you save is catalogued and nothing more — it " +
       "reaches no agent until it is attached to one.",
     kind: "write",
-    annotations: { openWorldHint: false },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     render: renderMcpServerSaved,
     refusal: (data) => (data.saved ? null : `Nothing was saved: ${data.problem ?? "it refused."} Nothing has changed.`),
   }),
@@ -2896,7 +2904,7 @@ const CATALOGUE_WRITE_TOOLS: readonly ToolSpec[] = [
       "switching a server off cannot change what it points at in the same call. It takes effect on the next " +
       "dispatch, not on a run already in flight. An id the catalogue does not have is refused by name.",
     kind: "write",
-    annotations: { idempotentHint: true, openWorldHint: false },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     render: renderMcpServerSwitched,
     refusal: (data) => (data.server === null ? `Nothing was switched: ${data.problem ?? "it refused."} Nothing has changed.` : null),
   }),
@@ -2910,7 +2918,7 @@ const CATALOGUE_WRITE_TOOLS: readonly ToolSpec[] = [
       "it again has to add it afresh. Any values stored for it are left where they are. Ask before calling this " +
       "on a server you did not just add; switching it off with mcp_server_set_enabled is the reversible half.",
     kind: "write",
-    annotations: { destructiveHint: true, openWorldHint: false },
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
     render: () => "MCP server archived. Nothing is dispatched with it now; the row is kept, so mcp_servers_list with includeArchived still shows it.",
     refusal: (data) => (data.archived ? null : `Nothing was archived: ${data.problem ?? "it refused."} Nothing has changed.`),
   }),
@@ -2933,7 +2941,7 @@ const CATALOGUE_WRITE_TOOLS: readonly ToolSpec[] = [
       "edit to keep the scope it has. What you save is catalogued and nothing more — it reaches no agent until it is " +
       "attached to one.",
     kind: "write",
-    annotations: { openWorldHint: false },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     render: renderSkillSaved,
     refusal: (data) => (data.saved ? null : `Nothing was saved: ${data.problem ?? "it refused."} Nothing has changed.`),
   }),
@@ -2947,7 +2955,7 @@ const CATALOGUE_WRITE_TOOLS: readonly ToolSpec[] = [
       "what it says in the same call. It takes effect on the next dispatch, not on a run already in flight. An id " +
       "the catalogue does not have is refused by name.",
     kind: "write",
-    annotations: { idempotentHint: true, openWorldHint: false },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     render: renderSkillSwitched,
     refusal: (data) => (data.skill === null ? `Nothing was switched: ${data.problem ?? "it refused."} Nothing has changed.` : null),
   }),
@@ -2961,7 +2969,7 @@ const CATALOGUE_WRITE_TOOLS: readonly ToolSpec[] = [
       "before calling this on a skill you did not just write; switching it off with skill_set_enabled is the " +
       "lighter half.",
     kind: "write",
-    annotations: { destructiveHint: true, openWorldHint: false },
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
     render: () =>
       "Skill archived. It is delivered to nobody now; the row is kept, so skills_list with includeArchived still shows it, " +
       "and skill_restore_version brings it back.",
@@ -2976,7 +2984,7 @@ const CATALOGUE_WRITE_TOOLS: readonly ToolSpec[] = [
       "rewritten — the restore is itself a new version, naming the person who asked for it. A version that is not " +
       "that skill's is refused by name.",
     kind: "write",
-    annotations: { openWorldHint: false },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     render: renderSkillRestored,
     refusal: (data) => (data.skill === null ? `Nothing was restored: ${data.problem ?? "it refused."} Nothing has changed.` : null),
   }),
@@ -2989,7 +2997,7 @@ const CATALOGUE_WRITE_TOOLS: readonly ToolSpec[] = [
       "archive and restore it. A person's act only: EO's own agents are not offered this tool.",
     kind: "write",
     personOnly: true,
-    annotations: { idempotentHint: true, openWorldHint: false },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     render: renderSkillLocked,
     refusal: (data) => (data.skill === null ? `Nothing was changed: ${data.problem ?? "it refused."} Nothing has changed.` : null),
   }),
@@ -3067,7 +3075,7 @@ const AGENT_ATTACHMENT_SET_TOOL: ToolSpec = {
     "reversible half of mcp_server_archive. An agent or an entry that no longer exists comes back as a sentence " +
     "with nothing changed.",
   kind: "write",
-  annotations: { idempotentHint: true, openWorldHint: false },
+  annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   // The two listings are read, never written. They are here because the
   // answer this tool owes is "what will this agent be dispatched with?",
   // and the join it writes carries ids alone — deliberately, so that a
@@ -3167,7 +3175,7 @@ const UNGATED_WRITE_TOOLS: readonly ToolSpec[] = [
       "Read the eo_submit_work guide, via eo_guide, before a " +
       "first plan.",
     kind: "write",
-    annotations: { openWorldHint: false },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     render: (data) =>
       data.created
         ? `Created ${data.featureKey} with ${data.storyKeys.length} storie(s): ${data.storyKeys.join(", ")}. They are on the pipeline now and will be picked up in dependency order.`
@@ -3204,7 +3212,7 @@ const UNGATED_WRITE_TOOLS: readonly ToolSpec[] = [
       ITEM_PATHS_RULE +
       "Read the eo_submit_work guide, via eo_guide, before a first ticket.",
     kind: "write",
-    annotations: { openWorldHint: false },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     render: (data) => (data.created ? `Created ${data.key}. It is on the pipeline now.` : `Nothing was created: ${data.problem ?? "it was refused."}`),
     refusal: (data) => (data.created ? null : `Nothing was created: ${data.problem ?? "it was refused."} Nothing has changed — fix it and send it again.`),
   }),
@@ -3225,7 +3233,7 @@ const UNGATED_WRITE_TOOLS: readonly ToolSpec[] = [
       "that is missing, not a regular file, too large or not one this caller may name refuses the whole call, " +
       "naming the path and the reason, and nothing is posted.",
     kind: "write",
-    annotations: { openWorldHint: false },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     // Everything the channel takes except `delivery`, which is a
     // person's choice and stays one (EO-176). Steering pushes a message
     // into a turn that is already running, and agent-to-agent messaging
@@ -3254,7 +3262,7 @@ const UNGATED_WRITE_TOOLS: readonly ToolSpec[] = [
     // Not gated, and not destructive: it takes nothing away — an
     // unpinned comment is still in the thread — and ticket_get reads it
     // back, which is the rule the gate runs on.
-    annotations: { idempotentHint: true, openWorldHint: false },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     render: renderCommentPinned,
     // An id that matched nothing is a refusal, not a write that
     // happened. The text is the renderer's own not-found branch rather
@@ -3320,7 +3328,7 @@ const UNGATED_WRITE_TOOLS: readonly ToolSpec[] = [
       "file goes only with its comment, and naming one refuses the call. " +
       ITEM_PATHS_RULE.trimEnd(),
     kind: "write",
-    annotations: { idempotentHint: true, openWorldHint: false },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     render: renderItemUpdated,
     // A refused edit is a successful call whose answer is no: a key
     // another item holds, a key that is not one, an item deleted
@@ -3339,7 +3347,7 @@ const UNGATED_WRITE_TOOLS: readonly ToolSpec[] = [
       "`toPipelineId` as well as a `toStepId` that pipeline owns — both columns move together, and a step and a " +
       "pipeline that disagree are refused rather than half-written. Refuses while an agent is working on it.",
     kind: "write",
-    annotations: { openWorldHint: false },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     render: renderMoved,
     // Two refusals, and only one of them is about the item. A step that
     // is not the named pipeline's is a fact about the arguments, so the
@@ -3363,7 +3371,7 @@ const UNGATED_WRITE_TOOLS: readonly ToolSpec[] = [
       "words leaves whoever picks it up next with nothing to go on. Refuses on a step nobody decides on, on a result " +
       "the step does not declare, and while an agent is working on the ticket.",
     kind: "write",
-    annotations: { openWorldHint: false },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     render: renderDecided,
     // One field for every refusal, and the handler's own sentence is the
     // answer — each already names which of them it was, and rewriting it
@@ -3385,7 +3393,7 @@ const UNGATED_WRITE_TOOLS: readonly ToolSpec[] = [
       "agent is working on it, and when it is archived or on no pipeline. To hand a ticket to another pipeline, use " +
       "`item_move` with `toPipelineId`.",
     kind: "write",
-    annotations: { idempotentHint: false, openWorldHint: false },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     render: renderMovedToVersion,
     // Every refusal is the handler's own sentence, carried through so the
     // record and a client cannot come to describe the same one differently.
@@ -3398,7 +3406,7 @@ const UNGATED_WRITE_TOOLS: readonly ToolSpec[] = [
       "Park a ticket on the step it is already on, so the scheduler stops picking it up. It does not move the ticket " +
       "and records no transition. Refuses while an agent is working on it.",
     kind: "write",
-    annotations: { idempotentHint: true, openWorldHint: false },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     render: renderHeld,
     refusal: (data, tool) => activeRunRefusal("hold", tool, data.blockedByActiveRun),
   }),
@@ -3407,7 +3415,7 @@ const UNGATED_WRITE_TOOLS: readonly ToolSpec[] = [
     channel: "items:resume",
     description: "Clear a manual hold, leaving the ticket on the step it was already on.",
     kind: "write",
-    annotations: { idempotentHint: true, openWorldHint: false },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     render: renderResumed,
     refusal: (data, tool) => activeRunRefusal("resume", tool, data.blockedByActiveRun),
   }),
@@ -3418,7 +3426,7 @@ const UNGATED_WRITE_TOOLS: readonly ToolSpec[] = [
       "Put a finished ticket away, or bring an archived one back. Archiving deletes nothing and removes no history — " +
       "it only takes the ticket off the project.",
     kind: "write",
-    annotations: { idempotentHint: true, openWorldHint: false },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     render: renderArchived,
   }),
   channelTool({
@@ -3433,7 +3441,7 @@ const UNGATED_WRITE_TOOLS: readonly ToolSpec[] = [
     // which a caller should be told about — but it is also the ordinary
     // way to stop something going wrong, and putting it behind the
     // switch would make the switch the thing you reach for in a hurry.
-    annotations: { destructiveHint: true, openWorldHint: false },
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
     render: renderRunCancelled,
   }),
   channelTool({
@@ -3444,7 +3452,7 @@ const UNGATED_WRITE_TOOLS: readonly ToolSpec[] = [
       "of it, reading a reply on a parked step, and any step its role owns. Runs already in flight continue unless " +
       "cancelRunning is set, and even then the system agent's are left running. Nothing else moves until engine_resume.",
     kind: "write",
-    annotations: { idempotentHint: true, openWorldHint: false },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     render: renderEngineStatus,
   }),
   channelTool({
@@ -3452,7 +3460,7 @@ const UNGATED_WRITE_TOOLS: readonly ToolSpec[] = [
     channel: "engine:resume",
     description: "Start dispatching again after engine_pause.",
     kind: "write",
-    annotations: { idempotentHint: true, openWorldHint: false },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     render: renderEngineStatus,
   }),
   // An ordinary write, and not gated, because an empty pipeline does
@@ -3470,7 +3478,7 @@ const UNGATED_WRITE_TOOLS: readonly ToolSpec[] = [
       "blocking problem is refused there anyway, and this says what is wrong while it is still cheap to fix.",
     kind: "read",
     list: "problems",
-    annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     render: renderPipelineProblems,
   }),
   PIPELINE_SAVE_TOOL,
@@ -3502,7 +3510,7 @@ const UNGATED_WRITE_TOOLS: readonly ToolSpec[] = [
       "suggestion, and an administrator approves it or sends it back with a reason. Edit the copy with pipeline_save " +
       "first if the change is not in it yet, then call this. It publishes nothing by itself.",
     kind: "write",
-    annotations: { openWorldHint: false },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     render: renderSuggested,
   }),
   channelTool({
@@ -3518,7 +3526,7 @@ const UNGATED_WRITE_TOOLS: readonly ToolSpec[] = [
       "its number is a card whose Publish restores them too.",
     kind: "read",
     list: "versions",
-    annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     render: renderPipelineVersions,
   }),
   /**
@@ -3541,7 +3549,7 @@ const UNGATED_WRITE_TOOLS: readonly ToolSpec[] = [
       "the update. Writes nothing and resolves nothing: the update is resolved only when the person publishes a draft from the " +
       "chat about it, or presses Keep my pipeline.",
     kind: "read",
-    annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     render: renderUpdateConflict,
     refusal: (data) => (data.conflict === null ? data.problem : null),
   }),
@@ -3554,7 +3562,7 @@ const UNGATED_WRITE_TOOLS: readonly ToolSpec[] = [
       "transition path and gets a note in its thread saying why. Archived items and items with an agent working on " +
       "them are left where they are, and counted.",
     kind: "write",
-    annotations: { openWorldHint: false },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     render: renderStepItemsMoved,
   }),
   channelTool({
@@ -3574,7 +3582,7 @@ const UNGATED_WRITE_TOOLS: readonly ToolSpec[] = [
       "source is not added twice, and nothing is ever removed or replaced through here (module_test_save edits a case, " +
       "module_test_delete removes one). Saving re-runs the tests in the background; module_tests_run waits for a result.",
     kind: "write",
-    annotations: { openWorldHint: false },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     // No way to approve through here, and none to strip (EO-353):
     // `modules:save` carries no `approve` at all, because approving runs
     // the module's tests and is `modules:approve`'s alone. A crafted call
@@ -3610,7 +3618,7 @@ const UNGATED_WRITE_TOOLS: readonly ToolSpec[] = [
       "stale, is on modules_list.",
     kind: "read",
     list: "tests",
-    annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     render: renderModuleTests,
     refusal: (data) => data.problem,
   }),
@@ -3654,7 +3662,7 @@ const UNGATED_WRITE_TOOLS: readonly ToolSpec[] = [
       "the module unapproved until a person approves it again with module_approve, which runs every case. Saving a case " +
       "exactly as it already is changes nothing.",
     kind: "write",
-    annotations: { openWorldHint: false },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     render: (data) =>
       data.saved && data.test !== null
         ? `Saved the test case "${data.test.description}" (id: ${data.test.id}). The module's tests are re-running in the background; module_tests_run waits for a result.` +
@@ -3672,7 +3680,7 @@ const UNGATED_WRITE_TOOLS: readonly ToolSpec[] = [
       "archive to restore it from — and the module's tests re-run without it. Deleting a case of an approved module " +
       "withdraws its approval, which a person gives again with module_approve.",
     kind: "dangerous",
-    annotations: { destructiveHint: true, openWorldHint: false },
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
     render: (data) => "Test case deleted. The module's tests are re-running without it." + approvalWithdrawnNote(data.approvalWithdrawn),
     refusal: (data) => (data.deleted ? null : `Nothing was deleted: ${data.problem ?? "it refused."}`),
   }),
@@ -3684,7 +3692,7 @@ const UNGATED_WRITE_TOOLS: readonly ToolSpec[] = [
       "and the case's output — plus line and branch coverage of the module's code. The result is also stored, and is " +
       "what modules_list reports. Nothing real happens while they run; see module_test_save for what a case runs under.",
     kind: "write",
-    annotations: { openWorldHint: false },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     render: (data) => (data.run === null ? `The tests did not run: ${data.problem ?? "it refused."}` : renderModuleTestRun(data.run)),
     refusal: (data) => (data.run === null ? `The tests did not run: ${data.problem ?? "it refused."}` : null),
   }),
@@ -3696,7 +3704,7 @@ const UNGATED_WRITE_TOOLS: readonly ToolSpec[] = [
       "document itself rather than writing a file, so you can read it, diff it, or hand it to pipeline_import_check " +
       "on another machine.",
     kind: "read",
-    annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     // The channel defaults to putting a save dialog in front of a person.
     // Fixed here rather than left to the caller: there is no person on
     // this side of it, and a tool that could open a modal nobody sees
@@ -3718,7 +3726,7 @@ const UNGATED_WRITE_TOOLS: readonly ToolSpec[] = [
       "arrives unapproved and inert, a collision has to be decided rather than guessed, and a pack asking for " +
       "EO's admin tools is refused outright.",
     kind: "read",
-    annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     input: z.object({ document: z.string() }),
     render: (data) => {
       if (data.problem !== null) return `That document cannot be imported: ${data.problem}`;
@@ -3773,7 +3781,7 @@ const UNGATED_WRITE_TOOLS: readonly ToolSpec[] = [
       "`import` brings theirs in beside it. Any module that arrives is unapproved and inert until someone reads it — " +
       "the pipeline will not publish until they have.",
     kind: "write",
-    annotations: { openWorldHint: false },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     render: (data) => {
       if (!data.imported) return `Nothing was imported: ${data.problem ?? "it refused."}`;
       const unapproved =
@@ -3790,7 +3798,7 @@ const UNGATED_WRITE_TOOLS: readonly ToolSpec[] = [
     channel: "jira:pull",
     description: "Pull comments and edits made in Jira onto one EO ticket now, rather than waiting for the next scheduled sync.",
     kind: "write",
-    annotations: { idempotentHint: true, openWorldHint: true },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
     render: (data) => `Pulled ${data.comments} comment(s), ${data.edits} edit(s) and ${data.attachments} attachment(s).`,
   }),
   channelTool({
@@ -3805,7 +3813,7 @@ const UNGATED_WRITE_TOOLS: readonly ToolSpec[] = [
       "each module. The reply is every " +
       "preference as it now stands. Nothing here is destructive — read it back and correct it.",
     kind: "write",
-    annotations: { idempotentHint: true, openWorldHint: false },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     render: renderSettingsWritten,
   }),
   GUARDRAILS_SET_TOOL,
@@ -3862,7 +3870,7 @@ const GATED_TOOLS: readonly ToolSpec[] = [
       "worktree holds uncommitted changes that exist nowhere else — pass discardUncommitted only if losing them is " +
       "intended. deleteInJira is separate and off by default.",
     kind: "dangerous",
-    annotations: { destructiveHint: true, openWorldHint: false },
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
     render: (data) => {
       const jira = data.jira === null ? "" : ` Jira: ${data.jira.deleted}/${data.jira.attempted} deleted${data.jira.problem === null ? "" : ` (${data.jira.problem})`}.`;
       // A checkout the delete could not remove is still on disk, and the
@@ -3904,7 +3912,7 @@ const GATED_TOOLS: readonly ToolSpec[] = [
       "go ahead — that stops those runs and removes those worktrees, keeping their branches. A project on the " +
       "organisation's record is refused: the record owns it.",
     kind: "dangerous",
-    annotations: { destructiveHint: true, openWorldHint: false },
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
     render: (data) => {
       const leftover =
         data.leftoverWorktrees.length === 0
@@ -3947,7 +3955,7 @@ const GATED_TOOLS: readonly ToolSpec[] = [
       "call again with confirm: true only once they have said to delete it. agent_save with `enabled: false` is the " +
       "reversible alternative.",
     kind: "dangerous",
-    annotations: { destructiveHint: true, openWorldHint: false },
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
     render: () => "Agent deleted. Nothing dispatches it now; its past runs and comments still show its name.",
     refusal: (data, tool) => (data.deleted ? null : unconfirmedAgentRemoval(data, "deleted", tool)),
   }),
@@ -3967,7 +3975,7 @@ const GATED_TOOLS: readonly ToolSpec[] = [
       "own action (packShipped in registry_get) is not a definition and cannot be deleted. Where the role had defined " +
       "its own version of a pack's action name, the pack's version applies to it again afterwards.",
     kind: "dangerous",
-    annotations: { destructiveHint: true, openWorldHint: false },
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
     render: () => "Action definition deleted.",
     refusal: (data) => (data.deleted ? null : `Nothing was deleted: ${data.problem ?? "it refused."} Nothing has changed.`),
   }),
@@ -3979,7 +3987,7 @@ const GATED_TOOLS: readonly ToolSpec[] = [
       "comment mirrored into Jira is the same comment, so leaving it there would be leaving a copy of something you " +
       "just removed.",
     kind: "dangerous",
-    annotations: { destructiveHint: true, openWorldHint: false },
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
     render: (data) => (data.deleted ? `Deleted ${data.deletedCount} comment(s).` : `Nothing was deleted: ${data.problem ?? "it refused."}`),
     refusal: (data) => (data.deleted ? null : `EO did not delete it: ${data.problem ?? "it refused."} Nothing has changed.`),
   }),
@@ -3994,7 +4002,7 @@ const GATED_TOOLS: readonly ToolSpec[] = [
       "There is no flag to keep it, either — unlike comment_delete, this channel has no deleteInJira. Attachment " +
       "ids come from ticket_get, which lists each comment's attachments by id.",
     kind: "dangerous",
-    annotations: { destructiveHint: true, openWorldHint: false },
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
     render: (data) =>
       data.deleted
         ? "Attachment deleted: the row and the file are gone from EO. If it was mirrored to Jira, deleting it there " +
@@ -4015,7 +4023,7 @@ const GATED_TOOLS: readonly ToolSpec[] = [
       "Archive a pipeline. Its tickets are archived with it rather than deleted, and the reply says how many — read " +
       "that number before assuming this was small.",
     kind: "dangerous",
-    annotations: { destructiveHint: true, openWorldHint: false },
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
     render: (data) => `Pipeline archived, and ${data.archivedItemCount} ticket(s) with it.`,
     refusal: (data, tool) => (data.deleted ? null : activeRunRefusal("archive", tool, data.blockedByActiveRun) ?? "EO did not archive it. Nothing has changed."),
   }),
@@ -4030,7 +4038,7 @@ const GATED_TOOLS: readonly ToolSpec[] = [
       "is true — set that only once the person has seen the figure and said to approve anyway. Approving is a claim " +
       "about a human having read something — do not make it on their behalf unless they have said so.",
     kind: "dangerous",
-    annotations: { idempotentHint: true, openWorldHint: false },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     render: (data) =>
       data.approved
         ? `Module approved. Every test case passed; line coverage ${data.lineCoverage ?? 0}%.${renderMachineSpecific(data.machineSpecific)}`
@@ -4060,7 +4068,7 @@ const GATED_TOOLS: readonly ToolSpec[] = [
       "cases are a kept version a person approved; otherwise it needs approving like any edit, and a pipeline naming it will not " +
       "publish until it is. Its tests re-run in the background.",
     kind: "dangerous",
-    annotations: { openWorldHint: false },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     render: (data) =>
       data.restored && data.module !== null
         ? `Restored "${data.module.name}" as v${data.version ?? "?"}. It is ${data.module.approvedAt === null ? "**not approved** — it needs approving before a pipeline naming it will publish" : "approved, because a person approved exactly this code and these test cases before"}. ` +
@@ -4073,7 +4081,7 @@ const GATED_TOOLS: readonly ToolSpec[] = [
     channel: "modules:archive",
     description: "Retire a module. Refuses while any pipeline step still uses it, and says how many do.",
     kind: "dangerous",
-    annotations: { destructiveHint: true, openWorldHint: false },
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
     render: () => "Module archived.",
     refusal: (data) =>
       data.archived ? null : `EO did not archive it: ${data.usedByStepCount} pipeline step(s) still use it. Take it off those steps first. Nothing has changed.`,
@@ -4087,7 +4095,7 @@ const GATED_TOOLS: readonly ToolSpec[] = [
       "variables: those are listed with the variable each reads and whether EO's environment has it, and count as " +
       "set only when it does. The variable's value is never returned.",
     kind: "dangerous",
-    annotations: { readOnlyHint: false, idempotentHint: true, openWorldHint: false },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     render: (data) => {
       const shared = data.names.length === 0 ? "none" : data.names.join(", ");
       const overrides = data.overrides.length === 0 ? "none" : data.overrides.join(", ");
@@ -4119,7 +4127,7 @@ const GATED_TOOLS: readonly ToolSpec[] = [
     // Destructive despite the name: a value that is overwritten here can
     // never be read back, so setting one over an existing secret — or a
     // reference over one (EO-416) — loses the old one irrecoverably.
-    annotations: { destructiveHint: true, idempotentHint: true, openWorldHint: false },
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
     render: (data) => {
       if (!data.saved) return `Not stored: ${data.problem ?? "it refused."}`;
       if (data.replaced === "value") {
@@ -4138,7 +4146,7 @@ const GATED_TOOLS: readonly ToolSpec[] = [
       "Any pipeline step whose module declares it will run without it after this, which usually means the step " +
       "fails rather than that it does less.",
     kind: "dangerous",
-    annotations: { destructiveHint: true, idempotentHint: true, openWorldHint: false },
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
     render: (data) => (data.cleared ? "Secret removed." : "There was no such secret."),
   }),
   /**
@@ -4166,7 +4174,7 @@ const GATED_TOOLS: readonly ToolSpec[] = [
       "never exported with a pipeline. Secrets are a separate list (module_secrets_list) and their values are never returned.",
     kind: "read",
     list: "variables",
-    annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     // A step's own variable is set by a person on the assistant's card
     // (EO-522), and the value they typed reaches neither the agent nor
     // its transcript — so this read, which every agent may make, says
@@ -4194,7 +4202,7 @@ const GATED_TOOLS: readonly ToolSpec[] = [
       "are PATH, HOME and names starting EO_, which EO sets itself. An organisation secret of the same name still wins. " +
       "For a credential use module_secret_set instead: a variable is not hidden anywhere.",
     kind: "dangerous",
-    annotations: { destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     render: (data) => (data.saved ? "Environment variable saved." : `Not saved: ${data.problem ?? "it refused."}`),
     refusal: (data) => (data.saved ? null : `Not saved: ${data.problem ?? "it refused."} Nothing has changed.`),
   }),
@@ -4205,7 +4213,7 @@ const GATED_TOOLS: readonly ToolSpec[] = [
       "Remove one environment variable from the shared list, or from one step's when you pass stepId. A step that loses " +
       "its own value falls back to the shared one; a module that declares the name and has nothing left will be refused.",
     kind: "dangerous",
-    annotations: { destructiveHint: true, idempotentHint: true, openWorldHint: false },
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
     render: (data) => (data.cleared ? "Environment variable removed." : "That is not an environment variable name."),
   }),
   /**
@@ -4264,7 +4272,7 @@ const GATED_TOOLS: readonly ToolSpec[] = [
     // setting one over an existing secret loses the old one
     // irrecoverably. `DESTRUCTIVE` in catalog.test.ts is where that is
     // written down.
-    annotations: { destructiveHint: true, idempotentHint: true, openWorldHint: false },
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
     render: (data) =>
       data.saved
         ? "Value stored in the OS keychain. Nothing reads it back out — mcp_servers_list will say the name is set and never what is behind it."
@@ -4294,7 +4302,7 @@ const GATED_TOOLS: readonly ToolSpec[] = [
       "spelled as the entry declares it. A name with nothing behind it, and a server EO no longer has, are both " +
       "reported as already gone rather than as a failure.",
     kind: "dangerous",
-    annotations: { destructiveHint: true, idempotentHint: true, openWorldHint: false },
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
     // "EO holds no value" rather than "removed", because the channel
     // answers `{ cleared: true }` for a name that never had one and for
     // a server that is already gone — deliberately, since neither is a
@@ -4318,7 +4326,7 @@ const GATED_TOOLS: readonly ToolSpec[] = [
       "that exists, and leave `token` out to keep the stored one: renaming a connection should not mean retyping a " +
       "secret. This adds a site; jira_connect is what points a repository at it.",
     kind: "dangerous",
-    annotations: { idempotentHint: true, openWorldHint: true },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
     render: (data) => {
       if (!data.ok) return `Nothing was saved: ${data.problem ?? "it refused."}`;
       // The reply carries the site it wrote, but the channel types it as
@@ -4339,7 +4347,7 @@ const GATED_TOOLS: readonly ToolSpec[] = [
       "would stop them mirroring with nothing on screen to say why. A site EO does not have is reported as already " +
       "gone rather than as a failure. The token is unrecoverable afterwards and has to be given again.",
     kind: "dangerous",
-    annotations: { destructiveHint: true, idempotentHint: true, openWorldHint: false },
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
     render: (data) => (data.ok ? "Site forgotten, and its stored token with it." : `Nothing was removed: ${data.problem ?? "it refused."}`),
     refusal: (data) => (data.ok ? null : `Nothing was removed: ${data.problem ?? "it refused."} Nothing has changed.`),
   }),
@@ -4353,7 +4361,7 @@ const GATED_TOOLS: readonly ToolSpec[] = [
       "push. `featureIssueType` and `storyIssueType` are what EO creates for each; jira_save_config changes them " +
       "afterwards, and jira_test proves the whole path.",
     kind: "dangerous",
-    annotations: { idempotentHint: true, openWorldHint: true },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
     render: (data) => (data.ok ? "Repository connected to Jira. jira_save_status_map is what makes its tickets move issues." : `Not connected: ${data.problem ?? "it refused."}`),
     refusal: (data) => (data.ok ? null : `Not connected: ${data.problem ?? "it refused."} Nothing has changed.`),
   }),
@@ -4364,7 +4372,7 @@ const GATED_TOOLS: readonly ToolSpec[] = [
       "Download and unpack an agent CLI into EO's own cache. This fetches code from the network and runs it later — " +
       "the Settings screen shows the publisher, size and terms before a person agrees, and there is no such screen here.",
     kind: "dangerous",
-    annotations: { openWorldHint: true },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
     render: (data) => (data.ok ? "Runtime installed." : `Not installed: ${data.problem ?? "it refused."}`),
     refusal: (data) => (data.ok ? null : `Not installed: ${data.problem ?? "it refused."} Nothing has changed.`),
   }),
@@ -4378,7 +4386,7 @@ const GATED_TOOLS: readonly ToolSpec[] = [
       "exactly where it is and only stops future versions arriving on their own. Read runtime_status first to see " +
       "which it currently is, and again afterwards — the setting is reported there.",
     kind: "dangerous",
-    annotations: { idempotentHint: true, openWorldHint: true },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
     render: (data) => (data.ok ? "Automatic updates setting applied." : `The setting was written, but reconciling the runtime failed: ${data.problem ?? "it refused."}`),
     // Deliberately not a refusal: the setting is stored before the
     // reconcile is attempted, so a failed download is a report about the
@@ -4390,7 +4398,7 @@ const GATED_TOOLS: readonly ToolSpec[] = [
     channel: "runtime:remove",
     description: "Delete EO's managed copy of an agent CLI. Refuses while agents are configured to use it.",
     kind: "dangerous",
-    annotations: { destructiveHint: true, openWorldHint: false },
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
     render: (data) => (data.ok ? "Runtime removed." : `Not removed: ${data.problem ?? "it refused."}`),
     refusal: (data) => (data.ok ? null : `Not removed: ${data.problem ?? "it refused."} Nothing has changed.`),
   }),
@@ -4402,7 +4410,7 @@ const GATED_TOOLS: readonly ToolSpec[] = [
       "running on it — closer to pausing the engine than to changing a preference, which is why it sits behind this " +
       "switch.",
     kind: "dangerous",
-    annotations: { idempotentHint: true, openWorldHint: false },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     render: (data) => (data.ok ? "Runtime setting applied." : `Not applied: ${data.problem ?? "it refused."}`),
     refusal: (data) => (data.ok ? null : `Not applied: ${data.problem ?? "it refused."} Nothing has changed.`),
   }),
@@ -4411,7 +4419,7 @@ const GATED_TOOLS: readonly ToolSpec[] = [
     channel: "repositories:remove",
     description: "Detach a repository from EO. Its checkout on disk is left alone.",
     kind: "dangerous",
-    annotations: { destructiveHint: true, openWorldHint: false },
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
     render: (data) => (data.ok ? "Repository detached." : `Not detached: ${data.problem ?? "it refused."}`),
     refusal: (data) => (data.ok ? null : `Not detached: ${data.problem ?? "it refused."} Nothing has changed.`),
   }),
@@ -4425,7 +4433,7 @@ const GATED_TOOLS: readonly ToolSpec[] = [
       "ticket's own, which is what a step with no pick has always done. repository_remove is this same door for " +
       "the git kind, and does the same thing.",
     kind: "dangerous",
-    annotations: { destructiveHint: true, openWorldHint: false },
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
     render: (data) => (data.ok ? "Workspace detached. Nothing on disk was touched." : `Not detached: ${data.problem ?? "it refused."}`),
     refusal: (data) => (data.ok ? null : `Not detached: ${data.problem ?? "it refused."} Nothing has changed.`),
   }),
@@ -4436,7 +4444,7 @@ const GATED_TOOLS: readonly ToolSpec[] = [
       "Release a git worktree EO is holding. Its branch survives. `force` discards uncommitted changes that exist " +
       "nowhere else — read worktrees_list first and only force what you have decided to lose.",
     kind: "dangerous",
-    annotations: { destructiveHint: true, openWorldHint: false },
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
     render: (data) => (data.released ? "Worktree released. Its branch is untouched." : `Not released: ${data.reason ?? "it refused."}`),
     refusal: (data) => (data.released ? null : `Not released: ${data.reason ?? "it refused."} Nothing has changed.`),
   }),
