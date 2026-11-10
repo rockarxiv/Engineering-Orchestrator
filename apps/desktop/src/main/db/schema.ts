@@ -2209,7 +2209,10 @@ export const runEvents = sqliteTable(
     // partial for the same reason: `memory_delivered` rows by time, which
     // the scheduled consolidation counts, and `idx_run_events_memory_used`
     // (EO-597, migration 0151) beside it, the `memory_used` rows an
-    // entry's uses are counted from. `idx_run_events_model` (EO-541,
+    // entry's uses are counted from. `idx_run_events_skills_delivered`
+    // and `idx_run_events_skill_loaded` (EO-715, migration 0161) are the
+    // same for skills: the rows a skill's deliveries and loads are
+    // counted from. `idx_run_events_model` (EO-541,
     // migration 0133) is partial too: the `thread_started` and `usage`
     // rows a run's model is read from.
   ],

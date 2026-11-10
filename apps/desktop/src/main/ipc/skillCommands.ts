@@ -2,6 +2,7 @@ import { skillAuthorFromActingAgent, type IpcPayload, type IpcResponse, type Ski
 import type { Db } from "../db/client.js";
 import { archiveSkill, getProject, getSkill, getWorkspace, listSkills, listSkillVersions, restoreSkillVersion, saveSkill, setSkillEnabled, setSkillLocked } from "../db/repos/index.js";
 import { releaseHeldSkillCopies } from "../db/repos/skillsRepo.js";
+import { skillUsageById, usageOfSkill } from "../db/repos/skillUsageRepo.js";
 
 /**
  * The skill catalogue, over IPC (EO-105).
@@ -17,7 +18,10 @@ import { releaseHeldSkillCopies } from "../db/repos/skillsRepo.js";
  */
 
 export function listSkillsCommand(db: Db, input: IpcPayload<"skills:list">): IpcResponse<"skills:list"> {
-  return { skills: listSkills(db, input.includeArchived ?? false) };
+  // Each with its usage (EO-715), counted from `run_events` as the list is
+  // read — every skill, whoever wrote it.
+  const usage = skillUsageById(db);
+  return { skills: listSkills(db, input.includeArchived ?? false).map((skill) => ({ ...skill, usage: usageOfSkill(usage, skill.id) })) };
 }
 
 /**

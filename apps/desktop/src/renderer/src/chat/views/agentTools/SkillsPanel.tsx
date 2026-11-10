@@ -8,6 +8,8 @@ import {
   type IpcRequest,
   type Skill,
   type SkillFile,
+  type SkillListEntry,
+  type SkillUsage,
   type SkillScope,
   type SkillVersion,
 } from "@eo/core";
@@ -215,6 +217,18 @@ function SkillHistory({ skill, onRestored }: { skill: Skill; onRestored: () => P
   );
 }
 
+/**
+ * How a skill has been used (EO-715): the runs given it, the runs that
+ * loaded it, the last load, and the runs given it since — the stretch an
+ * unused agent skill goes stale over. Counted from the runs' own events.
+ */
+export function skillUsageText(usage: SkillUsage): string {
+  if (usage.runsDelivered === 0) return "Not delivered to a run yet";
+  const runs = (count: number) => `${count} ${count === 1 ? "run" : "runs"}`;
+  const last = usage.lastLoadedAt === null ? "never loaded" : `last loaded ${new Date(usage.lastLoadedAt).toLocaleString()}`;
+  return `Delivered to ${runs(usage.runsDelivered)}, loaded by ${runs(usage.runsLoaded)}, ${last} · ${runs(usage.deliveriesSinceLoad)} without a load since`;
+}
+
 function SkillCard({
   skill,
   pending,
@@ -224,7 +238,7 @@ function SkillCard({
   onLock,
   onRestored,
 }: {
-  skill: Skill;
+  skill: SkillListEntry;
   /** What a press on this row is still doing (EO-562): its buttons wait and say so. */
   pending: RowAction | undefined;
   onEdit: () => void;
@@ -254,6 +268,8 @@ function SkillCard({
             ) : null}
           </div>
           <p className="text-[12.5px] text-ink-muted">{skill.description}</p>
+          {/* How it has been used (EO-715), for every skill whoever wrote it. */}
+          <p className="text-[11.5px] text-ink-subtle">{skillUsageText(skill.usage)}</p>
         </div>
         <div className="flex shrink-0 items-center gap-1">
           <Button size="sm" onClick={onEdit}>

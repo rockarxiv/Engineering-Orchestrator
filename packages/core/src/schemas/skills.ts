@@ -290,6 +290,61 @@ export const SkillVersionSchema = z.object({
 });
 export type SkillVersion = z.infer<typeof SkillVersionSchema>;
 
+// ── Usage (EO-715) ───────────────────────────────────────────────
+
+/**
+ * The run event that records which skills a run was given: the ids, and
+ * the slugs the backend offered them under. Written by the supervisor
+ * from what the adapter reports it actually delivered — the plugin
+ * directory's skills on Claude, the folders written under
+ * `.agent/skills` on Codex — never from what the agent says. One per run
+ * that was given any.
+ */
+export const SKILLS_DELIVERED_EVENT = "skills_delivered";
+export const SkillsDeliveredEventSchema = z.object({
+  type: z.literal(SKILLS_DELIVERED_EVENT),
+  skillIds: z.array(z.string()),
+  slugs: z.array(z.string()),
+});
+export type SkillsDeliveredEvent = z.infer<typeof SkillsDeliveredEventSchema>;
+
+/**
+ * The run event that records a run loading one of the skills it was
+ * given: a `Skill` call naming it on Claude, a tool call reading its
+ * `SKILL.md` on Codex. Once per skill per run; a load of a skill the run
+ * was not given records nothing.
+ */
+export const SKILL_LOADED_EVENT = "skill_loaded";
+export const SkillLoadedEventSchema = z.object({
+  type: z.literal(SKILL_LOADED_EVENT),
+  skillId: z.string(),
+  slug: z.string(),
+});
+export type SkillLoadedEvent = z.infer<typeof SkillLoadedEventSchema>;
+
+/**
+ * How a skill has been used, derived from those two events and never
+ * stored (EO-715). Runs, not events.
+ *
+ * `deliveriesSinceLoad` is the current stretch of runs given the skill
+ * since it was last loaded — every run that was given it, where it has
+ * never been loaded. What staleness and automatic archival count.
+ */
+export const SkillUsageSchema = z.object({
+  runsDelivered: z.number().int().nonnegative(),
+  runsLoaded: z.number().int().nonnegative(),
+  lastLoadedAt: z.number().nullable(),
+  deliveriesSinceLoad: z.number().int().nonnegative(),
+});
+export type SkillUsage = z.infer<typeof SkillUsageSchema>;
+
+/** A skill never delivered and never loaded. */
+export const NO_SKILL_USAGE: SkillUsage = { runsDelivered: 0, runsLoaded: 0, lastLoadedAt: null, deliveriesSinceLoad: 0 };
+
+/** One skill as the catalogue lists it: the skill, and its usage. */
+export const SkillListEntrySchema = SkillSchema.extend({ usage: SkillUsageSchema });
+export type SkillListEntry = z.infer<typeof SkillListEntrySchema>;
+
 /**
  * What a supporting file's path may look like.
  *

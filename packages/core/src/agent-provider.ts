@@ -558,6 +558,35 @@ export interface ToolCallEvent {
 }
 
 /**
+ * The skills this turn was actually given (EO-715), by slug — reported by
+ * the adapter that delivered them, as the first thing its stream says:
+ * the skills in the generated directory's allowlist on Claude, the
+ * folders `writeWorktreeSkills` wrote on Codex. Not said at all by a turn
+ * given none. On a resumed turn as well as a fresh one, because both
+ * deliver.
+ *
+ * The supervisor turns it into the run's `skills_delivered` event, with
+ * the skills' ids; it is not recorded as it stands.
+ */
+export interface SkillsOfferedEvent {
+  type: "skills_delivered";
+  slugs: string[];
+}
+
+/**
+ * The agent loaded one of EO's skills (EO-715), read off what the backend
+ * did rather than what the agent said: a `Skill` call naming
+ * `eo-attachments:<slug>` on Claude, a tool call reading
+ * `.agent/skills/<slug>/SKILL.md` on Codex. Emitted straight after the
+ * `tool_call` it was read from. Whether the turn was given that skill is
+ * the supervisor's question, not the adapter's.
+ */
+export interface SkillLoadAgentEvent {
+  type: "skill_loaded";
+  slug: string;
+}
+
+/**
  * What that call returned (EO-169).
  *
  * A separate event rather than a field on `ToolCallEvent`, because the
@@ -860,6 +889,8 @@ export type AgentEvent =
   | CompactedEvent
   | ToolCallEvent
   | ToolResultEvent
+  | SkillsOfferedEvent
+  | SkillLoadAgentEvent
   | { type: "file_edit"; path: string }
   | UsageEvent
   | { type: "result"; data: unknown }

@@ -48,6 +48,7 @@ import {
 } from "@eo/core";
 import type { AdminMcpDispatch } from "../agentAttachments/adminDelivery.js";
 import { deliverableSkills, writeWorktreeSkills, worktreeSkillsPromptSection, type WorktreeSkillDelivery } from "../agentAttachments/worktreeSkills.js";
+import { codexSkillsRead, skillsOffered } from "./skillUsage.js";
 import { agentMcpStdioConfig, eoMcpStdioConfig, type EoMcpServiceConfig } from "../mcp/serviceConfig.js";
 import { codexModelPrice, codexTurnCostCents, codexTurnCostMicrocents } from "./codexPricing.js";
 import { personCodexHome } from "./codexHome.js";
@@ -914,6 +915,9 @@ function mapCompletedItem(item: ThreadItem): { mapped: AgentEvent[]; recognised:
       return {
         mapped: [
           { type: "tool_call", name: "command_execution", callId: item.id, args: { command: item.command } },
+          // A command reading a skill's `SKILL.md` is that skill loaded
+          // (EO-715): Codex has no skill tool, so the read is the load.
+          ...codexSkillsRead(item.command),
           toolResultEvent({
             name: "command_execution",
             callId: item.id,
@@ -2416,6 +2420,8 @@ export function createCodexProvider(options: CodexProviderOptions = {}): AgentPr
     if (resumeOpts?.cwd) {
       const restored = writeWorktreeSkills(resumeOpts.cwd, skillsForRun(options.attachedSkills ?? [], resumeOpts.skillScope));
       warnAboutUndeliveredSkills(restored, resumeOpts.cwd);
+      // Given them again, as a fresh turn is (EO-715).
+      yield* skillsOffered(restored.delivered.map((skill) => skill.slug));
     }
 
     // Threads persist in ~/.codex/sessions, which is what makes resume
@@ -2512,7 +2518,10 @@ export function createCodexProvider(options: CodexProviderOptions = {}): AgentPr
       warnAboutUndeliveredSkills(skills, opts.cwd);
       const skillsSection = worktreeSkillsPromptSection(skills.delivered);
       opts.onSkillsSection?.(skillsSection);
-      return reachableTurn((reach) => startedTurn(opts, skillsSection, reach));
+      // Which of them this turn is given (EO-715), said first: what was
+      // written, not what was attached.
+      const offered = skillsOffered(skills.delivered.map((skill) => skill.slug));
+      return reachableTurn((reach) => saidFirst(offered, startedTurn(opts, skillsSection, reach)));
     },
 
     resume(threadId: string, message: string, resumeOpts?: AgentProviderResumeOptions): InterruptibleStream<AgentEvent> {
@@ -2759,6 +2768,12 @@ function withInterceptions(mapped: AgentEvent[], pending: SearchInterceptionEven
  * `interrupt` does nothing and `steer` answers false, which is the
  * contract's "the turn had already ended".
  */
+/** `events`, then everything `turn` says. */
+async function* saidFirst(events: readonly AgentEvent[], turn: AsyncIterable<AgentEvent>): AsyncIterable<AgentEvent> {
+  yield* events;
+  yield* turn;
+}
+
 function reachableTurn(run: (reach: (turn: CodexTurn) => void) => AsyncIterable<AgentEvent>): InterruptibleStream<AgentEvent> {
   let turn: CodexTurn | null = null;
   let over = false;

@@ -1,10 +1,11 @@
-import { McpServerDraftSchema, NO_POLICY, resultsFromRoutes, USER_ATTENTION_TARGET, NOT_ALLOWED_BY_YOUR_ORGANISATION, SkillDraftSchema, uuidv7, type Agent, type GuardConfigView, type IpcChannel, type IpcResponse, type Uuid, UNSCOPED_RUN } from "@eo/core";
+import { McpServerDraftSchema, NO_POLICY, resultsFromRoutes, USER_ATTENTION_TARGET, NOT_ALLOWED_BY_YOUR_ORGANISATION, SkillDraftSchema, SKILL_LOADED_EVENT, SKILLS_DELIVERED_EVENT, uuidv7, type Agent, type GuardConfigView, type IpcChannel, type IpcResponse, type Uuid, UNSCOPED_RUN } from "@eo/core";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DbHandle } from "../db/client.js";
 import {
+  appendRunEvent,
   createPipeline,
   createProject,
   createRun,
@@ -3013,6 +3014,24 @@ describe("writing the catalogues EO gives its agents", () => {
     expect(listed.text).toContain("created by a person");
     expect(listed.text).toContain("locked by a person");
     expect(listed.data).toMatchObject({ skills: [{ id, createdBy: "person", locked: true }] });
+  });
+
+  it("lists how each skill has been used, counted from the runs' events, person-written included (EO-715)", async () => {
+    expect((await tool("skill_save").run(dispatch, { name: "House style", description: "How we review.", body: "Read it twice." })).ok).toBe(true);
+    const id = listSkillsCommand(handle.db, {}).skills[0]?.id ?? "";
+    const item = createTestItem(handle.db, { type: "story", title: "Used", stepId: "todo" });
+    const given = createRun(handle.db, { itemId: item.id, agentId: null, action: "implement", status: "succeeded" });
+    const loaded = createRun(handle.db, { itemId: item.id, agentId: null, action: "review", status: "succeeded" });
+    appendRunEvent(handle.db, given.id, SKILLS_DELIVERED_EVENT, { type: SKILLS_DELIVERED_EVENT, skillIds: [id], slugs: ["house-style"] });
+    appendRunEvent(handle.db, loaded.id, SKILLS_DELIVERED_EVENT, { type: SKILLS_DELIVERED_EVENT, skillIds: [id], slugs: ["house-style"] });
+    appendRunEvent(handle.db, loaded.id, SKILL_LOADED_EVENT, { type: SKILL_LOADED_EVENT, skillId: id, slug: "house-style" });
+
+    const listed = await tool("skills_list").run(dispatch, {});
+    expect(listed.ok).toBe(true);
+    if (!listed.ok) return;
+    expect(listed.text).toContain("delivered to 2 runs, loaded by 1 run, last loaded");
+    expect(listed.text).toContain("delivered to 0 runs since its last load");
+    expect(listed.data).toMatchObject({ skills: [{ id, createdBy: "person", usage: { runsDelivered: 2, runsLoaded: 1, deliveriesSinceLoad: 0 } }] });
   });
 
   it("lists a skill's versions and restores an earlier one as a new version (EO-714)", async () => {
