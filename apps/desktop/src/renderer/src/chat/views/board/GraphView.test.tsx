@@ -138,7 +138,7 @@ interface World {
   steps?: PipelineStepView[];
   routes?: StepRouteView[];
   items?: ItemSummary[];
-  versions?: { id: string; pipelineId: string; number: number; createdAt: number; createdBy: string | null; createdByName: string | null }[];
+  versions?: { id: string; pipelineId: string; number: number; createdAt: number; createdBy: string | null; createdByName: string | null; releaseNotes: string | null }[];
   current?: number | null;
   webhook?: { entry: boolean; unattended: boolean };
   diverged?: boolean;
@@ -839,9 +839,9 @@ describe("a step's details, read-only (EO-524)", () => {
 
 describe("the pipeline's own setup, read-only (EO-524)", () => {
   const VERSIONS = [
-    { id: "v1", pipelineId: "default", number: 1, createdAt: 1_700_000_000_000, createdBy: null, createdByName: null },
-    { id: "v2", pipelineId: "default", number: 2, createdAt: 1_700_000_100_000, createdBy: "p1", createdByName: "Dana" },
-    { id: "v3", pipelineId: "default", number: 3, createdAt: 1_700_000_200_000, createdBy: "p2", createdByName: null },
+    { id: "v1", pipelineId: "default", number: 1, createdAt: 1_700_000_000_000, createdBy: null, createdByName: null, releaseNotes: null },
+    { id: "v2", pipelineId: "default", number: 2, createdAt: 1_700_000_100_000, createdBy: "p1", createdByName: "Dana", releaseNotes: null },
+    { id: "v3", pipelineId: "default", number: 3, createdAt: 1_700_000_200_000, createdBy: "p2", createdByName: null, releaseNotes: null },
   ];
 
   it("lists every version, newest first, with who saved it and when", async () => {
@@ -990,8 +990,8 @@ describe("the graph's history, for a version a template update wrote (EO-536)", 
   it("labels that version as a template update and no other", async () => {
     mockIpc({
       versions: [
-        { id: "v1", pipelineId: "default", number: 1, createdAt: 1, createdBy: "dana-id", createdByName: "Dana" },
-        { id: "v2", pipelineId: "default", number: 2, createdAt: 2, createdBy: "template:software-feature-to-merge@1.1", createdByName: "the software-feature-to-merge 1.1 template update" },
+        { id: "v1", pipelineId: "default", number: 1, createdAt: 1, createdBy: "dana-id", createdByName: "Dana", releaseNotes: null },
+        { id: "v2", pipelineId: "default", number: 2, createdAt: 2, createdBy: "template:software-feature-to-merge@1.1", createdByName: "the software-feature-to-merge 1.1 template update", releaseNotes: null },
       ],
       current: 2,
     });
@@ -1001,5 +1001,29 @@ describe("the graph's history, for a version a template update wrote (EO-536)", 
     const v2 = await within(versions).findByRole("listitem", { name: "v2" });
     expect(within(v2).getByText("Template update")).toBeInTheDocument();
     expect(within(within(versions).getByRole("listitem", { name: "v1" })).queryByText("Template update")).toBeNull();
+  });
+
+  it("shows that version's release notes, and none on a version a person saved (EO-728)", async () => {
+    mockIpc({
+      versions: [
+        { id: "v1", pipelineId: "default", number: 1, createdAt: 1, createdBy: "dana-id", createdByName: "Dana", releaseNotes: null },
+        {
+          id: "v2",
+          pipelineId: "default",
+          number: 2,
+          createdAt: 2,
+          createdBy: "template:software-feature-to-merge@1.2",
+          createdByName: "the software-feature-to-merge 1.2 template update",
+          releaseNotes: "1.1: Merge Request waits on the pull request.\n1.2: The watch never gives up.",
+        },
+      ],
+      current: 2,
+    });
+    renderGraph();
+
+    const versions = await screen.findByRole("list", { name: "Versions" });
+    const notes = await within(versions).findByRole("list", { name: "Release notes of v2" });
+    expect(within(notes).getAllByRole("listitem").map((line) => line.textContent)).toEqual(["1.1: Merge Request waits on the pull request.", "1.2: The watch never gives up."]);
+    expect(within(versions).queryByRole("list", { name: "Release notes of v1" })).toBeNull();
   });
 });

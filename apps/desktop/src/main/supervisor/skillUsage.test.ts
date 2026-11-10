@@ -14,7 +14,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { DbHandle } from "../db/client.js";
 import { setAgentAttachment } from "../db/repos/agentAttachmentsRepo.js";
 import { listAgents } from "../db/repos/agentsRepo.js";
-import { appendRunEventAt, createProject, createRun, listCommentsForItem, listRunEvents, listRunsForItem, listSkillVersions, ownRunsToSettle } from "../db/repos/index.js";
+import { appendRunEventAt, createProject, createRun, listRunEvents, listRunsForItem, listSkillVersions, ownRunsToSettle } from "../db/repos/index.js";
 import { skillUsageById, usageOfSkill } from "../db/repos/skillUsageRepo.js";
 import { getSkill, saveSkill } from "../db/repos/skillsRepo.js";
 import { findProjectThread } from "../projects/projectThread.js";
@@ -178,7 +178,7 @@ describe("archiving unused agent skills after a dispatch", () => {
     handle.close();
   });
 
-  it("archives an agent's skill nobody loads after the run that crosses the guardrail, and says so on the project thread", async () => {
+  it("archives an agent's skill nobody loads after the run that crosses the guardrail, posting nothing: the archive version says why (EO-728)", async () => {
     const project = createProject(handle.db, { name: "Shop", keyPrefix: "SHOP" });
     const item = createTestItem(handle.db, { type: "story", title: "On a project", stepId: "todo", projectId: project.id });
     const implementer = listAgents(handle.db).find((agent) => agent.role === "implementer")!;
@@ -204,10 +204,8 @@ describe("archiving unused agent skills after a dispatch", () => {
     const types = listRunEvents(handle.db, run!.id).map((event) => event.type).filter((type) => type.startsWith("skill"));
     expect(types).toEqual([SKILLS_DELIVERED_EVENT, SKILLS_SETTLED_EVENT]);
     expect(getSkill(handle.db, saved.skill.id)!.archivedAt).not.toBeNull();
-    expect(listSkillVersions(handle.db, saved.skill.id)[0]).toMatchObject({ action: "archive", author: { kind: "eo" } });
-    const notes = listCommentsForItem(handle.db, findProjectThread(handle.db, project.id)!.id);
-    expect(notes).toHaveLength(1);
-    expect(notes[0]!.body).toContain("`release`");
+    expect(listSkillVersions(handle.db, saved.skill.id)[0]).toMatchObject({ action: "archive", author: { kind: "eo" }, report: { kind: "unused", runsWithoutLoad: 1 } });
+    expect(findProjectThread(handle.db, project.id)).toBeUndefined();
   });
 
   /** An installation upgraded with runs recorded before `skills_settled` existed: they count, once settled on reconciling. */
