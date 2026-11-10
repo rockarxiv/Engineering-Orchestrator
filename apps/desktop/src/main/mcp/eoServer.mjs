@@ -477,6 +477,65 @@ async function repositoryCheckout(args, writeBridge) {
   return writeThroughEo(writeBridge, REPOSITORY_CHECKOUT_TOOL_NAME, args);
 }
 
+// ── skill_read (EO-721) ───────────────────────────────────────
+
+/**
+ * `SKILL_READ_TOOL_NAME` in `@eo/core`, duplicated for the reason
+ * `MEMORY_NOTE_TOOL_NAME` is and pinned to it by `eoServer.test.ts`.
+ */
+export const SKILL_READ_TOOL_NAME = "skill_read";
+
+const SKILL_READ_DESCRIPTION =
+  "Load one of the skills EO gave this run: answers with the skill's instructions, which you then follow. `slug` is the " +
+  "skill's name as your prompt lists it. Where the skill has supporting files, the answer says where in your working " +
+  "directory they are. A skill this run was not given is refused, and nothing is loaded.";
+
+const SKILL_READ_TOOL = {
+  name: SKILL_READ_TOOL_NAME,
+  // A read: EO answers with instructions it already holds and changes
+  // nothing. The load is read off the call by the adapter, not written by
+  // the tool.
+  annotations: READS_ANNOTATIONS,
+  description: SKILL_READ_DESCRIPTION,
+  inputSchema: {
+    type: "object",
+    properties: {
+      slug: { type: "string", description: "The skill's name, as your prompt lists it." },
+    },
+    required: ["slug"],
+    additionalProperties: false,
+  },
+};
+
+/**
+ * The skills this turn was given, by slug, from the environment the turn
+ * started this server with (EO-721). Which they are is the main process's
+ * to hold a call to; here they only decide whether the tool is listed.
+ */
+export function parseSkillSlugs(raw) {
+  if (typeof raw !== "string" || raw === "") return [];
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return [];
+  }
+  return Array.isArray(parsed) ? parsed.filter((slug) => typeof slug === "string" && slug !== "") : [];
+}
+
+/**
+ * `skill_read`: handed to EO, which answers with the skill's instructions
+ * when the run was given it — and records the load — or refuses with the
+ * reason. This service checks only that the call is the shape the tool
+ * advertises.
+ */
+async function skillRead(args, writeBridge) {
+  if (!validObject(args) || !hasOnlyKeys(args, ["slug"]) || typeof args.slug !== "string" || args.slug.trim() === "") {
+    return toolError("INVALID_ARGUMENT", "skill_read takes `slug`, a skill's name as your prompt lists it, and nothing else.");
+  }
+  return writeThroughEo(writeBridge, SKILL_READ_TOOL_NAME, args);
+}
+
 // ── Writes (EO-543) ───────────────────────────────────────────
 
 /**
@@ -612,7 +671,16 @@ const RUNTIMES_LIST_TOOL = {
 const CONFIG_TOOLS = [PIPELINE_LIST_TOOL, PIPELINE_READ_TOOL, AGENTS_LIST_TOOL, AGENT_READ_TOOL, RUNTIMES_LIST_TOOL];
 const CONFIG_TOOL_NAMES = CONFIG_TOOLS.map((tool) => tool.name);
 
-export function eoToolList({ enableCommentTool = false, enableConfigTools = false, enableFullThread = false, enableAttachmentAdd = false, enableMemoryRead = false, enableMemoryNote = false, enableRepositoryCheckout = false } = {}) {
+export function eoToolList({
+  enableCommentTool = false,
+  enableConfigTools = false,
+  enableFullThread = false,
+  enableAttachmentAdd = false,
+  enableMemoryRead = false,
+  enableMemoryNote = false,
+  enableRepositoryCheckout = false,
+  enableSkillRead = false,
+} = {}) {
   return [
     // EO's own name first, because a model reads a tool list in order
     // and the deprecated twin beside it is the one not to reach for.
@@ -630,6 +698,9 @@ export function eoToolList({ enableCommentTool = false, enableConfigTools = fals
     // checkout is made by EO, never by this server, and a turn with no
     // bridge is one on no item, which has no project to check out from.
     ...(enableRepositoryCheckout ? [REPOSITORY_CHECKOUT_TOOL] : []),
+    // Only on a turn EO gave skills to through this tool (EO-721) — a
+    // Codex turn; Claude loads its skills with the SDK's own `Skill`.
+    ...(enableSkillRead ? [SKILL_READ_TOOL] : []),
     // Only on a turn EO delivered memory to (EO-478), which is the turn
     // that told this server which scopes it may read.
     ...(enableMemoryRead ? [MEMORY_READ_TOOL] : []),
@@ -1471,7 +1542,20 @@ function withStructuredText(result) {
   return { ...result, structuredContent: text === "" ? structured : { ...structured, text } };
 }
 
-async function answerEoTool({ name, args, db, enableCommentTool = false, enableConfigTools = false, enableFullThread = false, runtimeRoot = null, attach = null, memoryScopes = [], enableMemoryNote = false, writeBridge = null }) {
+async function answerEoTool({
+  name,
+  args,
+  db,
+  enableCommentTool = false,
+  enableConfigTools = false,
+  enableFullThread = false,
+  runtimeRoot = null,
+  attach = null,
+  memoryScopes = [],
+  enableMemoryNote = false,
+  enableSkillRead = false,
+  writeBridge = null,
+}) {
   if (CONFIG_TOOL_NAMES.includes(name)) {
     if (!enableConfigTools) return toolError("TOOL_DISABLED", `The ${name} tool is not enabled for this role.`);
     if (!db) return toolError("DATABASE_UNAVAILABLE", "EO's configuration store is unavailable.");
@@ -1611,6 +1695,11 @@ async function answerEoTool({ name, args, db, enableCommentTool = false, enableC
     return repositoryCheckout(args, writeBridge);
   }
 
+  if (name === SKILL_READ_TOOL_NAME) {
+    if (!enableSkillRead) return toolError("TOOL_DISABLED", "EO gave this run no skills to load.");
+    return skillRead(args, writeBridge);
+  }
+
   if (name === MEMORY_READ_TOOL_NAME) return memoryRead(args, db, memoryScopes);
 
   if (name === MEMORY_NOTE_TOOL_NAME) {
@@ -1678,6 +1767,9 @@ export function createEoMcpService({
   // written: the grant is the agent's, and the bridge being down is a
   // fault to say, not a capability to hide.
   writeBridge = parseWriteBridge(process.env["EO_MCP_WRITE_BRIDGE"]),
+  // The skills this turn was given to load with `skill_read` (EO-721), as
+  // JSON. Absent or empty, the tool is not listed.
+  skillSlugs = parseSkillSlugs(process.env["EO_MCP_SKILLS"]),
 } = {}) {
   let db = null;
   try {
@@ -1701,6 +1793,7 @@ export function createEoMcpService({
     enableMemoryRead: readable.length > 0,
     enableMemoryNote: writable,
     enableRepositoryCheckout: bridge !== null,
+    enableSkillRead: Array.isArray(skillSlugs) && skillSlugs.length > 0,
   };
 
   return {
@@ -1724,6 +1817,7 @@ export function createEoMcpService({
           attach,
           memoryScopes: readable,
           enableMemoryNote: writable,
+          enableSkillRead: listed.enableSkillRead,
           writeBridge: bridge,
         });
         return { jsonrpc: "2.0", id: request.id, result };

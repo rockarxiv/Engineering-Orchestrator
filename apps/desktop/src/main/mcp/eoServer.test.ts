@@ -16,6 +16,7 @@ import {
   MEMORY_READ_TOOL_NAME,
   memoryNoteEnabled,
   REPOSITORY_CHECKOUT_TOOL_NAME,
+  SKILL_READ_TOOL_NAME,
   summarizeInstructions,
   uuidv7,
 } from "@eo/core";
@@ -1306,6 +1307,7 @@ describe("every eo tool's annotations", () => {
     enableMemoryRead: true,
     enableMemoryNote: true,
     enableRepositoryCheckout: true,
+    enableSkillRead: true,
   });
 
   /** The tools that change nothing. Written out, so a tool added tomorrow is a decision rather than a default. */
@@ -1316,6 +1318,7 @@ describe("every eo tool's annotations", () => {
     "comment_read",
     "comment_search",
     "memory_read",
+    "skill_read",
     "thread_read",
     "pipeline_list",
     "pipeline_read",
@@ -1393,6 +1396,7 @@ describe("every eo tool's structuredContent carries everything its text does (EO
       attachment_read: [{ attachmentId }, { attachmentId: "missing" }],
       attachment_add: [{ paths: ["a.txt"] }, { paths: [] }],
       repository_checkout: [{ repository: "app", branch: "main" }, { repository: "app" }],
+      skill_read: [{ slug: "house-style" }, { slug: "house-style", extra: 1 }],
       comment_read: [{ commentId: comment.id }, { commentId: "missing" }],
       comment_search: [{ key: item.key, pattern: "hello" }, { key: item.key, pattern: "(" }],
       memory_read: [{}, { scope: app.projectId }, { entryId: added.entry.id }, { entryId: "missing" }],
@@ -1417,11 +1421,12 @@ describe("every eo tool's structuredContent carries everything its text does (EO
       memoryScopes: [{ kind: "project", id: app.projectId!, name: "P" }],
       enableMemoryNote: true,
       writeBridge: bridge.tokenFor(item.id),
+      skillSlugs: ["house-style"],
     });
     try {
       // The whole list, as the service builds it with every switch on —
       // so a tool added tomorrow fails here until it has calls above.
-      const everyTool = start.eoToolList({ enableCommentTool: true, enableConfigTools: true, enableFullThread: true, enableAttachmentAdd: true, enableMemoryRead: true, enableMemoryNote: true, enableRepositoryCheckout: true }).map((tool) => tool.name);
+      const everyTool = start.eoToolList({ enableCommentTool: true, enableConfigTools: true, enableFullThread: true, enableAttachmentAdd: true, enableMemoryRead: true, enableMemoryNote: true, enableRepositoryCheckout: true, enableSkillRead: true }).map((tool) => tool.name);
       expect(eo.tools.map((tool) => tool.name).sort()).toEqual([...everyTool].sort());
       expect(Object.keys(CALLS).sort(), "every tool needs calls in CALLS").toEqual([...everyTool].sort());
 
@@ -1536,6 +1541,106 @@ describe("repository_checkout on the shared EO MCP service", () => {
         { itemId: item.id, request: { tool: REPOSITORY_CHECKOUT_TOOL_NAME, args: { repository: "web", branch: "release/2.4" } } },
         { itemId: item.id, request: { tool: REPOSITORY_CHECKOUT_TOOL_NAME, args: { repository: "web", branch: "release/9.9" } } },
       ]);
+    } finally {
+      await bridge.close();
+    }
+  });
+});
+
+/**
+ * `skill_read` (EO-721): listed only on a turn EO gave skills to load with
+ * it — a Codex turn — and handed to EO over the bridge, which answers with
+ * the skill's instructions or refuses one the run was not given.
+ */
+describe("skill_read on the shared EO MCP service", () => {
+  let directory: string;
+  let dbPath: string;
+  let handle: DbHandle;
+  let item: Item;
+
+  beforeEach(() => {
+    directory = mkdtempSync(join(tmpdir(), "eo mcp skill read "));
+    dbPath = join(directory, "eo.db");
+    handle = openDb(dbPath);
+    runMigrations(handle.db, migrationsFolder);
+    item = createTestItem(handle.db, { type: "story", title: "Load a skill", stepId: "todo" });
+  });
+
+  afterEach(() => {
+    handle.close();
+    removeScratch(directory);
+  });
+
+  const LIST = { jsonrpc: "2.0", id: 2, method: "tools/list" };
+  const call = (id: number, args: unknown) => ({ jsonrpc: "2.0", id, method: "tools/call", params: { name: SKILL_READ_TOOL_NAME, arguments: args } });
+  const BODY = "Read the whole diff before you judge any of it.";
+  const REFUSED = "EO did not give this run a skill called `ghost`, so nothing was loaded. The skills EO gave this run are `house-style`.";
+
+  it("pins its name to packages/core", () => {
+    expect((service as { SKILL_READ_TOOL_NAME: string }).SKILL_READ_TOOL_NAME).toBe(SKILL_READ_TOOL_NAME);
+  });
+
+  it("is listed on a turn given skills, taking a slug, and not otherwise", async () => {
+    const { bridge } = await scriptedBridge(() => ({ ok: true, text: BODY, data: {} }));
+    try {
+      const given = await callServer(dbPath, [INITIALIZE, INITIALIZED, LIST], false, eoMcpStdioConfig({ serverPath, dbPath, writeBridge: bridge.tokenFor(item.id), skillSlugs: ["house-style"] }).env);
+      const tool = (resultFor(given, 2)["tools"] as { name: string; description: string; inputSchema: { properties: Record<string, unknown>; required: string[]; additionalProperties: boolean } }[]).find(
+        (entry) => entry.name === SKILL_READ_TOOL_NAME,
+      );
+      expect(tool).toBeDefined();
+      expect(Object.keys(tool!.inputSchema.properties)).toEqual(["slug"]);
+      expect(tool!.inputSchema).toMatchObject({ required: ["slug"], additionalProperties: false });
+      expect(tool!.description).not.toContain(eoToolName(""));
+      expect(tool!.description).not.toMatch(/\beo\//);
+
+      for (const skillSlugs of [undefined, []]) {
+        const without = await callServer(dbPath, [INITIALIZE, INITIALIZED, LIST], false, eoMcpStdioConfig({ serverPath, dbPath, writeBridge: bridge.tokenFor(item.id), ...(skillSlugs ? { skillSlugs } : {}) }).env);
+        expect((resultFor(without, 2)["tools"] as { name: string }[]).map((entry) => entry.name)).not.toContain(SKILL_READ_TOOL_NAME);
+      }
+    } finally {
+      await bridge.close();
+    }
+  });
+
+  it("hands the call to EO and answers with what EO said: the instructions, or EO's refusal as the tool's error", async () => {
+    const { asked, bridge } = await scriptedBridge((request) =>
+      (request.args as { slug: string }).slug === "house-style"
+        ? { ok: true, text: BODY, data: { slug: "house-style", directory: null, files: [] } }
+        : { ok: false, code: "SKILL_NOT_GIVEN", problem: REFUSED },
+    );
+    try {
+      const responses = await callServer(
+        dbPath,
+        [INITIALIZE, INITIALIZED, call(10, { slug: "house-style" }), call(11, { slug: "ghost" }), call(12, {}), call(13, { slug: "house-style", depth: 1 }), call(14, { slug: " " })],
+        true,
+        eoMcpStdioConfig({ serverPath, dbPath, writeBridge: bridge.tokenFor(item.id), skillSlugs: ["house-style"] }).env,
+      );
+      expect(resultFor(responses, 10)).toEqual({
+        content: [{ type: "text", text: BODY }],
+        structuredContent: { slug: "house-style", directory: null, files: [], text: BODY },
+      });
+      expect(resultFor(responses, 11)).toEqual({
+        isError: true,
+        content: [{ type: "text", text: `SKILL_NOT_GIVEN: ${REFUSED}` }],
+        structuredContent: { error: { code: "SKILL_NOT_GIVEN", message: REFUSED }, text: `SKILL_NOT_GIVEN: ${REFUSED}` },
+      });
+      // Malformed: refused here, and EO never asked.
+      for (const id of [12, 13, 14]) expect(resultFor(responses, id)).toMatchObject({ isError: true, structuredContent: { error: { code: "INVALID_ARGUMENT" } } });
+      expect(asked).toEqual([
+        { itemId: item.id, request: { tool: SKILL_READ_TOOL_NAME, args: { slug: "house-style" } } },
+        { itemId: item.id, request: { tool: SKILL_READ_TOOL_NAME, args: { slug: "ghost" } } },
+      ]);
+    } finally {
+      await bridge.close();
+    }
+  });
+
+  it("refuses the call on a turn given no skills, without asking EO", async () => {
+    const { asked, bridge } = await scriptedBridge(() => ({ ok: true, text: BODY, data: {} }));
+    try {
+      const responses = await callServer(dbPath, [INITIALIZE, INITIALIZED, call(10, { slug: "house-style" })], true, eoMcpStdioConfig({ serverPath, dbPath, writeBridge: bridge.tokenFor(item.id) }).env);
+      expect(resultFor(responses, 10)).toMatchObject({ isError: true, structuredContent: { error: { code: "TOOL_DISABLED" } } });
+      expect(asked).toEqual([]);
     } finally {
       await bridge.close();
     }

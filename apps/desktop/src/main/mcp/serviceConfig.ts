@@ -51,6 +51,13 @@ export interface EoMcpServiceConfig {
    * could be written.
    */
   writeBridge?: { url: string; token: string };
+  /**
+   * The skills this turn was given to load with `skill_read` (EO-721), by
+   * slug. A turn's, like `attachFrom`, and filled in only by the Codex
+   * adapter: Claude loads its skills with the SDK's own `Skill` tool.
+   * Absent or empty, the server does not list the tool.
+   */
+  skillSlugs?: readonly string[];
 }
 
 export interface EoMcpStdioConfig {
@@ -133,6 +140,8 @@ export function eoMcpStdioConfig(config: EoMcpServiceConfig): EoMcpStdioConfig {
       ...(config.memoryScopes && config.memoryScopes.length > 0 ? { EO_MCP_MEMORY_SCOPES: JSON.stringify(config.memoryScopes) } : {}),
       // As JSON, for the same reason.
       ...(config.writeBridge ? { EO_MCP_WRITE_BRIDGE: JSON.stringify(config.writeBridge) } : {}),
+      // As JSON, for the same reason.
+      ...(config.skillSlugs && config.skillSlugs.length > 0 ? { EO_MCP_SKILLS: JSON.stringify(config.skillSlugs) } : {}),
     },
   };
 }

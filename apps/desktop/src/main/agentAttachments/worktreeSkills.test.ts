@@ -7,6 +7,7 @@ import {
   WORKTREE_AGENT_DIRECTORY,
   deliverableSkills,
   eoOwnsSkillDirectory,
+  skillReadAnswer,
   unmanagedAgentEntries,
   worktreeSkillFiles,
   worktreeSkillsPromptSection,
@@ -18,9 +19,9 @@ import { readTree } from "../testing/tree.js";
  * Skills reaching a Codex agent (EO-207).
  *
  * Against a real directory rather than a stubbed filesystem, because the
- * claim is about what an agent finds by listing: the choose-then-read
- * split only works if the `SKILL.md` is where the prompt says it is and
- * the supporting files are its siblings, and neither is a thing a mock
+ * claim is about what an agent finds on disk: the supporting files have
+ * to be where `skill_read`'s answer says they are, and the instructions
+ * themselves nowhere on disk at all (EO-721) — neither is a thing a mock
  * can be wrong about convincingly.
  */
 
@@ -56,23 +57,27 @@ afterEach(() => {
 });
 
 describe("writeWorktreeSkills", () => {
-  it("puts SKILL.md where the prompt says it is, with its supporting files beside it", () => {
+  it("puts a skill's supporting files where skill_read says they are, and never its SKILL.md (EO-721)", () => {
     const written = writeWorktreeSkills(worktree, [skill()]);
 
     expect(written.delivered.map((delivered) => delivered.slug)).toEqual(["pr-review"]);
     expect(written.undelivered).toEqual([]);
     expect(readTree(join(worktree, ".agent"))).toEqual({
-      "skills/pr-review/SKILL.md": expect.stringContaining('name: "pr-review"') as unknown as string,
       "skills/pr-review/checklist.md": "- [ ] tests\n- [ ] docs\n",
       // Inside the folder, so the folder is what says EO made it — the
       // only claim EO acts on when it comes to remove one.
       "skills/pr-review/.eo-delivered": expect.stringContaining("EO wrote this folder") as unknown as string,
     });
-    // The frontmatter is the generated directory's, unchanged: one
-    // renderer, so a Codex agent and a Claude agent read the same file.
-    const markdown = readFileSync(join(worktree, ".agent", "skills", "pr-review", "SKILL.md"), "utf8");
-    expect(markdown).toContain('description: "How this house reviews a pull request."');
-    expect(markdown).toContain(DISTINCTIVE_BODY); // the body lives here, and only here
+    // The instructions are `skill_read`'s answer: a load is a tool call EO
+    // sees, not a file read it would have to infer.
+    expect(existsSync(join(worktree, ".agent", "skills", "pr-review", "SKILL.md"))).toBe(false);
+  });
+
+  it("delivers a skill with no supporting files without writing anything", () => {
+    const written = writeWorktreeSkills(worktree, [skill({ files: [] })]);
+
+    expect(written.delivered.map((delivered) => delivered.slug)).toEqual(["pr-review"]);
+    expect(existsSync(join(worktree, WORKTREE_AGENT_DIRECTORY))).toBe(false);
   });
 
   it("writes nothing at all, and leaves no empty folder, when nothing is attached", () => {
@@ -89,11 +94,7 @@ describe("writeWorktreeSkills", () => {
     // Rewritten rather than merged into: one worktree is dispatched to
     // by several agents, and a directory that only ever gained files
     // would go on offering a skill nobody attached.
-    expect(Object.keys(readTree(join(worktree, ".agent"))).sort()).toEqual([
-      "skills/pr-review/.eo-delivered",
-      "skills/pr-review/SKILL.md",
-      "skills/pr-review/checklist.md",
-    ]);
+    expect(Object.keys(readTree(join(worktree, ".agent"))).sort()).toEqual(["skills/pr-review/.eo-delivered", "skills/pr-review/checklist.md"]);
   });
 
   it("does not deliver a disabled or an archived skill, by the same rule the other backend uses", () => {
@@ -176,7 +177,7 @@ describe("writeWorktreeSkills", () => {
     // what stops a directory accumulating skills nobody attached — and
     // it is the reason `providers/codex.ts` re-delivers on resume rather
     // than trusting what its first turn wrote.
-    writeWorktreeSkills(worktree, [skill({ id: "a", slug: "theirs-a", files: [] })]);
+    writeWorktreeSkills(worktree, [skill({ id: "a", slug: "theirs-a" })]);
 
     const mine = writeWorktreeSkills(worktree, [skill()]);
 
@@ -206,7 +207,7 @@ describe("writeWorktreeSkills", () => {
     // folders it found there, which is another checkout's delivery.
     const elsewhere = elsewhereWithADelivery();
     const theirs = join(elsewhere, ".agent", "skills", "pr-review");
-    const before = readFileSync(join(theirs, "SKILL.md"), "utf8");
+    const before = readFileSync(join(theirs, "checklist.md"), "utf8");
     symlinkSync(join(elsewhere, ".agent"), join(worktree, ".agent"), "dir");
 
     try {
@@ -218,11 +219,11 @@ describe("writeWorktreeSkills", () => {
       expect(written.undelivered.map((entry) => entry.slug)).toEqual(["pr-review"]);
       expect(written.undelivered[0]?.reason).toContain("symbolic link");
       // Nothing written through it...
-      expect(readFileSync(join(theirs, "SKILL.md"), "utf8")).toBe(before);
+      expect(readFileSync(join(theirs, "checklist.md"), "utf8")).toBe(before);
       // ...and the sweep did not reach the marked folder on the other
       // side either, on this dispatch or the one that delivers nothing.
       writeWorktreeSkills(worktree, []);
-      expect(existsSync(join(theirs, "SKILL.md"))).toBe(true);
+      expect(existsSync(join(theirs, "checklist.md"))).toBe(true);
       expect(existsSync(join(theirs, ".eo-delivered"))).toBe(true);
       // The link itself is left where the checkout put it.
       expect(existsSync(join(worktree, ".agent"))).toBe(true);
@@ -297,11 +298,12 @@ describe("writeWorktreeSkills", () => {
     // is not.
     writeFileSync(join(worktree, ".agent"), "in the way\n");
 
-    const written = writeWorktreeSkills(worktree, [skill(), skill({ id: "b", slug: "release", files: [] })]);
+    const written = writeWorktreeSkills(worktree, [skill(), skill({ id: "b", slug: "release" }), skill({ id: "c", slug: "plain", files: [] })]);
 
-    // Nothing offered, because EO cannot say what survived a failure
-    // that can land part-way through.
-    expect(written.delivered).toEqual([]);
+    // No skill with files offered, because EO cannot say what survived a
+    // failure that can land part-way through. One with none needs no
+    // disk, so the blocked path costs it nothing (EO-721).
+    expect(written.delivered.map((entry) => entry.slug)).toEqual(["plain"]);
     // And every skill it cost named, with the reason a person can act
     // on rather than a bare count.
     expect(written.undelivered.map((entry) => entry.slug)).toEqual(["pr-review", "release"]);
@@ -361,33 +363,49 @@ describe("writeWorktreeSkills", () => {
 });
 
 describe("worktreeSkillFiles", () => {
-  it("is the same layout the generated directory writes", () => {
-    // Ordered by `localeCompare`, which is the generated directory's own
-    // comparison and puts `checklist.md` ahead of `SKILL.md`. Copied
-    // rather than chosen: the two deliveries write the same bytes in the
-    // same order, which is what makes a rewrite that changed nothing
-    // look like nothing.
-    expect(worktreeSkillFiles([skill()]).map((file) => file.path)).toEqual([
-      "skills/pr-review/checklist.md",
-      "skills/pr-review/SKILL.md",
-    ]);
+  it("is the generated directory's layout, less SKILL.md (EO-721)", () => {
+    expect(worktreeSkillFiles([skill()]).map((file) => file.path)).toEqual(["skills/pr-review/checklist.md"]);
   });
 
   it("is ordered by slug, so two dispatches of one attachment set write the same bytes", () => {
-    const files = worktreeSkillFiles([skill({ id: "b", slug: "release", files: [] }), skill({ files: [] })]);
+    const files = worktreeSkillFiles([skill({ id: "b", slug: "release" }), skill()]);
 
-    expect(files.map((file) => file.path)).toEqual(["skills/pr-review/SKILL.md", "skills/release/SKILL.md"]);
+    expect(files.map((file) => file.path)).toEqual(["skills/pr-review/checklist.md", "skills/release/checklist.md"]);
+  });
+});
+
+describe("skillReadAnswer", () => {
+  it("answers with the body and names the folder and files the supporting files are in", () => {
+    const answer = skillReadAnswer(skill());
+
+    expect(answer.text).toContain(DISTINCTIVE_BODY);
+    expect(answer.text).toContain("`.agent/skills/pr-review/`");
+    expect(answer.text).toContain("`checklist.md`");
+    // The body, not the file: no frontmatter.
+    expect(answer.text).not.toContain('name: "pr-review"');
+    expect(answer.data).toEqual({ slug: "pr-review", directory: ".agent/skills/pr-review", files: ["checklist.md"] });
+  });
+
+  it("names no folder for a skill with no supporting files", () => {
+    const answer = skillReadAnswer(skill({ files: [] }));
+
+    expect(answer.text).toBe(`# PR review\n\n${DISTINCTIVE_BODY}`);
+    expect(answer.data).toEqual({ slug: "pr-review", directory: null, files: [] });
   });
 });
 
 describe("worktreeSkillsPromptSection", () => {
-  it("names each skill's slug and description, and says where to read the rest", () => {
+  it("names each skill's slug and description, and says to load one with skill_read on the eo server (EO-721)", () => {
     const section = worktreeSkillsPromptSection([skill()]);
 
     expect(section).toContain("`pr-review`");
     expect(section).toContain("How this house reviews a pull request.");
-    expect(section).toContain(".agent/skills");
-    expect(section).toContain("SKILL.md");
+    expect(section).toContain("`skill_read`");
+    expect(section).toContain("registers as `eo`");
+    // No file to read, and neither backend's spelling of a tool id.
+    expect(section).not.toContain("SKILL.md");
+    expect(section).not.toContain("mcp__eo__");
+    expect(section).not.toContain("eo/skill_read");
   });
 
   it("never carries the body — the split is the whole point", () => {
@@ -405,12 +423,12 @@ describe("worktreeSkillsPromptSection", () => {
   it("leaves a disable-model-invocation skill out of the choices while still delivering it", () => {
     const quiet = skill({ slug: "manual-only", disableModelInvocation: true });
 
-    // On disk, because a person invoking it by name still has to find it.
+    // Delivered, because a person invoking it by name still has to reach it.
     expect(writeWorktreeSkills(worktree, [quiet]).delivered.map((delivered) => delivered.slug)).toEqual(["manual-only"]);
-    expect(existsSync(join(worktree, ".agent", "skills", "manual-only", "SKILL.md"))).toBe(true);
+    expect(existsSync(join(worktree, ".agent", "skills", "manual-only", "checklist.md"))).toBe(true);
     // Absent from the list, which is exactly what the flag means on the
-    // other backend: present on disk, absent from what the model is
-    // choosing between.
+    // other backend: delivered, absent from what the model is choosing
+    // between.
     expect(worktreeSkillsPromptSection([quiet])).toBe("");
   });
 
@@ -443,7 +461,7 @@ describe("unmanagedAgentEntries", () => {
   });
 
   it("is nothing when .agent holds only what EO delivered", () => {
-    writeWorktreeSkills(worktree, [skill(), skill({ id: "b", slug: "release", files: [] })]);
+    writeWorktreeSkills(worktree, [skill(), skill({ id: "b", slug: "release" })]);
 
     // Derived, and going with the worktree costs nobody anything.
     expect(unmanagedAgentEntries(worktree)).toEqual([]);
