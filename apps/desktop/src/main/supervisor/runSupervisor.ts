@@ -53,6 +53,9 @@ import {
   type SkillsDeliveredEvent,
   type SkillsOfferedEvent,
   MEMORY_EXTRACTED_EVENT,
+  LEARNING_REVIEW_EVENT,
+  LEARNING_REVIEW_TIMEOUT_MS,
+  type AgentWriteTool,
   MEMORY_NOTE_TOOL_NAME,
   REPOSITORY_CHECKOUT_TOOL_NAME,
   RepositoryCheckoutArgsSchema,
@@ -198,6 +201,7 @@ import {
   setSetting,
   sumCostCentsForItem,
   usageHistoryOnThread,
+  recordSideCall,
   personCostCentsSince,
   sumCostCentsSince,
   updateRun,
@@ -259,7 +263,8 @@ import { heldToDelivered } from "../memory/memoryUse.js";
 import type { AgentWriteBridge, AgentWriteHandler } from "../mcp/writeBridge.js";
 import { writeAgentComment } from "./agentComments.js";
 import { projectMovedToTheRecord } from "../db/repos/projectsRepo.js";
-import { extractionEvent, extractMemory } from "../memory/extraction.js";
+import { extractionEvent, extractMemory, runProduce } from "../memory/extraction.js";
+import { learningReviewEvent, learningReviewPrompt, learningReviewSkip, type LearningReviewOutcome } from "../memory/learningReview.js";
 import { runSubject } from "../modules/runName.js";
 import { createSideCallSlots } from "../sideCalls/slots.js";
 import { endAllProcessTrees } from "../process/processTree.js";
@@ -1454,6 +1459,13 @@ async function* untilTurnEnded(stream: AsyncIterable<AgentEvent>, ended: Promise
 const STOP_GRACE_MS = 15_000;
 
 /**
+ * How long a learning review that was stopped — at its time limit, or by
+ * EO quitting — is read for what its backend says on the way out (its
+ * spend), before it is let go without waiting further (EO-717).
+ */
+const REVIEW_STOP_GRACE_MS = 2_000;
+
+/**
  * The stream, given up on once the run has been stopped and its backend
  * has not ended the turn within `STOP_GRACE_MS`.
  *
@@ -2424,7 +2436,10 @@ export function createRunSupervisor(
    * answered with what happened — which is what the tool answers the
    * agent, so "written" is only ever said of something that was.
    */
-  async function handleAgentWrite(itemId: string, request: AgentWriteRequest): Promise<AgentWriteAnswer> {
+  async function handleAgentWrite(itemId: string, request: AgentWriteRequest, writes: readonly AgentWriteTool[] | null = null): Promise<AgentWriteAnswer> {
+    // A credential minted for some writes alone is a learning review's
+    // (EO-717), and is made as that review, never as a run's turn.
+    if (writes !== null) return reviewWrite(itemId, request, writes);
     const found = [...liveTurns].find(([, turn]) => turn.item.id === itemId);
     if (found === undefined) return { ok: false, code: "NO_RUN", problem: "No run of this desktop's is working on this item now, so nothing was written." };
     const [runId, turn] = found;
@@ -2493,6 +2508,39 @@ export function createRunSupervisor(
   }
 
   /**
+   * The learning reviews under way, by the run each reviews (EO-717):
+   * the item, and the entries the review's `memory_note` calls wrote, in
+   * order, for its `learning_review` event.
+   */
+  const reviewTurns = new Map<Uuid, { itemId: Uuid; entryIds: string[] }>();
+
+  /**
+   * A write a learning review asked for (EO-717): `memory_note` alone,
+   * made as the reviewed run — the note's source — and marked as
+   * extracted, as the notes the review replaces were. Anything else is
+   * refused, whatever the credential says, so a review cannot post,
+   * attach or check anything out.
+   */
+  async function reviewWrite(itemId: string, request: AgentWriteRequest, writes: readonly AgentWriteTool[]): Promise<AgentWriteAnswer> {
+    if (request.tool !== MEMORY_NOTE_TOOL_NAME || !writes.includes(request.tool)) {
+      return { ok: false, code: "TOOL_NOT_SERVED", problem: `This turn is not served ${request.tool}, so nothing was written.` };
+    }
+    const found = [...reviewTurns].find(([, review]) => review.itemId === itemId);
+    if (found === undefined) return { ok: false, code: "NO_RUN", problem: "No learning review of this desktop's is under way on this item now, so nothing was written." };
+    const [runId, review] = found;
+    const item = getItem(db, itemId as Uuid);
+    if (!item) return { ok: false, code: "NO_RUN", problem: "EO no longer has the item this run is on, so nothing was written." };
+    try {
+      const answer = await noteMemory(item, runId, request.args, true);
+      const entryId = answer.ok ? answer.data["entryId"] : undefined;
+      if (typeof entryId === "string") review.entryIds.push(entryId);
+      return answer;
+    } catch (error) {
+      return { ok: false, code: "WRITE_FAILED", problem: `EO could not write it, so nothing was written: ${error instanceof Error ? error.message : String(error)}` };
+    }
+  }
+
+  /**
    * A `repository_checkout` call (EO-633): a reference checkout for the
    * item, made by the kind that lends one (EO-632) — the item's own kind
    * if it can, or else any installed kind that can, since an item whose
@@ -2531,10 +2579,10 @@ export function createRunSupervisor(
    * (EO-611), read here after the write: a record's answer has already
    * been copied into this database, and what the note replaced is gone.
    */
-  async function noteMemory(item: Item, runId: Uuid, args: unknown): Promise<AgentWriteAnswer> {
+  async function noteMemory(item: Item, runId: Uuid, args: unknown, extracted = false): Promise<AgentWriteAnswer> {
     const scopes = turnMemoryScopes(item);
     const onRecord = memoryOnRecord(item);
-    const written = await writeMemoryNote({ record, args, scopes, runId, item, now: now() });
+    const written = await writeMemoryNote({ record, args, scopes, runId, item, ...(extracted ? { extracted: true } : {}), now: now() });
     if (!written.ok) return { ok: false, code: "MEMORY_NOTE_REFUSED", problem: onRecord ? `The note was not saved. ${written.problem}` : written.problem };
     const scope = scopes.find((candidate) => candidate.scope.kind === written.entry.scope.kind && candidate.scope.id === written.entry.scope.id);
     const title = `${written.entry.scope.kind === "project" ? "Project" : "Workspace"}: ${scope?.name ?? written.entry.scope.id} (scope ${written.entry.scope.id})`;
@@ -2681,6 +2729,182 @@ export function createRunSupervisor(
       }
     } catch (error) {
       console.warn(`[eo] memory was not extracted from run ${runId}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  /** The learning reviews in flight, so quitting EO stops them (EO-717). */
+  const reviewControllers = new Set<AbortController>();
+
+  /**
+   * The learning review after a run (EO-717): where extraction ran, EO
+   * forks the run's thread and sends one review turn on the fork, served
+   * `memory_read` and `memory_note` and no other write. Inside the run,
+   * so it holds the run's slot until it returns, and after the item has
+   * moved, so it cannot change where the item went. Bounded by
+   * `LEARNING_REVIEW_TIMEOUT_MS`, past which it is stopped and recorded
+   * as failed.
+   *
+   * Where the thread cannot be forked — none, one on another backend, a
+   * backend that cannot fork, or the fork refused — `memory_extract`
+   * runs instead, exactly as before, and the event says it fell back and
+   * why. Every review that was asked for appends one `learning_review`
+   * event; a run it skips (as extraction skips it) appends none. Never
+   * throws.
+   */
+  async function reviewAfterRun(runId: Uuid, item: Item, agent: Agent): Promise<void> {
+    if (shuttingDown) return;
+    let outcome: LearningReviewOutcome;
+    try {
+      const run = getRun(db, runId);
+      if (!run) return;
+      const current = getItem(db, item.id) ?? item;
+      const scopes = turnMemoryScopes(item);
+      if (learningReviewSkip(run, current, runProduce(db, run), scopes) !== null) return;
+      outcome = await reviewOnFork(run, current, agent, scopes);
+    } catch (error) {
+      outcome = { kind: "failed", entryIds: [], reason: `The learning review could not be run: ${error instanceof Error ? error.message : String(error)}`, forkThreadId: null };
+    }
+    if (outcome.kind === "fell_back") {
+      console.warn(`[eo] the learning review of run ${runId} fell back to memory extraction: ${outcome.reason}`);
+      await extractAfterRun(runId, item, agent);
+    } else if (outcome.kind === "failed") {
+      console.warn(`[eo] the learning review of run ${runId} failed: ${outcome.reason}`);
+    }
+    try {
+      record.appendRunEvent(runId, LEARNING_REVIEW_EVENT, learningReviewEvent(outcome));
+    } catch (error) {
+      console.warn(`[eo] how the learning review of run ${runId} ended could not be recorded: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  /** The review turn on a fork of the run's thread, read to its end or its time limit. A fork that cannot be opened is `fell_back`. */
+  async function reviewOnFork(run: Run, item: Item, agent: Agent, scopes: readonly MemoryScopeInfo[]): Promise<LearningReviewOutcome> {
+    const backend = runsOn(agent, item).provider;
+    if (run.threadId === null) return { kind: "fell_back", reason: "The run has no thread to fork." };
+    if (run.provider !== null && run.provider !== backend) {
+      return { kind: "fell_back", reason: `The run's thread is on ${run.provider}, and ${agent.name} now runs on ${backend}.` };
+    }
+    // Either adapter starts EO's administrative server again on any turn
+    // of the system agent's, a fork's included (invariant 11), and a
+    // review may write nothing but memory.
+    if (isSystemAgent(agent)) return { kind: "fell_back", reason: "The system agent's turns are served EO's administrative tools, which a learning review may not be." };
+    const provider = providerFor(agent, item);
+    if (!provider.fork) return { kind: "fell_back", reason: `The ${backend} backend cannot fork a thread.` };
+    const bridge = options.agentWriteBridge?.() ?? null;
+    if (bridge === null) return { kind: "fell_back", reason: "EO has nowhere listening for the review's notes." };
+
+    const startedAt = now();
+    const controller = new AbortController();
+    reviewControllers.add(controller);
+    const review = { itemId: item.id, entryIds: [] as string[] };
+    reviewTurns.set(run.id, review);
+    const usage = createUsageTally({ earlierOnThread: sessionTotalBefore(usageHistoryOnThread(db, run.threadId, uuidv7() as Uuid)) });
+    let model: string | null = null;
+    /** Whether the backend said anything about spend: a fork that reported none leaves no row claiming it cost nothing. */
+    let reported = false;
+    let forkThreadId: string | null = null;
+    let failure: string | null = null;
+    let timedOut = false;
+    let interrupt: (() => Promise<void>) | undefined;
+    let stop: () => void = () => {};
+    const stopped = new Promise<"stopped">((resolve) => {
+      stop = () => resolve("stopped");
+    });
+    // Stopped however it is stopped — its time limit or EO quitting — what
+    // the backend says on its way out is read for a moment more, for its
+    // spend, and never waited on past that.
+    controller.signal.addEventListener("abort", () => {
+      void interrupt?.().catch(() => {});
+      setTimeout(stop, REVIEW_STOP_GRACE_MS);
+    });
+    const timer = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, LEARNING_REVIEW_TIMEOUT_MS);
+    try {
+      const forked = await Promise.race([
+        provider.fork(run.threadId, learningReviewPrompt(scopes), {
+          ...(run.cwd ? { cwd: run.cwd } : {}),
+          // `memory_read` over the run's scopes, and a credential for
+          // `memory_note` alone: no other write tool is listed, and the
+          // bridge refuses any other write made with it.
+          ...memoryOption(item),
+          writeBridge: bridge.tokenFor(item.id, [MEMORY_NOTE_TOOL_NAME]),
+          ...turnBudget(item, agent),
+          signal: controller.signal,
+        }),
+        stopped,
+      ]);
+      if (forked === "stopped") return failedReview(null);
+      if (!forked.ok) {
+        if (timedOut) return failedReview(null);
+        return { kind: "fell_back", reason: `${forked.reason}: ${forked.message}` };
+      }
+      forkThreadId = forked.threadId;
+      interrupt = forked.events.interrupt;
+      const iterator = forked.events[Symbol.asyncIterator]();
+      try {
+        for (;;) {
+          const next = await Promise.race([iterator.next(), stopped]);
+          if (next === "stopped") {
+            void iterator.return?.()?.catch(() => {});
+            break;
+          }
+          if (next.done) break;
+          const event = next.value;
+          if (event.type === "thread_started" && event.model) model = event.model;
+          else if (event.type === "usage" && usage.record(event)) reported = true;
+          else if (event.type === "error" && event.fatal !== false && failure === null) failure = event.message;
+        }
+      } catch (error) {
+        if (failure === null) failure = error instanceof Error ? error.message : String(error);
+      }
+      if (timedOut || shuttingDown || failure !== null) return failedReview(forkThreadId);
+      return review.entryIds.length > 0 ? { kind: "written", entryIds: [...review.entryIds], forkThreadId } : { kind: "nothing_to_save", forkThreadId };
+    } finally {
+      clearTimeout(timer);
+      reviewControllers.delete(controller);
+      reviewTurns.delete(run.id);
+      recordReviewSpend();
+    }
+
+    function failedReview(threadId: string | null): LearningReviewOutcome {
+      const reason = timedOut
+        ? `The learning review ran past its ${String(LEARNING_REVIEW_TIMEOUT_MS / 60_000)}-minute limit and was stopped.`
+        : shuttingDown
+          ? "EO shut down while the learning review was under way."
+          : `The learning review's turn failed: ${failure ?? "it ended without saying why."}`;
+      return { kind: "failed", entryIds: [...review.entryIds], reason, forkThreadId: threadId };
+    }
+
+    /**
+     * What the fork's turn spent, as a side call's row (`learning_review`),
+     * so the budgets that count side calls beside runs count it: the run's
+     * own row is already final. Written however the review ended, where
+     * the backend reported what it spent.
+     */
+    function recordReviewSpend(): void {
+      if (!reported) return;
+      try {
+        const totals = usage.totals();
+        recordSideCall(db, {
+          purpose: "learning_review",
+          projectId: (item.projectId as Uuid | null) ?? null,
+          itemId: item.id,
+          runId: run.id,
+          backend,
+          model,
+          tokensIn: totals.tokensIn,
+          tokensOut: totals.tokensOut,
+          costMicrocents: usage.costMicrocents(),
+          startedAt,
+          durationMs: Math.max(0, now() - startedAt),
+          outcome: forkThreadId !== null && failure === null && !timedOut && !shuttingDown ? "succeeded" : "failed",
+          reason: forkThreadId !== null && failure === null && !timedOut && !shuttingDown ? null : timedOut ? "timeout" : "error",
+        });
+      } catch (error) {
+        console.warn(`[eo] what the learning review of run ${run.id} spent could not be recorded: ${error instanceof Error ? error.message : String(error)}`);
+      }
     }
   }
 
@@ -4843,8 +5067,10 @@ export function createRunSupervisor(
       }
       // After the run is terminal and its item has moved, and before the
       // caller gives the run's slot back (EO-479). Not on a throw: a run
-      // that ended that way was closed by EO, not by its agent.
-      await extractAfterRun(run.id, item, agent);
+      // that ended that way was closed by EO, not by its agent. The
+      // learning review on a fork of the run's thread, or the extraction
+      // it falls back to (EO-717).
+      await reviewAfterRun(run.id, item, agent);
     } finally {
       drivenRuns.delete(run.id);
       // A run with no lease gives its slot back here, not in a release:
@@ -9935,6 +10161,8 @@ export function createRunSupervisor(
     // Side calls in flight, and waiting ones, are stopped: none of them
     // is work anybody is owed, and none may hold up quitting (EO-477).
     sideCaller.abortAll();
+    // And the learning reviews, which are no more owed than a side call (EO-717).
+    for (const controller of reviewControllers) controller.abort();
     // `superseded`: quitting is not somebody stopping this step, and a
     // shutdown that ended every live initiation would leave a board that
     // dispatches nothing on the next launch (EO-175).

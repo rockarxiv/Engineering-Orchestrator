@@ -1,0 +1,111 @@
+import {
+  eoToolName,
+  LEARNING_REVIEW_EVENT,
+  MAX_MEMORY_NOTE_CHARS,
+  MEMORY_NOTE_DEFINITION,
+  MEMORY_NOTE_REPLACES,
+  MEMORY_NOTE_TOOL_NAME,
+  MEMORY_READ_TOOL_NAME,
+  type Item,
+  type LearningReviewEvent,
+  type Run,
+} from "@eo/core";
+import { extractionSkip, type ExtractionSkip, type RunProduce } from "./extraction.js";
+import type { MemoryScopeInfo } from "./selection.js";
+import { scopeLines } from "./writing.js";
+
+/**
+ * The learning review (EO-717, after Nous Research's Hermes Agent).
+ *
+ * When a run ends, EO forks the run's own thread and sends this one turn
+ * on the fork. The fork has everything the run saw — every file it read,
+ * every command, every correction — so it can judge what is worth
+ * keeping far better than `memory_extract`, a side call that reads a
+ * summary. The fork is a copy: the item's thread is not written to, and
+ * the next dispatch resumes the original without this turn.
+ *
+ * The turn is served `memory_read` and `memory_note` and no other write
+ * (`AgentWriteBridgeAddress.writes`). Where the thread cannot be forked,
+ * `memory_extract` runs instead, as it did before this.
+ */
+
+/** Why no review was asked for: the runs `memory_extract` skips, less the one it skips for a short answer. */
+export type LearningReviewSkip = Exclude<ExtractionSkip, "little_prose">;
+
+/**
+ * Whether a run is one the review is asked about, and if not, why not.
+ * Pure. The runs extraction skips — not ended on its own terms
+ * (cancelled), interrupted, a preview, no scope, or one that called
+ * `memory_note` itself — and not one more: a run whose answer is short
+ * may still have read and run plenty, which is what the fork sees.
+ */
+export function learningReviewSkip(run: Run, item: Pick<Item, "previewAt">, produce: RunProduce, scopes: readonly MemoryScopeInfo[]): LearningReviewSkip | null {
+  const skip = extractionSkip(run, item, produce, scopes);
+  return skip === "little_prose" ? null : skip;
+}
+
+const MEMORY_NOTE = eoToolName(MEMORY_NOTE_TOOL_NAME);
+const MEMORY_READ = eoToolName(MEMORY_READ_TOOL_NAME);
+
+/**
+ * What the review turn is sent. What a note is comes from core
+ * (`MEMORY_NOTE_DEFINITION`), word for word, as it does for an agent
+ * writing its own notes and for `MEMORY_EXTRACT_SYSTEM`. Around it are
+ * the rules that worked in Hermes: save only what the run can point to,
+ * never infer what a person is like, and never save what describes this
+ * run's circumstances rather than the project — an environment failure,
+ * a claim that a tool does not work, an error that went away, an
+ * approach that did not work. A later agent told any of those stops
+ * trying what would work for it.
+ */
+export function learningReviewPrompt(scopes: readonly MemoryScopeInfo[]): string {
+  const limit = MAX_MEMORY_NOTE_CHARS.toLocaleString("en-US");
+  return [
+    "# Learning review",
+    "",
+    "The run above has ended. This turn is not part of its work: nothing you say here reaches the item, its thread or anybody on it, and the run's next turn will not see it.",
+    "",
+    `You are asked one thing: whether this run learned something the next agent on this project should be told, and if it did, to write it to memory with \`${MEMORY_NOTE}\`. Use \`${MEMORY_READ}\` to see what memory already holds. Do nothing else — do not change files, run commands, post comments, or carry on the run's work.`,
+    "",
+    MEMORY_NOTE_DEFINITION,
+    "",
+    "Save only what this run can point to: a command it ran and what came of it, a file it read, an answer a person gave. Not what you suspect or expect, and not what the run assumed and never checked. A note is believed by agents that cannot ask you where it came from.",
+    "",
+    "Never infer a person's traits, habits or preferences from how they wrote or what they asked for. What a person said about how work is done here may be a note, in what they said, and nothing read into it.",
+    "",
+    "Never save any of these, however sure the run was of them:",
+    "- An environment failure: a network or service outage, a missing credential, a full disk, a sandbox or permission refusing a command, a machine that was slow.",
+    "- A claim that a tool, command or service does not work, or cannot do something.",
+    "- An error that went away on its own or on a retry.",
+    "- An approach that did not work. Where the run found what does work, save that instead.",
+    "Each of these is about this run's circumstances, not the project, and a later agent told it stops trying what would work for it.",
+    "",
+    `One fact per note, in at most ${limit} characters. Give each note the scope it is true of:`,
+    ...scopeLines(scopes),
+    "",
+    `A note that corrects an entry memory holds, or says again what one already says, names that entry's id in \`${MEMORY_NOTE_REPLACES}\`, and EO retires the entry when it writes the note. Name only entries an agent wrote, never a person's. Do not write again what memory already holds.`,
+    "",
+    "Many runs teach nothing worth keeping. Then write nothing. Either way, end with one line saying what you saved, or that there was nothing to save.",
+  ].join("\n");
+}
+
+/** How a review ended, as its run event records it. */
+export type LearningReviewOutcome =
+  | { kind: "written"; entryIds: string[]; forkThreadId: string }
+  | { kind: "nothing_to_save"; forkThreadId: string }
+  | { kind: "failed"; entryIds: string[]; reason: string; forkThreadId: string | null }
+  | { kind: "fell_back"; reason: string };
+
+/** The `learning_review` event an outcome is recorded as. */
+export function learningReviewEvent(outcome: LearningReviewOutcome): LearningReviewEvent {
+  switch (outcome.kind) {
+    case "written":
+      return { type: LEARNING_REVIEW_EVENT, outcome: "written", entryIds: outcome.entryIds, reason: null, forkThreadId: outcome.forkThreadId };
+    case "nothing_to_save":
+      return { type: LEARNING_REVIEW_EVENT, outcome: "nothing_to_save", entryIds: [], reason: null, forkThreadId: outcome.forkThreadId };
+    case "failed":
+      return { type: LEARNING_REVIEW_EVENT, outcome: "failed", entryIds: outcome.entryIds, reason: outcome.reason, forkThreadId: outcome.forkThreadId };
+    case "fell_back":
+      return { type: LEARNING_REVIEW_EVENT, outcome: "fell_back", entryIds: [], reason: outcome.reason, forkThreadId: null };
+  }
+}

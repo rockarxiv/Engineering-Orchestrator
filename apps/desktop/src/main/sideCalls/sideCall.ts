@@ -338,6 +338,9 @@ export function createSideCaller(options: SideCallerOptions): SideCaller {
     const fail = (reason: SideCallFailureReason, message: string): SideCallResult<T> => finish({ ok: false, reason, message });
 
     if (shuttingDown) return fail("error", "EO is shutting down, so the call was not made.");
+    // A purpose that is a turn on a run's own agent, not a question to a
+    // small model (EO-717): its spend is written here, and it is never asked.
+    if (SIDE_CALL_MODELS[request.purpose] === "agent") return fail("error", `A ${request.purpose} is a turn on the run's own agent, not a side call, so the call was not made.`);
 
     const controller = new AbortController();
     let stoppedBy: "timeout" | "output_cap" | "shutdown" | "caller" | null = null;

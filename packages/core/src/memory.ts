@@ -499,6 +499,52 @@ export const MemoryExtractedEventSchema = z.object({
 });
 export type MemoryExtractedEvent = z.infer<typeof MemoryExtractedEventSchema>;
 
+// ── The learning review (EO-717) ─────────────────────────────────
+
+/**
+ * How long the learning review may take: the one turn on a fork of the
+ * run's thread, from the fork being asked for to its last event. It runs
+ * while the run settles, holding the run's slot, so it is bounded; past
+ * this it is stopped and recorded as `failed`.
+ */
+export const LEARNING_REVIEW_TIMEOUT_MS = 5 * 60_000;
+
+/**
+ * The run event that records how a run's learning review ended (EO-717),
+ * appended to the run's log once the review — or the extraction it fell
+ * back to — has returned. Not written for a run the review was never
+ * asked about: one cancelled, interrupted, on a preview, with no memory
+ * scope, or that called `memory_note` itself.
+ */
+export const LEARNING_REVIEW_EVENT = "learning_review";
+
+/**
+ * - `written` — the review turn wrote at least one note; `entryIds` are
+ *   the entries it wrote.
+ * - `nothing_to_save` — the turn ended and wrote nothing.
+ * - `failed` — the fork was opened and its turn did not end well: it
+ *   failed, was stopped at `LEARNING_REVIEW_TIMEOUT_MS`, or EO shut down
+ *   under it. `entryIds` are any notes written before it stopped.
+ * - `fell_back` — the thread could not be forked (no thread, a lost one,
+ *   a backend that cannot fork, or the fork refused), so `memory_extract`
+ *   ran instead and its `memory_extracted` event says how that went.
+ */
+export const LEARNING_REVIEW_OUTCOMES = ["written", "nothing_to_save", "failed", "fell_back"] as const;
+export const LearningReviewOutcomeSchema = z.enum(LEARNING_REVIEW_OUTCOMES);
+export type LearningReviewOutcome = z.infer<typeof LearningReviewOutcomeSchema>;
+
+export const LearningReviewEventSchema = z.object({
+  type: z.literal(LEARNING_REVIEW_EVENT),
+  outcome: LearningReviewOutcomeSchema,
+  /** The memory entries the review turn wrote, in the order written. */
+  entryIds: z.array(z.string()),
+  /** Why it failed or fell back, in a sentence; null otherwise. */
+  reason: z.string().nullable(),
+  /** The fork's thread, where one was opened; null on a fallback. Never the item's own thread. */
+  forkThreadId: z.string().nullable(),
+});
+export type LearningReviewEvent = z.infer<typeof LearningReviewEventSchema>;
+
 // ── Consolidation (EO-480) ───────────────────────────────────────
 
 /**

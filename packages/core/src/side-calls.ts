@@ -13,7 +13,14 @@ import { z } from "zod";
  * `side_calls` says the money went on, and a spend screen groups by it,
  * so a purpose nobody declared would be spend nobody can name.
  */
-export const SIDE_CALL_PURPOSES = ["memory_select", "memory_extract", "memory_consolidate"] as const;
+/**
+ * Why EO asked. `learning_review` (EO-717) is the one purpose no side
+ * call asks: it is the review turn on a fork of a run's own thread, run
+ * on that run's agent, and it is written here only so that what it
+ * spent is counted wherever side calls are (`SIDE_CALL_MODELS` says
+ * `agent`, which `sideCall` refuses).
+ */
+export const SIDE_CALL_PURPOSES = ["memory_select", "memory_extract", "memory_consolidate", "learning_review"] as const;
 export const SideCallPurposeSchema = z.enum(SIDE_CALL_PURPOSES);
 export type SideCallPurpose = z.infer<typeof SideCallPurposeSchema>;
 
@@ -28,6 +35,8 @@ export type SideCallPurpose = z.infer<typeof SideCallPurposeSchema>;
  *   (`sideCallModelOfSystemAgent`): consolidation, asked about once a day
  *   per scope, which needs judgement over the whole scope. A small model
  *   failed it eight times in a row on a 56,000-character scope.
+ * - `agent` — the reviewed run's own agent, on a fork of its thread
+ *   (EO-717): never asked through `sideCall`, which refuses it.
  *
  * A record keyed by purpose, so a purpose added to `SIDE_CALL_PURPOSES`
  * without saying which model it runs on is a type error rather than a
@@ -37,7 +46,8 @@ export const SIDE_CALL_MODELS = {
   memory_select: "small",
   memory_extract: "small",
   memory_consolidate: "system_agent",
-} as const satisfies Record<SideCallPurpose, "small" | "system_agent">;
+  learning_review: "agent",
+} as const satisfies Record<SideCallPurpose, "small" | "system_agent" | "agent">;
 
 /** What a `system_agent` side call runs on: a model and a reasoning effort, either null for the backend's default. */
 export interface SideCallModelChoice {
@@ -113,7 +123,7 @@ export type SideCallResult<T> = { ok: true; value: T } | { ok: false; reason: Si
  * its three moments spent it.
  */
 export const SIDE_CALL_SPEND_GROUPS = {
-  memory_upkeep: { label: "Memory upkeep", purposes: ["memory_select", "memory_extract", "memory_consolidate"] },
+  memory_upkeep: { label: "Memory upkeep", purposes: ["memory_select", "memory_extract", "memory_consolidate", "learning_review"] },
 } as const satisfies Record<string, { label: string; purposes: readonly SideCallPurpose[] }>;
 
 export type SideCallSpendGroup = keyof typeof SIDE_CALL_SPEND_GROUPS;

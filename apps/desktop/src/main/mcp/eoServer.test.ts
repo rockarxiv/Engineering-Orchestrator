@@ -1281,6 +1281,55 @@ describe("memory_note on the shared EO MCP service (EO-479)", () => {
       await bridge.close();
     }
   });
+
+  /**
+   * The learning review (EO-717): a turn whose credential names the writes
+   * it is served lists those and no other write tool, whatever the
+   * agent's grant — `memory_note` for an agent not granted it, and no
+   * `comment`, `attachment_add` or `repository_checkout` for one that is —
+   * and refuses a call to any other without asking EO.
+   */
+  it("serves a turn whose credential names its writes exactly those, whatever the agent's grant", async () => {
+    const { asked, bridge } = await scriptedBridge(() => ({ ok: true, text: "noted", data: { entryId: "m-1" } }));
+    try {
+      const reviewEnvironment = (allowedTools: string[] | undefined) =>
+        eoMcpStdioConfig({
+          serverPath,
+          dbPath,
+          enableCommentTool: true,
+          attachFrom: { runId: "run-1", directory },
+          memoryScopes: [projectScope, workspaceScope],
+          enableMemoryNote: memoryNoteEnabled({ config: allowedTools === undefined ? {} : { allowedTools } }),
+          writeBridge: bridge.tokenFor(item.id, [MEMORY_NOTE_TOOL_NAME]),
+        }).env;
+      for (const grant of [["Read"], [MEMORY_NOTE_TOOL_NAME, "comment"], undefined]) {
+        const tools = await listed(reviewEnvironment(grant));
+        expect(tools, JSON.stringify(grant)).toContain(MEMORY_NOTE_TOOL_NAME);
+        expect(tools, JSON.stringify(grant)).toContain("memory_read");
+        for (const write of ["comment", "attachment_add", "repository_checkout"]) expect(tools, `${write} for ${JSON.stringify(grant)}`).not.toContain(write);
+      }
+
+      const tool = (id: number, name: string, args: unknown) => ({ jsonrpc: "2.0", id, method: "tools/call", params: { name, arguments: args } });
+      const responses = await callServer(
+        dbPath,
+        [
+          INITIALIZE,
+          INITIALIZED,
+          tool(3, "comment", { body: "From the review." }),
+          tool(4, "attachment_add", { paths: ["a.txt"] }),
+          tool(5, "repository_checkout", { repository: "EO", branch: "main" }),
+          call(6, { scope: "project", text: "A fact." }),
+        ],
+        false,
+        reviewEnvironment(["Read"]),
+      );
+      for (const id of [3, 4, 5]) expect(textOf(responses, id), String(id)).toMatchObject({ isError: true, text: expect.stringContaining("TOOL_DISABLED") });
+      expect(textOf(responses, 6)).toEqual({ isError: false, text: "noted" });
+      expect(asked).toEqual([{ itemId: item.id, request: { tool: MEMORY_NOTE_TOOL_NAME, args: { scope: "project", text: "A fact." } } }]);
+    } finally {
+      await bridge.close();
+    }
+  });
 });
 
 /**

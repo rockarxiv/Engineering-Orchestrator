@@ -1,7 +1,7 @@
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
-import { AgentWriteRequestSchema, type AgentWriteAnswer, type AgentWriteBridgeAddress, type AgentWriteRequest } from "@eo/core";
+import { AGENT_WRITE_TOOLS, AgentWriteRequestSchema, type AgentWriteAnswer, type AgentWriteBridgeAddress, type AgentWriteRequest, type AgentWriteTool } from "@eo/core";
 
 /**
  * Where the `eo` server hands every write an agent asks for (EO-543,
@@ -30,12 +30,23 @@ import { AgentWriteRequestSchema, type AgentWriteAnswer, type AgentWriteBridgeAd
  * Loopback only, on a port the system chooses.
  */
 
-/** The main process's half: apply the rules for this tool and write, for the turn it is driving on this item. */
-export type AgentWriteHandler = (itemId: string, request: AgentWriteRequest) => Promise<AgentWriteAnswer>;
+/**
+ * The main process's half: apply the rules for this tool and write, for
+ * the turn it is driving on this item. `writes` is the list the
+ * credential was minted for (EO-717) — the request's tool is already one
+ * of them — or null for a credential that carries none, whose turn the
+ * agent's grant decides.
+ */
+export type AgentWriteHandler = (itemId: string, request: AgentWriteRequest, writes?: readonly AgentWriteTool[] | null) => Promise<AgentWriteAnswer>;
 
 export interface AgentWriteBridge {
-  /** Where a turn on this item hands a write, and the bearer it presents. */
-  tokenFor: (itemId: string) => AgentWriteBridgeAddress;
+  /**
+   * Where a turn on this item hands a write, and the bearer it presents.
+   * With `writes`, a credential for those writes alone (EO-717): the list
+   * is part of what is signed, so a turn cannot widen it, and the address
+   * carries it for the `eo` server to list only those tools.
+   */
+  tokenFor: (itemId: string, writes?: readonly AgentWriteTool[]) => AgentWriteBridgeAddress;
   close: () => Promise<void>;
 }
 
@@ -46,22 +57,35 @@ export interface AgentWriteBridge {
  */
 const MAX_BODY_BYTES = 1024 * 1024;
 const PATH = "/agent-write";
+/** Between a credential's item and the writes it was minted for. In neither a UUID nor a tool name. */
+const WRITES_SEPARATOR = "~";
 
 /** Binds the bridge's socket and answers it once bound. Rejects where it cannot be bound. */
 export function startAgentWriteBridge(handler: AgentWriteHandler): Promise<AgentWriteBridge> {
   const secret = randomBytes(32);
-  const mac = (itemId: string): string => createHmac("sha256", secret).update(itemId).digest("hex");
+  const mac = (subject: string): string => createHmac("sha256", secret).update(subject).digest("hex");
 
-  /** The item a bearer is for, or null where it is not one this process minted. */
-  function itemOf(header: string | undefined): string | null {
+  /**
+   * What a bearer is for, or null where it is not one this process
+   * minted: the item, and the writes it was minted for where it names
+   * some (`<item>~<tool>,<tool>`), all of it under the MAC.
+   */
+  function grantOf(header: string | undefined): { itemId: string; writes: AgentWriteTool[] | null } | null {
     if (header === undefined || !header.startsWith("Bearer ")) return null;
     const bearer = header.slice("Bearer ".length).trim();
     const dot = bearer.lastIndexOf(".");
     if (dot <= 0) return null;
-    const itemId = bearer.slice(0, dot);
+    const subject = bearer.slice(0, dot);
     const given = Buffer.from(bearer.slice(dot + 1), "utf8");
-    const expected = Buffer.from(mac(itemId), "utf8");
-    return given.length === expected.length && timingSafeEqual(given, expected) ? itemId : null;
+    const expected = Buffer.from(mac(subject), "utf8");
+    if (given.length !== expected.length || !timingSafeEqual(given, expected)) return null;
+    const tilde = subject.indexOf(WRITES_SEPARATOR);
+    if (tilde === -1) return { itemId: subject, writes: null };
+    const writes = subject
+      .slice(tilde + 1)
+      .split(",")
+      .filter((tool): tool is AgentWriteTool => (AGENT_WRITE_TOOLS as readonly string[]).includes(tool));
+    return { itemId: subject.slice(0, tilde), writes };
   }
 
   function answer(response: ServerResponse, status: number, body: AgentWriteAnswer): void {
@@ -73,8 +97,8 @@ export function startAgentWriteBridge(handler: AgentWriteHandler): Promise<Agent
 
   async function onRequest(request: IncomingMessage, response: ServerResponse): Promise<void> {
     if (request.method !== "POST" || request.url !== PATH) return answer(response, 404, refused("NOT_FOUND", "EO has nothing here."));
-    const itemId = itemOf(request.headers.authorization);
-    if (itemId === null) return answer(response, 401, refused("UNRECOGNISED_CREDENTIAL", "EO did not recognise this run's credential, so nothing was written."));
+    const grant = grantOf(request.headers.authorization);
+    if (grant === null) return answer(response, 401, refused("UNRECOGNISED_CREDENTIAL", "EO did not recognise this run's credential, so nothing was written."));
     let raw = "";
     let size = 0;
     for await (const chunk of request) {
@@ -90,9 +114,14 @@ export function startAgentWriteBridge(handler: AgentWriteHandler): Promise<Agent
     }
     const write = AgentWriteRequestSchema.safeParse(parsed);
     if (!write.success) return answer(response, 400, refused("UNREADABLE", "EO does not write anything for that tool, so nothing was written."));
+    // A credential minted for some writes opens those alone (EO-717),
+    // whatever the server it was handed to lists.
+    if (grant.writes !== null && !grant.writes.includes(write.data.tool)) {
+      return answer(response, 403, refused("TOOL_NOT_SERVED", `This turn is not served ${write.data.tool}, so nothing was written.`));
+    }
     let outcome: AgentWriteAnswer;
     try {
-      outcome = await handler(itemId, write.data);
+      outcome = await handler(grant.itemId, write.data, grant.writes);
     } catch (error) {
       outcome = refused("WRITE_FAILED", `EO could not write it: ${error instanceof Error ? error.message : String(error)}`);
     }
@@ -112,7 +141,11 @@ export function startAgentWriteBridge(handler: AgentWriteHandler): Promise<Agent
       // Never what keeps a process alive.
       server.unref();
       resolve({
-        tokenFor: (itemId) => ({ url, token: `${itemId}.${mac(itemId)}` }),
+        tokenFor: (itemId, writes) => {
+          if (writes === undefined) return { url, token: `${itemId}.${mac(itemId)}` };
+          const subject = `${itemId}${WRITES_SEPARATOR}${writes.join(",")}`;
+          return { url, token: `${subject}.${mac(subject)}`, writes: [...writes] };
+        },
         close: () =>
           new Promise<void>((done) => {
             server.close(() => done());
