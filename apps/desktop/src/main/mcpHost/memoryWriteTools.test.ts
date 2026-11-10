@@ -108,8 +108,8 @@ describe("the five memory write tools in the catalogue", () => {
     const spec = tool(name);
     expect(spec.kind).toBe("write");
     expect(spec.adminOnly).toBeUndefined();
-    expect(spec.annotations.destructiveHint).toBeUndefined();
-    expect(spec.annotations.readOnlyHint).toBeUndefined();
+    expect(spec.annotations.destructiveHint).toBe(false);
+    expect(spec.annotations.readOnlyHint).toBe(false);
     expect(spec.channels).toEqual(channels);
     // A write takes no narrowing parameters.
     expect(spec.narrowing).toBeUndefined();

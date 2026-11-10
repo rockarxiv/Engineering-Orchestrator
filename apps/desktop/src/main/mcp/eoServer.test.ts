@@ -1290,6 +1290,62 @@ describe("memory_note on the shared EO MCP service (EO-479)", () => {
  * this (EO-202); this holds the `eo` server's, every one of them, on an
  * answer and on a refusal alike.
  */
+/**
+ * Every tool states all four MCP annotation hints (EO-723). A client
+ * fills a missing hint with the spec default, and the defaults are the
+ * cautious ones, so leaving `destructiveHint` off a write tells a client
+ * the write destroys something.
+ */
+describe("every eo tool's annotations", () => {
+  type Annotated = { name: string; annotations?: Record<string, unknown> };
+  const list = (service as unknown as { eoToolList(options: Record<string, boolean>): Annotated[] }).eoToolList({
+    enableCommentTool: true,
+    enableConfigTools: true,
+    enableFullThread: true,
+    enableAttachmentAdd: true,
+    enableMemoryRead: true,
+    enableMemoryNote: true,
+    enableRepositoryCheckout: true,
+  });
+
+  /** The tools that change nothing. Written out, so a tool added tomorrow is a decision rather than a default. */
+  const READ_ONLY = [
+    "item_detail",
+    "ticket_detail",
+    "attachment_read",
+    "comment_read",
+    "comment_search",
+    "memory_read",
+    "thread_read",
+    "pipeline_list",
+    "pipeline_read",
+    "agents_list",
+    "agent_read",
+    "runtimes_list",
+  ];
+
+  it("states all four hints, as booleans, on every tool with every switch on", () => {
+    const HINTS = ["readOnlyHint", "destructiveHint", "idempotentHint", "openWorldHint"];
+    const missing = list.filter((tool) => HINTS.some((hint) => typeof tool.annotations?.[hint] !== "boolean"));
+
+    expect(list.length).toBeGreaterThan(READ_ONLY.length);
+    expect(missing.map((tool) => tool.name)).toEqual([]);
+  });
+
+  it("marks readOnlyHint on exactly the read-only tools, and destructiveHint on none", () => {
+    const readOnly = list.filter((tool) => tool.annotations?.["readOnlyHint"] === true).map((tool) => tool.name);
+
+    expect(readOnly.sort()).toEqual([...READ_ONLY].sort());
+    // Nothing here takes anything away: comments, files and notes are
+    // added, and a checkout is EO's own copy to read.
+    expect(list.filter((tool) => tool.annotations?.["destructiveHint"] !== false).map((tool) => tool.name)).toEqual([]);
+  });
+
+  it("says repository_checkout reaches beyond EO, and nothing else does", () => {
+    expect(list.filter((tool) => tool.annotations?.["openWorldHint"] === true).map((tool) => tool.name)).toEqual(["repository_checkout"]);
+  });
+});
+
 describe("every eo tool's structuredContent carries everything its text does (EO-543)", () => {
   let directory: string;
   let dbPath: string;

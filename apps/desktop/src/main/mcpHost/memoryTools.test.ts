@@ -88,7 +88,7 @@ describe("the three memory tools in the catalogue", () => {
     const spec = tool(name);
     expect(spec.kind).toBe("read");
     expect(spec.adminOnly).toBeUndefined();
-    expect(spec.annotations).toEqual({ readOnlyHint: true, idempotentHint: true, openWorldHint: false });
+    expect(spec.annotations).toEqual({ readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false });
     expect(spec.channels.filter((candidate) => candidate !== RESOLVE_KEY_CHANNEL)).toEqual([channel]);
     expect(spec.list).toBe(list);
     // Every narrowing parameter on a list, and fields on the one read with no single list.

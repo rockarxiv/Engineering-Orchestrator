@@ -464,7 +464,7 @@ describe("the destructive-operations gate, over the wire", () => {
     // And none of them is announced as destructive, which is what a
     // well-behaved client would put a confirmation in front of.
     for (const name of ["settings_read", "settings_write", "guardrails_set"]) {
-      expect(tools.find((tool) => tool.name === name)?.annotations?.destructiveHint, name).toBeUndefined();
+      expect(tools.find((tool) => tool.name === name)?.annotations?.destructiveHint, name).toBe(false);
     }
   });
 

@@ -94,7 +94,7 @@ describe("the two run tools in the catalogue", () => {
   it.each(["runs_list", "runs_summary"])("%s is a read, over its own IPC channel, with every shared parameter", (name) => {
     const spec = tool(name);
     expect(spec.kind).toBe("read");
-    expect(spec.annotations).toEqual({ readOnlyHint: true, idempotentHint: true, openWorldHint: false });
+    expect(spec.annotations).toEqual({ readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false });
     expect(spec.channels).toEqual([name === "runs_list" ? "runs:list" : "runs:summary", RESOLVE_KEY_CHANNEL]);
     const properties = Object.keys((spec.inputSchema["properties"] ?? {}) as Record<string, unknown>);
     for (const key of NARROWING_KEYS) expect(properties, key).toContain(key);
