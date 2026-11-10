@@ -107,8 +107,11 @@ export const CommentThread = memo(function CommentThread({
                   {options.map((option) => (
                     // The press target sits under the words, so a key
                     // inside an option is a link of its own and following
-                    // it never posts the answer.
-                    <div key={option} className="group relative">
+                    // it never posts the answer. The words are what give
+                    // the chip its size, and the target fills the chip, so
+                    // an option that wraps onto several lines is pressed
+                    // on any of them and never on its neighbour (EO-722).
+                    <div key={option} className="group relative max-w-full min-w-0">
                       <button
                         type="button"
                         aria-label={option}
@@ -118,7 +121,7 @@ export const CommentThread = memo(function CommentThread({
                       />
                       <span
                         className={cn(
-                          "pointer-events-none relative z-10 inline-flex h-[26px] items-center rounded-[10px] bg-canvas-raised px-2.5 text-xs font-medium text-ink group-hover:bg-canvas-hover",
+                          "pointer-events-none relative z-10 block min-h-[26px] rounded-[10px] bg-canvas-raised px-2.5 py-[5px] text-left text-xs leading-4 font-medium wrap-anywhere text-ink group-hover:bg-canvas-hover",
                           busy && "opacity-50",
                         )}
                       >

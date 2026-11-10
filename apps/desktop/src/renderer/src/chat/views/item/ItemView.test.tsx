@@ -392,6 +392,32 @@ describe("the thread", () => {
     expect(screen.getByTestId("current-route")).toHaveTextContent("/items/t2");
   });
 
+  it("sizes a long option's chip by its words, under a press target that fills the chip (EO-722)", async () => {
+    // jsdom lays nothing out, so this holds the structure that makes the
+    // target cover the words; offeredAnswers.spec.ts measures the window.
+    const long = [
+      "(A) Keep the current behaviour and document it, since changing it would break every caller that relies on the old order.",
+      "(B) Change it now and migrate the callers in the same change, accepting the larger diff.",
+    ];
+    const { calls, onCall } = recorder();
+    renderItem(detail({ comments: [comment({ body: "Which way?", kind: "question", options: long, awaitingHuman: true })] }), onCall);
+
+    for (const option of long) {
+      const target = await screen.findByRole("button", { name: option });
+      const chip = target.parentElement!;
+      const words = within(chip).getByText(option);
+      // The words are inside the chip the target fills, and give it its height.
+      expect(target.className).toMatch(/\babsolute\b/);
+      expect(target.className).toMatch(/\binset-0\b/);
+      expect(chip.className).toMatch(/\brelative\b/);
+      expect(words.closest(".min-h-\\[26px\\]")).not.toBeNull();
+      expect(chip.innerHTML).not.toMatch(/[\s"]h-\[/);
+    }
+
+    fireEvent.click(screen.getByRole("button", { name: long[0]! }));
+    await waitFor(() => expect(payloadOf(calls, "comments:post")).toMatchObject({ body: long[0]!, parentId: "c1" }));
+  });
+
   it("files an answer under its question", async () => {
     renderItem(
       detail({

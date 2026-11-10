@@ -43,6 +43,17 @@ describe("the answers an EO message offers in the chat", () => {
     await waitFor(() => expect(onDone).toHaveBeenCalled());
   });
 
+  it("draws a long answer as one button holding all its words, grown rather than fixed in height (EO-722)", () => {
+    const long = "Keep going for another eight rounds, and stop to ask again only if the same check fails twice in a row.";
+    mount(stop({ options: [long, "Discard"] }));
+
+    const button = screen.getByRole("button", { name: long });
+    expect(button).toHaveTextContent(long);
+    expect(button.className).not.toMatch(/(^|\s)h-\[26px\]/);
+    expect(button.className).toMatch(/\bmin-h-\[26px\]/);
+    expect(button.className).toMatch(/\bwhitespace-normal\b/);
+  });
+
   it("offers nothing once it has been answered", () => {
     mount(stop({ canAnswer: false }));
 
