@@ -48,10 +48,9 @@ import {
 } from "../db/repos/index.js";
 import type { ApplyConsolidationResult, ScopeTally } from "../db/repos/memoryConsolidationsRepo.js";
 import { resolveMessagesAbout, sendMessage as sendMessageHere, type MessageSendAnswer } from "../messages/messages.js";
-import { openProjectThread, type ProjectThreadAnswer } from "../projects/projectThread.js";
 import { agentReasoningEffort } from "../providers/smallModels.js";
 import type { SideCaller, SideCallRequest } from "../sideCalls/sideCall.js";
-import { applySkillProposals, discardedSkillProposals, type ProposalFileStore } from "./skillProposals.js";
+import { applySkillProposals, discardedSkillProposals } from "./skillProposals.js";
 import {
   consolidationAnswerSchema,
   consolidationDue,
@@ -144,21 +143,12 @@ export interface MemoryConsolidatorOptions {
   /** How often every scope is looked at. */
   intervalMs?: number;
   /**
-   * The project's thread, where the skills proposed after a consolidation
-   * are posted (EO-483, EO-575): `ItemRecord.projectThread`, so a project the
-   * organisation holds has its thread made by the record. Absent is this
-   * database's own tables.
-   */
-  projectThread?: (projectId: Uuid) => Promise<ProjectThreadAnswer>;
-  /**
    * Sends the message saying a scope's consolidation is stuck (EO-727):
    * `ItemRecord.sendMessage`, so on the organisation's record one about a
    * project it holds goes to each admin. Absent is this database's own
    * table, to this machine's person.
    */
   sendMessage?: (input: MessageSend) => Promise<MessageSendAnswer>;
-  /** Where a proposal's SKILL.md and diff are kept. Absent, the draft travels in the comment's body. */
-  store?: ProposalFileStore;
   /**
    * Whether a project's memory is consolidated somewhere else (EO-482): a
    * project an organisation's record holds, seen from a desktop holding a
@@ -407,7 +397,6 @@ export function createMemoryConsolidator(options: MemoryConsolidatorOptions): Me
   const systemAgent = options.systemAgent ?? (() => systemAgentSetup(db));
   const repositoryFiles = options.repositoryFiles ?? ((scope: MemoryScope) => readRepositoryFiles(db, scope));
   const intervalMs = options.intervalMs ?? DEFAULT_INTERVAL_MS;
-  const projectThread = options.projectThread ?? ((projectId: Uuid) => Promise.resolve(openProjectThread(db, projectId)));
   const sendMessage = options.sendMessage ?? ((input: MessageSend): Promise<MessageSendAnswer> => Promise.resolve({ ok: true, messages: [sendMessageHere(db, input)] }));
   /** Whether pipeline work is waiting or going; a question that cannot be answered is "yes", so consolidation waits rather than takes the slot. */
   const pipelineBusy = (): boolean => {
@@ -1050,19 +1039,15 @@ export function createMemoryConsolidator(options: MemoryConsolidatorOptions): Me
       // Evidence names entries as the consolidation left them; one it
       // folded from several may hold more than the procedure, and applying it
       // leaves it in memory rather than lose what else it says.
-      const posted = await applySkillProposals({
+      const posted = applySkillProposals({
         db,
         consolidationId,
         scope,
-        scopeLabel: facts.label,
-        projectId: facts.projectId,
         proposals: answer.value.skills,
         folded,
         // Only those the call was shown: one past the cap, or made while it
         // ran, is not a target its draft was written for.
         shown: new Map(shown.slice(0, EXISTING_SKILLS_MAX).map((skill) => [skill.slug, skill.id])),
-        projectThread,
-        ...(options.store ? { store: options.store } : {}),
         now: now(),
       });
       if (posted.notes.length > 0) say(posted.notes.join(" "));

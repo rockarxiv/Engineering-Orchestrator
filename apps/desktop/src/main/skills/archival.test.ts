@@ -13,10 +13,11 @@ import {
   restoreSkillVersion,
   saveSkill,
   setSkillLocked,
+  skillArchiveOf,
 } from "../db/repos/index.js";
 import { skillUsageById, usageOfSkill } from "../db/repos/skillUsageRepo.js";
 import { createTestItem, messagesFrom, openMigratedTestDb } from "../db/testHelpers.js";
-import { findProjectThread, openProjectThread } from "../projects/projectThread.js";
+import { findProjectThread } from "../projects/projectThread.js";
 import { markReplica } from "../db/recordRole.js";
 import { publishSection } from "../db/repos/publishedSectionsRepo.js";
 import { archiveUnusedSkills } from "./archival.js";
@@ -76,7 +77,7 @@ describe("archiving unused agent skills", () => {
     return id;
   }
 
-  const pass = (with_: SkillAgeing = ageing) => archiveUnusedSkills({ db: handle.db, projectId, reach: "all", ageing: with_, projectThread: (id) => Promise.resolve(openProjectThread(handle.db, id)) });
+  const pass = (with_: SkillAgeing = ageing) => archiveUnusedSkills({ db: handle.db, projectId, reach: "all", ageing: with_ });
   const stateOf = (id: string, with_: SkillAgeing = ageing) => skillState(getSkill(handle.db, id)!, usageOfSkill(skillUsageById(handle.db), id), with_);
   const notes = () => {
     const thread = findProjectThread(handle.db, projectId);
@@ -137,10 +138,10 @@ describe("archiving unused agent skills", () => {
     const own = skill("release", "agent");
     const global = skill("format", "agent", null);
     runs(5, [own, global]);
-    const result = await archiveUnusedSkills({ db: handle.db, projectId, reach: "global", ageing, projectThread: (id) => Promise.resolve(openProjectThread(handle.db, id)) });
+    const result = await archiveUnusedSkills({ db: handle.db, projectId, reach: "global", ageing });
     expect(result.archived.map((archived) => archived.id)).toEqual([global]);
     expect(getSkill(handle.db, own)!.archivedAt).toBeNull();
-    expect(notes()).toHaveLength(1);
+    expect(notes()).toEqual([]);
   });
 
   it("makes a stale skill active again when a run loads it, and counts from zero", async () => {
@@ -162,7 +163,7 @@ describe("archiving unused agent skills", () => {
     runs(20, [person, locked]);
     expect(stateOf(person)).toBe("active");
     expect(stateOf(locked)).toBe("active");
-    expect(await pass()).toEqual({ archived: [], noteId: null });
+    expect(await pass()).toEqual({ archived: [] });
     expect(getSkill(handle.db, person)!.archivedAt).toBeNull();
     expect(getSkill(handle.db, locked)!.archivedAt).toBeNull();
     expect(notes()).toEqual([]);
@@ -187,45 +188,36 @@ describe("archiving unused agent skills", () => {
     expect((await pass()).archived).toEqual([]);
   });
 
-  it("posts exactly one note naming every skill a pass archived, and nothing for a pass that archives nothing", async () => {
+  it("posts nothing for what a pass archives, and keeps on each archive that EO archived it after how many runs without a load (EO-728)", async () => {
     const first = skill("release", "agent");
     const second = skill("changelog", "agent");
     const global = skill("format", "agent", null);
     const elsewhere = skill("billing", "agent", otherProjectId);
     expect((await pass()).archived).toEqual([]);
-    expect(notes()).toEqual([]);
 
     runs(5, [first, second, global, elsewhere]);
+    runs(2, [first]);
     const result = await pass();
     expect(result.archived.map((archived) => archived.slug).sort()).toEqual(["changelog", "format", "release"]);
     // Another project's skill is that project's pass to archive.
     expect(getSkill(handle.db, elsewhere)!.archivedAt).toBeNull();
-    const posted = notes();
-    expect(posted).toHaveLength(1);
-    expect(posted[0]!.id).toBe(result.noteId);
-    for (const slug of ["release", "changelog", "format"]) expect(posted[0]!.body).toContain(`\`${slug}\``);
-    expect(posted[0]!.body).toContain("Restore");
+
+    // No project thread was opened, nor any comment written anywhere.
+    expect(findProjectThread(handle.db, projectId)).toBeUndefined();
+    expect(handle.db.all(sql`select id from comments`)).toEqual([]);
+
+    const [archive] = listSkillVersions(handle.db, first);
+    expect(archive).toMatchObject({ action: "archive", author: { kind: "eo" }, report: { kind: "unused", runsWithoutLoad: 7 } });
+    expect(listSkillVersions(handle.db, second)[0]!.report).toEqual({ kind: "unused", runsWithoutLoad: 5 });
+    // What the Skills screen shows on the archived skill, beside Restore.
+    expect(skillArchiveOf(handle.db, getSkill(handle.db, first)!)).toEqual({ versionId: archive!.id, author: { kind: "eo" }, runsWithoutLoad: 7 });
+
+    // Restoring the archive version brings it back, live, with its count started again.
+    expect(restoreSkillVersion(handle.db, first, archive!.id).ok).toBe(true);
+    expect(stateOf(first)).toBe("active");
+    expect(skillArchiveOf(handle.db, getSkill(handle.db, first)!)).toBeNull();
 
     expect((await pass()).archived).toEqual([]);
-    expect(notes()).toHaveLength(1);
-  });
-
-  it("archives nothing when the note cannot be written, and archives and tells on the next pass", async () => {
-    const first = skill("release", "agent");
-    const second = skill("changelog", "agent");
-    runs(5, [first, second]);
-    // A thread item this database has no row for: the note's insert fails
-    // after both archives were written, inside the same transaction.
-    const nowhere = { id: "019fb8c6-0000-7000-8000-00000000dead" } as never;
-    await expect(archiveUnusedSkills({ db: handle.db, projectId, reach: "all", ageing, projectThread: () => Promise.resolve({ ok: true, item: nowhere }) })).rejects.toThrow();
-    for (const id of [first, second]) {
-      expect(getSkill(handle.db, id)!.archivedAt).toBeNull();
-      expect(listSkillVersions(handle.db, id).map((version) => version.action)).toEqual(["create"]);
-    }
-
-    const result = await pass();
-    expect(result.archived).toHaveLength(2);
-    expect(notes()).toHaveLength(1);
   });
 
   it("sends one message about the project when a published section kept due skills, again only for a skill newly due, and never asks for the thread", async () => {
@@ -233,17 +225,7 @@ describe("archiving unused agent skills", () => {
     const second = skill("changelog", "agent");
     const stop = markReplica(handle.db, () => true);
     const held = () => messagesFrom(handle.db, "skill_archival_held");
-    // Pressed by a pass that asked for the project thread.
-    const refused = (with_: SkillAgeing = ageing) =>
-      archiveUnusedSkills({
-        db: handle.db,
-        projectId,
-        reach: "all",
-        ageing: with_,
-        projectThread: () => {
-          throw new Error("a held archive never asks for the project thread");
-        },
-      });
+    const refused = (with_: SkillAgeing = ageing) => archiveUnusedSkills({ db: handle.db, projectId, reach: "all", ageing: with_ });
     try {
       publishSection(handle.db, { section: "packs", publishedAt: Date.now(), publishedBy: null, publishedByName: "Dana" });
       runs(5, [first]);
@@ -285,7 +267,6 @@ describe("archiving unused agent skills", () => {
           projectId,
           reach: "all",
           ageing,
-          projectThread: (thread) => Promise.resolve(openProjectThread(handle.db, thread)),
           sendMessage: async (message) => {
             if (!reachable) return { ok: false, problem: "Your organisation's record could not be reached." };
             sent.push(message.body);
@@ -301,13 +282,5 @@ describe("archiving unused agent skills", () => {
     } finally {
       stop();
     }
-  });
-
-  it("archives nothing when there is no project thread to say so on", async () => {
-    const id = skill("release", "agent");
-    runs(5, [id]);
-    const result = await archiveUnusedSkills({ db: handle.db, projectId, reach: "all", ageing, projectThread: () => Promise.resolve({ ok: false, problem: "It is moving." }) });
-    expect(result).toMatchObject({ archived: [], problem: expect.stringContaining("It is moving.") });
-    expect(getSkill(handle.db, id)!.archivedAt).toBeNull();
   });
 });

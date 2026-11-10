@@ -373,7 +373,7 @@ export interface RunSupervisorOptions {
    * EO-578), the workspace files it is given, and how often every scope
    * is looked at.
    */
-  memoryConsolidation?: Pick<MemoryConsolidatorOptions, "systemAgent" | "repositoryFiles" | "intervalMs" | "projectThread" | "sendMessage" | "store">;
+  memoryConsolidation?: Pick<MemoryConsolidatorOptions, "systemAgent" | "repositoryFiles" | "intervalMs" | "sendMessage">;
   /**
    * Where the `eo` server hands every write an agent asks for — `comment`,
    * `attachment_add`, `memory_note` — to this supervisor (EO-543,
@@ -2048,14 +2048,9 @@ export function createRunSupervisor(
     // be dispatched" here and there cannot come apart.
     pipelineBusy: () =>
       slotsOfRuns() > 0 || hasDispatchableItem(eligibilityNow()),
-    // Where a consolidation's skill proposals are posted (EO-483): the
-    // record's accessor, so a project the organisation holds has its
-    // thread made there, and the run artifacts' store for the drafts.
-    projectThread: (projectId) => record.projectThread(projectId),
     // The message saying a scope is stuck (EO-727): the record's sender,
     // so on the organisation's record it reaches each admin.
     sendMessage: (input) => record.sendMessage(input),
-    ...(artifactStore ? { store: artifactStore } : {}),
     // A project an organisation's record holds is consolidated where the
     // record schedules work, never on a desktop holding a replica of it
     // (EO-482): two desktops folding one scope would be two writers of
@@ -2822,16 +2817,15 @@ export function createRunSupervisor(
   /**
    * EO's pass over the agent skills nobody loads (EO-720), after a run on
    * a project: those within the project's reach given `skillArchiveAfterRuns`
-   * runs in a row without a load are archived, and its thread is told.
+   * runs in a row without a load are archived, and nothing is posted (EO-728).
    * The guardrails are read now, so a change to them takes effect here.
    *
    * For a project the organisation's record holds, a desktop archives
    * only its own global skills: the project's are the record's, which
    * runs its pass when this run's settled transcript reaches it
    * (`serveApply`) — an archive in this replica would be undone by the
-   * record's next copy. The note goes through the record, onto the
-   * project's one thread. What the pass could not do it says there
-   * itself, or leaves for the next pass (`archival.ts`).
+   * record's next copy. What the pass could not do it says in a message,
+   * or leaves for the next pass (`archival.ts`).
    */
   async function archiveAfterRun(item: Item): Promise<void> {
     if (shuttingDown) return;
@@ -2846,8 +2840,6 @@ export function createRunSupervisor(
         projectId,
         reach: archiveReachOf(db, projectId, runsWhere === "server"),
         ageing: { staleAfterRuns: guards.skillStaleAfterRuns, archiveAfterRuns: guards.skillArchiveAfterRuns },
-        projectThread: (id) => record.projectThread(id),
-        postComment: (comment) => record.postComment(comment),
         sendMessage: (message) => record.sendMessage(message),
         now,
       });

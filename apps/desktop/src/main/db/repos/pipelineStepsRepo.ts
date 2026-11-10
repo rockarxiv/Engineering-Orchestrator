@@ -697,6 +697,8 @@ export interface ReplacePipelineGraphOptions {
   entryRules?: readonly EntryRule[];
   /** Who saved it, for "Pipeline updated to v7 by Dana". Null for a version EO took itself. */
   createdBy?: string | null;
+  /** The release notes of the template update filing it (EO-728), kept on the version. */
+  releaseNotes?: string | null;
   /**
    * Publish a version this pipeline already has, instead of filing a
    * new one (EO-329, ARCHITECTURE.md, "Publish, lock and versions": "rollback is publishing an
@@ -991,7 +993,7 @@ export function replacePipelineGraph(
     // version it answers with is the one the pipeline is still on,
     // which is the truth — its graph moved and its history did not.
     if (options.fileVersion === false && outgoing !== undefined) return { replaced: true, version: outgoing.number };
-    const filed = createPipelineVersion(inTx, pipelineId, options.createdBy ?? null);
+    const filed = createPipelineVersion(inTx, pipelineId, options.createdBy ?? null, options.releaseNotes ?? null);
     // "Pipeline versions to keep" (EO-359), here rather than at any one
     // caller because this is the one place a version is filed for a
     // graph change: an editor save, an approved suggestion and an import

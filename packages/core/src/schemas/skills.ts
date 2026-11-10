@@ -276,6 +276,41 @@ export const SKILL_LOCKED_PROBLEM = "A person locked this skill, so only a perso
 export const SkillVersionActionSchema = z.enum(["create", "edit", "enable", "disable", "archive", "restore", "lock", "unlock", "sync"]);
 export type SkillVersionAction = z.infer<typeof SkillVersionActionSchema>;
 
+/** One memory entry a consolidation drew a skill from, as it stood when the version was written (EO-728). */
+export const SkillVersionEvidenceSchema = z.object({
+  entryId: z.string(),
+  /** The entry's text, or null where it was already gone. */
+  body: z.string().nullable(),
+  /** The key of the item whose run wrote it, or null. */
+  itemKey: z.string().nullable(),
+});
+export type SkillVersionEvidence = z.infer<typeof SkillVersionEvidenceSchema>;
+
+/**
+ * What EO reports about one write, kept on the version it filed rather
+ * than posted anywhere (EO-728): a consolidation's evidence — the entries
+ * and the items they came from — and, for an improvement, the diff it
+ * made; or, for a skill EO archived, the runs it was given in a row
+ * without one of them loading it.
+ */
+export const SkillVersionReportSchema = z.discriminatedUnion("kind", [
+  z.object({
+    kind: z.literal("consolidation"),
+    evidence: z.array(SkillVersionEvidenceSchema),
+    /** The keys of the items the evidence was seen on. */
+    itemKeys: z.array(z.string()),
+    /** What an improvement changed in SKILL.md, as a unified diff; null for a new skill. */
+    diff: z.string().nullable(),
+  }),
+  z.object({ kind: z.literal("unused"), runsWithoutLoad: z.number().int().nonnegative() }),
+]);
+export type SkillVersionReport = z.infer<typeof SkillVersionReportSchema>;
+
+/** "after 30 runs without a load" — why EO archived a skill, the same words on the Skills screen and over MCP (EO-728). */
+export function runsWithoutLoadLabel(runs: number): string {
+  return `after ${runs} ${runs === 1 ? "run" : "runs"} without a load`;
+}
+
 /**
  * One write to a skill, as the skill stood after it (EO-714). Append-only:
  * restoring an earlier version files a new one rather than rewriting any.
@@ -290,6 +325,8 @@ export const SkillVersionSchema = z.object({
   author: SkillAuthorSchema,
   /** The version a `restore` put back; null for every other action. */
   restoredFrom: z.string().nullable(),
+  /** What EO reports about this write (EO-728); null for most. */
+  report: SkillVersionReportSchema.nullable(),
   createdAt: z.number(),
 });
 export type SkillVersion = z.infer<typeof SkillVersionSchema>;
@@ -401,7 +438,24 @@ export function skillDueForArchive(skill: Pick<Skill, "createdBy" | "locked" | "
 }
 
 /** One skill as the catalogue lists it: the skill, its usage, and where it stands (EO-720). */
-export const SkillListEntrySchema = SkillSchema.extend({ usage: SkillUsageSchema, state: SkillStateSchema });
+/**
+ * How an archived skill came to be archived (EO-728): the version that
+ * archived it — restoring it brings the skill back — who wrote it, and,
+ * where EO archived it as unused, after how many runs without a load.
+ */
+export const SkillArchiveSchema = z.object({
+  versionId: z.string(),
+  author: SkillAuthorSchema,
+  runsWithoutLoad: z.number().int().nonnegative().nullable(),
+});
+export type SkillArchive = z.infer<typeof SkillArchiveSchema>;
+
+export const SkillListEntrySchema = SkillSchema.extend({
+  usage: SkillUsageSchema,
+  state: SkillStateSchema,
+  /** For an archived skill, its archive; null for a live one, or one archived before versions were kept. */
+  archive: SkillArchiveSchema.nullable(),
+});
 export type SkillListEntry = z.infer<typeof SkillListEntrySchema>;
 
 /**

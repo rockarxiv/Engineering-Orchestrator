@@ -842,8 +842,8 @@ export async function serveApply(
 /**
  * The pass over unused agent skills (EO-720) for each project a run of
  * the batch settled on: the record is where those projects' skills are
- * written, so it is where they are archived, as a version authored by EO,
- * with the note on the project's thread — and the archived copy reaches
+ * written, so it is where they are archived, as a version authored by EO
+ * that says after how many runs without a load — and the archived copy reaches
  * every replica on its next pull. Triggered by a run's `skills_settled`,
  * never by its delivery: a transcript arrives a page at a time, and the
  * run's loads are in it only once the settled event is. A pass that fails
@@ -859,8 +859,6 @@ async function archiveSettledSkills(context: ServeRecordContext, projects: Reado
         projectId,
         reach: "all",
         ageing,
-        projectThread: (id) => context.record.projectThread(id),
-        postComment: (comment) => context.record.postComment(comment),
         sendMessage: (message) => context.record.sendMessage(message),
       });
     } catch (error) {

@@ -11,8 +11,6 @@ import {
   currentVersion,
   getItem,
   getPipelineOrigin,
-  listCommentsForItem,
-  listMentionsForComment,
   listPipelineVersions,
   listRoutesForPipeline,
   listStepsForPipeline,
@@ -26,6 +24,7 @@ import {
 } from "../db/repos/index.js";
 import { createProject } from "../db/repos/projectsRepo.js";
 import { createTestItem, openMigratedTestDb } from "../db/testHelpers.js";
+import { pipelineVersionsCommand } from "../ipc/pipelineCommands.js";
 import { ACTIVE_PROJECT_KEY } from "../ipc/repositoryCommands.js";
 import { findProjectThread } from "../projects/projectThread.js";
 import { loadTemplateHistory, type TemplateHistory, type TemplateVersion } from "./history.js";
@@ -226,27 +225,23 @@ describe("an update with no conflict", () => {
     expect(getItem(handle.db, later.id)?.pipelineVersionId).toBe(currentVersion(handle.db, "default")?.id);
   });
 
-  it("says what changed on the project thread, with the release notes, mentioning nobody", () => {
+  it("posts nothing, and the version it files keeps the release notes the pipeline's version list shows (EO-728)", () => {
     const { projectId } = untouchedDelivery();
     createTestItem(handle.db, { type: "story", title: "On it", stepId: "todo", projectId });
+    const before = currentVersion(handle.db, "default")!;
 
     applyTemplateUpdates(handle.db, history, { isTheRecord: false });
 
-    const thread = findProjectThread(handle.db, projectId);
-    expect(thread).toBeDefined();
-    const comments = listCommentsForItem(handle.db, thread!.id as Uuid);
-    expect(comments).toHaveLength(1);
-    const notice = comments[0]!;
-    expect(notice.authorType).toBe("engine");
-    expect(notice.body).toContain("Software feature to merge");
-    expect(notice.body).toContain("1.0 to 1.3");
-    expect(notice.body).toContain("Added **Watching pull request**.");
-    expect(notice.body).toContain("**Merge Request** → *Pull request open* now goes to **Watching pull request** (it went to **Done**).");
-    expect(notice.body).toContain("Your own changes to this pipeline were kept.");
-    expect(notice.body).toContain(shipped("1.1").notes);
-    expect(notice.body).toContain(shipped("1.2").notes);
-    expect(notice.body).toContain(shipped("1.3").notes);
-    expect(listMentionsForComment(handle.db, notice.id as Uuid)).toEqual([]);
+    // No project thread was opened, nor any comment written anywhere.
+    expect(findProjectThread(handle.db, projectId)).toBeUndefined();
+    expect(handle.db.all(sql`select id from comments`)).toEqual([]);
+
+    const notes = [shipped("1.1"), shipped("1.2"), shipped("1.3")].map((version) => `${version.version}: ${version.notes}`).join("\n");
+    expect(currentVersion(handle.db, "default")!.releaseNotes).toBe(notes);
+    const listed = pipelineVersionsCommand(handle.db, { pipelineId: "default" }).versions;
+    expect(listed.find((version) => version.number === before.number + 1)?.releaseNotes).toBe(notes);
+    // A version a person saved has none.
+    expect(listed.find((version) => version.number === before.number)?.releaseNotes).toBeNull();
   });
 });
 
@@ -350,32 +345,20 @@ describe("judged for the projects a pipeline serves, not the one on screen", () 
   });
 });
 
-describe("a notice that cannot be delivered", () => {
-  it("defers the whole update while the project is moving, and applies it with its notice once the move is over", () => {
+describe("a project in the middle of a move", () => {
+  it("has its update applied all the same, with nothing posted: there is no notice to wait on (EO-728)", () => {
     deliveryBeforeEo461("ready_to_merge");
     backfillPipelineOrigins(handle.db, history);
     const moving = createProject(handle.db, { name: "Moving", keyPrefix: "MOVE" });
     handle.db.run(sql`UPDATE pipelines SET project_id = ${moving.id} WHERE id = 'default'`);
     handle.db.run(sql`UPDATE projects SET adopting_at = 123 WHERE id = ${moving.id}`);
-    const versionsBefore = listPipelineVersions(handle.db, "default").length;
 
-    const deferred = applyTemplateUpdates(handle.db, history, { isTheRecord: false });
-
-    expect(deferred).toEqual([expect.objectContaining({ pipelineId: "default", outcome: "deferred" })]);
-    // Nothing written: no version, the base where it was, no conflict.
-    expect(listPipelineVersions(handle.db, "default")).toHaveLength(versionsBefore);
-    expect(listStepsForPipeline(handle.db, "default").map((step) => step.id)).not.toContain("pull_request_watch");
-    expect(getPipelineOrigin(handle.db, "default")?.version).toBe("1.0");
-    expect(openUpdateConflict(handle.db, "default")).toBeUndefined();
-
-    // The move abandoned; the next launch applies it, notice and all.
-    handle.db.run(sql`UPDATE projects SET adopting_at = NULL WHERE id = ${moving.id}`);
     const applied = applyTemplateUpdates(handle.db, history, { isTheRecord: false });
 
     expect(applied).toEqual([expect.objectContaining({ pipelineId: "default", outcome: "applied" })]);
     expect(getPipelineOrigin(handle.db, "default")?.version).toBe("1.3");
-    const thread = findProjectThread(handle.db, moving.id as Uuid);
-    expect(listCommentsForItem(handle.db, thread!.id as Uuid).map((comment) => comment.body)).toEqual([expect.stringContaining("Added **Watching pull request**.")]);
+    expect(findProjectThread(handle.db, moving.id as Uuid)).toBeUndefined();
+    expect(currentVersion(handle.db, "default")!.releaseNotes).toContain(shipped("1.3").notes);
   });
 });
 
@@ -472,13 +455,11 @@ describe("1.1 to 1.3: Watching pull request never gives up", () => {
     expect(listUpdateConflicts(handle.db, "default")).toEqual([]);
     expect(getPipelineOrigin(handle.db, "default")?.version).toBe("1.3");
 
-    const thread = findProjectThread(handle.db, projectId);
-    const notice = listCommentsForItem(handle.db, thread!.id as Uuid)[0]!;
-    expect(notice.body).toContain("1.1 to 1.3");
-    expect(notice.body).toContain("**Watching pull request**: keep checking changed.");
-    expect(notice.body).toContain(shipped("1.2").notes);
-    expect(notice.body).toContain(shipped("1.3").notes);
-    expect(notice.body).not.toContain(shipped("1.1").notes);
+    expect(findProjectThread(handle.db, projectId)).toBeUndefined();
+    const notes = currentVersion(handle.db, "default")!.releaseNotes;
+    expect(notes).toContain(shipped("1.2").notes);
+    expect(notes).toContain(shipped("1.3").notes);
+    expect(notes).not.toContain(shipped("1.1").notes);
   });
 
   it("holds a deadline the person set themselves as a conflict, and changes nothing", () => {

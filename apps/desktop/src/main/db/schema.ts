@@ -396,6 +396,8 @@ export const pipelineVersions = sqliteTable(
     createdAt: integer("created_at").notNull(),
     /** The person who saved it, for "by Dana". Null for one EO took itself. */
     createdBy: text("created_by"),
+    /** The release notes of the template update that filed it (EO-728); null for every other version. */
+    releaseNotes: text("release_notes"),
   },
   // Two rows claiming to be v6 of one pipeline would make "finishes on
   // v6" a sentence with two meanings.
@@ -1925,6 +1927,12 @@ export const skillVersions = sqliteTable(
     authorId: text("author_id"),
     /** The version a `restore` put back; null for every other action. */
     restoredFrom: text("restored_from"),
+    /**
+     * What EO reports about this write (EO-728), as `SkillVersionReport`
+     * JSON: a consolidation's evidence and diff, or the runs an archived
+     * skill went without a load. Null for every other write.
+     */
+    report: text("report", { mode: "json" }),
     createdAt: integer("created_at").notNull(),
   },
   (table) => [index("idx_skill_versions_skill").on(table.skillId, table.createdAt)],

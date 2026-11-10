@@ -8,6 +8,7 @@ import {
   instructionsMachineSpecificWarnings,
   isPackShipped,
   specFields,
+  runsWithoutLoadLabel,
   skillAuthorLabel,
   type SkillUsage,
   skillMachineSpecificWarnings,
@@ -30,6 +31,7 @@ import {
   type RepositoryView,
   type SideCallSpendLine,
   type Skill,
+  type SkillVersionReport,
   type ViewListKind,
   type ViewPipeline,
   type ViewPipelineChanges,
@@ -1302,7 +1304,7 @@ export function skillUsageLine(usage: SkillUsage): string {
  */
 export function renderSkills(data: IpcResponse<"skills:list">): string {
   return list(
-    data.skills.map((skill) => `- ${skillLine(skill)}\n  ${skillUsageLine(skill.usage)} State: ${skill.state}.`),
+    data.skills.map((skill) => `- ${skillLine(skill)}\n  ${skillUsageLine(skill.usage)} State: ${skill.state}.${archiveLine(skill.archive)}`),
     "No skills are catalogued.",
   );
 }
@@ -1344,14 +1346,34 @@ export function renderSkillSwitched(data: IpcResponse<"skills:setEnabled">): str
   return `${switched}: ${skillLine(data.skill)}\nIt takes effect on the next dispatch, not on a run already in flight.`;
 }
 
-/** A skill's history, newest first (EO-714): what each write did, who made it and when. */
+/** Who archived an archived skill, and EO why (EO-728); empty for a live one. */
+function archiveLine(archive: IpcResponse<"skills:list">["skills"][number]["archive"]): string {
+  if (archive === null) return "";
+  const why = archive.runsWithoutLoad === null ? "" : ` ${runsWithoutLoadLabel(archive.runsWithoutLoad)}`;
+  return ` Archived by ${skillAuthorLabel(archive.author)}${why}; restoring version ${archive.versionId} brings it back.`;
+}
+
+/** What EO reported about one write (EO-728): a consolidation's evidence and diff, or the runs without a load EO archived it after. */
+function skillReportLines(report: SkillVersionReport | null): string {
+  if (report === null) return "";
+  if (report.kind === "unused") return `\n  Archived ${runsWithoutLoadLabel(report.runsWithoutLoad)}.`;
+  const lines = ["", "  Evidence:"];
+  for (const entry of report.evidence) {
+    lines.push(`  - memory entry ${entry.entryId}${entry.itemKey === null ? "" : ` (from ${entry.itemKey})`}: ${entry.body ?? "(no longer there)"}`);
+  }
+  if (report.itemKeys.length > 0) lines.push(`  Seen on ${report.itemKeys.join(", ")}.`);
+  if (report.diff !== null) lines.push("  What it changed:", "  ```diff", ...report.diff.trimEnd().split("\n").map((line) => `  ${line}`), "  ```");
+  return lines.join("\n");
+}
+
+/** A skill's history, newest first (EO-714): what each write did, who made it and when, and what EO reported about it (EO-728). */
 export function renderSkillVersions(data: IpcResponse<"skills:versions">): string {
   if (data.problem !== null) return data.problem;
   return list(
     data.versions.map(
       (version) =>
         `- ${version.action} by ${skillAuthorLabel(version.author)}, ${new Date(version.createdAt).toISOString()} (version id: ${version.id})` +
-        `${version.restoredFrom === null ? "" : ` — restored version ${version.restoredFrom}`}\n  ${version.description}`,
+        `${version.restoredFrom === null ? "" : ` — restored version ${version.restoredFrom}`}\n  ${version.description}${skillReportLines(version.report)}`,
     ),
     "This skill has no versions.",
   );
@@ -1964,7 +1986,9 @@ export function renderSuggested(data: IpcResponse<"pipelines:suggest">): string 
 export function renderPipelineVersions(data: IpcResponse<"pipeline:versions">): string {
   const history = data.versions.map(
     (version) =>
-      `- ${versionLabel(version.number)}${version.createdByName === null ? "" : ` by ${version.createdByName}`}${version.number === data.current ? " (current)" : ""}`,
+      `- ${versionLabel(version.number)}${version.createdByName === null ? "" : ` by ${version.createdByName}`}${version.number === data.current ? " (current)" : ""}` +
+      // A template update's release notes, kept on the version it filed (EO-728).
+      (version.releaseNotes === null ? "" : `\n  Release notes:\n${version.releaseNotes.split("\n").map((line) => `  - ${line}`).join("\n")}`),
   );
   // The graph `graph` asked for (EO-359), whole, so a caller restoring a
   // version can hand it to pipeline_save as it stands. Publishing it

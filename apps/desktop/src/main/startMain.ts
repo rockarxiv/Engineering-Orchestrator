@@ -526,9 +526,7 @@ export function startMain(platform: Platform): RunningMain {
         ? `updated as v${update.version}`
         : update.outcome === "caught-up"
           ? "already had every change"
-          : update.outcome === "deferred"
-            ? `left for the next launch: ${update.reason}`
-            : "held: it conflicts";
+          : "held: it conflicts";
     console.log(`[eo] pipeline ${update.pipelineId}: template ${update.slug} ${update.from} → ${update.to}, ${what}`);
   }
   const named = (entries: readonly { role: string; action: string }[]): string => entries.map(({ role, action }) => `${role}/${action}`).join(", ");

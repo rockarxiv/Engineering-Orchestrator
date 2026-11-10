@@ -99,6 +99,19 @@ function History({ pipelineId }: { pipelineId: string }) {
                   {version.createdBy === null ? "Saved by EO" : `Saved by ${version.createdByName ?? "someone no longer listed"}`} ·{" "}
                   {new Date(version.createdAt).toLocaleString()}
                 </span>
+                {/* What the template update that filed it said of itself (EO-728). */}
+                {version.releaseNotes === null ? null : (
+                  <div className="mt-1 flex flex-col gap-0.5">
+                    <span className="text-[11.5px] font-medium text-ink-muted">Release notes</span>
+                    <ul aria-label={`Release notes of ${versionLabel(version.number)}`} className="flex flex-col gap-0.5">
+                      {version.releaseNotes.split("\n").map((line, at) => (
+                        <li key={at} className="text-[11.5px] text-ink-muted">
+                          {line}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
               </div>
               {before === undefined ? (
                 <span className="shrink-0 text-[11.5px] text-ink-subtle">The first</span>

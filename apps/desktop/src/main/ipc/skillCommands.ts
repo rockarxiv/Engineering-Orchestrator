@@ -1,6 +1,6 @@
 import { skillAuthorFromActingAgent, skillState, type IpcPayload, type IpcResponse, type SkillScope, type Uuid } from "@eo/core";
 import type { Db } from "../db/client.js";
-import { archiveSkill, getProject, getSkill, getWorkspace, listSkills, listSkillVersions, restoreSkillVersion, saveSkill, setSkillEnabled, setSkillLocked } from "../db/repos/index.js";
+import { archiveSkill, getProject, getSkill, getWorkspace, listSkills, listSkillVersions, restoreSkillVersion, saveSkill, setSkillEnabled, setSkillLocked, skillArchiveOf } from "../db/repos/index.js";
 import { releaseHeldSkillCopies } from "../db/repos/skillsRepo.js";
 import { skillUsageById, usageOfSkill } from "../db/repos/skillUsageRepo.js";
 import { readGuards } from "./configCommands.js";
@@ -28,7 +28,8 @@ export function listSkillsCommand(db: Db, input: IpcPayload<"skills:list">): Ipc
   return {
     skills: listSkills(db, input.includeArchived ?? false).map((skill) => {
       const used = usageOfSkill(usage, skill.id);
-      return { ...skill, usage: used, state: skillState(skill, used, ageing) };
+      // An archived one says who archived it, and EO why (EO-728).
+      return { ...skill, usage: used, state: skillState(skill, used, ageing), archive: skillArchiveOf(db, skill) };
     }),
   };
 }

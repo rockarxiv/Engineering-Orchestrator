@@ -546,10 +546,9 @@ describe("an agent's skill nobody loads, on a project the record holds (EO-720)"
     // Two settled runs in a row with nothing still arriving: archived, once.
     for (const run of [newRun("succeeded"), newRun("succeeded")]) await page(run, item.id, 1, [SKILLS_DELIVERED_EVENT, SKILLS_SETTLED_EVENT], skillId);
     expect(archived()).toBe(true);
-    expect(listSkillVersions(recordDb.db, skillId)[0]).toMatchObject({ action: "archive", author: { kind: "eo" } });
-    const notes = listCommentsForItem(recordDb.db, findProjectThread(recordDb.db, support.id)!.id as Uuid);
-    expect(notes).toHaveLength(1);
-    expect(notes[0]!.body).toContain("`refund-policy`");
+    expect(listSkillVersions(recordDb.db, skillId)[0]).toMatchObject({ action: "archive", author: { kind: "eo" }, report: { kind: "unused", runsWithoutLoad: 2 } });
+    // Nothing is posted for it (EO-728): the archive version says it.
+    expect(findProjectThread(recordDb.db, support.id)).toBeUndefined();
 
     // The archived copy reaches a replica, and stays archived there.
     await laptop.record.sync();
@@ -559,7 +558,7 @@ describe("an agent's skill nobody loads, on a project the record holds (EO-720)"
     expect(getSkill(laptopDb.db, skillId)!.archivedAt).not.toBeNull();
   });
 
-  it("leaves a moved project's skills to the record, but archives the desktop's own global skill, with the note on the project's one thread", async () => {
+  it("leaves a moved project's skills to the record, but archives the desktop's own global skill, posting nothing", async () => {
     const { support, skillId } = await movedWithAnAgentSkill();
     const global = saveSkill(annaDb.db, SkillDraftSchema.parse({ name: "House style", description: "How this house writes.", body: "Write plainly." }), Date.now(), { kind: "consolidation", consolidationId: "c-2" });
     if (!global.ok) throw new Error(global.problems.join("\n"));
@@ -583,17 +582,14 @@ describe("an agent's skill nobody loads, on a project the record holds (EO-720)"
       projectId: support.id,
       reach,
       ageing: { staleAfterRuns: 1, archiveAfterRuns: 3 },
-      projectThread: (id) => anna.record.projectThread(id),
-      postComment: (comment) => anna.record.postComment(comment),
     });
 
     expect(result.archived.map((one) => one.id)).toEqual([globalId]);
     expect(getSkill(annaDb.db, skillId)!.archivedAt).toBeNull();
-    expect(listSkillVersions(annaDb.db, globalId)[0]).toMatchObject({ action: "archive", author: { kind: "eo" } });
-    // The note is on the project's thread, which is the record's: it reaches the record.
+    expect(listSkillVersions(annaDb.db, globalId)[0]).toMatchObject({ action: "archive", author: { kind: "eo" }, report: { kind: "unused", runsWithoutLoad: 3 } });
+    // No note anywhere (EO-728): not on the record, not here.
     await anna.record.sync();
-    const notes = listCommentsForItem(recordDb.db, findProjectThread(recordDb.db, support.id)!.id as Uuid);
-    expect(notes.map((one) => one.body).filter((body) => body.includes("`house-style`"))).toHaveLength(1);
-    expect(notes.some((one) => one.body.includes("`refund-policy`"))).toBe(false);
+    expect(findProjectThread(recordDb.db, support.id)).toBeUndefined();
+    expect(findProjectThread(annaDb.db, support.id)).toBeUndefined();
   });
 });

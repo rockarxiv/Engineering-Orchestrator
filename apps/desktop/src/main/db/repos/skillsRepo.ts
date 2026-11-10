@@ -8,16 +8,19 @@ import {
   SKILL_LOCKED_PROBLEM,
   SkillSchema,
   SkillVersionActionSchema,
+  SkillVersionReportSchema,
   uuidv7,
   type RecordCursor,
   type RecordSkill,
   type Skill,
+  type SkillArchive,
   type SkillAuthor,
   type SkillDraft,
   type SkillFile,
   type SkillScope,
   type SkillVersion,
   type SkillVersionAction,
+  type SkillVersionReport,
   type Uuid,
 } from "@eo/core";
 import type { Db } from "../client.js";
@@ -148,6 +151,7 @@ function appendVersion(
   author: SkillAuthor,
   at: number,
   restoredFrom: string | null = null,
+  report: SkillVersionReport | null = null,
 ): void {
   db.insert(skillVersions)
     .values({
@@ -160,6 +164,7 @@ function appendVersion(
       authorKind: author.kind,
       authorId: authorIdOf(author),
       restoredFrom,
+      report,
       createdAt: at,
     })
     .run();
@@ -206,6 +211,8 @@ function toVersion(row: typeof skillVersions.$inferSelect): SkillVersion {
     files: toFiles(row.files),
     author: toAuthor(row.authorKind, row.authorId),
     restoredFrom: row.restoredFrom,
+    // One this build cannot read is shown as none, never as a wrong one.
+    report: SkillVersionReportSchema.safeParse(row.report).data ?? null,
     createdAt: row.createdAt,
   };
 }
@@ -298,7 +305,14 @@ function slugFor(db: Db, asked: string | null, name: string, existing: Skill | u
  * duplicate are all things a person did, and throwing is for programmer
  * error.
  */
-export function saveSkill(db: Db, draft: SkillDraft, now: number = Date.now(), author: SkillAuthor = PERSON_SKILL_AUTHOR): SaveSkillResult {
+export function saveSkill(
+  db: Db,
+  draft: SkillDraft,
+  now: number = Date.now(),
+  author: SkillAuthor = PERSON_SKILL_AUTHOR,
+  /** What EO reports about the write, kept on the version it files (EO-728). */
+  report: SkillVersionReport | null = null,
+): SaveSkillResult {
   const read = readSkillDraft(draft);
   if (!read.ok) return { ok: false, problems: read.problems };
 
@@ -336,7 +350,7 @@ export function saveSkill(db: Db, draft: SkillDraft, now: number = Date.now(), a
     if (existing) {
       db.update(skills).set(values).where(eq(skills.id, existing.id)).run();
       const skill = getSkill(db, existing.id)!;
-      appendVersion(db, skill, "edit", author, now);
+      appendVersion(db, skill, "edit", author, now, null, report);
       return { ok: true, skill };
     }
 
@@ -349,7 +363,7 @@ export function saveSkill(db: Db, draft: SkillDraft, now: number = Date.now(), a
       .returning()
       .get();
     const skill = toSkill(row);
-    appendVersion(db, skill, "create", author, now);
+    appendVersion(db, skill, "create", author, now, null, report);
     return { ok: true, skill };
   });
 }
@@ -757,6 +771,7 @@ function writeSkill(
   action: SkillVersionAction,
   columns: Partial<typeof skills.$inferInsert>,
   restoredFrom: string | null = null,
+  report: SkillVersionReport | null = null,
 ): SkillWriteResult {
   const existing = getSkill(db, id);
   if (existing === undefined) return { ok: false, problem: NO_SUCH_SKILL };
@@ -768,7 +783,7 @@ function writeSkill(
       .where(eq(skills.id, id))
       .run();
     const skill = getSkill(db, id)!;
-    appendVersion(db, skill, action, author, at, restoredFrom);
+    appendVersion(db, skill, action, author, at, restoredFrom, report);
     return { ok: true, skill };
   });
 }
@@ -777,9 +792,28 @@ export function setSkillEnabled(db: Db, id: string, enabled: boolean, at: number
   return writeSkill(db, id, author, at, enabled ? "enable" : "disable", { enabled });
 }
 
-/** Deleting a skill archives it — see the column's note and invariant #3. */
-export function archiveSkill(db: Db, id: string, at: number = Date.now(), author: SkillAuthor = PERSON_SKILL_AUTHOR): SkillWriteResult {
-  return writeSkill(db, id, author, at, "archive", { archivedAt: at });
+/** Deleting a skill archives it — see the column's note and invariant #3. `report` says why EO archived it (EO-728). */
+export function archiveSkill(db: Db, id: string, at: number = Date.now(), author: SkillAuthor = PERSON_SKILL_AUTHOR, report: SkillVersionReport | null = null): SkillWriteResult {
+  return writeSkill(db, id, author, at, "archive", { archivedAt: at }, null, report);
+}
+
+/**
+ * How an archived skill came to be archived (EO-728): its newest archive
+ * version, who wrote it, and the runs without a load EO archived it
+ * after. Null for a live skill, or one archived with no version kept.
+ */
+export function skillArchiveOf(db: Db, skill: Pick<Skill, "id" | "archivedAt">): SkillArchive | null {
+  if (skill.archivedAt === null) return null;
+  const row = db
+    .select()
+    .from(skillVersions)
+    .where(and(eq(skillVersions.skillId, skill.id), eq(skillVersions.action, "archive")))
+    .orderBy(desc(skillVersions.createdAt), desc(skillVersions.id))
+    .limit(1)
+    .get();
+  if (row === undefined) return null;
+  const version = toVersion(row);
+  return { versionId: version.id, author: version.author, runsWithoutLoad: version.report?.kind === "unused" ? version.report.runsWithoutLoad : null };
 }
 
 /**
