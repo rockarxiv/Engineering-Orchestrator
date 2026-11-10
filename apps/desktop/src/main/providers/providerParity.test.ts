@@ -593,7 +593,7 @@ const CAPABILITIES = [
   },
   {
     name: "skill load detection",
-    what: "a turn given skills says which (EO-715) — the ones actually delivered, on a start and again on a resume — and says a skill was loaded when the backend did it, not when the agent says so: a Skill call naming eo-attachments:<slug> on Claude, a command reading .agent/skills/<slug>/SKILL.md on Codex, each call once; a skill that is not EO's, or a call that reads anything else, is no load",
+    what: "a turn given skills says which (EO-715) — the ones actually delivered, on a start and again on a resume — and says a skill was loaded when the backend did it, not when the agent says so: a Skill call naming eo-attachments:<slug> on Claude, a command reading exactly .agent/skills/<slug>/SKILL.md on Codex (by its own words or the app-server's parse of it), each call once; a skill that is not EO's, a call that reads anything else, or one that only mentions the name or the path, is no load",
     same: {
       started: [
         { type: "skills_delivered", slugs: ["build-in-w", "e2e-for-p", "house-style"] },
@@ -2681,6 +2681,7 @@ const CLAUDE: Record<CapabilityName, Proof> = {
       sdk.init(),
       sdk.calls("c1", "Skill", { skill: "eo-attachments:house-style" }),
       sdk.calls("c2", "Read", { file_path: "/tmp/wt/README.md" }),
+      sdk.calls("c2b", "Bash", { command: "echo eo-attachments:e2e-for-p" }),
       sdk.calls("c3", "Skill", { skill: "eo-attachments:house-style" }),
       sdk.calls("c4", "Skill", { skill: "ponytail" }),
       sdk.calls("c5", "Skill", { skill: "eo-attachments:e2e-for-p", args: "now" }),
@@ -3862,15 +3863,22 @@ const CODEX: Record<CapabilityName, Proof> = {
     // reading one's SKILL.md, relative or absolute. Reading anything else
     // in the worktree is not a load.
     const cwd = scratchDirectory();
-    const command = (id: string, text: string) =>
-      note.item({ type: "commandExecution", id, command: text, cwd, processId: null, source: "agent", commandActions: [], aggregatedOutput: "", exitCode: 0, status: "completed", durationMs: 1 });
+    // A mention of the path — echoing it, listing it, reading a file
+    // beside it — is no load. The last read is one the command's words
+    // do not show and the app-server's own parse does (`commandActions`).
+    const command = (id: string, text: string, commandActions: unknown[] = []) =>
+      note.item({ type: "commandExecution", id, command: text, cwd, processId: null, source: "agent", commandActions, aggregatedOutput: "", exitCode: 0, status: "completed", durationMs: 1 });
+    const read = (path: string) => ({ type: "read", command: `cat ${path}`, name: "SKILL.md", path });
     const turn = [
       note.turnStarted(),
       command("cmd-1", "/bin/bash -lc 'cat .agent/skills/house-style/SKILL.md'"),
       command("cmd-2", "/bin/bash -lc 'cat README.md'"),
       command("cmd-3", `/bin/bash -lc "sed -n '1,80p' ${cwd}/.agent/skills/house-style/SKILL.md"`),
       command("cmd-4", "/bin/bash -lc 'ls .agent/skills/'"),
-      command("cmd-5", "/bin/bash -lc 'head -40 .agent/skills/e2e-for-p/SKILL.md'"),
+      command("cmd-5", "/bin/bash -lc 'echo .agent/skills/e2e-for-p/SKILL.md'"),
+      command("cmd-6", "/bin/bash -lc 'ls .agent/skills/e2e-for-p/SKILL.md'"),
+      command("cmd-7", "/bin/bash -lc 'cat .agent/skills/e2e-for-p/SKILL.md.bak'"),
+      command("cmd-8", "/bin/bash -lc 'python3 -c \"print(open(SKILL).read())\"'", [read(`${cwd}/.agent/skills/e2e-for-p/SKILL.md`)]),
       note.agentMessage("ok"),
       note.turnCompleted(),
     ];

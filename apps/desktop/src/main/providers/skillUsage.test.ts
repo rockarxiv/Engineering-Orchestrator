@@ -21,14 +21,47 @@ describe("skill usage detection", () => {
   it.each([
     ["bash -lc 'cat .agent/skills/house-style/SKILL.md'", ["house-style"]],
     ['bash -lc "sed -n 1,80p /tmp/wt/.agent/skills/house-style/SKILL.md"', ["house-style"]],
-    [".agent/skills/house-style/SKILL.md", ["house-style"]],
-    ["cat ./.agent/skills/a/SKILL.md .agent/skills/b-2/SKILL.md ./.agent/skills/a/SKILL.md", ["a", "b-2"]],
-    ["cat .agent/skills/house-style/checklist.md", []],
-    ["ls .agent/skills/", []],
-    ["cat foo.agent/skills/house-style/SKILL.md", []],
-    ["cat .agent/skills/House/SKILL.md", []],
+    ["/bin/zsh -lc \"sed -n '1,200p' ./.agent/skills/house-style/SKILL.md\"", ["house-style"]],
+    ["head -40 .agent/skills/house-style/SKILL.md", ["house-style"]],
+    ["nl -ba .agent/skills/house-style/SKILL.md | head -50", ["house-style"]],
+    ["cd /tmp/wt && cat .agent/skills/a/SKILL.md .agent/skills/b-2/SKILL.md; cat ./.agent/skills/a/SKILL.md", ["a", "b-2"]],
+    ["sed -n p < .agent/skills/house-style/SKILL.md", ["house-style"]],
+    ["cat .agent/skills/house-style/SKILL.md > /tmp/copy.md", ["house-style"]],
   ])("reads a Codex load from %s", (command, slugs) => {
     expect(codexSkillsRead(command)).toEqual(slugs.map((slug) => ({ type: "skill_loaded", slug })));
+  });
+
+  it.each([
+    // A mention is not a read.
+    "bash -lc 'echo .agent/skills/house-style/SKILL.md'",
+    "bash -lc 'ls .agent/skills/house-style/SKILL.md'",
+    "ls -la .agent/skills/",
+    "test -f .agent/skills/house-style/SKILL.md && echo yes",
+    "rg -n house-style .agent/skills/house-style/SKILL.md.bak",
+    // Not exactly that file.
+    "cat .agent/skills/house-style/SKILL.md.bak",
+    "cat .agent/skills/house-style/checklist.md",
+    "cat foo.agent/skills/house-style/SKILL.md",
+    "cat .agent/skills/House/SKILL.md",
+    "cat '.agent/skills/house-style/SKILL.md x'",
+    // Written, not read.
+    "cat > .agent/skills/house-style/SKILL.md",
+    "echo hi >> .agent/skills/house-style/SKILL.md",
+    "sed -i 's/a/b/' .agent/skills/house-style/SKILL.md",
+    // Named inside an argument that is not the file.
+    "grep -c x 'see .agent/skills/house-style/SKILL.md'",
+  ])("counts no Codex load from %s", (command) => {
+    expect(codexSkillsRead(command)).toEqual([]);
+  });
+
+  it("counts a Codex load from the app-server's read actions, on exactly the skill's file", () => {
+    expect(codexSkillsRead("/bin/bash -lc 'x'", ["/tmp/wt/.agent/skills/house-style/SKILL.md", ".agent/skills/review/SKILL.md"])).toEqual([
+      { type: "skill_loaded", slug: "house-style" },
+      { type: "skill_loaded", slug: "review" },
+    ]);
+    expect(codexSkillsRead("/bin/bash -lc 'x'", ["/tmp/wt/.agent/skills/house-style/SKILL.md.bak", "/tmp/wt/README.md"])).toEqual([]);
+    // Both kinds of evidence for one skill are one load.
+    expect(codexSkillsRead("cat .agent/skills/a/SKILL.md", ["/w/.agent/skills/a/SKILL.md"])).toEqual([{ type: "skill_loaded", slug: "a" }]);
   });
 
   it("says the leading events first and keeps the turn reachable", async () => {

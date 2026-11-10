@@ -916,8 +916,10 @@ function mapCompletedItem(item: ThreadItem): { mapped: AgentEvent[]; recognised:
         mapped: [
           { type: "tool_call", name: "command_execution", callId: item.id, args: { command: item.command } },
           // A command reading a skill's `SKILL.md` is that skill loaded
-          // (EO-715): Codex has no skill tool, so the read is the load.
-          ...codexSkillsRead(item.command),
+          // (EO-715): Codex has no skill tool, so the read is the load —
+          // a read, by the app-server's parse or the command's own words,
+          // never a mention of the path.
+          ...codexSkillsRead(item.command, item.reads),
           toolResultEvent({
             name: "command_execution",
             callId: item.id,
