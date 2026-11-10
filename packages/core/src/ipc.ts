@@ -6113,7 +6113,22 @@ export const recordContract = {
       cursor: RecordCursorSchema.default({ ts: 0, id: "" }),
       limit: z.number().int().positive().max(1000).default(500),
     }),
-    z.object({ messages: z.array(MessageSchema), cursor: RecordCursorSchema, more: z.boolean() }),
+    z.object({
+      messages: z.array(MessageSchema),
+      cursor: RecordCursorSchema,
+      more: z.boolean(),
+      /**
+       * Every message still open on the record for the asking device's
+       * person, by id, whatever the cursor. The feed says what changed,
+       * and a handled message the record has since deleted never changes
+       * again: a desktop that was away while one was answered elsewhere
+       * and then swept would hold it open for ever. So it removes any open
+       * copy of a record-held message not named here. Safe on any page:
+       * a copy handled there and not yet paged is only handled, and its
+       * page writes it back as such.
+       */
+      open: z.array(z.string()),
+    }),
   ),
   "record:changeDependencies": channel(
     z.object({

@@ -8,7 +8,7 @@ import { mirrorRecordComment } from "./drain.js";
 import { recordAssistBoard } from "../roles/assist.js";
 import { upsertReplicaItem } from "../db/repos/replicaRepo.js";
 import { findProjectThread } from "../projects/projectThread.js";
-import { upsertReplicaMessage } from "../db/repos/messagesRepo.js";
+import { forgetMessage, upsertReplicaMessage } from "../db/repos/messagesRepo.js";
 import { openMessageOf } from "../messages/messages.js";
 import { emitPush } from "../ipc/push.js";
 import { getRun, markRunSynced, runSyncBookmark } from "../db/repos/runsRepo.js";
@@ -450,6 +450,11 @@ export function createRemoteRecord(options: RemoteRecordOptions): RemoteRecord {
       const { message, problem } = answer.data;
       if (message !== null) {
         upsertReplicaMessage(db, message);
+        emitPush("messages:changed", {});
+      } else if (forgetMessage(db, request.messageId)) {
+        // The record has no such message of this person's: handled and
+        // swept there while this desktop was away. Its copy here is all
+        // that kept it open, and pressing again would only be refused again.
         emitPush("messages:changed", {});
       }
       if (problem !== null || message === null) return { ok: false, problem: problem ?? "Your organisation's record no longer has that message." };

@@ -7,7 +7,7 @@ import { AttachmentStorage } from "../attachments/storage.js";
 import type { DbHandle } from "../db/client.js";
 import { issueDevice } from "../db/repos/devicesRepo.js";
 import { createPerson } from "../db/repos/peopleRepo.js";
-import { createProject, getMessage, getProject, listOpenMessages, markMessageHandled, sweepHandledMessages } from "../db/repos/index.js";
+import { createProject, getMessage, getProject, insertMessage, listOpenMessages, markMessageHandled, sweepHandledMessages } from "../db/repos/index.js";
 import { setSetting } from "../db/repos/settingsRepo.js";
 import { messages } from "../db/schema.js";
 import { openMigratedTestDb } from "../db/testHelpers.js";
@@ -346,5 +346,78 @@ describe("the record's retention", () => {
     expect(onTheRecord().filter((message) => message.recipientId === annaId)).toHaveLength(100);
     expect(onTheRecord().filter((message) => message.recipientId === benId)).toHaveLength(100);
     expect(getMessage(recordDb.db, annasOldest.id)).toBeUndefined();
+  });
+});
+
+/**
+ * A desktop that was away while a message was handled elsewhere and then
+ * swept by the record's retention (EO-726, review). The handled row never
+ * pages again, so the desktop learns it from the record's open set.
+ */
+describe("a message the record swept while a recipient's desktop was away", () => {
+  async function answeredAndSweptWhileTheLaptopWasAway(sweep: (handledAt: number) => void): Promise<Message> {
+    const projectId = await organisationProject();
+    await carl.record.sendMessage(question(projectId, "local"));
+    await syncAll();
+    const annas = onTheRecord().find((message) => message.recipientId === annaId) as Message;
+    expect(listInbox(annaLaptop.handle.db).messages.map((message) => message.id)).toEqual([annas.id]);
+    annaLaptop.online = false;
+    const answered = await annaDesk.record.handleMessage({ messageId: annas.id, how: "answered", answer: "Keep mine" });
+    if (!answered.ok) throw new Error(answered.problem);
+    sweep(answered.message.handledAt as number);
+    expect(getMessage(recordDb.db, annas.id)).toBeUndefined();
+    annaLaptop.online = true;
+    return annas;
+  }
+
+  it("leaves the Inbox of that desktop when it next syncs, after the 7 days", async () => {
+    const annas = await answeredAndSweptWhileTheLaptopWasAway((handledAt) => sweepHandledMessages(recordDb.db, handledAt + HANDLED_MESSAGE_RETENTION_MS));
+
+    await annaLaptop.record.sync();
+
+    expect(getMessage(annaLaptop.handle.db, annas.id)).toBeUndefined();
+    expect(listInbox(annaLaptop.handle.db).messages).toEqual([]);
+    // Ben's own copy is still open on the record, and stays on his desktop.
+    await ben.record.sync();
+    expect(listInbox(ben.handle.db).messages).toHaveLength(1);
+  });
+
+  it("leaves it too when the record's 100-handled cap took it", async () => {
+    const annas = await answeredAndSweptWhileTheLaptopWasAway((handledAt) => {
+      // A hundred of Anna's handled after it, so hers is the oldest over the cap.
+      const project = createProject(recordDb.db, { name: "More", keyPrefix: "MORE", managed: true });
+      for (let index = 0; index < 100; index += 1) {
+        const later = insertMessage(recordDb.db, { ...question(project.id, annaId) }, handledAt);
+        markMessageHandled(recordDb.db, later.id, "dismissed", null, handledAt + 1 + index);
+      }
+      sweepHandledMessages(recordDb.db, handledAt + 1_000);
+    });
+
+    await annaLaptop.record.sync();
+
+    expect(getMessage(annaLaptop.handle.db, annas.id)).toBeUndefined();
+    expect(listInbox(annaLaptop.handle.db).messages).toEqual([]);
+  });
+
+  it("is taken off that desktop when its person presses Dismiss on it before syncing", async () => {
+    const annas = await answeredAndSweptWhileTheLaptopWasAway((handledAt) => sweepHandledMessages(recordDb.db, handledAt + HANDLED_MESSAGE_RETENTION_MS));
+
+    const pressed = await annaLaptop.record.handleMessage({ messageId: annas.id, how: "dismissed", answer: null });
+
+    expect(pressed.ok).toBe(false);
+    expect(getMessage(annaLaptop.handle.db, annas.id)).toBeUndefined();
+    expect(listInbox(annaLaptop.handle.db).messages).toEqual([]);
+  });
+
+  it("keeps an open one the record still holds open, and one about a project kept on the desktop", async () => {
+    const projectId = await organisationProject();
+    await carl.record.sendMessage(question(projectId, "local"));
+    const kept = createProject(annaLaptop.handle.db, { name: "Mine", keyPrefix: "MINE" });
+    await annaLaptop.record.sendMessage(question(kept.id, annaId));
+
+    await annaLaptop.record.sync();
+    await annaLaptop.record.sync();
+
+    expect(listOpenMessages(annaLaptop.handle.db, [annaId])).toHaveLength(2);
   });
 });

@@ -29,12 +29,12 @@ import { signedInPersonId } from "../identity/viewer.js";
 import { getComment, setCommentPinned, settleMention } from "../db/repos/commentsRepo.js";
 import { getItem } from "../db/repos/itemsRepo.js";
 import { getSetting, setSetting } from "../db/repos/settingsRepo.js";
-import { upsertReplicaMessage } from "../db/repos/messagesRepo.js";
+import { forgetMessagesGoneFromTheRecord, upsertReplicaMessage } from "../db/repos/messagesRepo.js";
 import { emitPush } from "../ipc/push.js";
 import { z } from "zod";
 import { hasTransition } from "../db/repos/transitionsRepo.js";
 import { setReplicaAssignee, upsertReplicaItem } from "../db/repos/replicaRepo.js";
-import { getProject, upsertReplicaProject } from "../db/repos/projectsRepo.js";
+import { getProject, projectMovedToTheRecord, upsertReplicaProject } from "../db/repos/projectsRepo.js";
 import { getItemType, upsertReplicaItemType } from "../db/repos/itemTypesRepo.js";
 import { upsertReplicaPipeline, upsertReplicaProjectAgent } from "../db/repos/projectMoveRepo.js";
 import { heldByTheRecord, retireObsoleteHold } from "../gallery/templateUpdates.js";
@@ -1315,7 +1315,8 @@ function readMessagesCursor(db: Db, deviceId: string): RecordCursor {
 /**
  * The messages the record holds for this device's person, changed since
  * the cursor (EO-726): new ones, and ones answered, dismissed or resolved
- * anywhere — which is how a press on one desktop reaches the others.
+ * anywhere — which is how a press on one desktop reaches the others —
+ * and the open copies of messages the record no longer holds open removed.
  *
  * Answers false only when the record could not be reached. A record
  * that refuses the channel — one older than messages — is passed over:
@@ -1325,6 +1326,7 @@ async function pullMessages(options: DrainOptions, pullPageSize: number, result:
   const { db, deviceId } = options;
   const now = options.now?.() ?? Date.now();
   let pulled = 0;
+  let stillOpen: readonly string[] | null = null;
   for (let page = 0; page < MAX_PULL_PAGES; page += 1) {
     const pull = await options.record.ask("record:messages", { deviceId, cursor: readMessagesCursor(db, deviceId), limit: pullPageSize });
     if (!pull.ok) {
@@ -1334,7 +1336,17 @@ async function pullMessages(options: DrainOptions, pullPageSize: number, result:
     }
     for (const message of pull.data.messages) pulled += place(options, "message", message.id, message, now) ? 1 : 0;
     setSetting(db, MESSAGES_CURSOR_KEY, { ...pull.data.cursor, deviceId });
+    stillOpen = pull.data.open;
     if (!pull.data.more) break;
+  }
+  // An open copy the record no longer holds open was handled elsewhere
+  // and then swept there — it will never page again, and would otherwise
+  // stay in this Inbox for ever. Safe whether or not the pass read to the
+  // end: a copy handled there and not yet paged is only handled, and its
+  // page writes it back as such.
+  if (stillOpen !== null) {
+    const open = new Set(stillOpen);
+    pulled += forgetMessagesGoneFromTheRecord(db, open, (projectId) => projectMovedToTheRecord(db, projectId as Uuid));
   }
   result.pulled += pulled;
   // The inbox, the badge and the OS notification listen for this, not

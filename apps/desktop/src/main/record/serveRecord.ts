@@ -107,7 +107,7 @@ import {
   restoreConsolidation,
 } from "../db/repos/index.js";
 import { applyMemoryWrite } from "../memory/memoryWrites.js";
-import { getMessage, listMessagesChangedSince, messageChangedAt } from "../db/repos/messagesRepo.js";
+import { getMessage, listMessagesChangedSince, listOpenMessageIds, messageChangedAt } from "../db/repos/messagesRepo.js";
 import { handleMessageHere, sendMessageToAdmins } from "../messages/messages.js";
 import { containerScopeOf } from "../memory/containerScope.js";
 import type { MemoryCaps, MemoryWriteRequest } from "./record.js";
@@ -466,18 +466,21 @@ export function serveHandleMessage(context: ServeRecordContext, payload: IpcPayl
 
 /**
  * The asking device's person's messages changed since its cursor
- * (EO-726): sent, answered, dismissed or resolved. A device belonging to
- * nobody this record knows is given none.
+ * (EO-726): sent, answered, dismissed or resolved — and the ids of all
+ * of theirs still open, so a replica can drop a copy whose handled row
+ * this record has since swept. A device belonging to nobody this record
+ * knows is given none.
  */
 export function serveMessages(context: ServeRecordContext, payload: IpcPayload<"record:messages">): IpcResponse<"record:messages"> {
   const { db } = context;
   const person = personOfDevice(db, payload.deviceId);
-  if (person === undefined) return { messages: [], cursor: payload.cursor, more: false };
+  if (person === undefined) return { messages: [], cursor: payload.cursor, more: false, open: [] };
   const changed = listMessagesChangedSince(db, person.id, payload.cursor, payload.limit);
   return {
     messages: changed,
     cursor: endOf(changed, payload.cursor, (message) => ({ ts: messageChangedAt(message), id: message.id })),
     more: changed.length === payload.limit,
+    open: listOpenMessageIds(db, person.id),
   };
 }
 

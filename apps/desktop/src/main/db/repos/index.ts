@@ -23,9 +23,12 @@ export {
 } from "./attachmentsRepo.js";
 export { extensionsForItem, extensionsForItems, setItemExtension } from "./itemExtensionsRepo.js";
 export {
+  forgetMessage,
+  forgetMessagesGoneFromTheRecord,
   getMessage,
   insertMessage,
   listMessagesChangedSince,
+  listOpenMessageIds,
   listOpenMessages,
   markMessageHandled,
   messageChangedAt,

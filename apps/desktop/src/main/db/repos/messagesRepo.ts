@@ -203,3 +203,37 @@ export function upsertReplicaMessage(db: Db, message: Message): "written" | "wai
     .run();
   return "written";
 }
+
+/** The ids of every open message addressed to this person — what `record:messages` answers as `open` (EO-726). */
+export function listOpenMessageIds(db: Db, recipientId: string): string[] {
+  return db
+    .select({ id: messages.id })
+    .from(messages)
+    .where(and(eq(messages.recipientId, recipientId), isNull(messages.handledAt)))
+    .all()
+    .map((row) => row.id);
+}
+
+/**
+ * Removes the open copies on a replica of messages the organisation's
+ * record no longer holds open (EO-726): those about a project it holds
+ * (`onTheRecord`) and not among `stillOpen`. A message handled elsewhere
+ * and then swept by the record's retention never pages again, so this is
+ * the only way such a copy stops being open here. Answers how many went.
+ */
+export function forgetMessagesGoneFromTheRecord(db: Db, stillOpen: ReadonlySet<string>, onTheRecord: (projectId: string) => boolean): number {
+  const gone = db
+    .select({ id: messages.id, projectId: messages.projectId })
+    .from(messages)
+    .where(isNull(messages.handledAt))
+    .all()
+    .filter((row) => row.projectId !== null && onTheRecord(row.projectId) && !stillOpen.has(row.id))
+    .map((row) => row.id);
+  if (gone.length === 0) return 0;
+  return db.delete(messages).where(inArray(messages.id, gone)).run().changes;
+}
+
+/** Deletes one message's row, where the record answered that it no longer has it (EO-726). */
+export function forgetMessage(db: Db, id: string): boolean {
+  return db.delete(messages).where(eq(messages.id, id)).run().changes > 0;
+}
