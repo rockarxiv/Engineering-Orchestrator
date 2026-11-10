@@ -3875,3 +3875,41 @@ describe("0158: an attachment owned by the item (EO-702)", () => {
     }
   });
 });
+
+describe("0160: skill ownership, history and lock (EO-714)", () => {
+  it("makes every existing skill a person's and unlocked, and starts each history with what it says now", () => {
+    const handle = openDb(":memory:");
+    const tempDir = mkdtempSync(join(tmpdir(), "eo-skill-versions-"));
+    try {
+      writeMigrationSetBefore(tempDir, "0160_skill_versions");
+      runMigrations(handle.db, tempDir);
+      handle.db.run(
+        sql`INSERT INTO skills (id, slug, name, description, body, files, created_at, updated_at, archived_at)
+            VALUES ('s-new', 'fresh', 'Fresh', 'Never edited.', 'One.', '[]', 10, 10, NULL),
+                   ('s-edited', 'edited', 'Edited', 'Edited once.', 'Two.', '[{"path":"a.md","content":"a"}]', 10, 20, NULL),
+                   ('s-gone', 'gone', 'Gone', 'Archived.', 'Three.', '[]', 10, 30, 30)`,
+      );
+
+      runMigrations(handle.db, join(dirname(fileURLToPath(import.meta.url)), "migrations"));
+
+      expect(handle.db.all(sql`SELECT id, created_by, locked FROM skills ORDER BY id`)).toEqual([
+        { id: "s-edited", created_by: "person", locked: 0 },
+        { id: "s-gone", created_by: "person", locked: 0 },
+        { id: "s-new", created_by: "person", locked: 0 },
+      ]);
+      expect(
+        handle.db.all(sql`SELECT skill_id, action, description, body, files, author_kind, author_id, restored_from, created_at FROM skill_versions ORDER BY skill_id`),
+      ).toEqual([
+        { skill_id: "s-edited", action: "edit", description: "Edited once.", body: "Two.", files: '[{"path":"a.md","content":"a"}]', author_kind: "person", author_id: null, restored_from: null, created_at: 20 },
+        { skill_id: "s-gone", action: "archive", description: "Archived.", body: "Three.", files: "[]", author_kind: "person", author_id: null, restored_from: null, created_at: 30 },
+        { skill_id: "s-new", action: "create", description: "Never edited.", body: "One.", files: "[]", author_kind: "person", author_id: null, restored_from: null, created_at: 10 },
+      ]);
+      // uuidv7-shaped ids, stamped with the moment of the write they record.
+      const ids = handle.db.all<{ id: string }>(sql`SELECT id FROM skill_versions`).map((row) => row.id);
+      for (const id of ids) expect(id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+    } finally {
+      handle.close();
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+});

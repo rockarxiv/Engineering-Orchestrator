@@ -171,7 +171,7 @@ import {
   RepositoryIntelligenceConfigPatchSchema,
   RepositoryIntelligenceStatusSchema,
 } from "./schemas/repositoryIntelligence.js";
-import { SkillDraftSchema, SkillSchema } from "./schemas/skills.js";
+import { SkillDraftSchema, SkillSchema, SkillVersionSchema } from "./schemas/skills.js";
 
 /**
  * An address in the app, as a canvas tab remembers it: the path and its
@@ -4186,6 +4186,27 @@ export const recordContract = {
   ),
   /** Deleting a skill archives it: invariant #3, and an attachment that named it still resolves. */
   "skills:archive": channel(z.object({ id: z.string() }), z.object({ archived: z.boolean(), problem: z.string().nullable() })),
+  /**
+   * A person's lock (EO-714). While a skill is locked, every write whose
+   * author is not a person is refused with nothing written. A person's
+   * action only: EO's administrative MCP host refuses the tool, so no
+   * agent can lock or unlock a skill.
+   */
+  "skills:setLocked": channel(
+    z.object({ id: z.string(), locked: z.boolean() }),
+    z.object({ skill: SkillSchema.nullable(), problem: z.string().nullable() }),
+  ),
+  /** Every write to one skill, newest first (EO-714). */
+  "skills:versions": channel(z.object({ id: z.string() }), z.object({ versions: z.array(SkillVersionSchema), problem: z.string().nullable() })),
+  /**
+   * Puts an earlier version's description, body and files back, and brings
+   * the skill back if it was archived (EO-714). A new version, never a
+   * rewrite of the old one.
+   */
+  "skills:restoreVersion": channel(
+    z.object({ id: z.string(), versionId: z.string() }),
+    z.object({ skill: SkillSchema.nullable(), problem: z.string().nullable() }),
+  ),
 
   // ── What each agent has been given out of those two (EO-106) ────
   //

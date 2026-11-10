@@ -33,6 +33,9 @@ import { createAdminMcpHost, type AdminMcpHost } from "./admin.js";
  * this wire either, mirroring the proof in dispatch.test.ts.
  */
 const SOCKET_TIMEOUT_MS = 30_000;
+
+/** The whole catalogue but the tools only a person may call, which no agent is offered (EO-714). */
+const ADMIN_TOOLS = TOOLS.filter((tool) => tool.personOnly !== true);
 vi.setConfig({ testTimeout: SOCKET_TIMEOUT_MS, hookTimeout: SOCKET_TIMEOUT_MS });
 
 const opts = { exposeErrorDetails: true };
@@ -188,7 +191,10 @@ describe("EO's internal administrative MCP host", () => {
     const client = await connect(url, token);
     const names = (await client.listTools()).tools.map((tool) => tool.name).sort();
 
-    expect(names).toEqual(TOOLS.map((tool) => tool.name).sort());
+    expect(names).toEqual(ADMIN_TOOLS.map((tool) => tool.name).sort());
+    // Locking a skill is a person's act, which not even the system agent takes (EO-714).
+    expect(names).not.toContain("skill_set_locked");
+    expect(ADMIN_TOOLS.length).toBeLessThan(TOOLS.length);
     // Including the ones the external listener is not offered at all
     // (EO-192). This socket is the reason `adminOnly` can exist.
     expect(names).toContain("view_current");
@@ -326,7 +332,7 @@ describe("turns that end without closing their session", () => {
       // Connected and served, which is what `eo_admin: connected` on the
       // backend's startup report is a reading of.
       expect(names, `turn ${index}`).toContain("view_current");
-      expect(names, `turn ${index}`).toHaveLength(TOOLS.length);
+      expect(names, `turn ${index}`).toHaveLength(ADMIN_TOOLS.length);
       // And nothing of it is left counting against the cap.
       await settled();
       expect(host.status().openSessions, `after turn ${index}`).toBe(0);
@@ -402,7 +408,7 @@ describe("turns that end without closing their session", () => {
     finished.release();
     await settled();
 
-    expect((await live.listTools()).tools.length).toBe(TOOLS.length);
+    expect((await live.listTools()).tools.length).toBe(ADMIN_TOOLS.length);
   });
 
   it("opens no session for a turn let go while its initialize body was still arriving", async () => {

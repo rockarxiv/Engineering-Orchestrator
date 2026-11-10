@@ -382,7 +382,8 @@ export const SECTION_LOCKED_CHANNELS: Record<PublishedSection, readonly IpcChann
   // A pack brings pipelines, agents, item types, skills and connectors
   // in one act, so a locked packs section is what stops one arriving
   // beside a published configuration and quietly becoming part of it.
-  packs: ["gallery:use", "pipelines:import", "skills:save", "skills:setEnabled", "skills:archive"],
+  // Restoring a skill version and locking one are writes to the skill too (EO-714).
+  packs: ["gallery:use", "pipelines:import", "skills:save", "skills:setEnabled", "skills:archive", "skills:restoreVersion", "skills:setLocked"],
   // See above: the person's own connection is theirs. What locks is the
   // catalogue, which only a pack writes — and the catalogue's *rows*
   // are published by policy (EO-328), so what this section adds is the

@@ -75,7 +75,15 @@ import {
   setMcpServerEnabledCommand,
   setMcpServerSecretCommand,
 } from "../ipc/mcpServerCommands.js";
-import { archiveSkillCommand, listSkillsCommand, saveSkillCommand, setSkillEnabledCommand } from "../ipc/skillCommands.js";
+import {
+  archiveSkillCommand,
+  listSkillsCommand,
+  listSkillVersionsCommand,
+  restoreSkillVersionCommand,
+  saveSkillCommand,
+  setSkillEnabledCommand,
+  setSkillLockedCommand,
+} from "../ipc/skillCommands.js";
 import { readMcpServerSecret, type McpServerSecretsOptions } from "../mcp/serverSecrets.js";
 import { storeOrganisationSecret } from "../policy/organisationSecrets.js";
 import { approveModuleCommand, saveModuleCommand } from "../ipc/moduleCommands.js";
@@ -2800,6 +2808,9 @@ describe("writing the catalogues EO gives its agents", () => {
     registerHandler("skills:save", (payload) => saveSkillCommand(handle.db, payload), opts);
     registerHandler("skills:setEnabled", (payload) => setSkillEnabledCommand(handle.db, payload), opts);
     registerHandler("skills:archive", (payload) => archiveSkillCommand(handle.db, payload), opts);
+    registerHandler("skills:setLocked", (payload) => setSkillLockedCommand(handle.db, payload), opts);
+    registerHandler("skills:versions", (payload) => listSkillVersionsCommand(handle.db, payload), opts);
+    registerHandler("skills:restoreVersion", (payload) => restoreSkillVersionCommand(handle.db, payload), opts);
   });
 
   afterEach(() => {
@@ -2987,6 +2998,43 @@ describe("writing the catalogues EO gives its agents", () => {
     expect(archived.text).toContain("archived");
     expect(listSkillsCommand(handle.db, {}).skills).toEqual([]);
     expect(listSkillsCommand(handle.db, { includeArchived: true }).skills.map((skill) => skill.id)).toEqual([id]);
+  });
+
+  it("lists who created each skill and whether it is locked, in the text and the structured reply (EO-714)", async () => {
+    expect((await tool("skill_save").run(dispatch, { name: "House style", description: "How we review.", body: "Read it twice." })).ok).toBe(true);
+    const id = listSkillsCommand(handle.db, {}).skills[0]?.id ?? "";
+
+    const locked = await tool("skill_set_locked").run(dispatch, { id, locked: true });
+    const listed = await tool("skills_list").run(dispatch, {});
+
+    expect(locked.ok && locked.text).toContain("No agent can change it");
+    expect(listed.ok).toBe(true);
+    if (!listed.ok) return;
+    expect(listed.text).toContain("created by a person");
+    expect(listed.text).toContain("locked by a person");
+    expect(listed.data).toMatchObject({ skills: [{ id, createdBy: "person", locked: true }] });
+  });
+
+  it("lists a skill's versions and restores an earlier one as a new version (EO-714)", async () => {
+    expect((await tool("skill_save").run(dispatch, { name: "House style", description: "First.", body: "One." })).ok).toBe(true);
+    const id = listSkillsCommand(handle.db, {}).skills[0]?.id ?? "";
+    expect((await tool("skill_save").run(dispatch, { id, name: "House style", description: "Second.", body: "Two." })).ok).toBe(true);
+    expect((await tool("skill_archive").run(dispatch, { id })).ok).toBe(true);
+
+    const history = await tool("skill_versions_list").run(dispatch, { id });
+    expect(history.ok).toBe(true);
+    if (!history.ok) return;
+    expect(history.text).toContain("archive by a person");
+    const versions = (history.data as IpcResponse<"skills:versions">).versions;
+    expect(versions.map((version) => version.action)).toEqual(["archive", "edit", "create"]);
+
+    const restored = await tool("skill_restore_version").run(dispatch, { id, versionId: versions[2]?.id });
+    expect(restored.ok && restored.text).toContain("Restored House style");
+    expect(listSkillsCommand(handle.db, {}).skills[0]).toMatchObject({ id, description: "First.", body: "One.", archivedAt: null });
+    expect(listSkillVersionsCommand(handle.db, { id }).versions[0]).toMatchObject({ action: "restore", author: { kind: "person" }, restoredFrom: versions[2]?.id });
+
+    const elsewhere = await tool("skill_restore_version").run(dispatch, { id, versionId: "019fb8c6-0000-7000-8000-00000000beef" });
+    expect(elsewhere.ok && elsewhere.refused).toBe(true);
   });
 
   it("carries no stored value into what a write answers with", async () => {

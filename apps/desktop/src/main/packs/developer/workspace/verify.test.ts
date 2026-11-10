@@ -186,7 +186,7 @@ describe("verifyImplementation", () => {
           scope: { kind: "global" },
           createdAt: 1,
           updatedAt: 1,
-          archivedAt: null,
+          archivedAt: null, createdBy: "person", locked: false,
         },
       ],
     });

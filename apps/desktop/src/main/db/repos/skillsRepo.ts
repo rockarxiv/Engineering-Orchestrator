@@ -1,19 +1,26 @@
-import { and, asc, eq, isNotNull, sql } from "drizzle-orm";
+import { and, asc, desc, eq, isNotNull, sql } from "drizzle-orm";
 import {
   allocateSkillSlugs,
   GLOBAL_SKILL_SCOPE,
+  isAgentSkillAuthor,
+  PERSON_SKILL_AUTHOR,
   readSkillDraft,
+  SKILL_LOCKED_PROBLEM,
+  SkillVersionActionSchema,
   uuidv7,
   type RecordCursor,
   type RecordSkill,
   type Skill,
+  type SkillAuthor,
   type SkillDraft,
   type SkillFile,
   type SkillScope,
+  type SkillVersion,
+  type SkillVersionAction,
   type Uuid,
 } from "@eo/core";
 import type { Db } from "../client.js";
-import { projects, skills, workspaces } from "../schema.js";
+import { projects, skills, skillVersions, workspaces } from "../schema.js";
 
 /**
  * The skill catalogue's rows (EO-105).
@@ -119,7 +126,88 @@ function toSkill(row: typeof skills.$inferSelect): Skill {
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
     archivedAt: row.archivedAt,
+    // Anything but `agent` is a person's: a row this build cannot read is
+    // never one an automatic archive may take (EO-714).
+    createdBy: row.createdBy === "agent" ? "agent" : "person",
+    locked: row.locked,
   };
+}
+
+// ── History (EO-714) ────────────────────────────────────────────────
+
+/**
+ * Files one version: the skill as it stands after a write, and who made
+ * the write. The only writer of `skill_versions`, and it only inserts —
+ * the table is append-only, as `run_events` is.
+ */
+function appendVersion(
+  db: Db,
+  skill: Pick<Skill, "id" | "description" | "body" | "files">,
+  action: SkillVersionAction,
+  author: SkillAuthor,
+  at: number,
+  restoredFrom: string | null = null,
+): void {
+  db.insert(skillVersions)
+    .values({
+      id: uuidv7(),
+      skillId: skill.id,
+      action,
+      description: skill.description,
+      body: skill.body,
+      files: skill.files,
+      authorKind: author.kind,
+      authorId: author.kind === "run" ? author.runId : author.kind === "consolidation" ? author.consolidationId : null,
+      restoredFrom,
+      createdAt: at,
+    })
+    .run();
+}
+
+/**
+ * A row's author, narrowed. A kind this build does not know, or an agent
+ * kind with no id, reads as the record's — never as a person's, which a
+ * lock would let through.
+ */
+function toAuthor(kind: string, id: string | null): SkillAuthor {
+  if (kind === "person") return PERSON_SKILL_AUTHOR;
+  if (kind === "run" && id !== null) return { kind: "run", runId: id };
+  if (kind === "consolidation" && id !== null) return { kind: "consolidation", consolidationId: id };
+  return { kind: "record" };
+}
+
+function toVersion(row: typeof skillVersions.$inferSelect): SkillVersion {
+  const action = SkillVersionActionSchema.safeParse(row.action);
+  return {
+    id: row.id,
+    skillId: row.skillId,
+    action: action.success ? action.data : "edit",
+    description: row.description,
+    body: row.body,
+    files: toFiles(row.files),
+    author: toAuthor(row.authorKind, row.authorId),
+    restoredFrom: row.restoredFrom,
+    createdAt: row.createdAt,
+  };
+}
+
+/** Every write to one skill, newest first (EO-714). */
+export function listSkillVersions(db: Db, skillId: string): SkillVersion[] {
+  return db
+    .select()
+    .from(skillVersions)
+    .where(eq(skillVersions.skillId, skillId))
+    .orderBy(desc(skillVersions.createdAt), desc(skillVersions.id))
+    .all()
+    .map(toVersion);
+}
+
+/** What a write that is not a save answers with: the skill as it now stands, or the sentence saying why nothing was written. */
+export type SkillWriteResult = { ok: true; skill: Skill } | { ok: false; problem: string };
+
+/** Why this author may not write to this skill, or null (EO-714): a lock refuses every author that is not a person. */
+function lockRefusal(skill: Skill, author: SkillAuthor): string | null {
+  return skill.locked && isAgentSkillAuthor(author) ? SKILL_LOCKED_PROBLEM : null;
 }
 
 /**
@@ -191,12 +279,14 @@ function slugFor(db: Db, asked: string | null, name: string, existing: Skill | u
  * duplicate are all things a person did, and throwing is for programmer
  * error.
  */
-export function saveSkill(db: Db, draft: SkillDraft, now: number = Date.now()): SaveSkillResult {
+export function saveSkill(db: Db, draft: SkillDraft, now: number = Date.now(), author: SkillAuthor = PERSON_SKILL_AUTHOR): SaveSkillResult {
   const read = readSkillDraft(draft);
   if (!read.ok) return { ok: false, problems: read.problems };
 
   const existing = draft.id === undefined ? undefined : getSkill(db, draft.id);
   if (draft.id !== undefined && !existing) return { ok: false, problems: [`No skill ${draft.id}.`] };
+  const locked = existing === undefined ? null : lockRefusal(existing, author);
+  if (locked !== null) return { ok: false, problems: [locked] };
 
   const slug = slugFor(db, read.slug, read.name, existing);
   if (!slug.ok) return { ok: false, problems: slug.problems };
@@ -223,17 +313,26 @@ export function saveSkill(db: Db, draft: SkillDraft, now: number = Date.now()): 
     localChangedAt: Date.now(),
   };
 
-  if (existing) {
-    db.update(skills).set(values).where(eq(skills.id, existing.id)).run();
-    return { ok: true, skill: getSkill(db, existing.id)! };
-  }
+  return db.transaction(() => {
+    if (existing) {
+      db.update(skills).set(values).where(eq(skills.id, existing.id)).run();
+      const skill = getSkill(db, existing.id)!;
+      appendVersion(db, skill, "edit", author, now);
+      return { ok: true, skill };
+    }
 
-  const row = db
-    .insert(skills)
-    .values({ id: uuidv7(), createdAt: now, archivedAt: null, ...values })
-    .returning()
-    .get();
-  return { ok: true, skill: toSkill(row) };
+    // An agent's skill is the agent's from its first version (EO-714); a
+    // person editing it later does not change that.
+    const createdBy = isAgentSkillAuthor(author) ? "agent" : "person";
+    const row = db
+      .insert(skills)
+      .values({ id: uuidv7(), createdAt: now, archivedAt: null, createdBy, locked: false, ...values })
+      .returning()
+      .get();
+    const skill = toSkill(row);
+    appendVersion(db, skill, "create", author, now);
+    return { ok: true, skill };
+  });
 }
 
 /**
@@ -261,6 +360,10 @@ export function saveSkill(db: Db, draft: SkillDraft, now: number = Date.now()): 
  * is not a state SQLite will hold or an agent could act on.
  */
 export function upsertReplicaSkill(db: Db, skill: Skill, projectId?: string | null): void {
+  db.transaction(() => upsertReplicaSkillIn(db, skill, projectId));
+}
+
+function upsertReplicaSkillIn(db: Db, skill: Skill, projectId?: string | null): void {
   standAside(db, skill.id, skill.slug);
   // The record's word where it gave one (EO-513) — a moved workspace's
   // skill names a workspace this machine may not have — and otherwise
@@ -286,6 +389,8 @@ export function upsertReplicaSkill(db: Db, skill: Skill, projectId?: string | nu
       updatedAt: skill.updatedAt,
       localChangedAt: Date.now(),
       archivedAt: skill.archivedAt,
+      createdBy: skill.createdBy,
+      locked: skill.locked,
     })
     .onConflictDoUpdate({
       target: skills.id,
@@ -302,9 +407,32 @@ export function upsertReplicaSkill(db: Db, skill: Skill, projectId?: string | nu
         updatedAt: skill.updatedAt,
         localChangedAt: Date.now(),
         archivedAt: skill.archivedAt,
+        createdBy: skill.createdBy,
+        locked: skill.locked,
       },
     })
     .run();
+  versionCopy(db, here, skill.id);
+}
+
+/**
+ * Files a `sync` version for a copy taken from the record (EO-714), when
+ * it changed anything a person reads in the history — and only then, so
+ * a publication applied again, or a page read twice, adds nothing. The
+ * write itself was made, and versioned, where the record is.
+ */
+function versionCopy(db: Db, before: Skill | undefined, id: string): void {
+  const after = getSkill(db, id);
+  if (after === undefined) return;
+  const same =
+    before !== undefined &&
+    before.description === after.description &&
+    before.body === after.body &&
+    JSON.stringify(before.files) === JSON.stringify(after.files) &&
+    before.enabled === after.enabled &&
+    before.archivedAt === after.archivedAt &&
+    before.locked === after.locked;
+  if (!same) appendVersion(db, after, "sync", { kind: "record" }, Date.now());
 }
 
 // ── A project's own skills, as they travel with it (EO-513) ─────────
@@ -393,6 +521,7 @@ export function skillOwner(db: Db, id: string): { projectId: string | null; scop
  * before this is reached.
  */
 export function writeMovedSkill(db: Db, skill: RecordSkill, projectId: string): void {
+  const before = getSkill(db, skill.id);
   const columns = {
     slug: skill.slug,
     name: skill.name,
@@ -408,11 +537,14 @@ export function writeMovedSkill(db: Db, skill: RecordSkill, projectId: string): 
     updatedAt: skill.updatedAt,
     localChangedAt: Date.now(),
     archivedAt: skill.archivedAt,
+    createdBy: skill.createdBy,
+    locked: skill.locked,
   };
   db.insert(skills)
     .values({ id: skill.id, createdAt: skill.createdAt, ...columns })
     .onConflictDoUpdate({ target: skills.id, set: columns })
     .run();
+  versionCopy(db, before, skill.id);
 }
 
 /**
@@ -438,17 +570,70 @@ function standAside(db: Db, id: string, slug: string): void {
     .set({ slug: `${slug}-local-${taken.id.slice(-6)}`, enabled: false, archivedAt: at, updatedAt: at, localChangedAt: at })
     .where(eq(skills.id, taken.id))
     .run();
+  // The organisation's catalogue archived it, which the history says (EO-714).
+  const archived = getSkill(db, taken.id);
+  if (archived !== undefined) appendVersion(db, archived, "archive", { kind: "record" }, at);
 }
 
-export function setSkillEnabled(db: Db, id: string, enabled: boolean, at: number = Date.now()): boolean {
-  if (!getSkill(db, id)) return false;
-  db.update(skills).set({ enabled, updatedAt: at, localChangedAt: Date.now() }).where(eq(skills.id, id)).run();
-  return true;
+/** The sentence for an id this database has no skill under. */
+const NO_SUCH_SKILL = "That skill no longer exists.";
+
+/**
+ * One write that is not a save: the row's columns changed, and the
+ * version that says so filed, in one transaction — or the sentence saying
+ * why nothing was written (EO-714).
+ */
+function writeSkill(
+  db: Db,
+  id: string,
+  author: SkillAuthor,
+  at: number,
+  action: SkillVersionAction,
+  columns: Partial<typeof skills.$inferInsert>,
+  restoredFrom: string | null = null,
+): SkillWriteResult {
+  const existing = getSkill(db, id);
+  if (existing === undefined) return { ok: false, problem: NO_SUCH_SKILL };
+  const locked = lockRefusal(existing, author);
+  if (locked !== null) return { ok: false, problem: locked };
+  return db.transaction(() => {
+    db.update(skills)
+      .set({ ...columns, updatedAt: at, localChangedAt: Date.now() })
+      .where(eq(skills.id, id))
+      .run();
+    const skill = getSkill(db, id)!;
+    appendVersion(db, skill, action, author, at, restoredFrom);
+    return { ok: true, skill };
+  });
+}
+
+export function setSkillEnabled(db: Db, id: string, enabled: boolean, at: number = Date.now(), author: SkillAuthor = PERSON_SKILL_AUTHOR): SkillWriteResult {
+  return writeSkill(db, id, author, at, enabled ? "enable" : "disable", { enabled });
 }
 
 /** Deleting a skill archives it — see the column's note and invariant #3. */
-export function archiveSkill(db: Db, id: string, at: number = Date.now()): boolean {
-  if (!getSkill(db, id)) return false;
-  db.update(skills).set({ archivedAt: at, updatedAt: at, localChangedAt: Date.now() }).where(eq(skills.id, id)).run();
-  return true;
+export function archiveSkill(db: Db, id: string, at: number = Date.now(), author: SkillAuthor = PERSON_SKILL_AUTHOR): SkillWriteResult {
+  return writeSkill(db, id, author, at, "archive", { archivedAt: at });
+}
+
+/**
+ * Locks or unlocks a skill (EO-714). A person's action only, so it takes
+ * no author: no agent's write reaches this function, and EO's
+ * administrative MCP host refuses the tool that would.
+ */
+export function setSkillLocked(db: Db, id: string, locked: boolean, at: number = Date.now()): SkillWriteResult {
+  return writeSkill(db, id, PERSON_SKILL_AUTHOR, at, locked ? "lock" : "unlock", { locked });
+}
+
+/**
+ * Puts one of the skill's earlier versions back (EO-714): its
+ * description, body and files, and the skill live again if it was
+ * archived. A new version naming who restored it and which version it
+ * restored — never a rewrite of either.
+ */
+export function restoreSkillVersion(db: Db, id: string, versionId: string, at: number = Date.now(), author: SkillAuthor = PERSON_SKILL_AUTHOR): SkillWriteResult {
+  const row = db.select().from(skillVersions).where(eq(skillVersions.id, versionId)).get();
+  if (row === undefined || row.skillId !== id) return { ok: false, problem: "That version is not one of this skill's." };
+  const version = toVersion(row);
+  return writeSkill(db, id, author, at, "restore", { description: version.description, body: version.body, files: version.files, archivedAt: null }, version.id);
 }

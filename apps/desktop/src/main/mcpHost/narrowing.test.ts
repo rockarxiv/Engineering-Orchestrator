@@ -68,6 +68,7 @@ const MAIN_LIST: Record<string, string | null> = {
   forge_detect: null,
   mcp_servers_list: "servers",
   skills_list: "skills",
+  skill_versions_list: "versions",
   agent_attachments_list: "attachments",
   pipeline_validate: "problems",
   pipeline_versions: "versions",

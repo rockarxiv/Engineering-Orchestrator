@@ -36,7 +36,7 @@ import {
   setMcpServerEnabledCommand,
   setMcpServerSecretCommand,
 } from "./mcpServerCommands.js";
-import { archiveSkillCommand, listSkillsCommand, saveSkillCommand, setSkillEnabledCommand } from "./skillCommands.js";
+import { archiveSkillCommand, listSkillsCommand, listSkillVersionsCommand, restoreSkillVersionCommand, saveSkillCommand, setSkillEnabledCommand, setSkillLockedCommand } from "./skillCommands.js";
 import {
   addMemoryCommand,
   editMemoryCommand,
@@ -854,6 +854,9 @@ export function registerAllHandlers(db: Db, engine: EngineHandle | undefined, re
   registerHandler("skills:save", (payload) => announcePipeline(saveSkillCommand(db, payload)), opts);
   registerHandler("skills:setEnabled", (payload) => announcePipeline(setSkillEnabledCommand(db, payload)), opts);
   registerHandler("skills:archive", (payload) => announcePipeline(archiveSkillCommand(db, payload)), opts);
+  registerHandler("skills:setLocked", (payload) => announcePipeline(setSkillLockedCommand(db, payload)), opts);
+  registerHandler("skills:versions", (payload) => listSkillVersionsCommand(db, payload), opts);
+  registerHandler("skills:restoreVersion", (payload) => announcePipeline(restoreSkillVersionCommand(db, payload)), opts);
   // EO-478: a scope's memory, read and written by a person. Every write
   // keeps the row it replaces; nothing here deletes.
   registerHandler("memory:list", (payload) => listMemoryCommand(db, payload), opts);

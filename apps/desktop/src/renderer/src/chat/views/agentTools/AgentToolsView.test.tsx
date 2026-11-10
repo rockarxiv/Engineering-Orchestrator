@@ -69,7 +69,7 @@ const PLAYBOOK: Skill = {
   scope: { kind: "global" },
   createdAt: 0,
   updatedAt: 0,
-  archivedAt: null,
+  archivedAt: null, createdBy: "person", locked: false,
 };
 
 const REVIEWER = { id: "019fb8c6-0000-7000-8000-0000000000c1", name: "Reviewer", role: "reviewer", provider: "claude", model: null, enabled: true, archivedAt: null };
@@ -428,6 +428,58 @@ describe("the agent tools catalogue", () => {
       disableModelInvocation: false,
       scope: { kind: "global" },
     });
+  });
+
+  /** Ownership, the lock and the history (EO-714). */
+  it("shows who wrote a skill and whether it is locked, and locks it with the switch", async () => {
+    const agents = { ...PLAYBOOK, createdBy: "agent" as const };
+    const calls = mockIpc({
+      "skills:list": { ok: true, data: { skills: [agents] } },
+      "skills:setLocked": { ok: true, data: { skill: { ...agents, locked: true }, problem: null } },
+    });
+    renderIn(<AgentTools />);
+
+    fireEvent.click(await screen.findByRole("tab", { name: /^Skills\s*1$/ }));
+    const card = await screen.findByRole("region", { name: "PR review" });
+    expect(card).toHaveTextContent("Written by an agent");
+    const lock = within(card).getByRole("switch", { name: "Locked" });
+    expect(lock).toHaveAttribute("aria-checked", "false");
+
+    fireEvent.click(lock);
+
+    await waitFor(() => expect(payloadOf(calls, "skills:setLocked")).toEqual({ id: PLAYBOOK.id, locked: true }));
+  });
+
+  it("lists a skill's history and restores an earlier version", async () => {
+    const at = (n: number) => new Date(2026, 0, n).getTime();
+    const versions = [
+      { id: "v3", skillId: PLAYBOOK.id, action: "archive", description: "Second.", body: "Two.", files: [], author: { kind: "consolidation", consolidationId: "c-1" }, restoredFrom: null, createdAt: at(3) },
+      { id: "v2", skillId: PLAYBOOK.id, action: "edit", description: "Second.", body: "Two.", files: [], author: { kind: "run", runId: "r-1" }, restoredFrom: null, createdAt: at(2) },
+      { id: "v1", skillId: PLAYBOOK.id, action: "create", description: "First.", body: "One.", files: [], author: { kind: "person" }, restoredFrom: null, createdAt: at(1) },
+    ];
+    const calls = mockIpc({
+      "skills:list": { ok: true, data: { skills: [{ ...PLAYBOOK, locked: true }] } },
+      "skills:versions": { ok: true, data: { versions, problem: null } },
+      "skills:restoreVersion": { ok: true, data: { skill: PLAYBOOK, problem: null } },
+    });
+    renderIn(<AgentTools />);
+
+    fireEvent.click(await screen.findByRole("tab", { name: /^Skills\s*1$/ }));
+    expect(await screen.findByText("Written by a person")).toBeInTheDocument();
+    expect(screen.getByRole("switch", { name: "Locked" })).toHaveAttribute("aria-checked", "true");
+    fireEvent.click(screen.getByRole("button", { name: "History" }));
+
+    const history = await screen.findByRole("region", { name: "History of PR review" });
+    await waitFor(() => expect(history).toHaveTextContent("Archived by memory consolidation c-1 — current"));
+    expect(history).toHaveTextContent("Edited by run r-1");
+    expect(history).toHaveTextContent("Created by a person");
+    // Restore on every earlier version, never on the current one.
+    const restores = within(history).getAllByRole("button", { name: /^Restore the version from/ });
+    expect(restores).toHaveLength(2);
+
+    fireEvent.click(restores[1]!);
+
+    await waitFor(() => expect(payloadOf(calls, "skills:restoreVersion")).toEqual({ id: PLAYBOOK.id, versionId: "v1" }));
   });
 
   it("attaches a server to an agent from the catalogue", async () => {

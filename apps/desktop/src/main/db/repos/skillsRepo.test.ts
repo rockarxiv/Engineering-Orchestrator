@@ -1,9 +1,22 @@
 import { sql } from "drizzle-orm";
-import { SkillDraftSchema, uuidv7, type SkillDraft, type SkillScope } from "@eo/core";
+import { SKILL_LOCKED_PROBLEM, SkillDraftSchema, uuidv7, type SkillAuthor, type SkillDraft, type SkillScope } from "@eo/core";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { DbHandle } from "../client.js";
 import { openMigratedTestDb } from "../testHelpers.js";
-import { archiveSkill, getSkill, getSkillBySlug, listSkills, readProjectSkills, saveSkill, setSkillEnabled, upsertReplicaSkill, writeMovedSkill } from "./skillsRepo.js";
+import {
+  archiveSkill,
+  getSkill,
+  getSkillBySlug,
+  listSkills,
+  listSkillVersions,
+  readProjectSkills,
+  restoreSkillVersion,
+  saveSkill,
+  setSkillEnabled,
+  setSkillLocked,
+  upsertReplicaSkill,
+  writeMovedSkill,
+} from "./skillsRepo.js";
 
 /**
  * The skill catalogue's rows (EO-105).
@@ -47,6 +60,8 @@ describe("saveSkill", () => {
       createdAt: expect.any(Number),
       updatedAt: expect.any(Number),
       archivedAt: null,
+      createdBy: "person",
+      locked: false,
     });
   });
 
@@ -83,7 +98,7 @@ describe("saveSkill", () => {
     const first = saveSkill(handle.db, draft({ name: "PR review" }));
     expect(first.ok).toBe(true);
     if (!first.ok) return;
-    expect(archiveSkill(handle.db, first.skill.id)).toBe(true);
+    expect(archiveSkill(handle.db, first.skill.id).ok).toBe(true);
 
     const second = saveSkill(handle.db, draft({ name: "PR review" }));
 
@@ -171,7 +186,7 @@ describe("listing, enabling and archiving", () => {
 
     expect(listSkills(handle.db).map((skill) => skill.slug)).toEqual(["atlas-notes", "zed-notes"]);
 
-    expect(archiveSkill(handle.db, first.skill.id)).toBe(true);
+    expect(archiveSkill(handle.db, first.skill.id).ok).toBe(true);
 
     expect(listSkills(handle.db).map((skill) => skill.slug)).toEqual(["atlas-notes"]);
     // Archived, not deleted: whatever attached it still has something to
@@ -185,18 +200,18 @@ describe("listing, enabling and archiving", () => {
     expect(saved.ok).toBe(true);
     if (!saved.ok) return;
 
-    expect(setSkillEnabled(handle.db, saved.skill.id, false)).toBe(true);
+    expect(setSkillEnabled(handle.db, saved.skill.id, false).ok).toBe(true);
     expect(getSkill(handle.db, saved.skill.id)?.enabled).toBe(false);
     // Disabled is a switch, not an archive: the row is still live.
     expect(listSkills(handle.db)).toHaveLength(1);
 
-    expect(setSkillEnabled(handle.db, saved.skill.id, true)).toBe(true);
+    expect(setSkillEnabled(handle.db, saved.skill.id, true).ok).toBe(true);
     expect(getSkill(handle.db, saved.skill.id)?.files).toEqual([{ path: "checklist.md", content: "- read it" }]);
   });
 
   it("says no rather than throwing when the skill is gone", () => {
-    expect(setSkillEnabled(handle.db, "019fb8c6-0000-7000-8000-00000000beef", false)).toBe(false);
-    expect(archiveSkill(handle.db, "019fb8c6-0000-7000-8000-00000000beef")).toBe(false);
+    expect(setSkillEnabled(handle.db, "019fb8c6-0000-7000-8000-00000000beef", false)).toEqual({ ok: false, problem: "That skill no longer exists." });
+    expect(archiveSkill(handle.db, "019fb8c6-0000-7000-8000-00000000beef")).toEqual({ ok: false, problem: "That skill no longer exists." });
   });
 });
 
@@ -222,7 +237,7 @@ describe("upsertReplicaSkill", () => {
       scope: { kind: "global" } as SkillScope,
       createdAt: 1_700_000_000_000,
       updatedAt: 1_700_000_000_000,
-      archivedAt: null,
+      archivedAt: null, createdBy: "person" as const, locked: false,
       ...overrides,
     };
   }
@@ -301,7 +316,7 @@ describe("the project a scoped skill belongs to (EO-513)", () => {
 
   it("keeps a moved workspace's skill on its project when it is edited where the workspace is not", () => {
     // The record: it holds the skill a move wrote, never the workspace.
-    const moved = { id: uuidv7(), slug: "fixtures", name: "Fixtures", description: "Where fixtures live.", body: "./fixtures", files: [], disableModelInvocation: false, enabled: true, scope: { kind: "workspace" as const, workspaceId: "ws-elsewhere" }, createdAt: 1, updatedAt: 1, archivedAt: null, projectId: "proj-moved" };
+    const moved = { id: uuidv7(), slug: "fixtures", name: "Fixtures", description: "Where fixtures live.", body: "./fixtures", files: [], disableModelInvocation: false, enabled: true, scope: { kind: "workspace" as const, workspaceId: "ws-elsewhere" }, createdAt: 1, updatedAt: 1, archivedAt: null, createdBy: "person" as const, locked: false, projectId: "proj-moved" };
     writeMovedSkill(handle.db, moved, "proj-moved");
 
     const edited = saveSkill(handle.db, draft({ id: moved.id, name: "Fixtures", body: "./test/fixtures" }));
@@ -318,3 +333,170 @@ describe("the project a scoped skill belongs to (EO-513)", () => {
     expect(projectOf(saved.skill.id)).toBeNull();
   });
 });
+
+/**
+ * Ownership, history and the lock (EO-714).
+ *
+ * Every write files exactly one version naming its author; restoring is a
+ * new version; and a locked skill refuses every author that is not a
+ * person, with nothing written.
+ */
+describe("skill versions", () => {
+  const run: SkillAuthor = { kind: "run", runId: "019fb8c6-0000-7000-8000-0000000000aa" };
+  const consolidation: SkillAuthor = { kind: "consolidation", consolidationId: "019fb8c6-0000-7000-8000-0000000000bb" };
+
+  function created(author?: SkillAuthor) {
+    const saved = saveSkill(handle.db, draft({ name: "PR review" }), 1_000, author);
+    if (!saved.ok) throw new Error(saved.problems.join(" "));
+    return saved.skill;
+  }
+
+  it("files exactly one version for every create, edit, switch, archive and restore, naming its author", () => {
+    const skill = created();
+    saveSkill(handle.db, draft({ id: skill.id, name: "PR review", body: "Read it twice." }), 2_000, run);
+    setSkillEnabled(handle.db, skill.id, false, 3_000, consolidation);
+    archiveSkill(handle.db, skill.id, 4_000);
+    const first = listSkillVersions(handle.db, skill.id).at(-1)!;
+    restoreSkillVersion(handle.db, skill.id, first.id, 5_000);
+
+    const versions = listSkillVersions(handle.db, skill.id);
+    expect(versions.map((version) => [version.action, version.author, version.createdAt])).toEqual([
+      ["restore", { kind: "person" }, 5_000],
+      ["archive", { kind: "person" }, 4_000],
+      ["disable", consolidation, 3_000],
+      ["edit", run, 2_000],
+      ["create", { kind: "person" }, 1_000],
+    ]);
+    expect(versions[3]?.body).toBe("Read it twice.");
+    expect(versions[0]?.restoredFrom).toBe(first.id);
+  });
+
+  it("files nothing for a write that is refused", () => {
+    const skill = created();
+    saveSkill(handle.db, draft({ id: skill.id, name: "PR review", description: "" }));
+    archiveSkill(handle.db, "019fb8c6-0000-7000-8000-00000000beef");
+
+    expect(listSkillVersions(handle.db, skill.id)).toHaveLength(1);
+  });
+
+  it("marks a skill an agent created as the agent's, and keeps it the agent's when a person edits it", () => {
+    expect(created().createdBy).toBe("person");
+    const skill = saveSkill(handle.db, draft({ name: "Release notes" }), 1_000, run);
+    expect(skill.ok && skill.skill.createdBy).toBe("agent");
+    if (!skill.ok) return;
+    const fromConsolidation = saveSkill(handle.db, draft({ name: "Fixtures" }), 1_000, consolidation);
+    expect(fromConsolidation.ok && fromConsolidation.skill.createdBy).toBe("agent");
+
+    const edited = saveSkill(handle.db, draft({ id: skill.skill.id, name: "Release notes", body: "A person's words." }));
+    expect(edited.ok && edited.skill.createdBy).toBe("agent");
+  });
+
+  it("restores an earlier version's description, body and files, and brings an archived skill back", () => {
+    const saved = saveSkill(handle.db, draft({ name: "PR review", description: "First.", body: "One.", files: [{ path: "a.md", content: "a" }] }), 1_000);
+    if (!saved.ok) throw new Error("not saved");
+    const original = listSkillVersions(handle.db, saved.skill.id)[0]!;
+    saveSkill(handle.db, draft({ id: saved.skill.id, name: "PR review", description: "Second.", body: "Two.", files: [] }), 2_000, run);
+    archiveSkill(handle.db, saved.skill.id, 3_000, run);
+
+    const restored = restoreSkillVersion(handle.db, saved.skill.id, original.id, 4_000);
+
+    expect(restored.ok).toBe(true);
+    const skill = getSkill(handle.db, saved.skill.id)!;
+    expect({ description: skill.description, body: skill.body, files: skill.files }).toEqual({
+      description: original.description,
+      body: original.body,
+      files: original.files,
+    });
+    expect(skill.archivedAt).toBeNull();
+    const newest = listSkillVersions(handle.db, saved.skill.id)[0]!;
+    expect(newest).toMatchObject({ action: "restore", author: { kind: "person" }, restoredFrom: original.id, description: "First.", body: "One." });
+    // Nothing earlier was rewritten.
+    expect(listSkillVersions(handle.db, saved.skill.id).find((version) => version.id === original.id)).toEqual(original);
+  });
+
+  it("refuses to restore a version that is another skill's", () => {
+    const one = created();
+    const other = saveSkill(handle.db, draft({ name: "Other" }));
+    if (!other.ok) throw new Error("not saved");
+    const theirs = listSkillVersions(handle.db, other.skill.id)[0]!;
+
+    expect(restoreSkillVersion(handle.db, one.id, theirs.id)).toEqual({ ok: false, problem: "That version is not one of this skill's." });
+    expect(listSkillVersions(handle.db, one.id)).toHaveLength(1);
+  });
+
+  it("refuses every write to a locked skill whose author is not a person, and writes nothing", () => {
+    const skill = created();
+    const original = listSkillVersions(handle.db, skill.id)[0]!;
+    expect(setSkillLocked(handle.db, skill.id, true, 2_000).ok).toBe(true);
+    const before = getSkill(handle.db, skill.id);
+    const versions = listSkillVersions(handle.db, skill.id).length;
+
+    for (const author of [run, consolidation]) {
+      const save = saveSkill(handle.db, draft({ id: skill.id, name: "PR review", body: "An agent's words." }), 9_000, author);
+      expect(save).toEqual({ ok: false, problems: [SKILL_LOCKED_PROBLEM] });
+      expect(archiveSkill(handle.db, skill.id, 9_000, author)).toEqual({ ok: false, problem: SKILL_LOCKED_PROBLEM });
+      expect(setSkillEnabled(handle.db, skill.id, false, 9_000, author)).toEqual({ ok: false, problem: SKILL_LOCKED_PROBLEM });
+      expect(restoreSkillVersion(handle.db, skill.id, original.id, 9_000, author)).toEqual({ ok: false, problem: SKILL_LOCKED_PROBLEM });
+    }
+    expect(SKILL_LOCKED_PROBLEM).toContain("A person locked this skill");
+    expect(getSkill(handle.db, skill.id)).toEqual(before);
+    expect(listSkillVersions(handle.db, skill.id)).toHaveLength(versions);
+
+    // A person still can, and unlocking lets agents in again.
+    expect(saveSkill(handle.db, draft({ id: skill.id, name: "PR review", body: "A person's words." }), 10_000).ok).toBe(true);
+    expect(setSkillLocked(handle.db, skill.id, false, 11_000).ok).toBe(true);
+    expect(saveSkill(handle.db, draft({ id: skill.id, name: "PR review", body: "An agent's words." }), 12_000, run).ok).toBe(true);
+    expect(listSkillVersions(handle.db, skill.id).map((version) => version.action).slice(0, 4)).toEqual(["edit", "unlock", "edit", "lock"]);
+  });
+
+  it("files a sync version for a copy from the record only when the copy changed something", () => {
+    const published = {
+      id: "019fb8c6-0000-7000-8000-00000000cccc",
+      slug: "published",
+      name: "Published",
+      description: "From the organisation.",
+      body: "One.",
+      files: [],
+      disableModelInvocation: false,
+      enabled: true,
+      scope: { kind: "global" } as SkillScope,
+      createdAt: 1,
+      updatedAt: 1,
+      archivedAt: null,
+      createdBy: "agent" as const,
+      locked: true,
+    };
+    upsertReplicaSkill(handle.db, published);
+    upsertReplicaSkill(handle.db, published);
+    upsertReplicaSkill(handle.db, { ...published, body: "Two.", updatedAt: 2 });
+
+    expect(getSkill(handle.db, published.id)).toMatchObject({ createdBy: "agent", locked: true, body: "Two." });
+    expect(listSkillVersions(handle.db, published.id).map((version) => [version.action, version.author.kind, version.body])).toEqual([
+      ["sync", "record", "Two."],
+      ["sync", "record", "One."],
+    ]);
+  });
+
+  it("says who archived a skill the organisation's catalogue made stand aside", () => {
+    const local = created();
+    upsertReplicaSkill(handle.db, {
+      id: "019fb8c6-0000-7000-8000-00000000dddd",
+      slug: local.slug,
+      name: "Theirs",
+      description: "From the organisation.",
+      body: "Body.",
+      files: [],
+      disableModelInvocation: false,
+      enabled: true,
+      scope: { kind: "global" },
+      createdAt: 1,
+      updatedAt: 1,
+      archivedAt: null,
+      createdBy: "person",
+      locked: false,
+    });
+
+    expect(listSkillVersions(handle.db, local.id)[0]).toMatchObject({ action: "archive", author: { kind: "record" } });
+  });
+});
+

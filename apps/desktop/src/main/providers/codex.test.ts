@@ -3516,7 +3516,7 @@ describe("skills on a Codex turn", () => {
       scope: { kind: "global" },
       createdAt: 1,
       updatedAt: 2,
-      archivedAt: null,
+      archivedAt: null, createdBy: "person", locked: false,
       ...overrides,
     };
   }
