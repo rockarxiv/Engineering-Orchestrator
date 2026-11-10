@@ -218,6 +218,28 @@ describe("Markdown as CommonMark and GFM read it (EO-707)", () => {
     expect(container.querySelector("p")).toHaveTextContent("![a chart](https://example.com/chart.png)");
   });
 
+  it.each([
+    ["an inline image in an inline link", "[![secret](https://example.com/leak)](https://example.com)", "![secret](https://example.com/leak)"],
+    ["a reference image in an inline link", "[![secret][img]](https://example.com)\n\n[img]: https://example.com/leak", "![secret][img]"],
+    ["an inline image in a reference link", "[![secret](https://example.com/leak)][site]\n\n[site]: https://example.com", "![secret](https://example.com/leak)"],
+    ["a reference image in a reference link", "[![secret][img]][site]\n\n[img]: https://example.com/leak\n[site]: https://example.com", "![secret][img]"],
+  ])("shows %s as the text it was typed as, and loads nothing", (_name, source, literal) => {
+    const { container } = render(<Markdown>{source}</Markdown>);
+
+    expect(container.querySelector("img")).toBeNull();
+    // Still a link, drawn as the image's source text.
+    expect(screen.getByRole("link")).toHaveAttribute("href", "https://example.com");
+    expect(screen.getByRole("link")).toHaveTextContent(literal);
+  });
+
+  it("does not find item references inside a link's text, even around an image", () => {
+    renderWithItemReferences("[EO-1 ![x](https://example.com/leak)](https://example.com)");
+
+    expect(screen.getAllByRole("link")).toHaveLength(1);
+    expect(screen.getByRole("link")).toHaveAttribute("href", "https://example.com");
+    expect(document.querySelector("img")).toBeNull();
+  });
+
   it("links a bare http(s) URL, and shows a bare email address as text", () => {
     const { container } = render(<Markdown>{"see https://example.com/x or write to someone@example.com"}</Markdown>);
 

@@ -176,7 +176,10 @@ function sourceOf(node: MarkdownNode, source: string): string | null {
 function remarkEo(options: { itemReferences: boolean }) {
   return (tree: MarkdownNode, file: { value: unknown }) => {
     const source = String(file.value);
-    const walk = (parent: MarkdownNode) => {
+    // Every node is visited, links' insides included: an image is no less
+    // an image for being what a link is drawn as. Only the marking of item
+    // references stops at a link, since an explicit link names no item.
+    const walk = (parent: MarkdownNode, insideLink: boolean) => {
       const children = parent.children;
       if (!children) return;
       children.forEach((child, index) => {
@@ -186,13 +189,13 @@ function remarkEo(options: { itemReferences: boolean }) {
           // Plain text, and never marked: an explicit link names no item.
           children[index] = { type: "text", value: literal } as MarkdownNode;
         } else if (child.type === "text") {
-          if (options.itemReferences) child.data = { ...child.data, hName: ITEM_TEXT };
-        } else if (child.type !== "link" && child.type !== "linkReference") {
-          walk(child);
+          if (options.itemReferences && !insideLink) child.data = { ...child.data, hName: ITEM_TEXT };
+        } else {
+          walk(child, insideLink || child.type === "link" || child.type === "linkReference");
         }
       });
     };
-    walk(tree);
+    walk(tree, false);
   };
 }
 
@@ -247,6 +250,10 @@ const COMPONENTS = {
     ) : (
       <>{children}</>
     ),
+  // `remarkEo` has already turned every image into its source text; one
+  // it could not place in the source still loads nothing, and reads as its
+  // words.
+  img: ({ alt }: Drawn<"img">) => <>{alt}</>,
   code: ({ node: _node, className, ...props }: Drawn<"code">) => <code className={cn("rounded-sm bg-canvas-active px-1 py-px font-mono text-sm", className)} {...props} />,
   pre: ({ node }: Drawn<"pre">) => {
     const { code, lang } = codeText(node);
