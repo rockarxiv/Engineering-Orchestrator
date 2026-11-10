@@ -280,7 +280,7 @@ import { runSubject } from "../modules/runName.js";
 import { createSideCallSlots } from "../sideCalls/slots.js";
 import { endAllProcessTrees } from "../process/processTree.js";
 import { createMemoryConsolidator, type MemoryConsolidatorOptions } from "../memory/consolidator.js";
-import { archiveUnusedSkills } from "../skills/archival.js";
+import { archiveUnusedSkills, archivesSkillsOf } from "../skills/archival.js";
 import { currentWatch, markCheckInFlight, ownerMention, recordQuietCheck, waitingLine, watchArrival, watchHold, watchRoundTrips, WATCH_ROUTED_REASON, WATCH_VERIFICATION_FAILED_REASON } from "./watches.js";
 import { agentMentionChain } from "./escalation.js";
 
@@ -2817,21 +2817,27 @@ export function createRunSupervisor(
    * a project: those within the project's reach given `skillArchiveAfterRuns`
    * runs in a row without a load are archived, and its thread is told.
    * The guardrails are read now, so a change to them takes effect here.
+   *
+   * Not for a project the organisation's record holds, on a desktop: its
+   * skills are the record's, which runs the pass when this run's events
+   * reach it (`serveApply`) — an archive in this replica would be undone
+   * by the record's next copy. What the pass could not do it says on the
+   * project's thread itself, or leaves for the next pass (`archival.ts`).
    */
   async function archiveAfterRun(item: Item): Promise<void> {
     if (shuttingDown) return;
     const projectId = (getItem(db, item.id) ?? item).projectId;
     if (projectId === null) return;
+    if (!archivesSkillsOf(db, projectId, runsWhere === "server")) return;
     try {
       const guards = readGuards();
-      const result = await archiveUnusedSkills({
+      await archiveUnusedSkills({
         db,
         projectId,
         ageing: { staleAfterRuns: guards.skillStaleAfterRuns, archiveAfterRuns: guards.skillArchiveAfterRuns },
         projectThread: (id) => record.projectThread(id),
         now,
       });
-      if ("problem" in result) console.warn(`[eo] agent skills due to be archived were left as they are: ${result.problem}`);
     } catch (error) {
       console.warn(`[eo] the pass archiving unused agent skills failed: ${error instanceof Error ? error.message : String(error)}`);
     }

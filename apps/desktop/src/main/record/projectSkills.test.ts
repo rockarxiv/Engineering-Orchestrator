@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { sql } from "drizzle-orm";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { FOLDER_KIND, ipcContract, McpServerDraftSchema, SkillDraftSchema, type IpcPayload, type SkillScope, type Uuid } from "@eo/core";
+import { FOLDER_KIND, ipcContract, SKILLS_DELIVERED_EVENT, McpServerDraftSchema, SkillDraftSchema, type IpcPayload, type SkillScope, type Uuid } from "@eo/core";
 import { buildTickInput } from "../supervisor/buildTickInput.js";
 import type { DbHandle } from "../db/client.js";
 import { openMigratedTestDb } from "../db/testHelpers.js";
@@ -13,7 +13,7 @@ import { addWorkspaceToProject, createProject, getProject } from "../db/repos/pr
 import { createWorkspace } from "../db/repos/workspacesRepo.js";
 import { createPerson } from "../db/repos/peopleRepo.js";
 import { issueDevice } from "../db/repos/devicesRepo.js";
-import { getSkill, getSkillBySlug, listHeldSkillCopies, listSkillVersions, readProjectSkills, saveSkill, setSkillLocked, upsertReplicaSkill } from "../db/repos/skillsRepo.js";
+import { getSkill, getSkillBySlug, listHeldSkillCopies, listSkills, listSkillVersions, readProjectSkills, saveSkill, setSkillLocked, upsertReplicaSkill } from "../db/repos/skillsRepo.js";
 import { saveMcpServer } from "../db/repos/mcpServersRepo.js";
 import { setSetting } from "../db/repos/settingsRepo.js";
 import { listCommentsForItem } from "../db/repos/commentsRepo.js";
@@ -23,7 +23,10 @@ import { MANAGED_PERSON_ID_KEY } from "../identity/viewer.js";
 import { createLocalRecord, type LocalItemRecord } from "./localRecord.js";
 import { createDeviceRecord, type DeviceRecord } from "./deviceRecord.js";
 import { moveProjectToRecord } from "./adopt.js";
-import { serveAdopt, serveChanges, type ServeRecordContext } from "./serveRecord.js";
+import { serveAdopt, serveApply, serveChanges, type ServeRecordContext } from "./serveRecord.js";
+import { archivesSkillsOf } from "../skills/archival.js";
+import { createRun } from "../db/repos/runsRepo.js";
+import { createTestItem } from "../db/testHelpers.js";
 import type { RecordTransport } from "./syncStatus.js";
 
 /**
@@ -453,3 +456,52 @@ function wireProject(projectId: Uuid): IpcPayload<"record:adopt">["project"] {
 function emptyPage(part: Partial<IpcPayload<"record:adopt">["page"]>): IpcPayload<"record:adopt">["page"] {
   return { ...ipcContract["record:adopt"].request.parse({ deviceId: "d", project: wireProject("p" as Uuid), keyNextValue: 0, page: {} }).page, ...part };
 }
+
+describe("an agent's skill nobody loads, on a project the record holds (EO-720)", () => {
+  it("is archived on the record when a device's runs report it, and stays archived on a replica's next pull", async () => {
+    const support = createProject(annaDb.db, { name: "Support", keyPrefix: "SUP", managed: false });
+    const saved = saveSkill(
+      annaDb.db,
+      SkillDraftSchema.parse({ name: "Refund policy", description: "When refunds apply.", body: "Do refunds.", scope: { kind: "project", projectId: support.id } }),
+      Date.now(),
+      { kind: "consolidation", consolidationId: "c-1" },
+    );
+    if (!saved.ok) throw new Error(saved.problems.join("\n"));
+    const skillId = saved.skill.id;
+    expect(await move(support.id)).toEqual({});
+    await laptop.record.sync();
+    expect(getSkill(laptopDb.db, skillId)!.archivedAt).toBeNull();
+
+    // A desktop does not archive a moved project's skills in its replica:
+    // the record's next copy would bring them back.
+    expect(archivesSkillsOf(annaDb.db, support.id, false)).toBe(false);
+    expect(archivesSkillsOf(recordDb.db, support.id, true)).toBe(true);
+
+    // Anna's runs on the project reach the record, each reporting the skill delivered.
+    serving.skillAgeing = () => ({ staleAfterRuns: 1, archiveAfterRuns: 2 });
+    const item = createTestItem(recordDb.db, { type: "story", title: "A refund", stepId: "todo", projectId: support.id });
+    const report = (ts: number) => {
+      const runId = createRun(recordDb.db, { itemId: item.id, agentId: null, action: "implement", status: "succeeded" }).id;
+      return serveApply(serving, {
+        deviceId: anna.deviceId,
+        commands: [{ kind: "runEvents", id: `c-${ts}`, runId, itemId: item.id, events: [{ seq: 1, ts, type: SKILLS_DELIVERED_EVENT, payload: { type: SKILLS_DELIVERED_EVENT, skillIds: [skillId], slugs: ["refund-policy"] } }] }],
+      });
+    };
+    await report(Date.now());
+    expect(getSkill(recordDb.db, skillId)!.archivedAt).toBeNull();
+    await report(Date.now() + 1);
+
+    expect(getSkill(recordDb.db, skillId)!.archivedAt).not.toBeNull();
+    expect(listSkillVersions(recordDb.db, skillId)[0]).toMatchObject({ action: "archive", author: { kind: "eo" } });
+    const notes = listCommentsForItem(recordDb.db, findProjectThread(recordDb.db, support.id)!.id as Uuid);
+    expect(notes).toHaveLength(1);
+    expect(notes[0]!.body).toContain("`refund-policy`");
+
+    await laptop.record.sync();
+    expect(getSkill(laptopDb.db, skillId)!.archivedAt).not.toBeNull();
+    expect(listSkills(laptopDb.db).map((one) => one.id)).not.toContain(skillId);
+    // A later pull with nothing new leaves it as the record has it.
+    await laptop.record.sync();
+    expect(getSkill(laptopDb.db, skillId)!.archivedAt).not.toBeNull();
+  });
+});

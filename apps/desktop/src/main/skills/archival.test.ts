@@ -16,6 +16,8 @@ import {
 import { skillUsageById, usageOfSkill } from "../db/repos/skillUsageRepo.js";
 import { createTestItem, openMigratedTestDb } from "../db/testHelpers.js";
 import { findProjectThread, openProjectThread } from "../projects/projectThread.js";
+import { markReplica } from "../db/recordRole.js";
+import { publishSection } from "../db/repos/publishedSectionsRepo.js";
 import { archiveUnusedSkills } from "./archival.js";
 
 /** Archiving the agent skills nobody loads (EO-720). */
@@ -145,6 +147,54 @@ describe("archiving unused agent skills", () => {
 
     expect((await pass()).archived).toEqual([]);
     expect(notes()).toHaveLength(1);
+  });
+
+  it("archives nothing when the note cannot be written, and archives and tells on the next pass", async () => {
+    const first = skill("release", "agent");
+    const second = skill("changelog", "agent");
+    runs(5, [first, second]);
+    // A thread item this database has no row for: the note's insert fails
+    // after both archives were written, inside the same transaction.
+    const nowhere = { id: "019fb8c6-0000-7000-8000-00000000dead" } as never;
+    await expect(archiveUnusedSkills({ db: handle.db, projectId, ageing, projectThread: () => Promise.resolve({ ok: true, item: nowhere }) })).rejects.toThrow();
+    for (const id of [first, second]) {
+      expect(getSkill(handle.db, id)!.archivedAt).toBeNull();
+      expect(listSkillVersions(handle.db, id).map((version) => version.action)).toEqual(["create"]);
+    }
+
+    const result = await pass();
+    expect(result.archived).toHaveLength(2);
+    expect(notes()).toHaveLength(1);
+  });
+
+  it("says once on the project thread that a published section kept due skills, and again only for a skill newly due", async () => {
+    const first = skill("release", "agent");
+    const second = skill("changelog", "agent");
+    const stop = markReplica(handle.db, () => true);
+    try {
+      publishSection(handle.db, { section: "packs", publishedAt: Date.now(), publishedBy: null, publishedByName: "Dana" });
+      runs(5, [first]);
+      runs(2, [second]);
+      const told = await pass();
+      expect(told).toMatchObject({ archived: [], problem: expect.stringContaining("published the packs section") });
+      expect(getSkill(handle.db, first)!.archivedAt).toBeNull();
+      expect(notes()).toHaveLength(1);
+      expect(notes()[0]!.body).toContain("`release`");
+      expect(notes()[0]!.id).toBe(told.noteId);
+
+      // The same refusal is not said after every run.
+      runs(1, [first]);
+      expect((await pass()).noteId).toBeNull();
+      expect(notes()).toHaveLength(1);
+
+      // Another skill falling due is.
+      runs(3, [second]);
+      await pass();
+      expect(notes()).toHaveLength(2);
+      expect(notes()[1]!.body).toContain("`changelog`");
+    } finally {
+      stop();
+    }
   });
 
   it("archives nothing when there is no project thread to say so on", async () => {

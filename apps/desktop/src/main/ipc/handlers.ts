@@ -1893,6 +1893,11 @@ export function registerAllHandlers(db: Db, engine: EngineHandle | undefined, re
       return { maxEntries: guards.memoryScopeMaxEntries, maxChars: guards.memoryScopeMaxChars };
     },
     templateHistory,
+    // How an agent's unused skill of a project held here is aged (EO-720).
+    skillAgeing: () => {
+      const guards = readGuards(db);
+      return { staleAfterRuns: guards.skillStaleAfterRuns, archiveAfterRuns: guards.skillArchiveAfterRuns };
+    },
   };
   registerHandler("record:work", (payload) => serveWork(serving, payload), opts);
   registerHandler("record:renew", (payload) => serveRenew(serving, payload), opts);
