@@ -189,7 +189,7 @@ describe("what the system agent's prompt says about a module attaching files", (
 
   it("tells it to declare needs.attach", () => {
     expect(flat).toContain("`attach: true` if you attach files");
-    expect(flat).toContain("`ticket`, `comment` and `attach` are not enforced");
+    expect(flat).toContain("`item`, `comment` and `attach` are not enforced");
   });
 
   it("describes ctx.createItem, its answer and its limits", () => {

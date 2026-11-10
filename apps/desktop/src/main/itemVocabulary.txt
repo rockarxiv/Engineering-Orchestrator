@@ -336,8 +336,10 @@ apps/desktop/src/main/roles/reviewVerdict.ts: ? "This ticket declares no accepta
 apps/desktop/src/main/roles/reviewVerdict.ts: `**Review census.** This ticket took ${here} review round${here === 1 ? "" : "s"}.\n\n${comparison}\n\n` +
 apps/desktop/src/main/roles/reviewVerdict.ts: `Rounds per ticket: ${census.roundsPerItem?.toFixed(2) ?? "n/a"} over ${census.items}, worst ${census.maxRounds}, against a worst of ${PRE_CHANGE_BASELINE.maxRounds}.`,
 apps/desktop/src/main/roles/reviewVerdict.ts: sections.push("", "Reported, but matching no criterion this ticket declares:", ...summary.extra.map(line));
-apps/desktop/src/main/roles/systemAgentModuleCard.test.ts: expect(flat).toContain("`ticket`, `comment` and `attach` are not enforced");
 apps/desktop/src/main/roles/systemAgentModuleCard.test.ts: expect(flat).toContain("a run on a generation 3 ticket cannot create");
+apps/desktop/src/main/roles/systemAgentModuleSurface.test.ts: expect(text).not.toContain("`ticket: true`");
+apps/desktop/src/main/roles/systemAgentModuleSurface.test.ts: expect(text).not.toMatch(/`ticket`,\s+`comment` and `attach` are not enforced/);
+apps/desktop/src/main/roles/systemAgentModuleSurface.test.ts: it("declares reading a ticket as `item: true`, the field the schema has, and never `ticket`", () => {
 apps/desktop/src/main/roles/systemAgentPriority.test.ts: expect(flat).toContain("Left out, a new ticket is 0.");
 apps/desktop/src/main/supervisor/agentComments.ts: ? `Comment posted. The mention-depth cap of ${MENTION_DEPTH_CAP} is reached on this ticket, so it went to the person instead of the agent you named. `
 apps/desktop/src/main/supervisor/agentComments.ts: body: `Escalation redirected to you: mention-depth cap of ${MENTION_DEPTH_CAP} reached on this ticket.`,
