@@ -3,7 +3,7 @@ import { sql } from "drizzle-orm";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { DbHandle } from "../db/client.js";
 import {
-  appendRunEvent,
+  appendRunEventAt,
   createProject,
   createRun,
   getSkill,
@@ -50,13 +50,21 @@ describe("archiving unused agent skills", () => {
     return saved.skill.id;
   }
 
+  /**
+   * One line of a run, on a clock that moves a millisecond with every line:
+   * a delivery written in the same millisecond as a load is not after it,
+   * so on a fast machine it would not count.
+   */
+  let clock = Date.now() - 1_000_000;
+  const line = (runId: Uuid, type: string, payload: unknown) => appendRunEventAt(handle.db, runId, { seq: 0, ts: (clock += 1) }, type, payload);
+
   /** `count` finished runs, each given these skills and settled; the last of them loading `loads`. */
   function runs(count: number, skillIds: string[], loads: string[] = []): void {
     for (let index = 0; index < count; index++) {
       const id = createRun(handle.db, { itemId, agentId: null, action: "implement", status: "succeeded" }).id;
-      appendRunEvent(handle.db, id, SKILLS_DELIVERED_EVENT, { type: SKILLS_DELIVERED_EVENT, skillIds, slugs: skillIds });
-      if (index === count - 1) for (const skillId of loads) appendRunEvent(handle.db, id, SKILL_LOADED_EVENT, { type: SKILL_LOADED_EVENT, skillId, slug: skillId });
-      appendRunEvent(handle.db, id, SKILLS_SETTLED_EVENT, { type: SKILLS_SETTLED_EVENT });
+      line(id, SKILLS_DELIVERED_EVENT, { type: SKILLS_DELIVERED_EVENT, skillIds, slugs: skillIds });
+      if (index === count - 1) for (const skillId of loads) line(id, SKILL_LOADED_EVENT, { type: SKILL_LOADED_EVENT, skillId, slug: skillId });
+      line(id, SKILLS_SETTLED_EVENT, { type: SKILLS_SETTLED_EVENT });
     }
   }
 
@@ -64,7 +72,7 @@ describe("archiving unused agent skills", () => {
   function unsettled(skillIds: string[], status: "running" | "succeeded"): Uuid {
     const id = createRun(handle.db, { itemId, agentId: null, action: "implement", status }).id;
     if (status === "succeeded") handle.db.run(sql`update runs set ended_at = ${Date.now()} where id = ${id}`);
-    appendRunEvent(handle.db, id, SKILLS_DELIVERED_EVENT, { type: SKILLS_DELIVERED_EVENT, skillIds, slugs: skillIds });
+    line(id, SKILLS_DELIVERED_EVENT, { type: SKILLS_DELIVERED_EVENT, skillIds, slugs: skillIds });
     return id;
   }
 
@@ -108,8 +116,8 @@ describe("archiving unused agent skills", () => {
     expect(notes()).toEqual([]);
 
     // It did load it, and settled: the stretch starts again.
-    appendRunEvent(handle.db, going, SKILL_LOADED_EVENT, { type: SKILL_LOADED_EVENT, skillId: id, slug: id });
-    appendRunEvent(handle.db, going, SKILLS_SETTLED_EVENT, { type: SKILLS_SETTLED_EVENT });
+    line(going, SKILL_LOADED_EVENT, { type: SKILL_LOADED_EVENT, skillId: id, slug: id });
+    line(going, SKILLS_SETTLED_EVENT, { type: SKILLS_SETTLED_EVENT });
     handle.db.run(sql`update runs set status = 'succeeded' where id = ${going}`);
     expect(usageOfSkill(skillUsageById(handle.db), id).deliveriesSinceLoad).toBe(0);
     expect((await pass()).archived).toEqual([]);
@@ -121,7 +129,7 @@ describe("archiving unused agent skills", () => {
     const late = unsettled([id], "succeeded");
     handle.db.run(sql`update runs set ended_at = 1 where id = ${late}`);
     expect((await pass()).archived).toEqual([]);
-    appendRunEvent(handle.db, late, SKILLS_SETTLED_EVENT, { type: SKILLS_SETTLED_EVENT });
+    line(late, SKILLS_SETTLED_EVENT, { type: SKILLS_SETTLED_EVENT });
     expect((await pass()).archived.map((archived) => archived.id)).toEqual([id]);
   });
 

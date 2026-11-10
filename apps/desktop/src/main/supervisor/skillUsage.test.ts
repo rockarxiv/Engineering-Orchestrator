@@ -14,7 +14,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { DbHandle } from "../db/client.js";
 import { setAgentAttachment } from "../db/repos/agentAttachmentsRepo.js";
 import { listAgents } from "../db/repos/agentsRepo.js";
-import { appendRunEvent, createProject, createRun, listCommentsForItem, listRunEvents, listRunsForItem, listSkillVersions, ownRunsToSettle } from "../db/repos/index.js";
+import { appendRunEventAt, createProject, createRun, listCommentsForItem, listRunEvents, listRunsForItem, listSkillVersions, ownRunsToSettle } from "../db/repos/index.js";
 import { skillUsageById, usageOfSkill } from "../db/repos/skillUsageRepo.js";
 import { getSkill, saveSkill } from "../db/repos/skillsRepo.js";
 import { findProjectThread } from "../projects/projectThread.js";
@@ -221,14 +221,17 @@ describe("archiving unused agent skills after a dispatch", () => {
     setAgentAttachment(handle.db, { agentId: implementer.id, kind: "skill", id: skillId, attached: true });
 
     // Before the upgrade: one run that loaded it, then four that did not — none of them settled.
-    const legacy = (load: boolean) => {
+    // Each line a second apart and well in the past: on one clock tick a
+    // later run's delivery would not be after the load, and would not count.
+    const base = Date.now() - 60_000;
+    const legacy = (index: number, load: boolean) => {
       const runId = createRun(handle.db, { itemId: item.id, agentId: implementer.id, action: "implement", status: "succeeded" }).id;
-      appendRunEvent(handle.db, runId, SKILLS_DELIVERED_EVENT, { type: SKILLS_DELIVERED_EVENT, skillIds: [skillId], slugs: ["release"] });
-      if (load) appendRunEvent(handle.db, runId, SKILL_LOADED_EVENT, { type: SKILL_LOADED_EVENT, skillId, slug: "release" });
+      appendRunEventAt(handle.db, runId, { seq: 0, ts: base + index * 1_000 }, SKILLS_DELIVERED_EVENT, { type: SKILLS_DELIVERED_EVENT, skillIds: [skillId], slugs: ["release"] });
+      if (load) appendRunEventAt(handle.db, runId, { seq: 1, ts: base + index * 1_000 + 500 }, SKILL_LOADED_EVENT, { type: SKILL_LOADED_EVENT, skillId, slug: "release" });
       return runId;
     };
-    legacy(true);
-    for (let index = 0; index < 4; index++) legacy(false);
+    legacy(0, true);
+    for (let index = 1; index <= 4; index++) legacy(index, false);
     expect(usageOfSkill(skillUsageById(handle.db), skillId)).toMatchObject({ runsDelivered: 5, runsLoaded: 1, deliveriesSinceLoad: 0 });
 
     const fake = createFakeProvider({ result: validImplementResult });

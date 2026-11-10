@@ -481,6 +481,9 @@ describe("an agent's skill nobody loads, on a project the record holds (EO-720)"
     return { support, skillId: saved.skill.id };
   }
 
+  /** A clock a millisecond on with every line, so no delivery shares its time with the load before it. */
+  let clock = Date.now() - 1_000_000;
+
   /** One page of a run's transcript reaching the record, with the run row as the device has it then. */
   function page(runId: Uuid, itemId: Uuid, from: number, types: string[], skillId: string) {
     const payloadOf = (type: string) =>
@@ -491,7 +494,7 @@ describe("an agent's skill nobody loads, on a project the record holds (EO-720)"
           : { type };
     return serveApply(serving, {
       deviceId: anna.deviceId,
-      commands: [{ kind: "runEvents", id: `${runId}:events:${String(from)}`, runId, itemId, events: types.map((type, index) => ({ seq: from + index, ts: Date.now(), type, payload: payloadOf(type) })) }],
+      commands: [{ kind: "runEvents", id: `${runId}:events:${String(from)}`, runId, itemId, events: types.map((type, index) => ({ seq: from + index, ts: (clock += 1), type, payload: payloadOf(type) })) }],
     });
   }
 
