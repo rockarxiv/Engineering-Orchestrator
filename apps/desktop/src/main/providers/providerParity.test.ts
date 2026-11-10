@@ -600,6 +600,7 @@ const CAPABILITIES = [
         { type: "skill_loaded", slug: "house-style" },
         { type: "skill_loaded", slug: "house-style" },
         { type: "skill_loaded", slug: "e2e-for-p" },
+        { type: "skill_loaded", slug: "e2e-for-p" },
       ],
       resumed: [{ type: "skills_delivered", slugs: ["build-in-w", "e2e-for-p", "house-style"] }],
       withoutSkills: [],
@@ -2685,6 +2686,7 @@ const CLAUDE: Record<CapabilityName, Proof> = {
       sdk.calls("c3", "Skill", { skill: "eo-attachments:house-style" }),
       sdk.calls("c4", "Skill", { skill: "ponytail" }),
       sdk.calls("c5", "Skill", { skill: "eo-attachments:e2e-for-p", args: "now" }),
+      sdk.calls("c6", "Skill", { skill: "eo-attachments:e2e-for-p" }),
       sdk.result(),
     ]);
     const startedEvents = await collect(createClaudeProvider({ runQuery: started.runQuery, enableCommentTool: false }).start({ ...startOpts, toolDirectory, skillScope: SCOPED_RUN }));
@@ -3879,6 +3881,10 @@ const CODEX: Record<CapabilityName, Proof> = {
       command("cmd-6", "/bin/bash -lc 'ls .agent/skills/e2e-for-p/SKILL.md'"),
       command("cmd-7", "/bin/bash -lc 'cat .agent/skills/e2e-for-p/SKILL.md.bak'"),
       command("cmd-8", "/bin/bash -lc 'python3 -c \"print(open(SKILL).read())\"'", [read(`${cwd}/.agent/skills/e2e-for-p/SKILL.md`)]),
+      // Help and an option's value read no file; a search of the file reads it.
+      command("cmd-9", "/bin/bash -lc 'cat --help .agent/skills/house-style/SKILL.md'"),
+      command("cmd-10", "/bin/bash -lc 'sed -n -e .agent/skills/house-style/SKILL.md /dev/null'"),
+      command("cmd-11", "/bin/bash -lc 'rg . .agent/skills/e2e-for-p/SKILL.md'"),
       note.agentMessage("ok"),
       note.turnCompleted(),
     ];

@@ -40,8 +40,118 @@ export function claudeSkillLoaded(name: string, input: unknown): AgentEvent[] {
  */
 const SKILL_FILE = new RegExp(`^(?:.*/)?${WORKTREE_SKILLS_PATH.replace(".", "\\.")}/([a-z0-9]+(?:-[a-z0-9]+)*)/SKILL\\.md$`);
 
-/** Commands whose file arguments they read. `sed -i` is an edit, and is excluded where it is seen. */
-const READERS = new Set(["cat", "head", "tail", "sed", "nl", "less", "more", "bat", "batcat", "tac", "awk", "view"]);
+/**
+ * How one reading command takes its arguments, so a file operand can be
+ * told from an option's value, a script or a pattern.
+ *
+ * - `valued`: the options that take a value — the next word, or the rest
+ *   of the word (`-n40`, `--lines=40`). Every other option is a flag.
+ * - `script`: the first operand is a script or a pattern, not a file,
+ *   unless one of `scriptOptions` supplied it (`sed -e`, `grep -f`).
+ * - `noRead`: options under which the command reads no file at all —
+ *   help, version, or listing files rather than their contents.
+ * - `edits`: options that make it write the file rather than read it.
+ */
+interface ReaderSpec {
+  valued: readonly string[];
+  script?: boolean;
+  scriptOptions?: readonly string[];
+  noRead?: readonly string[];
+  edits?: readonly string[];
+}
+
+const NO_READ = ["--help", "--version"];
+
+const GREP: ReaderSpec = {
+  valued: ["-e", "-f", "-m", "-A", "-B", "-C", "-d", "-D", "--regexp", "--file", "--max-count", "--after-context", "--before-context", "--context", "--label", "--include", "--exclude", "--exclude-dir", "--exclude-from", "--devices", "--directories", "--binary-files", "--group-separator"],
+  script: true,
+  scriptOptions: ["-e", "-f", "--regexp", "--file"],
+  noRead: ["-V"],
+};
+
+/** The commands whose file operands they read. */
+const READERS: ReadonlyMap<string, ReaderSpec> = new Map<string, ReaderSpec>([
+  ["cat", { valued: [] }],
+  ["tac", { valued: ["-s", "--separator"] }],
+  ["head", { valued: ["-n", "-c", "--lines", "--bytes"] }],
+  ["tail", { valued: ["-n", "-c", "-s", "--lines", "--bytes", "--pid", "--sleep-interval", "--max-unchanged-stats"] }],
+  ["nl", { valued: ["-b", "-d", "-f", "-h", "-i", "-l", "-n", "-s", "-v", "-w", "--body-numbering", "--section-delimiter", "--footer-numbering", "--header-numbering", "--line-increment", "--join-blank-lines", "--number-format", "--number-separator", "--starting-line-number", "--number-width"] }],
+  ["less", { valued: ["-b", "-h", "-j", "-k", "-o", "-O", "-p", "-P", "-t", "-T", "-x", "-y", "-z"], noRead: ["-V"] }],
+  ["more", { valued: ["-n"], noRead: ["-V"] }],
+  ["view", { valued: ["-c", "-S", "-u", "-i", "-T", "-w", "-W", "-s", "-t", "-q"] }],
+  ...["bat", "batcat"].map((name): [string, ReaderSpec] => [
+    name,
+    {
+      valued: ["-l", "-H", "-r", "-m", "--language", "--highlight-line", "--line-range", "--map-syntax", "--style", "--theme", "--tabs", "--wrap", "--terminal-width", "--pager", "--color", "--decorations", "--italic-text", "--file-name", "--diff-context", "--paging"],
+      noRead: ["-V", "-L", "--list-languages", "--list-themes", "--config-file", "--config-dir", "--cache-dir"],
+    },
+  ]),
+  [
+    "sed",
+    {
+      valued: ["-e", "-f", "-l", "--expression", "--file", "--line-length"],
+      script: true,
+      scriptOptions: ["-e", "-f", "--expression", "--file"],
+      edits: ["-i", "--in-place"],
+    },
+  ],
+  ...["awk", "gawk", "mawk", "nawk"].map((name): [string, ReaderSpec] => [name, { valued: ["-f", "-v", "-F", "--file", "--assign", "--field-separator"], script: true, scriptOptions: ["-f", "--file"] }]),
+  ...["grep", "egrep", "fgrep"].map((name): [string, ReaderSpec] => [name, GREP]),
+  [
+    "rg",
+    {
+      valued: ["-e", "-f", "-g", "-t", "-T", "-m", "-A", "-B", "-C", "-M", "-j", "-r", "-E", "-d", "--regexp", "--file", "--glob", "--iglob", "--type", "--type-not", "--type-add", "--type-clear", "--max-count", "--after-context", "--before-context", "--context", "--max-columns", "--threads", "--replace", "--encoding", "--max-depth", "--color", "--colors", "--sort", "--sortr", "--pre", "--pre-glob", "--ignore-file", "--path-separator", "--context-separator", "--field-match-separator", "--field-context-separator", "--engine", "--max-filesize", "--dfa-size-limit", "--regex-size-limit", "--hostname-bin", "--hyperlink-format", "--generate"],
+      script: true,
+      scriptOptions: ["-e", "-f", "--regexp", "--file"],
+      noRead: ["-V", "-h", "--files", "--type-list", "--generate", "--pcre2-version"],
+    },
+  ],
+]);
+
+/**
+ * The files one invocation of a reading command reads, by its arguments,
+ * or null where it reads nothing at all — help, version, a listing, an
+ * in-place edit. Options, their values and a script or pattern operand
+ * are never files; after `--` every word is.
+ */
+function fileOperands(spec: ReaderSpec, args: readonly string[]): string[] | null {
+  const valued = new Set(spec.valued);
+  const scriptOptions = new Set(spec.scriptOptions ?? []);
+  const stops = new Set([...NO_READ, ...(spec.noRead ?? []), ...(spec.edits ?? [])]);
+  const operands: string[] = [];
+  let scriptGiven = false;
+  let optionsOver = false;
+  for (let at = 0; at < args.length; at += 1) {
+    const arg = args[at]!;
+    if (optionsOver || arg === "-" || !arg.startsWith("-")) {
+      operands.push(arg);
+      continue;
+    }
+    if (arg === "--") {
+      optionsOver = true;
+      continue;
+    }
+    if (arg.startsWith("--")) {
+      const [name = arg] = arg.split("=", 1);
+      if (stops.has(name)) return null;
+      if (scriptOptions.has(name)) scriptGiven = true;
+      if (valued.has(name) && !arg.includes("=")) at += 1;
+      continue;
+    }
+    // A cluster of short options: `-nE`, `-n40`, `-A3`. A valued one
+    // takes the rest of the word, or the next word when it ends it.
+    for (let index = 1; index < arg.length; index += 1) {
+      const option = `-${arg[index]!}`;
+      if (stops.has(option)) return null;
+      if (scriptOptions.has(option)) scriptGiven = true;
+      if (valued.has(option)) {
+        if (index === arg.length - 1) at += 1;
+        break;
+      }
+    }
+  }
+  return spec.script && !scriptGiven ? operands.slice(1) : operands;
+}
 
 /** Shells whose `-c` script is parsed in turn: Codex runs every command as `bash -lc '…'`. */
 const SHELLS = new Set(["bash", "sh", "zsh", "dash"]);
@@ -122,15 +232,26 @@ function skillsReadBy(command: string, depth: number): string[] {
       if (script !== undefined) slugs.push(...skillsReadBy(script, depth + 1));
       continue;
     }
-    if (!READERS.has(program)) continue;
-    if (program === "sed" && args.some((arg) => arg.startsWith("-i") || arg.startsWith("--in-place"))) continue;
+    const spec = READERS.get(program);
+    if (spec === undefined) continue;
+    // Redirects first: what follows `>` is written, and what follows `<`
+    // is read as standard input — where the command reads at all, which
+    // a help or version invocation does not.
+    const operands: string[] = [];
+    const input: string[] = [];
     for (let at = 0; at < args.length; at += 1) {
-      // What follows `>` is written, not read.
-      if (args[at] === ">") {
+      if (args[at] === ">" || args[at] === "<") {
+        const target = args[at + 1];
+        if (args[at] === "<" && target !== undefined) input.push(target);
         at += 1;
         continue;
       }
-      const slug = SKILL_FILE.exec(args[at]!)?.[1];
+      operands.push(args[at]!);
+    }
+    const files = fileOperands(spec, operands);
+    if (files === null) continue;
+    for (const file of [...files, ...input]) {
+      const slug = SKILL_FILE.exec(file)?.[1];
       if (slug !== undefined) slugs.push(slug);
     }
   }
@@ -145,8 +266,10 @@ function skillsReadBy(command: string, depth: number): string[] {
  * A read, not a mention (invariant 5): either the app-server's own parse
  * of the command says it reads exactly that file (`reads`, its `read`
  * actions), or the command line itself runs a reading command — `cat`,
- * `sed -n`, `head`, `nl`, … — with exactly that file as an argument.
- * `echo` or `ls` of the path, or a read of `SKILL.md.bak`, is no load.
+ * `sed -n`, `head`, `nl`, `grep`, `rg`, … — with exactly that file as a
+ * file operand. `echo` or `ls` of the path, a read of `SKILL.md.bak`, the
+ * path as an option's value or a script (`sed -e <path> /dev/null`), and
+ * a help or version invocation (`cat --help <path>`) are no load.
  * One event per skill however many times the command reads it.
  */
 export function codexSkillsRead(command: string, reads: readonly string[] = []): AgentEvent[] {

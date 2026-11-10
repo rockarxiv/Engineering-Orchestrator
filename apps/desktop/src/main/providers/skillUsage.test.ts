@@ -27,6 +27,20 @@ describe("skill usage detection", () => {
     ["cd /tmp/wt && cat .agent/skills/a/SKILL.md .agent/skills/b-2/SKILL.md; cat ./.agent/skills/a/SKILL.md", ["a", "b-2"]],
     ["sed -n p < .agent/skills/house-style/SKILL.md", ["house-style"]],
     ["cat .agent/skills/house-style/SKILL.md > /tmp/copy.md", ["house-style"]],
+    // Searching the file reads it.
+    ["rg . .agent/skills/house-style/SKILL.md", ["house-style"]],
+    ["rg -n --color=never -e foo -- .agent/skills/house-style/SKILL.md", ["house-style"]],
+    ["grep -n '' .agent/skills/house-style/SKILL.md", ["house-style"]],
+    ["grep -A3 -i release .agent/skills/house-style/SKILL.md", ["house-style"]],
+    ["egrep -e a -e b .agent/skills/house-style/SKILL.md", ["house-style"]],
+    // Options and their values are skipped, not mistaken for the file or for its absence.
+    ["head -n 40 .agent/skills/house-style/SKILL.md", ["house-style"]],
+    ["tail -n40 .agent/skills/house-style/SKILL.md", ["house-style"]],
+    ["sed -n -e 1,20p .agent/skills/house-style/SKILL.md", ["house-style"]],
+    ["sed -nE '1,20p' .agent/skills/house-style/SKILL.md", ["house-style"]],
+    ["awk '{print}' .agent/skills/house-style/SKILL.md", ["house-style"]],
+    ["cat -- .agent/skills/house-style/SKILL.md", ["house-style"]],
+    ["bat --style=plain -r 1:40 .agent/skills/house-style/SKILL.md", ["house-style"]],
   ])("reads a Codex load from %s", (command, slugs) => {
     expect(codexSkillsRead(command)).toEqual(slugs.map((slug) => ({ type: "skill_loaded", slug })));
   });
@@ -50,6 +64,29 @@ describe("skill usage detection", () => {
     "sed -i 's/a/b/' .agent/skills/house-style/SKILL.md",
     // Named inside an argument that is not the file.
     "grep -c x 'see .agent/skills/house-style/SKILL.md'",
+    // Help and version read no file.
+    "cat --help .agent/skills/house-style/SKILL.md",
+    "head --version .agent/skills/house-style/SKILL.md",
+    "rg -V .agent/skills/house-style/SKILL.md",
+    "rg -h .agent/skills/house-style/SKILL.md",
+    "bat --list-languages .agent/skills/house-style/SKILL.md",
+    // Listing files is not reading them.
+    "rg --files .agent/skills/house-style/SKILL.md",
+    // The path as an option's value, a script or a pattern, not a file operand.
+    "sed -n -e .agent/skills/house-style/SKILL.md /dev/null",
+    "sed .agent/skills/house-style/SKILL.md",
+    "sed -f .agent/skills/house-style/SKILL.md README.md",
+    "awk -f .agent/skills/house-style/SKILL.md README.md",
+    "rg .agent/skills/house-style/SKILL.md",
+    "rg -e .agent/skills/house-style/SKILL.md README.md",
+    "grep -f .agent/skills/house-style/SKILL.md README.md",
+    "grep --regexp=x --file .agent/skills/house-style/SKILL.md README.md",
+    "tail --pid .agent/skills/house-style/SKILL.md README.md",
+    "head -n .agent/skills/house-style/SKILL.md README.md",
+    // An in-place edit, however it is spelled.
+    "sed -ni 's/a/b/' .agent/skills/house-style/SKILL.md",
+    "sed --in-place=.orig 's/a/b/' .agent/skills/house-style/SKILL.md",
+    "cat --help < .agent/skills/house-style/SKILL.md",
   ])("counts no Codex load from %s", (command) => {
     expect(codexSkillsRead(command)).toEqual([]);
   });
