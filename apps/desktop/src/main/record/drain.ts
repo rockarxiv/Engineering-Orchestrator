@@ -66,7 +66,8 @@ import { asRunCommand, runCommandId, runPatchFrom } from "./runCommand.js";
 import type { RecordAttachmentStore } from "./serveRecord.js";
 import { answerCopiedSkillProposal } from "../memory/skillProposals.js";
 import { writeArrivedMemory } from "../db/repos/memoriesRepo.js";
-import { getSkill, upsertReplicaSkill } from "../db/repos/skillsRepo.js";
+import { getSkill, holdSkillCopy, releaseHeldSkillCopies, upsertReplicaSkill } from "../db/repos/skillsRepo.js";
+import { tellHeldSkillCopies } from "../skills/heldSkills.js";
 import { memoryWaitingFor } from "./memoryReplica.js";
 import { isDecision } from "./stepAuthority.js";
 
@@ -1186,9 +1187,20 @@ async function applyChanges(options: DrainOptions, changes: RecordChanges): Prom
     const here = getSkill(options.db, skill.id);
     if (here !== undefined && here.updatedAt > skill.updatedAt) continue;
     const { projectId, ...row } = skill;
-    upsertReplicaSkill(options.db, row, projectId);
+    // Kept out, with nothing written, where a person's lock here stands
+    // in its way (EO-714) — held, as a publication's is.
+    const taken = upsertReplicaSkill(options.db, row, projectId);
+    if (!taken.ok) {
+      holdSkillCopy(options.db, row, projectId, taken.problem);
+      continue;
+    }
     applied += 1;
   }
+  // What a lock kept out before, written now the lock no longer stands in
+  // its way; and what it still keeps out, told to the person once, on a
+  // project thread (EO-714).
+  applied += releaseHeldSkillCopies(options.db).length;
+  tellHeldSkillCopies(options.db, now);
   /**
    * The record-held projects' own agents (EO-476), after the
    * publications for the graphs' reason — whether the agents section is

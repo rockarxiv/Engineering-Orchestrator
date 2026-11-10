@@ -1848,10 +1848,83 @@ export const skills = sqliteTable("skills", {
   localChangedAt: integer("local_changed_at").notNull().default(0),
   /** Archived rather than deleted — see `modules.archived_at` and invariant #3. */
   archivedAt: integer("archived_at"),
+  /**
+   * `SkillOwner` (EO-714): `person` or `agent` — who created the row. Every
+   * skill that existed when the column arrived was a person's. A person
+   * editing an agent's skill does not change it; it decides only whether
+   * the skill may be archived automatically.
+   */
+  createdBy: text("created_by").notNull().default("person"),
+  /**
+   * A person's lock (EO-714): while true, every write whose author is not
+   * a person is refused with nothing written (`skillsRepo`).
+   */
+  locked: integer("locked", { mode: "boolean" }).notNull().default(false),
 }, (table) => [
   index("idx_skills_project").on(table.projectId),
   index("idx_skills_local_changed").on(table.localChangedAt, table.id),
 ]);
+
+/**
+ * A copy of a skill from the organisation's record that a person's lock
+ * kept out (EO-714) — a published skill whose slug a locked skill here
+ * holds, or the record's newer copy of a skill a person locked here.
+ *
+ * Held rather than dropped: it is written the moment the lock no longer
+ * stands in its way (`releaseHeldSkillCopies`, on an unlock and on every
+ * pull), and the person is told once, on a project thread, what is held
+ * and what to do (`told_at`). One row per skill: a newer copy replaces
+ * the one held.
+ */
+export const heldSkillCopies = sqliteTable("held_skill_copies", {
+  /** The arriving skill's id. */
+  skillId: text("skill_id").primaryKey(),
+  /** `Skill`, as the record sent it. */
+  copy: text("copy", { mode: "json" }).notNull(),
+  /** The project the record gave it, for a record-held project's skill; null for a published section's, whose project its scope says. */
+  projectId: text("project_id"),
+  /** The sentence saying why it was held and what lets it in — the comment's body. */
+  problem: text("problem").notNull(),
+  heldAt: integer("held_at").notNull(),
+  /** When a person was told, or null while no thread could be found to tell them on. */
+  toldAt: integer("told_at"),
+});
+
+/**
+ * Every write to a skill, as the skill stood after it (EO-714).
+ *
+ * Append-only, as `run_events` is: a row is never updated or deleted
+ * (`architecturalInvariants.test.ts` holds that), and the only way one
+ * goes is its skill being deleted outright, which the cascade does and no
+ * TypeScript asks for. Restoring a version is itself a new version.
+ *
+ * The author is a kind and an id: `person` (no id), `run` (a run's id),
+ * `consolidation` (a memory consolidation's id) or `record` (copied from
+ * the organisation's record, which already holds the write).
+ */
+export const skillVersions = sqliteTable(
+  "skill_versions",
+  {
+    id: text("id").primaryKey(), // uuidv7
+    skillId: text("skill_id")
+      .notNull()
+      .references(() => skills.id, { onDelete: "cascade" }),
+    /** `SkillVersionAction`. */
+    action: text("action").notNull(),
+    description: text("description").notNull(),
+    body: text("body").notNull(),
+    /** `SkillFile[]`, as `skills.files`. */
+    files: text("files", { mode: "json" }).notNull(),
+    /** `SkillAuthor["kind"]`. */
+    authorKind: text("author_kind").notNull(),
+    /** The run's or the consolidation's id; null for a person and the record. */
+    authorId: text("author_id"),
+    /** The version a `restore` put back; null for every other action. */
+    restoredFrom: text("restored_from"),
+    createdAt: integer("created_at").notNull(),
+  },
+  (table) => [index("idx_skill_versions_skill").on(table.skillId, table.createdAt)],
+);
 
 /**
  * Which MCP servers an agent has been given (EO-106).

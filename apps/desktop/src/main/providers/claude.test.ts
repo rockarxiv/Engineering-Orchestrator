@@ -1261,7 +1261,7 @@ describe("attachments", () => {
           scope: { kind: "global" },
           createdAt: 1,
           updatedAt: 1,
-          archivedAt: null,
+          archivedAt: null, createdBy: "person", locked: false,
         },
       ],
     });
@@ -1356,7 +1356,7 @@ describe("attachments", () => {
           scope: { kind: "global" },
           createdAt: 1,
           updatedAt: 1,
-          archivedAt: null,
+          archivedAt: null, createdBy: "person", locked: false,
         },
       ],
     });

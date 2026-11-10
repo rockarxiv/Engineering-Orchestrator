@@ -77,7 +77,7 @@ function answeringSkills(skills: Skill[]): void {
 }
 
 function projectSkill(name: string, scope: Skill["scope"], overrides: Partial<Skill> = {}): Skill {
-  return { id: `skill-${name}`, slug: name.toLowerCase().replace(/[^a-z0-9]+/g, "-"), name, description: "A procedure.", body: "Step one.", files: [], disableModelInvocation: false, enabled: true, scope, createdAt: 0, updatedAt: 0, archivedAt: null, ...overrides };
+  return { id: `skill-${name}`, slug: name.toLowerCase().replace(/[^a-z0-9]+/g, "-"), name, description: "A procedure.", body: "Step one.", files: [], disableModelInvocation: false, enabled: true, scope, createdAt: 0, updatedAt: 0, archivedAt: null, createdBy: "person", locked: false, ...overrides };
 }
 
 function renderProjects({

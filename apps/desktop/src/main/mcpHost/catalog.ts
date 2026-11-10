@@ -93,9 +93,12 @@ import {
   renderModuleVersions,
   renderSettings,
   renderSettingsWritten,
+  renderSkillLocked,
+  renderSkillRestored,
   renderSkills,
   renderSkillSaved,
   renderSkillSwitched,
+  renderSkillVersions,
   renderSpend,
   renderItem,
   renderItems,
@@ -183,6 +186,15 @@ export interface ToolSpec {
    * was never shown.
    */
   adminOnly?: boolean;
+  /**
+   * Withheld from the administrative listener entirely (EO-714) — the
+   * other direction from `adminOnly`. A person's act that no agent may
+   * take, not even the system agent acting with the person's authority:
+   * locking a skill is what stops agents changing it, so an agent able to
+   * unlock one would make the lock nothing. Enforced on both paths, as
+   * `adminOnly` is.
+   */
+  personOnly?: boolean;
   annotations: ToolAnnotations;
   /**
    * Every channel this tool may touch.
@@ -257,6 +269,8 @@ interface ChannelToolSpec<K extends IpcChannel> {
   kind: ToolKind;
   /** See `ToolSpec.adminOnly`. Absent means every server EO runs offers it. */
   adminOnly?: boolean;
+  /** See `ToolSpec.personOnly`. */
+  personOnly?: boolean;
   annotations: ToolAnnotations;
   /** See `ToolSpec.list`. */
   list?: string;
@@ -447,6 +461,7 @@ function spelledTool<K extends IpcChannel>(spec: ChannelToolSpec<K>, spelling: T
     description,
     kind: spec.kind,
     ...(spec.adminOnly === true ? { adminOnly: true } : {}),
+    ...(spec.personOnly === true ? { personOnly: true } : {}),
     annotations: spec.annotations,
     ...(spec.list !== undefined ? { list: spec.list } : {}),
     channels: [spec.channel],
@@ -1430,14 +1445,29 @@ const CATALOGUE_READ_TOOLS: readonly ToolSpec[] = [
     channel: "skills:list",
     description:
       "The skills a person has written for EO's agents — instructions delivered beside an agent rather than tools it " +
-      "calls. Each answers with its slug, what it is for, whether it is delivered at all and whether the model is " +
-      "offered it to choose. The full body of each travels in the structured reply rather than in the text. This is " +
+      "calls. Each answers with its slug, what it is for, whether it is delivered at all, whether the model is " +
+      "offered it to choose, who created it (`createdBy`: a person or an agent) and whether a person has locked it " +
+      "(`locked`) so no agent can change it. The full body of each travels in the structured reply rather than in the text. This is " +
       "the catalogue: agent_attachments_list is what says which agents get which. Pass includeArchived to see " +
       "retired ones, which attachments can still point at.",
     kind: "read",
     list: "skills",
     annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
     render: renderSkills,
+  }),
+  channelTool({
+    name: "skill_versions_list",
+    channel: "skills:versions",
+    description:
+      "Every write to one skill, newest first (`id` from skills_list): what it did — create, edit, enable, disable, " +
+      "archive, restore, lock, unlock, or sync for a copy taken from the organisation's record — who made it (a " +
+      "person, a run by its id, or a memory consolidation by its id) and when. The description of each is in the " +
+      "text; its body and files travel in the structured reply. skill_restore_version puts any of them back.",
+    kind: "read",
+    list: "versions",
+    annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
+    render: renderSkillVersions,
+    refusal: (data) => data.problem,
   }),
   channelTool({
     name: "agent_attachments_list",
@@ -2924,13 +2954,42 @@ const CATALOGUE_WRITE_TOOLS: readonly ToolSpec[] = [
     channel: "skills:archive",
     description:
       "Retire a catalogued skill. No agent is delivered it again, and skills_list stops showing it unless you pass " +
-      "includeArchived. The row is kept rather than deleted — an attachment that named it still resolves — but " +
-      "nothing brings it back, so a person who wants it again has to write it afresh. Ask before calling this on " +
-      "a skill you did not just write; switching it off with skill_set_enabled is the reversible half.",
+      "includeArchived. The row is kept rather than deleted — an attachment that named it still resolves — and " +
+      "skill_restore_version brings it back. The archive is a version in its history, naming who archived it. Ask " +
+      "before calling this on a skill you did not just write; switching it off with skill_set_enabled is the " +
+      "lighter half.",
     kind: "write",
     annotations: { destructiveHint: true, openWorldHint: false },
-    render: () => "Skill archived. It is delivered to nobody now; the row is kept, so skills_list with includeArchived still shows it.",
+    render: () =>
+      "Skill archived. It is delivered to nobody now; the row is kept, so skills_list with includeArchived still shows it, " +
+      "and skill_restore_version brings it back.",
     refusal: (data) => (data.archived ? null : `Nothing was archived: ${data.problem ?? "it refused."} Nothing has changed.`),
+  }),
+  channelTool({
+    name: "skill_restore_version",
+    channel: "skills:restoreVersion",
+    description:
+      "Put one of a skill's earlier versions back: its description, body and files become that version's, and an " +
+      "archived skill is live again. `id` is the skill's and `versionId` one from skill_versions_list. Nothing is " +
+      "rewritten — the restore is itself a new version, naming the person who asked for it. A version that is not " +
+      "that skill's is refused by name.",
+    kind: "write",
+    annotations: { openWorldHint: false },
+    render: renderSkillRestored,
+    refusal: (data) => (data.skill === null ? `Nothing was restored: ${data.problem ?? "it refused."} Nothing has changed.` : null),
+  }),
+  channelTool({
+    name: "skill_set_locked",
+    channel: "skills:setLocked",
+    description:
+      "Lock a skill, or unlock it. While a skill is locked, every write to it whose author is not a person — a " +
+      "run's learning review, a memory consolidation, EO's own system agent — is refused, and nothing is written; a person can still edit, " +
+      "archive and restore it. A person's act only: EO's own agents are not offered this tool.",
+    kind: "write",
+    personOnly: true,
+    annotations: { idempotentHint: true, openWorldHint: false },
+    render: renderSkillLocked,
+    refusal: (data) => (data.skill === null ? `Nothing was changed: ${data.problem ?? "it refused."} Nothing has changed.` : null),
   }),
 ];
 

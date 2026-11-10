@@ -427,9 +427,14 @@ export {
   getSkill,
   getSkillBySlug,
   listSkills,
+  listSkillVersions,
+  restoreSkillVersion,
   saveSkill,
   setSkillEnabled,
+  setSkillLocked,
   type SaveSkillResult,
+  type ReplicaSkillResult,
+  type SkillWriteResult,
 } from "./skillsRepo.js";
 export {
   approveModule,

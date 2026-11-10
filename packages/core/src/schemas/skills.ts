@@ -114,6 +114,14 @@ export function skillsForRun<T extends { scope: SkillScope }>(skills: readonly T
   return skills.filter((skill) => skillInRunScope(skill.scope, where));
 }
 
+/**
+ * Who created a skill (EO-714). A person editing an agent's skill does not
+ * change it: it decides only whether the skill may be archived
+ * automatically, which a person's never is.
+ */
+export const SkillOwnerSchema = z.enum(["person", "agent"]);
+export type SkillOwner = z.infer<typeof SkillOwnerSchema>;
+
 export const SkillSchema = z.object({
   id: z.string(),
   /**
@@ -166,9 +174,121 @@ export const SkillSchema = z.object({
   updatedAt: z.number(),
   /** Archived rather than deleted — a run that used it still points at it (invariant #3). */
   archivedAt: z.number().nullable(),
+  /**
+   * Who created it (EO-714) — see `SkillOwnerSchema`. Defaulted so a
+   * published section or a record from before ownership reads as what
+   * every skill then was: a person's.
+   */
+  createdBy: SkillOwnerSchema.default("person"),
+  /**
+   * A person's lock (EO-714): while set, every write whose author is not a
+   * person is refused and nothing is written. Defaulted for `createdBy`'s
+   * reason.
+   */
+  locked: z.boolean().default(false),
 });
 
 export type Skill = z.infer<typeof SkillSchema>;
+
+/**
+ * Who wrote one version of a skill (EO-714).
+ *
+ * A person; a run, by its id; a memory consolidation, by its id; one of
+ * EO's system agents, by its id, writing through the administrative MCP
+ * host — the turn's own credential names it, never the caller's word; or
+ * the organisation's record, for a copy this machine took from it — the
+ * write itself was made, and versioned, where the record is.
+ */
+export const SkillAuthorSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("person") }),
+  z.object({ kind: z.literal("run"), runId: z.string() }),
+  z.object({ kind: z.literal("consolidation"), consolidationId: z.string() }),
+  z.object({ kind: z.literal("agent"), agentId: z.string() }),
+  z.object({ kind: z.literal("record") }),
+]);
+export type SkillAuthor = z.infer<typeof SkillAuthorSchema>;
+
+export const PERSON_SKILL_AUTHOR: SkillAuthor = { kind: "person" };
+
+/** Who wrote one version of a skill, as the subject of a sentence — the same words on the Skills screen and over MCP (EO-714). */
+export function skillAuthorLabel(author: SkillAuthor): string {
+  switch (author.kind) {
+    case "person":
+      return "a person";
+    case "run":
+      return `run ${author.runId}`;
+    case "consolidation":
+      return `memory consolidation ${author.consolidationId}`;
+    case "agent":
+      return `system agent ${author.agentId}`;
+    case "record":
+      return "the organisation's record";
+  }
+}
+
+/** What one write did, as a person reads it in a skill's history (EO-714). */
+export function skillVersionActionLabel(action: SkillVersionAction): string {
+  switch (action) {
+    case "create":
+      return "Created";
+    case "edit":
+      return "Edited";
+    case "enable":
+      return "Switched on";
+    case "disable":
+      return "Switched off";
+    case "archive":
+      return "Archived";
+    case "restore":
+      return "Restored";
+    case "lock":
+      return "Locked";
+    case "unlock":
+      return "Unlocked";
+    case "sync":
+      return "Copied from the record";
+  }
+}
+
+/** Whether this author is an agent — what a lock refuses (EO-714). The system agent is one, though it acts with the person's authority. */
+export function isAgentSkillAuthor(author: SkillAuthor): boolean {
+  return author.kind === "run" || author.kind === "consolidation" || author.kind === "agent";
+}
+
+/**
+ * Who is writing, from what a door stamped on the payload (EO-714): the
+ * system agent the administrative MCP host named, or else the person.
+ * Every other door strips the field (`withActingAgent`), so absent means
+ * the person.
+ */
+export function skillAuthorFromActingAgent(actingAgentId: string | undefined): SkillAuthor {
+  return actingAgentId === undefined ? PERSON_SKILL_AUTHOR : { kind: "agent", agentId: actingAgentId };
+}
+
+/** The sentence every write a lock refuses comes back with (EO-714). */
+export const SKILL_LOCKED_PROBLEM = "A person locked this skill, so only a person can change it. Nothing was written.";
+
+/** What one write to a skill did (EO-714). `sync` is a copy taken from the organisation's record. */
+export const SkillVersionActionSchema = z.enum(["create", "edit", "enable", "disable", "archive", "restore", "lock", "unlock", "sync"]);
+export type SkillVersionAction = z.infer<typeof SkillVersionActionSchema>;
+
+/**
+ * One write to a skill, as the skill stood after it (EO-714). Append-only:
+ * restoring an earlier version files a new one rather than rewriting any.
+ */
+export const SkillVersionSchema = z.object({
+  id: z.string(),
+  skillId: z.string(),
+  action: SkillVersionActionSchema,
+  description: z.string(),
+  body: z.string(),
+  files: z.array(SkillFileSchema),
+  author: SkillAuthorSchema,
+  /** The version a `restore` put back; null for every other action. */
+  restoredFrom: z.string().nullable(),
+  createdAt: z.number(),
+});
+export type SkillVersion = z.infer<typeof SkillVersionSchema>;
 
 /**
  * What a supporting file's path may look like.

@@ -64,14 +64,14 @@ describe("the destructive-operations gate", () => {
     const offered = toolsFor(false, "admin");
 
     expect(offered.filter((tool) => tool.kind === "dangerous")).toEqual([]);
-    expect(offered.length).toBe(TOOLS.filter((tool) => tool.kind !== "dangerous").length);
+    expect(offered.length).toBe(TOOLS.filter((tool) => tool.kind !== "dangerous" && tool.personOnly !== true).length);
   });
 
   it("offers everything once it is open", () => {
     // The admin listener's, because that is the audience the whole
     // catalogue is for. The external one is a tool short (EO-192), which
     // is the point of the case below.
-    expect(toolsFor(true, "admin").length).toBe(TOOLS.length);
+    expect(toolsFor(true, "admin").length).toBe(TOOLS.filter((tool) => tool.personOnly !== true).length);
     // Strictly more than when closed, which is the property Settings
     // reports to the person deciding whether to flip it.
     expect(toolsFor(true).length).toBeGreaterThan(toolsFor(false).length);
@@ -138,5 +138,34 @@ describe("the admin-only surface", () => {
     expect(toolOffered(view, "external")).toBe(false);
     expect(toolOffered(view, "admin")).toBe(true);
     expect(toolOffered(ordinary, "external")).toBe(true);
+  });
+});
+
+/**
+ * The other direction (EO-714): a tool only a person may call, which the
+ * administrative listener — the one EO's own agents reach — never offers.
+ */
+describe("the person-only surface", () => {
+  const personOnly = TOOLS.filter((tool) => tool.personOnly === true).map((tool) => tool.name);
+
+  it("holds the skill lock, so the checks below are not passing on an empty set", () => {
+    expect(personOnly).toEqual(["skill_set_locked"]);
+  });
+
+  it("withholds those tools from the admin listener, and offers them to the external one", () => {
+    for (const dangerous of [false, true]) {
+      const admin = toolsFor(dangerous, "admin").map((tool) => tool.name);
+      const external = toolsFor(dangerous, "external").map((tool) => tool.name);
+      for (const name of personOnly) {
+        expect(admin, `${name} with dangerousOperations=${dangerous}`).not.toContain(name);
+        expect(external, `${name} with dangerousOperations=${dangerous}`).toContain(name);
+      }
+    }
+  });
+
+  it("answers per tool as well as per list", () => {
+    const lock = TOOLS.find((tool) => tool.name === "skill_set_locked")!;
+    expect(toolOffered(lock, "admin")).toBe(false);
+    expect(toolOffered(lock, "external")).toBe(true);
   });
 });

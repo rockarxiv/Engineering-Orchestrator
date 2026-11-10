@@ -95,9 +95,9 @@ export function toolAllowed(tool: Pick<ToolSpec, "kind">, dangerousOperations: b
  */
 export type McpAudience = "admin" | "external";
 
-/** Whether this listener offers this tool at all — see `ToolSpec.adminOnly`. */
-export function toolOffered(tool: Pick<ToolSpec, "adminOnly">, audience: McpAudience): boolean {
-  return audience === "admin" || tool.adminOnly !== true;
+/** Whether this listener offers this tool at all — see `ToolSpec.adminOnly` and `ToolSpec.personOnly`. */
+export function toolOffered(tool: Pick<ToolSpec, "adminOnly" | "personOnly">, audience: McpAudience): boolean {
+  return audience === "admin" ? tool.personOnly !== true : tool.adminOnly !== true;
 }
 
 /**

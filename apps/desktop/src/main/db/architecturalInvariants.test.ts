@@ -109,12 +109,20 @@ describe("architectural invariant: items.stepId has exactly one writer", () => {
  * at all. The one way an occurrence is ever removed is the person
  * deleting the whole job, which the schema's cascade does and no
  * TypeScript asks for.
+ *
+ * `skill_versions` is the fifth (EO-714): every write to a skill, with
+ * its author, is what makes an agent's write to one accountable and
+ * restorable. A version rewritten or removed is a write nobody can see
+ * was made. Restoring one files a new version; no file is exempt, and
+ * the only way a row goes is its skill being deleted outright, which the
+ * schema's cascade does.
  */
 const APPEND_ONLY: Readonly<Record<string, readonly string[]>> = {
   runEvents: [join("db", "repos", "itemsRepo.ts")],
   transitions: [join("db", "repos", "itemsRepo.ts")],
   jobOccurrences: [],
   jobEvents: [],
+  skillVersions: [],
 };
 
 /**
@@ -153,8 +161,11 @@ function findRecordRewriters(root: string, allowed: Readonly<Record<string, read
  * migration is SQL, and is just as able to rewrite the substrate, so it
  * is read too. Adding an index, as 0140 does, is not a write of a row.
  */
-function migrationRunEventsRewrites(sql: string): string[] {
-  const statement = /\b(update\s+(?:or\s+\w+\s+)?|delete\s+from\s+|drop\s+table\s+(?:if\s+exists\s+)?|replace\s+into\s+|insert\s+or\s+replace\s+into\s+)[`"[]?run_events\b/gi;
+function migrationRecordRewrites(sql: string, table = "run_events"): string[] {
+  const statement = new RegExp(
+    `\\b(update\\s+(?:or\\s+\\w+\\s+)?|delete\\s+from\\s+|drop\\s+table\\s+(?:if\\s+exists\\s+)?|replace\\s+into\\s+|insert\\s+or\\s+replace\\s+into\\s+)[\`"[]?${table}\\b`,
+    "gi",
+  );
   return [...sql.replace(/--[^\n]*/g, "").matchAll(statement)].map((match) => match[0].replace(/\s+/g, " ").toLowerCase());
 }
 
@@ -163,17 +174,29 @@ describe("architectural invariant: a record is never rewritten", () => {
     const migrations = join(mainSrcRoot, "db", "migrations");
     const offenders = readdirSync(migrations)
       .filter((name) => name.endsWith(".sql"))
-      .flatMap((name) => migrationRunEventsRewrites(readFileSync(join(migrations, name), "utf8")).map((found) => `${name}: ${found}`));
+      .flatMap((name) => migrationRecordRewrites(readFileSync(join(migrations, name), "utf8")).map((found) => `${name}: ${found}`));
     expect(offenders).toEqual([]);
     // And the reader is not a tautology.
-    expect(migrationRunEventsRewrites("UPDATE `run_events` SET payload = '{}';\nDELETE FROM run_events WHERE seq > 3;\nCREATE INDEX `idx_run_events_x` ON `run_events` (`ts`);")).toEqual([
+    expect(migrationRecordRewrites("UPDATE `run_events` SET payload = '{}';\nDELETE FROM run_events WHERE seq > 3;\nCREATE INDEX `idx_run_events_x` ON `run_events` (`ts`);")).toEqual([
       "update `run_events",
       "delete from run_events",
     ]);
-    expect(migrationRunEventsRewrites("-- never UPDATE run_events\nCREATE INDEX `idx_runs_item` ON `runs` (`item_id`);")).toEqual([]);
+    expect(migrationRecordRewrites("-- never UPDATE run_events\nCREATE INDEX `idx_runs_item` ON `runs` (`item_id`);")).toEqual([]);
   });
 
-  it("nothing updates run_events, transitions or job_occurrences, and only deleting an item removes a row", () => {
+  it("no migration updates, deletes or drops skill_versions rows (EO-714)", () => {
+    const migrations = join(mainSrcRoot, "db", "migrations");
+    const offenders = readdirSync(migrations)
+      .filter((name) => name.endsWith(".sql"))
+      .flatMap((name) => migrationRecordRewrites(readFileSync(join(migrations, name), "utf8"), "skill_versions").map((found) => `${name}: ${found}`));
+    expect(offenders).toEqual([]);
+    // Filing the history the migration starts from is an insert, not a rewrite.
+    expect(migrationRecordRewrites("INSERT INTO `skill_versions` (`id`) VALUES ('a');\nUPDATE skill_versions SET body = '';", "skill_versions")).toEqual([
+      "update skill_versions",
+    ]);
+  });
+
+  it("nothing updates run_events, transitions, job_occurrences, job_events or skill_versions, and only deleting an item removes a row", () => {
     expect(findRecordRewriters(mainSrcRoot, APPEND_ONLY)).toEqual([]);
   });
 
@@ -185,6 +208,7 @@ describe("architectural invariant: a record is never rewritten", () => {
       writeFileSync(join(tempDir, "promote.ts"), 'db.update(jobOccurrences).set({ status: "fired" }).run();');
       writeFileSync(join(tempDir, "rewrite.ts"), 'db.update(runEvents).set({ payload: {} }).run();');
       writeFileSync(join(tempDir, "forget.ts"), "db.delete(transitions).where(eq(transitions.itemId, id)).run();");
+      writeFileSync(join(tempDir, "history.ts"), 'db.update(skillVersions).set({ body: "" }).run();\ndb.delete(skillVersions).run();');
       // The sanctioned one, at the path the real exemption names.
       mkdirSync(join(tempDir, "db", "repos"), { recursive: true });
       writeFileSync(join(tempDir, "db", "repos", "itemsRepo.ts"), "tx.delete(runEvents).where(inArray(runEvents.runId, runIds)).run();");
@@ -193,6 +217,8 @@ describe("architectural invariant: a record is never rewritten", () => {
 
       expect(findRecordRewriters(tempDir, APPEND_ONLY)).toEqual([
         "forget.ts: delete(transitions)",
+        "history.ts: delete(skillVersions)",
+        "history.ts: update(skillVersions)",
         "promote.ts: update(jobOccurrences)",
         "release.ts: update(jobEvents)",
         "rewrite.ts: update(runEvents)",

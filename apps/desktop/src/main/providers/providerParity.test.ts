@@ -786,7 +786,7 @@ function scopedSkill(slug: string, scope: SkillScope): Skill {
     scope,
     createdAt: 1,
     updatedAt: 1,
-    archivedAt: null,
+    archivedAt: null, createdBy: "person", locked: false,
   };
 }
 const SCOPED_SKILLS: Skill[] = [

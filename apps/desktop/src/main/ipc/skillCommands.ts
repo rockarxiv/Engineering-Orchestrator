@@ -1,6 +1,7 @@
-import type { IpcPayload, IpcResponse, SkillScope, Uuid } from "@eo/core";
+import { skillAuthorFromActingAgent, type IpcPayload, type IpcResponse, type SkillScope, type Uuid } from "@eo/core";
 import type { Db } from "../db/client.js";
-import { archiveSkill, getProject, getSkill, getWorkspace, listSkills, saveSkill, setSkillEnabled } from "../db/repos/index.js";
+import { archiveSkill, getProject, getSkill, getWorkspace, listSkills, listSkillVersions, restoreSkillVersion, saveSkill, setSkillEnabled, setSkillLocked } from "../db/repos/index.js";
+import { releaseHeldSkillCopies } from "../db/repos/skillsRepo.js";
 
 /**
  * The skill catalogue, over IPC (EO-105).
@@ -36,8 +37,13 @@ export function listSkillsCommand(db: Db, input: IpcPayload<"skills:list">): Ipc
 export function saveSkillCommand(db: Db, input: IpcPayload<"skills:save">): IpcResponse<"skills:save"> {
   const scopeProblem = input.scope === undefined ? null : missingScope(db, input.scope);
   if (scopeProblem !== null) return { saved: false, skill: null, problem: scopeProblem };
-  const result = saveSkill(db, input);
+  // Who is writing (EO-714): a system agent the administrative MCP host
+  // named, whose write a lock refuses, or else the person.
+  const { actingAgentId, ...draft } = input;
+  const result = saveSkill(db, draft, Date.now(), skillAuthorFromActingAgent(actingAgentId));
   if (!result.ok) return { saved: false, skill: null, problem: result.problems.join("\n") };
+  // A rename can free the slug a held copy from the record wanted (EO-714).
+  releaseHeldSkillCopies(db);
   return { saved: true, skill: result.skill, problem: null };
 }
 
@@ -58,13 +64,33 @@ function missingScope(db: Db, scope: SkillScope): string | null {
 }
 
 export function setSkillEnabledCommand(db: Db, input: IpcPayload<"skills:setEnabled">): IpcResponse<"skills:setEnabled"> {
-  if (!setSkillEnabled(db, input.id, input.enabled)) return { skill: null, problem: "That skill no longer exists." };
-  const skill = getSkill(db, input.id);
-  return skill === undefined ? { skill: null, problem: "That skill no longer exists." } : { skill, problem: null };
+  const result = setSkillEnabled(db, input.id, input.enabled, Date.now(), skillAuthorFromActingAgent(input.actingAgentId));
+  return result.ok ? { skill: result.skill, problem: null } : { skill: null, problem: result.problem };
 }
 
-/** Archives a skill. Still listable with `includeArchived`, and still what an attachment points at. */
+/** Archives a skill. Still listable with `includeArchived`, still what an attachment points at, and a version in its history (EO-714). */
 export function archiveSkillCommand(db: Db, input: IpcPayload<"skills:archive">): IpcResponse<"skills:archive"> {
-  if (!archiveSkill(db, input.id)) return { archived: false, problem: "That skill no longer exists." };
-  return { archived: true, problem: null };
+  const result = archiveSkill(db, input.id, Date.now(), skillAuthorFromActingAgent(input.actingAgentId));
+  return result.ok ? { archived: true, problem: null } : { archived: false, problem: result.problem };
+}
+
+/** Locks or unlocks a skill (EO-714) — a person's act, which every door but the administrative MCP host's carries. */
+export function setSkillLockedCommand(db: Db, input: IpcPayload<"skills:setLocked">): IpcResponse<"skills:setLocked"> {
+  const result = setSkillLocked(db, input.id, input.locked);
+  // Unlocked, it no longer keeps out what the record sent while it was
+  // locked (EO-714): that is written now, not on the next pull.
+  if (result.ok && !input.locked) releaseHeldSkillCopies(db);
+  return result.ok ? { skill: result.skill, problem: null } : { skill: null, problem: result.problem };
+}
+
+/** Every write to one skill, newest first (EO-714). */
+export function listSkillVersionsCommand(db: Db, input: IpcPayload<"skills:versions">): IpcResponse<"skills:versions"> {
+  if (getSkill(db, input.id) === undefined) return { versions: [], problem: "That skill no longer exists." };
+  return { versions: listSkillVersions(db, input.id), problem: null };
+}
+
+/** Puts an earlier version back, as a new version naming whoever restored it (EO-714). */
+export function restoreSkillVersionCommand(db: Db, input: IpcPayload<"skills:restoreVersion">): IpcResponse<"skills:restoreVersion"> {
+  const result = restoreSkillVersion(db, input.id, input.versionId, Date.now(), skillAuthorFromActingAgent(input.actingAgentId));
+  return result.ok ? { skill: result.skill, problem: null } : { skill: null, problem: result.problem };
 }

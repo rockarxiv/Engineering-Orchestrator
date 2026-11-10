@@ -40,7 +40,7 @@ function skill(overrides: Partial<Skill> = {}): Skill {
     scope: { kind: "global" },
     createdAt: 1,
     updatedAt: 2,
-    archivedAt: null,
+    archivedAt: null, createdBy: "person", locked: false,
     ...overrides,
   };
 }

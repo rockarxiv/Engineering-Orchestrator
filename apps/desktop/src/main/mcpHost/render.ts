@@ -8,6 +8,7 @@ import {
   instructionsMachineSpecificWarnings,
   isPackShipped,
   specFields,
+  skillAuthorLabel,
   skillMachineSpecificWarnings,
   reservedMcpServerName,
   versionLabel,
@@ -1256,8 +1257,11 @@ function skillLine(skill: Skill): string {
   if (skill.disableModelInvocation) marks.push("delivered, but not offered for the model to choose");
   if (skill.archivedAt !== null) marks.push("archived");
   if (skill.files.length > 0) marks.push(`${skill.files.length} supporting file(s)`);
+  // Who created it and whether a person locked it (EO-714), on every line.
+  if (skill.locked) marks.push("locked by a person — no agent can change it");
   const suffix = marks.length === 0 ? "" : ` — ${marks.join("; ")}`;
-  return `${skill.name} (slug: ${skill.slug}, id: ${skill.id})${suffix}\n  ${skill.description}`;
+  const owner = skill.createdBy === "agent" ? "created by an agent" : "created by a person";
+  return `${skill.name} (slug: ${skill.slug}, id: ${skill.id}, ${owner})${suffix}\n  ${skill.description}`;
 }
 
 /**
@@ -1317,6 +1321,33 @@ export function renderSkillSwitched(data: IpcResponse<"skills:setEnabled">): str
   if (data.skill === null) return `Nothing changed: ${data.problem ?? "it refused."}`;
   const switched = data.skill.enabled ? "Switched on" : "Switched off";
   return `${switched}: ${skillLine(data.skill)}\nIt takes effect on the next dispatch, not on a run already in flight.`;
+}
+
+/** A skill's history, newest first (EO-714): what each write did, who made it and when. */
+export function renderSkillVersions(data: IpcResponse<"skills:versions">): string {
+  if (data.problem !== null) return data.problem;
+  return list(
+    data.versions.map(
+      (version) =>
+        `- ${version.action} by ${skillAuthorLabel(version.author)}, ${new Date(version.createdAt).toISOString()} (version id: ${version.id})` +
+        `${version.restoredFrom === null ? "" : ` — restored version ${version.restoredFrom}`}\n  ${version.description}`,
+    ),
+    "This skill has no versions.",
+  );
+}
+
+/** A version put back (EO-714). */
+export function renderSkillRestored(data: IpcResponse<"skills:restoreVersion">): string {
+  if (data.skill === null) return `Nothing was restored: ${data.problem ?? "it refused."}`;
+  return `Restored ${skillLine(data.skill)}\nThe restore is a new version in its history; it takes effect on the next dispatch.`;
+}
+
+/** A skill locked or unlocked (EO-714). */
+export function renderSkillLocked(data: IpcResponse<"skills:setLocked">): string {
+  if (data.skill === null) return `Nothing changed: ${data.problem ?? "it refused."}`;
+  return data.skill.locked
+    ? `Locked ${skillLine(data.skill)}\nNo agent can change it until a person unlocks it.`
+    : `Unlocked ${skillLine(data.skill)}\nAgents may change it again.`;
 }
 
 /**

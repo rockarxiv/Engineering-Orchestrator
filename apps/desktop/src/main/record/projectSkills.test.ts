@@ -13,12 +13,12 @@ import { addWorkspaceToProject, createProject, getProject } from "../db/repos/pr
 import { createWorkspace } from "../db/repos/workspacesRepo.js";
 import { createPerson } from "../db/repos/peopleRepo.js";
 import { issueDevice } from "../db/repos/devicesRepo.js";
-import { getSkill, getSkillBySlug, readProjectSkills, saveSkill, upsertReplicaSkill } from "../db/repos/skillsRepo.js";
+import { getSkill, getSkillBySlug, listHeldSkillCopies, listSkillVersions, readProjectSkills, saveSkill, setSkillLocked, upsertReplicaSkill } from "../db/repos/skillsRepo.js";
 import { saveMcpServer } from "../db/repos/mcpServersRepo.js";
 import { setSetting } from "../db/repos/settingsRepo.js";
 import { listCommentsForItem } from "../db/repos/commentsRepo.js";
 import { countProjectRows, readProjectAgents, writeAdoptedPage, writeAdoptedProject } from "../db/repos/projectMoveRepo.js";
-import { findProjectThread } from "../projects/projectThread.js";
+import { findProjectThread, openProjectThread } from "../projects/projectThread.js";
 import { MANAGED_PERSON_ID_KEY } from "../identity/viewer.js";
 import { createLocalRecord, type LocalItemRecord } from "./localRecord.js";
 import { createDeviceRecord, type DeviceRecord } from "./deviceRecord.js";
@@ -362,6 +362,60 @@ describe("a skill the record cannot take (EO-513)", () => {
     // The organisation's skill is untouched, and the project stays here.
     expect(getSkillBySlug(recordDb.db, slug)).toMatchObject({ body: "Theirs.", archivedAt: null });
     expect(getProject(annaDb.db, support.id)?.managedAt).toBeNull();
+  });
+});
+
+/**
+ * A person's lock against the record's copies (EO-714): the record is not
+ * a person, so a lock refuses what it writes, says so, and holds nothing
+ * back for good.
+ */
+describe("a skill a person locked, against the record's copies (EO-714)", () => {
+  it("ends a move's page by name where a person locked the skill on the record", () => {
+    const { support, projectSkill } = supportWithItsOwnSkills();
+    const wire = wireProject(support.id);
+    const sent = readProjectSkills(annaDb.db, support.id).find((one) => one.id === projectSkill)!;
+    expect(writeAdoptedProject(recordDb.db, wire, annaPersonId, 5).ok).toBe(true);
+    writeAdoptedPage(recordDb.db, wire, emptyPage({ skills: [{ ...sent, body: "First.", updatedAt: 10 }] }), anna.deviceId);
+    expect(setSkillLocked(recordDb.db, projectSkill, true, 11).ok).toBe(true);
+    const before = getSkill(recordDb.db, projectSkill);
+    const history = listSkillVersions(recordDb.db, projectSkill);
+
+    const again = writeAdoptedPage(recordDb.db, wire, emptyPage({ skills: [{ ...sent, body: "Second.", updatedAt: 20 }] }), anna.deviceId);
+
+    expect(again.skipped).toEqual([expect.stringContaining(`a person locked the skill "${sent.slug}"`)]);
+    expect(getSkill(recordDb.db, projectSkill)).toEqual(before);
+    expect(listSkillVersions(recordDb.db, projectSkill)).toEqual(history);
+  });
+
+  it("holds the record's newer copy off a replica's locked skill, tells the person on the project's thread, and writes it once unlocked", async () => {
+    const { support, projectSkill } = supportWithItsOwnSkills();
+    await move(support.id);
+    expect(openProjectThread(recordDb.db, support.id).ok).toBe(true);
+    await laptop.record.sync();
+    expect(setSkillLocked(laptopDb.db, projectSkill, true).ok).toBe(true);
+    const mine = getSkill(laptopDb.db, projectSkill);
+    const history = listSkillVersions(laptopDb.db, projectSkill);
+
+    // The record's newer copy, written by somebody on another machine.
+    const edited = saveSkill(recordDb.db, { ...getSkill(recordDb.db, projectSkill)!, slug: null, body: "Edited on the record." }, Date.now() + 1_000);
+    expect(edited.ok).toBe(true);
+    await laptop.record.sync();
+
+    expect(getSkill(laptopDb.db, projectSkill)).toEqual(mine);
+    expect(listSkillVersions(laptopDb.db, projectSkill)).toEqual(history);
+    expect(listHeldSkillCopies(laptopDb.db).map((held) => held.skill.body)).toEqual(["Edited on the record."]);
+    const thread = findProjectThread(laptopDb.db, support.id)!;
+    const said = listCommentsForItem(laptopDb.db, thread.id as Uuid).filter((comment) => comment.body.includes("a person locked it here"));
+    expect(said).toHaveLength(1);
+    expect(said[0]).toMatchObject({ kind: "escalation" });
+
+    // Unlocked, it arrives — and the person is not told twice.
+    expect(setSkillLocked(laptopDb.db, projectSkill, false).ok).toBe(true);
+    await laptop.record.sync();
+    expect(getSkill(laptopDb.db, projectSkill)?.body).toBe("Edited on the record.");
+    expect(listHeldSkillCopies(laptopDb.db)).toEqual([]);
+    expect(listCommentsForItem(laptopDb.db, thread.id as Uuid).filter((comment) => comment.body.includes("a person locked it here"))).toHaveLength(1);
   });
 });
 

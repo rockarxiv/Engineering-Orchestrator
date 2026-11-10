@@ -46,7 +46,7 @@ function scopedSkill(name: string, scope: Skill["scope"], overrides: Partial<Ski
     scope,
     createdAt: 0,
     updatedAt: 0,
-    archivedAt: null,
+    archivedAt: null, createdBy: "person", locked: false,
     ...overrides,
   };
 }

@@ -61,6 +61,8 @@ describe("skillsScopedTo", () => {
     createdAt: 0,
     updatedAt: 0,
     archivedAt,
+    createdBy: "person",
+    locked: false,
   });
   const all = [
     skill("everywhere", { kind: "global" }),

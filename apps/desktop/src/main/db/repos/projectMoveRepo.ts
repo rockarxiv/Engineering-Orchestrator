@@ -1858,9 +1858,16 @@ export function writeAdoptedPage(db: Db, project: RecordProject, page: RecordAdo
         skip(counts, `this record already has a skill called "${skill.slug}"; rename the project's skill and move it again`);
         continue;
       }
+      if (here !== undefined && here.updatedAt > skill.updatedAt) {
+        counts.skills += 1;
+        continue;
+      }
+      const written = writeMovedSkill(db, skill, project.id);
+      if (!written.ok) {
+        skip(counts, written.problem);
+        continue;
+      }
       counts.skills += 1;
-      if (here !== undefined && here.updatedAt > skill.updatedAt) continue;
-      writeMovedSkill(db, skill, project.id);
     }
     // …and an agent written on an earlier page than one of them — a skill
     // made while the move was running — gets it now (EO-513).

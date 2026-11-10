@@ -1,13 +1,22 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Plus, X } from "lucide-react";
-import { skillMachineSpecificWarnings, type IpcRequest, type Skill, type SkillFile, type SkillScope } from "@eo/core";
+import {
+  skillAuthorLabel,
+  skillMachineSpecificWarnings,
+  skillVersionActionLabel,
+  type IpcRequest,
+  type Skill,
+  type SkillFile,
+  type SkillScope,
+  type SkillVersion,
+} from "@eo/core";
 import { ipcQuery } from "../../../query/client";
 import { skillsKey } from "../../../query/hooks";
 import { useInFlight } from "../../../query/useInFlight";
 import { useViewParameters } from "../../../shared/view/ViewPublisher";
 import { BLANK, draftOf, toSave, type SkillDraft } from "../../../shared/agentTools/skills";
-import { Button, Card, Chip, EmptyState, ErrorLine, Field, IconButton, Loading, Select, TextArea, TextInput } from "../../kit";
+import { Button, Card, Chip, EmptyState, ErrorLine, Field, IconButton, Loading, Select, Switch, TextArea, TextInput } from "../../kit";
 import { AttachedAgents, useNextDispatchNote } from "./attach";
 import { TickOption } from "./ticks";
 import { toggleLabel, type RowAction } from "./rowActions";
@@ -148,12 +157,72 @@ function SkillEditor({
   );
 }
 
+/** The key one skill's history is read under — beneath `skillsKey`, so every skill write reads it again (EO-714). */
+function skillVersionsKey(id: string) {
+  return [...skillsKey, id, "versions"] as const;
+}
+
+/**
+ * Every write to one skill, newest first, with Restore on each earlier
+ * one (EO-714). A restore is itself a new version, naming the person.
+ */
+function SkillHistory({ skill, onRestored }: { skill: Skill; onRestored: () => Promise<unknown> }) {
+  const [problem, setProblem] = useState<string | null>(null);
+  const versions = useQuery({ queryKey: skillVersionsKey(skill.id), queryFn: () => ipcQuery("skills:versions", { id: skill.id }) });
+  const restore = useMutation({
+    mutationFn: (versionId: string) => ipcQuery("skills:restoreVersion", { id: skill.id, versionId }),
+    onSuccess: async (result) => {
+      setProblem(result.problem);
+      if (result.skill !== null) await onRestored();
+    },
+    onError: (error: Error) => setProblem(error.message),
+  });
+  const list: SkillVersion[] = versions.data?.versions ?? [];
+
+  return (
+    <section aria-label={`History of ${skill.name}`} className="flex flex-col gap-1.5 rounded-[12px] bg-canvas-subtle p-3">
+      <span className="text-[12px] font-medium text-ink-muted">History</span>
+      {versions.isLoading ? <Loading /> : null}
+      {versions.error ? <ErrorLine>{versions.error.message}</ErrorLine> : null}
+      {versions.data?.problem ? <ErrorLine>{versions.data.problem}</ErrorLine> : null}
+      {problem !== null ? <p role="alert" className="text-[12px] text-danger">{problem}</p> : null}
+      <ol className="flex flex-col gap-1.5">
+        {list.map((version, index) => (
+          <li key={version.id} className="flex min-w-0 flex-wrap items-start gap-x-3 gap-y-1">
+            <div className="flex min-w-0 flex-1 basis-[14rem] flex-col">
+              <span className="text-[12.5px] text-ink">
+                {skillVersionActionLabel(version.action)} by {skillAuthorLabel(version.author)}
+                {index === 0 ? " — current" : ""}
+              </span>
+              <span className="text-[11.5px] text-ink-subtle">{new Date(version.createdAt).toLocaleString()}</span>
+              <span className="truncate text-[11.5px] text-ink-muted">{version.description}</span>
+            </div>
+            {index > 0 ? (
+              <Button
+                size="sm"
+                variant="ghost"
+                aria-label={`Restore the version from ${new Date(version.createdAt).toLocaleString()}`}
+                disabled={restore.isPending}
+                onClick={() => restore.mutate(version.id)}
+              >
+                Restore
+              </Button>
+            ) : null}
+          </li>
+        ))}
+      </ol>
+    </section>
+  );
+}
+
 function SkillCard({
   skill,
   pending,
   onEdit,
   onToggle,
   onArchive,
+  onLock,
+  onRestored,
 }: {
   skill: Skill;
   /** What a press on this row is still doing (EO-562): its buttons wait and say so. */
@@ -161,7 +230,10 @@ function SkillCard({
   onEdit: () => void;
   onToggle: () => void;
   onArchive: () => void;
+  onLock: (locked: boolean) => void;
+  onRestored: () => Promise<unknown>;
 }) {
+  const [showHistory, setShowHistory] = useState(false);
   return (
     <Card label={skill.name}>
       <div className="flex min-w-0 flex-wrap items-start gap-x-3 gap-y-2">
@@ -170,6 +242,9 @@ function SkillCard({
             <h3 className="mr-0.5 truncate text-[14px] font-medium text-ink">{skill.name}</h3>
             <code className="font-mono text-[11.5px] text-ink-subtle">{skill.slug}</code>
             {skill.archivedAt !== null ? <Chip tone="paused">Archived</Chip> : skill.enabled ? null : <Chip>Disabled</Chip>}
+            {/* Who created it, and whether a person locked it (EO-714). */}
+            <Chip>{skill.createdBy === "agent" ? "Written by an agent" : "Written by a person"}</Chip>
+            {skill.locked ? <Chip>Locked</Chip> : null}
             {skill.disableModelInvocation ? <Chip>Not offered to the model</Chip> : null}
             <ScopeChip scope={skill.scope} />
             {skill.files.length > 0 ? (
@@ -192,8 +267,19 @@ function SkillCard({
               {pending === "archive" ? "Archiving…" : "Archive"}
             </Button>
           ) : null}
+          <Button size="sm" variant="ghost" aria-expanded={showHistory} onClick={() => setShowHistory((shown) => !shown)}>
+            {showHistory ? "Hide history" : "History"}
+          </Button>
         </div>
       </div>
+      <Switch
+        checked={skill.locked}
+        disabled={pending !== undefined}
+        onChange={onLock}
+        label="Locked"
+        description="While it is locked, no agent can change, archive or restore this skill. You still can."
+      />
+      {showHistory ? <SkillHistory skill={skill} onRestored={onRestored} /> : null}
       <AttachedAgents kind="skill" entryId={skill.id} entryName={skill.name} />
     </Card>
   );
@@ -244,6 +330,19 @@ export function SkillsPanel() {
     mutationFn: (id: string) => ipcQuery("skills:archive", { id }),
     onSuccess: async (result) => {
       if (!result.archived) {
+        setRowProblem(result.problem);
+        return;
+      }
+      setRowProblem(null);
+      await refresh();
+    },
+    onError: (error: Error) => setRowProblem(error.message),
+  });
+
+  const lock = useMutation({
+    mutationFn: (input: { id: string; locked: boolean }) => ipcQuery("skills:setLocked", input),
+    onSuccess: async (result) => {
+      if (result.problem !== null) {
         setRowProblem(result.problem);
         return;
       }
@@ -327,6 +426,8 @@ export function SkillsPanel() {
             pending={rowActions.pending.get(skill.id)}
             onToggle={() => runRow(skill.id, skill.enabled ? "disable" : "enable", () => setEnabled.mutateAsync({ id: skill.id, enabled: !skill.enabled }))}
             onArchive={() => runRow(skill.id, "archive", () => archive.mutateAsync(skill.id))}
+            onLock={(locked) => runRow(skill.id, locked ? "lock" : "unlock", () => lock.mutateAsync({ id: skill.id, locked }))}
+            onRestored={refresh}
           />
         ),
       )}
