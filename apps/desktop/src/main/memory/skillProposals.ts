@@ -145,20 +145,42 @@ export function discardedSkillProposals(db: Db, scope: MemoryScope): DiscardedSk
 
 /**
  * Why a proposal is held back without a notice, as the consolidation's
- * note says it, or null: a person discarded its scope and slug. Nothing
- * is posted for it — the person has already said no, and a notice every
- * consolidation would only say it again.
+ * note says it, or null: a person discarded its scope and slug — a new
+ * skill whose slug is a consolidation's skill a person archived, or any
+ * proposal whose slug a person discarded with the Discard answer
+ * proposals used to offer. Nothing is posted for it: the person has
+ * already said no, and a notice every consolidation would only say it
+ * again. An improvement to an archived skill is not held back here; it
+ * is refused with a notice saying why (`improvementTarget`).
  */
 function heldBack(db: Db, scope: MemoryScope, proposal: SkillProposal): string | null {
+  if (proposal.kind === "new") {
+    const skill = getSkillBySlug(db, proposal.slug);
+    if (skill && discardedByArchive(db, skill, scope)) {
+      return `The skill proposal \`${proposal.slug}\` was not applied: a person archived the skill \`${proposal.slug}\` a consolidation created in this scope, and it stays discarded unless a person restores it.`;
+    }
+  }
   const slugs = proposal.kind === "improvement" ? [...new Set([proposal.slug, proposal.target])] : [proposal.slug];
   for (const slug of slugs) {
-    const skill = getSkillBySlug(db, slug);
-    if (skill && discardedByArchive(db, skill, scope)) {
-      return `The skill proposal \`${proposal.slug}\` was not applied: a person archived the skill \`${slug}\` a consolidation created in this scope, and it stays discarded unless a person restores it.`;
-    }
     if (skillProposalDiscarded(db, scope, slug)) return `The skill proposal \`${proposal.slug}\` was discarded before, so it was not applied.`;
   }
   return null;
+}
+
+/** Why an archived target is not written to: a person's discard, if it is one, or an archive. */
+function archivedProblem(db: Db, skill: Skill, scope: MemoryScope): string {
+  return discardedByArchive(db, skill, scope)
+    ? `A person archived the skill \`${skill.slug}\`, which a consolidation created, and that discards it: it is not changed again unless a person restores it on the Skills screen.`
+    : `The skill it improves, \`${skill.slug}\`, is archived, so it was left as it is; a person can restore it on the Skills screen.`;
+}
+
+/**
+ * The skill an improvement's target slug means: the one the proposal call
+ * was shown under it, by id. With no snapshot of what it was shown (a
+ * caller that passes none), the skill holding the slug now.
+ */
+function targetIdOf(db: Db, named: string, shown: ReadonlyMap<string, string> | undefined): string | undefined {
+  return shown ? shown.get(named) : getSkillBySlug(db, named)?.id;
 }
 
 /**
@@ -171,10 +193,17 @@ function heldBack(db: Db, scope: MemoryScope, proposal: SkillProposal): string |
  */
 function improvementTarget(db: Db, named: string, targetId: string | undefined, scope: MemoryScope): { ok: true; skill: Skill } | { ok: false; problem: string } {
   const target = targetId === undefined ? undefined : getSkill(db, targetId);
-  if (!target) return { ok: false, problem: `There is no skill \`${named}\` for it to improve, so there is nothing to apply it to.` };
-  if (target.archivedAt !== null) {
-    return { ok: false, problem: `The skill it improves, \`${target.slug}\`, is archived, so it was left as it is; a person can restore it on the Skills screen.` };
+  if (!target) {
+    // Not one the call was shown. Whatever holds the slug now is only
+    // looked at to say why: an archived skill (which the call is never
+    // shown), or one made while the call ran, which its draft was not
+    // written for and which is never written to.
+    const now = getSkillBySlug(db, named);
+    if (now && now.archivedAt !== null) return { ok: false, problem: archivedProblem(db, now, scope) };
+    if (now) return { ok: false, problem: `The skill \`${named}\` was made while the proposal was being written, so this draft was not written for it and it was left as it is.` };
+    return { ok: false, problem: `There is no skill \`${named}\` for it to improve, so there is nothing to apply it to.` };
   }
+  if (target.archivedAt !== null) return { ok: false, problem: archivedProblem(db, target, scope) };
   if (target.slug !== named) {
     return { ok: false, problem: `The skill it improves was \`${named}\` and has since been renamed \`${target.slug}\`, so this draft is no longer for it.` };
   }
@@ -336,8 +365,9 @@ export function proposalNoticeBody(
  * which the consolidation keeps on its row.
  *
  * A proposal a person discarded — its scope and slug discarded before
- * EO-719, or a skill a consolidation created there archived by a person —
- * is held back with no notice (`heldBack`). Asked first, and again in the
+ * EO-719, or, for a new one, a skill a consolidation created there
+ * archived by a person — is held back with no notice (`heldBack`); an
+ * improvement to an archived skill is refused with one. Asked first, and again in the
  * transaction that applies it: finding the thread and storing the draft
  * are awaited, and a person may archive meanwhile.
  *
@@ -425,7 +455,7 @@ async function applyOne(input: ApplySkillProposalsInput, proposal: SkillProposal
   const targetSlug = proposal.kind === "improvement" ? proposal.target : null;
   // The skill the target slug meant when the proposal call was asked, held
   // by id from here on: a slug is the one thing a person can rename.
-  const targetId = targetSlug === null ? undefined : (input.shown?.get(targetSlug) ?? getSkillBySlug(db, targetSlug)?.id);
+  const targetId = targetSlug === null ? undefined : targetIdOf(db, targetSlug, input.shown);
   const target = targetId === undefined ? undefined : getSkill(db, targetId);
   const followed = coveringEntries(proposal.evidence.entryIds, input.folded);
   const evidenceEntryIds = [...new Set(proposal.evidence.entryIds)];

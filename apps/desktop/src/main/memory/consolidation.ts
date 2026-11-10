@@ -493,7 +493,7 @@ export interface DiscardedProposal {
 /** The most of one existing skill's body the skill proposal call is shown. */
 const EXISTING_SKILL_BODY_MAX_CHARS = 6_000;
 /** The most existing skills the skill proposal call is shown. */
-const EXISTING_SKILLS_MAX = 30;
+export const EXISTING_SKILLS_MAX = 30;
 
 /**
  * Which part of a scope one call is given, when the scope is consolidated

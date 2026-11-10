@@ -66,6 +66,7 @@ import {
   crossBatchMergeInput,
   MEMORY_CONSOLIDATE_SYSTEM,
   MEMORY_CROSS_BATCH_MERGE_SYSTEM,
+  EXISTING_SKILLS_MAX,
   MEMORY_PROPOSE_SKILLS_SYSTEM,
   peopleAloneOverCap,
   peopleOverCapNote,
@@ -1044,7 +1045,9 @@ export function createMemoryConsolidator(options: MemoryConsolidatorOptions): Me
         projectId: facts.projectId,
         proposals: answer.value.skills,
         folded,
-        shown: new Map(shown.map((skill) => [skill.slug, skill.id])),
+        // Only those the call was shown: one past the cap, or made while it
+        // ran, is not a target its draft was written for.
+        shown: new Map(shown.slice(0, EXISTING_SKILLS_MAX).map((skill) => [skill.slug, skill.id])),
         projectThread,
         ...(options.store ? { store: options.store } : {}),
         now: now(),
