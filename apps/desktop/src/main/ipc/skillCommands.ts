@@ -1,4 +1,4 @@
-import type { IpcPayload, IpcResponse, SkillScope, Uuid } from "@eo/core";
+import { skillAuthorFromActingAgent, type IpcPayload, type IpcResponse, type SkillScope, type Uuid } from "@eo/core";
 import type { Db } from "../db/client.js";
 import { archiveSkill, getProject, getSkill, getWorkspace, listSkills, listSkillVersions, restoreSkillVersion, saveSkill, setSkillEnabled, setSkillLocked } from "../db/repos/index.js";
 
@@ -36,7 +36,10 @@ export function listSkillsCommand(db: Db, input: IpcPayload<"skills:list">): Ipc
 export function saveSkillCommand(db: Db, input: IpcPayload<"skills:save">): IpcResponse<"skills:save"> {
   const scopeProblem = input.scope === undefined ? null : missingScope(db, input.scope);
   if (scopeProblem !== null) return { saved: false, skill: null, problem: scopeProblem };
-  const result = saveSkill(db, input);
+  // Who is writing (EO-714): a system agent the administrative MCP host
+  // named, whose write a lock refuses, or else the person.
+  const { actingAgentId, ...draft } = input;
+  const result = saveSkill(db, draft, Date.now(), skillAuthorFromActingAgent(actingAgentId));
   if (!result.ok) return { saved: false, skill: null, problem: result.problems.join("\n") };
   return { saved: true, skill: result.skill, problem: null };
 }
@@ -58,13 +61,13 @@ function missingScope(db: Db, scope: SkillScope): string | null {
 }
 
 export function setSkillEnabledCommand(db: Db, input: IpcPayload<"skills:setEnabled">): IpcResponse<"skills:setEnabled"> {
-  const result = setSkillEnabled(db, input.id, input.enabled);
+  const result = setSkillEnabled(db, input.id, input.enabled, Date.now(), skillAuthorFromActingAgent(input.actingAgentId));
   return result.ok ? { skill: result.skill, problem: null } : { skill: null, problem: result.problem };
 }
 
 /** Archives a skill. Still listable with `includeArchived`, still what an attachment points at, and a version in its history (EO-714). */
 export function archiveSkillCommand(db: Db, input: IpcPayload<"skills:archive">): IpcResponse<"skills:archive"> {
-  const result = archiveSkill(db, input.id);
+  const result = archiveSkill(db, input.id, Date.now(), skillAuthorFromActingAgent(input.actingAgentId));
   return result.ok ? { archived: true, problem: null } : { archived: false, problem: result.problem };
 }
 
@@ -80,8 +83,8 @@ export function listSkillVersionsCommand(db: Db, input: IpcPayload<"skills:versi
   return { versions: listSkillVersions(db, input.id), problem: null };
 }
 
-/** Puts an earlier version back, as a new version naming the person (EO-714). */
+/** Puts an earlier version back, as a new version naming whoever restored it (EO-714). */
 export function restoreSkillVersionCommand(db: Db, input: IpcPayload<"skills:restoreVersion">): IpcResponse<"skills:restoreVersion"> {
-  const result = restoreSkillVersion(db, input.id, input.versionId);
+  const result = restoreSkillVersion(db, input.id, input.versionId, Date.now(), skillAuthorFromActingAgent(input.actingAgentId));
   return result.ok ? { skill: result.skill, problem: null } : { skill: null, problem: result.problem };
 }

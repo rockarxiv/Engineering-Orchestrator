@@ -155,7 +155,14 @@ export function applySectionDocument(db: Db, document: SectionDocument | null): 
   let written = 0;
 
   for (const skill of document.skills) {
-    upsertReplicaSkill(db, skill);
+    // A skill a person locked here is not archived to make room for one
+    // of the same slug (EO-714): that one is not taken, and the log says
+    // why, as a held template update's closing does.
+    const taken = upsertReplicaSkill(db, skill);
+    if (!taken.ok) {
+      console.log(`[eo] ${taken.problem}`);
+      continue;
+    }
     written += 1;
   }
   for (const module of document.modules) {

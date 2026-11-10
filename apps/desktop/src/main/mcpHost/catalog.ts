@@ -2983,7 +2983,7 @@ const CATALOGUE_WRITE_TOOLS: readonly ToolSpec[] = [
     channel: "skills:setLocked",
     description:
       "Lock a skill, or unlock it. While a skill is locked, every write to it whose author is not a person — a " +
-      "run's learning review, a memory consolidation — is refused, and nothing is written; a person can still edit, " +
+      "run's learning review, a memory consolidation, EO's own system agent — is refused, and nothing is written; a person can still edit, " +
       "archive and restore it. A person's act only: EO's own agents are not offered this tool.",
     kind: "write",
     personOnly: true,

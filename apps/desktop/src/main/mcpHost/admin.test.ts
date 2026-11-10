@@ -2,7 +2,7 @@ import { existsSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { request as httpRequest } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ADMIN_MCP_SERVER_NAME, McpServerDraftSchema } from "@eo/core";
+import { ADMIN_MCP_SERVER_NAME, McpServerDraftSchema, SKILL_LOCKED_PROBLEM } from "@eo/core";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -13,6 +13,15 @@ import { listMcpServerViews, saveMcpServerCommand, setMcpServerSecretCommand } f
 import type { SecretStore } from "../secrets/store.js";
 import type { McpServerSecretsOptions } from "../mcp/serverSecrets.js";
 import { clearHandlerRegistry, registerHandler } from "../ipc/registry.js";
+import {
+  archiveSkillCommand,
+  listSkillVersionsCommand,
+  restoreSkillVersionCommand,
+  saveSkillCommand,
+  setSkillEnabledCommand,
+  setSkillLockedCommand,
+} from "../ipc/skillCommands.js";
+import { getSkill } from "../db/repos/skillsRepo.js";
 import { TOOLS } from "./catalog.js";
 import { toolsFor, writeMcpConfig } from "./gate.js";
 import { createAdminMcpHost, type AdminMcpHost } from "./admin.js";
@@ -470,3 +479,84 @@ describe("turns that end without closing their session", () => {
     expect(host.status().openSessions).toBe(0);
   });
 });
+
+/**
+ * A system agent writing a skill through this host (EO-714). Its writes
+ * are versioned as the agent's, from the turn's own credential, and a
+ * person's lock refuses them as it refuses any agent's.
+ */
+describe("a system agent's skill writes", () => {
+  const AGENT = "019fb8c6-0000-7000-8000-0000000a9e47";
+
+  beforeEach(() => {
+    registerHandler("skills:save", (payload) => saveSkillCommand(handle.db, payload), opts);
+    registerHandler("skills:setEnabled", (payload) => setSkillEnabledCommand(handle.db, payload), opts);
+    registerHandler("skills:archive", (payload) => archiveSkillCommand(handle.db, payload), opts);
+    registerHandler("skills:restoreVersion", (payload) => restoreSkillVersionCommand(handle.db, payload), opts);
+  });
+
+  /** A skill as a person saved it, through the person's own door. */
+  function personsSkill(): string {
+    const saved = saveSkillCommand(handle.db, { slug: null, name: "House style", description: "How we review.", body: "Read it twice.", files: [] });
+    if (saved.skill === null) throw new Error(saved.problem ?? "not saved");
+    return saved.skill.id;
+  }
+
+  async function agentTurn(): Promise<Client> {
+    await host.start();
+    const endpoint = host.endpoint();
+    if (endpoint === null) throw new Error("the internal host is not up");
+    return connect(endpoint.url, endpoint.lease(AGENT).token);
+  }
+
+  const textOf = (result: Awaited<ReturnType<Client["callTool"]>>) => JSON.stringify(result.content);
+
+  it("is refused on a locked skill, every write of it, with nothing written", async () => {
+    const id = personsSkill();
+    const original = listSkillVersionsCommand(handle.db, { id }).versions[0]!;
+    expect(setSkillLockedCommand(handle.db, { id, locked: true }).problem).toBeNull();
+    const before = getSkill(handle.db, id);
+    const versions = listSkillVersionsCommand(handle.db, { id }).versions.length;
+    const client = await agentTurn();
+
+    const calls = [
+      { name: "skill_save", arguments: { id, name: "House style", description: "How we review.", body: "An agent's words." } },
+      { name: "skill_archive", arguments: { id } },
+      { name: "skill_set_enabled", arguments: { id, enabled: false } },
+      { name: "skill_restore_version", arguments: { id, versionId: original.id } },
+    ];
+    for (const call of calls) {
+      const result = await client.callTool(call);
+      expect(textOf(result), call.name).toContain(SKILL_LOCKED_PROBLEM);
+    }
+
+    expect(getSkill(handle.db, id)).toEqual(before);
+    expect(listSkillVersionsCommand(handle.db, { id }).versions).toHaveLength(versions);
+  });
+
+  it("names the agent, not a person, as the author of what it writes", async () => {
+    const id = personsSkill();
+    const client = await agentTurn();
+
+    const edited = await client.callTool({ name: "skill_save", arguments: { id, name: "House style", description: "How we review.", body: "An agent's words." } });
+    const created = await client.callTool({ name: "skill_save", arguments: { name: "Release notes", description: "How we write them.", body: "Lead with the fix." } });
+
+    expect(textOf(edited)).toContain("Saved");
+    expect(listSkillVersionsCommand(handle.db, { id }).versions[0]).toMatchObject({ action: "edit", author: { kind: "agent", agentId: AGENT } });
+    // A person's skill stays the person's; the one the agent made is the agent's.
+    expect(getSkill(handle.db, id)?.createdBy).toBe("person");
+    expect(textOf(created)).toContain("created by an agent");
+  });
+
+  it("cannot claim to be a person, nor another agent, by what it sends", async () => {
+    const id = personsSkill();
+    expect(setSkillLockedCommand(handle.db, { id, locked: true }).problem).toBeNull();
+    const client = await agentTurn();
+
+    const result = await client.callTool({ name: "skill_archive", arguments: { id, actingAgentId: "someone-else" } });
+
+    expect(textOf(result)).toContain(SKILL_LOCKED_PROBLEM);
+    expect(getSkill(handle.db, id)?.archivedAt).toBeNull();
+  });
+});
+

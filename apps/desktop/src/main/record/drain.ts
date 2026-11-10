@@ -1186,7 +1186,13 @@ async function applyChanges(options: DrainOptions, changes: RecordChanges): Prom
     const here = getSkill(options.db, skill.id);
     if (here !== undefined && here.updatedAt > skill.updatedAt) continue;
     const { projectId, ...row } = skill;
-    upsertReplicaSkill(options.db, row, projectId);
+    // Refused, with nothing written, where a person locked a skill here
+    // that holds the slug (EO-714) — said in the log, as a publication's is.
+    const taken = upsertReplicaSkill(options.db, row, projectId);
+    if (!taken.ok) {
+      console.log(`[eo] ${taken.problem}`);
+      continue;
+    }
     applied += 1;
   }
   /**

@@ -3,7 +3,7 @@ import { z } from "zod";
 import { ModuleViewSchema, SectionDocumentSchema, type ModuleManifest, type Uuid } from "@eo/core";
 import type { DbHandle } from "../db/client.js";
 import { openMigratedTestDb } from "../db/testHelpers.js";
-import { addModuleTests, createAgent, deleteAgent, deleteModuleTest, getAgent, getModule, listModuleTests, saveModule } from "../db/repos/index.js";
+import { addModuleTests, createAgent, deleteAgent, deleteModuleTest, getAgent, getModule, getSkill, getSkillBySlug, listModuleTests, saveModule, saveSkill, setSkillLocked } from "../db/repos/index.js";
 import { listAgentDetails } from "../ipc/configCommands.js";
 import { applySectionDocument, sectionDocument } from "./configuration.js";
 
@@ -199,5 +199,44 @@ describe("publishing a module's test cases", () => {
     applySectionDocument(replica.db, travelled(withoutTests));
 
     expect(listModuleTests(replica.db, module.id)).toHaveLength(2);
+  });
+});
+
+/**
+ * A published skill whose slug a person's locked skill holds (EO-714).
+ *
+ * Making room archives the local one, and a lock refuses every write a
+ * person did not make — so the published one is not taken, nothing is
+ * written, and the rest of the publication still lands.
+ */
+describe("publishing a skill over a person's locked one", () => {
+  let publisher: DbHandle;
+  let replica: DbHandle;
+
+  beforeEach(() => {
+    publisher = openMigratedTestDb();
+    replica = openMigratedTestDb();
+  });
+
+  afterEach(() => {
+    publisher.close();
+    replica.close();
+  });
+
+  it("leaves the locked skill as it is and takes the rest of the section", () => {
+    const draft = { slug: "house-style", name: "House style", description: "How we review.", body: "Ours.", files: [] };
+    const mine = saveSkill(replica.db, { ...draft, slug: "house-style" });
+    if (!mine.ok) throw new Error("not saved");
+    expect(setSkillLocked(replica.db, mine.skill.id, true).ok).toBe(true);
+    const before = getSkill(replica.db, mine.skill.id);
+    saveSkill(publisher.db, { ...draft, body: "Theirs." });
+    saveSkill(publisher.db, { ...draft, slug: "release-notes", name: "Release notes" });
+
+    const written = applySectionDocument(replica.db, sectionDocument(publisher.db, "packs"));
+
+    expect(written).toBe(1);
+    expect(getSkill(replica.db, mine.skill.id)).toEqual(before);
+    expect(getSkillBySlug(replica.db, "house-style")?.body).toBe("Ours.");
+    expect(getSkillBySlug(replica.db, "release-notes")).toBeDefined();
   });
 });

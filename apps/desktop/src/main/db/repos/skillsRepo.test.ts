@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { SKILL_LOCKED_PROBLEM, SkillDraftSchema, uuidv7, type SkillAuthor, type SkillDraft, type SkillScope } from "@eo/core";
+import { SKILL_LOCKED_PROBLEM, SkillDraftSchema, uuidv7, type RecordSkill, type SkillAuthor, type SkillDraft, type SkillScope } from "@eo/core";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { DbHandle } from "../client.js";
 import { openMigratedTestDb } from "../testHelpers.js";
@@ -475,6 +475,81 @@ describe("skill versions", () => {
       ["sync", "record", "Two."],
       ["sync", "record", "One."],
     ]);
+  });
+
+  it("files a sync version for a copy that changed only a name, a slug, a scope or the model switch", () => {
+    const published = {
+      id: "019fb8c6-0000-7000-8000-00000000eeee",
+      slug: "published",
+      name: "Published",
+      description: "From the organisation.",
+      body: "Body.",
+      files: [],
+      disableModelInvocation: false,
+      enabled: true,
+      scope: { kind: "global" } as SkillScope,
+      createdAt: 1,
+      updatedAt: 1,
+      archivedAt: null,
+      createdBy: "person" as const,
+      locked: false,
+    };
+    upsertReplicaSkill(handle.db, published);
+    const changes = [
+      { name: "Renamed" },
+      { slug: "published-renamed" },
+      { disableModelInvocation: true },
+      { scope: { kind: "project", projectId: "proj-1" } as SkillScope },
+    ];
+    let current = published;
+    for (const change of changes) {
+      current = { ...current, ...change, updatedAt: current.updatedAt + 1 };
+      upsertReplicaSkill(handle.db, current);
+    }
+
+    expect(listSkillVersions(handle.db, published.id)).toHaveLength(1 + changes.length);
+    expect(getSkill(handle.db, published.id)).toMatchObject({ name: "Renamed", slug: "published-renamed", disableModelInvocation: true });
+  });
+
+  it("files a sync version for a moved skill whose only change is its name or scope", () => {
+    const moved: RecordSkill = { id: uuidv7(), slug: "fixtures", name: "Fixtures", description: "Where fixtures live.", body: "./fixtures", files: [], disableModelInvocation: false, enabled: true, scope: { kind: "project", projectId: "proj-moved" }, createdAt: 1, updatedAt: 1, archivedAt: null, createdBy: "person", locked: false, projectId: "proj-moved" };
+    writeMovedSkill(handle.db, moved, "proj-moved");
+    writeMovedSkill(handle.db, moved, "proj-moved");
+    writeMovedSkill(handle.db, { ...moved, name: "Fixture files", updatedAt: 2 }, "proj-moved");
+    writeMovedSkill(handle.db, { ...moved, name: "Fixture files", scope: { kind: "workspace", workspaceId: "ws-1" }, updatedAt: 3 }, "proj-moved");
+
+    expect(listSkillVersions(handle.db, moved.id).map((version) => version.action)).toEqual(["sync", "sync", "sync"]);
+  });
+
+  it("refuses a published skill whose slug a person's locked skill holds, and writes nothing", () => {
+    const local = created();
+    expect(setSkillLocked(handle.db, local.id, true).ok).toBe(true);
+    const before = getSkill(handle.db, local.id);
+    const versions = listSkillVersions(handle.db, local.id).length;
+
+    const taken = upsertReplicaSkill(handle.db, {
+      id: "019fb8c6-0000-7000-8000-00000000ffff",
+      slug: local.slug,
+      name: "Theirs",
+      description: "From the organisation.",
+      body: "Body.",
+      files: [],
+      disableModelInvocation: false,
+      enabled: true,
+      scope: { kind: "global" },
+      createdAt: 1,
+      updatedAt: 1,
+      archivedAt: null,
+      createdBy: "person",
+      locked: false,
+    });
+
+    expect(taken.ok).toBe(false);
+    if (taken.ok) return;
+    expect(taken.problem).toContain("a person locked this machine's own skill");
+    expect(getSkill(handle.db, local.id)).toEqual(before);
+    expect(listSkillVersions(handle.db, local.id)).toHaveLength(versions);
+    expect(getSkill(handle.db, "019fb8c6-0000-7000-8000-00000000ffff")).toBeUndefined();
   });
 
   it("says who archived a skill the organisation's catalogue made stand aside", () => {

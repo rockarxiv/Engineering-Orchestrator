@@ -193,14 +193,17 @@ export type Skill = z.infer<typeof SkillSchema>;
 /**
  * Who wrote one version of a skill (EO-714).
  *
- * A person; a run, by its id; a memory consolidation, by its id; or the
- * organisation's record, for a copy this machine took from it — the write
- * itself was made, and versioned, where the record is.
+ * A person; a run, by its id; a memory consolidation, by its id; one of
+ * EO's system agents, by its id, writing through the administrative MCP
+ * host — the turn's own credential names it, never the caller's word; or
+ * the organisation's record, for a copy this machine took from it — the
+ * write itself was made, and versioned, where the record is.
  */
 export const SkillAuthorSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("person") }),
   z.object({ kind: z.literal("run"), runId: z.string() }),
   z.object({ kind: z.literal("consolidation"), consolidationId: z.string() }),
+  z.object({ kind: z.literal("agent"), agentId: z.string() }),
   z.object({ kind: z.literal("record") }),
 ]);
 export type SkillAuthor = z.infer<typeof SkillAuthorSchema>;
@@ -216,6 +219,8 @@ export function skillAuthorLabel(author: SkillAuthor): string {
       return `run ${author.runId}`;
     case "consolidation":
       return `memory consolidation ${author.consolidationId}`;
+    case "agent":
+      return `system agent ${author.agentId}`;
     case "record":
       return "the organisation's record";
   }
@@ -245,9 +250,19 @@ export function skillVersionActionLabel(action: SkillVersionAction): string {
   }
 }
 
-/** Whether this author is an agent — what a lock refuses (EO-714). */
+/** Whether this author is an agent — what a lock refuses (EO-714). The system agent is one, though it acts with the person's authority. */
 export function isAgentSkillAuthor(author: SkillAuthor): boolean {
-  return author.kind === "run" || author.kind === "consolidation";
+  return author.kind === "run" || author.kind === "consolidation" || author.kind === "agent";
+}
+
+/**
+ * Who is writing, from what a door stamped on the payload (EO-714): the
+ * system agent the administrative MCP host named, or else the person.
+ * Every other door strips the field (`withActingAgent`), so absent means
+ * the person.
+ */
+export function skillAuthorFromActingAgent(actingAgentId: string | undefined): SkillAuthor {
+  return actingAgentId === undefined ? PERSON_SKILL_AUTHOR : { kind: "agent", agentId: actingAgentId };
 }
 
 /** The sentence every write a lock refuses comes back with (EO-714). */

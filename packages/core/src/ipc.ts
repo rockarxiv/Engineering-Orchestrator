@@ -4168,7 +4168,9 @@ export const recordContract = {
   // file with `..` in its path and a slug another skill has are all
   // things a person typed, not programmer errors, and the editor has to
   // show them beside the field (F-04).
-  "skills:save": channel(SkillDraftSchema, z.object({ saved: z.boolean(), skill: SkillSchema.nullable(), problem: z.string().nullable() })),
+  // `actingAgentId` on the four skill writes (EO-714): a system agent's
+  // write is versioned as the agent's, and a lock refuses it.
+  "skills:save": channel(SkillDraftSchema.extend({ ...ACTING_AGENT }), z.object({ saved: z.boolean(), skill: SkillSchema.nullable(), problem: z.string().nullable() })),
   /**
    * Turns a skill on or off.
    *
@@ -4181,11 +4183,11 @@ export const recordContract = {
    * about whether it is delivered at all.
    */
   "skills:setEnabled": channel(
-    z.object({ id: z.string(), enabled: z.boolean() }),
+    z.object({ id: z.string(), enabled: z.boolean(), ...ACTING_AGENT }),
     z.object({ skill: SkillSchema.nullable(), problem: z.string().nullable() }),
   ),
   /** Deleting a skill archives it: invariant #3, and an attachment that named it still resolves. */
-  "skills:archive": channel(z.object({ id: z.string() }), z.object({ archived: z.boolean(), problem: z.string().nullable() })),
+  "skills:archive": channel(z.object({ id: z.string(), ...ACTING_AGENT }), z.object({ archived: z.boolean(), problem: z.string().nullable() })),
   /**
    * A person's lock (EO-714). While a skill is locked, every write whose
    * author is not a person is refused with nothing written. A person's
@@ -4204,7 +4206,7 @@ export const recordContract = {
    * rewrite of the old one.
    */
   "skills:restoreVersion": channel(
-    z.object({ id: z.string(), versionId: z.string() }),
+    z.object({ id: z.string(), versionId: z.string(), ...ACTING_AGENT }),
     z.object({ skill: SkillSchema.nullable(), problem: z.string().nullable() }),
   ),
 
@@ -7504,7 +7506,15 @@ export function withActingDevice(channel: string, payload: unknown, deviceId: st
  * replying in a thread. Each declares `actingAgentId`, and `ipc.test.ts`
  * holds that true.
  */
-export const AGENT_ACTED_CHANNELS = ["items:decide", "comments:post"] as const satisfies readonly IpcChannel[];
+export const AGENT_ACTED_CHANNELS = [
+  "items:decide",
+  "comments:post",
+  // A skill write is versioned with its author, and a lock refuses an agent's (EO-714).
+  "skills:save",
+  "skills:setEnabled",
+  "skills:archive",
+  "skills:restoreVersion",
+] as const satisfies readonly IpcChannel[];
 
 /** The field EO's administrative MCP host stamps, spelled once. */
 export const ACTING_AGENT_KEY = "actingAgentId";

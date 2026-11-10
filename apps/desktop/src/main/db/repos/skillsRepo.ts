@@ -157,11 +157,26 @@ function appendVersion(
       body: skill.body,
       files: skill.files,
       authorKind: author.kind,
-      authorId: author.kind === "run" ? author.runId : author.kind === "consolidation" ? author.consolidationId : null,
+      authorId: authorIdOf(author),
       restoredFrom,
       createdAt: at,
     })
     .run();
+}
+
+/** The id a version row keeps beside its author's kind; null for a person and the record. */
+function authorIdOf(author: SkillAuthor): string | null {
+  switch (author.kind) {
+    case "run":
+      return author.runId;
+    case "consolidation":
+      return author.consolidationId;
+    case "agent":
+      return author.agentId;
+    case "person":
+    case "record":
+      return null;
+  }
 }
 
 /**
@@ -173,6 +188,7 @@ function toAuthor(kind: string, id: string | null): SkillAuthor {
   if (kind === "person") return PERSON_SKILL_AUTHOR;
   if (kind === "run" && id !== null) return { kind: "run", runId: id };
   if (kind === "consolidation" && id !== null) return { kind: "consolidation", consolidationId: id };
+  if (kind === "agent" && id !== null) return { kind: "agent", agentId: id };
   return { kind: "record" };
 }
 
@@ -358,13 +374,32 @@ export function saveSkill(db: Db, draft: SkillDraft, now: number = Date.now(), a
  * A local skill of the same slug stands aside — see `standAside`. The
  * slug is unique and is what a model invokes, so two rows claiming it
  * is not a state SQLite will hold or an agent could act on.
+ *
+ * Unless that local skill is locked (EO-714): a person's lock refuses
+ * every write a person did not make, and archiving their skill to make
+ * room is one. The arriving skill is then refused whole — nothing is
+ * renamed, archived or written — with the sentence saying why, for the
+ * caller to say where a person will see it. An agent attached to it holds
+ * the attachment until it arrives, as it does for any tool not here yet.
  */
-export function upsertReplicaSkill(db: Db, skill: Skill, projectId?: string | null): void {
-  db.transaction(() => upsertReplicaSkillIn(db, skill, projectId));
+export function upsertReplicaSkill(db: Db, skill: Skill, projectId?: string | null): ReplicaSkillResult {
+  return db.transaction(() => upsertReplicaSkillIn(db, skill, projectId));
 }
 
-function upsertReplicaSkillIn(db: Db, skill: Skill, projectId?: string | null): void {
-  standAside(db, skill.id, skill.slug);
+/** A copy from the record written, or the sentence saying why nothing was (EO-714). */
+export type ReplicaSkillResult = { ok: true } | { ok: false; problem: string };
+
+function upsertReplicaSkillIn(db: Db, skill: Skill, projectId?: string | null): ReplicaSkillResult {
+  const blocker = slugHolder(db, skill.id, skill.slug);
+  if (blocker?.locked === true) {
+    return {
+      ok: false,
+      problem:
+        `The organisation's skill "${skill.slug}" was not taken onto this machine: a person locked this machine's own skill of that slug, ` +
+        "so it was not archived to make room and nothing was written. Unlock or rename it, and the organisation's next publication brings the skill.",
+    };
+  }
+  if (blocker !== undefined) standAside(db, blocker.id, skill.slug);
   // The record's word where it gave one (EO-513) — a moved workspace's
   // skill names a workspace this machine may not have — and otherwise
   // what this machine's own workspaces say.
@@ -413,6 +448,7 @@ function upsertReplicaSkillIn(db: Db, skill: Skill, projectId?: string | null): 
     })
     .run();
   versionCopy(db, here, skill.id);
+  return { ok: true };
 }
 
 /**
@@ -424,13 +460,20 @@ function upsertReplicaSkillIn(db: Db, skill: Skill, projectId?: string | null): 
 function versionCopy(db: Db, before: Skill | undefined, id: string): void {
   const after = getSkill(db, id);
   if (after === undefined) return;
+  // Every column such a copy writes that a person could see change — a
+  // rename or a new scope is a write as much as a new body is.
   const same =
     before !== undefined &&
+    before.slug === after.slug &&
+    before.name === after.name &&
     before.description === after.description &&
     before.body === after.body &&
     JSON.stringify(before.files) === JSON.stringify(after.files) &&
+    before.disableModelInvocation === after.disableModelInvocation &&
     before.enabled === after.enabled &&
+    JSON.stringify(before.scope) === JSON.stringify(after.scope) &&
     before.archivedAt === after.archivedAt &&
+    before.createdBy === after.createdBy &&
     before.locked === after.locked;
   if (!same) appendVersion(db, after, "sync", { kind: "record" }, Date.now());
 }
@@ -559,12 +602,12 @@ export function writeMovedSkill(db: Db, skill: RecordSkill, projectId: string): 
  * archived row holding the name is a name the organisation's own row
  * cannot have.
  *
- * Does nothing in the ordinary case, which is the same row arriving
- * again by its own id.
+ * Only ever asked for an unlocked row: `upsertReplicaSkillIn` refuses the
+ * arriving skill instead when a person has locked the one holding the
+ * slug (EO-714).
  */
-function standAside(db: Db, id: string, slug: string): void {
-  const taken = db.select({ id: skills.id }).from(skills).where(eq(skills.slug, slug)).get();
-  if (taken === undefined || taken.id === id) return;
+function standAside(db: Db, takenId: string, slug: string): void {
+  const taken = { id: takenId };
   const at = Date.now();
   db.update(skills)
     .set({ slug: `${slug}-local-${taken.id.slice(-6)}`, enabled: false, archivedAt: at, updatedAt: at, localChangedAt: at })
@@ -573,6 +616,15 @@ function standAside(db: Db, id: string, slug: string): void {
   // The organisation's catalogue archived it, which the history says (EO-714).
   const archived = getSkill(db, taken.id);
   if (archived !== undefined) appendVersion(db, archived, "archive", { kind: "record" }, at);
+}
+
+/**
+ * The other skill already holding this slug, if any — none in the
+ * ordinary case, which is the same row arriving again by its own id.
+ */
+function slugHolder(db: Db, id: string, slug: string): { id: string; locked: boolean } | undefined {
+  const taken = db.select({ id: skills.id, locked: skills.locked }).from(skills).where(eq(skills.slug, slug)).get();
+  return taken === undefined || taken.id === id ? undefined : taken;
 }
 
 /** The sentence for an id this database has no skill under. */
