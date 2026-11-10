@@ -896,35 +896,50 @@ export function runModule(launcher: ModuleHostLauncher, request: RunModuleReques
     const reply = (id: unknown, answer: ModuleCreationAnswer): void => signedAnswer(replyPipe, id, answer);
 
     /**
-     * Answers the host for one read of an item (EO-709), on fd 6 and
-     * signed as a creation's answer is.
+     * Answers the host for one read (EO-709, EO-710), on fd 6 and signed
+     * as a creation's answer is.
      *
      * `{ item }` — null where no item has the key — or `{ exists }` for
-     * `ctx.commentOn`'s check, or `{ unavailable }` with the sentence
-     * saying why nothing could be read. The host turns each into what
-     * the module is handed; the wording a module may already compare
-     * against stays over there.
+     * `ctx.commentOn`'s check; `{ runs }` and `{ transitions }`, null
+     * where no item has the key; `{ items }`, a page of the running
+     * item's project, or `{ refused }` saying why the filter could not
+     * be read; `{ attachment }` with its bytes as base64, null where no
+     * attachment has the id, or `{ refused }` where its file is gone.
+     * `{ unavailable }` with the sentence saying why nothing could be
+     * read. The host turns each into what the module is handed; the
+     * wording a module may already compare against stays over there.
      *
      * Queued on the chain the writes are, so a module that comments and
      * then reads its item finds its comment there.
      */
-    const answerRead = async (id: unknown, rawKey: unknown, what: unknown): Promise<void> => {
-      const key = typeof rawKey === "string" ? rawKey.trim() : "";
+    const answerRead = async (id: unknown, event: { key?: unknown; what?: unknown; filter?: unknown }): Promise<void> => {
+      const key = typeof event.key === "string" ? event.key.trim() : "";
+      const what = event.what;
       const items = launcher.items;
       if (items === undefined) {
         signedAnswer(readPipe, id, { unavailable: "This build of EO gave the module host no way to read its database, so no ticket can be read." });
         return;
       }
       try {
-        signedAnswer(readPipe, id, what === "exists" ? { exists: key !== "" && items.exists(key) } : { item: key === "" ? null : await items.read(key) });
+        if (what === "exists") signedAnswer(readPipe, id, { exists: key !== "" && items.exists(key) });
+        else if (what === "runs") signedAnswer(readPipe, id, { runs: key === "" ? null : items.runs(key) });
+        else if (what === "transitions") signedAnswer(readPipe, id, { transitions: key === "" ? null : items.transitions(key) });
+        else if (what === "items") {
+          const page = items.items(request.item.projectId, event.filter);
+          signedAnswer(readPipe, id, "refused" in page ? page : { items: page });
+        } else if (what === "attachment") {
+          const file = key === "" ? null : await items.readAttachment(key);
+          if (file === null || "refused" in file) signedAnswer(readPipe, id, file === null ? { attachment: null } : file);
+          else signedAnswer(readPipe, id, { attachment: { id: file.id, name: file.name, mimeType: file.mimeType, size: file.size, content: file.content.toString("base64") } });
+        } else signedAnswer(readPipe, id, { item: key === "" ? null : await items.read(key) });
       } catch (error) {
         signedAnswer(readPipe, id, { unavailable: `EO's ticket store could not be read: ${error instanceof Error ? error.message : String(error)}` });
       }
     };
-    const queueRead = (id: unknown, key: unknown, what: unknown): void => {
+    const queueRead = (id: unknown, event: { key?: unknown; what?: unknown; filter?: unknown }): void => {
       attaching += 1;
       writes = writes
-        .then(() => answerRead(id, key, what))
+        .then(() => answerRead(id, event))
         .catch(() => undefined)
         .finally(() => {
           attaching -= 1;
@@ -1052,6 +1067,7 @@ export function runModule(launcher: ModuleHostLauncher, request: RunModuleReques
               id?: unknown;
               creation?: unknown;
               what?: unknown;
+              filter?: unknown;
             };
             if (event.type === "output" && typeof event.text === "string") emit(event.text);
             // Every shell-out is logged. `needs.bin` is a promise EO
@@ -1060,7 +1076,7 @@ export function runModule(launcher: ModuleHostLauncher, request: RunModuleReques
             else if (event.type === "comment" && typeof event.body === "string") queueOrPostComment(event.key, event.body);
             else if (event.type === "attach") queueAttachment(event.paths, event.caption);
             else if (event.type === "create") queueCreation(event.id, event.creation);
-            else if (event.type === "read") queueRead(event.id, event.key, event.what);
+            else if (event.type === "read") queueRead(event.id, event);
           } catch {
             emit(line);
           }

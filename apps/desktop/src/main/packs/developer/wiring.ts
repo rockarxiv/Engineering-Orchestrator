@@ -11,10 +11,12 @@ import {
   type Item,
   type Uuid,
   type PipelineStep,
+  type Run,
+  parsedResultOf,
 } from "@eo/core";
 import { emitPush } from "../../ipc/push.js";
 import type { Db } from "../../db/client.js";
-import { getItemType, resolveItemType } from "../../db/repos/index.js";
+import { getAgent, getItemType, resolveItemType } from "../../db/repos/index.js";
 import type { RoleWiring } from "../pack.js";
 import type { NextStep } from "../../supervisor/runSupervisor.js";
 import { routeResult } from "../../supervisor/routeResult.js";
@@ -197,6 +199,28 @@ function claimedActions(contributed: Registry): ReadonlySet<string> {
     for (const action of role.schemasByAction.keys()) actions.add(action);
   }
   return actions;
+}
+
+/**
+ * Which declared result a finished run produced, as this pack reads its
+ * answer — for a module reading an item's runs (EO-710).
+ *
+ * `resultKeyFor`, asked the way `resolveNextState` asks it: of an action
+ * this pack claims, where the run's role leaves the pack's meaning in
+ * force. `undefined` everywhere else is "no opinion", and the reader
+ * takes the `result` the run reported, as the supervisor routes such a
+ * run. The key is not stored on a run, so this is the reading, again,
+ * of the same answer by the same code.
+ */
+export function createRunResultKey(db: Db, contributed: Registry = developerRegistry()): (run: Run, item: Item) => string | null | undefined {
+  const claimed = claimedActions(contributed);
+  const ownFunctions = new Set(contributed.builtins.keys());
+  return (run, item) => {
+    if (!claimed.has(run.action)) return undefined;
+    const role = run.agentId === null ? null : (getAgent(db, run.agentId)?.role ?? null);
+    if (!packMeaningInForce(db, item, role, run.action)) return undefined;
+    return resultKeyFor(db, contributed, run.action, parsedResultOf(run.result), item, ownFunctions);
+  };
 }
 
 /**

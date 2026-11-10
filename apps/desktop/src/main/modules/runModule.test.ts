@@ -2005,12 +2005,19 @@ describe("what a module can reach", () => {
       // again.
       "item",
       "itemByKey",
+      // The board, searched (EO-710).
+      "items",
       "log",
+      // A file's bytes, an item's runs and its step moves (EO-710).
+      "readAttachment",
+      "runs",
       "ticket",
       "ticketByKey",
       // The ceiling this run is held to, so a module can size its own
       // waiting against a real number instead of a guess (EO-162).
       "timeoutMs",
+      // An item's step moves (EO-710).
+      "transitions",
     ]);
   });
 });
@@ -2577,6 +2584,7 @@ describe("what a module can read about an item", () => {
     const stub: ModuleHostLauncher = {
       ...launcher,
       items: {
+        ...moduleItemReader(handle.db),
         read: (key) => {
           asked.push(key);
           return Promise.resolve(key === "ELSE-1" ? { ...moduleItemView(handle.db, running, "release/2.4"), key: "ELSE-1", title: "Only the reader knows this" } : null);

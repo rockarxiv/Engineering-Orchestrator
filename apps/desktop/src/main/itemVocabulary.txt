@@ -272,6 +272,8 @@ apps/desktop/src/main/mcpHost/submittedPriority.test.ts: it("creates the ticket 
 apps/desktop/src/main/mcpHost/submittedPriority.test.ts: it("leaves every ticket at 0 when the plan says nothing", async () => {
 apps/desktop/src/main/memory/writing.test.ts: expect(block).not.toMatch(/\b(ticket|story|feature|branch|worktree|repository)\b/i);
 apps/desktop/src/main/modules/moduleComments.ts: if (!target) return `no ticket has the key "${comment.key}".`;
+apps/desktop/src/main/modules/moduleHistoryRead.test.ts: { found: false, reason: 'A ticket key is a string, like "EO-42".' },
+apps/desktop/src/main/modules/moduleHistoryRead.test.ts: { found: false, reason: 'No ticket has the key "NOPE-1".' },
 apps/desktop/src/main/modules/pipelineTransfer.test.ts: description: "Writes the notes from the ticket and its thread.",
 apps/desktop/src/main/modules/runModule.test.ts: "ticket",
 apps/desktop/src/main/modules/runModule.test.ts: // (KAN-162): a module approved before the rename reads `.ticket` off
@@ -289,6 +291,7 @@ apps/desktop/src/main/modules/runModule.test.ts: expect(transcript.match(/ctx\.t
 apps/desktop/src/main/modules/runModule.test.ts: title: "Let a module read a ticket",
 apps/desktop/src/main/modules/runModule.ts: signedAnswer(readPipe, id, { unavailable: "This build of EO gave the module host no way to read its database, so no ticket can be read." });
 apps/desktop/src/main/modules/runModule.ts: signedAnswer(readPipe, id, { unavailable: `EO's ticket store could not be read: ${error instanceof Error ? error.message : String(error)}` });
+apps/desktop/src/main/modules/runModuleTests.test.ts: assert.deepEqual(read.unknown, { found: false, reason: 'No ticket has the key "EO-404".' });
 apps/desktop/src/main/modules/runModuleTests.test.ts: assert.deepEqual(run.logs, ['No ticket has the key "EO-404".']);
 apps/desktop/src/main/outbox/retireForgeQueue.ts: `simply has no pull request open. Move this ticket through the merge step again to open one.`,
 apps/desktop/src/main/packs/pack.ts: `— comes from a pack. Install one and this ticket carries on from here.`

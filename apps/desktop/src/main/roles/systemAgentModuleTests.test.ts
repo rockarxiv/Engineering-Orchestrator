@@ -64,6 +64,6 @@ describe("the configure section of the system agent's prompt", () => {
     const accepted = /It takes ([a-zA-Z, ]+) and timeoutMs\./.exec(host)?.[1];
     expect(accepted).toBeDefined();
     const names = [...accepted!.split(/,\s*/), "timeoutMs"].map((name) => name.trim());
-    expect(names.sort()).toEqual(["answer", "createItem", "exec", "inputs", "item", "itemByKey", "timeoutMs"]);
+    expect(names.sort()).toEqual(["answer", "attachments", "createItem", "exec", "inputs", "item", "itemByKey", "items", "runs", "timeoutMs", "transitions"]);
   });
 });
