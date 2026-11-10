@@ -932,6 +932,16 @@ export type AgentEvent =
 export interface AgentProviderResumeOptions extends AgentTurnOverrides {
   /** The same worktree the run started in. Sessions are scoped to it. */
   cwd?: string;
+  /**
+   * Told the Skills section the adapter adds after the message, or an
+   * empty string when it adds none — synchronously, before `resume`
+   * returns, as `AgentProviderStartOptions.onSkillsSection` is on a start.
+   * Codex adds it to every resumed turn it gives skills (EO-721): a
+   * thread opened before EO served skills through `skill_read` was told
+   * to read a `SKILL.md` that is no longer written, so the turn says how
+   * to load one now. Debug mode's capture is the caller.
+   */
+  onSkillsSection?: (section: string) => void;
   /** Re-stated because a corrective turn (A-02) must produce the same shape as the original. */
   outputSchema?: JsonSchema;
   /**
@@ -1133,7 +1143,7 @@ export interface AgentSideCallOptions {
 
 export type AgentPrewarmTurn =
   | ({ kind: "start"; instructions: string } & Omit<AgentProviderStartOptions, "instructions" | "context" | "signal" | "attachments" | "onSkillsSection">)
-  | ({ kind: "resume"; threadId: string } & Omit<AgentProviderResumeOptions, "signal" | "attachments">);
+  | ({ kind: "resume"; threadId: string } & Omit<AgentProviderResumeOptions, "signal" | "attachments" | "onSkillsSection">);
 
 export interface AgentProvider {
   start: (opts: AgentProviderStartOptions) => InterruptibleStream<AgentEvent>;

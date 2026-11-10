@@ -89,13 +89,13 @@ export function sentOnStart(provider: AgentProvider, context: SendContext, opts:
   };
 }
 
-/** What a `resume` of this thread with this message sends, as debug mode records it. */
-export function sentOnResume(provider: AgentProvider, context: SendContext, threadId: string, message: string, opts: AgentProviderResumeOptions | undefined): DebugSent {
+/** What a `resume` of this thread with this message sends, as debug mode records it — with the Skills section the adapter reported adding (EO-721). */
+export function sentOnResume(provider: AgentProvider, context: SendContext, threadId: string, message: string, opts: AgentProviderResumeOptions | undefined, skillsSection = ""): DebugSent {
   return {
     purpose: context.purpose,
     thread: { mode: "resumed", threadId, refusal: null },
     instructions: { sent: false, text: context.threadInstructions },
-    prompt: message,
+    prompt: withSkillsSection(message, skillsSection),
     session: sessionOf(provider, context, opts ?? {}),
   };
 }
@@ -133,8 +133,18 @@ export function capturingProvider(provider: AgentProvider, context: SendContext,
       }
     },
     resume(threadId, message, opts) {
-      capture(() => sentOnResume(provider, context, threadId, message, opts));
-      return provider.resume(threadId, message, opts);
+      let skillsSection = "";
+      try {
+        return provider.resume(threadId, message, {
+          ...opts,
+          onSkillsSection: (section) => {
+            skillsSection = section;
+            opts?.onSkillsSection?.(section);
+          },
+        });
+      } finally {
+        capture(() => sentOnResume(provider, context, threadId, message, opts, skillsSection));
+      }
     },
     ...(provider.describeSession ? { describeSession: (turn) => provider.describeSession!(turn) } : {}),
     // Passed on, so debug mode does not take a backend's forking away

@@ -2421,30 +2421,46 @@ export function createCodexProvider(options: CodexProviderOptions = {}): AgentPr
     }
   }
 
-  async function* resumedTurn(threadId: string, message: string, resumeOpts: AgentProviderResumeOptions | undefined, reach: (turn: CodexTurn) => void, fork: boolean): AsyncIterable<AgentEvent> {
-    // This agent's skills, given again: their supporting files put back
-    // where `skill_read` says they are (EO-207, EO-721), and the slugs
-    // the `eo` server serves.
-    //
-    // Written again rather than assumed to have survived, because they
-    // demonstrably do not. Every action on an item shares one worktree
-    // and `.agent/skills` holds one delivery: an agent dispatched after
-    // this thread's first turn sweeps what this one wrote and leaves its
-    // own. This thread is then resumed — `findReusableThread` keeps the
-    // conversation — and a skill it loads names a folder that now holds
-    // somebody else's.
-    //
-    // No prompt section goes with it: the choices were named in the turn
-    // that opened this thread and are in the conversation the CLI
-    // resumes. What has to be restored is the files and the tool.
-    let skillSlugs: string[] = [];
-    if (resumeOpts?.cwd) {
-      const restored = writeWorktreeSkills(resumeOpts.cwd, skillsForRun(options.attachedSkills ?? [], resumeOpts.skillScope));
-      warnAboutUndeliveredSkills(restored, resumeOpts.cwd);
-      // Given them again, as a fresh turn is (EO-715).
-      yield* skillsOffered(restored.delivered.map((skill) => skill.slug));
-      skillSlugs = restored.delivered.map((skill) => skill.slug);
-    }
+  /**
+   * This agent's skills, given again on a resumed turn: their supporting
+   * files put back where `skill_read` says they are (EO-207, EO-721), the
+   * slugs the `eo` server serves, and the Skills section said again.
+   *
+   * Written again rather than assumed to have survived, because they
+   * demonstrably do not. Every action on an item shares one worktree and
+   * `.agent/skills` holds one delivery: an agent dispatched after this
+   * thread's first turn sweeps what this one wrote and leaves its own.
+   *
+   * The section is said again on every resumed turn given skills, though
+   * the turn that opened the thread named them, because that turn may
+   * have named them the old way (EO-721): a thread opened before EO
+   * served skills through `skill_read` was told to read
+   * `.agent/skills/<slug>/SKILL.md`, which is no longer written, and
+   * `findReusableThread` carries such a thread on. The section is a few
+   * lines; a thread left looking for a file that is not there loads no
+   * skill and says nothing about why.
+   *
+   * Synchronous, inside `resume`, so the section can be reported from
+   * what was actually written before `resume` returns — as `start` does.
+   */
+  function resumedSkills(resumeOpts: AgentProviderResumeOptions | undefined): { slugs: string[]; section: string } {
+    if (!resumeOpts?.cwd) return { slugs: [], section: "" };
+    const restored = writeWorktreeSkills(resumeOpts.cwd, skillsForRun(options.attachedSkills ?? [], resumeOpts.skillScope));
+    warnAboutUndeliveredSkills(restored, resumeOpts.cwd);
+    return { slugs: restored.delivered.map((skill) => skill.slug), section: worktreeSkillsPromptSection(restored.delivered) };
+  }
+
+  async function* resumedTurn(
+    threadId: string,
+    message: string,
+    resumeOpts: AgentProviderResumeOptions | undefined,
+    reach: (turn: CodexTurn) => void,
+    fork: boolean,
+    skills: { slugs: string[]; section: string },
+  ): AsyncIterable<AgentEvent> {
+    const skillSlugs = skills.slugs;
+    // Given them again, as a fresh turn is (EO-715).
+    yield* skillsOffered(skillSlugs);
 
     // Threads persist in ~/.codex/sessions, which is what makes resume
     // cheap after a crash (ARCHITECTURE.md, "Reconciling on launch", E-04) — and an agent's own
@@ -2498,7 +2514,7 @@ export function createCodexProvider(options: CodexProviderOptions = {}): AgentPr
           options.config,
         ),
       );
-      const prompt = withAttachmentNote(message, resumeOpts?.attachments);
+      const prompt = withAttachmentNote(withSkillsSection(message, skills.section), resumeOpts?.attachments);
       for await (const event of streamTurn(thread, prompt, resumeOpts?.outputSchema, resumeOpts?.signal, reach, hook, resumeOpts?.streamDeltas === true, resumeOpts?.warmKey, resumeOpts?.budgetCents)) {
         // A turn that fails before it starts is reported as an event
         // rather than by exiting, and `mapThreadEvent` has already turned
@@ -2566,7 +2582,9 @@ export function createCodexProvider(options: CodexProviderOptions = {}): AgentPr
     },
 
     resume(threadId: string, message: string, resumeOpts?: AgentProviderResumeOptions): InterruptibleStream<AgentEvent> {
-      return reachableTurn((reach) => lostThreadTranslated(threadId, message, resumeOpts, reach, false));
+      const skills = resumedSkills(resumeOpts);
+      resumeOpts?.onSkillsSection?.(skills.section);
+      return reachableTurn((reach) => lostThreadTranslated(threadId, message, resumeOpts, reach, false, skills));
     },
 
     fork(threadId: string, message: string, forkOpts?: AgentProviderResumeOptions): Promise<AgentForkResult> {
@@ -2575,7 +2593,12 @@ export function createCodexProvider(options: CodexProviderOptions = {}): AgentPr
       // (EO-716). A missing thread is refused in the words a resume's is,
       // "no rollout found for thread id" — measured on 0.166.0 — so it is
       // translated the same way and answered as `thread_not_found`.
-      return openedFork(threadId, reachableTurn((reach) => lostThreadTranslated(threadId, message, forkOpts, reach, true)));
+      //
+      // The skills are given back as on a resume (EO-721), but no Skills
+      // section is added: a fork's turn is EO's own message, sent as
+      // written, and loading a skill is not what it is for.
+      const skills = { ...resumedSkills(forkOpts), section: "" };
+      return openedFork(threadId, reachableTurn((reach) => lostThreadTranslated(threadId, message, forkOpts, reach, true, skills)));
     },
 
     dropWarm(): void {
@@ -2763,7 +2786,14 @@ export function createCodexProvider(options: CodexProviderOptions = {}): AgentPr
     }
   }
 
-  async function* lostThreadTranslated(threadId: string, message: string, resumeOpts: AgentProviderResumeOptions | undefined, reach: (turn: CodexTurn) => void, fork: boolean): AsyncIterable<AgentEvent> {
+  async function* lostThreadTranslated(
+    threadId: string,
+    message: string,
+    resumeOpts: AgentProviderResumeOptions | undefined,
+    reach: (turn: CodexTurn) => void,
+    fork: boolean,
+    skills: { slugs: string[]; section: string },
+  ): AsyncIterable<AgentEvent> {
     // "This thread is gone" told apart from every other way a resume
     // can fail (EO-93). Only the recognised sentence is translated;
     // anything else leaves here exactly as it arrived, which is what
@@ -2775,7 +2805,7 @@ export function createCodexProvider(options: CodexProviderOptions = {}): AgentPr
     // which `resumedTurn` re-throws with the backend's own words so
     // that both arrive here.
     try {
-      yield* resumedTurn(threadId, message, resumeOpts, reach, fork);
+      yield* resumedTurn(threadId, message, resumeOpts, reach, fork, skills);
     } catch (error) {
       if (!isMissingCodexSession(error)) throw error;
       throw new ThreadNotFoundError({ threadId, provider: PROVIDER, cause: error });

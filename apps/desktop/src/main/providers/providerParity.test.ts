@@ -1642,7 +1642,11 @@ function debugCapture(
     startedThread: { mode: started?.thread.mode, threadId: started?.thread.threadId },
     resumedThread: { mode: resumed?.thread.mode, threadId: resumed?.thread.threadId },
     instructionsSentOnResume: resumed?.instructions.sent,
-    resumedPrompt: resumed?.prompt,
+    // The message, before the Skills section Codex says again on a resumed
+    // turn (EO-721) — a thread opened before `skill_read` was told to read
+    // a file — and Claude, whose Skill tool lists its skills, does not.
+    // That it is recorded as sent is the line below.
+    resumedPrompt: resumed?.prompt.split("\n\n")[0],
     resumedPromptIsWhatTheBackendGot: resumed?.prompt === got.resumedPrompt,
     describesItsSession: started?.session.described === true && resumed?.session.described === true,
     namesItsInstructionsSlot: started?.session.instructionsSlot === got.instructionsSlot,

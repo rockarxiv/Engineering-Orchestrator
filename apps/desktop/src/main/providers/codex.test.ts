@@ -191,6 +191,10 @@ function stubCodex(events: ThreadEvent[], scenario: FakeAppServerScenario = appS
       current = client.resumeThread(id, options);
       return thread;
     }),
+    forkThread: vi.fn((id: string, options?: CodexThreadOptions) => {
+      current = client.forkThread(id, options);
+      return thread;
+    }),
   };
   return { codex, thread, fake };
 }
@@ -3632,10 +3636,64 @@ describe("skills on a Codex turn", () => {
     expect(existsSync(join(worktree, ".agent", "skills", "pr-review", "checklist.md"))).toBe(true);
     expect(handed[0]?.[8]).toEqual(["pr-review"]);
     expect(existsSync(join(worktree, ".agent", "skills", "release-notes"))).toBe(false);
-    // And the resumed turn is the message and nothing else: the choices
-    // were named in the conversation the CLI is resuming, so naming them
-    // again would pay for the section on every turn.
+    // And the resumed turn is the message, then the Skills section said
+    // again (EO-721) — see the next test for why.
+    expect(promptOf(thread).startsWith("carry on\n\n## Skills")).toBe(true);
+  });
+
+  it("tells a thread opened before skill_read how to load its skills now, without writing a SKILL.md (EO-721)", async () => {
+    // A thread opened before EO-721 was told, in its first turn, to read
+    // `.agent/skills/<slug>/SKILL.md`. That file is no longer written, and
+    // `findReusableThread` carries such a thread on — so a resumed turn
+    // given skills says the current section again: each skill by name
+    // and description, loaded with `skill_read`.
+    mkdirSync(join(worktree, ".agent", "skills", "pr-review"), { recursive: true });
+    const { codex, thread } = stubCodex([{ type: "item.completed", item: { id: "i", type: "agent_message", text: "continued" } }]);
+    const handed: unknown[][] = [];
+    const sections: string[] = [];
+    // Swept first, so the legacy folder EO wrote does not stand in the way: give it EO's marker.
+    writeFileSync(join(worktree, ".agent", "skills", "pr-review", ".eo-delivered"), "EO-DELIVERED-SKILL-FOLDER v1\n");
+    writeFileSync(join(worktree, ".agent", "skills", "pr-review", "SKILL.md"), `---\nname: "pr-review"\n---\n\n${BODY}\n`);
+    const provider = createCodexProvider({ createCodex: (...args: unknown[]) => (handed.push(args), codex as never), attachedSkills: [skill()] });
+
+    const events = await collect(provider.resume("thr_legacy", "the human replied", { cwd: worktree, onSkillsSection: (section) => sections.push(section) }));
+
+    const prompt = promptOf(thread);
+    expect(prompt.startsWith("the human replied\n\n## Skills")).toBe(true);
+    expect(prompt).toContain("- `pr-review` — How this house reviews a pull request.");
+    expect(prompt).toContain("`skill_read`");
+    expect(prompt).not.toContain("SKILL.md");
+    expect(prompt).not.toContain(BODY);
+    // Reported as it was sent, before `resume` returned, for debug mode.
+    expect(sections).toEqual([prompt.slice("the human replied\n\n".length)]);
+    // The tool is there to load it with, and the old file is gone with the sweep.
+    expect(handed[0]?.[8]).toEqual(["pr-review"]);
+    expect(existsSync(join(worktree, ".agent", "skills", "pr-review", "SKILL.md"))).toBe(false);
+    expect(existsSync(join(worktree, ".agent", "skills", "pr-review", "checklist.md"))).toBe(true);
+    expect(events).toContainEqual({ type: "skills_delivered", slugs: ["pr-review"] });
+  });
+
+  it("gives a fork its skills back and serves them, but sends its message as written (EO-721)", async () => {
+    const { codex, thread } = stubCodex([{ type: "item.completed", item: { id: "i", type: "agent_message", text: "reviewed" } }]);
+    const handed: unknown[][] = [];
+    const provider = createCodexProvider({ createCodex: (...args: unknown[]) => (handed.push(args), codex as never), attachedSkills: [skill()] });
+
+    const forked = await provider.fork!("thr_original", "Review this run.", { cwd: worktree });
+    if (!forked.ok) throw new Error(forked.message);
+    await collect(forked.events);
+
+    expect(promptOf(thread)).toBe("Review this run.");
+    expect(handed[0]?.[8]).toEqual(["pr-review"]);
+    expect(existsSync(join(worktree, ".agent", "skills", "pr-review", "checklist.md"))).toBe(true);
+  });
+
+  it("adds no section to a resumed turn given no skills", async () => {
+    const { codex, thread } = stubCodex([{ type: "item.completed", item: { id: "i", type: "agent_message", text: "continued" } }]);
+    const sections: string[] = [];
+    await collect(createCodexProvider({ createCodex: () => codex as never }).resume("thr", "carry on", { cwd: worktree, onSkillsSection: (section) => sections.push(section) }));
+
     expect(promptOf(thread)).toBe("carry on");
+    expect(sections).toEqual([""]);
   });
 
   it("resumes without a worktree rather than failing on one it was not given", async () => {
