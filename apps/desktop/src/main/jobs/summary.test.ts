@@ -10,6 +10,7 @@ import { catchUpJob } from "./catchUp.js";
 import { fireJob } from "./fire.js";
 import { createJob, updateJob } from "./jobs.js";
 import { jobSummary, nextRunAt, occurrenceRows } from "./summary.js";
+import { sendMessage } from "../messages/messages.js";
 
 /**
  * What the Jobs list and the Job page read off a job (EO-308,
@@ -138,13 +139,14 @@ describe("editing the schedule and the zone", () => {
     expect(getJob(handle.db, monday.id as Uuid)?.trigger).toEqual(DAILY_0800_BERLIN);
   });
 
-  it("retitles the thread when the job is renamed, so there is one name for one thing", () => {
+  it("renames the job and leaves its thread as it was, since nothing writes to a job thread (EO-729)", () => {
     const monday = job();
+    const before = getItem(handle.db, monday.threadItemId as Uuid);
 
     expect(updateJob(handle.db, { jobId: monday.id as Uuid, name: "Weekly digest" }).ok).toBe(true);
 
     expect(getJob(handle.db, monday.id as Uuid)?.name).toBe("Weekly digest");
-    expect(getItem(handle.db, monday.threadItemId as Uuid)?.title).toBe("Job: Weekly digest");
+    expect(getItem(handle.db, monday.threadItemId as Uuid)).toEqual(before);
   });
 
   it("will not edit a deleted job", () => {
@@ -177,7 +179,7 @@ describe("why a paused job is paused", () => {
 
     const trip = occurrenceOverBudget(handle.db, item.id)!;
     expect(trip).not.toBeNull();
-    pauseForBudget(handle.db, trip, item);
+    void pauseForBudget(handle.db, trip, item, async (input) => ({ ok: true, messages: [sendMessage(handle.db, input)] }));
 
     expect(getJob(handle.db, monday.id as Uuid)?.pausedReason).toBe("budget");
     expect(budgeted.pausedReason).toBeNull();

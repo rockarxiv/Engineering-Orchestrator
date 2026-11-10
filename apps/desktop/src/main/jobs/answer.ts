@@ -1,15 +1,16 @@
-import type { Comment, Uuid } from "@eo/core";
+import type { Comment, Message, Uuid } from "@eo/core";
 import type { Db } from "../db/client.js";
 import { getComment, getJob, hasFiredAt, occurrenceForOffer } from "../db/repos/index.js";
 import { fireJob, type FireResult } from "./fire.js";
+import { JOB_MESSAGE_SOURCE } from "./ownerMessage.js";
 
 /**
  * "Run it now" — the offer a skip leaves behind (EO-306,
  * `ARCHITECTURE.md`, "Schedules, and a machine that was off").
  *
  * A skip that only says what did not happen leaves the person to
- * reconstruct it by hand. So the comment carries the offer, and pressing
- * it fires *that occurrence* — with its own `dueAt`, so `{{date}}` on the
+ * reconstruct it by hand. So the skip's message to the job's owner
+ * carries the offer (EO-729), and answering it fires *that occurrence* — with its own `dueAt`, so `{{date}}` on the
  * item reads the Monday it was for rather than the Wednesday somebody
  * got round to it.
  *
@@ -51,8 +52,40 @@ export const LEAVE_IT_OPTION = "Leave it";
 export const SKIP_OFFER_OPTIONS = [RUN_NOW_OPTION, LEAVE_IT_OPTION];
 
 /**
- * Fires the occurrence a person has just said yes to, if that is what
- * they said.
+ * Fires the occurrence a person has just answered "Run it now" to, in
+ * the skip's message (EO-729).
+ *
+ * Called wherever a message is answered — this database, or the
+ * organisation's record for one about a project it holds, which is
+ * where that job's occurrences are written — and answers `null` for
+ * every message that is not a skip's offer answered with yes.
+ *
+ * **Which occurrence is decided by the message being answered**: the
+ * skip wrote its offer's id on the occurrence, so pressing an offer from
+ * three weeks ago runs that week's, never the newest skip's.
+ */
+export function answerSkipMessage(db: Db, message: Message): FireResult | null {
+  if (message.source !== JOB_MESSAGE_SOURCE.skipped) return null;
+  if (message.handledHow !== "answered" || message.answer !== RUN_NOW_OPTION) return null;
+  const occurrence = occurrenceForOffer(db, message.id as Uuid);
+  if (!occurrence || occurrence.jobId !== message.jobId) return null;
+  // Answered on two screens before either refreshed: an occurrence fires once.
+  if (hasFiredAt(db, occurrence.jobId as Uuid, occurrence.dueAt)) return null;
+  // Read now, so the firing uses the job as it is today; a deleted job
+  // files nothing (`fireJob` would refuse it and say so, which a person
+  // who deleted it does not need telling).
+  const job = getJob(db, occurrence.jobId as Uuid);
+  if (!job || job.deletedAt !== null) return null;
+  return fireJob(db, job, { dueAt: occurrence.dueAt });
+}
+
+/**
+ * Fires the occurrence a person has just said yes to in a reply on the
+ * job's thread, where the offer was a comment.
+ *
+ * Skips have sent their offer as a message since EO-729; this answers
+ * the ones posted on a job's thread before that, which are still open
+ * in somebody's inbox until the threads are retired.
  *
  * Called on every human comment, and answers `null` for almost all of
  * them. A reply that is not filed under anything leaves after one field

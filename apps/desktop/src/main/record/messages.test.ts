@@ -1,20 +1,38 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { HANDLED_MESSAGE_RETENTION_MS, type IpcPayload, type Message, type MessageSend, type Uuid } from "@eo/core";
+import { HANDLED_MESSAGE_RETENTION_MS, type IpcPayload, type Job, type Message, type MessageSend, type Uuid } from "@eo/core";
+import { eq } from "drizzle-orm";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { AttachmentStorage } from "../attachments/storage.js";
 import type { DbHandle } from "../db/client.js";
 import { issueDevice } from "../db/repos/devicesRepo.js";
 import { createPerson } from "../db/repos/peopleRepo.js";
-import { createProject, getMessage, getProject, insertMessage, listOpenMessages, markMessageHandled, sweepHandledMessages } from "../db/repos/index.js";
+import {
+  createProject,
+  getJob,
+  getMessage,
+  getProject,
+  insertMessage,
+  listCommentsForItem,
+  listOccurrences,
+  listOpenMessages,
+  markMessageHandled,
+  recordOccurrence,
+  sweepHandledMessages,
+} from "../db/repos/index.js";
 import { setSetting } from "../db/repos/settingsRepo.js";
-import { messages } from "../db/schema.js";
-import { openMigratedTestDb } from "../db/testHelpers.js";
+import { jobs, messages } from "../db/schema.js";
+import { createTestItem, openMigratedTestDb } from "../db/testHelpers.js";
 import { MANAGED_PERSON_ID_KEY } from "../identity/viewer.js";
 import { clearPublishedView } from "../ipc/currentView.js";
 import { listInbox } from "../ipc/domainQueries.js";
 import { clearHandlerRegistry, dispatchIpc } from "../ipc/registry.js";
+import { RUN_NOW_OPTION } from "../jobs/answer.js";
+import { pauseForBudget } from "../jobs/budget.js";
+import { catchUpJob } from "../jobs/catchUp.js";
+import { createJob } from "../jobs/jobs.js";
+import { JOB_MESSAGE_SOURCE } from "../jobs/ownerMessage.js";
 import { fakePlatform } from "../testing/platform.js";
 import { createDeviceRecord, type DeviceRecord } from "./deviceRecord.js";
 import { createLocalRecord } from "./localRecord.js";
@@ -419,5 +437,70 @@ describe("a message the record swept while a recipient's desktop was away", () =
     await annaLaptop.record.sync();
 
     expect(listOpenMessages(annaLaptop.handle.db, [annaId])).toHaveLength(2);
+  });
+});
+
+/**
+ * A job's guards about a project the record holds (EO-729): written on
+ * the record, to the job's owner rather than to each admin, and answered
+ * there — which is where that job's occurrences are.
+ */
+describe("a job's guard about a project the organisation's record holds", () => {
+  const MONDAY_0800 = Date.UTC(2026, 5, 1, 6, 0);
+
+  /** A weekly job on the record's project, owned by Carl — who is no admin — and made before its Monday. */
+  async function carlsJob(): Promise<Job> {
+    const projectId = await organisationProject();
+    const created = createJob(recordDb.db, {
+      projectId,
+      name: "Monday report",
+      trigger: { kind: "schedule", schedule: { kind: "weekly", weekday: 1, hour: 8, minute: 0 }, timeZone: "Europe/Berlin", catchUpWithinMinutes: 180 },
+      pipelineId: "default",
+      template: { type: "developer:story", title: "{{job}} for {{date}}", body: null },
+    });
+    if (!created.ok) throw new Error(created.problem);
+    recordDb.db.update(jobs).set({ ownerId: carlId, createdAt: MONDAY_0800 - 60_000 }).where(eq(jobs.id, created.job.id)).run();
+    return getJob(recordDb.db, created.job.id as Uuid)!;
+  }
+
+  it("is a message on the record to the job's owner, which reaches only their desktop, and running it from there fires on the record", async () => {
+    const job = await carlsJob();
+
+    // The record's own scheduler skips the Monday it was not running for.
+    catchUpJob(recordDb.db, job, { now: MONDAY_0800 + 4 * 60 * 60_000 });
+
+    const written = onTheRecord();
+    expect(written).toHaveLength(1);
+    expect(written[0]).toMatchObject({ recipientId: carlId, jobId: job.id, projectId: job.projectId, source: JOB_MESSAGE_SOURCE.skipped });
+    expect(written[0]?.body).toContain("Monday report");
+    expect(listCommentsForItem(recordDb.db, job.threadItemId as Uuid)).toEqual([]);
+
+    await syncAll();
+    expect(listInbox(carl.handle.db).messages.map((message) => message.id)).toEqual([written[0]?.id]);
+    expect(heldOn(annaDesk)).toEqual([]);
+    expect(heldOn(ben)).toEqual([]);
+
+    const answered = await carl.record.handleMessage({ messageId: written[0]!.id, how: "answered", answer: RUN_NOW_OPTION });
+
+    expect(answered.ok).toBe(true);
+    expect(listOccurrences(recordDb.db, job.id as Uuid).map((occurrence) => occurrence.status)).toEqual(["fired", "skipped"]);
+  });
+
+  it("is sent through the record when a desktop's run trips the job's budget, to the owner", async () => {
+    const job = await carlsJob();
+    const occurrence = recordOccurrence(recordDb.db, { jobId: job.id as Uuid, dueAt: MONDAY_0800, status: "fired", firedAt: MONDAY_0800 });
+    const item = createTestItem(annaDesk.handle.db, { type: "story", title: "Monday report for 2026-06-01", stepId: "todo" });
+
+    // Anna's desktop ran the leased item and found it over budget.
+    await pauseForBudget(annaDesk.handle.db, { job, occurrence, budgetCents: 400, spentCents: 500 }, item, (input) => annaDesk.record.sendMessage(input));
+
+    const written = onTheRecord();
+    expect(written).toHaveLength(1);
+    expect(written[0]).toMatchObject({ recipientId: carlId, jobId: job.id, source: JOB_MESSAGE_SOURCE.budget });
+    expect(written[0]?.body).toContain(`"Monday report" is paused`);
+    // Carl's, not Anna's: nothing kept on the desktop that sent it.
+    expect(heldOn(annaDesk)).toEqual([]);
+    await carl.record.sync();
+    expect(heldOn(carl)).toEqual([written[0]?.id]);
   });
 });

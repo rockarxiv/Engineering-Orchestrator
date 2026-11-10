@@ -1,7 +1,7 @@
 import type { Item, Job, JobOccurrence, JobPauseReason, Uuid } from "@eo/core";
 import type { Db } from "../db/client.js";
 import { getJob, listOccurrences, occurrenceForItem, setJobPaused, sumCostCentsForItem, sumCostCentsForItems } from "../db/repos/index.js";
-import { postToJobThread } from "./thread.js";
+import { JOB_MESSAGE_SOURCE, messageJobOwnerThrough, type JobMessageSender } from "./ownerMessage.js";
 
 /**
  * Per-job budgets, and pause (EO-307,
@@ -17,8 +17,8 @@ import { postToJobThread } from "./thread.js";
  * **A budget trip is a park, not a route.** It happens before a dispatch
  * rather than after a result, so there is no result to route on: the run
  * that would have started never does, the item is left awaiting a person
- * (invariant #8), and the job's thread is told which budget it was and
- * what it had spent. Routing it would mean inventing an outcome for work
+ * (invariant #8), and the job's owner is sent a message saying which
+ * budget it was and what it had spent (EO-729). Routing it would mean inventing an outcome for work
  * that never ran.
  *
  * **And pausing is the other half of the same sentence.** Parking one
@@ -62,8 +62,8 @@ export function occurrenceOverBudget(db: Db, itemId: Uuid): JobBudgetTrip | null
   // a tombstone so the items it filed can still name it, and those
   // items may well be work a person chose to *keep* — parking one would
   // stop work somebody deliberately kept, on the authority of a job
-  // they deliberately deleted, and would say so on a thread that has
-  // been archived. The per-item and daily guards still apply to them,
+  // they deliberately deleted, and would say so about a job that is
+  // gone. The per-item and daily guards still apply to them,
   // like any other item on the board.
   if (job.deletedAt !== null) return null;
   const spentCents = sumCostCentsForItem(db, itemId);
@@ -92,28 +92,31 @@ export function budgetRefusal(trip: JobBudgetTrip): string {
  * Stops the job, and says so where a person will see it.
  *
  * Quiet if the job is already paused: a second item of a second
- * occurrence can trip the same budget, and two comments about one state
+ * occurrence can trip the same budget, and two messages about one state
  * is EO reporting its own timing rather than anything to act on.
  *
- * The comment mentions the owner, which is what a job's thread is for
- * (ARCHITECTURE.md, "What a job records"): the guard fires where no item of the *job's* own exists,
- * so
- * the thread is the channel it ends in (invariants #4 and #8).
+ * The job's owner is sent a message (EO-729): the guard is about the
+ * job, which is no item, so it ends in a message to the person who must
+ * act (invariant #8) — the item it parked carries its own comment.
+ * `send` is the record's `sendMessage`, because this runs on whichever
+ * desktop dispatched the item: a project the organisation's record holds
+ * has its messages written there (EO-726), and any other here.
  */
-export function pauseForBudget(db: Db, trip: JobBudgetTrip, item: Item): void {
-  if (trip.job.pausedAt !== null) return;
+export function pauseForBudget(db: Db, trip: JobBudgetTrip, item: Item, send: JobMessageSender): Promise<void> {
+  if (trip.job.pausedAt !== null) return Promise.resolve();
   // Said here, where it is known (EO-308, ARCHITECTURE.md, "The inbox, the archive and jobs"). The
   // chip on the Jobs
   // list is drawn from it, and nothing downstream can work it out: a
   // job a person paused after an expensive occurrence has exactly the
   // same spend as this one.
   pauseJob(db, trip.job.id as Uuid, Date.now(), "budget");
-  postToJobThread(
-    db,
+  return messageJobOwnerThrough(
+    send,
     trip.job,
     `"${trip.job.name}" is paused: ${item.key} has spent ${trip.spentCents}¢ of the ${trip.budgetCents}¢ this job ` +
       `allows one occurrence, so nothing more was dispatched for it. Resume the job when you have decided what to ` +
       `do about the budget.`,
+    { source: JOB_MESSAGE_SOURCE.budget },
   );
 }
 

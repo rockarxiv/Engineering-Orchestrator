@@ -3,7 +3,7 @@ import type { Db } from "../db/client.js";
 import { getProject, listAllJobs } from "../db/repos/index.js";
 import { isReplica } from "../db/recordRole.js";
 import { startInterval } from "../schedule/interval.js";
-import { catchUpJob, type CatchUpDeps, type JobGuardNotification } from "./catchUp.js";
+import { catchUpJob, type CatchUpDeps } from "./catchUp.js";
 import { releaseHeldWebhookEvents, type WebhookDeps } from "./webhook.js";
 
 /**
@@ -39,12 +39,6 @@ export interface JobSchedulerOptions {
   intervalMs?: number;
   onTick?: (result: JobTickResult) => void;
   /**
-   * Shows an OS notification for a guard. Handed in by the composition
-   * root, because showing one is the machine's job (KAN-127) and this
-   * module has no window.
-   */
-  notify?: (notification: JobGuardNotification) => void;
-  /**
    * What a released webhook event needs that the sweep does not have
    * (EO-332): somewhere to keep the payload as a file. Handed in by the
    * composition root, because attachment storage is a directory on this
@@ -69,7 +63,7 @@ export interface JobTickResult {
  * only evidence is a console line is a loop nobody tests.
  *
  * Each job is caught up in its own try, so a job whose pipeline was
- * deleted out from under it is a guard on one thread rather than the
+ * deleted out from under it is a guard about one job rather than the
  * reason none of the others ran this minute.
  */
 export function runJobTick(db: Db, deps: CatchUpDeps = {}): JobTickResult {
@@ -146,7 +140,7 @@ export function startJobScheduler(db: Db, options: JobSchedulerOptions = {}): ()
       // not: optional call short-circuits its *arguments*, so with no
       // `onTick` — which is how the app itself starts this — the tick
       // never ran at all.
-      const result = runJobTick(db, options.notify === undefined ? {} : { notify: options.notify });
+      const result = runJobTick(db);
       options.onTick?.(result);
       // …and then what a webhook burst left waiting (EO-332, ARCHITECTURE.md, "Controls").
       // After the schedules and inside the same non-overlap flag, so a

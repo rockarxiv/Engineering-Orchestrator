@@ -62,47 +62,6 @@ export function notificationForMessage(message: Message): { title: string; body:
   return { title: "EO needs you", body: truncateForGlance(message.body) };
 }
 
-/**
- * What a job's guard says when it interrupts somebody (EO-306,
- * `ARCHITECTURE.md`, "Schedules, and a machine that was off").
- *
- * **The same sentence the thread was told, whole.** The notification is
- * a second delivery of one message rather than a summary of it: a person
- * who reads "EO was not open within 3 hours of 08:00. Run it now?" on a
- * lock screen and then opens the thread should find the words they
- * already read.
- *
- * So this deliberately does *not* truncate, where `notificationFor`
- * above does, and the difference is not an oversight. An inbox
- * notification carries a comment somebody else wrote — arbitrary length,
- * with the item one click away for the rest of it. A guard carries a
- * sentence EO composed, whose last clause is the only actionable thing
- * in it: cut a guard about a job with a long name at 140 characters and
- * what falls off the end is the reason it was skipped and the offer to
- * run it, leaving a notification that says a thing happened and not what
- * or what to do. The OS elides what will not fit on its own, and it does
- * so knowing the width of the screen, which is not a fact available here.
- *
- * Here rather than in `jobs/catchUp.ts` because this is the file about
- * what interrupts somebody and how it reads; the delivery is the
- * platform's (KAN-127) and the wording has stayed here.
- */
-export function notificationForJobGuard(guard: { title: string; body: string }): { title: string; body: string } {
-  return { title: guard.title, body: guard.body };
-}
-
-/**
- * Whether a guard should interrupt at all.
- *
- * Do Not Disturb suppresses the notification and nothing else — the
- * comment is posted, the mention is open and the badge counts it,
- * exactly as `createInboxNotifier` has it. Silencing an alert must not
- * also hide the fact.
- */
-export function shouldInterrupt(db: Db): boolean {
-  return !getSetting(db, DND_KEY, false);
-}
-
 /** Truncated rather than wrapped: a notification is a glance. */
 function truncateForGlance(body: string): string {
   return body.length > 140 ? `${body.slice(0, 139)}…` : body;

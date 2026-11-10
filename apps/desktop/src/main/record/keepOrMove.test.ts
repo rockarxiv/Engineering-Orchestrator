@@ -6,7 +6,7 @@ import { EMPTY_SPEC_SHAPE, LOCAL_PERSON_ID, type IpcPayload, type Item, type Rec
 import { sql } from "drizzle-orm";
 import { buildTickInput } from "../supervisor/buildTickInput.js";
 import type { DbHandle } from "../db/client.js";
-import { createTestItem, openMigratedTestDb } from "../db/testHelpers.js";
+import { createTestItem, messagesAboutJob, openMigratedTestDb } from "../db/testHelpers.js";
 import { getItemWatch, startItemWatch, updateItemWatch } from "../db/repos/itemWatchesRepo.js";
 import {
   abandonAdoption,
@@ -62,7 +62,7 @@ import { createDeviceRecord, type DeviceRecord } from "./deviceRecord.js";
 import { moveProjectToRecord, type AdoptRequest } from "./adopt.js";
 import { serveAdopt, serveApply, serveChanges, serveRelease, serveRenew, serveWork, type ServeRecordContext } from "./serveRecord.js";
 import type { RecordTransport } from "./syncStatus.js";
-import { MANAGED_PERSON_ID_KEY } from "../identity/viewer.js";
+import { MANAGED_PERSON_ID_KEY, signedInPersonId } from "../identity/viewer.js";
 import { AttachmentStorage } from "../attachments/storage.js";
 import { runJobTick } from "../jobs/scheduler.js";
 import { fireJob } from "../jobs/fire.js";
@@ -2353,16 +2353,19 @@ describe("a job whose project is mid-transfer", () => {
     // declined" is a row the record never hears about, on a project
     // whose whole account of itself is meant to be the record's.
     expect(pressed.occurrence).toBeNull();
-    // Nothing but the note on the thread and the mention that carries
-    // it to the owner's inbox — no item, and no occurrence.
+    // Nothing written on the project at all — no item, no occurrence,
+    // and no comment on the job's thread.
     const after = countProjectRows(annaDb.db, support.id);
-    expect({ ...after, comments: 0, mentions: 0 }).toEqual({ ...before, comments: 0, mentions: 0 });
-    expect(after.occurrences).toBe(before.occurrences);
-    expect(after.items).toBe(before.items);
-    // Every guard ends in a comment (invariant #8): the thread says
-    // why, and says it here rather than to the organisation.
+    expect(after).toEqual(before);
+    // Every guard ends in a message where there is no item (invariant
+    // #8, EO-729): to the person at this desktop, about no project, so it
+    // is kept and handled here rather than on the organisation's record.
+    const told = messagesAboutJob(annaDb.db, jobId);
+    expect(told).toHaveLength(1);
+    expect(told[0]).toMatchObject({ projectId: null, source: "job_declined", recipientId: signedInPersonId(annaDb.db) });
+    expect(told[0]?.body).toContain("record files its work");
     const thread = getJob(annaDb.db, jobId)!.threadItemId as Uuid;
-    expect(listCommentsForItem(annaDb.db, thread).map((one) => one.body).join(" ")).toContain("record files its work");
+    expect(listCommentsForItem(annaDb.db, thread)).toEqual([]);
     expect(pendingCommands(annaDb.db, 50).map((command) => command.itemId)).not.toContain(thread);
 
     // The record is the one that files it, and does.

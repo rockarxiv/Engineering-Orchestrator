@@ -27,7 +27,7 @@ import {
   recordJobEvent,
 } from "../db/repos/index.js";
 import { fireJob } from "./fire.js";
-import { postToJobThread } from "./thread.js";
+import { JOB_MESSAGE_SOURCE, messageJobOwner } from "./ownerMessage.js";
 import { hashWebhookBody, webhookSignatureMatches } from "./webhookSignature.js";
 
 /**
@@ -50,9 +50,9 @@ import { hashWebhookBody, webhookSignatureMatches } from "./webhookSignature.js"
  * The review found the first draft had no answer to where a
  * deduplicated, malformed or over-cap event is recorded. It does now:
  * every request writes exactly one `job_events` row, and every outcome
- * that is not `created` — bar the two below — also posts on the job's
- * thread item and mentions the owner, because a guard ends in a comment
- * (invariant #8) on the one channel there is (invariant #4).
+ * that is not `created` — bar the two below — also sends the job's owner
+ * a message (EO-729), because a guard where there is no item ends in a
+ * message to the person who must act (invariant #8).
  *
  * ### Where the work then runs
  *
@@ -64,7 +64,7 @@ import { hashWebhookBody, webhookSignatureMatches } from "./webhookSignature.js"
  *
  * **Bad signatures and replays are recorded and never posted.** That is
  * the exception the story names and the reason for it is the attacker:
- * a stranger who can make EO post a comment by sending an unsigned
+ * a stranger who can make EO send a message by sending an unsigned
  * request can fill somebody's inbox from the outside, which is a denial
  * of service dressed as a guard. They are counted at the door instead
  * (the throttle in `server/http.ts`) and readable on the Events tab,
@@ -310,7 +310,7 @@ export async function receiveWebhook(db: Db, delivery: WebhookDelivery, deps: We
   }
   if (filed.kind === "refused") {
     // 422: read and understood, and no amount of sending it again makes
-    // this payload fill the field. `fireJob` has told the thread.
+    // this payload fill the field. `fireJob` has told the owner.
     return recorded(db, job, { ...accepted, outcome: "refused", reason: filed.reason, status: 422 });
   }
   return recorded(db, job, { ...accepted, outcome: "held", reason: filed.reason, status: 202 });
@@ -327,7 +327,7 @@ export async function receiveWebhook(db: Db, delivery: WebhookDelivery, deps: We
  *
  * A job that still cannot file work — paused, or its pipeline deleted —
  * is passed over in silence. It said why when it held the first one, and
- * a sentence a minute about a state that has not changed is how a thread
+ * a sentence a minute about a state that has not changed is how an inbox
  * becomes something nobody reads.
  */
 export async function releaseHeldWebhookEvents(db: Db, deps: WebhookDeps & { now?: number } = {}): Promise<JobEvent[]> {
@@ -409,7 +409,7 @@ async function fileTheItem(db: Db, job: Job, event: AcceptedEvent, deps: Webhook
       // and the history readable.
       const fired = fireJob(db, job, { dueAt: event.receivedAt, firedAt: now, overrides });
       // Returned rather than thrown: this firing is over, and its `failed`
-      // occurrence and the thread's comment have to outlive this
+      // occurrence and the owner's message have to outlive this
       // transaction, which a throw would take back (EO-610).
       if (fired.item === null && fired.refusedAtEntry === true) return { refused: fired.problem ?? "Its pipeline refused it." };
       if (fired.item === null) throw new Unfiled(fired.problem ?? "EO could not file an item for it.");
@@ -554,7 +554,7 @@ function whyItWaits(db: Db, job: Job, now: number): string | null {
  *
  * Asked before the item is attempted rather than after it fails, so a
  * job whose pipeline was deleted holds its events and says so once,
- * instead of writing a `failed` occurrence and a thread comment for
+ * instead of writing a `failed` occurrence and a message for
  * every delivery that arrives until somebody notices.
  */
 function whyItCannotFile(db: Db, job: Job): string | null {
@@ -584,9 +584,9 @@ function whyItCannotFile(db: Db, job: Job): string | null {
  * record for every request the throttle admits, which is an attack the
  * record would be helping with.
  *
- * And never posted on the thread. That is the story's own exception and
- * its reason is in one sentence: an attacker who can make EO post a
- * comment can fill an inbox from outside.
+ * And never told the owner. That is the story's own exception and its
+ * reason is in one sentence: an attacker who can make EO send a message
+ * can fill an inbox from outside.
  */
 function refused(db: Db, job: Job, now: number, rawBody: string, outcome: JobEventOutcome, reason: string): WebhookAnswer {
   const event = recordJobEvent(db, {
@@ -604,7 +604,7 @@ function refused(db: Db, job: Job, now: number, rawBody: string, outcome: JobEve
   return { status: 401, outcome, event, itemId: null };
 }
 
-/** Everything that is recorded *and* said on the thread — which is every outcome bar the two above. */
+/** Everything that is recorded *and* said to the owner — which is every outcome bar the two above. */
 function recorded(
   db: Db,
   job: Job,
@@ -618,25 +618,25 @@ function recorded(
     outcome: input.outcome,
     reason: input.reason,
   });
-  const sentence = threadSentence(db, job, event);
-  if (sentence !== null) postToJobThread(db, job, sentence);
+  const sentence = ownerSentence(db, job, event);
+  if (sentence !== null) messageJobOwner(db, job, sentence, { source: JOB_MESSAGE_SOURCE.webhook });
   return { status: input.status, outcome: input.outcome, event, itemId: null };
 }
 
 /**
- * What the job's thread is told, or null for an outcome that says
+ * What the job's owner is told, or null for an outcome that says
  * nothing.
  *
  * A held event says it **once per burst**, and that is the one piece of
  * judgement in this file. The rule the story states is that a
- * non-created outcome posts a comment; applied literally to a burst of
- * forty it would post thirty comments about one situation, which is the
- * failure `catchUp.ts` already names — a guard is worth a comment and
+ * non-created outcome is said; applied literally to a burst of forty it
+ * would send thirty messages about one situation, which is the failure
+ * `catchUp.ts` already names — a guard is worth a message and
  * sixty of them a day is worth nothing. So the first event to start a
  * queue speaks for the queue, and the Events tab's "N waiting" is where
  * the number lives (ARCHITECTURE.md, "The inbox, the archive and jobs").
  */
-function threadSentence(db: Db, job: Job, event: JobEvent): string | null {
+function ownerSentence(db: Db, job: Job, event: JobEvent): string | null {
   if (event.outcome === "held") {
     // One, because this row is in the count: anything higher means a
     // queue was already waiting and has already been spoken for.

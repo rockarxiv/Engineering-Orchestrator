@@ -35,7 +35,7 @@ import { createAdminMcpHost } from "./mcpHost/admin.js";
 import { approvedModuleTestWriteRefusal } from "./roles/assist.js";
 import { recordScenarioApprovalWithdrawal, scenarioModuleWriteRefusal } from "./roles/scenario.js";
 import { createMcpHost } from "./mcpHost/index.js";
-import { createInboxNotifier, notificationFor, notificationForJobGuard, notificationForMessage, shouldInterrupt } from "./notifications.js";
+import { createInboxNotifier, notificationFor, notificationForMessage } from "./notifications.js";
 import { startOutboxDrain } from "./outbox/drainLoop.js";
 import { retireForgeQueue } from "./outbox/retireForgeQueue.js";
 import { retireConversationRooms } from "./ipc/retireConversationRooms.js";
@@ -630,21 +630,6 @@ export function startMain(platform: Platform): RunningMain {
     // The same instance everything else attaches through — two would be
     // two views of one directory.
     webhooks: { storage: attachmentStorage },
-    // What it says is notifications.ts's and showing it is the
-    // platform's, composed here — the same split `notify` above makes,
-    // and for the same reason. Do Not Disturb silences the alert and
-    // nothing else: the comment is on the thread and the mention is in
-    // the inbox either way.
-    notify: (guard) => {
-      if (!shouldInterrupt(db)) return;
-      platform.notify({
-        ...notificationForJobGuard(guard),
-        onClick: () => {
-          platform.showWindow();
-          emitPush("navigate", { to: `/items/${guard.itemId}` });
-        },
-      });
-    },
   });
 
   // Jira, the other way round: comments and edits written there reach

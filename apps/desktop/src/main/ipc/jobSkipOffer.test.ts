@@ -1,34 +1,38 @@
 import { eq } from "drizzle-orm";
-import type { Comment, Job, JobTrigger, Uuid } from "@eo/core";
+import type { Job, JobTrigger, Message, Uuid } from "@eo/core";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { DbHandle } from "../db/client.js";
-import { listCommentsForItem, listOccurrences } from "../db/repos/index.js";
+import { getMessage, listCommentsForItem, listOccurrences } from "../db/repos/index.js";
 import { jobs } from "../db/schema.js";
-import { openMigratedTestDb } from "../db/testHelpers.js";
+import { messagesAboutJob, openMigratedTestDb } from "../db/testHelpers.js";
 import { catchUpJob } from "../jobs/catchUp.js";
 import { createJob } from "../jobs/jobs.js";
-import { RUN_NOW_OPTION } from "../jobs/answer.js";
-import { postHumanComment } from "./domainCommands.js";
+import { LEAVE_IT_OPTION, RUN_NOW_OPTION } from "../jobs/answer.js";
+import { fakePlatform } from "../testing/platform.js";
+import { clearHandlerRegistry, dispatchIpc } from "./registry.js";
 
 /**
  * Pressing "Run it now" on a skipped occurrence, through the channel a
- * person actually presses it on (EO-306,
+ * person actually presses it on (EO-306, EO-729,
  * `ARCHITECTURE.md`, "Schedules, and a machine that was off").
  *
  * `answer.test.ts` covers what the decision is; this covers that
- * `comments:post` reaches it at all. Worth its own test because the offer
- * deliberately has no channel of its own — it is an option on a comment,
- * so the wiring is one call inside the ordinary reply path and nothing
- * else would notice if it were removed.
+ * `messages:answer` reaches it at all. Worth its own test because the
+ * offer has no channel of its own — it is an option on the skip's
+ * message, so the wiring is one call inside the ordinary answer path and
+ * nothing else would notice if it were removed.
  */
 
 let handle: DbHandle;
 
-beforeEach(() => {
+beforeEach(async () => {
   handle = openMigratedTestDb();
+  const { registerAllHandlers } = await import("./handlers.js");
+  registerAllHandlers(handle.db, undefined, { platform: fakePlatform() });
 });
 
 afterEach(() => {
+  clearHandlerRegistry();
   handle.close();
 });
 
@@ -42,8 +46,8 @@ const WEEKLY_0800: JobTrigger = {
   catchUpWithinMinutes: 180,
 };
 
-/** A schedule job whose Monday morning was missed, with the offer on its thread. */
-function missedMonday(name = "Monday report"): { job: Job; offer: Comment } {
+/** A schedule job whose Monday morning was missed, with the offer in a message to its owner. */
+function missedMonday(name = "Monday report"): { job: Job; offer: Message } {
   const created = createJob(handle.db, {
     projectId: null,
     name,
@@ -53,63 +57,41 @@ function missedMonday(name = "Monday report"): { job: Job; offer: Comment } {
   });
   if (!created.ok) throw new Error(created.problem);
   handle.db.update(jobs).set({ createdAt: MONDAY_0800 - 60_000 }).where(eq(jobs.id, created.job.id)).run();
-  // Four hours late: skipped, with the offer on the thread.
+  // Four hours late: skipped, with the offer in the owner's inbox.
   catchUpJob(handle.db, { ...created.job, createdAt: MONDAY_0800 - 60_000 }, { now: MONDAY_0800 + 4 * 60 * 60_000 });
-  const offer = listCommentsForItem(handle.db, created.job.threadItemId as Uuid)[0]!;
+  const offer = messagesAboutJob(handle.db, created.job.id)[0]!;
   expect(offer.options).toContain(RUN_NOW_OPTION);
   return { job: created.job, offer };
 }
 
-function post(itemId: string, body: string, parentId: string | null) {
-  return postHumanComment(handle.db, undefined, { itemId, body, parentId, mentions: [], pinned: false, attachmentIds: [] });
-}
-
-describe("replying to a job's skip offer", () => {
-  it("fires the occurrence the comment was about", async () => {
+describe("answering a job's skip offer", () => {
+  it("fires the occurrence the message was about", async () => {
     const { job: monday, offer } = missedMonday();
 
-    const posted = await post(monday.threadItemId, RUN_NOW_OPTION, offer.id);
+    const answered = await dispatchIpc("messages:answer", { messageId: offer.id, answer: RUN_NOW_OPTION });
 
-    // The reply is recorded either way — the firing is a consequence of
+    expect(answered.ok).toBe(true);
+    // The answer is recorded either way — the firing is a consequence of
     // it and never a replacement for it.
-    expect(posted.commentId).toBeTruthy();
-    expect(posted.resumedRun).toBe(false);
+    expect(getMessage(handle.db, offer.id)).toMatchObject({ handledHow: "answered", answer: RUN_NOW_OPTION });
     const occurrences = listOccurrences(handle.db, monday.id as Uuid);
     expect(occurrences.map((occurrence) => occurrence.status)).toEqual(["fired", "skipped"]);
     // For the Monday it was due, not for the moment the button was
     // pressed.
     expect(occurrences[0]?.dueAt).toBe(MONDAY_0800);
     expect(occurrences[0]?.itemId).not.toBeNull();
+    // And nothing was said on the job's thread.
+    expect(listCommentsForItem(handle.db, monday.threadItemId as Uuid)).toEqual([]);
   });
 
-  /**
-   * `parentId` is a claim the caller makes and not a fact the database
-   * enforces: `comments:post` takes any id at all in it, and nothing
-   * makes a parent and its child share an item. So the channel is where
-   * this has to be shown — the unit test can only prove the rule, and
-   * this proves nobody can reach round it.
-   */
-  it("does not fire from a comment on another item that cites the offer as its parent", async () => {
-    const { job: monday, offer } = missedMonday();
-    // Any other item: this one is a second job's thread, which is simply
-    // the shortest item to come by.
-    const elsewhere = missedMonday("Something else").job.threadItemId;
-    expect(elsewhere).not.toBe(monday.threadItemId);
+  it("does not fire when the person leaves it, or dismisses it", async () => {
+    const first = missedMonday();
+    const second = missedMonday("Something else");
 
-    const posted = await post(elsewhere, RUN_NOW_OPTION, offer.id);
+    await dispatchIpc("messages:answer", { messageId: first.offer.id, answer: LEAVE_IT_OPTION });
+    await dispatchIpc("messages:dismiss", { messageId: second.offer.id });
 
-    // The comment is written, because a person said something and
-    // invariant #4 says the thread is where that goes. What it does not
-    // do is run somebody's job from an item it has nothing to do with.
-    expect(posted.commentId).toBeTruthy();
-    expect(listOccurrences(handle.db, monday.id as Uuid).map((occurrence) => occurrence.status)).toEqual(["skipped"]);
-  });
-
-  it("does not fire from a comment on the thread that answers nothing", async () => {
-    const { job: monday } = missedMonday();
-
-    await post(monday.threadItemId, RUN_NOW_OPTION, null);
-
-    expect(listOccurrences(handle.db, monday.id as Uuid).map((occurrence) => occurrence.status)).toEqual(["skipped"]);
+    expect(listOccurrences(handle.db, first.job.id as Uuid).map((occurrence) => occurrence.status)).toEqual(["skipped"]);
+    expect(listOccurrences(handle.db, second.job.id as Uuid).map((occurrence) => occurrence.status)).toEqual(["skipped"]);
   });
 });

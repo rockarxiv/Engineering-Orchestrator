@@ -130,3 +130,12 @@ export function messagesFrom(db: Db, source: string): Message[] {
     .all()
     .flatMap((row) => getMessage(db, row.id) ?? []);
 }
+
+/** Every message about one job, open or handled, oldest first (EO-729): what its guards said. */
+export function messagesAboutJob(db: Db, jobId: string): Message[] {
+  const rows = db.select({ id: messages.id }).from(messages).where(eq(messages.jobId, jobId)).orderBy(asc(messages.createdAt), asc(messages.id)).all();
+  return rows.flatMap((row) => {
+    const message = getMessage(db, row.id);
+    return message ? [message] : [];
+  });
+}
