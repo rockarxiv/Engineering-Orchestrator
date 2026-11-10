@@ -13,6 +13,7 @@ import {
   getAppliedTemplateUpdate,
   getPipelineOrigin,
   listPipelineVersions,
+  publishSection,
   listRoutesForPipeline,
   listStepsForPipeline,
   recordPipelineOrigin,
@@ -30,8 +31,12 @@ import { applyTemplateUpdates } from "../gallery/templateUpdates.js";
 import { MANAGED_PERSON_ID_KEY } from "../identity/viewer.js";
 import { buildTickInput } from "../supervisor/buildTickInput.js";
 import { moveProjectToRecord } from "./adopt.js";
+import { findProjectThread } from "../projects/projectThread.js";
 import { createLocalRecord } from "./localRecord.js";
-import { serveAdopt, type ServeRecordContext } from "./serveRecord.js";
+import { serveAdopt, serveApply, serveChanges, type ServeRecordContext } from "./serveRecord.js";
+import { createDeviceRecord } from "./deviceRecord.js";
+import type { RecordTransport } from "./syncStatus.js";
+import { pipelineVersionsCommand } from "../ipc/pipelineCommands.js";
 
 /**
  * A template pipeline's origin survives a move to the record (EO-532).
@@ -216,5 +221,55 @@ describe("moving a template pipeline updated lately", () => {
 
     expect(getAppliedTemplateUpdate(recordDb.db, pipelineId)).toBeNull();
     expect(describeTemplateStatus(recordDb.db, pipelineId, history, { onTheRecord: true }).updated).toBeNull();
+  });
+});
+
+/**
+ * A template update the record applies reaches the desktops with its
+ * release notes (EO-728): the version it filed carries them down, so the
+ * pipeline's version list on a desktop holding the project shows them,
+ * as the record's does, and nothing is posted anywhere.
+ *
+ * Where the organisation publishes its pipelines: only then does a
+ * desktop take the record's graph and versions at all
+ * (`upsertReplicaPipeline`); unpublished, it keeps its own and holds no
+ * version the update filed.
+ */
+describe("a template update the record applies, on a desktop", () => {
+  it("shows its release notes in the desktop's version list", async () => {
+    const project = createProject(deskDb.db, { name: "Shop", keyPrefix: "SHOP" });
+    const { pipelineId, ids } = importedPipeline(project.id as Uuid);
+    createTestItem(deskDb.db, { type: "story", title: "In flight", stepId: ids.get("todo")!, projectId: project.id as Uuid });
+    await move(project.id as Uuid);
+    publishSection(recordDb.db, { section: "pipelines", subjectId: "default", publishedAt: Date.now() });
+
+    expect(applyTemplateUpdates(recordDb.db, history, { isTheRecord: true })).toContainEqual(expect.objectContaining({ pipelineId, outcome: "applied", to: "1.3" }));
+    const filed = currentVersion(recordDb.db, pipelineId)!;
+    expect(filed.releaseNotes).toEqual(expect.any(String));
+    expect(filed.releaseNotes).not.toBe("");
+
+    const transport: RecordTransport = {
+      async request(channel, payload) {
+        const answer =
+          channel === "record:changes"
+            ? serveChanges(serving, payload as IpcPayload<"record:changes">)
+            : channel === "record:apply"
+              ? await serveApply(serving, payload as IpcPayload<"record:apply">)
+              : null;
+        return answer === null ? { ok: false, error: { message: `EO has no channel called "${channel}".` } } : { ok: true, data: answer as never };
+      },
+    };
+    const desk = createDeviceRecord({ db: deskDb.db, deviceId: () => deviceId, transport: () => transport });
+    try {
+      await desk.sync();
+    } finally {
+      desk.stop();
+    }
+
+    const versions = pipelineVersionsCommand(deskDb.db, { pipelineId }).versions;
+    expect(versions.find((version) => version.id === filed.id)).toMatchObject({ number: filed.number, createdBy: filed.createdBy, releaseNotes: filed.releaseNotes });
+    // Said on the version, and nowhere else.
+    expect(findProjectThread(recordDb.db, project.id)).toBeUndefined();
+    expect(findProjectThread(deskDb.db, project.id)).toBeUndefined();
   });
 });

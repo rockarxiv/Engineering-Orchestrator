@@ -6,6 +6,7 @@ import {
   PERSON_SKILL_AUTHOR,
   readSkillDraft,
   SKILL_LOCKED_PROBLEM,
+  SkillCopySchema,
   SkillSchema,
   SkillVersionActionSchema,
   SkillVersionReportSchema,
@@ -15,6 +16,7 @@ import {
   type Skill,
   type SkillArchive,
   type SkillAuthor,
+  type SkillCopy,
   type SkillDraft,
   type SkillFile,
   type SkillScope,
@@ -228,6 +230,27 @@ export function listSkillVersions(db: Db, skillId: string): SkillVersion[] {
     .map(toVersion);
 }
 
+/**
+ * The newest of a skill's versions that carries a report (EO-728) — what
+ * travels with a copy of it (`SkillCopySchema`), so the installation that
+ * takes the copy can say who wrote it and why. Null where none does.
+ */
+export function newestReportedVersion(db: Db, skillId: string): SkillVersion | null {
+  const row = db
+    .select()
+    .from(skillVersions)
+    .where(and(eq(skillVersions.skillId, skillId), isNotNull(skillVersions.report)))
+    .orderBy(desc(skillVersions.createdAt), desc(skillVersions.id))
+    .limit(1)
+    .get();
+  return row === undefined ? null : toVersion(row);
+}
+
+/** A skill as it travels to another installation: the row and its newest reported version (EO-728). */
+export function skillCopyOf(db: Db, skill: Skill): SkillCopy {
+  return { ...skill, reportedVersion: newestReportedVersion(db, skill.id) };
+}
+
 /** What a write that is not a save answers with: the skill as it now stands, or the sentence saying why nothing was written. */
 export type SkillWriteResult = { ok: true; skill: Skill } | { ok: false; problem: string };
 
@@ -399,14 +422,14 @@ export function saveSkill(
  * caller to say where a person will see it. An agent attached to it holds
  * the attachment until it arrives, as it does for any tool not here yet.
  */
-export function upsertReplicaSkill(db: Db, skill: Skill, projectId?: string | null): ReplicaSkillResult {
+export function upsertReplicaSkill(db: Db, skill: Skill | SkillCopy, projectId?: string | null): ReplicaSkillResult {
   return db.transaction(() => upsertReplicaSkillIn(db, skill, projectId));
 }
 
 /** A copy from the record written, or the sentence saying why nothing was (EO-714). */
 export type ReplicaSkillResult = { ok: true } | { ok: false; problem: string };
 
-function upsertReplicaSkillIn(db: Db, skill: Skill, projectId?: string | null): ReplicaSkillResult {
+function upsertReplicaSkillIn(db: Db, skill: Skill | SkillCopy, projectId?: string | null): ReplicaSkillResult {
   const here = getSkill(db, skill.id);
   // The same copy again changes nothing a lock protects, so it is neither
   // written nor refused (EO-714).
@@ -473,7 +496,7 @@ function upsertReplicaSkillIn(db: Db, skill: Skill, projectId?: string | null): 
       },
     })
     .run();
-  versionCopy(db, here, skill.id);
+  versionCopy(db, here, skill);
   // Whatever was held for it is spent: this copy is the newest (EO-714).
   db.delete(heldSkillCopies).where(eq(heldSkillCopies.skillId, skill.id)).run();
   return { ok: true };
@@ -524,7 +547,7 @@ function sameSkill(a: Skill, b: Skill): boolean {
 
 /** A held copy, as the person is told of it. */
 export interface HeldSkillCopy {
-  skill: Skill;
+  skill: SkillCopy;
   /** The project the record gave it, or null for a published section's. */
   projectId: string | null;
   problem: string;
@@ -533,7 +556,7 @@ export interface HeldSkillCopy {
 }
 
 function toHeld(row: typeof heldSkillCopies.$inferSelect): HeldSkillCopy | undefined {
-  const skill = SkillSchema.safeParse(row.copy);
+  const skill = SkillCopySchema.safeParse(row.copy);
   return skill.success ? { skill: skill.data, projectId: row.projectId, problem: row.problem, heldAt: row.heldAt, toldAt: row.toldAt } : undefined;
 }
 
@@ -542,7 +565,7 @@ function toHeld(row: typeof heldSkillCopies.$inferSelect): HeldSkillCopy | undef
  * in its way. A newer copy of the same skill replaces the one held; an
  * older one, read out of order, does not.
  */
-export function holdSkillCopy(db: Db, skill: Skill, projectId: string | undefined, problem: string, at: number = Date.now()): void {
+export function holdSkillCopy(db: Db, skill: Skill | SkillCopy, projectId: string | undefined, problem: string, at: number = Date.now()): void {
   const held = db.select().from(heldSkillCopies).where(eq(heldSkillCopies.skillId, skill.id)).get();
   const current = held === undefined ? undefined : toHeld(held);
   if (current !== undefined && current.skill.updatedAt > skill.updatedAt) return;
@@ -590,17 +613,44 @@ export function releaseHeldSkillCopies(db: Db): string[] {
  * it changed anything a person reads in the history — and only then, so
  * a publication applied again, or a page read twice, adds nothing. The
  * write itself was made, and versioned, where the record is.
+ *
+ * Before it, the copy's newest reported version (EO-728), as the sender
+ * filed it — its id, action, author, report, time and the skill as it
+ * stood — where this history does not hold it yet: what a consolidation
+ * drew the skill from and changed, or that EO archived it and after how
+ * many runs without a load, says so here as it does there, and an EO
+ * archive can be restored from it. Keyed by its id, so a copy sent again
+ * files nothing.
  */
-function versionCopy(db: Db, before: Skill | undefined, id: string): void {
-  const after = getSkill(db, id);
+function versionCopy(db: Db, before: Skill | undefined, copy: Skill | SkillCopy): void {
+  const after = getSkill(db, copy.id);
   if (after === undefined) return;
+  const reported = "reportedVersion" in copy ? copy.reportedVersion : null;
+  if (reported !== null && reported.skillId === copy.id) {
+    db.insert(skillVersions)
+      .values({
+        id: reported.id,
+        skillId: copy.id,
+        action: reported.action,
+        description: reported.description,
+        body: reported.body,
+        files: reported.files,
+        authorKind: reported.author.kind,
+        authorId: authorIdOf(reported.author),
+        restoredFrom: reported.restoredFrom,
+        report: reported.report,
+        createdAt: reported.createdAt,
+      })
+      .onConflictDoNothing()
+      .run();
+  }
   if (before === undefined || !sameSkill(before, after)) appendVersion(db, after, "sync", { kind: "record" }, Date.now());
 }
 
 // ── A project's own skills, as they travel with it (EO-513) ─────────
 
-function toRecordSkill(row: typeof skills.$inferSelect & { projectId: string }): RecordSkill {
-  return { ...toSkill(row), projectId: row.projectId };
+function toRecordSkill(db: Db, row: typeof skills.$inferSelect & { projectId: string }): RecordSkill {
+  return { ...skillCopyOf(db, toSkill(row)), projectId: row.projectId };
 }
 
 function belongsToAProject(row: typeof skills.$inferSelect): row is typeof skills.$inferSelect & { projectId: string } {
@@ -621,7 +671,7 @@ export function readProjectSkills(db: Db, projectId: string): RecordSkill[] {
     .orderBy(asc(skills.createdAt), asc(skills.id))
     .all()
     .filter(belongsToAProject)
-    .map(toRecordSkill);
+    .map((row) => toRecordSkill(db, row));
 }
 
 /** A skill as the record's feed pages it: the row, and the stamp its cursor moves by. */
@@ -661,7 +711,7 @@ export function listProjectSkillsUpdatedSince(db: Db, cursor: RecordCursor, limi
     .limit(limit)
     .all()
     .filter(belongsToAProject)
-    .map((row) => ({ skill: toRecordSkill(row), changedAt: row.localChangedAt }));
+    .map((row) => ({ skill: toRecordSkill(db, row), changedAt: row.localChangedAt }));
 }
 
 /** Whose skill this row is, where this database holds one under the id — for the record deciding what a move may write. */
@@ -714,7 +764,7 @@ export function writeMovedSkill(db: Db, skill: RecordSkill, projectId: string): 
     .values({ id: skill.id, createdAt: skill.createdAt, ...columns })
     .onConflictDoUpdate({ target: skills.id, set: columns })
     .run();
-  versionCopy(db, before, skill.id);
+  versionCopy(db, before, skill);
   return { ok: true };
 }
 

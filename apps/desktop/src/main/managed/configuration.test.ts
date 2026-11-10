@@ -3,7 +3,7 @@ import { z } from "zod";
 import { ModuleViewSchema, SectionDocumentSchema, type ModuleManifest, type Uuid } from "@eo/core";
 import type { DbHandle } from "../db/client.js";
 import { openMigratedTestDb } from "../db/testHelpers.js";
-import { addModuleTests, createAgent, deleteAgent, deleteModuleTest, getAgent, getModule, getSkill, getSkillBySlug, listModuleTests, saveModule, saveSkill, setSkillLocked } from "../db/repos/index.js";
+import { addModuleTests, archiveSkill, createAgent, deleteAgent, deleteModuleTest, getAgent, getModule, getSkill, getSkillBySlug, listModuleTests, listSkillVersions, saveModule, saveSkill, setSkillLocked } from "../db/repos/index.js";
 import { listAgentDetails } from "../ipc/configCommands.js";
 import { applySectionDocument, sectionDocument } from "./configuration.js";
 import { listHeldSkillCopies, releaseHeldSkillCopies } from "../db/repos/skillsRepo.js";
@@ -248,5 +248,41 @@ describe("publishing a skill over a person's locked one", () => {
     expect(releaseHeldSkillCopies(replica.db)).toHaveLength(1);
     expect(getSkillBySlug(replica.db, "house-style")?.body).toBe("Theirs.");
     expect(getSkill(replica.db, mine.skill.id)?.body).toBe("Ours.");
+  });
+});
+
+/**
+ * A published skill carries its newest reported version (EO-728), so a
+ * desktop applying the packs section can say that EO archived it, and
+ * after how many runs without a load, as the publisher's history does.
+ */
+describe("publishing a skill EO archived", () => {
+  let publisher: DbHandle;
+  let replica: DbHandle;
+
+  beforeEach(() => {
+    publisher = openMigratedTestDb();
+    replica = openMigratedTestDb();
+  });
+
+  afterEach(() => {
+    publisher.close();
+    replica.close();
+  });
+
+  it("files EO's archive version, report and all, on the replica", () => {
+    const saved = saveSkill(publisher.db, { slug: "house-style", name: "House style", description: "How we review.", body: "Ours.", files: [] }, 10, { kind: "agent", agentId: "a-1" });
+    if (!saved.ok) throw new Error("not saved");
+    archiveSkill(publisher.db, saved.skill.id, 20, { kind: "eo" }, { kind: "unused", runsWithoutLoad: 12 });
+
+    const document = sectionDocument(publisher.db, "packs");
+    // Through the contract's own schema, as the publication row is read back.
+    applySectionDocument(replica.db, SectionDocumentSchema.parse(JSON.parse(JSON.stringify(document))));
+
+    expect(getSkill(replica.db, saved.skill.id)?.archivedAt).toBe(20);
+    expect(listSkillVersions(replica.db, saved.skill.id).find((version) => version.action === "archive")).toMatchObject({
+      author: { kind: "eo" },
+      report: { kind: "unused", runsWithoutLoad: 12 },
+    });
   });
 });

@@ -334,6 +334,7 @@ function versionsAReplicaNeeds(db: Db, pipelineId: string, currentVersionId: str
       entryRules: EntryRulesSchema.safeParse(version.entryRules).data ?? [],
       createdAt: version.createdAt,
       createdBy: version.createdBy,
+      releaseNotes: version.releaseNotes,
     }));
 }
 
@@ -858,6 +859,7 @@ function storeReplicaVersions(db: Db, pipeline: RecordPipeline): void {
         entryRules: version.entryRules,
         createdAt: version.createdAt,
         createdBy: version.createdBy,
+        releaseNotes: version.releaseNotes,
       })
       .onConflictDoNothing()
       .run();

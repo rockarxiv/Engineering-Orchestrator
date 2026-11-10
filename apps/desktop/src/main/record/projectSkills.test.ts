@@ -30,6 +30,7 @@ import { createRun } from "../db/repos/runsRepo.js";
 import { appendRunEvent } from "../db/repos/index.js";
 import { createTestItem } from "../db/testHelpers.js";
 import type { RecordTransport } from "./syncStatus.js";
+import { listSkillsCommand, restoreSkillVersionCommand } from "../ipc/skillCommands.js";
 
 /**
  * A project's own skills travel with the project (EO-513,
@@ -223,6 +224,42 @@ describe("handing a project to the record carries its own skills (EO-513)", () =
 
     expect(getAgentAttachments(recordDb.db, own.id).skillIds).toEqual([proposed]);
     expect(getAgentAttachments(laptopDb.db, own.id).skillIds).toEqual([proposed]);
+  });
+});
+
+describe("what a consolidation reported about a skill, across the record (EO-728)", () => {
+  it("reaches the record with the move and a replica with the sync: who wrote it, its evidence and its diff", async () => {
+    const support = createProject(annaDb.db, { name: "Support", keyPrefix: "SUP", managed: false });
+    const consolidation = { kind: "consolidation" as const, consolidationId: "c-9" };
+    const created = saveSkill(
+      annaDb.db,
+      SkillDraftSchema.parse({ name: "Refund policy", description: "When refunds apply.", body: "Do refunds.", scope: { kind: "project", projectId: support.id } }),
+      Date.now() - 2_000,
+      consolidation,
+      { kind: "consolidation", evidence: [{ entryId: "e-1", body: "Refunds need a receipt.", itemKey: "SUP-1" }], itemKeys: ["SUP-1"], diff: null },
+    );
+    if (!created.ok) throw new Error(created.problems.join("\n"));
+    const improvement = { kind: "consolidation" as const, evidence: [{ entryId: "e-2", body: "Refunds over 50 need a lead.", itemKey: "SUP-4" }], itemKeys: ["SUP-4"], diff: "-Do refunds.\n+Do refunds; over 50, ask a lead." };
+    const improved = saveSkill(
+      annaDb.db,
+      SkillDraftSchema.parse({ id: created.skill.id, name: "Refund policy", description: "When refunds apply.", body: "Do refunds; over 50, ask a lead.", scope: { kind: "project", projectId: support.id } }),
+      Date.now() - 1_000,
+      consolidation,
+      improvement,
+    );
+    if (!improved.ok) throw new Error(improved.problems.join("\n"));
+    const filed = listSkillVersions(annaDb.db, created.skill.id)[0]!;
+
+    expect(await move(support.id)).toEqual({});
+    await laptop.record.sync();
+
+    for (const db of [recordDb.db, laptopDb.db]) {
+      expect(listSkillVersions(db, created.skill.id).find((version) => version.id === filed.id)).toEqual(filed);
+      expect(filed).toMatchObject({ action: "edit", author: consolidation, report: improvement });
+    }
+    // Nothing posted for it, on either side.
+    expect(findProjectThread(recordDb.db, support.id)).toBeUndefined();
+    expect(findProjectThread(laptopDb.db, support.id)).toBeUndefined();
   });
 });
 
@@ -556,6 +593,16 @@ describe("an agent's skill nobody loads, on a project the record holds (EO-720)"
     expect(listSkills(laptopDb.db).map((one) => one.id)).not.toContain(skillId);
     await laptop.record.sync();
     expect(getSkill(laptopDb.db, skillId)!.archivedAt).not.toBeNull();
+
+    // Its Skills screen says EO archived it, and after how many runs (EO-728)…
+    const archiveVersion = listSkillVersions(recordDb.db, skillId)[0]!;
+    const listed = listSkillsCommand(laptopDb.db, { includeArchived: true }).skills.find((one) => one.id === skillId);
+    expect(listed?.archive).toEqual({ versionId: archiveVersion.id, author: { kind: "eo" }, runsWithoutLoad: 2 });
+    expect(listSkillVersions(laptopDb.db, skillId).filter((version) => version.action === "archive")).toEqual([archiveVersion]);
+    // …and Restore there brings it back.
+    expect(restoreSkillVersionCommand(laptopDb.db, { id: skillId, versionId: archiveVersion.id }).problem).toBeNull();
+    expect(getSkill(laptopDb.db, skillId)!.archivedAt).toBeNull();
+    expect(listSkills(laptopDb.db).map((one) => one.id)).toContain(skillId);
   });
 
   it("leaves a moved project's skills to the record, but archives the desktop's own global skill, posting nothing", async () => {

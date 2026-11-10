@@ -4,7 +4,7 @@ import { PipelineStepViewSchema, PipelineViewSchema, StepRouteViewSchema } from 
 import { PublishedAgentSchema, PublishedSectionSchema } from "./sections.js";
 import { RecordMemorySchema } from "./memory.js";
 import { MessageSendSchema } from "./messages.js";
-import { SkillSchema } from "./schemas/skills.js";
+import { SkillCopySchema } from "./schemas/skills.js";
 import { CommentOptionSchema, parseStoredCommentOptions } from "./schemas/commentOptions.js";
 import { SideCallFailureReasonSchema, SideCallPurposeSchema } from "./side-calls.js";
 import { TrialPlanSchema, TrialStepSourcesSchema } from "./trialPlan.js";
@@ -1189,6 +1189,8 @@ export const RecordPipelineSchema = PipelineViewSchema.extend({
         entryRules: EntryRulesSchema.default([]),
         createdAt: z.number(),
         createdBy: z.string().nullable().default(null),
+        /** The release notes of the template update that filed it (EO-728), so a replica's version list shows them; null for every other version, and on a page from a build before it. */
+        releaseNotes: z.string().nullable().default(null),
       }),
     )
     .default([]),
@@ -1261,9 +1263,10 @@ export type RecordAgent = z.infer<typeof RecordAgentSchema>;
  * workspace never travels, so a record holding a workspace's skill has
  * no workspace row to ask whose it is, and the skill says so itself, as
  * a workspace's memory does (`RecordMemorySchema.projectId`). The id is
- * the sender's and is kept: `agent_skills` names a skill by id.
+ * the sender's and is kept: `agent_skills` names a skill by id. Its
+ * newest reported version travels with it (`SkillCopySchema`, EO-728).
  */
-export const RecordSkillSchema = SkillSchema.extend({ projectId: z.string() });
+export const RecordSkillSchema = SkillCopySchema.extend({ projectId: z.string() });
 export type RecordSkill = z.infer<typeof RecordSkillSchema>;
 
 /**
