@@ -676,6 +676,81 @@ describe("runModuleTests", () => {
     ]);
   });
 
+  /**
+   * The three values EO-711 added, each scripted by its fixture and
+   * asserted on in the case — and what a case that scripts none of them
+   * reads: objects of nulls, and no project.
+   */
+  it("takes run, workspace and project fixtures, and a case can assert on each", async () => {
+    const module = `
+      export default async function (ctx) {
+        return { ok: true, result: "merged", detail: JSON.stringify({ cwd: ctx.cwd, run: ctx.run, workspace: ctx.workspace, project: ctx.project }) };
+      }`;
+    const run = await runModuleTests(launcher, {
+      module: { code: module, manifest: manifest() },
+      tests: [
+        testCase(`import assert from "node:assert/strict";
+          export default async function (harness) {
+            const run = await harness.run({
+              run: { step: { id: "s-review", name: "Review" }, attempt: 2, cameFrom: { step: { id: "s-impl", name: "Implement" }, result: "done" }, watch: { intervalMs: 60000 } },
+              workspace: { kind: "git-worktree", id: "w-1", name: "payments", git: { baseBranch: "develop", testCommand: "pnpm test", worktreePath: "/elsewhere", forge: { kind: "github" } } },
+              project: {
+                id: "p-1", name: "Payments", keyPrefix: "PAY",
+                workspaces: [{ kind: "git-worktree", id: "w-1", name: "payments" }],
+                itemTypes: [{ slug: "story", label: "Story", fields: [{ name: "automerge", kind: "boolean" }] }],
+                pipelines: [{ id: "pl-1", name: "Delivery", steps: [{ id: "s-review", name: "Review", kind: "agent" }] }],
+              },
+            });
+            assert.equal(run.outcome.ok, true, run.outcome.reason);
+            const read = JSON.parse(run.outcome.detail);
+            assert.equal(read.run.step.name, "Review");
+            assert.deepEqual(read.run.cameFrom, { step: { id: "s-impl", name: "Implement" }, result: "done" });
+            assert.equal(read.run.attempt, 2);
+            assert.deepEqual(read.run.pipeline, null);
+            assert.equal(read.run.trial, false);
+            assert.deepEqual(read.run.watch, { startedAt: null, waitingMs: null, intervalMs: 60000 });
+            assert.equal(read.workspace.git.baseBranch, "develop");
+            assert.equal(read.workspace.git.testCommand, "pnpm test");
+            assert.equal(read.workspace.git.lintCommand, null);
+            assert.deepEqual(read.workspace.git.forge, { kind: "github", remote: null, draft: false, opensPullRequests: false });
+            assert.equal(read.workspace.git.worktreePath, harness.cwd);
+            assert.equal(read.workspace.git.worktreePath, read.cwd);
+            assert.deepEqual(read.project.itemTypes, [{ id: null, slug: "story", label: "Story", container: false, fields: [{ name: "automerge", kind: "boolean", required: false }] }]);
+            assert.deepEqual(read.project.pipelines, [{ id: "pl-1", name: "Delivery", steps: [{ id: "s-review", name: "Review", kind: "agent" }] }]);
+            assert.deepEqual(read.project.workspaces, [{ kind: "git-worktree", id: "w-1", name: "payments" }]);
+          }`, "scripted"),
+        testCase(`import assert from "node:assert/strict";
+          export default async function (harness) {
+            const run = await harness.run();
+            const read = JSON.parse(run.outcome.detail);
+            assert.deepEqual(read.run, { step: null, pipeline: null, attempt: null, cameFrom: { step: null, result: null }, trial: false, watch: null });
+            assert.deepEqual(read.workspace, { kind: null, id: null, name: null, git: null });
+            assert.equal(read.project, null);
+          }`, "unscripted"),
+      ],
+    });
+    expect(run.cases.map((entry) => entry.failure)).toEqual([null, null]);
+  });
+
+  it("refuses a run, workspace or project fixture that is not an object", async () => {
+    const run = await runModuleTests(launcher, {
+      module: { code: `export default async function () { return { ok: true, result: "merged" }; }`, manifest: manifest() },
+      tests: [
+        testCase(`export default async function (harness) { await harness.run({ run: [] }); }`, "run"),
+        testCase(`export default async function (harness) { await harness.run({ workspace: null }); }`, "workspace"),
+        testCase(`export default async function (harness) { await harness.run({ project: "PAY" }); }`, "project"),
+        testCase(`import assert from "node:assert/strict";
+          export default async function (harness) { const run = await harness.run({ project: null }); assert.equal(run.outcome.ok, true); }`, "no project"),
+      ],
+    });
+    expect(run.cases.map((entry) => entry.failure)).toEqual([
+      expect.stringContaining("harness.run's run is an object, a partial of ctx.run."),
+      expect.stringContaining("harness.run's workspace is an object, a partial of ctx.workspace."),
+      expect.stringContaining("harness.run's project is an object, a partial of ctx.project."),
+      null,
+    ]);
+  });
+
   it("runs a case with no secrets in its environment, in a fresh directory that is removed afterwards", async () => {
     const previous = process.env.EO_TEST_SECRET;
     process.env.EO_TEST_SECRET = "hunter2";

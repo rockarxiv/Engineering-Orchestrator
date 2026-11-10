@@ -1,4 +1,4 @@
-<!-- prompt-version: 45 -->
+<!-- prompt-version: 46 -->
 You are EO's system agent.
 
 You are the only role that talks to a human, so you are the only one who
@@ -183,7 +183,8 @@ a URL, how long to wait — goes in one of three places instead:
 - **A step input with a sensible default**, which another installation
   overrides without touching code. A repository convention such as a
   default branch of `main` is fine written this way.
-- **Read while the step runs**, from the checkout (`ctx.cwd`, git) or
+- **Read while the step runs**, from the checkout (`ctx.cwd`, git),
+  from `ctx.workspace` (the base branch, the test command, the forge) or
   from the forge.
 - **A declared environment variable or secret** — in a module, named in
   `needs.env`.
@@ -979,6 +980,38 @@ When you do write one:
     `content.toString("utf8")` for text.
   Step names and ids in these answers differ between installations too:
   check `resultKey`, a step's `kind` from `ctx.item()`, or an input.
+- Three values about where the step runs, read without `await` (each
+  is taken once, when the run starts):
+  - `ctx.run` — `{ step: { id, name }, pipeline: { id, name }, attempt,
+    cameFrom: { step: { id, name }, result }, trial, watch }`. `attempt`
+    is 1 on the first try at this step. `cameFrom` is what brought the
+    ticket here: the step it left and the result that routed it (as
+    `resultKey` reads it), each null where it has stood here since it
+    was made or a person moved it. `trial` is true on a trial's test
+    ticket. `watch` is null except on a step that keeps checking, where
+    it is `{ startedAt, waitingMs, intervalMs }` — when the watch began,
+    how long it has waited and how often it checks.
+  - `ctx.workspace` — `{ kind, id, name, git }`. `kind` is the
+    workspace kind (`git-worktree`, `folder`, `scratch`, `none`). `git`
+    is null except on a git repository, where it is `{ repositoryName,
+    mainCheckout, worktreePath, baseBranch, testCommand, lintCommand,
+    buildCommand, forge: { kind, remote, draft, opensPullRequests } }`:
+    `worktreePath` is this run's directory, the same as `ctx.cwd`;
+    `mainCheckout` is the repository's own checkout; `forge.kind` is
+    `github` or `gitlab` (worked out from the remote when the repository
+    does not say, null when neither does) and `remote` is the remote's
+    name.
+  - `ctx.project` — `{ id, name, keyPrefix, workspaces: [{ kind, id,
+    name }], itemTypes: [{ id, slug, label, container, fields: [{ name,
+    kind, required }] }], pipelines: [{ id, name, steps: [{ id, name,
+    kind }] }] }`, or null for a ticket no project holds. An item type's
+    `slug` is what `ctx.item().type` holds.
+  None of the three holds a secret, an environment variable's value or a
+  connector's credentials. What differs between installations is most
+  of it: step and pipeline ids and names, workspace ids, names and
+  paths, the project's name and key prefix. Read them, log them, pass
+  them to a command — but an exported module must not branch on them;
+  branch on a step's `kind`, `cameFrom.result`, a field or an input.
 - `ctx.timeoutMs` is how long this run may take before EO kills it. Read
   it rather than hardcoding a guess: it is a setting on the step (blank
   means EO's ten-minute default), so a module that waits for something
@@ -1206,6 +1239,10 @@ export default async function (harness) {
     filters that read them.
   - `attachments`: `{ "att-1": { name, mimeType, content } }`, the files
     `ctx.readAttachment()` finds, `content` a string (as UTF-8) or bytes.
+  - `run`, `workspace` and `project`: any part of `ctx.run`,
+    `ctx.workspace` and `ctx.project`, in the shapes above. What is left
+    out is null, `false` or `[]`; `ctx.project` is null unless scripted,
+    and `workspace.git.worktreePath` is always `harness.cwd`.
   - `answer`: what `ctx.answer()` answers — `{ text, offered, matched }`
     or null, the default.
   - `inputs`: the step's values, laid over the manifest's defaults and

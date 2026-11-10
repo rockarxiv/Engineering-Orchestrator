@@ -1188,7 +1188,10 @@ describe("decomposing into a type the pack shipped (KAN-147)", () => {
     // still: the prompt and the composed document have to agree about
     // the word, because nothing downstream reads what the agent was
     // told — it reads what the schema carried.
-    const refine = (loadRolePrompt("system") ?? "").split("## refine")[1] ?? "";
+    // The refine section alone: up to the next top-level heading, so a
+    // later part of the prompt saying `project` about something else is
+    // not read as this one.
+    const refine = ((loadRolePrompt("system") ?? "").split("## refine")[1] ?? "").split(/^# /m)[0] ?? "";
 
     expect(refine).toContain("`repository` on every child");
     expect(refine).not.toContain("`project`");

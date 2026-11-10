@@ -62,6 +62,9 @@ import {
   listRunsForItem,
   boundGraphForItem,
   getStep,
+  getRun,
+  getProject,
+  listItemTypes,
   listItemsIncludingArchived,
   jiraBaseUrlFor,
   listWorkspaces,
@@ -114,7 +117,8 @@ import { verificationOfKind } from "../workspaceKinds.js";
 import { activeProjectId } from "./repositoryCommands.js";
 import { workspaceView } from "./workspaceCommands.js";
 import { providerSteersLiveTurns } from "../providers/capabilities.js";
-import { currentWatchViews, itemWatchView } from "../supervisor/watches.js";
+import { currentWatch, currentWatchViews, itemWatchView } from "../supervisor/watches.js";
+import { watchIntervalMs } from "@eo/engine";
 import { runActionName } from "../modules/runName.js";
 import { registry, registryForProject } from "../registry.js";
 import { outsideReachForSteps } from "../trials/stepModes.js";
@@ -1173,6 +1177,169 @@ export function moduleItemSummaries(db: Db, projectId: Uuid | null, filters: Ite
     })),
     total: rows.length,
     nextOffset: end < rows.length ? end : null,
+  };
+}
+
+/**
+ * The run a module is on, the workspace it runs in and the project the
+ * item belongs to (EO-711) — `ctx.run`, `ctx.workspace` and
+ * `ctx.project`, built once when the run starts and sent with it.
+ *
+ * Nothing here is a secret: no environment variable, no keychain value,
+ * no Jira connection and no forge token is read to build it. The
+ * workspace's forge settings are the four a person sets on the
+ * repository, and the remote is its name, not its URL.
+ */
+export interface ModuleRunContext {
+  run: ModuleRunSnapshot;
+  workspace: ModuleWorkspaceSnapshot;
+  /** Null for an item no project holds. */
+  project: ModuleProjectSnapshot | null;
+}
+
+export interface ModuleRunSnapshot {
+  /** The step the module runs on, named by the item's own version. */
+  step: ModuleStepRef | null;
+  pipeline: { id: string; name: string } | null;
+  /** Which attempt at this step this run is: 1 on the first. */
+  attempt: number;
+  /**
+   * What brought the item onto this step: the step it left and the
+   * result that routed it, as `ctx.runs()` reads a run's result. Both
+   * null where it has stood here since it was made; `result` null where
+   * a person moved it, or the move was not a run's.
+   */
+  cameFrom: { step: ModuleStepRef | null; result: string | null };
+  /** Whether the item is a trial's test item. */
+  trial: boolean;
+  /** On a step that keeps checking: since when, how long so far, and how often. Null on any other. */
+  watch: { startedAt: number; waitingMs: number; intervalMs: number } | null;
+}
+
+export interface ModuleWorkspaceSnapshot {
+  /** The slug of the kind that prepared the run's directory: `git-worktree`, `folder`, `scratch`, `none` … */
+  kind: string;
+  id: string | null;
+  name: string | null;
+  /** On a git repository; null on every other kind. */
+  git: {
+    repositoryName: string;
+    /** Where the repository's own checkout is. */
+    mainCheckout: string;
+    /** This run's directory — the same as `ctx.cwd`. */
+    worktreePath: string;
+    baseBranch: string;
+    testCommand: string | null;
+    lintCommand: string | null;
+    buildCommand: string | null;
+    forge: {
+      /** As configured, else worked out from the remote; null where neither says. */
+      kind: "github" | "gitlab" | null;
+      /** The remote's name, like `origin`. */
+      remote: string;
+      draft: boolean;
+      /** Whether EO opens pull requests here. */
+      opensPullRequests: boolean;
+    };
+  } | null;
+}
+
+export interface ModuleProjectSnapshot {
+  id: string;
+  name: string;
+  keyPrefix: string;
+  workspaces: { kind: string; id: string; name: string }[];
+  /** `slug` is the word `ctx.item().type` holds. */
+  itemTypes: { id: string; slug: string; label: string; container: boolean; fields: { name: string; kind: string; required: boolean }[] }[];
+  pipelines: { id: string; name: string; steps: { id: string; name: string; kind: string }[] }[];
+}
+
+/**
+ * `ModuleRunContext` for a run that is about to start. `resultKey` is
+ * the caller's for `moduleRunsView`'s reason, and `guessedForgeKind` is
+ * what the remote says where the repository names no forge — worked out
+ * by the caller, because asking the remote is git's and a pack's.
+ */
+export function moduleRunContext(
+  db: Db,
+  input: { item: Item; runId: string; workspace: { cwd: string; kind: WorkspaceKindSlug; workspaceId: string | null }; now: number },
+  resolve: { resultKey: (run: Run, item: Item) => string | null; guessedForgeKind: "github" | "gitlab" | null },
+): ModuleRunContext {
+  const { item } = input;
+  const stepRef = moduleStepNamer(db, item);
+  const step = stepForItem(db, item);
+  const pipeline = item.pipelineId === null ? undefined : getPipeline(db, item.pipelineId);
+
+  // The move that put the item where it stands: the newest one into its step.
+  const arrival = item.stepId === null ? undefined : listTransitionsForItem(db, item.id).filter((transition) => transition.toStepId === item.stepId).at(-1);
+  const routedBy = arrival?.runId == null ? undefined : getRun(db, arrival.runId as Uuid);
+  const watching = step?.watch == null ? undefined : currentWatch(db, item, step.id);
+
+  const row = input.workspace.workspaceId === null ? undefined : getWorkspace(db, input.workspace.workspaceId as Uuid);
+  const git = asGitWorkspace(row);
+  const project = item.projectId === null ? undefined : getProject(db, item.projectId);
+
+  return {
+    run: {
+      step: step === undefined ? null : { id: step.id, name: step.name },
+      pipeline: pipeline === undefined ? null : { id: pipeline.id, name: pipeline.name },
+      // A check of a step that keeps checking has no row until it has
+      // something to record, and is a first attempt when it gets one.
+      attempt: getRun(db, input.runId as Uuid)?.attempt ?? 1,
+      cameFrom: {
+        step: arrival?.fromStepId == null ? null : stepRef(arrival.fromStepId),
+        result: routedBy === undefined || routedBy.result === null ? null : resolve.resultKey(routedBy, item),
+      },
+      trial: item.trialAt !== null,
+      watch:
+        watching === undefined || step?.watch == null
+          ? null
+          : { startedAt: watching.startedAt, waitingMs: Math.max(0, input.now - watching.startedAt), intervalMs: watchIntervalMs(step.watch) },
+    },
+    workspace: {
+      kind: input.workspace.kind,
+      id: row?.id ?? null,
+      name: row === undefined ? null : workspaceLabel(row),
+      git:
+        git === undefined
+          ? null
+          : {
+              repositoryName: git.config.name,
+              mainCheckout: git.config.repoPath,
+              worktreePath: input.workspace.cwd,
+              baseBranch: git.config.baseBranch,
+              testCommand: git.config.testCommand,
+              lintCommand: git.config.lintCommand,
+              buildCommand: git.config.buildCommand,
+              forge: {
+                kind: git.config.forgeKind ?? resolve.guessedForgeKind,
+                remote: git.config.forgeRemote,
+                draft: git.config.forgeDraft,
+                opensPullRequests: git.config.forgeOpenPr,
+              },
+            },
+    },
+    project:
+      project === undefined
+        ? null
+        : {
+            id: project.id,
+            name: project.name,
+            keyPrefix: project.keyPrefix,
+            workspaces: projectWorkspaceList(db, project.id).map((workspace) => ({ kind: workspace.kind, id: workspace.id, name: workspaceLabel(workspace) })),
+            itemTypes: listItemTypes(db, project.id).map((type) => ({
+              id: type.id,
+              slug: type.slug,
+              label: type.label,
+              container: type.container,
+              fields: specFields(type.specShape).map(({ name, kind, required }) => ({ name, kind, required })),
+            })),
+            pipelines: listPipelines(db, project.id).map((each) => ({
+              id: each.id,
+              name: each.name,
+              steps: listStepsForPipeline(db, each.id).map((pipelineStep) => ({ id: pipelineStep.id, name: pipelineStep.name, kind: pipelineStep.type })),
+            })),
+          },
   };
 }
 

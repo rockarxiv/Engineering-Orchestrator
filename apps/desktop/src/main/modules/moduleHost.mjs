@@ -167,6 +167,14 @@
  *   - `attachments`: `{ "att-1": { name, mimeType, content }, … }`, the
  *     files `ctx.readAttachment()` finds, `content` a string (as UTF-8)
  *     or bytes.
+ *   - `run`, `workspace` and `project`: partials of `ctx.run`,
+ *     `ctx.workspace` and `ctx.project` (EO-711), shaped as a real run's
+ *     are — `{ step: { id, name }, cameFrom: { step, result }, … }`,
+ *     `{ kind, id, name, git: { baseBranch, testCommand, forge: { kind } … } }`,
+ *     `{ id, name, keyPrefix, workspaces, itemTypes, pipelines }`. Fields
+ *     left out are null, `false` or `[]`; `ctx.run` and `ctx.workspace`
+ *     are always objects, `ctx.project` is null unless scripted, and
+ *     `workspace.git.worktreePath` is always `harness.cwd`.
  *   - `answer`: what `ctx.answer()` answers, `{ text, offered, matched }`
  *     or null (the default).
  *   - `inputs`: the step's values, laid over the manifest's defaults and
@@ -1731,13 +1739,13 @@ function itemShape(value) {
     updatedAt: asNumber(item.updatedAt),
     comments: frozenList(item.comments, commentShape),
     spec: frozenRecord(item.spec),
-    fields: frozenList(item.fields, (field) => Object.freeze({ name: asText(field.name), kind: asText(field.kind), required: field.required === true })),
+    fields: frozenList(item.fields, fieldDefinitionShape),
     priority: asNumber(item.priority),
     heldAt: asNumber(item.heldAt),
     archivedAt: asNumber(item.archivedAt),
     trial: item.trial === true,
     createdBy: asText(item.createdBy),
-    pipeline: shapedOrNull(item.pipeline, (pipeline) => Object.freeze({ id: asText(pipeline.id), name: asText(pipeline.name) })),
+    pipeline: shapedOrNull(item.pipeline, pipelineRefShape),
     step: shapedOrNull(item.step, (step) =>
       Object.freeze({ id: asText(step.id), name: asText(step.name), kind: asText(step.kind), ownerRole: asText(step.ownerRole) }),
     ),
@@ -1932,6 +1940,111 @@ function attachmentContentShape(value, content) {
 
 /** The sentence for an attachment id that is not one. */
 const ATTACHMENT_ID_SHAPE = "An attachment id is a string, as ctx.item().attachments lists it.";
+
+// ── The run, the workspace and the project (EO-711) ──────────
+//
+// Three values rather than reads: the parent builds them once, when the
+// run starts, and sends them on stdin with everything else, so a module
+// reads `ctx.run`, `ctx.workspace` and `ctx.project` without `await`.
+// None of it changes while the run does. A test case writes a partial
+// of each and comes through the same shapes, so a field a real run has
+// is a field a fixture has, null where it was left out.
+//
+// None of it is a secret: no environment variable, keychain value,
+// connector credential or forge token goes into building any of them.
+// What does differ between installations — every step and pipeline id
+// and name, every workspace id and path — is for a module to read and
+// report, not to branch on: an exported module that compared one with a
+// literal would break on arrival somewhere else.
+
+/** A field an item type defines: its name, its kind and whether it is required. `ctx.item().fields` and `ctx.project.itemTypes[].fields` alike. */
+function fieldDefinitionShape(field) {
+  return Object.freeze({ name: asText(field.name), kind: asText(field.kind), required: field.required === true });
+}
+
+/** A pipeline named by id and name. */
+function pipelineRefShape(value) {
+  return Object.freeze({ id: asText(value.id), name: asText(value.name) });
+}
+
+/**
+ * `ctx.run`: the step and pipeline this run is on, which attempt it is,
+ * what brought the item here (the step it left and the result that
+ * routed it), whether it is a trial's test item, and — on a step that
+ * keeps checking — since when, how long so far and how often.
+ */
+function runContextShape(value) {
+  const run = value !== null && typeof value === "object" ? value : {};
+  const cameFrom = run.cameFrom !== null && typeof run.cameFrom === "object" ? run.cameFrom : {};
+  return Object.freeze({
+    step: shapedOrNull(run.step, stepRefShape),
+    pipeline: shapedOrNull(run.pipeline, pipelineRefShape),
+    attempt: asNumber(run.attempt),
+    cameFrom: Object.freeze({ step: shapedOrNull(cameFrom.step, stepRefShape), result: asText(cameFrom.result) }),
+    trial: run.trial === true,
+    watch: shapedOrNull(run.watch, (watch) =>
+      Object.freeze({ startedAt: asNumber(watch.startedAt), waitingMs: asNumber(watch.waitingMs), intervalMs: asNumber(watch.intervalMs) }),
+    ),
+  });
+}
+
+/**
+ * `ctx.workspace`: its kind, id and name and, on a git repository,
+ * `git`. `git.worktreePath` is `cwd` whatever was sent — the directory
+ * the module runs in is the one fact here this side knows first-hand.
+ */
+function workspaceContextShape(value, cwd) {
+  const workspace = value !== null && typeof value === "object" ? value : {};
+  return Object.freeze({
+    kind: asText(workspace.kind),
+    id: asText(workspace.id),
+    name: asText(workspace.name),
+    git: shapedOrNull(workspace.git, (git) => {
+      const forge = git.forge !== null && typeof git.forge === "object" ? git.forge : {};
+      return Object.freeze({
+        repositoryName: asText(git.repositoryName),
+        mainCheckout: asText(git.mainCheckout),
+        worktreePath: cwd,
+        baseBranch: asText(git.baseBranch),
+        testCommand: asText(git.testCommand),
+        lintCommand: asText(git.lintCommand),
+        buildCommand: asText(git.buildCommand),
+        forge: Object.freeze({
+          kind: asText(forge.kind),
+          remote: asText(forge.remote),
+          draft: forge.draft === true,
+          opensPullRequests: forge.opensPullRequests === true,
+        }),
+      });
+    }),
+  });
+}
+
+/** `ctx.project`: its id, name and key prefix, its workspaces, its item types with their fields, and its pipelines with their steps. */
+function projectContextShape(value) {
+  return Object.freeze({
+    id: asText(value.id),
+    name: asText(value.name),
+    keyPrefix: asText(value.keyPrefix),
+    workspaces: frozenList(value.workspaces, (workspace) => Object.freeze({ kind: asText(workspace.kind), id: asText(workspace.id), name: asText(workspace.name) })),
+    itemTypes: frozenList(value.itemTypes, (type) =>
+      Object.freeze({
+        id: asText(type.id),
+        slug: asText(type.slug),
+        label: asText(type.label),
+        container: type.container === true,
+        fields: frozenList(type.fields, fieldDefinitionShape),
+      }),
+    ),
+    pipelines: frozenList(value.pipelines, (pipeline) =>
+      Object.freeze({
+        id: asText(pipeline.id),
+        name: asText(pipeline.name),
+        steps: frozenList(pipeline.steps, (step) => Object.freeze({ id: asText(step.id), name: asText(step.name), kind: asText(step.kind) })),
+      }),
+    ),
+  });
+}
 
 /**
  * The line a module's transcript carries the first time it calls one of
@@ -2764,6 +2877,10 @@ async function main() {
      * checking it is the module's (invariant #5).
      */
     answer: makeAnswer(request.answer ?? null),
+    // The run, the workspace and the project (EO-711): sent with the run.
+    run: runContextShape(request.context?.run),
+    workspace: workspaceContextShape(request.context?.workspace, request.cwd),
+    project: shapedOrNull(request.context?.project, projectContextShape),
     item: reads.item,
     itemByKey: reads.itemByKey,
     // An item's history, the board and a file's bytes (EO-710).
@@ -2842,7 +2959,7 @@ async function main() {
 // under "Test mode". What follows is the machinery behind it.
 
 /** Every fixture `harness.run` takes. A name outside this is a typo, and is refused rather than ignored. */
-const FIXTURE_NAMES = new Set(["exec", "item", "itemByKey", "runs", "transitions", "items", "attachments", "answer", "inputs", "timeoutMs", "createItem"]);
+const FIXTURE_NAMES = new Set(["exec", "item", "itemByKey", "runs", "transitions", "items", "attachments", "run", "workspace", "project", "answer", "inputs", "timeoutMs", "createItem"]);
 
 /**
  * The `runs` or `transitions` a case scripted, `{ KEY: [entry, …] }`,
@@ -3763,11 +3880,11 @@ async function testMain(request) {
 
   const run = async (fixtures = {}) => {
     if (fixtures === null || typeof fixtures !== "object" || Array.isArray(fixtures)) {
-      throw new TypeError("harness.run takes one object of fixtures: { exec, item, itemByKey, runs, transitions, items, attachments, answer, inputs, createItem, timeoutMs }.");
+      throw new TypeError("harness.run takes one object of fixtures: { exec, item, itemByKey, runs, transitions, items, attachments, run, workspace, project, answer, inputs, createItem, timeoutMs }.");
     }
     const unknown = Object.keys(fixtures).filter((name) => !FIXTURE_NAMES.has(name));
     if (unknown.length > 0) {
-      throw new TypeError(`harness.run does not take ${unknown.map((name) => JSON.stringify(name)).join(", ")}. It takes exec, item, itemByKey, runs, transitions, items, attachments, answer, inputs, createItem and timeoutMs.`);
+      throw new TypeError(`harness.run does not take ${unknown.map((name) => JSON.stringify(name)).join(", ")}. It takes exec, item, itemByKey, runs, transitions, items, attachments, run, workspace, project, answer, inputs, createItem and timeoutMs.`);
     }
     const script = readScript(fixtures.exec);
     const creationAnswers = readCreationAnswers(fixtures.createItem);
@@ -3781,6 +3898,13 @@ async function testMain(request) {
     const timeoutMs = fixtures.timeoutMs ?? caseLimitMs;
     if (fixtures.inputs !== undefined && (fixtures.inputs === null || typeof fixtures.inputs !== "object" || Array.isArray(fixtures.inputs))) {
       throw new TypeError("harness.run's inputs is an object of input names to values.");
+    }
+    // The run, the workspace and the project (EO-711): an object each,
+    // and `project` may be null — an item no project holds.
+    for (const name of ["run", "workspace", "project"]) {
+      const value = fixtures[name];
+      if (value === undefined || (name === "project" && value === null)) continue;
+      if (value === null || typeof value !== "object" || Array.isArray(value)) throw new TypeError(`harness.run's ${name} is an object, a partial of ctx.${name}.`);
     }
     if (fixtures.itemByKey !== undefined && (fixtures.itemByKey === null || typeof fixtures.itemByKey !== "object" || Array.isArray(fixtures.itemByKey))) {
       throw new TypeError('harness.run\'s itemByKey is an object of keys to items: { "EO-2": { title: "…" } }.');
@@ -3944,6 +4068,9 @@ async function testMain(request) {
       inputs: Object.freeze({ ...inputs }),
       timeoutMs,
       answer: makeAnswer(fixtures.answer ?? null),
+      run: runContextShape(fixtures.run),
+      workspace: workspaceContextShape(fixtures.workspace, process.cwd()),
+      project: shapedOrNull(fixtures.project, projectContextShape),
       item: readRunning,
       itemByKey: read,
       runs: history(scriptedRuns, "runs", runShape),

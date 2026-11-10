@@ -58,7 +58,7 @@ describe("the guides", () => {
       "**One operating system's shell, commands or path separators**",
       "**Personal tooling**",
       "**A step input with a sensible default**",
-      "**Read while the step runs**, from the checkout (`ctx.cwd`, git) or from the forge",
+      "**Read while the step runs**, from the checkout (`ctx.cwd`, git), from `ctx.workspace` (the base branch, the test command, the forge) or from the forge",
       "**A declared environment variable or secret**",
       "build every path they use from `harness.cwd`",
       "a path in a scripted `stdout` or `stderr` is a realistic fixture, and it stays rather than being stripped out",

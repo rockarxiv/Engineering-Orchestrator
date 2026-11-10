@@ -72,7 +72,8 @@ export async function forgePullRequestState(input: ForgePullRequestStateInput): 
   return lookUpForgeState(forge, branch, repoPath, run, input.signal);
 }
 
-async function guessForgeFromRemote(repoPath: string, remote: string): Promise<ForgeKind | null> {
+/** Which forge the remote's URL points at, or null where it cannot be read or is neither. Also what `ctx.workspace` says for a repository that names none (EO-711). */
+export async function guessForgeFromRemote(repoPath: string, remote: string): Promise<ForgeKind | null> {
   const url = await remoteUrl(repoPath, remote);
   if (!url.ok) return null;
   return guessForge(parseRemoteUrl(url.stdout)?.host ?? "");

@@ -42,6 +42,7 @@ import { agentRunVariables, redirectWithheldVariables, type ModuleSecretsOptions
 import { foldPacks, missingPackRefusal, type CodePack } from "./packs/pack.js";
 import { developerPack } from "./packs/developer/index.js";
 import { pullRequestTargetBranch } from "./packs/developer/forge/openForItem.js";
+import { guessForgeFromRemote } from "./packs/developer/forge/mergeState.js";
 import { createRunResultKey } from "./packs/developer/wiring.js";
 import { useRegistry } from "./registry.js";
 import { useWorkspaceKinds } from "./workspaceKinds.js";
@@ -424,8 +425,13 @@ export function createEngine(options: EngineOptions, packs: readonly CodePack[] 
               // branch a pull request targets worked out by the code
               // `open_pull_request` opens one with — and, for `ctx.runs()`
               // (EO-710), the result key a run produced read by the code
-              // that routed it.
-              items: moduleItemReader(db, { targetBranch: (item) => pullRequestTargetBranch(db, item), resultKey: createRunResultKey(db) }),
+              // that routed it — and, for `ctx.workspace` (EO-711), the
+              // forge a repository that names none points at.
+              items: moduleItemReader(db, {
+                targetBranch: (item) => pullRequestTargetBranch(db, item),
+                resultKey: createRunResultKey(db),
+                forgeKind: guessForgeFromRemote,
+              }),
             },
             secrets: options.moduleSecrets,
             // Where a file a module attaches is kept (EO-414): the store
