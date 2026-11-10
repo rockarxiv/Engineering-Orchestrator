@@ -6,6 +6,7 @@ import type { CustomModule, Item, ModuleCreation, ModuleCreationAnswer, ModuleCr
 import type { StepAnswer } from "../roles/answers.js";
 import { killTree } from "../process/killTree.js";
 import { searchPath } from "../process/searchPath.js";
+import type { ModuleItemReader } from "./moduleItemRead.js";
 
 /**
  * Running one module, from the outside (KAN-105).
@@ -364,18 +365,20 @@ export interface ModuleHostLauncher {
   /** Extra environment for the *host* process (not the module). */
   hostEnv?: Record<string, string>;
   /**
-   * Where `eo.db` is, so the host can open it read-only for `ctx.item()`
-   * and `ctx.itemByKey()` — and for `ctx.ticket()` and `ctx.ticketByKey()`,
-   * the deprecated names beside them (EO-74, KAN-162).
+   * What answers `ctx.item()` and `ctx.itemByKey()` — and `ctx.ticket()`
+   * and `ctx.ticketByKey()`, the deprecated names beside them — and
+   * `ctx.commentOn()`'s check of its key (EO-709). The host asks on fd 6
+   * and this side reads, with the code the screens read with.
    *
    * On the launcher rather than on the request because it is a fact about
    * this installation, not about one run — the same place `hostPath`
-   * sits. Optional for the same reason `hostPath` is optional upstream: a
+   * sits, and where the database path the host once opened itself was.
+   * Optional for the same reason `hostPath` is optional upstream: a
    * caller driving the engine without one (the v1 gate does) gets a
    * module whose reads answer "unavailable" in a sentence, rather than a
    * host that cannot start.
    */
-  dbPath?: string;
+  items?: ModuleItemReader;
 }
 
 /**
@@ -562,7 +565,13 @@ export function runModule(launcher: ModuleHostLauncher, request: RunModuleReques
       // has to carry the new item's key back. Stdin could not be it —
       // the host reads the request to its end before importing
       // anything, and that end is what tells it the request is whole.
-      stdio: ["pipe", "pipe", "pipe", "pipe", "pipe", "pipe"],
+      //
+      // fd 6 is the same again for reads (EO-709): the item `ctx.item()`
+      // answers with, built here. Its own descriptor because the host
+      // waits on it synchronously — `ctx.item()` is called without
+      // `await` — and a synchronous read on fd 5 could take a creation's
+      // answer from under the asynchronous one waiting there.
+      stdio: ["pipe", "pipe", "pipe", "pipe", "pipe", "pipe", "pipe"],
       env: {
         // The host's own environment, not the module's: the module's is
         // in the request, and the host empties `process.env` down to it
@@ -853,33 +862,73 @@ export function runModule(launcher: ModuleHostLauncher, request: RunModuleReques
      * waiting and is not answered.
      */
     // Indexed past what `spawn`'s type knows: it describes five
-    // descriptors, and this is the sixth asked for above.
-    const sixth: unknown = (child.stdio as readonly unknown[])[5];
-    const replyPipe = sixth instanceof Duplex ? sixth : null;
-    if (replyPipe) {
+    // descriptors, and these are the sixth and seventh asked for above.
+    const answerPipe = (fd: number): Duplex | null => {
+      const pipe: unknown = (child.stdio as readonly unknown[])[fd];
+      if (!(pipe instanceof Duplex)) return null;
       // A host that is gone leaves this a pipe with no reader, exactly
       // as stdin can be (EO-80), and an unhandled EPIPE here would take
       // the main process with it.
-      replyPipe.on("error", () => undefined);
+      pipe.on("error", () => undefined);
       // Nothing is read from it. Flowing so that its end is seen when
       // the host exits and `close` is not held up waiting on it.
-      replyPipe.resume();
-    }
-    const reply = (id: unknown, answer: ModuleCreationAnswer): void => {
+      pipe.resume();
+      return pipe;
+    };
+    const replyPipe = answerPipe(5);
+    const readPipe = answerPipe(6);
+    const signedAnswer = (pipe: Duplex | null, id: unknown, payload: unknown): void => {
       if (typeof id !== "string" || id === "") return;
-      if (!replyPipe || replyPipe.destroyed || !replyPipe.writable) return;
+      if (!pipe || pipe.destroyed || !pipe.writable) return;
       try {
         // ASCII only, everything else escaped. The host reads this
         // descriptor in chunks and decodes each one byte for byte, so a
         // character must never be more than one of them — a `«NAME»` in
         // a reason split across two reads would otherwise fail its own
         // signature.
-        const signed = JSON.stringify({ id, payload: answer }).replace(/[\u007f-\uffff]/g, (char) => `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`);
-        replyPipe.write(`${createHmac("sha256", replyKey).update(signed).digest("hex")} ${signed}\n`);
+        const signed = JSON.stringify({ id, payload }).replace(/[\u007f-\uffff]/g, (char) => `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`);
+        pipe.write(`${createHmac("sha256", replyKey).update(signed).digest("hex")} ${signed}\n`);
       } catch {
         // The host went between the check and the write. The transcript
         // already has whatever was worth saying.
       }
+    };
+    const reply = (id: unknown, answer: ModuleCreationAnswer): void => signedAnswer(replyPipe, id, answer);
+
+    /**
+     * Answers the host for one read of an item (EO-709), on fd 6 and
+     * signed as a creation's answer is.
+     *
+     * `{ item }` — null where no item has the key — or `{ exists }` for
+     * `ctx.commentOn`'s check, or `{ unavailable }` with the sentence
+     * saying why nothing could be read. The host turns each into what
+     * the module is handed; the wording a module may already compare
+     * against stays over there.
+     *
+     * Queued on the chain the writes are, so a module that comments and
+     * then reads its item finds its comment there.
+     */
+    const answerRead = async (id: unknown, rawKey: unknown, what: unknown): Promise<void> => {
+      const key = typeof rawKey === "string" ? rawKey.trim() : "";
+      const items = launcher.items;
+      if (items === undefined) {
+        signedAnswer(readPipe, id, { unavailable: "This build of EO gave the module host no way to read its database, so no ticket can be read." });
+        return;
+      }
+      try {
+        signedAnswer(readPipe, id, what === "exists" ? { exists: key !== "" && items.exists(key) } : { item: key === "" ? null : await items.read(key) });
+      } catch (error) {
+        signedAnswer(readPipe, id, { unavailable: `EO's ticket store could not be read: ${error instanceof Error ? error.message : String(error)}` });
+      }
+    };
+    const queueRead = (id: unknown, key: unknown, what: unknown): void => {
+      attaching += 1;
+      writes = writes
+        .then(() => answerRead(id, key, what))
+        .catch(() => undefined)
+        .finally(() => {
+          attaching -= 1;
+        });
     };
 
     /**
@@ -1002,6 +1051,7 @@ export function runModule(launcher: ModuleHostLauncher, request: RunModuleReques
               caption?: unknown;
               id?: unknown;
               creation?: unknown;
+              what?: unknown;
             };
             if (event.type === "output" && typeof event.text === "string") emit(event.text);
             // Every shell-out is logged. `needs.bin` is a promise EO
@@ -1010,6 +1060,7 @@ export function runModule(launcher: ModuleHostLauncher, request: RunModuleReques
             else if (event.type === "comment" && typeof event.body === "string") queueOrPostComment(event.key, event.body);
             else if (event.type === "attach") queueAttachment(event.paths, event.caption);
             else if (event.type === "create") queueCreation(event.id, event.creation);
+            else if (event.type === "read") queueRead(event.id, event.key, event.what);
           } catch {
             emit(line);
           }
@@ -1147,10 +1198,10 @@ export function runModule(launcher: ModuleHostLauncher, request: RunModuleReques
         // that never declared it can wait is refused.
         watch: request.module.manifest.watch === true,
         inputs: resolveInputs(request.module, request.inputs),
-        // The key, not the row (EO-74). The host reads the item itself,
-        // through its own read-only handle, so that `ctx.item()` and
+        // The key, not the row (EO-74). The host asks for the item on
+        // fd 6 each time it is read (EO-709), so `ctx.item()` and
         // `ctx.itemByKey()` answer with one shape built in one place —
-        // a copy sent from here would be a second, staler version of it.
+        // a copy sent here would be a second, staler version of it.
         itemKey: request.item.key,
         // One source for the caps (EO-75). The host applies them so a
         // module gets an immediate, accurate refusal; this side applies
@@ -1160,8 +1211,9 @@ export function runModule(launcher: ModuleHostLauncher, request: RunModuleReques
         attachments: { maxPaths: MAX_ATTACH_PATHS },
         // And how many items one run may create (EO-433), likewise.
         creations: { maxPerRun: MAX_CREATIONS_PER_RUN },
-        // What the host verifies each answer to a creation with. Sent
-        // here because stdin is the one channel a module never sees.
+        // What the host verifies each answer to a creation, and to a
+        // read, with. Sent here because stdin is the one channel a
+        // module never sees.
         replyKey,
         // And for the answers a refusal may name (EO-76), sent for the
         // same reason: the host checks what the module returned, this
@@ -1180,7 +1232,6 @@ export function runModule(launcher: ModuleHostLauncher, request: RunModuleReques
         // than the row: one shape, built in one place, by the side that
         // owns the rules about who counts as having answered.
         answer: request.answer ?? null,
-        dbPath: launcher.dbPath ?? null,
         cwd: request.cwd,
         env: request.env,
       }),

@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Item, ModuleManifest, StepWatch, Uuid } from "@eo/core";
 import { openDb, type DbHandle } from "../db/client.js";
+import { moduleItemReader } from "../modules/moduleItemRead.js";
 import { runMigrations } from "../db/migrate.js";
 import { createRoute, createStep, getItem, getItemWatch, listActiveRuns, listCommentsForItem, listRunEvents, listRunsForItem, saveModule } from "../db/repos/index.js";
 import { createModuleRunnerLookup } from "../modules/registry.js";
@@ -105,7 +106,7 @@ function seed(options: { watch: boolean; step: StepWatch | null }) {
     now: () => clock,
     moduleRunner: createModuleRunnerLookup({
       db: handle.db,
-      launcher: { execPath: process.execPath, hostPath, hostEnv: { ELECTRON_RUN_AS_NODE: "1" }, dbPath: join(directory, "eo.db") },
+      launcher: { execPath: process.execPath, hostPath, hostEnv: { ELECTRON_RUN_AS_NODE: "1" }, items: moduleItemReader(handle.db) },
       secrets: { directory: join(directory, "secrets"), store },
     }),
     kinds: kindsPreparing(directory),

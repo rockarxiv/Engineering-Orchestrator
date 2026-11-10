@@ -37,9 +37,11 @@ import { skillRunScope } from "./supervisor/workspaceResolution.js";
 import { recordFor } from "./record/localRecord.js";
 import type { ItemRecord } from "./record/record.js";
 import { createModuleRunnerLookup } from "./modules/registry.js";
+import { moduleItemReader } from "./modules/moduleItemRead.js";
 import { agentRunVariables, redirectWithheldVariables, type ModuleSecretsOptions } from "./modules/secrets.js";
 import { foldPacks, missingPackRefusal, type CodePack } from "./packs/pack.js";
 import { developerPack } from "./packs/developer/index.js";
+import { pullRequestTargetBranch } from "./packs/developer/forge/openForItem.js";
 import { useRegistry } from "./registry.js";
 import { useWorkspaceKinds } from "./workspaceKinds.js";
 import { usePackConnectors } from "./connectors/declared.js";
@@ -416,10 +418,11 @@ export function createEngine(options: EngineOptions, packs: readonly CodePack[] 
               // *is* Node when told to be, so there is no second runtime
               // to install and no version to keep in step.
               hostEnv: { ELECTRON_RUN_AS_NODE: "1" },
-              // What the host opens read-only for `ctx.ticket()` (EO-74).
-              // Absent leaves the reads answering "unavailable", which is
-              // the v1 gate's case and not a reason to refuse to run.
-              ...(dbPath ? { dbPath } : {}),
+              // What answers `ctx.item()` and `ctx.itemByKey()` (EO-709):
+              // this database, read the way the screens read it, with the
+              // branch a pull request targets worked out by the code
+              // `open_pull_request` opens one with.
+              items: moduleItemReader(db, { targetBranch: (item) => pullRequestTargetBranch(db, item) }),
             },
             secrets: options.moduleSecrets,
             // Where a file a module attaches is kept (EO-414): the store

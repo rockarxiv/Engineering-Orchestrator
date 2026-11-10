@@ -282,10 +282,13 @@ apps/desktop/src/main/modules/runModule.test.ts: expect(String(answered(outcome)
 apps/desktop/src/main/modules/runModule.test.ts: expect(answered(outcome)).toEqual({ found: false, reason: 'No ticket has the key "NOPE-404".' });
 apps/desktop/src/main/modules/runModule.test.ts: expect(answered(outcome)).toEqual({ found: true, item: shape, ticket: shape });
 apps/desktop/src/main/modules/runModule.test.ts: expect(answered(outcome)).toEqual({ posted: false, reason: 'No ticket has the key "NOPE-404".' });
+apps/desktop/src/main/modules/runModule.test.ts: expect(answered(outcome)).toEqual({ title: "Only the reader knows this", target: "release/2.4", missing: { found: false, reason: 'No ticket has the key "NOPE-1".' } });
 apps/desktop/src/main/modules/runModule.test.ts: expect(answered(outcome)).toMatchObject({ found: true, ticket: { key: elsewhere.key, title: "Somebody else's work", parentKey: null, comments: [] } });
-apps/desktop/src/main/modules/runModule.test.ts: expect(getItem(handle.db, running.id)?.title).toBe("Let a module read a ticket");
+apps/desktop/src/main/modules/runModule.test.ts: expect(read.children).toEqual(expect.arrayContaining([relation(running, "Let a module read a ticket"), relation(blocker, "Lay the groundwork")]));
 apps/desktop/src/main/modules/runModule.test.ts: expect(transcript.match(/ctx\.ticket\(\) or ctx\.ticketByKey\(\)/g)?.length).toBe(1);
 apps/desktop/src/main/modules/runModule.test.ts: title: "Let a module read a ticket",
+apps/desktop/src/main/modules/runModule.ts: signedAnswer(readPipe, id, { unavailable: "This build of EO gave the module host no way to read its database, so no ticket can be read." });
+apps/desktop/src/main/modules/runModule.ts: signedAnswer(readPipe, id, { unavailable: `EO's ticket store could not be read: ${error instanceof Error ? error.message : String(error)}` });
 apps/desktop/src/main/modules/runModuleTests.test.ts: assert.deepEqual(run.logs, ['No ticket has the key "EO-404".']);
 apps/desktop/src/main/outbox/retireForgeQueue.ts: `simply has no pull request open. Move this ticket through the merge step again to open one.`,
 apps/desktop/src/main/packs/pack.ts: `— comes from a pack. Install one and this ticket carries on from here.`
