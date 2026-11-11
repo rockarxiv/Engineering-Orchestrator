@@ -1,10 +1,10 @@
 import { randomUUID } from "node:crypto";
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, linkSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { eq } from "drizzle-orm";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { ipcContract, type DiscussionOutput, type EntryRule, type IpcPayload, type Item, type ModuleManifest, type Uuid } from "@eo/core";
 import type { DbHandle } from "../db/client.js";
 import {
@@ -66,13 +66,17 @@ const nothingStored = { isEncryptionAvailable: () => false, encryptString: () =>
  * `no_reviewers` is true and whose pull request would target the forge's
  * default branch, read here from a binary it runs; and refuses when
  * either branch is unknown. The team's real module is theirs to write.
+ *
+ * The binary is Node under the forge's name, handed the script that
+ * prints the branch: `ctx.exec` spawns with no shell, and Windows runs
+ * no `#!` script without one.
  */
-const NO_REVIEWERS = `
+const noReviewers = (script: string) => `
 export default async function check(ctx) {
   const { item } = ctx.item();
   if (item.spec.no_reviewers !== true) return { ok: true, result: "pass" };
   const target = item.git.targetBranch;
-  const asked = await ctx.exec("forge-default-branch", []);
+  const asked = await ctx.exec("forge-default-branch", [${JSON.stringify(script)}]);
   const defaultBranch = asked.code === 0 ? asked.stdout.trim() : "";
   if (!target || !defaultBranch) {
     return { ok: true, result: "refuse", reason: "the pull request's target or the forge's default branch could not be established" };
@@ -82,6 +86,7 @@ export default async function check(ctx) {
   }
   return { ok: true, result: "pass" };
 }`;
+let NO_REVIEWERS: string;
 
 const CHECK_MANIFEST: ModuleManifest = {
   name: "No reviewers",
@@ -109,10 +114,21 @@ const targetBranch = async (item: Item): Promise<string | null> => {
 let savedPath: string | undefined;
 let repo: string;
 
+/** A copy of Node, made once, linked into each test's PATH under the forge binary's name. */
+let node: string;
+const forgeBinary = () => join(bin, process.platform === "win32" ? "forge-default-branch.exe" : "forge-default-branch");
+const forgeScript = () => join(bin, "default-branch.cjs");
+
 function defaultBranchIs(branch: string | null): void {
-  writeFileSync(join(bin, "forge-default-branch"), branch === null ? "#!/bin/sh\nexit 1\n" : `#!/bin/sh\necho ${branch}\n`);
-  chmodSync(join(bin, "forge-default-branch"), 0o755);
+  writeFileSync(forgeScript(), branch === null ? "process.exit(1);\n" : `process.stdout.write(${JSON.stringify(`${branch}\n`)});\n`);
 }
+
+beforeAll(() => {
+  node = join(mkdtempSync(join(tmpdir(), "eo-entry-node-")), "node");
+  copyFileSync(process.execPath, node);
+});
+
+afterAll(() => rmSync(dirname(node), { recursive: true, force: true }));
 
 function launcher(): ModuleHostLauncher {
   return {
@@ -164,7 +180,9 @@ beforeEach(() => {
   repo = mkdtempSync(join(tmpdir(), "eo-entry-repo-"));
   savedPath = process.env["PATH"];
   process.env["PATH"] = `${bin}${delimiter}${savedPath ?? ""}`;
+  linkSync(node, forgeBinary());
   defaultBranchIs("main");
+  NO_REVIEWERS = noReviewers(forgeScript());
   insertItemType(handle.db, null, {
     packSlug: "local",
     slug: "change",
@@ -533,7 +551,7 @@ describe("fail closed", () => {
       '"Delivery" needs these before work can enter it: a pass from "No reviewers", which cannot run here: EO here has no module host to run it on.',
     );
     configure();
-    rmSync(join(bin, "forge-default-branch"));
+    rmSync(forgeBinary());
     expect((await submitItemCommand(handle.db, undefined, submission(false))).problem).toContain("which cannot run here: forge-default-branch is not installed where this door is");
   });
 
@@ -793,7 +811,7 @@ describe("publishing a module rule", () => {
     configureEntryChecks(null);
     expect(messages(save([{ kind: "module", module: id }]))).toContain('The entry rule runs "No reviewers", which this record cannot run: EO here has no module host to run it on.');
     configure();
-    rmSync(join(bin, "forge-default-branch"));
+    rmSync(forgeBinary());
     expect(messages(save([{ kind: "module", module: id }]))).toContain('The entry rule runs "No reviewers", which this record cannot run: forge-default-branch is not installed here.');
   });
 });
