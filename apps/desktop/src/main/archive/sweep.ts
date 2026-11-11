@@ -10,7 +10,6 @@ import {
   setSetting,
   setItemArchived,
 } from "../db/repos/index.js";
-import { isProjectThread } from "../projects/projectThread.js";
 
 /** How long an item stays on the project after it is finished. Days. */
 export const ARCHIVE_AFTER_DAYS_KEY = "project.archiveAfterDays";
@@ -74,11 +73,7 @@ export function sweepArchive(db: Db, now = Date.now()): SweepResult {
   // still is. Getting this wrong does not draw something oddly — it puts
   // live work in the Archive, or leaves finished work on the board for
   // ever.
-  // Never a project's thread (EO-471). It is on a step that is not
-  // terminal, so it is never finished — but it is somewhere the project
-  // keeps saying things for as long as it exists, and that is a reason
-  // of its own rather than a consequence of how its step is set.
-  const rows = listItems(db).filter((item) => !isProjectThread(item));
+  const rows = listItems(db);
   const finished = finishedItemIds(db, rows);
 
   // The clock, which is a different question: *when* an item entered the

@@ -1,10 +1,9 @@
 import { and, asc, eq, isNull } from "drizzle-orm";
-import { uuidv7, type Uuid } from "@eo/core";
+import { uuidv7 } from "@eo/core";
 import type { KeyChange } from "@eo/engine";
 import type { Db } from "../client.js";
 import { pipelineUpdateConflicts } from "../schema.js";
 import { emitPush } from "../../ipc/push.js";
-import { dismissOpenMentionsForComment } from "./commentsRepo.js";
 import { markMessagesAboutResolved } from "./messagesRepo.js";
 
 /** The source of a held update's notice (`MessageSend.source`, EO-727); its subject is the conflict's id. */
@@ -41,7 +40,8 @@ export interface PipelineUpdateConflict {
   /**
    * What the conflict notice was sent as (EO-533, EO-727): its messages,
    * one per project it concerns and recipient — or, for a conflict noticed
-   * before messages, its comments on the project threads. Empty where
+   * before messages, the comments on project threads that migration 0167
+   * turned into messages with this conflict as their subject. Empty where
    * nobody could be told — a pipeline with no project and no work on any.
    */
   noticeIds: string[];
@@ -169,8 +169,7 @@ export function listUpdateConflicts(db: Db, pipelineId: string): PipelineUpdateC
  * Its notice closes with it (EO-533, EO-727): every message it sent is
  * marked resolved in the same write, however the conflict was resolved —
  * a draft published from its chat, the person keeping their own version,
- * or a newer template version superseding it — and the mentions of a
- * notice posted on project threads before messages are dismissed. A
+ * or a newer template version superseding it. A
  * notice asking for something already settled would sit in the inbox
  * with nothing behind it.
  */
@@ -184,9 +183,6 @@ export function resolveUpdateConflict(db: Db, id: string, resolution: string, at
       .all();
     let resolved = 0;
     for (const row of closed) {
-      // A message id names no comment, so this only reaches a notice
-      // posted on a thread before EO-727.
-      for (const noticeId of toConflict(row).noticeIds) dismissOpenMentionsForComment(db, noticeId as Uuid);
       resolved += markMessagesAboutResolved(db, TEMPLATE_CONFLICT_SOURCE, row.id, at).length;
     }
     return resolved;

@@ -17,7 +17,6 @@ import { ProjectAgents } from "./ProjectAgents";
 import { ProjectItemTypes } from "./ProjectItemTypes";
 import { MemoryPanel } from "./MemoryPanel";
 import { GitForm } from "./WorkspacesSection";
-import { PROJECT_NOTES_LABEL, useOpenProjectNotes } from "../../../../shared/settings/projectNotes";
 
 type Project = IpcResponse<"projects:list">["projects"][number];
 
@@ -167,8 +166,6 @@ export function ProjectsSection() {
       if (result.restored) void queryClient.invalidateQueries();
     },
   });
-  /** The project's own thread (EO-471), in the ordinary item view. */
-  const openNotes = useOpenProjectNotes(setProblem);
   /** Preview is a rehearsal and a project mid-move keeps what it has, so neither offers to add one (EO-607). */
   const chipsOn = (project: Project) =>
     repositories.filter((repository) => project.repositoryIds.includes(repository.id) || (!project.preview && project.adoptingAt === null));
@@ -210,18 +207,6 @@ export function ProjectsSection() {
                   />
                   <Chip className="font-mono">{project.keyPrefix}</Chip>
                   <span className="shrink-0 text-[11.5px] tabular-nums text-ink-subtle">{words.count(project.itemCount)}</span>
-                  {/* Somewhere to say what belongs to the project rather
-                      than to any one item (EO-471). On every project, the
-                      organisation's included: the record is asked. */}
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    disabled={openNotes.isPending}
-                    aria-label={`Open ${project.name}'s project notes`}
-                    onClick={() => openNotes.mutate(project.id)}
-                  >
-                    {PROJECT_NOTES_LABEL}
-                  </Button>
                   <span className="flex shrink-0 gap-1">
                     {/* Every live project but one mid-move (EO-605), where the attach is refused, and Preview (EO-604),
                         where saving would make a new project and move the window. The record keeps its button. */}

@@ -1,8 +1,7 @@
 import { jiraStateOf, type IpcPayload, type IpcResponse, type Item, type Uuid } from "@eo/core";
 import type { AttachmentStorage } from "../attachments/storage.js";
 import type { Db } from "../db/client.js";
-import { deleteItem, getItem, getProject, listAttachmentsForItem, listRunsForItem, listItems, itemWithDescendants } from "../db/repos/index.js";
-import { isProjectThread } from "../projects/projectThread.js";
+import { deleteItem, getItem, listAttachmentsForItem, listRunsForItem, listItems, itemWithDescendants } from "../db/repos/index.js";
 import { jiraFor, type JiraContext } from "../packs/developer/jira/connection.js";
 import { branchPrefix } from "../packs/developer/workspace/branchPrefix.js";
 import { allWorktreeConfigs } from "../packs/developer/workspace/dispatchWorkspace.js";
@@ -241,16 +240,6 @@ export async function deleteItemCommand(
   const itemId = input.itemId as Uuid;
   const item = getItem(db, itemId);
   if (!item) return refused("That ticket no longer exists.");
-
-  // A project's thread lives as long as its project (EO-471). It is
-  // where things that belong to no single item were said, and deleting
-  // it on its own would take those with it while leaving the project
-  // somewhere to say the next one — a new, empty thread. The project's
-  // own delete still takes it, through `removeItemsAndTheirWork`.
-  const project = item.projectId === null ? undefined : getProject(db, item.projectId as Uuid);
-  if (isProjectThread(item) && project !== undefined) {
-    return refused(`${item.key} is ${project.name}'s notes, which stay as long as the project does. Deleting the project removes them with it.`);
-  }
 
   const ids = itemWithDescendants(db, itemId);
   const byId = new Map(listItems(db).map((entry) => [entry.id, entry]));

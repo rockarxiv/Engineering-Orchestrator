@@ -1177,6 +1177,13 @@
       "when": 1798214400000,
       "tag": "0167_item_type_updated_at",
       "breakpoints": true
+    },
+    {
+      "idx": 168,
+      "version": "6",
+      "when": 1798300800000,
+      "tag": "0168_retire_threads",
+      "breakpoints": true
     }
   ]
 }

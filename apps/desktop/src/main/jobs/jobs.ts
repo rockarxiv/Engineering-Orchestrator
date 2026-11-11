@@ -6,7 +6,7 @@ import {
   getPipeline,
   insertJob,
   itemIdsFiredBy,
-  jobForThreadItem,
+  jobForConversation,
   listAllJobs,
   localPerson,
   markJobDeleted,
@@ -19,18 +19,15 @@ import {
 } from "../db/repos/index.js";
 import { compileSchedule } from "../schedule/cron.js";
 import { isKnownTimeZone } from "../schedule/timeZone.js";
-import { openJobThread } from "./thread.js";
 
 /**
  * Making a job, and being done with one (EO-304,
  * `ARCHITECTURE.md`, "What a job records").
  *
- * Above the repository because neither act is a question about the
- * `jobs` table: creating a job creates its off-board thread item (whose
- * guards are messages to the owner since EO-729, so nothing writes to
- * it), and deleting one archives that item rather than
- * deleting it — what was said on a thread outlives the definition that
- * owned it, exactly as an archived item keeps its runs.
+ * Above the repository because neither act is only a question about the
+ * `jobs` table: creating one checks that it could fire against the
+ * project's pipelines and types, and deleting one may archive the work
+ * it filed and, for a from-discussion job, its conversation.
  */
 
 export interface CreateJobInput {
@@ -58,7 +55,7 @@ export interface CreateJobInput {
 export type CreateJobResult = { ok: true; job: Job } | { ok: false; problem: string };
 
 /**
- * Creates a job and, unless it is reusing one, its thread.
+ * Creates a job, or finds the one a conversation already made.
  *
  * Everything is checked before anything is written. A job whose
  * pipeline has no entry step, or whose template names a type nothing
@@ -75,11 +72,11 @@ export function createJob(db: Db, input: CreateJobInput): CreateJobResult {
   const template = input.template ?? null;
 
   if (input.trigger.kind === "from-discussion") {
-    // Its thread is the conversation itself (ARCHITECTURE.md, "What a job records"): a second
-    // thread beside it would be two places to look for one exchange.
+    // One job per conversation (ARCHITECTURE.md, "What a job records"): a second Create there
+    // reuses the job the first one made.
     const conversation = getItem(db, input.trigger.conversationId as Uuid);
     if (!conversation) return { ok: false, problem: "That conversation no longer exists, so there is nothing to record the item as coming from." };
-    const existing = jobForThreadItem(db, conversation.id);
+    const existing = jobForConversation(db, conversation.id);
     if (existing) return { ok: true, job: existing };
     return {
       ok: true,
@@ -92,7 +89,6 @@ export function createJob(db: Db, input: CreateJobInput): CreateJobResult {
         pipelineId: null,
         template: null,
         ownerId,
-        threadItemId: conversation.id,
         ...(input.budgetPerOccurrenceCents === undefined ? {} : { budgetPerOccurrenceCents: input.budgetPerOccurrenceCents }),
         ...(input.maxItemsPerHour === undefined ? {} : { maxItemsPerHour: input.maxItemsPerHour }),
         ...(input.runsOn === undefined ? {} : { runsOn: input.runsOn }),
@@ -103,10 +99,6 @@ export function createJob(db: Db, input: CreateJobInput): CreateJobResult {
   const fireable = checkFireable(db, input.projectId, input.trigger, pipelineId, template) ?? templateRefusal(db, input.projectId, input.trigger, pipelineId, template);
   if (fireable !== null) return { ok: false, problem: fireable };
 
-  // Last, because it is the only step that writes anything: a refusal
-  // above must not leave a thread item behind for a job that does not
-  // exist.
-  const thread = openJobThread(db, name, input.projectId);
   return {
     ok: true,
     job: insertJob(db, {
@@ -116,7 +108,6 @@ export function createJob(db: Db, input: CreateJobInput): CreateJobResult {
       pipelineId,
       template,
       ownerId,
-      threadItemId: thread.id,
       ...(input.budgetPerOccurrenceCents === undefined ? {} : { budgetPerOccurrenceCents: input.budgetPerOccurrenceCents }),
       ...(input.maxItemsPerHour === undefined ? {} : { maxItemsPerHour: input.maxItemsPerHour }),
       ...(input.runsOn === undefined ? {} : { runsOn: input.runsOn }),
@@ -236,8 +227,7 @@ export interface EditJobInput extends UpdateJobInput {
  * one is delete it, which is what the page offers instead.
  *
  * Renaming touches nothing but the job (EO-729): its guards are messages
- * that name it as it is when they are sent, and nothing writes to a job
- * thread any more.
+ * that name it as it is when they are sent.
  */
 export function updateJob(db: Db, input: EditJobInput): CreateJobResult {
   const job = getJob(db, input.jobId);
@@ -322,20 +312,17 @@ export interface DeleteJobOptions {
  * happened while it existed is rewritten, which is what invariant #3
  * asks everywhere else — migration 0080 says the whole of it.
  *
- * **The thread is archived rather than deleted.** Everything said on it
- * stays, along with any runs and their cost, and an archived item drops
- * out of `listItems` — which is what stops the mention path from ever
- * dispatching against it again. The same call clearing an assistant chat
- * makes, for the same reason.
- *
- * A from-discussion job's thread is the conversation, and archiving a
- * conversation is what closing one already does; deleting that job
- * closes the conversation with it, which is what a person asking for
- * "stop recording items as coming from this chat" means.
+ * **A from-discussion job's conversation is archived rather than
+ * deleted.** Archiving a conversation is what closing one already does;
+ * deleting that job closes the conversation with it, which is what a
+ * person asking for "stop recording items as coming from this chat"
+ * means. Everything said in it stays, along with any runs and their
+ * cost, and an archived item drops out of `listItems` — which is what
+ * stops the mention path from ever dispatching against it again.
  *
  * **"Archive its items" archives; it does not delete.** A job that has
  * run for a year owns a year of work, with its runs, its costs and its
- * threads on it, and the choice the design offers is between putting that
+ * conversations on it, and the choice the design offers is between putting that
  * away and leaving it out — not between two kinds of loss. Restoring
  * one is the same button it is for anything else in the archive.
  */
@@ -343,8 +330,8 @@ export function deleteJob(db: Db, id: Uuid, options: DeleteJobOptions = {}): { d
   const job = getJob(db, id);
   if (!job || job.deletedAt !== null) return { deleted: false, archivedItemCount: 0 };
   const now = Date.now();
-  const thread = getItem(db, job.threadItemId as Uuid);
-  if (thread && thread.archivedAt === null) setItemArchived(db, thread.id, now);
+  const conversation = job.trigger.kind === "from-discussion" ? getItem(db, job.trigger.conversationId as Uuid) : undefined;
+  if (conversation && conversation.archivedAt === null) setItemArchived(db, conversation.id, now);
 
   let archivedItemCount = 0;
   if (options.archiveItems === true) {

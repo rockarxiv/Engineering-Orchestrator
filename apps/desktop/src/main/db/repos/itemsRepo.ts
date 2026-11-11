@@ -24,6 +24,7 @@ import type { Db } from "../client.js";
 import { arrivalRefusal } from "./entryRulesRepo.js";
 import { projectForWorkspace } from "./projectsRepo.js";
 import { dropWebhookWaiversWithoutEntry } from "./webhookWaiverRepo.js";
+import { fromDiscussionOf } from "./jobsRepo.js";
 import { extensionsForItem, extensionsForItems, setItemExtension } from "./itemExtensionsRepo.js";
 import { getItemType, resolveItemType, type ItemType, type ItemTypeName } from "./itemTypesRepo.js";
 import { assigneeOnArrival, type StepOwnership } from "./peopleRepo.js";
@@ -305,7 +306,7 @@ export interface CreateItemInput {
   /**
    * Overrides the project-derived key prefix.
    *
-   * Used by the conversation rooms and job threads, whose items exist for
+   * Used by the conversation rooms, whose items exist for
    * the sake of runs and durability but are not work. Numbering them
    * `EO-51`, `EO-52` would interleave chats with stories in a sequence
    * people read and quote, so they get their own counter — `key_counters`
@@ -313,18 +314,6 @@ export interface CreateItemInput {
    * different mechanism.
    */
   keyPrefix?: string;
-  /**
-   * The whole key, where the item has one of its own rather than the
-   * next number in a sequence (EO-471).
-   *
-   * A project's thread: there is one per project, so its key is the
-   * project's own — `SHOP-NOTES` — and needs no counter. A counter is a
-   * per-database fact, and a thread can be made on a desktop or on the
-   * organisation's record and travel between them; two counters handing
-   * out the same number is two items with one key in somebody's replica.
-   * Takes precedence over `keyPrefix`, and consumes no counter.
-   */
-  key?: string;
   /**
    * Who filed it (EO-302, ARCHITECTURE.md, "Identity").
    *
@@ -491,7 +480,7 @@ export function createItem(db: Db, input: CreateItemInput): CreateItemResult {
   const refused = creationRefusal(db, input, type.type);
   if (refused !== null) return { ok: false, slug: type.type.slug, problem: refused, refusedAtEntry: true };
 
-  const key = input.key ?? mintKey(db, input.keyPrefix ?? keyPrefixFor(db, workspaceId, projectId));
+  const key = mintKey(db, input.keyPrefix ?? keyPrefixFor(db, workspaceId, projectId));
   const now = Date.now();
   const jiraSync = resolveJiraSync(db, input);
   const jiraKey = input.jiraKey ?? null;
@@ -664,26 +653,6 @@ export function listItemsUpdatedSince(db: Db, cursor: RecordCursor, limit: numbe
 
 export function getItem(db: Db, id: Uuid): Item | undefined {
   return hydrateOne(db, selectItems(db).where(eq(items.id, id)).get());
-}
-
-/**
- * The item a project keeps on one step, where it keeps exactly one
- * (EO-471).
- *
- * The project thread's lookup: one off-board item per project, which
- * `idx_items_project_thread` holds the database to. Archived rows are
- * found too, for `getItemByKey`'s reason — this is a lookup, not a
- * policy.
- */
-export function getProjectItemOnStep(db: Db, projectId: Uuid, stepId: string): Item | undefined {
-  return hydrateOne(
-    db,
-    selectItems(db)
-      .where(and(eq(items.projectId, projectId), eq(items.stepId, stepId)))
-      .orderBy(asc(items.createdAt), asc(items.id))
-      .limit(1)
-      .get(),
-  );
 }
 
 /**
@@ -1463,17 +1432,14 @@ export function deleteItem(db: Db, id: Uuid): { deletedItemIds: Uuid[] } {
     tx.delete(itemDeps).where(inArray(itemDeps.itemId, ids)).run();
     tx.delete(itemDeps).where(inArray(itemDeps.dependsOnId, ids)).run();
 
-    // A job whose thread is one of these items (EO-304). The thread is
-    // where its guards post, so a job that outlived it would have
-    // nowhere to say anything — and `jobs.thread_item_id` is a real
-    // foreign key, so deleting a conversation that owns a
-    // `from-discussion` job would otherwise fail on it. The occurrences
-    // go with the job, by the cascade the schema declares.
-    tx.delete(jobs).where(inArray(jobs.threadItemId, ids)).run();
-    // And a waiver given for a webhook job that just went with its
-    // thread (EO-405). No such job has a thread a person can delete
-    // today; this is here so that the day one does, the waiver does not
-    // outlive it.
+    // A `from-discussion` job one of these conversations made (EO-304):
+    // it exists to record items as coming from the conversation, which
+    // is going. The occurrences go with the job, by the cascade the
+    // schema declares.
+    tx.delete(jobs).where(fromDiscussionOf(ids)).run();
+    // And a waiver given for a webhook job that just went (EO-405). No
+    // job a conversation made is a webhook job today; this is here so
+    // that the day one is, the waiver does not outlive it.
     dropWebhookWaiversWithoutEntry(tx as unknown as Db);
 
     tx.delete(items).where(inArray(items.id, ids)).run();

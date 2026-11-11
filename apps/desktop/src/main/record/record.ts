@@ -14,7 +14,6 @@ import type {
 import type { DispatchLease } from "../db/repos/leasesRepo.js";
 import type { PostCommentInput } from "../db/repos/commentsRepo.js";
 import type { Comment, IpcPayload, IpcResponse, PipelineTemplateStatus } from "@eo/core";
-import type { ProjectThreadAnswer } from "../projects/projectThread.js";
 import type { UpdateConflictChatAnswer, UpdateConflictChatRequest } from "../roles/updateConflictChat.js";
 import type { ResolveUpdateConflictAnswer, ResolveUpdateConflictRequest } from "../gallery/updateConflictDetail.js";
 import type { TemplateHistory } from "../gallery/history.js";
@@ -216,34 +215,13 @@ export interface ItemRecord {
    */
   updateItemType: (request: IpcPayload<"itemTypes:update">) => Promise<IpcResponse<"itemTypes:update">>;
   /**
-   * The project's thread, made the first time anything asks (EO-471,
-   * ARCHITECTURE.md, "One channel").
-   *
-   * **The accessor** — the one function core and pack code call to get
-   * somewhere to post about a project rather than about an item. The
-   * same item on every call; the first call makes it.
-   *
-   * Asking, like `createItemFromModule`, and for its reason. The thread
-   * belongs to the record like the project's other items, so on a
-   * desktop holding a project the organisation owns it is the record
-   * that makes it — its key is the record's to mint, and a thread made
-   * on the replica would be an item the record never receives, with
-   * every comment on it refused there. The answer is copied into the
-   * replica before it is returned, so the caller can post at once.
-   *
-   * Never rejects. A record that cannot be reached answers a refusal
-   * with the sentence saying so.
-   */
-  projectThread: (projectId: Uuid) => Promise<ProjectThreadAnswer>;
-  /**
    * Sends a message — EO asking a person something that belongs to no
    * item (EO-725, EO-726, ARCHITECTURE.md §7.1).
    *
-   * **The accessor** for senders, as `projectThread` was for the thread
-   * a message replaces. A message about a project the organisation's
-   * record holds is written on the record, one to each of its admins
-   * whoever `recipientId` named, and never only in a desktop's own
-   * table: asking, like `projectThread`, because who the admins are is
+   * **The accessor** for senders. A message about a project the
+   * organisation's record holds is written on the record, one to each of
+   * its admins whoever `recipientId` named, and never only in a desktop's
+   * own table: asking, like `createItemFromModule`, because who the admins are is
    * the record's fact and a row written on a replica reaches nobody
    * else. The record's copies addressed to this desktop's person are
    * kept here at once; every other recipient's desktops pull theirs.
@@ -270,7 +248,7 @@ export interface ItemRecord {
    * first time anybody presses Fix with assistant and the same chat on
    * every press after.
    *
-   * Asking, like `projectThread`, and for its reason. A pipeline the
+   * Asking, like `createItemFromModule`, and for its reason. A pipeline the
    * organisation's record holds is compared there, so the conflict is
    * there — a desktop holds only the notice it was told — and the chat
    * belongs with it: made on the record, so every admin's press finds

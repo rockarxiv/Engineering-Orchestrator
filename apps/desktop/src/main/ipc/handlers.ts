@@ -251,7 +251,6 @@ import {
   serveHandleMessage,
   serveMessages,
   serveSendMessage,
-  serveProjectThread,
   serveUpdateConflictChat,
   serveUpdateConflict,
   serveTemplateStatus,
@@ -416,14 +415,13 @@ export interface HandlerResources {
    * The device record, where the composition root has one (EO-471).
    *
    * Only for what has to be *asked* of whichever record owns a project —
-   * a project's thread, its memory (EO-482), and what its items wait for
+   * a project's memory (EO-482) and what its items wait for
    * (EO-600) — since a moved
    * project's are the organisation's. Absent in a test and on a server, where this database is
    * the record and `recordFor(db)` is the answer.
    */
   record?: Pick<
     ItemRecord,
-    | "projectThread"
     | "updateConflictChat"
     | "updateConflict"
     | "resolveUpdateConflict"
@@ -1941,9 +1939,6 @@ export function registerAllHandlers(db: Db, engine: EngineHandle | undefined, re
   registerHandler("record:spend", (payload) => serveSpend(serving, payload), opts);
   // A module's run on a device asking for a work item (EO-433).
   registerHandler("record:createItem", (payload) => serveCreateItem(serving, payload), opts);
-  // A device asking for a project's thread, which is the record's to
-  // make (EO-471).
-  registerHandler("record:projectThread", (payload) => serveProjectThread(serving, payload), opts);
   // A device asking to change what an item of a project this record
   // holds waits for: the graph is the record's to judge (EO-600).
   registerHandler("record:changeDependencies", (payload) => serveChangeDependencies(serving, payload), opts);
@@ -2313,18 +2308,6 @@ export function registerAllHandlers(db: Db, engine: EngineHandle | undefined, re
         emitPush("items:changed", {});
       }
       return result;
-    },
-    opts,
-  );
-  // A project's notes (EO-471): its thread, made the first time it is
-  // asked for — by whichever record owns the project, which is why this
-  // goes through the device record rather than straight to the tables.
-  // No push: the thread is off-board, so no list a screen holds changes.
-  registerHandler(
-    "projects:thread",
-    async (payload) => {
-      const answer = await (resources.record ?? recordFor(db)).projectThread(payload.projectId as Uuid);
-      return answer.ok ? { itemId: answer.item.id, problem: null } : { itemId: null, problem: answer.problem };
     },
     opts,
   );

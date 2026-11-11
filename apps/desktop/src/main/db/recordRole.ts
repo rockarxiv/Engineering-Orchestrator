@@ -59,6 +59,7 @@ import type { Db } from "./client.js";
  * ask about and the honest answer is about the installation.
  */
 const replicas = new WeakMap<Db, (itemId?: Uuid) => boolean>();
+const projectReplicas = new WeakMap<Db, (projectId: Uuid | null) => boolean>();
 
 /**
  * Says this database is a replica while the predicate answers true.
@@ -67,10 +68,13 @@ const replicas = new WeakMap<Db, (itemId?: Uuid) => boolean>();
  * thing that knows both halves: which database, and whether this
  * machine has a record elsewhere.
  */
-export function markReplica(db: Db, isReplica: (itemId?: Uuid) => boolean): () => void {
+export function markReplica(db: Db, isReplica: (itemId?: Uuid) => boolean, isProjectReplica?: (projectId: Uuid | null) => boolean): () => void {
   replicas.set(db, isReplica);
+  if (isProjectReplica === undefined) projectReplicas.delete(db);
+  else projectReplicas.set(db, isProjectReplica);
   return () => {
     if (replicas.get(db) === isReplica) replicas.delete(db);
+    if (isProjectReplica !== undefined && projectReplicas.get(db) === isProjectReplica) projectReplicas.delete(db);
   };
 }
 
@@ -88,4 +92,18 @@ export function markReplica(db: Db, isReplica: (itemId?: Uuid) => boolean): () =
  */
 export function isReplica(db: Db, itemId?: Uuid): boolean {
   return replicas.get(db)?.(itemId) === true;
+}
+
+/**
+ * `isReplica`, asked of an item on this project — or on none, for null —
+ * before there is an item to ask about (EO-730): whether a job's next
+ * item would be the record's to file. A job used to ask it of its thread
+ * item, which sat on the job's project.
+ *
+ * Where only the item predicate was registered, it is asked without an
+ * item: the installation's answer.
+ */
+export function isProjectReplica(db: Db, projectId: Uuid | null): boolean {
+  const forProject = projectReplicas.get(db);
+  return forProject !== undefined ? forProject(projectId) : isReplica(db);
 }

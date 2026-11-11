@@ -109,8 +109,8 @@ import { exactDuplicateOperations, exactDuplicates, likelyDuplicatesOf, nearDupl
  * consolidation, and each batch of one, starts only while the pipeline
  * is idle (`pipelineBusy`), each call is cut off at a minute and a half
  * or its output-token cap, a scope that keeps failing backs off an hour,
- * then four, then a day, and the third failure in a row is said on the
- * project's thread.
+ * then four, then a day, and the third failure in a row is said in a
+ * message.
  */
 export interface MemoryConsolidatorOptions {
   db: Db;

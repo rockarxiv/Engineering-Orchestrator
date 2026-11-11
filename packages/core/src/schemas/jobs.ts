@@ -44,12 +44,12 @@ export const ManualTriggerSchema = z.object({
  * conversation would be the one way of creating work that is not a
  * trigger — and the item's provenance would be two mechanisms where
  * every other route has one. The job is made on the first approval in
- * that conversation and reuses the conversation itself as its thread:
- * the guard channel a job needs is the one the conversation already is.
+ * that conversation, and a second approval there finds it again by the
+ * conversation's id.
  */
 export const FromDiscussionTriggerSchema = z.object({
   kind: z.literal("from-discussion"),
-  /** The conversation item. Also this job's `threadItemId`. */
+  /** The conversation item: what finds this job again (`jobForConversation`). */
   conversationId: z.string().min(1),
 });
 
@@ -211,9 +211,8 @@ export type JobOccurrenceStatus = z.infer<typeof JobOccurrenceStatusSchema>;
  * One occurrence, as it crosses a boundary.
  *
  * An append-only record, the way a transition is — never a channel
- * (ARCHITECTURE.md, "What a job records"). What a person is *told* about a skip is the comment on
- * the
- * job's thread; this is what the app reads back.
+ * (ARCHITECTURE.md, "What a job records"). What a person is *told* about a skip is a
+ * message to the job's owner; this is what the app reads back.
  */
 export const JobOccurrenceViewSchema = z.object({
   id: z.string(),
@@ -227,8 +226,8 @@ export const JobOccurrenceViewSchema = z.object({
   /** What it created, if it created anything. The item may since have been deleted. */
   itemId: z.string().nullable(),
   /**
-   * The comment that offered to run this one, on the job's thread
-   * (EO-306).
+   * The message that offered to run this one (EO-306; a comment on
+   * the job's thread before EO-729, whose id 0167 gave the message).
    *
    * Set only on a skip beyond the grace — the one kind of skip there is
    * anything to offer about. It is what binds a person's reply to *this*
@@ -271,8 +270,6 @@ export const JobViewSchema = z.object({
   pipelineId: z.string().nullable(),
   template: JobTemplateSchema.nullable(),
   ownerId: z.string(),
-  /** The one off-board item this job owns as its thread (ARCHITECTURE.md, "What a job records"). */
-  threadItemId: z.string(),
   pausedAt: z.number().nullable(),
   /**
    * Which act stopped it, for the chip the design puts on a paused job.
@@ -316,7 +313,7 @@ export const JobViewSchema = z.object({
    *
    * So the row stays and says it is gone. It is out of every list, out
    * of the scheduler, out of the conversation reuse path and out of Run
-   * now; its thread is archived. What survives is exactly what
+   * now. What survives is exactly what
    * invariant #3 protects everywhere else — the record of what happened
    * while it existed — and nothing about that record is rewritten.
    */

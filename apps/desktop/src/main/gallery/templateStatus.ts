@@ -68,8 +68,8 @@ function recentUpdate(db: Db, origin: PipelineOrigin, history: TemplateHistory, 
  * with assistant opened, while that chat still exists — a person may
  * remove it, and the next press then starts another — or the notice
  * that offers the button, where nobody has pressed it yet and it is a
- * comment on a project thread. A notice sent as a message (EO-727) is on
- * no item, so the head opens the chat its button would.
+ * comment. A notice sent as a message (EO-727) is on no item, so the
+ * head opens the chat its button would.
  */
 function heldUpdate(db: Db, pipelineId: string): PipelineTemplateWaiting | null {
   const conflict = openUpdateConflict(db, pipelineId);

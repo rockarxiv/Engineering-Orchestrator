@@ -342,8 +342,9 @@ export const pipelineUpdateConflicts = sqliteTable(
     resolution: text("resolution"),
     /**
      * What the conflict notice was sent as: its messages (EO-727), or — for
-     * one noticed before then — its comments, one per project thread
-     * (EO-533, migration 0136). The column keeps its first name.
+     * one noticed before then, its comments on project threads (EO-533,
+     * migration 0136), which 0167 turned into messages whose subject is
+     * this conflict. The column keeps its first name.
      */
     noticeIds: text("notice_comment_ids", { mode: "json" }).notNull().default([]),
     /** The assistant chat Fix with assistant opened for it, so a second press shows the same chat. No foreign key: a removed chat is simply started again. */
@@ -1885,7 +1886,7 @@ export const skills = sqliteTable("skills", {
  *
  * Held rather than dropped: it is written the moment the lock no longer
  * stands in its way (`releaseHeldSkillCopies`, on an unlock and on every
- * pull), and the person is told once, on a project thread, what is held
+ * pull), and the person is told once, in a message, what is held
  * and what to do (`told_at`). One row per skill: a newer copy replaces
  * the one held.
  */
@@ -1899,7 +1900,7 @@ export const heldSkillCopies = sqliteTable("held_skill_copies", {
   /** The sentence saying why it was held and what lets it in — the comment's body. */
   problem: text("problem").notNull(),
   heldAt: integer("held_at").notNull(),
-  /** When a person was told, or null while no thread could be found to tell them on. */
+  /** When a person was told, or null while they could not be told yet. */
   toldAt: integer("told_at"),
 });
 
@@ -2364,6 +2365,16 @@ export const attachmentRemovals = sqliteTable(
   (table) => [index("idx_attachment_removals_paging").on(table.removedAt, table.attachmentId)],
 );
 
+/**
+ * The stored bytes of files whose rows a migration deleted (EO-730):
+ * the files on the project and job threads 0167 retired. A migration
+ * can remove a row but not a file, so it leaves the path here and
+ * `removeRetiredAttachmentFiles` deletes the file at launch, then the row.
+ */
+export const retiredAttachmentFiles = sqliteTable("retired_attachment_files", {
+  path: text("path").primaryKey(),
+});
+
 // Mentions drive the inbox. A mention is a request for attention.
 export const commentMentions = sqliteTable(
   "comment_mentions",
@@ -2552,22 +2563,6 @@ export const jobs = sqliteTable("jobs", {
     .notNull()
     .references((): AnySQLiteColumn => people.id),
   /**
-   * The one off-board item this job owns as its thread (ARCHITECTURE.md, "What a job records").
-   *
-   * The Discussions precedent reused: a guard that fires when no item
-   * exists — a skipped occurrence, a budget trip before dispatch — posts
-   * there and mentions the owner, so invariant #8 holds without
-   * inventing the second channel invariant #4 forbids.
-   *
-   * A real foreign key, so the pointer cannot dangle. `deleteItem`
-   * removes the jobs whose thread is being deleted, which is what keeps
-   * deleting a conversation (its from-discussion job's thread) from
-   * failing on this constraint.
-   */
-  threadItemId: text("thread_item_id")
-    .notNull()
-    .references((): AnySQLiteColumn => items.id),
-  /**
    * When somebody — or a budget trip — stopped this job (EO-307).
    *
    * A paused job fires nothing: `fireJob` refuses one whichever door it
@@ -2628,8 +2623,8 @@ export const jobs = sqliteTable("jobs", {
    * item somebody chose to keep still has to name what filed it. Its
    * provenance is the occurrence, and the occurrence would die with the
    * job — so the row stays and says it is gone: out of `listJobs`, out
-   * of `listAllJobs`, out of `jobForThreadItem`, out of Run now, its
-   * thread archived. `getJob` still answers, which is how `originOfItem`
+   * of `listAllJobs`, out of `jobForConversation`, out of Run now.
+   * `getJob` still answers, which is how `originOfItem`
    * still has a name to give. 0080 says the whole of why.
    */
   deletedAt: integer("deleted_at"),
@@ -2684,23 +2679,25 @@ export const jobOccurrences = sqliteTable(
      */
     itemId: text("item_id"),
     /**
-     * The comment that offered to run this occurrence (EO-306,
-     * migration 0079).
+     * The message that offered to run this occurrence (EO-306,
+     * migration 0079; a message since EO-729). The column keeps its
+     * first name: before EO-729 the offer was a comment on the job's
+     * thread, and 0167 turned each still-open one into a message with
+     * the comment's id, so the rows written then name it too.
      *
      * Set only on a `skipped` row that was skipped beyond the grace: it
-     * is the question on the job's thread carrying "Run it now", and it
-     * is what a reply answering that question is matched against. A
+     * is the question carrying "Run it now", and it is what an answer
+     * to that question is matched against. A
      * `fired` row was never offered, and a skip for "the previous item
      * is still open" carries no offer because running it is the
      * duplicate the skip existed to prevent.
      *
      * Written with the row and never after it, so the append-only rule
-     * holds: the comment is posted first and the occurrence recorded
-     * second, inside one transaction.
+     * holds.
      *
-     * Not a foreign key, for `item_id`'s reason directly above: a person
-     * may delete a comment, and the record of the offer having been made
-     * outlives it.
+     * Not a foreign key, for `item_id`'s reason directly above: a
+     * handled message is deleted after 7 days, and the record of the
+     * offer having been made outlives it.
      */
     offerCommentId: text("offer_comment_id"),
   },
@@ -2708,8 +2705,7 @@ export const jobOccurrences = sqliteTable(
     index("idx_job_occurrences_job").on(table.jobId, table.dueAt),
     // Which job made this item — what the detail rail asks, once per item.
     index("idx_job_occurrences_item").on(table.itemId),
-    // Which occurrence this comment offered — what the reply path asks,
-    // once per comment posted on a job thread.
+    // Which occurrence this message offered — what answering it asks.
     index("idx_job_occurrences_offer").on(table.offerCommentId),
   ],
 );
@@ -3224,8 +3220,8 @@ export const memoryConsolidations = sqliteTable(
     slotHeldMs: integer("slot_held_ms"),
     /**
      * When EO said consolidation of its scope is stuck, at this, the third
-     * failure in a row (EO-577): a note on the project thread, or this
-     * row's own note for a scope on no project. Null otherwise.
+     * failure in a row (EO-577): a message to the person, or this row's
+     * own note for a scope on no project. Null otherwise.
      */
     stuckNoticedAt: integer("stuck_noticed_at"),
   },
@@ -3237,8 +3233,9 @@ export const memoryConsolidations = sqliteTable(
  * "What an agent is given").
  *
  * Since EO-719 a row is a proposal the consolidation applied, `saved`
- * from the start, with the notice it posted on the project's thread as
- * `comment_id`. Rows from before then were posted offering Save and
+ * from the start. `comment_id` named the notice it posted on the
+ * project's thread until EO-728; migration 0167 deleted those threads,
+ * leaving it null. Rows from before then were posted offering Save and
  * Discard: an `open` one is waiting on a press nothing acts on any more,
  * and a `discarded` one still keeps a later consolidation from applying a
  * proposal with its scope and slug (EO-512).

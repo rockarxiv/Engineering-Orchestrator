@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { aliasNotice, aliasRetirementReached, type JobRunsOn } from "@eo/core";
 import { announceSweep, startArchiveSweep } from "./archive/schedule.js";
 import { startMessageSweep } from "./messages/messages.js";
+import { removeRetiredAttachmentFiles } from "./attachments/retiredFiles.js";
 import { onPush } from "./ipc/push.js";
 import { AttachmentStorage } from "./attachments/storage.js";
 import { getSchemaVersion, isNewDatabase, openDb, runMigrations } from "./db/index.js";
@@ -293,6 +294,15 @@ export function startMain(platform: Platform): RunningMain {
       if (count > 0) console.log(`[eo] deleted ${count} conversation(s) from Discussions and the Architecture panel, which no longer exist`);
     },
     (error: unknown) => console.error("[eo] could not finish deleting the conversations Discussions and the Architecture panel left behind:", error),
+  );
+
+  // EO-730: the files on the project and job threads migration 0167
+  // retired. Their rows went with the threads; their bytes go here.
+  void removeRetiredAttachmentFiles(db, attachmentStorage).then(
+    (count) => {
+      if (count > 0) console.log(`[eo] removed ${count} file(s) from retired project and job threads`);
+    },
+    (error: unknown) => console.error("[eo] could not remove the files the retired project and job threads left behind:", error),
   );
 
   // This machine's sign-in to an organisation server, if it has one

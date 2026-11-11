@@ -4630,21 +4630,6 @@ export const recordContract = {
    * nobody has to resume them one by one. An item somebody had put on
    * hold before is still on hold: archiving never touched it.
    */
-  /**
-   * Opens a project's notes — its thread, made the first time it is
-   * asked for (EO-471, ARCHITECTURE.md, "One channel").
-   *
-   * Answers the item's id for the ordinary item view to open, or why
-   * there is none: the project is gone, mid-move, or on a record this
-   * desktop cannot reach.
-   */
-  "projects:thread": channel(
-    z.object({ projectId: z.string() }),
-    z.object({
-      itemId: z.string().nullable(),
-      problem: z.string().nullable(),
-    }),
-  ),
   "projects:restore": channel(
     z.object({ projectId: z.string() }),
     z.object({
@@ -6056,29 +6041,6 @@ export const recordContract = {
     ModuleCreationAnswerSchema,
   ),
   /**
-   * A project's thread, asked of the record that owns the project
-   * (EO-471, ARCHITECTURE.md, "One channel").
-   *
-   * **Asking, not telling**, for `record:createItem`'s reason: the
-   * thread is an item, its key is the record's to mint, and whether the
-   * project already has one is a fact only the record holds — another
-   * desktop may have made it a minute ago. The record answers the one
-   * it has, or makes it; the device copies the answer into its replica
-   * so it can post on it at once.
-   *
-   * No device id: opening a project's notes is something a person does,
-   * and the door has already said who they are.
-   */
-  "record:projectThread": channel(
-    z.object({ projectId: z.string().min(1) }),
-    z.object({
-      /** The thread, as the pull would carry it. Null when the record would not open one. */
-      item: RecordItemSchema.nullable(),
-      /** Why not. Null whenever `item` is not. */
-      problem: z.string().nullable(),
-    }),
-  ),
-  /**
    * A change to what an item waits for, asked of the record that owns
    * the item (EO-600, ARCHITECTURE.md, "One work entity", "The record").
    *
@@ -6106,7 +6068,7 @@ export const recordContract = {
    * record, one to each of its admins, never only on the desktop that
    * sent it.
    *
-   * **Asking, not telling**, for `record:projectThread`'s reason: who the
+   * **Asking, not telling**, for `record:createItem`'s reason: who the
    * admins are is the record's fact, and a message written on a replica
    * reaches nobody else. The record answers the copies addressed to the
    * asking device's person, which that desktop keeps at once; the other

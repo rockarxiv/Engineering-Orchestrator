@@ -316,7 +316,12 @@ export function createDeviceRecord(options: DeviceRecordOptions): DeviceRecord {
    * the record does it, once, rather than this machine doing it early
    * and every other machine doing it again on the pull.
    */
-  const stopBeingAReplica = markReplica(db, (itemId) => (itemId === undefined ? remote.linked() : theRecordOwns(itemId)));
+  const stopBeingAReplica = markReplica(
+    db,
+    (itemId) => (itemId === undefined ? remote.linked() : theRecordOwns(itemId)),
+    // `theRecordOwns`, asked of an item on this project, or on none.
+    (projectId) => options.isTheRecord !== true && (projectId === null ? remote.linked() : projectMovedToTheRecord(db, projectId)),
+  );
 
   /**
    * Everything written against this database, on its way to the record.
@@ -531,15 +536,9 @@ export function createDeviceRecord(options: DeviceRecordOptions): DeviceRecord {
       return (onTheRecord ? remote : local).updateItemType(request);
     },
 
-    // The record that owns the project (EO-471). A project somebody
-    // moved is the record's for ever, for `theRecordOwns`' reason, so a
-    // desktop that has signed out is refused here rather than making a
-    // thread the organisation would never see.
-    projectThread: (projectId: Uuid) =>
-      (options.isTheRecord !== true && projectMovedToTheRecord(db, projectId) ? remote : local).projectThread(projectId),
-
     // A message about a project (EO-726) is the organisation's record's
-    // when the record holds the project, for `projectThread`'s reason:
+    // when the record holds the project — a project somebody moved is
+    // the record's for ever, for `theRecordOwns`' reason — so it is
     // addressed there to each admin, and refused rather than written
     // here when it cannot be reached — a desktop that has signed out
     // included. On the record itself it goes to the admins at once.

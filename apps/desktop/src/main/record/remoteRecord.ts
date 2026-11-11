@@ -9,7 +9,6 @@ import { askAgentAbout, getComment } from "../db/repos/commentsRepo.js";
 import { mirrorRecordComment } from "./drain.js";
 import { recordAssistBoard } from "../roles/assist.js";
 import { upsertReplicaItem } from "../db/repos/replicaRepo.js";
-import { findProjectThread } from "../projects/projectThread.js";
 import { forgetMessage, upsertReplicaMessage } from "../db/repos/messagesRepo.js";
 import { openMessageOf } from "../messages/messages.js";
 import { emitPush } from "../ipc/push.js";
@@ -412,20 +411,6 @@ export function createRemoteRecord(options: RemoteRecordOptions): RemoteRecord {
     },
 
     /**
-     * A project's thread, asked of the record and kept here (EO-471).
-     *
-     * One the replica already holds is answered from it: the thread is
-     * never replaced, so the copy is as good as the original for the
-     * caller's purpose, which is to post on it.
-     *
-     * Otherwise the record makes it — or finds the one another desktop
-     * made — and the answer is written into the replica at once, through
-     * the same door the pull uses, rather than left for the next sync:
-     * whoever asked is about to post on it, and a comment needs its item
-     * here first. Two asks at once are two copies of one row by id, so
-     * they leave one item.
-     */
-    /**
      * A message about a project the record holds, written there, one to
      * each admin (EO-726). The copies addressed to this desktop's person
      * are kept at once, so its inbox does not wait for the next pull;
@@ -487,27 +472,6 @@ export function createRemoteRecord(options: RemoteRecordOptions): RemoteRecord {
       }
       if (problem !== null || message === null) return { ok: false, problem: problem ?? "Your organisation's record no longer has that message." };
       return { ok: true, message };
-    },
-
-    async projectThread(projectId) {
-      const held = findProjectThread(db, projectId);
-      if (held !== undefined) return { ok: true, item: held };
-      const answer = await ask("record:projectThread", { projectId });
-      if (!answer.ok) {
-        return {
-          ok: false,
-          problem: answer.unreachable
-            ? `This project's notes are on your organisation's record, which could not be reached: ${answer.problem}`
-            : `Your organisation's record did not open this project's notes: ${answer.problem}`,
-        };
-      }
-      if (answer.data.item === null) return { ok: false, problem: answer.data.problem ?? "Your organisation's record did not open this project's notes." };
-      upsertReplicaItem(db, answer.data.item);
-      const copied = getItem(db, answer.data.item.id as Uuid);
-      if (copied === undefined) {
-        return { ok: false, problem: "Your organisation's record opened this project's notes, but this desktop could not keep a copy yet. It arrives with the next sync." };
-      }
-      return { ok: true, item: copied };
     },
 
     /**

@@ -893,7 +893,6 @@ export function readProjectJobs(db: Db, projectId: Uuid): RecordJob[] {
       pipelineId: row.pipelineId,
       template: row.template ?? null,
       ownerId: row.ownerId,
-      threadItemId: row.threadItemId,
       pausedAt: row.pausedAt,
       pausedReason: row.pausedReason,
       budgetPerOccurrenceCents: row.budgetPerOccurrenceCents,
@@ -1393,10 +1392,9 @@ type Uncarried = z.infer<typeof UncarriedSchema>;
 /**
  * Where a move keeps them until the project is live (EO-513).
  *
- * Kept rather than said at once, because the project's thread is one of
- * the project's items and arrives on a later page than its agents — a
- * thread opened on the record before then would be a second one beside
- * it. A setting rather than a table: it is one move's working note,
+ * Kept rather than said at once, because the project is not live on
+ * the record until the last page, and a message about it is the record's
+ * to send once it is. A setting rather than a table: it is one move's working note,
  * small, and gone once it has been said or the move is abandoned.
  */
 function uncarriedKey(projectId: string): string {
@@ -1912,8 +1910,8 @@ export function writeAdoptedPage(db: Db, project: RecordProject, page: RecordAdo
         .run();
       // What could not be attached is kept, never dropped (EO-513,
       // invariant 8): a global skill this record has not got, another
-      // project's, a server it has no row for. The project's thread is
-      // told once the project is live — see `takeUncarriedTools`. Not for
+      // project's, a server it has no row for. The admins are told once
+      // the project is live — see `takeUncarriedTools`. Not for
       // a tombstone, which no run will ever be dispatched as.
       const unarrived = replaceReplicaAttachments(db, agent.id, agent.mcpServerIds, agent.skillIds);
       keepUncarried(db, project.id, agent, agent.deletedAt === null ? unarrived : NOTHING_UNARRIVED);
@@ -2159,10 +2157,6 @@ export function writeAdoptedPage(db: Db, project: RecordProject, page: RecordAdo
     }
 
     for (const job of page.jobs) {
-      if (hasItem(db, job.threadItemId) === null) {
-        skip(counts, `job "${job.name}": this record has no thread item for it`);
-        continue;
-      }
       const owner = knownPerson(db, job.ownerId);
       if (owner === null) {
         skip(counts, `job "${job.name}": this record has no row for its owner`);
@@ -2179,7 +2173,6 @@ export function writeAdoptedPage(db: Db, project: RecordProject, page: RecordAdo
           pipelineId: hasPipeline(db, job.pipelineId),
           template: job.template ?? null,
           ownerId: owner,
-          threadItemId: job.threadItemId,
           pausedAt: job.pausedAt,
           pausedReason: job.pausedReason,
           budgetPerOccurrenceCents: job.budgetPerOccurrenceCents,
@@ -2201,7 +2194,6 @@ export function writeAdoptedPage(db: Db, project: RecordProject, page: RecordAdo
             // conflict clause did not write — so the count matched and
             // the job pointed at the wrong graph.
             pipelineId: sql`case when excluded.updated_at >= ${jobs.updatedAt} then excluded.pipeline_id else ${jobs.pipelineId} end`,
-            threadItemId: sql`case when excluded.updated_at >= ${jobs.updatedAt} then excluded.thread_item_id else ${jobs.threadItemId} end`,
             template: sql`case when excluded.updated_at >= ${jobs.updatedAt} then excluded.template else ${jobs.template} end`,
             pausedAt: sql`case when excluded.updated_at >= ${jobs.updatedAt} then excluded.paused_at else ${jobs.pausedAt} end`,
             pausedReason: sql`case when excluded.updated_at >= ${jobs.updatedAt} then excluded.paused_reason else ${jobs.pausedReason} end`,

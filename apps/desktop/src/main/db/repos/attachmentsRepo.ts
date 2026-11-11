@@ -2,7 +2,7 @@ import { and, asc, eq, getTableColumns, inArray, isNull, sql } from "drizzle-orm
 import { onProject } from "./projectScope.js";
 import type { AgentAttachment, RecordCursor, Uuid } from "@eo/core";
 import type { Db } from "../client.js";
-import { attachmentRemovals, attachments, comments, jiraAttachmentLinks, outbox, items } from "../schema.js";
+import { attachmentRemovals, attachments, comments, jiraAttachmentLinks, outbox, items, retiredAttachmentFiles } from "../schema.js";
 import { notifyItemAttachmentsAdded, notifyItemAttachmentRemoved } from "../itemAttachmentEvents.js";
 import { isReplica } from "../recordRole.js";
 import { jiraStateFor } from "./itemsRepo.js";
@@ -415,4 +415,14 @@ export function deleteAttachmentsForComments(db: Db, commentIds: Uuid[]): Attach
   }
   db.delete(attachments).where(inArray(attachments.commentId, commentIds)).run();
   return rows;
+}
+
+/** The stored files whose rows migration 0167 deleted with the project and job threads (EO-730), still to remove. */
+export function listRetiredAttachmentFiles(db: Db): string[] {
+  return db.select({ path: retiredAttachmentFiles.path }).from(retiredAttachmentFiles).all().map((row) => row.path);
+}
+
+/** Forgets a retired file once its bytes are gone. */
+export function forgetRetiredAttachmentFile(db: Db, path: string): void {
+  db.delete(retiredAttachmentFiles).where(eq(retiredAttachmentFiles.path, path)).run();
 }

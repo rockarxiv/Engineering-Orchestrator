@@ -53,7 +53,6 @@ import { originForWire } from "../db/repos/itemOriginsRepo.js";
 import { listAllDependencies, waitsForWire } from "../db/repos/itemDepsRepo.js";
 import { postModuleCreation } from "../modules/moduleCreations.js";
 import { changeDependenciesOf, summariseDependencyChange } from "../roles/itemDependencies.js";
-import { findProjectThread, openProjectThread } from "../projects/projectThread.js";
 import { openUpdateConflictChat } from "../roles/updateConflictChat.js";
 import { describeUpdateConflict, resolveUpdateConflictHere } from "../gallery/updateConflictDetail.js";
 import { describeTemplateStatus } from "../gallery/templateStatus.js";
@@ -539,32 +538,6 @@ export function serveMessages(context: ServeRecordContext, payload: IpcPayload<"
     more: changed.length === payload.limit,
     open: listOpenMessageIds(db, person.id),
   };
-}
-
-/**
- * A project's thread, for a device that holds the project as a replica
- * (EO-471, ARCHITECTURE.md, "One channel").
- *
- * The same `openProjectThread` a solo desktop calls on its own tables,
- * against this record's: the one this project has, or a new one. Two
- * desktops asking at once are two requests this process answers one
- * after the other, and the second finds the first's thread.
- *
- * Carried as the pull would carry it, so the device can copy it into its
- * replica through the door it already copies items through.
- */
-export async function serveProjectThread(
-  context: ServeRecordContext,
-  payload: IpcPayload<"record:projectThread">,
-): Promise<IpcResponse<"record:projectThread">> {
-  const { db } = context;
-  const had = findProjectThread(db, payload.projectId as Uuid) !== undefined;
-  const answer = openProjectThread(db, payload.projectId as Uuid);
-  if (!answer.ok) return { item: null, problem: answer.problem };
-  // A new item on the record, so every device and open browser is told
-  // to ask again — which is how the others learn of it.
-  if (!had) emitPush("items:changed", { itemId: answer.item.id });
-  return { item: { ...asRecordItem(answer.item, null), origin: null, waits: null }, problem: null };
 }
 
 /**
