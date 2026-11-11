@@ -19,9 +19,11 @@
 --    mention of a comment, by person id, keeps the comment's own id —
 --    which is what a skip's "Run it now" offer names in
 --    `job_occurrences.offer_comment_id`, so answering the message fires
---    the occurrence without rewriting that append-only row. Any other
---    keeps the comment id's time and random head and takes its tail from
---    the person's id.
+--    the occurrence without rewriting that append-only row. Any other is
+--    the comment's id and the person's joined, `<comment>:<person>`: the
+--    whole pair, so no two mentions can share one. The order is over the
+--    comment's mentions of people, open or not, so a replica whose copy of
+--    a mention's status lags the record's still names each the same way.
 --
 --    A skip offer becomes a `job_skipped` message about its job, as one
 --    sent since EO-729 is; a template-update conflict notice still
@@ -32,7 +34,7 @@ INSERT INTO `messages`
 	(`id`, `recipient_id`, `project_id`, `job_id`, `source`, `body`, `options`, `created_at`, `handled_at`, `handled_how`, `answer`, `subject`)
 SELECT
 	CASE WHEN `ranked`.`rank` = 1 THEN `ranked`.`comment_id`
-	     ELSE substr(`ranked`.`comment_id`, 1, 24) || substr(lower(hex(`ranked`.`target_id`)), -12) END,
+	     ELSE `ranked`.`comment_id` || ':' || `ranked`.`target_id` END,
 	`ranked`.`target_id`,
 	`ranked`.`project_id`,
 	coalesce(`ranked`.`offer_job_id`, `ranked`.`thread_job_id`),
@@ -54,6 +56,7 @@ FROM (
 		`c`.`body`,
 		`c`.`options`,
 		`c`.`created_at`,
+		`m`.`status`,
 		(SELECT `j`.`id` FROM `jobs` `j` WHERE `j`.`thread_item_id` = `i`.`id`) AS `thread_job_id`,
 		(SELECT `o`.`job_id` FROM `job_occurrences` `o` WHERE `o`.`offer_comment_id` = `c`.`id` LIMIT 1) AS `offer_job_id`,
 		(SELECT `p`.`id` FROM `pipeline_update_conflicts` `p`, json_each(`p`.`notice_comment_ids`) `n`
@@ -63,11 +66,10 @@ FROM (
 	JOIN `comments` `c` ON `c`.`id` = `m`.`comment_id`
 	JOIN `items` `i` ON `i`.`id` = `c`.`item_id`
 	WHERE `i`.`step_id` IN ('project-thread', 'job-thread')
-	  AND `m`.`status` = 'open'
 	  AND `m`.`target_type` = 'human'
 	  AND `m`.`target_id` IS NOT NULL
 ) AS `ranked`
-WHERE true
+WHERE `ranked`.`status` = 'open'
 ON CONFLICT(`id`) DO NOTHING;
 --> statement-breakpoint
 -- 2. The bytes of the files on those threads are EO's to remove, which a
@@ -107,6 +109,10 @@ DELETE FROM `comments` WHERE `id` IN (SELECT `id` FROM `retired_comments`);
 DELETE FROM `run_events` WHERE `run_id` IN (SELECT `id` FROM `runs` WHERE `item_id` IN (SELECT `id` FROM `retired_threads`));
 --> statement-breakpoint
 DELETE FROM `side_calls` WHERE `item_id` IN (SELECT `id` FROM `retired_threads`) OR `run_id` IN (SELECT `id` FROM `runs` WHERE `item_id` IN (SELECT `id` FROM `retired_threads`));
+--> statement-breakpoint
+-- A memory an agent wrote on a thread stays, as `deleteItem` leaves it:
+-- the project's, no longer pointing at the run or the thread.
+UPDATE `memories` SET `source_run_id` = NULL WHERE `source_run_id` IN (SELECT `id` FROM `runs` WHERE `item_id` IN (SELECT `id` FROM `retired_threads`));
 --> statement-breakpoint
 UPDATE `comments` SET `run_id` = NULL WHERE `run_id` IN (SELECT `id` FROM `runs` WHERE `item_id` IN (SELECT `id` FROM `retired_threads`));
 --> statement-breakpoint

@@ -58,6 +58,8 @@ function beforeTheMigration(): DbHandle {
 
 const ANNA = "01a1c900-0000-7000-8000-000000000a01" as Uuid;
 const BEN = "01a1c900-0000-7000-8000-000000000b02" as Uuid;
+/** Ends in the same twelve characters as Ben's id. */
+const CARL = "01a1c900-0001-7000-8000-000000000b02" as Uuid;
 
 interface Seeded {
   projectId: Uuid;
@@ -78,6 +80,8 @@ interface Seeded {
   filePath: string;
   /** Ordinary work beside the threads, which stays. */
   work: Uuid;
+  /** What the agent that ran on the thread noted about the project. */
+  memoryId: string;
 }
 
 /**
@@ -117,6 +121,9 @@ function seed(db: DbHandle["db"], ids?: Partial<Seeded>): Seeded {
   const agentId = db.get<{ id: string }>(sql`SELECT id FROM agents LIMIT 1`)!.id;
   const run = createRun(db, { itemId: notes, agentId: agentId as Uuid, action: "respond", status: "succeeded" });
   appendRunEvent(db, run.id, "output", { type: "output", text: "Looking at the notes" });
+  const memoryId = uuidv7();
+  db.run(sql`INSERT INTO memories (id, scope_kind, scope_id, body, source_kind, source_run_id, source_item_id, project_id, created_at, updated_at)
+             VALUES (${memoryId}, 'project', ${project}, 'The docs live in the api repository.', 'run', ${run.id}, ${notes}, ${project}, 1, 1)`);
   const filePath = `/managed/${reply}/notes.txt`;
   db.run(sql`INSERT INTO attachments (id, item_id, comment_id, storage_path, name, mime_type, size, managed, created_at)
              VALUES (${uuidv7()}, ${notes}, ${reply}, ${filePath}, 'notes.txt', 'text/plain', 5, 1, 1)`);
@@ -127,7 +134,7 @@ function seed(db: DbHandle["db"], ids?: Partial<Seeded>): Seeded {
   db.run(sql`INSERT INTO job_occurrences (id, job_id, due_at, fired_at, status, reason, item_id, offer_comment_id)
              VALUES (${uuidv7()}, ${jobId}, ${occurrenceDueAt}, NULL, 'skipped', 'offline beyond grace', NULL, ${offer})`);
 
-  return { projectId: project, notesId: notes, jobThreadId: jobThread, jobId, notice, conflictId, answered, reply, offer, occurrenceDueAt, filePath, work: work.id as Uuid };
+  return { projectId: project, notesId: notes, jobThreadId: jobThread, jobId, notice, conflictId, answered, reply, offer, occurrenceDueAt, filePath, work: work.id as Uuid, memoryId };
 }
 
 function comment(db: DbHandle["db"], id: Uuid | undefined, itemId: Uuid, body: string, options: string | null, at: number, parentId: Uuid | null = null): Uuid {
@@ -163,13 +170,58 @@ describe("migration 0167, retiring the project and job threads", () => {
     expect(toAnna).toMatchObject({ projectId: seeded.projectId, jobId: null, body: "**Delivery** could not take the template's update.", options: conflictNoticeOptions(seeded.conflictId), createdAt: 10 });
     expect(toBen).toMatchObject({ projectId: seeded.projectId, body: toAnna!.body, options: toAnna!.options });
     expect(offer).toMatchObject({ projectId: null, jobId: seeded.jobId, body: `"Monday report" was skipped. Run it now?`, options: SKIP_OFFER_OPTIONS, createdAt: 40 });
-    // The first mention of a comment keeps the comment's id; the others a
-    // UUIDv7 of their own beside it.
+    // The first mention of a comment keeps the comment's id; the others
+    // the comment's and the person's together.
     expect(toAnna!.id).toBe(seeded.notice);
-    expect(toBen!.id).not.toBe(seeded.notice);
-    expect(toBen!.id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+    expect(toBen!.id).toBe(`${seeded.notice}:${BEN}`);
     // In the inbox of the person at this desktop.
     expect(openMessagesFor(handle.db, undefined).map((message) => message.id)).toEqual([offer!.id]);
+  });
+
+  it("gives every person mentioned on one comment a message of their own, however alike their ids", () => {
+    const handle = beforeTheMigration();
+    const seeded = seed(handle.db);
+    handle.db.run(sql`INSERT INTO people (id, name, created_at, is_admin) VALUES (${CARL}, 'Carl', 1, 1)`);
+    mention(handle.db, seeded.notice, CARL, "open");
+
+    runMigrations(handle.db, MIGRATIONS);
+
+    const aboutTheConflict = messages(handle.db).filter((message) => message.source === "template_conflict");
+    expect(aboutTheConflict.map((message) => [message.recipientId, message.id])).toEqual([
+      [ANNA, seeded.notice],
+      [BEN, `${seeded.notice}:${BEN}`],
+      [CARL, `${seeded.notice}:${CARL}`],
+    ]);
+  });
+
+  it("names a mention's message the same however far its status had got, so a lagging replica and the record agree", () => {
+    const record = beforeTheMigration();
+    const replica = beforeTheMigration();
+    const onTheRecord = seed(record.db);
+    seed(replica.db, onTheRecord);
+    // Anna answered on the record; the replica has not heard yet.
+    record.db.run(sql`UPDATE comment_mentions SET status = 'addressed' WHERE comment_id = ${onTheRecord.notice} AND target_id = ${ANNA}`);
+
+    runMigrations(record.db, MIGRATIONS);
+    runMigrations(replica.db, MIGRATIONS);
+
+    const toBen = (db: DbHandle["db"]) => messages(db).find((message) => message.recipientId === BEN)?.id;
+    expect(toBen(record.db)).toBe(`${onTheRecord.notice}:${BEN}`);
+    expect(toBen(replica.db)).toBe(toBen(record.db));
+  });
+
+  it("keeps what an agent that ran on a thread noted, pointing at neither the run nor the thread", () => {
+    const handle = beforeTheMigration();
+    const seeded = seed(handle.db);
+
+    runMigrations(handle.db, MIGRATIONS);
+
+    expect(handle.db.get(sql`SELECT body, source_run_id, source_item_id FROM memories WHERE id = ${seeded.memoryId}`)).toEqual({
+      body: "The docs live in the api repository.",
+      source_run_id: null,
+      source_item_id: null,
+    });
+    expect(handle.db.all(sql`PRAGMA foreign_key_check`)).toEqual([]);
   });
 
   it("deletes the threads with every comment, mention and file on them, and leaves other work alone", () => {
