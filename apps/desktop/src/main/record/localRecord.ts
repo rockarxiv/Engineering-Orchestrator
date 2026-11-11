@@ -1,6 +1,6 @@
 import { postModuleCreation } from "../modules/moduleCreations.js";
 import { tick as schedule, type Dispatch, type DispatchRefusal, type TickInput } from "@eo/engine";
-import { DEFAULT_JOB_RUNS_ON, type Comment, type Item, type Uuid } from "@eo/core";
+import { DEFAULT_JOB_RUNS_ON, skillAuthorFromActingAgent, type Comment, type Item, type Uuid } from "@eo/core";
 import type { Db } from "../db/client.js";
 import { postComment, type PostCommentInput } from "../db/repos/commentsRepo.js";
 import { appendRunEvent } from "../db/repos/runEventsRepo.js";
@@ -24,7 +24,7 @@ import { changeDependenciesOf, summariseDependencyChange } from "../roles/itemDe
 import { openUpdateConflictChat } from "../roles/updateConflictChat.js";
 import { describeUpdateConflict, resolveUpdateConflictHere } from "../gallery/updateConflictDetail.js";
 import { describeTemplateStatus } from "../gallery/templateStatus.js";
-import { listConsolidations, restoreConsolidation } from "../db/repos/index.js";
+import { listConsolidations, restoreConsolidation, restoreSkillVersion } from "../db/repos/index.js";
 import { A_PERSON, applyMemoryWrite } from "../memory/memoryWrites.js";
 import type { ItemRecord, OfferWorkInput, TransitionCommand, WorkOffer } from "./record.js";
 
@@ -398,6 +398,13 @@ export function createLocalRecord(db: Db, options: LocalRecordOptions = {}): Loc
 
     async restoreMemoryConsolidation(consolidationId, caps) {
       return restoreConsolidation(db, consolidationId, { caps });
+    },
+
+    // Here, because this database holds the skill (EO-728): a solo
+    // desktop's, a kept project's, this desktop's own, or the record's own.
+    async restoreSkillVersion(request) {
+      const result = restoreSkillVersion(db, request.id, request.versionId, Date.now(), skillAuthorFromActingAgent(request.actingAgentId));
+      return result.ok ? { skill: result.skill, problem: null } : { skill: null, problem: result.problem };
     },
 
     applyTransition: (command: TransitionCommand): Item => transitionItem(db, command),

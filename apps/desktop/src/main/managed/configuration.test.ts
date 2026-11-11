@@ -252,7 +252,7 @@ describe("publishing a skill over a person's locked one", () => {
 });
 
 /**
- * A published skill carries its newest reported version (EO-728), so a
+ * A published skill carries its reported versions (EO-728), so a
  * desktop applying the packs section can say that EO archived it, and
  * after how many runs without a load, as the publisher's history does.
  */

@@ -23,6 +23,7 @@ import { listConsolidations, memoryScopeProjectId, supersedeProblem } from "../d
 import type { MemoryConsolidationCursor, MemoryConsolidationView, RecordCommand, RecordMemoryWrite } from "@eo/core";
 import type { MemoryWriteRequest } from "./record.js";
 import { copyRecordMemories } from "./memoryReplica.js";
+import { getSkill, holdSkillCopy, upsertReplicaSkill } from "../db/repos/skillsRepo.js";
 
 /**
  * The record, when it lives on somebody else's machine (EO-324,
@@ -669,6 +670,37 @@ export function createRemoteRecord(options: RemoteRecordOptions): RemoteRecord {
         if (next === null || answer.data.consolidations.length === 0 || (before !== undefined && next.startedAt === before.startedAt && next.id === before.id)) return all;
         before = next;
       }
+    },
+
+    /**
+     * Restored on the record that holds the skill (EO-728), and the skill
+     * as it now stands there copied here at once — through the replica's
+     * own rule (`upsertReplicaSkill`), so a person's lock here holds the
+     * copy rather than being written over, and says so.
+     */
+    async restoreSkillVersion(request) {
+      const answer = await ask("record:restoreSkillVersion", {
+        deviceId: options.deviceId,
+        skillId: request.id,
+        versionId: request.versionId,
+        agentId: request.actingAgentId ?? null,
+      });
+      if (!answer.ok) {
+        return {
+          skill: null,
+          problem: answer.unreachable
+            ? `This skill is on your organisation's record, which could not be reached, so nothing was restored: ${answer.problem}`
+            : `Your organisation's record did not restore it: ${answer.problem}`,
+        };
+      }
+      const { skill, problem } = answer.data;
+      if (skill === null) return { skill: null, problem: problem ?? "Your organisation's record did not restore it." };
+      const { projectId, ...copy } = skill;
+      const taken = upsertReplicaSkill(db, copy, projectId);
+      if (!taken.ok) holdSkillCopy(db, copy, projectId ?? undefined, taken.problem);
+      emitPush("config:changed", {});
+      if (!taken.ok) return { skill: null, problem: `Your organisation's record restored it, but it is not on this machine yet: ${taken.problem}` };
+      return { skill: getSkill(db, copy.id) ?? null, problem: null };
     },
 
     /** Undone on the record that made it, under its caps; what it changed is copied here at once. */

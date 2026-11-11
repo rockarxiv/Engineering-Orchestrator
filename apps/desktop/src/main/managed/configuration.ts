@@ -82,7 +82,7 @@ export function sectionDocument(db: Db, section: PublishedSection): SectionDocum
           .map((agent) => publishedAgent(db, agent)),
       });
     case "packs":
-      // Each with its newest reported version (EO-728), so a desktop's
+      // Each with its reported versions (EO-728), so a desktop's
       // history says who wrote the skill and why, as this one's does.
       return SectionDocumentSchema.parse({ skills: listSkills(db, true).map((skill) => skillCopyOf(db, skill)) });
     case "connectors":

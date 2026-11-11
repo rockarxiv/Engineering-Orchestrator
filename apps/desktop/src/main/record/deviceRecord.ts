@@ -13,6 +13,7 @@ import { createRemoteRecord, type RemoteRecord } from "./remoteRecord.js";
 import { markReplica } from "../db/recordRole.js";
 import { itemsOnMovedProjects, locallyScheduledItemIds, movedToTheRecord, onTheRecord, projectMovedToTheRecord } from "../db/repos/projectsRepo.js";
 import { queueOutbound } from "./outbound.js";
+import { skillHeldByTheRecord } from "../skills/onTheRecord.js";
 import type { RecordAttachmentStore } from "./serveRecord.js";
 import { forgetSyncState, type RecordTransport } from "./syncStatus.js";
 import type { PolicySyncReason } from "../policy/sync.js";
@@ -580,6 +581,13 @@ export function createDeviceRecord(options: DeviceRecordOptions): DeviceRecord {
       if (held !== undefined) return recordHoldingMemoryOf(memoryScopeProjectId(db, held.scope)).restoreMemoryConsolidation(consolidationId, caps);
       return (options.isTheRecord !== true && remote.linked() ? remote : local).restoreMemoryConsolidation(consolidationId, caps);
     },
+
+    // The record that holds the skill (EO-728): one of a moved project's,
+    // or one its published packs section carries, is restored there — and
+    // refused rather than restored here when it cannot be reached, since
+    // the record's next copy would undo it. Any other is this database's.
+    restoreSkillVersion: (request) =>
+      (options.isTheRecord !== true && skillHeldByTheRecord(db, request.id) ? remote : local).restoreSkillVersion(request),
 
     applyTransition: (command: TransitionCommand): Item => recordOwning(command.itemId).applyTransition(command),
     appendRunEvent: (runId: Uuid, type: string, payload: unknown): void => current().appendRunEvent(runId, type, payload),

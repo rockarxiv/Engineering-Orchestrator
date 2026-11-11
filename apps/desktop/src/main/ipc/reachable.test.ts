@@ -163,6 +163,7 @@ const REACHED_BY_A_DESKTOP: Partial<Record<keyof typeof ipcContract, string>> = 
   "record:memory": "record/remoteRecord.ts — a desktop asks the record to write to a moved project's memory: a run's note, or a person's edit",
   "record:memoryConsolidations": "record/remoteRecord.ts — the memory panel lists a moved project's consolidations, which ran on the record",
   "record:restoreMemoryConsolidation": "record/remoteRecord.ts — a person undoes one of those consolidations from the memory panel",
+  "record:restoreSkillVersion": "record/remoteRecord.ts — a person restores a skill the record holds, such as one EO archived there, from the Skills screen",
   // EO-325. Sent by `ipc/handlers.ts` on behalf of the keep-or-move
   // sheet a person is looking at: the screen presses
   // `projects:moveToRecord`, and that handler is what talks to the

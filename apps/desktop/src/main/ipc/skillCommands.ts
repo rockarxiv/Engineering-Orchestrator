@@ -1,9 +1,11 @@
 import { skillAuthorFromActingAgent, skillState, type IpcPayload, type IpcResponse, type SkillScope, type Uuid } from "@eo/core";
 import type { Db } from "../db/client.js";
-import { archiveSkill, getProject, getSkill, getWorkspace, listSkills, listSkillVersions, restoreSkillVersion, saveSkill, setSkillEnabled, setSkillLocked, skillArchiveOf } from "../db/repos/index.js";
+import { archiveSkill, getProject, getSkill, getWorkspace, listSkills, listSkillVersions, saveSkill, setSkillEnabled, setSkillLocked, skillArchiveOf } from "../db/repos/index.js";
 import { releaseHeldSkillCopies } from "../db/repos/skillsRepo.js";
 import { skillUsageById, usageOfSkill } from "../db/repos/skillUsageRepo.js";
 import { readGuards } from "./configCommands.js";
+import { recordFor } from "../record/localRecord.js";
+import type { ItemRecord } from "../record/record.js";
 
 /**
  * The skill catalogue, over IPC (EO-105).
@@ -103,8 +105,16 @@ export function listSkillVersionsCommand(db: Db, input: IpcPayload<"skills:versi
   return { versions: listSkillVersions(db, input.id), problem: null };
 }
 
-/** Puts an earlier version back, as a new version naming whoever restored it (EO-714). */
-export function restoreSkillVersionCommand(db: Db, input: IpcPayload<"skills:restoreVersion">): IpcResponse<"skills:restoreVersion"> {
-  const result = restoreSkillVersion(db, input.id, input.versionId, Date.now(), skillAuthorFromActingAgent(input.actingAgentId));
-  return result.ok ? { skill: result.skill, problem: null } : { skill: null, problem: result.problem };
+/**
+ * Puts an earlier version back, as a new version naming whoever restored
+ * it (EO-714) — on whichever installation holds the skill (EO-728): the
+ * organisation's record for one of a moved project or its published packs
+ * section, through `record`; this database for every other.
+ */
+export function restoreSkillVersionCommand(
+  db: Db,
+  input: IpcPayload<"skills:restoreVersion">,
+  record: Pick<ItemRecord, "restoreSkillVersion"> = recordFor(db),
+): Promise<IpcResponse<"skills:restoreVersion">> {
+  return record.restoreSkillVersion({ id: input.id, versionId: input.versionId, actingAgentId: input.actingAgentId });
 }

@@ -1,4 +1,5 @@
 import {
+  PERSON_SKILL_AUTHOR,
   SKILLS_SETTLED_EVENT,
   DEFAULT_MEMORY_SCOPE_MAX_CHARS,
   DEFAULT_MEMORY_SCOPE_MAX_ENTRIES,
@@ -61,7 +62,7 @@ import { getPerson } from "../db/repos/peopleRepo.js";
 import { getUpdateConflict } from "../db/repos/pipelineUpdateConflictsRepo.js";
 import { itemsMidAdoption, listProjectsUpdatedSince, projectsMidAdoption } from "../db/repos/projectsRepo.js";
 import { listItemTypesSince } from "../db/repos/itemTypesRepo.js";
-import { listPublishedSectionsSince } from "../db/repos/publishedSectionsRepo.js";
+import { listPublishedSectionsSince, publishedSectionRow } from "../db/repos/publishedSectionsRepo.js";
 import {
   abandonAdoptedProject,
   carryKeyCounter,
@@ -72,7 +73,7 @@ import {
   writeAdoptedProject,
   type UncarriedTools,
 } from "../db/repos/projectMoveRepo.js";
-import { listProjectSkillsUpdatedSince } from "../db/repos/skillsRepo.js";
+import { getSkill, listProjectSkillsUpdatedSince, restoreSkillVersion, skillCopyOf, skillOwner } from "../db/repos/skillsRepo.js";
 import {
   getAttachment,
   insertAttachments,
@@ -787,6 +788,43 @@ export async function serveRestoreMemoryConsolidation(
   // neither of the consolidation's lists names (EO-546), so the device
   // holds every row the restore made active again at once.
   return { result, changed: recordMemories(db, [...new Set([...touched, ...result.changedIds])]) };
+}
+
+/** What a device that is not an admin's is told when it asks to restore a skill while the packs section is published (EO-728). */
+export const RESTORE_SKILL_NOT_AN_ADMIN =
+  "Your organisation has published its packs section, so only an administrator can restore one of its skills. Nothing was restored.";
+
+/**
+ * A device restoring a version of a skill this record holds (EO-728) —
+ * the record's half of `ItemRecord.restoreSkillVersion`, behind the
+ * Skills screen's Restore on a skill EO archived on the record.
+ *
+ * What it checks for itself (invariant 5): the skill is here and, where
+ * it is a project's, of a project this record holds and has finished
+ * taking; and while the packs section is published, which keeps the
+ * organisation's skills as its admins set them, the asking device is an
+ * admin's. Then the same restore any installation makes — a new version,
+ * a person's or the desktop's system agent's, which a lock here refuses
+ * for an agent. Answers with the skill as it now stands, its reported
+ * versions and its project, for the device to copy; every other desktop
+ * is told to ask again, and takes it on its next pull.
+ */
+export async function serveRestoreSkillVersion(
+  context: ServeRecordContext,
+  payload: IpcPayload<"record:restoreSkillVersion">,
+): Promise<IpcResponse<"record:restoreSkillVersion">> {
+  const { db } = context;
+  const refuse = (problem: string): IpcResponse<"record:restoreSkillVersion"> => ({ skill: null, problem });
+  const owner = skillOwner(db, payload.skillId);
+  if (owner === undefined) return refuse(`no skill on this record has the id "${payload.skillId}".`);
+  if (owner.projectId !== null && !heldHere(db, owner.projectId)) return refuse("this record does not hold that skill's project, so nothing was restored.");
+  if (publishedSectionRow(db, "packs") !== undefined && personOfDevice(db, payload.deviceId)?.isAdmin !== true) return refuse(RESTORE_SKILL_NOT_AN_ADMIN);
+  const author = payload.agentId === null ? PERSON_SKILL_AUTHOR : ({ kind: "agent", agentId: payload.agentId } as const);
+  const result = restoreSkillVersion(db, payload.skillId, payload.versionId, Date.now(), author);
+  if (!result.ok) return refuse(result.problem);
+  emitPush("config:changed", {});
+  emitPush("items:changed", {});
+  return { skill: { ...skillCopyOf(db, getSkill(db, payload.skillId) ?? result.skill), projectId: owner.projectId }, problem: null };
 }
 
 /**
