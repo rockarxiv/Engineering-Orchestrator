@@ -1,9 +1,9 @@
 import { spawn as nodeSpawn, type ChildProcessWithoutNullStreams, type SpawnOptionsWithoutStdio } from "node:child_process";
 import { createInterface } from "node:readline";
-import { TurnNotEndedError } from "@eo/core";
+import { TurnNotEndedError, type RunProcessScope } from "@eo/core";
 import { END_PROCESS_GRACE_MS } from "../process/endProcess.js";
-import { containedLaunch } from "../process/cgroupContainment.js";
 import { ProcessTree, TREE_MARKER_VARIABLE } from "../process/processTree.js";
+import { launchTree } from "../process/runScope.js";
 
 /**
  * EO's one client for `codex app-server --stdio` (EO-372).
@@ -78,6 +78,13 @@ export interface AppServerLaunch {
   spawn?: AppServerSpawn;
   /** Handed the process as it is spawned, before anything else is done with it — a test's way to stand between the two. */
   onSpawn?: (child: ChildProcessWithoutNullStreams) => void;
+  /**
+   * The run the process belongs to and its memory limit (EO-738): where
+   * the machine allows, the app-server starts in a systemd scope of the
+   * run's own (`launchTree`). Absent for a process that is no run's — a
+   * model list, a side call, a conversation's turn.
+   */
+  scope?: RunProcessScope;
 }
 
 /** How much of the server's stderr is kept for an error message. */
@@ -117,7 +124,13 @@ export class AppServerConnection {
     // then becomes the app-server (`containedLaunch`), so nothing it starts
     // is ever outside. A spawn seam runs what it likes in place of the
     // command, so there the process is moved in once spawned instead.
-    const contained = containedLaunch(`eo-tree-${marker}`, launch.executablePath, args, env.env, undefined);
+    //
+    // On a run's turn, in the run's own systemd scope where the machine has
+    // one to give (EO-738) — decided in `launchTree`, the one place both
+    // backends' trees are planned. A spawn seam is handed that plan too,
+    // when there is a scope, so what the turn would have started is what
+    // a test sees.
+    const contained = launchTree(`eo-tree-${marker}`, launch.executablePath, args, env.env, undefined, launch.scope);
     // `windowsHide` because this is spawned straight from the Electron
     // main process, which is a GUI process and has no console of its own
     // (EO-204). Windows gives a console program started from such a
@@ -136,7 +149,9 @@ export class AppServerConnection {
     // seam taking an options object it built elsewhere is a spawn that
     // scan cannot clear.
     this.child = launch.spawn
-      ? launch.spawn(launch.executablePath, args, { stdio: ["pipe", "pipe", "pipe"], ...env, windowsHide: true } as SpawnOptionsWithoutStdio)
+      ? launch.scope
+        ? launch.spawn(contained.command, contained.args, { stdio: ["pipe", "pipe", "pipe"], ...env, windowsHide: true } as SpawnOptionsWithoutStdio)
+        : launch.spawn(launch.executablePath, args, { stdio: ["pipe", "pipe", "pipe"], ...env, windowsHide: true } as SpawnOptionsWithoutStdio)
       : nodeSpawn(contained.command, contained.args, { stdio: ["pipe", "pipe", "pipe"], ...env, windowsHide: true });
     this.pid = this.child.pid;
     launch.onSpawn?.(this.child);

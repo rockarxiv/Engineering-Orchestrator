@@ -31,6 +31,7 @@ const GUARDS = {
   trialRoundsPerDraft: 8,
   trialBudgetCentsPerDraft: null,
   trialStopOnRepeatedFailure: true,
+  runMemoryMaxMb: null,
 };
 
 type Options = {
@@ -40,9 +41,13 @@ type Options = {
   guardsReplyMs?: number;
   /** A write carrying this value for the field fails outright. */
   failWhen?: { field: string; value: unknown };
+  /** What `guards:runMemory` says about this computer (EO-738). */
+  runMemory?: { applies: boolean; reason: string | null; totalMb: number; defaultMb: number; effectiveMb: number };
 };
 
-function renderWith(ui: ReactElement, { refusalBelowMs = 0, guardsReplyMs = 0, failWhen }: Options = {}) {
+const SCOPED_LINUX = { applies: true, reason: null, totalMb: 15_217, defaultMb: 11_412, effectiveMb: 11_412 };
+
+function renderWith(ui: ReactElement, { refusalBelowMs = 0, guardsReplyMs = 0, failWhen, runMemory = SCOPED_LINUX }: Options = {}) {
   const calls: Call[] = [];
   let guards = { ...GUARDS };
   const failing = (payload: unknown) =>
@@ -52,6 +57,7 @@ function renderWith(ui: ReactElement, { refusalBelowMs = 0, guardsReplyMs = 0, f
   window.eo.ipc.invoke = vi.fn(async (channel: string, payload: unknown) => {
     calls.push({ channel, payload });
     if (channel === "guards:get") return { ok: true, data: guards };
+    if (channel === "guards:runMemory") return { ok: true, data: runMemory };
     if (channel === "guards:set") {
       if (guardsReplyMs > 0) await new Promise((resolve) => setTimeout(resolve, guardsReplyMs));
       if (failing(payload)) return { ok: false, error: { code: "INTERNAL", message: "The database is locked." } };
@@ -84,6 +90,44 @@ function renderWith(ui: ReactElement, { refusalBelowMs = 0, guardsReplyMs = 0, f
 }
 
 const written = (calls: Call[], channel: string) => calls.filter((call) => call.channel === channel).map((call) => call.payload);
+
+describe("the run memory limit (EO-738)", () => {
+  it("is a box where this computer gives each run a scope, blank for EO's default, which it names", async () => {
+    const { calls } = renderWith(<GuardrailsSection />);
+    const guardrails = await screen.findByRole("region", { name: "Guardrails" });
+    const box = await within(guardrails).findByLabelText("Memory per run (MB, blank = EO's default)");
+    expect(box).toHaveValue(null);
+    expect(within(guardrails).getByText(/three quarters of its 15,217 MB, shared across a global concurrency of 1 — 11,412 MB/)).toBeTruthy();
+
+    fireEvent.change(box, { target: { value: "4096" } });
+    fireEvent.blur(box);
+    await waitFor(() => expect(written(calls, "guards:set").at(-1)).toMatchObject({ runMemoryMaxMb: 4096, perItemAttemptLimit: 3 }));
+
+    // The same box, still there: the save does not take it away.
+    expect(box).toBeInTheDocument();
+    fireEvent.change(box, { target: { value: "" } });
+    fireEvent.blur(box);
+    await waitFor(() => expect(written(calls, "guards:set").at(-1)).toMatchObject({ runMemoryMaxMb: null }));
+  });
+
+  it("refuses a value outside its range by name, and writes nothing", async () => {
+    const { calls } = renderWith(<GuardrailsSection />);
+    const guardrails = await screen.findByRole("region", { name: "Guardrails" });
+    const box = await within(guardrails).findByLabelText("Memory per run (MB, blank = EO's default)");
+    fireEvent.change(box, { target: { value: "100" } });
+    fireEvent.blur(box);
+    expect(await within(guardrails).findByRole("alert")).toHaveTextContent(/runMemoryMaxMb.*from 256 to 1,048,576/);
+    expect(written(calls, "guards:set")).toEqual([]);
+  });
+
+  it("is no control at all where it does not apply, and says why", async () => {
+    renderWith(<GuardrailsSection />, { runMemory: { applies: false, reason: "macOS has no systemd", totalMb: 16_384, defaultMb: 12_288, effectiveMb: 12_288 } });
+    const guardrails = await screen.findByRole("region", { name: "Guardrails" });
+    expect(await within(guardrails).findByText("Does not apply on this computer")).toBeTruthy();
+    expect(within(guardrails).getByText(/Applies on Linux only.*macOS has no systemd/)).toBeTruthy();
+    expect(within(guardrails).queryByLabelText(/Memory per run/)).toBeNull();
+  });
+});
 
 describe("the guardrails section", () => {
   it("draws every limit, and the one checkbox is the system agent reading replies", async () => {

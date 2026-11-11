@@ -26,6 +26,7 @@ import {
 } from "../db/repos/index.js";
 import type { StepAnswer } from "../roles/answers.js";
 import { resetSearchPathForTests, resolveSearchPath } from "../process/searchPath.js";
+import { setRunScopes, systemdRunScopes, type RunScopes } from "../process/runScope.js";
 import { postModuleComment } from "./moduleComments.js";
 import { moduleItemView } from "../ipc/domainQueries.js";
 import { updateItemTypeCommand } from "../ipc/itemTypeCommands.js";
@@ -3030,4 +3031,50 @@ describe("what a module can say on an item", () => {
     expect(answered(outcome)["other"]).toMatchObject({ posted: false });
     expect(listCommentsForItem(handle.db, running.id)).toHaveLength(1);
   });
+});
+
+/**
+ * A module run's host starts through the run scopes (EO-738), as every
+ * agent run's CLI does: in a systemd scope of the run's own where the
+ * machine has one, so a module that runs out of memory ends its run and
+ * not EO.
+ */
+describe("a module run's host and its run's scope (EO-738)", () => {
+  const SCOPE = { runId: "019a0000-0000-7000-8000-000000000738", memoryMaxMb: 1_024 };
+  let restore: (() => void) | null = null;
+  afterEach(() => {
+    restore?.();
+    restore = null;
+  });
+
+  const scoped = (module: CustomModule, scope?: typeof SCOPE) => runModule(launcher, { module, item, cwd: process.cwd(), env: {}, ...(scope ? { scope } : {}) });
+  const fine = () => moduleWith(`export default async function run() { return { ok: true, result: "ok", detail: "fine" }; }`);
+
+  it("is planned through the run scopes, and started as they plan it", async () => {
+    const asked: { scope: unknown; command: string; args: readonly string[] }[] = [];
+    const adopted: (number | undefined)[] = [];
+    const scopes: RunScopes = {
+      availability: () => ({ applies: true }),
+      plan: (scope, _name, command, args) => {
+        asked.push({ scope, command, args });
+        // The same command, so the host runs; `adopt` says it was this plan that was spawned.
+        return { command, args: [...args], adopt: (pid) => (adopted.push(pid), null) };
+      },
+      outOfMemory: async () => null,
+      handOver: () => undefined,
+    };
+    restore = setRunScopes(scopes);
+    expect(await scoped(fine(), SCOPE)).toEqual({ ok: true, result: "ok", detail: "fine" });
+    expect(asked).toEqual([{ scope: SCOPE, command: launcher.execPath, args: [hostPath] }]);
+    expect(adopted).toHaveLength(1);
+    expect(typeof adopted[0]).toBe("number");
+    // A module run with no scope asks for none.
+    await scoped(fine());
+    expect(asked).toHaveLength(1);
+  });
+
+  it.runIf(process.platform === "linux" && systemdRunScopes().availability().applies)("runs whole inside a real scope, every descriptor carried through", async () => {
+    restore = setRunScopes(systemdRunScopes());
+    expect(await scoped(fine(), SCOPE)).toEqual({ ok: true, result: "ok", detail: "fine" });
+  }, 30_000);
 });

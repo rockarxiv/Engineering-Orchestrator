@@ -1213,6 +1213,10 @@ export const AgentRemovalImpactSchema = z.object({
 });
 export type AgentRemovalImpact = z.infer<typeof AgentRemovalImpactSchema>;
 
+/** The bounds of `runMemoryMaxMb` (EO-738): below 256 MB no agent CLI starts, and 1 TB is past any desktop. */
+export const RUN_MEMORY_MIN_MB = 256;
+export const RUN_MEMORY_MAX_MB = 1_048_576;
+
 export const GuardConfigSchema = z.object({
   globalConcurrency: z.number().int().positive().max(16),
   /** Per repo. With one repository this is indistinguishable from the global cap (D-04). */
@@ -1378,8 +1382,41 @@ export const GuardConfigSchema = z.object({
    * reach what was failing. On by default.
    */
   trialStopOnRepeatedFailure: z.boolean(),
+  /**
+   * The most memory one run's processes may use together, in megabytes
+   * (EO-738, ARCHITECTURE.md, "Guardrails").
+   *
+   * Where a systemd user manager is reachable on Linux, every agent run
+   * and every module run starts its process tree in a transient systemd
+   * scope of its own with this as its `MemoryMax`, so a run that runs out
+   * of memory is stopped by itself and EO and the other runs carry on.
+   * Null is EO's default for the machine it runs on, derived from the
+   * machine's memory and the global concurrency cap
+   * (`guards:runMemory` answers what that comes to); a number is a
+   * person's choice. Elsewhere it is stored and has no effect, which the
+   * Guardrails screen says. Required for `watchRoundTripsPerItem`'s
+   * reason.
+   */
+  runMemoryMaxMb: z.number().int().min(RUN_MEMORY_MIN_MB).max(RUN_MEMORY_MAX_MB).nullable(),
 });
 export type GuardConfigView = z.infer<typeof GuardConfigSchema>;
+
+/**
+ * What the run memory limit comes to on this machine (EO-738).
+ *
+ * `applies` is false on macOS, Windows, and Linux without a reachable
+ * systemd user manager, and `reason` says which; runs there start as
+ * they always did. `defaultMb` is what a null `runMemoryMaxMb` means
+ * here, `effectiveMb` what a run is given now.
+ */
+export const RunMemoryFactsSchema = z.object({
+  applies: z.boolean(),
+  reason: z.string().nullable(),
+  totalMb: z.number().int().nonnegative(),
+  defaultMb: z.number().int().positive(),
+  effectiveMb: z.number().int().positive(),
+});
+export type RunMemoryFacts = z.infer<typeof RunMemoryFactsSchema>;
 
 /**
  * What writing the guardrails answers with (EO-162).

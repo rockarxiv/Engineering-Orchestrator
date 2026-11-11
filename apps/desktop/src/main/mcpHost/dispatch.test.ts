@@ -752,6 +752,7 @@ const STORED_GUARDS: GuardConfigView = {
   trialRoundsPerDraft: 6,
   trialBudgetCentsPerDraft: 900,
   trialStopOnRepeatedFailure: false,
+  runMemoryMaxMb: 4096,
 };
 
 describe("a pin, through the tool that sets it", () => {
@@ -1142,6 +1143,33 @@ describe("a composite tool", () => {
     // something the channel then rejected.
     expect(set).not.toHaveBeenCalled();
     expect(readGuards(handle.db)).toEqual(STORED_GUARDS);
+  });
+
+  it("sets the run memory limit, back to EO's default with null, and refuses one outside its range by name (EO-738)", async () => {
+    writeGuards(handle.db, STORED_GUARDS);
+    const set = vi.fn((payload: GuardConfigView) => writeGuards(handle.db, payload));
+    registerHandler("guards:get", () => readGuards(handle.db), opts);
+    registerHandler("guards:set", set, opts);
+
+    const raised = await tool("guardrails_set").run(dispatch, { runMemoryMaxMb: 6_144 });
+    expect(raised.ok).toBe(true);
+    expect(readGuards(handle.db)).toEqual({ ...STORED_GUARDS, runMemoryMaxMb: 6_144 });
+    if (raised.ok) expect(raised.text).toContain("6144 MB");
+
+    const defaulted = await tool("guardrails_set").run(dispatch, { runMemoryMaxMb: null });
+    expect(defaulted.ok).toBe(true);
+    expect(readGuards(handle.db).runMemoryMaxMb).toBeNull();
+    if (defaulted.ok) expect(defaulted.text).toContain("EO's default for this machine");
+
+    set.mockClear();
+    for (const runMemoryMaxMb of [64, 2_000_000, 1_500.5]) {
+      const outcome = await tool("guardrails_set").run(dispatch, { runMemoryMaxMb });
+      expect(outcome.ok).toBe(false);
+      if (outcome.ok) return;
+      expect(outcome.issues?.join("\n")).toContain("runMemoryMaxMb");
+    }
+    expect(set).not.toHaveBeenCalled();
+    expect(readGuards(handle.db).runMemoryMaxMb).toBeNull();
   });
 
   /**

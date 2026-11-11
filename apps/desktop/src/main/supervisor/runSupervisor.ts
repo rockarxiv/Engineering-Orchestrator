@@ -120,6 +120,7 @@ import {
   refineChildren,
   acceptanceCriteriaOf,
   type Run,
+  type RunProcessScope,
   type RunCheck,
   type RunInterruption,
   type ForkCopy,
@@ -180,6 +181,9 @@ export interface ArtifactStore {
 import { handOffRefusal, reportedResultKey, routeResult } from "./routeResult.js";
 import { stepScopeFor, trialStepMode } from "../trials/stepModes.js";
 import { attemptLimitStop } from "./attemptLimit.js";
+import { isOutOfMemoryStop, outOfMemoryStop } from "./outOfMemory.js";
+import { scopedProvider } from "./scopedProvider.js";
+import { effectiveRunMemoryMaxMb, machineMemoryMb, runScopes, type RunOutOfMemory } from "../process/runScope.js";
 import { createUsageTally, sessionTotalBefore, type ThreadUsage } from "./usageTally.js";
 import {
   createRun,
@@ -365,6 +369,12 @@ export interface PreparedToolDirectory {
 
 export interface RunSupervisorOptions {
   db: Db;
+  /**
+   * Whether a run's processes ended out of memory (EO-738), asked once a
+   * run has ended badly. Seam for tests; the run scopes every run's tree
+   * is started through (`process/runScope.ts`) otherwise.
+   */
+  outOfMemory?: (runId: Uuid) => Promise<RunOutOfMemory | null>;
   /**
    * What EO's side calls run on (EO-477): short model calls that are not
    * runs. Absent, every side call fails saying the backend makes none,
@@ -918,6 +928,13 @@ export interface GuardConfig {
    * offered a slot before live work (EO-582). The order only.
    */
   trialsFirst: boolean;
+  /**
+   * The memory one run's processes may use together, in megabytes, or
+   * null for EO's default for this machine (EO-738). Where the machine
+   * allows, every run's process tree starts in a systemd scope of its
+   * own with this as its `MemoryMax`.
+   */
+  runMemoryMaxMb: number | null;
 }
 
 /**
@@ -947,6 +964,7 @@ export const DEFAULT_GUARDS: GuardConfig = {
   skillStaleAfterRuns: DEFAULT_SKILL_STALE_AFTER_RUNS,
   skillArchiveAfterRuns: DEFAULT_SKILL_ARCHIVE_AFTER_RUNS,
   trialsFirst: true,
+  runMemoryMaxMb: null,
 };
 
 export interface ReconcileSummary {
@@ -1877,6 +1895,7 @@ export function createRunSupervisor(
     limits = DEFAULT_LIMITS,
 
     guards: guardOverrides,
+    outOfMemory = (runId: Uuid) => runScopes().outOfMemory(runId),
     now = Date.now,
     watchdogIntervalMs = DEFAULT_WATCHDOG_INTERVAL_MS,
     onWake,
@@ -3317,7 +3336,11 @@ export function createRunSupervisor(
     action: string,
     send: { purpose: SendContext["purpose"]; refusal?: string | null },
   ): AgentProvider {
-    const inner = providerFor(agent, item);
+    // Every turn of a run, whichever backend: its CLI starts in the run's
+    // own systemd scope where the machine has one, with the run's memory
+    // limit (EO-738). Said once here, the one door every run's turn goes
+    // through, rather than at each of the places a turn is opened.
+    const inner = scopedProvider(providerFor(agent, item), processScopeOf(run.id));
     const capturing = debugMode() && (send.purpose !== "correction" || capturedRuns.has(run.id));
     if (!capturing) return inner;
     capturedRuns.add(run.id);
@@ -3335,6 +3358,71 @@ export function createRunSupervisor(
       },
       (sent) => recordSent(run.id, sent),
     );
+  }
+
+  /** What a run's processes are started under (EO-738): the run, and its memory limit as the guardrails say now. */
+  function processScopeOf(runId: Uuid): RunProcessScope {
+    const memoryMaxMb = effectiveRunMemoryMaxMb({
+      runMemoryMaxMb: readGuards().runMemoryMaxMb,
+      globalConcurrency: (typeof limits === "function" ? limits() : limits).globalConcurrency,
+    });
+    return { runId, memoryMaxMb };
+  }
+
+  /**
+   * Whether a run that ended badly ran out of memory (EO-738). Never
+   * throws: a question nothing could answer is a run that failed the
+   * ordinary way.
+   */
+  async function ranOutOfMemory(runId: Uuid): Promise<RunOutOfMemory | null> {
+    try {
+      return await outOfMemory(runId);
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Ends an agent's run that ran out of memory (EO-738): `failed`, with
+   * the limit and the killed process in its error — which keeps it out of
+   * the attempt count (`isOutOfMemoryStop`) — and the item parked the way
+   * a guard parks it, with the same sentence as an escalation. Not
+   * retried: the same work would run into the same limit. A reply starts
+   * a fresh initiation, as a reply to any guard's park does.
+   *
+   * A module run (`agent` null) ends the same way: the run `failed`, and
+   * the park a placeholder of its own, so the run that ran out is not
+   * mistaken for a question it asked.
+   */
+  function endOutOfMemory(runId: Uuid, item: Item, agent: Agent | null, action: string, threadId: string | null, report: RunOutOfMemory): void {
+    const reason = outOfMemoryReason(report, agent, action);
+    updateRun(db, runId, { status: "failed", error: reason, endedAt: now(), ...(threadId === null ? {} : { threadId }) });
+    announceRun(runId, item.id, "failed");
+    const row = getRun(db, runId);
+    refuseDispatch(item, agent, action, reason, row?.initiationId ?? workflowInitiationId(item, action), row?.attempt ?? 1);
+  }
+
+  /** The out-of-memory sentence for a run: the agent by name, or the module step by its action. */
+  function outOfMemoryReason(report: RunOutOfMemory, agent: Agent | null, action: string): string {
+    return outOfMemoryStop(report, agent?.name ?? `"${action}"`, outOfMemoryLimit());
+  }
+
+  /**
+   * Whether a module run that failed did so because its host's scope ran
+   * out of memory (EO-738). Asked only of a module that ran and failed:
+   * one that succeeded, or never started, has nothing to say.
+   */
+  async function moduleRanOutOfMemory(outcome: BuiltinOutcome, runId: Uuid): Promise<RunOutOfMemory | null> {
+    return outcome.ok ? null : ranOutOfMemory(runId);
+  }
+
+  /** Where the limit an out-of-memory run was held to came from, for its sentence. */
+  function outOfMemoryLimit(): { setting: number | null; totalMb: number; globalConcurrency: number } {
+    return {
+      setting: readGuards().runMemoryMaxMb,
+      totalMb: machineMemoryMb(),
+      globalConcurrency: (typeof limits === "function" ? limits() : limits).globalConcurrency,
+    };
   }
 
   /**
@@ -4002,8 +4090,11 @@ export function createRunSupervisor(
     // An interrupted run is not an attempt (`RunInterruption`): the
     // agent did nothing wrong, and the run that carries it on takes the
     // same attempt number.
+    // Nor is a run that ran out of memory (EO-738): it parked for a
+    // person rather than being retried, and what it hit was the machine's
+    // limit, not the agent's work.
     return listRunsForItem(db, itemId).filter(
-      (run) => run.initiationId === initiationId && !isGuardPlaceholder(run) && run.interruption === null,
+      (run) => run.initiationId === initiationId && !isGuardPlaceholder(run) && run.interruption === null && !isOutOfMemoryStop(run.error),
     ).length;
   }
 
@@ -5747,6 +5838,11 @@ export function createRunSupervisor(
         // fails like any other provider error.
         await carryOnWithoutTheThread(run, item, agent, action, threadId, runOpts);
       } else {
+        // A CLI the kernel or systemd stopped because the run ran out of
+        // memory dies like any other (EO-738); its scope is what says so.
+        const outOfMemory = await ranOutOfMemory(run.id);
+        if (outOfMemory !== null) endOutOfMemory(run.id, item, agent, action, threadId, outOfMemory);
+        else {
         updateRun(db, run.id, {
           status: "failed",
           error: String(error),
@@ -5757,6 +5853,7 @@ export function createRunSupervisor(
         // a person, and "Error: " in front of it helps nobody.
         postRunFailure(item.id, run.id, error instanceof Error ? error.message : String(error));
         announceRun(run.id, item.id, "failed");
+        }
       }
       // Said however the run ended (invariant 8): a process that may still
       // be working in this run's workspace is the thing a person has to know.
@@ -5815,7 +5912,15 @@ export function createRunSupervisor(
         }
         return;
 
-      case "error":
+      case "error": {
+        // Out of memory first (EO-738): the backend's word on retrying is
+        // about its own error, and a CLI the run's scope stopped reports
+        // whatever its death looked like from inside.
+        const outOfMemory = await ranOutOfMemory(run.id);
+        if (outOfMemory !== null) {
+          endOutOfMemory(run.id, item, agent, action, threadId, outOfMemory);
+          return;
+        }
         // The backend said trying again will not help (EO-437) — a
         // content filter's refusal is the one this was found on. A
         // `failed` row is what the scheduler retries, so leaving it one
@@ -5845,6 +5950,7 @@ export function createRunSupervisor(
         postRunFailure(item.id, run.id, outcome.message);
         announceRun(run.id, item.id, "failed");
         return;
+      }
 
       case "result": {
         // The agent answered with questions rather than an answer
@@ -6222,6 +6328,12 @@ export function createRunSupervisor(
       ...memoryOption(item),
       // And where the agent's writes go (EO-543).
       ...writeBridgeOption(item),
+      // In a scope of its own with the run's memory limit (EO-738), so a
+      // warm process is outside EO's unit like every run's. No run exists
+      // yet, so it is filed under the conversation; the turn that adopts
+      // it runs in it, and both adapters leave the scope out of what a
+      // warm process must match.
+      processScope: processScopeOf(`warm:${item.id}` as Uuid),
       warmKey: attachments,
     };
     provider.prewarm(resuming ? { kind: "resume", threadId: resuming, ...turn } : { kind: "start", instructions: agent.instructions, ...turn });
@@ -7407,7 +7519,7 @@ export function createRunSupervisor(
     // `dispatchedStep`'s reason above.
     const ranStep = stepId === undefined || stepId === item.stepId ? stepForItem(db, item) : getStep(db, stepId);
 
-    const outcome: BuiltinOutcome = checked
+    const ran: BuiltinOutcome = checked
       ? checked.outcome
       : runner
       ? await runner({
@@ -7416,6 +7528,8 @@ export function createRunSupervisor(
           prepareWorkspace: prepareAndRecord,
           report,
           runId: run.id,
+          // A module's host starts in the run's own scope (EO-738).
+          processScope: processScopeOf(run.id),
           signal: controller.signal,
           ...(ranStep ? { inputs: ranStep.inputs } : {}),
         }).catch((error: unknown) => ({
@@ -7428,6 +7542,12 @@ export function createRunSupervisor(
             ? `"${action}" is not one of EO's built-in functions.`
             : `This step runs a module that is missing, deleted, or no longer approved. Check it under Settings → Modules.`,
         };
+    // A host its scope stopped for running out of memory (EO-738) dies
+    // like any other failure from inside; its scope is what says so, and
+    // the sentence that does is what the run's log and park carry.
+    const outOfMemory = !checked && runner ? await moduleRanOutOfMemory(ran, run.id) : null;
+    const ranOutWords = outOfMemory === null ? null : outOfMemoryReason(outOfMemory, null, action);
+    const outcome: BuiltinOutcome = ranOutWords === null ? ran : { ok: false, reason: ranOutWords };
 
     activeControllers.delete(run.id);
 
@@ -7472,6 +7592,29 @@ export function createRunSupervisor(
     const current = getItem(db, item.id) ?? item;
     const moved = current.stepId !== item.stepId;
     const step = stepForItem(db, current);
+
+    // Out of memory (EO-738): the run `failed`, not a question, and not
+    // routed — a module's failure is never a result the graph routes, and
+    // trying again runs into the same limit. The item parks and asks, as
+    // an agent's run that ran out does; one a person has moved meanwhile
+    // is not frozen on the step they chose, only told.
+    if (outOfMemory !== null && ranOutWords !== null) {
+      if (moved) {
+        updateRun(db, run.id, { status: "failed", error: ranOutWords, endedAt: now() });
+        postComment(db, {
+          itemId: item.id,
+          runId: run.id,
+          author: { type: "engine" },
+          kind: "escalation",
+          body: ranOutWords,
+          mentions: [{ type: "human" }],
+        });
+        announceRun(run.id, item.id, "failed");
+        return;
+      }
+      endOutOfMemory(run.id, item, null, action, null, outOfMemory);
+      return;
+    }
 
     if (!outcome.ok) {
       // Where this pipeline sends a failure, when it says (EO-77).
@@ -8080,12 +8223,15 @@ export function createRunSupervisor(
               lines.push(text);
             },
             runId,
+            // A module's host starts in the run's own scope (EO-738).
+            processScope: processScopeOf(runId),
             signal: controller.signal,
             ensureRun: () => {
               ensureRun();
             },
             inputs: step.inputs,
-          }).catch((error: unknown) => ({ ok: false as const, reason: error instanceof Error ? error.message : String(error) }))
+          })
+            .catch((error: unknown) => ({ ok: false as const, reason: error instanceof Error ? error.message : String(error) }))
         : {
             ok: false,
             reason: builtin
@@ -8097,6 +8243,10 @@ export function createRunSupervisor(
       markCheckInFlight(db, item.id, false);
       onItemChanged(item.id);
     }
+    // A host its scope stopped for running out of memory (EO-738): said
+    // as that, and below, not retried like a check that failed.
+    const outOfMemory = runner ? await moduleRanOutOfMemory(outcome, runId) : null;
+    if (outOfMemory !== null) outcome = { ok: false, reason: outOfMemoryReason(outOfMemory, null, action) };
     const ended = now();
 
     // Stopped while it checked: whoever stopped it has been told, and the
@@ -8110,6 +8260,15 @@ export function createRunSupervisor(
     // left, so nothing is routed and the watch is left as it was.
     const current = getItem(db, item.id);
     if (!current || current.stepId !== item.stepId) {
+      if (outOfMemory !== null && !outcome.ok) {
+        // Not a success, and said (invariant 8), but nothing parked: the
+        // item is on a step somebody chose for it since.
+        ensureRun();
+        updateRun(db, runId, { status: "failed", error: outcome.reason, endedAt: ended });
+        postComment(db, { itemId: item.id, runId, author: { type: "engine" }, kind: "escalation", mentions: [{ type: "human" }], parseBodyMentions: false, body: outcome.reason });
+        announceRun(runId, item.id, "failed");
+        return null;
+      }
       if (run !== undefined) {
         updateRun(db, runId, { status: "succeeded", error: "Finished after this ticket was moved to another step, so it was left where it is.", endedAt: ended });
         announceRun(runId, item.id, "succeeded");
@@ -8125,6 +8284,21 @@ export function createRunSupervisor(
       buffer.dispose();
       onPushEvents?.(into.id, []);
     };
+
+    // Out of memory (EO-738): not a check to retry after a backoff — the
+    // same check would run into the same limit — and not one of the
+    // failures in a row that the watch gives up after. The run that ran
+    // out stays `failed`, and the watch parks at once on a run of its
+    // own, asking; a reply starts the watch again from then.
+    if (outOfMemory !== null && !outcome.ok) {
+      const failedRun = ensureRun();
+      recordLines(failedRun);
+      updateItemWatch(db, row.id, { lastCheckedAt: ended, checks: row.checks + 1, lastError: outcome.reason });
+      updateRun(db, runId, { status: "failed", error: outcome.reason, endedAt: ended });
+      announceRun(runId, item.id, "failed");
+      parkWatch(item, action, step, outcome.reason, `"${step.name}" has stopped checking.\n\n${outcome.reason}`, [{ type: "human" }]);
+      return null;
+    }
 
     if (!outcome.ok) {
       const failures = row.consecutiveFailures + 1;

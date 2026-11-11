@@ -1,9 +1,9 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { EventEmitter } from "node:events";
 import type { SpawnedProcess, SpawnOptions } from "@anthropic-ai/claude-agent-sdk";
-import { TurnNotEndedError } from "@eo/core";
-import { containedLaunch } from "../process/cgroupContainment.js";
+import { TurnNotEndedError, type RunProcessScope } from "@eo/core";
 import { ProcessTree, TREE_MARKER_VARIABLE } from "../process/processTree.js";
+import { launchTree } from "../process/runScope.js";
 
 /**
  * The Claude CLI processes one turn spawned, held so the turn can end them
@@ -59,6 +59,12 @@ export interface ClaudeProcessesOptions {
    * real child can be made into on demand.
    */
   onSpawn?: (child: ChildProcessWithoutNullStreams) => void;
+  /**
+   * The run the turn belongs to and its memory limit (EO-738): where
+   * the machine allows, the CLI starts in a systemd scope of the run's
+   * own (`launchTree`). Absent on a turn that is no run's.
+   */
+  scope?: RunProcessScope;
 }
 
 /** How much stderr is kept for a failed exit's message — about what the SDK keeps. */
@@ -85,9 +91,13 @@ export function claudeProcesses(seams: ClaudeProcessesOptions = {}): ClaudeProce
       // what the CLI starts inherits: where there is no cgroup, that is
       // how a descendant that has left the CLI's group and parentage is
       // still found at the end.
+      //
+      // And, on a run's turn, in the run's own systemd scope where the
+      // machine has one to give (EO-738): `launchTree` is the one place
+      // that is decided, for this backend and the other alike.
       const marker = ProcessTree.newMarker();
       const env = { ...options.env, [TREE_MARKER_VARIABLE]: marker };
-      const launch = containedLaunch(`eo-tree-${marker}`, options.command, options.args, env, options.cwd);
+      const launch = launchTree(`eo-tree-${marker}`, options.command, options.args, env, options.cwd, seams.scope);
       const child = spawn(launch.command, launch.args, {
         ...(options.cwd === undefined ? {} : { cwd: options.cwd }),
         env,

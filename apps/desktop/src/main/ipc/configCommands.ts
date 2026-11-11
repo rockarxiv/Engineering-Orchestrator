@@ -131,6 +131,11 @@ export const DEFAULT_GUARD_CONFIG: GuardConfigView = {
   trialRoundsPerDraft: 8,
   trialBudgetCentsPerDraft: null,
   trialStopOnRepeatedFailure: true,
+  // EO's default for the machine (EO-738): three quarters of its memory,
+  // shared across the global concurrency cap (`defaultRunMemoryMaxMb`).
+  // Null rather than a figure, so it follows the cap and the machine
+  // until a person picks one.
+  runMemoryMaxMb: null,
 };
 
 /**

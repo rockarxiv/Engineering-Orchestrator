@@ -25,6 +25,7 @@ import {
   type DebugSent,
   McpServerDraftSchema,
   type McpServer,
+  type RunProcessScope,
   type Registry,
   type Skill,
   type SkillScope,
@@ -44,6 +45,7 @@ import { codexServerSecretReader } from "../engine.js";
 import { storeMcpServerSecret } from "../mcp/serverSecrets.js";
 import { startAgentWriteBridge } from "../mcp/writeBridge.js";
 import { windowsTreeKill } from "../process/processTree.js";
+import { setRunScopes, type RunScopes } from "../process/runScope.js";
 import { agentRunVariables, storeVariable } from "../modules/secrets.js";
 import { readOrganisationSecretEntry, storeOrganisationSecret } from "../policy/organisationSecrets.js";
 import type { SecretStore } from "../secrets/store.js";
@@ -173,6 +175,11 @@ const OPTIONAL_NOTE_SCHEMA = { type: "object", properties: { verdict: { type: "s
  * what each backend's proof returns — so two backends that both pass
  * have, by construction, produced the same thing.
  */
+/** The run a turn's processes are scoped to, and the memory they may use (EO-738). */
+const RUN_SCOPE = { runId: "019a0000-0000-7000-8000-000000000738", memoryMaxMb: 2_048 };
+/** A warm-up's scope (EO-738): filed under its conversation, at the same limit as the run that adopts it. */
+const WARM_SCOPE = { runId: "warm:019a0000-0000-7000-8000-000000000739", memoryMaxMb: 2_048 };
+
 /** The item's own files the "reading the item's own files" row reads (EO-703): a text file and an image, by id. */
 const ITEM_TEXT_ID = "019a0000-0000-7000-8000-000000000703";
 const ITEM_IMAGE_ID = "019a0000-0000-7000-8000-000000000704";
@@ -836,6 +843,16 @@ const CAPABILITIES = [
     name: "a turn's whole process tree is ended",
     what: "once a turn ends — its result read, or the run cancelled mid-way — everything the agent's process started is gone with it, not only that one process: a `setsid sleep 600` backgrounded from a shell that has since exited, which belongs to pid 1 by then; a `setsid sleep 600` started with an environment of its own, as Codex starts an MCP server; and, where agents are contained in a cgroup of their own, an `env -i … setsid sleep 600` backgrounded from a shell that has exited, which nothing but the cgroup says is the agent's (EO-494)",
     same: { outcome: { kind: "result", data: "done" }, goneOnceReadPastItsResult: true, goneOnceCancelled: true },
+  },
+  {
+    name: "a run's processes in a scope of its own",
+    what: "every turn of a run — a start and a resume alike — plans its backend's process through the run scope interface (`launchTree`, `RunScopes.plan`), handed the run and its memory limit, which is where a systemd scope with that MemoryMax is made on Linux; a turn that belongs to no run plans none (EO-738)",
+    same: { planned: [RUN_SCOPE, RUN_SCOPE], plannedTheBackend: true },
+  },
+  {
+    name: "a warm process's scope handed to its run",
+    what: "a backend started ahead of its turn in a scope filed under its conversation is adopted by a run's turn at the same memory limit, and its scope is handed over to that run — so the run, not the conversation, hears that it ran out of memory — while a turn whose limit has changed since the warm-up does not adopt it, starts afresh, and takes nothing over (EO-738)",
+    same: { adopted: true, handedOver: [[WARM_SCOPE.runId, RUN_SCOPE.runId]], otherLimitStartsAgain: true },
   },
 ] as const;
 
@@ -2106,7 +2123,79 @@ async function firstSaid(call: SdkCall | undefined): Promise<string | null> {
 const claudeTurn = async (messages: SDKMessage[], start: Record<string, unknown> = {}) =>
   collect(createClaudeProvider({ runQuery: scripted(messages).runQuery, enableCommentTool: false }).start({ ...startOpts, ...start } as never));
 
+/**
+ * Run scopes that record what they were asked to plan and make no scope
+ * (EO-738): the tree then starts as it would have anyway, so a proof sees
+ * the request without depending on this machine having systemd.
+ */
+function recordingRunScopes(expectedCommand: (command: string, args: readonly string[]) => boolean) {
+  const planned: RunProcessScope[] = [];
+  const handedOver: [string, string][] = [];
+  let plannedTheBackend = true;
+  const scopes: RunScopes = {
+    availability: () => ({ applies: true }),
+    plan(scope, _name, command, args) {
+      planned.push({ ...scope });
+      if (!expectedCommand(command, args)) plannedTheBackend = false;
+      return null;
+    },
+    outOfMemory: async () => null,
+    handOver: (from, to) => {
+      handedOver.push([from, to]);
+    },
+  };
+  return { scopes, handedOver, observation: () => ({ planned, plannedTheBackend }) };
+}
+
 const CLAUDE: Record<CapabilityName, Proof> = {
+  "a warm process's scope handed to its run": async () => {
+    const recording = recordingRunScopes(() => true);
+    const restore = setRunScopes(recording.scopes);
+    try {
+      const { runQuery, calls } = scripted([sdk.init(), sdk.says("Hi."), sdk.result({ result: "Hi." })]);
+      const provider = createClaudeProvider({ runQuery, enableCommentTool: false });
+      const turn = { cwd: "/tmp/wt", warmKey: "tools-v1" };
+      provider.prewarm!({ kind: "start", instructions: startOpts.instructions, ...turn, processScope: WARM_SCOPE });
+      await until(() => calls.length === 1);
+      await collect(provider.start({ ...startOpts, ...turn, processScope: RUN_SCOPE }));
+      const adopted = calls.length === 1;
+      const handedOver = recording.handedOver.map((pair) => [...pair]);
+
+      provider.prewarm!({ kind: "start", instructions: startOpts.instructions, ...turn, processScope: WARM_SCOPE });
+      await until(() => calls.length === 2);
+      await collect(provider.start({ ...startOpts, ...turn, processScope: { ...RUN_SCOPE, memoryMaxMb: 4_096 } }));
+      const otherLimitStartsAgain = calls.length === 3 && recording.handedOver.length === 1;
+      return { adopted, handedOver, otherLimitStartsAgain };
+    } finally {
+      restore();
+    }
+  },
+
+  "a run's processes in a scope of its own": async () => {
+    // The stub spawns its CLI through EO's hook, as the SDK does, and
+    // the hook is what has to ask the run scopes.
+    const cli = ["-e", 'process.stdout.write("up\\n")'];
+    const recording = recordingRunScopes((command, args) => command === process.execPath && args.join(" ") === cli.join(" "));
+    const restore = setRunScopes(recording.scopes);
+    try {
+      const runQuery = ((params: { options?: Record<string, unknown> }) =>
+        (async function* () {
+          const spawn = params.options?.["spawnClaudeCodeProcess"] as (options: unknown) => { stdout: NodeJS.ReadableStream };
+          const spawned = spawn({ command: process.execPath, args: cli, env: { ...process.env }, signal: new AbortController().signal });
+          await new Promise((resolve) => spawned.stdout.once("data", resolve));
+          yield* [sdk.init(), sdk.says("done"), sdk.result()];
+        })()) as never;
+      const provider = createClaudeProvider({ runQuery, enableCommentTool: false, processGraceMs: 100 });
+      await collect(provider.start({ ...startOpts, processScope: RUN_SCOPE }));
+      await collect(provider.resume("sess-1", "carry on", { cwd: "/tmp/wt", processScope: RUN_SCOPE }));
+      // A conversation's turn: no run, so no scope asked for.
+      await collect(provider.start(startOpts));
+      return recording.observation();
+    } finally {
+      restore();
+    }
+  },
+
   "a resumed run's own usage": async () => {
     // The CLI restores a resumed session's cost state, so run 2's result
     // is the whole conversation's running total: run 1's, and its own.
@@ -3393,6 +3482,49 @@ const shellCall = (id: string) =>
   note.item({ type: "commandExecution", id, command: SEARCH.command, cwd: "/", processId: null, source: "agent", commandActions: [], aggregatedOutput: "", exitCode: 0, status: "completed", durationMs: 1 });
 
 const CODEX: Record<CapabilityName, Proof> = {
+  "a warm process's scope handed to its run": async () => {
+    const recording = recordingRunScopes((command, args) => command === STUB_EXECUTABLE && args[0] === "app-server");
+    const restore = setRunScopes(recording.scopes);
+    try {
+      const { fake, provider } = codexOver({ after: { "turn/start": [note.turnStarted(), note.agentMessage("Hi."), note.turnCompleted()] } });
+      const turn = { cwd: "/tmp/wt", warmKey: "tools-v1" };
+      provider.prewarm!({ kind: "start", instructions: startOpts.instructions, ...turn, processScope: WARM_SCOPE });
+      await until(() => fake.sent.some((message) => message.method === "thread/start"));
+      await collect(provider.start({ ...startOpts, ...turn, processScope: RUN_SCOPE }));
+      const adopted = fake.launches.length === 1;
+      const handedOver = recording.handedOver.map((pair) => [...pair]);
+
+      provider.prewarm!({ kind: "start", instructions: startOpts.instructions, ...turn, processScope: WARM_SCOPE });
+      await until(() => fake.launches.length === 2);
+      await collect(provider.start({ ...startOpts, ...turn, processScope: { ...RUN_SCOPE, memoryMaxMb: 4_096 } }));
+      const otherLimitStartsAgain = fake.launches.length === 3 && recording.handedOver.length === 1;
+      return { adopted, handedOver, otherLimitStartsAgain };
+    } finally {
+      restore();
+    }
+  },
+
+  "a run's processes in a scope of its own": async () => {
+    // The app-server's spawn, under the real client, is what has to ask
+    // the run scopes; the stub stands in only for the process.
+    const recording = recordingRunScopes((command, args) => command === STUB_EXECUTABLE && args[0] === "app-server");
+    const restore = setRunScopes(recording.scopes);
+    try {
+      const completed = [note.turnStarted(), note.agentMessage("done"), note.turnCompleted()];
+      await collect(codexOver({ after: { "turn/start": completed } }).provider.start({ ...startOpts, processScope: RUN_SCOPE }));
+      await collect(
+        codexOver({
+          after: { "turn/start": [note.turnStarted("turn-1", "thr-persisted"), note.agentMessage("continued", "m", "turn-1", "thr-persisted"), note.turnCompleted("completed", null, "turn-1", "thr-persisted")] },
+        }).provider.resume("thr-persisted", "carry on", { cwd: "/tmp/wt", processScope: RUN_SCOPE }),
+      );
+      // A conversation's turn: no run, so no scope asked for.
+      await collect(codexOver({ after: { "turn/start": completed } }).provider.start(startOpts));
+      return recording.observation();
+    } finally {
+      restore();
+    }
+  },
+
   "a resumed run's own usage": async () => {
     // The app-server restates the thread's total when it is resumed, and
     // the client reports a turn's share of it; the tally adds those up.
@@ -4740,7 +4872,7 @@ describe.each(CAPABILITIES)("$name: $what", (capability) => {
 });
 
 describe("the shared list", () => {
-  it("is the twelve capabilities EO-380 names and the ones EO-385, EO-387, EO-392, EO-395, EO-412, EO-421, EO-444, EO-468, EO-470, EO-477, EO-478, EO-479, EO-487, EO-488, EO-490, EO-493, EO-494, EO-534, EO-543, EO-578, EO-587, EO-597, EO-633, EO-700, EO-703, EO-716, EO-717, EO-718, EO-732 and the streaming chat added, each once", () => {
+  it("is the twelve capabilities EO-380 names and the ones EO-385, EO-387, EO-392, EO-395, EO-412, EO-421, EO-444, EO-468, EO-470, EO-477, EO-478, EO-479, EO-487, EO-488, EO-490, EO-493, EO-494, EO-534, EO-543, EO-578, EO-587, EO-597, EO-633, EO-700, EO-703, EO-716, EO-717, EO-718, EO-732, EO-738 (two) and the streaming chat added, each once", () => {
     // Pinned so that taking one off the list is a decision somebody
     // made in this file rather than a line that went missing.
     expect(CAPABILITIES.map((capability) => capability.name)).toEqual([
@@ -4802,6 +4934,8 @@ describe("the shared list", () => {
       "environment variables filling server names",
       "a turn EO stops reading is ended",
       "a turn's whole process tree is ended",
+      "a run's processes in a scope of its own",
+      "a warm process's scope handed to its run",
     ]);
   });
 
