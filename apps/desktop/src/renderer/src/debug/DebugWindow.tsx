@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Check, Copy } from "lucide-react";
-import { DEBUG_SENT_EVENT, DebugSentSchema, type DebugAgent, type DebugRun, type DebugSent, type DebugSession } from "@eo/core";
+import { DEBUG_SENT_EVENT, DebugSentSchema, learningReviewActivityKind, type DebugAgent, type DebugRun, type DebugSent, type DebugSession } from "@eo/core";
 import { cn } from "@eo/ui";
 import { ipcQuery } from "../query/client";
 import { useInvalidateOnPush } from "../query/useInvalidateOnPush";
@@ -9,6 +9,7 @@ import { groupRuns, isRunActive } from "../shared/transcript/grouping";
 import { Button, Chip } from "../chat/kit";
 import { useChatTheme } from "../chat/theme";
 import { RunHeader, TranscriptLog, runTone, spokenStatus } from "../chat/views/transcript/Transcript";
+import { TranscriptEvent } from "../chat/views/transcript/TranscriptEvent";
 import { useTranscript, type TranscriptEventView } from "../shared/transcript/useTranscript";
 import { useDebugMode } from "./debugMode";
 
@@ -52,6 +53,17 @@ import { useDebugMode } from "./debugMode";
  * A run dispatched with debug mode on is listed once its first send is
  * written: the supervisor says `runs:progress` as it writes it, and that
  * push asks main for the tabs again.
+ *
+ * ## The learning review, apart
+ *
+ * The review after a run (EO-717) is a turn on a fork of the run's
+ * thread, and debug mode records it on the run's log (EO-734): one
+ * `debug_sent` row with purpose `learning_review`, then the fork's tool
+ * calls, results and words under types of their own
+ * (`LEARNING_REVIEW_ACTIVITY_EVENTS`). None of it is the run's, so none
+ * of it is in either column: it is drawn in a section of its own under
+ * them, labelled as the review, what was sent first and then what the
+ * fork did, in the order it happened.
  */
 
 const agentsKey = ["debug", "agents"] as const;
@@ -96,7 +108,8 @@ export function sentOf(events: readonly TranscriptEventView[]): SentTurnView[] {
   for (const event of events) {
     if (event.type === DEBUG_SENT_EVENT) {
       const parsed = DebugSentSchema.safeParse(event.payload);
-      if (parsed.success) turns.push({ send: parsed.data, reportedModel: null, finalModel: null });
+      // The learning review's send is not the run's: `learningReviewOf` has it.
+      if (parsed.success && parsed.data.purpose !== "learning_review") turns.push({ send: parsed.data, reportedModel: null, finalModel: null });
       continue;
     }
     const latest = turns.at(-1);
@@ -106,6 +119,39 @@ export function sentOf(events: readonly TranscriptEventView[]): SentTurnView[] {
     else if (event.type === "usage") latest.finalModel = named(event.payload, "model") ?? latest.finalModel;
   }
   return turns;
+}
+
+/** What debug mode recorded of a run's learning review (EO-734): what the fork was sent, and what it did. */
+export interface LearningReviewView {
+  /** The review's sends, in order — one per review. */
+  sent: DebugSent[];
+  /**
+   * The fork's tool calls, results and words, in the order they were
+   * written, each under the fork's own event type again so the
+   * transcript's components draw it — which nothing outside this
+   * section ever sees.
+   */
+  activity: TranscriptEventView[];
+}
+
+/** A log's learning review, or null where it has none recorded. */
+export function learningReviewOf(events: readonly TranscriptEventView[]): LearningReviewView | null {
+  const review: LearningReviewView = { sent: [], activity: [] };
+  for (const event of events) {
+    if (event.type === DEBUG_SENT_EVENT) {
+      const parsed = DebugSentSchema.safeParse(event.payload);
+      if (parsed.success && parsed.data.purpose === "learning_review") review.sent.push(parsed.data);
+      continue;
+    }
+    const kind = learningReviewActivityKind(event.type);
+    if (kind !== null) review.activity.push({ ...event, type: kind });
+  }
+  return review.sent.length === 0 && review.activity.length === 0 ? null : review;
+}
+
+/** Whether a row is the run's own activity: not a record of a send, and not what its learning review did. */
+function isRunActivity(event: TranscriptEventView): boolean {
+  return event.type !== DEBUG_SENT_EVENT && learningReviewActivityKind(event.type) === null;
 }
 
 /**
@@ -262,9 +308,11 @@ function RunDebug({ run }: { run: DebugRun }) {
   const runIds = useMemo(() => [run.id], [run.id]);
   const { events, loading, error } = useTranscript(runIds);
   const sent = useMemo(() => sentOf(events), [events]);
-  // The activity is every row that is not a record of a send: those are
-  // drawn in full in the column beside it, not as a line in the log.
-  const activity = useMemo(() => events.filter((event) => event.type !== DEBUG_SENT_EVENT), [events]);
+  // The activity is every row that is not a record of a send — those are
+  // drawn in full in the column beside it, not as a line in the log —
+  // and not the learning review's, which has a section of its own.
+  const activity = useMemo(() => events.filter(isRunActivity), [events]);
+  const review = useMemo(() => learningReviewOf(events), [events]);
   // The run as a one-turn group, which is the shape `RunHeader` reads
   // tokens, turns and cost from — the same arithmetic as a run screen.
   const group = useMemo(() => groupRuns([run])[0]!, [run]);
@@ -303,7 +351,46 @@ function RunDebug({ run }: { run: DebugRun }) {
           <TranscriptLog events={activity} />
         </section>
       </div>
+      {review && <LearningReview review={review} run={run} />}
     </div>
+  );
+}
+
+/**
+ * The run's learning review (EO-734), under the run and apart from it:
+ * what the fork was sent, then what it did, in order. Drawn row by row
+ * rather than folded, since a review is a handful of calls and the
+ * calls are what a person opens this to read.
+ */
+function LearningReview({ review, run }: { review: LearningReviewView; run: DebugRun }) {
+  // The copy's own id, which every row of what it did carries.
+  const forkThreadId = review.activity.map((event) => named(event.payload, "forkThreadId")).find((id) => id !== null) ?? null;
+  return (
+    <section aria-label="Learning review" className="flex max-h-[45vh] shrink-0 select-text flex-col gap-3 overflow-y-auto border-t border-line p-3">
+      <div className="flex flex-col gap-0.5">
+        <h2 className="font-display text-base text-ink">Learning review</h2>
+        <p className="text-sm text-ink-subtle">
+          Not the run. After the run ended, EO reviewed it on a fork of its thread, which the run never sees. What the review did is not counted in the run&apos;s
+          tool calls, skills, memory, turns or cost.
+        </p>
+      </div>
+      {review.sent.map((send, index) => (
+        <SentTurn key={index} turn={{ send, reportedModel: null, finalModel: null }} run={run} ordinal={index + 1} of={review.sent.length} />
+      ))}
+      <div aria-label="What the review did" className="flex flex-col">
+        <h3 className="text-sm font-medium text-ink">What the review did</h3>
+        {forkThreadId !== null && (
+          <p className="text-2xs text-ink-subtle">
+            On the fork&apos;s own thread, <span className="font-mono">{forkThreadId}</span>.
+          </p>
+        )}
+        {review.activity.length === 0 ? (
+          <p className="text-sm text-ink-subtle">No tool calls or words recorded for the review.</p>
+        ) : (
+          review.activity.map((event) => <TranscriptEvent key={`${event.runId}:${event.seq}`} event={event} />)
+        )}
+      </div>
+    </section>
   );
 }
 
@@ -312,6 +399,7 @@ const PURPOSE: Record<DebugSent["purpose"], string> = {
   reply: "A person's reply, continuing a parked run",
   recovery: "Recovery after a restart",
   correction: "Correction, inside the run",
+  learning_review: "The learning review, on a fork of the run's thread",
 };
 
 /**
@@ -332,9 +420,13 @@ function SentTurn({ turn, run, ordinal, of }: { turn: SentTurnView; run: DebugRu
 
       <div role="status" className="flex flex-col gap-0.5 text-sm">
         <span className="text-ink">
-          {send.thread.mode === "resumed" ? "Resumed an existing provider thread." : "Started a new provider thread."}{" "}
+          {send.thread.mode === "forked"
+            ? "Forked the run's provider thread: a copy, so nothing said here reaches the run's own thread."
+            : send.thread.mode === "resumed"
+              ? "Resumed an existing provider thread."
+              : "Started a new provider thread."}{" "}
           <span className="text-ink-muted">
-            Thread id: <span className="font-mono">{threadId ?? "not issued yet"}</span>
+            {send.thread.mode === "forked" ? "Forked from" : "Thread id"}: <span className="font-mono">{threadId ?? "not issued yet"}</span>
           </span>
         </span>
         {send.thread.refusal !== null && (
@@ -349,19 +441,19 @@ function SentTurn({ turn, run, ordinal, of }: { turn: SentTurnView; run: DebugRu
       ) : send.instructions.text !== null ? (
         <SentBlock
           title="Instructions"
-          note="Not sent on this turn. A resumed thread keeps the instructions it was started with, which are these."
+          note={`Not sent on this turn. A ${send.thread.mode === "forked" ? "forked" : "resumed"} thread keeps the instructions it was started with, which are these.`}
           text={send.instructions.text}
         />
       ) : (
         <p className="rounded-md border border-line bg-canvas-subtle p-2 text-sm text-ink-muted">
-          <span className="font-medium text-ink">Instructions.</span> Not sent on this turn: a resumed thread keeps the instructions it was started with. EO
+          <span className="font-medium text-ink">Instructions.</span> Not sent on this turn: a {send.thread.mode === "forked" ? "forked" : "resumed"} thread keeps the instructions it was started with. EO
           can no longer show those — the agent&apos;s instructions have been edited since the thread started, and the originals were not recorded.
         </p>
       )}
 
       <SentBlock
         title="Prompt"
-        note={send.thread.mode === "resumed" ? "The follow-up only: the thread already holds everything before it." : "The full assembled context."}
+        note={send.thread.mode === "new" ? "The full assembled context." : "The follow-up only: the thread already holds everything before it."}
         text={send.prompt}
       />
 

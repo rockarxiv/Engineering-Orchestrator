@@ -1,6 +1,6 @@
 import { QueryClientProvider } from "@tanstack/react-query";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { DEBUG_SENT_EVENT, type DebugAgent, type DebugRun, type DebugSent, type RunEventView } from "@eo/core";
+import { DEBUG_SENT_EVENT, LEARNING_REVIEW_ACTIVITY_EVENTS, type DebugAgent, type DebugRun, type DebugSent, type RunEventView } from "@eo/core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ThemeProvider } from "@eo/ui";
 import { createQueryClient } from "../query/client";
@@ -488,6 +488,71 @@ describe("what the agent is doing", () => {
 
     expect(await screen.findByText(/12k in \/ 800 out/)).toHaveTextContent("50% cached");
     expect(screen.getByText("0.37 USD")).toBeInTheDocument();
+  });
+});
+
+describe("the learning review", () => {
+  /** A run's log with its learning review recorded after it (EO-734): the review's send, then what its fork did. */
+  const reviewed = () => [
+    event(0, DEBUG_SENT_EVENT, sent()),
+    event(1, "tool_call", { name: "Edit", args: { path: "src/limiter.ts" }, callId: "c1" }),
+    event(2, "output", { text: "Limiter added." }),
+    event(3, DEBUG_SENT_EVENT, {
+      ...sent(),
+      purpose: "learning_review",
+      thread: { mode: "forked", threadId: "thread-1", refusal: null },
+      instructions: { sent: false, text: "You are the implementer." },
+      prompt: "Review the run you just finished. Save what a later run would need.",
+      session: { ...sent().session, outputSchema: null, mcpServers: ["eo"], skills: [] },
+    }),
+    event(4, LEARNING_REVIEW_ACTIVITY_EVENTS.tool_call, { type: "tool_call", name: "memory_read", args: { scope: "project" }, callId: "rc1", forkThreadId: "thread-fork" }),
+    event(5, LEARNING_REVIEW_ACTIVITY_EVENTS.tool_result, { type: "tool_result", name: "memory_read", callId: "rc1", ok: true, output: "3 entries: seed the fixtures", forkThreadId: "thread-fork" }),
+    event(6, LEARNING_REVIEW_ACTIVITY_EVENTS.output, { type: "output", text: "Nothing new worth saving.", forkThreadId: "thread-fork" }),
+    event(7, "learning_review", { kind: "nothing_to_save", forkThreadId: "thread-fork" }),
+  ];
+
+  it("draws the review in its own labelled section under the run: what was sent, then its calls, results and answer, in order", async () => {
+    mount([agent()], { r1: reviewed() });
+
+    const review = await screen.findByRole("region", { name: "Learning review" });
+    const inReview = within(review);
+    expect(inReview.getByText(/Not the run\./)).toBeInTheDocument();
+    const send = inReview.getByRole("article", { name: "Send 1" });
+    expect(send).toHaveTextContent("The learning review, on a fork of the run's thread");
+    expect(send).toHaveTextContent("Forked the run's provider thread");
+    expect(send).toHaveTextContent("Forked from: thread-1");
+    expect(send).toHaveTextContent("Review the run you just finished. Save what a later run would need.");
+    expect(within(inReview.getByRole("generic", { name: "What the review did" })).getByText("thread-fork")).toBeInTheDocument();
+
+    // In order: the send, then the call, its result and the answer.
+    const text = review.textContent ?? "";
+    const order = ["Review the run you just finished.", "memory_read", "memory_read returned", "Nothing new worth saving."].map((needle) => text.indexOf(needle));
+    expect(order.every((at) => at >= 0)).toBe(true);
+    expect([...order].sort((a, b) => a - b)).toEqual(order);
+    fireEvent.click(inReview.getByText("memory_read returned"));
+    expect(await inReview.findByText("3 entries: seed the fixtures")).toBeInTheDocument();
+  });
+
+  it("keeps the review out of the run's sends and the run's activity", async () => {
+    mount([agent()], { r1: reviewed() });
+
+    const sentColumn = within(await screen.findByRole("region", { name: "What was sent" }));
+    expect(await sentColumn.findByRole("article", { name: "Send 1" })).toHaveTextContent("Dispatch");
+    expect(sentColumn.getAllByRole("article")).toHaveLength(1);
+    expect(sentColumn.queryByText(/learning review/i)).not.toBeInTheDocument();
+
+    const activity = within(screen.getByRole("region", { name: "What the agent is doing" }));
+    expect(await activity.findByText("Limiter added.")).toBeInTheDocument();
+    expect(activity.queryByText("Nothing new worth saving.")).not.toBeInTheDocument();
+    expect(activity.queryByText(/memory_read/)).not.toBeInTheDocument();
+    expect(activity.queryByText(/learning_review_/)).not.toBeInTheDocument();
+  });
+
+  it("draws no review section for a run with none recorded", async () => {
+    mount([agent()], { r1: [event(0, DEBUG_SENT_EVENT, sent()), event(1, "output", { text: "Done." }), event(2, "learning_review", { kind: "nothing_to_save" })] });
+
+    await screen.findByText("Done.");
+    expect(screen.queryByRole("region", { name: "Learning review" })).not.toBeInTheDocument();
   });
 });
 

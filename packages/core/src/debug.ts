@@ -21,6 +21,36 @@ import { RunViewSchema } from "./ipc-schemas.js";
 export const DEBUG_SENT_EVENT = "debug_sent";
 
 /**
+ * What a learning review's fork did, as debug mode records it on the
+ * reviewed run's log (EO-734): the fork's own `tool_call`, `tool_result`
+ * and `output`, each under a type of its own.
+ *
+ * **Never the run's own types.** The review runs inside the run and
+ * holds its slot, so its record belongs on that run's log — but
+ * everything that counts a run's activity (its tool calls, the skills it
+ * loaded, the memory it used, its turns and its cost) reads the log by
+ * type, and must not count what the review did as the run's. A row's
+ * payload is the fork's event as the backend reported it, with the
+ * fork's thread id beside it.
+ */
+export const LEARNING_REVIEW_ACTIVITY_EVENTS = {
+  tool_call: "learning_review_tool_call",
+  tool_result: "learning_review_tool_result",
+  output: "learning_review_output",
+} as const;
+
+/** One of the fork's event types debug mode records. */
+export type LearningReviewActivityKind = keyof typeof LEARNING_REVIEW_ACTIVITY_EVENTS;
+
+/** The fork's own event type a learning-review row was recorded from, or null for any other row. */
+export function learningReviewActivityKind(type: string): LearningReviewActivityKind | null {
+  for (const [kind, recordedAs] of Object.entries(LEARNING_REVIEW_ACTIVITY_EVENTS)) {
+    if (recordedAs === type) return kind as LearningReviewActivityKind;
+  }
+  return null;
+}
+
+/**
  * The marker in the URL's query that makes a window the debug window.
  *
  * In the query for the canvas window's reason (`CANVAS_WINDOW_SEARCH`):
@@ -80,19 +110,25 @@ export const DebugSentSchema = z.object({
   /**
    * Why it was sent. `dispatch` opens a run; `reply` and `recovery`
    * continue a parked or interrupted one; `correction` is a further send
-   * inside a run, asking the agent to fix what it returned.
+   * inside a run, asking the agent to fix what it returned;
+   * `learning_review` is the review turn on a fork of the run's thread
+   * after it ended (EO-717, recorded since EO-734) — not the run's own.
    */
-  purpose: z.enum(["dispatch", "reply", "recovery", "correction"]),
+  purpose: z.enum(["dispatch", "reply", "recovery", "correction", "learning_review"]),
   thread: z.object({
-    /** Whether this turn opened a provider thread or continued one. */
-    mode: z.enum(["new", "resumed"]),
-    /** The thread continued. Null on a new one, whose id the backend had not issued yet when this was written. */
+    /** Whether this turn opened a provider thread, continued one, or continued a copy of one (`forked`, the learning review's). */
+    mode: z.enum(["new", "resumed", "forked"]),
+    /**
+     * The thread continued — on a fork, the thread it was forked from.
+     * Null on a new one, whose id the backend had not issued yet when
+     * this was written.
+     */
     threadId: z.string().nullable(),
     /** Why a thread that existed was not carried on, in `findReusableThread`'s words. Null when nothing was refused. */
     refusal: z.string().nullable(),
   }),
   instructions: z.object({
-    /** False on a resumed thread: neither backend is sent instructions there, the thread keeps the ones it started with. */
+    /** False on a resumed or forked thread: neither backend is sent instructions there, the thread keeps the ones it started with. */
     sent: z.boolean(),
     /**
      * Sent: the text, verbatim. Not sent: the instructions the thread

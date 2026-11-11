@@ -2724,6 +2724,9 @@ export function createClaudeProvider(options: ClaudeProviderOptions = {}): Agent
           ...(turn.reasoningEffort ? { reasoningEffort: turn.reasoningEffort } : {}),
           ...(turn.toolDirectory ? { toolDirectory: turn.toolDirectory } : {}),
           ...(turn.repositoryMcp ? { repositoryMcp: turn.repositoryMcp } : {}),
+          // What grants an allowlisted agent `memory_read` (EO-478), so
+          // the recorded allowlist is the one the turn is handed (EO-734).
+          ...(turn.memoryScopes ? { memoryScopes: turn.memoryScopes } : {}),
         },
         { config: options.config, enableCommentTool, executablePath: options.executablePath, eoMcp: options.eoMcp, apiKey: null },
       );
@@ -2738,7 +2741,8 @@ export function createClaudeProvider(options: ClaudeProviderOptions = {}): Agent
         // `${VAR}` references, which this does not read anyway.
         mcpServers: [...Object.keys(built.mcpServers ?? {}), ...(turn.toolDirectory ? Object.keys(readToolDirectoryServers(turn.toolDirectory)) : [])],
         allowedTools: built.allowedTools ?? null,
-        skills: Array.isArray(built.skills) ? [...built.skills] : [],
+        // None for a turn given no skills, as `resumed` enables none (EO-717).
+        skills: turn.withoutSkills === true ? [] : Array.isArray(built.skills) ? [...built.skills] : [],
         inheritsAmbientConfig: options.config?.inheritAmbientConfig === true,
       };
     },
