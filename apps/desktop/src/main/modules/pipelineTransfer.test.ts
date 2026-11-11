@@ -1736,11 +1736,80 @@ describe("the pack", () => {
       });
 
       const preflight = preflightImport(fresh.db, secrets, built.document, { projectId: project.id });
-      expect(preflight.itemTypes).toContainEqual({ type: "support:case", label: "Case", present: true });
+      expect(preflight.itemTypes).toContainEqual({ type: "support:case", label: "Case", present: true, conflict: null });
 
       const imported = importPipeline(fresh.db, { document: built.document, projectId: project.id });
       if (!imported.ok) throw new Error(imported.reason);
       expect(listItemTypes(fresh.db, project.id).filter((type) => type.slug === "case").map((type) => type.label)).toEqual(["Enquiry"]);
+    } finally {
+      fresh.close();
+    }
+  });
+
+  /**
+   * A field this project added to the pack's type, under a name the
+   * document's version of the type also uses (EO-735): the needs check
+   * says so, naming both, and the import merges nothing.
+   */
+  it("says so when the document ships a field under the name of one this project added, and merges nothing", () => {
+    const { pipeline } = packInstallation(handle.db);
+    const built = exportPipeline(handle.db, pipeline.id);
+    if (!built.ok) throw new Error(built.reason);
+    const document = {
+      ...built.document,
+      itemTypes: built.document.itemTypes.map((type) =>
+        type.slug === "case" ? { ...type, specShape: { ...type.specShape, properties: { ...type.specShape.properties, automerge: { type: "string" as const } } } } : type,
+      ),
+    };
+
+    const fresh = openMigratedTestDb();
+    try {
+      const project = createProject(fresh.db, { name: "Support", keyPrefix: "SUP" });
+      const ours = { type: "object" as const, properties: { automerge: { type: "boolean" as const, "x-eo-added": true } }, required: [] };
+      insertItemType(fresh.db, project.id, { packSlug: "support", slug: "case", label: "Case", plural: "Cases", container: false, specShape: ours, actionOverrides: {} });
+
+      const preflight = preflightImport(fresh.db, secrets, document, { projectId: project.id });
+      const line = preflight.itemTypes.find((type) => type.type === "support:case");
+      expect(line?.conflict).toContain("The support pack's “Case” has a field “automerge”, and Support already added a field “automerge” of its own");
+      expect(line?.conflict).toContain("merged nothing");
+
+      const imported = importPipeline(fresh.db, { document, projectId: project.id });
+      if (!imported.ok) throw new Error(imported.reason);
+      expect(listItemTypes(fresh.db, project.id).find((type) => type.slug === "case")?.specShape).toEqual(ours);
+    } finally {
+      fresh.close();
+    }
+  });
+
+  /**
+   * The same, where the import names no project: it writes the
+   * installation's types (`writeItemTypes`), so the needs check reads
+   * that scope and says so there too (EO-735, review).
+   */
+  it("says so for an installation-scoped type when the import names no project", () => {
+    const { pipeline } = packInstallation(handle.db);
+    const built = exportPipeline(handle.db, pipeline.id);
+    if (!built.ok) throw new Error(built.reason);
+    const document = {
+      ...built.document,
+      itemTypes: built.document.itemTypes.map((type) =>
+        type.slug === "case" ? { ...type, specShape: { ...type.specShape, properties: { ...type.specShape.properties, automerge: { type: "string" as const } } } } : type,
+      ),
+    };
+
+    const fresh = openMigratedTestDb();
+    try {
+      const ours = { type: "object" as const, properties: { automerge: { type: "boolean" as const, "x-eo-added": true } }, required: [] };
+      insertItemType(fresh.db, null, { packSlug: "support", slug: "case", label: "Case", plural: "Cases", container: false, specShape: ours, actionOverrides: {} });
+
+      const preflight = preflightImport(fresh.db, secrets, document);
+      const line = preflight.itemTypes.find((type) => type.type === "support:case");
+      expect(line?.present).toBe(true);
+      expect(line?.conflict).toContain("The support pack's “Case” has a field “automerge”, and this installation already added a field “automerge” of its own");
+
+      const imported = importPipeline(fresh.db, { document });
+      if (!imported.ok) throw new Error(imported.reason);
+      expect(listItemTypes(fresh.db, null).find((type) => type.slug === "case")?.specShape).toEqual(ours);
     } finally {
       fresh.close();
     }

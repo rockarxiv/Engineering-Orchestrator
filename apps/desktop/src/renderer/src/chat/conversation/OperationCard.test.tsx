@@ -332,7 +332,7 @@ describe("a card for a project's item type (EO-523)", () => {
     expect(sent(calls, "itemTypes:create")).toEqual([]);
   });
 
-  it("marks what a change moves, and says a pack's type can only be renamed", async () => {
+  it("marks what a change moves, and says what of a pack's type may change", async () => {
     const story = { label: "Story", plural: "Stories", slug: "story", container: false, fields: [] };
     draw(message({ kind: "itemTypeUpdate", outcome: null }), {
       kind: "itemTypeUpdate",
@@ -353,7 +353,7 @@ describe("a card for a project's item type (EO-523)", () => {
   });
 
   it("shows what the channel would refuse as the refusal, and offers no press", async () => {
-    const refusal = "“Story” comes from the developer pack. You can rename it; its fields and whether it holds other items are the pack's.";
+    const refusal = "“Story” comes from the developer pack, so whether it holds other items is the pack's. You can rename it and add optional fields of your own.";
     const story = { label: "Story", plural: "Stories", slug: "story", container: false, fields: [] };
     draw(message({ kind: "itemTypeUpdate", outcome: null }), {
       kind: "itemTypeUpdate",

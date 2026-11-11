@@ -31,7 +31,7 @@ export function asText(value: unknown): string {
  * `undefined` — "not said" rather than "said nothing" — and that comes
  * before the kinds, so a switch nobody moved never becomes `false`.
  */
-export function fromText(field: SpecField, raw: string): unknown {
+export function fromText(field: Pick<SpecField, "kind">, raw: string): unknown {
   const trimmed = raw.trim();
   if (trimmed === "") return undefined;
   if (field.kind === "boolean") return raw === "true";

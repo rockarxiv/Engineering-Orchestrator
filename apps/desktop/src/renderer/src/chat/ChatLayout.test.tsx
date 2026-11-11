@@ -1763,7 +1763,7 @@ describe("a proposed item, open in the canvas", () => {
         typeLabel: "Section",
         under: null,
         ...row,
-        ...(full ? { description } : {}),
+        ...(full ? { description, addedFields: [] } : {}),
         created: state.now === "applied" ? CREATED[index] : null,
       }));
     const closed = () => (state.now === "open" ? null : state.now);

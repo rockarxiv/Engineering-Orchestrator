@@ -860,6 +860,13 @@ export const itemTypes = sqliteTable(
      */
     actionOverrides: text("action_overrides", { mode: "json" }).notNull().default("{}"),
     createdAt: integer("created_at").notNull(),
+    /**
+     * When it last changed after it was made (EO-735, migration 0167), or
+     * null for a type nobody has edited. What the record pages types to
+     * its replicas by, `created_at` standing in where it is null, so an
+     * edit reaches the desktops that already hold the type.
+     */
+    updatedAt: integer("updated_at"),
   },
   (table) => [uniqueIndex("idx_item_types_slug").on(table.projectId, table.packSlug, table.slug)],
 );

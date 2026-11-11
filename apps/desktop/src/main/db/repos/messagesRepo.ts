@@ -106,6 +106,15 @@ export function markMessageHandled(
 }
 
 /**
+ * Whether this database holds any message of a source about one subject,
+ * handled or not (EO-735) — what a sender that runs on every launch asks
+ * so a person is told once rather than at every start.
+ */
+export function hasMessageAbout(db: Db, source: string, subject: string): boolean {
+  return db.select({ id: messages.id }).from(messages).where(and(eq(messages.source, source), eq(messages.subject, subject))).get() !== undefined;
+}
+
+/**
  * Resolves every open message of a source about one subject (EO-727):
  * what they asked about was settled some other way. Answers those it
  * closed; one already handled is left as it was.

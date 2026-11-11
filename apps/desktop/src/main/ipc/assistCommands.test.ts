@@ -17,6 +17,7 @@ import {
   ProposalDetailSchema,
   ProposalSummarySchema,
   proposedItemPath,
+  specFields,
 } from "@eo/core";
 import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -104,6 +105,8 @@ import { renderCurrentView } from "../mcpHost/render.js";
 import { STEER_REPLY_WITHIN_MS, type EngineHandle } from "./domainCommands.js";
 import { handleIpcRequest } from "./handleRequest.js";
 import { clearHandlerRegistry, dispatchIpc, registerHandler } from "./registry.js";
+import { resolveItemType } from "../db/repos/itemTypesRepo.js";
+import { updateItemTypeCommand } from "./itemTypeCommands.js";
 
 /**
  * One thread, and a page that names one thing (EO-192, EO-193).
@@ -2088,8 +2091,8 @@ describe("the buttons on a card", () => {
       expect(proposal).toMatchObject({ conversationId: conversation.id, canApprove: true, closed: null, container: { title: "Rate limiting" } });
       expect(proposal!.rows.map((row) => (row.kind === "new" ? row.description : null))).toEqual(PLAN.stories.map((story) => story.body));
       // The rows are the card's own, so the two cannot list different things.
-      expect(proposal!.rows.map((row) => (row.kind === "new" ? { ...row, description: undefined } : row))).toEqual(
-        proposalOn(messageId)!.rows.map((row) => ({ ...row, description: undefined })),
+      expect(proposal!.rows.map((row) => (row.kind === "new" ? { ...row, description: undefined, addedFields: undefined } : row))).toEqual(
+        proposalOn(messageId)!.rows.map((row) => ({ ...row, description: undefined, addedFields: undefined })),
       );
 
       const applied = approveAssistProposal(handle.db, undefined, { conversationId: proposal!.conversationId, messageId });
@@ -2104,6 +2107,45 @@ describe("the buttons on a card", () => {
       const after = readAssistProposal(handle.db, { messageId }).proposal!;
       expect(after).toMatchObject({ canApprove: false, closed: "applied" });
       expect(after.rows.map((row) => (row.kind === "new" ? row.created?.key : null))).toEqual(applied.createdKeys.slice(1));
+    });
+
+    /**
+     * A field the project added to the items' type (EO-735) is offered on
+     * each row, and what a person sets before Create is filed with that
+     * row alone; a row nobody set anything on is created without it.
+     */
+    it("offer each row's added fields, and file what a person set on them when approved", async () => {
+      const conversation = await openedOn("/settings");
+      const story = resolveItemType(handle.db, conversation.projectId, { packSlug: "developer", slug: "story" });
+      if (!story.ok) throw new Error(story.problem);
+      const own = specFields(story.type.specShape).map(({ name, kind, required }) => ({ name, kind, required }));
+      expect(updateItemTypeCommand(handle.db, { id: story.type.id, fields: [...own, { name: "automerge", kind: "boolean", required: false }] }).problem).toBeNull();
+      const { cardIds } = turn(conversation, { message: "Here is that as work.", questions: [], proposals: [PLAN] });
+      const messageId = cardIds[0]!;
+
+      const { proposal } = readAssistProposal(handle.db, { messageId });
+      expect(proposal!.rows.map((row) => (row.kind === "new" ? row.addedFields : null))).toEqual(
+        PLAN.stories.map(() => [{ name: "automerge", label: "Automerge", kind: "boolean" }]),
+      );
+
+      const applied = approveAssistProposal(handle.db, undefined, { conversationId: conversation.id, messageId, addedFields: [{ row: 1, values: { automerge: false } }] });
+
+      expect(applied.problem).toBeNull();
+      const [, first, second, third] = applied.createdKeys.map((key) => getItemByKey(handle.db, key)!);
+      expect(second!.spec).toMatchObject({ automerge: false });
+      expect(first!.spec).not.toHaveProperty("automerge");
+      expect(third!.spec).not.toHaveProperty("automerge");
+    });
+
+    it("refuse a value for a field the row's type was not given here, and create nothing", async () => {
+      const conversation = await openedOn("/settings");
+      const { cardIds } = turn(conversation, { message: "Here is that as work.", questions: [], proposals: [PLAN] });
+
+      const refused = approveAssistProposal(handle.db, undefined, { conversationId: conversation.id, messageId: cardIds[0]!, addedFields: [{ row: 0, values: { acceptance_criteria: [] } }] });
+
+      expect(refused.applied).toBe(false);
+      expect(refused.problem).toContain("“acceptance_criteria” is not a field this project added");
+      expect(refused.createdKeys).toEqual([]);
     });
 
     /**

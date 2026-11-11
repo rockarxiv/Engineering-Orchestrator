@@ -6,7 +6,7 @@ import type { PostCommentInput } from "../db/repos/commentsRepo.js";
 import { drainToRecord, type DrainResult } from "./drain.js";
 import { recordFor, type LocalItemRecord } from "./localRecord.js";
 import type { ItemRecord, MemoryWriteRequest, OfferWorkInput, TransitionCommand, WorkOffer } from "./record.js";
-import { getConsolidation, getMessage, getUpdateConflict, memoryEntryProjectId, memoryScopeProjectId } from "../db/repos/index.js";
+import { getConsolidation, getItemType, getMessage, getUpdateConflict, memoryEntryProjectId, memoryScopeProjectId } from "../db/repos/index.js";
 import { sendMessageToAdmins } from "../messages/messages.js";
 import { heldByTheRecord } from "../gallery/templateUpdates.js";
 import { createRemoteRecord, type RemoteRecord } from "./remoteRecord.js";
@@ -520,6 +520,16 @@ export function createDeviceRecord(options: DeviceRecordOptions): DeviceRecord {
     // kept here, the organisation's for one it holds — where "cannot be
     // reached" is a refusal, not a local write.
     changeDependencies: (request) => recordOwning(request.itemId).changeDependencies(request),
+
+    // The record that holds the type's project (EO-735): the
+    // organisation's for a project moved to it, where "cannot be reached"
+    // is a refusal rather than a local write; this database for one kept
+    // here, for the installation's own types and on the record itself.
+    updateItemType: (request) => {
+      const projectId = getItemType(db, request.id as Uuid)?.projectId ?? null;
+      const onTheRecord = options.isTheRecord !== true && projectId !== null && projectMovedToTheRecord(db, projectId);
+      return (onTheRecord ? remote : local).updateItemType(request);
+    },
 
     // The record that owns the project (EO-471). A project somebody
     // moved is the record's for ever, for `theRecordOwns`' reason, so a

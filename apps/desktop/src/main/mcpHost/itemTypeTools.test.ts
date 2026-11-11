@@ -74,10 +74,12 @@ describe("item_types_list", () => {
 
     const types = (result.structuredContent as { types: { packSlug: string; slug: string; specShape: unknown }[] }).types;
     expect(types.find((type) => type.slug === "case")).toMatchObject({ packSlug: "local" });
-    // A pack's types, where the project has them, say they can only be renamed.
+    // A pack's types, where the project has them, say what of them may change (EO-735).
     const shipped = types.filter((type) => type.packSlug !== "local");
     expect(shipped.length).toBeGreaterThan(0);
-    for (const type of shipped) expect(text).toContain(`a ${type.packSlug} pack's type — only its label and plural can change, and it cannot be deleted`);
+    for (const type of shipped) expect(text).toContain(
+        `a ${type.packSlug} pack's type — its label and plural can change and optional fields can be added beside the pack's own; the pack's fields and its container flag cannot change, and it cannot be deleted`,
+      );
   });
 
   it("counts the items of a type", async () => {

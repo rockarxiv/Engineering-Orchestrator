@@ -14,6 +14,8 @@ import type {
   Uuid,
 } from "@eo/core";
 import {
+  addedFieldCollisionMessage,
+  addedFieldCollisions,
   ADMIN_GRANT_REFUSAL,
   CONNECTOR_SETUP_REFUSAL,
   ADMIN_MCP_SERVER_NAME,
@@ -67,6 +69,7 @@ import {
   listAgents,
   getModuleBySlug,
   getPipeline,
+  getProject,
   listActionDefinitionsForRole,
   listItemTypes,
   listModules,
@@ -663,7 +666,7 @@ export interface ImportPreflight {
    */
   refusal: string | null;
   /** The types the pack ships, and whether this project already has each. */
-  itemTypes: { type: string; label: string; present: boolean }[];
+  itemTypes: { type: string; label: string; present: boolean; conflict: string | null }[];
   /** A slug already in this catalog. Neither side is overwritten without a choice. */
   collisions: { slug: string; localName: string; incomingName: string }[];
   moduleCount: number;
@@ -719,6 +722,8 @@ export interface PreflightOptions {
    * client checking a document with no project in hand is asking about
    * the installation, and a preflight that guessed at one would say a
    * type is already present on the strength of somebody else's project.
+   * Item types are read in the installation's own scope then, which is
+   * where an import naming no project writes them (EO-735).
    */
   projectId?: Uuid | null;
 }
@@ -851,11 +856,24 @@ export function preflightImport(db: Db, secrets: ModuleSecretsOptions, document:
     // a document it did not parse here — and the screen it reaches has a
     // line to show rather than an exception to swallow.
     refusal: packRefusal(document),
-    itemTypes: document.itemTypes.map((type) => ({
-      type: qualifiedItemType(type),
-      label: type.label,
-      present: projectId !== undefined && hasItemType(db, projectId, type.packSlug, type.slug),
-    })),
+    itemTypes: document.itemTypes.map((type) => {
+      // The row already here under the pack's word, if any, in the scope
+      // the import writes to (`writeItemTypes`): the project's, or the
+      // installation's where no project is named (EO-735, review). An
+      // import never reshapes it, so the one thing to say about it beyond
+      // "kept" is a field the document ships under a name this scope gave
+      // a field of its own.
+      const scope = (projectId ?? null) as Uuid | null;
+      const here = listItemTypes(db, scope).find((row) => row.packSlug === type.packSlug && row.slug === type.slug);
+      const collisions = here === undefined ? [] : addedFieldCollisions(here.specShape, type.specShape);
+      const projectName = scope === null ? null : (getProject(db, scope)?.name ?? null);
+      return {
+        type: qualifiedItemType(type),
+        label: type.label,
+        present: here !== undefined,
+        conflict: here === undefined || collisions.length === 0 ? null : collisions.map((field) => addedFieldCollisionMessage(here, field, projectName)).join(" "),
+      };
+    }),
     missingBinaries: [...binaries].map(([name, wantedBy]) => ({ name, wantedBy })),
     missingSecrets: [...secretNames].map(([name, wantedBy]) => ({ name, wantedBy })),
     wantsNetwork,

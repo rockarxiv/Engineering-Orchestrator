@@ -139,7 +139,7 @@ export const AssistCardSchema = z.discriminatedUnion("kind", [
     /**
      * Change one item type (EO-523) — `itemTypes:update`. Each of the
      * four is the value it would have, or null to leave it as it is. A
-     * pack's type takes a new label and plural only, as in the editor.
+     * pack's type takes a new label and plural, and optional fields beside the pack's own (EO-735).
      */
     kind: z.literal("itemTypeUpdate"),
     /** The type, by the id `item_types_list` gives. */

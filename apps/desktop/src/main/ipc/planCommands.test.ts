@@ -1,4 +1,4 @@
-import { gitStateOf, jiraStateOf, ipcContract, type IpcPayload, type Uuid } from "@eo/core";
+import { gitStateOf, jiraStateOf, ipcContract, specFields, type IpcPayload, type SpecFieldDraft, type Uuid } from "@eo/core";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { DbHandle } from "../db/client.js";
 import {
@@ -13,6 +13,8 @@ import {
 import { attachWorkspace, openMigratedTestDb } from "../db/testHelpers.js";
 import { handleIpcRequest } from "./handleRequest.js";
 import { submitPlan } from "./planCommands.js";
+import { listItemTypes } from "../db/repos/itemTypesRepo.js";
+import { updateItemTypeCommand } from "./itemTypeCommands.js";
 
 /**
  * A plan agreed outside EO, handed over whole.
@@ -43,6 +45,14 @@ function plan(overrides: Partial<IpcPayload<"work:submitPlan">> = {}): IpcPayloa
     stories: [story("Cap the importer's request rate")],
     ...overrides,
   };
+}
+
+/** Adds optional fields of the project's own to the pack's type of this word, in the installation's scope (EO-735). */
+function addFieldsTo(slug: string, added: SpecFieldDraft[]): void {
+  const type = listItemTypes(handle.db, null).find((row) => row.packSlug === "developer" && row.slug === slug)!;
+  const own = specFields(type.specShape).map(({ name, kind, required }) => ({ name, kind, required }));
+  const saved = updateItemTypeCommand(handle.db, { id: type.id, fields: [...own, ...added] });
+  if (saved.problem !== null) throw new Error(saved.problem);
 }
 
 beforeEach(() => {
@@ -508,6 +518,38 @@ describe("a plan naming an existing branch for a story", () => {
 
     expect(result.created).toBe(false);
     expect(result.problem).toContain("does not work on a branch");
+    expect(listItemsForProject(handle.db, null)).toHaveLength(before);
+  });
+});
+
+describe("a story's own fields in a submitted plan (EO-735)", () => {
+  const AUTOMERGE: SpecFieldDraft = { name: "automerge", kind: "boolean", required: false };
+
+  it("stores an added field a story sends in spec, and a story without it is valid", async () => {
+    addFieldsTo("story", [AUTOMERGE]);
+
+    // Through the channel, so the schema is shown to keep `spec` rather than strip it.
+    const result = await handleIpcRequest(
+      "work:submitPlan",
+      plan({ stories: [story("Merges itself", { spec: { automerge: true } }), story("Says nothing")] }),
+      (parsed) => submitPlan(handle.db, undefined, parsed),
+      { exposeErrorDetails: true },
+    );
+
+    expect(result).toMatchObject({ ok: true, data: { created: true } });
+    const keys = result.ok ? result.data.storyKeys : [];
+    expect(getItemByKey(handle.db, keys[0]!)?.spec).toMatchObject({ automerge: true, acceptance_criteria: ["Merges itself is demonstrably done"] });
+    expect(getItemByKey(handle.db, keys[1]!)?.spec ?? {}).not.toHaveProperty("automerge");
+  });
+
+  it("refuses the whole plan for a value of the wrong kind, naming the field", () => {
+    addFieldsTo("story", [AUTOMERGE]);
+    const before = listItemsForProject(handle.db, null).length;
+
+    const result = submitPlan(handle.db, undefined, plan({ stories: [story("Merges itself", { spec: { automerge: "yes" } })] }));
+
+    expect(result.created).toBe(false);
+    expect(result.problem).toContain("automerge");
     expect(listItemsForProject(handle.db, null)).toHaveLength(before);
   });
 });

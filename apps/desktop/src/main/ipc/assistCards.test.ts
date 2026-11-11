@@ -1,6 +1,7 @@
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { sql } from "drizzle-orm";
+import { listItemTypes } from "../db/repos/itemTypesRepo.js";
 import { join } from "node:path";
 import { AssistOutputSchema, PipelineExportSchema, pageDescriptorFor, type AssistReply, type IpcChannel, type IpcResponse, type Item, type Uuid } from "@eo/core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -377,7 +378,10 @@ describe("importing into the chat's own project", () => {
     const { cardIds } = turn(conversation, { message: "Here.", card: { kind: "pipelineImport", attachmentId } });
 
     const shown = await read(conversation, cardIds[0]!);
-    expect(shown.card?.kind === "pipelineImport" && shown.card.preflight.itemTypes.every((type) => !type.present)).toBe(true);
+    // Read in the installation's scope, where an import naming no project writes its types (EO-735) — never the active project's.
+    const installation = new Set(listItemTypes(handle.db, null).map((type) => `${type.packSlug}:${type.slug}`));
+    const preflight = shown.card?.kind === "pipelineImport" ? shown.card.preflight : null;
+    expect(preflight?.itemTypes.map((type) => type.present)).toEqual(preflight?.itemTypes.map((type) => installation.has(type.type)));
 
     expect((await press(conversation, cardIds[0]!, { deploy: "reuse" })).applied).toBe(true);
 

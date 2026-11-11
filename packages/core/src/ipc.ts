@@ -30,6 +30,7 @@ import {
   RecordCommandSchema,
   RecordCommentCommandSchema,
   RecordItemSchema,
+  RecordItemTypeSchema,
   RecordLeaseSchema,
   RecordRunCommandSchema,
   RecordOfferSchema,
@@ -615,8 +616,13 @@ export const ImportPreflightViewSchema = z.object({
    * can install or sign into turns it green.
    */
   refusal: z.string().nullable().default(null),
-  /** The item types the pack ships, and whether this project already has each. */
-  itemTypes: z.array(z.object({ type: z.string(), label: z.string(), present: z.boolean() })).default([]),
+  /**
+   * The item types the pack ships, and whether this project already has
+   * each. `conflict` is the sentence for one already here whose fields
+   * this project added to under a name the pack's version also uses
+   * (EO-735): the type is kept as it is and nothing is merged.
+   */
+  itemTypes: z.array(z.object({ type: z.string(), label: z.string(), present: z.boolean(), conflict: z.string().nullable().default(null) })).default([]),
   /**
    * Prompts and module code still written against the tool names
    * EO renamed (KAN-178).
@@ -1120,7 +1126,21 @@ export const recordContract = {
        * proposals are read with, and no agent inside a conversation
        * names files on this machine.
        */
-      stories: z.array(RefineStorySchema.extend({ paths: ItemPathsSchema.optional() })).min(1),
+      stories: z
+        .array(
+          RefineStorySchema.extend({
+            paths: ItemPathsSchema.optional(),
+            /**
+             * The story's other fields, under the names its type's shape
+             * declares (EO-735) — one a project added to a pack's type,
+             * say. Held to the shape with the rest of the story, so a
+             * value of the wrong kind refuses the plan; a name the type
+             * does not declare is not stored.
+             */
+            spec: z.record(z.string().min(1), z.unknown()).optional(),
+          }),
+        )
+        .min(1),
       /** Files to put on the feature as its own (EO-704). Honoured only where a door stamped `pathsFrom`. */
       paths: ItemPathsSchema.optional(),
       [PATHS_FROM_KEY]: PathsFromSchema.optional(),
@@ -2403,7 +2423,19 @@ export const recordContract = {
    * on, never a second way of building one.
    */
   "assist:approve": channel(
-    z.object({ conversationId: z.string(), messageId: z.string() }),
+    z.object({
+      conversationId: z.string(),
+      messageId: z.string(),
+      /**
+       * Values a person set, on the proposed item's view, for fields the
+       * project added to a row's type (EO-735), by the row's place among
+       * the proposal's new items. Merged into what that row files and held
+       * to the type's shape with the rest; a name that is not a field
+       * added to the row's type refuses the approval. Absent is the card
+       * as proposed.
+       */
+      addedFields: z.array(z.object({ row: z.number().int().nonnegative(), values: z.record(z.string().min(1), z.unknown()) })).optional(),
+    }),
     z.object({
       applied: z.boolean(),
       problem: z.string().nullable(),
@@ -4433,16 +4465,29 @@ export const recordContract = {
     z.object({ type: ItemTypeViewSchema.nullable(), problem: z.string().nullable() }),
   ),
   // Every field optional, because a pack's type may have only its labels
-  // changed and the screen sends only what it is allowed to move —
-  // sending `container` or `fields` for one is refused rather than
-  // ignored, so a caller is never told a change landed when it did not.
+  // and its project's own fields changed (EO-735), and the screen sends
+  // only what it means to move — sending `container` for one, or a
+  // `fields` list that changes the pack's own fields, is refused rather
+  // than ignored, so a caller is never told a change landed when it did
+  // not.
   "itemTypes:update": channel(
     z.object({
       id: z.string(),
       label: z.string().min(1).optional(),
       plural: z.string().min(1).optional(),
       container: z.boolean().optional(),
+      /**
+       * The whole field list as it would be. On a pack's type, the pack's
+       * fields as they are and any others beside them, which are this
+       * project's own and optional (`packItemTypeFieldsProblem`).
+       */
       fields: z.array(SpecFieldDraftSchema).optional(),
+      /**
+       * Never accepted: what an action means on a type is not edited
+       * here. Read so that sending it is refused, naming it, rather than
+       * stripped and answered as saved.
+       */
+      actionOverrides: z.unknown().optional(),
     }),
     z.object({ type: ItemTypeViewSchema.nullable(), problem: z.string().nullable() }),
   ),
@@ -6130,6 +6175,31 @@ export const recordContract = {
       open: z.array(z.string()),
     }),
   ),
+  /**
+   * A change to an item type the record holds, asked by a device that
+   * holds it as a replica (EO-735): a rename, or the project's own
+   * optional fields on a pack's type. The record judges it with the
+   * checks `itemTypes:update` makes — against its own items, which only
+   * it has all of — and only an admin's device may ask. Answered with
+   * the type as the pull would carry it, which the device writes into
+   * its replica at once; every other device takes it on its next pull.
+   */
+  "record:updateItemType": channel(
+    z.object({
+      deviceId: z.string().min(1),
+      id: z.string().min(1),
+      label: z.string().min(1).optional(),
+      plural: z.string().min(1).optional(),
+      container: z.boolean().optional(),
+      fields: z.array(SpecFieldDraftSchema).optional(),
+      actionOverrides: z.unknown().optional(),
+    }),
+    z.object({
+      /** The type as it now stands, as the pull would carry it. Null when it was refused. */
+      type: RecordItemTypeSchema.nullable(),
+      problem: z.string().nullable(),
+    }),
+  ),
   "record:changeDependencies": channel(
     z.object({
       deviceId: z.string().min(1),
@@ -7488,6 +7558,9 @@ export const DEVICE_SCOPED_CHANNELS = [
   // asks for, and the record names that device's person in the comment
   // that says so (EO-600).
   "record:changeDependencies",
+  // Changing a project's item type is an administrator's act, and the
+  // record checks that the asking device is one of its admins' (EO-735).
+  "record:updateItemType",
   // A message's recipients are the record's admins, and a reply or a
   // pull is only ever the asking device's person's (EO-726).
   "record:sendMessage",

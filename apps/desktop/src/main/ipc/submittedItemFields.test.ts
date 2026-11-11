@@ -1,4 +1,4 @@
-import { jiraStateOf, ipcContract, type DiscussionOutput, type IpcPayload, type Item, type Uuid } from "@eo/core";
+import { jiraStateOf, ipcContract, specFields, type DiscussionOutput, type IpcPayload, type Item, type SpecFieldDraft, type Uuid } from "@eo/core";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -28,6 +28,8 @@ import { PROPOSAL_KIND } from "../roles/proposal.js";
 import { updateItemText } from "./domainCommands.js";
 import { submitPlan } from "./planCommands.js";
 import { submitItem, submitItemCommand } from "./itemCommands.js";
+import { listItemTypes } from "../db/repos/itemTypesRepo.js";
+import { updateItemTypeCommand } from "./itemTypeCommands.js";
 
 /**
  * A bug carries acceptance criteria too, and no path drops a field in
@@ -88,6 +90,14 @@ function bug(overrides: Partial<IpcPayload<"work:submitItem">> = {}): IpcPayload
     environment: "Chrome 128 on macOS 14.",
     ...overrides,
   };
+}
+
+/** Adds optional fields of the project's own to the pack's type of this word, in the installation's scope (EO-735). */
+function addFieldsTo(slug: string, added: SpecFieldDraft[]): void {
+  const type = listItemTypes(handle.db, null).find((row) => row.packSlug === "developer" && row.slug === slug)!;
+  const own = specFields(type.specShape).map(({ name, kind, required }) => ({ name, kind, required }));
+  const saved = updateItemTypeCommand(handle.db, { id: type.id, fields: [...own, ...added] });
+  if (saved.problem !== null) throw new Error(saved.problem);
 }
 
 function criteriaOf(item: Item): unknown {
@@ -427,4 +437,29 @@ describe("no field this channel accepts is dropped in silence", () => {
       });
     }
   }
+});
+
+describe("a field a project added to the pack's type, handed over in spec (EO-735)", () => {
+  const AUTOMERGE: SpecFieldDraft = { name: "automerge", kind: "boolean", required: false };
+
+  it("is stored when sent, and an item filed without it is valid", () => {
+    addFieldsTo("bug", [AUTOMERGE]);
+
+    const sent = submitItem(handle.db, undefined, bug({ spec: { automerge: false } }));
+    const without = submitItem(handle.db, undefined, bug());
+
+    expect(sent.created).toBe(true);
+    expect(getItemByKey(handle.db, sent.key!)?.spec).toMatchObject({ automerge: false });
+    expect(without.created).toBe(true);
+    expect(getItemByKey(handle.db, without.key!)?.spec ?? {}).not.toHaveProperty("automerge");
+  });
+
+  it("is held to its kind", () => {
+    addFieldsTo("bug", [AUTOMERGE]);
+
+    const refused = submitItem(handle.db, undefined, bug({ spec: { automerge: "yes" } }));
+
+    expect(refused.created).toBe(false);
+    expect(refused.problem).toContain("automerge");
+  });
 });

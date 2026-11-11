@@ -120,8 +120,9 @@ describe("what the system agent's prompt says about item types (EO-523)", () => 
     expect(cards()).toContain("`null` to leave it as it is");
   });
 
-  it("says a pack's type can only be renamed, and that a refusal is shown on the card", () => {
-    expect(cards()).toContain("**A pack's type can only be renamed**");
+  it("says a pack's type can be renamed and take optional fields of the project's own, and that a refusal is shown on the card", () => {
+    expect(cards()).toContain("**A pack's type can be renamed, and can take optional fields of the project's own**");
+    expect(cards()).toContain("each with `\"required\": false`");
     expect(cards()).toContain("the card shows that refusal in place of its button");
     expect(cards()).toContain("No tool adds, changes or removes a type; the card is the only way.");
   });

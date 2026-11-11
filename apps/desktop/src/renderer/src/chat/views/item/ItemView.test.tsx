@@ -1079,6 +1079,35 @@ describe("the spec editor, drawn from the type's shape (KAN-147)", () => {
     expect(within(details).queryByRole("button")).not.toBeInTheDocument();
   });
 
+  it("offers a field a project added to a pack's type, empty until somebody sets it (EO-735)", async () => {
+    const { calls, onCall } = recorder();
+    const added = {
+      roles: [],
+      builtins: [],
+      itemTypes: [
+        {
+          packSlug: "support",
+          slug: "case",
+          label: "Case",
+          plural: "Cases",
+          container: false,
+          specShape: { ...SHAPE, properties: { ...SHAPE.properties, automerge: { type: "boolean", "x-eo-added": true }, note: { type: "string", "x-eo-added": true } } },
+          actionOverrides: {},
+        },
+      ],
+    };
+    renderItem(caseItem({ customer: "ACME" }), onCall, { "registry:get": added, "items:update": { updated: true, problem: null } });
+
+    fireEvent.click(await screen.findByRole("button", { name: "Edit details" }));
+    expect(screen.getByRole("switch", { name: "Automerge" })).not.toBeChecked();
+    expect(screen.getByLabelText("Note")).toHaveValue("");
+    fireEvent.click(screen.getByRole("switch", { name: "Automerge" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save details" }));
+
+    // Only the field moved; `note`, never touched, is not decided as "".
+    await waitFor(() => expect(payloadOf(calls, "items:update")).toEqual({ itemId: "t1", spec: { automerge: true } }));
+  });
+
   it("says nothing at all for a type whose only field is its criteria", async () => {
     renderItem(detail(), undefined, {
       "registry:get": {

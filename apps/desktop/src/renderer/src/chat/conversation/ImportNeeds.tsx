@@ -102,6 +102,13 @@ export function ImportNeeds({
             : "."}
         </Line>
       ) : null}
+      {preflight.itemTypes.map((type) =>
+        type.conflict === null ? null : (
+          <Line key={`type-${type.type}`} tone="paused">
+            {type.conflict}
+          </Line>
+        ),
+      )}
       {preflight.roleSlots.length > 0 ? (
         <Line>
           Needs {preflight.roleSlots.length === 1 ? "an agent in the role" : "agents in the roles"} {preflight.roleSlots.map((slot) => slot.slug).join(", ")}

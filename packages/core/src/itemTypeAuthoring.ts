@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { specFields, type SpecFieldKind, type SpecProperty, type SpecShape } from "./schemas/specShape.js";
+import { ADDED_FIELD_KEYWORD, specFields, type SpecFieldKind, type SpecProperty, type SpecShape } from "./schemas/specShape.js";
 
 /**
  * Making an item type without writing code (ARCHITECTURE.md, "An item type is data", KAN-164).
@@ -29,10 +29,11 @@ import { specFields, type SpecFieldKind, type SpecProperty, type SpecShape } fro
  * `qualifiedItemType`, so a hand-made `case` and a support pack's `case`
  * have to be tellable apart — and they are, as `local:case` and
  * `support:case`. It is also the whole of how the editor knows what it
- * may change: a pack's type is editable in label only, because its
- * container flag and its fields are what the pack's code was written
- * against, and a person who moves them has changed a contract they
- * cannot see the other end of.
+ * may change: a pack's type takes a new label and optional fields of
+ * this project's own (EO-735) and nothing else, because its container
+ * flag and its own fields are what the pack's code was written against,
+ * and a person who moves them has changed a contract they cannot see
+ * the other end of.
  *
  * Reserved, therefore: a pack calling itself `local` would claim every
  * hand-made type on the installation. Nothing enforces that today
@@ -48,6 +49,14 @@ export function isPackShipped(type: { packSlug: string }): boolean {
 
 /** The four kinds a person may pick, in the order the editor offers them. */
 export const SPEC_FIELD_KINDS: readonly SpecFieldKind[] = ["string", "number", "boolean", "string list"];
+
+/** What each kind is called to a person — the settings, a card, a refusal. */
+export const SPEC_FIELD_KIND_LABELS: Readonly<Record<SpecFieldKind, string>> = {
+  string: "Text",
+  number: "Number",
+  boolean: "Yes / no",
+  "string list": "List of text",
+};
 
 /**
  * One field as the form holds it: a name, a kind and whether creation
@@ -80,6 +89,21 @@ export function toSlug(raw: string): string {
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "_")
     .replace(/^_+|_+$/g, "");
+}
+
+/**
+ * A field's name as the row will hold it (EO-735): one of the pack's
+ * own fields exactly as the pack wrote it, anything else normalised by
+ * `toSlug`.
+ *
+ * A pack's shape may name a field `customer-name` or `customerName` —
+ * `SpecShapeSchema` allows both — and that name is the key every item of
+ * the type already holds its value under. Normalising it would turn the
+ * pack's unchanged field into a field the list removes and one it adds,
+ * so only what a person typed is normalised.
+ */
+export function fieldNameFor(raw: string, packFieldNames: ReadonlySet<string>): string {
+  return packFieldNames.has(raw) ? raw : toSlug(raw);
 }
 
 /**
@@ -131,8 +155,10 @@ export function specShapeFromFields(fields: readonly SpecFieldDraft[]): SpecShap
  * Lossy on purpose, and only in the direction that is safe: a pack's
  * `title`, `description` and `x-eo-criteria` are not offered by the form
  * and do not survive a round-trip through it — which is one of the
- * reasons a pack's type is editable in label only, rather than the
- * editor quietly rewriting a shape it can only see part of.
+ * reasons a pack's own fields are never rewritten from this list: a
+ * field list for a pack's type is laid beside the pack's document by
+ * `withAddedFields`, rather than the editor quietly rewriting a shape it
+ * can only see part of.
  */
 export function specFieldDrafts(shape: SpecShape): SpecFieldDraft[] {
   return specFields(shape).map((field) => ({ name: field.name, kind: field.kind, required: field.required }));
@@ -152,8 +178,13 @@ export interface ItemTypeDraft {
  * form checks before it asks and the command checks before it writes,
  * and two implementations would be two definitions of a valid type with
  * the lenient one deciding what is in the table.
+ *
+ * `packFieldNames` are a pack's type's own fields (EO-735), compared as
+ * the pack wrote them rather than normalised (`fieldNameFor`), so two
+ * distinct pack names such as `customer-name` and `customer_name` are
+ * not taken for one.
  */
-export function itemTypeDraftProblem(draft: ItemTypeDraft): string | null {
+export function itemTypeDraftProblem(draft: ItemTypeDraft, packFieldNames: ReadonlySet<string> = new Set()): string | null {
   if (draft.label.trim() === "") return "A type needs a name — “Case”, say.";
   if (draft.plural.trim() === "") return "A type needs a plural name — “Cases”, say.";
   if (toSlug(draft.label) === "") return `“${draft.label.trim()}” has no letters or digits in it, so there is no word to file items under.`;
@@ -161,8 +192,16 @@ export function itemTypeDraftProblem(draft: ItemTypeDraft): string | null {
   const seen = new Set<string>();
   for (const field of draft.fields) {
     if (field.name.trim() === "") return "Every field needs a name.";
-    if (toSlug(field.name) === "") return `“${field.name.trim()}” has no letters or digits in it, so it cannot be a field name.`;
-    const name = toSlug(field.name);
+    const name = fieldNameFor(field.name, packFieldNames);
+    if (name === "") return `“${field.name.trim()}” has no letters or digits in it, so it cannot be a field name.`;
+    // A name every object already answers to: an item's spec would seem
+    // to hold a value for it while holding none, wherever a door reads
+    // `spec[name]` — the validator included — so it is refused rather
+    // than saved to fail later. After normalising only `constructor`
+    // can be one; a pack's own names are the pack's.
+    if (!packFieldNames.has(field.name) && name in Object.prototype) {
+      return `“${name}” is a name every object already has, so EO could not tell a value for it from none. Give the field another name.`;
+    }
     if (seen.has(name)) return `Two fields are called “${name}”. Each field needs its own name.`;
     seen.add(name);
   }
@@ -197,15 +236,151 @@ export function packItemTypeRefusal(type: { label: string; packSlug: string }): 
 }
 
 /**
- * Why a pack's type cannot have its shape or its container flag changed.
+ * Why a pack's type cannot have its container flag changed.
  *
- * The design: a person may *create* a type, and rename what a pack ships. The
- * flag and the fields are what that pack's prompts, posters and routing
- * were written against — a pack's story that stops demanding acceptance
+ * The design: a person may *create* a type, rename what a pack ships and
+ * add optional fields of their own to it (EO-735). The flag and the
+ * pack's fields are what that pack's prompts, posters and routing were
+ * written against — a pack's story that stops demanding acceptance
  * criteria breaks the review it ships, silently and one run later.
  */
 export function packItemTypeEditRefusal(type: { label: string; packSlug: string }): string {
-  return `“${type.label}” comes from the ${type.packSlug} pack. You can rename it; its fields and whether it holds other items are the pack's.`;
+  return `“${type.label}” comes from the ${type.packSlug} pack, so whether it holds other items is the pack's. You can rename it and add optional fields of your own.`;
+}
+
+/** Why no type's action overrides change here: a pack's are the pack's, and editing them is not offered for any. */
+export function itemTypeActionOverridesRefusal(type: { label: string; packSlug: string }): string {
+  return isPackShipped(type)
+    ? `“${type.label}” comes from the ${type.packSlug} pack, so what an action means on it is the pack's. You can rename it and add optional fields of your own.`
+    : `What an action means on “${type.label}” cannot be changed here.`;
+}
+
+/**
+ * The fields a project added to a pack's type (EO-735), as the form
+ * holds them. Empty on a type nobody added to, and on a type made here,
+ * whose fields are all its own.
+ */
+export function addedFieldDrafts(shape: SpecShape): SpecFieldDraft[] {
+  return specFields(shape)
+    .filter((field) => field.added)
+    .map((field) => ({ name: field.name, kind: field.kind, required: false }));
+}
+
+/**
+ * A pack's type with this project's own fields laid beside the pack's
+ * (EO-735, ARCHITECTURE.md, "An item type is data").
+ *
+ * The pack's properties are kept exactly as the row holds them — their
+ * titles, descriptions, criteria marks and whatever else the pack wrote,
+ * none of which the form can see — and so is which of them are
+ * required. Whatever this project had added before is replaced by
+ * `added`, each marked and never required. Names are taken as given:
+ * the caller normalises and checks them (`packItemTypeFieldsProblem`).
+ */
+export function withAddedFields(shape: SpecShape, added: readonly SpecFieldDraft[]): SpecShape {
+  const properties: Record<string, SpecProperty> = {};
+  for (const [name, property] of Object.entries(shape.properties)) {
+    if (property[ADDED_FIELD_KEYWORD] !== true) properties[name] = property;
+  }
+  for (const field of added) {
+    // Own keys only: `constructor` or `toString` is a name a person may
+    // give a field, and `in` would find it on Object.prototype and drop it.
+    if (Object.hasOwn(properties, field.name)) continue;
+    properties[field.name] = { ...propertyFor({ ...field, required: false }), [ADDED_FIELD_KEYWORD]: true };
+  }
+  return { ...shape, properties, required: shape.required.filter((name) => Object.hasOwn(properties, name) && properties[name]![ADDED_FIELD_KEYWORD] !== true) };
+}
+
+/**
+ * Why a field list for a pack's type would change what the pack owns,
+ * or null (EO-735).
+ *
+ * `fields` is the whole list as it would be, names already normalised:
+ * the pack's fields as they are, and any others beside them, which are
+ * this project's. So a pack field missing from it is a removal, one with
+ * another kind or another required is a change, and an added one that
+ * is required is a required field the pack's own template, a plan, a job
+ * or a module would file items without. Each refusal names the field and
+ * which of the three it is.
+ *
+ * A field of the project's own named like a pack's is the pack's field
+ * as far as the list can tell: with the pack's kind and required it is
+ * that field, unchanged, and with anything else it is refused here —
+ * the pack's fields win.
+ */
+export function packItemTypeFieldsProblem(type: { label: string; packSlug: string; specShape: SpecShape }, fields: readonly SpecFieldDraft[]): string | null {
+  const asked = new Map(fields.map((field) => [field.name, field]));
+  const packFields = specFields(type.specShape).filter((field) => !field.added);
+  const taken = (field: { name: string; kind: SpecFieldKind }): string =>
+    `“${type.label}” already has a field “${field.name}” from the ${type.packSlug} pack, of kind ${SPEC_FIELD_KIND_LABELS[field.kind].toLowerCase()}. ` +
+    "The pack's fields stay as it ships them — give a field of your own another name.";
+  for (const field of packFields) {
+    // A second entry under a pack field's name is a field of the
+    // project's own claiming it, whatever else the list says.
+    if (fields.filter((other) => other.name === field.name).length > 1) return taken(field);
+    const wanted = asked.get(field.name);
+    if (wanted === undefined) {
+      return `“${field.name}” is the ${type.packSlug} pack's field on “${type.label}”, so it cannot be removed. Fields you add sit beside the pack's; they do not replace them.`;
+    }
+    if (wanted.kind !== field.kind) return taken(field);
+    if (wanted.required !== field.required) {
+      return `Whether “${field.name}” is required on “${type.label}” is the ${type.packSlug} pack's to say, and it is ${field.required ? "required" : "optional"}.`;
+    }
+  }
+  const packNames = new Set(packFields.map((field) => field.name));
+  const required = fields.find((field) => !packNames.has(field.name) && field.required);
+  if (required !== undefined) {
+    return (
+      `“${required.name}” cannot be required. A field added to “${type.label}”, which the ${type.packSlug} pack ships, is optional, ` +
+      "so whatever files one without it — the pack's own template, a plan, a job or a module — keeps working."
+    );
+  }
+  return null;
+}
+
+/**
+ * Why a field cannot be removed, renamed or have its kind changed while
+ * items hold a value for it, naming how many (EO-735) — the rule
+ * `itemTypeHoldsItemsMessage` makes for a whole type, for one field.
+ * Null when none does.
+ */
+export function fieldHoldsValuesMessage(type: { label: string; plural: string }, field: string, count: number): string | null {
+  if (count <= 0) return null;
+  const holders = count === 1 ? `1 ${type.label.toLowerCase()} holds` : `${count} ${type.plural.toLowerCase()} hold`;
+  return `${holders} a value for “${field}”. Clear it on ${count === 1 ? "that item" : "them"} before removing or renaming the field, or changing its kind.`;
+}
+
+/**
+ * The fields a pack's newer shape of a type declares under a name this
+ * row already gave a field of its own (EO-735), in the pack's order.
+ *
+ * What a pack's seed and a document's import ask of a type that is
+ * already here. Neither merges a shape into a row that exists, so this
+ * is not about what would be written: it is the one conflict a person
+ * has to hear about, since the pack's field and the project's would
+ * share a name and could not both be the item's.
+ */
+export function addedFieldCollisions(row: SpecShape, shipped: SpecShape): string[] {
+  const added = new Set(specFields(row).filter((field) => field.added).map((field) => field.name));
+  return specFields(shipped)
+    .filter((field) => !field.added && added.has(field.name))
+    .map((field) => field.name);
+}
+
+/**
+ * What EO says when a pack or a document ships a field on a type that a
+ * project already added a field of the same name to (EO-735): both, by
+ * name, and that nothing was merged.
+ *
+ * `where` is the project's name, or null for the installation's own
+ * types.
+ */
+export function addedFieldCollisionMessage(type: { label: string; packSlug: string }, field: string, where: string | null): string {
+  const holder = where === null ? "this installation" : where;
+  return (
+    `The ${type.packSlug} pack's “${type.label}” has a field “${field}”, and ${holder} already added a field “${field}” of its own to “${type.label}”. ` +
+    `EO kept the added field and its items' values, and merged nothing from the pack's “${type.label}”: the pack's field and the added one cannot share a name.`
+  );
 }
 
 /**

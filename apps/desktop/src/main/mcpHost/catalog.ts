@@ -1814,7 +1814,8 @@ const READ_TOOLS: readonly ToolSpec[] = [
     description:
       "A project's item types: each one's id, label and plural, the word items of it are filed under, whether it holds " +
       "other items or is the work, how many items are of it, and its fields — name, kind, whether required, and what a " +
-      "pack wrote about it. Says which are a pack's: a pack's type can only be renamed and never deleted; one made here " +
+      "pack wrote about it. Says which are a pack's: a pack's type can be renamed and take optional fields of the " +
+      "project's own, marked as added in this project, beside the pack's, and is never deleted; one made here " +
       "can be reshaped, and deleted while no item is of it. Pass projectId from projects_list; omit it for the project " +
       "the app window is showing. No tool adds, changes or removes a type — that is a card a person presses in the " +
       "assistant's chat.",
@@ -3750,6 +3751,7 @@ const UNGATED_WRITE_TOOLS: readonly ToolSpec[] = [
       if (p.refusal !== null) lines.push(p.refusal, "");
       if (p.capabilities.length > 0) lines.push("What this pack can reach:", ...p.capabilities.map((item) => `- ${item.server}: ${item.line}`), "");
       if (p.itemTypes.length > 0) lines.push(`Item types: ${p.itemTypes.map((item) => `${item.label}${item.present ? " (already here, kept as it is)" : ""}`).join(", ")}`, "");
+      for (const item of p.itemTypes) if (item.conflict !== null) lines.push(item.conflict, "");
       if (p.roleSlots.length > 0) {
         lines.push(
           "Roles:",

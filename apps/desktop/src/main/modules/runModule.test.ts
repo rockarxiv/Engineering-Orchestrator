@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { ALIAS_RETIREMENT_VERSION, moduleMachineSpecificWarnings } from "@eo/core";
+import { ALIAS_RETIREMENT_VERSION, isPackShipped, moduleMachineSpecificWarnings, specFields } from "@eo/core";
 import type { Comment, CustomModule, Item, Uuid } from "@eo/core";
 import { openDb, type DbHandle } from "../db/client.js";
 import { runMigrations } from "../db/migrate.js";
@@ -15,6 +15,7 @@ import {
   addDependency,
   createItemType,
   createRun,
+  getItemType,
   listAgents,
   listCommentsForItem,
   listMentionsForComment,
@@ -27,6 +28,7 @@ import type { StepAnswer } from "../roles/answers.js";
 import { resetSearchPathForTests, resolveSearchPath } from "../process/searchPath.js";
 import { postModuleComment } from "./moduleComments.js";
 import { moduleItemView } from "../ipc/domainQueries.js";
+import { updateItemTypeCommand } from "../ipc/itemTypeCommands.js";
 import {
   MAX_COMMENTS_PER_RUN,
   MAX_COMMENT_CHARS,
@@ -2431,6 +2433,47 @@ describe("what a module can read about an item", () => {
         { name: "automerge", kind: "boolean", required: false },
         { name: "summary", kind: "string", required: true },
       ],
+    });
+  });
+
+  /**
+   * A field a project added to a pack's type (EO-735): listed in
+   * `fields` whether or not it is set, and in `spec` only once it is, so
+   * a module gating on it tells never-set from `false`.
+   */
+  it("tells an added field never set from one set to false", async () => {
+    const packType = getItemType(handle.db, running.typeId)!;
+    expect(isPackShipped(packType)).toBe(true);
+    const packFields = specFields(packType.specShape).map(({ name, kind, required }) => ({ name, kind, required }));
+    const saved = updateItemTypeCommand(handle.db, { id: packType.id, fields: [...packFields, { name: "automerge", kind: "boolean", required: false }] });
+    expect(saved.problem).toBeNull();
+    const file = (title: string, spec: Record<string, unknown>) =>
+      createTestItem(handle.db, {
+        type: running.type,
+        title,
+        stepId: "todo",
+        ...(running.projectId === null ? {} : { projectId: running.projectId }),
+        spec: { acceptance_criteria: ["It works"], ...spec },
+      });
+    const unset = file("Never said", {});
+    const off = file("Said no", { automerge: false });
+    const on = file("Said yes", { automerge: true });
+
+    const outcome = await runAgainstDb(
+      `export default async function run(ctx) {
+        const read = (key) => {
+          const item = ctx.itemByKey(key).item;
+          return { set: "automerge" in item.spec, value: item.spec.automerge, field: item.fields.find((field) => field.name === "automerge") };
+        };
+        return { ok: true, result: "ok", detail: JSON.stringify({ unset: read(${JSON.stringify(unset.key)}), off: read(${JSON.stringify(off.key)}), on: read(${JSON.stringify(on.key)}) }) };
+      }`,
+    );
+
+    const field = { name: "automerge", kind: "boolean", required: false };
+    expect(answered(outcome)).toEqual({
+      unset: { set: false, field },
+      off: { set: true, value: false, field },
+      on: { set: true, value: true, field },
     });
   });
 

@@ -2,16 +2,17 @@ import { useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Navigate } from "react-router-dom";
 import { FilePlus2, MessageSquare } from "lucide-react";
-import type { ProposalDetail } from "@eo/core";
+import type { ProposalDetail, ProposedAddedField } from "@eo/core";
 import { Markdown } from "@eo/ui";
 import { assistRoomKey, drawAssistReply } from "../../../shared/assist/useAssistRoom";
 import { ipcQuery } from "../../../query/client";
 import { itemsKey, useChromeVocabulary } from "../../../query/hooks";
 import { useAskAssistant } from "../../askAssistant";
-import { Button, Card, Chip, ErrorLine, Facts, GroupLabel, Loading, Notice, ViewHeader } from "../../kit";
+import { Button, Card, Chip, ErrorLine, Facts, Field, GroupLabel, Loading, Notice, Select, TextArea, TextInput, ViewHeader } from "../../kit";
 import { Part } from "../item/Fields";
 import { RefText } from "../items/ItemReference";
 import { proposalKey, useProposal } from "./useProposal";
+import { addedFieldValues, clearAddedFieldDrafts, setAddedFieldDraft, useAddedFieldDraft } from "./addedFieldDrafts";
 
 /**
  * A proposed item, open beside the conversation before it is filed
@@ -24,10 +25,12 @@ import { proposalKey, useProposal } from "./useProposal";
  * key would be it says it is not filed yet.
  *
  * It is read from `assist:proposal`: the proposal on the run behind the
- * card, which is what approving files. Nothing here is edited. The two
- * things a person can do are the two the card offers — approve the whole
- * proposal, or say what should change, which is a sentence in the
- * conversation and a new proposal in reply.
+ * card, which is what approving files. The two things a person can do
+ * are the two the card offers — approve the whole proposal, or say what
+ * should change, which is a sentence in the conversation and a new
+ * proposal in reply. The one thing filled in here is a field the project
+ * added to the item's type (EO-735): offered empty, sent with the
+ * approval only if somebody sets it.
  *
  * Once the proposal is approved this address has nothing left to be
  * about, so it becomes the created item's own address, in the same tab.
@@ -62,7 +65,7 @@ export function ProposedItemView({ messageId, index, tabKey }: { messageId: stri
   // Approved: the item exists, and this tab is its.
   if (row.created) return <Navigate to={`/items/${row.created.itemId}`} replace state={replaces} />;
 
-  return <Unfiled proposal={proposal} row={row} messageId={messageId} />;
+  return <Unfiled proposal={proposal} row={row} index={index} messageId={messageId} />;
 }
 
 type ProposedRow = Extract<ProposalDetail["rows"][number], { kind: "new" }>;
@@ -82,7 +85,7 @@ function closedReason(proposal: ProposalDetail): string {
   return "The conversation this proposal is in has been put away, so it can no longer be approved.";
 }
 
-function Unfiled({ proposal, row, messageId }: { proposal: ProposalDetail; row: ProposedRow; messageId: string }) {
+function Unfiled({ proposal, row, index, messageId }: { proposal: ProposalDetail; row: ProposedRow; index: number; messageId: string }) {
   const vocabulary = useChromeVocabulary();
   const queryClient = useQueryClient();
   const ask = useAskAssistant();
@@ -90,9 +93,13 @@ function Unfiled({ proposal, row, messageId }: { proposal: ProposalDetail; row: 
 
   // The card's own call, on the card's own message: either button creates everything the proposal holds.
   const approve = useMutation({
-    mutationFn: () => ipcQuery("assist:approve", { conversationId: proposal.conversationId, messageId }),
+    mutationFn: () => {
+      const addedFields = addedFieldValues(messageId);
+      return ipcQuery("assist:approve", { conversationId: proposal.conversationId, messageId, ...(addedFields === undefined ? {} : { addedFields }) });
+    },
     onSuccess: (result) => {
       setProblem(result.problem);
+      if (result.applied) clearAddedFieldDrafts(messageId);
       // The room, and this proposal under its key: the card loses its button as this view becomes the item.
       // Drawn from the answer first when that chat is the one on show (EO-548); re-read either way.
       drawAssistReply(queryClient, result.conversation);
@@ -167,6 +174,10 @@ function Unfiled({ proposal, row, messageId }: { proposal: ProposalDetail; row: 
                 )}
               </Part>
 
+              {proposal.canApprove && row.addedFields.length > 0 ? (
+                <AddedFields messageId={messageId} index={index} fields={row.addedFields} disabled={approve.isPending} />
+              ) : null}
+
               {row.waitsOn.length > 0 ? (
                 <section aria-label="Dependencies" className="flex min-w-0 flex-col gap-2 border-t border-line/60 pt-3">
                   <GroupLabel>Blocked by</GroupLabel>
@@ -201,5 +212,52 @@ function Unfiled({ proposal, row, messageId }: { proposal: ProposalDetail; row: 
         </div>
       </div>
     </div>
+  );
+}
+
+/**
+ * The fields this project added to the item's type (EO-735), offered
+ * before the item exists: each empty, and filed only if somebody sets it,
+ * so an item created without them is created without them. A yes/no field
+ * is a choice of three — not set, yes, no — because a module reading it
+ * tells "never set" from "no".
+ */
+function AddedFields({ messageId, index, fields, disabled }: { messageId: string; index: number; fields: ProposedAddedField[]; disabled: boolean }) {
+  const draft = useAddedFieldDraft(messageId, index);
+  const put = (field: ProposedAddedField, text: string) => setAddedFieldDraft(messageId, index, field, text);
+  return (
+    <Part title="Added in this project">
+      <p className="text-[12px] text-ink-subtle">Optional. Each is left unset unless you fill it in before creating.</p>
+      <div className="flex flex-col gap-3">
+        {fields.map((field) => (
+          <Field key={field.name} label={field.label}>
+            {field.kind === "boolean" ? (
+              <Select aria-label={field.label} value={draft[field.name] ?? ""} disabled={disabled} onChange={(event) => put(field, event.target.value)}>
+                <option value="">Not set</option>
+                <option value="true">Yes</option>
+                <option value="false">No</option>
+              </Select>
+            ) : field.kind === "string list" ? (
+              <TextArea
+                aria-label={`${field.label}, one per line`}
+                value={draft[field.name] ?? ""}
+                rows={3}
+                disabled={disabled}
+                placeholder="One per line."
+                onChange={(event) => put(field, event.target.value)}
+              />
+            ) : (
+              <TextInput
+                aria-label={field.label}
+                type={field.kind === "number" ? "number" : "text"}
+                value={draft[field.name] ?? ""}
+                disabled={disabled}
+                onChange={(event) => put(field, event.target.value)}
+              />
+            )}
+          </Field>
+        ))}
+      </div>
+    </Part>
   );
 }
