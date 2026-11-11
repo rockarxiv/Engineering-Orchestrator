@@ -780,6 +780,15 @@ const CAPABILITIES = [
     },
   },
   {
+    name: "a fork's own usage",
+    what: "a fork of a thread — the learning review's turn — is recorded with only the tokens and cost its own turn spent, whatever its readings carry over from the thread it copies, by the rule a resumed run's spend is taken off the thread's earlier total (EO-733)",
+    same: {
+      firstRun: { tokensIn: 1_000_000, tokensOut: 100_000 },
+      secondRun: { tokensIn: 300_000, tokensOut: 20_000 },
+      secondChargedOnlyItsOwn: true,
+    },
+  },
+  {
     name: "environment variables filling server names",
     what: "a delivered server's declared name with no secret behind it is filled from the run's environment variables, the step's over the shared; a server's own secret beats a variable and an organisation secret beats both; an organisation value that cannot be read is stood in for by nothing",
     same: {
@@ -1954,6 +1963,22 @@ const CLAUDE: Record<CapabilityName, Proof> = {
       createClaudeProvider({ runQuery: scripted([sdk.says("done again"), totalSoFar(1_300_000, 120_000, 13)]).runQuery, enableCommentTool: false }).resume("sess-1", "carry on", { cwd: "/tmp/wt" }),
     );
     return recordedOnThread(first, second);
+  },
+
+  "a fork's own usage": async () => {
+    // A fork resumes the session into a copy (`forkSession`), and its
+    // result is read as a resumed run's is: what the run left the session
+    // at is taken off, wherever the copy's running total starts.
+    const totalSoFar = (inputTokens: number, outputTokens: number, usd: number, session_id: string) =>
+      sdk.result({
+        session_id,
+        total_cost_usd: usd,
+        modelUsage: { "claude-opus": { inputTokens, outputTokens, cacheReadInputTokens: 0, cacheCreationInputTokens: 0 } },
+      });
+    const first = await claudeTurn([sdk.init(), sdk.says("done"), totalSoFar(1_000_000, 100_000, 10, "sess-1")]);
+    const { runQuery } = scripted([sdk.init({ session_id: "sess-fork" }), sdk.says("reviewed"), totalSoFar(1_300_000, 120_000, 13, "sess-fork")]);
+    const forked = await createClaudeProvider({ runQuery, enableCommentTool: false }).fork!("sess-1", "review the run", { cwd: "/tmp/wt" });
+    return recordedOnThread(first, forked.ok ? await collect(forked.events) : []);
   },
 
   "admin bearer per turn": async () => {
@@ -3186,6 +3211,26 @@ const CODEX: Record<CapabilityName, Proof> = {
     });
     const second = await collect(provider.resume("thr-fake", "carry on", { cwd: "/tmp/wt" }));
     return recordedOnThread(first, second);
+  },
+
+  "a fork's own usage": async () => {
+    // `thread/fork` copies the thread's total into the copy and restates
+    // nothing, so the fork's reading carries the first run's spend; what
+    // its own response used (`last`) says where the copy began.
+    const first = await codexTurn([note.turnStarted(), note.agentMessage("done"), note.tokenUsage({ input: 1_000_000, output: 100_000 }), note.turnCompleted()]);
+    const { provider } = codexOver({
+      forkId: "thr-fork",
+      after: {
+        "turn/start": [
+          note.turnStarted("turn-1", "thr-fork"),
+          note.agentMessage("reviewed", "m", "turn-1", "thr-fork"),
+          note.tokenUsage({ input: 1_300_000, output: 120_000 }, "turn-1", "thr-fork", { input: 300_000, output: 20_000 }),
+          note.turnCompleted("completed", null, "turn-1", "thr-fork"),
+        ],
+      },
+    });
+    const forked = await provider.fork!("thr-fake", "review the run", { cwd: "/tmp/wt" });
+    return recordedOnThread(first, forked.ok ? await collect(forked.events) : []);
   },
 
   "admin bearer per turn": async () => {
@@ -4491,6 +4536,7 @@ describe("the shared list", () => {
       "reading the item's own files",
       "environment variables",
       "a resumed run's own usage",
+      "a fork's own usage",
       "environment variables filling server names",
       "a turn EO stops reading is ended",
       "a turn's whole process tree is ended",
