@@ -16,6 +16,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { DbHandle } from "../db/client.js";
 import { createRun, getItem, listCommentsForItem, listProjects, updateRun } from "../db/repos/index.js";
 import { attachWorkspace, createTestItem, openMigratedTestDb } from "../db/testHelpers.js";
+import { createItemType } from "../db/repos/itemTypesRepo.js";
 import { assistAgent, postAssistReply } from "../roles/assist.js";
 import { ASSIST_ACTION } from "../roles/conversationSteps.js";
 import { PROPOSAL_KIND } from "../roles/proposal.js";
@@ -232,6 +233,43 @@ describe("changing an item type", () => {
     expect(pressed).toMatchObject({ applied: false, problem: `“${story.label}” was not changed: ${refusal}` });
     expect((await messageOf(cardId!)).card).toEqual({ kind: "itemTypeUpdate", outcome: { done: false, said: `“${story.label}” was not changed: ${refusal}` } });
     expect(await typeNamed(story.slug)).toMatchObject({ container: false });
+  });
+
+  it("previews a pack field under the name the pack wrote, which is the name pressing it saves (EO-735)", async () => {
+    const shipped = createItemType(handle.db, {
+      projectId,
+      packSlug: "support",
+      slug: "case",
+      label: "Case",
+      plural: "Cases",
+      container: false,
+      specShape: { type: "object", properties: { "customer-name": { type: "string", minLength: 1 }, customerName: { type: "string" } }, required: ["customer-name"] },
+    });
+    const conversation = await chat();
+    const own = [
+      { name: "customer-name", kind: "string" as const, required: true },
+      { name: "customerName", kind: "string" as const, required: false },
+    ];
+
+    // Restating the pack's fields as they are changes nothing.
+    const restated = turn(conversation, { kind: "itemTypeUpdate", itemTypeId: shipped.id, label: null, plural: null, container: null, fields: own });
+    expect(restated.cardId).toBeUndefined();
+
+    const { cardId } = turn(conversation, {
+      kind: "itemTypeUpdate",
+      itemTypeId: shipped.id,
+      label: null,
+      plural: null,
+      container: null,
+      fields: [...own, { name: "Escalated", kind: "boolean", required: false }],
+    });
+    const shown = (await read(conversation, cardId!)).card;
+    expect(shown).toMatchObject({ problem: null });
+    const previewed = shown?.kind === "itemTypeUpdate" ? shown.after.fields.map((field) => field.name) : [];
+    expect(previewed).toEqual(["customer-name", "customerName", "escalated"]);
+
+    expect(await press(conversation, cardId!)).toMatchObject({ applied: true });
+    expect(Object.keys((await typeNamed("case"))?.specShape.properties ?? {})).toEqual(previewed);
   });
 
   it("reshapes a type made here", async () => {

@@ -194,6 +194,14 @@ export function itemTypeDraftProblem(draft: ItemTypeDraft, packFieldNames: Reado
     if (field.name.trim() === "") return "Every field needs a name.";
     const name = fieldNameFor(field.name, packFieldNames);
     if (name === "") return `“${field.name.trim()}” has no letters or digits in it, so it cannot be a field name.`;
+    // A name every object already answers to: an item's spec would seem
+    // to hold a value for it while holding none, wherever a door reads
+    // `spec[name]` — the validator included — so it is refused rather
+    // than saved to fail later. After normalising only `constructor`
+    // can be one; a pack's own names are the pack's.
+    if (!packFieldNames.has(field.name) && name in Object.prototype) {
+      return `“${name}” is a name every object already has, so EO could not tell a value for it from none. Give the field another name.`;
+    }
     if (seen.has(name)) return `Two fields are called “${name}”. Each field needs its own name.`;
     seen.add(name);
   }
@@ -275,10 +283,12 @@ export function withAddedFields(shape: SpecShape, added: readonly SpecFieldDraft
     if (property[ADDED_FIELD_KEYWORD] !== true) properties[name] = property;
   }
   for (const field of added) {
-    if (field.name in properties) continue;
+    // Own keys only: `constructor` or `toString` is a name a person may
+    // give a field, and `in` would find it on Object.prototype and drop it.
+    if (Object.hasOwn(properties, field.name)) continue;
     properties[field.name] = { ...propertyFor({ ...field, required: false }), [ADDED_FIELD_KEYWORD]: true };
   }
-  return { ...shape, properties, required: shape.required.filter((name) => name in properties && properties[name]![ADDED_FIELD_KEYWORD] !== true) };
+  return { ...shape, properties, required: shape.required.filter((name) => Object.hasOwn(properties, name) && properties[name]![ADDED_FIELD_KEYWORD] !== true) };
 }
 
 /**

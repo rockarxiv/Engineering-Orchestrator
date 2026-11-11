@@ -108,6 +108,15 @@ function packFieldNamesOf(type: ItemType): ReadonlySet<string> {
 }
 
 /**
+ * A field list's names as `itemTypes:create` (no type yet) or `update`
+ * (this type) would write them — what the assistant's card previews and
+ * compares with (EO-523, EO-735), so it shows the names the press saves.
+ */
+export function fieldsAsWritten(existing: ItemType | null, fields: readonly SpecFieldDraft[]): SpecFieldDraft[] {
+  return normalised(fields, existing === null ? new Set() : packFieldNamesOf(existing));
+}
+
+/**
  * Why `itemTypes:create` would refuse this type in this scope, or null.
  *
  * The command asks it before it writes, and the assistant's card for a

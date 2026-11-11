@@ -281,6 +281,20 @@ describe("a project's own optional fields on a pack's type (EO-735)", () => {
     expect(refused.problem).toContain(`already has a field “${taken.name}” from the developer pack`);
   });
 
+  it("refuses a field named like something every object already has, such as constructor, rather than dropping it", () => {
+    const before = packType().specShape;
+
+    const refused = addFields(AUTOMERGE, { name: "Constructor", kind: "boolean", required: false });
+
+    expect(refused.type).toBeNull();
+    expect(refused.problem).toContain("“constructor” is a name every object already has");
+    expect(packType().specShape).toEqual(before);
+    // The same on a type made here, where it would have been saved and then read as set on every item.
+    const made = createItemTypeCommand(handle.db, { projectId, label: "Case", plural: "Cases", container: false, fields: [{ name: "constructor", kind: "boolean", required: false }] });
+    expect(made.type).toBeNull();
+    expect(made.problem).toContain("“constructor” is a name every object already has");
+  });
+
   it("keeps a pack field's name as the pack wrote it, hyphen or capitals, and adds beside it", () => {
     // `SpecShapeSchema` allows any of these as a pack's field name; each is
     // the key the type's items hold their value under, so none of them is

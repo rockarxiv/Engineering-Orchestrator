@@ -218,6 +218,16 @@ describe("a project's own optional fields on a pack's type (EO-735)", () => {
     expect(itemTypeDraftProblem({ label: "Case", plural: "Cases", fields })).toContain("Two fields are called “customer_name”");
   });
 
+  it("lays a field beside the pack's by its own keys, so a name Object.prototype has is not taken as already there", () => {
+    expect(Object.keys(withAddedFields(PACK_SHAPE, [{ name: "constructor", kind: "boolean", required: false }]).properties)).toEqual(["criteria", "constructor"]);
+  });
+
+  it("refuses a field name every object already has, unless it is the pack's own", () => {
+    const fields: SpecFieldDraft[] = [{ name: "Constructor", kind: "boolean", required: false }];
+    expect(itemTypeDraftProblem({ label: "Case", plural: "Cases", fields })).toContain("“constructor” is a name every object already has");
+    expect(itemTypeDraftProblem({ label: "Case", plural: "Cases", fields: [{ name: "constructor", kind: "boolean", required: false }] }, new Set(["constructor"]))).toBeNull();
+  });
+
   it("lays added fields beside the pack's document, marked, optional, and the pack's untouched", () => {
     const shape = withAddedFields(PACK_SHAPE, [AUTOMERGE, { name: "note", kind: "string", required: true }]);
 

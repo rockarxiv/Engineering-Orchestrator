@@ -12,7 +12,7 @@ import {
 import type { Db } from "../db/client.js";
 import { getItemType, getProject } from "../db/repos/index.js";
 import type { ItemType } from "../db/repos/itemTypesRepo.js";
-import { createItemTypeProblem, deleteItemTypeProblem, updateItemTypeProblem } from "../ipc/itemTypeCommands.js";
+import { createItemTypeProblem, deleteItemTypeProblem, fieldsAsWritten, updateItemTypeProblem } from "../ipc/itemTypeCommands.js";
 
 /**
  * The assistant's cards for a project's item types (EO-523): adding one,
@@ -42,9 +42,13 @@ export function isItemTypeCard(card: AssistCard): card is ItemTypeCard {
   return card.kind === "itemTypeCreate" || card.kind === "itemTypeUpdate" || card.kind === "itemTypeDelete";
 }
 
-/** Fields as the row would hold them: named the way `itemTypes:create` and `update` name them. */
-function normalisedFields(fields: readonly SpecFieldDraft[]): ItemTypeCardShape["fields"] {
-  return fields.map((field) => ({ name: toSlug(field.name), kind: field.kind, required: field.required }));
+/**
+ * Fields as the row would hold them: named the way `itemTypes:create`
+ * and `update` name them — a pack's own fields as the pack wrote them,
+ * anything else normalised (`fieldsAsWritten`, EO-735).
+ */
+function normalisedFields(existing: ItemType | null, fields: readonly SpecFieldDraft[]): ItemTypeCardShape["fields"] {
+  return fieldsAsWritten(existing, fields).map((field) => ({ name: field.name, kind: field.kind, required: field.required }));
 }
 
 /** A type as it is, in the card's terms. */
@@ -70,7 +74,7 @@ export function itemTypeUpdatePayload(existing: ItemType, card: Extract<AssistCa
   const label = card.label === null || card.label.trim() === existing.label ? undefined : card.label;
   const plural = card.plural === null || card.plural.trim() === existing.plural ? undefined : card.plural;
   const container = card.container === null || card.container === existing.container ? undefined : card.container;
-  const fields = card.fields === null || sameFields(normalisedFields(card.fields), specFieldDrafts(existing.specShape)) ? undefined : card.fields;
+  const fields = card.fields === null || sameFields(normalisedFields(existing, card.fields), specFieldDrafts(existing.specShape)) ? undefined : card.fields;
   return {
     id: existing.id,
     ...(label === undefined ? {} : { label }),
@@ -93,7 +97,7 @@ function shapeAfter(existing: ItemType, payload: IpcPayload<"itemTypes:update">)
     // A rename leaves the word items are filed under as it was.
     slug: existing.slug,
     container: payload.container ?? existing.container,
-    fields: payload.fields === undefined ? specFieldDrafts(existing.specShape) : normalisedFields(payload.fields),
+    fields: payload.fields === undefined ? specFieldDrafts(existing.specShape) : normalisedFields(existing, payload.fields),
   };
 }
 
@@ -151,7 +155,7 @@ export function itemTypeCardDetail(db: Db, card: ItemTypeCard): { detail: Assist
         kind: card.kind,
         projectId: project.id,
         projectName: project.name,
-        type: { label, plural: card.plural.trim(), slug: toSlug(label), container: card.container, fields: normalisedFields(card.fields) },
+        type: { label, plural: card.plural.trim(), slug: toSlug(label), container: card.container, fields: normalisedFields(null, card.fields) },
         problem: createItemTypeProblem(db, project.id, card),
       },
     };
