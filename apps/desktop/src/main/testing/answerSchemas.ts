@@ -253,7 +253,10 @@ export const ASSIST_ANSWER_WITH_MAPS = {
         routes: [{ ...DRAFT_ROUTE, requiresComment: true }],
         icon: "workflow",
         restoredFrom: 3,
-        entryRules: [{ kind: "field", field: "customer", types: ["developer:story"], message: "the customer's name" }, { kind: "description", field: null, types: null, message: null }],
+        entryRules: [
+          { kind: "field", field: "customer", types: ["developer:story"], message: "the customer's name", module: null, timeoutMs: null },
+          { kind: "description", field: null, types: null, message: null, module: null, timeoutMs: null },
+        ],
         templateStepIds: [{ name: "release_merge", value: "merge" }],
       },
       modules: [
@@ -266,6 +269,8 @@ export const ASSIST_ANSWER_WITH_MAPS = {
             sideEffects: null,
             // Optional in the manifest (EO-456), so required-and-nullable for Codex.
             watch: null,
+            // And whether it is an entry check (EO-736), likewise.
+            entryCheck: null,
             inputs: [
               { name: "ciWaitSeconds", value: { type: "number", description: "How long to wait for the checks.", default: 1800 } },
               { name: "branch", value: { type: "string", description: null, default: "main" } },

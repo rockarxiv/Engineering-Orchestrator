@@ -1,4 +1,4 @@
-import { MODULE_COVERAGE_BAR, moduleMachineSpecificWarnings, portabilityWarnings, type CustomModule, type IpcPayload, type IpcResponse, type ModuleView } from "@eo/core";
+import { entryCheckManifestProblems, MODULE_COVERAGE_BAR, moduleMachineSpecificWarnings, portabilityWarnings, type CustomModule, type IpcPayload, type IpcResponse, type ModuleView } from "@eo/core";
 import type { Db } from "../db/client.js";
 import {
   addModuleTests,
@@ -254,6 +254,11 @@ export async function judgeModuleForApproval(
   const module = getModule(db, id);
   if (!module) return no(refused("That module no longer exists."));
   if (module.archivedAt !== null) return no(refused("That module has been deleted."));
+  // An entry check only reads (EO-736): one whose manifest says it also
+  // creates, comments, attaches or reaches outside EO is refused before
+  // its tests run, which could not make it any less so.
+  const reaching = entryCheckManifestProblems(module.manifest);
+  if (reaching.length > 0) return no(refused(`"${module.name}" was not approved: ${reaching.join(" ")} Remove ${reaching.length === 1 ? "it" : "them"} from its manifest, or stop declaring it an entry check.`));
   // Before queueing a run that could only say the same thing.
   if (listModuleTests(db, module.id).length === 0) return no(noTests(module));
 

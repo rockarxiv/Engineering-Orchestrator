@@ -2,14 +2,15 @@ import { Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { pipelineChangesPath, templateUpdateOfAuthor, versionLabel } from "@eo/core";
 import { ipcQuery } from "../../../query/client";
-import { useDivergence, useLockedSections, useWebhookUnattended } from "../../../query/hooks";
+import { pipelineStepsKey, useDivergence, useLockedSections, useWebhookUnattended } from "../../../query/hooks";
 import { useInvalidateOnPush } from "../../../query/useInvalidateOnPush";
 import { pipelineHistoryKey, pipelineVersionsKey } from "../../../shared/pipeline/history";
 import { CardSection, Chip, ErrorLine, Facts, Loading } from "../../kit";
 import { TemplateUpdateChip } from "../changes/PipelineChangesView";
 
 /**
- * What a pipeline is beyond its steps, read-only (EO-524): every version
+ * What a pipeline is beyond its steps, read-only (EO-524): what work must
+ * have to enter it (EO-736), every version
  * it has had and who filed each, whether what a webhook files on it is
  * sent on unread, and whether it is the organisation's and this
  * machine's copy has gone its own way.
@@ -23,6 +24,7 @@ export function PipelineDetails({ pipelineId }: { pipelineId: string }) {
   return (
     <div className="flex min-w-0 flex-col gap-4">
       <Settings pipelineId={pipelineId} />
+      <EntryRules pipelineId={pipelineId} />
       <History pipelineId={pipelineId} />
     </div>
   );
@@ -67,6 +69,33 @@ function Settings({ pipelineId }: { pipelineId: string }) {
           { term: "Organisation pipeline", value: organisation },
         ]}
       />
+    </CardSection>
+  );
+}
+
+/**
+ * What work must have to enter (EO-610, EO-736), read-only like the rest
+ * of this page: each rule in the words a refusal would use, a module
+ * rule's module by name with its time limit. Changing them is the
+ * assistant's: it offers a draft, and a person publishes it.
+ */
+function EntryRules({ pipelineId }: { pipelineId: string }) {
+  const answer = useQuery({ queryKey: pipelineStepsKey(pipelineId), queryFn: () => ipcQuery("pipelineSteps:list", { pipelineId }) });
+  useInvalidateOnPush("config:changed", pipelineStepsKey(pipelineId));
+  const lines = answer.data?.entryRuleLines ?? [];
+
+  return (
+    <CardSection title="Entry rules" description="What work must have before it may enter this pipeline. To change them, ask the assistant; it offers a draft to publish.">
+      {answer.isLoading ? <Loading>Reading the rules…</Loading> : null}
+      {answer.error ? <ErrorLine>{answer.error.message}</ErrorLine> : null}
+      {!answer.isLoading && !answer.error && lines.length === 0 ? <p className="text-[12.5px] text-ink-subtle">None — work enters with nothing asked of it.</p> : null}
+      {lines.length === 0 ? null : (
+        <ul aria-label="Entry rules" className="flex list-disc flex-col gap-1 pl-5 text-[12.5px] text-ink">
+          {lines.map((line, index) => (
+            <li key={index}>{line}</li>
+          ))}
+        </ul>
+      )}
     </CardSection>
   );
 }

@@ -175,6 +175,11 @@
  *     left out are null, `false` or `[]`; `ctx.run` and `ctx.workspace`
  *     are always objects, `ctx.project` is null unless scripted, and
  *     `workspace.git.worktreePath` is always `harness.cwd`.
+ *   - `entry`: `ctx.entry` on an entry check (EO-736),
+ *     `{ door, pipeline: { id, name }, fromStep: { id, name } }` — `door`
+ *     one of `creation`, `move`, `route` and `job`, `fromStep` null on
+ *     creation and from a job. Null unless scripted. On creation the
+ *     `item` fixture's `id` and `key` are left out, as a real door's are.
  *   - `answer`: what `ctx.answer()` answers, `{ text, offered, matched }`
  *     or null (the default).
  *   - `inputs`: the step's values, laid over the manifest's defaults and
@@ -189,6 +194,8 @@
  * - What `run` answers:
  *   - `outcome`: what EO would make of the module's return value —
  *     `{ ok: true, result, detail }` or `{ ok: false, reason, options? }`.
+ *     An entry check's refusal (EO-736, manifest `entryCheck: true`) is
+ *     `{ ok: true, result: "refuse", detail, reason }`.
  *     A module that throws, fails to load or returns nonsense is a
  *     failed outcome here as on a real run, not a thrown `run`. A check
  *     that is still waiting (EO-458) is
@@ -1999,6 +2006,21 @@ function runContextShape(value) {
 }
 
 /**
+ * `ctx.entry` (EO-736): on an entry check, the door the item is entering
+ * by — `creation`, `move`, `route` or `job` — the pipeline it is entering
+ * and, for a move or a route, the step it came from. Null on every run
+ * that is not an entry check.
+ */
+function entryContextShape(value) {
+  if (value === null || typeof value !== "object") return null;
+  return Object.freeze({
+    door: asText(value.door),
+    pipeline: shapedOrNull(value.pipeline, pipelineRefShape),
+    fromStep: shapedOrNull(value.fromStep, stepRefShape),
+  });
+}
+
+/**
  * `ctx.workspace`: its kind, id and name and, on a git repository,
  * `git`. `git.worktreePath` is `cwd` whatever was sent — the directory
  * the module runs in is the one fact here this side knows first-hand.
@@ -2838,6 +2860,11 @@ async function main() {
   // Never a way to write — a write is asked for below and granted by
   // the parent, never done here.
   const reads = makeItemReads(makeReadChannel(request.replyKey), request.itemKey);
+  // An entry check (EO-736) is about an item as it would enter, which on
+  // creation is no row at all: the parent built it and sent it, so
+  // `ctx.item()` answers with that rather than asking for a key.
+  const entering = request.entering !== null && typeof request.entering === "object" ? itemShape(request.entering) : null;
+  const readEntering = () => Object.freeze({ found: true, item: entering, ticket: entering });
   // The other direction (EO-75): an event on fd 3 the parent turns into
   // a real `postComment`, because a write from here would skip the
   // mentions, the Jira mirror and the push to open windows.
@@ -2891,7 +2918,9 @@ async function main() {
     run: runContextShape(request.context?.run),
     workspace: workspaceContextShape(request.context?.workspace, request.cwd),
     project: shapedOrNull(request.context?.project, projectContextShape),
-    item: reads.item,
+    // Which door, on an entry check (EO-736); null on every other run.
+    entry: entryContextShape(request.entry),
+    item: entering === null ? reads.item : readEntering,
     itemByKey: reads.itemByKey,
     // An item's history, the board and a file's bytes (EO-710).
     runs: reads.runs,
@@ -2907,7 +2936,7 @@ async function main() {
      * approved it to approve it again. They answer identically and put
      * one line in the transcript saying they are on a clock.
      */
-    ticket: reads.ticket,
+    ticket: entering === null ? reads.ticket : readEntering,
     ticketByKey: reads.ticketByKey,
     comment: says.comment,
     commentOn: says.commentOn,
@@ -2956,7 +2985,7 @@ async function main() {
     // a fired guard does not end in a module's own account of events
     // (invariant #5).
     const refusal = guard.refusal();
-    respond(refusal === null ? normalize(outcome, request.options, request.watch === true) : { ok: false, reason: refusal });
+    respond(refusal === null ? normalize(outcome, request.options, request.watch === true, request.entryCheck === true) : { ok: false, reason: refusal });
   } catch (error) {
     const refusal = guard.refusal();
     respond({ ok: false, reason: refusal ?? (error instanceof Error ? (error.stack ?? error.message) : String(error)) });
@@ -2975,7 +3004,7 @@ async function main() {
  * fails when a name here is missing from the system agent's prompt or
  * from module_test_save's description.
  */
-export const FIXTURE_NAMES = new Set(["exec", "item", "itemByKey", "runs", "transitions", "items", "attachments", "run", "workspace", "project", "answer", "inputs", "timeoutMs", "createItem"]);
+export const FIXTURE_NAMES = new Set(["exec", "item", "itemByKey", "runs", "transitions", "items", "attachments", "run", "workspace", "project", "entry", "answer", "inputs", "timeoutMs", "createItem"]);
 
 /**
  * The `runs` or `transitions` a case scripted, `{ KEY: [entry, …] }`,
@@ -3896,11 +3925,11 @@ async function testMain(request) {
 
   const run = async (fixtures = {}) => {
     if (fixtures === null || typeof fixtures !== "object" || Array.isArray(fixtures)) {
-      throw new TypeError("harness.run takes one object of fixtures: { exec, item, itemByKey, runs, transitions, items, attachments, run, workspace, project, answer, inputs, createItem, timeoutMs }.");
+      throw new TypeError("harness.run takes one object of fixtures: { exec, item, itemByKey, runs, transitions, items, attachments, run, workspace, project, entry, answer, inputs, createItem, timeoutMs }.");
     }
     const unknown = Object.keys(fixtures).filter((name) => !FIXTURE_NAMES.has(name));
     if (unknown.length > 0) {
-      throw new TypeError(`harness.run does not take ${unknown.map((name) => JSON.stringify(name)).join(", ")}. It takes exec, item, itemByKey, runs, transitions, items, attachments, run, workspace, project, answer, inputs, createItem and timeoutMs.`);
+      throw new TypeError(`harness.run does not take ${unknown.map((name) => JSON.stringify(name)).join(", ")}. It takes exec, item, itemByKey, runs, transitions, items, attachments, run, workspace, project, entry, answer, inputs, createItem and timeoutMs.`);
     }
     const script = readScript(fixtures.exec);
     const creationAnswers = readCreationAnswers(fixtures.createItem);
@@ -4087,6 +4116,7 @@ async function testMain(request) {
       run: runContextShape(fixtures.run),
       workspace: workspaceContextShape(fixtures.workspace, process.cwd()),
       project: shapedOrNull(fixtures.project, projectContextShape),
+      entry: entryContextShape(fixtures.entry),
       item: readRunning,
       itemByKey: read,
       runs: history(scriptedRuns, "runs", runShape),
@@ -4131,7 +4161,7 @@ async function testMain(request) {
       try {
         const returned = await loaded.module.default(ctx);
         const refusal = moduleGuard.refusal();
-        return result(refusal === null ? normalize(returned, request.options, request.watch === true) : { ok: false, reason: refusal });
+        return result(refusal === null ? normalize(returned, request.options, request.watch === true, request.entryCheck === true) : { ok: false, reason: refusal });
       } catch (error) {
         return result({ ok: false, reason: moduleGuard.refusal() ?? describeThrown(error, names) });
       }
@@ -4215,7 +4245,7 @@ async function testMain(request) {
  * rather than repeating the question, is what stops an answered question
  * looking unread.
  */
-function normalize(outcome, optionLimits, watch) {
+function normalize(outcome, optionLimits, watch, entryCheck = false) {
   if (outcome === null || typeof outcome !== "object") {
     return { ok: false, reason: `A module must return { ok: true, result, detail } or { ok: false, reason }; this one returned ${JSON.stringify(outcome) ?? "undefined"}.` };
   }
@@ -4229,6 +4259,12 @@ function normalize(outcome, optionLimits, watch) {
       return { ok: false, reason: "A module that succeeded must name the result it produced, so the pipeline knows where to send the ticket." };
     }
     if (outcome.result === WAITING_RESULT) return waitingOutcome(outcome, watch);
+    // An entry check's refusal carries why (EO-736): the person at the
+    // door reads it in the refusal sentence. Only there, so every other
+    // module's outcome is exactly what it was.
+    if (entryCheck && outcome.result === ENTRY_CHECK_REFUSE) {
+      return { ok: true, result: outcome.result, detail: String(outcome.detail ?? ""), reason: typeof outcome.reason === "string" ? outcome.reason : "" };
+    }
     return { ok: true, result: outcome.result, detail: String(outcome.detail ?? "") };
   }
   if (outcome.ok === false) {
@@ -4249,6 +4285,9 @@ function normalize(outcome, optionLimits, watch) {
  * import.
  */
 const WAITING_RESULT = "waiting";
+
+/** What an entry check answers when it keeps an item out (EO-736). `ENTRY_CHECK_REFUSE` in `@eo/core`. */
+const ENTRY_CHECK_REFUSE = "refuse";
 
 /**
  * A module that answered `waiting`, held to what that means (EO-458,

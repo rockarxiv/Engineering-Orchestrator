@@ -3681,7 +3681,10 @@ const UNGATED_WRITE_TOOLS: readonly ToolSpec[] = [
       "project — ctx.project (null unless scripted): { id, name, keyPrefix, workspaces ([{ kind, id, name }]), itemTypes ([{ id, slug, " +
       "label, container, fields }]), pipelines ([{ id, name, steps ([{ id, name, kind }]) }]) }. Left out is null, false or []. Step and " +
       "pipeline ids and names, workspace ids, names and paths and the project's name and key prefix differ between installations: a " +
-      "module reads them but must not branch on them. answer — " +
+      "module reads them but must not branch on them. entry — ctx.entry, for an entry check (manifest entryCheck: true): { door " +
+      "(creation, move, route or job), pipeline ({ id, name }), fromStep ({ id, name } or null) }, null unless scripted; leave id and key " +
+      "out of item to test the creation door. An entry check answers { ok: true, result: \"pass\" } or { ok: true, result: \"refuse\", reason }, " +
+      "and outcome carries that reason. answer — " +
       "ctx.answer(). inputs — the step's values. timeoutMs — ctx.timeoutMs. createItem — [{ key } or { reason }], the answers ctx.createItem gets in order (NEW-1, NEW-2… when none is scripted). Nothing real happens: no process is " +
       "spawned, comments are recorded in `comments` and never posted, files given to ctx.attach are recorded in " +
       "`attachments` as [{ key, caption, paths }] and never copied, items given to ctx.createItem are recorded in `created` as [{ idempotencyKey, key, type, title, body, spec, pipeline, " +

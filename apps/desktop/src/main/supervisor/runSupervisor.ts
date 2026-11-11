@@ -178,7 +178,7 @@ export interface ArtifactStore {
    */
   rollback?(records: Omit<CreateAttachmentRecord, "itemId" | "commentId">[]): Promise<void>;
 }
-import { handOffRefusal, reportedResultKey, routeResult } from "./routeResult.js";
+import { handOffModuleRefusal, handOffRefusal, reportedResultKey, routeResult } from "./routeResult.js";
 import { stepScopeFor, trialStepMode } from "../trials/stepModes.js";
 import { attemptLimitStop } from "./attemptLimit.js";
 import { isOutOfMemoryStop, outOfMemoryStop } from "./outOfMemory.js";
@@ -6017,21 +6017,25 @@ export function createRunSupervisor(
           const failedTo = verificationRoute(item, action, stepForItem(db, item));
           if (failedTo && runOpts.transitionOnSuccess !== false) {
             // Unless that is a pipeline this item may not enter (EO-610).
-            const refused = handOffRefusal(db, item, failedTo);
+            // Its module rules too (EO-736), once the data rules let it in.
+            // The move is made where the module rules are last judged.
+            const enter = (): void => {
+              record.applyTransition({
+                itemId: item.id,
+                toStepId: failedTo.stepId,
+                toPipelineId: failedTo.pipelineId,
+                actor: agent.id,
+                runId: run.id,
+                reason: "verification failed",
+                resultKey: failedTo.resultKey ?? null,
+              });
+            };
+            const refused = handOffRefusal(db, item, failedTo) ?? (await handOffModuleRefusal(db, item, failedTo, enter));
             if (refused !== null) {
               updateRun(db, run.id, { status: "awaiting_input", error: refused, endedAt: now(), threadId });
               announceRun(run.id, item.id, "awaiting_input");
               return;
             }
-            record.applyTransition({
-              itemId: item.id,
-              toStepId: failedTo.stepId,
-              toPipelineId: failedTo.pipelineId,
-              actor: agent.id,
-              runId: run.id,
-              reason: "verification failed",
-              resultKey: failedTo.resultKey ?? null,
-            });
             await settleItem(item, failedTo.stepId);
           }
           announceRun(run.id, item.id, "failed");
@@ -6128,24 +6132,39 @@ export function createRunSupervisor(
           // index as it stands at this instant, so this is the last
           // moment at which what it will see is still EO's to decide.
           await syncIndexAtHandover(run, item, runOpts.attachment ?? NOTHING_ATTACHED);
-          record.applyTransition({
-            itemId: item.id,
-            toStepId: destination.stepId,
-            // The same transition it always was, naming one more column
-            // (EO-59). Passed on every move rather than only the ones that
-            // cross a pipeline, because naming it is what makes
-            // `transitionItem` check the step against it — and a
-            // destination whose two halves disagree is the item the
-            // scheduler cannot see, which is worth refusing wherever it
-            // could arise rather than only where we expect it to.
-            toPipelineId: destination.pipelineId,
-            actor: agent.id,
-            runId: run.id,
-            reason: "run succeeded",
-            // Which result it was sent on (EO-586) — not stored; told to the
-            // listeners, which cannot read it back from a pack's answer.
-            resultKey: destination.resultKey ?? null,
-          });
+          // A pipeline's module entry rules, where the destination is
+          // another pipeline (EO-736): its data rules were judged where
+          // the route was decided, and a refusal here parks and asks as
+          // that one does. After the handover rather than before it, so
+          // nothing awaits between the modules' answer and the move: the
+          // move is made in the same pass as their last judgement, of the
+          // item as it stands then.
+          const enter = (): void => {
+            record.applyTransition({
+              itemId: item.id,
+              toStepId: destination.stepId,
+              // The same transition it always was, naming one more column
+              // (EO-59). Passed on every move rather than only the ones that
+              // cross a pipeline, because naming it is what makes
+              // `transitionItem` check the step against it — and a
+              // destination whose two halves disagree is the item the
+              // scheduler cannot see, which is worth refusing wherever it
+              // could arise rather than only where we expect it to.
+              toPipelineId: destination.pipelineId,
+              actor: agent.id,
+              runId: run.id,
+              reason: "run succeeded",
+              // Which result it was sent on (EO-586) — not stored; told to the
+              // listeners, which cannot read it back from a pack's answer.
+              resultKey: destination.resultKey ?? null,
+            });
+          };
+          const refusedByModule = await handOffModuleRefusal(db, item, destination, enter);
+          if (refusedByModule !== null) {
+            updateRun(db, run.id, { status: "awaiting_input", error: refusedByModule, endedAt: now(), threadId });
+            announceRun(run.id, item.id, "awaiting_input");
+            return;
+          }
           // A feature used to be pushed along here, both ways: a story
           // finishing closed it, a story sent back reopened it. It is
           // derived now (ARCHITECTURE.md, "One work entity") — nothing to write, nothing to
@@ -7667,56 +7686,60 @@ export function createRunSupervisor(
           return;
         }
 
-        // Unless that is a pipeline this item may not enter (EO-610).
-        const refused = handOffRefusal(db, item, destination);
+        // Unless that is a pipeline this item may not enter (EO-610), by
+        // its data rules or its module rules (EO-736). What is written
+        // with the move is written where the module rules are last
+        // judged, so nothing is said of a move that did not happen.
+        const enter = (): void => {
+          // The graph has somewhere for this to go, so the item goes
+          // there instead of stopping. `failed` on the run, because it did
+          // not do its work — and unlike the park below, a failed run does
+          // not hold the item still, which is exactly right when the
+          // pipeline has just said who picks it up next.
+          updateRun(db, run.id, {
+            status: "failed",
+            error: outcome.reason,
+            result: { raw: outcome, parsed: { result: FAILED_RESULT } },
+            endedAt: now(),
+          });
+          // Invariant #8 — every guard ends in a comment.
+          //
+          // A note when EO is *reporting* something: the pipeline named who
+          // handles this, and mentioning a human as well would raise `!` on
+          // an item already on its way somewhere that deals with it.
+          //
+          // An escalation when it is *asking* something. `options` is what
+          // tells the two apart — a refusal that names the answers it would
+          // take is a question, and a tied stack target is the live example:
+          // the only thing that resolves it is a person replying with one of
+          // those keys, read back out of this thread. Routing the item
+          // does not answer it, so posting the reason without the question
+          // asked one nobody could ever hear.
+          const asking = outcome.options !== undefined && outcome.options.length > 0;
+          postComment(db, {
+            itemId: item.id,
+            runId: run.id,
+            author: { type: "engine" },
+            kind: asking ? "escalation" : "note",
+            body: `"${action}" could not finish: ${outcome.reason}`,
+            ...(asking ? { options: outcome.options, mentions: [{ type: "human" as const }] } : {}),
+          });
+          record.applyTransition({
+            itemId: item.id,
+            toStepId: destination.stepId,
+            toPipelineId: destination.pipelineId,
+            actor: "engine",
+            runId: run.id,
+            reason: "built-in step failed",
+            resultKey: destination.resultKey ?? null,
+          });
+        };
+        const refused = handOffRefusal(db, item, destination) ?? (await handOffModuleRefusal(db, item, destination, enter));
         if (refused !== null) {
           updateRun(db, run.id, { status: "awaiting_input", error: refused, endedAt: now() });
           announceRun(run.id, item.id, "awaiting_input");
           return;
         }
-
-        // The graph has somewhere for this to go, so the item goes
-        // there instead of stopping. `failed` on the run, because it did
-        // not do its work — and unlike the park below, a failed run does
-        // not hold the item still, which is exactly right when the
-        // pipeline has just said who picks it up next.
-        updateRun(db, run.id, {
-          status: "failed",
-          error: outcome.reason,
-          result: { raw: outcome, parsed: { result: FAILED_RESULT } },
-          endedAt: now(),
-        });
-        // Invariant #8 — every guard ends in a comment.
-        //
-        // A note when EO is *reporting* something: the pipeline named who
-        // handles this, and mentioning a human as well would raise `!` on
-        // an item already on its way somewhere that deals with it.
-        //
-        // An escalation when it is *asking* something. `options` is what
-        // tells the two apart — a refusal that names the answers it would
-        // take is a question, and a tied stack target is the live example:
-        // the only thing that resolves it is a person replying with one of
-        // those keys, read back out of this thread. Routing the item
-        // does not answer it, so posting the reason without the question
-        // asked one nobody could ever hear.
-        const asking = outcome.options !== undefined && outcome.options.length > 0;
-        postComment(db, {
-          itemId: item.id,
-          runId: run.id,
-          author: { type: "engine" },
-          kind: asking ? "escalation" : "note",
-          body: `"${action}" could not finish: ${outcome.reason}`,
-          ...(asking ? { options: outcome.options, mentions: [{ type: "human" as const }] } : {}),
-        });
-        record.applyTransition({
-          itemId: item.id,
-          toStepId: destination.stepId,
-          toPipelineId: destination.pipelineId,
-          actor: "engine",
-          runId: run.id,
-          reason: "built-in step failed",
-          resultKey: destination.resultKey ?? null,
-        });
         await settleItem(item, destination.stepId);
         announceRun(run.id, item.id, "failed");
         return;
@@ -7856,35 +7879,37 @@ export function createRunSupervisor(
         endedAt: now(),
       };
 
-      // Unless that is a pipeline this item may not enter (EO-610).
-      const refusedHandOff = failedTo ? handOffRefusal(db, current, failedTo) : null;
-      if (refusedHandOff !== null) {
-        updateRun(db, run.id, { ...failed, status: "awaiting_input", error: refusedHandOff });
-        postComment(db, { itemId: current.id, runId: run.id, author: { type: "engine" }, kind: "note", body: account });
-        announceRun(run.id, item.id, "awaiting_input");
-        return;
-      }
-
       if (failedTo) {
         // The graph has somewhere for a failed verification to go, so
         // the item goes there rather than stopping. A note rather than
         // an escalation, for the failure route's reason: the pipeline
         // has named who picks this up, and mentioning a human as well
         // would raise `!` on an item already on its way to someone.
-        updateRun(db, run.id, failed);
-        postComment(db, { itemId: current.id, runId: run.id, author: { type: "engine" }, kind: "note", body: account });
-        record.applyTransition({
-          itemId: current.id,
-          toStepId: failedTo.stepId,
-          toPipelineId: failedTo.pipelineId,
-          actor: "engine",
-          runId: run.id,
-          // A watch's move says so whichever route it took (EO-456): a
-          // check whose claim the workspace refused is a round trip like
-          // any other, and the guardrail counts exactly these.
-          reason: checked ? WATCH_VERIFICATION_FAILED_REASON : "verification failed",
-          resultKey: failedTo.resultKey ?? null,
-        });
+        // Written where the module rules are last judged (EO-736).
+        const enter = (): void => {
+          updateRun(db, run.id, failed);
+          postComment(db, { itemId: current.id, runId: run.id, author: { type: "engine" }, kind: "note", body: account });
+          record.applyTransition({
+            itemId: current.id,
+            toStepId: failedTo.stepId,
+            toPipelineId: failedTo.pipelineId,
+            actor: "engine",
+            runId: run.id,
+            // A watch's move says so whichever route it took (EO-456): a
+            // check whose claim the workspace refused is a round trip like
+            // any other, and the guardrail counts exactly these.
+            reason: checked ? WATCH_VERIFICATION_FAILED_REASON : "verification failed",
+            resultKey: failedTo.resultKey ?? null,
+          });
+        };
+        // Unless that is a pipeline this item may not enter (EO-610).
+        const refusedHandOff = handOffRefusal(db, current, failedTo) ?? (await handOffModuleRefusal(db, current, failedTo, enter));
+        if (refusedHandOff !== null) {
+          updateRun(db, run.id, { ...failed, status: "awaiting_input", error: refusedHandOff });
+          postComment(db, { itemId: current.id, runId: run.id, author: { type: "engine" }, kind: "note", body: account });
+          announceRun(run.id, item.id, "awaiting_input");
+          return;
+        }
         await settleItem(current, failedTo.stepId);
         announceRun(run.id, item.id, "failed");
         return;
@@ -8023,23 +8048,36 @@ export function createRunSupervisor(
       return;
     }
 
+    // A pipeline's module entry rules, where the destination is another
+    // pipeline (EO-736): parked and asked, as a route its data rules
+    // refuse is.
+    // The move is made in the same pass as their last judgement.
+    //
     // `engine`, not an agent id: EO did this itself, and attributing it
     // to an agent would put a name in the audit log that never ran.
     //
     // A builtin hands work on exactly as an agent does: same actor, same
     // run id, same reason, and the destination's pipeline alongside its
     // step (EO-59).
-    record.applyTransition({
-      itemId: item.id,
-      toStepId: next.stepId,
-      toPipelineId: next.pipelineId,
-      actor: "engine",
-      runId: run.id,
-      // A watch's move says so, because the round-trip guardrail counts
-      // exactly these (EO-456).
-      reason: checked ? WATCH_ROUTED_REASON : "built-in step finished",
-      resultKey: next.resultKey ?? null,
-    });
+    const enter = (): void => {
+      record.applyTransition({
+        itemId: item.id,
+        toStepId: next.stepId,
+        toPipelineId: next.pipelineId,
+        actor: "engine",
+        runId: run.id,
+        // A watch's move says so, because the round-trip guardrail counts
+        // exactly these (EO-456).
+        reason: checked ? WATCH_ROUTED_REASON : "built-in step finished",
+        resultKey: next.resultKey ?? null,
+      });
+    };
+    const refusedByModule = await handOffModuleRefusal(db, current, next, enter);
+    if (refusedByModule !== null) {
+      updateRun(db, run.id, { status: "awaiting_input", error: refusedByModule, endedAt: now() });
+      announceRun(run.id, item.id, "awaiting_input");
+      return;
+    }
     await settleItem(item, next.stepId);
     announceRun(run.id, item.id, "succeeded");
   }

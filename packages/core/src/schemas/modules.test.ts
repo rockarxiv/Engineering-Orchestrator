@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { declaredStepInputs, describeModuleTestShortfall, moduleInputProblems, moduleTestShortfalls, StepInputsSchema, type ModuleTestRun } from "./modules.js";
+import { declaredStepInputs, describeModuleTestShortfall, ModuleManifestSchema, moduleInputProblems, moduleTestShortfalls, StepInputsSchema, type ModuleTestRun } from "./modules.js";
+import { entryCheckManifestProblems } from "../entryRules.js";
 
 /**
  * What a step may set for the inputs its module declares (EO-78).
@@ -154,5 +155,32 @@ describe("moduleTestShortfalls", () => {
     expect(describeModuleTestShortfall(shortfalls[0]!)).toBe("coverage not measured yet");
     expect(describeModuleTestShortfall({ reason: "no_tests" })).toBe("no tests");
     expect(describeModuleTestShortfall({ reason: "failing", failing: ["a", "b"] })).toBe("2 failing cases");
+  });
+});
+
+describe("an entry check's manifest (EO-736)", () => {
+  const needs = { bin: ["glab"], env: ["GITLAB_TOKEN"], network: true, item: true, comment: false, attach: false, create: false };
+
+  it("may read: the network, binaries, environment variables and secrets", () => {
+    expect(entryCheckManifestProblems({ entryCheck: true, needs })).toEqual([]);
+  });
+
+  it("may not create, comment, attach or reach outside EO, one sentence for each", () => {
+    expect(entryCheckManifestProblems({ entryCheck: true, sideEffects: true, needs: { ...needs, create: true, comment: true, attach: true } })).toEqual([
+      "An entry check only reads, so it may not declare needs.create.",
+      "An entry check only reads, so it may not declare needs.comment.",
+      "An entry check only reads, so it may not declare needs.attach.",
+      "An entry check only reads, so it may not declare sideEffects.",
+    ]);
+  });
+
+  it("says nothing of a module that is no entry check", () => {
+    expect(entryCheckManifestProblems({ needs: { ...needs, create: true } })).toEqual([]);
+  });
+
+  it("is a manifest field that parses, and absent on an older manifest", () => {
+    const base = { name: "Check", description: "A check.", results: ["pass", "refuse"] };
+    expect(ModuleManifestSchema.parse({ ...base, entryCheck: true }).entryCheck).toBe(true);
+    expect(ModuleManifestSchema.parse(base).entryCheck).toBeUndefined();
   });
 });

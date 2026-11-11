@@ -21,7 +21,7 @@ import {
   type Uuid,
 } from "@eo/core";
 import type { Db } from "../client.js";
-import { arrivalRefusal } from "./entryRulesRepo.js";
+import { newItemEntryRefusal } from "./entryRulesRepo.js";
 import { projectForWorkspace } from "./projectsRepo.js";
 import { dropWebhookWaiversWithoutEntry } from "./webhookWaiverRepo.js";
 import { fromDiscussionOf } from "./jobsRepo.js";
@@ -455,15 +455,60 @@ export type CreateItemResult = { ok: true; item: Item } | { ok: false; slug: str
 export function creationRefusal(db: Db, input: CreateItemInput, type: ItemType): string | null {
   const pipelineId = resolvePipelineId(db, input);
   if (pipelineId === null || input.trialAt != null || input.previewAt != null) return null;
-  return arrivalRefusal(db, {
-    pipelineId,
-    stepId: input.stepId,
-    type,
+  const extensions = { [JIRA_EXTENSION]: { key: input.jiraKey ?? null }, [GIT_EXTENSION]: input.git ?? {} };
+  return newItemEntryRefusal(
+    db,
+    {
+      pipelineId,
+      stepId: input.stepId,
+      type,
+      body: input.body ?? null,
+      spec: input.spec ?? null,
+      hasWorkspace: (input.workspaceId ?? null) !== null,
+      extensions,
+    },
+    itemAsItWouldEnter(db, input, type, pipelineId),
+  );
+}
+
+/**
+ * The item this input would create, as an entry check reads it (EO-736):
+ * every field the row would carry, with an id that names no row and no
+ * key, because neither exists until it is let in. Never written.
+ */
+function itemAsItWouldEnter(db: Db, input: CreateItemInput, type: ItemType, pipelineId: string): Item {
+  const git: GitItemState = { ...NO_GIT_STATE, ...input.git };
+  const jira: JiraItemState = { key: input.jiraKey ?? null, id: input.jiraId ?? null, sync: resolveJiraSync(db, input), pullPending: false };
+  return {
+    id: uuidv7() as Uuid,
+    key: "",
+    typeId: type.id as Uuid,
+    type: type.slug,
+    typeLabel: type.label,
+    container: type.container,
+    parentId: input.parentId ?? null,
+    workspaceId: input.workspaceId ?? null,
+    projectId: input.projectId ?? null,
+    title: input.title,
     body: input.body ?? null,
     spec: input.spec ?? null,
-    hasWorkspace: (input.workspaceId ?? null) !== null,
-    extensions: { [JIRA_EXTENSION]: { key: input.jiraKey ?? null }, [GIT_EXTENSION]: input.git ?? {} },
-  });
+    pipelineId: pipelineId as Uuid,
+    stepId: input.stepId,
+    pipelineVersionId: null,
+    priority: input.priority ?? 0,
+    extensions: {
+      ...(isDefaultJiraState(jira) ? {} : { [JIRA_EXTENSION]: jira }),
+      ...(isDefaultGitState(git) ? {} : { [GIT_EXTENSION]: git }),
+    },
+    archivedAt: null,
+    heldAt: null,
+    previewAt: null,
+    trialAt: null,
+    createdBy: input.createdBy === undefined ? LOCAL_PERSON_ID : input.createdBy,
+    assigneeId: null,
+    createdAt: 0,
+    updatedAt: 0,
+  } as Item;
 }
 
 export function createItem(db: Db, input: CreateItemInput): CreateItemResult {

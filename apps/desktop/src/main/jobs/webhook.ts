@@ -26,7 +26,7 @@ import {
   postComment,
   recordJobEvent,
 } from "../db/repos/index.js";
-import { fireJob } from "./fire.js";
+import { fireJob, jobEntryVerdicts } from "./fire.js";
 import { JOB_MESSAGE_SOURCE, messageJobOwner } from "./ownerMessage.js";
 import { hashWebhookBody, webhookSignatureMatches } from "./webhookSignature.js";
 
@@ -400,6 +400,9 @@ async function fileTheItem(db: Db, job: Job, event: AcceptedEvent, deps: Webhook
   const trigger = job.trigger as WebhookTrigger;
   const overrides = itemFromPayload(trigger.mapping ?? EMPTY_WEBHOOK_MAPPING, event.payload);
 
+  // The pipeline's module entry rules first (EO-736): the firing below is
+  // one transaction, which cannot wait on a module.
+  const entryVerdicts = await jobEntryVerdicts(db, job, { dueAt: event.receivedAt, firedAt: now, overrides });
   let filed: { item: Item; row: JobEvent } | { refused: string };
   try {
     filed = db.transaction(() => {
@@ -407,7 +410,7 @@ async function fileTheItem(db: Db, job: Job, event: AcceptedEvent, deps: Webhook
       // to it, and for a held event those are hours apart: the
       // occurrence keeps both, which is what makes the cap countable
       // and the history readable.
-      const fired = fireJob(db, job, { dueAt: event.receivedAt, firedAt: now, overrides });
+      const fired = fireJob(db, job, { dueAt: event.receivedAt, firedAt: now, overrides, entryVerdicts });
       // Returned rather than thrown: this firing is over, and its `failed`
       // occurrence and the owner's message have to outlive this
       // transaction, which a throw would take back (EO-610).

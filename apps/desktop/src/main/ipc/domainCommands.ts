@@ -108,6 +108,7 @@ import { notifyVersionMoveAsked } from "../db/versionMoveEvents.js";
 import { holderView, judgeClaimOutright, judgeOnGroupStep } from "../record/stepAuthority.js";
 import { getGroup } from "../db/repos/groupsRepo.js";
 import { emitPush } from "./push.js";
+import { withModuleEntryChecks } from "../modules/entryChecks.js";
 import { clearEnginePausePreference, isEnginePausePreferred, persistEnginePause } from "../engineActivity.js";
 
 /**
@@ -662,6 +663,16 @@ function busy(engine: EngineHandle | undefined, itemId: Uuid, activeRun: Run | u
  * mis-drag would be a genuinely bad surprise — so the UI has to confirm
  * first, and the refusal is what makes it.
  */
+/**
+ * `items:move` as the channel answers it: the destination's module entry
+ * rules are run first (EO-736). `moveItem` refuses before the active-run
+ * guard until each has its verdict, so nothing is cancelled or moved
+ * while one is out.
+ */
+export function moveItemChecked(db: Db, engine: EngineHandle | undefined, input: IpcPayload<"items:move">): Promise<IpcResponse<"items:move">> {
+  return withModuleEntryChecks(db, "move", () => moveItem(db, engine, input));
+}
+
 export function moveItem(db: Db, engine: EngineHandle | undefined, input: IpcPayload<"items:move">): IpcResponse<"items:move"> {
   const itemId = input.itemId as Uuid;
   const item = getItem(db, itemId);
@@ -850,6 +861,11 @@ export function moveItemToVersion(
  * without the reason in front of it, it has nothing to go on but the
  * fact that the item came back.
  */
+/** `items:decide` as the channel answers it: a decision routing into another pipeline runs its module entry rules first (EO-736). */
+export function decideItemChecked(db: Db, engine: EngineHandle | undefined, input: IpcPayload<"items:decide">): Promise<IpcResponse<"items:decide">> {
+  return withModuleEntryChecks(db, "route", () => decideItem(db, engine, input));
+}
+
 export function decideItem(db: Db, engine: EngineHandle | undefined, input: IpcPayload<"items:decide">): IpcResponse<"items:decide"> {
   const itemId = input.itemId as Uuid;
   const item = getItem(db, itemId);

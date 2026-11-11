@@ -1367,6 +1367,8 @@ describe("createCodexProvider", () => {
         // manifest, so required-and-nullable in the strict schema, like
         // `sideEffects` beside it.
         watch: null,
+        // Whether the module is an entry check (EO-736), the same way.
+        entryCheck: null,
       };
       const manifestFromClaude = {
         name: "Deploy",
@@ -1530,7 +1532,7 @@ describe("createCodexProvider", () => {
         const ofAChange = (strictNode(changeOf(strict).object, "properties", "manifest").anyOf as Record<string, unknown>[]).find((branch) => branch["type"] === "object")!;
 
         expect(ofAChange).toEqual(ofAModule);
-        expect(Object.keys(ofAChange["properties"] as object).sort()).toEqual(["description", "inputs", "name", "needs", "results", "sideEffects", "watch"]);
+        expect(Object.keys(ofAChange["properties"] as object).sort()).toEqual(["description", "entryCheck", "inputs", "name", "needs", "results", "sideEffects", "watch"]);
         // And the scenario chat's is that same document too.
         const inScenario = (strictNode(changeOf(strictCodexOutputSchema(scenarioSchema())).object, "properties", "manifest").anyOf as Record<string, unknown>[]).find(
           (branch) => branch["type"] === "object",

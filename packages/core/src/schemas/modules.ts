@@ -148,6 +148,19 @@ export const ModuleManifestSchema = z.object({
    * reads as a module that runs once.
    */
   watch: z.boolean().optional(),
+  /**
+   * Whether this module is an entry check (EO-736, ARCHITECTURE.md,
+   * "Entry rules"): a `module` entry rule may name it, and EO runs it
+   * against an item as it would enter a pipeline. It answers
+   * `{ ok: true, result: "pass" }` or `{ ok: true, result: "refuse",
+   * reason }`.
+   *
+   * Read-only by declaration: approval refuses a manifest that says this
+   * and also declares `needs.create`, `needs.comment`, `needs.attach` or
+   * `sideEffects` (`entryCheckManifestProblems`). Optional for
+   * `sideEffects`' reason: absent reads as a module that is no check.
+   */
+  entryCheck: z.boolean().optional(),
 });
 
 /**

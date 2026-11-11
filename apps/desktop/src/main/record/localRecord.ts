@@ -26,6 +26,7 @@ import { describeUpdateConflict, resolveUpdateConflictHere } from "../gallery/up
 import { describeTemplateStatus } from "../gallery/templateStatus.js";
 import { listConsolidations, restoreConsolidation, restoreSkillVersion } from "../db/repos/index.js";
 import { A_PERSON, applyMemoryWrite } from "../memory/memoryWrites.js";
+import { withModuleEntryChecks } from "../modules/entryChecks.js";
 import type { ItemRecord, OfferWorkInput, TransitionCommand, WorkOffer } from "./record.js";
 
 /**
@@ -328,11 +329,16 @@ export function createLocalRecord(db: Db, options: LocalRecordOptions = {}): Loc
     // Here, because this database is the record for these rows
     // (EO-433). The same function a server runs when a device asks it,
     // which is what makes the guards one set.
+    //
+    // A door that waits for a module entry rule (EO-736): the creation is
+    // written whole or refused before its row until each has a verdict.
     async createItemFromModule(request) {
-      return postModuleCreation(db, { module: request.module, item: request.item, runId: request.runId }, request.creation, {
-        atCap: request.atCap,
-        ...(request.onCreated === undefined ? {} : { onCreated: request.onCreated }),
-      });
+      return withModuleEntryChecks(db, "creation", () =>
+        postModuleCreation(db, { module: request.module, item: request.item, runId: request.runId }, request.creation, {
+          atCap: request.atCap,
+          ...(request.onCreated === undefined ? {} : { onCreated: request.onCreated }),
+        }),
+      );
     },
 
     // Here, because this database is the record for these rows

@@ -7,6 +7,7 @@ import { requestJiraPullDrain } from "../packs/developer/jira/pullSchedule.js";
 import { applyNewFeature } from "../roles/discussion.js";
 import { activeProjectId } from "./repositoryCommands.js";
 import { emitPush } from "./push.js";
+import { withModuleEntryChecks } from "../modules/entryChecks.js";
 import type { EngineHandle } from "./domainCommands.js";
 
 /**
@@ -134,7 +135,10 @@ export async function submitPlanCommand(
   attachmentStorage?: AttachmentStorage,
 ): Promise<IpcResponse<"work:submitPlan">> {
   const lists = [input.paths ?? [], ...input.stories.map((story) => story.paths ?? [])];
-  if (lists.every((paths) => paths.length === 0)) return submitPlan(db, engine, input);
+  // Each story's module entry rules are run before the plan is written
+  // (EO-736): `submitPlan` refuses whole, before its first row, until
+  // every one has a verdict.
+  if (lists.every((paths) => paths.length === 0)) return withModuleEntryChecks(db, "creation", () => submitPlan(db, engine, input));
   const refused = (problem: string): IpcResponse<"work:submitPlan"> => ({ created: false, featureKey: null, storyKeys: [], problem });
   const granted = await checkItemUploads(input.pathsFrom, lists, attachmentStorage);
   if (!granted.ok) return refused(granted.problem);
@@ -142,7 +146,7 @@ export async function submitPlanCommand(
   if (!stored.ok) return refused(stored.problem);
   let answer: IpcResponse<"work:submitPlan">;
   try {
-    answer = submitPlan(db, engine, input, stored.records);
+    answer = await withModuleEntryChecks(db, "creation", () => submitPlan(db, engine, input, stored.records));
   } catch (error) {
     await rollbackItemUploads(granted.storage, stored.records);
     throw error;

@@ -47,7 +47,8 @@ export function JobsView() {
       setProblem(null);
       setDraft(null);
       void queryClient.invalidateQueries({ queryKey: jobsRootKey });
-      void navigate(`/jobs/${result.job.id}`);
+      // With what the save did not check (EO-736), for the job's page to say.
+      void navigate(`/jobs/${result.job.id}`, result.notice ? { state: { notice: result.notice } } : undefined);
     },
     onError: (error: unknown) => setProblem(error instanceof Error ? error.message : String(error)),
   });

@@ -14,6 +14,7 @@ import {
   type MemorySource,
   type SkillAgeing,
   type IpcResponse,
+  type Item,
   type RecordAdoptCounts,
   type RecordAdoptedAttachment,
   type RecordCommand,
@@ -52,6 +53,7 @@ import { getModule } from "../db/repos/modulesRepo.js";
 import { originForWire } from "../db/repos/itemOriginsRepo.js";
 import { listAllDependencies, waitsForWire } from "../db/repos/itemDepsRepo.js";
 import { postModuleCreation } from "../modules/moduleCreations.js";
+import { withModuleEntryChecks } from "../modules/entryChecks.js";
 import { changeDependenciesOf, summariseDependencyChange } from "../roles/itemDependencies.js";
 import { openUpdateConflictChat } from "../roles/updateConflictChat.js";
 import { describeUpdateConflict, resolveUpdateConflictHere } from "../gallery/updateConflictDetail.js";
@@ -356,7 +358,8 @@ export async function serveCreateItem(
   let answer: IpcResponse<"record:createItem">;
   try {
     upsertReportedRun(db, payload.run);
-    answer = postModuleCreation(db, { module, item: origin, runId: payload.run.runId as Uuid }, payload.creation, { atCap: payload.atCap });
+    // The record runs the pipeline's module entry rules itself (EO-736).
+    answer = await withModuleEntryChecks(db, "creation", () => postModuleCreation(db, { module, item: origin, runId: payload.run.runId as Uuid }, payload.creation, { atCap: payload.atCap }));
   } catch (error) {
     return refuse(`the item could not be written: ${error instanceof Error ? error.message : String(error)}`);
   }
@@ -997,98 +1000,126 @@ async function applyOne(context: ServeRecordContext, deviceId: string, command: 
     holder: holderOf(db, item.assigneeId),
     notPermitted: refusal,
   });
+  // The same, of the item as it stands now rather than when the command arrived (EO-736).
+  const notPermittedNow = (current: Item, refusal: StepRefusal): RecordCommandResult => ({
+    ...ok,
+    applied: false,
+    holder: holderOf(db, current.assigneeId),
+    notPermitted: refusal,
+  });
 
   switch (command.kind) {
     case "transition": {
-      // **Already applied, and the device never heard so.**
-      //
-      // The case is ordinary and the consequence of missing it is not:
-      // the record applies a move, the acknowledgement is lost — the
-      // socket drops, the laptop lid closes — and the device replays
-      // the command it still holds. By then the item *has* moved, so
-      // the conflict rule below would find `fromStepId` stale and
-      // answer `superseded`, and the device would drop its own move and
-      // raise an inbox row naming itself as the person who overtook it.
-      // A false accusation about a move that in fact succeeded.
-      //
-      // So identity is asked before conflict. `transitionId` is the
-      // move's own id on both sides (see the command's own note), which
-      // is exactly what makes "have I already done this" answerable —
-      // and answering it `applied` is the truth: it was.
-      if (hasTransition(db, command.transitionId)) return ok;
-      if (getStep(db, command.toStepId) === undefined) {
-        return refused(`This record has no step "${command.toStepId}".`);
-      }
-      // **The conflict rule** (ARCHITECTURE.md, "The record"). The device said where
-      // it believed the item was; the record applies the move only if
-      // that is still true. Refusing is not a failure — the command was
-      // good and the world moved — so it comes back as `superseded`
-      // with the record's own answer, and the device turns that into
-      // the inbox row.
-      //
-      // A command that claims nothing about the previous step applies
-      // unconditionally. That is what a first arrival and a replayed
-      // old-format command look like, and the alternative — refusing
-      // everything that cannot prove where it came from — would drop
-      // work to protect a check.
-      if (command.fromStepId !== null && item.stepId !== command.fromStepId) {
-        return {
-          id: command.id,
-          applied: false,
-          superseded: { stepId: item.stepId ?? "", by: whoMovedIt(db, command.itemId as Uuid) },
-          problem: null,
-          heldBy: null,
-          holder: null,
-          notPermitted: null,
-        };
-      }
-      // **A person moving an item off a group-owned human step** (EO-368).
-      // Only the holder may, and the person is the one the sending device
-      // belongs to — never anything the command says. Asked after the
-      // identity check and the conflict rule above: a replayed move that
-      // already landed is "already done", and one overtaken by somebody
-      // else's is told so in those words rather than judged against a
-      // step it never meant to leave.
-      //
-      // Only a person's move. An agent finishing its run, a module and
-      // the engine move items as they always have: they are not somebody
-      // deciding on a human step, and refusing them would strand work.
-      //
-      // …and a decision the system agent pressed (EO-585), which is a
-      // person's act made by their assistant and is held to the same
-      // rule as theirs: it acts with the authority of the person whose
-      // device sent it, never more. The one exception is a trial item,
-      // where standing in for whoever the step would ask is the whole of
-      // the assistant's job.
-      if (command.actor === "human" || (isDecision(command.reason) && item.trialAt === null)) {
-        const refusal = judgeOnGroupStep(db, item, personOfDevice(db, deviceId)?.id ?? null, "change");
-        if (refusal !== null) return notPermitted(refusal);
-      }
-      // **The pipeline it is entering** (EO-610, ARCHITECTURE.md, "Entry
-      // rules"). The device asked its own copy before it showed the move,
-      // but that copy can be behind this one. After the checks above, for
-      // their reason: a move that is overtaken or not this person's to
-      // make is told so, rather than judged against where it was going.
-      //
+      const apply = (): void => {
+        record.applyTransition({
+          // The device's id for this move, so the two audit rows are one
+          // row rather than two accounts of the same thing.
+          id: command.transitionId as Uuid,
+          itemId: command.itemId as Uuid,
+          toStepId: command.toStepId,
+          toPipelineId: command.toPipelineId as Uuid | null,
+          actor: command.actor,
+          deviceId,
+          runId: command.runId as Uuid | null,
+          reason: command.reason,
+        });
+      };
+      // Everything the command is judged on, against the item as the record
+      // holds it at this instant (EO-736). A module rule takes a subprocess
+      // and time, and while it runs another device can move the item, hand
+      // it to somebody else or edit what the module reads; so the whole of
+      // this runs again in the same synchronous pass as the move, and an
+      // overtaken move is still answered `superseded` rather than written
+      // over the newer one.
+      const settle = (current: Item, judgeEntry: boolean): RecordCommandResult => {
+        // **Already applied, and the device never heard so.**
+        //
+        // The case is ordinary and the consequence of missing it is not:
+        // the record applies a move, the acknowledgement is lost — the
+        // socket drops, the laptop lid closes — and the device replays
+        // the command it still holds. By then the item *has* moved, so
+        // the conflict rule below would find `fromStepId` stale and
+        // answer `superseded`, and the device would drop its own move and
+        // raise an inbox row naming itself as the person who overtook it.
+        // A false accusation about a move that in fact succeeded.
+        //
+        // So identity is asked before conflict. `transitionId` is the
+        // move's own id on both sides (see the command's own note), which
+        // is exactly what makes "have I already done this" answerable —
+        // and answering it `applied` is the truth: it was.
+        if (hasTransition(db, command.transitionId)) return ok;
+        if (getStep(db, command.toStepId) === undefined) {
+          return refused(`This record has no step "${command.toStepId}".`);
+        }
+        // **The conflict rule** (ARCHITECTURE.md, "The record"). The device said where
+        // it believed the item was; the record applies the move only if
+        // that is still true. Refusing is not a failure — the command was
+        // good and the world moved — so it comes back as `superseded`
+        // with the record's own answer, and the device turns that into
+        // the inbox row.
+        //
+        // A command that claims nothing about the previous step applies
+        // unconditionally. That is what a first arrival and a replayed
+        // old-format command look like, and the alternative — refusing
+        // everything that cannot prove where it came from — would drop
+        // work to protect a check.
+        if (command.fromStepId !== null && current.stepId !== command.fromStepId) {
+          return {
+            id: command.id,
+            applied: false,
+            superseded: { stepId: current.stepId ?? "", by: whoMovedIt(db, command.itemId as Uuid) },
+            problem: null,
+            heldBy: null,
+            holder: null,
+            notPermitted: null,
+          };
+        }
+        // **A person moving an item off a group-owned human step** (EO-368).
+        // Only the holder may, and the person is the one the sending device
+        // belongs to — never anything the command says. Asked after the
+        // identity check and the conflict rule above: a replayed move that
+        // already landed is "already done", and one overtaken by somebody
+        // else's is told so in those words rather than judged against a
+        // step it never meant to leave.
+        //
+        // Only a person's move. An agent finishing its run, a module and
+        // the engine move items as they always have: they are not somebody
+        // deciding on a human step, and refusing them would strand work.
+        //
+        // …and a decision the system agent pressed (EO-585), which is a
+        // person's act made by their assistant and is held to the same
+        // rule as theirs: it acts with the authority of the person whose
+        // device sent it, never more. The one exception is a trial item,
+        // where standing in for whoever the step would ask is the whole of
+        // the assistant's job.
+        if (command.actor === "human" || (isDecision(command.reason) && current.trialAt === null)) {
+          const refusal = judgeOnGroupStep(db, current, personOfDevice(db, deviceId)?.id ?? null, "change");
+          if (refusal !== null) return notPermittedNow(current, refusal);
+        }
+        // **The pipeline it is entering** (EO-610, ARCHITECTURE.md, "Entry
+        // rules"). The device asked its own copy before it showed the move,
+        // but that copy can be behind this one. After the checks above, for
+        // their reason: a move that is overtaken or not this person's to
+        // make is told so, rather than judged against where it was going.
+        if (judgeEntry) {
+          const sentence = itemEntryRefusal(db, current, command.toPipelineId, command.toStepId);
+          if (sentence !== null) {
+            return notPermittedNow(current, { why: "entryRules", groupName: "", holder: holderView(db, current.assigneeId), stepId: current.stepId, pipelineId: current.pipelineId, sentence });
+          }
+        }
+        apply();
+        return ok;
+      };
       // Clearing a step that is being removed is exempt here as it is at
       // the door: that work is not entering anywhere by choice.
-      if (!isStepClearance(command.reason)) {
-        const sentence = itemEntryRefusal(db, item, command.toPipelineId, command.toStepId);
-        if (sentence !== null) return notPermitted({ why: "entryRules", groupName: "", holder: holderView(db, item.assigneeId), stepId: item.stepId, pipelineId: item.pipelineId, sentence });
-      }
-      record.applyTransition({
-        // The device's id for this move, so the two audit rows are one
-        // row rather than two accounts of the same thing.
-        id: command.transitionId as Uuid,
-        itemId: command.itemId as Uuid,
-        toStepId: command.toStepId,
-        toPipelineId: command.toPipelineId as Uuid | null,
-        actor: command.actor,
-        deviceId,
-        runId: command.runId as Uuid | null,
-        reason: command.reason,
+      if (isStepClearance(command.reason)) return settle(item, false);
+      // Its module rules too (EO-736): the record runs the module itself
+      // before applying the command, rather than trusting the device's run.
+      const door = command.actor === "human" ? "move" : "route";
+      return await withModuleEntryChecks(db, door, () => {
+        const current = getItem(db, command.itemId as Uuid);
+        return current === undefined ? refused("This record no longer has that item.") : settle(current, true);
       });
-      return ok;
     }
 
     case "comment": {

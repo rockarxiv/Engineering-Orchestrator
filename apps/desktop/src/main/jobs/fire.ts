@@ -1,6 +1,9 @@
 import { parseQualifiedItemType, type Item, type Job, type JobOccurrence, type Uuid } from "@eo/core";
 import type { Db } from "../db/client.js";
-import { createItem, getPipeline, getProject, recordOccurrence } from "../db/repos/index.js";
+import { createItem, creationRefusal, getPipeline, getProject, recordOccurrence, resolveItemType } from "../db/repos/index.js";
+import { runWithEntryVerdicts } from "../db/repos/entryRulesRepo.js";
+import type { CreateItemInput } from "../db/repos/itemsRepo.js";
+import { withModuleEntryChecks } from "../modules/entryChecks.js";
 import { isProjectReplica } from "../db/recordRole.js";
 import { fillTemplate } from "./template.js";
 import { JOB_MESSAGE_SOURCE, messageJobOwner } from "./ownerMessage.js";
@@ -54,6 +57,14 @@ export interface FireOptions {
    * could only be tested by waiting an hour.
    */
   firedAt?: number;
+  /**
+   * What the pipeline's module entry rules said of this firing's item
+   * (EO-736), worked out beforehand by `jobEntryVerdicts` — the firing
+   * itself is one synchronous transaction that cannot wait on a module.
+   * Absent where nobody asked, and then a module rule refuses the item,
+   * saying it cannot run here.
+   */
+  entryVerdicts?: ReadonlyMap<string, string | null>;
 }
 
 /** What a trigger may put in place of the template — see `FireOptions.overrides`. */
@@ -99,6 +110,56 @@ class Refused extends Error {
     super(reason);
     this.name = "Refused";
   }
+}
+
+/** What one firing asks `createItem` for: the template with its blanks filled, on the pipeline's entry step. */
+function firingInput(job: Job, dueAt: number, overrides: FireOverrides, pipelineId: Uuid, entryStepId: string): CreateItemInput {
+  const template = job.template!;
+  const blanks = { dueAt, job: job.name };
+  return {
+    type: parseQualifiedItemType(template.type) ?? template.type,
+    title: overrides.title ?? fillTemplate(template.title, blanks),
+    body: overrides.body ?? (template.body === null ? null : fillTemplate(template.body, blanks)),
+    ...(overrides.spec === undefined ? {} : { spec: overrides.spec }),
+    projectId: job.projectId as Uuid | null,
+    pipelineId,
+    stepId: entryStepId,
+    createdBy: job.ownerId as Uuid,
+  };
+}
+
+/**
+ * What the pipeline's module entry rules say of the item this firing would
+ * file (EO-736, ARCHITECTURE.md, "Entry rules"), for `FireOptions.entryVerdicts`.
+ *
+ * Run before the firing, because the firing is one transaction and a
+ * module is a subprocess. Reads only: the item is judged as `createItem`
+ * would judge it, and nothing is written. Empty where there is nothing to
+ * run — no template, no pipeline, a data rule that refuses already.
+ * `options.dueAt` must be the one the firing is given, since the title's
+ * blanks are filled from it.
+ */
+export async function jobEntryVerdicts(db: Db, job: Job, options: FireOptions & { dueAt: number }): Promise<Map<string, string | null>> {
+  const verdicts = new Map<string, string | null>();
+  if (job.template === null || job.pipelineId === null) return verdicts;
+  const pipeline = getPipeline(db, job.pipelineId);
+  if (pipeline === undefined || pipeline.entryStepId === null) return verdicts;
+  const input = firingInput(job, options.dueAt, options.overrides ?? {}, pipeline.id as Uuid, pipeline.entryStepId);
+  const type = resolveItemType(db, input.projectId ?? null, input.type);
+  if (!type.ok) return verdicts;
+  // Judged until it settles, so a rule published or a module changed
+  // while a check ran is asked again here rather than failing the firing.
+  await withModuleEntryChecks(db, "job", () => creationRefusal(db, input, type.type), verdicts);
+  return verdicts;
+}
+
+/**
+ * `fireJob`, with the module entry rules run first (EO-736): what every
+ * door that can wait fires through.
+ */
+export async function fireJobChecked(db: Db, job: Job, options: FireOptions = {}): Promise<FireResult> {
+  const pinned = { ...options, dueAt: options.dueAt ?? Date.now() };
+  return fireJob(db, job, { ...pinned, entryVerdicts: await jobEntryVerdicts(db, job, pinned) });
 }
 
 /**
@@ -193,18 +254,11 @@ export function fireJob(db: Db, job: Job, options: FireOptions = {}): FireResult
         throw new Refused(`"${pipeline.name}" has no step for new work to start on, so there was nowhere to file this.`);
       }
 
-      const blanks = { dueAt, job: job.name };
-      const overrides = options.overrides ?? {};
-      const created = createItem(db, {
-        type: parseQualifiedItemType(template.type) ?? template.type,
-        title: overrides.title ?? fillTemplate(template.title, blanks),
-        body: overrides.body ?? (template.body === null ? null : fillTemplate(template.body, blanks)),
-        ...(overrides.spec === undefined ? {} : { spec: overrides.spec }),
-        projectId: job.projectId as Uuid | null,
-        pipelineId: pipeline.id as Uuid,
-        stepId: pipeline.entryStepId,
-        createdBy: job.ownerId as Uuid,
-      });
+      const input = firingInput(job, dueAt, options.overrides ?? {}, pipeline.id as Uuid, pipeline.entryStepId);
+      // With the module rules' verdicts, where the caller worked them
+      // out (EO-736); a rule with none refuses, saying it cannot run here.
+      const { entryVerdicts } = options;
+      const created = entryVerdicts === undefined ? createItem(db, input) : runWithEntryVerdicts("job", entryVerdicts, () => createItem(db, input), { final: true }).result;
       if (!created.ok) throw new Refused(created.problem, created.refusedAtEntry === true);
 
       const occurrence = recordOccurrence(db, {

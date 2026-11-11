@@ -37,6 +37,8 @@ import { skillRunScope } from "./supervisor/workspaceResolution.js";
 import { recordFor } from "./record/localRecord.js";
 import type { ItemRecord } from "./record/record.js";
 import { createModuleRunnerLookup } from "./modules/registry.js";
+import { configureEntryChecks } from "./modules/entryChecks.js";
+import type { ModuleHostLauncher } from "./modules/runModule.js";
 import { moduleItemReader } from "./modules/moduleItemRead.js";
 import { agentRunVariables, redirectWithheldVariables, type ModuleSecretsOptions } from "./modules/secrets.js";
 import { foldPacks, missingPackRefusal, type CodePack } from "./packs/pack.js";
@@ -344,6 +346,45 @@ export function createEngine(options: EngineOptions, packs: readonly CodePack[] 
   // text, since nothing stores it to be asked for again.
   liveDrafts.onDelta((push) => emitPush("runs:delta", push));
 
+  // The module host, built once and shared by a `module` step's runner
+  // and the entry checks a pipeline's `module` rules run (EO-736).
+  const moduleLauncher: ModuleHostLauncher | undefined =
+    options.moduleHostPath && options.moduleSecrets
+      ? {
+          execPath: process.execPath,
+          hostPath: options.moduleHostPath,
+          // The same trick the MCP service is launched with: Electron
+          // *is* Node when told to be, so there is no second runtime
+          // to install and no version to keep in step.
+          hostEnv: { ELECTRON_RUN_AS_NODE: "1" },
+          // What answers `ctx.item()` and `ctx.itemByKey()` (EO-709):
+          // this database, read the way the screens read it, with the
+          // branch a pull request targets worked out by the code
+          // `open_pull_request` opens one with — and, for `ctx.runs()`
+          // (EO-710), the result key a run produced read by the code
+          // that routed it — and, for `ctx.workspace` (EO-711), the
+          // forge a repository that names none points at.
+          items: moduleItemReader(db, {
+            targetBranch: (item) => pullRequestTargetBranch(db, item),
+            resultKey: createRunResultKey(db),
+            forgeKind: guessForgeFromRemote,
+          }),
+        }
+      : undefined;
+  // What a `module` entry rule runs with (EO-736, ARCHITECTURE.md, "Entry
+  // rules"): the same host, and the target branch `ctx.item()` reports.
+  // Every door reads it from here; with no host, every module rule
+  // refuses and says why.
+  configureEntryChecks(
+    moduleLauncher && options.moduleSecrets
+      ? {
+          launcher: moduleLauncher,
+          secrets: options.moduleSecrets,
+          targetBranch: (item) => pullRequestTargetBranch(db, item),
+          ...(options.organisationSecrets ? { organisationSecrets: options.organisationSecrets } : {}),
+        }
+      : null,
+  );
   const supervisor = createRunSupervisor({
     db,
     record,
@@ -405,7 +446,7 @@ export function createEngine(options: EngineOptions, packs: readonly CodePack[] 
     // host path — the v1 gate drives the engine with scripted agents and
     // has no packaged resources — in which case a module step parks and
     // says so, rather than the engine failing to construct.
-    ...(options.moduleHostPath && options.moduleSecrets
+    ...(moduleLauncher && options.moduleSecrets
       ? {
           moduleRunner: createModuleRunnerLookup({
             db,
@@ -413,26 +454,7 @@ export function createEngine(options: EngineOptions, packs: readonly CodePack[] 
             // that owns the item, which for an organisation's project
             // is not this database.
             record,
-            launcher: {
-              execPath: process.execPath,
-              hostPath: options.moduleHostPath,
-              // The same trick the MCP service is launched with: Electron
-              // *is* Node when told to be, so there is no second runtime
-              // to install and no version to keep in step.
-              hostEnv: { ELECTRON_RUN_AS_NODE: "1" },
-              // What answers `ctx.item()` and `ctx.itemByKey()` (EO-709):
-              // this database, read the way the screens read it, with the
-              // branch a pull request targets worked out by the code
-              // `open_pull_request` opens one with — and, for `ctx.runs()`
-              // (EO-710), the result key a run produced read by the code
-              // that routed it — and, for `ctx.workspace` (EO-711), the
-              // forge a repository that names none points at.
-              items: moduleItemReader(db, {
-                targetBranch: (item) => pullRequestTargetBranch(db, item),
-                resultKey: createRunResultKey(db),
-                forgeKind: guessForgeFromRemote,
-              }),
-            },
+            launcher: moduleLauncher,
             secrets: options.moduleSecrets,
             // Where a file a module attaches is kept (EO-414): the store
             // a run's artifacts already go to.

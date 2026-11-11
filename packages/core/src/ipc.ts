@@ -3211,6 +3211,12 @@ export const recordContract = {
       /** The same rules in the words a refusal would use, or null for a pipeline with none. */
       entrySentence: z.string().nullable().default(null),
       /**
+       * Each rule as one line, in the order the pipeline lists them, for a
+       * person reading what the pipeline asks (EO-736): its words, a module
+       * rule's module by name and its time limit, and the types it applies to.
+       */
+      entryRuleLines: z.array(z.string()).default([]),
+      /**
        * Where a route may hand work to (EO-58, EO-69).
        *
        * On the same channel as the graph rather than fetched per pipeline:
@@ -4957,7 +4963,16 @@ export const recordContract = {
        */
       runsOn: JobRunsOnSchema.optional(),
     }),
-    z.object({ job: JobSummarySchema.nullable(), problem: z.string().nullable() }),
+    z.object({
+      job: JobSummarySchema.nullable(),
+      problem: z.string().nullable(),
+      /**
+       * What the save did not check (EO-736): the pipeline's module entry
+       * rules, which run on each firing because a template is no item yet.
+       * Absent or null where there are none.
+       */
+      notice: z.string().nullable().optional(),
+    }),
   ),
   /**
    * Makes a job, and with it the off-board item it posts its guards on
@@ -4980,7 +4995,16 @@ export const recordContract = {
       /** Omitted is `device`, which is where every job has always run (EO-330, ARCHITECTURE.md, "Where a job runs"). */
       runsOn: JobRunsOnSchema.optional(),
     }),
-    z.object({ job: JobSummarySchema.nullable(), problem: z.string().nullable() }),
+    z.object({
+      job: JobSummarySchema.nullable(),
+      problem: z.string().nullable(),
+      /**
+       * What the save did not check (EO-736): the pipeline's module entry
+       * rules, which run on each firing because a template is no item yet.
+       * Absent or null where there are none.
+       */
+      notice: z.string().nullable().optional(),
+    }),
   ),
   /**
    * The `manual` trigger: fire this job once, now.

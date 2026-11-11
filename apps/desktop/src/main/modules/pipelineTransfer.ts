@@ -16,6 +16,7 @@ import type {
 import {
   addedFieldCollisionMessage,
   addedFieldCollisions,
+  MODULE_ENTRY_RULE_KIND,
   ADMIN_GRANT_REFUSAL,
   CONNECTOR_SETUP_REFUSAL,
   ADMIN_MCP_SERVER_NAME,
@@ -138,6 +139,14 @@ export function exportPipeline(db: Db, pipelineId: string): { ok: true; document
     if (!module) return { ok: false, reason: `"${step.name}" runs a module this installation no longer has, so the pipeline cannot be exported whole.` };
     if (!used.some((candidate) => candidate.id === module.id)) used.push(module);
   }
+  // And the modules its entry rules run (EO-736), which travel the same
+  // way: by slug, with their code and their tests.
+  for (const rule of pipeline.entryRules) {
+    if (rule.kind !== MODULE_ENTRY_RULE_KIND || rule.module === undefined) continue;
+    const module = byId.get(rule.module);
+    if (!module) return { ok: false, reason: `An entry rule runs a module this installation no longer has ("${rule.module}"), so the pipeline cannot be exported whole.` };
+    if (!used.some((candidate) => candidate.id === module.id)) used.push(module);
+  }
 
   const slugById = new Map(used.map((module) => [module.id as string, module.slug]));
   const exported = new Set(steps.map((step) => step.id));
@@ -182,7 +191,10 @@ export function exportPipeline(db: Db, pipelineId: string): { ok: true; document
         // Part of what the pipeline says rather than a fact about this
         // machine (EO-610): a type is named by pack and word, and a field
         // by the word its type declares, so both mean the same over there.
-        entryRules: pipeline.entryRules,
+        // A module rule names its module by slug, as a step does (EO-736).
+        entryRules: pipeline.entryRules.map((rule) =>
+          rule.kind === MODULE_ENTRY_RULE_KIND && rule.module !== undefined ? { ...rule, module: slugById.get(rule.module) ?? rule.module } : rule,
+        ),
       },
       steps: steps.map((step) => ({
         id: step.id,
@@ -1275,6 +1287,22 @@ function referenceProblem(document: PipelineExport): string | null {
 }
 
 /**
+ * An entry rule naming a module neither the document carries nor this
+ * installation has (EO-736), refused by name: imported, it would refuse
+ * every item at the door.
+ */
+function entryRuleModuleProblem(db: Db, document: PipelineExport): string | null {
+  for (const rule of document.pipeline.entryRules) {
+    if (rule.kind !== MODULE_ENTRY_RULE_KIND || rule.module === undefined) continue;
+    const slug = rule.module;
+    if (!document.modules.some((module) => module.slug === slug) && getModuleBySlug(db, slug) === undefined) {
+      return `An entry rule runs the module "${slug}", which this document does not carry and this installation does not have.`;
+    }
+  }
+  return null;
+}
+
+/**
  * What `validatePipeline` would say about the document's entry rules
  * (EO-610), held to the types the project has and the ones the document
  * brings with it, since those land in the same transaction.
@@ -1308,7 +1336,7 @@ export function importPipeline(db: Db, input: ImportPipelineInput): ImportResult
   const refusal = packRefusal(document);
   if (refusal !== null) return { ok: false, reason: refusal };
 
-  const problem = referenceProblem(document) ?? entryRulesProblem(db, document, input.projectId ?? null);
+  const problem = referenceProblem(document) ?? entryRuleModuleProblem(db, document) ?? entryRulesProblem(db, document, input.projectId ?? null);
   if (problem !== null) return { ok: false, reason: problem };
 
   // Slugs claimed here already, plus the ones this document is about to
@@ -1493,7 +1521,15 @@ function writeImport(
     // transaction and inside the version that freezes both (EO-327):
     // an imported pipeline whose entry step arrived a statement later
     // would have a v1 that froze the wrong one.
-    { entryStepId: document.pipeline.entryStepId === null ? null : mapped(document.pipeline.entryStepId), entryRules: document.pipeline.entryRules },
+    {
+      entryStepId: document.pipeline.entryStepId === null ? null : mapped(document.pipeline.entryStepId),
+      // A module rule's slug back to the module it means here (EO-736): one
+      // this document brought, or the one this installation already has.
+      entryRules: document.pipeline.entryRules.map((rule) => {
+        if (rule.kind !== MODULE_ENTRY_RULE_KIND || rule.module === undefined) return rule;
+        return { ...rule, module: idBySlug.get(rule.module) ?? getModuleBySlug(db, rule.module)?.id ?? rule.module };
+      }),
+    },
   );
   if (!written.replaced) throw new Error(`A freshly created pipeline refused its graph: ${written.holding.map((hold) => hold.stepId).join(", ")}`);
 

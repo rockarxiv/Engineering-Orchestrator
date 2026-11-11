@@ -32,6 +32,7 @@ import type { ItemTypeName } from "../db/repos/itemTypesRepo.js";
 import { approvalNote } from "./approvalNote.js";
 import { answerableQuestionIds } from "./conversationView.js";
 import type { EngineHandle } from "./domainCommands.js";
+import { withModuleEntryChecks } from "../modules/entryChecks.js";
 import { emitPush } from "./push.js";
 
 /**
@@ -172,7 +173,13 @@ export async function approveWorkProposalThroughRecord(
   addedValues: AddedFieldValues = [],
 ): Promise<AppliedProposal> {
   const held = reorderOnTheRecord(db, conversation, proposalCommentId);
-  if (held === null) return approveWorkProposal(db, engine, conversation, proposalCommentId, chosenType, addedValues);
+  if (held === null) {
+    // A door that can wait for a module entry rule (EO-736): the proposal
+    // is applied whole, or refused before its first row, until each item
+    // it creates has its verdict.
+    const applied = await withModuleEntryChecks(db, "creation", () => applyDiscussionProposal(db, conversation, proposalCommentId, null, typeChoice(chosenType), addedValues));
+    return settleApproval(db, engine, conversation, proposalCommentId, applied);
+  }
 
   const { item, proposal } = held;
   const answer = await record.changeDependencies({

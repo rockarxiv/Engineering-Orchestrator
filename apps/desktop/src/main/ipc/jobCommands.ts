@@ -12,8 +12,8 @@ import { getJob, listDevices, listJobs } from "../db/repos/index.js";
 import { placementForJob, runsOnOf, type PlacementFacts } from "../jobs/placement.js";
 import { sessionStatus, type SessionStoreOptions } from "../managed/session.js";
 import { jobCostCents, pauseJob, resumeJob } from "../jobs/budget.js";
-import { fireJob } from "../jobs/fire.js";
-import { createJob, deleteJob, updateJob } from "../jobs/jobs.js";
+import { fireJob, jobEntryVerdicts, type FireOptions } from "../jobs/fire.js";
+import { moduleRulesNotice, createJob, deleteJob, updateJob } from "../jobs/jobs.js";
 import { jobSummary, occurrenceRows } from "../jobs/summary.js";
 import { activeProjectId } from "./repositoryCommands.js";
 import type { EngineHandle } from "./domainCommands.js";
@@ -261,7 +261,7 @@ export async function updateJobCommand(
     ...(input.runsOn === undefined ? {} : { runsOn: input.runsOn }),
   });
   if (!result.ok) return { job: null, problem: result.problem };
-  return { job: jobSummary(db, result.job), problem: null };
+  return { job: jobSummary(db, result.job), problem: null, notice: moduleRulesNotice(db, result.job) };
 }
 
 export async function createJobCommand(
@@ -293,7 +293,7 @@ export async function createJobCommand(
   // A summary, like every other `jobs:*` answer about one job (EO-308):
   // the caller opens the Job page on it, and the next run is the first
   // thing that page states.
-  return { job: jobSummary(db, result.job), problem: null };
+  return { job: jobSummary(db, result.job), problem: null, notice: moduleRulesNotice(db, result.job) };
 }
 
 /**
@@ -316,7 +316,13 @@ export async function createJobCommand(
  * reason where they pressed it, and invariant #8 is about work dropped
  * where nobody is looking.
  */
-export function runJobNowCommand(db: Db, engine: EngineHandle | undefined, input: IpcPayload<"jobs:runNow">): IpcResponse<"jobs:runNow"> {
+export function runJobNowCommand(
+  db: Db,
+  engine: EngineHandle | undefined,
+  input: IpcPayload<"jobs:runNow">,
+  /** The firing's moment and its module entry verdicts, where `runJobNowChecked` worked them out (EO-736). */
+  fire: FireOptions = {},
+): IpcResponse<"jobs:runNow"> {
   const job = getJob(db, input.jobId as Uuid);
   // A tombstone is not a job to run. `getJob` still answers for one so
   // that the items it filed can name it (`deleteJob`); every door a
@@ -331,7 +337,7 @@ export function runJobNowCommand(db: Db, engine: EngineHandle | undefined, input
     };
   }
 
-  const result = fireJob(db, job);
+  const result = fireJob(db, job, fire);
   if (result.item !== null) {
     emitPush("items:changed", { itemId: result.item.id });
     // New work on a step: the scheduler should look now rather than on
@@ -392,4 +398,16 @@ export function deleteJobCommand(db: Db, input: IpcPayload<"jobs:delete">): IpcR
   const result = deleteJob(db, input.jobId as Uuid, { archiveItems: input.archiveItems });
   if (result.deleted) emitPush("items:changed", {});
   return result;
+}
+
+/**
+ * `jobs:runNow` as the channel answers it: the pipeline's module entry
+ * rules are run on the item first (EO-736), since the firing itself
+ * cannot wait on a module.
+ */
+export async function runJobNowChecked(db: Db, engine: EngineHandle | undefined, input: IpcPayload<"jobs:runNow">): Promise<IpcResponse<"jobs:runNow">> {
+  const job = getJob(db, input.jobId as Uuid);
+  if (!job || job.deletedAt !== null || job.trigger.kind === "from-discussion") return runJobNowCommand(db, engine, input);
+  const dueAt = Date.now();
+  return runJobNowCommand(db, engine, input, { dueAt, entryVerdicts: await jobEntryVerdicts(db, job, { dueAt }) });
 }

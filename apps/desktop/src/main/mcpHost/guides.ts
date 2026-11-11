@@ -378,16 +378,24 @@ scratch unless you intend to replace everything.
 ## What work must have to enter
 
 \`entryRules\` is an ordered list of what an item must have to enter the
-pipeline. Rules are declared data, not code: each can only ask about what EO
-already holds on the item, and nothing runs. EO checks them when an item is
+pipeline. Rules are declared data: each but a \`module\` rule can only ask
+about what EO already holds on the item. EO checks them when an item is
 created on the pipeline, when a job is saved and each time it fires, and when
 an item moves in from another pipeline, by hand or by a route. A refusal names
 everything missing at once. A route that is refused leaves the item where it
 is and asks a person.
 
 - **\`kind\`** — \`field\` (with \`field\`, a spec field by name),
-  \`description\`, \`workspace\`, or a kind a pack contributes, which
-  \`registry_get\` lists.
+  \`description\`, \`workspace\`, \`module\`, or a kind a pack contributes,
+  which \`registry_get\` lists.
+- **\`module\`** — for a \`module\` rule, the id of an approved module whose
+  manifest says \`entryCheck: true\`. EO runs it on the item as it would enter,
+  and lets it in only when it answers \`pass\`; its \`refuse\` reason is shown.
+  A crash, a timeout or a module that cannot run keeps the item out too. It runs
+  only once every other rule is met, once per module, in the order listed.
+  A job's save does not run it; each firing does.
+- **\`timeoutMs\`** — how long a \`module\` rule's check may take: 30 seconds
+  when left out, never more than ten minutes.
 - **\`types\`** — the qualified item types it applies to, such as
   \`developer:story\`. Left out, it applies to every type. A \`field\` rule fails
   on an item whose type has no such field, so narrow it with \`types\`.
@@ -398,7 +406,8 @@ string, or an empty array. \`0\` and \`false\` are present.
 
 \`pipeline_get\` shows them. In \`pipeline_save\`, leaving \`entryRules\` out keeps
 what the pipeline has and \`[]\` clears them. A rule naming a field or a type
-this project does not have is refused, and so is a kind nothing contributes.
+this project does not have is refused, and so is a kind nothing contributes,
+and a \`module\` rule whose module is missing, unapproved or no entry check.
 Changing them files a new version, and an item already on the pipeline is not
 checked again. They replace nothing a module step does after entry: a rule
 stops work at the door, and a module step can still check anything once it is in.

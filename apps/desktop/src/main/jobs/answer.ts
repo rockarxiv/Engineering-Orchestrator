@@ -1,7 +1,8 @@
-import type { Message, Uuid } from "@eo/core";
+import type { Job, Message, Uuid } from "@eo/core";
 import type { Db } from "../db/client.js";
 import { getJob, hasFiredAt, occurrenceForOffer } from "../db/repos/index.js";
-import { fireJob, type FireResult } from "./fire.js";
+import { fireJob, fireJobChecked, type FireResult } from "./fire.js";
+import { jobMeetsModuleRules } from "./jobs.js";
 import { JOB_MESSAGE_SOURCE } from "./ownerMessage.js";
 
 /**
@@ -42,7 +43,7 @@ export const SKIP_OFFER_OPTIONS = [RUN_NOW_OPTION, LEAVE_IT_OPTION];
  * skip wrote its offer's id on the occurrence, so pressing an offer from
  * three weeks ago runs that week's, never the newest skip's.
  */
-export function answerSkipMessage(db: Db, message: Message): FireResult | null {
+export function answerSkipMessage(db: Db, message: Message): FireResult | null | Promise<FireResult> {
   if (message.source !== JOB_MESSAGE_SOURCE.skipped) return null;
   if (message.handledHow !== "answered" || message.answer !== RUN_NOW_OPTION) return null;
   const occurrence = occurrenceForOffer(db, message.id as Uuid);
@@ -54,5 +55,15 @@ export function answerSkipMessage(db: Db, message: Message): FireResult | null {
   // who deleted it does not need telling).
   const job = getJob(db, occurrence.jobId as Uuid);
   if (!job || job.deletedAt !== null) return null;
-  return fireJob(db, job, { dueAt: occurrence.dueAt });
+  return fireOffered(db, job, occurrence.dueAt);
+}
+
+/**
+ * Fires the occurrence an answer named: at once, or — where the job's
+ * pipeline has a `module` entry rule for what it files — once that rule
+ * has run on the item (EO-736), which takes a subprocess and so a promise.
+ * Every other job fires in the same turn it always did.
+ */
+function fireOffered(db: Db, job: Job, dueAt: number): FireResult | Promise<FireResult> {
+  return jobMeetsModuleRules(db, job) ? fireJobChecked(db, job, { dueAt }) : fireJob(db, job, { dueAt });
 }
