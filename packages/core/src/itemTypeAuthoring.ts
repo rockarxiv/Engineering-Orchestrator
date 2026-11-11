@@ -92,6 +92,21 @@ export function toSlug(raw: string): string {
 }
 
 /**
+ * A field's name as the row will hold it (EO-735): one of the pack's
+ * own fields exactly as the pack wrote it, anything else normalised by
+ * `toSlug`.
+ *
+ * A pack's shape may name a field `customer-name` or `customerName` —
+ * `SpecShapeSchema` allows both — and that name is the key every item of
+ * the type already holds its value under. Normalising it would turn the
+ * pack's unchanged field into a field the list removes and one it adds,
+ * so only what a person typed is normalised.
+ */
+export function fieldNameFor(raw: string, packFieldNames: ReadonlySet<string>): string {
+  return packFieldNames.has(raw) ? raw : toSlug(raw);
+}
+
+/**
  * What a required field of this kind demands, beyond being present.
  *
  * `required` in JSON Schema means the key is there, and a key holding
@@ -163,8 +178,13 @@ export interface ItemTypeDraft {
  * form checks before it asks and the command checks before it writes,
  * and two implementations would be two definitions of a valid type with
  * the lenient one deciding what is in the table.
+ *
+ * `packFieldNames` are a pack's type's own fields (EO-735), compared as
+ * the pack wrote them rather than normalised (`fieldNameFor`), so two
+ * distinct pack names such as `customer-name` and `customer_name` are
+ * not taken for one.
  */
-export function itemTypeDraftProblem(draft: ItemTypeDraft): string | null {
+export function itemTypeDraftProblem(draft: ItemTypeDraft, packFieldNames: ReadonlySet<string> = new Set()): string | null {
   if (draft.label.trim() === "") return "A type needs a name — “Case”, say.";
   if (draft.plural.trim() === "") return "A type needs a plural name — “Cases”, say.";
   if (toSlug(draft.label) === "") return `“${draft.label.trim()}” has no letters or digits in it, so there is no word to file items under.`;
@@ -172,8 +192,8 @@ export function itemTypeDraftProblem(draft: ItemTypeDraft): string | null {
   const seen = new Set<string>();
   for (const field of draft.fields) {
     if (field.name.trim() === "") return "Every field needs a name.";
-    if (toSlug(field.name) === "") return `“${field.name.trim()}” has no letters or digits in it, so it cannot be a field name.`;
-    const name = toSlug(field.name);
+    const name = fieldNameFor(field.name, packFieldNames);
+    if (name === "") return `“${field.name.trim()}” has no letters or digits in it, so it cannot be a field name.`;
     if (seen.has(name)) return `Two fields are called “${name}”. Each field needs its own name.`;
     seen.add(name);
   }

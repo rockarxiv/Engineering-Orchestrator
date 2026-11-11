@@ -1,5 +1,6 @@
 import {
   addedFieldCollisionMessage,
+  fieldNameFor,
   fieldHoldsValuesMessage,
   isPackShipped,
   itemTypeActionOverridesRefusal,
@@ -82,7 +83,8 @@ export function listItemTypesCommand(db: Db, input: IpcPayload<"itemTypes:list">
 
 /**
  * The fields as the row will hold them: names normalised the way the
- * type's own slug is.
+ * type's own slug is, except a pack's own fields, kept as the pack
+ * wrote them (`fieldNameFor`, EO-735).
  *
  * `Customer name` typed into the form becomes `customer_name`, because
  * a field name is a JSON key an agent answers with and a space in one is
@@ -91,8 +93,18 @@ export function listItemTypesCommand(db: Db, input: IpcPayload<"itemTypes:list">
  * typed — `Customer` and `customer` are one field, and finding that out
  * at the INSERT is finding it out too late.
  */
-function normalised(fields: readonly SpecFieldDraft[]): SpecFieldDraft[] {
-  return fields.map((field) => ({ ...field, name: toSlug(field.name) }));
+function normalised(fields: readonly SpecFieldDraft[], packFieldNames: ReadonlySet<string> = new Set()): SpecFieldDraft[] {
+  return fields.map((field) => ({ ...field, name: fieldNameFor(field.name, packFieldNames) }));
+}
+
+/**
+ * A pack's type's own field names as the pack wrote them (EO-735), which
+ * `normalised` leaves alone — `customer-name` is the key its items hold
+ * a value under, not `customer_name`. Empty on a type made here.
+ */
+function packFieldNamesOf(type: ItemType): ReadonlySet<string> {
+  if (!isPackShipped(type)) return new Set();
+  return new Set(specFields(type.specShape).filter((field) => !field.added).map((field) => field.name));
 }
 
 /**
@@ -169,7 +181,7 @@ export function updateItemTypeCommand(db: Db, input: IpcPayload<"itemTypes:updat
     label: input.label?.trim() ?? existing.label,
     plural: input.plural?.trim() ?? existing.plural,
     ...(input.container === undefined ? {} : { container: input.container }),
-    ...(input.fields === undefined ? {} : { specShape: shapeFor(existing, normalised(input.fields)) }),
+    ...(input.fields === undefined ? {} : { specShape: shapeFor(existing, normalised(input.fields, packFieldNamesOf(existing))) }),
   });
   if (updated === undefined) return { type: null, problem: "That item type is not here any more." };
   return { type: toView(db, updated), problem: null };
@@ -178,7 +190,7 @@ export function updateItemTypeCommand(db: Db, input: IpcPayload<"itemTypes:updat
 /** The shape a field list leaves the type with: the pack's document with these beside it, or the list itself on a type made here. */
 function shapeFor(existing: ItemType, fields: readonly SpecFieldDraft[]): ItemType["specShape"] {
   if (!isPackShipped(existing)) return specShapeFromFields(fields);
-  const packFields = new Set(specFields(existing.specShape).filter((field) => !field.added).map((field) => field.name));
+  const packFields = packFieldNamesOf(existing);
   return withAddedFields(
     existing.specShape,
     fields.filter((field) => !packFields.has(field.name)),
@@ -215,13 +227,14 @@ export function updateItemTypeProblem(
 
   // The pack's fields first, so a field of the project's own named like
   // one is told it is the pack's rather than that two fields share a name.
-  const fields = input.fields === undefined ? undefined : normalised(input.fields);
+  const packFieldNames = packFieldNamesOf(existing);
+  const fields = input.fields === undefined ? undefined : normalised(input.fields, packFieldNames);
   if (fields !== undefined && isPackShipped(existing)) {
     const packProblem = packItemTypeFieldsProblem(existing, fields);
     if (packProblem !== null) return packProblem;
   }
 
-  const drafted = itemTypeDraftProblem({ label, plural, fields: input.fields ?? [] });
+  const drafted = itemTypeDraftProblem({ label, plural, fields: input.fields ?? [] }, packFieldNames);
   if (drafted !== null) return drafted;
   if (fields === undefined) return null;
 

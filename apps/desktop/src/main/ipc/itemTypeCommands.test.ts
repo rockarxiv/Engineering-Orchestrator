@@ -3,7 +3,7 @@ import { actionOverrideFor, LOCAL_PACK, LOCAL_PERSON_ID, specFields, type SpecFi
 import type { DbHandle } from "../db/client.js";
 import { attachWorkspace, createTestItem, openMigratedTestDb } from "../db/testHelpers.js";
 import { listProjects } from "../db/repos/index.js";
-import { getItemType, itemTypesFor, listItemTypes, syncItemTypes } from "../db/repos/itemTypesRepo.js";
+import { createItemType, getItemType, itemTypesFor, listItemTypes, syncItemTypes } from "../db/repos/itemTypesRepo.js";
 import { getItem, listOpenMessages } from "../db/repos/index.js";
 import { registryForProject } from "../registry.js";
 import { applyNewItem } from "../roles/discussion.js";
@@ -279,6 +279,44 @@ describe("a project's own optional fields on a pack's type (EO-735)", () => {
 
     expect(refused.type).toBeNull();
     expect(refused.problem).toContain(`already has a field “${taken.name}” from the developer pack`);
+  });
+
+  it("keeps a pack field's name as the pack wrote it, hyphen or capitals, and adds beside it", () => {
+    // `SpecShapeSchema` allows any of these as a pack's field name; each is
+    // the key the type's items hold their value under, so none of them is
+    // normalised into another — or into the others.
+    const shipped = createItemType(handle.db, {
+      projectId,
+      packSlug: "support",
+      slug: "case",
+      label: "Case",
+      plural: "Cases",
+      container: false,
+      specShape: {
+        type: "object",
+        properties: { "customer-name": { type: "string", minLength: 1 }, customerName: { type: "string" }, customer_name: { type: "string" } },
+        required: ["customer-name"],
+      },
+    });
+    const own: SpecFieldDraft[] = [
+      { name: "customer-name", kind: "string", required: true },
+      { name: "customerName", kind: "string", required: false },
+      { name: "customer_name", kind: "string", required: false },
+    ];
+
+    const saved = updateItemTypeCommand(handle.db, { id: shipped.id, fields: [...own, { name: "Escalated", kind: "boolean", required: false }] });
+
+    expect(saved.problem).toBeNull();
+    const after = getItemType(handle.db, shipped.id)!;
+    expect(Object.keys(after.specShape.properties)).toEqual(["customer-name", "customerName", "customer_name", "escalated"]);
+    expect(after.specShape.properties["customer-name"]).toEqual(shipped.specShape.properties["customer-name"]);
+    expect(after.specShape.required).toEqual(["customer-name"]);
+    expect(specFields(after.specShape).filter((field) => field.added).map((field) => field.name)).toEqual(["escalated"]);
+
+    // A field of the project's own typed so it normalises onto a pack name is still the pack's name.
+    const typedOnto = updateItemTypeCommand(handle.db, { id: shipped.id, fields: [...own, { name: "Customer Name", kind: "boolean", required: false }] });
+    expect(typedOnto.type).toBeNull();
+    expect(typedOnto.problem).toContain("already has a field “customer_name” from the support pack");
   });
 
   it("still refuses the container flag and the action overrides, saying which", () => {

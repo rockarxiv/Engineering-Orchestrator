@@ -4,6 +4,7 @@ import {
   addedFieldCollisions,
   addedFieldDrafts,
   fieldHoldsValuesMessage,
+  fieldNameFor,
   isPackShipped,
   itemTypeDraftProblem,
   itemTypeHoldsItemsMessage,
@@ -201,6 +202,21 @@ describe("a project's own optional fields on a pack's type (EO-735)", () => {
   const TYPE = { label: "Case", packSlug: "support", specShape: PACK_SHAPE };
   const PACK_FIELDS: SpecFieldDraft[] = [{ name: "criteria", kind: "string list", required: true }];
   const AUTOMERGE: SpecFieldDraft = { name: "automerge", kind: "boolean", required: false };
+
+  it("keeps a pack field's name as the pack wrote it and normalises only what a person typed", () => {
+    const pack = new Set(["customer-name", "customerName"]);
+
+    expect(fieldNameFor("customer-name", pack)).toBe("customer-name");
+    expect(fieldNameFor("customerName", pack)).toBe("customerName");
+    expect(fieldNameFor("Customer Name", pack)).toBe("customer_name");
+    // Two distinct pack names are two fields, not one written twice.
+    const fields: SpecFieldDraft[] = [
+      { name: "customer-name", kind: "string", required: true },
+      { name: "customer_name", kind: "string", required: false },
+    ];
+    expect(itemTypeDraftProblem({ label: "Case", plural: "Cases", fields }, new Set(["customer-name", "customer_name"]))).toBeNull();
+    expect(itemTypeDraftProblem({ label: "Case", plural: "Cases", fields })).toContain("Two fields are called “customer_name”");
+  });
 
   it("lays added fields beside the pack's document, marked, optional, and the pack's untouched", () => {
     const shape = withAddedFields(PACK_SHAPE, [AUTOMERGE, { name: "note", kind: "string", required: true }]);
