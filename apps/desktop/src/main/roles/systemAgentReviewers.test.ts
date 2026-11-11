@@ -41,7 +41,7 @@ describe("what the system agent's prompt says about reviewers on a proposal", ()
   });
 
   it("is a newer version than the one before proposals carried reviewers", () => {
-    expect(Number(/prompt-version:\s*(\d+)/.exec(prompt)![1])).toBeGreaterThanOrEqual(50);
+    expect(Number(/prompt-version:\s*(\d+)/.exec(prompt)![1])).toBeGreaterThanOrEqual(51);
   });
 });
 
