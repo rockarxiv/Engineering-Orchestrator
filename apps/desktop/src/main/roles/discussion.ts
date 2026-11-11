@@ -9,6 +9,7 @@ import {
   missingSpecFields,
   parsedResultOf,
   priorityLabel,
+  referenceProblem,
   specFields,
   specIssues,
   type AmendProposal,
@@ -504,6 +505,12 @@ export function applyNewFeature(
   pipelineId: string | null,
   jira: PlanJiraSubmission = {},
 ): ApplyDiscussionResult {
+  // The feature's Reference (EO-739), judged before anything is written.
+  // A label, so it is not asked where the stories land.
+  const reference = namedReference(proposal.reference);
+  const unnamed = referenceRefusal(proposal.title, reference);
+  if (unnamed !== null) return { ok: false, reason: unnamed };
+
   // The same validation `refine` runs, on the same shape — the touches
   // merge and the cycle check over the merged graph. A plan that cannot
   // be built must never have been approvable, but re-checking here is
@@ -530,7 +537,7 @@ export function applyNewFeature(
   // created. Nested inside the approval door's, this is a savepoint.
   try {
     return db.transaction(() => {
-      const result = createPlan(db, projectId, proposal, placement, links, jira);
+      const result = createPlan(db, projectId, proposal, reference, placement, links, jira);
       if (!result.ok) throw new Refused(result.reason);
       return result;
     });
@@ -545,6 +552,7 @@ function createPlan(
   db: Db,
   projectId: Uuid | null,
   proposal: SubmittedFeature,
+  reference: string | null,
   placement: StoryPlacement,
   links: { feature: string | null; stories: readonly (string | null)[] },
   jira: PlanJiraSubmission,
@@ -566,6 +574,9 @@ function createPlan(
     // The plan's setting, and the only place it is written down: a story
     // that says nothing about sync inherits it from this row.
     ...(jira.sync === undefined ? {} : { jiraSync: jira.sync }),
+    // On the feature alone (EO-739): its stories read it through
+    // `effectiveReference`, so changing it later changes theirs too.
+    ...(reference === null ? {} : { git: { reference } }),
   });
   // Before the comments and before the stories, so a project without a
   // container type refuses the plan whole rather than leaving a feature
@@ -935,6 +946,14 @@ export interface HandedOverItem {
    */
   existingBranch?: string;
   /**
+   * The outside issue this item belongs to, as a plain label (EO-739).
+   * Trimmed and judged by `applyNewItem`, which reads a blank one as
+   * none and refuses one `referenceProblem` refuses, with nothing
+   * created. Written onto the `git` extension in the same insert, on any
+   * pipeline: unlike a branch it asks nothing of where the item lands.
+   */
+  reference?: string;
+  /**
    * Who handed it over (EO-326, ARCHITECTURE.md, "Identity").
    *
    * Absent everywhere there is only one person it could be, where
@@ -965,6 +984,7 @@ export interface HandedOverItem {
 export function handedOver(proposal: NewStoryProposal | NewBugProposal): HandedOverItem {
   const baseBranch = proposalBaseBranch(proposal);
   const existingBranch = proposalExistingBranch(proposal);
+  const reference = namedReference(proposal.reference);
   return {
     type: developerType(proposal.action === "new_story" ? "story" : "bug"),
     title: proposal.title,
@@ -976,6 +996,7 @@ export function handedOver(proposal: NewStoryProposal | NewBugProposal): HandedO
     ...(proposal.repository === undefined ? {} : { repository: proposal.repository }),
     ...(baseBranch === null ? {} : { baseBranch }),
     ...(existingBranch === null ? {} : { existingBranch }),
+    ...(reference === null ? {} : { reference }),
     ...(proposal.priority === undefined ? {} : { priority: proposal.priority }),
   };
 }
@@ -991,6 +1012,31 @@ function proposalBaseBranch(proposal: NewStoryProposal | NewBugProposal): string
   if (proposal.action !== "new_story" || proposal.base_branch === undefined) return null;
   const named = proposal.base_branch.trim();
   return named === "" ? null : named;
+}
+
+/**
+ * A Reference as it was sent (EO-739), trimmed, and null when it names
+ * nothing — the reading `judgeReferenceEdit` takes of an edit, so a blank
+ * one is no Reference rather than a problem.
+ */
+function namedReference(value: string | undefined): string | null {
+  if (value === undefined) return null;
+  const named = value.trim();
+  return named === "" ? null : named;
+}
+
+/**
+ * Why `title` cannot be created with this Reference, in
+ * `referenceProblem`'s words, or null when it can (EO-739).
+ */
+function referenceRefusal(title: string, reference: string | null): string | null {
+  const problem = reference === null ? null : referenceProblem(reference);
+  return problem === null ? null : `"${title}" names a Reference EO cannot use. ${problem}`;
+}
+
+/** The line a card's body names a proposed item's Reference with, or nothing when it names none (EO-739). */
+function referenceLines(reference: string | null): string[] {
+  return reference === null ? [] : [`_Reference: \`${reference}\`_`];
 }
 
 /** The existing branch a single-item proposal names, read as `proposalBaseBranch` reads a base (EO-365). */
@@ -1055,6 +1101,12 @@ export function applyNewItem(
   pipelineId: string | null,
   jira: JiraSubmission = {},
 ): ApplyDiscussionResult {
+  // A label, judged before anything else is read (EO-739), and on any
+  // pipeline: it names the work, and asks nothing of where it lands.
+  const reference = namedReference(handed.reference);
+  const unnamed = referenceRefusal(handed.title, reference);
+  if (unnamed !== null) return { ok: false, reason: unnamed };
+
   const parent = handed.parent === undefined ? null : getItemByKey(db, handed.parent);
   if (handed.parent !== undefined) {
     if (!parent) return { ok: false, reason: `There is no ticket ${handed.parent} to put this under.` };
@@ -1157,7 +1209,7 @@ export function applyNewItem(
   const link = jira.key === undefined ? null : resolveSubmittedJiraKey(db, jira.key);
   if (link !== null && !link.ok) return { ok: false, reason: link.reason };
 
-  const git = storyGitState(handed);
+  const git = storyGitState({ ...handed, reference });
   const created = createItem(db, {
     // The row resolved above, by the pack and the word it came back with
     // — not the name again, so that what was validated and what is
@@ -1421,9 +1473,22 @@ export function renderProposal(db: Db, conversation: Item, proposal: DiscussionP
       // unbuildable plan never reaches the human as approvable.
       const plan = buildProposal(db, conversation.projectId, childrenFromStories(proposal.stories));
       if (!plan.ok) return plan;
+      // The feature's Reference, judged here as well as at apply time
+      // (EO-739), so a value git would not take is never approvable.
+      const reference = namedReference(proposal.reference);
+      const unnamed = referenceRefusal(proposal.title, reference);
+      if (unnamed !== null) return { ok: false, reason: unnamed };
       return {
         ok: true,
-        body: [`**${proposal.title}** — a new feature.`, ...priorityLines(proposal.priority), "", proposal.understanding, "", plan.body].join("\n"),
+        body: [
+          `**${proposal.title}** — a new feature.`,
+          ...priorityLines(proposal.priority),
+          ...referenceLines(reference),
+          "",
+          proposal.understanding,
+          "",
+          plan.body,
+        ].join("\n"),
       };
     }
 
@@ -1441,6 +1506,9 @@ export function renderProposal(db: Db, conversation: Item, proposal: DiscussionP
       const existing = proposalExistingBranch(proposal);
       const unworkable = existing === null ? null : branchNameProblem(existing);
       if (unworkable !== null) return { ok: false, reason: `"${proposal.title}" names an existing branch EO cannot use. ${unworkable}` };
+      const reference = namedReference(proposal.reference);
+      const unnamed = referenceRefusal(proposal.title, reference);
+      if (unnamed !== null) return { ok: false, reason: unnamed };
       return {
         ok: true,
         body: [
@@ -1448,6 +1516,7 @@ export function renderProposal(db: Db, conversation: Item, proposal: DiscussionP
           "",
           `**${proposal.title}**`,
           ...priorityLines(proposal.priority),
+          ...referenceLines(reference),
           "",
           proposal.body,
           "",
@@ -1463,6 +1532,9 @@ export function renderProposal(db: Db, conversation: Item, proposal: DiscussionP
       const under = proposal.parent ? ` under ${proposal.parent}` : "";
       const missing = missingReference(db, conversation, proposal);
       if (missing) return { ok: false, reason: missing };
+      const reference = namedReference(proposal.reference);
+      const unnamed = referenceRefusal(proposal.title, reference);
+      if (unnamed !== null) return { ok: false, reason: unnamed };
       return {
         ok: true,
         body: [
@@ -1470,6 +1542,7 @@ export function renderProposal(db: Db, conversation: Item, proposal: DiscussionP
           "",
           `**${proposal.title}**`,
           ...priorityLines(proposal.priority),
+          ...referenceLines(reference),
           "",
           proposal.body,
           "",
@@ -1551,11 +1624,13 @@ export function summariseProposal(db: Db, conversation: Item, proposal: Discussi
     case "new_feature": {
       const children = childrenFromStories(proposal.stories);
       const { edges } = mergeRefineEdges(children);
+      const reference = namedReference(proposal.reference);
       return {
         container: {
           title: proposal.title,
           typeLabel: labelOf(developerType("feature")),
           ...(proposal.priority === undefined ? {} : { priority: proposal.priority }),
+          ...(reference === null ? {} : { reference }),
         },
         rows: children.map((child, index) => ({
           kind: "new" as const,
@@ -1586,6 +1661,7 @@ export function summariseProposal(db: Db, conversation: Item, proposal: Discussi
         waitsOn: handed.depends_on.map(existing),
         under: handed.parent === undefined ? null : existing(handed.parent),
         ...(handed.priority === undefined ? {} : { priority: handed.priority }),
+        ...(handed.reference === undefined ? {} : { reference: handed.reference }),
       };
       return { container: null, rows: [row] };
     }

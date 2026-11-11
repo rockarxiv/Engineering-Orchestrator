@@ -1738,6 +1738,7 @@ describe("createCodexProvider", () => {
             actual: "Nothing happens.",
             environment: "Safari 18",
             acceptance_criteria: [],
+            reference: null,
             ...fields,
           },
         ],
@@ -1797,6 +1798,7 @@ describe("createCodexProvider", () => {
         const proposal = (fromNull.value as { proposals: Record<string, unknown>[] }).proposals[0]!;
         expect(proposal).not.toHaveProperty("parent");
         expect(proposal).not.toHaveProperty("pipeline");
+        expect(proposal).not.toHaveProperty("reference");
       }
     });
 

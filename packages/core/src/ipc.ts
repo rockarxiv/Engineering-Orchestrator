@@ -1120,6 +1120,15 @@ export const recordContract = {
        */
       priority: ItemPrioritySchema.optional(),
       /**
+       * The outside issue the feature belongs to, as a plain label
+       * (EO-739): written onto the feature, and read by every story under
+       * it that has none of its own. Trimmed, a blank one is none, and one
+       * that could not appear in a git branch name refuses the plan as
+       * `problem` with nothing created. The feature's only: a story's own
+       * is `work:submitItem`'s, or `items:update`'s once it exists.
+       */
+      reference: z.string().optional(),
+      /**
        * Each story as a plan's story is, plus `paths` (EO-704): files to
        * put on that story as its own. Added here rather than on
        * `RefineStorySchema`, which is also what the product owner's
@@ -1229,6 +1238,13 @@ export const recordContract = {
       acceptanceCriteria: z.array(z.string().min(1)).default([]),
       /** How soon it should be picked up (EO-568). Left out, it is 0 — inherited from no parent. */
       priority: ItemPrioritySchema.optional(),
+      /**
+       * The outside issue this item belongs to, as a plain label
+       * (EO-739). Left out under a feature, the feature's is read.
+       * Trimmed, a blank one is none, and one that could not appear in a
+       * git branch name is refused as `problem` with nothing created.
+       */
+      reference: z.string().optional(),
       /**
        * The item's structured fields, under the names its type's shape
        * declares (KAN-147).

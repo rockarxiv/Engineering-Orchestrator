@@ -223,6 +223,28 @@ describe("a proposal for a single standalone item", () => {
   });
 });
 
+describe("the Reference a proposal creates work with (EO-739)", () => {
+  it("names a plan's on the feature, not on any of its rows", () => {
+    draw(message({ proposal: { ...PLAN, container: { title: "Rate limiting", typeLabel: "Feature", reference: "PROJ-123" } } }));
+
+    const card = screen.getByRole("region", { name: "Proposal" });
+    expect(within(card).getByText("Reference PROJ-123")).toBeInTheDocument();
+    for (const row of rows()) expect(row).not.toHaveTextContent("Reference");
+  });
+
+  it("names a single item's on its row", () => {
+    draw(message({ proposal: { container: null, rows: [proposed("Refuse over the limit", { typeLabel: "Bug", reference: "PROJ-9" })], closed: null } }));
+
+    expect(within(rows()[0]!).getByText("Reference PROJ-9")).toBeInTheDocument();
+  });
+
+  it("has no Reference line on a proposal that names none", () => {
+    draw(message({ proposal: PLAN }));
+
+    expect(screen.getByRole("region", { name: "Proposal" })).not.toHaveTextContent("Reference");
+  });
+});
+
 describe("a proposal that amends existing items", () => {
   const CHANGE: ProposalSummary = {
     container: null,

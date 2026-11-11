@@ -75,6 +75,16 @@ const NewFeatureProposalSchema = z.object({
    * is 0 whatever the feature's is.
    */
   priority: ItemPrioritySchema.optional(),
+  /**
+   * The outside issue the feature belongs to, as a plain label — PROJ-123,
+   * a GitHub issue (EO-739). Written onto the feature's `git` extension;
+   * its stories carry none of their own and read it through
+   * `effectiveReference`, which is why `PlannedStorySchema` has no such
+   * field. Trimmed, a blank one is none, and one `referenceProblem`
+   * refuses is sent back before the card is posted. A plain string for
+   * the reason `base_branch` is one.
+   */
+  reference: z.string().optional(),
   /** Each may name a `base_branch` to be cut from (EO-364), or an `existing_branch` to work on (EO-365) — see `PlannedStorySchema`. */
   stories: z.array(PlannedStorySchema).min(1),
 });
@@ -99,6 +109,12 @@ const attachable = {
    * amendment that used to follow every urgent proposal.
    */
   priority: ItemPrioritySchema.optional(),
+  /**
+   * The outside issue this item belongs to, as a plain label (EO-739) —
+   * see `NewFeatureProposalSchema.reference`. Under a feature, left out
+   * means the feature's is read.
+   */
+  reference: z.string().optional(),
 };
 
 const NewStoryProposalSchema = z.object({
