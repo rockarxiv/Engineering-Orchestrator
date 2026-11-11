@@ -327,6 +327,8 @@ export function createModuleRunnerLookup(options: ModuleRegistryOptions): (actio
         // secret, so left in the transcript rather than redacted.
         variables,
         ...(context.signal ? { signal: context.signal } : {}),
+        // The run's own systemd scope and memory limit (EO-738).
+        ...(context.processScope ? { scope: context.processScope } : {}),
         onOutput: context.report,
         // The other half of the channel (EO-75). The host asked; this
         // is the side that holds the writable handle, so this is where

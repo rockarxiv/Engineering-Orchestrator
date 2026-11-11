@@ -5,10 +5,12 @@
 import type { HookInput, HookJSONOutput, Options, SDKMessage, SDKRateLimitInfo, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import { loadClaudeSdk, type ClaudeSdkModule } from "./claudeSdk.js";
 import { claudeProcesses, withStderr, type ClaudeProcesses } from "./claudeProcess.js";
+import { adoptWarmScope, warmScopeKey } from "../process/runScope.js";
 import { claudeCompatibilityHolds, type ClaudeSettingSources, type ClaudeSettingsReader } from "./claudeCompatibility.js";
 import {
   ThreadNotFoundError,
   type AgentInputAttachment,
+  type RunProcessScope,
   withAliasedToolNames,
   type AgentEvent,
   type AgentProvider,
@@ -312,8 +314,8 @@ export interface ClaudeProviderOptions {
    * otherwise, the SDK's own figure.
    */
   processGraceMs?: number;
-  /** Seam for tests: what each turn spawns its CLI through (`claudeProcess.ts`). */
-  turnProcesses?: () => ClaudeProcesses;
+  /** Seam for tests: what each turn spawns its CLI through (`claudeProcess.ts`), handed the run's scope where the turn has one (EO-738). */
+  turnProcesses?: (scope?: RunProcessScope) => ClaudeProcesses;
 }
 
 /** `mcp__eo__comment` -> `comment`: EO's own tools are recorded under their bare names on both backends. What a write tool did reaches EO over the agent write bridge, never from this (EO-543). */
@@ -1766,6 +1768,8 @@ interface WarmQuery {
   options: Options;
   /** The CLI it spawned, which whoever is done with it ends (EO-493). */
   processes: ClaudeProcesses;
+  /** The scope its CLI was started in (EO-738), filed under its conversation until a run adopts it. */
+  scope?: RunProcessScope;
   timer: ReturnType<typeof setTimeout>;
   /**
    * Lets go of the admin bearer the warm process was spawned with
@@ -1783,13 +1787,14 @@ interface WarmQuery {
  * left out. Null when the options cannot be read as data, which is no
  * warm-up rather than a wrong one.
  */
-function warmKeyOf(options: Options, warmKey: string | undefined, perTurn: readonly string[] = []): string | null {
+function warmKeyOf(options: Options, warmKey: string | undefined, perTurn: readonly string[] = [], scope?: RunProcessScope): string | null {
   // A bearer minted for each turn (EO-444) differs between the warm-up
   // and its turn by design, so its value is not part of the match — but
   // its name is: a process spawned without one is not the turn's.
   const env = options.env && perTurn.length > 0 ? { ...options.env, ...Object.fromEntries(perTurn.filter((name) => name in options.env!).map((name) => [name, "<per turn>"])) } : options.env;
   try {
-    return JSON.stringify([{ ...options, env }, warmKey ?? null], (key, value: unknown) => (key === "abortController" ? undefined : value));
+    // The scope's memory limit, not which run it names (EO-738).
+    return JSON.stringify([{ ...options, env }, warmKey ?? null, warmScopeKey(scope)], (key, value: unknown) => (key === "abortController" ? undefined : value));
   } catch {
     return null;
   }
@@ -2555,17 +2560,26 @@ export function createClaudeProvider(options: ClaudeProviderOptions = {}): Agent
     signal: AbortSignal | undefined,
     /** Whether the turn's words are shown as they are written (`streamDeltas`). */
     showWords: boolean,
+    /** The run the turn's CLI belongs to and its memory limit (EO-738). */
+    scope: RunProcessScope | undefined,
   ): InterruptibleStream<AgentEvent> => {
     turnsStarted += 1;
-    const adopted = takeWarm(warmKeyOf(sdkOptions, warmKey, Object.keys(admin?.environment ?? {})));
-    if (adopted) bridgeSignal(signal, adopted.controller);
+    // A warm query's CLI was started in a scope of its own (EO-738), so
+    // which run a turn's scope names is not part of what must match, but
+    // its memory limit is; and once adopted, the scope is the run's.
+    const adopted = takeWarm(warmKeyOf(sdkOptions, warmKey, Object.keys(admin?.environment ?? {}), scope));
+    if (adopted) {
+      bridgeSignal(signal, adopted.controller);
+      adoptWarmScope(adopted.scope, scope);
+    }
     // The turn's own options stay ready either way: a warm query that
     // turns out to have died is replaced by a query opened on them.
     const controller = bridgeSignal(signal);
     if (controller) sdkOptions.abortController = controller;
     // Spawned by EO rather than by the SDK, so the turn can end its CLI
-    // and know when it has gone (EO-493).
-    const processes = options.turnProcesses?.() ?? claudeProcesses();
+    // and know when it has gone (EO-493) — and, on a run's turn, in the
+    // run's own systemd scope where the machine has one (EO-738).
+    const processes = options.turnProcesses?.(scope) ?? claudeProcesses(scope ? { scope } : {});
     sdkOptions.spawnClaudeCodeProcess = processes.spawn;
     return stream(prompt, sdkOptions, sdk, interceptions, processes, admin?.release, adopted, showWords);
   };
@@ -2591,7 +2605,7 @@ export function createClaudeProvider(options: ClaudeProviderOptions = {}): Agent
           // Before `open`, which keys a warm query on these options: a
           // warm resume of this session is never adopted by a fork of it.
           if (fork) sdkOptions.forkSession = true;
-          const opened = open(sdk, withAttachmentNote(message, resumeOpts?.attachments), sdkOptions, interceptions, admin, resumeOpts?.warmKey, resumeOpts?.signal, resumeOpts?.streamDeltas === true);
+          const opened = open(sdk, withAttachmentNote(message, resumeOpts?.attachments), sdkOptions, interceptions, admin, resumeOpts?.warmKey, resumeOpts?.signal, resumeOpts?.streamDeltas === true, resumeOpts?.processScope);
           // On a turn whose calls are refused, a `Skill` call loaded
           // nothing and an `Edit` changed nothing: the hook refused them,
           // so the events the call alone would say are not said (EO-732).
@@ -2627,7 +2641,7 @@ export function createClaudeProvider(options: ClaudeProviderOptions = {}): Agent
         // made every fresh dispatch carry the role prompt twice.
         sdkOptions.systemPrompt = opts.instructions;
         const prompt = withAttachmentNote(withSkillsSection(opts.context, skillsSection), opts.attachments);
-        return open(sdk, prompt, sdkOptions, interceptions, admin, opts.warmKey, opts.signal, opts.streamDeltas === true);
+        return open(sdk, prompt, sdkOptions, interceptions, admin, opts.warmKey, opts.signal, opts.streamDeltas === true, opts.processScope);
       }));
     },
 
@@ -2680,7 +2694,7 @@ export function createClaudeProvider(options: ClaudeProviderOptions = {}): Agent
             ? turnOptions(startSpec(turn, interceptions.record), lease)
             : turnOptions(resumeSpec(turn.threadId, turn, interceptions.record), lease);
         if (turn.kind === "start") sdkOptions.systemPrompt = turn.instructions;
-        const key = warmKeyOf(sdkOptions, turn.warmKey, Object.keys(lease?.environment ?? {}));
+        const key = warmKeyOf(sdkOptions, turn.warmKey, Object.keys(lease?.environment ?? {}), turn.processScope);
         if (key === null) return;
         if (warm?.key === key) {
           // Still the same turn being typed: kept warm, not started twice.
@@ -2691,11 +2705,12 @@ export function createClaudeProvider(options: ClaudeProviderOptions = {}): Agent
         dropWarm();
         const controller = new AbortController();
         sdkOptions.abortController = controller;
-        const processes = options.turnProcesses?.() ?? claudeProcesses();
+        // In the scope the warm-up was given (EO-738).
+        const processes = options.turnProcesses?.(turn.processScope) ?? claudeProcesses(turn.processScope ? { scope: turn.processScope } : {});
         sdkOptions.spawnClaudeCodeProcess = processes.spawn;
         const input = turnInput();
         const query = sdk.query({ prompt: input.messages, options: sdkOptions });
-        warm = { key, query, input, controller, interceptions, options: sdkOptions, processes, timer: idleTimer(), ...(lease ? { release: lease.release } : {}) };
+        warm = { key, query, input, controller, interceptions, options: sdkOptions, processes, ...(turn.processScope ? { scope: turn.processScope } : {}), timer: idleTimer(), ...(lease ? { release: lease.release } : {}) };
         admin = null;
       })()
         .finally(() => {

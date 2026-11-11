@@ -1,4 +1,4 @@
-import type { Item, StepInputs, Uuid, WatchNews } from "@eo/core";
+import type { Item, RunProcessScope, StepInputs, Uuid, WatchNews } from "@eo/core";
 import type { Db } from "../db/client.js";
 import type { PrepareWorkspaceOutcome, PrepareWorkspaceRequest } from "./workspaceKind.js";
 
@@ -38,6 +38,13 @@ export interface BuiltinContext {
    * against a run to be readable at all.
    */
   runId: Uuid;
+  /**
+   * The run's memory limit, for a step that starts a process tree of its
+   * own — a custom module's host (EO-738). Where the machine allows, that
+   * tree starts in a systemd scope of the run's own, with this as its
+   * `MemoryMax`. EO's own functions start nothing that needs one.
+   */
+  processScope?: RunProcessScope;
   /**
    * Where this run says what it is doing, as it does it.
    *

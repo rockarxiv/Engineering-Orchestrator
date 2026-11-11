@@ -40,6 +40,7 @@ import {
   type McpServer,
   type QuotaEvent,
   type RepositoryMcpServer,
+  type RunProcessScope,
   type SearchInterceptionEvent,
   type ServerStatusEvent,
   type Skill,
@@ -700,13 +701,15 @@ function usageEvent(usage: Usage, model: string | undefined): UsageEvent {
 }
 
 function threadOptionsFrom(
-  opts: { cwd?: string; model?: string; reasoningEffort?: string; showReasoning?: boolean },
+  opts: { cwd?: string; model?: string; reasoningEffort?: string; showReasoning?: boolean; processScope?: RunProcessScope },
   config: CodexAgentConfig | undefined,
 ): CodexThreadOptions {
   const model = opts.model ?? config?.model;
   const reasoningEffort = opts.reasoningEffort ?? config?.reasoningEffort;
   return {
     ...(opts.cwd ? { workingDirectory: opts.cwd } : {}), // the G-01 worktree
+    // The run's own systemd scope for the app-server (EO-738).
+    ...(opts.processScope ? { processScope: opts.processScope } : {}),
     // Claude's `thinking.display`, in Codex's words: a conversation that
     // shows reasoning asks for summaries, one that hides it asks for
     // none, and a turn that says nothing leaves the CLI's default.
@@ -2552,6 +2555,7 @@ export function createCodexProvider(options: CodexProviderOptions = {}): AgentPr
             ...(resumeOpts?.model ? { model: resumeOpts.model } : {}),
             ...(resumeOpts?.reasoningEffort ? { reasoningEffort: resumeOpts.reasoningEffort } : {}),
             ...(resumeOpts?.showReasoning === undefined ? {} : { showReasoning: resumeOpts.showReasoning }),
+            ...(resumeOpts?.processScope ? { processScope: resumeOpts.processScope } : {}),
           },
           options.config,
         ),
@@ -2670,6 +2674,7 @@ export function createCodexProvider(options: CodexProviderOptions = {}): AgentPr
                 ...(turn.model ? { model: turn.model } : {}),
                 ...(turn.reasoningEffort ? { reasoningEffort: turn.reasoningEffort } : {}),
                 ...(turn.showReasoning === undefined ? {} : { showReasoning: turn.showReasoning }),
+                ...(turn.processScope ? { processScope: turn.processScope } : {}),
               },
               options.config,
             );

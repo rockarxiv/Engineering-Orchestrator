@@ -608,6 +608,13 @@ const NOT_CATALOGUED_MACHINE: Partial<Record<MachineChannel, string>> = {
   // looking at.
   "jobs:placement": "where a job runs is the owner's standing claim on their own machine — see jobs:list, and the update that moves it",
 
+  // What the run memory limit comes to on this desktop (EO-738). The
+  // setting itself is guardrails_get's and guardrails_set's, which say
+  // what null means and that the limit holds only on Linux with a systemd
+  // user manager; this is the figure the Guardrails screen draws beside
+  // the box, and changing it is done through the setting, not through it.
+  "guards:runMemory": "the run memory limit is read and written through guardrails_get and guardrails_set, which say what its default is made of and where it applies; this is the Guardrails screen's own reading of the machine",
+
   // Signing a connector in (EO-315). Out on two grounds at once, and
   // either would do. It opens a browser window on the machine somebody
   // is sitting at and waits up to five minutes for them to press a

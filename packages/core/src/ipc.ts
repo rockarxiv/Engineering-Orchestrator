@@ -59,6 +59,7 @@ import {
   ProjectViewSchema,
   BranchPrefixSchema,
   GuardConfigSchema,
+  RunMemoryFactsSchema,
   GuardSaveResultSchema,
   HeldWorktreeSchema,
   ProviderCapabilitiesSchema,
@@ -6594,6 +6595,14 @@ export const machineContract = {
    * *queued* for every item with a move still waiting to be replayed.
    */
   "sync:status": channel(z.void(), SyncStatusSchema),
+  /**
+   * What the run memory limit comes to on this machine (EO-738): whether
+   * per-run systemd scopes apply here at all, and what EO's default for
+   * `runMemoryMaxMb` is. Machine-half because both are facts about this
+   * desktop — its platform, its systemd user manager, its memory — and a
+   * server asked would be describing its own.
+   */
+  "guards:runMemory": channel(z.void(), RunMemoryFactsSchema),
   /**
    * Signs this machine in to an organisation server.
    *

@@ -64,12 +64,18 @@ describe("warming the backend for the turn being typed", () => {
     expect(starts).toHaveLength(1);
     const { kind, instructions, ...warmed } = prewarms[0] as Extract<AgentPrewarmTurn, { kind: "start" }>;
     expect(kind).toBe("start");
-    const { context, signal, instructions: started, attachments, ...dispatched } = starts[0]!;
+    const { context, signal, instructions: started, attachments, processScope: runScope, ...dispatched } = starts[0]!;
     void context;
     void signal;
     void attachments;
     expect(instructions).toBe(started);
-    expect(warmed).toEqual(dispatched);
+    // Both in a scope with the same memory limit (EO-738): the warm-up's
+    // filed under the conversation, since no run exists yet, and the
+    // turn's under its run. Which run is not part of the match.
+    const { processScope: warmScope, ...warmedRest } = warmed;
+    expect(warmScope).toEqual({ runId: `warm:${chat.id}`, memoryMaxMb: runScope!.memoryMaxMb });
+    expect(runScope!.runId).not.toBe(warmScope!.runId);
+    expect(warmedRest).toEqual(dispatched);
     expect(warmed.warmKey).toEqual(expect.any(String));
   });
 

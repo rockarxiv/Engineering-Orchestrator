@@ -188,7 +188,7 @@ export function containedLaunch(name: string, command: string, args: readonly st
 }
 
 /** Whether `command` names a file that can be run, as `spawn` would look it up. */
-function executable(command: string, path: string | undefined, cwd: string | undefined): boolean {
+export function executable(command: string, path: string | undefined, cwd: string | undefined): boolean {
   const candidates = command.includes("/") ? [isAbsolute(command) ? command : resolve(cwd ?? process.cwd(), command)] : (path ?? "").split(delimiter).filter(Boolean).map((directory) => join(directory, command));
   return candidates.some((candidate) => {
     try {
@@ -234,7 +234,7 @@ export function containmentAvailable(): boolean {
   }
 }
 
-function containment(path: string): Containment {
+export function containment(path: string): Containment {
   return {
     path,
     pids: () => [...new Set(walk(path).flatMap(readPids))],

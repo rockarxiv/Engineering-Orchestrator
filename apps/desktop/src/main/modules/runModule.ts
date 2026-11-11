@@ -2,9 +2,10 @@ import { spawn } from "node:child_process";
 import { createHmac, randomBytes, randomUUID } from "node:crypto";
 import { Duplex } from "node:stream";
 import { DEFAULT_MODULE_TIMEOUT_MS, MAX_ATTACHMENT_ADD_PATHS, MAX_MODULE_CREATIONS_PER_RUN, MODULE_CREATION_WAITS, describeDuration, moduleInputProblems } from "@eo/core";
-import type { CustomModule, Item, ModuleCreation, ModuleCreationAnswer, ModuleCreationWait, WatchNews } from "@eo/core";
+import type { CustomModule, Item, ModuleCreation, ModuleCreationAnswer, ModuleCreationWait, RunProcessScope, WatchNews } from "@eo/core";
 import type { StepAnswer } from "../roles/answers.js";
 import { killTree } from "../process/killTree.js";
+import { busEnv, launchInRunScope } from "../process/runScope.js";
 import { searchPath } from "../process/searchPath.js";
 import type { ModuleItemReader } from "./moduleItemRead.js";
 import type { ModuleRunContext } from "../ipc/domainQueries.js";
@@ -362,6 +363,13 @@ export interface RunModuleRequest {
    * says.
    */
   onCreate?: (creation: ModuleCreation, limits: { atCap: boolean }) => ModuleCreationAnswer | Promise<ModuleCreationAnswer>;
+  /**
+   * The run this is and its memory limit (EO-738): where the machine
+   * allows, the host starts in a systemd scope of the run's own, so a
+   * module that runs out of memory ends its run and not EO. Absent, the
+   * host starts as it always did.
+   */
+  scope?: RunProcessScope;
 }
 
 export interface ModuleHostLauncher {
@@ -555,8 +563,28 @@ export function runModule(launcher: ModuleHostLauncher, request: RunModuleReques
   // one thing the result channel is believed on.
   const replyKey = randomBytes(32).toString("hex");
 
+  // The host's own environment, not the module's: the module's is in the
+  // request, and the host empties `process.env` down to it before
+  // importing anything.
+  const hostEnv: Record<string, string> = {
+    ...launcher.hostEnv,
+    ...systemRootEnv(process.platform, process.env),
+    // The login shell's PATH as well as the inherited one (EO-655): the
+    // host hands it to every `ctx.exec` child, and the import
+    // preflight's `needs.bin` check searches the same directories.
+    PATH: searchPath(),
+    // What `systemd-run` reaches the user manager through, on a run with
+    // a scope (EO-738). The module never sees them: the host empties its
+    // environment before importing it.
+    ...(request.scope ? busEnv(process.env) : {}),
+  };
+  // In the run's own systemd scope where the machine has one (EO-738),
+  // through the same interface every agent run's tree is started through;
+  // as it always was where not.
+  const scoped = request.scope ? launchInRunScope(request.scope, `eo-tree-${randomUUID()}`, launcher.execPath, [launcher.hostPath], hostEnv, request.cwd) : null;
+
   return new Promise((resolve) => {
-    const child = spawn(launcher.execPath, [launcher.hostPath], {
+    const child = spawn(scoped?.command ?? launcher.execPath, scoped?.args ?? [launcher.hostPath], {
       cwd: request.cwd,
       windowsHide: true,
       // A new process group, so `killTree` reaches whatever the module
@@ -579,18 +607,9 @@ export function runModule(launcher: ModuleHostLauncher, request: RunModuleReques
       // `await` — and a synchronous read on fd 5 could take a creation's
       // answer from under the asynchronous one waiting there.
       stdio: ["pipe", "pipe", "pipe", "pipe", "pipe", "pipe", "pipe"],
-      env: {
-        // The host's own environment, not the module's: the module's is
-        // in the request, and the host empties `process.env` down to it
-        // before importing anything.
-        ...launcher.hostEnv,
-        ...systemRootEnv(process.platform, process.env),
-        // The login shell's PATH as well as the inherited one (EO-655): the
-        // host hands it to every `ctx.exec` child, and the import
-        // preflight's `needs.bin` check searches the same directories.
-        PATH: searchPath(),
-      },
+      env: hostEnv,
     });
+    scoped?.adopt(child.pid);
 
     let result = "";
     let transcript = "";

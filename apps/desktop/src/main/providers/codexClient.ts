@@ -1,4 +1,5 @@
-import { PREWARM_IDLE_MS, type ForkCopy } from "@eo/core";
+import { PREWARM_IDLE_MS, type ForkCopy, type RunProcessScope } from "@eo/core";
+import { adoptWarmScope, warmScopeKey } from "../process/runScope.js";
 import { AppServerConnection, type AppServerExit, AppServerExitedError, type AppServerNotification, type AppServerSpawn } from "./codexAppServer.js";
 
 /**
@@ -222,6 +223,14 @@ export interface CodexThreadOptions {
    * adopted by a fork of it.
    */
   fork?: boolean;
+  /**
+   * The run this thread's process belongs to and its memory limit
+   * (EO-738), for the app-server's spawn (`launchTree`). Never sent to
+   * the app-server. Only its memory limit is part of a warm process's
+   * key: a warm-up is scoped before any run exists, under its
+   * conversation, and the run that adopts it takes the scope over.
+   */
+  processScope?: RunProcessScope;
 }
 
 export interface CodexTurnOptions {
@@ -396,7 +405,7 @@ interface WarmThread {
  * started for. A turn takes it only on an exact match; anything else, or
  * a minute of nobody sending, shuts it down.
  */
-let warmThread: { key: string; ready: Promise<WarmThread | null>; timer: ReturnType<typeof setTimeout>; release?: () => void } | null = null;
+let warmThread: { key: string; ready: Promise<WarmThread | null>; timer: ReturnType<typeof setTimeout>; release?: () => void; scope?: RunProcessScope } | null = null;
 
 /**
  * A warm process that has ended before Node has said so. Its `exit`
@@ -491,21 +500,24 @@ export class CodexClient {
       console.warn("[eo] could not start Codex ahead of a turn:", error);
       return null;
     });
-    warmThread = { key, ready, timer: warmTimer(), ...(this.options.afterTurn ? { release: this.options.afterTurn } : {}) };
+    warmThread = { key, ready, timer: warmTimer(), ...(this.options.afterTurn ? { release: this.options.afterTurn } : {}), ...(threadOptions.processScope ? { scope: threadOptions.processScope } : {}) };
   }
 
   /** What a warm process must have been started with: the binary, its arguments and environment, the thread, and the caller's key. */
   private warmKey(resumeId: string | null, threadOptions: CodexThreadOptions, warmKey: string | undefined): string | null {
     try {
       const env = this.options.env ? { ...this.options.env, ...Object.fromEntries((this.options.perTurnEnv ?? []).filter((name) => name in this.options.env!).map((name) => [name, "<per turn>"])) } : null;
-      return JSON.stringify([this.options.executablePath ?? null, configArguments(this.options.config, threadOptions), env, resumeId, threadOptions, warmKey ?? null]);
+      // Not which run a scope names (EO-738): a warm process is started in
+      // a scope of its own before any run exists. Its memory limit is.
+      const { processScope, ...matched } = threadOptions;
+      return JSON.stringify([this.options.executablePath ?? null, configArguments(this.options.config, threadOptions), env, resumeId, matched, warmKey ?? null, warmScopeKey(processScope)]);
     } catch {
       return null;
     }
   }
 
   /** The warm process, if it was started for exactly this; otherwise none, and the warm one is let go. */
-  private async takeWarm(key: string | null, signal: AbortSignal | undefined): Promise<WarmThread | null> {
+  private async takeWarm(key: string | null, signal: AbortSignal | undefined, scope: RunProcessScope | undefined): Promise<WarmThread | null> {
     if (!warmThread || key === null || warmThread.key !== key) {
       dropWarmThread();
       return null;
@@ -535,6 +547,8 @@ export class CodexClient {
       taken.release?.();
       return null;
     }
+    // Its scope is the run's from now on (EO-738).
+    adoptWarmScope(taken.scope, scope);
     return { ...ready, ...(taken.release ? { release: taken.release } : {}) };
   }
 
@@ -669,6 +683,7 @@ export class CodexClient {
       args: configArguments(this.options.config, threadOptions),
       ...(this.options.env ? { env: this.options.env } : {}),
       ...(this.options.spawn ? { spawn: this.options.spawn } : {}),
+      ...(threadOptions.processScope ? { scope: threadOptions.processScope } : {}),
     });
   }
 
@@ -759,7 +774,7 @@ export class CodexClient {
     // A process started for exactly this turn while it was being typed
     // (`prewarm`), already past its handshake and its thread opened; or,
     // as always, a new one.
-    const warm = await this.takeWarm(this.warmKey(resumeId, threadOptions, turnOptions.warmKey), signal);
+    const warm = await this.takeWarm(this.warmKey(resumeId, threadOptions, turnOptions.warmKey), signal, threadOptions.processScope);
     if (warm?.release) adopted.release = warm.release;
     const pipe = warm?.pipe ?? new Pipe(this.connect(threadOptions));
     const connection = pipe.connection;

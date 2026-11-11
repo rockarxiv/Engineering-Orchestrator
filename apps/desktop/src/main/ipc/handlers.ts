@@ -4,6 +4,7 @@ import { ArchivedItemListFiltersSchema, ItemListFiltersSchema, toRegistryView, t
 import { AttachmentStorage } from "../attachments/storage.js";
 import type { Db } from "../db/client.js";
 import { archiveAgentCommand, customiseAgent, deleteAgentCommand, listAgentDetails, projectStaffing, readGuards, saveAgent, setAgentBinding, savePipeline, validatePipelineCommand, writeGuards } from "./configCommands.js";
+import { runMemoryFacts } from "../process/runScope.js";
 import {
   createPipelineCommand,
   deletePipelineCommand,
@@ -2131,6 +2132,9 @@ export function registerAllHandlers(db: Db, engine: EngineHandle | undefined, re
 
   registerHandler("guards:get", () => readGuards(db), opts);
   registerHandler("guards:set", (payload) => writeGuards(db, payload), opts);
+  // What the run memory limit comes to here (EO-738): whether this
+  // machine gives a run a systemd scope at all, and its default.
+  registerHandler("guards:runMemory", () => runMemoryFacts(readGuards(db)), opts);
   registerHandler("repositories:list", () => listRepositoriesCommand(db, jira.credentials), opts);
   registerHandler(
     "repositories:create",

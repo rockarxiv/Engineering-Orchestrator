@@ -1909,7 +1909,7 @@ const READ_TOOLS: readonly ToolSpec[] = [
     name: "guardrails_get",
     channel: "guards:get",
     description:
-      "The limits EO applies before every dispatch: concurrency caps, attempt limit, run timeout, and spend budgets. " +
+      "The limits EO applies before every dispatch: concurrency caps, attempt limit, run timeout, spend budgets, and the memory one run may use. " +
       "Of the limits on a run, only the attempt limit applies to the system agent; what it spends still counts towards the budgets. " +
       "guardrails_set changes any of them, one field at a time — read this first to see what you are not changing.",
     kind: "read",
@@ -2002,6 +2002,8 @@ const GUARDRAILS_SET_TOOL: ToolSpec = {
     "guardrails_get reports. Budgets are in cents and null means no budget; the timeout is in milliseconds. " +
     "interpretReplies is whether the system agent reads a reply somebody typed to a step that stopped and asked, " +
     "instead of that step simply asking again; it is on unless somebody turned it off. " +
+    "runMemoryMaxMb is the memory, in MB, one run's processes may use together before that run alone is stopped; " +
+    "null is EO's default for the machine, and it applies only on Linux where a systemd user manager is reachable. " +
     "Concurrency stays at 1 by design until the loop is provably reliable, the system agent being the one thing it does not hold back — raising it is a decision to make with " +
     "the person, not on their behalf. A value outside its allowed range is refused by name and nothing is written. " +
     "So is a run timeout shorter than a module step's own time limit — raise the step's limit first, or leave the " +

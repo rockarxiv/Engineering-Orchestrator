@@ -1620,6 +1620,7 @@ export function renderGuards(data: IpcResponse<"guards:get">): string {
     `- rounds of a draft's test items before testing stops and asks the person: ${data.trialRoundsPerDraft}`,
     `- budget for testing one draft: ${data.trialBudgetCentsPerDraft === null ? "none (the daily budget still applies)" : `${data.trialBudgetCentsPerDraft}¢`}`,
     `- the same step failing with the same result in two rounds in a row: ${data.trialStopOnRepeatedFailure ? "stops testing and asks the person" : "does not stop testing"}`,
+    `- memory one run's processes may use together: ${data.runMemoryMaxMb === null ? "EO's default for this machine — three quarters of its memory, shared across the global concurrency cap" : `${data.runMemoryMaxMb} MB`}. Applies only on Linux where a systemd user manager is reachable, where each run starts in a systemd scope of its own and a run that runs out of memory stops alone and parks; elsewhere runs start without a limit`,
     "- the system agent: of the limits on a run, only the attempt limit applies to it. No concurrency cap, run timeout, silence limit, budget or mention limit holds it back, and what it spends still counts towards the budgets",
   ].join("\n");
 }

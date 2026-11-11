@@ -124,6 +124,26 @@ export interface AgentTurnOverrides {
    */
   withheldEnvironmentVariables?: string[];
   attachments?: AgentInputAttachment[];
+  /**
+   * The run this turn's processes belong to, and the memory they may use
+   * together (EO-738, ARCHITECTURE.md, "Guardrails").
+   *
+   * Both adapters hand it to the one place EO starts a run's process
+   * tree (`launchTree`, `main/process/runScope.ts`), which, where a
+   * systemd user manager is reachable on Linux, starts the backend's CLI
+   * in a transient scope of the run's own with this `MemoryMax` — so
+   * running out of memory stops the run and not EO. Elsewhere, and on a
+   * turn without it, the CLI starts as it always did. Set by the
+   * supervisor on every turn of a run; a conversation turn and a side
+   * call carry none.
+   */
+  processScope?: RunProcessScope;
+}
+
+/** What a run's processes are started under (EO-738): whose they are, and how much memory they may use. */
+export interface RunProcessScope {
+  runId: string;
+  memoryMaxMb: number;
 }
 
 export interface ToolDef {

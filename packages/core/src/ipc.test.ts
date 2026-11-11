@@ -128,6 +128,10 @@ describe("the two halves of the contract", () => {
         "debug:setMode",
         "debug:window",
         "dialog:pickDirectory",
+        // Whether per-run memory scopes apply on this machine, and what
+        // its default limit is (EO-738): its platform, its systemd user
+        // manager and its memory.
+        "guards:runMemory",
         "items:exportOutput",
         // Where a job may run (EO-330, ARCHITECTURE.md, "Where a job runs"). Machine-half because
         // every reason it can give is a fact about *this* desktop —

@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import type { GuardConfigView } from "@eo/core";
+import { RUN_MEMORY_MAX_MB, RUN_MEMORY_MIN_MB, type GuardConfigView } from "@eo/core";
 import { ipcQuery } from "../../../../query/client";
 import { guardsKey } from "../../../../query/hooks";
 import { withArticle } from "../../../parts";
@@ -155,6 +155,24 @@ export function GuardrailsSection() {
             </NotedField>
           </FieldGrid>
 
+          {/* EO-738: a run that runs out of memory stops alone — where this
+              machine can give it a scope of its own, and only there. */}
+          <RunMemoryField
+            stored={value.runMemoryMaxMb}
+            globalConcurrency={value.globalConcurrency}
+            onCommit={async (raw) => {
+              const typed = raw.trim() === "" ? null : Number(raw);
+              if (typed !== null && (!Number.isInteger(typed) || typed < RUN_MEMORY_MIN_MB || typed > RUN_MEMORY_MAX_MB)) {
+                setFailures((current) => ({
+                  ...current,
+                  runMemoryMaxMb: [`The run memory limit (runMemoryMaxMb) must be a whole number of megabytes from ${RUN_MEMORY_MIN_MB} to ${RUN_MEMORY_MAX_MB.toLocaleString("en-US")}, or blank for EO's default.`],
+                }));
+                return false;
+              }
+              return commit({ runMemoryMaxMb: typed });
+            }}
+          />
+
           {/* EO-212: what it caps is how long agents may go on without
               anybody watching, which the number alone does not say. */}
           <div className="max-w-[28rem]">
@@ -250,5 +268,51 @@ export function GuardrailsSection() {
         </>
       )}
     </CardSection>
+  );
+}
+
+/**
+ * The run memory limit (EO-738). Where this machine gives every run a
+ * systemd scope of its own, a box — blank for EO's default, which is said
+ * beside it. Where it cannot (macOS, Windows, Linux without a reachable
+ * systemd user manager), no box at all: a control that does nothing there
+ * would read as a limit in force. What this machine is, and what its
+ * default comes to, is asked of the machine (`guards:runMemory`).
+ */
+function RunMemoryField({ stored, globalConcurrency, onCommit }: { stored: number | null; globalConcurrency: number; onCommit: (raw: string) => Promise<boolean> }) {
+  const facts = useQuery({
+    // Under the guardrails' own key, so reading them back reads this too;
+    // and keyed by what the default is made of, so it follows an edit.
+    queryKey: [...guardsKey, "runMemory", stored, globalConcurrency],
+    queryFn: () => ipcQuery("guards:runMemory", undefined),
+    // The last answer stays drawn while the next is read, so the box a
+    // person is typing in is not taken away by the save it just made.
+    placeholderData: (previous) => previous,
+  });
+  const mb = (value: number) => `${value.toLocaleString("en-US")} MB`;
+  if (!facts.data) return facts.isError ? <ErrorLine>EO could not tell whether the run memory limit applies on this computer.</ErrorLine> : null;
+  if (!facts.data.applies) {
+    return (
+      <div className="max-w-[28rem]">
+        <NotedField
+          note={`Applies on Linux only, where each run starts in a systemd scope of its own so a run that runs out of memory stops by itself. It does not apply on this computer — ${facts.data.reason ?? "no systemd user manager is reachable"} — so runs here start without one.`}
+        >
+          <Field label="Memory per run">
+            <p className="text-[13px] text-ink-muted">Does not apply on this computer</p>
+          </Field>
+        </NotedField>
+      </div>
+    );
+  }
+  return (
+    <div className="max-w-[28rem]">
+      <NotedField
+        note={`What one run's processes — the agent and everything it starts, or a module — may use together. A run that reaches it, or that the system picks when this computer runs out, is stopped on its own and waits for you; EO and other runs carry on. Blank is EO's default for this computer: three quarters of its ${mb(facts.data.totalMb)}, shared across a global concurrency of ${globalConcurrency} — ${mb(facts.data.defaultMb)}.`}
+      >
+        <Field label="Memory per run (MB, blank = EO's default)">
+          <DraftInput type="number" min={RUN_MEMORY_MIN_MB} placeholder={String(facts.data.defaultMb)} value={stored === null ? "" : String(stored)} onCommit={onCommit} />
+        </Field>
+      </NotedField>
+    </div>
   );
 }
