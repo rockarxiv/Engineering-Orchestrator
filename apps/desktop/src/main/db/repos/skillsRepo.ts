@@ -7,7 +7,6 @@ import {
   readSkillDraft,
   SKILL_LOCKED_PROBLEM,
   SkillCopySchema,
-  SkillSchema,
   SkillVersionActionSchema,
   SkillVersionReportSchema,
   uuidv7,
