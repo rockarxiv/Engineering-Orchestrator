@@ -3334,6 +3334,12 @@ const UNGATED_WRITE_TOOLS: readonly ToolSpec[] = [
       "It is trimmed, and refused — with nothing else in the call changed — when it could not appear in a git " +
       "branch name: whitespace, .., ~, ^, :, ?, *, [, \\, @{, //, a leading - or /, a trailing . or /, or a part " +
       "between slashes that starts with . or ends with .lock. " +
+      "Set reviewers to the forge handles — a GitHub login or org/team, or a GitLab username — EO asks to review the pull " +
+      "request it opens for this ticket, in place of everyone else's: a ticket's own list wins, else its feature's own " +
+      "list, else the repository's default reviewers. On a feature it is the list its stories without their own read. " +
+      "reviewers: [] asks nobody, whatever the repository says, and reviewers: null clears the ticket's own list so it " +
+      "inherits again. Entries are trimmed, blanks and repeats dropped, and an entry with a space or comma in it refuses " +
+      "the call, naming that entry, with nothing else in the call changed. " +
       "Dependencies can be changed after filing: addDependsOn lists tickets this one is to wait for from now on, and " +
       "removeDependsOn tickets it is to stop waiting for, each by key — EO-42 — or id. The whole change is judged " +
       "before anything is written: a ticket that does not exist, the ticket itself, one on another project, an edge " +
@@ -3656,7 +3662,9 @@ const UNGATED_WRITE_TOOLS: readonly ToolSpec[] = [
       "and args in order; a call nothing scripts fails the case. item — the ticket ctx.item() answers with, any of: id, key, type, title, " +
       "body, parentKey, branch, prUrl, jiraKey, createdAt, updatedAt, comments, spec, fields ([{ name, kind, required }]), priority, " +
       "heldAt, archivedAt, trial, createdBy, pipeline ({ id, name }), step ({ id, name, kind, ownerRole }), pipelineVersion " +
-      "({ id, number }), git ({ branch, baseBranch, namedBranch, attachedAt, pullRequest, reference, targetBranch }), extensions, " +
+      "({ id, number }), git ({ branch, baseBranch, namedBranch, attachedAt, pullRequest, reference, targetBranch, reviewers — the " +
+      "ticket's own pull request reviewers, null when it inherits and [] when set to nobody — and pullRequestReviewers — the list " +
+      "the pull request step will request: its own, its feature's or the repository's default, [] off a repository }), extensions, " +
       "parent, children, dependsOn, dependedOnBy (each { key, title, type, stepName, finished }) and attachments ([{ id, name, " +
       "mimeType, size, commentId, createdAt }]); a field left out is null, false, [] or {}. itemByKey — { KEY: item } in the same " +
       "shape, for ctx.itemByKey and ctx.commentOn. runs — { KEY: [{ id, step ({ id, name }), action, agentName, status, resultKey, answer, error, " +

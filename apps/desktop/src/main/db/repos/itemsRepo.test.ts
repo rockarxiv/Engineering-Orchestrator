@@ -690,7 +690,7 @@ describe("an item's git state", () => {
     const item = story();
 
     expect(gitRows(item.id)).toEqual([]);
-    expect(gitStateOf(item)).toEqual({ branch: null, pullRequest: null, baseBranch: null, namedBranch: false, attachedAt: null, reference: null });
+    expect(gitStateOf(item)).toEqual({ branch: null, pullRequest: null, baseBranch: null, namedBranch: false, attachedAt: null, reference: null, reviewers: null });
   });
 
   it("records a branch a dispatch cut, and reads it back onto the item", () => {
@@ -699,7 +699,7 @@ describe("an item's git state", () => {
     updateItem(handle.db, item.id, { git: { branch: "eo/APP-1" } });
 
     expect(gitRows(item.id)).toHaveLength(1);
-    expect(gitStateOf(getItem(handle.db, item.id)!)).toEqual({ branch: "eo/APP-1", pullRequest: null, baseBranch: null, namedBranch: false, attachedAt: null, reference: null });
+    expect(gitStateOf(getItem(handle.db, item.id)!)).toEqual({ branch: "eo/APP-1", pullRequest: null, baseBranch: null, namedBranch: false, attachedAt: null, reference: null, reviewers: null });
   });
 
   it("leaves the branch where it was when only the pull request is patched", () => {
@@ -710,7 +710,7 @@ describe("an item's git state", () => {
 
     updateItem(handle.db, item.id, { git: { pullRequest: "https://github.com/acme/app/pull/3" } });
 
-    expect(gitStateOf(getItem(handle.db, item.id)!)).toEqual({ branch: "eo/APP-1", pullRequest: "https://github.com/acme/app/pull/3", baseBranch: null, namedBranch: false, attachedAt: null, reference: null });
+    expect(gitStateOf(getItem(handle.db, item.id)!)).toEqual({ branch: "eo/APP-1", pullRequest: "https://github.com/acme/app/pull/3", baseBranch: null, namedBranch: false, attachedAt: null, reference: null, reviewers: null });
   });
 
   it("takes the row away again when the item goes back to saying nothing", () => {
@@ -719,7 +719,7 @@ describe("an item's git state", () => {
     updateItem(handle.db, item.id, { git: { branch: null } });
 
     expect(gitRows(item.id)).toEqual([]);
-    expect(gitStateOf(getItem(handle.db, item.id)!)).toEqual({ branch: null, pullRequest: null, baseBranch: null, namedBranch: false, attachedAt: null, reference: null });
+    expect(gitStateOf(getItem(handle.db, item.id)!)).toEqual({ branch: null, pullRequest: null, baseBranch: null, namedBranch: false, attachedAt: null, reference: null, reviewers: null });
   });
 
   it("keeps a pack's state and a workspace kind's state side by side", () => {

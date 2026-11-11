@@ -23,6 +23,7 @@ import {
   pendingPushesForItem,
   postComment,
   updateItem,
+  updateWorkspace,
 } from "../db/repos/index.js";
 import type { StepAnswer } from "../roles/answers.js";
 import { resetSearchPathForTests, resolveSearchPath } from "../process/searchPath.js";
@@ -2359,7 +2360,7 @@ describe("what a module can read about an item", () => {
       pipeline: { id: "default", name: expect.any(String) },
       step: { id: "todo", name: expect.any(String), kind: expect.any(String), ownerRole: expect.anything() },
       pipelineVersion: running.pipelineVersionId === null ? null : { id: running.pipelineVersionId, number: expect.any(Number) },
-      git: { branch: "eo/EO-74", baseBranch: null, namedBranch: false, attachedAt: null, pullRequest: "https://forge.example/pull/74", reference: null, targetBranch: null },
+      git: { branch: "eo/EO-74", baseBranch: null, namedBranch: false, attachedAt: null, pullRequest: "https://forge.example/pull/74", reference: null, targetBranch: null, reviewers: null, pullRequestReviewers: [] },
       extensions: { git: expect.objectContaining({ branch: "eo/EO-74" }), jira: expect.objectContaining({ key: "KAN-74" }) },
       parent: { key: feature.key, title: "Give a module a voice", type: "feature", stepName: expect.any(String), finished: false },
       children: [],
@@ -2629,6 +2630,21 @@ describe("what a module can read about an item", () => {
    * host: a reader that answers with something no database holds is
    * what the module is handed, and the host's source holds no query.
    */
+  it("reads an item's own pull request reviewers beside the ones its pull request will ask (EO-742)", async () => {
+    const repository = attachWorkspace(handle.db, { name: "api", keyPrefix: "API", repoPath: directory });
+    updateWorkspace(handle.db, repository.id, { config: { forgeReviewers: ["alice"] } });
+    const parent = createTestItem(handle.db, { type: "feature", title: "Reviewers", stepId: null, workspaceId: repository.id, git: { reviewers: ["dave"] } });
+    const story = createTestItem(handle.db, { type: "story", title: "Inherits", stepId: "todo", workspaceId: repository.id, parentId: parent.id });
+    const nobody = createTestItem(handle.db, { type: "story", title: "Asks nobody", stepId: "todo", workspaceId: repository.id, parentId: parent.id, git: { reviewers: [] } });
+    const reviewersOf = `export default async function run(ctx) {
+      const { reviewers, pullRequestReviewers } = ctx.item().item.git;
+      return { ok: true, result: "ok", detail: JSON.stringify({ reviewers, pullRequestReviewers }) };
+    }`;
+
+    expect(answered(await runAgainstDb(reviewersOf, story))).toEqual({ reviewers: null, pullRequestReviewers: ["dave"] });
+    expect(answered(await runAgainstDb(reviewersOf, nobody))).toEqual({ reviewers: [], pullRequestReviewers: [] });
+  });
+
   it("answers from the main process's reader rather than from SQL of its own", async () => {
     const asked: string[] = [];
     const stub: ModuleHostLauncher = {

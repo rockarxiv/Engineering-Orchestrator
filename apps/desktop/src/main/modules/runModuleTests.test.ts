@@ -544,7 +544,7 @@ describe("runModuleTests", () => {
             pipeline: { id: "p-1", name: "Software" },
             step: { id: "merge", name: "Merge", kind: "module", ownerRole: "system" },
             pipelineVersion: { id: "v-1", number: 2 },
-            git: { branch: "eo/EO-1", baseBranch: "release/2.4", namedBranch: true, attachedAt: "abc123", pullRequest: "https://forge.example/pull/1", reference: "JIRA-9", targetBranch: "release/2.4" },
+            git: { branch: "eo/EO-1", baseBranch: "release/2.4", namedBranch: true, attachedAt: "abc123", pullRequest: "https://forge.example/pull/1", reference: "JIRA-9", targetBranch: "release/2.4", reviewers: ["carol"], pullRequestReviewers: ["carol"] },
             extensions: { jira: { key: "KAN-1" } },
             parent: { key: "EO-0", title: "The feature", type: "feature", stepName: "1 of 2 done", finished: false },
             children: [relation], dependsOn: [relation], dependedOnBy: [relation],
@@ -579,7 +579,7 @@ describe("runModuleTests", () => {
               id: null, key: "EO-10", type: null, title: null, body: null, parentKey: null, branch: null, prUrl: null, jiraKey: null,
               createdAt: null, updatedAt: null, comments: [], spec: {}, fields: [], priority: null, heldAt: null, archivedAt: null,
               trial: false, createdBy: null, pipeline: null, step: null, pipelineVersion: null,
-              git: { branch: null, baseBranch: null, namedBranch: false, attachedAt: null, pullRequest: null, reference: null, targetBranch: null },
+              git: { branch: null, baseBranch: null, namedBranch: false, attachedAt: null, pullRequest: null, reference: null, targetBranch: null, reviewers: null, pullRequestReviewers: [] },
               extensions: {}, parent: null, children: [], dependsOn: [], dependedOnBy: [], attachments: [],
             });
           }`),

@@ -967,10 +967,10 @@ describe("runMigrations", () => {
     runMigrations(handle.db, join(dirname(fileURLToPath(import.meta.url)), "migrations"));
 
     // Read through the accessor, which is how every caller reads it now.
-    expect(gitStateOf(getItem(handle.db, "t1" as Uuid)!)).toEqual({ branch: "eo/EO-1", pullRequest: "https://github.com/acme/api/pull/7", baseBranch: null, namedBranch: false, attachedAt: null, reference: null });
-    expect(gitStateOf(getItem(handle.db, "t2" as Uuid)!)).toEqual({ branch: "eo/EO-2", pullRequest: null, baseBranch: null, namedBranch: false, attachedAt: null, reference: null });
-    expect(gitStateOf(getItem(handle.db, "t3" as Uuid)!)).toEqual({ branch: null, pullRequest: "https://github.com/acme/api/pull/9", baseBranch: null, namedBranch: false, attachedAt: null, reference: null });
-    expect(gitStateOf(getItem(handle.db, "t4" as Uuid)!)).toEqual({ branch: null, pullRequest: null, baseBranch: null, namedBranch: false, attachedAt: null, reference: null });
+    expect(gitStateOf(getItem(handle.db, "t1" as Uuid)!)).toEqual({ branch: "eo/EO-1", pullRequest: "https://github.com/acme/api/pull/7", baseBranch: null, namedBranch: false, attachedAt: null, reference: null, reviewers: null });
+    expect(gitStateOf(getItem(handle.db, "t2" as Uuid)!)).toEqual({ branch: "eo/EO-2", pullRequest: null, baseBranch: null, namedBranch: false, attachedAt: null, reference: null, reviewers: null });
+    expect(gitStateOf(getItem(handle.db, "t3" as Uuid)!)).toEqual({ branch: null, pullRequest: "https://github.com/acme/api/pull/9", baseBranch: null, namedBranch: false, attachedAt: null, reference: null, reviewers: null });
+    expect(gitStateOf(getItem(handle.db, "t4" as Uuid)!)).toEqual({ branch: null, pullRequest: null, baseBranch: null, namedBranch: false, attachedAt: null, reference: null, reviewers: null });
 
     // A row for the three that had something to say, under the `git`
     // extension, and none for the item that never had a branch — beside

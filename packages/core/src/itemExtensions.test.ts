@@ -3,6 +3,7 @@ import {
   branchInGit,
   branchNameProblem,
   effectiveReference,
+  effectiveReviewers,
   gitExtension,
   gitStateOf,
   isDefaultGitState,
@@ -16,6 +17,7 @@ import {
   readGitState,
   readJiraState,
   referenceProblem,
+  REVIEWERS_FROM_REPOSITORY,
 } from "./itemExtensions.js";
 
 /**
@@ -88,8 +90,8 @@ describe("the jira extension", () => {
  */
 describe("the git extension", () => {
   it("reads an item with no extensions as one no git workspace has touched", () => {
-    expect(gitStateOf({ extensions: NO_ITEM_EXTENSIONS })).toEqual({ branch: null, pullRequest: null, baseBranch: null, namedBranch: false, attachedAt: null, reference: null });
-    expect(NO_GIT_STATE).toEqual({ branch: null, pullRequest: null, baseBranch: null, namedBranch: false, attachedAt: null, reference: null });
+    expect(gitStateOf({ extensions: NO_ITEM_EXTENSIONS })).toEqual({ branch: null, pullRequest: null, baseBranch: null, namedBranch: false, attachedAt: null, reference: null, reviewers: null });
+    expect(NO_GIT_STATE).toEqual({ branch: null, pullRequest: null, baseBranch: null, namedBranch: false, attachedAt: null, reference: null, reviewers: null });
   });
 
   it("reads what a row holds", () => {
@@ -100,13 +102,14 @@ describe("the git extension", () => {
       namedBranch: false,
       attachedAt: null,
       reference: null,
+      reviewers: null,
     });
   });
 
   it("fills in a field a row was written before", () => {
     // A branch cut before anything opened a pull request is the ordinary
     // state, and the row written then names only the branch.
-    expect(gitStateOf({ extensions: { git: { branch: "eo/EO-1" } } })).toEqual({ branch: "eo/EO-1", pullRequest: null, baseBranch: null, namedBranch: false, attachedAt: null, reference: null });
+    expect(gitStateOf({ extensions: { git: { branch: "eo/EO-1" } } })).toEqual({ branch: "eo/EO-1", pullRequest: null, baseBranch: null, namedBranch: false, attachedAt: null, reference: null, reviewers: null });
     // And a row written before a base branch could be named (EO-364)
     // reads as one that named none.
     expect(gitStateOf({ extensions: { git: { branch: "eo/EO-1", pullRequest: null } } }).baseBranch).toBeNull();
@@ -135,7 +138,7 @@ describe("the git extension", () => {
   });
 
   it("builds the map back the same way it reads it", () => {
-    expect(gitStateOf({ extensions: gitExtension({ branch: "eo/EO-1" }) })).toEqual({ branch: "eo/EO-1", pullRequest: null, baseBranch: null, namedBranch: false, attachedAt: null, reference: null });
+    expect(gitStateOf({ extensions: gitExtension({ branch: "eo/EO-1" }) })).toEqual({ branch: "eo/EO-1", pullRequest: null, baseBranch: null, namedBranch: false, attachedAt: null, reference: null, reviewers: null });
   });
 
   it("leaves the other extension's slot alone", () => {
@@ -144,7 +147,7 @@ describe("the git extension", () => {
     // either needing to know about the other.
     const extensions = { ...jiraExtension({ key: "KAN-7" }), ...gitExtension({ branch: "eo/EO-1" }) };
     expect(jiraStateOf({ extensions })).toEqual({ key: "KAN-7", id: null, sync: true, pullPending: false });
-    expect(gitStateOf({ extensions })).toEqual({ branch: "eo/EO-1", pullRequest: null, baseBranch: null, namedBranch: false, attachedAt: null, reference: null });
+    expect(gitStateOf({ extensions })).toEqual({ branch: "eo/EO-1", pullRequest: null, baseBranch: null, namedBranch: false, attachedAt: null, reference: null, reviewers: null });
   });
 });
 
@@ -242,5 +245,34 @@ describe("effectiveReference", () => {
   it("answers null when neither names one", () => {
     expect(effectiveReference({ extensions: NO_ITEM_EXTENSIONS }, undefined)).toBeNull();
     expect(effectiveReference({ extensions: NO_ITEM_EXTENSIONS }, { key: "EO-1", extensions: NO_ITEM_EXTENSIONS })).toBeNull();
+  });
+});
+
+describe("effectiveReviewers (EO-742)", () => {
+  const repository = ["alice", "bob"];
+  const feature = { key: "EO-1", extensions: gitExtension({ reviewers: ["dave"] }) };
+  const bare = { key: "EO-2", extensions: NO_ITEM_EXTENSIONS };
+
+  it("answers with the item's own, which wins over its parent's and the repository's", () => {
+    expect(effectiveReviewers({ extensions: gitExtension({ reviewers: ["carol"] }) }, feature, repository)).toEqual({ value: ["carol"], inheritedFrom: null });
+  });
+
+  it("answers with an empty own list as nobody, not as nothing said", () => {
+    expect(effectiveReviewers({ extensions: gitExtension({ reviewers: [] }) }, feature, repository)).toEqual({ value: [], inheritedFrom: null });
+  });
+
+  it("answers with the parent's own when the item has none, naming the parent", () => {
+    expect(effectiveReviewers({ extensions: NO_ITEM_EXTENSIONS }, feature, repository)).toEqual({ value: ["dave"], inheritedFrom: "EO-1" });
+    expect(effectiveReviewers({ extensions: NO_ITEM_EXTENSIONS }, { key: "EO-1", extensions: gitExtension({ reviewers: [] }) }, repository)).toEqual({ value: [], inheritedFrom: "EO-1" });
+  });
+
+  it("answers with the repository's default when neither names a list", () => {
+    expect(effectiveReviewers({ extensions: NO_ITEM_EXTENSIONS }, bare, repository)).toEqual({ value: ["alice", "bob"], inheritedFrom: REVIEWERS_FROM_REPOSITORY });
+    expect(effectiveReviewers({ extensions: NO_ITEM_EXTENSIONS }, undefined, [])).toEqual({ value: [], inheritedFrom: REVIEWERS_FROM_REPOSITORY });
+  });
+
+  it("is part of what makes git state worth a row", () => {
+    expect(isDefaultGitState({ ...NO_GIT_STATE, reviewers: [] })).toBe(false);
+    expect(isDefaultGitState({ ...NO_GIT_STATE, reviewers: null })).toBe(true);
   });
 });

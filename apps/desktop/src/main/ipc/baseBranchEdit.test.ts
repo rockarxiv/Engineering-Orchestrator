@@ -36,7 +36,7 @@ describe("setting a base branch", () => {
   it("writes it onto the item while no branch has been cut", () => {
     expect(updateItemText(handle.db, { itemId: item.id, baseBranch: " release/2.4 " })).toEqual({ updated: true, problem: null });
 
-    expect(stored(item)).toEqual({ branch: null, pullRequest: null, baseBranch: "release/2.4", namedBranch: false, attachedAt: null, reference: null });
+    expect(stored(item)).toEqual({ branch: null, pullRequest: null, baseBranch: "release/2.4", namedBranch: false, attachedAt: null, reference: null, reviewers: null });
   });
 
   it("clears it with null, and takes the row away once it says nothing", () => {
@@ -61,7 +61,7 @@ describe("setting a base branch", () => {
 
     expect(result.updated).toBe(false);
     expect(result.problem).toContain("`eo/API-1`");
-    expect(stored(item)).toEqual({ branch: "eo/API-1", pullRequest: null, baseBranch: "release/2.4", namedBranch: false, attachedAt: null, reference: null });
+    expect(stored(item)).toEqual({ branch: "eo/API-1", pullRequest: null, baseBranch: "release/2.4", namedBranch: false, attachedAt: null, reference: null, reviewers: null });
     expect(getItem(handle.db, item.id)?.title).toBe("A story");
   });
 
@@ -127,7 +127,7 @@ describe("naming an existing branch", () => {
   it("stores it as the item's branch, marked as named, while nothing is in git", () => {
     expect(updateItemText(handle.db, { itemId: item.id, existingBranch: " feature/limits " })).toEqual({ updated: true, problem: null });
 
-    expect(stored(item)).toEqual({ branch: "feature/limits", pullRequest: null, baseBranch: null, namedBranch: true, attachedAt: null, reference: null });
+    expect(stored(item)).toEqual({ branch: "feature/limits", pullRequest: null, baseBranch: null, namedBranch: true, attachedAt: null, reference: null, reviewers: null });
   });
 
   it("can be changed or cleared until Worktree attaches it, and clearing leaves no row", () => {

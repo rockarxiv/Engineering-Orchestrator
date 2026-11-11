@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { gitStateOf, jiraStateOf, type Item, type Uuid } from "@eo/core";
+import { effectiveReviewers, gitStateOf, jiraStateOf, REVIEWERS_FROM_REPOSITORY, type Item, type ItemReviewers, type Uuid } from "@eo/core";
 import { dependencyClosure } from "@eo/engine";
 import type { StackDependency, StackTargetDecision } from "../workspace/stackDecision.js";
 import type { Db } from "../../../db/client.js";
@@ -378,6 +378,7 @@ async function openNew(
     }
   }
 
+  const reviewers = pullRequestReviewers(db, item, workspace);
   const result = await openPullRequest({
     repoPath: workspace.config.repoPath,
     branch,
@@ -394,7 +395,7 @@ async function openNew(
     run,
     ...(signal ? { signal } : {}),
     ...(ended ? { onlyAdoptOpen: true } : {}),
-    reviewers: pullRequestReviewers(item, workspace),
+    reviewers: reviewers.value,
   });
 
   if (!result.ok) {
@@ -419,20 +420,27 @@ async function openNew(
     );
   }
   recordPullRequest(db, workspace, item, result.url, remarks);
-  if (result.reviewers) reportReviewers(db, item, result.reviewers, onProgress);
+  if (result.reviewers) reportReviewers(db, item, result.reviewers, reviewers, onProgress);
 
   return { kind: "opened", detail: result.adopted ? `Adopted the pull request already open: ${result.url}` : `Opened ${result.url}` };
 }
 
 /**
- * Who is asked to review the pull request `item` opens (EO-741).
- *
- * The repository's default for now. The one place the list is read, so
- * that an item's own list, or its feature's, is put in front of it here
- * and nowhere else.
+ * Who is asked to review the pull request `item` opens, and where the
+ * list came from (EO-741, EO-742): the item's own, else its feature's,
+ * else the repository's default — `effectiveReviewers`, which the item
+ * page, `item_get` and a module's `git.pullRequestReviewers` read too.
  */
-export function pullRequestReviewers(_item: Item, workspace: GitWorkspace): string[] {
-  return workspace.config.forgeReviewers;
+export function pullRequestReviewers(db: Db, item: Item, workspace: GitWorkspace): ItemReviewers {
+  const parent = item.parentId === null ? undefined : getItem(db, item.parentId);
+  return effectiveReviewers(item, parent, workspace.config.forgeReviewers);
+}
+
+/** Where a person corrects the list a refused reviewer came from. */
+function whereReviewersAreSet(item: Item, reviewers: ItemReviewers): string {
+  if (reviewers.inheritedFrom === REVIEWERS_FROM_REPOSITORY) return "correct the repository's default reviewers in Settings";
+  if (reviewers.inheritedFrom === null) return `correct the reviewers set on ${item.key}`;
+  return `correct the reviewers set on ${reviewers.inheritedFrom}`;
 }
 
 /**
@@ -442,7 +450,7 @@ export function pullRequestReviewers(_item: Item, workspace: GitWorkspace): stri
  * comment naming every reviewer the forge refused, with what it said.
  * The pull request is open either way, so none of it is a failure.
  */
-function reportReviewers(db: Db, item: Item, outcome: ReviewerRequest, onProgress?: (text: string) => void): void {
+function reportReviewers(db: Db, item: Item, outcome: ReviewerRequest, asked: ItemReviewers, onProgress?: (text: string) => void): void {
   if (outcome.author !== null) {
     onProgress?.(`Left ${outcome.author} out of the reviewers: they opened the pull request, and a forge does not let its author review it.`);
   }
@@ -458,7 +466,7 @@ function reportReviewers(db: Db, item: Item, outcome: ReviewerRequest, onProgres
     body: [
       `The pull request is open, but EO could not ask ${outcome.refused.length === 1 ? "this reviewer" : "these reviewers"} to review it:`,
       listed.join("\n"),
-      "Ask them on the forge, or correct the repository's default reviewers in Settings.",
+      `Ask them on the forge, or ${whereReviewersAreSet(item, asked)}.`,
     ].join("\n\n"),
   });
 }

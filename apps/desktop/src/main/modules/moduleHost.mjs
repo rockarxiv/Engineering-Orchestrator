@@ -1619,6 +1619,11 @@ function asText(value) {
   return typeof value === "string" ? value : null;
 }
 
+/** The strings in a list, frozen; `[]` for anything that is not one. */
+function textList(value) {
+  return Object.freeze((Array.isArray(value) ? value : []).filter((entry) => typeof entry === "string"));
+}
+
 /** A plain object or array as frozen data, all the way down, and a copy: nothing a module holds is shared with what it was built from. */
 function frozenData(value) {
   if (Array.isArray(value)) return Object.freeze(value.map(frozenData));
@@ -1758,6 +1763,11 @@ function itemShape(value) {
       pullRequest: asText(git.pullRequest) ?? pullRequest,
       reference: asText(git.reference),
       targetBranch: asText(git.targetBranch),
+      // The item's own reviewers as stored — null inherits, [] is
+      // nobody — beside the list the pull request step will ask, as
+      // `baseBranch` sits beside `targetBranch` (EO-742).
+      reviewers: Array.isArray(git.reviewers) ? textList(git.reviewers) : null,
+      pullRequestReviewers: textList(git.pullRequestReviewers),
     }),
     extensions: frozenRecord(item.extensions),
     parent,

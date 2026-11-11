@@ -49,7 +49,7 @@ import {
 } from "../db/repos/index.js";
 import { declaredResults } from "@eo/engine";
 import { listAgentDetails } from "./configCommands.js";
-import { listArchivedSummaries, listInbox, listItemSummaries } from "./domainQueries.js";
+import { itemReviewers, listArchivedSummaries, listInbox, listItemSummaries } from "./domainQueries.js";
 import { originIndex } from "../jobs/origin.js";
 import { activeProjectId } from "./repositoryCommands.js";
 import { pipelineVersionsCommand } from "./pipelineCommands.js";
@@ -493,6 +493,8 @@ function resolveItem(db: Db, itemId: string) {
       git: gitStateOf(item),
       // Own or the feature's (EO-637), as the item page shows it.
       reference: effectiveReference(item, item.parentId === null ? undefined : getItem(db, item.parentId)),
+      // Own, the feature's or the repository's (EO-742), as the item page shows them.
+      reviewers: itemReviewers(db, item),
     },
   } as const;
 }

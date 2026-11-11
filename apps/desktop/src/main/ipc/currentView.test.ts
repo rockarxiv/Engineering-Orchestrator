@@ -293,6 +293,18 @@ describe("an item's screen", () => {
     expect(showing.item.reference).toEqual({ value: "PROJ-123", inheritedFrom: feature.key });
     expect(await asTheAgentReadsIt()).toContain(`- Reference: \`PROJ-123\` (inherited from ${feature.key})`);
   });
+
+  it("names the pull request reviewers its work asks, and the feature they are inherited from (EO-742)", async () => {
+    const feature = createTestItem(handle.db, { type: "feature", title: "Rate limiting", stepId: null });
+    const item = createTestItem(handle.db, { type: "story", title: "Add rate limiting", stepId: "todo", parentId: feature.id });
+    updateItem(handle.db, feature.id, { git: { reviewers: ["dave"] } });
+    publish(`/items/${item.id}`);
+
+    const showing = current().view?.showing;
+    if (showing?.kind !== "item") throw new Error("expected an item");
+    expect(showing.item.reviewers).toEqual({ value: ["dave"], inheritedFrom: feature.key });
+    expect(await asTheAgentReadsIt()).toContain(`- Pull request reviewers: dave (inherited from ${feature.key})`);
+  });
 });
 
 describe("a pipeline's screen", () => {
