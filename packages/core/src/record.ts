@@ -3,6 +3,7 @@ import { EntryRulesSchema } from "./entryRules.js";
 import { PipelineStepViewSchema, PipelineViewSchema, StepRouteViewSchema } from "./ipc-schemas.js";
 import { PublishedAgentSchema, PublishedSectionSchema } from "./sections.js";
 import { RecordMemorySchema } from "./memory.js";
+import { MessageSendSchema } from "./messages.js";
 import { SkillSchema } from "./schemas/skills.js";
 import { CommentOptionSchema, parseStoredCommentOptions } from "./schemas/commentOptions.js";
 import { SideCallFailureReasonSchema, SideCallPurposeSchema } from "./side-calls.js";
@@ -674,6 +675,28 @@ export const RecordRebindCommandSchema = z.object({
 });
 export type RecordRebindCommand = z.infer<typeof RecordRebindCommandSchema>;
 
+/**
+ * A message EO on this device owes a person, about an item the record
+ * holds (EO-729): a job's budget trip, found by the desktop that was about
+ * to dispatch the job's item.
+ *
+ * Queued rather than sent, because the guard has already paused the job
+ * and will not fire again: a record that cannot be reached at that moment
+ * must not cost the person the message. The record writes it as it
+ * writes any message about a project it holds (`sendMessageToAdmins`),
+ * under `messageId`, which the device minted — so a replay after a lost
+ * acknowledgement finds the message already written and writes nothing.
+ */
+export const RecordSendMessageCommandSchema = z.object({
+  kind: z.literal("sendMessage"),
+  id: z.string(),
+  /** The item the guard stopped; the command is filed under it like every other. */
+  itemId: z.string(),
+  messageId: z.string(),
+  message: MessageSendSchema,
+});
+export type RecordSendMessageCommand = z.infer<typeof RecordSendMessageCommandSchema>;
+
 export const RecordCommandSchema = z.discriminatedUnion("kind", [
   RecordPinCommandSchema,
   RecordMentionCommandSchema,
@@ -689,6 +712,7 @@ export const RecordCommandSchema = z.discriminatedUnion("kind", [
   RecordWatchCommandSchema,
   RecordSideCallCommandSchema,
   RecordRebindCommandSchema,
+  RecordSendMessageCommandSchema,
 ]);
 export type RecordCommand = z.infer<typeof RecordCommandSchema>;
 export type RecordWatchCommand = z.infer<typeof RecordWatchCommandSchema>;

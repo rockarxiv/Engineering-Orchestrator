@@ -1,24 +1,44 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { HANDLED_MESSAGE_RETENTION_MS, type IpcPayload, type Message, type MessageSend, type Uuid } from "@eo/core";
+import { HANDLED_MESSAGE_RETENTION_MS, type IpcPayload, type Job, type Message, type MessageSend, type Uuid } from "@eo/core";
+import { eq } from "drizzle-orm";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { AttachmentStorage } from "../attachments/storage.js";
 import type { DbHandle } from "../db/client.js";
 import { issueDevice } from "../db/repos/devicesRepo.js";
 import { createPerson } from "../db/repos/peopleRepo.js";
-import { createProject, getMessage, getProject, insertMessage, listOpenMessages, markMessageHandled, sweepHandledMessages } from "../db/repos/index.js";
+import {
+  createProject,
+  getItem,
+  getJob,
+  getMessage,
+  getProject,
+  insertMessage,
+  listCommentsForItem,
+  listOccurrences,
+  listOpenMessages,
+  markMessageHandled,
+  pendingCommands,
+  recordOccurrence,
+  sweepHandledMessages,
+} from "../db/repos/index.js";
 import { setSetting } from "../db/repos/settingsRepo.js";
-import { messages } from "../db/schema.js";
-import { openMigratedTestDb } from "../db/testHelpers.js";
+import { jobs, messages } from "../db/schema.js";
+import { createTestItem, openMigratedTestDb } from "../db/testHelpers.js";
 import { MANAGED_PERSON_ID_KEY } from "../identity/viewer.js";
 import { clearPublishedView } from "../ipc/currentView.js";
 import { listInbox } from "../ipc/domainQueries.js";
 import { clearHandlerRegistry, dispatchIpc } from "../ipc/registry.js";
+import { RUN_NOW_OPTION } from "../jobs/answer.js";
+import { pauseForBudget } from "../jobs/budget.js";
+import { catchUpJob } from "../jobs/catchUp.js";
+import { createJob } from "../jobs/jobs.js";
+import { JOB_MESSAGE_SOURCE } from "../jobs/ownerMessage.js";
 import { fakePlatform } from "../testing/platform.js";
 import { createDeviceRecord, type DeviceRecord } from "./deviceRecord.js";
 import { createLocalRecord } from "./localRecord.js";
-import { serveChanges, serveHandleMessage, serveMessages, serveSendMessage, type ServeRecordContext } from "./serveRecord.js";
+import { serveApply, serveChanges, serveHandleMessage, serveMessages, serveSendMessage, type ServeRecordContext } from "./serveRecord.js";
 import type { RecordTransport } from "./syncStatus.js";
 
 /**
@@ -91,6 +111,8 @@ function desktop(personId: Uuid, name: string): Desktop {
       switch (channel) {
         case "record:changes":
           return { ok: true, data: serveChanges(serving, payload as IpcPayload<"record:changes">) as never };
+        case "record:apply":
+          return { ok: true, data: (await serveApply(serving, { ...(payload as IpcPayload<"record:apply">), deviceId })) as never };
         case "record:sendMessage":
           return { ok: true, data: serveSendMessage(serving, { ...(payload as IpcPayload<"record:sendMessage">), deviceId }) as never };
         case "record:handleMessage":
@@ -419,5 +441,152 @@ describe("a message the record swept while a recipient's desktop was away", () =
     await annaLaptop.record.sync();
 
     expect(listOpenMessages(annaLaptop.handle.db, [annaId])).toHaveLength(2);
+  });
+});
+
+/**
+ * A job's guards about a project the record holds (EO-729): written on
+ * the record, to the job's owner rather than to each admin, and answered
+ * there — which is where that job's occurrences are.
+ */
+describe("a job's guard about a project the organisation's record holds", () => {
+  const MONDAY_0800 = Date.UTC(2026, 5, 1, 6, 0);
+
+  /** A weekly job on the record's project, owned by Carl — who is no admin — and made before its Monday. */
+  async function carlsJob(): Promise<Job> {
+    const projectId = await organisationProject();
+    const created = createJob(recordDb.db, {
+      projectId,
+      name: "Monday report",
+      trigger: { kind: "schedule", schedule: { kind: "weekly", weekday: 1, hour: 8, minute: 0 }, timeZone: "Europe/Berlin", catchUpWithinMinutes: 180 },
+      pipelineId: "default",
+      template: { type: "developer:story", title: "{{job}} for {{date}}", body: null },
+    });
+    if (!created.ok) throw new Error(created.problem);
+    recordDb.db.update(jobs).set({ ownerId: carlId, createdAt: MONDAY_0800 - 60_000 }).where(eq(jobs.id, created.job.id)).run();
+    return getJob(recordDb.db, created.job.id as Uuid)!;
+  }
+
+  it("is a message on the record to the job's owner, which reaches only their desktop, and running it from there fires on the record", async () => {
+    const job = await carlsJob();
+
+    // The record's own scheduler skips the Monday it was not running for.
+    catchUpJob(recordDb.db, job, { now: MONDAY_0800 + 4 * 60 * 60_000 });
+
+    const written = onTheRecord();
+    expect(written).toHaveLength(1);
+    expect(written[0]).toMatchObject({ recipientId: carlId, jobId: job.id, projectId: job.projectId, source: JOB_MESSAGE_SOURCE.skipped });
+    expect(written[0]?.body).toContain("Monday report");
+    expect(listCommentsForItem(recordDb.db, job.threadItemId as Uuid)).toEqual([]);
+
+    await syncAll();
+    expect(listInbox(carl.handle.db).messages.map((message) => message.id)).toEqual([written[0]?.id]);
+    expect(heldOn(annaDesk)).toEqual([]);
+    expect(heldOn(ben)).toEqual([]);
+
+    const answered = await carl.record.handleMessage({ messageId: written[0]!.id, how: "answered", answer: RUN_NOW_OPTION });
+
+    expect(answered.ok).toBe(true);
+    expect(listOccurrences(recordDb.db, job.id as Uuid).map((occurrence) => occurrence.status)).toEqual(["fired", "skipped"]);
+  });
+
+  /** An item the job filed, on the record and pulled down to every desktop. */
+  async function filedItem(job: Job) {
+    const item = createTestItem(recordDb.db, { type: "story", title: "Monday report for 2026-06-01", stepId: "todo", projectId: job.projectId as Uuid });
+    const occurrence = recordOccurrence(recordDb.db, { jobId: job.id as Uuid, dueAt: MONDAY_0800, status: "fired", firedAt: MONDAY_0800, itemId: item.id });
+    await syncAll();
+    const there = getItem(annaDesk.handle.db, item.id);
+    if (there === undefined) throw new Error("the item did not reach Anna's desktop");
+    return { item: there, occurrence };
+  }
+
+  it("is written on the record, to the owner, when a desktop's run trips the job's budget", async () => {
+    const job = await carlsJob();
+    const { item, occurrence } = await filedItem(job);
+
+    // Anna's desktop ran the leased item and found it over budget.
+    pauseForBudget(annaDesk.handle.db, { job, occurrence, budgetCents: 400, spentCents: 500 }, item);
+    await annaDesk.record.sync();
+
+    const written = onTheRecord();
+    expect(written).toHaveLength(1);
+    expect(written[0]).toMatchObject({ recipientId: carlId, jobId: job.id, projectId: job.projectId, source: JOB_MESSAGE_SOURCE.budget });
+    expect(written[0]?.body).toContain(`"Monday report" is paused`);
+    expect(written[0]?.body).toContain(item.key);
+    // Carl's, not Anna's: nothing kept on the desktop that sent it.
+    expect(heldOn(annaDesk)).toEqual([]);
+    await carl.record.sync();
+    expect(heldOn(carl)).toEqual([written[0]?.id]);
+  });
+
+  it("still reaches the owner when the record could not be reached at the trip, once it can", async () => {
+    const job = await carlsJob();
+    const { item, occurrence } = await filedItem(job);
+    annaDesk.online = false;
+
+    pauseForBudget(annaDesk.handle.db, { job, occurrence, budgetCents: 400, spentCents: 500 }, item);
+    await annaDesk.record.sync();
+
+    // Nothing on the record yet, and the message is not lost: it waits in
+    // the desktop's queue of commands for the record.
+    expect(onTheRecord()).toEqual([]);
+    expect(pendingCommands(annaDesk.handle.db).map((command) => command.kind)).toEqual(["sendMessage"]);
+
+    annaDesk.online = true;
+    await annaDesk.record.sync();
+    await annaDesk.record.sync();
+
+    const written = onTheRecord();
+    expect(written.map((message) => [message.recipientId, message.source])).toEqual([[carlId, JOB_MESSAGE_SOURCE.budget]]);
+    expect(pendingCommands(annaDesk.handle.db)).toEqual([]);
+    await carl.record.sync();
+    expect(listInbox(carl.handle.db).messages.map((message) => message.id)).toEqual([written[0]?.id]);
+  });
+
+  it("is written once, however many times a lost acknowledgement makes the desktop send it", async () => {
+    const job = await carlsJob();
+    const { item, occurrence } = await filedItem(job);
+    annaDesk.online = false;
+    pauseForBudget(annaDesk.handle.db, { job, occurrence, budgetCents: 400, spentCents: 500 }, item);
+    const queued = pendingCommands(annaDesk.handle.db).map((entry) => entry.command);
+
+    // The same command arriving twice, as it does when the first answer
+    // never got back to the desktop.
+    const deviceId = issueDevice(recordDb.db, { personId: annaId, name: "anna-replay", tokenHash: "hash-anna-replay", secretsKeyHash: null }).id;
+    const first = await serveApply(serving, { deviceId, commands: queued });
+    const second = await serveApply(serving, { deviceId, commands: queued });
+
+    expect(first.results.map((result) => result.applied)).toEqual([true]);
+    expect(second.results.map((result) => result.applied)).toEqual([true]);
+    expect(onTheRecord()).toHaveLength(1);
+  });
+
+  it("is not written again by a replay that arrives after the owner handled it and retention swept it", async () => {
+    const job = await carlsJob();
+    const { item, occurrence } = await filedItem(job);
+    annaDesk.online = false;
+    pauseForBudget(annaDesk.handle.db, { job, occurrence, budgetCents: 400, spentCents: 500 }, item);
+    const queued = pendingCommands(annaDesk.handle.db).map((entry) => entry.command);
+    const deviceId = issueDevice(recordDb.db, { personId: annaId, name: "anna-replay", tokenHash: "hash-anna-replay", secretsKeyHash: null }).id;
+
+    // The record writes it, and its answer never reaches Anna's desktop.
+    await serveApply(serving, { deviceId, commands: queued });
+    const written = onTheRecord();
+    expect(written).toHaveLength(1);
+    // Carl handles it on his desktop, and a week on the record sweeps it.
+    await carl.record.sync();
+    const dismissed = await carl.record.handleMessage({ messageId: written[0]!.id, how: "dismissed", answer: null });
+    if (!dismissed.ok) throw new Error(dismissed.problem);
+    sweepHandledMessages(recordDb.db, (dismissed.message.handledAt as number) + HANDLED_MESSAGE_RETENTION_MS + 1);
+    expect(onTheRecord()).toEqual([]);
+
+    // Anna's desktop comes back and the drain sends what it still holds.
+    annaDesk.online = true;
+    await annaDesk.record.sync();
+
+    expect(pendingCommands(annaDesk.handle.db)).toEqual([]);
+    expect(onTheRecord()).toEqual([]);
+    await carl.record.sync();
+    expect(listInbox(carl.handle.db).messages).toEqual([]);
   });
 });

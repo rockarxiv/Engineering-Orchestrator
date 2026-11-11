@@ -117,22 +117,20 @@ describe("jobs:runNow", () => {
   });
 });
 
-describe("a guard on a job's thread", () => {
-  it("reaches the inbox the app actually draws", async () => {
-    // Not `openMentionsForHuman` but the query the Inbox screen calls,
-    // which scopes by project and reads the item back — the thread is
-    // off-board, and off-board must not mean invisible.
+describe("a guard about a job", () => {
+  it("reaches the inbox the app actually draws, as a message to the owner", async () => {
+    // Not the messages table but the query the Inbox screen calls.
     const job = (await create()).job!;
     // The pipeline goes out from under a job that was valid when it was
-    // made: the guard case with no item to post on, which is the whole
-    // reason a job owns a thread.
+    // made: the guard case with no item to comment on.
     archivePipeline(handle.db, "default");
 
     runJobNowCommand(handle.db, undefined, { jobId: job.id });
 
     const inbox = listInbox(handle.db, null);
-    expect(inbox.items.map((entry) => entry.itemId)).toEqual([job.threadItemId]);
-    expect(inbox.items[0]?.authorName).toBe("EO");
+    expect(inbox.items).toEqual([]);
+    expect(inbox.messages.map((message) => [message.jobId, message.source])).toEqual([[job.id, "job_failed"]]);
+    expect(inbox.messages[0]?.body).toContain(job.name);
     expect(inbox.summary.openCount).toBe(1);
   });
 });

@@ -6,7 +6,7 @@ import { createRun, listAgents, postComment, setSetting, updateRun } from "./db/
 import { createTestItem, openMigratedTestDb } from "./db/testHelpers.js";
 import { DND_KEY } from "./ipc/domainCommands.js";
 import { listInbox } from "./ipc/domainQueries.js";
-import { createInboxNotifier, notificationFor, notificationForJobGuard, notificationForMessage, shouldInterrupt } from "./notifications.js";
+import { createInboxNotifier, notificationFor, notificationForMessage } from "./notifications.js";
 import { dismissMessageCommand, sendMessage } from "./messages/messages.js";
 
 let handle: DbHandle;
@@ -322,26 +322,7 @@ describe("inbox items", () => {
   });
 });
 
-describe("what a job's guard says when it interrupts somebody (EO-306)", () => {
-  /** A guard about a job whose name is long enough to push the sentence past any glance. */
-  const longGuard = {
-    title: "Weekly commercial performance and pipeline review was skipped",
-    body: `"Weekly commercial performance and pipeline review for the northern region" was skipped: EO was not open within 3 hours of 08:00. Run it now?`,
-  };
-
-  it("delivers the thread's sentence whole, however long it is", () => {
-    expect(longGuard.body.length).toBeGreaterThan(140);
-
-    // The requirement is the same text, and this is the case where the
-    // two could differ. Truncated at 140 characters what falls off the
-    // end is "Run it now?" — the only actionable thing in it — and the
-    // reason before it, leaving a notification that says a thing
-    // happened and neither what nor what to do.
-    expect(notificationForJobGuard(longGuard)).toEqual(longGuard);
-    expect(notificationForJobGuard(longGuard).body).toContain("Run it now?");
-    expect(notificationForJobGuard(longGuard).body).toContain("was not open within 3 hours");
-  });
-
+describe("what an inbox mention says when it interrupts somebody", () => {
   it("still truncates an inbox mention, which is somebody else's arbitrary text", () => {
     // The difference is deliberate: an inbox notification carries a
     // comment an agent or a person wrote, of no bounded length, with the
@@ -350,18 +331,5 @@ describe("what a job's guard says when it interrupts somebody (EO-306)", () => {
 
     expect(long.body.length).toBe(140);
     expect(long.body.endsWith("…")).toBe(true);
-  });
-});
-
-describe("Do Not Disturb", () => {
-  it("silences a guard without hiding it", () => {
-    expect(shouldInterrupt(handle.db)).toBe(true);
-
-    setSetting(handle.db, DND_KEY, true);
-
-    // The comment is still posted and the mention still counts; only the
-    // interruption is withheld. Silencing an alert must not also hide the
-    // fact.
-    expect(shouldInterrupt(handle.db)).toBe(false);
   });
 });

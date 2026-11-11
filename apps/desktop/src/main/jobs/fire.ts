@@ -3,7 +3,7 @@ import type { Db } from "../db/client.js";
 import { createItem, getPipeline, getProject, recordOccurrence } from "../db/repos/index.js";
 import { isReplica } from "../db/recordRole.js";
 import { fillTemplate } from "./template.js";
-import { postToJobThread } from "./thread.js";
+import { JOB_MESSAGE_SOURCE, messageJobOwner } from "./ownerMessage.js";
 
 /**
  * Firing a job (EO-304, `ARCHITECTURE.md`, "What a job records").
@@ -13,10 +13,9 @@ import { postToJobThread } from "./thread.js";
  * in memory, so a desktop that closed forgot what it had done — and it
  * is what the item's provenance is read back through.
  *
- * Every way of not firing ends in a comment on the job's thread
- * (invariant #8). That is the whole reason a job owns a thread: at the
- * moment a firing fails there is no item to post on, and EO must not
- * invent a second channel to say so (invariant #4).
+ * Every way of not firing ends in a message to the job's owner
+ * (invariant #8, EO-729): at the moment a firing fails there is no item
+ * to comment on, so the person who must act is told directly.
  */
 
 export interface FireOptions {
@@ -81,7 +80,7 @@ export interface FireResult {
   occurrence: JobOccurrence | null;
   /** Null when the occurrence is `failed`. */
   item: Item | null;
-  /** The sentence the thread was told, or null when it fired. */
+  /** The sentence the owner was told, or null when it fired. */
   problem: string | null;
   /**
    * The pipeline's entry rules refused what this firing would have filed
@@ -143,10 +142,11 @@ export function fireJob(db: Db, job: Job, options: FireOptions = {}): FireResult
    * machine that handed it over: the record files this now, and the work
    * still runs here when the record leases it (ARCHITECTURE.md, "Where a job runs").
    *
-   * The thread is told either way (invariant #8) and told `staysHere`:
+   * The person is told either way (invariant #8), and told here:
    * it is an account of what *this machine* did, like the drain's note
    * about its own queue, and the record has its own view of the same
-   * job.
+   * job — so the message is the person in front of this machine's,
+   * about no project, and never goes to the record.
    */
   const project = job.projectId === null ? undefined : getProject(db, job.projectId as Uuid);
   const notOurs =
@@ -156,7 +156,7 @@ export function fireJob(db: Db, job: Job, options: FireOptions = {}): FireResult
         ? "This project is on your organisation's record now, so the record files its work rather than this machine."
         : null;
   if (notOurs !== null) {
-    postToJobThread(db, job, `EO did not run "${job.name}". ${notOurs}`, { staysHere: true });
+    messageJobOwner(db, job, `EO did not run "${job.name}". ${notOurs}`, { source: JOB_MESSAGE_SOURCE.declined, staysHere: true });
     return { occurrence: null, item: null, problem: notOurs };
   }
 
@@ -219,9 +219,9 @@ export function fireJob(db: Db, job: Job, options: FireOptions = {}): FireResult
   } catch (error) {
     if (!(error instanceof Refused)) throw error; // a genuine fault, not a guard
     // Outside the rolled-back transaction, so the record of the failure
-    // survives the failure. `reason` and the comment carry the same
+    // survives the failure. `reason` and the message carry the same
     // sentence on purpose: the row is what the history lists and the
-    // comment is what reaches the person, and two wordings would be two
+    // message is what reaches the person, and two wordings would be two
     // accounts of one event.
     const occurrence = recordOccurrence(db, {
       jobId: job.id as Uuid,
@@ -230,7 +230,7 @@ export function fireJob(db: Db, job: Job, options: FireOptions = {}): FireResult
       firedAt: options.firedAt ?? Date.now(),
       reason: error.reason,
     });
-    postToJobThread(db, job, `"${job.name}" could not run. ${error.reason}`);
+    messageJobOwner(db, job, `"${job.name}" could not run. ${error.reason}`, { source: JOB_MESSAGE_SOURCE.failed });
     return { occurrence, item: null, problem: error.reason, ...(error.refusedAtEntry ? { refusedAtEntry: true as const } : {}) };
   }
 }

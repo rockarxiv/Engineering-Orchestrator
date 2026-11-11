@@ -23,7 +23,7 @@ import {
   updateRun,
 } from "./db/repos/index.js";
 import { items, keyCounters, pipelines } from "./db/schema.js";
-import { createTestItem, openMigratedTestDb } from "./db/testHelpers.js";
+import { createTestItem, messagesAboutJob, openMigratedTestDb } from "./db/testHelpers.js";
 import { openAssistConversation, postAssistReply } from "./roles/assist.js";
 import { ASSIST_ACTION } from "./roles/conversationSteps.js";
 import { applyDiscussionProposal, applyNewItem } from "./roles/discussion.js";
@@ -409,7 +409,7 @@ describe("a job", () => {
     expect(updateJob(handle.db, { jobId: made.job.id as Uuid, name: "Renamed" }).ok).toBe(true);
   });
 
-  it("fails an occurrence with the sentence when a firing is refused, tells the thread, and fires again later", () => {
+  it("fails an occurrence with the sentence when a firing is refused, tells the owner, and fires again later", () => {
     const made = job({ template: { ...template, body: "Written." } });
     if (!made.ok) throw new Error(made.problem);
     setRules("default", [{ kind: "workspace" }]);
@@ -419,7 +419,8 @@ describe("a job", () => {
     const sentence = '"Delivery" needs these before work can enter it: a workspace.';
     expect(fired).toMatchObject({ item: null, problem: sentence });
     expect(fired.occurrence).toMatchObject({ status: "failed", reason: sentence });
-    expect(listCommentsForItem(handle.db, made.job.threadItemId as Uuid).map((comment) => comment.body).join()).toContain(sentence);
+    expect(messagesAboutJob(handle.db, made.job.id).map((message) => message.body).join()).toContain(sentence);
+    expect(listCommentsForItem(handle.db, made.job.threadItemId as Uuid)).toEqual([]);
 
     setRules("default", []);
     expect(fireJob(handle.db, made.job, { dueAt: 2 }).occurrence?.status).toBe("fired");

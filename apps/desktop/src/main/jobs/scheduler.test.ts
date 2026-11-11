@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DbHandle } from "../db/client.js";
 import { listItemsForProject, listOccurrences } from "../db/repos/index.js";
 import { jobs } from "../db/schema.js";
-import { openMigratedTestDb } from "../db/testHelpers.js";
+import { messagesAboutJob, openMigratedTestDb } from "../db/testHelpers.js";
 import { createJob } from "./jobs.js";
 import { runJobTick, startJobScheduler, type JobTickResult } from "./scheduler.js";
 import { receiveWebhook } from "./webhook.js";
@@ -160,17 +160,18 @@ describe("the job scheduler's loop", () => {
     }
   });
 
-  it("interrupts the person through the notifier it was handed", () => {
+  it("tells the owner of a skipped occurrence in a message, at launch", () => {
     // Four hours late, so the occurrence is skipped rather than caught
-    // up — and showing an OS notification is the machine's job, handed
-    // in by the composition root (KAN-127).
+    // up. The inbox notifier interrupts for the message like any other
+    // (EO-729), so the scheduler is handed no notifier of its own.
     vi.setSystemTime(MONDAY_0800 + 4 * 60 * 60_000);
-    scheduleJob("Monday report");
-    const notified: string[] = [];
+    const job = scheduleJob("Monday report");
 
-    const stop = startJobScheduler(handle.db, { notify: (guard) => notified.push(guard.body) });
+    const stop = startJobScheduler(handle.db);
     try {
-      expect(notified).toEqual([`"Monday report" was skipped: EO was not open within 3 hours of 08:00. Run it now?`]);
+      expect(messagesAboutJob(handle.db, job.id).map((message) => message.body)).toEqual([
+        `"Monday report" was skipped: EO was not open within 3 hours of 08:00. Run it now?`,
+      ]);
     } finally {
       stop();
     }

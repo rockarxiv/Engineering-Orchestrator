@@ -12,7 +12,6 @@ import {
   markJobDeleted,
   resolveItemType,
   setItemArchived,
-  updateItem,
   updateJobRow,
   type ItemTypeName,
   type UpdateJobInput,
@@ -20,15 +19,16 @@ import {
 } from "../db/repos/index.js";
 import { compileSchedule } from "../schedule/cron.js";
 import { isKnownTimeZone } from "../schedule/timeZone.js";
-import { jobThreadTitle, openJobThread } from "./thread.js";
+import { openJobThread } from "./thread.js";
 
 /**
  * Making a job, and being done with one (EO-304,
  * `ARCHITECTURE.md`, "What a job records").
  *
  * Above the repository because neither act is a question about the
- * `jobs` table: creating a job creates the off-board item it will post
- * its guards on, and deleting one archives that item rather than
+ * `jobs` table: creating a job creates its off-board thread item (whose
+ * guards are messages to the owner since EO-729, so nothing writes to
+ * it), and deleting one archives that item rather than
  * deleting it — what was said on a thread outlives the definition that
  * owned it, exactly as an archived item keeps its runs.
  */
@@ -75,9 +75,7 @@ export function createJob(db: Db, input: CreateJobInput): CreateJobResult {
   const template = input.template ?? null;
 
   if (input.trigger.kind === "from-discussion") {
-    // Its thread is the conversation itself (ARCHITECTURE.md, "What a job records"). The guard
-    // channel a
-    // job needs is the one the conversation already is, and a second
+    // Its thread is the conversation itself (ARCHITECTURE.md, "What a job records"): a second
     // thread beside it would be two places to look for one exchange.
     const conversation = getItem(db, input.trigger.conversationId as Uuid);
     if (!conversation) return { ok: false, problem: "That conversation no longer exists, so there is nothing to record the item as coming from." };
@@ -237,11 +235,9 @@ export interface EditJobInput extends UpdateJobInput {
  * by design (ARCHITECTURE.md, "Trigger kinds"); the only thing a person can meaningfully do with
  * one is delete it, which is what the page offers instead.
  *
- * **Renaming retitles the thread.** The thread is titled after the job
- * because being the job's own place to post is the whole of what it is,
- * and a thread still called "Job: Monday report" under a job now called
- * "Weekly digest" is two names for one thing — visibly so the moment
- * `{{job}}` expands to the new one in the next item it files.
+ * Renaming touches nothing but the job (EO-729): its guards are messages
+ * that name it as it is when they are sent, and nothing writes to a job
+ * thread any more.
  */
 export function updateJob(db: Db, input: EditJobInput): CreateJobResult {
   const job = getJob(db, input.jobId);
@@ -267,7 +263,7 @@ export function updateJob(db: Db, input: EditJobInput): CreateJobResult {
   if (fireable !== null) return { ok: false, problem: fireable };
   // Only where the save touches what the rules read, so a rule added
   // later cannot stop somebody renaming a job or changing its budget. A
-  // job left as it is fails at the firing, with the sentence on its thread.
+  // job left as it is fails at the firing, with the sentence in a message to its owner.
   if (input.trigger !== undefined || input.pipelineId !== undefined || input.template !== undefined) {
     const refused = templateRefusal(db, job.projectId as Uuid | null, trigger, pipelineId, template);
     if (refused !== null) return { ok: false, problem: refused };
@@ -275,7 +271,6 @@ export function updateJob(db: Db, input: EditJobInput): CreateJobResult {
 
   const updated = updateJobRow(db, input.jobId, { ...input, name, trigger, pipelineId, template });
   if (!updated) return { ok: false, problem: "That job no longer exists." };
-  if (name !== job.name) updateItem(db, updated.threadItemId as Uuid, { title: jobThreadTitle(name) });
   return { ok: true, job: updated };
 }
 

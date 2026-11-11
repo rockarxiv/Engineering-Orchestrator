@@ -19,7 +19,7 @@ import {
   setJobPaused,
 } from "../db/repos/index.js";
 import { pipelines } from "../db/schema.js";
-import { openMigratedTestDb } from "../db/testHelpers.js";
+import { messagesAboutJob, openMigratedTestDb } from "../db/testHelpers.js";
 import { createJob } from "./jobs.js";
 import { MAX_HELD_EVENTS, WEBHOOK_PAYLOAD_NOTE, receiveWebhook, releaseHeldWebhookEvents, webhookAnswerWord } from "./webhook.js";
 import { mintWebhookSecret, signWebhook } from "./webhookSignature.js";
@@ -93,9 +93,16 @@ function deliver(body: string, options: DeliveryOptions = {}) {
   );
 }
 
-/** Everything on the job's thread that EO said — what a guard reaching a person looks like. */
-function threadComments(job: Job): string[] {
-  return listCommentsForItem(handle.db, job.threadItemId as Uuid).map((comment) => comment.body);
+/**
+ * Everything the job's guards told its owner — what a guard reaching a
+ * person looks like (EO-729). Asserts on the way that none of it went to
+ * the job's thread, and every one is the owner's and about the job.
+ */
+function ownerMessages(job: Job): string[] {
+  expect(listCommentsForItem(handle.db, job.threadItemId as Uuid)).toEqual([]);
+  const told = messagesAboutJob(handle.db, job.id);
+  for (const message of told) expect(message).toMatchObject({ recipientId: job.ownerId, jobId: job.id });
+  return told.map((message) => message.body);
 }
 
 function itemCount(): number {
@@ -178,10 +185,10 @@ describe("the same delivery twice", () => {
     expect(second.outcome).toBe("deduplicated");
     expect(itemCount()).toBe(1);
     expect(listJobEvents(handle.db, job.id as Uuid).map((event) => event.outcome)).toEqual(["deduplicated", "created"]);
-    // A guard that fired when no item exists still ends in a comment
-    // (invariant #8), on the one channel there is (invariant #4).
-    expect(threadComments(job).some((body) => body.includes("had this event already"))).toBe(true);
-    expect(openMentionsForHuman(handle.db).length).toBeGreaterThan(0);
+    // A guard that fired when no item exists ends in a message to the
+    // person who must act (invariant #8), and in no comment.
+    expect(ownerMessages(job).some((body) => body.includes("had this event already"))).toBe(true);
+    expect(messagesAboutJob(handle.db, job.id).map((message) => message.source)).toEqual(["job_webhook"]);
   });
 
   it("recognises a retry by the sender's own id even when the body is re-rendered", async () => {
@@ -199,7 +206,7 @@ describe("the same delivery twice", () => {
 });
 
 describe("a delivery EO will not believe", () => {
-  it("records a bad signature, answers 401, and says nothing to the thread", async () => {
+  it("records a bad signature, answers 401, and says nothing to the owner", async () => {
     const job = webhookJob();
 
     const answer = await deliver('{"id":"evt-1"}', { secret: mintWebhookSecret() });
@@ -213,11 +220,11 @@ describe("a delivery EO will not believe", () => {
     // event, and storing it would let a stranger grow the record.
     expect(events[0]?.payload).toBe("");
     // Never posted, so an attacker cannot fill an inbox from outside.
-    expect(threadComments(job)).toEqual([]);
+    expect(ownerMessages(job)).toEqual([]);
     expect(openMentionsForHuman(handle.db)).toEqual([]);
   });
 
-  it("records a stale timestamp as a replay, answers 401, and says nothing to the thread", async () => {
+  it("records a stale timestamp as a replay, answers 401, and says nothing to the owner", async () => {
     const job = webhookJob();
     const stale = T - WEBHOOK_TIMESTAMP_TOLERANCE_MS - 1;
 
@@ -229,7 +236,7 @@ describe("a delivery EO will not believe", () => {
     expect(answer.status).toBe(401);
     expect(answer.outcome).toBe("rejected_replay");
     expect(listJobEvents(handle.db, job.id as Uuid).map((event) => event.outcome)).toEqual(["rejected_replay"]);
-    expect(threadComments(job)).toEqual([]);
+    expect(ownerMessages(job)).toEqual([]);
   });
 
   it("answers both refusals with the same word, so neither says which half failed", () => {
@@ -246,7 +253,7 @@ describe("a delivery EO will not believe", () => {
     expect(itemCount()).toBe(0);
     // Signed by somebody holding the secret, so the body is kept in full.
     expect(listJobEvents(handle.db, job.id as Uuid)[0]?.payload).toBe("not json at all");
-    expect(threadComments(job).some((body) => body.includes("could not read"))).toBe(true);
+    expect(ownerMessages(job).some((body) => body.includes("could not read"))).toBe(true);
   });
 
   it("says so when the declared event key is not in the payload", async () => {
@@ -305,7 +312,7 @@ describe("a burst beyond the cap", () => {
     // One comment for the burst rather than thirty: the queue is spoken
     // for once and the count lives on the Events tab (ARCHITECTURE.md, "The inbox, the archive and
     // jobs").
-    expect(threadComments(job).filter((body) => body.includes("is waiting"))).toHaveLength(1);
+    expect(ownerMessages(job).filter((body) => body.includes("is waiting"))).toHaveLength(1);
 
     // An hour on, ten more — and exactly ten, because the ten just
     // filed are themselves inside the hour that follows.
@@ -361,7 +368,7 @@ describe("a job that cannot file work this minute", () => {
     expect(answer.status).toBe(202);
     expect(answer.outcome).toBe("held");
     expect(itemCount()).toBe(0);
-    expect(threadComments(job).some((body) => body.includes("paused"))).toBe(true);
+    expect(ownerMessages(job).some((body) => body.includes("paused"))).toBe(true);
 
     setJobPaused(handle.db, job.id as Uuid, null);
     await releaseHeldWebhookEvents(handle.db, { storage, now: T + 2000 });
@@ -377,7 +384,7 @@ describe("a job that cannot file work this minute", () => {
     await deliver('{"id":"evt-2"}', { now: T + 1000 });
 
     expect(listJobEvents(handle.db, job.id as Uuid).filter((event) => event.outcome === "held")).toHaveLength(2);
-    expect(threadComments(job).filter((body) => body.includes("has been deleted"))).toHaveLength(1);
+    expect(ownerMessages(job).filter((body) => body.includes("has been deleted"))).toHaveLength(1);
     // The tick passes over it in silence rather than writing a row a
     // minute about a state that has not changed.
     await releaseHeldWebhookEvents(handle.db, { storage, now: T + 2000 });
@@ -395,7 +402,7 @@ describe("a job that cannot file work this minute", () => {
 
     expect(answer.status).toBe(429);
     expect(answer.outcome).toBe("over_cap");
-    expect(threadComments(job).some((body) => body.includes("was refused"))).toBe(true);
+    expect(ownerMessages(job).some((body) => body.includes("was refused"))).toBe(true);
   });
 });
 
@@ -412,7 +419,7 @@ describe("a payload a pipeline's entry rules refuse (EO-610)", () => {
     return job;
   }
 
-  it("creates nothing, fails the occurrence with the sentence, tells the thread, and takes the next event", async () => {
+  it("creates nothing, fails the occurrence with the sentence, tells the owner, and takes the next event", async () => {
     const job = mappedJob();
 
     const answer = await deliver('{"id":"evt-1","text":""}', { now: T });
@@ -420,7 +427,7 @@ describe("a payload a pipeline's entry rules refuse (EO-610)", () => {
     expect(answer).toMatchObject({ status: 422, outcome: "refused", itemId: null });
     expect(itemCount()).toBe(0);
     expect(listOccurrences(handle.db, job.id as Uuid)).toEqual([expect.objectContaining({ status: "failed", reason: WANTS_A_BODY })]);
-    expect(threadComments(job).some((body) => body.includes(WANTS_A_BODY))).toBe(true);
+    expect(ownerMessages(job).some((body) => body.includes(WANTS_A_BODY))).toBe(true);
     expect(webhookAnswerWord("refused")).toBe("refused");
 
     expect(await deliver('{"id":"evt-2","text":"Deployed."}', { now: T + 1000 })).toMatchObject({ status: 202, outcome: "created" });

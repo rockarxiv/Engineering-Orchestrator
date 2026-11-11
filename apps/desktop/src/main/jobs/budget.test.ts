@@ -2,10 +2,10 @@ import type { Job, JobTrigger, Uuid } from "@eo/core";
 import { eq } from "drizzle-orm";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { DbHandle } from "../db/client.js";
-import { createRun, getJob, listCommentsForItem, listMentionsForComment, listOccurrences, openMentionsForHuman, updateRun } from "../db/repos/index.js";
+import { createRun, getJob, listCommentsForItem, listOccurrences, updateRun } from "../db/repos/index.js";
 import { items, jobs } from "../db/schema.js";
-import { createTestItem, openMigratedTestDb } from "../db/testHelpers.js";
-import { catchUpJob, type JobGuardNotification } from "./catchUp.js";
+import { createTestItem, messagesAboutJob, openMigratedTestDb } from "../db/testHelpers.js";
+import { catchUpJob } from "./catchUp.js";
 import { jobCostCents, occurrenceOverBudget, pauseJob, resumeJob } from "./budget.js";
 import { fireJob } from "./fire.js";
 import { createJob } from "./jobs.js";
@@ -69,17 +69,16 @@ function reread(one: Job): Job {
   return row;
 }
 
-function threadComments(one: Job) {
-  return listCommentsForItem(handle.db, one.threadItemId as Uuid);
+/** What the job's guards told its owner (EO-729). */
+function ownerMessages(one: Job) {
+  return messagesAboutJob(handle.db, one.id);
 }
 
 describe("a paused job", () => {
   it("fires nothing, and records what it did not do", () => {
     const report = job();
     pauseJob(handle.db, report.id as Uuid, DAY_ONE - 30_000);
-    const notified: JobGuardNotification[] = [];
-
-    const result = catchUpJob(handle.db, reread(report), { now: DAY_ONE + TEN_MINUTES, notify: (one) => notified.push(one) });
+    const result = catchUpJob(handle.db, reread(report), { now: DAY_ONE + TEN_MINUTES });
 
     expect(result.fired).toEqual([]);
     expect(result.skipped).toHaveLength(1);
@@ -90,12 +89,12 @@ describe("a paused job", () => {
     expect(occurrences[0]?.firedAt).toBeNull();
     // Nothing was filed, which is the whole point of the row.
     expect(occurrences[0]?.itemId).toBeNull();
-    // A pause is a state the person chose; they are not interrupted
-    // about it every morning.
-    expect(notified).toEqual([]);
+    // A pause is a state the person chose; they are told once, below,
+    // and not every morning.
+    expect(ownerMessages(report)).toHaveLength(1);
   });
 
-  it("says so on its thread, and mentions the owner — once, however many mornings pass", () => {
+  it("tells the owner in a message, with no comment — once, however many mornings pass", () => {
     const report = job();
     pauseJob(handle.db, report.id as Uuid, DAY_ONE - 30_000);
 
@@ -103,12 +102,12 @@ describe("a paused job", () => {
 
     // Three mornings came round; three rows say so.
     expect(result.skipped).toHaveLength(3);
-    const comments = threadComments(report);
-    expect(comments).toHaveLength(1);
-    expect(comments[0]?.body).toContain("paused");
-    expect(comments[0]?.body).toContain("Morning report");
-    expect(listMentionsForComment(handle.db, comments[0]!.id as Uuid)).toHaveLength(1);
-    expect(openMentionsForHuman(handle.db).length).toBeGreaterThan(0);
+    const messages = ownerMessages(report);
+    expect(messages).toHaveLength(1);
+    expect(messages[0]?.body).toContain("paused");
+    expect(messages[0]?.body).toContain("Morning report");
+    expect(messages[0]).toMatchObject({ recipientId: report.ownerId, jobId: report.id, source: "job_skipped" });
+    expect(listCommentsForItem(handle.db, report.threadItemId as Uuid)).toEqual([]);
   });
 
   it("refuses a press as well as a tick, whichever door it came through", () => {
@@ -123,7 +122,7 @@ describe("a paused job", () => {
     expect(occurrences).toHaveLength(1);
     expect(occurrences[0]?.status).toBe("failed");
     // The press was answered where a person can see it (invariant #8).
-    expect(threadComments(report)).toHaveLength(1);
+    expect(ownerMessages(report).map((message) => message.source)).toEqual(["job_failed"]);
   });
 });
 
@@ -157,7 +156,7 @@ describe("resuming a job", () => {
     catchUpJob(handle.db, reread(report), { now: DAY_THREE + TEN_MINUTES });
 
     // A second pause is a second decision, not the first one repeating.
-    expect(threadComments(report).filter((comment) => comment.body.includes("paused"))).toHaveLength(2);
+    expect(ownerMessages(report).filter((message) => message.body.includes("paused"))).toHaveLength(2);
   });
 });
 

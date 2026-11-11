@@ -344,7 +344,7 @@ export function runJobNowCommand(db: Db, engine: EngineHandle | undefined, input
     // its next tick, the same as any other way an item arrives.
     engine?.notifyStateChange();
   } else {
-    // The guard posted on the thread, so the thread changed.
+    // A refusal wrote a `failed` occurrence (its message pushes `messages:changed` itself).
     emitPush("items:changed", { itemId: job.threadItemId });
   }
   return {

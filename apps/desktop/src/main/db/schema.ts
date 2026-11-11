@@ -3314,3 +3314,18 @@ export const messages = sqliteTable(
   },
   (table) => [index("idx_messages_recipient_open").on(table.recipientId, table.handledAt), index("idx_messages_source_subject").on(table.source, table.subject)],
 );
+
+/**
+ * The messages a queued `sendMessage` record command has written here
+ * (EO-729, migration 0165), by the id the sending desktop minted.
+ *
+ * How the record knows a replay after a lost acknowledgement. Not the
+ * message row: a handled message is swept after 7 days or past the
+ * 100-handled cap, and a replay after that would write it again, open.
+ * Never swept itself — a row is one guard that fired, and a desktop may
+ * be away for as long as it likes before it replays.
+ */
+export const queuedMessageReceipts = sqliteTable("queued_message_receipts", {
+  messageId: text("message_id").primaryKey(),
+  receivedAt: integer("received_at").notNull(),
+});

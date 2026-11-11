@@ -5,7 +5,7 @@ import { compileSchedule, nextOccurrenceAfter, type CronFields } from "../schedu
 import { formatZonedClock, zonedPartsOf } from "../schedule/timeZone.js";
 import { SKIP_OFFER_OPTIONS } from "./answer.js";
 import { fireJob } from "./fire.js";
-import { postToJobThread } from "./thread.js";
+import { JOB_MESSAGE_SOURCE, messageJobOwner } from "./ownerMessage.js";
 
 /**
  * Catching a schedule up (EO-306, `ARCHITECTURE.md`,
@@ -25,28 +25,16 @@ import { postToJobThread } from "./thread.js";
  * for each, is it still worth running? The answers are: run it, the job
  * is paused (EO-307), the item it filed last time is still open, and it
  * was missed beyond the grace. Every one that is not "run it" is said
- * out loud on the job's thread, because a guard ends in a comment
- * (invariant #8) on the one channel there is (invariant #4) — a pause
- * once rather than hourly, which `skip` says why.
+ * out loud in a message to the job's owner (EO-729), because a guard
+ * where there is no item ends in a message to the person who must act
+ * (invariant #8) — a pause once rather than hourly, which `skip` says
+ * why. The inbox notifier interrupts for a message like any other, so
+ * nothing here shows a notification of its own.
  */
-
-/** What a caller has to provide to be interrupted, and what it gets. */
-export interface JobGuardNotification {
-  title: string;
-  body: string;
-  /** The thread the guard was posted on — what clicking the notification should open. */
-  itemId: string;
-}
 
 export interface CatchUpDeps {
   /** The moment the sweep is for. Injected so a test can drive the clock rather than wait for it. */
   now?: number;
-  /**
-   * Shows an OS notification. Absent in tests and in any main without a
-   * desktop: a skip is still recorded and still said on the thread, and
-   * the interruption is the part that needs a machine.
-   */
-  notify?: (notification: JobGuardNotification) => void;
 }
 
 export interface JobCatchUpResult {
@@ -85,7 +73,7 @@ export function catchUpJob(db: Db, job: Job, deps: CatchUpDeps = {}): JobCatchUp
     // `createJob` refuses a schedule that does not parse, so reaching
     // here means the row was written by something else — an older
     // version, a hand-edited database. Said once rather than every
-    // minute: the guard is worth a comment, and sixty of them a day is
+    // minute: the guard is worth a message, and sixty of them a day is
     // worth nothing.
     reportUnreadable(db, job, compiled.problem, now);
     return result;
@@ -100,7 +88,7 @@ export function catchUpJob(db: Db, job: Job, deps: CatchUpDeps = {}): JobCatchUp
     // catching up a week of them — the sweep starts after the newest
     // row, whatever its status.
     if (job.pausedAt !== null) {
-      result.skipped.push(skip(db, job, trigger, dueAt, "paused", now, null, deps));
+      result.skipped.push(skip(db, job, trigger, dueAt, "paused", now, null));
       continue;
     }
     // Asked again each time round the loop rather than once before it,
@@ -108,11 +96,11 @@ export function catchUpJob(db: Db, job: Job, deps: CatchUpDeps = {}): JobCatchUp
     // item open.
     const open = previousItemStillOpen(db, job);
     if (open) {
-      result.skipped.push(skip(db, job, trigger, dueAt, "previous still open", now, open, deps));
+      result.skipped.push(skip(db, job, trigger, dueAt, "previous still open", now, open));
       continue;
     }
     if (beyondGrace(trigger, dueAt, now)) {
-      result.skipped.push(skip(db, job, trigger, dueAt, "offline beyond grace", now, null, deps));
+      result.skipped.push(skip(db, job, trigger, dueAt, "offline beyond grace", now, null));
       continue;
     }
     const fired = fireJob(db, job, { dueAt });
@@ -183,25 +171,20 @@ function previousItemStillOpen(db: Db, job: Job): Item | null {
 }
 
 /**
- * Writes the skipped row, says so on the thread, and interrupts.
+ * Writes the skipped row and says so to the job's owner.
  *
- * The row carries the phrase and the comment carries the sentence, and
+ * The row carries the phrase and the message carries the sentence, and
  * both come from here so they cannot end up describing the event
  * differently — `fire.ts` makes the same move for a `failed` row.
  *
- * **The comment is posted before the row and named on it.** That order
+ * **The message is sent before the row and named on it.** That order
  * is what lets an occurrence record which offer was made for it while
  * `job_occurrences` stays append-only: the row is complete the first and
- * only time it is written. Both happen inside one transaction, so a
- * thread never carries an offer for an occurrence that was not recorded,
- * and an occurrence never names a comment that does not exist.
- *
- * `postComment` taking a transaction of its own inside this one is the
- * shape `jira/import.ts` already has: better-sqlite3 nests through
- * savepoints, and the only consequence is that the comment's push fires
- * before the outer commit — which costs a wasted refetch on a rollback
- * and nothing else. That caveat is written down where `postComment`
- * announces.
+ * only time it is written. `offer_comment_id` holds the offer's message
+ * id since EO-729 (a comment's, on rows written before it). Both happen
+ * inside one transaction, so nobody is offered an occurrence that was
+ * not recorded, and an occurrence never names an offer that does not
+ * exist.
  */
 function skip(
   db: Db,
@@ -211,30 +194,28 @@ function skip(
   reason: JobSkipReason,
   now: number,
   blocker: Item | null,
-  deps: CatchUpDeps,
 ): JobOccurrence {
   // There is something to offer only when running it now is the right
   // thing to do. A skip made because the previous item is still open
-  // gets a `note`: offering to run it would be offering the duplicate
-  // the skip existed to prevent, and a question nobody can answer is a
-  // mention that never closes.
+  // offers nothing: offering to run it would be offering the duplicate
+  // the skip existed to prevent.
   const offered = reason === "offline beyond grace";
   const body = sentenceFor(job, trigger, dueAt, reason, now, blocker);
   // A pause is said once and then left alone (EO-307), which is
   // `reportUnreadable`'s rule below and for its reason: the state does
   // not change until a person changes it, and an hourly job would
-  // otherwise post a comment an hour about a decision they took
-  // deliberately. A thread nobody can bear to read is invariant #8
+  // otherwise send a message an hour about a decision they took
+  // deliberately. An inbox nobody can bear to read is invariant #8
   // switched off by whoever is tired of reading it. The rows are still
   // written, every one of them, so nothing about the history is
   // shortened — only the telling.
   const speak = reason !== "paused" || !alreadySaidPaused(db, job);
 
-  const occurrence = db.transaction(() => {
-    // A question rather than a note, because the inbox and the item
-    // thread both draw a question's options as buttons — which is how
-    // "Run it now" reaches a person before the Jobs page exists.
-    const comment = speak ? postToJobThread(db, job, body, offered ? { kind: "question", options: SKIP_OFFER_OPTIONS } : {}) : null;
+  return db.transaction(() => {
+    // Answering "Run it now" fires this occurrence (`answerSkipMessage`).
+    const message = speak
+      ? messageJobOwner(db, job, body, { source: JOB_MESSAGE_SOURCE.skipped, ...(offered ? { options: SKIP_OFFER_OPTIONS } : {}) })
+      : null;
     return recordOccurrence(db, {
       jobId: job.id as Uuid,
       dueAt,
@@ -243,22 +224,15 @@ function skip(
       // skipped row a skipped row (ARCHITECTURE.md, "What a job records").
       firedAt: null,
       reason,
-      // Which question a person is answering when they answer. Null
-      // where no question was asked.
-      offerCommentId: offered && comment !== null ? comment.id : null,
+      // Which offer a person is answering when they answer. Null where
+      // nothing was offered.
+      offerCommentId: offered && message !== null ? (message.id as Uuid) : null,
     });
   });
-
-  // And not interrupted about, for the same reason: an OS notification
-  // for a job the person paused is EO telling them what they already
-  // decided.
-  if (speak && reason !== "paused") deps.notify?.({ title: `${job.name} was skipped`, body, itemId: job.threadItemId });
-
-  return occurrence;
 }
 
 /**
- * What the person is told — the same sentence on the thread and in the
+ * What the person is told — the same sentence in the message and in its
  * notification.
  *
  * Two sentences and no more. The first says what did not happen and why,
@@ -313,12 +287,12 @@ function describeGrace(minutes: number): string {
 }
 
 /**
- * Whether the pause has already been said on this thread (EO-307).
+ * Whether the pause has already been said to the owner (EO-307).
  *
  * The newest occurrence, not a search of the history: the rows are
  * written in order and a pause holds until a person lifts it, so the row
- * before this one being a paused skip means the comment for this run of
- * pausing has been posted. Pausing again after a resume says it again,
+ * before this one being a paused skip means the message for this run of
+ * pausing has been sent. Pausing again after a resume says it again,
  * which is right — it is a new decision, and the occurrences in between
  * ran.
  */
@@ -334,12 +308,14 @@ function alreadySaidPaused(db: Db, job: Job): boolean {
  * was missed, the calendar itself is unreadable, and the two belong in
  * different columns of the job's history. Quiet on every tick after the
  * first, because the fault does not change until somebody edits the job
- * — and an unreadable schedule that posted a comment a minute would bury
- * the thread it was trying to be seen on.
+ * — and an unreadable schedule that sent a message a minute would bury
+ * the inbox it was trying to be seen in.
  */
 function reportUnreadable(db: Db, job: Job, problem: string, now: number): void {
   const latest = latestOccurrence(db, job.id as Uuid);
   if (latest?.status === "failed" && latest.reason === problem) return;
   recordOccurrence(db, { jobId: job.id as Uuid, dueAt: now, status: "failed", firedAt: now, reason: problem });
-  postToJobThread(db, job, `"${job.name}" has a schedule EO cannot read, so nothing is being filed for it. ${problem}`);
+  messageJobOwner(db, job, `"${job.name}" has a schedule EO cannot read, so nothing is being filed for it. ${problem}`, {
+    source: JOB_MESSAGE_SOURCE.failed,
+  });
 }

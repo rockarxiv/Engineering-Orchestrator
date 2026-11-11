@@ -2,19 +2,13 @@ import { LOCAL_PERSON_ID, type Job, type JobTrigger, type Uuid } from "@eo/core"
 import { eq } from "drizzle-orm";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { DbHandle } from "../db/client.js";
-import {
-  archivePipeline,
-  listCommentsForItem,
-  listMentionsForComment,
-  listOccurrences,
-  openMentionsForHuman,
-  setItemArchived,
-} from "../db/repos/index.js";
+import { archivePipeline, listCommentsForItem, listOccurrences, openMentionsForHuman, setItemArchived } from "../db/repos/index.js";
 import { jobs } from "../db/schema.js";
-import { openMigratedTestDb } from "../db/testHelpers.js";
-import { catchUpJob, type JobGuardNotification } from "./catchUp.js";
+import { messagesAboutJob, openMigratedTestDb } from "../db/testHelpers.js";
+import { catchUpJob } from "./catchUp.js";
 import { createJob } from "./jobs.js";
 import { RUN_NOW_OPTION } from "./answer.js";
+import { JOB_MESSAGE_SOURCE } from "./ownerMessage.js";
 
 /**
  * The catch-up, with the clock driven rather than waited for (EO-306,
@@ -77,17 +71,16 @@ function job(trigger: JobTrigger, createdAt: number): Job {
   return { ...result.job, createdAt };
 }
 
-function threadComments(monday: Job) {
-  return listCommentsForItem(handle.db, monday.threadItemId as Uuid);
+/** What the job's guards told its owner (EO-729). */
+function ownerMessages(monday: Job) {
+  return messagesAboutJob(handle.db, monday.id);
 }
 
 describe("a schedule that came round while EO was open", () => {
   it("fires it once, with a fired row, when the clock starts inside the grace", () => {
     const monday = job(WEEKLY_0800, MONDAY_0800 - 60_000);
-    const notified: JobGuardNotification[] = [];
-
     // 09:10 Berlin: seventy minutes late, well inside three hours.
-    const result = catchUpJob(handle.db, monday, { now: MONDAY_0800 + 70 * 60_000, notify: (n) => notified.push(n) });
+    const result = catchUpJob(handle.db, monday, { now: MONDAY_0800 + 70 * 60_000 });
 
     expect(result.fired).toHaveLength(1);
     expect(result.skipped).toEqual([]);
@@ -98,10 +91,8 @@ describe("a schedule that came round while EO was open", () => {
     // which is what makes `{{date}}` on the item read the right day.
     expect(occurrences[0]?.dueAt).toBe(MONDAY_0800);
     expect(occurrences[0]?.itemId).not.toBeNull();
-    // Nothing was missed, so nobody is interrupted and the thread stays
-    // quiet.
-    expect(notified).toEqual([]);
-    expect(threadComments(monday)).toEqual([]);
+    // Nothing was missed, so nobody is told anything.
+    expect(ownerMessages(monday)).toEqual([]);
   });
 
   it("does not fire the same occurrence twice, however often it is swept", () => {
@@ -142,74 +133,38 @@ describe("a schedule that came round while EO was shut", () => {
     expect(occurrences[0]?.itemId).toBeNull();
   });
 
-  it("says so on the thread, mentioning the owner, and offers to run it", () => {
+  it("sends the owner a message naming the job, offers to run it, and posts no comment", () => {
     const monday = job(WEEKLY_0800, MONDAY_0800 - 60_000);
 
     catchUpJob(handle.db, monday, { now: MONDAY_0800 + 4 * 60 * 60_000 });
 
-    const comments = threadComments(monday);
-    expect(comments).toHaveLength(1);
-    expect(comments[0]?.authorType).toBe("engine");
-    expect(comments[0]?.body).toBe(`"Monday report" was skipped: EO was not open within 3 hours of 08:00. Run it now?`);
-    expect(comments[0]?.kind).toBe("question");
-    expect(comments[0]?.options).toContain(RUN_NOW_OPTION);
-    // Invariant #8 on invariant #4's one channel, aimed at the owner.
-    expect(listMentionsForComment(handle.db, comments[0]!.id).map((m) => [m.targetType, m.targetId])).toEqual([["human", LOCAL_PERSON_ID]]);
-    expect(openMentionsForHuman(handle.db).map((entry) => entry.comment.itemId)).toEqual([monday.threadItemId]);
+    const messages = ownerMessages(monday);
+    expect(messages).toHaveLength(1);
+    expect(messages[0]).toMatchObject({
+      recipientId: LOCAL_PERSON_ID,
+      jobId: monday.id,
+      projectId: null,
+      source: JOB_MESSAGE_SOURCE.skipped,
+      body: `"Monday report" was skipped: EO was not open within 3 hours of 08:00. Run it now?`,
+      handledAt: null,
+    });
+    expect(messages[0]?.options).toContain(RUN_NOW_OPTION);
+    // Invariant #8 where there is no item: a message, and nothing on a thread.
+    expect(listCommentsForItem(handle.db, monday.threadItemId as Uuid)).toEqual([]);
+    expect(openMentionsForHuman(handle.db)).toEqual([]);
   });
 
-  it("records which question was asked about which occurrence", () => {
+  it("records which offer was made about which occurrence", () => {
     const monday = job(WEEKLY_0800, MONDAY_0800 - 60_000);
 
     catchUpJob(handle.db, monday, { now: MONDAY_0800 + 4 * 60 * 60_000 });
 
-    // The link an answer is resolved through: without it a reply has to
-    // be matched to "the newest skip", which runs the wrong occurrence
+    // The link an answer is resolved through: without it an answer has
+    // to be matched to "the newest skip", which runs the wrong occurrence
     // the moment there are two. Written with the row rather than after
     // it, so `job_occurrences` stays append-only.
     const occurrence = listOccurrences(handle.db, monday.id as Uuid)[0]!;
-    expect(occurrence.offerCommentId).toBe(threadComments(monday)[0]?.id);
-  });
-
-  it("raises a notification saying the same thing", () => {
-    const monday = job(WEEKLY_0800, MONDAY_0800 - 60_000);
-    const notified: JobGuardNotification[] = [];
-
-    catchUpJob(handle.db, monday, { now: MONDAY_0800 + 4 * 60 * 60_000, notify: (n) => notified.push(n) });
-
-    expect(notified).toHaveLength(1);
-    // The same sentence as the comment, and pointing at the thread it
-    // was posted on — a notification is a second delivery of one
-    // message rather than a summary of it.
-    expect(notified[0]?.body).toBe(threadComments(monday)[0]?.body);
-    expect(notified[0]?.itemId).toBe(monday.threadItemId);
-    expect(notified[0]?.title).toContain("Monday report");
-  });
-
-  it("hands the notifier the whole sentence, even when the job's name makes it long", () => {
-    // The requirement is the same text on the thread and in the
-    // notification, and this is the case where the two could differ: cut
-    // at a glance's length, what falls off a long guard is the reason and
-    // the offer — the only actionable thing in it.
-    const longName = "Weekly commercial performance and pipeline review for the northern region";
-    const created = createJob(handle.db, {
-      projectId: null,
-      name: longName,
-      trigger: WEEKLY_0800,
-      pipelineId: "default",
-      template: { type: "developer:story", title: "{{job}}", body: null },
-    });
-    if (!created.ok) throw new Error(created.problem);
-    backdate(created.job.id, MONDAY_0800 - 60_000);
-    const long = { ...created.job, createdAt: MONDAY_0800 - 60_000 };
-    const notified: JobGuardNotification[] = [];
-
-    catchUpJob(handle.db, long, { now: MONDAY_0800 + 4 * 60 * 60_000, notify: (n) => notified.push(n) });
-
-    const body = threadComments(long)[0]?.body;
-    expect(body!.length).toBeGreaterThan(140);
-    expect(notified[0]?.body).toBe(body);
-    expect(notified[0]?.body).toContain("Run it now?");
+    expect(occurrence.offerCommentId).toBe(ownerMessages(monday)[0]?.id);
   });
 
   it("names the day as well as the clock when the skip was not today", () => {
@@ -217,7 +172,7 @@ describe("a schedule that came round while EO was shut", () => {
 
     catchUpJob(handle.db, monday, { now: MONDAY_0800 + 30 * 60 * 60_000 });
 
-    expect(threadComments(monday)[0]?.body).toContain("08:00 on 2026-06-01");
+    expect(ownerMessages(monday)[0]?.body).toContain("08:00 on 2026-06-01");
   });
 
   it("offers the grace in the words it was set in", () => {
@@ -225,7 +180,7 @@ describe("a schedule that came round while EO was shut", () => {
 
     catchUpJob(handle.db, monday, { now: MONDAY_0800 + 4 * 60 * 60_000 });
 
-    expect(threadComments(monday)[0]?.body).toContain("within 90 minutes of 08:00");
+    expect(ownerMessages(monday)[0]?.body).toContain("within 90 minutes of 08:00");
   });
 
   it("decides each missed occurrence separately, oldest first", () => {
@@ -254,14 +209,13 @@ describe("a schedule whose last item has not finished", () => {
     expect(result.skipped).toHaveLength(1);
     expect(result.skipped[0]?.status).toBe("skipped");
     expect(result.skipped[0]?.reason).toBe("previous still open");
-    const comments = threadComments(monday);
-    expect(comments).toHaveLength(1);
-    expect(comments[0]?.body).toContain("is still open");
+    const messages = ownerMessages(monday);
+    expect(messages).toHaveLength(1);
+    expect(messages[0]?.body).toContain("is still open");
     // No offer: running it is exactly the duplicate the skip prevented.
-    expect(comments[0]?.kind).toBe("note");
-    expect(comments[0]?.options).toBeNull();
-    // And the row points at no question, so nothing a person types on
-    // the thread can be read as having answered one.
+    expect(messages[0]?.options).toBeNull();
+    // And the row points at no offer, so no answer can be read as
+    // having accepted one.
     expect(result.skipped[0]?.offerCommentId).toBeNull();
     expect(filed.itemId).not.toBeNull();
   });
@@ -333,12 +287,12 @@ describe("a schedule that cannot run at all", () => {
     catchUpJob(handle.db, monday, { now: MONDAY_0800 + 60_000 });
     const after = listOccurrences(handle.db, monday.id as Uuid);
 
-    // `fire.ts` records the `failed` row and posts its own guard; the
+    // `fire.ts` records the `failed` row and sends its own guard; the
     // catch-up counts it as neither fired nor skipped, because nothing
     // ran and nothing was passed over either.
     expect(after).toHaveLength(1);
     expect(after[0]?.status).toBe("failed");
-    expect(threadComments(monday)).toHaveLength(1);
+    expect(ownerMessages(monday)).toHaveLength(1);
   });
 });
 
@@ -346,7 +300,7 @@ describe("a schedule EO cannot read", () => {
   it("records the fault and says so once, rather than every minute", () => {
     // `createJob` refuses an expression that does not parse, so a row
     // like this was written by something else — an older version, a
-    // hand-edited database. The guard is still owed a comment
+    // hand-edited database. The guard is still owed a message
     // (invariant #8); sixty a day is owed to nobody.
     const monday = job(WEEKLY_0800, MONDAY_0800 - 60_000);
     const broken: Job = { ...monday, trigger: { kind: "schedule", schedule: { kind: "cron", expression: "0 8 * *" }, timeZone: BERLIN, catchUpWithinMinutes: 180 } };
@@ -358,7 +312,7 @@ describe("a schedule EO cannot read", () => {
     expect(occurrences).toHaveLength(1);
     expect(occurrences[0]?.status).toBe("failed");
     expect(occurrences[0]?.reason).toContain("five fields");
-    expect(threadComments(monday)).toHaveLength(1);
+    expect(ownerMessages(monday)).toHaveLength(1);
   });
 });
 

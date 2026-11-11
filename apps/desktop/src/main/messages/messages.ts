@@ -1,9 +1,10 @@
-import { answerOptions, LOCAL_PERSON_ID, type IpcPayload, type IpcResponse, type Message, type MessageSend } from "@eo/core";
+import { answerOptions, LOCAL_PERSON_ID, type IpcPayload, type IpcResponse, type Message, type MessageSend, type Uuid } from "@eo/core";
 import type { Db } from "../db/client.js";
-import { getMessage, insertMessage, listOpenMessages, listPeople, markMessageHandled, markMessagesAboutResolved, sweepHandledMessages } from "../db/repos/index.js";
+import { getJob, getMessage, insertMessage, listOpenMessages, listPeople, markMessageHandled, markMessagesAboutResolved, sweepHandledMessages } from "../db/repos/index.js";
 import { actingCaller } from "../identity/acting.js";
 import { viewerIds } from "../identity/viewer.js";
 import { emitPush } from "../ipc/push.js";
+import { answerSkipMessage } from "../jobs/answer.js";
 import { startInterval } from "../schedule/interval.js";
 
 /**
@@ -54,11 +55,24 @@ export type MessageHandlingAnswer = { ok: true; message: Message } | { ok: false
  * (`conflictNoticeMentions`). The recipient the sender named is a
  * desktop's own person, which means nothing here; it is used only by a
  * record with no admin yet, rather than telling nobody.
+ *
+ * A message about a job this record holds goes to the job's owner
+ * instead (EO-729): a job's guards are the owner's to act on, as they
+ * are on a desktop, and the owner is a person this record knows.
  */
-export function sendMessageToAdmins(db: Db, input: MessageSend, now: number = Date.now()): Message[] {
-  const admins = listPeople(db).filter((person) => person.isAdmin);
-  const recipients = admins.length > 0 ? admins.map((person) => person.id) : [input.recipientId];
-  const sent = db.transaction(() => recipients.map((recipientId) => insertMessage(db, { ...input, recipientId }, now)));
+export function sendMessageToAdmins(db: Db, input: MessageSend, now: number = Date.now(), firstId?: string): Message[] {
+  const jobOwner = input.jobId == null ? undefined : getJob(db, input.jobId as Uuid)?.ownerId;
+  const people = listPeople(db);
+  const admins = people.filter((person) => person.isAdmin);
+  const recipients =
+    jobOwner !== undefined && people.some((person) => person.id === jobOwner)
+      ? [jobOwner]
+      : admins.length > 0
+        ? admins.map((person) => person.id)
+        : [input.recipientId];
+  // The first recipient's copy takes the id a queued command minted, so
+  // its replay can tell the message was already written (EO-729).
+  const sent = db.transaction(() => recipients.map((recipientId, index) => insertMessage(db, { ...input, recipientId }, now, index === 0 ? firstId : undefined)));
   emitPush("messages:changed", {});
   return sent;
 }
@@ -75,9 +89,21 @@ export function handleMessageHere(db: Db, request: MessageHandling, now: number 
       request.how === "answered"
         ? answerMessageCommand(db, { ...payload, answer: request.answer ?? "" }, now)
         : dismissMessageCommand(db, payload, now);
+    // What an answer sets going, where the message lives: "Run it now" on
+    // a skip fires its occurrence (EO-729). Any other message, nothing.
+    if (message.handledHow === "answered") actOnAnswer(db, message);
     return { ok: true, message };
   } catch (error) {
     return { ok: false, problem: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+/** The answer is recorded whatever its consequence does: a fault in it is logged, not the press refused. */
+function actOnAnswer(db: Db, message: Message): void {
+  try {
+    answerSkipMessage(db, message);
+  } catch (error) {
+    console.error(`[eo] answering the message ${message.id} did not set off what it offered:`, error);
   }
 }
 

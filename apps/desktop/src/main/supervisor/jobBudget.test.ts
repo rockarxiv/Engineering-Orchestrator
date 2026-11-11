@@ -6,7 +6,6 @@ import {
   createRun,
   getJob,
   listCommentsForItem,
-  listMentionsForComment,
   listOccurrences,
   listRunsForItem,
   needsAttention,
@@ -15,7 +14,7 @@ import {
   updateRun,
 } from "../db/repos/index.js";
 import { jobs } from "../db/schema.js";
-import { openMigratedTestDb } from "../db/testHelpers.js";
+import { messagesAboutJob, openMigratedTestDb } from "../db/testHelpers.js";
 import { catchUpJob } from "../jobs/catchUp.js";
 import { fireJob } from "../jobs/fire.js";
 import { createJob } from "../jobs/jobs.js";
@@ -124,23 +123,22 @@ describe("an occurrence whose item has spent the job's budget", () => {
     expect(getJob(handle.db, report.id as Uuid)?.pausedAt).not.toBeNull();
   });
 
-  it("names the budget on the job's thread, to the owner", async () => {
+  it("names the budget in a message to the job's owner, and posts nothing on the job's thread", async () => {
     const report = job(50);
     const filed = filedByJob(report, DAY_ONE);
     spend(filed, 60);
 
     await supervisor().runOnce();
 
-    const comments = listCommentsForItem(handle.db, report.threadItemId as Uuid);
-    expect(comments).toHaveLength(1);
-    expect(comments[0]?.authorType).toBe("engine");
-    expect(comments[0]?.body).toContain("50¢");
-    expect(comments[0]?.body).toContain(filed.key);
-    // The one channel there is, aimed at whoever owns the job.
-    expect(listMentionsForComment(handle.db, comments[0]!.id).map((mention) => [mention.targetType, mention.targetId])).toEqual([
-      ["human", LOCAL_PERSON_ID],
-    ]);
-    expect(openMentionsForHuman(handle.db).map((entry) => entry.comment.itemId)).toContain(report.threadItemId);
+    const messages = messagesAboutJob(handle.db, report.id);
+    expect(messages).toHaveLength(1);
+    expect(messages[0]).toMatchObject({ recipientId: LOCAL_PERSON_ID, jobId: report.id, source: "job_budget" });
+    expect(messages[0]?.body).toContain("50¢");
+    expect(messages[0]?.body).toContain(filed.key);
+    expect(messages[0]?.body).toContain(report.name);
+    // No comment on the job's thread; the parked item carries its own.
+    expect(listCommentsForItem(handle.db, report.threadItemId as Uuid)).toEqual([]);
+    expect(openMentionsForHuman(handle.db).map((entry) => entry.comment.itemId)).not.toContain(report.threadItemId);
   });
 
   it("says it once, however many ticks pass", async () => {
@@ -153,7 +151,7 @@ describe("an occurrence whose item has spent the job's budget", () => {
     await supervisor().runOnce();
 
     expect(listRunsForItem(handle.db, filed.id)).toHaveLength(2);
-    expect(listCommentsForItem(handle.db, report.threadItemId as Uuid)).toHaveLength(1);
+    expect(messagesAboutJob(handle.db, report.id)).toHaveLength(1);
   });
 
   it("leaves the next morning as a skipped row saying the job was paused", async () => {

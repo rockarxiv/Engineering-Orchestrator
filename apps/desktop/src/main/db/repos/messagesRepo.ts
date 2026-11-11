@@ -11,7 +11,7 @@ import {
   type MessageSend,
 } from "@eo/core";
 import type { Db } from "../client.js";
-import { jobs, messages, projects } from "../schema.js";
+import { jobs, messages, projects, queuedMessageReceipts } from "../schema.js";
 
 /**
  * What EO asks a person outside any item (EO-725, ARCHITECTURE.md §7.1).
@@ -43,10 +43,11 @@ function toDomain(row: Row): Message {
 }
 
 /** Writes one open message. Throws on a malformed one — a sender is EO's own code, so that is a programmer error. */
-export function insertMessage(db: Db, input: MessageSend, now: number = Date.now()): Message {
+/** `id` is minted here unless the sender minted it — a queued command's message, written once whatever the replays (EO-729). */
+export function insertMessage(db: Db, input: MessageSend, now: number = Date.now(), id: string = uuidv7()): Message {
   const parsed = MessageSendSchema.parse(input);
   const row: Row = {
-    id: uuidv7(),
+    id,
     recipientId: parsed.recipientId,
     projectId: parsed.projectId ?? null,
     jobId: parsed.jobId ?? null,
@@ -254,4 +255,18 @@ export function forgetMessagesGoneFromTheRecord(db: Db, stillOpen: ReadonlySet<s
 /** Deletes one message's row, where the record answered that it no longer has it (EO-726). */
 export function forgetMessage(db: Db, id: string): boolean {
   return db.delete(messages).where(eq(messages.id, id)).run().changes > 0;
+}
+
+/**
+ * Whether a queued `sendMessage` command's message has already been
+ * written here (EO-729) — asked of the receipt, which outlives the
+ * message's own retention.
+ */
+export function hasQueuedMessageReceipt(db: Db, messageId: string): boolean {
+  return db.select({ id: queuedMessageReceipts.messageId }).from(queuedMessageReceipts).where(eq(queuedMessageReceipts.messageId, messageId)).get() !== undefined;
+}
+
+/** Records that a queued command's message was written, so a replay of it writes nothing (EO-729). */
+export function recordQueuedMessageReceipt(db: Db, messageId: string, now: number = Date.now()): void {
+  db.insert(queuedMessageReceipts).values({ messageId, receivedAt: now }).onConflictDoNothing().run();
 }
