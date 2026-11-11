@@ -52,7 +52,7 @@ export type MessageHandlingAnswer = { ok: true; message: Message } | { ok: false
  * A message about a project the organisation's record holds, written on
  * the record (EO-726, ARCHITECTURE.md §7.1): one to each of its admins,
  * who are whom the equivalent mention on the project's thread went to
- * (`conflictNoticeMentions`). The recipient the sender named is a
+ * before messages. The recipient the sender named is a
  * desktop's own person, which means nothing here; it is used only by a
  * record with no admin yet, rather than telling nobody.
  *
