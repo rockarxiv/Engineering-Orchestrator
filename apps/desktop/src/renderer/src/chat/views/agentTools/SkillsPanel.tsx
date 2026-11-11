@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Plus, X } from "lucide-react";
 import {
+  runsWithoutLoadLabel,
   skillAuthorLabel,
   skillMachineSpecificWarnings,
   skillVersionActionLabel,
@@ -13,6 +14,7 @@ import {
   type SkillScope,
   type SkillState,
   type SkillVersion,
+  type SkillVersionReport,
 } from "@eo/core";
 import { ipcQuery } from "../../../query/client";
 import { skillsKey } from "../../../query/hooks";
@@ -199,6 +201,7 @@ function SkillHistory({ skill, onRestored }: { skill: Skill; onRestored: () => P
               </span>
               <span className="text-[11.5px] text-ink-subtle">{new Date(version.createdAt).toLocaleString()}</span>
               <span className="truncate text-[11.5px] text-ink-muted">{version.description}</span>
+              {version.report === null ? null : <VersionReport report={version.report} />}
             </div>
             {index > 0 ? (
               <Button
@@ -215,6 +218,70 @@ function SkillHistory({ skill, onRestored }: { skill: Skill; onRestored: () => P
         ))}
       </ol>
     </section>
+  );
+}
+
+/**
+ * What EO reported about one write, kept on the version rather than posted
+ * anywhere (EO-728): the evidence a consolidation drew a skill from — each
+ * memory entry and the item it came from — and, for an improvement, its
+ * diff; or the runs without a load EO archived the skill after.
+ */
+function VersionReport({ report }: { report: SkillVersionReport }) {
+  if (report.kind === "unused") return <span className="text-[11.5px] text-ink-muted">Archived by EO {runsWithoutLoadLabel(report.runsWithoutLoad)}.</span>;
+  return (
+    <div className="mt-1 flex min-w-0 flex-col gap-1">
+      <span className="text-[11.5px] font-medium text-ink-muted">Evidence</span>
+      <ul aria-label="Evidence" className="flex flex-col gap-0.5">
+        {report.evidence.map((entry) => (
+          <li key={entry.entryId} className="text-[11.5px] text-ink-muted">
+            {entry.itemKey === null ? null : <span className="font-mono text-ink-subtle">{entry.itemKey} · </span>}
+            {entry.body ?? "(no longer there)"}
+          </li>
+        ))}
+      </ul>
+      {report.itemKeys.length > 0 ? <span className="text-[11.5px] text-ink-subtle">Seen on {report.itemKeys.join(", ")}.</span> : null}
+      {report.diff === null ? null : (
+        <details>
+          <summary className="cursor-pointer text-[11.5px] text-ink-muted">What it changed</summary>
+          <pre aria-label="Diff" className="mt-1 overflow-x-auto rounded-[8px] bg-canvas p-2 font-mono text-[11px] text-ink">
+            {report.diff}
+          </pre>
+        </details>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Who archived an archived skill, and — for EO — after how many runs
+ * without a load, with Restore beside it (EO-728). Restore puts back the
+ * archive version itself, which is the skill as it was, live again.
+ */
+function ArchivedBy({ skill, onRestored }: { skill: SkillListEntry; onRestored: () => Promise<unknown> }) {
+  const [problem, setProblem] = useState<string | null>(null);
+  const restore = useMutation({
+    mutationFn: (versionId: string) => ipcQuery("skills:restoreVersion", { id: skill.id, versionId }),
+    onSuccess: async (result) => {
+      setProblem(result.problem);
+      if (result.skill !== null) await onRestored();
+    },
+    onError: (error: Error) => setProblem(error.message),
+  });
+  const archive = skill.archive;
+  if (archive === null) return null;
+  const why = archive.runsWithoutLoad === null ? "" : ` ${runsWithoutLoadLabel(archive.runsWithoutLoad)}`;
+  return (
+    <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
+      <p className="text-[12px] text-ink-muted">
+        Archived by {skillAuthorLabel(archive.author)}
+        {why}.
+      </p>
+      <Button size="sm" variant="ghost" aria-label={`Restore ${skill.name}`} disabled={restore.isPending} onClick={() => restore.mutate(archive.versionId)}>
+        {restore.isPending ? "Restoring…" : "Restore"}
+      </Button>
+      {problem !== null ? <p role="alert" className="text-[12px] text-danger">{problem}</p> : null}
+    </div>
   );
 }
 
@@ -316,6 +383,7 @@ function SkillCard({
         label="Locked"
         description="While it is locked, no agent can change, archive or restore this skill. You still can."
       />
+      <ArchivedBy skill={skill} onRestored={onRestored} />
       {showHistory ? <SkillHistory skill={skill} onRestored={onRestored} /> : null}
       <AttachedAgents kind="skill" entryId={skill.id} entryName={skill.name} />
     </Card>

@@ -39,6 +39,8 @@ export const PipelineVersionSchema = z.object({
   createdBy: z.string().nullable(),
   /** The name to show for `createdBy`, resolved where the version is read. Null when unknown. */
   createdByName: z.string().nullable(),
+  /** The release notes of the template update that filed it (EO-728), one version per line; null for every other version. */
+  releaseNotes: z.string().nullable(),
 });
 export type PipelineVersion = z.infer<typeof PipelineVersionSchema>;
 

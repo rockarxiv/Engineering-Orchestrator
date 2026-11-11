@@ -1,4 +1,5 @@
 import {
+  PERSON_SKILL_AUTHOR,
   SKILLS_SETTLED_EVENT,
   DEFAULT_MEMORY_SCOPE_MAX_CHARS,
   DEFAULT_MEMORY_SCOPE_MAX_ENTRIES,
@@ -61,7 +62,7 @@ import { getPerson } from "../db/repos/peopleRepo.js";
 import { getUpdateConflict } from "../db/repos/pipelineUpdateConflictsRepo.js";
 import { itemsMidAdoption, listProjectsUpdatedSince, projectsMidAdoption } from "../db/repos/projectsRepo.js";
 import { listItemTypesSince } from "../db/repos/itemTypesRepo.js";
-import { listPublishedSectionsSince } from "../db/repos/publishedSectionsRepo.js";
+import { listPublishedSectionsSince, publishedSectionRow } from "../db/repos/publishedSectionsRepo.js";
 import {
   abandonAdoptedProject,
   carryKeyCounter,
@@ -72,7 +73,7 @@ import {
   writeAdoptedProject,
   type UncarriedTools,
 } from "../db/repos/projectMoveRepo.js";
-import { listProjectSkillsUpdatedSince } from "../db/repos/skillsRepo.js";
+import { getSkill, listProjectSkillsUpdatedSince, restoreSkillVersion, skillCopyOf, skillOwner, skillVersionOf, skillVersionWithContent } from "../db/repos/skillsRepo.js";
 import {
   getAttachment,
   insertAttachments,
@@ -789,6 +790,56 @@ export async function serveRestoreMemoryConsolidation(
   return { result, changed: recordMemories(db, [...new Set([...touched, ...result.changedIds])]) };
 }
 
+/** What a device that is not an admin's is told when it asks to restore a skill while the packs section is published (EO-728). */
+export const RESTORE_SKILL_NOT_AN_ADMIN =
+  "Your organisation has published its packs section, so only an administrator can restore one of its skills. Nothing was restored.";
+
+/** What a device is told when the version it asked for was never this skill's on the record, by id or by what it held (EO-728). */
+export const RESTORE_SKILL_VERSION_NOT_HERE =
+  "that version was never this skill's on the record — it was written only on your machine — so nothing was restored. Restore a version the record sent instead.";
+
+/**
+ * A device restoring a version of a skill this record holds (EO-728) —
+ * the record's half of `ItemRecord.restoreSkillVersion`, behind the
+ * Skills screen's Restore on a skill EO archived on the record.
+ *
+ * What it checks for itself (invariant 5): the skill is here and, where
+ * it is a project's, of a project this record holds and has finished
+ * taking; and while the packs section is published, which keeps the
+ * organisation's skills as its admins set them, the asking device is an
+ * admin's; and the version is one of the record's — by id, or, for one
+ * the desktop filed under its own id, the newest of the record's that
+ * held the same description, body and files. Then the same restore any
+ * installation makes — a new version,
+ * a person's or the desktop's system agent's, which a lock here refuses
+ * for an agent. Answers with the skill as it now stands, its reported
+ * versions and its project, for the device to copy; every other desktop
+ * is told to ask again, and takes it on its next pull.
+ */
+export async function serveRestoreSkillVersion(
+  context: ServeRecordContext,
+  payload: IpcPayload<"record:restoreSkillVersion">,
+): Promise<IpcResponse<"record:restoreSkillVersion">> {
+  const { db } = context;
+  const refuse = (problem: string): IpcResponse<"record:restoreSkillVersion"> => ({ skill: null, problem });
+  const owner = skillOwner(db, payload.skillId);
+  if (owner === undefined) return refuse(`no skill on this record has the id "${payload.skillId}".`);
+  if (owner.projectId !== null && !heldHere(db, owner.projectId)) return refuse("this record does not hold that skill's project, so nothing was restored.");
+  if (publishedSectionRow(db, "packs") !== undefined && personOfDevice(db, payload.deviceId)?.isAdmin !== true) return refuse(RESTORE_SKILL_NOT_AN_ADMIN);
+  const author = payload.agentId === null ? PERSON_SKILL_AUTHOR : ({ kind: "agent", agentId: payload.agentId } as const);
+  // A version the desktop filed under an id of its own is restored as the
+  // record's version that held the same thing, and only where one did.
+  const versionId =
+    skillVersionOf(db, payload.skillId, payload.versionId)?.id ??
+    (payload.content === null ? undefined : skillVersionWithContent(db, payload.skillId, payload.content)?.id);
+  if (versionId === undefined) return refuse(RESTORE_SKILL_VERSION_NOT_HERE);
+  const result = restoreSkillVersion(db, payload.skillId, versionId, Date.now(), author);
+  if (!result.ok) return refuse(result.problem);
+  emitPush("config:changed", {});
+  emitPush("items:changed", {});
+  return { skill: { ...skillCopyOf(db, getSkill(db, payload.skillId) ?? result.skill), projectId: owner.projectId }, problem: null };
+}
+
 /**
  * Whether this record holds a project's memory: the project is here and
  * has finished arriving. A project still being handed over is the
@@ -842,8 +893,8 @@ export async function serveApply(
 /**
  * The pass over unused agent skills (EO-720) for each project a run of
  * the batch settled on: the record is where those projects' skills are
- * written, so it is where they are archived, as a version authored by EO,
- * with the note on the project's thread — and the archived copy reaches
+ * written, so it is where they are archived, as a version authored by EO
+ * that says after how many runs without a load — and the archived copy reaches
  * every replica on its next pull. Triggered by a run's `skills_settled`,
  * never by its delivery: a transcript arrives a page at a time, and the
  * run's loads are in it only once the settled event is. A pass that fails
@@ -859,8 +910,6 @@ async function archiveSettledSkills(context: ServeRecordContext, projects: Reado
         projectId,
         reach: "all",
         ageing,
-        projectThread: (id) => context.record.projectThread(id),
-        postComment: (comment) => context.record.postComment(comment),
         sendMessage: (message) => context.record.sendMessage(message),
       });
     } catch (error) {

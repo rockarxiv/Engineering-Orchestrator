@@ -149,7 +149,6 @@ describe("automatic memory consolidation", () => {
       heldElsewhere?: MemoryConsolidatorOptions["heldElsewhere"];
       onPendingChanged?: MemoryConsolidatorOptions["onPendingChanged"];
       proposeSkills?: (request: SideCallRequest<unknown>) => Promise<SideCallResult<unknown>>;
-      projectThread?: MemoryConsolidatorOptions["projectThread"];
       sendMessage?: MemoryConsolidatorOptions["sendMessage"];
     } = {},
   ): MemoryConsolidator {
@@ -165,7 +164,6 @@ describe("automatic memory consolidation", () => {
       ...(options.neighbours ? { neighbours: options.neighbours } : {}),
       ...(options.heldElsewhere ? { heldElsewhere: options.heldElsewhere } : {}),
       ...(options.onPendingChanged ? { onPendingChanged: options.onPendingChanged } : {}),
-      ...(options.projectThread ? { projectThread: options.projectThread } : {}),
       ...(options.sendMessage ? { sendMessage: options.sendMessage } : {}),
     });
     return consolidator;
@@ -1564,9 +1562,6 @@ describe("automatic memory consolidation", () => {
       const sent: MessageSend[] = [];
       const runner = consolidatorWith(sideCall as never, {
         now: () => clock,
-        projectThread: () => {
-          throw new Error("the stuck message never asks for a project thread");
-        },
         sendMessage: async (input) => {
           if (refuse) return { ok: false, problem: "Your organisation's record could not be reached." };
           sent.push(input);
@@ -2061,9 +2056,11 @@ describe("automatic memory consolidation", () => {
       await consolidator!.idle();
 
       expect(proposeSkills).toHaveBeenCalledTimes(1);
-      const [offer] = posted().filter((comment) => comment.parentId === null);
-      expect(offer!.body).toContain("Moved the 1 entry holding this procedure out of memory");
-      expect(offer!.body).toContain("One memory entry holds this procedure folded together with other entries, so it was left in memory");
+      // Nothing is posted (EO-728); the untouched entry moved, the reworded fold stayed.
+      expect(posted()).toEqual([]);
+      const active = listMemories(handle.db, workspace).map((entry) => entry.body);
+      expect(active).toContain(shorter);
+      expect(active).not.toContain(untouched.body);
     });
   });
 

@@ -173,7 +173,7 @@ import {
   RepositoryIntelligenceConfigPatchSchema,
   RepositoryIntelligenceStatusSchema,
 } from "./schemas/repositoryIntelligence.js";
-import { SkillDraftSchema, SkillListEntrySchema, SkillSchema, SkillVersionSchema } from "./schemas/skills.js";
+import { SkillCopySchema, SkillDraftSchema, SkillListEntrySchema, SkillSchema, SkillVersionSchema } from "./schemas/skills.js";
 
 /**
  * An address in the app, as a canvas tab remembers it: the path and its
@@ -6308,6 +6308,36 @@ export const recordContract = {
     z.object({ deviceId: z.string().min(1), consolidationId: z.string().min(1) }),
     RecordMemoryRestoreAnswerSchema,
   ),
+  /**
+   * Restoring a version of a skill the record holds (EO-728): one of a
+   * project it holds, or one its published packs section carries. The
+   * record restores it — checking for itself that it holds the skill and,
+   * while the packs section is published, that the asking device is an
+   * admin's — and answers with the skill as it now stands, its reported
+   * versions and its project, which the asking desktop copies into its
+   * replica. Every other desktop takes it on its next pull. `agentId` is
+   * the asking desktop's system agent where one restored it over
+   * `eo_admin` (its `actingAgentId`, which every server door strips, so
+   * it travels under a name of its own), and the version is filed as that
+   * agent's; null for a person.
+   *
+   * `content` is what the version holds in the asking desktop's history,
+   * where it holds it. A version filed there under an id of the desktop's
+   * own — a `sync` of a copy the record sent — is not one the record
+   * knows by id, so the record restores the newest of its own versions
+   * holding exactly that description, body and files, and refuses where
+   * none does: it puts back only what it once held.
+   */
+  "record:restoreSkillVersion": channel(
+    z.object({
+      deviceId: z.string().min(1),
+      skillId: z.string().min(1),
+      versionId: z.string().min(1),
+      agentId: z.string().min(1).max(100).nullable().default(null),
+      content: SkillVersionSchema.pick({ description: true, body: true, files: true }).nullable().default(null),
+    }),
+    z.object({ skill: SkillCopySchema.extend({ projectId: z.string().nullable() }).nullable(), problem: z.string().nullable() }),
+  ),
   "record:adopt": channel(
     z.object({
       deviceId: z.string().min(1),
@@ -7448,6 +7478,9 @@ export const DEVICE_SCOPED_CHANNELS = [
   // source of a person's entry (EO-482).
   "record:memory",
   "record:restoreMemoryConsolidation",
+  // Restoring a record-held skill is a person's act on a *device*, and
+  // under a published packs section the record checks it is an admin's (EO-728).
+  "record:restoreSkillVersion",
   // Resolving a held template update is an administrator's act, and the
   // record checks that the asking device is one of its admins' (EO-534).
   "record:resolveUpdateConflict",

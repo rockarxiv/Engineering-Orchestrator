@@ -219,6 +219,7 @@ const NOT_CATALOGUED: Partial<Record<RecordChannel, string>> = {
   "record:memory": "writes a moved project's memory as a named device's run or person, which no agent is; an agent notes with memory_note",
   "record:memoryConsolidations": "a replica's question about consolidations its record ran; memory:consolidations is the reading",
   "record:restoreMemoryConsolidation": "undoes a record's consolidation as a named device's person; memory:restoreConsolidation is the action",
+  "record:restoreSkillVersion": "restores a record-held skill as a named device's person or agent; skills:restoreVersion (skill_restore_version) is the action",
   // EO-471. The Settings button behind "Project notes". What is said on
   // the thread is a comment like any other, and EO's own features post
   // there through `ItemRecord.projectThread` rather than through a

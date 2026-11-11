@@ -6,18 +6,22 @@ import {
   PERSON_SKILL_AUTHOR,
   readSkillDraft,
   SKILL_LOCKED_PROBLEM,
-  SkillSchema,
+  SkillCopySchema,
   SkillVersionActionSchema,
+  SkillVersionReportSchema,
   uuidv7,
   type RecordCursor,
   type RecordSkill,
   type Skill,
+  type SkillArchive,
   type SkillAuthor,
+  type SkillCopy,
   type SkillDraft,
   type SkillFile,
   type SkillScope,
   type SkillVersion,
   type SkillVersionAction,
+  type SkillVersionReport,
   type Uuid,
 } from "@eo/core";
 import type { Db } from "../client.js";
@@ -148,6 +152,7 @@ function appendVersion(
   author: SkillAuthor,
   at: number,
   restoredFrom: string | null = null,
+  report: SkillVersionReport | null = null,
 ): void {
   db.insert(skillVersions)
     .values({
@@ -160,6 +165,7 @@ function appendVersion(
       authorKind: author.kind,
       authorId: authorIdOf(author),
       restoredFrom,
+      report,
       createdAt: at,
     })
     .run();
@@ -206,6 +212,8 @@ function toVersion(row: typeof skillVersions.$inferSelect): SkillVersion {
     files: toFiles(row.files),
     author: toAuthor(row.authorKind, row.authorId),
     restoredFrom: row.restoredFrom,
+    // One this build cannot read is shown as none, never as a wrong one.
+    report: SkillVersionReportSchema.safeParse(row.report).data ?? null,
     createdAt: row.createdAt,
   };
 }
@@ -219,6 +227,32 @@ export function listSkillVersions(db: Db, skillId: string): SkillVersion[] {
     .orderBy(desc(skillVersions.createdAt), desc(skillVersions.id))
     .all()
     .map(toVersion);
+}
+
+/**
+ * Every one of a skill's versions that carries a report (EO-728), oldest
+ * first — what travels with a copy of it (`SkillCopySchema`), so the
+ * installation that takes the copy can say who wrote it and why, for each
+ * write it reported on. Empty where none does.
+ */
+export function reportedVersionsOf(db: Db, skillId: string): SkillVersion[] {
+  return db
+    .select()
+    .from(skillVersions)
+    .where(and(eq(skillVersions.skillId, skillId), isNotNull(skillVersions.report)))
+    .orderBy(asc(skillVersions.createdAt), asc(skillVersions.id))
+    .all()
+    .map(toVersion);
+}
+
+/** A skill as it travels to another installation: the row and its reported versions (EO-728). */
+export function skillCopyOf(db: Db, skill: Skill): SkillCopy {
+  return { ...skill, versions: reportedVersionsOf(db, skill.id) };
+}
+
+/** Every one of a skill's versions, oldest first — what a project move carries (EO-728). */
+function allVersionsOf(db: Db, skillId: string): SkillVersion[] {
+  return listSkillVersions(db, skillId).reverse();
 }
 
 /** What a write that is not a save answers with: the skill as it now stands, or the sentence saying why nothing was written. */
@@ -298,7 +332,14 @@ function slugFor(db: Db, asked: string | null, name: string, existing: Skill | u
  * duplicate are all things a person did, and throwing is for programmer
  * error.
  */
-export function saveSkill(db: Db, draft: SkillDraft, now: number = Date.now(), author: SkillAuthor = PERSON_SKILL_AUTHOR): SaveSkillResult {
+export function saveSkill(
+  db: Db,
+  draft: SkillDraft,
+  now: number = Date.now(),
+  author: SkillAuthor = PERSON_SKILL_AUTHOR,
+  /** What EO reports about the write, kept on the version it files (EO-728). */
+  report: SkillVersionReport | null = null,
+): SaveSkillResult {
   const read = readSkillDraft(draft);
   if (!read.ok) return { ok: false, problems: read.problems };
 
@@ -336,7 +377,7 @@ export function saveSkill(db: Db, draft: SkillDraft, now: number = Date.now(), a
     if (existing) {
       db.update(skills).set(values).where(eq(skills.id, existing.id)).run();
       const skill = getSkill(db, existing.id)!;
-      appendVersion(db, skill, "edit", author, now);
+      appendVersion(db, skill, "edit", author, now, null, report);
       return { ok: true, skill };
     }
 
@@ -349,7 +390,7 @@ export function saveSkill(db: Db, draft: SkillDraft, now: number = Date.now(), a
       .returning()
       .get();
     const skill = toSkill(row);
-    appendVersion(db, skill, "create", author, now);
+    appendVersion(db, skill, "create", author, now, null, report);
     return { ok: true, skill };
   });
 }
@@ -385,14 +426,14 @@ export function saveSkill(db: Db, draft: SkillDraft, now: number = Date.now(), a
  * caller to say where a person will see it. An agent attached to it holds
  * the attachment until it arrives, as it does for any tool not here yet.
  */
-export function upsertReplicaSkill(db: Db, skill: Skill, projectId?: string | null): ReplicaSkillResult {
+export function upsertReplicaSkill(db: Db, skill: Skill | SkillCopy, projectId?: string | null): ReplicaSkillResult {
   return db.transaction(() => upsertReplicaSkillIn(db, skill, projectId));
 }
 
 /** A copy from the record written, or the sentence saying why nothing was (EO-714). */
 export type ReplicaSkillResult = { ok: true } | { ok: false; problem: string };
 
-function upsertReplicaSkillIn(db: Db, skill: Skill, projectId?: string | null): ReplicaSkillResult {
+function upsertReplicaSkillIn(db: Db, skill: Skill | SkillCopy, projectId?: string | null): ReplicaSkillResult {
   const here = getSkill(db, skill.id);
   // The same copy again changes nothing a lock protects, so it is neither
   // written nor refused (EO-714).
@@ -459,7 +500,7 @@ function upsertReplicaSkillIn(db: Db, skill: Skill, projectId?: string | null): 
       },
     })
     .run();
-  versionCopy(db, here, skill.id);
+  versionCopy(db, here, skill);
   // Whatever was held for it is spent: this copy is the newest (EO-714).
   db.delete(heldSkillCopies).where(eq(heldSkillCopies.skillId, skill.id)).run();
   return { ok: true };
@@ -510,7 +551,7 @@ function sameSkill(a: Skill, b: Skill): boolean {
 
 /** A held copy, as the person is told of it. */
 export interface HeldSkillCopy {
-  skill: Skill;
+  skill: SkillCopy;
   /** The project the record gave it, or null for a published section's. */
   projectId: string | null;
   problem: string;
@@ -519,7 +560,7 @@ export interface HeldSkillCopy {
 }
 
 function toHeld(row: typeof heldSkillCopies.$inferSelect): HeldSkillCopy | undefined {
-  const skill = SkillSchema.safeParse(row.copy);
+  const skill = SkillCopySchema.safeParse(row.copy);
   return skill.success ? { skill: skill.data, projectId: row.projectId, problem: row.problem, heldAt: row.heldAt, toldAt: row.toldAt } : undefined;
 }
 
@@ -528,7 +569,7 @@ function toHeld(row: typeof heldSkillCopies.$inferSelect): HeldSkillCopy | undef
  * in its way. A newer copy of the same skill replaces the one held; an
  * older one, read out of order, does not.
  */
-export function holdSkillCopy(db: Db, skill: Skill, projectId: string | undefined, problem: string, at: number = Date.now()): void {
+export function holdSkillCopy(db: Db, skill: Skill | SkillCopy, projectId: string | undefined, problem: string, at: number = Date.now()): void {
   const held = db.select().from(heldSkillCopies).where(eq(heldSkillCopies.skillId, skill.id)).get();
   const current = held === undefined ? undefined : toHeld(held);
   if (current !== undefined && current.skill.updatedAt > skill.updatedAt) return;
@@ -576,17 +617,48 @@ export function releaseHeldSkillCopies(db: Db): string[] {
  * it changed anything a person reads in the history — and only then, so
  * a publication applied again, or a page read twice, adds nothing. The
  * write itself was made, and versioned, where the record is.
+ *
+ * Before it, each of the versions the copy carries (EO-728) — its
+ * reported ones, or on a move every one — as the sender filed it: its
+ * id, action, author, report, time and the skill as it stood, where this
+ * history does not hold it yet. So what each consolidation drew the skill
+ * from and changed, and that EO archived it and after how many runs
+ * without a load, says so here as it does there, even where several were
+ * written between two copies, and an EO archive can be restored from it;
+ * and the record that takes a moved project can restore any version the
+ * desktop's history showed. Keyed by id, so a copy sent again files
+ * nothing.
  */
-function versionCopy(db: Db, before: Skill | undefined, id: string): void {
-  const after = getSkill(db, id);
+function versionCopy(db: Db, before: Skill | undefined, copy: Skill | SkillCopy): void {
+  const after = getSkill(db, copy.id);
   if (after === undefined) return;
+  const carried = "versions" in copy ? copy.versions : [];
+  for (const version of carried) {
+    if (version.skillId !== copy.id) continue;
+    db.insert(skillVersions)
+      .values({
+        id: version.id,
+        skillId: copy.id,
+        action: version.action,
+        description: version.description,
+        body: version.body,
+        files: version.files,
+        authorKind: version.author.kind,
+        authorId: authorIdOf(version.author),
+        restoredFrom: version.restoredFrom,
+        report: version.report,
+        createdAt: version.createdAt,
+      })
+      .onConflictDoNothing()
+      .run();
+  }
   if (before === undefined || !sameSkill(before, after)) appendVersion(db, after, "sync", { kind: "record" }, Date.now());
 }
 
 // ── A project's own skills, as they travel with it (EO-513) ─────────
 
-function toRecordSkill(row: typeof skills.$inferSelect & { projectId: string }): RecordSkill {
-  return { ...toSkill(row), projectId: row.projectId };
+function toRecordSkill(db: Db, row: typeof skills.$inferSelect & { projectId: string }): RecordSkill {
+  return { ...skillCopyOf(db, toSkill(row)), projectId: row.projectId };
 }
 
 function belongsToAProject(row: typeof skills.$inferSelect): row is typeof skills.$inferSelect & { projectId: string } {
@@ -598,6 +670,12 @@ function belongsToAProject(row: typeof skills.$inferSelect): row is typeof skill
  * oldest first: what travels when it moves (EO-513). Never a global
  * skill — that is the installation's, and an organisation hands those
  * out by publishing the packs section.
+ *
+ * Each with its whole history (EO-728), not only its reported versions:
+ * once the project is the record's, a Restore on the desktop is made
+ * there (`ItemRecord.restoreSkillVersion`), and every version the
+ * desktop's history offers from before the move has to be one the record
+ * holds under the same id.
  */
 export function readProjectSkills(db: Db, projectId: string): RecordSkill[] {
   return db
@@ -607,7 +685,7 @@ export function readProjectSkills(db: Db, projectId: string): RecordSkill[] {
     .orderBy(asc(skills.createdAt), asc(skills.id))
     .all()
     .filter(belongsToAProject)
-    .map(toRecordSkill);
+    .map((row) => ({ ...toRecordSkill(db, row), versions: allVersionsOf(db, row.id) }));
 }
 
 /** A skill as the record's feed pages it: the row, and the stamp its cursor moves by. */
@@ -647,7 +725,7 @@ export function listProjectSkillsUpdatedSince(db: Db, cursor: RecordCursor, limi
     .limit(limit)
     .all()
     .filter(belongsToAProject)
-    .map((row) => ({ skill: toRecordSkill(row), changedAt: row.localChangedAt }));
+    .map((row) => ({ skill: toRecordSkill(db, row), changedAt: row.localChangedAt }));
 }
 
 /** Whose skill this row is, where this database holds one under the id — for the record deciding what a move may write. */
@@ -700,7 +778,7 @@ export function writeMovedSkill(db: Db, skill: RecordSkill, projectId: string): 
     .values({ id: skill.id, createdAt: skill.createdAt, ...columns })
     .onConflictDoUpdate({ target: skills.id, set: columns })
     .run();
-  versionCopy(db, before, skill.id);
+  versionCopy(db, before, skill);
   return { ok: true };
 }
 
@@ -757,6 +835,7 @@ function writeSkill(
   action: SkillVersionAction,
   columns: Partial<typeof skills.$inferInsert>,
   restoredFrom: string | null = null,
+  report: SkillVersionReport | null = null,
 ): SkillWriteResult {
   const existing = getSkill(db, id);
   if (existing === undefined) return { ok: false, problem: NO_SUCH_SKILL };
@@ -768,7 +847,7 @@ function writeSkill(
       .where(eq(skills.id, id))
       .run();
     const skill = getSkill(db, id)!;
-    appendVersion(db, skill, action, author, at, restoredFrom);
+    appendVersion(db, skill, action, author, at, restoredFrom, report);
     return { ok: true, skill };
   });
 }
@@ -777,9 +856,28 @@ export function setSkillEnabled(db: Db, id: string, enabled: boolean, at: number
   return writeSkill(db, id, author, at, enabled ? "enable" : "disable", { enabled });
 }
 
-/** Deleting a skill archives it — see the column's note and invariant #3. */
-export function archiveSkill(db: Db, id: string, at: number = Date.now(), author: SkillAuthor = PERSON_SKILL_AUTHOR): SkillWriteResult {
-  return writeSkill(db, id, author, at, "archive", { archivedAt: at });
+/** Deleting a skill archives it — see the column's note and invariant #3. `report` says why EO archived it (EO-728). */
+export function archiveSkill(db: Db, id: string, at: number = Date.now(), author: SkillAuthor = PERSON_SKILL_AUTHOR, report: SkillVersionReport | null = null): SkillWriteResult {
+  return writeSkill(db, id, author, at, "archive", { archivedAt: at }, null, report);
+}
+
+/**
+ * How an archived skill came to be archived (EO-728): its newest archive
+ * version, who wrote it, and the runs without a load EO archived it
+ * after. Null for a live skill, or one archived with no version kept.
+ */
+export function skillArchiveOf(db: Db, skill: Pick<Skill, "id" | "archivedAt">): SkillArchive | null {
+  if (skill.archivedAt === null) return null;
+  const row = db
+    .select()
+    .from(skillVersions)
+    .where(and(eq(skillVersions.skillId, skill.id), eq(skillVersions.action, "archive")))
+    .orderBy(desc(skillVersions.createdAt), desc(skillVersions.id))
+    .limit(1)
+    .get();
+  if (row === undefined) return null;
+  const version = toVersion(row);
+  return { versionId: version.id, author: version.author, runsWithoutLoad: version.report?.kind === "unused" ? version.report.runsWithoutLoad : null };
 }
 
 /**
@@ -789,6 +887,30 @@ export function archiveSkill(db: Db, id: string, at: number = Date.now(), author
  */
 export function setSkillLocked(db: Db, id: string, locked: boolean, at: number = Date.now()): SkillWriteResult {
   return writeSkill(db, id, PERSON_SKILL_AUTHOR, at, locked ? "lock" : "unlock", { locked });
+}
+
+/** One of a skill's versions, by id; undefined where it is not one of that skill's. */
+export function skillVersionOf(db: Db, skillId: string, versionId: string): SkillVersion | undefined {
+  const row = db.select().from(skillVersions).where(eq(skillVersions.id, versionId)).get();
+  return row === undefined || row.skillId !== skillId ? undefined : toVersion(row);
+}
+
+/** What a restore puts back: a version's description, body and files. */
+export type SkillVersionContent = Pick<SkillVersion, "description" | "body" | "files">;
+
+/**
+ * The newest of a skill's versions holding exactly this description, body
+ * and files (EO-728) — how the record finds, among its own versions, the
+ * one a desktop's history shows under an id of the desktop's: a `sync`
+ * version, filed under a fresh id when the record's copy arrived, holds
+ * what one of the record's versions held. Undefined where none does, so
+ * the record restores only what it once had.
+ */
+export function skillVersionWithContent(db: Db, skillId: string, content: SkillVersionContent): SkillVersion | undefined {
+  const files = JSON.stringify(content.files);
+  return listSkillVersions(db, skillId).find(
+    (version) => version.description === content.description && version.body === content.body && JSON.stringify(version.files) === files,
+  );
 }
 
 /**

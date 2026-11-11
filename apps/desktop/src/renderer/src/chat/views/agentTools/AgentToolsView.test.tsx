@@ -72,6 +72,7 @@ const PLAYBOOK: SkillListEntry = {
   archivedAt: null, createdBy: "person", locked: false,
   usage: { runsDelivered: 0, runsLoaded: 0, lastLoadedAt: null, deliveriesSinceLoad: 0 },
   state: "active",
+  archive: null,
 };
 
 const REVIEWER = { id: "019fb8c6-0000-7000-8000-0000000000c1", name: "Reviewer", role: "reviewer", provider: "claude", model: null, enabled: true, archivedAt: null };
@@ -504,9 +505,9 @@ describe("the agent tools catalogue", () => {
   it("lists a skill's history and restores an earlier version", async () => {
     const at = (n: number) => new Date(2026, 0, n).getTime();
     const versions = [
-      { id: "v3", skillId: PLAYBOOK.id, action: "archive", description: "Second.", body: "Two.", files: [], author: { kind: "consolidation", consolidationId: "c-1" }, restoredFrom: null, createdAt: at(3) },
-      { id: "v2", skillId: PLAYBOOK.id, action: "edit", description: "Second.", body: "Two.", files: [], author: { kind: "run", runId: "r-1" }, restoredFrom: null, createdAt: at(2) },
-      { id: "v1", skillId: PLAYBOOK.id, action: "create", description: "First.", body: "One.", files: [], author: { kind: "person" }, restoredFrom: null, createdAt: at(1) },
+      { id: "v3", skillId: PLAYBOOK.id, action: "archive", description: "Second.", body: "Two.", files: [], author: { kind: "consolidation", consolidationId: "c-1" }, restoredFrom: null, report: null, createdAt: at(3) },
+      { id: "v2", skillId: PLAYBOOK.id, action: "edit", description: "Second.", body: "Two.", files: [], author: { kind: "run", runId: "r-1" }, restoredFrom: null, report: null, createdAt: at(2) },
+      { id: "v1", skillId: PLAYBOOK.id, action: "create", description: "First.", body: "One.", files: [], author: { kind: "person" }, restoredFrom: null, report: null, createdAt: at(1) },
     ];
     const calls = mockIpc({
       "skills:list": { ok: true, data: { skills: [{ ...PLAYBOOK, locked: true }] } },
@@ -531,6 +532,69 @@ describe("the agent tools catalogue", () => {
     fireEvent.click(restores[1]!);
 
     await waitFor(() => expect(payloadOf(calls, "skills:restoreVersion")).toEqual({ id: PLAYBOOK.id, versionId: "v1" }));
+  });
+
+  it("shows on a version a consolidation wrote its evidence and diff, and on EO's archive the runs without a load (EO-728)", async () => {
+    const at = (n: number) => new Date(2026, 0, n).getTime();
+    const versions = [
+      { id: "v3", skillId: PLAYBOOK.id, action: "archive", description: "Two.", body: "Two.", files: [], author: { kind: "eo" }, restoredFrom: null, report: { kind: "unused", runsWithoutLoad: 30 }, createdAt: at(3) },
+      {
+        id: "v2",
+        skillId: PLAYBOOK.id,
+        action: "edit",
+        description: "Two.",
+        body: "Two.",
+        files: [],
+        author: { kind: "consolidation", consolidationId: "c-1" },
+        restoredFrom: null,
+        report: {
+          kind: "consolidation",
+          evidence: [{ entryId: "m-1", body: "Run Xvfb before the e2e suite.", itemKey: "SHOP-12" }],
+          itemKeys: ["SHOP-12", "SHOP-14"],
+          diff: "--- a/pr-review/SKILL.md\n+++ b/pr-review/SKILL.md\n-One.\n+Two.",
+        },
+        createdAt: at(2),
+      },
+      { id: "v1", skillId: PLAYBOOK.id, action: "create", description: "One.", body: "One.", files: [], author: { kind: "person" }, restoredFrom: null, report: null, createdAt: at(1) },
+    ];
+    mockIpc({
+      "skills:list": { ok: true, data: { skills: [PLAYBOOK] } },
+      "skills:versions": { ok: true, data: { versions, problem: null } },
+    });
+    renderIn(<AgentTools />);
+
+    fireEvent.click(await screen.findByRole("tab", { name: /^Skills\s*1$/ }));
+    fireEvent.click(await screen.findByRole("button", { name: "History" }));
+    const history = await screen.findByRole("region", { name: "History of PR review" });
+    await waitFor(() => expect(history).toHaveTextContent("Edited by memory consolidation c-1"));
+    expect(history).toHaveTextContent("Archived by EO after 30 runs without a load.");
+    const evidence = within(history).getByRole("list", { name: "Evidence" });
+    expect(evidence).toHaveTextContent("SHOP-12 · Run Xvfb before the e2e suite.");
+    expect(history).toHaveTextContent("Seen on SHOP-12, SHOP-14.");
+    expect(within(history).getByLabelText("Diff")).toHaveTextContent("-One. +Two.");
+  });
+
+  it("says on an archived skill that EO archived it after N runs without a load, and restores it there (EO-728)", async () => {
+    const archived: SkillListEntry = {
+      ...PLAYBOOK,
+      name: "Old",
+      createdBy: "agent",
+      archivedAt: 5,
+      state: "archived",
+      archive: { versionId: "v-archive", author: { kind: "eo" }, runsWithoutLoad: 30 },
+    };
+    const calls = mockIpc({
+      "skills:list": { ok: true, data: { skills: [archived] } },
+      "skills:restoreVersion": { ok: true, data: { skill: PLAYBOOK, problem: null } },
+    });
+    renderIn(<AgentTools />);
+
+    fireEvent.click(await screen.findByRole("tab", { name: /^Skills/ }));
+    fireEvent.click(await screen.findByRole("button", { name: "Show archived (1)" }));
+    const card = await screen.findByRole("region", { name: "Old" });
+    expect(card).toHaveTextContent("Archived by EO after 30 runs without a load.");
+    fireEvent.click(within(card).getByRole("button", { name: "Restore Old" }));
+    await waitFor(() => expect(payloadOf(calls, "skills:restoreVersion")).toEqual({ id: archived.id, versionId: "v-archive" }));
   });
 
   it("attaches a server to an agent from the catalogue", async () => {

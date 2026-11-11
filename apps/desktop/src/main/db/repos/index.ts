@@ -437,6 +437,7 @@ export {
 } from "./mcpServersRepo.js";
 export {
   archiveSkill,
+  skillArchiveOf,
   getSkill,
   getSkillBySlug,
   listSkills,

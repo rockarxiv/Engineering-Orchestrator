@@ -342,6 +342,25 @@ export interface ItemRecord {
    */
   restoreMemoryConsolidation: (consolidationId: string, caps: MemoryCaps) => Promise<MemoryRestoreConsolidationResult>;
   /**
+   * Restore an earlier version of a skill (EO-714) — on whichever
+   * installation holds the skill (EO-728).
+   *
+   * **Asking, like `restoreMemoryConsolidation`, and for its reason.** A
+   * skill of a project the organisation's record holds, or one its
+   * published packs section carries, is the record's: its next copy
+   * would undo a restore made on a replica, and no other desktop would
+   * ever see it. So on a desktop holding such a skill this is a round
+   * trip; the record restores it, judging for itself that it holds the
+   * skill and, while the packs section is published, that the asking
+   * device is an admin's, and the skill as the record now has it is
+   * copied into the replica before it is answered. Any other skill is
+   * restored in this database.
+   *
+   * Never rejects. A record that cannot be reached answers that nothing
+   * was restored, which is true, and nothing is written here.
+   */
+  restoreSkillVersion: (request: SkillRestoreRequest) => Promise<IpcResponse<"skills:restoreVersion">>;
+  /**
    * Settle up with the record, where the record is somewhere else
    * (EO-324, ARCHITECTURE.md, "The record").
    *
@@ -367,6 +386,13 @@ export interface ItemRecord {
    * clock. Absent where `sync` is, for its reason.
    */
   flush?: () => Promise<unknown>;
+}
+
+/** A restore of one skill's version: the IPC request's, with the system agent that asked, if one did (EO-714). */
+export interface SkillRestoreRequest {
+  id: string;
+  versionId: string;
+  actingAgentId?: string | undefined;
 }
 
 /**

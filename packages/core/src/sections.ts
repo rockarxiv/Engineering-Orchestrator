@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { versionLabel } from "./pipelineVersions.js";
 import { ModuleTestCaseSchema, ModuleViewSchema } from "./schemas/modules.js";
-import { SkillSchema } from "./schemas/skills.js";
+import { SkillCopySchema } from "./schemas/skills.js";
 import type { IpcChannel } from "./ipc.js";
 
 /**
@@ -194,8 +194,8 @@ export type PublishedModule = z.infer<typeof PublishedModuleSchema>;
 export const SectionDocumentSchema = z.object({
   /** The agents section. */
   agents: z.array(PublishedAgentSchema).default([]),
-  /** The packs section: the skills a pack brings. */
-  skills: z.array(SkillSchema).default([]),
+  /** The packs section: the skills a pack brings, each with its reported versions (EO-728). */
+  skills: z.array(SkillCopySchema).default([]),
   /**
    * The pipelines section's code half — what a `module` step runs.
    *

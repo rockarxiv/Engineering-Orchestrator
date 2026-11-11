@@ -4,7 +4,7 @@ import { getAgentAttachments, replaceReplicaAttachments } from "../db/repos/agen
 import { listAgents, revisionOf, takesRecordCopy, updateAgent, upsertReplicaAgent } from "../db/repos/agentsRepo.js";
 import { listModules, upsertReplicaModule } from "../db/repos/modulesRepo.js";
 import { listModuleTests, replaceReplicaModuleTests } from "../db/repos/moduleTestsRepo.js";
-import { holdSkillCopy, listSkills, upsertReplicaSkill } from "../db/repos/skillsRepo.js";
+import { holdSkillCopy, listSkills, skillCopyOf, upsertReplicaSkill } from "../db/repos/skillsRepo.js";
 
 /**
  * What a publish carries, and what a device does with it (EO-329,
@@ -82,7 +82,9 @@ export function sectionDocument(db: Db, section: PublishedSection): SectionDocum
           .map((agent) => publishedAgent(db, agent)),
       });
     case "packs":
-      return SectionDocumentSchema.parse({ skills: listSkills(db, true) });
+      // Each with its reported versions (EO-728), so a desktop's
+      // history says who wrote the skill and why, as this one's does.
+      return SectionDocumentSchema.parse({ skills: listSkills(db, true).map((skill) => skillCopyOf(db, skill)) });
     case "connectors":
       // Nothing of its own to carry, and that is a decision rather than
       // an omission (EO-328). A connector is an MCP server row with a

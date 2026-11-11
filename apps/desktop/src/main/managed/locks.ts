@@ -3,6 +3,7 @@ import type { Db } from "../db/client.js";
 import { isReplica } from "../db/recordRole.js";
 import { isDiverged } from "../db/repos/divergenceRepo.js";
 import { publishedSectionRow } from "../db/repos/publishedSectionsRepo.js";
+import { skillHeldByTheRecord } from "../skills/onTheRecord.js";
 
 /**
  * Whether a write is one this installation may make (EO-329,
@@ -70,6 +71,11 @@ export function sectionLockFor(db: Db, channel: IpcChannel, payload?: unknown): 
   // all and this machine has already diverged it (EO-331, ARCHITECTURE.md, "Divergence and
   // suggestions").
   const mine = editableWhenDiverged(channel) && isDiverged(db, subjectPipeline(payload) ?? "");
+  // Restoring a version of a skill the record holds is made on the
+  // record, which judges it (EO-728, `skillHeldByTheRecord`): nothing is
+  // written here for the lock to keep off. Earned, as divergence is, by
+  // naming a skill this replica has from the record; anything else locks.
+  if (channel === "skills:restoreVersion" && skillHeldByTheRecord(db, subjectSkill(payload) ?? "")) return null;
   for (const section of sections) {
     if (section === "pipelines" && mine) continue;
     const published = publishedSectionRow(db, section);
@@ -100,6 +106,13 @@ export function sectionLockFor(db: Db, channel: IpcChannel, payload?: unknown): 
 function subjectPipeline(payload: unknown): string | null {
   if (payload === null || typeof payload !== "object") return null;
   const named = (payload as { pipelineId?: unknown }).pipelineId;
+  return typeof named === "string" && named !== "" ? named : null;
+}
+
+/** The skill a restore names, read as defensively as `subjectPipeline` reads a pipeline. */
+function subjectSkill(payload: unknown): string | null {
+  if (payload === null || typeof payload !== "object") return null;
+  const named = (payload as { id?: unknown }).id;
   return typeof named === "string" && named !== "" ? named : null;
 }
 

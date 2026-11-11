@@ -26,6 +26,8 @@ export interface PipelineVersionRow {
   number: number;
   createdAt: number;
   createdBy: string | null;
+  /** The release notes of the template update that filed it (EO-728); null for every other version. */
+  releaseNotes: string | null;
 }
 
 /**
@@ -54,6 +56,7 @@ function toVersion(row: typeof pipelineVersions.$inferSelect): PipelineVersionRo
     number: row.number,
     createdAt: row.createdAt,
     createdBy: row.createdBy,
+    releaseNotes: row.releaseNotes,
   };
 }
 
@@ -97,9 +100,10 @@ function highestNumber(db: Db, pipelineId: string): number {
  *
  * Called after a save has written the new graph — the snapshot is of
  * what was just published, which is what the version *is*. `createdBy`
- * is the person who pressed Save, and null when nobody did.
+ * is the person who pressed Save, and null when nobody did; `releaseNotes`
+ * those of the template update that filed it (EO-728).
  */
-export function createPipelineVersion(db: Db, pipelineId: string, createdBy: string | null = null): PipelineVersionRow {
+export function createPipelineVersion(db: Db, pipelineId: string, createdBy: string | null = null, releaseNotes: string | null = null): PipelineVersionRow {
   // The document and the pointer at it, together (EO-327). Two
   // statements that must never be seen apart: a version row nothing
   // points at is a snapshot nobody reads, and — far worse — a pointer
@@ -124,6 +128,7 @@ export function createPipelineVersion(db: Db, pipelineId: string, createdBy: str
         entryRules: snapshot.entryRules,
         createdAt: Date.now(),
         createdBy,
+        releaseNotes,
       })
       .returning()
       .get();

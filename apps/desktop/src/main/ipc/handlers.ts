@@ -256,6 +256,7 @@ import {
   serveTemplateStatus,
   serveResolveUpdateConflict,
   serveRestoreMemoryConsolidation,
+  serveRestoreSkillVersion,
   serveRenew,
   serveWork,
   type ServeRecordContext,
@@ -429,6 +430,7 @@ export interface HandlerResources {
     | "writeMemory"
     | "memoryConsolidations"
     | "restoreMemoryConsolidation"
+    | "restoreSkillVersion"
     | "changeDependencies"
     | "handleMessage"
   >;
@@ -887,7 +889,8 @@ export function registerAllHandlers(db: Db, engine: EngineHandle | undefined, re
   registerHandler("skills:archive", (payload) => announcePipeline(archiveSkillCommand(db, payload)), opts);
   registerHandler("skills:setLocked", (payload) => announcePipeline(setSkillLockedCommand(db, payload)), opts);
   registerHandler("skills:versions", (payload) => listSkillVersionsCommand(db, payload), opts);
-  registerHandler("skills:restoreVersion", (payload) => announcePipeline(restoreSkillVersionCommand(db, payload)), opts);
+  // On the record for a skill it holds (EO-728), and here for any other.
+  registerHandler("skills:restoreVersion", async (payload) => announcePipeline(await restoreSkillVersionCommand(db, payload, resources.record ?? recordFor(db))), opts);
   // EO-478: a scope's memory, read and written by a person. Every write
   // keeps the row it replaces; nothing here deletes.
   registerHandler("memory:list", (payload) => listMemoryCommand(db, payload), opts);
@@ -1963,6 +1966,8 @@ export function registerAllHandlers(db: Db, engine: EngineHandle | undefined, re
   registerHandler("record:memory", (payload) => serveMemory(serving, payload), opts);
   registerHandler("record:memoryConsolidations", (payload) => serveMemoryConsolidations(serving, payload), opts);
   registerHandler("record:restoreMemoryConsolidation", (payload) => serveRestoreMemoryConsolidation(serving, payload), opts);
+  // A device restoring a skill this record holds (EO-728).
+  registerHandler("record:restoreSkillVersion", (payload) => serveRestoreSkillVersion(serving, payload), opts);
   // The push that follows a command landing is `serveApply`'s own — it
   // is the record that changed, and a door emitting it would be a
   // second place to remember.

@@ -11,7 +11,6 @@ import {
   listRoutesForPipeline,
   listStepsForPipeline,
   openUpdateConflict,
-  postComment,
   projectsWithWorkOnPipeline,
   publishedSectionRow,
   recordAppliedTemplateUpdate,
@@ -30,7 +29,6 @@ import { TEMPLATE_CONFLICT_SOURCE } from "../db/repos/pipelineUpdateConflictsRep
 import { projectMovedToTheRecord } from "../db/repos/projectsRepo.js";
 import { storedGraphProblems } from "../ipc/configCommands.js";
 import { sendMessageHere } from "../messages/messages.js";
-import { openProjectThread } from "../projects/projectThread.js";
 import { compareTemplateVersions, type TemplateHistory, type TemplateVersion } from "./history.js";
 
 /**
@@ -46,8 +44,8 @@ import { compareTemplateVersions, type TemplateHistory, type TemplateVersion } f
  *   merge is filed as a new pipeline version, its author the template
  *   update, and the pipeline's base moves to the new version. Items in
  *   flight finish on the version they entered on, as after any publish.
- *   A comment on the project thread says what changed, with the release
- *   notes, and mentions nobody — nothing is asked of anyone.
+ *   Nothing is posted (EO-728): nothing is asked of anyone. The version
+ *   keeps the release notes, and the pipeline's version list shows them.
  * - **Held.** A key conflicts, or the merge does not validate: nothing
  *   is applied, not even the parts that do not conflict, and an open
  *   update conflict records the version and each conflicting key with
@@ -79,16 +77,7 @@ export type TemplateUpdateResult =
   | { pipelineId: string; outcome: "applied"; slug: string; from: string; to: string; version: number; changes: KeyChange[] }
   /** Nothing the template changed was left to apply — the person had made every change already — so only the base moved. */
   | { pipelineId: string; outcome: "caught-up"; slug: string; from: string; to: string }
-  | { pipelineId: string; outcome: "conflict"; slug: string; from: string; to: string; conflictId: string }
-  /**
-   * Nothing written, and asked again on the next launch: the project
-   * thread an applied update's notice goes to could not be secured — a
-   * project moving to the organisation's record, say. An update applied
-   * without its notice would never be announced, since the base it moves
-   * is what says there is nothing left to do. A held update is never
-   * deferred: its notice is a message, written with it (EO-727).
-   */
-  | { pipelineId: string; outcome: "deferred"; slug: string; from: string; to: string; reason: string };
+  | { pipelineId: string; outcome: "conflict"; slug: string; from: string; to: string; conflictId: string };
 
 /**
  * Compares and updates every pipeline this installation holds whose
@@ -237,26 +226,16 @@ function updatePipeline(db: Db, pipelineId: string, history: TemplateHistory, no
     return held(holdUpdate(db, compared, notes, [], messages, now, isTheRecord));
   }
 
-  // Where the notice goes, secured before anything is written. A thread
-  // that cannot be opened now defers the whole update rather than
-  // applying it unannounced: the base it moves is what tells the next
-  // launch there is nothing to do, so a notice missed here is missed
-  // for good.
-  const threads = noticeThreads(db, pipelineId, isTheRecord);
-  if (!threads.ok) return { ...summary, outcome: "deferred", reason: threads.problem };
-
   const preserved = listStepsForPipeline(db, pipelineId).filter((step) => step.offBoard);
-  const kept = compared.merge.comparison.changes.some((change) => change.outcome === "person");
-  // The graph, the origin and the notice in one transaction: an update
-  // is never applied without being announced, nor announced without
-  // being applied.
+  // The graph, its release notes and the origin in one transaction: the
+  // version an update files always says what the update was (EO-728).
   const written = db.transaction(() => {
     const replaced = replacePipelineGraph(
       db,
       pipelineId,
       [...steps, ...preserved].map(({ ownerPersonId: _person, ownerGroupId: _group, ...step }) => step),
       routes.map(({ id: _id, ...route }) => route),
-      { createdBy: templateUpdateAuthor(origin.slug, template.version) },
+      { createdBy: templateUpdateAuthor(origin.slug, template.version), releaseNotes: notes === "" ? null : notes },
     );
     if (!replaced.replaced) return replaced;
     recordPipelineOrigin(db, { pipelineId, document: template.document, stepIds });
@@ -264,9 +243,6 @@ function updatePipeline(db: Db, pipelineId: string, history: TemplateHistory, no
     // rather than read from the version just filed, which a save may prune.
     recordAppliedTemplateUpdate(db, pipelineId, { version: template.version, pipelineVersion: replaced.version, at: now });
     if (open !== undefined) resolveUpdateConflict(db, open.id, "superseded", now);
-    const body = updateNoticeBody(db, pipelineId, { compared, taken, kept, version: replaced.version, notes });
-    // Nothing is asked of anyone, so nobody is summoned.
-    for (const thread of threads.itemIds) postComment(db, { itemId: thread, author: { type: "engine" }, kind: "note", body, mentions: [], parseBodyMentions: false });
     return replaced;
   });
   if (!written.replaced) {
@@ -274,10 +250,6 @@ function updatePipeline(db: Db, pipelineId: string, history: TemplateHistory, no
     // the repository's guard under it, answering the same thing.
     const messages = written.holding.map((hold) => `"${hold.stepName}" still holds ${hold.count} item(s), and the update removes it.`);
     return held(holdUpdate(db, compared, notes, [], messages, now, isTheRecord));
-  }
-
-  if (threads.itemIds.length === 0) {
-    console.log(`[eo] pipeline ${pipelineId} was updated to ${origin.slug} ${template.version} (v${written.version}); no project has work on it, so no project thread was told.`);
   }
   return { ...summary, outcome: "applied", version: written.version, changes: taken };
 }
@@ -589,56 +561,6 @@ export const FIELD_WORDS: Record<ComparedStepField, string> = {
   results: "results",
 };
 
-interface UpdateNotice {
-  compared: PipelineComparison;
-  taken: KeyChange[];
-  kept: boolean;
-  version: number;
-  notes: string;
-}
-
-/** The sentences a notice lists, one per change the template made. */
-export function describeTemplateChanges(db: Db, compared: PipelineComparison, taken: readonly KeyChange[]): string[] {
-  const names = new Map<string, string>();
-  for (const step of [...compared.current.steps, ...compared.next.steps]) if (!names.has(step.id)) names.set(step.id, step.name);
-  const stepName = (id: string): string => names.get(id) ?? id;
-  const targetName = (target: unknown): string => {
-    if (target === "user_attention") return "a person";
-    if (target === "terminal") return "the end";
-    if (typeof target !== "string") return "nowhere";
-    return names.has(target) ? `**${stepName(target)}**` : (`**${getStep(db, target)?.name ?? target}**`);
-  };
-  return taken.map((change) => {
-    const { key } = change;
-    if (key.kind === "step") return change.template === null ? `Removed **${stepName(key.stepId)}**.` : `Added **${stepName(key.stepId)}**.`;
-    if (key.kind === "setting") return `**${stepName(key.stepId)}**: ${FIELD_WORDS[key.field]} changed.`;
-    const label = routeLabel(change);
-    const from = `**${stepName(key.fromStepId)}** → *${label}*`;
-    if (change.template === null) return `${from} no longer routes anywhere.`;
-    const to = targetName(fieldOf(change.template, "target"));
-    if (change.current === null) return `${from} goes to ${to}.`;
-    const was = fieldOf(change.current, "target");
-    return was === fieldOf(change.template, "target") ? `${from} is relabelled.` : `${from} now goes to ${to} (it went to ${targetName(was)}).`;
-  });
-}
-
-/** The notice's text: what changed, whether the person's own changes were kept, and the release notes. */
-function updateNoticeBody(db: Db, pipelineId: string, notice: UpdateNotice): string {
-  const { compared } = notice;
-  const name = getPipeline(db, pipelineId)?.name ?? "A pipeline";
-  const title = compared.template.document.template.title;
-  const lines = [
-    `**${name}** was updated from the *${title}* template ${compared.origin.version} to ${compared.template.version}, as v${notice.version}. ` +
-      `Items already on it finish on the version they entered on.`,
-    "",
-    "What changed:",
-    ...describeTemplateChanges(db, compared, notice.taken).map((line) => `- ${line}`),
-  ];
-  if (notice.kept) lines.push("", "Your own changes to this pipeline were kept.");
-  if (notice.notes !== "") lines.push("", "Release notes:", ...notice.notes.split("\n").map((line) => `- ${line}`));
-  return lines.join("\n");
-}
-
 /**
  * The projects an update is told about (EO-533): the project that owns
  * the pipeline; for one no project has adopted, each project with work
@@ -654,30 +576,8 @@ function noticeProjects(db: Db, pipelineId: string, isTheRecord: boolean): Uuid[
   );
 }
 
-/**
- * The project threads an applied update is announced on, each opened
- * (made, if it has none yet) — or why one could not be: the thread of
- * each of its `noticeProjects`. Every one must open: an update announced
- * on some of its threads and not others would leave a project never told.
- */
-function noticeThreads(db: Db, pipelineId: string, isTheRecord: boolean): { ok: true; itemIds: Uuid[] } | { ok: false; problem: string } {
-  if (getPipeline(db, pipelineId) === undefined) return { ok: false, problem: "the pipeline no longer exists" };
-  const itemIds: Uuid[] = [];
-  for (const projectId of noticeProjects(db, pipelineId, isTheRecord)) {
-    const thread = openProjectThread(db, projectId);
-    if (!thread.ok) return { ok: false, problem: thread.problem };
-    itemIds.push(thread.item.id as Uuid);
-  }
-  return { ok: true, itemIds };
-}
-
 function fieldOf(value: unknown, field: string): unknown {
   return value !== null && typeof value === "object" ? (value as Record<string, unknown>)[field] : undefined;
-}
-
-function routeLabel(change: KeyChange): string {
-  const label = fieldOf(change.template, "label") ?? fieldOf(change.current, "label") ?? fieldOf(change.base, "label");
-  return typeof label === "string" ? label : change.key.kind === "route" ? change.key.resultKey : "";
 }
 
 /**

@@ -1,4 +1,4 @@
-import type { Comment, IpcChannel, IpcPayload, IpcResponse, IpcResult, MemoryEntryView, MemoryScope, SideCallResult, Uuid } from "@eo/core";
+import type { IpcChannel, IpcPayload, IpcResponse, IpcResult, MemoryEntryView, MemoryScope, SideCallResult, Uuid } from "@eo/core";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { DbHandle } from "../db/client.js";
 import { issueDevice } from "../db/repos/devicesRepo.js";
@@ -11,12 +11,10 @@ import {
   getProject,
   getSkillBySlug,
   listAgents,
-  listCommentsForItem,
   listMemories,
   listSkillVersions,
 } from "../db/repos/index.js";
 import { createTestItem, openMigratedTestDb } from "../db/testHelpers.js";
-import { postHumanComment } from "../ipc/domainCommands.js";
 import { MEMORY_PROPOSE_SKILLS_SYSTEM } from "../memory/consolidation.js";
 import { createMemoryConsolidator } from "../memory/consolidator.js";
 import { findProjectThread } from "../projects/projectThread.js";
@@ -110,10 +108,10 @@ async function syncAll(): Promise<void> {
 /**
  * A project on the record with an item, pulled to both desktops; six
  * notes in the desk's memory of it, two of them the e2e procedure; and a
- * consolidation on the desk that proposes `run-e2e`, posted on the
- * record's project thread and pulled to the laptop.
+ * consolidation on the desk that proposes `run-e2e`, after which every
+ * device has synced.
  */
-async function proposed(): Promise<{ projectId: Uuid; evidence: MemoryEntryView[]; offer: Comment }> {
+async function proposed(): Promise<{ projectId: Uuid; evidence: MemoryEntryView[] }> {
   const project = createProject(recordDb.db, { name: "Support", keyPrefix: "SUP", managed: true });
   const item = createTestItem(recordDb.db, { type: "story", title: "Fix the export", stepId: "todo", projectId: project.id as Uuid });
   await syncAll();
@@ -134,7 +132,6 @@ async function proposed(): Promise<{ projectId: Uuid; evidence: MemoryEntryView[
   const consolidator = createMemoryConsolidator({
     db: desk.handle.db,
     caps: () => CAPS,
-    projectThread: (projectId) => desk.record.projectThread(projectId),
     // The consolidation folds the facts; the skill proposal call after it (EO-575) proposes `run-e2e`.
     sideCall: (async (request: AnyRequest): Promise<Answer> => ({
       ok: true,
@@ -161,47 +158,24 @@ async function proposed(): Promise<{ projectId: Uuid; evidence: MemoryEntryView[
   consolidator.stop();
   await syncAll();
 
-  const thread = findProjectThread(laptop.handle.db, project.id as Uuid);
-  expect(findProjectThread(recordDb.db, project.id as Uuid)?.id).toBe(thread?.id);
-  const offer = listCommentsForItem(laptop.handle.db, thread!.id as Uuid).find((comment) => comment.body.includes("created the skill `run-e2e`"));
-  if (!offer) throw new Error("the notice did not reach the laptop");
-  return { projectId: project.id as Uuid, evidence, offer };
-}
-
-function answersOn(handle: DbHandle, offer: Comment): Comment[] {
-  return listCommentsForItem(handle.db, offer.itemId as Uuid).filter((comment) => comment.parentId === offer.id && comment.authorType === "engine");
+  return { projectId: project.id as Uuid, evidence };
 }
 
 describe("a skill proposal on a project the organisation holds", () => {
-  it("is applied on the desktop whose consolidation proposed it, and its notice reaches every copy of the thread, offering nothing", async () => {
-    const { projectId, evidence, offer } = await proposed();
+  it("is applied on the desktop whose consolidation proposed it, and posts nothing on any copy (EO-728)", async () => {
+    const { projectId, evidence } = await proposed();
 
     const skill = getSkillBySlug(desk.handle.db, "run-e2e");
     expect(skill).toMatchObject({ createdBy: "agent", scope: { kind: "project", projectId } });
-    expect(listSkillVersions(desk.handle.db, skill!.id).map((version) => version.author.kind)).toEqual(["consolidation"]);
+    const versions = listSkillVersions(desk.handle.db, skill!.id);
+    expect(versions.map((version) => version.author.kind)).toEqual(["consolidation"]);
+    expect(versions[0]!.report).toMatchObject({ kind: "consolidation", evidence: evidence.map((entry) => ({ entryId: entry.id, body: entry.body })) });
     const implementer = listAgents(desk.handle.db).find((agent) => agent.role === "implementer")!;
     expect(getAgentAttachments(desk.handle.db, implementer.id).skillIds).toEqual([skill!.id]);
     const active = listMemories(desk.handle.db, { kind: "project", id: projectId }).map((entry) => entry.id);
     for (const entry of evidence) expect(active).not.toContain(entry.id);
 
-    expect(offer.kind).toBe("note");
-    expect(offer.options ?? []).toEqual([]);
-    for (const where of [desk.handle, recordDb]) {
-      expect(listCommentsForItem(where.db, offer.itemId as Uuid).find((comment) => comment.id === offer.id)).toBeDefined();
-    }
-  });
-
-  it("changes nothing when somebody replies Save, Discard or Propose again to it from another device", async () => {
-    const { offer } = await proposed();
-    const skill = getSkillBySlug(desk.handle.db, "run-e2e")!;
-
-    for (const word of ["Save", "Discard", "Propose again"]) {
-      await postHumanComment(laptop.handle.db, undefined, { itemId: offer.itemId, body: word, parentId: offer.id, mentions: [], pinned: false, attachmentIds: [] });
-    }
-    await syncAll();
-
-    expect(getSkillBySlug(desk.handle.db, "run-e2e")).toEqual(skill);
-    expect(listSkillVersions(desk.handle.db, skill.id)).toHaveLength(1);
-    for (const where of [desk.handle, recordDb, laptop.handle]) expect(answersOn(where, offer)).toEqual([]);
+    // No project thread was opened on the record or on either desktop.
+    for (const where of [desk.handle, recordDb, laptop.handle]) expect(findProjectThread(where.db, projectId)).toBeUndefined();
   });
 });
