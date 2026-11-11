@@ -17,7 +17,6 @@ import { listAgents } from "../db/repos/agentsRepo.js";
 import { appendRunEventAt, createProject, createRun, listRunEvents, listRunsForItem, listSkillVersions, ownRunsToSettle } from "../db/repos/index.js";
 import { skillUsageById, usageOfSkill } from "../db/repos/skillUsageRepo.js";
 import { getSkill, saveSkill } from "../db/repos/skillsRepo.js";
-import { findProjectThread } from "../projects/projectThread.js";
 import { createTestItem, openMigratedTestDb } from "../db/testHelpers.js";
 import { listSkillsCommand } from "../ipc/skillCommands.js";
 import { createFakeProvider } from "../providers/fake.js";
@@ -205,7 +204,6 @@ describe("archiving unused agent skills after a dispatch", () => {
     expect(types).toEqual([SKILLS_DELIVERED_EVENT, SKILLS_SETTLED_EVENT]);
     expect(getSkill(handle.db, saved.skill.id)!.archivedAt).not.toBeNull();
     expect(listSkillVersions(handle.db, saved.skill.id)[0]).toMatchObject({ action: "archive", author: { kind: "eo" }, report: { kind: "unused", runsWithoutLoad: 1 } });
-    expect(findProjectThread(handle.db, project.id)).toBeUndefined();
   });
 
   /** An installation upgraded with runs recorded before `skills_settled` existed: they count, once settled on reconciling. */

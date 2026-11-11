@@ -244,7 +244,6 @@ describe("projects:delete", () => {
         pipelineId: pipeline.id,
         template: null,
         ownerId: LOCAL_PERSON_ID,
-        threadItemId: thread.id,
       });
       saveJiraBinding(handle.db, eo.projectId, { projectKey: "EO" });
       expect(listItemTypes(handle.db, eo.projectId).length).toBeGreaterThan(0);

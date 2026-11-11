@@ -18,12 +18,11 @@ import { saveMcpServer } from "../db/repos/mcpServersRepo.js";
 import { setSetting } from "../db/repos/settingsRepo.js";
 import { listCommentsForItem } from "../db/repos/commentsRepo.js";
 import { countProjectRows, readProjectAgents, writeAdoptedPage, writeAdoptedProject } from "../db/repos/projectMoveRepo.js";
-import { findProjectThread } from "../projects/projectThread.js";
 import { MANAGED_PERSON_ID_KEY } from "../identity/viewer.js";
 import { createLocalRecord, type LocalItemRecord } from "./localRecord.js";
 import { createDeviceRecord, type DeviceRecord } from "./deviceRecord.js";
 import { moveProjectToRecord } from "./adopt.js";
-import { RESTORE_SKILL_NOT_AN_ADMIN, RESTORE_SKILL_VERSION_NOT_HERE, serveAdopt, serveApply, serveChanges, serveMessages, serveProjectThread, serveRestoreSkillVersion, serveSendMessage, type ServeRecordContext } from "./serveRecord.js";
+import { RESTORE_SKILL_NOT_AN_ADMIN, RESTORE_SKILL_VERSION_NOT_HERE, serveAdopt, serveApply, serveChanges, serveMessages, serveRestoreSkillVersion, serveSendMessage, type ServeRecordContext } from "./serveRecord.js";
 import { archiveReachOf, archiveUnusedSkills, EO_SKILL_AUTHOR } from "../skills/archival.js";
 import { markReplica } from "../db/recordRole.js";
 import { publishSectionCommand } from "../ipc/sectionCommands.js";
@@ -101,9 +100,7 @@ function desktop(handle: DbHandle, deviceId: string): Desktop {
           ? serveChanges(serving, payload as IpcPayload<"record:changes">)
           : channel === "record:apply"
             ? await serveApply(serving, payload as IpcPayload<"record:apply">)
-            : channel === "record:projectThread"
-              ? await serveProjectThread(serving, payload as IpcPayload<"record:projectThread">)
-              : channel === "record:messages"
+            : channel === "record:messages"
                 ? serveMessages(serving, { ...(payload as IpcPayload<"record:messages">), deviceId })
                 : channel === "record:sendMessage"
                   ? serveSendMessage(serving, { ...(payload as IpcPayload<"record:sendMessage">), deviceId })
@@ -186,8 +183,7 @@ describe("handing a project to the record carries its own skills (EO-513)", () =
     expect(countProjectRows(recordDb.db, support.id).skills).toBe(2);
     expect(countProjectRows(recordDb.db, support.id)).toEqual(countProjectRows(annaDb.db, support.id));
     // Nothing missing, so nothing to say.
-    const thread = findProjectThread(recordDb.db, support.id);
-    expect(thread === undefined ? [] : listCommentsForItem(recordDb.db, thread.id as Uuid)).toEqual([]);
+    expect(recordDb.db.all(sql`select id from messages`)).toEqual([]);
   });
 
   it("does not copy a global skill", async () => {
@@ -268,8 +264,6 @@ describe("what a consolidation reported about a skill, across the record (EO-728
       expect(listSkillVersions(db, created.skill.id).filter((version) => version.report !== null)).toEqual(filed);
     }
     // Nothing posted for it, on either side.
-    expect(findProjectThread(recordDb.db, support.id)).toBeUndefined();
-    expect(findProjectThread(laptopDb.db, support.id)).toBeUndefined();
   });
 });
 
@@ -291,7 +285,6 @@ describe("an attachment that cannot be carried over (EO-513)", () => {
     expect(getSkill(recordDb.db, globalSkill)).toBeUndefined();
     expect(getSkill(recordDb.db, elsewhere)).toBeUndefined();
 
-    expect(findProjectThread(recordDb.db, support.id)).toBeUndefined();
     const said = messagesFrom(recordDb.db, "uncarried_tools");
     expect(said).toHaveLength(1);
     expect(said[0]).toMatchObject({ recipientId: annaPersonId, projectId: support.id, handledAt: null });
@@ -304,7 +297,6 @@ describe("an attachment that cannot be carried over (EO-513)", () => {
     // …and the admin's other desktop pulls the same message, with no thread.
     await laptop.record.sync();
     expect(messagesFrom(laptopDb.db, "uncarried_tools").map((message) => message.id)).toEqual([said[0]!.id]);
-    expect(findProjectThread(laptopDb.db, support.id)).toBeUndefined();
   });
 
   it("is said once, however many times the last page is sent", async () => {
@@ -405,7 +397,6 @@ describe("the windows a move has to hold through (EO-513, review)", () => {
     expect(said).toHaveLength(1);
     expect(said[0]!.body).toContain("Support implementer");
     expect(said[0]!.body).toContain('the skill "House style"');
-    expect(findProjectThread(recordDb.db, support.id)).toBeUndefined();
   });
 });
 
@@ -470,7 +461,6 @@ describe("a skill a person locked, against the record's copies (EO-714)", () => 
     expect(said[0]!.body).toContain("a person locked it here");
     // Kept on this machine, whose lock it is: about no project, since the record holds this one.
     expect(said[0]).toMatchObject({ recipientId: LOCAL_PERSON_ID, projectId: null, handledAt: null });
-    expect(findProjectThread(laptopDb.db, support.id)).toBeUndefined();
 
     // Unlocked, it arrives — and the person is not told twice.
     expect(setSkillLocked(laptopDb.db, projectSkill, false).ok).toBe(true);
@@ -595,7 +585,6 @@ describe("an agent's skill nobody loads, on a project the record holds (EO-720)"
     expect(archived()).toBe(true);
     expect(listSkillVersions(recordDb.db, skillId)[0]).toMatchObject({ action: "archive", author: { kind: "eo" }, report: { kind: "unused", runsWithoutLoad: 2 } });
     // Nothing is posted for it (EO-728): the archive version says it.
-    expect(findProjectThread(recordDb.db, support.id)).toBeUndefined();
 
     // The archived copy reaches a replica, and stays archived there.
     await laptop.record.sync();
@@ -642,8 +631,6 @@ describe("an agent's skill nobody loads, on a project the record holds (EO-720)"
     expect(listSkillVersions(annaDb.db, globalId)[0]).toMatchObject({ action: "archive", author: { kind: "eo" }, report: { kind: "unused", runsWithoutLoad: 3 } });
     // No note anywhere (EO-728): not on the record, not here.
     await anna.record.sync();
-    expect(findProjectThread(recordDb.db, support.id)).toBeUndefined();
-    expect(findProjectThread(annaDb.db, support.id)).toBeUndefined();
   });
 });
 
@@ -710,7 +697,6 @@ describe("Restore on a skill EO archived on the record (EO-728, review)", () => 
     expect(answer.data).toMatchObject({ problem: null, skill: { id: skillId, archivedAt: null } });
     await liveEverywhere(skillId, archiveVersion.id);
     // Nothing posted for it, anywhere.
-    for (const db of [recordDb.db, laptopDb.db, annaDb.db]) expect(findProjectThread(db, support.id)).toBeUndefined();
   });
 
   it("is made on the record while the packs section is published, which still locks a skill of the desktop's own", async () => {

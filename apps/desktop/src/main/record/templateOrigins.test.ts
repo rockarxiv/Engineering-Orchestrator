@@ -31,7 +31,6 @@ import { applyTemplateUpdates } from "../gallery/templateUpdates.js";
 import { MANAGED_PERSON_ID_KEY } from "../identity/viewer.js";
 import { buildTickInput } from "../supervisor/buildTickInput.js";
 import { moveProjectToRecord } from "./adopt.js";
-import { findProjectThread } from "../projects/projectThread.js";
 import { createLocalRecord } from "./localRecord.js";
 import { serveAdopt, serveApply, serveChanges, type ServeRecordContext } from "./serveRecord.js";
 import { createDeviceRecord } from "./deviceRecord.js";
@@ -268,8 +267,6 @@ describe("a template update the record applies, on a desktop", () => {
 
     const versions = pipelineVersionsCommand(deskDb.db, { pipelineId }).versions;
     expect(versions.find((version) => version.id === filed.id)).toMatchObject({ number: filed.number, createdBy: filed.createdBy, releaseNotes: filed.releaseNotes });
-    // Said on the version, and nowhere else.
-    expect(findProjectThread(recordDb.db, project.id)).toBeUndefined();
-    expect(findProjectThread(deskDb.db, project.id)).toBeUndefined();
+    // Said on the version.
   });
 });

@@ -22,7 +22,6 @@ import { createPerson } from "../db/repos/peopleRepo.js";
 import { createProject } from "../db/repos/projectsRepo.js";
 import { createTestItem, messagesFrom, openMigratedTestDb } from "../db/testHelpers.js";
 import { listInbox } from "../ipc/domainQueries.js";
-import { findProjectThread, openProjectThread } from "../projects/projectThread.js";
 import { loadTemplateHistory, type TemplateHistory, type TemplateVersion } from "./history.js";
 import { backfillPipelineOrigins } from "./origins.js";
 import { applyTemplateUpdates, conflictNoticeOptions, FIX_WITH_ASSISTANT, updateConflictBrief } from "./templateUpdates.js";
@@ -76,9 +75,9 @@ function noticesOn(projectId: Uuid): Message[] {
   return messagesFrom(handle.db, "template_conflict").filter((message) => message.projectId === projectId);
 }
 
-/** No project thread was made for any of these projects, so nothing was posted on one. */
-function expectNoThread(...projectIds: Uuid[]): void {
-  for (const projectId of projectIds) expect(findProjectThread(handle.db, projectId)).toBeUndefined();
+/** Nothing was posted as a comment anywhere: what EO says here is a message. */
+function expectNoComment(): void {
+  expect(handle.db.all(sql`select id from comments`)).toEqual([]);
 }
 
 function withVersion(version: string, notes: string): TemplateHistory {
@@ -116,7 +115,7 @@ describe("recording an update conflict", () => {
 
     // In the person's inbox, as a message.
     expect(listInbox(handle.db, projectId).messages.map((message) => message.id)).toEqual([notice.id]);
-    expectNoThread(projectId);
+    expectNoComment();
   });
 
   it("sends one about each project with items on a pipeline no project has adopted", () => {
@@ -134,7 +133,7 @@ describe("recording an update conflict", () => {
     expect(noticesOn(idle.id as Uuid)).toHaveLength(0);
     const conflict = openUpdateConflict(handle.db, "default")!;
     expect(conflict.noticeIds).toHaveLength(2);
-    expectNoThread(shop.id as Uuid, blog.id as Uuid, idle.id as Uuid);
+    expectNoComment();
   });
 
   it("sends it to each of the organisation's admins on the record", () => {
@@ -152,18 +151,17 @@ describe("recording an update conflict", () => {
     expect(recipients).toEqual(expect.arrayContaining([anna.id, ben.id]));
     expect(recipients).not.toContain(carl.id);
     expect(openUpdateConflict(handle.db, "default")?.noticeIds.sort()).toEqual(noticesOn(projectId).map((message) => message.id).sort());
-    expectNoThread(projectId);
+    expectNoComment();
   });
 
-  it("is held and told at once while the project's thread could not be opened, rather than deferred", () => {
+  it("is held and told at once while the project is moving, rather than deferred", () => {
     customisedDelivery();
     const projectId = adoptedBy("Moving", "MOVE");
     handle.db.run(sql`UPDATE projects SET adopting_at = 123 WHERE id = ${projectId}`);
-    expect(openProjectThread(handle.db, projectId).ok).toBe(false);
 
     expect(applyTemplateUpdates(handle.db, history, { isTheRecord: false })).toEqual([expect.objectContaining({ outcome: "conflict" })]);
     expect(noticesOn(projectId)).toHaveLength(1);
-    expectNoThread(projectId);
+    expectNoComment();
   });
 });
 
@@ -191,23 +189,6 @@ describe("when the conflict resolves", () => {
     resolveUpdateConflict(handle.db, openUpdateConflict(handle.db, "default")!.id, "published", 500);
 
     expect(getMessage(handle.db, notice.id)).toMatchObject({ handledHow: "dismissed", handledAt: 10 });
-  });
-
-  it("still dismisses the mention of a notice posted on a project thread before messages", () => {
-    customisedDelivery();
-    const projectId = adoptedBy("Shop", "SHOP");
-    applyTemplateUpdates(handle.db, history, { isTheRecord: false });
-    const conflict = openUpdateConflict(handle.db, "default")!;
-    // A notice as EO-533 posted it, which EO-730 has not migrated yet.
-    const thread = openProjectThread(handle.db, projectId);
-    if (!thread.ok) throw new Error(thread.problem);
-    const old = postComment(handle.db, { itemId: thread.item.id, author: { type: "engine" }, kind: "note", body: "Held.", options: conflictNoticeOptions(conflict.id), mentions: [{ type: "human" }], parseBodyMentions: false });
-    setUpdateConflictNotices(handle.db, conflict.id, [...conflict.noticeIds, old.id]);
-
-    resolveUpdateConflict(handle.db, conflict.id, "published");
-
-    expect(listMentionsForComment(handle.db, old.id as Uuid).map((mention) => mention.status)).toEqual(["dismissed"]);
-    expect(getMessage(handle.db, conflict.noticeIds[0]!)?.handledHow).toBe("resolved");
   });
 
   it("never notifies the same template version twice, however many launches and resolutions", () => {
@@ -244,7 +225,7 @@ describe("when the conflict resolves", () => {
     const second = notices.find((message) => message.id !== first.id)!;
     expect(second.body).toContain("from 1.0 to 1.4");
     expect(second.handledAt).toBeNull();
-    expectNoThread(projectId);
+    expectNoComment();
   });
 });
 
@@ -314,7 +295,7 @@ describe("a held update nobody was told about", () => {
 
     expect(applyTemplateUpdates(handle.db, history, { isTheRecord: false })).toEqual([]);
     expect(noticesOn(projectId)).toHaveLength(1);
-    expectNoThread(projectId);
+    expectNoComment();
   });
 
   it("is announced once work arrives on a pipeline that had no project and no work when it was held", () => {
@@ -336,31 +317,7 @@ describe("a held update nobody was told about", () => {
 
     applyTemplateUpdates(handle.db, history, { isTheRecord: false });
     expect(noticesOn(shop.id as Uuid)).toHaveLength(1);
-    expectNoThread(shop.id as Uuid);
+    expectNoComment();
   });
 });
 
-describe("an ordinary remark on the project thread", () => {
-  it("leaves a notice posted there before messages open — a remark beside it, or a reply under it — until the conflict resolves", () => {
-    customisedDelivery();
-    const projectId = adoptedBy("Shop", "SHOP");
-    applyTemplateUpdates(handle.db, history, { isTheRecord: false });
-    const conflict = openUpdateConflict(handle.db, "default")!;
-    // A notice as EO-533 posted it, with its one action button.
-    const thread = openProjectThread(handle.db, projectId);
-    if (!thread.ok) throw new Error(thread.problem);
-    const notice = postComment(handle.db, { itemId: thread.item.id, author: { type: "engine" }, kind: "note", body: "Held.", options: conflictNoticeOptions(conflict.id), mentions: [{ type: "human" }], parseBodyMentions: false });
-    setUpdateConflictNotices(handle.db, conflict.id, [...conflict.noticeIds, notice.id]);
-    // And a plain question beside it, which a remark does answer.
-    const question = postComment(handle.db, { itemId: notice.itemId, author: { type: "engine" }, kind: "question", body: "Which repository?", mentions: [{ type: "human" }] });
-
-    postComment(handle.db, { itemId: notice.itemId, author: { type: "human" }, body: "Unrelated: the CI is slow today." });
-    postComment(handle.db, { itemId: notice.itemId, author: { type: "human" }, parentId: notice.id, body: "I'll look at this later." });
-
-    expect(listMentionsForComment(handle.db, question.id as Uuid).map((mention) => mention.status)).toEqual(["addressed"]);
-    expect(listMentionsForComment(handle.db, notice.id as Uuid).map((mention) => mention.status)).toEqual(["open"]);
-
-    resolveUpdateConflict(handle.db, conflict.id, "published");
-    expect(listMentionsForComment(handle.db, notice.id as Uuid).map((mention) => mention.status)).toEqual(["dismissed"]);
-  });
-});

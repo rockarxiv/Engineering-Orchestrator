@@ -136,9 +136,6 @@ const REACHED_BY_A_DESKTOP: Partial<Record<keyof typeof ipcContract, string>> = 
   "record:spend": "record/remoteRecord.ts — the device asks the record what this person has spent today, before dispatching",
   "record:createItem": "record/remoteRecord.ts — a module's run on a device asks the record to create the work item ctx.createItem named",
   "record:attachment": "record/drain.ts — the device fetches a file the record told it about",
-  // EO-471. Asked by `projects:thread` on a desktop whose project the
-  // organisation holds: the thread is the record's to make.
-  "record:projectThread": "record/remoteRecord.ts — a desktop asks the record for a moved project's thread when a person opens its notes",
   // EO-600. Asked by `items:update` on a desktop whose project the
   // organisation holds: what its items wait for is the record's to change.
   // EO-726. A message about a project the organisation holds lives on

@@ -107,7 +107,6 @@ describe("a paused job", () => {
     expect(messages[0]?.body).toContain("paused");
     expect(messages[0]?.body).toContain("Morning report");
     expect(messages[0]).toMatchObject({ recipientId: report.ownerId, jobId: report.id, source: "job_skipped" });
-    expect(listCommentsForItem(handle.db, report.threadItemId as Uuid)).toEqual([]);
   });
 
   it("refuses a press as well as a tick, whichever door it came through", () => {

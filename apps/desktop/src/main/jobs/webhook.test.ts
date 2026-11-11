@@ -95,11 +95,10 @@ function deliver(body: string, options: DeliveryOptions = {}) {
 
 /**
  * Everything the job's guards told its owner — what a guard reaching a
- * person looks like (EO-729). Asserts on the way that none of it went to
- * the job's thread, and every one is the owner's and about the job.
+ * person looks like (EO-729). Asserts on the way that every one is the
+ * owner's and about the job.
  */
 function ownerMessages(job: Job): string[] {
-  expect(listCommentsForItem(handle.db, job.threadItemId as Uuid)).toEqual([]);
   const told = messagesAboutJob(handle.db, job.id);
   for (const message of told) expect(message).toMatchObject({ recipientId: job.ownerId, jobId: job.id });
   return told.map((message) => message.body);

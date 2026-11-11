@@ -420,7 +420,6 @@ describe("a job", () => {
     expect(fired).toMatchObject({ item: null, problem: sentence });
     expect(fired.occurrence).toMatchObject({ status: "failed", reason: sentence });
     expect(messagesAboutJob(handle.db, made.job.id).map((message) => message.body).join()).toContain(sentence);
-    expect(listCommentsForItem(handle.db, made.job.threadItemId as Uuid)).toEqual([]);
 
     setRules("default", []);
     expect(fireJob(handle.db, made.job, { dueAt: 2 }).occurrence?.status).toBe("fired");

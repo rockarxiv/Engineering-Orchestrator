@@ -26,7 +26,6 @@ import {
 import { abandonAdoption, beginAdoption } from "../db/repos/projectsRepo.js";
 import { createTestItem, openMigratedTestDb } from "../db/testHelpers.js";
 import { PREVIEW_PROJECT_KEY } from "../gallery/commands.js";
-import { openProjectThread } from "../projects/projectThread.js";
 import { addRepositoryToProjectCommand, createProjectCommand, listProjectsCommand, removeRepositoryFromProjectCommand } from "./projectCommands.js";
 import { ACTIVE_PROJECT_KEY, activeProjectId, createRepositoryCommand, removeRepositoryCommand } from "./repositoryCommands.js";
 
@@ -367,13 +366,10 @@ describe("removing a project's last repository (EO-603)", () => {
     return { workspace, project };
   }
 
-  it("keeps the project, its pipelines, its tickets and its notes thread", () => {
+  it("keeps the project, its pipelines and its tickets", () => {
     const api = repositoryWithProject("api", "API");
     const pipeline = createPipeline(handle.db, { name: "Delivery", projectId: api.project.id });
     const feature = createTestItem(handle.db, { type: "feature", title: "Spans repos", stepId: null, projectId: api.project.id, workspaceId: null });
-    const thread = openProjectThread(handle.db, api.project.id);
-    if (!thread.ok) throw new Error(thread.problem);
-    postComment(handle.db, { itemId: thread.item.id, author: { type: "human" }, body: "The staging database is shared." });
 
     const removed = removeRepositoryCommand(handle.db, { id: api.workspace.id });
 
@@ -382,7 +378,6 @@ describe("removing a project's last repository (EO-603)", () => {
     expect(getProject(handle.db, api.project.id)).toMatchObject({ id: api.project.id, name: "api" });
     expect(listPipelines(handle.db, api.project.id).map((entry) => entry.id)).toContain(pipeline.id);
     expect(getItem(handle.db, feature.id)).toMatchObject({ projectId: api.project.id });
-    expect(listCommentsForItem(handle.db, thread.item.id).map((comment) => comment.body)).toContain("The staging database is shared.");
   });
 
   it("keeps a project with nothing on it, the window on it, and takes a repository again", async () => {

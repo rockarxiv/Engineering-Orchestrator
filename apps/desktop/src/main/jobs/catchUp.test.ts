@@ -149,8 +149,7 @@ describe("a schedule that came round while EO was shut", () => {
       handledAt: null,
     });
     expect(messages[0]?.options).toContain(RUN_NOW_OPTION);
-    // Invariant #8 where there is no item: a message, and nothing on a thread.
-    expect(listCommentsForItem(handle.db, monday.threadItemId as Uuid)).toEqual([]);
+    // Invariant #8 where there is no item: a message.
     expect(openMentionsForHuman(handle.db)).toEqual([]);
   });
 

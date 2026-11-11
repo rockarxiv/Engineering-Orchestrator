@@ -23,7 +23,6 @@ function job(overrides: Partial<JobSummary> = {}): JobSummary {
     pipelineId: "default",
     template: { type: "developer:story", title: "{{job}}", body: null },
     ownerId: "person-1",
-    threadItemId: "thread-1",
     pausedAt: null,
     budgetPerOccurrenceCents: null,
     maxItemsPerHour: null,

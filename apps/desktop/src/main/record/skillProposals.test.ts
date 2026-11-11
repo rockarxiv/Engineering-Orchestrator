@@ -17,11 +17,10 @@ import {
 import { createTestItem, openMigratedTestDb } from "../db/testHelpers.js";
 import { MEMORY_PROPOSE_SKILLS_SYSTEM } from "../memory/consolidation.js";
 import { createMemoryConsolidator } from "../memory/consolidator.js";
-import { findProjectThread } from "../projects/projectThread.js";
 import type { SideCallRequest } from "../sideCalls/sideCall.js";
 import { createDeviceRecord, type DeviceRecord } from "./deviceRecord.js";
 import { createLocalRecord } from "./localRecord.js";
-import { serveApply, serveChanges, serveProjectThread, type ServeRecordContext } from "./serveRecord.js";
+import { serveApply, serveChanges, type ServeRecordContext } from "./serveRecord.js";
 import type { RecordTransport } from "./syncStatus.js";
 
 /**
@@ -62,8 +61,6 @@ function transport(): RecordTransport {
             return serveApply(serving, payload as IpcPayload<"record:apply">);
           case "record:changes":
             return serveChanges(serving, payload as IpcPayload<"record:changes">);
-          case "record:projectThread":
-            return serveProjectThread(serving, payload as IpcPayload<"record:projectThread">);
           default:
             return null;
         }
@@ -176,6 +173,5 @@ describe("a skill proposal on a project the organisation holds", () => {
     for (const entry of evidence) expect(active).not.toContain(entry.id);
 
     // No project thread was opened on the record or on either desktop.
-    for (const where of [desk.handle, recordDb, laptop.handle]) expect(findProjectThread(where.db, projectId)).toBeUndefined();
   });
 });

@@ -1,3 +1,4 @@
+import { sql } from "drizzle-orm";
 import { LOCAL_PERSON_ID, type Skill, type Uuid } from "@eo/core";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { DbHandle } from "../db/client.js";
@@ -5,7 +6,6 @@ import { createProject } from "../db/repos/projectsRepo.js";
 import { holdSkillCopy, listHeldSkillCopies, saveSkill, setSkillLocked, upsertReplicaSkill } from "../db/repos/skillsRepo.js";
 import { messagesFrom, openMigratedTestDb } from "../db/testHelpers.js";
 import { listInbox } from "../ipc/domainQueries.js";
-import { findProjectThread } from "../projects/projectThread.js";
 import { tellHeldSkillCopies } from "./heldSkills.js";
 
 /**
@@ -57,9 +57,9 @@ function told() {
   return messagesFrom(handle.db, "held_skill_copy");
 }
 
-/** No project thread was made for any of these projects. */
-function expectNoThread(...projectIds: string[]): void {
-  for (const projectId of projectIds) expect(findProjectThread(handle.db, projectId as Uuid)).toBeUndefined();
+/** Nothing was posted as a comment anywhere: what EO says here is a message. */
+function expectNoComment(): void {
+  expect(handle.db.all(sql`select id from comments`)).toEqual([]);
 }
 
 describe("telling a person what their lock kept out", () => {
@@ -77,7 +77,7 @@ describe("telling a person what their lock kept out", () => {
     expect(listHeldSkillCopies(handle.db)[0]?.toldAt).toBe(50);
     // In the person's inbox, as a message.
     expect(listInbox(handle.db).messages.map((message) => message.id)).toEqual([told()[0]!.id]);
-    expectNoThread(shop.id, api.id);
+    expectNoComment();
   });
 
   it("is about the project a locked project skill belongs to", () => {
@@ -88,7 +88,7 @@ describe("telling a person what their lock kept out", () => {
     tellHeldSkillCopies(handle.db);
 
     expect(told()).toEqual([expect.objectContaining({ projectId: shop.id })]);
-    expectNoThread(shop.id, api.id);
+    expectNoComment();
   });
 
   it("tells a copy at once on a machine with no project, rather than waiting for a thread", () => {

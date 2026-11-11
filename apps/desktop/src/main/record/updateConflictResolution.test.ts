@@ -36,7 +36,6 @@ import { clearPublishedView } from "../ipc/currentView.js";
 import type { EngineHandle } from "../ipc/domainCommands.js";
 import { clearHandlerRegistry, dispatchIpc } from "../ipc/registry.js";
 import { TOOLS } from "../mcpHost/catalog.js";
-import { findProjectThread } from "../projects/projectThread.js";
 import { createFakeProvider } from "../providers/fake.js";
 import { postAssistReply } from "../roles/assist.js";
 import { ASSIST_ACTION } from "../roles/conversationSteps.js";
@@ -199,9 +198,8 @@ async function heldOnTheRecord(): Promise<{ conflictId: string; projectId: Uuid 
   return { conflictId: conflict.id, projectId: project.id as Uuid };
 }
 
-/** The notice on Anna's desktop: the record's message to her, pulled, and no project thread. */
+/** The notice on Anna's desktop: the record's message to her, pulled. */
 function annaNotice(projectId: Uuid) {
-  expect(findProjectThread(anna.handle.db, projectId)).toBeUndefined();
   const [notice, ...more] = messagesFrom(anna.handle.db, "template_conflict").filter((message) => message.projectId === projectId);
   expect(notice).toBeDefined();
   expect(more).toEqual([]);

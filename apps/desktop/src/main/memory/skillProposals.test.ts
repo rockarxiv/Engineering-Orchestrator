@@ -31,7 +31,6 @@ import {
   setSkillLocked,
 } from "../db/repos/index.js";
 import { attachWorkspace, createTestItem, openMigratedTestDb } from "../db/testHelpers.js";
-import { findProjectThread } from "../projects/projectThread.js";
 import type { SideCallRequest } from "../sideCalls/sideCall.js";
 import { MEMORY_PROPOSE_SKILLS_SYSTEM } from "./consolidation.js";
 import { createMemoryConsolidator } from "./consolidator.js";
@@ -173,9 +172,8 @@ describe("skills proposed by memory consolidation", () => {
     return { ...given, request: requests[1]! };
   }
 
-  /** Nothing is posted for a proposal, applied or not (EO-728): no project thread is opened, and no comment written anywhere. */
+  /** Nothing is posted for a proposal, applied or not (EO-728): no comment is written anywhere. */
   function expectNothingPosted(): void {
-    expect(findProjectThread(handle.db, projectId)).toBeUndefined();
     expect(handle.db.all(sql`select id from comments`)).toEqual([]);
   }
 

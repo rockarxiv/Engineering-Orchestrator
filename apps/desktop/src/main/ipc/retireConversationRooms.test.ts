@@ -13,7 +13,7 @@ import {
   createRun,
   getItem,
   insertAttachments,
-  jobForThreadItem,
+  jobForConversation,
   listAttachmentsForItem,
   listCommentsForItem,
   listMentionsForComment,
@@ -27,8 +27,6 @@ import {
 import { keyCounters, transitions } from "../db/schema.js";
 import { openMigratedTestDb } from "../db/testHelpers.js";
 import { recordItemsFromConversation } from "../jobs/fromDiscussion.js";
-import { openJobThread } from "../jobs/thread.js";
-import { openProjectThread } from "../projects/projectThread.js";
 import { assistAgent, openAssistConversation } from "../roles/assist.js";
 import { SCENARIO_STEP } from "../roles/conversationSteps.js";
 import { retireConversationRooms } from "./retireConversationRooms.js";
@@ -40,7 +38,7 @@ import { retireConversationRooms } from "./retireConversationRooms.js";
  * Every kind of conversation EO holds, seeded the same way and side by
  * side — so what the startup step tells apart is the room and nothing
  * else: a DISC and an ARCH conversation, which go, beside an assistant
- * chat, a scenario chat, a job thread and a project's notes, which stay.
+ * chat and a scenario chat, which stay.
  */
 let handle: DbHandle;
 let directory: string;
@@ -136,7 +134,7 @@ async function furnish(item: Item, label: string): Promise<Seeded> {
 
 /** Everything `furnish` wrote, read back. */
 function owned(seeded: Seeded) {
-  const job = jobForThreadItem(handle.db, seeded.item.id);
+  const job = jobForConversation(handle.db, seeded.item.id);
   return {
     item: getItem(handle.db, seeded.item.id) !== undefined,
     comments: listCommentsForItem(handle.db, seeded.item.id).length,
@@ -155,15 +153,11 @@ const KEPT = { item: true, comments: 1, mentions: 1, runs: 1, runEvents: 1, atta
 const GONE = { item: false, comments: 0, mentions: 0, runs: 0, runEvents: 0, attachments: 0, file: false, transitions: 0, job: false, occurrences: 0 };
 
 async function seedEveryRoom() {
-  const notes = openProjectThread(handle.db, projectId);
-  if (!notes.ok) throw new Error(notes.problem);
   return {
     discussion: await furnish(retiredRoom("discussion", "DISC"), "discussion"),
     architecture: await furnish(retiredRoom("architecture", "ARCH"), "architecture"),
     assistant: await furnish(openAssistConversation(handle.db, projectId), "assistant"),
     scenario: await furnish(scenarioChat(), "scenario"),
-    jobThread: await furnish(openJobThread(handle.db, "Weekly report", projectId), "job"),
-    projectNotes: await furnish(notes.item, "notes"),
   };
 }
 
@@ -179,7 +173,6 @@ describe("retiring Discussions and the Architecture panel at startup", () => {
     expect(rooms.architecture.item.key).toMatch(/^ARCH-\d+$/);
     expect(rooms.assistant.item.key).toMatch(/^ASK-\d+$/);
     expect(rooms.scenario.item.key).toMatch(/^SCN-\d+$/);
-    expect(rooms.jobThread.item.key).toMatch(/^JOB-\d+$/);
     for (const seeded of Object.values(rooms)) expect(owned(seeded), seeded.item.key).toEqual(KEPT);
   });
 
@@ -190,7 +183,7 @@ describe("retiring Discussions and the Architecture panel at startup", () => {
 
     expect(owned(rooms.discussion)).toEqual(GONE);
     expect(owned(rooms.architecture)).toEqual(GONE);
-    for (const kept of [rooms.assistant, rooms.scenario, rooms.jobThread, rooms.projectNotes]) {
+    for (const kept of [rooms.assistant, rooms.scenario]) {
       expect(owned(kept), kept.item.key).toEqual(KEPT);
     }
     // The work a discussion filed is the project's, not the conversation's.
@@ -234,7 +227,7 @@ describe("retiring Discussions and the Architecture panel at startup", () => {
     await retireConversationRooms(handle.db, storage);
 
     await expect(retireConversationRooms(handle.db, storage)).resolves.toBe(0);
-    for (const kept of [rooms.assistant, rooms.scenario, rooms.jobThread, rooms.projectNotes]) {
+    for (const kept of [rooms.assistant, rooms.scenario]) {
       expect(owned(kept), kept.item.key).toEqual(KEPT);
     }
   });
