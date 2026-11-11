@@ -24,7 +24,7 @@
 
 import { spawnSync } from "node:child_process";
 import { readdirSync, statSync } from "node:fs";
-import { dirname, extname, join, resolve } from "node:path";
+import { dirname, extname, join } from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 
@@ -34,7 +34,7 @@ import { fileURLToPath } from "node:url";
  * once on one machine. When a shard of `src/main` reaches it, raise
  * MAIN_SHARDS, not this.
  */
-export const HEAP_MB = 2560;
+const HEAP_MB = 2560;
 
 /**
  * How many passes src/main is linted in. Four peaked at about 1.85 GB
@@ -42,7 +42,7 @@ export const HEAP_MB = 2560;
  * because src/main/ipc alone takes about 1.7 GB. Each extra pass costs a
  * few seconds to build the program again.
  */
-export const MAIN_SHARDS = 4;
+const MAIN_SHARDS = 4;
 
 /** The trees a type-aware config in eslint.config.js covers, each with its own tsconfig. */
 const TYPED_TREES = [
@@ -73,7 +73,7 @@ function weightOf(path) {
  * not lint are left out, because naming one explicitly makes eslint warn
  * about it.
  */
-export function shardMain(root, shards) {
+function shardMain(root, shards) {
   const mainDir = join(root, "src", "main");
   const entries = readdirSync(mainDir, { withFileTypes: true })
     .filter((entry) => entry.isDirectory() || LINTED_EXTENSIONS.has(extname(entry.name)))
@@ -89,7 +89,7 @@ export function shardMain(root, shards) {
 }
 
 /** The passes `pnpm lint` runs, in order: each a name and the arguments eslint is given. */
-export function lintPasses(root = appRoot) {
+function lintPasses(root = appRoot) {
   const main = shardMain(root, MAIN_SHARDS).map((paths, index, all) => ({
     name: `main ${index + 1}/${all.length}`,
     // A directory with nothing eslint lints in it is not an error here:
@@ -134,4 +134,8 @@ function run() {
   return status;
 }
 
-if (process.argv[1] !== undefined && fileURLToPath(import.meta.url) === resolve(process.argv[1])) process.exitCode = run();
+// Unconditionally, rather than behind an "is this the entry module" check
+// comparing import.meta.url with process.argv[1]: on Windows the two can
+// differ in a drive letter's case, and a check that quietly fails there
+// would make `pnpm lint` lint nothing and pass. Nothing imports this file.
+process.exitCode = run();
