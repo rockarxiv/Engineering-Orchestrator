@@ -35,6 +35,12 @@ export const ProposedItemRowSchema = z.object({
   /** The priority it would be created with (EO-568). Absent when the proposal gave none, which is 0. */
   priority: z.number().int().optional(),
   /**
+   * The Reference a single item would be created with (EO-739), trimmed.
+   * Absent when it names none — and on a plan's rows, which read their
+   * feature's from the container.
+   */
+  reference: z.string().optional(),
+  /**
    * The item this row became, once the proposal was approved (EO-408),
    * and null or absent until then — and for a created item deleted since.
    *
@@ -65,6 +71,8 @@ export const ProposalSummarySchema = z.object({
     typeLabel: z.string(),
     /** The container's own priority (EO-568), absent when the proposal gave none. Its items carry theirs on their rows. */
     priority: z.number().int().optional(),
+    /** The container's Reference (EO-739), trimmed, which its items inherit. Absent when the proposal gave none. */
+    reference: z.string().optional(),
   }).nullable(),
   rows: z.array(ProposalRowSchema),
   /**

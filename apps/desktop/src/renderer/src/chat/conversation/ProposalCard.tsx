@@ -71,6 +71,7 @@ export function ProposalCard({ message, conversationId, onDone }: { message: Dis
           <PriorityLabel priority={summary.container.priority} />
         </div>
       ) : null}
+      {summary?.container?.reference !== undefined ? <ReferenceLine reference={summary.container.reference} /> : null}
       {summary !== null ? (
         <ul aria-label={summary.rows.every((row) => row.kind === "change") ? "Proposed changes" : `Proposed ${several}`} className="flex flex-col gap-1.5">
           {summary.rows.map((row, index) => (
@@ -127,6 +128,7 @@ function ProposedRow({ row, to }: { row: ProposedItemRow; to: string }) {
           {rest.length > 0 ? <span className="shrink-0 text-ink-subtle">+{rest.length} more</span> : null}
         </p>
       ) : null}
+      {row.reference !== undefined ? <ReferenceLine reference={row.reference} /> : null}
       {row.under !== null ? (
         <p className="truncate text-[11.5px] text-ink-subtle">
           Under {row.under.key} {row.under.title}
@@ -149,6 +151,15 @@ function ProposedRow({ row, to }: { row: ProposedItemRow; to: string }) {
 function PriorityLabel({ priority }: { priority: number | undefined }) {
   if (priority === undefined || !showsPriorityBadge(priority)) return null;
   return <span className="shrink-0 text-[11px] font-medium text-ink-muted">{priorityLabel(priority)}</span>;
+}
+
+/**
+ * The Reference a proposed item would be created with (EO-739): on the
+ * container for a plan, whose items inherit it, and on the row for a
+ * single item. Nothing when the proposal names none.
+ */
+function ReferenceLine({ reference }: { reference: string }) {
+  return <p className="truncate text-[11.5px] text-ink-subtle">Reference {reference}</p>;
 }
 
 /** A change to an item that exists: its key, linking to its own view, and what changes. */

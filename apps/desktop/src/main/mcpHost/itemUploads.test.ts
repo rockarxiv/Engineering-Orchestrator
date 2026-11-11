@@ -1,7 +1,7 @@
 import { mkdirSync, mkdtempSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { withActingAgent, type Uuid } from "@eo/core";
+import { effectiveReference, gitStateOf, referenceProblem, withActingAgent, type Uuid } from "@eo/core";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -339,6 +339,71 @@ describe("work_submit_plan with paths", () => {
     expect(answer.isError, answer.text).toBe(false);
     const featureKey = /[A-Z]+-\d+/.exec(answer.text)![0];
     expect(listItemAttachments(handle.db, getItemByKey(handle.db, featureKey)!.id).map((one) => one.name)).toEqual(["spec.pdf"]);
+  });
+});
+
+/**
+ * A Reference set when the work is handed over (EO-739): trimmed, a blank
+ * one read as none, and one git would not take refused with nothing
+ * created and none of the files the call named kept.
+ */
+describe("a reference handed over with the work", () => {
+  const plan = (reference: string, paths?: string[]) => ({
+    projectId,
+    title: "Board redesign",
+    understanding: "We agreed to rebuild the board against the mocks.",
+    reference,
+    stories: [1, 2].map((index) => ({ title: `Story ${index}`, body: "b", acceptance_criteria: ["done"], depends_on: [], touches: [] })),
+    ...(paths === undefined ? {} : { paths }),
+  });
+
+  it("puts work_submit_plan's on the feature, trimmed, and every story inherits it", async () => {
+    const answer = await external("work_submit_plan", plan("  PROJ-123 "));
+
+    expect(answer.isError, answer.text).toBe(false);
+    const [featureKey, ...storyKeys] = [...answer.text.matchAll(/[A-Z]+-\d+/g)].map((match) => match[0]);
+    const feature = getItemByKey(handle.db, featureKey!)!;
+    expect(gitStateOf(feature).reference).toBe("PROJ-123");
+    expect(storyKeys).toHaveLength(2);
+    for (const key of storyKeys) {
+      const story = getItemByKey(handle.db, key)!;
+      expect(effectiveReference(story, getItem(handle.db, story.parentId!))).toEqual({ value: "PROJ-123", inheritedFrom: feature.key });
+    }
+  });
+
+  it("puts work_submit_item's on the item, trimmed", async () => {
+    const answer = await external("work_submit_item", { ...story(), reference: " PROJ-9  " });
+
+    expect(gitStateOf(filed(answer)).reference).toBe("PROJ-9");
+  });
+
+  it("reads a blank one as none, on either", async () => {
+    const item = filed(await external("work_submit_item", { ...story(), reference: "   " }));
+    expect(gitStateOf(item).reference).toBeNull();
+
+    const answer = await external("work_submit_plan", plan(""));
+    expect(answer.isError, answer.text).toBe(false);
+    for (const [key] of answer.text.matchAll(/[A-Z]+-\d+/g)) expect(gitStateOf(getItemByKey(handle.db, key)!).reference).toBeNull();
+  });
+
+  it("refuses work_submit_item's that git would not take, in referenceProblem's words, and keeps none of its files", async () => {
+    const shot = file(elsewhere, "mock.png", PNG);
+
+    const answer = await external("work_submit_item", { ...story([shot]), reference: "PROJ 123" });
+
+    expect(answer.text).toContain("Nothing has changed");
+    expect(answer.text).toContain(referenceProblem("PROJ 123")!);
+    nothingFiled();
+  });
+
+  it("refuses work_submit_plan's that git would not take, in referenceProblem's words, and keeps none of its files", async () => {
+    const spec = file(elsewhere, "spec.pdf", "%PDF-1.4");
+
+    const answer = await external("work_submit_plan", plan("PROJ 123", [spec]));
+
+    expect(answer.text).toContain("Nothing has changed");
+    expect(answer.text).toContain(referenceProblem("PROJ 123")!);
+    nothingFiled();
   });
 });
 

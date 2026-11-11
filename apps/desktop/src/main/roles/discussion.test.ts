@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { gitStateOf, EMPTY_SPEC_SHAPE, LOCAL_PERSON_ID, LOCAL_PERSON_NAME, type Agent, type DiscussionOutput, type DiscussionProposal, type DiscussionQuestion, type Item, type Uuid } from "@eo/core";
+import { effectiveReference, gitStateOf, referenceProblem, EMPTY_SPEC_SHAPE, LOCAL_PERSON_ID, LOCAL_PERSON_NAME, type Agent, type DiscussionOutput, type DiscussionProposal, type DiscussionQuestion, type Item, type NewStoryProposal, type Uuid } from "@eo/core";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { DbHandle } from "../db/client.js";
 import {
@@ -26,7 +26,7 @@ import { archivePipeline, createPipeline, createStep, getPipeline, setEntryStep 
 import { featureIsDone, featureProgress } from "./featureLifecycle.js";
 import { openAssistConversation, postAssistReply } from "./assist.js";
 import { ASSIST_ACTION } from "./conversationSteps.js";
-import { applyDiscussionProposal, describeProposal, proposedPipelineProblem, resolvePlacement, summariseProposal } from "./discussion.js";
+import { applyDiscussionProposal, applyNewItem, describeProposal, handedOver, proposedPipelineProblem, resolvePlacement, summariseProposal } from "./discussion.js";
 import { PROPOSAL_KIND } from "./proposal.js";
 
 let handle: DbHandle;
@@ -763,6 +763,113 @@ describe("the priority a proposal creates work with", () => {
     const { proposalIds } = turn(says("Here.", proposal));
 
     expect(cardOf(proposalIds[0]!)).not.toContain("Priority");
+  });
+});
+
+/**
+ * The Reference a proposal names (EO-739): on the feature for a plan,
+ * which its stories inherit, and on the item for a single story or bug.
+ * A label, so it is shown on the card and written in the insert on any
+ * pipeline — the conversation here is on no project, where no branch is
+ * ever cut.
+ */
+describe("the Reference a proposal names", () => {
+  const bug = (extra: Record<string, unknown> = {}): DiscussionProposal => ({
+    action: "new_bug",
+    title: "Login loops",
+    body: "It loops.",
+    steps_to_reproduce: "Sign in.",
+    expected: "Signed in.",
+    actual: "Back at sign-in.",
+    environment: "Chrome.",
+    acceptance_criteria: [],
+    ...extra,
+  });
+  const newStory = (extra: Record<string, unknown> = {}): DiscussionProposal => ({ action: "new_story", ...story("Add the limiter"), depends_on: [], ...extra });
+  const feature = (extra: Record<string, unknown> = {}): DiscussionProposal => ({
+    action: "new_feature",
+    title: "Rate limiting",
+    understanding: "Cap callers.",
+    decisions: [],
+    stories: [story("Count requests"), story("Refuse over the limit")],
+    ...extra,
+  });
+  const created = (title: string) => listItems(handle.db).find((item) => item.title === title)!;
+  const cardOf = (proposalId: Uuid) => listCommentsForItem(handle.db, conversation.id).find((comment) => comment.id === proposalId)!.body;
+
+  it("writes a plan's onto the feature, and every story reads it from the feature", () => {
+    const { proposalIds } = turn(says("Here.", feature({ reference: "PROJ-123" })));
+
+    expect(cardOf(proposalIds[0]!)).toContain("_Reference: `PROJ-123`_");
+    expect(apply(proposalIds[0]!).ok).toBe(true);
+
+    const made = created("Rate limiting");
+    expect(gitStateOf(made).reference).toBe("PROJ-123");
+    for (const title of ["Count requests", "Refuse over the limit"]) {
+      const child = created(title);
+      expect(gitStateOf(child).reference).toBeNull();
+      expect(effectiveReference(child, getItem(handle.db, child.parentId!))).toEqual({ value: "PROJ-123", inheritedFrom: made.key });
+    }
+  });
+
+  it.each([
+    ["new_story", newStory({ reference: "  PROJ-9  " }), "Add the limiter"],
+    ["new_bug", bug({ reference: "  PROJ-9  " }), "Login loops"],
+  ])("writes a %s's onto it, trimmed, on a pipeline that cuts no branch", (_action, proposal, title) => {
+    // No repository on the conversation's project: a base branch is refused here.
+    const { proposalIds } = turn(says("Here.", proposal));
+
+    expect(cardOf(proposalIds[0]!)).toContain("_Reference: `PROJ-9`_");
+    expect(apply(proposalIds[0]!).ok).toBe(true);
+    expect(gitStateOf(created(title)).reference).toBe("PROJ-9");
+  });
+
+  it.each([
+    ["new_feature", feature({ reference: "   " }), ["Rate limiting", "Count requests"]],
+    ["new_story", newStory({ reference: "" }), ["Add the limiter"]],
+    ["new_bug", bug({ reference: " \t " }), ["Login loops"]],
+  ])("reads a blank one on a %s as none", (_action, proposal, titles) => {
+    const { proposalIds } = turn(says("Here.", proposal));
+
+    expect(cardOf(proposalIds[0]!)).not.toContain("Reference");
+    expect(apply(proposalIds[0]!).ok).toBe(true);
+    for (const title of titles) expect(gitStateOf(created(title)).reference).toBeNull();
+    expect(handle.db.all(sql`SELECT * FROM item_extensions WHERE extension = 'git'`)).toEqual([]);
+  });
+
+  it.each([
+    ["new_feature", feature({ reference: "PROJ 123" })],
+    ["new_story", newStory({ reference: "PROJ 123" })],
+    ["new_bug", bug({ reference: "PROJ 123" })],
+  ])("sends a %s's that git would not take back, in referenceProblem's words, with no card", (_action, proposal) => {
+    const before = listItems(handle.db).length;
+    const { proposalIds } = turn(says("Here.", proposal));
+
+    expect(proposalIds).toEqual([]);
+    const rejection = listCommentsForItem(handle.db, conversation.id).find((comment) => comment.kind === "rejection");
+    expect(rejection?.body).toContain(referenceProblem("PROJ 123")!);
+    expect(listItems(handle.db)).toHaveLength(before);
+  });
+
+  it("refuses one git would not take at approval too, and creates nothing", () => {
+    // The card's check can be bypassed by a proposal posted before it existed; the apply path asks again.
+    const before = listItems(handle.db).length;
+    const result = applyNewItem(handle.db, null, { ...handedOver(newStory() as NewStoryProposal), reference: "PROJ 123" }, null);
+
+    expect(result.ok).toBe(false);
+    expect(!result.ok && result.reason).toContain(referenceProblem("PROJ 123")!);
+    expect(listItems(handle.db)).toHaveLength(before);
+  });
+
+  it("puts it on the card's container for a plan, and on the row for a single item", () => {
+    const plan = summariseProposal(handle.db, conversation, feature({ reference: " PROJ-123 " }));
+    expect(plan.container?.reference).toBe("PROJ-123");
+    for (const row of plan.rows) expect(row).not.toHaveProperty("reference");
+
+    expect(summariseProposal(handle.db, conversation, newStory({ reference: "PROJ-9" })).rows[0]).toMatchObject({ reference: "PROJ-9" });
+    expect(summariseProposal(handle.db, conversation, bug({ reference: "PROJ-9" })).rows[0]).toMatchObject({ reference: "PROJ-9" });
+    expect(summariseProposal(handle.db, conversation, bug({ reference: " " })).rows[0]).not.toHaveProperty("reference");
+    expect(summariseProposal(handle.db, conversation, feature()).container).not.toHaveProperty("reference");
   });
 });
 

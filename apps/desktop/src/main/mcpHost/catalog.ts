@@ -3178,6 +3178,12 @@ const UNGATED_WRITE_TOOLS: readonly ToolSpec[] = [
       "its pull request opens from it, and EO never renames, deletes, rebases or force-pushes it. It has to exist " +
       "locally or on the repository's remote, and must not be checked out anywhere else, by the time the story is " +
       "picked up. " +
+      "Set reference to name the outside ticket the feature belongs to — PROJ-123, a GitHub issue, anything — as a " +
+      "plain label: it is never sent to Jira or any other tracker, and any number of tickets may hold the same one. " +
+      "It goes on the feature, and every story under it inherits the feature's; a story's own is set later with " +
+      "reference on item_update. It is trimmed, a blank one is none, and one that could not appear in a git branch " +
+      "name — whitespace, .., ~, ^, :, ?, *, [, \\, @{, //, a leading - or /, a trailing . or /, or a part between " +
+      "slashes that starts with . or ends with .lock — refuses the whole plan and creates nothing. " +
       "paths puts files on the feature as its own, and paths on a story puts them on that story: files on the " +
       "machine running EO that become part of what the item is, beside its description, written with the item so " +
       "the first agent dispatched on it already has them. " +
@@ -3216,6 +3222,12 @@ const UNGATED_WRITE_TOOLS: readonly ToolSpec[] = [
       "Jira key. Leave jiraKey out for work Jira has never heard of. Set jiraSync: false to create the ticket with " +
       "Jira switched off in both directions — nothing pushed, nothing pulled — which keeps any key attached for when " +
       "it is switched back on; leave it out to inherit the parent feature's setting, or on when there is no parent. " +
+      "Set reference to name the outside ticket this one belongs to — PROJ-123, a GitHub issue, anything — as a " +
+      "plain label: it is never sent to Jira or any other tracker, and any number of tickets may hold the same one. " +
+      "A story under a feature inherits the feature's reference when it has none of its own, so leave it out to " +
+      "read the feature's. It is trimmed, a blank one is none, and one that could not appear in a git branch name — " +
+      "whitespace, .., ~, ^, :, ?, *, [, \\, @{, //, a leading - or /, a trailing . or /, or a part between " +
+      "slashes that starts with . or ends with .lock — is refused and nothing is created. " +
       "paths puts files on the ticket as its own: files on the machine running EO that become part of what the " +
       "ticket is, beside its description, written with the ticket so the first agent dispatched on it already has " +
       "them. " +

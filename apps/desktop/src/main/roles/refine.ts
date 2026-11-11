@@ -261,14 +261,21 @@ export function storyBranchRefusal(db: Db, title: string, branches: { baseBranch
 
 /**
  * The `git` extension a new story is created with, when it names a base
- * branch or an existing branch (EO-364, EO-365) — undefined when it names
- * neither, so it gets no row.
+ * branch, an existing branch (EO-364, EO-365) or a Reference (EO-739,
+ * already trimmed and judged, null for none) — undefined when it names
+ * none of them, so it gets no row.
  */
-export function storyGitState(branches: { baseBranch?: string; existingBranch?: string }): { baseBranch?: string; branch?: string; namedBranch?: boolean } | undefined {
-  if (branches.baseBranch === undefined && branches.existingBranch === undefined) return undefined;
+export function storyGitState(branches: {
+  baseBranch?: string;
+  existingBranch?: string;
+  reference?: string | null;
+}): { baseBranch?: string; branch?: string; namedBranch?: boolean; reference?: string } | undefined {
+  const reference = branches.reference ?? null;
+  if (branches.baseBranch === undefined && branches.existingBranch === undefined && reference === null) return undefined;
   return {
     ...(branches.baseBranch === undefined ? {} : { baseBranch: branches.baseBranch }),
     ...(branches.existingBranch === undefined ? {} : { branch: branches.existingBranch, namedBranch: true }),
+    ...(reference === null ? {} : { reference }),
   };
 }
 

@@ -1,4 +1,4 @@
-import { jiraStateOf, ipcContract, specFields, type DiscussionOutput, type IpcPayload, type Item, type SpecFieldDraft, type Uuid } from "@eo/core";
+import { gitStateOf, jiraStateOf, ipcContract, specFields, type DiscussionOutput, type IpcPayload, type Item, type SpecFieldDraft, type Uuid } from "@eo/core";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -318,6 +318,11 @@ const PROBES: Record<keyof IpcPayload<"work:submitItem">, FieldProbe> = {
     // probe sends a value no default could produce.
     send: () => ({ priority: 2 }),
     carried: (_world, item) => item.priority === 2,
+  },
+  reference: {
+    // EO-739: trimmed on the way in, so the probe sends it padded.
+    send: () => ({ reference: "  PROJ-739 " }),
+    carried: (_world, item) => gitStateOf(item).reference === "PROJ-739",
   },
   touches: {
     send: () => ({ touches: ["src/probe.ts"] }),

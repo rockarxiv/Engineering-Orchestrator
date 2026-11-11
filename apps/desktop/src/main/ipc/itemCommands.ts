@@ -105,6 +105,8 @@ export function submitItem(
         ...(input.pipeline === undefined ? {} : { pipeline: input.pipeline }),
         ...(input.repository === undefined ? {} : { repository: input.repository }),
         ...(input.priority === undefined ? {} : { priority: input.priority }),
+        // Trimmed and judged by `applyNewItem` (EO-739), on any pipeline.
+        ...(input.reference === undefined ? {} : { reference: input.reference }),
       },
       null,
       // What the caller said about Jira, carried whole (EO-123). Neither

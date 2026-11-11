@@ -67,6 +67,10 @@ export function submitPlan(
         // The feature's own, and only the feature's (EO-568): each story's
         // rides on the story, and one that says nothing is 0.
         ...(input.priority === undefined ? {} : { priority: input.priority }),
+        // The feature's (EO-739), which its stories inherit. Trimmed and
+        // judged by `applyNewFeature`, which refuses one git would not
+        // take before anything is written.
+        ...(input.reference === undefined ? {} : { reference: input.reference }),
       },
       null,
       // What the submitter said about Jira, carried whole and defaulted
