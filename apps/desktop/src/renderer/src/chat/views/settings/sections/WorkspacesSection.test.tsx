@@ -324,6 +324,25 @@ describe("editing one", () => {
     });
   });
 
+  it("shows the default reviewers with the pull-request settings, and saves what was typed as a list (EO-741)", async () => {
+    const calls = renderSection([workspace({ config: { name: "shop-web", repoPath: "/code/shop-web", baseBranch: "main", forgeOpenPr: true, forgeReviewers: ["alice"] } })]);
+    fireEvent.click(await screen.findByRole("button", { name: "Edit" }));
+    const form = screen.getByLabelText("Edit shop-web");
+    const pullRequests = within(form).getByRole("group", { name: "Pull requests" });
+
+    const field = within(pullRequests).getByLabelText("Default reviewers");
+    expect(field).toHaveValue("alice");
+    fireEvent.change(field, { target: { value: "alice, bob  acme/backend," } });
+    expect(field).toHaveValue("alice, bob  acme/backend,");
+    expect(lastUnsavedEdits(calls)).toContainEqual({ field: "Default reviewers", value: "alice,bob,acme/backend" });
+    fireEvent.click(within(form).getByRole("button", { name: "Save" }));
+
+    await waitFor(() => {
+      const sent = on(calls, "workspaces:update").at(-1) as { id: string; config: { forgeReviewers: string[] } };
+      expect(sent.config.forgeReviewers).toEqual(["alice", "bob", "acme/backend"]);
+    });
+  });
+
   it("checks an attached repository's forge and says what to fix", async () => {
     renderSection();
     fireEvent.click(await screen.findByRole("button", { name: "Edit" }));

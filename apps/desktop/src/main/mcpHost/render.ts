@@ -102,7 +102,10 @@ function repositoryLine(repository: RepositoryView): string {
     `test: ${repository.testCommand ?? "none"}`,
     `lint: ${repository.lintCommand ?? "none"}`,
     `build: ${repository.buildCommand ?? "none"}`,
-  ].join("; ");
+  ].join("; ") +
+    // Said even when empty: "none" is a setting repository_update offers
+    // to change, and a caller checking its own write must see it (EO-741).
+    `\n  default pull request reviewers: ${repository.forge.reviewers.length === 0 ? "none" : repository.forge.reviewers.join(", ")}`;
   // Omitted when there is none, rather than shown as "none": on a project
   // spanning several repositories this is what a story is routed on, and
   // an empty one is worth noticing by its absence rather than reading as

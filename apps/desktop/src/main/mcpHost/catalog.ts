@@ -1631,7 +1631,7 @@ const READ_TOOLS: readonly ToolSpec[] = [
     channel: "repositories:list",
     description:
       "Every git repository EO drives: where it is checked out, its base branch, its test, lint and build commands, " +
-      "and how it is wired to Jira — the project key, the issue types EO creates, the extra fields it sends, which " +
+      "who it asks to review the pull requests EO opens, and how it is wired to Jira — the project key, the issue types EO creates, the extra fields it sends, which " +
       "Jira status each pipeline step means and what a transition into one demands. That is where jira_save_config, " +
       "jira_save_status_map and jira_save_transition_fields are read back, since each answers only that it worked.",
     kind: "read",
@@ -2557,7 +2557,10 @@ const PROJECT_SETUP_TOOLS: readonly ToolSpec[] = [
       "Change an attached repository: its name, its description, where it is checked out, its base branch, the " +
       "test, lint and build commands verification runs, and how it opens pull requests. Send only the fields you " +
       "mean to change; anything left out keeps the value repositories_list reports. null on a command means EO has " +
-      "nothing to run for that step. A repoPath that is not a git repository is refused by name, and so is one " +
+      "nothing to run for that step. forgeReviewers is the repository's default pull request reviewers: the forge " +
+      "handles EO asks to review each pull request it opens here, after creating it — a GitHub login or org/team, or a " +
+      "GitLab username. It replaces the whole list, [] asks nobody, and an entry with a space or comma in it refuses " +
+      "the update and names that entry. A repoPath that is not a git repository is refused by name, and so is one " +
       "another repository is already attached to — one checkout is one repository — exactly as on the way in. A " +
       "repository has no key prefix of its own: the prefix its tickets carry is its project's, and projects_list " +
       "reports it.",

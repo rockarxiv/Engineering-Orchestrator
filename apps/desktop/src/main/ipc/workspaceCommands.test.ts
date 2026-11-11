@@ -10,7 +10,7 @@ import { asGitWorkspace, createProject, createStep, getProject, getStep, getWork
 import { beginAdoption } from "../db/repos/projectsRepo.js";
 import { workspaces } from "../db/schema.js";
 import { attachWorkspace, createTestItem, openMigratedTestDb } from "../db/testHelpers.js";
-import { activeProjectId } from "./repositoryCommands.js";
+import { activeProjectId, listRepositoriesCommand } from "./repositoryCommands.js";
 import { createWorkspaceCommand, listWorkspacesCommand, removeWorkspaceCommand, updateWorkspaceCommand } from "./workspaceCommands.js";
 
 /**
@@ -379,6 +379,25 @@ describe("changing one", () => {
       expect((await updateWorkspaceCommand(handle.db, credentials, { id: git.id, config: { name: "  " } })).ok).toBe(false);
       expect((await updateWorkspaceCommand(handle.db, credentials, { id: git.id, config: { repoPath: "" } })).ok).toBe(false);
       expect(asGitWorkspace(getWorkspace(handle.db, git.id))?.config.name).toBe("the repo");
+    });
+
+    it("saves the default reviewers the form sends, tidied, and that is what repositories_list reports (EO-741)", async () => {
+      const git = attachWorkspace(handle.db, { keyPrefix: "EO", name: "the repo", repoPath: repository("the repo") });
+
+      const updated = await updateWorkspaceCommand(handle.db, credentials, { id: git.id, config: { ...git.config, forgeReviewers: ["alice", "bob", "alice"] } });
+
+      expect(updated.ok, updated.problem ?? "").toBe(true);
+      expect(listRepositoriesCommand(handle.db, credentials).repositories.find((listed) => listed.id === git.id)?.forge.reviewers).toEqual(["alice", "bob"]);
+    });
+
+    it("refuses a reviewer with a comma in it, naming it, and stores nothing from the form (EO-741)", async () => {
+      const git = attachWorkspace(handle.db, { keyPrefix: "EO", name: "the repo", repoPath: repository("the repo") });
+
+      const updated = await updateWorkspaceCommand(handle.db, credentials, { id: git.id, config: { baseBranch: "trunk", forgeReviewers: ["alice,bob"] } });
+
+      expect(updated.ok).toBe(false);
+      expect(updated.problem).toContain('"alice,bob"');
+      expect(asGitWorkspace(getWorkspace(handle.db, git.id))?.config).toMatchObject({ baseBranch: "main", forgeReviewers: [] });
     });
 
     it("leaves the forge settings alone when only the path is sent", async () => {

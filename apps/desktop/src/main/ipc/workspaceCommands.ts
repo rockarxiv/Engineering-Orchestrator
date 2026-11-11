@@ -1,4 +1,4 @@
-import { FOLDER_KIND, FolderWorkspaceConfigSchema, GIT_WORKTREE_KIND, GitWorkspaceConfigSchema, type IpcPayload, type IpcResponse, type Uuid } from "@eo/core";
+import { FOLDER_KIND, FolderWorkspaceConfigSchema, GIT_WORKTREE_KIND, GitWorkspaceConfigSchema, normaliseReviewers, type IpcPayload, type IpcResponse, type Uuid } from "@eo/core";
 import type { Db } from "../db/client.js";
 import {
   createWorkspace,
@@ -170,6 +170,11 @@ export async function createWorkspaceCommand(
   if (input.kind === GIT_WORKTREE_KIND) {
     const parsed = GitWorkspaceConfigSchema.safeParse(input.config);
     if (!parsed.success) return { ok: false, problem: configProblem(GIT_WORKTREE_KIND, input.config) };
+    // Before anything is attached: the reviewers are laid over the row
+    // below, after the repository exists, and a list refused then would
+    // leave a repository behind with the refusal (EO-741).
+    const reviewers = normaliseReviewers(parsed.data.forgeReviewers);
+    if (!reviewers.ok) return { ok: false, problem: `${reviewers.problem} Nothing was attached.` };
 
     const created = await createRepositoryCommand(db, credentials, {
       name: parsed.data.name,
@@ -194,6 +199,7 @@ export async function createWorkspaceCommand(
       forgeRemote: parsed.data.forgeRemote,
       forgeDraft: parsed.data.forgeDraft,
       forgeTemplatePath: parsed.data.forgeTemplatePath,
+      forgeReviewers: reviewers.reviewers,
     };
     const workspace = updateWorkspace(db, created.repository.id as Uuid, { config: patch });
     return { ok: true, workspace: workspaceView(db, getWorkspace(db, workspace.id) ?? workspace), problem: null };
@@ -274,6 +280,7 @@ function gitRepositoryPatch(patch: Record<string, unknown>): Omit<IpcPayload<"re
     "forgeRemote",
     "forgeDraft",
     "forgeTemplatePath",
+    "forgeReviewers",
   ] as const;
   const forwarded: Record<string, unknown> = {};
   for (const key of keys) {

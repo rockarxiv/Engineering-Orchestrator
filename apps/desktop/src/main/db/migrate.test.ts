@@ -2415,6 +2415,9 @@ describe("0072: workspaces, connector bindings, and the ids that do not change",
       forgeRemote: "origin",
       forgeDraft: false,
       forgeTemplatePath: null,
+      // No column ever held it: the schema's default, read onto a row
+      // written before the field existed (EO-741).
+      forgeReviewers: [],
     });
     expect(workspaces[1]!.config).toMatchObject({ baseBranch: "trunk", buildCommand: "go build", forgeRemote: "upstream", forgeDraft: true });
   });

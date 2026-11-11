@@ -86,6 +86,12 @@ export const CLI_FOR: Record<ForgeKind, string> = { github: "gh", gitlab: "glab"
 export interface ExistingPullRequest {
   url: string;
   state: string;
+  /**
+   * Who opened it, by forge handle — read only by the read-back that
+   * asks for reviewers (EO-741), since a forge will not have an author
+   * review their own. Null when the answer did not say.
+   */
+  author: string | null;
 }
 
 export interface CreatePullRequestArgs {
@@ -112,17 +118,34 @@ export interface CreatePullRequestArgs {
  * - GitLab calls the link `web_url`; GitHub calls it `url`.
  * - `--yes` is required on `glab mr create` or it waits for a
  *   confirmation nobody can answer.
+ * - Reviewers are asked for after the create, by a command of their
+ *   own (EO-741): `gh pr edit <url> --add-reviewer a,b`, and
+ *   `glab mr update <iid> --reviewer +a,+b`, where the `+` is what adds
+ *   rather than replaces. Checked against `gh` 2.103 and `glab` 1.128's
+ *   help as well, which spell both the same way.
  */
 export const FORGE_COMMANDS: Record<
   ForgeKind,
   {
-    find(branch: string): string[];
+    /**
+     * `withAuthor` asks for who opened it as well, which only `gh` needs
+     * telling — `glab`'s JSON carries the author whatever is asked. Only
+     * the read-back that goes on to ask for reviewers sets it, so a
+     * repository with none runs exactly the commands it always did.
+     */
+    find(branch: string, withAuthor?: boolean): string[];
     create(args: CreatePullRequestArgs): string[];
     parseFind(stdout: string): ExistingPullRequest | null;
+    /**
+     * Asks `reviewers` to review the pull request at `url`, adding to
+     * whoever is already asked (EO-741). Null when `url` does not name
+     * one this forge's CLI can be pointed at.
+     */
+    requestReviewers(url: string, reviewers: readonly string[]): string[] | null;
   }
 > = {
   github: {
-    find: (branch) => ["pr", "list", "--head", branch, "--state", "all", "--json", "url,state", "--limit", "1"],
+    find: (branch, withAuthor = false) => ["pr", "list", "--head", branch, "--state", "all", "--json", withAuthor ? "url,state,author" : "url,state", "--limit", "1"],
     create: ({ branch, base, title, bodyFile, draft }) => [
       "pr",
       "create",
@@ -138,7 +161,11 @@ export const FORGE_COMMANDS: Record<
       bodyFile,
       ...(draft ? ["--draft"] : []),
     ],
-    parseFind: (stdout) => firstOf(stdout, (entry) => ({ url: String(entry["url"] ?? ""), state: String(entry["state"] ?? "") })),
+    parseFind: (stdout) =>
+      firstOf(stdout, (entry) => ({ url: String(entry["url"] ?? ""), state: String(entry["state"] ?? ""), author: handleIn(entry["author"], "login") })),
+    // `gh pr edit` takes the url itself, and `--add-reviewer` a
+    // comma-separated list of logins and `org/team`s.
+    requestReviewers: (url, reviewers) => ["pr", "edit", url, "--add-reviewer", reviewers.join(",")],
   },
   gitlab: {
     // `mr list` rather than `mr view`: an absent merge request comes back
@@ -164,9 +191,24 @@ export const FORGE_COMMANDS: Record<
       firstOf(stdout, (entry) => ({
         url: String(entry["web_url"] ?? entry["url"] ?? ""),
         state: String(entry["state"] ?? ""),
+        author: handleIn(entry["author"], "username"),
       })),
+    // By the merge request's iid, which its url ends in: `glab` 1.112
+    // selects one by id or branch, not by url. Each name is prefixed `+`,
+    // because an unprefixed `--reviewer` *replaces* whoever is asked.
+    requestReviewers: (url, reviewers) => {
+      const iid = /\/merge_requests\/(\d+)(?:[/?#]|$)/.exec(url)?.[1];
+      return iid === undefined ? null : ["mr", "update", iid, "--reviewer", reviewers.map((reviewer) => `+${reviewer}`).join(",")];
+    },
   },
 };
+
+/** The handle in an author object — `gh`'s `{ login }`, `glab`'s `{ username }` — or null. */
+function handleIn(author: unknown, key: string): string | null {
+  if (typeof author !== "object" || author === null) return null;
+  const handle = (author as Record<string, unknown>)[key];
+  return typeof handle === "string" && handle !== "" ? handle : null;
+}
 
 function firstOf(stdout: string, map: (entry: Record<string, unknown>) => ExistingPullRequest): ExistingPullRequest | null {
   const trimmed = stdout.trim();

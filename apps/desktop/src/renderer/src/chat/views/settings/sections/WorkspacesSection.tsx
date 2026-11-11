@@ -49,6 +49,7 @@ interface GitDraft {
   forgeRemote: string;
   forgeDraft: boolean;
   forgeTemplatePath: string | null;
+  forgeReviewers: string[];
 }
 
 const BLANK_GIT: GitDraft = {
@@ -64,6 +65,7 @@ const BLANK_GIT: GitDraft = {
   forgeRemote: "origin",
   forgeDraft: false,
   forgeTemplatePath: null,
+  forgeReviewers: [],
 };
 
 /**
@@ -84,6 +86,7 @@ const GIT_FIELD_LABELS: Record<keyof GitDraft, string> = {
   forgeRemote: "Remote",
   forgeDraft: "Open it as a draft",
   forgeTemplatePath: "Template",
+  forgeReviewers: "Default reviewers",
 };
 
 interface FolderDraft {
@@ -353,6 +356,9 @@ export function GitForm({
   onCancel: () => void;
 }) {
   const [draft, setDraft] = useState(initial);
+  // Kept as typed, so a separator being typed is not eaten mid-word; the
+  // draft holds the handles it splits into, which EO tidies on save.
+  const [reviewers, setReviewers] = useState(initial.forgeReviewers.join(", "));
   const detect = useMutation({ mutationFn: () => ipcQuery("forge:detect", { repositoryId: workspaceId! }) });
   useViewParameters({ unsavedEdits: unsavedEditsBetween(draft, initial, GIT_FIELD_LABELS) });
   const result = detect.data;
@@ -420,6 +426,18 @@ export function GitForm({
                   className="font-mono"
                   placeholder=".github/PULL_REQUEST_TEMPLATE/bug_fix.md"
                   onChange={(event) => setDraft({ ...draft, forgeTemplatePath: event.target.value || null })}
+                />
+              </Field>
+              {/* Asked after EO creates a pull request — never on one it finds already open (EO-741). */}
+              <Field label="Default reviewers">
+                <TextInput
+                  value={reviewers}
+                  className="font-mono"
+                  placeholder="alice, acme/backend"
+                  onChange={(event) => {
+                    setReviewers(event.target.value);
+                    setDraft({ ...draft, forgeReviewers: event.target.value.split(/[\s,]+/).filter((handle) => handle !== "") });
+                  }}
                 />
               </Field>
               <div className="flex items-end pb-1.5">

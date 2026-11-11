@@ -1542,6 +1542,8 @@ export const ForgeConfigSchema = z.object({
   remote: z.string(),
   draft: z.boolean(),
   templatePath: z.string().nullable(),
+  /** Asked to review every pull request EO opens here, in order (EO-741). */
+  reviewers: z.array(z.string()),
 });
 
 export type ForgeConfigView = z.infer<typeof ForgeConfigSchema>;
@@ -1683,6 +1685,14 @@ export const UpdateRepositoryInputSchema = z.object({
   forgeRemote: z.string().min(1).optional(),
   forgeDraft: z.boolean().optional(),
   forgeTemplatePath: z.string().nullable().optional(),
+  forgeReviewers: z
+    .array(z.string())
+    .optional()
+    .describe(
+      "Who EO asks to review each pull request it opens on this repository, after creating it: forge handles — a GitHub " +
+        "login, a GitHub org/team, or a GitLab username. Replaces the whole list; [] asks nobody. Entries are trimmed, " +
+        "blanks and repeats dropped, and an entry with a space or comma in it refuses the update.",
+    ),
 });
 
 /**

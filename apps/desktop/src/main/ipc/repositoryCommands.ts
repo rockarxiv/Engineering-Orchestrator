@@ -1,4 +1,4 @@
-import type { IpcPayload, IpcResponse, Uuid } from "@eo/core";
+import { normaliseReviewers, type IpcPayload, type IpcResponse, type Uuid } from "@eo/core";
 import type { Db } from "../db/client.js";
 import { previewProjectId } from "../gallery/commands.js";
 import type { CredentialsOptions } from "../packs/developer/jira/credentials.js";
@@ -68,6 +68,7 @@ function toView(db: Db, workspace: GitWorkspace, credentials: CredentialsOptions
       remote: workspace.config.forgeRemote,
       draft: workspace.config.forgeDraft,
       templatePath: workspace.config.forgeTemplatePath,
+      reviewers: workspace.config.forgeReviewers,
     },
   };
 }
@@ -284,6 +285,15 @@ export async function updateRepositoryCommand(db: Db, credentials: CredentialsOp
     }
   }
 
+  // Normalised before anything is written, so a list that refuses leaves
+  // every other field in this update unwritten too (EO-741).
+  let reviewers: string[] | undefined;
+  if (input.forgeReviewers !== undefined) {
+    const normalised = normaliseReviewers(input.forgeReviewers);
+    if (!normalised.ok) return { ok: false, problem: `${normalised.problem} Nothing changed.` };
+    reviewers = normalised.reviewers;
+  }
+
   // No key prefix in the patch, and none in the input schema: a
   // repository has none to change since KAN-128. Its project's is fixed
   // at creation, for the reason this comment used to give — existing
@@ -301,6 +311,7 @@ export async function updateRepositoryCommand(db: Db, credentials: CredentialsOp
     ...(input.forgeRemote !== undefined ? { forgeRemote: input.forgeRemote } : {}),
     ...(input.forgeDraft !== undefined ? { forgeDraft: input.forgeDraft } : {}),
     ...(input.forgeTemplatePath !== undefined ? { forgeTemplatePath: input.forgeTemplatePath } : {}),
+    ...(reviewers !== undefined ? { forgeReviewers: reviewers } : {}),
   };
 
   // The update kept the row's kind, so what comes back is the same

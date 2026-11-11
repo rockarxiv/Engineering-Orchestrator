@@ -83,9 +83,44 @@ export const GitWorkspaceConfigSchema = z.object({
   forgeDraft: z.boolean().default(false),
   /** Only for a template directory holding several choices. */
   forgeTemplatePath: z.string().nullable().default(null),
+  /**
+   * Who is asked to review a pull request EO opens here, unless the item
+   * names its own (EO-741). Forge handles — a GitHub login, a GitHub
+   * `org/team`, a GitLab username — stored as `normaliseReviewers` left
+   * them. Empty asks nobody, which is what EO did before the field.
+   */
+  forgeReviewers: z.array(z.string()).default([]),
 });
 
 export type GitWorkspaceConfig = z.infer<typeof GitWorkspaceConfigSchema>;
+
+/**
+ * A list of pull request reviewers as it is stored (EO-741).
+ *
+ * Each entry is trimmed, blanks are dropped and a repeat is dropped in
+ * favour of its first appearance. An entry with whitespace or a comma
+ * inside it refuses the whole list rather than being split or skipped:
+ * a forge CLI takes the list comma-separated, so `alice,bob` saved as one
+ * reviewer would ask for two people nobody listed apart, and dropping it
+ * quietly would leave a person believing somebody is being asked.
+ */
+export function normaliseReviewers(entries: readonly string[]): { ok: true; reviewers: string[] } | { ok: false; problem: string } {
+  const reviewers: string[] = [];
+  for (const entry of entries) {
+    const handle = entry.trim();
+    if (handle === "") continue;
+    if (/[\s,]/.test(handle)) {
+      return {
+        ok: false,
+        problem:
+          `"${handle}" is not a reviewer EO can ask for: a reviewer is one forge handle — a GitHub login, a GitHub ` +
+          `org/team or a GitLab username — with no space or comma in it. Give each reviewer as its own entry.`,
+      };
+    }
+    if (!reviewers.includes(handle)) reviewers.push(handle);
+  }
+  return { ok: true, reviewers };
+}
 
 /**
  * How a `git-worktree` workspace is used by one step (EO-296,
