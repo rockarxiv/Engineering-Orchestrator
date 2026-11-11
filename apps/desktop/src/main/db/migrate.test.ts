@@ -3360,7 +3360,7 @@ describe("0123: the pull request is watched after Merge Request opens it", () =>
     // And the same for the two 0155 adds (EO-610).
     handle.db.run(sql`ALTER TABLE pipelines ADD entry_rules text DEFAULT '[]' NOT NULL`);
     handle.db.run(sql`ALTER TABLE pipeline_versions ADD entry_rules text DEFAULT '[]' NOT NULL`);
-    // And the one 0165 adds (EO-728).
+    // And the one 0166 adds (EO-728).
     handle.db.run(sql`ALTER TABLE pipeline_versions ADD release_notes text`);
     const before = ensureCurrentVersion(handle.db, "default")!;
     handle.db.run(sql`ALTER TABLE pipeline_steps DROP COLUMN watch_never_gives_up`);
@@ -3743,7 +3743,7 @@ describe("0154: follow-ups are gone", () => {
     try {
       writeMigrationSetBefore(tempDir, stopBefore);
       runMigrations(handle.db, tempDir);
-      // Filed by today's repository, which reads columns 0155 adds (EO-610), and the one 0165 adds (EO-728).
+      // Filed by today's repository, which reads columns 0155 adds (EO-610), and the one 0166 adds (EO-728).
       handle.db.run(sql`ALTER TABLE pipelines ADD entry_rules text DEFAULT '[]' NOT NULL`);
       handle.db.run(sql`ALTER TABLE pipeline_versions ADD entry_rules text DEFAULT '[]' NOT NULL`);
       handle.db.run(sql`ALTER TABLE pipeline_versions ADD release_notes text`);
@@ -3846,7 +3846,7 @@ describe("0158: an attachment owned by the item (EO-702)", () => {
     try {
       writeMigrationSetBefore(tempDir, "0158_item_attachments");
       runMigrations(handle.db, tempDir);
-      // Filed by today's repository, which reads the column 0165 adds (EO-728).
+      // Filed by today's repository, which reads the column 0166 adds (EO-728).
       handle.db.run(sql`ALTER TABLE pipeline_versions ADD release_notes text`);
       const item = createTestItem(handle.db, { type: "story", title: "Has a file", stepId: "todo" });
       handle.db.run(sql`ALTER TABLE pipeline_versions DROP COLUMN release_notes`);
