@@ -1372,6 +1372,13 @@ describe("memory_note on the shared EO MCP service (EO-479)", () => {
       // Nor a credential naming other writes.
       const notes = await listed(environment([MEMORY_NOTE_TOOL_NAME]));
       for (const tool of SKILL_WRITE_TOOLS) expect(notes, tool).not.toContain(tool);
+      // A skill-only review (EO-731), for a run that wrote its own notes:
+      // the skill tools and memory_read, and not memory_note, even for an
+      // agent whose allowlist names it.
+      const skillsOnly = await listed(environment([...SKILL_WRITE_TOOLS]));
+      for (const tool of SKILL_WRITE_TOOLS) expect(skillsOnly, tool).toContain(tool);
+      expect(skillsOnly).toContain(MEMORY_READ_TOOL_NAME);
+      expect(skillsOnly).not.toContain(MEMORY_NOTE_TOOL_NAME);
 
       const tool = (id: number, name: string, args: unknown) => ({ jsonrpc: "2.0", id, method: "tools/call", params: { name, arguments: args } });
       const calls = [

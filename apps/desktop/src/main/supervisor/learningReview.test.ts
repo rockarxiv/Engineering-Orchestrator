@@ -203,7 +203,7 @@ describe("the learning review after a run", () => {
     expect(written).toEqual([
       expect.objectContaining({ body: "Seed the fixtures database before the integration tests.", source: { type: "run", runId: run.id, itemId: item.id, extracted: true } }),
     ]);
-    expect(reviewEvents()).toEqual([{ type: LEARNING_REVIEW_EVENT, outcome: "written", entryIds: [written[0]!.id], skillIds: [], reason: null, forkThreadId: `fork-of-${run.threadId}` }]);
+    expect(reviewEvents()).toEqual([{ type: LEARNING_REVIEW_EVENT, outcome: "written", review: "full", entryIds: [written[0]!.id], skillIds: [], reason: null, forkThreadId: `fork-of-${run.threadId}` }]);
     // It replaces extraction: no memory_extract call and no memory_extracted event.
     expect(side.asked).toEqual([]);
     expect(eventsOf(run.id, MEMORY_EXTRACTED_EVENT)).toEqual([]);
@@ -221,7 +221,7 @@ describe("the learning review after a run", () => {
     await supervisorOver(provider).runOnce();
 
     expect(forks).toHaveLength(1);
-    expect(reviewEvents()).toEqual([{ type: LEARNING_REVIEW_EVENT, outcome: "nothing_to_save", entryIds: [], skillIds: [], reason: null, forkThreadId: expect.any(String) }]);
+    expect(reviewEvents()).toEqual([{ type: LEARNING_REVIEW_EVENT, outcome: "nothing_to_save", review: "full", entryIds: [], skillIds: [], reason: null, forkThreadId: expect.any(String) }]);
     expect(listMemories(handle.db, project)).toEqual([]);
     expect(extractCalls()).toEqual([]);
   });
@@ -286,7 +286,7 @@ describe("the learning review after a run", () => {
     const extracted = listMemories(handle.db, project);
     expect(extracted.map((entry) => entry.body)).toEqual(["Extracted: seed the fixtures first."]);
     expect(eventsOf(run.id, MEMORY_EXTRACTED_EVENT)).toEqual([expect.objectContaining({ outcome: "written", entryIds: [extracted[0]!.id] })]);
-    expect(reviewEvents()).toEqual([{ type: LEARNING_REVIEW_EVENT, outcome: "fell_back", entryIds: [], skillIds: [], reason: `thread_not_found: No thread "${run.threadId}".`, forkThreadId: null }]);
+    expect(reviewEvents()).toEqual([{ type: LEARNING_REVIEW_EVENT, outcome: "fell_back", review: "full", entryIds: [], skillIds: [], reason: `thread_not_found: No thread "${run.threadId}".`, forkThreadId: null }]);
   });
 
   it("falls back on a backend that cannot fork", async () => {
@@ -326,7 +326,7 @@ describe("the learning review after a run", () => {
     await tick;
 
     const written = listMemories(handle.db, project);
-    expect(reviewEvents()).toEqual([{ type: LEARNING_REVIEW_EVENT, outcome: "failed", entryIds: [written[0]!.id], skillIds: [], reason: expect.stringContaining("limit"), forkThreadId: expect.any(String) }]);
+    expect(reviewEvents()).toEqual([{ type: LEARNING_REVIEW_EVENT, outcome: "failed", review: "full", entryIds: [written[0]!.id], skillIds: [], reason: expect.stringContaining("limit"), forkThreadId: expect.any(String) }]);
     expect(side.asked).toEqual([]);
     expect(getItem(handle.db, item.id)?.stepId).toBe(AFTER_IMPLEMENT);
     expect(listSideCalls(handle.db).filter((call) => call.purpose === "learning_review")).toEqual([expect.objectContaining({ outcome: "failed", reason: "timeout" })]);
@@ -391,16 +391,94 @@ describe("the learning review after a run", () => {
     expect(reviewEvents(run!.id)).toEqual([expect.objectContaining({ outcome: "written", entryIds: [written[0]!.id] })]);
   });
 
-  describe("is not asked for, as extraction is not", () => {
-    it("a run that called memory_note itself", async () => {
-      const { provider, forks } = reviewing({ steps: [{ toolCall: { name: MEMORY_NOTE_TOOL_NAME, args: { scope: "project", text: "Its own." } } }], result: RESULT });
+  /**
+   * A run that called memory_note itself (EO-731): it wrote its own
+   * notes, so its review is the skill half alone — served memory_read and
+   * the skill tools and not memory_note, and with nothing in its place
+   * where its thread cannot be forked.
+   */
+  describe("a run that called memory_note itself", () => {
+    const NOTED_ITSELF = { steps: [{ toolCall: { name: MEMORY_NOTE_TOOL_NAME, args: { scope: "project", text: "Its own." } } }], result: RESULT };
+
+    it("is reviewed on a fork for skills alone: a credential without memory_note, and a prompt asking for no memory", async () => {
+      const { provider, forks, answers } = reviewing(NOTED_ITSELF, {
+        writes: [note("From the skill review."), { tool: SKILL_VIEW_TOOL_NAME, args: { slug: "no-such-skill" } }],
+      });
+      const side = extractor();
+      const supervisor = supervisorOver(provider, side.provider);
+
+      await supervisor.runOnce();
+
+      const run = onlyRun();
+      expect(run.status).toBe("succeeded");
+      expect(forks.map((fork) => fork.threadId)).toEqual([run.threadId]);
+      expect(forks[0]!.opts.writeBridge?.writes).toEqual([...SKILL_WRITE_TOOLS]);
+      // memory_read's scopes, so the review can see what the run wrote.
+      expect(forks[0]!.opts.memoryScopes).toEqual(expect.arrayContaining([expect.objectContaining({ kind: "project", id: project.id })]));
+      expect(forks[0]!.opts.withoutSkills).toBe(true);
+      expect(forks[0]!.opts.withoutAdminServer).toBe(true);
+      expect(forks[0]!.message).toContain("This run already wrote its own notes to memory");
+      expect(forks[0]!.message).toContain("## Skills");
+      expect(forks[0]!.message).not.toContain(MEMORY_NOTE_DEFINITION);
+      expect(forks[0]!.message).not.toContain("memory_note");
+
+      // The bridge refuses memory_note made with that credential, and
+      // answers a skill tool, which reached the review.
+      expect(answers[0]).toEqual(expect.objectContaining({ ok: false, code: "TOOL_NOT_SERVED" }));
+      expect(answers[1]).not.toEqual(expect.objectContaining({ code: "TOOL_NOT_SERVED" }));
+      expect(listMemories(handle.db, project).map((entry) => entry.body)).not.toContain("From the skill review.");
+      // And EO's own half refuses it too, whatever reached it.
+      expect(await supervisor.handleAgentWrite(item.id, note("Through the side door."), [...SKILL_WRITE_TOOLS])).toEqual(expect.objectContaining({ ok: false, code: "TOOL_NOT_SERVED" }));
+
+      expect(reviewEvents()).toEqual([
+        { type: LEARNING_REVIEW_EVENT, outcome: "nothing_to_save", review: "skills_only", entryIds: [], skillIds: [], reason: null, forkThreadId: `fork-of-${run.threadId}` },
+      ]);
+      expect(side.asked).toEqual([]);
+    });
+
+    it("runs nothing in its place when its thread cannot be forked: no memory_extract, one fell_back event", async () => {
+      const { provider, forks } = reviewing({ ...NOTED_ITSELF, result: LONG_RESULT }, { refuse: true });
+      const side = extractor();
+
+      await supervisorOver(provider, side.provider).runOnce();
+
+      const run = onlyRun();
+      expect(forks).toHaveLength(1);
+      expect(side.asked).toEqual([]);
+      expect(extractCalls()).toEqual([]);
+      expect(eventsOf(run.id, MEMORY_EXTRACTED_EVENT)).toEqual([]);
+      expect(reviewEvents()).toEqual([
+        { type: LEARNING_REVIEW_EVENT, outcome: "fell_back", review: "skills_only", entryIds: [], skillIds: [], reason: `thread_not_found: No thread "${run.threadId}".`, forkThreadId: null },
+      ]);
+    });
+
+    it("runs nothing in its place on a backend that cannot fork", async () => {
+      const forkless: AgentProvider = { ...createFakeProvider({ ...NOTED_ITSELF, result: LONG_RESULT }) };
+      delete forkless.fork;
+      const side = extractor();
+
+      await supervisorOver(forkless, side.provider).runOnce();
+
+      expect(side.asked).toEqual([]);
+      expect(eventsOf(onlyRun().id, MEMORY_EXTRACTED_EVENT)).toEqual([]);
+      expect(reviewEvents()).toEqual([expect.objectContaining({ outcome: "fell_back", review: "skills_only", reason: expect.stringContaining("cannot fork a thread") })]);
+    });
+
+    it("is still not reviewed when it is on a preview item", async () => {
+      const preview = createTestItem(handle.db, { type: "story", title: "Weekly report", stepId: "todo", projectId: project.id as Uuid, previewAt: Date.now() });
+      deleteItem(handle.db, item.id);
+      const { provider, forks } = reviewing(NOTED_ITSELF);
 
       await supervisorOver(provider).runOnce();
 
+      const [run] = listRunsForItem(handle.db, preview.id);
+      expect(run).toBeDefined();
       expect(forks).toEqual([]);
-      expect(reviewEvents()).toEqual([]);
+      expect(reviewEvents(run!.id)).toEqual([]);
     });
+  });
 
+  describe("is not asked for, as extraction is not", () => {
     it("a run that was cancelled", async () => {
       const { provider, forks } = reviewing({ steps: [{ sleepMs: 5_000 }], result: RESULT });
       const supervisor = supervisorOver(provider);
