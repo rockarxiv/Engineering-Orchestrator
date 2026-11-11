@@ -9,7 +9,7 @@ import { openMigratedTestDb } from "../db/testHelpers.js";
 import { removeRetiredAttachmentFiles } from "./retiredFiles.js";
 import { AttachmentStorage } from "./storage.js";
 
-/** The bytes of the files migration 0167 deleted with the threads, removed at launch (EO-730). */
+/** The bytes of the files migration 0168 deleted with the threads, removed at launch (EO-730). */
 let handle: DbHandle;
 let directory: string;
 

@@ -417,7 +417,7 @@ export function deleteAttachmentsForComments(db: Db, commentIds: Uuid[]): Attach
   return rows;
 }
 
-/** The stored files whose rows migration 0167 deleted with the project and job threads (EO-730), still to remove. */
+/** The stored files whose rows migration 0168 deleted with the project and job threads (EO-730), still to remove. */
 export function listRetiredAttachmentFiles(db: Db): string[] {
   return db.select({ path: retiredAttachmentFiles.path }).from(retiredAttachmentFiles).all().map((row) => row.path);
 }

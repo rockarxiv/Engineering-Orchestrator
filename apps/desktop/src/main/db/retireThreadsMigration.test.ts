@@ -20,7 +20,7 @@ import { appendRunEvent, createRun, listRunsForItem } from "./repos/index.js";
 import { createTestItem } from "./testHelpers.js";
 
 /**
- * Migration 0167 (EO-730): the project and job threads retired.
+ * Migration 0168 (EO-730): the project and job threads retired.
  *
  * Every still-open mention of a person on a thread becomes an open
  * message to that person with the comment's body and options; the
@@ -41,14 +41,14 @@ afterEach(() => {
   tempDirs = [];
 });
 
-/** A database as it stood on the launch before 0167. */
+/** A database as it stood on the launch before 0168. */
 function beforeTheMigration(): DbHandle {
   const handle = openDb(":memory:");
   handles.push(handle);
   const dir = mkdtempSync(join(tmpdir(), "eo-retire-threads-"));
   tempDirs.push(dir);
   const journal = JSON.parse(readFileSync(join(MIGRATIONS, "meta", "_journal.json"), "utf8")) as { entries: { tag: string }[] };
-  const kept = journal.entries.slice(0, journal.entries.findIndex((entry) => entry.tag.startsWith("0167_")));
+  const kept = journal.entries.slice(0, journal.entries.findIndex((entry) => entry.tag.startsWith("0168_")));
   mkdirSync(join(dir, "meta"), { recursive: true });
   writeFileSync(join(dir, "meta", "_journal.json"), JSON.stringify({ ...journal, entries: kept }));
   for (const entry of kept) writeFileSync(join(dir, `${entry.tag}.sql`), readFileSync(join(MIGRATIONS, `${entry.tag}.sql`), "utf8"));
@@ -152,7 +152,7 @@ function messages(db: DbHandle["db"]): Message[] {
   return db.all<{ id: string }>(sql`SELECT id FROM messages ORDER BY created_at, recipient_id`).map((row) => getMessage(db, row.id)!);
 }
 
-describe("migration 0167, retiring the project and job threads", () => {
+describe("migration 0168, retiring the project and job threads", () => {
   it("turns every open mention of a person on a thread into an open message to that person, with the comment's body and options", () => {
     const handle = beforeTheMigration();
     const seeded = seed(handle.db);

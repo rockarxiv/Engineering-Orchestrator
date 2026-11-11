@@ -343,7 +343,7 @@ export const pipelineUpdateConflicts = sqliteTable(
     /**
      * What the conflict notice was sent as: its messages (EO-727), or — for
      * one noticed before then, its comments on project threads (EO-533,
-     * migration 0136), which 0167 turned into messages whose subject is
+     * migration 0136), which 0168 turned into messages whose subject is
      * this conflict. The column keeps its first name.
      */
     noticeIds: text("notice_comment_ids", { mode: "json" }).notNull().default([]),
@@ -2367,7 +2367,7 @@ export const attachmentRemovals = sqliteTable(
 
 /**
  * The stored bytes of files whose rows a migration deleted (EO-730):
- * the files on the project and job threads 0167 retired. A migration
+ * the files on the project and job threads 0168 retired. A migration
  * can remove a row but not a file, so it leaves the path here and
  * `removeRetiredAttachmentFiles` deletes the file at launch, then the row.
  */
@@ -2682,7 +2682,7 @@ export const jobOccurrences = sqliteTable(
      * The message that offered to run this occurrence (EO-306,
      * migration 0079; a message since EO-729). The column keeps its
      * first name: before EO-729 the offer was a comment on the job's
-     * thread, and 0167 turned each still-open one into a message with
+     * thread, and 0168 turned each still-open one into a message with
      * the comment's id, so the rows written then name it too.
      *
      * Set only on a `skipped` row that was skipped beyond the grace: it
@@ -3234,7 +3234,7 @@ export const memoryConsolidations = sqliteTable(
  *
  * Since EO-719 a row is a proposal the consolidation applied, `saved`
  * from the start. `comment_id` named the notice it posted on the
- * project's thread until EO-728; migration 0167 deleted those threads,
+ * project's thread until EO-728; migration 0168 deleted those threads,
  * leaving it null. Rows from before then were posted offering Save and
  * Discard: an `open` one is waiting on a press nothing acts on any more,
  * and a `discarded` one still keeps a later consolidation from applying a

@@ -89,14 +89,14 @@ function afterThePullRequestWatch(rows: unknown[]): unknown[] {
 }
 
 /**
- * The upgrade stopped before 0167, which retired the project and job
+ * The upgrade stopped before 0168, which retired the project and job
  * threads (EO-730): for the tests of 0078 and 0119, which added the steps
- * 0167 removes again.
+ * 0168 removes again.
  */
 function runMigrationsBeforeTheThreadsRetired(db: DbHandle["db"]): void {
-  const dir = mkdtempSync(join(tmpdir(), "eo-before-0167-"));
+  const dir = mkdtempSync(join(tmpdir(), "eo-before-0168-"));
   try {
-    writeMigrationSetBefore(dir, "0167_retire_threads");
+    writeMigrationSetBefore(dir, "0168_retire_threads");
     runMigrations(db, dir);
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -104,7 +104,7 @@ function runMigrationsBeforeTheThreadsRetired(db: DbHandle["db"]): void {
 }
 
 /**
- * Step rows as they read once 0167 has run over them (EO-730): the
+ * Step rows as they read once 0168 has run over them (EO-730): the
  * project and job threads' steps gone. For the tests of earlier
  * migrations that replay every later one.
  */
@@ -1479,7 +1479,7 @@ describe("runMigrations", () => {
     // this assertion is for, and a room added later is one more of
     // exactly that — and 0123 the shipped pipeline's pull request watch
     // (EO-461), on the board. 0078's `job-thread` and 0119's
-    // `project-thread` came and went again with 0167 (EO-730).
+    // `project-thread` came and went again with 0168 (EO-730).
     expect(handle.db.all(sql`SELECT id FROM pipeline_steps`)).toHaveLength(stepsBefore + 3);
     expect(handle.db.all(sql`SELECT id FROM pipeline_steps WHERE id IN ('discussion', 'architecture') ORDER BY id`)).toEqual([
       { id: "architecture" },
@@ -2747,7 +2747,7 @@ describe("0073: the run's directory stops being named after one kind of workspac
     ).toEqual({ pipeline_id: "discussions", type: "user", owner_role: null, entry_action: null, is_terminal: 0, off_board: 1 });
     expect(handle.db.get(sql`SELECT next_value FROM key_counters WHERE prefix = 'SCN'`)).toEqual({ next_value: 1 });
     // 0123's pull request watch (EO-461) is added on the way past, and
-    // moves Done one along; 0167 removes 0078's `job-thread` (EO-730).
+    // moves Done one along; 0168 removes 0078's `job-thread` (EO-730).
     expect(
       handle.db.all(sql`SELECT id, pipeline_id, position, off_board FROM pipeline_steps WHERE id NOT IN ('scenario', 'pull_request_watch') ORDER BY id`),
     ).toEqual(afterThePullRequestWatch(withoutThreadSteps(before)));
@@ -2896,7 +2896,7 @@ describe("0073: the run's directory stops being named after one kind of workspac
     );
     const stepsBefore = handle.db.all(sql`SELECT id FROM pipeline_steps`).length;
 
-    // As far as the release before 0167, which retired the job threads
+    // As far as the release before 0168, which retired the job threads
     // again (EO-730).
     runMigrationsBeforeTheThreadsRetired(handle.db);
 
@@ -3467,7 +3467,7 @@ describe("0119: a thread for each project", () => {
     runMigrations(handle.db, tempDir);
     const before = handle.db.all(sql`SELECT id, pipeline_id, position, off_board, is_terminal FROM pipeline_steps ORDER BY id`);
 
-    // As far as the release before 0167, which retired the project
+    // As far as the release before 0168, which retired the project
     // threads again (EO-730).
     runMigrationsBeforeTheThreadsRetired(handle.db);
 

@@ -296,7 +296,7 @@ export function startMain(platform: Platform): RunningMain {
     (error: unknown) => console.error("[eo] could not finish deleting the conversations Discussions and the Architecture panel left behind:", error),
   );
 
-  // EO-730: the files on the project and job threads migration 0167
+  // EO-730: the files on the project and job threads migration 0168
   // retired. Their rows went with the threads; their bytes go here.
   void removeRetiredAttachmentFiles(db, attachmentStorage).then(
     (count) => {

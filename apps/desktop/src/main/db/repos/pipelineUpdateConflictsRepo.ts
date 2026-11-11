@@ -40,7 +40,7 @@ export interface PipelineUpdateConflict {
   /**
    * What the conflict notice was sent as (EO-533, EO-727): its messages,
    * one per project it concerns and recipient — or, for a conflict noticed
-   * before messages, the comments on project threads that migration 0167
+   * before messages, the comments on project threads that migration 0168
    * turned into messages with this conflict as their subject. Empty where
    * nobody could be told — a pipeline with no project and no work on any.
    */

@@ -171,12 +171,12 @@ function migrationRecordRewrites(sql: string, table = "run_events"): string[] {
 
 /**
  * The one migration that removes `run_events` rows, and it is
- * `itemsRepo.ts`'s exemption above (invariant #3's own): 0167 deletes the
+ * `itemsRepo.ts`'s exemption above (invariant #3's own): 0168 deletes the
  * project and job threads outright (EO-730), so it deletes whatever an
  * agent mentioned on one ran there, as `deleteItem` would — the item
  * being gone, not a rewrite of what happened while it existed.
  */
-const MIGRATIONS_DELETING_ITEMS: readonly string[] = ["0167_retire_threads.sql: delete from `run_events"];
+const MIGRATIONS_DELETING_ITEMS: readonly string[] = ["0168_retire_threads.sql: delete from `run_events"];
 
 describe("architectural invariant: a record is never rewritten", () => {
   it("no migration updates, deletes or drops run_events rows (EO-555)", () => {

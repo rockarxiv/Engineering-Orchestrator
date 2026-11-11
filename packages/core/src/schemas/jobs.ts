@@ -227,7 +227,7 @@ export const JobOccurrenceViewSchema = z.object({
   itemId: z.string().nullable(),
   /**
    * The message that offered to run this one (EO-306; a comment on
-   * the job's thread before EO-729, whose id 0167 gave the message).
+   * the job's thread before EO-729, whose id 0168 gave the message).
    *
    * Set only on a skip beyond the grace — the one kind of skip there is
    * anything to offer about. It is what binds a person's reply to *this*
