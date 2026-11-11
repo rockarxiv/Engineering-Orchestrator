@@ -235,7 +235,7 @@ describe("projects:delete", () => {
 
     it("takes its pipelines, item types, jobs and connector bindings with it", async () => {
       const eo = repository();
-      const thread = createTestItem(handle.db, { type: "story", title: "The weekly report", stepId: "todo", workspaceId: eo.id, projectId: eo.projectId });
+      createTestItem(handle.db, { type: "story", title: "The weekly report", stepId: "todo", workspaceId: eo.id, projectId: eo.projectId });
       const pipeline = createPipeline(handle.db, { name: "Support", projectId: eo.projectId });
       insertJob(handle.db, {
         projectId: eo.projectId,
@@ -244,7 +244,6 @@ describe("projects:delete", () => {
         pipelineId: pipeline.id,
         template: null,
         ownerId: LOCAL_PERSON_ID,
-        threadItemId: thread.id,
       });
       saveJiraBinding(handle.db, eo.projectId, { projectKey: "EO" });
       expect(listItemTypes(handle.db, eo.projectId).length).toBeGreaterThan(0);

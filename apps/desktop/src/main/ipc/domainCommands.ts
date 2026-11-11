@@ -84,7 +84,6 @@ import {
 } from "../roles/itemDependencies.js";
 import { branchPrefix, setBranchPrefix } from "../packs/developer/workspace/branchPrefix.js";
 import { unansweredQuestions } from "../roles/clarificationQuestions.js";
-import { answerSkipOffer } from "../jobs/answer.js";
 import { actingAgentFor, standInBody, withOnYourBehalfNote } from "../trials/onBehalf.js";
 import { agentStopAnswerRefusal, answerTrialStop } from "../trials/loop.js";
 import { decisionRefusal, dispatchBlocker } from "@eo/engine";
@@ -357,17 +356,6 @@ export async function postHumanComment(
   const delivery = input.delivery === undefined
     ? null
     : await deliverToLiveRun(db, engine, { itemId, commentId: comment.id, body: comment.body, requested: input.delivery });
-
-  // "Run it now" on a skipped occurrence (EO-306). Before the resume
-  // path below, because a job thread has no run to resume and this is
-  // the only thing a reply on one can be waiting to do — and after the
-  // comment is written, so the answer is in the thread beside the
-  // occurrence it caused rather than after it.
-  const ranJob = answerSkipOffer(db, comment);
-  if (ranJob?.item) {
-    emitPush("items:changed", { itemId: ranJob.item.id });
-    engine?.notifyStateChange();
-  }
 
   // Keep going, publish anyway or discard, under a stop on testing a
   // draft (EO-586): the person's answer, read here because only here is it

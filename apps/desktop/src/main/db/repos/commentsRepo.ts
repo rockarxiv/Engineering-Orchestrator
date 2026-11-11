@@ -517,7 +517,7 @@ export function postComment(db: Db, input: PostCommentInput): Comment {
   // record does, once, rather than every desktop that pulls the comment
   // down. See `recordRole.ts`.
   //
-  // Of the item, not of the database (EO-325). A kept project's thread
+  // Of the item, not of the database (EO-325). A kept project's item
   // is this machine's to mirror; a moved one's is the record's.
   const ours = !isReplica(db, input.itemId);
   const settledHere: SettledMention[] = [];

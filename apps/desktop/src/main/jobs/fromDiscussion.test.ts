@@ -1,7 +1,7 @@
 import type { Item, Uuid } from "@eo/core";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { DbHandle } from "../db/client.js";
-import { deleteItem, getItem, listJobs, listOccurrences } from "../db/repos/index.js";
+import { deleteItem, getItem, jobForConversation, listJobs, listOccurrences } from "../db/repos/index.js";
 import { createTestItem, openMigratedTestDb } from "../db/testHelpers.js";
 import { openAssistConversation } from "../roles/assist.js";
 import { recordItemsFromConversation } from "./fromDiscussion.js";
@@ -22,7 +22,7 @@ function story(title: string): Item {
 }
 
 describe("an item created by pressing Create in a conversation", () => {
-  it("is recorded as a from-discussion occurrence on a job that owns the conversation as its thread", () => {
+  it("is recorded as a from-discussion occurrence on a job its conversation names", () => {
     const conversation = openAssistConversation(handle.db, null);
     const created = story("Page the importer");
 
@@ -31,9 +31,8 @@ describe("an item created by pressing Create in a conversation", () => {
     const jobs = listJobs(handle.db, null);
     expect(jobs).toHaveLength(1);
     expect(jobs[0]?.trigger).toEqual({ kind: "from-discussion", conversationId: conversation.id });
-    // The conversation *is* the thread: a job's guard channel is the one
-    // the conversation already is, so no second item is created.
-    expect(jobs[0]?.threadItemId).toBe(conversation.id);
+    // Found again by its conversation, so a second Create reuses it.
+    expect(jobForConversation(handle.db, conversation.id as Uuid)?.id).toBe(jobs[0]?.id);
     // And no template or pipeline, because the conversation supplied
     // the item and the approval resolved the placement.
     expect(jobs[0]?.template).toBeNull();
@@ -104,10 +103,8 @@ describe("an item created by pressing Create in a conversation", () => {
   });
 
   it("does not stop the conversation from being deleted", () => {
-    // `jobs.thread_item_id` is a real foreign key, so a conversation
-    // that owns a job would otherwise be undeletable — a feature that
-    // already exists, broken by a table it has never heard of. The job
-    // goes with the thread, and its occurrences with the job.
+    // The job goes with the conversation that made it, and its
+    // occurrences with the job.
     const conversation = openAssistConversation(handle.db, null);
     const created = story("Page the importer");
     recordItemsFromConversation(handle.db, conversation, [created]);

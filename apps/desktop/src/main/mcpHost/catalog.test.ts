@@ -192,9 +192,6 @@ const NOT_CATALOGUED: Partial<Record<RecordChannel, string>> = {
   // agents get no creation tool in that feature.
   "record:createItem": "creates work on the organisation's board as a named device's module run, which no agent is",
   "record:attachment": "hands out a file by id to whoever asks; an agent reads what is attached to the item it is working on",
-  // EO-471. A desktop's own question about a project the organisation
-  // holds, answered with a row for its replica.
-  "record:projectThread": "a replica's request for a row to copy; an agent reads a thread with ticket_get once it has the item",
   // EO-600: a desktop asking the record to make the change items:update
   // was asked for, on an item the organisation holds.
   // EO-726: EO's messages to a person, which agents never send or read (invariant 4).
@@ -221,11 +218,6 @@ const NOT_CATALOGUED: Partial<Record<RecordChannel, string>> = {
   "record:memoryConsolidations": "a replica's question about consolidations its record ran; memory:consolidations is the reading",
   "record:restoreMemoryConsolidation": "undoes a record's consolidation as a named device's person; memory:restoreConsolidation is the action",
   "record:restoreSkillVersion": "restores a record-held skill as a named device's person or agent; skills:restoreVersion (skill_restore_version) is the action",
-  // EO-471. The Settings button behind "Project notes". What is said on
-  // the thread is a comment like any other, and EO's own features post
-  // there through `ItemRecord.projectThread` rather than through a
-  // client.
-  "projects:thread": "the Settings button that opens a project's notes; what is said there reaches an agent as any thread does",
   // EO-325. Handing somebody's project to their organisation is
   // irreversible in this version and is theirs to decide, not an
   // assistant's to perform on their behalf — the sheet and the settings

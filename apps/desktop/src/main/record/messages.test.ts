@@ -15,7 +15,6 @@ import {
   getMessage,
   getProject,
   insertMessage,
-  listCommentsForItem,
   listOccurrences,
   listOpenMessages,
   markMessageHandled,
@@ -477,7 +476,6 @@ describe("a job's guard about a project the organisation's record holds", () => 
     expect(written).toHaveLength(1);
     expect(written[0]).toMatchObject({ recipientId: carlId, jobId: job.id, projectId: job.projectId, source: JOB_MESSAGE_SOURCE.skipped });
     expect(written[0]?.body).toContain("Monday report");
-    expect(listCommentsForItem(recordDb.db, job.threadItemId as Uuid)).toEqual([]);
 
     await syncAll();
     expect(listInbox(carl.handle.db).messages.map((message) => message.id)).toEqual([written[0]?.id]);

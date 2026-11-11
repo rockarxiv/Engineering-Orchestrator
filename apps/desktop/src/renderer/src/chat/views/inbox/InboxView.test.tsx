@@ -422,8 +422,8 @@ describe("what the inbox publishes", () => {
         items: [
           item({
             commentId: "notice-1",
-            itemKey: "SHOP-NOTES",
-            itemTitle: "Project notes",
+            itemKey: "SHOP-12",
+            itemTitle: "Checkout",
             authorName: "EO",
             kind: "note",
             blocking: false,

@@ -1,7 +1,7 @@
 import type { Uuid } from "@eo/core";
 import type { Db } from "../db/client.js";
 import { getProject, listAllJobs } from "../db/repos/index.js";
-import { isReplica } from "../db/recordRole.js";
+import { isProjectReplica } from "../db/recordRole.js";
 import { startInterval } from "../schedule/interval.js";
 import { catchUpJob, type CatchUpDeps } from "./catchUp.js";
 import { releaseHeldWebhookEvents, type WebhookDeps } from "./webhook.js";
@@ -85,9 +85,10 @@ export function runJobTick(db: Db, deps: CatchUpDeps = {}): JobTickResult {
    * the design's: the record leases the dispatch to a device, which runs it
    * on somebody's machine with their files and their logins.
    *
-   * Asked of the job's own thread item, because `isReplica` is the
-   * question every other writer in this process asks and asking it a
-   * second way is how two answers come to differ. A solo desktop, a
+   * Asked of the job's project through `isProjectReplica`, which is
+   * `isReplica` — the question every other writer in this process asks —
+   * asked before there is an item, because asking it a second way is how
+   * two answers come to differ. A solo desktop, a
    * server, and every test that has not registered a record answer
    * false and this reads as it always did.
    */
@@ -99,7 +100,7 @@ export function runJobTick(db: Db, deps: CatchUpDeps = {}): JobTickResult {
       // about an occurrence nobody was going to run. A transfer takes
       // seconds, and the occurrence is still due on the other side of
       // it.
-      !isReplica(db, job.threadItemId as Uuid) && !(job.projectId !== null && getProject(db, job.projectId as Uuid)?.adoptingAt != null),
+      !isProjectReplica(db, job.projectId as Uuid | null) && !(job.projectId !== null && getProject(db, job.projectId as Uuid)?.adoptingAt != null),
   );
   const result: JobTickResult = { considered: jobs.length, fired: [], skipped: [] };
   // One `now` for the whole sweep, so two jobs due at the same minute

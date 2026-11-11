@@ -12,6 +12,7 @@ import {
   offBoardStepIds,
   openAgentMentionsQuery,
   postComment,
+  createStep,
 } from "../db/repos/index.js";
 import { transitionItem } from "../db/repos/transitionsRepo.js";
 import { createTestItem, openMigratedTestDb } from "../db/testHelpers.js";
@@ -239,8 +240,9 @@ describe("findPendingResponses as one query (EO-554)", () => {
     const asked = human(conversation, "@implementer what is this?", [implementer]);
 
     // An off-board step with no conversation action of its own.
-    const notes = createTestItem(handle.db, { type: "story", title: "Notes", stepId: "project-thread" });
-    expect(offBoardStepIds(handle.db).has("project-thread")).toBe(true);
+    createStep(handle.db, { id: "notes" as Uuid, pipelineId: "discussions" as Uuid, position: -9, name: "Notes", type: "user", offBoard: true });
+    const notes = createTestItem(handle.db, { type: "story", title: "Notes", stepId: "notes" });
+    expect(offBoardStepIds(handle.db).has("notes")).toBe(true);
     const noted = human(notes, "@implementer a note", [implementer]);
 
     // An on-board step is an ordinary question.

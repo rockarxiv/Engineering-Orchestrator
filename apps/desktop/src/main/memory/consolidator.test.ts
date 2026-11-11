@@ -32,7 +32,6 @@ import {
   getConsolidation,
   listActiveRuns,
   listAgents,
-  listCommentsForItem,
   listConsolidations,
   listMemories,
   listSideCalls,
@@ -46,7 +45,6 @@ import {
   updateAgent,
 } from "../db/repos/index.js";
 import { buildEligibilityInput } from "../supervisor/buildTickInput.js";
-import { findProjectThread } from "../projects/projectThread.js";
 import { applyConsolidation, runsDeliveredFromScopeQuery } from "../db/repos/memoryConsolidationsRepo.js";
 import { DEFAULT_GUARD_CONFIG, writeGuards } from "../ipc/configCommands.js";
 import { attachWorkspace, createTestItem, messagesFrom, openMigratedTestDb } from "../db/testHelpers.js";
@@ -1523,8 +1521,6 @@ describe("automatic memory consolidation", () => {
       expect(notice!.body).toContain("10 entries against a cap of 10");
       expect(notice!.body).toContain("against a cap of 40,000");
       expect(notice!.body).toContain("`schema` — The answer did not match the shape asked for: retire: Required");
-      // Never on the project thread.
-      expect(findProjectThread(handle.db, projectId as Uuid)).toBeUndefined();
 
       // The fourth waits a day, and is not said again.
       await failAgainAfter(24 * 60 * 60 * 1000);
@@ -1551,7 +1547,6 @@ describe("automatic memory consolidation", () => {
       expect(notices()).toHaveLength(2);
       expect(notices()[1]!.body).toContain("`timeout` — The call took longer than its 90000 ms and was stopped.");
       expect(notices()[1]!.handledAt).toBeNull();
-      expect(findProjectThread(handle.db, projectId as Uuid)).toBeUndefined();
     });
 
     it("sends the stuck message through the sender it is given, and says it the next failure when that sender refuses", async () => {
@@ -1886,11 +1881,8 @@ describe("automatic memory consolidation", () => {
       body: BODY,
     });
     const noSkills = async (): Promise<AnyAnswer> => ({ ok: true, value: { skills: [] } });
-    /** What was posted on the project's thread: nothing, where it has none yet. */
-    const posted = () => {
-      const thread = findProjectThread(handle.db, projectId as Uuid);
-      return thread ? listCommentsForItem(handle.db, thread.id as Uuid) : [];
-    };
+    /** Every comment written anywhere: a proposal posts none (EO-728). */
+    const posted = () => handle.db.all(sql`select id from comments`);
 
     it("are asked for in a call of their own after the consolidation succeeds, given the entries it left, the existing skills and every discarded proposal, and answer at most three", async () => {
       const at = Date.now() - 3 * DAY;

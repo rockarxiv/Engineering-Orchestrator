@@ -42,7 +42,7 @@ export interface MemoryCaps {
 export const CONSOLIDATION_BACKOFF_MS = [60 * 60 * 1000, 4 * 60 * 60 * 1000, 24 * 60 * 60 * 1000] as const;
 /**
  * How many failures in a row make a scope's consolidation stuck: the
- * note on the project thread is posted at the one that makes it this
+ * message saying so is sent at the one that makes it this
  * many (EO-577).
  */
 export const CONSOLIDATION_STUCK_AFTER = 3;

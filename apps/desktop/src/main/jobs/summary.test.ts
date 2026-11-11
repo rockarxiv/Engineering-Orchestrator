@@ -2,7 +2,7 @@ import type { Job, JobTrigger, Uuid } from "@eo/core";
 import { eq } from "drizzle-orm";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { DbHandle } from "../db/client.js";
-import { createRun, getItem, getJob, listOccurrences, recordOccurrence, updateRun } from "../db/repos/index.js";
+import { createRun, getJob, listOccurrences, recordOccurrence, updateRun } from "../db/repos/index.js";
 import { items, jobs } from "../db/schema.js";
 import { openMigratedTestDb } from "../db/testHelpers.js";
 import { occurrenceOverBudget, pauseForBudget, pauseJob, resumeJob } from "./budget.js";
@@ -138,14 +138,12 @@ describe("editing the schedule and the zone", () => {
     expect(getJob(handle.db, monday.id as Uuid)?.trigger).toEqual(DAILY_0800_BERLIN);
   });
 
-  it("renames the job and leaves its thread as it was, since nothing writes to a job thread (EO-729)", () => {
+  it("renames the job", () => {
     const monday = job();
-    const before = getItem(handle.db, monday.threadItemId as Uuid);
 
     expect(updateJob(handle.db, { jobId: monday.id as Uuid, name: "Weekly digest" }).ok).toBe(true);
 
     expect(getJob(handle.db, monday.id as Uuid)?.name).toBe("Weekly digest");
-    expect(getItem(handle.db, monday.threadItemId as Uuid)).toEqual(before);
   });
 
   it("will not edit a deleted job", () => {

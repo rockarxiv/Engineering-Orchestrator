@@ -1,7 +1,7 @@
 import { parseQualifiedItemType, type Item, type Job, type JobOccurrence, type Uuid } from "@eo/core";
 import type { Db } from "../db/client.js";
 import { createItem, getPipeline, getProject, recordOccurrence } from "../db/repos/index.js";
-import { isReplica } from "../db/recordRole.js";
+import { isProjectReplica } from "../db/recordRole.js";
 import { fillTemplate } from "./template.js";
 import { JOB_MESSAGE_SOURCE, messageJobOwner } from "./ownerMessage.js";
 
@@ -152,7 +152,7 @@ export function fireJob(db: Db, job: Job, options: FireOptions = {}): FireResult
   const notOurs =
     project?.adoptingAt != null
       ? `"${project.name}" is being moved to your organisation's record, so nothing new is filed on it until that is done.`
-      : isReplica(db, job.threadItemId as Uuid)
+      : isProjectReplica(db, job.projectId as Uuid | null)
         ? "This project is on your organisation's record now, so the record files its work rather than this machine."
         : null;
   if (notOurs !== null) {

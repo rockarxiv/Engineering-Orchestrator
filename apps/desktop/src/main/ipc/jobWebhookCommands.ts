@@ -71,7 +71,7 @@ export function jobEventsCommand(db: Db, input: IpcPayload<"jobs:events">): IpcR
  * place — and so a regenerate is refused for the same reasons a save is
  * rather than for a shorter list of its own.
  *
- * Nothing is posted on the job's thread. A guard that fires with no item
+ * Nothing is sent to the job's owner. A guard that fires with no item
  * has to say so somewhere (invariant #8); this is a person pressing a
  * button and watching the new secret appear, which is `pauseJobCommand`'s
  * distinction exactly.
@@ -144,12 +144,8 @@ export async function sendTestWebhookEventCommand(
     // New work on a step, exactly as a delivery off the socket is: the
     // scheduler should look now rather than on its next tick.
     engine?.notifyStateChange();
-  } else {
-    // Every other outcome said so on the job's thread — bar the two that
-    // never post, which a test event cannot reach because EO signed it
-    // itself and stamped its own clock on it.
-    emitPush("items:changed", { itemId: job.threadItemId });
   }
+  // Every other outcome is a message to the job's owner, which pushes `messages:changed` itself.
 
   return {
     outcome: answer.outcome,

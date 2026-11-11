@@ -9,7 +9,6 @@ import {
   listOccurrences,
   listRunsForItem,
   needsAttention,
-  openMentionsForHuman,
   transitionItem,
   updateRun,
 } from "../db/repos/index.js";
@@ -136,9 +135,6 @@ describe("an occurrence whose item has spent the job's budget", () => {
     expect(messages[0]?.body).toContain("50¢");
     expect(messages[0]?.body).toContain(filed.key);
     expect(messages[0]?.body).toContain(report.name);
-    // No comment on the job's thread; the parked item carries its own.
-    expect(listCommentsForItem(handle.db, report.threadItemId as Uuid)).toEqual([]);
-    expect(openMentionsForHuman(handle.db).map((entry) => entry.comment.itemId)).not.toContain(report.threadItemId);
   });
 
   it("says it once, however many ticks pass", async () => {

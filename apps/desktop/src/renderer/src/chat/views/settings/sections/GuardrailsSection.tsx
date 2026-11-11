@@ -200,7 +200,7 @@ export function GuardrailsSection() {
           </NotedField>
 
           {/* EO-720: counted in runs, not days, so an idle project ages nothing. */}
-          <NotedField note="An agent-written skill that is given to this many runs in a row without one of them loading it is marked stale, and then archived — delivered to nobody, with a note on the project's thread. A load starts the count again. Skills a person wrote, and locked skills, are never archived by EO.">
+          <NotedField note="An agent-written skill that is given to this many runs in a row without one of them loading it is marked stale, and then archived — delivered to nobody, and its version history says why. A load starts the count again. Skills a person wrote, and locked skills, are never archived by EO.">
             <div className="grid max-w-[28rem] grid-cols-2 gap-3">
               <Field label="Runs without a load before a skill is stale">
                 <DraftInput type="number" min={1} {...field(value.skillStaleAfterRuns, (raw) => ({ skillStaleAfterRuns: atLeastOne(raw) }))} />

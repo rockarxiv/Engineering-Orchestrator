@@ -1830,7 +1830,6 @@ export const RecordJobSchema = z.object({
   pipelineId: z.string().nullable().default(null),
   template: z.unknown().nullable().default(null),
   ownerId: z.string(),
-  threadItemId: z.string(),
   pausedAt: z.number().nullable().default(null),
   pausedReason: z.string().nullable().default(null),
   budgetPerOccurrenceCents: z.number().nullable().default(null),

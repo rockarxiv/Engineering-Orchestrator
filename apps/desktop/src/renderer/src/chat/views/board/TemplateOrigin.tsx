@@ -62,9 +62,8 @@ export function TemplateOrigin({ pipelineId }: { pipelineId: string }) {
 
 /**
  * The held update, as a button: to the chat about it where there is one,
- * else to a notice posted on the project thread before messages (EO-727).
- * Where neither exists — the notice is a message, on no item — it opens
- * the chat the notice's button would have.
+ * else to a notice that is a comment. Where neither exists — the notice is
+ * a message, on no item — it opens the chat the notice's button would have.
  */
 function UpdateWaiting({ waiting }: { waiting: PipelineTemplateWaiting }) {
   const navigate = useNavigate();

@@ -8,14 +8,13 @@ import {
   listItemsForProject,
   listJobs,
   listOccurrences,
-  listPipelineSteps,
   recordOccurrence,
 } from "../db/repos/index.js";
 import { openMigratedTestDb } from "../db/testHelpers.js";
 import { fireJob } from "./fire.js";
 import { createJob, deleteJob, updateJob } from "./jobs.js";
 import { originOfItem } from "./origin.js";
-import { JOB_THREAD_KEY_PREFIX, JOB_THREAD_STEP } from "./thread.js";
+import { openAssistConversation } from "../roles/assist.js";
 
 let handle: DbHandle;
 
@@ -51,23 +50,11 @@ function scheduleJob(schedule: { kind: "daily"; hour: number; minute: number } |
 }
 
 describe("creating a job", () => {
-  it("gives it a thread on an off-board step, titled after the job", () => {
+  it("makes no item for it: its guards are messages to its owner (EO-730)", () => {
     const result = manualJob();
 
     expect(result.ok).toBe(true);
-    const job = result.ok ? result.job : undefined;
-    const thread = getItem(handle.db, job!.threadItemId as Uuid);
-    expect(thread?.title).toBe("Job: Monday report");
-    expect(thread?.stepId).toBe(JOB_THREAD_STEP);
-    expect(thread?.key.startsWith(`${JOB_THREAD_KEY_PREFIX}-`)).toBe(true);
-
-    // Off-board is the property the story names, and it is the step's
-    // own rather than this test's opinion of it.
-    const step = listPipelineSteps(handle.db).find((entry) => entry.id === JOB_THREAD_STEP);
-    expect(step?.offBoard).toBe(true);
-    // On the Discussions pipeline, which is the one that is never a
-    // sidebar entry because every step of it is off-board.
-    expect(step?.pipelineId).toBe("discussions");
+    expect(allItems()).toEqual([]);
   });
 
   it("owns it to the local person when nobody says otherwise", () => {
@@ -81,16 +68,14 @@ describe("creating a job", () => {
 
     expect(result.ok).toBe(false);
     expect(listJobs(handle.db, null)).toEqual([]);
-    // The refusal must not leave a thread behind for a job that does
-    // not exist.
-    expect(itemsOn(JOB_THREAD_STEP)).toEqual([]);
+    expect(allItems()).toEqual([]);
   });
 
-  it("refuses a template naming a type this project does not have, before creating a thread", () => {
+  it("refuses a template naming a type this project does not have", () => {
     const result = manualJob({ template: { ...TEMPLATE, type: "local:incident" } });
 
     expect(result.ok).toBe(false);
-    expect(itemsOn(JOB_THREAD_STEP)).toEqual([]);
+    expect(listJobs(handle.db, null)).toEqual([]);
   });
 
   it("refuses a nameless job", () => {
@@ -114,8 +99,8 @@ describe("creating a schedule job", () => {
 
     expect(refused.ok).toBe(false);
     expect(refused.ok ? "" : refused.problem).toContain("five fields");
-    // And nothing was written — no thread for a job that does not exist.
-    expect(itemsOn(JOB_THREAD_STEP)).toEqual([]);
+    // And nothing was written.
+    expect(listJobs(handle.db, null)).toEqual([]);
   });
 
   it("refuses a time zone this machine has never heard of", () => {
@@ -159,7 +144,7 @@ describe("creating a webhook job", () => {
 
     expect(refused.ok).toBe(false);
     expect(refused.ok ? "" : refused.problem).toContain("already receives webhooks at /deploys");
-    expect(itemsOn(JOB_THREAD_STEP)).toHaveLength(1);
+    expect(listJobs(handle.db, null)).toHaveLength(1);
   });
 
   it("lets a job keep its own address when something else about it is edited", () => {
@@ -173,15 +158,14 @@ describe("creating a webhook job", () => {
 });
 
 describe("deleting a job", () => {
-  it("archives its thread rather than deleting it, so what was said stays", () => {
-    const created = manualJob();
+  it("archives a from-discussion job's conversation rather than deleting it, so what was said stays", () => {
+    const conversation = openAssistConversation(handle.db, null);
+    const created = createJob(handle.db, { projectId: null, name: "From a chat", trigger: { kind: "from-discussion", conversationId: conversation.id } });
     const job = created.ok ? created.job : undefined;
 
     expect(deleteJob(handle.db, job!.id as Uuid)).toEqual({ deleted: true, archivedItemCount: 0 });
 
-    const thread = getItem(handle.db, job!.threadItemId as Uuid);
-    expect(thread).toBeDefined();
-    expect(thread?.archivedAt).not.toBeNull();
+    expect(getItem(handle.db, conversation.id)?.archivedAt).not.toBeNull();
   });
 
   /**
@@ -268,8 +252,6 @@ describe("deleting a job", () => {
  * "the refusal wrote nothing" is a statement about what is on disk and
  * not a restatement of "there is no job".
  */
-function itemsOn(stepId: string): string[] {
-  return listItemsForProject(handle.db, null)
-    .filter((item) => item.stepId === stepId)
-    .map((item) => item.id);
+function allItems(): string[] {
+  return listItemsForProject(handle.db, null).map((item) => item.id);
 }

@@ -9,7 +9,7 @@ import { jobEvents } from "../schema.js";
  *
  * Table access only, exactly as `jobsRepo` is. What a delivery *means* —
  * that a verified one creates an item, that one over the cap waits, that
- * one that produced nothing is said out loud on the job's thread — lives
+ * one that produced nothing is said out loud to the job's owner — lives
  * in `main/jobs/webhook.ts`, because none of it is a question about this
  * table.
  *

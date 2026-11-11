@@ -1,5 +1,3 @@
-apps/desktop/src/main/jobs/thread.ts: type: developerType("feature"),
-apps/desktop/src/main/projects/projectThread.ts: type: developerType("feature"),
 apps/desktop/src/main/providers/demo.ts: type: developerType("bug").slug,
 apps/desktop/src/main/providers/demo.ts: type: developerType("feature").slug,
 apps/desktop/src/main/providers/demo.ts: type: developerType("story").slug,

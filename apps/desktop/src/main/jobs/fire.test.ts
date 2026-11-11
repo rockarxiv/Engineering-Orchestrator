@@ -1,7 +1,7 @@
 import { LOCAL_PERSON_ID, type Job, type Uuid } from "@eo/core";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { DbHandle } from "../db/client.js";
-import { archivePipeline, getItem, getPipeline, listCommentsForItem, listOccurrences, openMentionsForHuman } from "../db/repos/index.js";
+import { archivePipeline, getPipeline, listOccurrences, openMentionsForHuman } from "../db/repos/index.js";
 import { messagesAboutJob, openMigratedTestDb } from "../db/testHelpers.js";
 import { openMessagesFor } from "../messages/messages.js";
 import { fireJob } from "./fire.js";
@@ -93,8 +93,7 @@ describe("firing a job", () => {
     expect(messages[0]).toMatchObject({ recipientId: LOCAL_PERSON_ID, jobId: monday.id, source: "job_failed", options: null });
     // Names the job and the reason.
     expect(messages[0]?.body).toBe(`"Monday report" could not run. ${result.problem}`);
-    // Invariant #8 where there is no item: a message, not a comment.
-    expect(listCommentsForItem(handle.db, monday.threadItemId as Uuid)).toEqual([]);
+    // Invariant #8 where there is no item: a message.
     expect(openMentionsForHuman(handle.db)).toEqual([]);
   });
 
@@ -121,15 +120,13 @@ describe("firing a job", () => {
     expect(messages[0]?.body).toContain(result.problem!);
   });
 
-  it("writes nothing to the job's thread however often it fails", () => {
+  it("tells the owner each time it fails", () => {
     const monday = job();
     archivePipeline(handle.db, "default");
 
     fireJob(handle.db, monday);
     fireJob(handle.db, monday);
 
-    expect(getItem(handle.db, monday.threadItemId as Uuid)?.archivedAt).toBeNull();
-    expect(listCommentsForItem(handle.db, monday.threadItemId as Uuid)).toEqual([]);
     expect(messagesAboutJob(handle.db, monday.id)).toHaveLength(2);
     expect(listOccurrences(handle.db, monday.id as Uuid)).toHaveLength(2);
   });

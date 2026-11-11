@@ -319,7 +319,7 @@ function JobStatus({
 /**
  * Every occurrence, newest first, the skipped ones included: a fired row
  * is visible as an item on a board, and a skipped one exists nowhere
- * else. The reason is the row's own sentence, the one the thread carries.
+ * else. The reason is the row's own sentence, the one the owner's message carries.
  */
 function History({ rows, timeZone }: { rows: JobOccurrenceRow[]; timeZone: string | undefined }) {
   if (rows.length === 0) return <p className="text-[12.5px] text-ink-subtle">It has not come round yet.</p>;

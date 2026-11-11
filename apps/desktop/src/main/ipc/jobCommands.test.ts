@@ -261,15 +261,12 @@ describe("jobs:delete", () => {
     expect(detail?.item.origin?.jobName).toBe("Monday report");
   });
 
-  it("removes the job and archives its thread", async () => {
+  it("removes the job", async () => {
     const job = (await create()).job!;
 
     expect(deleteJobCommand(handle.db, { jobId: job.id, archiveItems: false })).toEqual({ deleted: true, archivedItemCount: 0 });
 
     expect(listJobsCommand(handle.db, { projectId: null }).jobs).toEqual([]);
-    // Archived, so it is out of the project — and still there, with
-    // everything that was said on it.
-    expect(listItemsForProject(handle.db, null).some((item) => item.id === job.threadItemId)).toBe(false);
   });
 });
 

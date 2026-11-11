@@ -124,7 +124,6 @@ function blankJob(job: PlacedJob): Job {
     pipelineId: job.pipelineId,
     template: null,
     ownerId: "",
-    threadItemId: "",
     pausedAt: null,
     pausedReason: null,
     budgetPerOccurrenceCents: null,
@@ -262,8 +261,6 @@ export async function updateJobCommand(
     ...(input.runsOn === undefined ? {} : { runsOn: input.runsOn }),
   });
   if (!result.ok) return { job: null, problem: result.problem };
-  // Renaming retitles the thread, which is an item on a screen somewhere.
-  emitPush("items:changed", { itemId: result.job.threadItemId });
   return { job: jobSummary(db, result.job), problem: null };
 }
 
@@ -293,9 +290,6 @@ export async function createJobCommand(
     ...(input.runsOn === undefined ? {} : { runsOn: input.runsOn }),
   });
   if (!result.ok) return { job: null, problem: result.problem };
-  // The thread item is new work on a screen somewhere, even though it is
-  // off-board: the inbox counts and the archive both read items.
-  emitPush("items:changed", { itemId: result.job.threadItemId });
   // A summary, like every other `jobs:*` answer about one job (EO-308):
   // the caller opens the Job page on it, and the next run is the first
   // thing that page states.
@@ -343,10 +337,8 @@ export function runJobNowCommand(db: Db, engine: EngineHandle | undefined, input
     // New work on a step: the scheduler should look now rather than on
     // its next tick, the same as any other way an item arrives.
     engine?.notifyStateChange();
-  } else {
-    // A refusal wrote a `failed` occurrence (its message pushes `messages:changed` itself).
-    emitPush("items:changed", { itemId: job.threadItemId });
   }
+  // A refusal wrote a `failed` occurrence, and its message pushes `messages:changed` itself.
   return {
     fired: result.item !== null,
     occurrence: result.occurrence,
@@ -392,13 +384,12 @@ export function jobCostCommand(db: Db, input: IpcPayload<"jobs:cost">): IpcRespo
  * Is done with the job, and with its work if that is what was chosen
  * (ARCHITECTURE.md, "The inbox, the archive and jobs").
  *
- * The push is emitted whichever way the choice went: the thread is
- * archived either way, and archiving the items moves work off every
- * board that was showing it.
+ * The push is emitted whichever way the choice went: a from-discussion
+ * job's conversation is archived either way, and archiving the items
+ * moves work off every board that was showing it.
  */
 export function deleteJobCommand(db: Db, input: IpcPayload<"jobs:delete">): IpcResponse<"jobs:delete"> {
-  const job = getJob(db, input.jobId as Uuid);
   const result = deleteJob(db, input.jobId as Uuid, { archiveItems: input.archiveItems });
-  if (result.deleted && job) emitPush("items:changed", { itemId: job.threadItemId });
+  if (result.deleted) emitPush("items:changed", {});
   return result;
 }

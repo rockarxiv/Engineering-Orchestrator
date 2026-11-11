@@ -6,7 +6,7 @@ import { describeJobTrigger } from "@eo/core";
 import { blankDraft, budgetOf, templateOf, triggerOf, type JobDraft } from "../../../shared/jobs/draft";
 import { pauseChipOf, whenOf, zoneOf } from "../../../shared/jobs/format";
 import { ipcQuery } from "../../../query/client";
-import { itemsKey, jobsKey, jobsRootKey } from "../../../query/hooks";
+import { jobsKey, jobsRootKey } from "../../../query/hooks";
 import { useProjects } from "../../../query/useRepositories";
 import { Button, Card, CardSection, Chip, EmptyState, ErrorLine, Loading, ViewHeader } from "../../kit";
 import { JobFields } from "./JobFields";
@@ -47,8 +47,6 @@ export function JobsView() {
       setProblem(null);
       setDraft(null);
       void queryClient.invalidateQueries({ queryKey: jobsRootKey });
-      // Its thread item is new work, off-board though it is.
-      void queryClient.invalidateQueries({ queryKey: itemsKey });
       void navigate(`/jobs/${result.job.id}`);
     },
     onError: (error: unknown) => setProblem(error instanceof Error ? error.message : String(error)),

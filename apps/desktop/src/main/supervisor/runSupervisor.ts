@@ -1396,7 +1396,7 @@ function isManualAction(action: string): boolean {
   //
   // A module's scenario chat (EO-356) belongs here because a turn moves
   // no item, and its conversation sits on an off-board step whose
-  // position fallback is the `job-thread` step beside it. A scenario turn
+  // position fallback is the next off-board step along. A scenario turn
   // recovered after a restart and routed like a stage would leave its
   // room — the thread a module page opens would simply be gone.
   return action === RESPOND_ACTION || action === INTERPRET_ACTION || action === SCENARIO_ACTION;

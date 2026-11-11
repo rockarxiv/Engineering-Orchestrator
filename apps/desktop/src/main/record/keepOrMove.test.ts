@@ -1685,7 +1685,7 @@ describe("a graph nobody owns", () => {
 describe("a job whose pipeline changes while the move runs", () => {
   it("arrives pointing where it points now", async () => {
     const support = localProject("Support", "SUP");
-    const thread = itemOn(support.id, "The weekly report");
+    itemOn(support.id, "The weekly report");
     const first = listPipelines(annaDb.db, support.id, true)[0]!;
     adoptPipeline(annaDb.db, first.id, support.id);
     const second = createPipeline(annaDb.db, { name: "The other flow", projectId: support.id });
@@ -1697,7 +1697,6 @@ describe("a job whose pipeline changes while the move runs", () => {
       pipelineId: first.id,
       template: null,
       ownerId: LOCAL_PERSON_ID,
-      threadItemId: thread.id,
     });
     signIn(anna);
 
@@ -2043,7 +2042,6 @@ describe("a project whose job has already fired", () => {
       pipelineId: pipeline.id,
       template: null,
       ownerId: LOCAL_PERSON_ID,
-      threadItemId: thread.id,
     });
     const fired = recordOccurrence(annaDb.db, { jobId: job.id as Uuid, dueAt: 1_000, status: "fired", firedAt: 1_001, itemId: thread.id });
     recordOccurrence(annaDb.db, { jobId: job.id as Uuid, dueAt: 2_000, status: "skipped", reason: "The previous one was still open." });
@@ -2061,7 +2059,7 @@ describe("a project whose job has already fired", () => {
     // **The review's first finding.** The schedule travelled and the
     // account of it did not, so the record would fire an occurrence
     // this machine had already fired — and the skip somebody was told
-    // about would be gone from the thread it was told in.
+    // about would be gone from its history.
     expect(counts(recordDb, support.id)).toEqual(before);
     const there = listOccurrences(recordDb.db, support.jobId);
     expect(there.map((one) => one.status).sort()).toEqual(["fired", "skipped"]);
@@ -2178,7 +2176,7 @@ describe("a scheduled job on a project that has moved", () => {
    */
   function jobFixture(): { projectId: Uuid; jobId: Uuid; due: number } {
     const support = localProject("Support", "SUP");
-    const thread = itemOn(support.id, "The weekly report");
+    itemOn(support.id, "The weekly report");
     const pipeline = listPipelines(annaDb.db, support.id, true)[0]!;
     adoptPipeline(annaDb.db, pipeline.id, support.id);
     const job = insertJob(annaDb.db, {
@@ -2188,7 +2186,6 @@ describe("a scheduled job on a project that has moved", () => {
       pipelineId: pipeline.id,
       template: { type: "story", title: "This week", body: null },
       ownerId: LOCAL_PERSON_ID,
-      threadItemId: thread.id,
     });
     // `insertJob` stamps "now", and this is a job that already existed
     // when the occurrence came round.
@@ -2234,7 +2231,7 @@ describe("a scheduled job on a project that has moved", () => {
     // it somebody else's replica — `isTheRecord`. Without that the
     // record would decline to fire the jobs it is the only one able to
     // fire, and a moved schedule would simply stop.
-    const thread = createTestItem(recordDb.db, { type: "story", title: "The weekly report", stepId: "todo" });
+    createTestItem(recordDb.db, { type: "story", title: "The weekly report", stepId: "todo" });
     const job = insertJob(recordDb.db, {
       projectId: null,
       name: "The weekly report",
@@ -2242,7 +2239,6 @@ describe("a scheduled job on a project that has moved", () => {
       pipelineId: "default",
       template: { type: "story", title: "This week", body: null },
       ownerId: LOCAL_PERSON_ID,
-      threadItemId: thread.id,
     });
     recordDb.db.run(sql`update jobs set created_at = ${MONDAY_0800 - 60_000} where id = ${job.id}`);
 
@@ -2297,7 +2293,7 @@ describe("a pin changed during a move", () => {
 describe("a job whose project is mid-transfer", () => {
   /** A project with a weekly job on it, already due once. */
   function jobDueOn(projectId: Uuid): Uuid {
-    const thread = itemOn(projectId, "The weekly report");
+    itemOn(projectId, "The weekly report");
     const pipeline = listPipelines(annaDb.db, projectId, true)[0]!;
     adoptPipeline(annaDb.db, pipeline.id, projectId);
     const job = insertJob(annaDb.db, {
@@ -2307,7 +2303,6 @@ describe("a job whose project is mid-transfer", () => {
       pipelineId: pipeline.id,
       template: { type: "story", title: "This week", body: null },
       ownerId: LOCAL_PERSON_ID,
-      threadItemId: thread.id,
     });
     annaDb.db.run(sql`update jobs set created_at = ${MONDAY_0800 - 60_000} where id = ${job.id}`);
     return job.id as Uuid;
@@ -2353,8 +2348,7 @@ describe("a job whose project is mid-transfer", () => {
     // declined" is a row the record never hears about, on a project
     // whose whole account of itself is meant to be the record's.
     expect(pressed.occurrence).toBeNull();
-    // Nothing written on the project at all — no item, no occurrence,
-    // and no comment on the job's thread.
+    // Nothing written on the project at all — no item, no occurrence.
     const after = countProjectRows(annaDb.db, support.id);
     expect(after).toEqual(before);
     // Every guard ends in a message where there is no item (invariant
@@ -2364,9 +2358,7 @@ describe("a job whose project is mid-transfer", () => {
     expect(told).toHaveLength(1);
     expect(told[0]).toMatchObject({ projectId: null, source: "job_declined", recipientId: signedInPersonId(annaDb.db) });
     expect(told[0]?.body).toContain("record files its work");
-    const thread = getJob(annaDb.db, jobId)!.threadItemId as Uuid;
-    expect(listCommentsForItem(annaDb.db, thread)).toEqual([]);
-    expect(pendingCommands(annaDb.db, 50).map((command) => command.itemId)).not.toContain(thread);
+    expect(pendingCommands(annaDb.db, 50)).toEqual([]);
 
     // The record is the one that files it, and does.
     const there = runJobTick(recordDb.db, { now: MONDAY_0800 + 70 * 60_000 });

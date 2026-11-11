@@ -2,7 +2,7 @@ import { LOCAL_PERSON_ID, type Job, type JobTrigger, type Uuid } from "@eo/core"
 import { eq } from "drizzle-orm";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { DbHandle } from "../db/client.js";
-import { archivePipeline, listCommentsForItem, listOccurrences, openMentionsForHuman, setItemArchived } from "../db/repos/index.js";
+import { archivePipeline, listOccurrences, openMentionsForHuman, setItemArchived } from "../db/repos/index.js";
 import { jobs } from "../db/schema.js";
 import { messagesAboutJob, openMigratedTestDb } from "../db/testHelpers.js";
 import { catchUpJob } from "./catchUp.js";
@@ -149,8 +149,7 @@ describe("a schedule that came round while EO was shut", () => {
       handledAt: null,
     });
     expect(messages[0]?.options).toContain(RUN_NOW_OPTION);
-    // Invariant #8 where there is no item: a message, and nothing on a thread.
-    expect(listCommentsForItem(handle.db, monday.threadItemId as Uuid)).toEqual([]);
+    // Invariant #8 where there is no item: a message.
     expect(openMentionsForHuman(handle.db)).toEqual([]);
   });
 

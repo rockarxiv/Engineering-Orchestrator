@@ -1,12 +1,12 @@
-import { LOCAL_PERSON_ID, type Comment, type Job, type JobOccurrence, type JobTrigger, type Message, type Uuid } from "@eo/core";
+import { LOCAL_PERSON_ID, type Job, type JobOccurrence, type JobTrigger, type Message, type Uuid } from "@eo/core";
 import { eq } from "drizzle-orm";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { DbHandle } from "../db/client.js";
-import { getItem, getMessage, listOccurrences, postComment, recordOccurrence } from "../db/repos/index.js";
+import { getItem, getMessage, listOccurrences } from "../db/repos/index.js";
 import { jobs } from "../db/schema.js";
 import { messagesAboutJob, openMigratedTestDb } from "../db/testHelpers.js";
 import { handleMessageHere } from "../messages/messages.js";
-import { answerSkipMessage, answerSkipOffer, LEAVE_IT_OPTION, RUN_NOW_OPTION, SKIP_OFFER_OPTIONS } from "./answer.js";
+import { answerSkipMessage, LEAVE_IT_OPTION, RUN_NOW_OPTION } from "./answer.js";
 import { catchUpJob } from "./catchUp.js";
 import { createJob } from "./jobs.js";
 
@@ -215,65 +215,6 @@ describe("what carries no offer", () => {
     const impostor: Message = { ...real, source: "template_conflict", handledAt: 1, handledHow: "answered", answer: RUN_NOW_OPTION };
 
     expect(answerSkipMessage(handle.db, impostor)).toBeNull();
-    expect(statuses(monday)).toEqual(["skipped"]);
-  });
-});
-
-/**
- * An offer a skip posted on the job's thread before EO-729, still open
- * in somebody's inbox until the threads are retired: answering it by
- * reply still fires the occurrence it named.
- */
-describe("an offer posted on the thread before skips became messages", () => {
-  function legacyOffer(monday: Job): JobOccurrence {
-    const offer = postComment(handle.db, {
-      itemId: monday.threadItemId as Uuid,
-      author: { type: "engine" },
-      kind: "question",
-      options: SKIP_OFFER_OPTIONS,
-      mentions: [{ type: "human" }],
-      parseBodyMentions: false,
-      body: `"Monday report" was skipped. Run it now?`,
-    });
-    return recordOccurrence(handle.db, {
-      jobId: monday.id as Uuid,
-      dueAt: MONDAY_0800,
-      status: "skipped",
-      firedAt: null,
-      reason: "offline beyond grace",
-      offerCommentId: offer.id as Uuid,
-    });
-  }
-
-  function reply(item: Uuid, body: string, parentId: string | null): Comment {
-    return postComment(handle.db, { itemId: item, author: { type: "human" }, body, parentId: parentId as Uuid | null });
-  }
-
-  it("fires the occurrence that offer was made for, once", () => {
-    const monday = job();
-    const offered = legacyOffer(monday);
-
-    const result = answerSkipOffer(handle.db, reply(monday.threadItemId as Uuid, `run it now\n\nWe still need last week's numbers.`, offered.offerCommentId));
-
-    expect(result?.occurrence?.dueAt).toBe(MONDAY_0800);
-    expect(result?.item?.title).toBe("Monday report for 2026-06-01");
-    expect(answerSkipOffer(handle.db, reply(monday.threadItemId as Uuid, RUN_NOW_OPTION, offered.offerCommentId))).toBeNull();
-  });
-
-  it("ignores a remark that answers nothing, and a reply on another item citing the offer", () => {
-    const monday = job();
-    const offered = legacyOffer(monday);
-    const other = createJob(handle.db, {
-      projectId: null,
-      name: "Something else",
-      trigger: { kind: "manual" },
-      pipelineId: "default",
-      template: { type: "developer:story", title: "x", body: null },
-    });
-    if (!other.ok) throw new Error(other.problem);
-
-    expect(answerSkipOffer(handle.db, reply(monday.threadItemId as Uuid, RUN_NOW_OPTION, null))).toBeNull();
-    expect(answerSkipOffer(handle.db, reply(other.job.threadItemId as Uuid, RUN_NOW_OPTION, offered.offerCommentId))).toBeNull();
     expect(statuses(monday)).toEqual(["skipped"]);
   });
 });

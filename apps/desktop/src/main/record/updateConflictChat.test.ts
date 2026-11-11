@@ -27,7 +27,6 @@ import { applyTemplateUpdates } from "../gallery/templateUpdates.js";
 import { openUpdateConflictAssist } from "../ipc/assistCommands.js";
 import { clearPublishedView } from "../ipc/currentView.js";
 import type { EngineHandle } from "../ipc/domainCommands.js";
-import { findProjectThread } from "../projects/projectThread.js";
 import { createFakeProvider } from "../providers/fake.js";
 import { assistAgent, assistBoards, postAssistReply, shownAssistConversation } from "../roles/assist.js";
 import { ASSIST_ACTION, ASSIST_STEP } from "../roles/conversationSteps.js";
@@ -147,9 +146,8 @@ async function heldOnTheRecord(): Promise<{ conflictId: string; projectId: Uuid 
   return { conflictId: conflict.id, projectId: project.id as Uuid };
 }
 
-/** The notice as a desktop's replica holds it: the message to its person, pulled from the record, and no project thread. */
+/** The notice as a desktop's replica holds it: the message to its person, pulled from the record. */
 function noticeOn(machine: Desktop, projectId: Uuid) {
-  expect(findProjectThread(machine.handle.db, projectId)).toBeUndefined();
   const notices = messagesFrom(machine.handle.db, "template_conflict").filter((message) => message.projectId === projectId);
   expect(notices).toHaveLength(1);
   return notices[0]!;

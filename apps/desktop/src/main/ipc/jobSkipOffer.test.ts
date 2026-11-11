@@ -2,7 +2,7 @@ import { eq } from "drizzle-orm";
 import type { Job, JobTrigger, Message, Uuid } from "@eo/core";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { DbHandle } from "../db/client.js";
-import { getMessage, listCommentsForItem, listOccurrences } from "../db/repos/index.js";
+import { getMessage, listOccurrences } from "../db/repos/index.js";
 import { jobs } from "../db/schema.js";
 import { messagesAboutJob, openMigratedTestDb } from "../db/testHelpers.js";
 import { catchUpJob } from "../jobs/catchUp.js";
@@ -80,8 +80,6 @@ describe("answering a job's skip offer", () => {
     // pressed.
     expect(occurrences[0]?.dueAt).toBe(MONDAY_0800);
     expect(occurrences[0]?.itemId).not.toBeNull();
-    // And nothing was said on the job's thread.
-    expect(listCommentsForItem(handle.db, monday.threadItemId as Uuid)).toEqual([]);
   });
 
   it("does not fire when the person leaves it, or dismisses it", async () => {

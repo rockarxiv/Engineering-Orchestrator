@@ -2,7 +2,7 @@ import type { Job, JobTrigger, Uuid } from "@eo/core";
 import { eq } from "drizzle-orm";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { DbHandle } from "../db/client.js";
-import { createRun, getJob, listCommentsForItem, listOccurrences, updateRun } from "../db/repos/index.js";
+import { createRun, getJob, listOccurrences, updateRun } from "../db/repos/index.js";
 import { items, jobs } from "../db/schema.js";
 import { createTestItem, messagesAboutJob, openMigratedTestDb } from "../db/testHelpers.js";
 import { catchUpJob } from "./catchUp.js";
@@ -107,7 +107,6 @@ describe("a paused job", () => {
     expect(messages[0]?.body).toContain("paused");
     expect(messages[0]?.body).toContain("Morning report");
     expect(messages[0]).toMatchObject({ recipientId: report.ownerId, jobId: report.id, source: "job_skipped" });
-    expect(listCommentsForItem(handle.db, report.threadItemId as Uuid)).toEqual([]);
   });
 
   it("refuses a press as well as a tick, whichever door it came through", () => {

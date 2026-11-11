@@ -1,4 +1,4 @@
-import { and, desc, eq, gte, inArray, isNull, sql } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, isNull, sql, type SQL } from "drizzle-orm";
 import {
   DEFAULT_JOB_RUNS_ON,
   JobPauseReasonSchema,
@@ -51,7 +51,6 @@ function toJob(row: typeof jobs.$inferSelect): Job {
     pipelineId: row.pipelineId,
     template: row.template === null ? null : JobTemplateSchema.parse(row.template),
     ownerId: row.ownerId,
-    threadItemId: row.threadItemId,
     pausedAt: row.pausedAt,
     // Parsed rather than cast, for `trigger`'s reason: a row holding
     // something else is a database somebody else wrote to, and the chip
@@ -93,14 +92,13 @@ export interface InsertJobInput {
   pipelineId: string | null;
   template: JobTemplate | null;
   ownerId: Uuid;
-  threadItemId: Uuid;
   budgetPerOccurrenceCents?: number | null;
   maxItemsPerHour?: number | null;
   /** Omitted is `device` — see the column, and `DEFAULT_JOB_RUNS_ON`. */
   runsOn?: JobRunsOn;
 }
 
-/** Writes the row. The thread item it names must already exist — see `main/jobs/jobs.ts`. */
+/** Writes the row. What is checked before it is written is `main/jobs/jobs.ts`'s. */
 export function insertJob(db: Db, input: InsertJobInput): Job {
   const now = Date.now();
   const row = db
@@ -113,7 +111,6 @@ export function insertJob(db: Db, input: InsertJobInput): Job {
       pipelineId: input.pipelineId,
       template: input.template,
       ownerId: input.ownerId,
-      threadItemId: input.threadItemId,
       pausedAt: null,
       pausedReason: null,
       budgetPerOccurrenceCents: input.budgetPerOccurrenceCents ?? null,
@@ -211,20 +208,24 @@ export function pipelineHasWebhookEntry(db: Db, pipelineId: string): boolean {
 }
 
 /**
- * The job whose thread is this item, if there is one.
+ * The from-discussion job a conversation made, if there is one (ARCHITECTURE.md, "What a job records").
  *
- * How the from-discussion job for a conversation is found again: its
- * thread *is* the conversation (ARCHITECTURE.md, "What a job records"), so the second Create in a
- * conversation reuses the job the first one made rather than filing a
- * second definition of the same thing.
+ * How the second Create in a conversation reuses the job the first one
+ * made rather than filing a second definition of the same thing: the
+ * job's trigger names the conversation.
  */
-export function jobForThreadItem(db: Db, threadItemId: Uuid): Job | undefined {
+export function jobForConversation(db: Db, conversationId: Uuid): Job | undefined {
   const row = db
     .select()
     .from(jobs)
-    .where(and(eq(jobs.threadItemId, threadItemId), isNull(jobs.deletedAt)))
+    .where(and(fromDiscussionOf([conversationId]), isNull(jobs.deletedAt)))
     .get();
   return row ? toJob(row) : undefined;
+}
+
+/** The from-discussion jobs any of these conversations made — what `deleteItem` takes with them. */
+export function fromDiscussionOf(conversationIds: readonly string[]): SQL {
+  return sql`json_extract(${jobs.trigger}, '$.kind') = 'from-discussion' and json_extract(${jobs.trigger}, '$.conversationId') in ${conversationIds}`;
 }
 
 /**
@@ -288,11 +289,11 @@ export function updateJobRow(db: Db, id: Uuid, input: UpdateJobInput): Job | und
  *
  * What "deleted" then means is everything a person asking for it means:
  * gone from `listJobs`, passed over by `listAllJobs` so no tick can
- * reach it, unfindable by `jobForThreadItem` so a conversation starts a
- * new job rather than reviving this one, and refused by Run now. The
- * thread is archived rather than deleted, which is `deleteJob` in
- * `main/jobs/jobs.ts` — what was said outlives the definition that
- * owned it.
+ * reach it, unfindable by `jobForConversation` so a conversation starts a
+ * new job rather than reviving this one, and refused by Run now. A
+ * from-discussion job's conversation is archived with it rather than
+ * deleted, which is `deleteJob` in `main/jobs/jobs.ts` — what was said
+ * outlives the definition that owned it.
  */
 export function markJobDeleted(db: Db, id: Uuid, at: number = Date.now()): Job | undefined {
   const row = db.update(jobs).set({ deletedAt: at, updatedAt: at }).where(eq(jobs.id, id)).returning().get();
@@ -433,14 +434,12 @@ export function hasFiredAt(db: Db, jobId: Uuid, dueAt: number): boolean {
 }
 
 /**
- * The occurrence this comment offered to run, if it offered one
+ * The occurrence this message offered to run, if it offered one
  * (EO-306, `ARCHITECTURE.md`, "Schedules, and a machine that was off").
  *
- * The whole of how "Run it now" knows *which* occurrence. A reply is
- * filed under the comment it answers (D-05), that comment is the offer,
- * and the offer names its occurrence — so an answer to an offer from
- * three weeks ago runs the occurrence from three weeks ago, and a
- * comment on the thread that answers nothing runs nothing at all.
+ * The whole of how "Run it now" knows *which* occurrence: the offer
+ * names its occurrence, so answering an offer from three weeks ago runs
+ * the occurrence from three weeks ago.
  */
 export function occurrenceForOffer(db: Db, offerCommentId: Uuid): JobOccurrence | undefined {
   const row = db.select().from(jobOccurrences).where(eq(jobOccurrences.offerCommentId, offerCommentId)).get();

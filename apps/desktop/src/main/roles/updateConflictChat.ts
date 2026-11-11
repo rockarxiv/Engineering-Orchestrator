@@ -45,8 +45,7 @@ export interface UpdateConflictChatRequest {
   answeredBy: ConflictChatAnswerer;
   /**
    * The notice pressed, which places the chat of a pipeline no project has
-   * adopted: its message's id (EO-727), or its comment's for a notice
-   * posted on a project thread before messages.
+   * adopted: its message's id (EO-727), or a comment's.
    */
   commentId: string | null;
   /** Where to place it when neither the pipeline nor the notice says: the project on screen on a desktop, none on the record. */

@@ -129,12 +129,6 @@ function renderProjects({
       projects = projects.map((entry) => (entry.id === asked.projectId ? { ...entry, repositoryIds: [...entry.repositoryIds, "r2"] } : entry));
       return { ok: true, data: { ok: true, workspace: undefined, problem: null } };
     }
-    if (channel === "projects:thread") {
-      const asked = payload as { projectId: string };
-      return asked.projectId === "theirs"
-        ? { ok: true, data: { itemId: null, problem: "This project's notes are on your organisation's record, which could not be reached: fetch failed" } }
-        : { ok: true, data: { itemId: `thread-of-${asked.projectId}`, problem: null } };
-    }
     return fallback(channel as never, payload as never);
   }) as never;
 
@@ -549,30 +543,15 @@ describe("where a project lives (EO-325)", () => {
   });
 });
 
-describe("Project notes (EO-471)", () => {
-  it("opens the project's thread in the ordinary item view", async () => {
-    const calls = renderProjects();
-
-    fireEvent.click(await screen.findByRole("button", { name: "Open Shop's project notes" }));
-
-    expect(await screen.findByText("Item view for thread-of-shop")).toBeInTheDocument();
-    expect(on(calls, "projects:thread")).toEqual([{ projectId: "shop" }]);
-  });
-
-  it("says why, where the thread cannot be opened", async () => {
+describe("Project notes, retired (EO-730)", () => {
+  it("is offered on no project: what EO asks about a project is a message", async () => {
     renderProjects();
-
-    fireEvent.click(await screen.findByRole("button", { name: "Open Theirs's project notes" }));
-
-    expect(await screen.findByText(/could not be reached: fetch failed/)).toBeInTheDocument();
-  });
-
-  it("is labelled Project notes", async () => {
-    renderProjects();
-    expect(await screen.findAllByRole("button", { name: /project notes/ })).toHaveLength(2);
-    expect(screen.getAllByText("Project notes")).toHaveLength(2);
+    expect(await screen.findByRole("textbox", { name: "Rename Shop" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /project notes/i })).not.toBeInTheDocument();
+    expect(screen.queryByText("Project notes")).not.toBeInTheDocument();
   });
 });
+
 
 describe("memory (EO-481)", () => {
   it("gives each project a Memory section listing its own entries", async () => {

@@ -26,7 +26,6 @@ import { createProject } from "../db/repos/projectsRepo.js";
 import { createTestItem, openMigratedTestDb } from "../db/testHelpers.js";
 import { pipelineVersionsCommand } from "../ipc/pipelineCommands.js";
 import { ACTIVE_PROJECT_KEY } from "../ipc/repositoryCommands.js";
-import { findProjectThread } from "../projects/projectThread.js";
 import { loadTemplateHistory, type TemplateHistory, type TemplateVersion } from "./history.js";
 import { backfillPipelineOrigins } from "./origins.js";
 import { applyTemplateUpdates, compareWithTemplate } from "./templateUpdates.js";
@@ -232,8 +231,7 @@ describe("an update with no conflict", () => {
 
     applyTemplateUpdates(handle.db, history, { isTheRecord: false });
 
-    // No project thread was opened, nor any comment written anywhere.
-    expect(findProjectThread(handle.db, projectId)).toBeUndefined();
+    // No comment written anywhere.
     expect(handle.db.all(sql`select id from comments`)).toEqual([]);
 
     const notes = [shipped("1.1"), shipped("1.2"), shipped("1.3")].map((version) => `${version.version}: ${version.notes}`).join("\n");
@@ -357,7 +355,6 @@ describe("a project in the middle of a move", () => {
 
     expect(applied).toEqual([expect.objectContaining({ pipelineId: "default", outcome: "applied" })]);
     expect(getPipelineOrigin(handle.db, "default")?.version).toBe("1.3");
-    expect(findProjectThread(handle.db, moving.id as Uuid)).toBeUndefined();
     expect(currentVersion(handle.db, "default")!.releaseNotes).toContain(shipped("1.3").notes);
   });
 });
@@ -428,7 +425,7 @@ describe("1.1 to 1.3: Watching pull request never gives up", () => {
   const watchStep = () => listStepsForPipeline(handle.db, "default").find((step) => step.id === "pull_request_watch");
 
   it("is applied with nothing held, as the one change of keep checking on the watch", () => {
-    const { projectId } = deliveryOn11();
+    deliveryOn11();
     expect(watchStep()?.watch).toEqual({ everyMinutes: 5, giveUpAfterHours: 168 });
 
     const results = applyTemplateUpdates(handle.db, history, { isTheRecord: false });
@@ -455,7 +452,6 @@ describe("1.1 to 1.3: Watching pull request never gives up", () => {
     expect(listUpdateConflicts(handle.db, "default")).toEqual([]);
     expect(getPipelineOrigin(handle.db, "default")?.version).toBe("1.3");
 
-    expect(findProjectThread(handle.db, projectId)).toBeUndefined();
     const notes = currentVersion(handle.db, "default")!.releaseNotes;
     expect(notes).toContain(shipped("1.2").notes);
     expect(notes).toContain(shipped("1.3").notes);

@@ -7,7 +7,6 @@ import {
   createProject,
   createRun,
   getSkill,
-  listCommentsForItem,
   listSkills,
   listSkillVersions,
   restoreSkillVersion,
@@ -17,7 +16,6 @@ import {
 } from "../db/repos/index.js";
 import { skillUsageById, usageOfSkill } from "../db/repos/skillUsageRepo.js";
 import { createTestItem, messagesFrom, openMigratedTestDb } from "../db/testHelpers.js";
-import { findProjectThread } from "../projects/projectThread.js";
 import { markReplica } from "../db/recordRole.js";
 import { publishSection } from "../db/repos/publishedSectionsRepo.js";
 import { archiveUnusedSkills } from "./archival.js";
@@ -79,10 +77,8 @@ describe("archiving unused agent skills", () => {
 
   const pass = (with_: SkillAgeing = ageing) => archiveUnusedSkills({ db: handle.db, projectId, reach: "all", ageing: with_ });
   const stateOf = (id: string, with_: SkillAgeing = ageing) => skillState(getSkill(handle.db, id)!, usageOfSkill(skillUsageById(handle.db), id), with_);
-  const notes = () => {
-    const thread = findProjectThread(handle.db, projectId);
-    return thread === undefined ? [] : listCommentsForItem(handle.db, thread.id);
-  };
+  /** Every comment written anywhere: archiving posts none (EO-728). */
+  const notes = () => handle.db.all(sql`select id from comments`);
 
   it("marks an agent's skill stale at the stale count and archives it at the archive count, after which it is not delivered", async () => {
     const id = skill("release", "agent");
@@ -202,8 +198,7 @@ describe("archiving unused agent skills", () => {
     // Another project's skill is that project's pass to archive.
     expect(getSkill(handle.db, elsewhere)!.archivedAt).toBeNull();
 
-    // No project thread was opened, nor any comment written anywhere.
-    expect(findProjectThread(handle.db, projectId)).toBeUndefined();
+    // No comment written anywhere.
     expect(handle.db.all(sql`select id from comments`)).toEqual([]);
 
     const [archive] = listSkillVersions(handle.db, first);
@@ -247,7 +242,6 @@ describe("archiving unused agent skills", () => {
       await refused();
       expect(held()).toHaveLength(2);
       expect(held()[1]!.body).toContain("`changelog`");
-      expect(findProjectThread(handle.db, projectId)).toBeUndefined();
     } finally {
       stop();
     }

@@ -312,9 +312,8 @@ function chunk<T>(rows: readonly T[], size: number): T[][] {
  * types and graphs before items (`items.type_id`, `items.step_id`),
  * items before runs (`runs.item_id`), runs before their transcripts and
  * before the moves and comments that name them
- * (`transitions.run_id`, `comments.run_id`), items before jobs
- * (`jobs.thread_item_id`), and comments before the files that hang off
- * them (`attachments.comment_id`).
+ * (`transitions.run_id`, `comments.run_id`), and comments before the
+ * files that hang off them (`attachments.comment_id`).
  */
 export async function moveProjectToRecord(options: MoveProjectOptions): Promise<MoveProjectResult> {
   const { db, projectId, personId } = options;
@@ -512,7 +511,7 @@ export async function moveProjectToRecord(options: MoveProjectOptions): Promise<
     // agents attached to them: the record attaches an agent only to a
     // skill it holds. Never a global skill — that is the installation's,
     // and what an agent is attached to beyond the project's own is said
-    // on the project's thread by the record, once the project is live.
+    // in a message by the record, once the project is live.
     const newSkills = readProjectSkills(db, projectId).filter((skill) => stale(sent.skills, skill.id, skill.updatedAt));
     for (const page of chunk(newSkills, PAGE.skills)) {
       const problem = await send({ skills: page });

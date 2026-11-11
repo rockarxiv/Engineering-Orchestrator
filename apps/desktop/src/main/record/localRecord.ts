@@ -18,7 +18,6 @@ import { personCostCentsSince } from "../db/repos/runsRepo.js";
 import { serverPlacedItemIds } from "../db/repos/jobsRepo.js";
 import { overPersonBudgetForItem, readPolicy } from "../policy/policy.js";
 import { parkForPersonBudget } from "../policy/personBudget.js";
-import { openProjectThread } from "../projects/projectThread.js";
 import { handleMessageHere, sendMessage } from "../messages/messages.js";
 import { changeDependenciesOf, summariseDependencyChange } from "../roles/itemDependencies.js";
 import { updateItemTypeCommand } from "../ipc/itemTypeCommands.js";
@@ -348,12 +347,6 @@ export function createLocalRecord(db: Db, options: LocalRecordOptions = {}): Loc
     // same command a server runs when a device asks.
     async updateItemType(request) {
       return updateItemTypeCommand(db, request);
-    },
-
-    // Here, because this database is the record for these rows
-    // (EO-471) — and the same function a server runs when a device asks.
-    async projectThread(projectId) {
-      return openProjectThread(db, projectId);
     },
 
     // Here, because this database holds the message (EO-726): a solo
