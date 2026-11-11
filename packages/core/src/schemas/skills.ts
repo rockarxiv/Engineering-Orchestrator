@@ -333,15 +333,17 @@ export type SkillVersion = z.infer<typeof SkillVersionSchema>;
 
 /**
  * A skill as it travels from one installation to another (EO-728): the
- * skill, and every one of its versions that carries a report — each
- * consolidation's evidence and diff, each time EO archived it and after
- * how many runs — oldest first. The receiving side files each it does not
- * hold yet under its own id, author and report, so its history says who
- * wrote the skill and why, as the sender's does, however many writes it
- * missed between two copies. Empty where no version carries one, and on a
- * copy from a build before it.
+ * skill, and versions of it, oldest first. Every copy carries each of its
+ * versions that holds a report — each consolidation's evidence and diff,
+ * each time EO archived it and after how many runs — and a project move's
+ * page carries every version, so the record that takes the project holds
+ * the history the desktop showed and can restore any of it. The receiving
+ * side files each it does not hold yet under the sender's id, author and
+ * report, so its history says who wrote the skill and why, as the
+ * sender's does, however many writes it missed between two copies. Empty
+ * where there is nothing to carry, and on a copy from a build before it.
  */
-export const SkillCopySchema = SkillSchema.extend({ reportedVersions: z.array(SkillVersionSchema).default([]) });
+export const SkillCopySchema = SkillSchema.extend({ versions: z.array(SkillVersionSchema).default([]) });
 export type SkillCopy = z.infer<typeof SkillCopySchema>;
 
 // ── Usage (EO-715) ───────────────────────────────────────────────

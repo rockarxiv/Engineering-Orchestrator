@@ -73,7 +73,7 @@ import {
   writeAdoptedProject,
   type UncarriedTools,
 } from "../db/repos/projectMoveRepo.js";
-import { getSkill, listProjectSkillsUpdatedSince, restoreSkillVersion, skillCopyOf, skillOwner } from "../db/repos/skillsRepo.js";
+import { getSkill, listProjectSkillsUpdatedSince, restoreSkillVersion, skillCopyOf, skillOwner, skillVersionOf, skillVersionWithContent } from "../db/repos/skillsRepo.js";
 import {
   getAttachment,
   insertAttachments,
@@ -794,6 +794,10 @@ export async function serveRestoreMemoryConsolidation(
 export const RESTORE_SKILL_NOT_AN_ADMIN =
   "Your organisation has published its packs section, so only an administrator can restore one of its skills. Nothing was restored.";
 
+/** What a device is told when the version it asked for was never this skill's on the record, by id or by what it held (EO-728). */
+export const RESTORE_SKILL_VERSION_NOT_HERE =
+  "that version was never this skill's on the record — it was written only on your machine — so nothing was restored. Restore a version the record sent instead.";
+
 /**
  * A device restoring a version of a skill this record holds (EO-728) —
  * the record's half of `ItemRecord.restoreSkillVersion`, behind the
@@ -803,7 +807,10 @@ export const RESTORE_SKILL_NOT_AN_ADMIN =
  * it is a project's, of a project this record holds and has finished
  * taking; and while the packs section is published, which keeps the
  * organisation's skills as its admins set them, the asking device is an
- * admin's. Then the same restore any installation makes — a new version,
+ * admin's; and the version is one of the record's — by id, or, for one
+ * the desktop filed under its own id, the newest of the record's that
+ * held the same description, body and files. Then the same restore any
+ * installation makes — a new version,
  * a person's or the desktop's system agent's, which a lock here refuses
  * for an agent. Answers with the skill as it now stands, its reported
  * versions and its project, for the device to copy; every other desktop
@@ -820,7 +827,13 @@ export async function serveRestoreSkillVersion(
   if (owner.projectId !== null && !heldHere(db, owner.projectId)) return refuse("this record does not hold that skill's project, so nothing was restored.");
   if (publishedSectionRow(db, "packs") !== undefined && personOfDevice(db, payload.deviceId)?.isAdmin !== true) return refuse(RESTORE_SKILL_NOT_AN_ADMIN);
   const author = payload.agentId === null ? PERSON_SKILL_AUTHOR : ({ kind: "agent", agentId: payload.agentId } as const);
-  const result = restoreSkillVersion(db, payload.skillId, payload.versionId, Date.now(), author);
+  // A version the desktop filed under an id of its own is restored as the
+  // record's version that held the same thing, and only where one did.
+  const versionId =
+    skillVersionOf(db, payload.skillId, payload.versionId)?.id ??
+    (payload.content === null ? undefined : skillVersionWithContent(db, payload.skillId, payload.content)?.id);
+  if (versionId === undefined) return refuse(RESTORE_SKILL_VERSION_NOT_HERE);
+  const result = restoreSkillVersion(db, payload.skillId, versionId, Date.now(), author);
   if (!result.ok) return refuse(result.problem);
   emitPush("config:changed", {});
   emitPush("items:changed", {});

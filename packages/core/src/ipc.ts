@@ -6320,9 +6320,22 @@ export const recordContract = {
    * `eo_admin` (its `actingAgentId`, which every server door strips, so
    * it travels under a name of its own), and the version is filed as that
    * agent's; null for a person.
+   *
+   * `content` is what the version holds in the asking desktop's history,
+   * where it holds it. A version filed there under an id of the desktop's
+   * own — a `sync` of a copy the record sent — is not one the record
+   * knows by id, so the record restores the newest of its own versions
+   * holding exactly that description, body and files, and refuses where
+   * none does: it puts back only what it once held.
    */
   "record:restoreSkillVersion": channel(
-    z.object({ deviceId: z.string().min(1), skillId: z.string().min(1), versionId: z.string().min(1), agentId: z.string().min(1).max(100).nullable().default(null) }),
+    z.object({
+      deviceId: z.string().min(1),
+      skillId: z.string().min(1),
+      versionId: z.string().min(1),
+      agentId: z.string().min(1).max(100).nullable().default(null),
+      content: SkillVersionSchema.pick({ description: true, body: true, files: true }).nullable().default(null),
+    }),
     z.object({ skill: SkillCopySchema.extend({ projectId: z.string().nullable() }).nullable(), problem: z.string().nullable() }),
   ),
   "record:adopt": channel(

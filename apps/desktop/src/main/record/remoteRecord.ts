@@ -20,10 +20,10 @@ import type { ItemRecord, OfferWorkInput, TransitionCommand, WorkOffer } from ".
 import type { LocalItemRecord } from "./localRecord.js";
 import { markOffline, markOnline, type RecordTransport } from "./syncStatus.js";
 import { listConsolidations, memoryScopeProjectId, supersedeProblem } from "../db/repos/index.js";
-import type { MemoryConsolidationCursor, MemoryConsolidationView, RecordCommand, RecordMemoryWrite } from "@eo/core";
+import type { MemoryConsolidationCursor, MemoryConsolidationView, RecordCommand, RecordMemoryWrite, SkillVersion } from "@eo/core";
 import type { MemoryWriteRequest } from "./record.js";
 import { copyRecordMemories } from "./memoryReplica.js";
-import { getSkill, holdSkillCopy, upsertReplicaSkill } from "../db/repos/skillsRepo.js";
+import { getSkill, holdSkillCopy, skillVersionOf, upsertReplicaSkill, type SkillVersionContent } from "../db/repos/skillsRepo.js";
 
 /**
  * The record, when it lives on somebody else's machine (EO-324,
@@ -684,6 +684,7 @@ export function createRemoteRecord(options: RemoteRecordOptions): RemoteRecord {
         skillId: request.id,
         versionId: request.versionId,
         agentId: request.actingAgentId ?? null,
+        content: contentOf(skillVersionOf(db, request.id, request.versionId)),
       });
       if (!answer.ok) {
         return {
@@ -770,4 +771,9 @@ function asMemoryWrite(db: Db, request: MemoryWriteRequest): RecordMemoryWrite |
 
 function asLease(lease: { itemId: string; deviceId: string; grantedAt: number; expiresAt: number }): DispatchLease {
   return { itemId: lease.itemId as Uuid, deviceId: lease.deviceId, grantedAt: lease.grantedAt, expiresAt: lease.expiresAt };
+}
+
+/** What a restore of this version puts back, as this desktop's history holds it — for the record to find among its own (EO-728). */
+function contentOf(version: SkillVersion | undefined): SkillVersionContent | null {
+  return version === undefined ? null : { description: version.description, body: version.body, files: version.files };
 }

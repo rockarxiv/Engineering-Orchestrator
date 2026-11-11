@@ -321,8 +321,8 @@ describe("a copy carries every reported version (EO-728)", () => {
     const id = createdImprovedArchived();
     const sent = skillCopyOf(handle.db, getSkill(handle.db, id)!);
     const senders = listSkillVersions(handle.db, id).filter((version) => version.report !== null);
-    expect(sent.reportedVersions).toEqual([...senders].reverse());
-    expect(sent.reportedVersions.map((version) => version.report?.kind)).toEqual(["consolidation", "consolidation", "unused"]);
+    expect(sent.versions).toEqual([...senders].reverse());
+    expect(sent.versions.map((version) => version.report?.kind)).toEqual(["consolidation", "consolidation", "unused"]);
 
     upsertReplicaSkill(replica.db, sent);
     upsertReplicaSkill(replica.db, sent);
@@ -349,7 +349,7 @@ describe("a copy carries every reported version (EO-728)", () => {
   it("files only the reports a replica missed when it already holds the earlier ones, and carries them on a move's page", () => {
     const plain = saveSkill(handle.db, draft({ name: "House style" }));
     if (!plain.ok) throw new Error(plain.problems.join("\n"));
-    expect(skillCopyOf(handle.db, plain.skill).reportedVersions).toEqual([]);
+    expect(skillCopyOf(handle.db, plain.skill).versions).toEqual([]);
     upsertReplicaSkill(replica.db, skillCopyOf(handle.db, plain.skill));
 
     const first = saveSkill(handle.db, draft({ id: plain.skill.id, name: "House style", body: "Write plainly." }), 50, { kind: "consolidation", consolidationId: "c-2" }, improvement);
@@ -410,7 +410,7 @@ describe("the project a scoped skill belongs to (EO-513)", () => {
 
   it("keeps a moved workspace's skill on its project when it is edited where the workspace is not", () => {
     // The record: it holds the skill a move wrote, never the workspace.
-    const moved = { id: uuidv7(), slug: "fixtures", name: "Fixtures", description: "Where fixtures live.", body: "./fixtures", files: [], disableModelInvocation: false, enabled: true, scope: { kind: "workspace" as const, workspaceId: "ws-elsewhere" }, createdAt: 1, updatedAt: 1, archivedAt: null, createdBy: "person" as const, locked: false, projectId: "proj-moved", reportedVersions: [] };
+    const moved = { id: uuidv7(), slug: "fixtures", name: "Fixtures", description: "Where fixtures live.", body: "./fixtures", files: [], disableModelInvocation: false, enabled: true, scope: { kind: "workspace" as const, workspaceId: "ws-elsewhere" }, createdAt: 1, updatedAt: 1, archivedAt: null, createdBy: "person" as const, locked: false, projectId: "proj-moved", versions: [] };
     writeMovedSkill(handle.db, moved, "proj-moved");
 
     const edited = saveSkill(handle.db, draft({ id: moved.id, name: "Fixtures", body: "./test/fixtures" }));
@@ -606,7 +606,7 @@ describe("skill versions", () => {
   });
 
   it("files a sync version for a moved skill whose only change is its name or scope", () => {
-    const moved: RecordSkill = { id: uuidv7(), slug: "fixtures", name: "Fixtures", description: "Where fixtures live.", body: "./fixtures", files: [], disableModelInvocation: false, enabled: true, scope: { kind: "project", projectId: "proj-moved" }, createdAt: 1, updatedAt: 1, archivedAt: null, createdBy: "person", locked: false, projectId: "proj-moved", reportedVersions: [] };
+    const moved: RecordSkill = { id: uuidv7(), slug: "fixtures", name: "Fixtures", description: "Where fixtures live.", body: "./fixtures", files: [], disableModelInvocation: false, enabled: true, scope: { kind: "project", projectId: "proj-moved" }, createdAt: 1, updatedAt: 1, archivedAt: null, createdBy: "person", locked: false, projectId: "proj-moved", versions: [] };
     writeMovedSkill(handle.db, moved, "proj-moved");
     writeMovedSkill(handle.db, moved, "proj-moved");
     writeMovedSkill(handle.db, { ...moved, name: "Fixture files", updatedAt: 2 }, "proj-moved");
@@ -706,7 +706,7 @@ describe("skill versions", () => {
   });
 
   it("refuses a moved copy that arrives locked itself over a skill locked on the record, but not the same page sent again", () => {
-    const moved: RecordSkill = { ...recordCopy({ locked: true, scope: { kind: "project", projectId: "proj-moved" } }), projectId: "proj-moved", reportedVersions: [] };
+    const moved: RecordSkill = { ...recordCopy({ locked: true, scope: { kind: "project", projectId: "proj-moved" } }), projectId: "proj-moved", versions: [] };
     expect(writeMovedSkill(handle.db, moved, "proj-moved").ok).toBe(true);
     const before = getSkill(handle.db, moved.id);
     const history = listSkillVersions(handle.db, moved.id);
@@ -722,7 +722,7 @@ describe("skill versions", () => {
   });
 
   it("refuses a moved copy over a skill a person locked on the record, writing nothing", () => {
-    const moved: RecordSkill = { ...recordCopy({ scope: { kind: "project", projectId: "proj-moved" } }), projectId: "proj-moved", reportedVersions: [] };
+    const moved: RecordSkill = { ...recordCopy({ scope: { kind: "project", projectId: "proj-moved" } }), projectId: "proj-moved", versions: [] };
     writeMovedSkill(handle.db, moved, "proj-moved");
     expect(setSkillLocked(handle.db, moved.id, true, 5).ok).toBe(true);
     const before = getSkill(handle.db, moved.id);

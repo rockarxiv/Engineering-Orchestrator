@@ -23,7 +23,7 @@ import { MANAGED_PERSON_ID_KEY } from "../identity/viewer.js";
 import { createLocalRecord, type LocalItemRecord } from "./localRecord.js";
 import { createDeviceRecord, type DeviceRecord } from "./deviceRecord.js";
 import { moveProjectToRecord } from "./adopt.js";
-import { RESTORE_SKILL_NOT_AN_ADMIN, serveAdopt, serveApply, serveChanges, serveMessages, serveProjectThread, serveRestoreSkillVersion, serveSendMessage, type ServeRecordContext } from "./serveRecord.js";
+import { RESTORE_SKILL_NOT_AN_ADMIN, RESTORE_SKILL_VERSION_NOT_HERE, serveAdopt, serveApply, serveChanges, serveMessages, serveProjectThread, serveRestoreSkillVersion, serveSendMessage, type ServeRecordContext } from "./serveRecord.js";
 import { archiveReachOf, archiveUnusedSkills, EO_SKILL_AUTHOR } from "../skills/archival.js";
 import { markReplica } from "../db/recordRole.js";
 import { publishSectionCommand } from "../ipc/sectionCommands.js";
@@ -740,7 +740,7 @@ describe("Restore on a skill EO archived on the record (EO-728, review)", () => 
     const ben = createPerson(recordDb.db, { name: "Ben", email: "ben@example.com", isAdmin: false });
     const bensDevice = issueDevice(recordDb.db, { personId: ben.id, name: "ben-desk", tokenHash: "h3", secretsKeyHash: null }).id;
 
-    const answer = await serveRestoreSkillVersion(serving, { deviceId: bensDevice, skillId, versionId: archiveVersion.id, agentId: null });
+    const answer = await serveRestoreSkillVersion(serving, { deviceId: bensDevice, skillId, versionId: archiveVersion.id, agentId: null, content: null });
 
     expect(answer).toEqual({ skill: null, problem: RESTORE_SKILL_NOT_AN_ADMIN });
     expect(getSkill(recordDb.db, skillId)!.archivedAt).not.toBeNull();
@@ -765,3 +765,100 @@ describe("Restore on a skill EO archived on the record (EO-728, review)", () => 
   });
 });
 
+
+describe("Restore of a version a desktop's history offers for a skill the record holds (EO-728, second review)", () => {
+  let stopBeingAReplica: (() => void) | null = null;
+  afterEach(() => {
+    stopBeingAReplica?.();
+    stopBeingAReplica = null;
+    clearHandlerRegistry();
+  });
+
+  /** A desktop's own door for the channel, as handlers.ts registers it: its section lock asked first, then its device record. */
+  function doorOf(desktop: Desktop): void {
+    stopBeingAReplica = markReplica(desktop.handle.db, () => true);
+    registerHandler("skills:restoreVersion", (payload) => restoreSkillVersionCommand(desktop.handle.db, payload, desktop.record), {
+      exposeErrorDetails: true,
+      sectionLock: (channel: IpcChannel, payload: unknown) => sectionLockFor(desktop.handle.db, channel, payload),
+    });
+  }
+
+  function edit(db: DbHandle["db"], id: string, body: string): void {
+    const current = getSkill(db, id)!;
+    const saved = saveSkill(db, SkillDraftSchema.parse({ id, name: current.name, description: current.description, body, scope: current.scope }));
+    if (!saved.ok) throw new Error(saved.problems.join("\n"));
+  }
+
+  async function restore(id: string, versionId: string): Promise<IpcResponse<"skills:restoreVersion">> {
+    const answer = await dispatchIpc("skills:restoreVersion", { id, versionId });
+    if (!answer.ok) throw new Error(answer.error.message);
+    return answer.data as IpcResponse<"skills:restoreVersion">;
+  }
+
+  it("restores an earlier sync version after two copies, as the record's own version that held it", async () => {
+    const support = createProject(annaDb.db, { name: "Support", keyPrefix: "SUP", managed: false });
+    const id = skill(annaDb.db, "Refund policy", { kind: "project", projectId: support.id });
+    expect(await move(support.id)).toEqual({});
+    edit(recordDb.db, id, "Refund within 14 days.");
+    await laptop.record.sync();
+    edit(recordDb.db, id, "Refund within 30 days.");
+    await laptop.record.sync();
+
+    // Two copies, two sync versions, each under an id of the laptop's own.
+    const earlier = listSkillVersions(laptopDb.db, id).find((version) => version.action === "sync" && version.body === "Refund within 14 days.")!;
+    expect(listSkillVersions(laptopDb.db, id).filter((version) => version.action === "sync")).toHaveLength(2);
+    expect(listSkillVersions(recordDb.db, id).map((version) => version.id)).not.toContain(earlier.id);
+    const recordsOwn = listSkillVersions(recordDb.db, id).find((version) => version.action === "edit" && version.body === "Refund within 14 days.")!;
+    doorOf(laptop);
+
+    const answer = await restore(id, earlier.id);
+
+    expect(answer).toMatchObject({ problem: null, skill: { id, body: "Refund within 14 days." } });
+    expect(getSkill(recordDb.db, id)!.body).toBe("Refund within 14 days.");
+    expect(listSkillVersions(recordDb.db, id)[0]).toMatchObject({ action: "restore", restoredFrom: recordsOwn.id, author: { kind: "person" } });
+    expect(getSkill(laptopDb.db, id)!.body).toBe("Refund within 14 days.");
+    await laptop.record.sync();
+    expect(getSkill(laptopDb.db, id)!.body).toBe("Refund within 14 days.");
+    await anna.record.sync();
+    expect(getSkill(annaDb.db, id)!.body).toBe("Refund within 14 days.");
+  });
+
+  it("restores a version from before the move, which the move carried to the record under its own id", async () => {
+    const support = createProject(annaDb.db, { name: "Support", keyPrefix: "SUP", managed: false });
+    const id = skill(annaDb.db, "Refund policy", { kind: "project", projectId: support.id });
+    edit(annaDb.db, id, "Refund within 14 days.");
+    const original = listSkillVersions(annaDb.db, id).find((version) => version.action === "create")!;
+    expect(await move(support.id)).toEqual({});
+    // The whole history went with the project, under the desktop's ids.
+    const onTheRecord = listSkillVersions(recordDb.db, id);
+    for (const version of listSkillVersions(annaDb.db, id)) expect(onTheRecord).toContainEqual(version);
+    doorOf(anna);
+
+    const answer = await restore(id, original.id);
+
+    expect(answer).toMatchObject({ problem: null, skill: { id, body: "Do refund policy." } });
+    expect(getSkill(recordDb.db, id)!.body).toBe("Do refund policy.");
+    expect(listSkillVersions(recordDb.db, id)[0]).toMatchObject({ action: "restore", restoredFrom: original.id });
+    expect(getSkill(annaDb.db, id)!.body).toBe("Do refund policy.");
+    await laptop.record.sync();
+    expect(getSkill(laptopDb.db, id)!.body).toBe("Do refund policy.");
+  });
+
+  it("refuses a version written only on the desktop, which the record never held, and writes nothing on either", async () => {
+    const support = createProject(annaDb.db, { name: "Support", keyPrefix: "SUP", managed: false });
+    const id = skill(annaDb.db, "Refund policy", { kind: "project", projectId: support.id });
+    expect(await move(support.id)).toEqual({});
+    await laptop.record.sync();
+    edit(laptopDb.db, id, "Only on the laptop.");
+    const local = listSkillVersions(laptopDb.db, id)[0]!;
+    const recordVersions = listSkillVersions(recordDb.db, id).length;
+    doorOf(laptop);
+
+    const answer = await restore(id, local.id);
+
+    expect(answer.skill).toBeNull();
+    expect(answer.problem).toContain(RESTORE_SKILL_VERSION_NOT_HERE);
+    expect(listSkillVersions(recordDb.db, id)).toHaveLength(recordVersions);
+    expect(getSkill(recordDb.db, id)!.body).toBe("Do refund policy.");
+  });
+});

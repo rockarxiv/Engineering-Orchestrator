@@ -247,7 +247,12 @@ export function reportedVersionsOf(db: Db, skillId: string): SkillVersion[] {
 
 /** A skill as it travels to another installation: the row and its reported versions (EO-728). */
 export function skillCopyOf(db: Db, skill: Skill): SkillCopy {
-  return { ...skill, reportedVersions: reportedVersionsOf(db, skill.id) };
+  return { ...skill, versions: reportedVersionsOf(db, skill.id) };
+}
+
+/** Every one of a skill's versions, oldest first — what a project move carries (EO-728). */
+function allVersionsOf(db: Db, skillId: string): SkillVersion[] {
+  return listSkillVersions(db, skillId).reverse();
 }
 
 /** What a write that is not a save answers with: the skill as it now stands, or the sentence saying why nothing was written. */
@@ -613,19 +618,22 @@ export function releaseHeldSkillCopies(db: Db): string[] {
  * a publication applied again, or a page read twice, adds nothing. The
  * write itself was made, and versioned, where the record is.
  *
- * Before it, each of the copy's reported versions (EO-728), as the
- * sender filed it — its id, action, author, report, time and the skill as
- * it stood — that this history does not hold yet: what each consolidation
- * drew the skill from and changed, and that EO archived it and after how
- * many runs without a load, says so here as it does there, even where
- * several were written between two copies, and an EO archive can be
- * restored from it. Keyed by id, so a copy sent again files nothing.
+ * Before it, each of the versions the copy carries (EO-728) — its
+ * reported ones, or on a move every one — as the sender filed it: its
+ * id, action, author, report, time and the skill as it stood, where this
+ * history does not hold it yet. So what each consolidation drew the skill
+ * from and changed, and that EO archived it and after how many runs
+ * without a load, says so here as it does there, even where several were
+ * written between two copies, and an EO archive can be restored from it;
+ * and the record that takes a moved project can restore any version the
+ * desktop's history showed. Keyed by id, so a copy sent again files
+ * nothing.
  */
 function versionCopy(db: Db, before: Skill | undefined, copy: Skill | SkillCopy): void {
   const after = getSkill(db, copy.id);
   if (after === undefined) return;
-  const reported = "reportedVersions" in copy ? copy.reportedVersions : [];
-  for (const version of reported) {
+  const carried = "versions" in copy ? copy.versions : [];
+  for (const version of carried) {
     if (version.skillId !== copy.id) continue;
     db.insert(skillVersions)
       .values({
@@ -662,6 +670,12 @@ function belongsToAProject(row: typeof skills.$inferSelect): row is typeof skill
  * oldest first: what travels when it moves (EO-513). Never a global
  * skill — that is the installation's, and an organisation hands those
  * out by publishing the packs section.
+ *
+ * Each with its whole history (EO-728), not only its reported versions:
+ * once the project is the record's, a Restore on the desktop is made
+ * there (`ItemRecord.restoreSkillVersion`), and every version the
+ * desktop's history offers from before the move has to be one the record
+ * holds under the same id.
  */
 export function readProjectSkills(db: Db, projectId: string): RecordSkill[] {
   return db
@@ -671,7 +685,7 @@ export function readProjectSkills(db: Db, projectId: string): RecordSkill[] {
     .orderBy(asc(skills.createdAt), asc(skills.id))
     .all()
     .filter(belongsToAProject)
-    .map((row) => toRecordSkill(db, row));
+    .map((row) => ({ ...toRecordSkill(db, row), versions: allVersionsOf(db, row.id) }));
 }
 
 /** A skill as the record's feed pages it: the row, and the stamp its cursor moves by. */
@@ -873,6 +887,30 @@ export function skillArchiveOf(db: Db, skill: Pick<Skill, "id" | "archivedAt">):
  */
 export function setSkillLocked(db: Db, id: string, locked: boolean, at: number = Date.now()): SkillWriteResult {
   return writeSkill(db, id, PERSON_SKILL_AUTHOR, at, locked ? "lock" : "unlock", { locked });
+}
+
+/** One of a skill's versions, by id; undefined where it is not one of that skill's. */
+export function skillVersionOf(db: Db, skillId: string, versionId: string): SkillVersion | undefined {
+  const row = db.select().from(skillVersions).where(eq(skillVersions.id, versionId)).get();
+  return row === undefined || row.skillId !== skillId ? undefined : toVersion(row);
+}
+
+/** What a restore puts back: a version's description, body and files. */
+export type SkillVersionContent = Pick<SkillVersion, "description" | "body" | "files">;
+
+/**
+ * The newest of a skill's versions holding exactly this description, body
+ * and files (EO-728) — how the record finds, among its own versions, the
+ * one a desktop's history shows under an id of the desktop's: a `sync`
+ * version, filed under a fresh id when the record's copy arrived, holds
+ * what one of the record's versions held. Undefined where none does, so
+ * the record restores only what it once had.
+ */
+export function skillVersionWithContent(db: Db, skillId: string, content: SkillVersionContent): SkillVersion | undefined {
+  const files = JSON.stringify(content.files);
+  return listSkillVersions(db, skillId).find(
+    (version) => version.description === content.description && version.body === content.body && JSON.stringify(version.files) === files,
+  );
 }
 
 /**
