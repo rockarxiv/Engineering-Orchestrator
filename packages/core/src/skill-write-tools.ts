@@ -32,6 +32,15 @@ export const SKILL_WRITE_TOOLS = [SKILL_VIEW_TOOL_NAME, SKILL_CREATE_TOOL_NAME, 
 export type SkillWriteTool = (typeof SKILL_WRITE_TOOLS)[number];
 
 /**
+ * Why a skill tool is refused on a turn that is not a learning review
+ * (EO-732): every turn that could be reviewed lists them, so the refusal
+ * is said when one is called — by the `eo` server, the bridge and the
+ * supervisor alike, whatever else the turn's credential names.
+ */
+export const skillToolNotServed = (tool: string): string =>
+  `Only a learning review may write skills, so EO serves ${tool} to no other turn, and nothing was read or written.`;
+
+/**
  * What each tool takes. Strict, so an argument a tool does not name is a
  * refused call rather than an ignored field.
  */

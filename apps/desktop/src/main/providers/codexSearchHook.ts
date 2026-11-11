@@ -7,6 +7,7 @@ import { join } from "node:path";
 import type { RepositoryMcpServer, SearchInterceptionEvent } from "@eo/core";
 import { AppServerConnection, type AppServerSpawn } from "./codexAppServer.js";
 import { configArguments } from "./codexClient.js";
+import { refusalHookOutput } from "./callRefusal.js";
 import type { SearchNudge } from "./searchNudge.js";
 
 /**
@@ -57,6 +58,8 @@ import type { SearchNudge } from "./searchNudge.js";
 export interface CodexSearchHook {
   /** The command line Codex runs for the hook, as one string its shell is given. */
   command: string;
+  /** Which tool calls Codex offers it: the shell's alone, or every one on a turn that refuses calls (EO-732). */
+  matcher: string;
   /** What the command reads to find this listener. Goes into the CLI's environment, never its arguments. */
   env: Record<string, string>;
   /** Every firing recorded since the last call. Empty on a turn that intercepted nothing. */
@@ -69,6 +72,15 @@ export interface CodexSearchHook {
 export const SEARCH_HOOK_URL_ENV = "EO_SEARCH_HOOK_URL";
 /** The variable the command reads the listener's bearer from. */
 export const SEARCH_HOOK_TOKEN_ENV = "EO_SEARCH_HOOK_TOKEN";
+/**
+ * Set on a turn whose hook refuses calls (EO-732): the command then
+ * refuses a call it could not ask about, rather than staying quiet, since
+ * a refusal that fails open is no refusal.
+ */
+export const SEARCH_HOOK_REFUSES_ENV = "EO_SEARCH_HOOK_REFUSES";
+
+/** Every tool call, for a turn whose hook refuses calls (EO-732). */
+export const CODEX_EVERY_TOOL_MATCHER = "*";
 
 /**
  * Which tool calls Codex offers the hook.
@@ -100,6 +112,13 @@ export interface CodexSearchHookRequest {
   nodePath?: string;
   /** Seam for tests: the platform whose shell the command line is written for. */
   platform?: NodeJS.Platform;
+  /**
+   * Why a call is refused, or null for one the turn may make (EO-732,
+   * `refusedCall`). Given, the hook is opened whatever the nudge and the
+   * index — on every tool call, since a refusal must see them all — and a
+   * call this answers for is denied before the nudge is asked anything.
+   */
+  refuse?: (tool: string) => string | null;
 }
 
 /**
@@ -119,18 +138,20 @@ export interface CodexSearchHookRequest {
  * no `hooks` key in the CLI's configuration and no listener.
  */
 export async function openCodexSearchHook(request: CodexSearchHookRequest): Promise<CodexSearchHook | null> {
-  const { nudge, server, cwd, commandPath } = request;
-  if (nudge === undefined || commandPath === undefined) return null;
+  const { nudge, server, cwd, commandPath, refuse } = request;
+  if (commandPath === undefined) return null;
   const answers = server?.answers;
   const knows = server?.knows;
-  if (server === undefined || answers === undefined || knows === undefined) return null;
+  // Nothing to nudge with: no judgement, or no index that could answer.
+  const nudging = nudge !== undefined && server !== undefined && answers !== undefined && knows !== undefined;
+  if (!nudging && refuse === undefined) return null;
 
   // `<server>/<tool>` is how this backend spells a tool id wherever EO
   // meets one — it is what `mapCompletedItem` records a call under — and
   // it carries the two parts every backend agrees on, the server's name
   // and the provider's bare word, with none of Claude's punctuation
   // (EO-198).
-  const qualify = (tool: string): string => `${server.name}/${tool}`;
+  const qualify = (tool: string): string => `${server?.name ?? ""}/${tool}`;
 
   const pending: SearchInterceptionEvent[] = [];
   const token = randomBytes(32).toString("hex");
@@ -138,9 +159,14 @@ export async function openCodexSearchHook(request: CodexSearchHookRequest): Prom
 
   const answer = async (body: string): Promise<string | null> => {
     const payload = asRecord(parseJson(body));
-    if (payload === null || payload["hook_event_name"] !== "PreToolUse") return null;
-    const tool = payload["tool_name"];
-    if (typeof tool !== "string") return null;
+    const tool = payload?.["tool_name"];
+    // A turn that refuses calls refuses one it cannot read (EO-732).
+    if (payload === null || payload["hook_event_name"] !== "PreToolUse" || typeof tool !== "string") {
+      return refuse === undefined ? null : JSON.stringify(refusalHookOutput("EO refused this call: it could not tell which tool it was, and this turn may make only some calls."));
+    }
+    const refused = refuse?.(tool) ?? null;
+    if (refused !== null) return JSON.stringify(refusalHookOutput(refused));
+    if (!nudging) return null;
     const interception = await nudge({ tool, input: payload["tool_input"], answers, knows, qualify, root: cwd });
     if (interception === null) return null;
     // Recorded before it is said, and only on the one path that says
@@ -168,7 +194,8 @@ export async function openCodexSearchHook(request: CodexSearchHookRequest): Prom
 
   return {
     command: hookCommandLine(request.nodePath ?? process.execPath, commandPath, request.platform ?? process.platform),
-    env: { [SEARCH_HOOK_URL_ENV]: `http://127.0.0.1:${port}/`, [SEARCH_HOOK_TOKEN_ENV]: token },
+    matcher: refuse === undefined ? CODEX_SEARCH_TOOL_MATCHER : CODEX_EVERY_TOOL_MATCHER,
+    env: { [SEARCH_HOOK_URL_ENV]: `http://127.0.0.1:${port}/`, [SEARCH_HOOK_TOKEN_ENV]: token, ...(refuse === undefined ? {} : { [SEARCH_HOOK_REFUSES_ENV]: "1" }) },
     drain: () => pending.splice(0, pending.length),
     close: () =>
       new Promise<void>((resolveClosed) => {

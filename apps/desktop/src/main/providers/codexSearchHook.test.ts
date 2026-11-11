@@ -4,7 +4,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { RepositoryMcpServer } from "@eo/core";
 import { afterEach, describe, expect, it } from "vitest";
-import { CODEX_SEARCH_TOOL_MATCHER, SEARCH_HOOK_TOKEN_ENV, SEARCH_HOOK_URL_ENV, hookCommandLine, openCodexSearchHook, probeHookTrust, type CodexSearchHook } from "./codexSearchHook.js";
+import { CODEX_EVERY_TOOL_MATCHER, CODEX_SEARCH_TOOL_MATCHER, SEARCH_HOOK_REFUSES_ENV, SEARCH_HOOK_TOKEN_ENV, SEARCH_HOOK_URL_ENV, hookCommandLine, openCodexSearchHook, probeHookTrust, type CodexSearchHook } from "./codexSearchHook.js";
 import { fakeAppServer } from "../testing/fakeCodexAppServer.js";
 import type { SearchNudge, SearchNudgeRequest } from "./searchNudge.js";
 
@@ -225,6 +225,72 @@ describe("the command Codex runs", () => {
     expect(hookCommandLine("C:\\Program Files\\EO\\EO.exe", "C:\\Program Files\\EO\\resources\\hook.mjs", "win32")).toBe(
       'set "ELECTRON_RUN_AS_NODE=1" && "C:\\Program Files\\EO\\EO.exe" "C:\\Program Files\\EO\\resources\\hook.mjs"',
     );
+  });
+});
+
+/**
+ * A turn that refuses calls (EO-732): the learning review's fork. The same
+ * listener and command carry EO's refusals, decided by the caller's
+ * `refuse`, and the command fails closed there.
+ */
+describe("the hook on a turn that refuses calls", () => {
+  const refuse = (tool: string): string | null => (tool === "mcp__eo__memory_note" ? null : `EO refused \`${tool}\` on a learning review.`);
+
+  async function refusing(nudge: SearchNudge | undefined = undefined): Promise<CodexSearchHook> {
+    open = await openCodexSearchHook({ nudge, server: undefined, cwd: "/tmp/wt", commandPath: HOOK_COMMAND, refuse });
+    expect(open).not.toBeNull();
+    return open as CodexSearchHook;
+  }
+
+  it("is opened without a judgement or an index, offered every call, and says so to its command", async () => {
+    const hook = await refusing();
+    expect(hook.matcher).toBe(CODEX_EVERY_TOOL_MATCHER);
+    expect(hook.env[SEARCH_HOOK_REFUSES_ENV]).toBe("1");
+    // And a turn that refuses nothing is offered the shell alone, as before.
+    const { nudge } = scripted();
+    const plain = await openCodexSearchHook({ nudge, server, cwd: "/tmp/wt", commandPath: HOOK_COMMAND });
+    expect(plain?.matcher).toBe(CODEX_SEARCH_TOOL_MATCHER);
+    expect(plain?.env[SEARCH_HOOK_REFUSES_ENV]).toBeUndefined();
+    await plain?.close();
+  });
+
+  it("denies a call refuse answers for, with its reason, lets one it allows through, and denies a payload it cannot read", async () => {
+    const hook = await refusing();
+    const denied = await post(hook, JSON.stringify({ ...payload("echo hi > a.txt"), tool_name: "apply_patch" }));
+    expect(denied.status).toBe(200);
+    expect(await denied.json()).toEqual({ hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: "EO refused `apply_patch` on a learning review." } });
+    expect((await post(hook, JSON.stringify({ ...payload(""), tool_name: "mcp__eo__memory_note" }))).status).toBe(204);
+    for (const body of ["not json", JSON.stringify({ hook_event_name: "PreToolUse" })]) {
+      const unreadable = await post(hook, body);
+      expect(unreadable.status, body).toBe(200);
+      expect(((await unreadable.json()) as { hookSpecificOutput: { permissionDecision: string } }).hookSpecificOutput.permissionDecision, body).toBe("deny");
+    }
+    expect(hook.drain()).toEqual([]);
+  });
+
+  it("refuses before the nudge is asked, and nudges a call it allows as before", async () => {
+    const { nudge, asked } = scripted();
+    open = await openCodexSearchHook({ nudge, server, cwd: "/tmp/wt", commandPath: HOOK_COMMAND, refuse: (tool) => (tool === "Bash" ? null : "refused") });
+    const hook = open as CodexSearchHook;
+    expect((await post(hook, JSON.stringify({ ...payload("broad"), tool_name: "apply_patch" }))).status).toBe(200);
+    expect(asked).toEqual([]);
+    expect(await (await post(hook, JSON.stringify(payload("broad")))).json()).toEqual({ hookSpecificOutput: { hookEventName: "PreToolUse", additionalContext: "try repo/idx_symbol" } });
+  });
+
+  it("has its command refuse the call whenever it cannot ask, rather than let it through", async () => {
+    const hook = await refusing();
+    const refusal = (run: { stdout: string; code: number | null }) => ({ code: run.code, decision: (JSON.parse(run.stdout || "{}") as { hookSpecificOutput?: { permissionDecision?: string } }).hookSpecificOutput?.permissionDecision ?? null });
+    const deny = { code: 0, decision: "deny" };
+
+    // Asked: refused, and allowed.
+    expect(refusal(await runCommand(hook.command, hook.env, JSON.stringify({ ...payload("x"), tool_name: "Bash" })))).toEqual(deny);
+    expect(await runCommand(hook.command, hook.env, JSON.stringify({ ...payload("x"), tool_name: "mcp__eo__memory_note" }))).toEqual({ stdout: "", code: 0 });
+    // Not asked: the wrong bearer, no listener named, a listener gone.
+    expect(refusal(await runCommand(hook.command, { ...hook.env, [SEARCH_HOOK_TOKEN_ENV]: "wrong" }, JSON.stringify({ ...payload("x"), tool_name: "mcp__eo__memory_note" })))).toEqual(deny);
+    expect(refusal(await runCommand(hook.command, { [SEARCH_HOOK_URL_ENV]: "", [SEARCH_HOOK_TOKEN_ENV]: "", [SEARCH_HOOK_REFUSES_ENV]: "1" }, JSON.stringify(payload("x"))))).toEqual(deny);
+    await hook.close();
+    open = null;
+    expect(refusal(await runCommand(hook.command, hook.env, JSON.stringify({ ...payload("x"), tool_name: "mcp__eo__memory_note" })))).toEqual(deny);
   });
 });
 

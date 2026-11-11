@@ -8,6 +8,7 @@ import {
   MEMORY_EXTRACTED_EVENT,
   MEMORY_NOTE_DEFINITION,
   MEMORY_NOTE_TOOL_NAME,
+  MEMORY_READ_TOOL_NAME,
   SKILL_CREATE_TOOL_NAME,
   SKILL_FILE_REMOVE_TOOL_NAME,
   SKILL_FILE_WRITE_TOOL_NAME,
@@ -20,8 +21,10 @@ import {
   type AgentForkResult,
   type AgentProvider,
   type AgentProviderResumeOptions,
+  type AgentProviderStartOptions,
   type AgentWriteAnswer,
   type AgentWriteRequest,
+  type ForkCopy,
   type Item,
   type MemoryScope,
   type Uuid,
@@ -75,6 +78,25 @@ interface ReviewScript {
   refuse?: boolean;
   /** The turn fails once opened. */
   failWith?: string;
+  /** How the backend says it copied the thread (EO-732), as Codex does. */
+  fork?: ForkCopy;
+}
+
+/**
+ * Which of a run's turn options the fork was opened with otherwise (EO-732):
+ * every field the run's turn was given, less what is a turn's own — what
+ * it says, its signal, its credential, its budget and environment read
+ * as it opens, and the warm-up key a fork never adopts — has to be on the
+ * fork with the same value.
+ */
+const A_TURNS_OWN = new Set(["context", "instructions", "signal", "writeBridge", "warmKey", "attachments", "tools", "budgetCents", "environmentVariables", "withheldEnvironmentVariables", "onSkillsSection"]);
+function sameAsTheRun(run: AgentProviderStartOptions, fork: AgentProviderResumeOptions): { differ: string[]; missing: string[] } {
+  const forked = fork as Record<string, unknown>;
+  const fields = Object.entries(run).filter(([key]) => !A_TURNS_OWN.has(key));
+  return {
+    differ: fields.filter(([key, value]) => key in forked && JSON.stringify(forked[key]) !== JSON.stringify(value)).map(([key]) => key),
+    missing: fields.filter(([key]) => !(key in forked)).map(([key]) => key),
+  };
 }
 
 /**
@@ -113,8 +135,13 @@ describe("the learning review after a run", () => {
     const forks: { threadId: string; message: string; opts: AgentProviderResumeOptions }[] = [];
     const answers: AgentWriteAnswer[] = [];
     const resumes: { threadId: string; message: string }[] = [];
+    const starts: AgentProviderStartOptions[] = [];
     const provider: AgentProvider = {
       ...fake,
+      start(opts) {
+        starts.push(opts);
+        return fake.start(opts);
+      },
       resume(threadId, message, opts) {
         resumes.push({ threadId, message });
         return fake.resume(threadId, message, opts);
@@ -124,7 +151,7 @@ describe("the learning review after a run", () => {
         if (review.refuse) return { ok: false, reason: "thread_not_found", threadId, message: `No thread "${threadId}".` };
         const forkId = `fork-of-${threadId}`;
         async function* events(): AsyncIterable<AgentEvent> {
-          yield { type: "thread_started", threadId: forkId, model: "the-agents-model" };
+          yield { type: "thread_started", threadId: forkId, model: "the-agents-model", ...(review.fork ? { fork: review.fork } : {}) };
           for (const write of review.writes ?? []) answers.push(await sendAgentWrite(opts!.writeBridge!, write));
           if (review.until) await review.until;
           if (review.hang) await new Promise<void>((resolve) => opts!.signal!.addEventListener("abort", () => resolve(), { once: true }));
@@ -138,7 +165,7 @@ describe("the learning review after a run", () => {
         return { ok: true, threadId: forkId, events: events() };
       },
     };
-    return { provider, forks, answers, resumes };
+    return { provider, forks, answers, resumes, starts };
   }
 
   /** A side-call provider for `memory_extract`, the fallback, answering with one note. */
@@ -174,7 +201,7 @@ describe("the learning review after a run", () => {
   const note = (text: string): AgentWriteRequest => ({ tool: MEMORY_NOTE_TOOL_NAME, args: { scope: "project", text } });
 
   it("forks the run's thread and sends one review turn served memory_note and the skill tools alone, whose notes are recorded with their ids", async () => {
-    const { provider, forks, answers } = reviewing({ result: RESULT }, { writes: [note("Seed the fixtures database before the integration tests.")] });
+    const { provider, forks, answers, starts } = reviewing({ result: RESULT }, { writes: [note("Seed the fixtures database before the integration tests.")] });
     const side = extractor();
 
     await supervisorOver(provider, side.provider).runOnce();
@@ -186,17 +213,17 @@ describe("the learning review after a run", () => {
     // The run's own thread, forked; the review prompt with the definition word for word.
     expect(forks[0]!.threadId).toBe(run.threadId);
     expect(forks[0]!.message).toContain(MEMORY_NOTE_DEFINITION);
-    // A credential for memory_note alone, memory_read's scopes, and none
-    // of the run's other tools: no attached servers, no index, nothing to
-    // attach from.
+    // A credential for memory_note and the skill tools alone, and every
+    // other call refused as it is made (EO-732)…
     expect(forks[0]!.opts.writeBridge?.writes).toEqual([MEMORY_NOTE_TOOL_NAME, ...SKILL_WRITE_TOOLS]);
+    expect(forks[0]!.opts.refuseCallsExcept).toEqual([MEMORY_READ_TOOL_NAME, MEMORY_NOTE_TOOL_NAME, ...SKILL_WRITE_TOOLS]);
     expect(forks[0]!.opts.memoryScopes).toEqual(expect.arrayContaining([expect.objectContaining({ kind: "project", id: project.id })]));
-    expect(forks[0]!.opts.toolDirectory).toBeUndefined();
-    expect(forks[0]!.opts.repositoryMcp).toBeUndefined();
-    expect(forks[0]!.opts.attachFrom).toBeUndefined();
-    // Nor skills, nor EO's administrative server, whichever backend it is on.
-    expect(forks[0]!.opts.withoutSkills).toBe(true);
-    expect(forks[0]!.opts.withoutAdminServer).toBe(true);
+    // …and otherwise the run's own options, field by field: what the
+    // backend is told to list and how it is to answer is what the run's
+    // turn was told, so the fork's prompt starts as the run's did.
+    expect(starts).toHaveLength(1);
+    expect(Object.keys(starts[0]!)).toEqual(expect.arrayContaining(["cwd", "outputSchema", "memoryScopes", "skillScope", "streamDeltas"]));
+    expect(sameAsTheRun(starts[0]!, forks[0]!.opts)).toEqual({ differ: [], missing: [] });
 
     expect(answers).toEqual([expect.objectContaining({ ok: true })]);
     const written = listMemories(handle.db, project);
@@ -224,6 +251,26 @@ describe("the learning review after a run", () => {
     expect(reviewEvents()).toEqual([{ type: LEARNING_REVIEW_EVENT, outcome: "nothing_to_save", review: "full", entryIds: [], skillIds: [], reason: null, forkThreadId: expect.any(String) }]);
     expect(listMemories(handle.db, project)).toEqual([]);
     expect(extractCalls()).toEqual([]);
+  });
+
+  it("records which fork the backend used, and why it fell back to the plain one (EO-732)", async () => {
+    const fallbackReason = "thread/fork failed: `experimentalPredictionMode` requires a loaded parent (code -32600)";
+    const { provider } = reviewing({ result: RESULT }, { fork: { mode: "plain", fallbackReason } });
+
+    await supervisorOver(provider).runOnce();
+
+    expect(reviewEvents()).toEqual([
+      { type: LEARNING_REVIEW_EVENT, outcome: "nothing_to_save", review: "full", entryIds: [], skillIds: [], reason: null, forkThreadId: expect.any(String), forkMode: "plain", forkFallbackReason: fallbackReason },
+    ]);
+  });
+
+  it("records a prediction-mode fork as such, with no fallback (EO-732)", async () => {
+    const { provider } = reviewing({ result: RESULT }, { writes: [note("Seed the fixtures database before the integration tests.")], fork: { mode: "prediction" } });
+
+    await supervisorOver(provider).runOnce();
+
+    expect(reviewEvents()).toEqual([expect.objectContaining({ outcome: "written", forkMode: "prediction" })]);
+    expect(reviewEvents()[0]).not.toHaveProperty("forkFallbackReason");
   });
 
   it("refuses every other write the review asks for, and posts nothing", async () => {
@@ -361,7 +408,7 @@ describe("the learning review after a run", () => {
     expect(listRunsForItem(handle.db, waiting.id).length).toBeGreaterThan(0);
   });
 
-  it("forks the system agent's run too, without EO's administrative server, served memory_note and the skill tools alone", async () => {
+  it("forks the system agent's run too, with its tools as the run had them, served memory_note and the skill tools alone", async () => {
     const conversation = openAssistConversation(handle.db, project.id as Uuid);
     deleteItem(handle.db, item.id);
     const systemAgent = listAgents(handle.db).find((agent) => agent.role === SYSTEM_ROLE)!;
@@ -379,10 +426,11 @@ describe("the learning review after a run", () => {
     // Its own thread, forked — not a fallback.
     expect(forks.map((fork) => fork.threadId)).toEqual([run!.threadId]);
     expect(side.asked).toEqual([]);
-    // Without the administrative server either adapter otherwise gives
-    // every turn of the system agent's, and with a credential for
-    // memory_note and the skill tools alone: any other write is refused.
-    expect(forks[0]!.opts.withoutAdminServer).toBe(true);
+    // The administrative server is the agent's, as on its every turn,
+    // and refused when called (EO-732): every call but these is. And a
+    // credential for memory_note and the skill tools alone: any other
+    // write is refused.
+    expect(forks[0]!.opts.refuseCallsExcept).toEqual([MEMORY_READ_TOOL_NAME, MEMORY_NOTE_TOOL_NAME, ...SKILL_WRITE_TOOLS]);
     expect(forks[0]!.opts.writeBridge?.writes).toEqual([MEMORY_NOTE_TOOL_NAME, ...SKILL_WRITE_TOOLS]);
     expect(answers).toEqual([expect.objectContaining({ ok: false, code: "TOOL_NOT_SERVED" }), expect.objectContaining({ ok: true })]);
     expect(listCommentsForItem(handle.db, conversation.id).filter((comment) => comment.body === "From the system agent's review.")).toEqual([]);
@@ -415,8 +463,9 @@ describe("the learning review after a run", () => {
       expect(forks[0]!.opts.writeBridge?.writes).toEqual([...SKILL_WRITE_TOOLS]);
       // memory_read's scopes, so the review can see what the run wrote.
       expect(forks[0]!.opts.memoryScopes).toEqual(expect.arrayContaining([expect.objectContaining({ kind: "project", id: project.id })]));
-      expect(forks[0]!.opts.withoutSkills).toBe(true);
-      expect(forks[0]!.opts.withoutAdminServer).toBe(true);
+      // The run's tools, as the full review's (EO-732): memory_note is
+      // refused when called, with every other call but the review's own.
+      expect(forks[0]!.opts.refuseCallsExcept).toEqual([MEMORY_READ_TOOL_NAME, ...SKILL_WRITE_TOOLS]);
       expect(forks[0]!.message).toContain("This run already wrote its own notes to memory");
       expect(forks[0]!.message).toContain("## Skills");
       expect(forks[0]!.message).not.toContain(MEMORY_NOTE_DEFINITION);

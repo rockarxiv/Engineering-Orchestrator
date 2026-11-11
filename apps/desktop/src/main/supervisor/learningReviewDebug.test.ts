@@ -138,7 +138,8 @@ describe("the learning review, with debug mode on", () => {
     expect(send!.thread).toEqual({ mode: "forked", threadId: run.threadId, refusal: null });
     // A fork sends no instructions: the copy keeps the run's.
     expect(send!.instructions.sent).toBe(false);
-    expect(send!.session).toEqual(expect.objectContaining({ backend: "fake", outputSchema: null, cwd: forks[0]!.opts.cwd ?? null }));
+    // Sent the run's answer schema, as the run was (EO-732), and named so.
+    expect(send!.session).toEqual(expect.objectContaining({ backend: "fake", outputSchema: "implement", cwd: forks[0]!.opts.cwd ?? null }));
     // And the run's own dispatch is still its own, and first.
     expect(sends[0]!.purpose).toBe("dispatch");
   });

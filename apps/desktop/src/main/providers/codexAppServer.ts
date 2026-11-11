@@ -215,9 +215,11 @@ export class AppServerConnection {
   /**
    * The handshake every exchange begins with: `initialize`, then the
    * `initialized` notification. Nothing else is accepted before it.
+   * `capabilities` are the client's opt-ins, such as the experimental API
+   * a fork's turn asks for (EO-732).
    */
-  async initialize(): Promise<unknown> {
-    const result = await this.request("initialize", { clientInfo: { name: "eo", title: "EO", version: "0.0.0" }, capabilities: null });
+  async initialize(capabilities: Record<string, unknown> | null = null): Promise<unknown> {
+    const result = await this.request("initialize", { clientInfo: { name: "eo", title: "EO", version: "0.0.0" }, capabilities });
     this.notify("initialized");
     return result;
   }

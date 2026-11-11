@@ -23,6 +23,7 @@ import {
   SKILL_READ_TOOL_NAME,
   SKILL_VIEW_TOOL_NAME,
   SKILL_WRITE_TOOLS,
+  skillToolNotServed,
   summarizeInstructions,
   uuidv7,
 } from "@eo/core";
@@ -1289,16 +1290,17 @@ describe("memory_note on the shared EO MCP service (EO-479)", () => {
   });
 
   /**
-   * The learning review (EO-717): a turn whose credential names the writes
-   * it is served lists those and no other write tool, whatever the
-   * agent's grant — `memory_note` for an agent not granted it, and no
-   * `comment`, `attachment_add` or `repository_checkout` for one that is —
-   * and refuses a call to any other without asking EO.
+   * The learning review (EO-717, EO-732): a turn whose credential names
+   * the writes it is served lists exactly what the run's own turn lists —
+   * `memory_note` for an agent not granted it, and `comment`,
+   * `attachment_add` and `repository_checkout` for one that is — so the
+   * fork is sent the run's tools, and refuses a call to any write it is
+   * not served, with `TOOL_NOT_SERVED`, without asking EO.
    */
-  it("serves a turn whose credential names its writes exactly those, whatever the agent's grant", async () => {
+  it("serves a turn whose credential names its writes exactly those, whatever the agent's grant, and lists what the run's turn lists", async () => {
     const { asked, bridge } = await scriptedBridge(() => ({ ok: true, text: "noted", data: { entryId: "m-1" } }));
     try {
-      const reviewEnvironment = (allowedTools: string[] | undefined) =>
+      const environmentFor = (allowedTools: string[] | undefined, writes: [typeof MEMORY_NOTE_TOOL_NAME] | undefined) =>
         eoMcpStdioConfig({
           serverPath,
           dbPath,
@@ -1306,13 +1308,16 @@ describe("memory_note on the shared EO MCP service (EO-479)", () => {
           attachFrom: { runId: "run-1", directory },
           memoryScopes: [projectScope, workspaceScope],
           enableMemoryNote: memoryNoteEnabled({ config: allowedTools === undefined ? {} : { allowedTools } }),
-          writeBridge: bridge.tokenFor(item.id, [MEMORY_NOTE_TOOL_NAME]),
+          writeBridge: bridge.tokenFor(item.id, writes),
         }).env;
+      const reviewEnvironment = (allowedTools: string[] | undefined) => environmentFor(allowedTools, [MEMORY_NOTE_TOOL_NAME]);
       for (const grant of [["Read"], [MEMORY_NOTE_TOOL_NAME, "comment"], undefined]) {
         const tools = await listed(reviewEnvironment(grant));
         expect(tools, JSON.stringify(grant)).toContain(MEMORY_NOTE_TOOL_NAME);
         expect(tools, JSON.stringify(grant)).toContain("memory_read");
-        for (const write of ["comment", "attachment_add", "repository_checkout"]) expect(tools, `${write} for ${JSON.stringify(grant)}`).not.toContain(write);
+        for (const write of ["comment", "attachment_add", "repository_checkout"]) expect(tools, `${write} for ${JSON.stringify(grant)}`).toContain(write);
+        // The run's own turn, its credential naming no writes: the same list.
+        expect(await listed(environmentFor(grant, undefined)), JSON.stringify(grant)).toEqual(tools);
       }
 
       const tool = (id: number, name: string, args: unknown) => ({ jsonrpc: "2.0", id, method: "tools/call", params: { name, arguments: args } });
@@ -1329,7 +1334,7 @@ describe("memory_note on the shared EO MCP service (EO-479)", () => {
         false,
         reviewEnvironment(["Read"]),
       );
-      for (const id of [3, 4, 5]) expect(textOf(responses, id), String(id)).toMatchObject({ isError: true, text: expect.stringContaining("TOOL_DISABLED") });
+      for (const id of [3, 4, 5]) expect(textOf(responses, id), String(id)).toMatchObject({ isError: true, text: expect.stringContaining("TOOL_NOT_SERVED") });
       expect(textOf(responses, 6)).toEqual({ isError: false, text: "noted" });
       expect(asked).toEqual([{ itemId: item.id, request: { tool: MEMORY_NOTE_TOOL_NAME, args: { scope: "project", text: "A fact." } } }]);
     } finally {
@@ -1338,13 +1343,17 @@ describe("memory_note on the shared EO MCP service (EO-479)", () => {
   });
 
   /**
-   * The learning review's skill tools (EO-718): listed on a turn whose
-   * credential names them and on no other — not for any grant, not on a
-   * credential that names no writes — and handed to EO whole when called.
+   * The learning review's skill tools (EO-718, EO-732): listed on every
+   * turn that could be reviewed — memory scopes and a bridge — whatever
+   * its credential, so a run and its review are sent the same tools; served
+   * on a credential that names them and handed to EO whole when called;
+   * and refused on any other, with `TOOL_NOT_SERVED` and why, without
+   * asking EO.
    */
-  it("lists the skill tools only on a credential that names them, and hands their calls to EO", async () => {
+  it("lists the skill tools on every turn that could be reviewed, serves them only on a credential that names them, and hands their calls to EO", async () => {
     const own = service as unknown as Record<string, unknown>;
     expect(own["SKILL_WRITE_TOOLS"]).toEqual([...SKILL_WRITE_TOOLS]);
+    for (const tool of SKILL_WRITE_TOOLS) expect((own["SKILL_TOOL_NOT_SERVED"] as (name: string) => string)(tool)).toBe(skillToolNotServed(tool));
     expect([own["SKILL_VIEW_TOOL_NAME"], own["SKILL_CREATE_TOOL_NAME"], own["SKILL_PATCH_TOOL_NAME"], own["SKILL_FILE_WRITE_TOOL_NAME"], own["SKILL_FILE_REMOVE_TOOL_NAME"]]).toEqual([
       SKILL_VIEW_TOOL_NAME,
       SKILL_CREATE_TOOL_NAME,
@@ -1365,20 +1374,30 @@ describe("memory_note on the shared EO MCP service (EO-479)", () => {
         }).env;
       const review = await listed(environment([MEMORY_NOTE_TOOL_NAME, ...SKILL_WRITE_TOOLS]));
       for (const tool of SKILL_WRITE_TOOLS) expect(review, tool).toContain(tool);
-      // A run's own turn — a credential naming no writes — is served none,
-      // even for an agent whose allowlist names every one of them.
-      const run = await listed(environment(undefined));
-      for (const tool of SKILL_WRITE_TOOLS) expect(run, tool).not.toContain(tool);
-      // Nor a credential naming other writes.
-      const notes = await listed(environment([MEMORY_NOTE_TOOL_NAME]));
-      for (const tool of SKILL_WRITE_TOOLS) expect(notes, tool).not.toContain(tool);
+      // A run's own turn — a credential naming no writes — lists them all
+      // the same, and so does a credential naming other writes.
+      expect(await listed(environment(undefined))).toEqual(review);
+      expect(await listed(environment([MEMORY_NOTE_TOOL_NAME]))).toEqual(review);
+      // A turn that could not be reviewed lists none: no scopes, or no bridge.
+      const unreviewable = [
+        eoMcpStdioConfig({ serverPath, dbPath, enableCommentTool: true, writeBridge: bridge.tokenFor(item.id) }).env,
+        eoMcpStdioConfig({ serverPath, dbPath, enableCommentTool: true, memoryScopes: [projectScope] }).env,
+      ];
+      for (const env of unreviewable) for (const tool of SKILL_WRITE_TOOLS) expect(await listed(env), tool).not.toContain(tool);
       // A skill-only review (EO-731), for a run that wrote its own notes:
-      // the skill tools and memory_read, and not memory_note, even for an
-      // agent whose allowlist names it.
-      const skillsOnly = await listed(environment([...SKILL_WRITE_TOOLS]));
-      for (const tool of SKILL_WRITE_TOOLS) expect(skillsOnly, tool).toContain(tool);
-      expect(skillsOnly).toContain(MEMORY_READ_TOOL_NAME);
-      expect(skillsOnly).not.toContain(MEMORY_NOTE_TOOL_NAME);
+      // listed the same as the run, memory_note included (EO-732), and
+      // memory_note refused when called, since its credential does not
+      // name it.
+      expect(await listed(environment([...SKILL_WRITE_TOOLS]))).toEqual(review);
+      expect(review).toContain(MEMORY_NOTE_TOOL_NAME);
+      expect(review).toContain(MEMORY_READ_TOOL_NAME);
+      const noted = await callServer(
+        dbPath,
+        [INITIALIZE, INITIALIZED, { jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: MEMORY_NOTE_TOOL_NAME, arguments: { scope: "project", text: "A fact." } } }],
+        false,
+        environment([...SKILL_WRITE_TOOLS]),
+      );
+      expect(textOf(noted, 2)).toMatchObject({ isError: true, text: expect.stringContaining("TOOL_NOT_SERVED") });
 
       const tool = (id: number, name: string, args: unknown) => ({ jsonrpc: "2.0", id, method: "tools/call", params: { name, arguments: args } });
       const calls = [
@@ -1397,8 +1416,15 @@ describe("memory_note on the shared EO MCP service (EO-479)", () => {
       expect(asked[0]!.request.args).toEqual({ slug: "csv-exports", file: "references/a.md" });
 
       asked.length = 0;
-      const refused = await callServer(dbPath, [INITIALIZE, INITIALIZED, ...calls.slice(0, 5)], false, environment(undefined));
-      for (const id of [3, 4, 5, 6, 7]) expect(textOf(refused, id), String(id)).toMatchObject({ isError: true, text: expect.stringContaining("TOOL_DISABLED") });
+      for (const writes of [undefined, [MEMORY_NOTE_TOOL_NAME] as Parameters<AgentWriteBridge["tokenFor"]>[1]]) {
+        const refused = await callServer(dbPath, [INITIALIZE, INITIALIZED, ...calls.slice(0, 5)], false, environment(writes));
+        for (const [index, id] of [3, 4, 5, 6, 7].entries()) {
+          expect(textOf(refused, id), String(id)).toMatchObject({ isError: true, text: expect.stringContaining("TOOL_NOT_SERVED") });
+          expect(textOf(refused, id).text, String(id)).toContain(skillToolNotServed(SKILL_WRITE_TOOLS[index]!));
+        }
+      }
+      const runRefusal = await callServer(dbPath, [INITIALIZE, INITIALIZED, calls[1]!], false, environment(undefined));
+      expect(textOf(runRefusal, 4)).toMatchObject({ isError: true, text: expect.stringContaining("Only a learning review may write skills") });
       expect(asked).toEqual([]);
     } finally {
       await bridge.close();
@@ -1431,7 +1457,7 @@ describe("every eo tool's annotations", () => {
     enableMemoryNote: true,
     enableRepositoryCheckout: true,
     enableSkillRead: true,
-    skillTools: [...SKILL_WRITE_TOOLS],
+    enableSkillTools: true,
   });
 
   /** The tools that change nothing. Written out, so a tool added tomorrow is a decision rather than a default. */
@@ -1534,6 +1560,13 @@ describe("every eo tool's structuredContent carries everything its text does (EO
       agents_list: [{}],
       agent_read: [{ name: agentName }, { name: "nobody" }],
       runtimes_list: [{}],
+      // Listed on a turn that could be reviewed, and refused on this one,
+      // whose credential does not name them (EO-732).
+      skill_view: [{ slug: "house-style" }],
+      skill_create: [{ slug: "house-style", description: "When.", body: "How." }],
+      skill_patch: [{ slug: "house-style", old_text: "a", new_text: "b" }],
+      skill_file_write: [{ slug: "house-style", path: "references/a.md", content: "x" }],
+      skill_file_remove: [{ slug: "house-style", path: "references/a.md" }],
     };
 
     const eo = start.createEoMcpService({
@@ -1552,7 +1585,7 @@ describe("every eo tool's structuredContent carries everything its text does (EO
     try {
       // The whole list, as the service builds it with every switch on —
       // so a tool added tomorrow fails here until it has calls above.
-      const everyTool = start.eoToolList({ enableCommentTool: true, enableConfigTools: true, enableFullThread: true, enableAttachmentAdd: true, enableMemoryRead: true, enableMemoryNote: true, enableRepositoryCheckout: true, enableSkillRead: true }).map((tool) => tool.name);
+      const everyTool = start.eoToolList({ enableCommentTool: true, enableConfigTools: true, enableFullThread: true, enableAttachmentAdd: true, enableMemoryRead: true, enableMemoryNote: true, enableRepositoryCheckout: true, enableSkillRead: true, enableSkillTools: true }).map((tool) => tool.name);
       expect(eo.tools.map((tool) => tool.name).sort()).toEqual([...everyTool].sort());
       expect(Object.keys(CALLS).sort(), "every tool needs calls in CALLS").toEqual([...everyTool].sort());
 

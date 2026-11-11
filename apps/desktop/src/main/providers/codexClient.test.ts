@@ -234,6 +234,63 @@ describe("a Codex turn over a stubbed app-server", () => {
     });
   });
 
+  it("opens a fork in prediction mode, from the original loaded first, so it keeps the original's prompt cache (EO-732)", async () => {
+    const fake = fakeAppServer({
+      forkId: "thr-fork",
+      after: {
+        // Loading the original restates its total, under its own id: no
+        // starting point for the copy's turn.
+        "thread/resume": [note.tokenUsage({ input: 9_000, cached: 8_000, output: 400 }, "turn-0", "thr-original")],
+        "turn/start": [
+          note.turnStarted("turn-1", "thr-fork"),
+          note.tokenUsage({ input: 200, cached: 180, output: 10 }, "turn-1", "thr-fork"),
+          note.agentMessage("ok", "msg-1", "turn-1", "thr-fork"),
+          note.turnCompleted("completed", null, "turn-1", "thr-fork"),
+        ],
+      },
+    });
+    const cwd = repository();
+    const events = await drain((await client(fake).forkThread("thr-original", { workingDirectory: cwd, model: "gpt-6.1-sol", approvalPolicy: "never" }).runStreamed("review")).events);
+
+    const methods = fake.sent.flatMap((message) => (message.method === undefined || message.id === undefined ? [] : [message.method]));
+    expect(methods).toEqual(["initialize", "thread/resume", "thread/fork", "turn/start"]);
+    // The experimental API, opted into for a fork's turn alone.
+    expect(fake.paramsOf("initialize")).toMatchObject({ capabilities: { experimentalApi: true } });
+    // Loaded as a resumed turn on it would be, and no turn started on it.
+    expect(fake.paramsOf("thread/resume")).toMatchObject({ threadId: "thr-original", cwd, model: "gpt-6.1-sol", approvalPolicy: "never", excludeTurns: true });
+    // And copied with no override: everything comes from the original.
+    expect(fake.paramsOf("thread/fork")).toEqual({ threadId: "thr-original", experimentalPredictionMode: true, ephemeral: true, excludeTurns: true });
+    expect(fake.paramsOf("turn/start")).toMatchObject({ threadId: "thr-fork" });
+    expect(events[0]).toEqual({ type: "thread.started", thread_id: "thr-fork", model: "gpt-6.1-sol", fork: { mode: "prediction" } });
+    expect(events.at(-1)).toMatchObject({ type: "turn.completed", usage: { input_tokens: 200, cached_input_tokens: 180, output_tokens: 10 } });
+  });
+
+  it("falls back to the plain fork, saying why, where the app-server refuses the prediction-mode one (EO-732)", async () => {
+    const fake = fakeAppServer({
+      forkId: "thr-fork",
+      refusePredictionFork: "`experimentalPredictionMode` requires a loaded parent",
+      after: { "turn/start": [note.turnStarted("turn-1", "thr-fork"), note.agentMessage("ok", "msg-1", "turn-1", "thr-fork"), note.turnCompleted("completed", null, "turn-1", "thr-fork")] },
+    });
+    const cwd = repository();
+    const events = await drain((await client(fake).forkThread("thr-original", { workingDirectory: cwd, model: "gpt-6.1-sol" }).runStreamed("review")).events);
+
+    const forks = fake.sent.filter((message) => message.method === "thread/fork").map((message) => message.params);
+    expect(forks).toHaveLength(2);
+    expect(forks[1]).toMatchObject({ threadId: "thr-original", cwd, model: "gpt-6.1-sol", excludeTurns: true });
+    expect(forks[1]).not.toHaveProperty("experimentalPredictionMode");
+    expect(events[0]).toEqual({ type: "thread.started", thread_id: "thr-fork", model: "gpt-6.1-sol", fork: { mode: "plain", fallbackReason: "thread/fork failed: `experimentalPredictionMode` requires a loaded parent (code -32600)" } });
+    expect(events.at(-1)?.type).toBe("turn.completed");
+  });
+
+  it("opts into no experimental API on a turn that is not a fork's (EO-732)", async () => {
+    const fake = fakeAppServer({ after: { "turn/start": [note.turnStarted(), note.agentMessage("ok"), note.turnCompleted()] } });
+    const events = await drain((await client(fake).resumeThread("thr-fake", { workingDirectory: repository() }).runStreamed("again")).events);
+
+    expect(fake.paramsOf("initialize")).toMatchObject({ capabilities: null });
+    expect(fake.paramsOf("thread/fork")).toBeUndefined();
+    expect(events[0]).toEqual({ type: "thread.started", thread_id: "thr-fake", model: "gpt-6.1-sol" });
+  });
+
   it("names the model the app-server opened the thread on, not the one EO asked for (EO-374)", async () => {
     // Asked for nothing, the CLI picks its own default; asked for one, it
     // may still answer with another. The answer is what a turn is priced at.

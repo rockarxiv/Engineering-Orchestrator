@@ -11,6 +11,7 @@ import {
   SKILL_FILE_WRITE_TOOL_NAME,
   SKILL_PATCH_TOOL_NAME,
   SKILL_VIEW_TOOL_NAME,
+  type ForkCopy,
   type Item,
   type LearningReviewEvent,
   type LearningReviewKind,
@@ -32,7 +33,12 @@ import { scopeLines } from "./writing.js";
  *
  * The full review is served `memory_read`, `memory_note` and the skill
  * tools (EO-718, `reviewSkills.ts`) and no other write
- * (`AgentWriteBridgeAddress.writes`). Where the thread cannot be forked,
+ * (`AgentWriteBridgeAddress.writes`). Either review is sent the run's own
+ * tools and answer schema, so the backend reads the thread from its
+ * prompt cache, and every other call is refused as it is made (EO-732,
+ * `refuseCallsExcept`) — which is why it may be asked to answer in the
+ * run's format, and is told to give the run's answer again. Where the
+ * thread cannot be forked,
  * `memory_extract` runs instead, as it did before this, and no skill is
  * written for that run.
  *
@@ -115,7 +121,7 @@ export function learningReviewPrompt(scopes: readonly MemoryScopeInfo[], skills:
   const limit = MAX_MEMORY_NOTE_CHARS.toLocaleString("en-US");
   return [
     ...REVIEW_HEAD,
-    `You are asked one thing: whether this run learned something the next agent on this project should be told, and if it did, to write it down — a fact to memory with \`${MEMORY_NOTE}\`, a way of doing a kind of task to a skill (below). Use \`${MEMORY_READ}\` to see what memory already holds. Do nothing else — do not change files, run commands, post comments, or carry on the run's work.`,
+    `You are asked one thing: whether this run learned something the next agent on this project should be told, and if it did, to write it down — a fact to memory with \`${MEMORY_NOTE}\`, a way of doing a kind of task to a skill (below). Use \`${MEMORY_READ}\` to see what memory already holds. ${DO_NOTHING_ELSE}`,
     "",
     MEMORY_NOTE_DEFINITION,
     "",
@@ -133,6 +139,8 @@ export function learningReviewPrompt(scopes: readonly MemoryScopeInfo[], skills:
     ...skillsSection(skills),
     "",
     "Many runs teach nothing worth keeping. Then write nothing. Either way, end with one line saying what you saved, or that there was nothing to save.",
+    "",
+    ANSWER_AGAIN,
   ].join("\n");
 }
 
@@ -147,7 +155,7 @@ export function learningReviewPrompt(scopes: readonly MemoryScopeInfo[], skills:
 export function learningReviewSkillsPrompt(skills: LearningReviewSkills): string {
   return [
     ...REVIEW_HEAD,
-    `You are asked one thing: whether this run worked out a way of doing a kind of task that the next agent on this project should be told, and if it did, to write it to a skill (below). This run already wrote its own notes to memory, so memory is not asked for here and you cannot write to it; use \`${MEMORY_READ}\` to see what it holds. Do nothing else — do not change files, run commands, post comments, or carry on the run's work.`,
+    `You are asked one thing: whether this run worked out a way of doing a kind of task that the next agent on this project should be told, and if it did, to write it to a skill (below). This run already wrote its own notes to memory, so memory is not asked for here and you cannot write to it; use \`${MEMORY_READ}\` to see what it holds. ${DO_NOTHING_ELSE}`,
     "",
     SAVE_ONLY_EVIDENCE,
     "",
@@ -156,8 +164,20 @@ export function learningReviewSkillsPrompt(skills: LearningReviewSkills): string
     ...skillsSection(skills),
     "",
     "Many runs teach nothing worth keeping. Then write nothing. Either way, end with one line saying what you saved, or that there was nothing to save.",
+    "",
+    ANSWER_AGAIN,
   ].join("\n");
 }
+
+/**
+ * What either review may not do (EO-732): it has the run's tools, so that
+ * the backend reads the thread from its cache, and EO refuses every other
+ * call as it is made.
+ */
+const DO_NOTHING_ELSE = "Do nothing else — do not change files, run commands, post comments, load skills, or carry on the run's work. This turn has the run's tools, and EO refuses a call to any other as it is made.";
+
+/** Either review is sent the run's answer schema (EO-732), so where that asks for an answer, the run's own is given again. */
+const ANSWER_AGAIN = "Where this turn asks you to end with an answer in the format the run answered in, give the run's own answer again, unchanged: nobody reads this turn's answer.";
 
 /** How either review opens: what this turn is, and is not. */
 const REVIEW_HEAD = [
@@ -210,23 +230,29 @@ function skillsSection({ skills, canCreate }: LearningReviewSkills): string[] {
   ];
 }
 
-/** How a review ended, as its run event records it. */
+/**
+ * How a review ended, as its run event records it. `fork` is how the
+ * backend copied the thread, where it says (EO-732): Codex's
+ * prediction-mode fork, or the plain one it fell back to and why.
+ */
 export type LearningReviewOutcome =
-  | { kind: "written"; entryIds: string[]; skillIds: string[]; forkThreadId: string }
-  | { kind: "nothing_to_save"; forkThreadId: string }
-  | { kind: "failed"; entryIds: string[]; skillIds: string[]; reason: string; forkThreadId: string | null }
+  | { kind: "written"; entryIds: string[]; skillIds: string[]; forkThreadId: string; fork?: ForkCopy }
+  | { kind: "nothing_to_save"; forkThreadId: string; fork?: ForkCopy }
+  | { kind: "failed"; entryIds: string[]; skillIds: string[]; reason: string; forkThreadId: string | null; fork?: ForkCopy }
   | { kind: "fell_back"; reason: string };
 
-/** The `learning_review` event an outcome is recorded as, and which review it was (EO-731). */
+/** The `learning_review` event an outcome is recorded as, which review it was (EO-731), and how the thread was copied (EO-732). */
 export function learningReviewEvent(outcome: LearningReviewOutcome, review: LearningReviewKind): LearningReviewEvent {
+  const fork = outcome.kind === "fell_back" ? undefined : outcome.fork;
+  const copied = fork === undefined ? {} : { forkMode: fork.mode, ...(fork.fallbackReason === undefined ? {} : { forkFallbackReason: fork.fallbackReason }) };
   switch (outcome.kind) {
     case "written":
-      return { type: LEARNING_REVIEW_EVENT, outcome: "written", review, entryIds: outcome.entryIds, skillIds: outcome.skillIds, reason: null, forkThreadId: outcome.forkThreadId };
+      return { type: LEARNING_REVIEW_EVENT, outcome: "written", review, entryIds: outcome.entryIds, skillIds: outcome.skillIds, reason: null, forkThreadId: outcome.forkThreadId, ...copied };
     case "nothing_to_save":
-      return { type: LEARNING_REVIEW_EVENT, outcome: "nothing_to_save", review, entryIds: [], skillIds: [], reason: null, forkThreadId: outcome.forkThreadId };
+      return { type: LEARNING_REVIEW_EVENT, outcome: "nothing_to_save", review, entryIds: [], skillIds: [], reason: null, forkThreadId: outcome.forkThreadId, ...copied };
     case "failed":
-      return { type: LEARNING_REVIEW_EVENT, outcome: "failed", review, entryIds: outcome.entryIds, skillIds: outcome.skillIds, reason: outcome.reason, forkThreadId: outcome.forkThreadId };
+      return { type: LEARNING_REVIEW_EVENT, outcome: "failed", review, entryIds: outcome.entryIds, skillIds: outcome.skillIds, reason: outcome.reason, forkThreadId: outcome.forkThreadId, ...copied };
     case "fell_back":
-      return { type: LEARNING_REVIEW_EVENT, outcome: "fell_back", review, entryIds: [], skillIds: [], reason: outcome.reason, forkThreadId: null };
+      return { type: LEARNING_REVIEW_EVENT, outcome: "fell_back", review, entryIds: [], skillIds: [], reason: outcome.reason, forkThreadId: null, ...copied };
   }
 }

@@ -566,6 +566,15 @@ export const LearningReviewEventSchema = z.object({
   reason: z.string().nullable(),
   /** The fork's thread, where one was opened; null on a fallback. Never the item's own thread. */
   forkThreadId: z.string().nullable(),
+  /**
+   * How the backend copied the thread (EO-732): `prediction` for Codex's
+   * cache-keeping fork, `plain` for its ordinary one. Absent where no
+   * fork was opened, on Claude, which has one way to fork, and on events
+   * written before EO-732, so those events read as they always did.
+   */
+  forkMode: z.enum(["prediction", "plain"]).optional(),
+  /** Why Codex fell back to the plain fork, in its own words. Absent otherwise. */
+  forkFallbackReason: z.string().optional(),
 });
 export type LearningReviewEvent = z.infer<typeof LearningReviewEventSchema>;
 

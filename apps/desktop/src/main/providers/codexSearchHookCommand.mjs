@@ -25,6 +25,13 @@
 // that is not the expected one — ends the same way: nothing on stdout and
 // exit 0, which Codex reads as a hook with nothing to say.
 //
+// **Except on a turn that refuses calls (EO-732).** On the learning
+// review's fork the same command carries EO's refusals, and there a
+// failure must not let the call through: a refusal that fails open is no
+// refusal. `EO_SEARCH_HOOK_REFUSES` says which turn this is, and every
+// failure then refuses the call, saying why. An answer of "nothing to say"
+// (204) is still the listener allowing the call.
+//
 // The globals this file uses, declared the way `eoServer.mjs` declares
 // its own: nothing here is bundled, so there is no tsconfig lib to say
 // what a Node runtime provides.
@@ -40,9 +47,28 @@ const TIMEOUT_MS = 5000;
 
 const url = process.env["EO_SEARCH_HOOK_URL"];
 const token = process.env["EO_SEARCH_HOOK_TOKEN"];
+const refuses = process.env["EO_SEARCH_HOOK_REFUSES"] === "1";
 
-function quiet() {
+/** Nothing to say, and the call goes on: what every failure is, except where this turn refuses calls (EO-732). */
+function allow() {
   process.exit(0);
+}
+
+/** A failure: quiet on an ordinary turn, and on a turn that refuses calls the call refused. */
+let refusing = false;
+function quiet() {
+  if (!refuses) allow();
+  // Once: a timeout and a failed request can both land before the write.
+  if (refusing) return;
+  refusing = true;
+  const refusal = {
+    hookSpecificOutput: {
+      hookEventName: "PreToolUse",
+      permissionDecision: "deny",
+      permissionDecisionReason: "EO refused this call: it could not check it, and this turn may make only some calls.",
+    },
+  };
+  process.stdout.write(JSON.stringify(refusal), () => process.exit(0));
 }
 
 if (!url || !token) quiet();
@@ -69,10 +95,11 @@ process.stdin.on("end", () => {
         response.on("error", quiet);
         response.on("end", () => {
           // 200 is the one status with something to say. 204 is "not a
-          // broad search", and anything else is a listener that is not
-          // EO's or not well.
+          // broad search" (or a call the turn may make), and anything else
+          // is a listener that is not EO's or not well.
+          if (response.statusCode === 204) allow();
           if (response.statusCode !== 200) quiet();
-          process.stdout.write(Buffer.concat(answer), quiet);
+          process.stdout.write(Buffer.concat(answer), allow);
         });
       },
     );

@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
@@ -103,6 +103,14 @@ function sse(response: ServerResponse, events: [string, unknown][]): void {
   response.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache" });
   for (const [event, data] of events) response.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
   response.end();
+}
+
+function filesUnder(root: string): string[] {
+  if (!existsSync(root)) return [];
+  return readdirSync(root).flatMap((name) => {
+    const path = join(root, name);
+    return statSync(path).isDirectory() ? filesUnder(path) : [path];
+  });
 }
 
 async function drain(stream: AsyncIterable<AgentEvent>): Promise<AgentEvent[]> {
@@ -215,8 +223,54 @@ describe.skipIf(!CODEX_OPTED_IN)("forking a Codex thread, against the real app-s
         });
       },
     });
-    const observed = await forkScenario(provider, repository(), capture.bodies);
+    const rolloutOf = (threadId: string): string | undefined => filesUnder(join(home, "sessions")).find((file) => file.includes(threadId));
+    const cwd = repository();
+    // The original as its turn left it, before anything forks it.
+    let originalRollout: string | null = null;
+    /** The original's rollout once the fork's turn has ended, before anything resumes it. */
+    let afterTheFork: string | null = null;
+    const probing: AgentProvider = {
+      ...provider,
+      fork: async (threadId, message, opts) => {
+        const path = rolloutOf(threadId);
+        // The first fork's: the scenario forks a thread nobody has after.
+        const first = originalRollout === null && path !== undefined;
+        if (first) originalRollout = readFileSync(path, "utf8");
+        const forked = await provider.fork!(threadId, message, opts);
+        if (!first || !forked.ok) return forked;
+        const events = forked.events;
+        async function* read(): AsyncGenerator<AgentEvent> {
+          yield* events;
+          afterTheFork = readFileSync(path!, "utf8");
+        }
+        return { ...forked, events: read() };
+      },
+    };
+    const observed = await forkScenario(probing, cwd, capture.bodies);
     expectAFork(observed);
+
+    // In prediction mode (EO-732): the copy's request is keyed to the
+    // original's prompt cache — the original's own thread id, measured at
+    // 0.166.0 — and starts with everything the original's request sent, so
+    // the backend reads the original's thread from its cache, where a
+    // plain fork's key is its own and reads none of it.
+    expect(observed.forkEvents.find((event) => event.type === "thread_started")).toMatchObject({ fork: { mode: "prediction" } });
+    const request = (words: string) => JSON.parse(capture.bodies.find((body) => body.includes(words))!) as Record<string, unknown>;
+    const original = request("kumquat-original-716");
+    const fork = request("persimmon-fork-716");
+    expect(original["prompt_cache_key"]).toBe(observed.originalId);
+    expect(fork["prompt_cache_key"]).toBe(original["prompt_cache_key"]);
+    const withoutIds = (items: unknown) => JSON.parse(JSON.stringify(items).replace(/"id":"[^"]*",?/g, "")) as unknown[];
+    const originalInput = withoutIds(original["input"]);
+    expect(withoutIds(fork["input"]).slice(0, originalInput.length)).toEqual(originalInput);
+    expect(fork["model"]).toBe(original["model"]);
+    expect(fork["reasoning"]).toEqual(original["reasoning"]);
+    // Loading the original to fork it wrote nothing to it: its rollout is
+    // byte for byte what its own turn left.
+    expect(originalRollout).not.toBeNull();
+    expect(afterTheFork).toBe(originalRollout);
+    // And the copy is ephemeral: nothing of it is kept on disk.
+    expect(rolloutOf(observed.fork.threadId)).toBeUndefined();
     // The copy carries the original's token totals and no reading
     // restates them, measured at 0.166.0: the fork's turn — one request,
     // 11 in and 3 out — is still reported as its own (EO-733).

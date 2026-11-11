@@ -1,4 +1,4 @@
-import type { AgentWriteAnswer, AgentWriteRequest } from "@eo/core";
+import { SKILL_WRITE_TOOLS, skillToolNotServed, type AgentWriteAnswer, type AgentWriteRequest } from "@eo/core";
 import { afterEach, describe, expect, it } from "vitest";
 // @ts-expect-error — the service is plain JavaScript, deliberately: it ships
 // unbundled because Codex spawns it by path.
@@ -42,6 +42,11 @@ describe("the agent write bridge", () => {
     for (const tool of ["comment", "attachment_add", "repository_checkout"] as const) {
       expect(await sendAgentWrite(scoped, { tool, args: {} }), tool).toMatchObject({ ok: false, code: "TOOL_NOT_SERVED" });
     }
+    // A skill tool's refusal says why: only a learning review may write skills (EO-732).
+    for (const tool of SKILL_WRITE_TOOLS) {
+      expect(await sendAgentWrite(scoped, { tool, args: {} }), tool).toEqual({ ok: false, code: "TOOL_NOT_SERVED", problem: skillToolNotServed(tool) });
+    }
+    expect(skillToolNotServed("skill_create")).toContain("Only a learning review may write skills");
     // The list is signed: one widened by hand is not a credential this bridge minted.
     const widened = { ...scoped, token: scoped.token.replace("~memory_note.", "~memory_note,comment.") };
     expect(await sendAgentWrite(widened, { tool: "comment", args: { body: "x" } })).toMatchObject({ ok: false, code: "UNRECOGNISED_CREDENTIAL" });

@@ -46,10 +46,11 @@ import {
   type UsageEvent,
   skillsForRun,
   withoutReservedEnvironmentVariables,
+  SKILL_READ_TOOL_NAME,
 } from "@eo/core";
 import type { AdminMcpDispatch } from "../agentAttachments/adminDelivery.js";
 import { deliverableSkills, writeWorktreeSkills, worktreeSkillsPromptSection, type WorktreeSkillDelivery } from "../agentAttachments/worktreeSkills.js";
-import { codexSkillLoaded, skillsOffered } from "./skillUsage.js";
+import { codexSkillLoaded, skillsOffered, withoutEvents } from "./skillUsage.js";
 import { openedFork } from "./threadFork.js";
 import { agentMcpStdioConfig, eoMcpStdioConfig, type EoMcpServiceConfig } from "../mcp/serviceConfig.js";
 import { codexModelPrice, codexTurnCostCents, codexTurnCostMicrocents } from "./codexPricing.js";
@@ -58,6 +59,7 @@ import { CODEX_SIDE_CALL_SWITCHES, writeSideCallCatalog } from "./codexSideCallL
 
 /** The catalogue Codex caches in every home it runs in, which a side call copies its model's entry from. */
 const CODEX_MODELS_CACHE = "models_cache.json";
+import { REFUSED_CALL_EVENTS, refusedCall } from "./callRefusal.js";
 import { CODEX_SEARCH_TOOL_MATCHER, openCodexSearchHook, probeHookTrust, type CodexHookTrust, type CodexSearchHook } from "./codexSearchHook.js";
 import type { SearchNudge } from "./searchNudge.js";
 import { toolResultEvent, toolResultText } from "./toolResult.js";
@@ -267,7 +269,7 @@ export interface CodexProviderOptions {
    * (`probeHookTrust`), which the real one asks the CLI by spawning it.
    * Null means it could not be learned, and the turn gets no hook.
    */
-  searchHookTrust?: (command: string) => Promise<CodexHookTrust | null>;
+  searchHookTrust?: (command: string, matcher: string) => Promise<CodexHookTrust | null>;
   /**
    * Seam for tests — the real client spawns `codex app-server`, which a
    * unit test must not do.
@@ -306,8 +308,6 @@ export interface CodexProviderOptions {
     adminDirectory?: string,
     /** The skills the turn was given, by slug, for `skill_read` (EO-721). Handed only on a turn given some. */
     skillSlugs?: readonly string[],
-    /** The turn is not served the administrative server, whoever the agent is (EO-717, `withoutAdminServer`). */
-    withoutAdmin?: boolean,
   ) => Pick<CodexClient, "startThread" | "resumeThread"> & Partial<Pick<CodexClient, "prewarm" | "forkThread">>;
   /**
    * Seam for tests — the client a side call runs on (EO-477), built from
@@ -350,7 +350,7 @@ export interface CodexProviderOptions {
  * The half of a turn's search hook the CLI is launched with: the command
  * it runs, and what that command reads to find EO (EO-379).
  */
-export type CodexSearchHookDelivery = Pick<CodexSearchHook, "command" | "env"> & {
+export type CodexSearchHookDelivery = Pick<CodexSearchHook, "command" | "env" | "matcher"> & {
   /** What marks this one hook as reviewed, so the CLI runs it and no other it has not been told to. */
   trust: CodexHookTrust;
 };
@@ -756,7 +756,7 @@ export function mapThreadEvent(event: ThreadEvent): { mapped: AgentEvent[]; reco
     case "thread.started":
       // With the model the app-server opened the thread on, when it named
       // one (EO-392) — its default, where EO asked for none.
-      return { mapped: [{ type: "thread_started", threadId: event.thread_id, ...(event.model ? { model: event.model } : {}) }], recognised: true };
+      return { mapped: [{ type: "thread_started", threadId: event.thread_id, ...(event.model ? { model: event.model } : {}), ...(event.fork ? { fork: event.fork } : {}) }], recognised: true };
 
     case "turn.started":
       return { mapped: [], recognised: true }; // no counterpart; a turn boundary isn't an agent event
@@ -1473,9 +1473,14 @@ const CODEX_MEMORY_OFF = {
   memories: { generate_memories: false, use_memories: false },
 } as const;
 
-/** EO's hook as the CLI's configuration spells it — the one shape both the turn and the trust probe are given. */
-function searchHookEntries(command: string): Record<string, unknown> {
-  return { PreToolUse: [{ matcher: CODEX_SEARCH_TOOL_MATCHER, hooks: [{ type: "command", command, timeout: SEARCH_HOOK_TIMEOUT_SECONDS }] }] };
+/**
+ * EO's hook as the CLI's configuration spells it — the one shape both the
+ * turn and the trust probe are given. Offered the shell alone for the
+ * search interception, and every call on a turn that refuses calls
+ * (EO-732), which the hash is then taken over.
+ */
+function searchHookEntries(command: string, matcher: string = CODEX_SEARCH_TOOL_MATCHER): Record<string, unknown> {
+  return { PreToolUse: [{ matcher, hooks: [{ type: "command", command, timeout: SEARCH_HOOK_TIMEOUT_SECONDS }] }] };
 }
 
 /**
@@ -1525,14 +1530,13 @@ function hasAdmin(options: CodexProviderOptions): boolean {
  * `providerParity.test.ts` holds the two to each other against the
  * launch itself.
  */
-export function codexServerNames(options: CodexProviderOptions, repositoryMcp?: RepositoryMcpServer, withoutAdmin = false): string[] {
+export function codexServerNames(options: CodexProviderOptions, repositoryMcp?: RepositoryMcpServer): string[] {
   return [
     ...new Set([
       ...deliveredServers(options.attachedServers ?? []).map((server) => server.name),
       ...(repositoryMcp ? [repositoryMcp.name] : []),
       ...(options.eoMcp ? [EO_MCP_SERVER] : []),
-      // Not on a turn told it is without it, which `buildCodexOptions` configures none for (EO-717).
-      ...(hasAdmin(options) && !withoutAdmin ? [ADMIN_MCP_SERVER_NAME] : []),
+      ...(hasAdmin(options) ? [ADMIN_MCP_SERVER_NAME] : []),
     ]),
   ];
 }
@@ -1548,13 +1552,11 @@ export function buildCodexOptions(
   withheldEnvironmentVariables?: readonly string[],
   adminDirectory?: string,
   skillSlugs?: readonly string[],
-  /** Not served the administrative server, and no bearer minted for it (EO-717). */
-  withoutAdmin = false,
 ): Pick<CodexClientOptions, "executablePath" | "config" | "env" | "afterTurn" | "perTurnEnv"> {
   // Asked once per client, and let go of again if the options cannot be
   // built (EO-444): no process will be spawned to let it go after. For
   // the directory the turn runs in (EO-700).
-  const admin = withoutAdmin ? null : (options.admin?.(adminDirectory) ?? null);
+  const admin = options.admin?.(adminDirectory) ?? null;
   try {
     return codexOptionsWith(options, admin, repositoryMcp, searchHook, attachFrom, memoryScopes, environmentVariables, writeBridge, withheldEnvironmentVariables, skillSlugs);
   } catch (error) {
@@ -1745,7 +1747,7 @@ function codexOptionsWith(
   // using their setup. The thread-wide `bypass_hook_trust` would have run
   // those too, which is why it is not what this sends.
   const hooks = searchHook
-    ? { ...searchHookEntries(searchHook.command), state: { [searchHook.trust.key]: { trusted_hash: searchHook.trust.hash } } }
+    ? { ...searchHookEntries(searchHook.command, searchHook.matcher), state: { [searchHook.trust.key]: { trusted_hash: searchHook.trust.hash } } }
     : undefined;
   const config = {
     ...(Object.keys(mcpServers).length > 0 ? { mcp_servers: mcpServers } : {}),
@@ -1792,10 +1794,9 @@ export function codexClientOptions(
   withheldEnvironmentVariables?: readonly string[],
   adminDirectory?: string,
   skillSlugs?: readonly string[],
-  withoutAdmin = false,
 ): CodexClientOptions {
   return {
-    ...buildCodexOptions(options, repositoryMcp, searchHook, attachFrom, memoryScopes, environmentVariables, writeBridge, withheldEnvironmentVariables, adminDirectory, skillSlugs, withoutAdmin),
+    ...buildCodexOptions(options, repositoryMcp, searchHook, attachFrom, memoryScopes, environmentVariables, writeBridge, withheldEnvironmentVariables, adminDirectory, skillSlugs),
     ...(options.onUnmappedEvent ? { onUnmappedNotification: options.onUnmappedEvent } : {}),
   };
 }
@@ -2214,8 +2215,7 @@ export function createCodexProvider(options: CodexProviderOptions = {}): AgentPr
       withheldEnvironmentVariables?: readonly string[],
       adminDirectory?: string,
       skillSlugs?: readonly string[],
-      withoutAdmin?: boolean,
-    ) => new CodexClient(codexClientOptions(options, repositoryMcp, searchHook, attachFrom, memoryScopes, environmentVariables, writeBridge, withheldEnvironmentVariables, adminDirectory, skillSlugs, withoutAdmin)));
+    ) => new CodexClient(codexClientOptions(options, repositoryMcp, searchHook, attachFrom, memoryScopes, environmentVariables, writeBridge, withheldEnvironmentVariables, adminDirectory, skillSlugs)));
 
   /**
    * What marks EO's hook as trusted, learned once per command line.
@@ -2225,16 +2225,18 @@ export function createCodexProvider(options: CodexProviderOptions = {}): AgentPr
    * probe that failed is tried again on the next turn.
    */
   const learnedTrust = new Map<string, CodexHookTrust>();
-  async function trustFor(command: string): Promise<CodexHookTrust | null> {
-    const known = learnedTrust.get(command);
+  async function trustFor(command: string, matcher: string): Promise<CodexHookTrust | null> {
+    // By matcher too: the hash is over the whole entry (EO-732).
+    const key = `${matcher}\n${command}`;
+    const known = learnedTrust.get(key);
     if (known) return known;
     const executablePath = options.executablePath;
     const learned = options.searchHookTrust
-      ? await options.searchHookTrust(command)
+      ? await options.searchHookTrust(command, matcher)
       : executablePath
-        ? await probeHookTrust({ executablePath, hooks: searchHookEntries(command) })
+        ? await probeHookTrust({ executablePath, hooks: searchHookEntries(command, matcher) })
         : null;
-    if (learned) learnedTrust.set(command, learned);
+    if (learned) learnedTrust.set(key, learned);
     return learned;
   }
 
@@ -2250,19 +2252,40 @@ export function createCodexProvider(options: CodexProviderOptions = {}): AgentPr
    * be a hook that never runs. The turn is the work and the nudge is
    * advice beside it, so either costs the advice and says so here rather
    * than failing the run.
+   *
+   * Except on a turn that may make only some calls (EO-732,
+   * `refuseCallsExcept`): there the hook is what refuses the rest, so it
+   * is opened whatever the nudge and the index, offered every call, and a
+   * hook that cannot be set up is thrown — the turn is not run — rather
+   * than the turn run with nothing refusing its calls.
    */
-  async function searchHookFor(repositoryMcp: RepositoryMcpServer | undefined, cwd: string | undefined): Promise<TurnSearchHook | null> {
-    if (cwd === undefined) return null;
+  async function searchHookFor(repositoryMcp: RepositoryMcpServer | undefined, cwd: string | undefined, refuseCallsExcept?: readonly string[]): Promise<TurnSearchHook | null> {
+    const refusing = refuseCallsExcept !== undefined;
     let hook: CodexSearchHook | null = null;
     try {
-      hook = await openCodexSearchHook({ nudge: options.searchNudge, server: repositoryMcp, cwd, commandPath: options.searchHookCommandPath });
-      if (hook === null) return null;
-      const trust = await trustFor(hook.command);
+      if (cwd === undefined) {
+        if (refusing) throw new Error("the turn names no directory to run in");
+        return null;
+      }
+      hook = await openCodexSearchHook({
+        nudge: options.searchNudge,
+        server: repositoryMcp,
+        cwd,
+        commandPath: options.searchHookCommandPath,
+        ...(refusing ? { refuse: (tool: string) => refusedCall(tool, { eoTools: refuseCallsExcept, repositoryServer: repositoryMcp?.name ?? null }) } : {}),
+      });
+      if (hook === null) {
+        if (refusing) throw new Error("EO has no hook command to run on this machine");
+        return null;
+      }
+      const trust = await trustFor(hook.command, hook.matcher);
       if (trust === null) throw new Error("the Codex CLI did not report the hook, so it cannot be marked as trusted");
       return { ...hook, trust };
     } catch (error) {
       await hook?.close();
-      console.warn(`[codex] the broad-search hook could not be set up, so this turn runs without it: ${error instanceof Error ? error.message : String(error)}`);
+      const why = error instanceof Error ? error.message : String(error);
+      if (refusing) throw new Error(`EO could not set up the hook that refuses this turn's other calls, so the turn was not run: ${why}`);
+      console.warn(`[codex] the broad-search hook could not be set up, so this turn runs without it: ${why}`);
       return null;
     }
   }
@@ -2283,13 +2306,8 @@ export function createCodexProvider(options: CodexProviderOptions = {}): AgentPr
     withheldEnvironmentVariables?: readonly string[],
     adminDirectory?: string,
     skillSlugs?: readonly string[],
-    withoutAdmin = false,
   ) {
-    const hook = searchHook ? { command: searchHook.command, env: searchHook.env, trust: searchHook.trust } : undefined;
-    // A turn not served the administrative server (EO-717): told so,
-    // with every argument, since the server would otherwise be given to
-    // any client built for this agent whatever its directory.
-    if (withoutAdmin) return createCodex(repositoryMcp, hook, attachFrom, memoryScopes, environmentVariables, writeBridge, withheldEnvironmentVariables, undefined, skillSlugs, true);
+    const hook = searchHook ? { command: searchHook.command, env: searchHook.env, matcher: searchHook.matcher, trust: searchHook.trust } : undefined;
     // And the skills `skill_read` serves only on a turn given some
     // (EO-721) — every argument before them with it, as they are.
     if (skillSlugs && skillSlugs.length > 0) {
@@ -2455,9 +2473,16 @@ export function createCodexProvider(options: CodexProviderOptions = {}): AgentPr
    * Synchronous, inside `resume`, so the section can be reported from
    * what was actually written before `resume` returns — as `start` does.
    */
+  function refusingCalls(resumeOpts: AgentProviderResumeOptions | undefined, stream: InterruptibleStream<AgentEvent>): InterruptibleStream<AgentEvent> {
+    // On a turn whose calls are refused (EO-732), what a call says by
+    // being made did not happen: a refused `skill_read` loaded nothing.
+    // Codex reports no completed item for a call its hook denied, so this
+    // is the same rule Claude's adapter keeps, held here as well.
+    return resumeOpts?.refuseCallsExcept ? withoutEvents(stream, REFUSED_CALL_EVENTS) : stream;
+  }
+
   function resumedSkills(resumeOpts: AgentProviderResumeOptions | undefined): { slugs: string[]; section: string } {
-    // None, and nothing written, for a turn given no skills (EO-717).
-    if (!resumeOpts?.cwd || resumeOpts.withoutSkills === true) return { slugs: [], section: "" };
+    if (!resumeOpts?.cwd) return { slugs: [], section: "" };
     const restored = writeWorktreeSkills(resumeOpts.cwd, skillsForRun(options.attachedSkills ?? [], resumeOpts.skillScope));
     warnAboutUndeliveredSkills(restored, resumeOpts.cwd);
     return { slugs: restored.delivered.map((skill) => skill.slug), section: worktreeSkillsPromptSection(restored.delivered) };
@@ -2490,7 +2515,11 @@ export function createCodexProvider(options: CodexProviderOptions = {}): AgentPr
     // And the search hook again, for the same reason once more (EO-379):
     // a hook is part of what this invocation is launched with, so a
     // resumed turn that did not name one would be a turn without it.
-    const searchHook = await searchHookFor(resumeOpts?.repositoryMcp, resumeOpts?.cwd);
+    //
+    // And on a turn that may make only some calls, the hook is what
+    // refuses the rest (EO-732): one that cannot be set up throws here,
+    // before any client is launched.
+    const searchHook = await searchHookFor(resumeOpts?.repositoryMcp, resumeOpts?.cwd, resumeOpts?.refuseCallsExcept);
     try {
       yield* resumedWith(searchHook);
     } finally {
@@ -2508,7 +2537,6 @@ export function createCodexProvider(options: CodexProviderOptions = {}): AgentPr
         resumeOpts?.withheldEnvironmentVariables,
         resumeOpts?.cwd,
         skillSlugs,
-        resumeOpts?.withoutAdminServer === true,
       );
       // A fork opens with `thread/fork` instead, and the turn runs on the
       // copy it answers with (EO-716). A client built without it (a test's
@@ -2598,7 +2626,7 @@ export function createCodexProvider(options: CodexProviderOptions = {}): AgentPr
     resume(threadId: string, message: string, resumeOpts?: AgentProviderResumeOptions): InterruptibleStream<AgentEvent> {
       const skills = resumedSkills(resumeOpts);
       resumeOpts?.onSkillsSection?.(skills.section);
-      return reachableTurn((reach) => lostThreadTranslated(threadId, message, resumeOpts, reach, false, skills));
+      return refusingCalls(resumeOpts, reachableTurn((reach) => lostThreadTranslated(threadId, message, resumeOpts, reach, false, skills)));
     },
 
     fork(threadId: string, message: string, forkOpts?: AgentProviderResumeOptions): Promise<AgentForkResult> {
@@ -2611,9 +2639,17 @@ export function createCodexProvider(options: CodexProviderOptions = {}): AgentPr
       // The skills are given back as on a resume (EO-721), Skills section
       // included: a fork copies a thread that may predate `skill_read` and
       // still say to read a `SKILL.md` that is no longer written.
-      const skills = resumedSkills(forkOpts);
+      //
+      // Except on a turn that refuses calls (EO-732), whose section would
+      // tell it to load skills with `skill_read`, which it is refused: the
+      // learning review reads them with `skill_view`. The skills are still
+      // written and `skill_read` still listed, as on the run, so what the
+      // fork is sent starts as the run's did; only the message it adds
+      // goes without the section, which is no part of that start.
+      const resumed = resumedSkills(forkOpts);
+      const skills = forkOpts?.refuseCallsExcept && !forkOpts.refuseCallsExcept.includes(SKILL_READ_TOOL_NAME) ? { ...resumed, section: "" } : resumed;
       forkOpts?.onSkillsSection?.(skills.section);
-      return openedFork(threadId, reachableTurn((reach) => lostThreadTranslated(threadId, message, forkOpts, reach, true, skills)));
+      return openedFork(threadId, refusingCalls(forkOpts, reachableTurn((reach) => lostThreadTranslated(threadId, message, forkOpts, reach, true, skills))));
     },
 
     dropWarm(): void {
@@ -2723,14 +2759,13 @@ export function createCodexProvider(options: CodexProviderOptions = {}): AgentPr
           { name: "sandboxMode", value: String(thread.sandboxMode) },
           { name: "approvalPolicy", value: String(thread.approvalPolicy) },
         ],
-        mcpServers: codexServerNames(options, turn.repositoryMcp, turn.withoutAdminServer === true),
+        mcpServers: codexServerNames(options, turn.repositoryMcp),
         // Codex is handed no allowlist: what a server offers is what the
         // agent may call.
         allowedTools: null,
         // The same list `writeWorktreeSkills` delivers, by slug — which
         // is the name the prompt section calls each one.
-        // None for a turn given no skills, which `resumedSkills` writes none for (EO-717).
-        skills: turn.withoutSkills === true ? [] : deliverableSkills(skillsForRun(options.attachedSkills ?? [], turn.skillScope)).map((skill) => skill.slug),
+        skills: deliverableSkills(skillsForRun(options.attachedSkills ?? [], turn.skillScope)).map((skill) => skill.slug),
         inheritsAmbientConfig: options.config?.inheritAmbientConfig === true,
       };
     },

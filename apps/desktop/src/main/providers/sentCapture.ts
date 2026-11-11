@@ -59,8 +59,6 @@ function sessionOf(provider: AgentProvider, context: SendContext, turn: AgentSes
     ...(turn.repositoryMcp !== undefined ? { repositoryMcp: turn.repositoryMcp } : {}),
     ...(turn.skillScope !== undefined ? { skillScope: turn.skillScope } : {}),
     ...(turn.memoryScopes !== undefined ? { memoryScopes: turn.memoryScopes } : {}),
-    ...(turn.withoutSkills !== undefined ? { withoutSkills: turn.withoutSkills } : {}),
-    ...(turn.withoutAdminServer !== undefined ? { withoutAdminServer: turn.withoutAdminServer } : {}),
   });
   return {
     backend: context.backend,

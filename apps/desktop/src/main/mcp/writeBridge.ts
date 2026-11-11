@@ -1,7 +1,7 @@
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
-import { AGENT_WRITE_TOOLS, AgentWriteRequestSchema, type AgentWriteAnswer, type AgentWriteBridgeAddress, type AgentWriteRequest, type AgentWriteTool } from "@eo/core";
+import { AGENT_WRITE_TOOLS, AgentWriteRequestSchema, SKILL_WRITE_TOOLS, skillToolNotServed, type AgentWriteAnswer, type AgentWriteBridgeAddress, type AgentWriteRequest, type AgentWriteTool } from "@eo/core";
 
 /**
  * Where the `eo` server hands every write an agent asks for (EO-543,
@@ -117,7 +117,9 @@ export function startAgentWriteBridge(handler: AgentWriteHandler): Promise<Agent
     // A credential minted for some writes opens those alone (EO-717),
     // whatever the server it was handed to lists.
     if (grant.writes !== null && !grant.writes.includes(write.data.tool)) {
-      return answer(response, 403, refused("TOOL_NOT_SERVED", `This turn is not served ${write.data.tool}, so nothing was written.`));
+      // A skill tool's refusal says why (EO-732): only a learning review may write skills.
+      const problem = (SKILL_WRITE_TOOLS as readonly string[]).includes(write.data.tool) ? skillToolNotServed(write.data.tool) : `This turn is not served ${write.data.tool}, so nothing was written.`;
+      return answer(response, 403, refused("TOOL_NOT_SERVED", problem));
     }
     let outcome: AgentWriteAnswer;
     try {
