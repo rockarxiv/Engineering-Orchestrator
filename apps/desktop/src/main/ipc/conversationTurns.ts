@@ -26,6 +26,7 @@ import {
   SKIPPED_ANSWER,
   summariseProposal,
   type ProposalAtLength,
+  type AddedFieldValues,
 } from "../roles/discussion.js";
 import type { ItemTypeName } from "../db/repos/itemTypesRepo.js";
 import { approvalNote } from "./approvalNote.js";
@@ -144,8 +145,10 @@ export function approveWorkProposal(
    * to the proposal's own type.
    */
   chosenType?: string,
+  /** What a person set for fields the project added to a row's type (EO-735); see `assist:approve`. */
+  addedValues: AddedFieldValues = [],
 ): AppliedProposal {
-  const applied = applyDiscussionProposal(db, conversation, proposalCommentId, null, typeChoice(chosenType));
+  const applied = applyDiscussionProposal(db, conversation, proposalCommentId, null, typeChoice(chosenType), addedValues);
   return settleApproval(db, engine, conversation, proposalCommentId, applied);
 }
 
@@ -166,9 +169,10 @@ export async function approveWorkProposalThroughRecord(
   conversation: Item,
   proposalCommentId: Uuid,
   chosenType?: string,
+  addedValues: AddedFieldValues = [],
 ): Promise<AppliedProposal> {
   const held = reorderOnTheRecord(db, conversation, proposalCommentId);
-  if (held === null) return approveWorkProposal(db, engine, conversation, proposalCommentId, chosenType);
+  if (held === null) return approveWorkProposal(db, engine, conversation, proposalCommentId, chosenType, addedValues);
 
   const { item, proposal } = held;
   const answer = await record.changeDependencies({

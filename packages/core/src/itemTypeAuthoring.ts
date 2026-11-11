@@ -346,7 +346,7 @@ export function addedFieldCollisions(row: SpecShape, shipped: SpecShape): string
  * types.
  */
 export function addedFieldCollisionMessage(type: { label: string; packSlug: string }, field: string, where: string | null): string {
-  const holder = where === null ? "This installation" : where;
+  const holder = where === null ? "this installation" : where;
   return (
     `The ${type.packSlug} pack's “${type.label}” has a field “${field}”, and ${holder} already added a field “${field}” of its own to “${type.label}”. ` +
     `EO kept the added field and its items' values, and merged nothing from the pack's “${type.label}”: the pack's field and the added one cannot share a name.`

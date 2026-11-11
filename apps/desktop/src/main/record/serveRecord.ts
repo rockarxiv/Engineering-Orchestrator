@@ -61,7 +61,8 @@ import type { TemplateHistory } from "../gallery/history.js";
 import { getPerson } from "../db/repos/peopleRepo.js";
 import { getUpdateConflict } from "../db/repos/pipelineUpdateConflictsRepo.js";
 import { itemsMidAdoption, listProjectsUpdatedSince, projectsMidAdoption } from "../db/repos/projectsRepo.js";
-import { listItemTypesSince } from "../db/repos/itemTypesRepo.js";
+import { getItemType, listItemTypesSince, recordItemTypeOf } from "../db/repos/itemTypesRepo.js";
+import { updateItemTypeCommand } from "../ipc/itemTypeCommands.js";
 import { listPublishedSectionsSince, publishedSectionRow } from "../db/repos/publishedSectionsRepo.js";
 import {
   abandonAdoptedProject,
@@ -365,6 +366,53 @@ export async function serveCreateItem(
   // module asked for it.
   if (answer.created && !answer.existing) emitPush("items:changed", {});
   return answer;
+}
+
+/** Why the record refuses a device that is not an admin's a change to an item type (EO-735). */
+export const UPDATE_ITEM_TYPE_NOT_AN_ADMIN = "only an administrator of your organisation can change a project's item types on its record.";
+
+/**
+ * A change to an item type this record holds, asked by a device holding
+ * it as a replica (EO-735): a rename, or a project's own optional fields
+ * on a pack's type.
+ *
+ * The same `updateItemTypeCommand` a solo desktop runs on its own
+ * tables, against this record's — so a field items hold a value for is
+ * counted across every item, which only the record has. Configuring a
+ * project is an administrator's act here, as resolving its template
+ * update is: a device this record does not know, or one whose person is
+ * not an admin, is refused. So is a type on a project still arriving.
+ *
+ * Answered with the type as the pull carries it; its `updatedAt` is what
+ * pages it again to every other device.
+ */
+export async function serveUpdateItemType(
+  context: ServeRecordContext,
+  payload: IpcPayload<"record:updateItemType">,
+): Promise<IpcResponse<"record:updateItemType">> {
+  const { db } = context;
+  const refuse = (problem: string): IpcResponse<"record:updateItemType"> => ({ type: null, problem });
+
+  const person = personOfDevice(db, payload.deviceId);
+  if (person === undefined) return refuse("this record does not know the device that asked, so it changed nothing.");
+  if (!person.isAdmin) return refuse(UPDATE_ITEM_TYPE_NOT_AN_ADMIN);
+  const existing = getItemType(db, payload.id as Uuid);
+  if (existing === undefined) return refuse("this record no longer has that item type, so nothing was changed.");
+  if (existing.projectId !== null && projectsMidAdoption(db).has(existing.projectId)) {
+    return refuse("the project this item type is on is still arriving on the record, so it cannot be changed yet.");
+  }
+
+  const answer = updateItemTypeCommand(db, {
+    id: payload.id,
+    ...(payload.label === undefined ? {} : { label: payload.label }),
+    ...(payload.plural === undefined ? {} : { plural: payload.plural }),
+    ...(payload.container === undefined ? {} : { container: payload.container }),
+    ...(payload.fields === undefined ? {} : { fields: payload.fields }),
+    ...(payload.actionOverrides === undefined ? {} : { actionOverrides: payload.actionOverrides }),
+  });
+  if (answer.type === null) return refuse(answer.problem ?? "it was refused.");
+  const updated = getItemType(db, existing.id);
+  return updated === undefined ? refuse("this record no longer has that item type, so nothing was changed.") : { type: recordItemTypeOf(updated), problem: null };
 }
 
 /**
@@ -1867,18 +1915,7 @@ export function serveChanges(
       createdAt: project.createdAt,
       updatedAt: project.updatedAt,
     })),
-    itemTypes: types.map((type) => ({
-      id: type.id,
-      projectId: type.projectId,
-      packSlug: type.packSlug,
-      slug: type.slug,
-      label: type.label,
-      plural: type.plural,
-      container: type.container,
-      specShape: type.specShape,
-      actionOverrides: type.actionOverrides,
-      createdAt: type.createdAt,
-    })),
+    itemTypes: types.map(recordItemTypeOf),
     pipelines: graphs,
     agents: projectAgents,
     // Without the row key, which is this record's paging business —
@@ -1898,7 +1935,7 @@ export function serveChanges(
       attachments: endOf(files, cursors.attachments, (file) => ({ ts: file.createdAt, id: file.id })),
       attachmentRemovals: endOf(removals, cursors.attachmentRemovals, (removal) => ({ ts: removal.ts, id: removal.attachmentId })),
       projects: endOf(movedProjects, cursors.projects, (project) => ({ ts: project.updatedAt, id: project.id })),
-      itemTypes: endOf(types, cursors.itemTypes, (type) => ({ ts: type.createdAt, id: type.id })),
+      itemTypes: endOf(types, cursors.itemTypes, (type) => ({ ts: type.updatedAt ?? type.createdAt, id: type.id })),
       pipelines: endOf(graphs, cursors.pipelines, (pipeline) => ({ ts: pipeline.updatedAt, id: pipeline.id })),
       agents: endOf(projectAgents, cursors.agents, (agent) => ({ ts: agent.updatedAt, id: agent.id })),
       publishedSections: endOf(publications, cursors.publishedSections, (row) => ({ ts: row.publishedAt, id: row.key })),

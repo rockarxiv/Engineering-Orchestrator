@@ -21,6 +21,7 @@ import { parkForPersonBudget } from "../policy/personBudget.js";
 import { openProjectThread } from "../projects/projectThread.js";
 import { handleMessageHere, sendMessage } from "../messages/messages.js";
 import { changeDependenciesOf, summariseDependencyChange } from "../roles/itemDependencies.js";
+import { updateItemTypeCommand } from "../ipc/itemTypeCommands.js";
 import { openUpdateConflictChat } from "../roles/updateConflictChat.js";
 import { describeUpdateConflict, resolveUpdateConflictHere } from "../gallery/updateConflictDetail.js";
 import { describeTemplateStatus } from "../gallery/templateStatus.js";
@@ -341,6 +342,12 @@ export function createLocalRecord(db: Db, options: LocalRecordOptions = {}): Loc
       const changed = changeDependenciesOf(db, request.itemId, { add: request.add, remove: request.remove }, request.by, request.why ?? null);
       if (!changed.ok) return { ok: false, problem: changed.reason };
       return { ok: true, dependencies: changed.applied === null ? null : summariseDependencyChange(changed.applied) };
+    },
+
+    // Here, because this database holds the type (EO-735) — and the
+    // same command a server runs when a device asks.
+    async updateItemType(request) {
+      return updateItemTypeCommand(db, request);
     },
 
     // Here, because this database is the record for these rows

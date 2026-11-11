@@ -83,9 +83,27 @@ export const ProposalSummarySchema = z.object({
  * One proposed item at full length (EO-408): its row, and the description
  * the row leaves out.
  */
+/**
+ * A field the project added to the row's type (EO-735), as the proposed
+ * item's view offers it before the item exists: its name, the label a
+ * person reads, and its kind.
+ */
+export const ProposedAddedFieldSchema = z.object({
+  name: z.string(),
+  label: z.string(),
+  kind: z.enum(["string", "number", "boolean", "string list"]),
+});
+
 export const ProposedItemDetailSchema = ProposedItemRowSchema.extend({
   /** The item's body as it would be filed, Markdown. Empty when it has none. */
   description: z.string(),
+  /**
+   * The fields this project added to the row's type (EO-735), in the
+   * type's order: what the view offers a person to fill in before
+   * pressing Create, each left unset unless they do. Empty for a type
+   * nobody added to.
+   */
+  addedFields: z.array(ProposedAddedFieldSchema).default([]),
 });
 
 /**
@@ -120,6 +138,7 @@ export const ProposalDetailSchema = z.object({
 });
 
 export type ProposedItemDetail = z.infer<typeof ProposedItemDetailSchema>;
+export type ProposedAddedField = z.infer<typeof ProposedAddedFieldSchema>;
 export type ProposalDetail = z.infer<typeof ProposalDetailSchema>;
 export type ProposalDependency = z.infer<typeof ProposalDependencySchema>;
 export type ProposedItemRow = z.infer<typeof ProposedItemRowSchema>;

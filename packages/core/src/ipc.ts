@@ -30,6 +30,7 @@ import {
   RecordCommandSchema,
   RecordCommentCommandSchema,
   RecordItemSchema,
+  RecordItemTypeSchema,
   RecordLeaseSchema,
   RecordRunCommandSchema,
   RecordOfferSchema,
@@ -2422,7 +2423,19 @@ export const recordContract = {
    * on, never a second way of building one.
    */
   "assist:approve": channel(
-    z.object({ conversationId: z.string(), messageId: z.string() }),
+    z.object({
+      conversationId: z.string(),
+      messageId: z.string(),
+      /**
+       * Values a person set, on the proposed item's view, for fields the
+       * project added to a row's type (EO-735), by the row's place among
+       * the proposal's new items. Merged into what that row files and held
+       * to the type's shape with the rest; a name that is not a field
+       * added to the row's type refuses the approval. Absent is the card
+       * as proposed.
+       */
+      addedFields: z.array(z.object({ row: z.number().int().nonnegative(), values: z.record(z.string().min(1), z.unknown()) })).optional(),
+    }),
     z.object({
       applied: z.boolean(),
       problem: z.string().nullable(),
@@ -6162,6 +6175,31 @@ export const recordContract = {
       open: z.array(z.string()),
     }),
   ),
+  /**
+   * A change to an item type the record holds, asked by a device that
+   * holds it as a replica (EO-735): a rename, or the project's own
+   * optional fields on a pack's type. The record judges it with the
+   * checks `itemTypes:update` makes — against its own items, which only
+   * it has all of — and only an admin's device may ask. Answered with
+   * the type as the pull would carry it, which the device writes into
+   * its replica at once; every other device takes it on its next pull.
+   */
+  "record:updateItemType": channel(
+    z.object({
+      deviceId: z.string().min(1),
+      id: z.string().min(1),
+      label: z.string().min(1).optional(),
+      plural: z.string().min(1).optional(),
+      container: z.boolean().optional(),
+      fields: z.array(SpecFieldDraftSchema).optional(),
+      actionOverrides: z.unknown().optional(),
+    }),
+    z.object({
+      /** The type as it now stands, as the pull would carry it. Null when it was refused. */
+      type: RecordItemTypeSchema.nullable(),
+      problem: z.string().nullable(),
+    }),
+  ),
   "record:changeDependencies": channel(
     z.object({
       deviceId: z.string().min(1),
@@ -7520,6 +7558,9 @@ export const DEVICE_SCOPED_CHANNELS = [
   // asks for, and the record names that device's person in the comment
   // that says so (EO-600).
   "record:changeDependencies",
+  // Changing a project's item type is an administrator's act, and the
+  // record checks that the asking device is one of its admins' (EO-735).
+  "record:updateItemType",
   // A message's recipients are the record's admins, and a reply or a
   // pull is only ever the asking device's person's (EO-726).
   "record:sendMessage",

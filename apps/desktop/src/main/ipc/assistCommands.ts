@@ -965,7 +965,7 @@ export function approveAssistProposal(
   const refusal = assistApprovalRefusal(db, conversation, messageId);
   if (refusal !== null) return refusedApproval(db, conversation, refusal);
 
-  const applied = approveWorkProposal(db, engine, conversation, messageId);
+  const applied = approveWorkProposal(db, engine, conversation, messageId, undefined, input.addedFields);
   return { ...applied, conversation: toView(db, getItem(db, conversation.id) ?? conversation) };
 }
 
@@ -986,7 +986,7 @@ export async function approveAssistProposalThroughRecord(
   const refusal = assistApprovalRefusal(db, conversation, messageId);
   if (refusal !== null) return refusedApproval(db, conversation, refusal);
 
-  const applied = await approveWorkProposalThroughRecord(db, engine, record, conversation, messageId);
+  const applied = await approveWorkProposalThroughRecord(db, engine, record, conversation, messageId, undefined, input.addedFields);
   return { ...applied, conversation: toView(db, getItem(db, conversation.id) ?? conversation) };
 }
 
@@ -1117,7 +1117,11 @@ export function readAssistProposal(db: Db, input: IpcPayload<"assist:proposal">)
       canApprove: message.canApprove,
       container: summary.container,
       // A description per new item, in the rows' own order; an amendment's row has none.
-      rows: summary.rows.map((row) => (row.kind === "new" ? { ...row, description: atLength.descriptions[next++] ?? "" } : row)),
+      rows: summary.rows.map((row) => {
+        if (row.kind !== "new") return row;
+        const at = next++;
+        return { ...row, description: atLength.descriptions[at] ?? "", addedFields: atLength.addedFields[at] ?? [] };
+      }),
       closed: summary.closed,
       landsOn: atLength.landsOn,
     },

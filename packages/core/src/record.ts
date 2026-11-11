@@ -1015,6 +1015,13 @@ export const RecordItemTypeSchema = z.object({
   specShape: z.unknown().default([]),
   actionOverrides: z.unknown().default({}),
   createdAt: z.number(),
+  /**
+   * When the record last changed it after it was made (EO-735), or null
+   * for one never edited — and from a record older than the field. A
+   * replica holding the type takes the record's row again when this is
+   * newer than its own (`upsertReplicaItemType`).
+   */
+  updatedAt: z.number().nullable().default(null),
 });
 export type RecordItemType = z.infer<typeof RecordItemTypeSchema>;
 

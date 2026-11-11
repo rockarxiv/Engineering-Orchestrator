@@ -8,6 +8,7 @@ import { ipcQuery } from "../../query/client";
 import { useChromeVocabulary } from "../../query/hooks";
 import { drawAssistReply } from "../../shared/assist/useAssistRoom";
 import { proposalKey } from "../views/proposal/useProposal";
+import { addedFieldValues, clearAddedFieldDrafts } from "../views/proposal/addedFieldDrafts";
 import { priorityLabel, showsPriorityBadge } from "../../shared/pipeline/priority";
 import { Button } from "../kit";
 
@@ -36,9 +37,14 @@ export function ProposalCard({ message, conversationId, onDone }: { message: Dis
   const queryClient = useQueryClient();
   const [problem, setProblem] = useState<string | null>(null);
   const approve = useMutation({
-    mutationFn: () => ipcQuery("assist:approve", { conversationId, messageId: message.id }),
+    mutationFn: () => {
+      // What a person set on a proposed item's view for its type's added fields (EO-735), whichever Create is pressed.
+      const addedFields = addedFieldValues(message.id);
+      return ipcQuery("assist:approve", { conversationId, messageId: message.id, ...(addedFields === undefined ? {} : { addedFields }) });
+    },
     onSuccess: (result) => {
       setProblem(result.problem);
+      if (result.applied) clearAddedFieldDrafts(message.id);
       // The card as approving left it, before the refetch `onDone` asks
       // for: otherwise the button is back to "Create" in between (EO-548).
       drawAssistReply(queryClient, result.conversation);

@@ -13,7 +13,7 @@ import type {
 } from "@eo/core";
 import type { DispatchLease } from "../db/repos/leasesRepo.js";
 import type { PostCommentInput } from "../db/repos/commentsRepo.js";
-import type { Comment, IpcResponse, PipelineTemplateStatus } from "@eo/core";
+import type { Comment, IpcPayload, IpcResponse, PipelineTemplateStatus } from "@eo/core";
 import type { ProjectThreadAnswer } from "../projects/projectThread.js";
 import type { UpdateConflictChatAnswer, UpdateConflictChatRequest } from "../roles/updateConflictChat.js";
 import type { ResolveUpdateConflictAnswer, ResolveUpdateConflictRequest } from "../gallery/updateConflictDetail.js";
@@ -198,6 +198,23 @@ export interface ItemRecord {
    * changed, which is true, and nothing is written here or queued.
    */
   changeDependencies: (request: DependencyChangeAsk) => Promise<DependencyChangeAnswer>;
+  /**
+   * Change an item type (EO-735): a rename, or a project's own optional
+   * fields on a pack's type — what `itemTypes:update` asks.
+   *
+   * **Asking, for `changeDependencies`' reason.** A type on a project the
+   * organisation holds is the record's: its items, whose stored values a
+   * field's removal is judged against, are all there, and a field added
+   * on one replica alone would leave every other desktop's forms and
+   * modules on the old shape. So on a desktop holding such a project the
+   * record judges and writes the change, the answer is copied into the
+   * replica before it is returned, and every other desktop takes it on
+   * its next pull. Anything else is this database's.
+   *
+   * Never rejects. A record that cannot be reached answers that nothing
+   * changed, which is true, and nothing is written here or queued.
+   */
+  updateItemType: (request: IpcPayload<"itemTypes:update">) => Promise<IpcResponse<"itemTypes:update">>;
   /**
    * The project's thread, made the first time anything asks (EO-471,
    * ARCHITECTURE.md, "One channel").

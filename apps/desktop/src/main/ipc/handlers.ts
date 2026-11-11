@@ -13,7 +13,7 @@ import {
   updatePipelineCommand,
 } from "./pipelineCommands.js";
 import { deleteRoleActionCommand, inspectRoleActionCommand, saveRoleActionCommand, withActionUses } from "./roleActionCommands.js";
-import { createItemTypeCommand, deleteItemTypeCommand, listItemTypesCommand, updateItemTypeCommand } from "./itemTypeCommands.js";
+import { createItemTypeCommand, deleteItemTypeCommand, listItemTypesCommand } from "./itemTypeCommands.js";
 import {
   approveModuleCommand,
   archiveModuleCommand,
@@ -247,6 +247,7 @@ import {
   serveMemory,
   serveMemoryConsolidations,
   serveChangeDependencies,
+  serveUpdateItemType,
   serveHandleMessage,
   serveMessages,
   serveSendMessage,
@@ -432,6 +433,7 @@ export interface HandlerResources {
     | "restoreMemoryConsolidation"
     | "restoreSkillVersion"
     | "changeDependencies"
+    | "updateItemType"
     | "handleMessage"
   >;
 }
@@ -1945,6 +1947,10 @@ export function registerAllHandlers(db: Db, engine: EngineHandle | undefined, re
   // A device asking to change what an item of a project this record
   // holds waits for: the graph is the record's to judge (EO-600).
   registerHandler("record:changeDependencies", (payload) => serveChangeDependencies(serving, payload), opts);
+  // A device asking to change an item type of a project this record
+  // holds: the type, and the items its fields are judged against, are
+  // the record's (EO-735).
+  registerHandler("record:updateItemType", (payload) => serveUpdateItemType(serving, payload), opts);
   // A device sending a message about a project this record holds, a
   // person on one answering or dismissing it, and a device pulling its
   // person's: messages about the record's projects live here (EO-726).
@@ -2123,7 +2129,9 @@ export function registerAllHandlers(db: Db, engine: EngineHandle | undefined, re
   // call, so main has nothing cached to invalidate.
   registerHandler("itemTypes:list", (payload) => listItemTypesCommand(db, payload), opts);
   registerHandler("itemTypes:create", (payload) => createItemTypeCommand(db, payload), opts);
-  registerHandler("itemTypes:update", (payload) => updateItemTypeCommand(db, payload), opts);
+  // Through the record (EO-735): a type on a project the organisation's
+  // record holds is changed there, and copied here; any other, here.
+  registerHandler("itemTypes:update", (payload) => (resources.record ?? recordFor(db)).updateItemType(payload), opts);
   registerHandler("itemTypes:delete", (payload) => deleteItemTypeCommand(db, payload), opts);
 
   registerHandler("guards:get", () => readGuards(db), opts);

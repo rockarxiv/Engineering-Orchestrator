@@ -148,6 +148,7 @@ const REACHED_BY_A_DESKTOP: Partial<Record<keyof typeof ipcContract, string>> = 
   "record:handleMessage": "record/remoteRecord.ts — a desktop asks the record to mark a message it holds answered or dismissed when a person presses in the Inbox",
   "record:messages": "record/drain.ts — the device pulls its person's messages the record holds",
   "record:changeDependencies": "record/remoteRecord.ts — a desktop asks the record to change what an item waits for when a person or item_update sends addDependsOn or removeDependsOn",
+  "record:updateItemType": "record/remoteRecord.ts — a desktop asks the record to change an item type of a project it holds when a person saves one in settings or presses an item-type card (EO-735)",
   // EO-533. Asked by `assist:openUpdateConflict` on a desktop whose
   // admin pressed Fix with assistant on a notice the record posted.
   "record:updateConflictChat": "record/remoteRecord.ts — a desktop asks the record for the chat about a conflict it holds when a person presses Fix with assistant",

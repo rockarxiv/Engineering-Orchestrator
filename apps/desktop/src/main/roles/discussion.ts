@@ -9,6 +9,7 @@ import {
   missingSpecFields,
   parsedResultOf,
   priorityLabel,
+  specFields,
   specIssues,
   type AmendProposal,
   type Comment,
@@ -20,6 +21,7 @@ import {
   type NewStoryProposal,
   type ProposalRow,
   type ProposalSummary,
+  type ProposedAddedField,
   type ReorderProposal,
   type Item,
   type Pipeline,
@@ -357,6 +359,12 @@ export function applyDiscussionProposal(
    * with what a Case is missing rather than filed as a Case without it.
    */
   chosenType?: ItemTypeName,
+  /**
+   * What a person set, before pressing Create, for fields the project
+   * added to a row's type (EO-735) — see `assist:approve`. Merged into
+   * the row it names and held to the type's shape with the rest.
+   */
+  addedValues: AddedFieldValues = [],
 ): ApplyDiscussionResult {
   const comment = listCommentsForItem(db, conversation.id).find((entry) => entry.id === proposalCommentId);
   if (!comment || !isWorkProposal(db, comment)) {
@@ -378,7 +386,7 @@ export function applyDiscussionProposal(
   // state the transaction is here to prevent.
   try {
     return db.transaction(() => {
-      const result = applyOne(db, conversation, proposal, pipelineId, chosenType);
+      const result = applyOne(db, conversation, proposal, pipelineId, chosenType, addedValues);
       if (!result.ok) throw new Refused(result.reason);
       return result;
     });
@@ -396,25 +404,82 @@ class Refused extends Error {
   }
 }
 
+/** Values for fields a project added to a row's type, by the row's place among a proposal's new items (EO-735). */
+export type AddedFieldValues = readonly { row: number; values: Record<string, unknown> }[];
+
+/** The fields this project added to the type a name resolves to here (EO-735), in the type's order. */
+function addedFieldsOf(db: Db, projectId: Uuid | null, name: ItemTypeName): ProposedAddedField[] {
+  const resolved = resolveItemType(db, projectId, name);
+  if (!resolved.ok) return [];
+  return specFields(resolved.type.specShape)
+    .filter((field) => field.added)
+    .map((field) => ({ name: field.name, label: field.label, kind: field.kind }));
+}
+
+/**
+ * One row's values, as what it files would carry them, or why not
+ * (EO-735). Only a field the project added to the row's type may be set
+ * this way: anything else is the proposal's to say, and a person who
+ * wants it changed asks for a new proposal. Unset values are dropped, so
+ * a field left alone stays absent rather than stored empty.
+ */
+function addedValuesFor(
+  db: Db,
+  projectId: Uuid | null,
+  type: ItemTypeName,
+  title: string,
+  values: Record<string, unknown>,
+): { ok: true; values: Record<string, unknown> } | { ok: false; reason: string } {
+  const allowed = new Set(addedFieldsOf(db, projectId, type).map((field) => field.name));
+  const set: Record<string, unknown> = {};
+  for (const [name, value] of Object.entries(values)) {
+    if (!allowed.has(name)) return { ok: false, reason: `“${name}” is not a field this project added to the type of "${title}", so it cannot be set before creating it.` };
+    if (value !== undefined && value !== null) set[name] = value;
+  }
+  return { ok: true, values: set };
+}
+
 function applyOne(
   db: Db,
   conversation: Item,
   proposal: DiscussionProposal,
   pipelineId: string | null,
   chosenType?: ItemTypeName,
+  addedValues: AddedFieldValues = [],
 ): ApplyDiscussionResult {
+  const projectId = conversation.projectId;
   switch (proposal.action) {
-    case "new_feature":
-      return applyNewFeature(db, conversation.projectId, proposal, pipelineId);
+    case "new_feature": {
+      if (addedValues.length === 0) return applyNewFeature(db, projectId, proposal, pipelineId);
+      const children = childrenFromStories(proposal.stories);
+      const stories: SubmittedStory[] = [...proposal.stories];
+      for (const { row, values } of addedValues) {
+        const story = stories[row];
+        const child = children[row];
+        if (story === undefined || child === undefined) return { ok: false, reason: `This proposal has no item ${row + 1} to set fields on.` };
+        const judged = addedValuesFor(db, projectId, childTypeOf(child), story.title, values);
+        if (!judged.ok) return judged;
+        stories[row] = { ...story, spec: { ...(stories[row]?.spec ?? {}), ...judged.values } };
+      }
+      return applyNewFeature(db, projectId, { ...proposal, stories }, pipelineId);
+    }
     case "new_story":
     case "new_bug": {
-      const handed = handedOver(proposal);
-      return applyNewItem(db, conversation.projectId, chosenType === undefined ? handed : { ...handed, type: chosenType }, pipelineId);
+      const proposed = handedOver(proposal);
+      const handed = chosenType === undefined ? proposed : { ...proposed, type: chosenType };
+      let spec = handed.spec;
+      for (const { row, values } of addedValues) {
+        if (row !== 0) return { ok: false, reason: `This proposal has no item ${row + 1} to set fields on.` };
+        const judged = addedValuesFor(db, projectId, handed.type, handed.title, values);
+        if (!judged.ok) return judged;
+        spec = { ...spec, ...judged.values };
+      }
+      return applyNewItem(db, projectId, { ...handed, spec }, pipelineId);
     }
     case "amend":
-      return applyAmendment(db, proposal);
     case "reorder":
-      return applyReorder(db, proposal);
+      if (addedValues.length > 0) return { ok: false, reason: "This proposal creates nothing, so there are no fields to set on it." };
+      return proposal.action === "amend" ? applyAmendment(db, proposal) : applyReorder(db, proposal);
   }
 }
 
@@ -1555,6 +1620,8 @@ export function summariseProposal(db: Db, conversation: Item, proposal: Discussi
 export interface ProposalAtLength {
   /** One per row of `summariseProposal`, in its order. Empty for a proposal that creates nothing. */
   descriptions: string[];
+  /** The fields the project added to each new row's type (EO-735), parallel to `descriptions`. */
+  addedFields: ProposedAddedField[][];
   /** The pipeline and the step work enters it at, or null when approval could not say either. */
   landsOn: { pipelineName: string; stepName: string } | null;
 }
@@ -1570,15 +1637,24 @@ export interface ProposalAtLength {
  * would use, and names none where approval would refuse or have to ask.
  */
 export function describeProposal(db: Db, conversation: Item, proposal: DiscussionProposal): ProposalAtLength {
-  if (proposal.action === "amend" || proposal.action === "reorder") return { descriptions: [], landsOn: null };
+  if (proposal.action === "amend" || proposal.action === "reorder") return { descriptions: [], addedFields: [], landsOn: null };
 
   const placement = resolvePlacement(db, conversation.projectId, null, proposal.pipeline);
   const pipeline = "problem" in placement ? undefined : listPipelines(db, conversation.projectId).find((entry) => entry.id === placement.pipelineId);
   const step = "problem" in placement ? undefined : listStepsForPipeline(db, placement.pipelineId).find((entry) => entry.id === placement.entryStepId);
   const landsOn = pipeline && step ? { pipelineName: pipeline.name, stepName: step.name } : null;
 
-  if (proposal.action === "new_feature") return { descriptions: childrenFromStories(proposal.stories).map((child) => child.body), landsOn };
-  return { descriptions: [handedOver(proposal).body], landsOn };
+  const projectId = conversation.projectId;
+  if (proposal.action === "new_feature") {
+    const children = childrenFromStories(proposal.stories);
+    return {
+      descriptions: children.map((child) => child.body),
+      addedFields: children.map((child) => addedFieldsOf(db, projectId, childTypeOf(child))),
+      landsOn,
+    };
+  }
+  const handed = handedOver(proposal);
+  return { descriptions: [handed.body], addedFields: [addedFieldsOf(db, projectId, handed.type)], landsOn };
 }
 
 /**

@@ -1782,6 +1782,40 @@ describe("the pack", () => {
   });
 
   /**
+   * The same, where the import names no project: it writes the
+   * installation's types (`writeItemTypes`), so the needs check reads
+   * that scope and says so there too (EO-735, review).
+   */
+  it("says so for an installation-scoped type when the import names no project", () => {
+    const { pipeline } = packInstallation(handle.db);
+    const built = exportPipeline(handle.db, pipeline.id);
+    if (!built.ok) throw new Error(built.reason);
+    const document = {
+      ...built.document,
+      itemTypes: built.document.itemTypes.map((type) =>
+        type.slug === "case" ? { ...type, specShape: { ...type.specShape, properties: { ...type.specShape.properties, automerge: { type: "string" as const } } } } : type,
+      ),
+    };
+
+    const fresh = openMigratedTestDb();
+    try {
+      const ours = { type: "object" as const, properties: { automerge: { type: "boolean" as const, "x-eo-added": true } }, required: [] };
+      insertItemType(fresh.db, null, { packSlug: "support", slug: "case", label: "Case", plural: "Cases", container: false, specShape: ours, actionOverrides: {} });
+
+      const preflight = preflightImport(fresh.db, secrets, document);
+      const line = preflight.itemTypes.find((type) => type.type === "support:case");
+      expect(line?.present).toBe(true);
+      expect(line?.conflict).toContain("The support pack's “Case” has a field “automerge”, and this installation already added a field “automerge” of its own");
+
+      const imported = importPipeline(fresh.db, { document });
+      if (!imported.ok) throw new Error(imported.reason);
+      expect(listItemTypes(fresh.db, null).find((type) => type.slug === "case")?.specShape).toEqual(ours);
+    } finally {
+      fresh.close();
+    }
+  });
+
+  /**
    * ARCHITECTURE.md, "An agent is a row": a pack recommends a backend and may not require one.
    * Nobody
    * signed in to what this one was built on, so the agent arrives with

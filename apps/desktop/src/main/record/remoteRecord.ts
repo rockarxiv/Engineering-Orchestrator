@@ -3,6 +3,8 @@ import type { Dispatch, DispatchRefusal } from "@eo/engine";
 import type { Db } from "../db/client.js";
 import { getAgent } from "../db/repos/agentsRepo.js";
 import { getItem } from "../db/repos/itemsRepo.js";
+import { getItemType, upsertReplicaItemType } from "../db/repos/itemTypesRepo.js";
+import { itemTypeViewOf } from "../ipc/itemTypeCommands.js";
 import { askAgentAbout, getComment } from "../db/repos/commentsRepo.js";
 import { mirrorRecordComment } from "./drain.js";
 import { recordAssistBoard } from "../roles/assist.js";
@@ -382,6 +384,31 @@ export function createRemoteRecord(options: RemoteRecordOptions): RemoteRecord {
         if (comment !== null && getComment(db, comment.commentId as Uuid) === undefined) mirrorRecordComment(db, local, comment);
       });
       return { ok: true, dependencies: answer.data.dependencies };
+    },
+
+    /**
+     * A change to an item type, asked of the record and never made here
+     * (EO-735). The record judges and writes it; its answer is written
+     * into the replica at once, through the door the pull uses, so the
+     * settings and the forms show the change when the call returns.
+     *
+     * A record that cannot be reached means nothing changed, said as
+     * that, and nothing is queued — for `changeDependencies`' reason.
+     */
+    async updateItemType(request) {
+      const label = getItemType(db, request.id as Uuid)?.label ?? "That item type";
+      const answer = await ask("record:updateItemType", { deviceId: options.deviceId, ...request });
+      if (!answer.ok) {
+        return {
+          type: null,
+          problem: answer.unreachable
+            ? `“${label}” belongs to a project your organisation's record holds, which could not be reached, so it was not changed: ${answer.problem}`
+            : `Your organisation's record did not change “${label}”: ${answer.problem}`,
+        };
+      }
+      if (answer.data.type === null) return { type: null, problem: `Your organisation's record did not change “${label}”: ${answer.data.problem ?? "it was refused."}` };
+      upsertReplicaItemType(db, answer.data.type);
+      return { type: itemTypeViewOf(db, answer.data.type.id as Uuid), problem: null };
     },
 
     /**

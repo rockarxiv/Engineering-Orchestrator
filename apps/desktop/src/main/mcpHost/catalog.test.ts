@@ -202,6 +202,7 @@ const NOT_CATALOGUED: Partial<Record<RecordChannel, string>> = {
   "record:handleMessage": "a person's answer or dismissal of a message EO sent them; agents never read or answer messages",
   "record:messages": "a replica pulling its person's messages; agents never read messages",
   "record:changeDependencies": "a replica's request for the record to make a change items:update was asked for; an agent changes what an item waits for with item_update",
+  "record:updateItemType": "a replica's request for the record to make a change itemTypes:update was asked for; an item type is changed by a person, in settings or on the assistant's card, never by a tool (EO-735)",
   // EO-533: a desktop asking the record for the chat about a conflict it
   // holds, on behalf of an admin pressing Fix with assistant.
   "record:updateConflict": "a desktop's own question to its organisation's record, asked for pipeline_update_conflict — which is the tool an agent calls",

@@ -332,7 +332,10 @@ describe("memories_search's approximate text search (EO-545)", () => {
       const upgraded = openDb(":memory:");
       try {
         runMigrations(upgraded.db, before);
+        // Made by today's repository, which reads the column 0167 adds to item types (EO-735).
+        upgraded.db.run(sql`ALTER TABLE item_types ADD updated_at integer`);
         const w = attachWorkspace(upgraded.db, { keyPrefix: "UP", name: "up", repoPath: "/tmp/up" });
+        upgraded.db.run(sql`ALTER TABLE item_types DROP COLUMN updated_at`);
         const scopeId = w.projectId!;
         // Rows as the previous release wrote them, with no `replaces_id`.
         const row = (id: string, body: string, createdAt: number, retired: { at: number; reason: string } | null, sourceKind = "person") =>

@@ -722,6 +722,8 @@ export interface PreflightOptions {
    * client checking a document with no project in hand is asking about
    * the installation, and a preflight that guessed at one would say a
    * type is already present on the strength of somebody else's project.
+   * Item types are read in the installation's own scope then, which is
+   * where an import naming no project writes them (EO-735).
    */
   projectId?: Uuid | null;
 }
@@ -855,13 +857,16 @@ export function preflightImport(db: Db, secrets: ModuleSecretsOptions, document:
     // line to show rather than an exception to swallow.
     refusal: packRefusal(document),
     itemTypes: document.itemTypes.map((type) => {
-      // The row this project already has under the pack's word, if any.
-      // An import never reshapes it (`writeItemTypes`), so the one thing
-      // to say about it beyond "kept" is a field the document ships under
-      // a name this project gave a field of its own (EO-735).
-      const here = projectId === undefined ? undefined : listItemTypes(db, projectId as Uuid).find((row) => row.packSlug === type.packSlug && row.slug === type.slug);
+      // The row already here under the pack's word, if any, in the scope
+      // the import writes to (`writeItemTypes`): the project's, or the
+      // installation's where no project is named (EO-735, review). An
+      // import never reshapes it, so the one thing to say about it beyond
+      // "kept" is a field the document ships under a name this scope gave
+      // a field of its own.
+      const scope = (projectId ?? null) as Uuid | null;
+      const here = listItemTypes(db, scope).find((row) => row.packSlug === type.packSlug && row.slug === type.slug);
       const collisions = here === undefined ? [] : addedFieldCollisions(here.specShape, type.specShape);
-      const projectName = projectId === undefined ? null : (getProject(db, projectId as Uuid)?.name ?? null);
+      const projectName = scope === null ? null : (getProject(db, scope)?.name ?? null);
       return {
         type: qualifiedItemType(type),
         label: type.label,

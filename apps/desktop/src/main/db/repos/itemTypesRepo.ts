@@ -41,6 +41,8 @@ export interface ItemType {
   /** By action. Empty when this type has nothing to say about any of them. */
   actionOverrides: Readonly<Record<string, ActionOverride>>;
   createdAt: number;
+  /** When it last changed after it was made (EO-735), or null for a type nobody has edited. */
+  updatedAt: number | null;
 }
 
 /**
@@ -80,6 +82,7 @@ function toDomain(row: typeof itemTypes.$inferSelect): ItemType {
     specShape: specShapeOf(row.specShape),
     actionOverrides: actionOverridesOf(row.actionOverrides),
     createdAt: row.createdAt,
+    updatedAt: row.updatedAt ?? null,
   };
 }
 
@@ -157,7 +160,9 @@ export function listItemTypesSince(db: Db, cursor: { ts: number; id: string }, l
     .from(itemTypes)
     .where(
       and(
-        sql`(${itemTypes.createdAt}, ${itemTypes.id}) > (${cursor.ts}, ${cursor.id})`,
+        // By when the row last changed (EO-735): an edited type pages
+        // again, so a replica that already holds it takes the edit.
+        sql`(coalesce(${itemTypes.updatedAt}, ${itemTypes.createdAt}), ${itemTypes.id}) > (${cursor.ts}, ${cursor.id})`,
         // The project's own types *and* whatever its items are filed
         // under — an item on a moved project may still stand on an
         // installation-wide type, and a desktop that skipped it files
@@ -168,10 +173,27 @@ export function listItemTypesSince(db: Db, cursor: { ts: number; id: string }, l
                  or ${itemTypes.id} in (select ${items.typeId} from ${items} where ${items.projectId} = ${within}))`,
       ),
     )
-    .orderBy(asc(itemTypes.createdAt), asc(itemTypes.id))
+    .orderBy(asc(sql`coalesce(${itemTypes.updatedAt}, ${itemTypes.createdAt})`), asc(itemTypes.id))
     .limit(limit)
     .all()
     .map(toDomain);
+}
+
+/** One row as the record carries it to a replica (EO-325) — the pull's shape, and `record:updateItemType`'s answer (EO-735). */
+export function recordItemTypeOf(type: ItemType): RecordItemType {
+  return {
+    id: type.id,
+    projectId: type.projectId,
+    packSlug: type.packSlug,
+    slug: type.slug,
+    label: type.label,
+    plural: type.plural,
+    container: type.container,
+    specShape: type.specShape,
+    actionOverrides: type.actionOverrides,
+    createdAt: type.createdAt,
+    updatedAt: type.updatedAt,
+  };
 }
 
 /**
@@ -184,10 +206,13 @@ export function listItemTypesSince(db: Db, cursor: { ts: number; id: string }, l
  * copy, filing somebody's work under a type with the same word and a
  * different shape.
  *
- * Idempotent, and it does not overwrite: a row that is already here was
- * either put here by this same pull or is this installation's own, and
- * a pull is not the place to rewrite a type somebody edited in the design's
- * editor.
+ * Idempotent. A row of another id that already holds the word here is
+ * left alone: it is this installation's own, and a pull is not the place
+ * to rewrite a type somebody edited in the design's editor. The record's
+ * own row, by its id, is the record's: when the record has changed it
+ * since this replica's copy (EO-735, `updatedAt`), the copy takes the
+ * record's labels, flag, shape and overrides — which is how a field an
+ * admin added on the record reaches every desktop holding the type.
  */
 export function upsertReplicaItemType(db: Db, type: RecordItemType): "written" | "skipped" {
   // A type scoped to a project this replica has not got. `project_id`
@@ -213,9 +238,23 @@ export function upsertReplicaItemType(db: Db, type: RecordItemType): "written" |
       specShape: type.specShape as ItemType["specShape"],
       actionOverrides: type.actionOverrides as ItemType["actionOverrides"],
       createdAt: type.createdAt,
+      updatedAt: type.updatedAt ?? null,
     })
     .onConflictDoNothing()
     .run();
+  if (type.updatedAt !== null && type.updatedAt !== undefined) {
+    db.update(itemTypes)
+      .set({
+        label: type.label,
+        plural: type.plural,
+        container: type.container,
+        specShape: type.specShape as ItemType["specShape"],
+        actionOverrides: type.actionOverrides as ItemType["actionOverrides"],
+        updatedAt: type.updatedAt,
+      })
+      .where(and(eq(itemTypes.id, type.id), sql`coalesce(${itemTypes.updatedAt}, 0) < ${type.updatedAt}`))
+      .run();
+  }
   return "written";
 }
 
@@ -527,7 +566,7 @@ export function updateItemType(db: Db, id: Uuid, patch: ItemTypePatch): ItemType
   if (patch.plural !== undefined) changes.plural = patch.plural;
   if (patch.container !== undefined) changes.container = patch.container;
   if (patch.specShape !== undefined) changes.specShape = patch.specShape;
-  if (Object.keys(changes).length > 0) db.update(itemTypes).set(changes).where(eq(itemTypes.id, id)).run();
+  if (Object.keys(changes).length > 0) db.update(itemTypes).set({ ...changes, updatedAt: Date.now() }).where(eq(itemTypes.id, id)).run();
   return getItemType(db, id);
 }
 

@@ -133,6 +133,7 @@ export function readProjectItemTypes(db: Db, projectId: Uuid): RecordItemType[] 
       specShape: row.specShape,
       actionOverrides: row.actionOverrides,
       createdAt: row.createdAt,
+      updatedAt: row.updatedAt ?? null,
     }));
 }
 
@@ -1548,6 +1549,7 @@ export function writeAdoptedPage(db: Db, project: RecordProject, page: RecordAdo
           specShape: type.specShape,
           actionOverrides: type.actionOverrides,
           createdAt: type.createdAt,
+          updatedAt: type.updatedAt ?? null,
         })
         .onConflictDoUpdate({
           target: itemTypes.id,

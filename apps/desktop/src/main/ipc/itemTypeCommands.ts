@@ -69,6 +69,12 @@ function toView(db: Db, type: ItemType): ItemTypeView {
   };
 }
 
+/** One type as `itemTypes:*` answer with it, by id, or null when it is not here. */
+export function itemTypeViewOf(db: Db, id: Uuid): ItemTypeView | null {
+  const type = getItemType(db, id);
+  return type === undefined ? null : toView(db, type);
+}
+
 export function listItemTypesCommand(db: Db, input: IpcPayload<"itemTypes:list">): IpcResponse<"itemTypes:list"> {
   const scope = scopeOf(db, input.projectId);
   return { types: listItemTypes(db, scope).map((type) => toView(db, type)) };

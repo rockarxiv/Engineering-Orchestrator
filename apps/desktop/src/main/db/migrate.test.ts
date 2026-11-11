@@ -3747,11 +3747,14 @@ describe("0154: follow-ups are gone", () => {
       handle.db.run(sql`ALTER TABLE pipelines ADD entry_rules text DEFAULT '[]' NOT NULL`);
       handle.db.run(sql`ALTER TABLE pipeline_versions ADD entry_rules text DEFAULT '[]' NOT NULL`);
       handle.db.run(sql`ALTER TABLE pipeline_versions ADD release_notes text`);
+      // …and the column 0167 adds to item types (EO-735).
+      handle.db.run(sql`ALTER TABLE item_types ADD updated_at integer`);
       const finished = createTestItem(handle.db, { type: "story", title: "A finished story", stepId: "todo" });
       const waiting = createTestItem(handle.db, { type: "story", title: "A story with a question", stepId: "todo" });
       handle.db.run(sql`ALTER TABLE pipelines DROP COLUMN entry_rules`);
       handle.db.run(sql`ALTER TABLE pipeline_versions DROP COLUMN entry_rules`);
       handle.db.run(sql`ALTER TABLE pipeline_versions DROP COLUMN release_notes`);
+      handle.db.run(sql`ALTER TABLE item_types DROP COLUMN updated_at`);
       const ask = (itemId: string, body: string, options: string[]) => postComment(handle.db, { itemId: itemId as Uuid, author: { type: "engine" }, kind: "question", body, options, mentions: [{ type: "human" }], parseBodyMentions: false });
       const filed = ask(finished.id, "**A follow-up to file: One**\n\nWhy.", ["File it", "Discard"]);
       const writeUp = ask(finished.id, "**A follow-up to write up: Two**\n\nWhy.", ["Discard"]);
@@ -3846,10 +3849,13 @@ describe("0158: an attachment owned by the item (EO-702)", () => {
     try {
       writeMigrationSetBefore(tempDir, "0158_item_attachments");
       runMigrations(handle.db, tempDir);
-      // Filed by today's repository, which reads the column 0166 adds (EO-728).
+      // Filed by today's repository, which reads the column 0166 adds (EO-728)
+      // and the one 0167 adds to item types (EO-735).
       handle.db.run(sql`ALTER TABLE pipeline_versions ADD release_notes text`);
+      handle.db.run(sql`ALTER TABLE item_types ADD updated_at integer`);
       const item = createTestItem(handle.db, { type: "story", title: "Has a file", stepId: "todo" });
       handle.db.run(sql`ALTER TABLE pipeline_versions DROP COLUMN release_notes`);
+      handle.db.run(sql`ALTER TABLE item_types DROP COLUMN updated_at`);
       const comment = postComment(handle.db, { itemId: item.id, author: { type: "human" }, body: "Here is the mock." });
       handle.db.run(
         sql`INSERT INTO attachments (id, item_id, comment_id, storage_path, name, mime_type, size, managed, created_at, jira_sync_error)
