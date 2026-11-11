@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { isThreadPerConversationAction, UNSCOPED_RUN, type Agent, type Run, type Uuid } from "@eo/core";
+import { UNSCOPED_RUN, type Agent, type Run, type Uuid } from "@eo/core";
 import { agentAttachmentsHash, EMPTY_ATTACHMENTS_HASH } from "../agentAttachments/fingerprint.js";
 import type { Db } from "../db/client.js";
 import { getItem, listItemAttachments, listRunsForItem } from "../db/repos/index.js";
@@ -334,118 +334,6 @@ export function staleAttachmentsRefusal(agent: Agent): string {
     `The MCP servers or skills attached to ${agent.name} changed while this run was being prepared. A provider ` +
     `session keeps the tools it was started with, so the conversation it was going to carry on couldn't be used — ` +
     `this run assembles the full context instead, which is how it picks the new ones up.`
-  );
-}
-
-/**
- * What a conversation has to have cost before EO says anything about it
- * (EO-210).
- *
- * **Spend, not size.** The first cut of this tried to measure how full
- * the provider's window was and could not: `runs.tokens_in` is billed
- * input summed over every model turn of a dispatch — its own docstring
- * says "not the size of what EO assembled" — and on Claude `usageOf`
- * records the running total for the whole query, across subagents and
- * sidechains, re-reported on each result. A short thread that took
- * twenty tool-calling turns bills more than a long thread that took two,
- * so a threshold on that number announced compaction of conversations
- * that were nowhere near a window. Neither backend reports the size of a
- * session, so EO cannot know it, and a notice that claimed to is worse
- * than no notice: it is EO being confidently wrong in the one place it
- * had appointed itself the honest witness.
- *
- * What EO *can* add up exactly is what this conversation has been billed
- * — the sum of `tokens_in` over the runs sharing its thread — so that is
- * what the threshold is on and what the sentence says. It is the number
- * this story started from: two usage windows exhausted in a day.
- *
- * A million, and round on purpose. Reuse does not stop a thread being
- * re-sent to the model on every turn; it stops *EO* re-assembling it
- * into the prompt as well. So a conversation still costs roughly the
- * square of its length, and a million input tokens is around thirty
- * substantial turns — far past anything ordinary, and reached by exactly
- * the kind of thread that eats an afternoon. Firing late costs one long
- * conversation nobody was told about; firing early costs a comment in
- * every busy room, which is how a notice stops being read.
- */
-export const THREAD_SPEND_NOTICE_TOKENS = 1_000_000;
-
-/**
- * Billed input across these runs.
- *
- * A run whose backend reported nothing contributes nothing. That is an
- * undercount rather than a reading of zero, and it is the safe direction
- * for a threshold: it delays the notice on an installation whose
- * backend is quiet, where the alternative would be to guess a number and
- * announce a cost nobody was charged.
- */
-function spendOf(runs: readonly Run[]): number {
-  return runs.reduce((total, run) => total + (run.tokensIn ?? 0), 0);
-}
-
-/**
- * What EO says once a reused thread has become expensive enough to
- * mention (EO-210), or null while it has not.
- *
- * The honest gap this closes, stated as narrowly as EO can support it.
- * When EO assembles a context it drops the oldest comments and says so —
- * `## What is not here` on a seed, `droppedCommentCount` on a thread —
- * so an agent working from a partial record knows it is working from
- * one. A reused provider thread has no such sentence available: if the
- * provider summarises the session, EO is not told, and nothing anywhere
- * records that it happened.
- *
- * So EO says the two things it can stand behind. What this conversation
- * has been billed, which it has added up itself. And that it is no
- * longer the one deciding what the model keeps — **not** that anything
- * has been dropped, because EO cannot see the thread and must not claim
- * to. The comment thread is still the whole record either way
- * (invariant #4), which is what makes ending the conversation a cheap
- * answer rather than a loss.
- *
- * Once per thread, on the crossing. Spend only accumulates, so "the
- * total including the newest run has crossed and the total without it
- * had not" is exactly the one dispatch where the line was passed — no
- * flag, no column, and no second comment however long the conversation
- * runs afterwards.
- *
- * The last sentence turns on the action because the answer does. In a
- * room the person has a control — Clear archives the conversation and
- * the next message opens a new thread — and telling them about a cost
- * they can stop in one click is worth the sentence. On a work item
- * there is no such control, and inventing one would be worse than
- * saying nothing: the implementer's thread ends when the item does,
- * and what EO owes there is an accurate account rather than an
- * instruction.
- */
-export function threadSpendNotice(db: Db, agent: Agent, resuming: Run, action: string): string | null {
-  if (resuming.threadId === null) return null;
-
-  // This thread's runs up to and including the one being continued. The
-  // run this dispatch has just written is excluded by the id bound: it
-  // has been billed nothing yet, and counting it would put a null in the
-  // middle of an otherwise exact sum.
-  const onThread = listRunsForItem(db, resuming.itemId).filter(
-    (run) => run.agentId === agent.id && run.threadId === resuming.threadId && run.id <= resuming.id,
-  );
-  const spend = spendOf(onThread);
-  if (spend < THREAD_SPEND_NOTICE_TOKENS) return null;
-  if (spendOf(onThread.filter((run) => run.id !== resuming.id)) >= THREAD_SPEND_NOTICE_TOKENS) return null;
-
-  const conversation = isThreadPerConversationAction(action);
-  const turns = `${onThread.length} ${conversation ? "message" : "run"}${onThread.length === 1 ? "" : "s"}`;
-  const whatToDo = conversation
-    ? `Clear this conversation when the subject has moved on, and the next message starts a fresh one.`
-    : `Nothing here needs doing: this thread ends when the ticket does, and a fresh run is given the newest word ` +
-      `from every step it has been through.`;
-
-  return (
-    `${agent.name} has now been billed about ${Math.round(spend / 100_000) / 10}M input tokens on this thread, over ` +
-    `${turns}. That is what the backend charged, not how large the conversation is — neither backend reports that, ` +
-    `so EO cannot tell you how close this thread is to its limit. What EO can tell you is that it is no longer the ` +
-    `one deciding what the model keeps: when EO trims a context it says what it left out, and a provider that ` +
-    `summarises its own session says nothing to anybody, so there would be no "what is not here" to read. Nothing ` +
-    `is lost from the ticket — every message here is a comment, and this thread is the record. ${whatToDo}`
   );
 }
 

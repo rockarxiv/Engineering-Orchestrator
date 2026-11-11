@@ -367,7 +367,6 @@ apps/desktop/src/main/supervisor/codexBudget.test.ts: expect(run?.error).toConta
 apps/desktop/src/main/supervisor/codexBudget.test.ts: expect(run?.error).toContain("Per-ticket cost budget of 200¢ reached");
 apps/desktop/src/main/supervisor/codexBudget.test.ts: expect(said[0]!.body).toContain("per-ticket and daily budgets cannot see it");
 apps/desktop/src/main/supervisor/contextActions.test.ts: item: { key: "EO-1", title: "A ticket", body: null, acceptanceCriteria: [], actionOverrides: new Map(), workspaceKind: "none" },
-apps/desktop/src/main/supervisor/conversationThread.test.ts: expect(notice).toContain("this thread ends when the ticket does");
 apps/desktop/src/main/supervisor/dispatchAuthorisation.test.ts: expect(engineNotes().some((body) => body.includes("Run cancelled: you moved this ticket"))).toBe(true);
 apps/desktop/src/main/supervisor/dispatchBlockers.ts: "Give this ticket's project an agent of its own in this role, or use a global one. Nothing has changed."
 apps/desktop/src/main/supervisor/dispatchBlockers.ts: "Mention an agent that works for this ticket's project, or a global one. Nothing has changed."
@@ -462,7 +461,6 @@ apps/desktop/src/main/supervisor/systemAgentGuardrails.test.ts: expect(runsOn(se
 apps/desktop/src/main/supervisor/threadReuse.test.ts: expect(reason).toContain("hasn't run on this ticket before");
 apps/desktop/src/main/supervisor/threadReuse.test.ts: expect(reasonFor(ask(), "no-thread")).toContain("hasn't run on this ticket before");
 apps/desktop/src/main/supervisor/threadReuse.test.ts: instructions: "Implement the ticket, and read ARCHITECTURE.md first.",
-apps/desktop/src/main/supervisor/threadReuse.ts: : `Nothing here needs doing: this thread ends when the ticket does, and a fresh run is given the newest word ` +
 apps/desktop/src/main/supervisor/threadReuse.ts: `${agent.name} hasn't run on this ticket before, so there is no conversation to carry over — this run ` +
 apps/desktop/src/main/supervisor/threadReuse.ts: `${agent.name}'s instructions have changed since its last run on this ticket. A provider session keeps the ` +
 apps/desktop/src/main/supervisor/threadReuse.ts: `${agent.name}'s last run on this ticket is parked waiting on a reply, and that conversation belongs to the ` +
@@ -477,7 +475,6 @@ apps/desktop/src/main/supervisor/threadReuse.ts: `EO has no record of which back
 apps/desktop/src/main/supervisor/threadReuse.ts: `The MCP servers or skills attached to ${agent.name} have changed since its last run on this ticket. A ` +
 apps/desktop/src/main/supervisor/threadReuse.ts: `The conversation behind ${agent.name}'s last run on this ticket was no longer on the backend when EO tried ` +
 apps/desktop/src/main/supervisor/threadReuse.ts: `instructions it was started with, so the conversation couldn't be carried over — this ticket is starting ` +
-apps/desktop/src/main/supervisor/threadReuse.ts: `is lost from the ticket — every message here is a comment, and this thread is the record. ${whatToDo}`
 apps/desktop/src/main/supervisor/threadReuse.ts: `over; this ticket starts fresh, on the instructions the agent has now.`
 apps/desktop/src/main/supervisor/threadReuse.ts: `ticket is starting fresh, which is how it picks the new ones up.`
 apps/desktop/src/main/supervisor/watchSteps.test.ts: expect(parked?.body).toContain("sent this ticket to another step 2 times since anybody commented on it, and the limit is 2");
