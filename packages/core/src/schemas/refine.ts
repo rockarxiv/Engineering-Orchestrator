@@ -200,6 +200,14 @@ export const RefineOutputSchema = z.object({
 export type RefineStory = z.infer<typeof RefineStorySchema>;
 export type ProposedStory = z.infer<typeof ProposedStorySchema>;
 export type PlannedStory = z.infer<typeof PlannedStorySchema>;
+
+/**
+ * A plan's story as `work:submitPlan` hands it over: a planned story,
+ * plus the other fields of its type in `spec` (EO-735) — a field a
+ * project added to a pack's type, say. Only that channel carries it; a
+ * conversation's `new_feature` and a decomposition do not.
+ */
+export type SubmittedStory = PlannedStory & { spec?: Record<string, unknown> | undefined };
 export type RefineOutput = z.infer<typeof RefineOutputSchema>;
 
 // ── Composed from the project's item types (KAN-147) ────────────
@@ -451,7 +459,7 @@ export function childSpec(shape: SpecShape, child: RefineChild): Record<string, 
  * is where the two meet — the type is left unstated, and the caller says
  * which of its own types an unstated child is.
  */
-export function childrenFromStories(stories: readonly PlannedStory[]): RefineChild[] {
+export function childrenFromStories(stories: readonly SubmittedStory[]): RefineChild[] {
   return stories.map((story) => ({
     type: null,
     title: story.title,
@@ -459,7 +467,11 @@ export function childrenFromStories(stories: readonly PlannedStory[]): RefineChi
     ...(story.repository === undefined ? {} : { repository: story.repository }),
     depends_on: [...story.depends_on],
     touches: [...story.touches],
-    spec: { acceptance_criteria: story.acceptance_criteria },
+    // The story's own `spec` first, so the criteria the plan names
+    // outright are the ones stored. What the type's shape does not
+    // declare is dropped by `childSpec`, and what it does is held to the
+    // shape before anything is written.
+    spec: { ...(story.spec ?? {}), acceptance_criteria: story.acceptance_criteria },
     // Trimmed here, once, so the plan's card and the row it writes name
     // the same branch. A blank one is a story that named nothing.
     ...(story.base_branch === undefined || story.base_branch.trim() === "" ? {} : { baseBranch: story.base_branch.trim() }),

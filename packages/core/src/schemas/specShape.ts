@@ -70,8 +70,22 @@ export const CRITERIA_KEYWORD = "x-eo-criteria";
  */
 export const CRITERIA_OFFER_KEYWORD = "x-eo-criteria-offer";
 
+/**
+ * A property a project added to a type a pack shipped, rather than one
+ * the pack declares (EO-735, ARCHITECTURE.md, "An item type is data").
+ *
+ * On the property, in the one document, rather than in a column beside
+ * it: creation validates against the shape, the item form and
+ * `ctx.item().fields` read it, and none of them has to learn that a type
+ * can be two lists. What reads the mark is what has to tell the two
+ * apart — the item-type editor, which lets a person change only these,
+ * and the pack seed, which refuses a pack field that would take one's
+ * name. An added field is always optional (`required` never names it).
+ */
+export const ADDED_FIELD_KEYWORD = "x-eo-added";
+
 /** The keywords EO reads and no provider should be shown. */
-const EO_KEYWORDS = [CRITERIA_KEYWORD, CRITERIA_OFFER_KEYWORD];
+const EO_KEYWORDS = [CRITERIA_KEYWORD, CRITERIA_OFFER_KEYWORD, ADDED_FIELD_KEYWORD];
 
 /** One property of a spec shape. Loose, because a document may say more than EO reads. */
 export const SpecPropertySchema = z.looseObject({
@@ -93,6 +107,7 @@ export const SpecPropertySchema = z.looseObject({
   description: z.string().min(1).optional(),
   [CRITERIA_KEYWORD]: z.boolean().optional(),
   [CRITERIA_OFFER_KEYWORD]: z.boolean().optional(),
+  [ADDED_FIELD_KEYWORD]: z.boolean().optional(),
 });
 
 export type SpecProperty = z.infer<typeof SpecPropertySchema>;
@@ -157,6 +172,8 @@ export interface SpecField {
   criteria: boolean;
   /** Whether this field may be quoted to a person as a candidate criterion. */
   offer: boolean;
+  /** Whether a project added it to a type a pack shipped, rather than the type's author declaring it (EO-735). */
+  added: boolean;
 }
 
 function kindOf(property: SpecProperty): SpecFieldKind {
@@ -198,6 +215,7 @@ export function specFields(shape: SpecShape): SpecField[] {
       ...(property.description === undefined ? {} : { description: property.description }),
       criteria: property[CRITERIA_KEYWORD] === true,
       offer: property[CRITERIA_OFFER_KEYWORD] === true,
+      added: property[ADDED_FIELD_KEYWORD] === true,
     };
   });
 }

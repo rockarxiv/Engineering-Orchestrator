@@ -16,6 +16,7 @@ import {
   type DiscussionQuestion,
   type NewBugProposal,
   type NewFeatureProposal,
+  type SubmittedStory,
   type NewStoryProposal,
   type ProposalRow,
   type ProposalSummary,
@@ -417,6 +418,9 @@ function applyOne(
   }
 }
 
+/** A `new_feature` proposal, whose stories may carry their other fields when `work:submitPlan` sent them (EO-735). */
+type SubmittedFeature = Omit<NewFeatureProposal, "stories"> & { stories: readonly SubmittedStory[] };
+
 /**
  * A feature and its stories, from a plan somebody has already agreed.
  *
@@ -431,7 +435,7 @@ function applyOne(
 export function applyNewFeature(
   db: Db,
   projectId: Uuid | null,
-  proposal: NewFeatureProposal,
+  proposal: SubmittedFeature,
   pipelineId: string | null,
   jira: PlanJiraSubmission = {},
 ): ApplyDiscussionResult {
@@ -475,7 +479,7 @@ export function applyNewFeature(
 function createPlan(
   db: Db,
   projectId: Uuid | null,
-  proposal: NewFeatureProposal,
+  proposal: SubmittedFeature,
   placement: StoryPlacement,
   links: { feature: string | null; stories: readonly (string | null)[] },
   jira: PlanJiraSubmission,
@@ -612,7 +616,7 @@ function resolveSubmittedJiraKey(db: Db, key: string): { ok: true; key: string }
  */
 function resolvePlanJiraKeys(
   db: Db,
-  proposal: NewFeatureProposal,
+  proposal: SubmittedFeature,
   jira: PlanJiraSubmission,
 ): { ok: true; feature: string | null; stories: readonly (string | null)[] } | { ok: false; reason: string } {
   // Canonical key to what in this plan claimed it, so the refusal can

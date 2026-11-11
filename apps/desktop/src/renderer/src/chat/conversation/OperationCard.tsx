@@ -473,7 +473,9 @@ function Body({ detail, itemsWord, itemWord, aliasesRetired }: { detail: AssistC
           shape={detail.after}
           before={detail.before}
           note={
-            isPackShipped(detail) ? `The ${detail.packSlug} pack ships this type. It can be renamed; its fields and whether it holds other items are the pack's.` : null
+            isPackShipped(detail)
+              ? `The ${detail.packSlug} pack ships this type. It can be renamed and take optional fields of this project's own; the pack's fields and whether it holds other items are the pack's.`
+              : null
           }
           problem={detail.problem}
         />

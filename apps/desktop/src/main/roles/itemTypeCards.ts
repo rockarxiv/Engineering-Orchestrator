@@ -28,9 +28,11 @@ import { createItemTypeProblem, deleteItemTypeProblem, updateItemTypeProblem } f
  * the type as it is, the type as pressing the card would leave it, and
  * what the channel would refuse the press with now, asked through the
  * very checks the command runs (`createItemTypeProblem` and its two
- * neighbours). A pack's type takes a new label and plural and nothing
- * else, as it did in the editor; a card that reshapes one is drawn with
- * that refusal on it and no button.
+ * neighbours). A pack's type takes a new label and plural, as it did in
+ * the editor; a card that reshapes what the pack owns is drawn with
+ * that refusal on it and no button. A pack's type also takes optional
+ * fields of the project's own beside the pack's (EO-735), as the
+ * project's item-type settings offer.
  */
 
 type ItemTypeCard = Extract<AssistCard, { kind: "itemTypeCreate" | "itemTypeUpdate" | "itemTypeDelete" }>;
@@ -169,7 +171,7 @@ export function itemTypeCardDetail(db: Db, card: ItemTypeCard): { detail: Assist
       kind: card.kind,
       ...common,
       itemCount,
-      problem: changesSomething(payload) ? updateItemTypeProblem(existing, payload) : `“${existing.label}” already is what the card says, so there is nothing to change.`,
+      problem: changesSomething(payload) ? updateItemTypeProblem(db, existing, payload) : `“${existing.label}” already is what the card says, so there is nothing to change.`,
       before: itemTypeShape(existing),
       after: shapeAfter(existing, payload),
     },
@@ -198,7 +200,9 @@ export function itemTypeCardBody(db: Db, card: ItemTypeCard): string {
     case "itemTypeCreate":
       return `**Add** the item type ${describe(detail.type)}, to ${detail.projectName}. Nothing is added until Add type is pressed on the card.${refused(detail.problem)}`;
     case "itemTypeUpdate": {
-      const pack = isPackShipped({ packSlug: detail.packSlug }) ? ` The ${detail.packSlug} pack ships it, so only its name and plural can change.` : "";
+      const pack = isPackShipped({ packSlug: detail.packSlug })
+        ? ` The ${detail.packSlug} pack ships it, so its name and plural can change and optional fields can be added beside the pack's; the pack's own fields and whether it holds other items stay as they are.`
+        : "";
       return `**Change** the item type “${detail.before.label}” to ${describe(detail.after)}.${pack} Nothing changes until Save type is pressed on the card.${refused(detail.problem)}`;
     }
     case "itemTypeDelete":

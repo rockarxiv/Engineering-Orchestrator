@@ -613,7 +613,7 @@ describe("item types, read-only (EO-523)", () => {
     itemCount: 1,
   };
 
-  it("shows each project's types and their fields, says which a pack ships, and offers nothing to change them", async () => {
+  it("shows each project's types and their fields, says which a pack ships, and offers nothing to change a type made here", async () => {
     answeringItemTypes("shop", [STORY, CASE]);
     const calls = renderProjects();
 
@@ -623,11 +623,108 @@ describe("item types, read-only (EO-523)", () => {
     expect(within(shop).getByLabelText("Case")).toHaveTextContent("Case / Cases · case · holds other items · made here · 1 item");
     expect(within(shop).getByLabelText("Case")).toHaveTextContent("No fields — a title and a description only.");
     expect(shop).toHaveTextContent("to add, change or remove one, ask the assistant");
-    expect(within(shop).queryByRole("button")).toBeNull();
+    expect(within(within(shop).getByLabelText("Case")).queryByRole("button")).toBeNull();
     expect(within(shop).queryByRole("textbox")).toBeNull();
+    // A pack's type offers its project's own fields and nothing else (EO-735).
+    expect(within(within(shop).getByLabelText("Story")).getAllByRole("button").map((button) => button.textContent)).toEqual(["Add a field to Story"]);
     expect(on(calls, "itemTypes:list")).toContainEqual({ projectId: "shop" });
 
     expect(await screen.findByLabelText("Theirs's item types")).toHaveTextContent("This project has no item types.");
     expect(calls.some((call) => call.channel.startsWith("itemTypes:") && call.channel !== "itemTypes:list")).toBe(false);
+  });
+});
+
+describe("a project's own fields on a pack's type (EO-735)", () => {
+  const AUTOMERGE = { type: "boolean" as const, "x-eo-added": true };
+  const CRITERIA = { type: "array" as const, items: { type: "string" as const }, minItems: 1 };
+  function story(added: Record<string, typeof AUTOMERGE>) {
+    return {
+      id: "t-story",
+      projectId: "shop",
+      packSlug: "developer",
+      slug: "story",
+      label: "Story",
+      plural: "Stories",
+      container: false,
+      specShape: { type: "object" as const, properties: { acceptance_criteria: CRITERIA, ...added }, required: ["acceptance_criteria"] },
+      itemCount: 2,
+    };
+  }
+
+  /** Answers `itemTypes:list` with the type as it stands and `itemTypes:update` with `problem`, or else applies the list it was sent. */
+  function answering(problem: string | null) {
+    let current = story({ automerge: AUTOMERGE });
+    const updates: unknown[] = [];
+    const prior = window.eo.ipc.invoke;
+    window.eo.ipc.invoke = vi.fn(async (channel: string, payload: unknown) => {
+      if (channel === "itemTypes:list") return { ok: true, data: { types: (payload as { projectId: string }).projectId === "shop" ? [current] : [] } };
+      if (channel === "itemTypes:update") {
+        updates.push(payload);
+        if (problem !== null) return { ok: true, data: { type: null, problem } };
+        const fields = (payload as { fields: { name: string; kind: string }[] }).fields.filter((field) => field.name !== "acceptance_criteria");
+        current = story(Object.fromEntries(fields.map((field) => [field.name, AUTOMERGE])));
+        return { ok: true, data: { type: current, problem: null } };
+      }
+      return prior(channel as never, payload as never);
+    }) as never;
+    return updates;
+  }
+
+  const PACK_FIELD = { name: "acceptance_criteria", kind: "string list", required: true };
+
+  it("shows the pack's fields and the added ones apart", async () => {
+    answering(null);
+    renderProjects();
+
+    const type = await screen.findByLabelText("Story");
+    await waitFor(() => expect(within(type).getByLabelText("Story's added fields")).toHaveTextContent("automerge — Yes / no, optional"));
+    expect(within(type).getByLabelText("Story's fields")).toHaveTextContent("acceptance_criteria");
+    expect(within(type).getByLabelText("Story's fields")).not.toHaveTextContent("automerge");
+  });
+
+  it("adds one, sending the pack's fields as they are beside the added ones", async () => {
+    const updates = answering(null);
+    renderProjects();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Add a field to Story" }));
+    fireEvent.change(screen.getByLabelText("New field on Story"), { target: { value: "no_reviewers" } });
+    fireEvent.click(screen.getByRole("button", { name: "Add" }));
+
+    await waitFor(() =>
+      expect(updates).toEqual([
+        {
+          id: "t-story",
+          fields: [PACK_FIELD, { name: "automerge", kind: "boolean", required: false }, { name: "no_reviewers", kind: "boolean", required: false }],
+        },
+      ]),
+    );
+    await waitFor(() => expect(screen.getByLabelText("Story's added fields")).toHaveTextContent("no_reviewers"));
+  });
+
+  it("renames and removes one", async () => {
+    const updates = answering(null);
+    renderProjects();
+
+    const row = await screen.findByLabelText("automerge");
+    fireEvent.click(within(row).getByRole("button", { name: "Rename" }));
+    fireEvent.change(screen.getByLabelText("New name for automerge"), { target: { value: "merge_itself" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(updates[0]).toEqual({ id: "t-story", fields: [PACK_FIELD, { name: "merge_itself", kind: "boolean", required: false }] }));
+
+    const renamed = await screen.findByLabelText("merge_itself");
+    fireEvent.click(within(renamed).getByRole("button", { name: "Remove" }));
+    await waitFor(() => expect(updates[1]).toEqual({ id: "t-story", fields: [PACK_FIELD] }));
+    await waitFor(() => expect(screen.getByLabelText("Fields added to Story in this project")).toHaveTextContent("None yet."));
+  });
+
+  it("shows the refusal when items hold a value for the field it would remove", async () => {
+    answering("2 stories hold a value for “automerge”. Clear it on them before removing or renaming the field, or changing its kind.");
+    renderProjects();
+
+    const row = await screen.findByLabelText("automerge");
+    fireEvent.click(within(row).getByRole("button", { name: "Remove" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("2 stories hold a value for “automerge”");
+    expect(screen.getByLabelText("Story's added fields")).toHaveTextContent("automerge");
   });
 });

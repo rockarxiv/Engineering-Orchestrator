@@ -853,7 +853,7 @@ export function renderItemTypes(data: IpcResponse<"itemTypes:list">): string {
   return list(
     data.types.map((type) => {
       const owner = isPackShipped(type)
-        ? `a ${type.packSlug} pack's type — only its label and plural can change, and it cannot be deleted`
+        ? `a ${type.packSlug} pack's type — its label and plural can change and optional fields can be added beside the pack's own; the pack's fields and its container flag cannot change, and it cannot be deleted`
         : "made here — its label, plural, fields and container flag can change, and it can be deleted while no item is of it";
       const fields = specFields(type.specShape).map((field) => {
         const notes = [
@@ -861,6 +861,7 @@ export function renderItemTypes(data: IpcResponse<"itemTypes:list">): string {
           field.required ? "required" : "optional",
           ...(field.values === undefined ? [] : [`one of ${field.values.join(", ")}`]),
           ...(field.criteria ? ["holds the acceptance criteria"] : []),
+          ...(field.added ? ["added in this project"] : []),
         ];
         return `  - field \`${field.name}\` (${notes.join(", ")})${field.description === undefined ? "" : ` — ${field.description}`}`;
       });

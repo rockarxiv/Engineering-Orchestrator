@@ -26,6 +26,7 @@ import { persistEnginePause } from "./engineActivity.js";
 import { settleDailyBudgetNotice } from "./guardDefaultNotice.js";
 import { emitPush, registerAllHandlers, type Platform } from "./ipc/index.js";
 import { startManagedRuntimeReconciliation } from "./ipc/runtimeCommands.js";
+import { announceAddedFieldCollisions } from "./ipc/itemTypeCommands.js";
 import { createInstallRequest, quitOrInstall } from "./ipc/updateCommands.js";
 import { assistDeltaView } from "./ipc/assistCommands.js";
 import { watchAssistDeltas } from "./ipc/assistDeltas.js";
@@ -495,6 +496,9 @@ export function startMain(platform: Platform): RunningMain {
   // project whose types have not arrived yet.
   const seeded = syncItemTypes(db, itemTypeContributions(packs));
   if (seeded.created.length > 0) console.log(`[eo] seeded item types: ${[...new Set(seeded.created)].join(", ")}`);
+  // EO-735: a pack field that would share a name with one a project
+  // added is refused, and the person told why.
+  announceAddedFieldCollisions(db, seeded.collisions, !platform.hasMachine);
 
   // EO-421: the output schemas a role's agent used to carry in its
   // config become that role's action definitions. After the fold for the

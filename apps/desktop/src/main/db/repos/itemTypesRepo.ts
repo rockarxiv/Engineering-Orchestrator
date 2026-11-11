@@ -1,6 +1,7 @@
 import { and, asc, count, eq, isNull, sql } from "drizzle-orm";
 import {
   ActionOverridesSchema,
+  addedFieldCollisions,
   EMPTY_SPEC_SHAPE,
   qualifiedItemType,
   SpecShapeSchema,
@@ -290,6 +291,18 @@ export function resolveItemType(db: Db, projectId: Uuid | null, name: ItemTypeNa
 export interface ItemTypeSeedReport {
   /** `"developer:story"` per row written, so a startup log says what appeared. */
   created: string[];
+  /**
+   * A pack field named like a field the row's project added (EO-735),
+   * one per row and field. The row is left as it is — the seed never
+   * merges — and the caller tells the person (`announceAddedFieldCollisions`).
+   */
+  collisions: AddedFieldCollision[];
+}
+
+/** One pack field a type here already has a field of its own under the name of. */
+export interface AddedFieldCollision {
+  type: ItemType;
+  field: string;
 }
 
 /**
@@ -382,7 +395,10 @@ export function copyItemTypesToProject(db: Db, projectId: Uuid): number {
  * a seed that reconciled would quietly undo that on the next launch —
  * the mistake `syncRolePrompts` had to grow provenance to stop making.
  * Bringing an edited type up to a pack's new version is the type
- * editor's business (KAN-164), not this function's.
+ * editor's business (KAN-164), not this function's. A pack whose type
+ * now declares a field under the name of one a project added to it
+ * (EO-735) is reported in `collisions` rather than merged: the added
+ * field and its items' values stay.
  *
  * Both scopes, because both are real: the installation scope answers for
  * items that belong to no project, and each project carries its own
@@ -394,17 +410,24 @@ export function copyItemTypesToProject(db: Db, projectId: Uuid): number {
  */
 export function syncItemTypes(db: Db, contributed: readonly ItemTypeEntry[]): ItemTypeSeedReport {
   const created: string[] = [];
+  const collisions: AddedFieldCollision[] = [];
   const scopes: (Uuid | null)[] = [null, ...db.select({ id: projects.id }).from(projects).all().map((row) => row.id as Uuid)];
 
   for (const entry of contributed) {
     for (const scope of scopes) {
-      if (hasItemType(db, scope, entry.packSlug, entry.slug)) continue;
+      const here = listItemTypes(db, scope).find((type) => type.packSlug === entry.packSlug && type.slug === entry.slug);
+      if (here !== undefined) {
+        // Kept as it is, as ever; the one thing worth saying is a pack
+        // field that would take the name of one this project added.
+        for (const field of addedFieldCollisions(here.specShape, entry.specShape)) collisions.push({ type: here, field });
+        continue;
+      }
       insertItemType(db, scope, entry);
       created.push(qualifiedItemType(entry));
     }
   }
 
-  return { created };
+  return { created, collisions };
 }
 
 /**
@@ -418,6 +441,34 @@ export function syncItemTypes(db: Db, contributed: readonly ItemTypeEntry[]): It
  */
 export function countItemsOfType(db: Db, typeId: Uuid): number {
   const row = db.select({ total: count() }).from(items).where(eq(items.typeId, typeId)).get();
+  return row?.total ?? 0;
+}
+
+/**
+ * How many items of this type hold a value for one field (EO-735), the
+ * Archive included for the reason `countItemsOfType` gives.
+ *
+ * What the refusal to remove, rename or re-kind a field names. A value
+ * is anything but nothing: a key that is absent, JSON null, an empty
+ * text or an empty list holds none, so a field somebody cleared does
+ * not keep its definition pinned.
+ */
+export function countItemsHoldingField(db: Db, typeId: Uuid, field: string): number {
+  // Field names are normalised to `[a-z0-9_]` before they reach a shape,
+  // but the path is quoted anyway: a pack may name a field anything.
+  const path = `$."${field.replace(/["\\]/g, "")}"`;
+  const row = db
+    .select({ total: count() })
+    .from(items)
+    .where(
+      and(
+        eq(items.typeId, typeId),
+        sql`coalesce(json_type(${items.spec}, ${path}), 'null') != 'null'`,
+        sql`not (json_type(${items.spec}, ${path}) = 'text' and json_extract(${items.spec}, ${path}) = '')`,
+        sql`not (json_type(${items.spec}, ${path}) = 'array' and json_array_length(${items.spec}, ${path}) = 0)`,
+      ),
+    )
+    .get();
   return row?.total ?? 0;
 }
 

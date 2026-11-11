@@ -1,19 +1,25 @@
 import { describe, expect, it } from "vitest";
 import {
+  addedFieldCollisionMessage,
+  addedFieldCollisions,
+  addedFieldDrafts,
+  fieldHoldsValuesMessage,
   isPackShipped,
   itemTypeDraftProblem,
   itemTypeHoldsItemsMessage,
   itemTypeOptionLabel,
   LOCAL_PACK,
   packItemTypeEditRefusal,
+  packItemTypeFieldsProblem,
   specFieldDrafts,
   specShapeFromFields,
   toSlug,
+  withAddedFields,
   type SpecFieldDraft,
 } from "./itemTypeAuthoring.js";
 import { developerRegistry } from "./registry/developer.js";
 import { parseQualifiedItemType, qualifiedItemType } from "./registry/index.js";
-import { missingSpecFields, specFields, specIssues } from "./schemas/specShape.js";
+import { missingSpecFields, specFields, specIssues, withoutEoKeywords, type SpecShape } from "./schemas/specShape.js";
 
 /** The story's own example: a Case with a required customer and an optional channel. */
 const CASE_FIELDS: SpecFieldDraft[] = [
@@ -182,5 +188,75 @@ describe("offering a type by its label", () => {
   it("names the pack where two types answer to one label", () => {
     expect(itemTypeOptionLabel(types[1]!, types)).toBe("Case (support)");
     expect(itemTypeOptionLabel(types[2]!, types)).toBe("Case (local)");
+  });
+});
+
+describe("a project's own optional fields on a pack's type (EO-735)", () => {
+  /** A pack's type with a criteria field it annotated, which the form cannot see. */
+  const PACK_SHAPE: SpecShape = {
+    type: "object",
+    properties: { criteria: { type: "array", items: { type: "string" }, minItems: 1, "x-eo-criteria": true, description: "What done means." } },
+    required: ["criteria"],
+  };
+  const TYPE = { label: "Case", packSlug: "support", specShape: PACK_SHAPE };
+  const PACK_FIELDS: SpecFieldDraft[] = [{ name: "criteria", kind: "string list", required: true }];
+  const AUTOMERGE: SpecFieldDraft = { name: "automerge", kind: "boolean", required: false };
+
+  it("lays added fields beside the pack's document, marked, optional, and the pack's untouched", () => {
+    const shape = withAddedFields(PACK_SHAPE, [AUTOMERGE, { name: "note", kind: "string", required: true }]);
+
+    expect(shape.properties["criteria"]).toEqual(PACK_SHAPE.properties["criteria"]);
+    expect(shape.properties["automerge"]).toEqual({ type: "boolean", "x-eo-added": true });
+    expect(shape.required).toEqual(["criteria"]);
+    expect(specFields(shape).map((field) => [field.name, field.added, field.required])).toEqual([
+      ["criteria", false, true],
+      ["automerge", true, false],
+      ["note", true, false],
+    ]);
+    expect(addedFieldDrafts(shape)).toEqual([AUTOMERGE, { name: "note", kind: "string", required: false }]);
+    // Replaced, not accumulated: the list is the whole of what was added.
+    expect(Object.keys(withAddedFields(shape, []).properties)).toEqual(["criteria"]);
+  });
+
+  it("validates an added field by its kind, and an item without it", () => {
+    const shape = withAddedFields(PACK_SHAPE, [AUTOMERGE]);
+
+    expect(specIssues(shape, { criteria: ["Done"] })).toEqual([]);
+    expect(specIssues(shape, { criteria: ["Done"], automerge: false })).toEqual([]);
+    expect(specIssues(shape, { criteria: ["Done"], automerge: "yes" })).not.toEqual([]);
+  });
+
+  it("shows no provider the mark", () => {
+    expect(withoutEoKeywords({ type: "boolean", "x-eo-added": true })).toEqual({ type: "boolean" });
+  });
+
+  it("accepts the pack's fields as they are with optional ones beside them, and refuses anything else, saying which", () => {
+    expect(packItemTypeFieldsProblem(TYPE, [...PACK_FIELDS, AUTOMERGE])).toBeNull();
+    expect(packItemTypeFieldsProblem(TYPE, [AUTOMERGE])).toContain("“criteria” is the support pack's field on “Case”, so it cannot be removed");
+    expect(packItemTypeFieldsProblem(TYPE, [{ ...PACK_FIELDS[0]!, kind: "string" }])).toContain("already has a field “criteria” from the support pack");
+    expect(packItemTypeFieldsProblem(TYPE, [{ ...PACK_FIELDS[0]!, required: false }])).toContain("Whether “criteria” is required on “Case” is the support pack's to say");
+    expect(packItemTypeFieldsProblem(TYPE, [...PACK_FIELDS, { ...AUTOMERGE, required: true }])).toContain("“automerge” cannot be required");
+    expect(packItemTypeFieldsProblem(TYPE, [...PACK_FIELDS, { name: "criteria", kind: "boolean", required: false }])).toContain(
+      "already has a field “criteria” from the support pack",
+    );
+  });
+
+  it("finds a pack field shipped under an added field's name, and says both", () => {
+    const row = withAddedFields(PACK_SHAPE, [AUTOMERGE]);
+    const shipped: SpecShape = { ...PACK_SHAPE, properties: { ...PACK_SHAPE.properties, automerge: { type: "string" } } };
+
+    expect(addedFieldCollisions(row, shipped)).toEqual(["automerge"]);
+    expect(addedFieldCollisions(row, PACK_SHAPE)).toEqual([]);
+    // A shape carrying the same added field — another project's export — is not the pack shipping one.
+    expect(addedFieldCollisions(row, row)).toEqual([]);
+    expect(addedFieldCollisionMessage({ label: "Case", packSlug: "support" }, "automerge", "Shop")).toBe(
+      "The support pack's “Case” has a field “automerge”, and Shop already added a field “automerge” of its own to “Case”. " +
+        "EO kept the added field and its items' values, and merged nothing from the pack's “Case”: the pack's field and the added one cannot share a name.",
+    );
+  });
+
+  it("names how many items hold a value, or nothing when none do", () => {
+    expect(fieldHoldsValuesMessage({ label: "Case", plural: "Cases" }, "automerge", 0)).toBeNull();
+    expect(fieldHoldsValuesMessage({ label: "Case", plural: "Cases" }, "automerge", 3)).toContain("3 cases hold a value for “automerge”");
   });
 });

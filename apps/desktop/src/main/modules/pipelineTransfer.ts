@@ -14,6 +14,8 @@ import type {
   Uuid,
 } from "@eo/core";
 import {
+  addedFieldCollisionMessage,
+  addedFieldCollisions,
   ADMIN_GRANT_REFUSAL,
   CONNECTOR_SETUP_REFUSAL,
   ADMIN_MCP_SERVER_NAME,
@@ -67,6 +69,7 @@ import {
   listAgents,
   getModuleBySlug,
   getPipeline,
+  getProject,
   listActionDefinitionsForRole,
   listItemTypes,
   listModules,
@@ -663,7 +666,7 @@ export interface ImportPreflight {
    */
   refusal: string | null;
   /** The types the pack ships, and whether this project already has each. */
-  itemTypes: { type: string; label: string; present: boolean }[];
+  itemTypes: { type: string; label: string; present: boolean; conflict: string | null }[];
   /** A slug already in this catalog. Neither side is overwritten without a choice. */
   collisions: { slug: string; localName: string; incomingName: string }[];
   moduleCount: number;
@@ -851,11 +854,21 @@ export function preflightImport(db: Db, secrets: ModuleSecretsOptions, document:
     // a document it did not parse here — and the screen it reaches has a
     // line to show rather than an exception to swallow.
     refusal: packRefusal(document),
-    itemTypes: document.itemTypes.map((type) => ({
-      type: qualifiedItemType(type),
-      label: type.label,
-      present: projectId !== undefined && hasItemType(db, projectId, type.packSlug, type.slug),
-    })),
+    itemTypes: document.itemTypes.map((type) => {
+      // The row this project already has under the pack's word, if any.
+      // An import never reshapes it (`writeItemTypes`), so the one thing
+      // to say about it beyond "kept" is a field the document ships under
+      // a name this project gave a field of its own (EO-735).
+      const here = projectId === undefined ? undefined : listItemTypes(db, projectId as Uuid).find((row) => row.packSlug === type.packSlug && row.slug === type.slug);
+      const collisions = here === undefined ? [] : addedFieldCollisions(here.specShape, type.specShape);
+      const projectName = projectId === undefined ? null : (getProject(db, projectId as Uuid)?.name ?? null);
+      return {
+        type: qualifiedItemType(type),
+        label: type.label,
+        present: here !== undefined,
+        conflict: here === undefined || collisions.length === 0 ? null : collisions.map((field) => addedFieldCollisionMessage(here, field, projectName)).join(" "),
+      };
+    }),
     missingBinaries: [...binaries].map(([name, wantedBy]) => ({ name, wantedBy })),
     missingSecrets: [...secretNames].map(([name, wantedBy]) => ({ name, wantedBy })),
     wantsNetwork,

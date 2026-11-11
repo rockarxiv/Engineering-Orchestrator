@@ -1,12 +1,18 @@
 import {
+  addedFieldCollisionMessage,
+  fieldHoldsValuesMessage,
   isPackShipped,
+  itemTypeActionOverridesRefusal,
   itemTypeDraftProblem,
   itemTypeHoldsItemsMessage,
   LOCAL_PACK,
   packItemTypeEditRefusal,
+  packItemTypeFieldsProblem,
   packItemTypeRefusal,
+  specFields,
   specShapeFromFields,
   toSlug,
+  withAddedFields,
   type IpcPayload,
   type IpcResponse,
   type ItemTypeView,
@@ -14,8 +20,12 @@ import {
   type Uuid,
 } from "@eo/core";
 import type { Db } from "../db/client.js";
-import type { ItemType } from "../db/repos/itemTypesRepo.js";
+import type { AddedFieldCollision, ItemType } from "../db/repos/itemTypesRepo.js";
+import { getProject } from "../db/repos/projectsRepo.js";
+import { hasMessageAbout } from "../db/repos/messagesRepo.js";
+import { sendMessageHere } from "../messages/messages.js";
 import {
+  countItemsHoldingField,
   countItemsOfType,
   createItemType,
   deleteItemType,
@@ -124,47 +134,100 @@ export function createItemTypeCommand(db: Db, input: IpcPayload<"itemTypes:creat
 }
 
 /**
- * Renaming any type, and reshaping only the ones nobody shipped.
+ * Renaming any type, reshaping the ones nobody shipped, and adding
+ * optional fields to the ones a pack did (EO-735).
  *
- * The design allows renaming what a pack ships and creating your own. The
- * container flag and the fields are the pack's: its prompts, its
- * posters and its routing were written against them, and a story that
- * quietly stops demanding acceptance criteria breaks the review the same
- * pack ships, one run later and somewhere else. So the two are refused
- * rather than dropped — a caller told "saved" about a change that did
- * not happen is worse than one told no.
+ * The design allows renaming what a pack ships, adding optional fields of
+ * this project's own beside the pack's, and creating your own. The
+ * container flag, the pack's own fields, which of them are required and
+ * the action overrides are the pack's: its prompts, its posters and its
+ * routing were written against them, and a story that quietly stops
+ * demanding acceptance criteria breaks the review the same pack ships,
+ * one run later and somewhere else. So those are refused rather than
+ * dropped — a caller told "saved" about a change that did not happen is
+ * worse than one told no.
+ *
+ * A pack's type keeps the pack's document as it is and has this
+ * project's fields laid beside it (`withAddedFields`), each marked as
+ * added, so the form, the hand-over doors and `ctx.item()` read them
+ * from the one shape and the editor can still tell them apart.
  */
 export function updateItemTypeCommand(db: Db, input: IpcPayload<"itemTypes:update">): IpcResponse<"itemTypes:update"> {
   const existing = getItemType(db, input.id as Uuid);
   if (existing === undefined) return { type: null, problem: "That item type is not here any more." };
 
-  const problem = updateItemTypeProblem(existing, input);
+  const problem = updateItemTypeProblem(db, existing, input);
   if (problem !== null) return { type: null, problem };
 
   const updated = updateItemType(db, existing.id, {
     label: input.label?.trim() ?? existing.label,
     plural: input.plural?.trim() ?? existing.plural,
     ...(input.container === undefined ? {} : { container: input.container }),
-    ...(input.fields === undefined ? {} : { specShape: specShapeFromFields(normalised(input.fields)) }),
+    ...(input.fields === undefined ? {} : { specShape: shapeFor(existing, normalised(input.fields)) }),
   });
   if (updated === undefined) return { type: null, problem: "That item type is not here any more." };
   return { type: toView(db, updated), problem: null };
+}
+
+/** The shape a field list leaves the type with: the pack's document with these beside it, or the list itself on a type made here. */
+function shapeFor(existing: ItemType, fields: readonly SpecFieldDraft[]): ItemType["specShape"] {
+  if (!isPackShipped(existing)) return specShapeFromFields(fields);
+  const packFields = new Set(specFields(existing.specShape).filter((field) => !field.added).map((field) => field.name));
+  return withAddedFields(
+    existing.specShape,
+    fields.filter((field) => !packFields.has(field.name)),
+  );
 }
 
 /**
  * Why `itemTypes:update` would refuse this change to a type that is
  * here, or null — asked by the command and by the assistant's card
  * (EO-523), for the reason `createItemTypeProblem` is shared.
+ *
+ * In order: what is the pack's on a pack's type — the container flag,
+ * the action overrides, its own fields and which are required — then
+ * the draft's own sense, then a field items hold values for that the
+ * list would remove, rename or give another kind, with how many hold
+ * one. The last applies to every type: a field taken out from under
+ * stored values leaves them under a name nothing declares.
  */
 export function updateItemTypeProblem(
+  db: Db,
   existing: ItemType,
-  input: { label?: string | undefined; plural?: string | undefined; container?: boolean | undefined; fields?: readonly SpecFieldDraft[] | undefined },
+  input: {
+    label?: string | undefined;
+    plural?: string | undefined;
+    container?: boolean | undefined;
+    fields?: readonly SpecFieldDraft[] | undefined;
+    actionOverrides?: unknown;
+  },
 ): string | null {
   const label = input.label?.trim() ?? existing.label;
   const plural = input.plural?.trim() ?? existing.plural;
-  const reshaping = input.container !== undefined || input.fields !== undefined;
-  if (reshaping && isPackShipped(existing)) return packItemTypeEditRefusal(existing);
-  return itemTypeDraftProblem({ label, plural, fields: input.fields ?? [] });
+  if (input.container !== undefined && isPackShipped(existing)) return packItemTypeEditRefusal(existing);
+  if (input.actionOverrides !== undefined) return itemTypeActionOverridesRefusal(existing);
+
+  // The pack's fields first, so a field of the project's own named like
+  // one is told it is the pack's rather than that two fields share a name.
+  const fields = input.fields === undefined ? undefined : normalised(input.fields);
+  if (fields !== undefined && isPackShipped(existing)) {
+    const packProblem = packItemTypeFieldsProblem(existing, fields);
+    if (packProblem !== null) return packProblem;
+  }
+
+  const drafted = itemTypeDraftProblem({ label, plural, fields: input.fields ?? [] });
+  if (drafted !== null) return drafted;
+  if (fields === undefined) return null;
+
+  const asked = new Map(fields.map((field) => [field.name, field]));
+  for (const field of specFields(existing.specShape)) {
+    // A pack's own fields were judged above; only what this project can move is counted.
+    if (isPackShipped(existing) && !field.added) continue;
+    if (asked.get(field.name)?.kind === field.kind) continue;
+    const held = fieldHoldsValuesMessage(existing, field.name, countItemsHoldingField(db, existing.id, field.name));
+    if (held !== null) return held;
+  }
+  return null;
 }
 
 /**
@@ -203,4 +266,26 @@ export function deleteItemTypeProblem(db: Db, existing: ItemType): { itemCount: 
   if (held !== null) return { itemCount, problem: held };
   if (isPackShipped(existing)) return { itemCount, problem: packItemTypeRefusal(existing) };
   return { itemCount, problem: null };
+}
+
+/** The `messages.source` of a pack field refused for sharing an added field's name (EO-735). */
+export const ADDED_FIELD_COLLISION_SOURCE = "item_type_field_conflict";
+
+/**
+ * Tells the person about each pack field the seed refused because a
+ * project had already added a field of that name to the type (EO-735,
+ * invariant 8): a message naming both, sent once per type and field —
+ * the seed runs on every launch, and a message handled or still open
+ * is not sent again. Answers how many were sent.
+ */
+export function announceAddedFieldCollisions(db: Db, collisions: readonly AddedFieldCollision[], isTheRecord: boolean): number {
+  let sent = 0;
+  for (const { type, field } of collisions) {
+    const subject = `${type.id}:${field}`;
+    if (hasMessageAbout(db, ADDED_FIELD_COLLISION_SOURCE, subject)) continue;
+    const where = type.projectId === null ? null : (getProject(db, type.projectId)?.name ?? null);
+    sendMessageHere(db, { projectId: type.projectId, source: ADDED_FIELD_COLLISION_SOURCE, subject, body: addedFieldCollisionMessage(type, field, where) }, isTheRecord);
+    sent += 1;
+  }
+  return sent;
 }
