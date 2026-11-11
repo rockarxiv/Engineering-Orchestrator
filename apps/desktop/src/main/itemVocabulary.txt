@@ -348,6 +348,9 @@ apps/desktop/src/main/roles/systemAgentPriority.test.ts: expect(flat).toContain(
 apps/desktop/src/main/roles/systemAgentReference.test.ts: expect(proposing).toContain("**`reference` is for when the person names an outside ticket the work belongs to**");
 apps/desktop/src/main/roles/systemAgentReference.test.ts: expect(proposing).toContain("On a `new_story` or `new_bug` it goes on that ticket, when it has one of its own");
 apps/desktop/src/main/roles/systemAgentReference.test.ts: expect(proposing).toContain("Once a ticket exists, `reference` on `item_update`, on `eo_admin`, sets it, or clears it with `null`.");
+apps/desktop/src/main/roles/systemAgentReviewers.test.ts: "Once a ticket exists, `reviewers` on `item_update`, on `eo_admin`, sets them, empties them with `[]`, or clears them with `null`",
+apps/desktop/src/main/roles/systemAgentReviewers.test.ts: "`pullRequestReviewers` is the list the pull request step will request: the ticket's own, else its feature's, else the repository's default.",
+apps/desktop/src/main/roles/systemAgentReviewers.test.ts: expect(flat).toContain("`reviewers` is the ticket's own list as stored — null when it inherits, `[]` when it is set to nobody");
 apps/desktop/src/main/supervisor/agentComments.ts: ? `Comment posted. The mention-depth cap of ${MENTION_DEPTH_CAP} is reached on this ticket, so it went to the person instead of the agent you named. `
 apps/desktop/src/main/supervisor/agentComments.ts: body: `Escalation redirected to you: mention-depth cap of ${MENTION_DEPTH_CAP} reached on this ticket.`,
 apps/desktop/src/main/supervisor/agentComments.ts: if (!isOutput) body = `${body}\n\n(Escalation redirected to you: mention-depth cap of ${MENTION_DEPTH_CAP} reached on this ticket.)`;

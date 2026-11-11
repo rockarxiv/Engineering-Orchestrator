@@ -8,6 +8,7 @@ import {
   formatIssues,
   missingSpecFields,
   parsedResultOf,
+  normaliseReviewers,
   priorityLabel,
   referenceProblem,
   specFields,
@@ -510,6 +511,9 @@ export function applyNewFeature(
   const reference = namedReference(proposal.reference);
   const unnamed = referenceRefusal(proposal.title, reference);
   if (unnamed !== null) return { ok: false, reason: unnamed };
+  // Its reviewers (EO-743), judged the same way and as early.
+  const reviewers = proposedReviewers(proposal.title, proposal.reviewers);
+  if (!reviewers.ok) return { ok: false, reason: reviewers.reason };
 
   // The same validation `refine` runs, on the same shape — the touches
   // merge and the cycle check over the merged graph. A plan that cannot
@@ -537,7 +541,7 @@ export function applyNewFeature(
   // created. Nested inside the approval door's, this is a savepoint.
   try {
     return db.transaction(() => {
-      const result = createPlan(db, projectId, proposal, reference, placement, links, jira);
+      const result = createPlan(db, projectId, proposal, { reference, reviewers: reviewers.reviewers }, placement, links, jira);
       if (!result.ok) throw new Refused(result.reason);
       return result;
     });
@@ -552,7 +556,7 @@ function createPlan(
   db: Db,
   projectId: Uuid | null,
   proposal: SubmittedFeature,
-  reference: string | null,
+  own: { reference: string | null; reviewers: string[] | null },
   placement: StoryPlacement,
   links: { feature: string | null; stories: readonly (string | null)[] },
   jira: PlanJiraSubmission,
@@ -574,9 +578,17 @@ function createPlan(
     // The plan's setting, and the only place it is written down: a story
     // that says nothing about sync inherits it from this row.
     ...(jira.sync === undefined ? {} : { jiraSync: jira.sync }),
-    // On the feature alone (EO-739): its stories read it through
-    // `effectiveReference`, so changing it later changes theirs too.
-    ...(reference === null ? {} : { git: { reference } }),
+    // On the feature alone (EO-739, EO-743): its stories read them
+    // through `effectiveReference` and `effectiveReviewers`, so changing
+    // either later changes theirs too.
+    ...(own.reference === null && own.reviewers === null
+      ? {}
+      : {
+          git: {
+            ...(own.reference === null ? {} : { reference: own.reference }),
+            ...(own.reviewers === null ? {} : { reviewers: own.reviewers }),
+          },
+        }),
   });
   // Before the comments and before the stories, so a project without a
   // container type refuses the plan whole rather than leaving a feature
@@ -954,6 +966,15 @@ export interface HandedOverItem {
    */
   reference?: string;
   /**
+   * Who is asked to review this item's pull request, in place of its
+   * feature's or the repository's default (EO-743), as it was sent.
+   * Normalised and judged by `applyNewItem` as `item_update` judges an
+   * edit (`normaliseReviewers`), with nothing created when an entry is
+   * refused. `[]` asks nobody; absent, the item inherits. Written onto the
+   * `git` extension in the same insert, on any pipeline.
+   */
+  reviewers?: readonly string[];
+  /**
    * Who handed it over (EO-326, ARCHITECTURE.md, "Identity").
    *
    * Absent everywhere there is only one person it could be, where
@@ -997,6 +1018,7 @@ export function handedOver(proposal: NewStoryProposal | NewBugProposal): HandedO
     ...(baseBranch === null ? {} : { baseBranch }),
     ...(existingBranch === null ? {} : { existingBranch }),
     ...(reference === null ? {} : { reference }),
+    ...(proposal.reviewers === undefined ? {} : { reviewers: proposal.reviewers }),
     ...(proposal.priority === undefined ? {} : { priority: proposal.priority }),
   };
 }
@@ -1032,6 +1054,37 @@ function namedReference(value: string | undefined): string | null {
 function referenceRefusal(title: string, reference: string | null): string | null {
   const problem = reference === null ? null : referenceProblem(reference);
   return problem === null ? null : `"${title}" names a Reference EO cannot use. ${problem}`;
+}
+
+/**
+ * The reviewers a proposed item is to be created with (EO-743), as
+ * `normaliseReviewers` leaves them — the reading `judgeReviewersEdit`
+ * takes of an edit, so `[]` is "nobody" — and null when none were sent,
+ * which leaves the item to inherit. An entry it refuses is a reason
+ * naming `title` and the entry.
+ */
+function proposedReviewers(title: string, sent: readonly string[] | undefined): { ok: true; reviewers: string[] | null } | { ok: false; reason: string } {
+  if (sent === undefined) return { ok: true, reviewers: null };
+  const normalised = normaliseReviewers(sent);
+  return normalised.ok ? { ok: true, reviewers: normalised.reviewers } : { ok: false, reason: `"${title}" names a reviewer EO cannot ask for. ${normalised.problem}` };
+}
+
+/**
+ * The reviewers a card shows (EO-743): as they would be stored, and
+ * undefined when none were sent. Refuses nothing, as `summariseProposal`
+ * does not — a list `normaliseReviewers` refuses never reaches a card,
+ * and is shown as sent if one somehow did.
+ */
+function shownReviewers(sent: readonly string[] | undefined): string[] | undefined {
+  if (sent === undefined) return undefined;
+  const normalised = normaliseReviewers(sent);
+  return normalised.ok ? normalised.reviewers : [...sent];
+}
+
+/** The line a card's body names a proposed item's reviewers with, or nothing when it names none of its own (EO-743). */
+function reviewersLines(reviewers: string[] | null): string[] {
+  if (reviewers === null) return [];
+  return [reviewers.length === 0 ? "_Reviewers: nobody_" : `_Reviewers: ${reviewers.map((handle) => `\`${handle}\``).join(", ")}_`];
 }
 
 /** The line a card's body names a proposed item's Reference with, or nothing when it names none (EO-739). */
@@ -1106,6 +1159,9 @@ export function applyNewItem(
   const reference = namedReference(handed.reference);
   const unnamed = referenceRefusal(handed.title, reference);
   if (unnamed !== null) return { ok: false, reason: unnamed };
+  // Its reviewers (EO-743), judged as early and on any pipeline.
+  const reviewers = proposedReviewers(handed.title, handed.reviewers);
+  if (!reviewers.ok) return { ok: false, reason: reviewers.reason };
 
   const parent = handed.parent === undefined ? null : getItemByKey(db, handed.parent);
   if (handed.parent !== undefined) {
@@ -1209,7 +1265,7 @@ export function applyNewItem(
   const link = jira.key === undefined ? null : resolveSubmittedJiraKey(db, jira.key);
   if (link !== null && !link.ok) return { ok: false, reason: link.reason };
 
-  const git = storyGitState({ ...handed, reference });
+  const git = storyGitState({ ...handed, reference, reviewers: reviewers.reviewers });
   const created = createItem(db, {
     // The row resolved above, by the pack and the word it came back with
     // — not the name again, so that what was validated and what is
@@ -1478,12 +1534,17 @@ export function renderProposal(db: Db, conversation: Item, proposal: DiscussionP
       const reference = namedReference(proposal.reference);
       const unnamed = referenceRefusal(proposal.title, reference);
       if (unnamed !== null) return { ok: false, reason: unnamed };
+      // And its reviewers (EO-743), so an entry no forge would take is
+      // sent back before a card exists rather than refused at approval.
+      const reviewers = proposedReviewers(proposal.title, proposal.reviewers);
+      if (!reviewers.ok) return reviewers;
       return {
         ok: true,
         body: [
           `**${proposal.title}** — a new feature.`,
           ...priorityLines(proposal.priority),
           ...referenceLines(reference),
+          ...reviewersLines(reviewers.reviewers),
           "",
           proposal.understanding,
           "",
@@ -1509,6 +1570,10 @@ export function renderProposal(db: Db, conversation: Item, proposal: DiscussionP
       const reference = namedReference(proposal.reference);
       const unnamed = referenceRefusal(proposal.title, reference);
       if (unnamed !== null) return { ok: false, reason: unnamed };
+      // And its reviewers (EO-743), so an entry no forge would take is
+      // sent back before a card exists rather than refused at approval.
+      const reviewers = proposedReviewers(proposal.title, proposal.reviewers);
+      if (!reviewers.ok) return reviewers;
       return {
         ok: true,
         body: [
@@ -1517,6 +1582,7 @@ export function renderProposal(db: Db, conversation: Item, proposal: DiscussionP
           `**${proposal.title}**`,
           ...priorityLines(proposal.priority),
           ...referenceLines(reference),
+          ...reviewersLines(reviewers.reviewers),
           "",
           proposal.body,
           "",
@@ -1535,6 +1601,10 @@ export function renderProposal(db: Db, conversation: Item, proposal: DiscussionP
       const reference = namedReference(proposal.reference);
       const unnamed = referenceRefusal(proposal.title, reference);
       if (unnamed !== null) return { ok: false, reason: unnamed };
+      // And its reviewers (EO-743), so an entry no forge would take is
+      // sent back before a card exists rather than refused at approval.
+      const reviewers = proposedReviewers(proposal.title, proposal.reviewers);
+      if (!reviewers.ok) return reviewers;
       return {
         ok: true,
         body: [
@@ -1543,6 +1613,7 @@ export function renderProposal(db: Db, conversation: Item, proposal: DiscussionP
           `**${proposal.title}**`,
           ...priorityLines(proposal.priority),
           ...referenceLines(reference),
+          ...reviewersLines(reviewers.reviewers),
           "",
           proposal.body,
           "",
@@ -1625,12 +1696,14 @@ export function summariseProposal(db: Db, conversation: Item, proposal: Discussi
       const children = childrenFromStories(proposal.stories);
       const { edges } = mergeRefineEdges(children);
       const reference = namedReference(proposal.reference);
+      const reviewers = shownReviewers(proposal.reviewers);
       return {
         container: {
           title: proposal.title,
           typeLabel: labelOf(developerType("feature")),
           ...(proposal.priority === undefined ? {} : { priority: proposal.priority }),
           ...(reference === null ? {} : { reference }),
+          ...(reviewers === undefined ? {} : { reviewers }),
         },
         rows: children.map((child, index) => ({
           kind: "new" as const,
@@ -1662,6 +1735,7 @@ export function summariseProposal(db: Db, conversation: Item, proposal: Discussi
         under: handed.parent === undefined ? null : existing(handed.parent),
         ...(handed.priority === undefined ? {} : { priority: handed.priority }),
         ...(handed.reference === undefined ? {} : { reference: handed.reference }),
+        ...(handed.reviewers === undefined ? {} : { reviewers: shownReviewers(handed.reviewers) ?? [] }),
       };
       return { container: null, rows: [row] };
     }

@@ -1022,6 +1022,12 @@ exports[`the JSON Schema each provider receives > is unchanged for assist (undef
                       "reference": {
                         "type": "string"
                       },
+                      "reviewers": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      },
                       "stories": {
                         "minItems": 1,
                         "type": "array",
@@ -1124,6 +1130,12 @@ exports[`the JSON Schema each provider receives > is unchanged for assist (undef
                       "reference": {
                         "type": "string"
                       },
+                      "reviewers": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      },
                       "acceptance_criteria": {
                         "minItems": 1,
                         "type": "array",
@@ -1198,6 +1210,12 @@ exports[`the JSON Schema each provider receives > is unchanged for assist (undef
                       },
                       "reference": {
                         "type": "string"
+                      },
+                      "reviewers": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
                       },
                       "steps_to_reproduce": {
                         "type": "string",

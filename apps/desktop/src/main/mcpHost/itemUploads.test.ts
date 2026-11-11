@@ -1,7 +1,7 @@
 import { mkdirSync, mkdtempSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { effectiveReference, gitStateOf, referenceProblem, withActingAgent, type Uuid } from "@eo/core";
+import { effectiveReference, effectiveReviewers, gitStateOf, normaliseReviewers, referenceProblem, withActingAgent, type Uuid } from "@eo/core";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -403,6 +403,72 @@ describe("a reference handed over with the work", () => {
 
     expect(answer.text).toContain("Nothing has changed");
     expect(answer.text).toContain(referenceProblem("PROJ 123")!);
+    nothingFiled();
+  });
+});
+
+/**
+ * Reviewers set when the work is handed over (EO-743): normalised as
+ * item_update does, and an entry it refuses refused with nothing created
+ * and none of the files the call named kept.
+ */
+describe("reviewers handed over with the work", () => {
+  const plan = (reviewers: string[], paths?: string[]) => ({
+    projectId,
+    title: "Board redesign",
+    understanding: "We agreed to rebuild the board against the mocks.",
+    reviewers,
+    stories: [1, 2].map((index) => ({ title: `Story ${index}`, body: "b", acceptance_criteria: ["done"], depends_on: [], touches: [] })),
+    ...(paths === undefined ? {} : { paths }),
+  });
+  const refusalOf = (entry: string) => {
+    const normalised = normaliseReviewers([entry]);
+    return normalised.ok ? "" : normalised.problem;
+  };
+
+  it("puts work_submit_plan's on the feature, normalised, and every story inherits them", async () => {
+    const answer = await external("work_submit_plan", plan([" erin ", "", "org/team", "erin"]));
+
+    expect(answer.isError, answer.text).toBe(false);
+    const [featureKey, ...storyKeys] = [...answer.text.matchAll(/[A-Z]+-\d+/g)].map((match) => match[0]);
+    const feature = getItemByKey(handle.db, featureKey!)!;
+    expect(gitStateOf(feature).reviewers).toEqual(["erin", "org/team"]);
+    expect(storyKeys).toHaveLength(2);
+    for (const key of storyKeys) {
+      const child = getItemByKey(handle.db, key)!;
+      expect(gitStateOf(child).reviewers).toBeNull();
+      expect(effectiveReviewers(child, getItem(handle.db, child.parentId!), [])).toEqual({ value: ["erin", "org/team"], inheritedFrom: feature.key });
+    }
+  });
+
+  it("puts work_submit_item's on the item, normalised", async () => {
+    const answer = await external("work_submit_item", { ...story(), reviewers: ["frank ", "frank"] });
+
+    expect(gitStateOf(filed(answer)).reviewers).toEqual(["frank"]);
+  });
+
+  it("reads an empty list as nobody", async () => {
+    const item = filed(await external("work_submit_item", { ...story(), reviewers: [] }));
+    expect(gitStateOf(item).reviewers).toEqual([]);
+  });
+
+  it("refuses work_submit_item's bad entry, naming it, and keeps none of its files", async () => {
+    const shot = file(elsewhere, "mock.png", PNG);
+
+    const answer = await external("work_submit_item", { ...story([shot]), reviewers: ["frank", "a b"] });
+
+    expect(answer.text).toContain("Nothing has changed");
+    expect(answer.text).toContain(refusalOf("a b"));
+    nothingFiled();
+  });
+
+  it("refuses work_submit_plan's bad entry, naming it, and keeps none of its files", async () => {
+    const spec = file(elsewhere, "spec.pdf", "%PDF-1.4");
+
+    const answer = await external("work_submit_plan", plan(["erin,frank"], [spec]));
+
+    expect(answer.text).toContain("Nothing has changed");
+    expect(answer.text).toContain(refusalOf("erin,frank"));
     nothingFiled();
   });
 });

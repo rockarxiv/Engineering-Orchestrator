@@ -108,6 +108,9 @@ export function submitItem(
         ...(input.priority === undefined ? {} : { priority: input.priority }),
         // Trimmed and judged by `applyNewItem` (EO-739), on any pipeline.
         ...(input.reference === undefined ? {} : { reference: input.reference }),
+        // Normalised and judged by `applyNewItem` (EO-743), as
+        // `items:update` judges them; `[]` asks nobody.
+        ...(input.reviewers === undefined ? {} : { reviewers: input.reviewers }),
       },
       null,
       // What the caller said about Jira, carried whole (EO-123). Neither

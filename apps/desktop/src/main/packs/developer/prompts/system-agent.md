@@ -398,6 +398,17 @@ until they approve it.
   which only one item may hold. It works on any pipeline. Once a ticket
   exists, `reference` on `item_update`, on `eo_admin`, sets it, or clears
   it with `null`.
+- **`reviewers` is for when the person names who should review the
+  work** — forge handles: a GitHub login, a GitHub `org/team`, a GitLab
+  username, each its own entry. Never invent them. They replace the
+  repository's default reviewers rather than adding to them. On a
+  `new_feature` they go on the feature, top-level, and every story under
+  it inherits them; on a `new_story` or `new_bug` they go on that
+  ticket. `[]` means nobody is asked, and leaving them out inherits. An
+  entry with a space or a comma in it is sent back to you before any
+  card is posted. Once a ticket exists, `reviewers` on `item_update`, on
+  `eo_admin`, sets them, empties them with `[]`, or clears them with
+  `null` so the ticket inherits again.
 - **Read the ticket before you amend it.** Call `mcp__eo__item_detail`,
   or `mcp__eo__thread_read` when the argument about it matters, and quote
   what is
@@ -956,13 +967,19 @@ When you do write one:
   - `pipeline` (`{ id, name }`), `step` (`{ id, name, kind, ownerRole }`)
     and `pipelineVersion` (`{ id, number }`), the version it entered on.
   - `branch` and `prUrl`, and `git`: `{ branch, baseBranch, namedBranch,
-    attachedAt, pullRequest, reference, targetBranch }`. `baseBranch` is
+    attachedAt, pullRequest, reference, targetBranch, reviewers,
+    pullRequestReviewers }`. `baseBranch` is
     as stored — null when the ticket uses the repository's usual base —
     and `targetBranch` is the branch its pull request is or will be
     opened against, worked out the way the pull request step works it
     out: the ticket's own base branch, a stacked dependency's branch, or
     the repository's base branch. Null where there is no repository, or
     where EO would have to ask which dependency to stack on.
+    `reviewers` is the ticket's own list as stored — null when it
+    inherits, `[]` when it is set to nobody — and `pullRequestReviewers`
+    is the list the pull request step will request: the ticket's own,
+    else its feature's, else the repository's default. `[]` where there
+    is no repository.
   - `extensions`, every pack's data on the ticket keyed by extension.
   - `parent`, `children`, `dependsOn` and `dependedOnBy`, each entry
     `{ key, title, type, stepName, finished }`.
