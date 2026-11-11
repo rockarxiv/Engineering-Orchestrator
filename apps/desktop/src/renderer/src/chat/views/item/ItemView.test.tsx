@@ -76,6 +76,7 @@ function detail(overrides: Partial<ItemDetailData> = {}): ItemDetailData {
       jiraSync: true,
       jiraConnected: true,
       reference: null,
+      reviewers: null,
       updatedAt: 1,
       stepEnteredAt: 1,
       heldAt: null,
@@ -921,6 +922,82 @@ describe("the Reference (EO-637)", () => {
     expect(within(field).getByText("Inherited from EO-1")).toBeInTheDocument();
     expect(within(field).getByRole("button", { name: "Set" })).toBeInTheDocument();
     expect(within(field).queryByRole("button", { name: "Clear" })).not.toBeInTheDocument();
+  });
+});
+
+describe("the pull request reviewers (EO-742)", () => {
+  const UPDATED = { updated: true, problem: null };
+  function withReviewers(own: string[] | null, reviewers: { value: string[]; inheritedFrom: string | null }): ItemDetailData {
+    const data = detail();
+    data.item.git = { ...NO_GIT_STATE, reviewers: own };
+    data.item.reviewers = reviewers;
+    return data;
+  }
+
+  it("shows its feature's as inherited, naming the feature", async () => {
+    renderItem(withReviewers(null, { value: ["dave"], inheritedFrom: "EO-1" }));
+
+    const field = await screen.findByRole("region", { name: "Pull request reviewers" });
+    expect(field).toHaveTextContent("dave");
+    expect(within(field).getByText("Inherited from EO-1")).toBeInTheDocument();
+    expect(within(field).queryByRole("button", { name: "Inherit" })).not.toBeInTheDocument();
+  });
+
+  it("says when they are the repository's default", async () => {
+    renderItem(withReviewers(null, { value: ["alice", "bob"], inheritedFrom: "repository" }));
+
+    const field = await screen.findByRole("region", { name: "Pull request reviewers" });
+    expect(field).toHaveTextContent("alice, bob");
+    expect(within(field).getByText("From the repository")).toBeInTheDocument();
+  });
+
+  it("sets the item's own from handles separated by commas or spaces", async () => {
+    const { calls, onCall } = recorder();
+    renderItem(withReviewers(null, { value: ["alice"], inheritedFrom: "repository" }), onCall, { "items:update": UPDATED });
+
+    const field = await screen.findByRole("region", { name: "Pull request reviewers" });
+    fireEvent.click(within(field).getByRole("button", { name: "Set" }));
+    const box = within(field).getByLabelText("Reviewers");
+    fireEvent.change(box, { target: { value: " carol,  acme/backend " } });
+    fireEvent.keyDown(box, { key: "Enter" });
+
+    await waitFor(() => expect(payloadOf(calls, "items:update")).toEqual({ itemId: "t1", reviewers: ["carol", "acme/backend"] }));
+  });
+
+  it("sets it to nobody", async () => {
+    const { calls, onCall } = recorder();
+    renderItem(withReviewers(null, { value: ["alice"], inheritedFrom: "repository" }), onCall, { "items:update": UPDATED });
+
+    const field = await screen.findByRole("region", { name: "Pull request reviewers" });
+    fireEvent.click(within(field).getByRole("button", { name: "Ask nobody" }));
+
+    await waitFor(() => expect(payloadOf(calls, "items:update")).toEqual({ itemId: "t1", reviewers: [] }));
+  });
+
+  it("shows its own empty list as nobody, and clears it back to inheriting", async () => {
+    const { calls, onCall } = recorder();
+    renderItem(withReviewers([], { value: [], inheritedFrom: null }), onCall, { "items:update": UPDATED });
+
+    const field = await screen.findByRole("region", { name: "Pull request reviewers" });
+    expect(field).toHaveTextContent("Nobody");
+    expect(within(field).queryByText(/Inherited|From the repository/)).not.toBeInTheDocument();
+    expect(within(field).queryByRole("button", { name: "Ask nobody" })).not.toBeInTheDocument();
+    fireEvent.click(within(field).getByRole("button", { name: "Inherit" }));
+
+    await waitFor(() => expect(payloadOf(calls, "items:update")).toEqual({ itemId: "t1", reviewers: null }));
+  });
+
+  it("shows a refusal beside the box", async () => {
+    renderItem(withReviewers(null, { value: [], inheritedFrom: "repository" }), undefined, {
+      "items:update": { updated: false, problem: '"a b" is not a reviewer EO can ask for.' },
+    });
+
+    const field = await screen.findByRole("region", { name: "Pull request reviewers" });
+    fireEvent.click(within(field).getByRole("button", { name: "Set" }));
+    fireEvent.change(within(field).getByLabelText("Reviewers"), { target: { value: "carol" } });
+    fireEvent.click(within(field).getByRole("button", { name: "Save" }));
+
+    expect(await within(field).findByRole("alert")).toHaveTextContent("is not a reviewer EO can ask for");
   });
 });
 

@@ -1567,6 +1567,18 @@ export const recordContract = {
        */
       reference: z.string().nullable().optional(),
       /**
+       * Who is asked to review this item's pull request, in place of the
+       * repository's default reviewers (EO-742). A list sets it, `[]`
+       * sets it to nobody, `null` clears it so the item inherits again —
+       * its feature's own list, else the repository's default — and
+       * omitting it leaves it alone.
+       *
+       * Normalised as the repository's list is (`normaliseReviewers`):
+       * trimmed, blanks and repeats dropped, and an entry with whitespace
+       * or a comma in it refused as `problem` — the whole call with it.
+       */
+      reviewers: z.array(z.string()).nullable().optional(),
+      /**
        * Items this one is to wait for from now on, and items it is to
        * stop waiting for (EO-600) — each by key (`EO-42`) or by id, as
        * wherever an item's id is asked for.

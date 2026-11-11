@@ -1,5 +1,5 @@
 import { useState } from "react";
-import type { ItemReference } from "@eo/core";
+import { REVIEWERS_FROM_REPOSITORY, type ItemReference, type ItemReviewers } from "@eo/core";
 import { Button, Chip, GroupLabel, TextInput } from "../../kit";
 import { RefText } from "../items/ItemReference";
 import { StatusLine } from "./parts";
@@ -101,6 +101,129 @@ export function ReferenceField({
           {own !== null ? (
             <Button size="sm" variant="ghost" disabled={busy} onClick={() => onSave(null)}>
               Clear
+            </Button>
+          ) : null}
+        </span>
+      )}
+
+      {problem ? (
+        <StatusLine tone="danger">
+          <RefText>{problem}</RefText>
+        </StatusLine>
+      ) : null}
+    </section>
+  );
+}
+
+/**
+ * Who is asked to review the pull request an item opens, read and set
+ * from the item page beside its Reference (EO-742).
+ *
+ * Shows the list as it takes effect — the item's own, its feature's, or
+ * the repository's default — and says which. Three things can be done
+ * to the item's own list: set it (handles separated by commas or
+ * spaces), set it to nobody, which asks nobody whatever the repository
+ * says, and clear it, which goes back to inheriting. Through
+ * `items:update`, so a refusal is the handler's own words.
+ *
+ * Keyed by the caller on the item's own list, so a write that lands
+ * resets the draft to what the item now says.
+ */
+export function ReviewersField({
+  own,
+  reviewers,
+  busy,
+  problem,
+  onSave,
+  onCancel,
+}: {
+  /** The item's own list: null when it inherits, `[]` when it asks nobody. */
+  own: string[] | null;
+  /** What takes effect and where it came from; null from a main process that predates it. */
+  reviewers: ItemReviewers | null;
+  busy: boolean;
+  problem: string | null;
+  onSave: (reviewers: string[] | null) => void;
+  onCancel: () => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState((own ?? []).join(", "));
+  const handles = draft.split(/[\s,]+/).filter((handle) => handle !== "");
+  const unchanged = own !== null && handles.join(",") === own.join(",");
+  const send = (): void => {
+    if (busy || handles.length === 0 || unchanged) return;
+    onSave(handles);
+  };
+  const shown = reviewers ?? (own === null ? null : { value: own, inheritedFrom: null });
+
+  return (
+    <section aria-label="Pull request reviewers" className="flex min-w-0 flex-col gap-2 border-t border-line/60 pt-3">
+      <GroupLabel>Pull request reviewers</GroupLabel>
+      {shown !== null ? (
+        <span className="flex flex-wrap items-center gap-1.5 text-[12.5px]">
+          {shown.value.length > 0 ? (
+            <span className="min-w-0 truncate font-mono text-ink" title={shown.value.join(", ")}>
+              {shown.value.join(", ")}
+            </span>
+          ) : (
+            <span className="text-ink-subtle">Nobody</span>
+          )}
+          {shown.inheritedFrom === REVIEWERS_FROM_REPOSITORY ? (
+            <Chip title="No reviewers of its own or its feature's, so the repository's default reviewers are asked">From the repository</Chip>
+          ) : shown.inheritedFrom !== null ? (
+            <Chip title={`No reviewers of its own, so ${shown.inheritedFrom}'s are asked`}>Inherited from {shown.inheritedFrom}</Chip>
+          ) : null}
+        </span>
+      ) : (
+        <span className="text-[12.5px] text-ink-subtle">Nobody</span>
+      )}
+
+      {editing ? (
+        <div className="flex flex-col gap-1.5">
+          <TextInput
+            aria-label="Reviewers"
+            placeholder={shown !== null && shown.value.length > 0 ? shown.value.join(", ") : "alice, acme/backend"}
+            value={draft}
+            disabled={busy}
+            className="font-mono"
+            onChange={(event) => setDraft(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key !== "Enter") return;
+              event.preventDefault();
+              send();
+            }}
+          />
+          <span className="flex flex-wrap gap-1">
+            <Button size="sm" variant="secondary" disabled={busy || handles.length === 0 || unchanged} onClick={send}>
+              Save
+            </Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              disabled={busy}
+              onClick={() => {
+                setDraft((own ?? []).join(", "));
+                setEditing(false);
+                onCancel();
+              }}
+            >
+              Cancel
+            </Button>
+          </span>
+        </div>
+      ) : (
+        <span className="flex flex-wrap gap-1">
+          <Button size="sm" variant="ghost" disabled={busy} onClick={() => setEditing(true)}>
+            {own === null || own.length === 0 ? "Set" : "Change"}
+          </Button>
+          {own === null || own.length > 0 ? (
+            <Button size="sm" variant="ghost" disabled={busy} onClick={() => onSave([])}>
+              Ask nobody
+            </Button>
+          ) : null}
+          {own !== null ? (
+            <Button size="sm" variant="ghost" disabled={busy} onClick={() => onSave(null)}>
+              Inherit
             </Button>
           ) : null}
         </span>

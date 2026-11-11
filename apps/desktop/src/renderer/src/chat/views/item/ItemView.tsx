@@ -30,7 +30,7 @@ import { CriteriaSection, SpecSection } from "./Fields";
 import { ItemFiles } from "./ItemFiles";
 import { ItemHeader } from "./ItemHeader";
 import { JiraLink } from "./JiraLink";
-import { ReferenceField } from "./ReferenceField";
+import { ReferenceField, ReviewersField } from "./ReferenceField";
 import { MemoryPanel } from "../settings/sections/MemoryPanel";
 import { OutputSection } from "./Output";
 import { RunComposer } from "./RunComposer";
@@ -112,6 +112,17 @@ export function ItemView({ itemId }: { itemId: string }) {
       return Promise.all([invalidate(), queryClient.invalidateQueries({ queryKey: ["item"] })]);
     },
     onError: (error: Error) => setReferenceProblem(error.message),
+  });
+  const [reviewersProblem, setReviewersProblem] = useState<string | null>(null);
+  const editReviewers = useMutation({
+    mutationFn: (input: IpcRequest<"items:update">) => ipcQuery("items:update", input),
+    onSuccess: (result) => {
+      setReviewersProblem(result.problem);
+      // Every item's detail, for the Reference's reason: a feature's list
+      // is what the stories under it without their own show.
+      return Promise.all([invalidate(), queryClient.invalidateQueries({ queryKey: ["item"] })]);
+    },
+    onError: (error: Error) => setReviewersProblem(error.message),
   });
   const [criteriaProblem, setCriteriaProblem] = useState<string | null>(null);
   const editCriteria = useMutation({
@@ -583,6 +594,21 @@ export function ItemView({ itemId }: { itemId: string }) {
                     editReference.mutate({ itemId, reference: next });
                   }}
                   onCancel={() => setReferenceProblem(null)}
+                />
+
+                {/* Who its pull request asks to review it, own or inherited (EO-742). */}
+                <ReviewersField
+                  key={item.git.reviewers?.join(",") ?? "inherits"}
+                  // Read with a fallback: absent from a detail answered by a main process that predates it.
+                  own={item.git.reviewers ?? null}
+                  reviewers={item.reviewers ?? null}
+                  busy={editReviewers.isPending}
+                  problem={reviewersProblem}
+                  onSave={(next) => {
+                    setReviewersProblem(null);
+                    editReviewers.mutate({ itemId, reviewers: next });
+                  }}
+                  onCancel={() => setReviewersProblem(null)}
                 />
 
                 {/* Only where the repository names a Jira site (EO-126). */}

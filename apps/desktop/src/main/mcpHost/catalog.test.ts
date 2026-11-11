@@ -1886,6 +1886,23 @@ describe("the MCP tool catalog", () => {
     expect(description).toMatch(/refuses the whole call/);
   });
 
+  it.each(["ticket_update", "item_update"])("tells a client that %s sets reviewers, what [] and null mean, and the fallback order (EO-742)", (name) => {
+    const tool = TOOLS.flatMap((candidate) => [candidate, ...(candidate.twin === undefined ? [] : [candidate.twin])]).find((candidate) => candidate.name === name);
+    const description = (tool?.description ?? "").replace(/\s+/g, " ");
+
+    expect(description).toContain("Set reviewers");
+    expect(description).toContain("reviewers: [] asks nobody");
+    expect(description).toContain("reviewers: null clears");
+    expect(description).toContain("a ticket's own list wins, else its feature's own list, else the repository's default reviewers");
+  });
+
+  it("names a module's two reviewer fields in module_test_save's item fixture (EO-742)", () => {
+    const description = (TOOLS.find((candidate) => candidate.name === "module_test_save")?.description ?? "").replace(/\s+/g, " ");
+
+    expect(description).toContain("reviewers");
+    expect(description).toContain("pullRequestReviewers");
+  });
+
   it("tells a client submitting an item that a Jira key attaches and reads the issue in", () => {
     // The surprise a model cannot recover from otherwise (EO-127): it
     // sends a carefully written body beside a key, and the issue's own

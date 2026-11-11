@@ -1586,7 +1586,7 @@ describe("a base branch set on the ticket", () => {
     expect(await branchExists(repoPath, "release/2.4")).toBe(false);
     expect(progress.some((line) => line.includes("release/2.4") && line.includes("base branch set on this ticket"))).toBe(true);
     // The base stays on the ticket beside the branch it started.
-    expect(gitStateOf(getItem(handle.db, named.id)!)).toEqual({ branch: `eo/${named.key}`, pullRequest: null, baseBranch: "release/2.4", namedBranch: false, attachedAt: null, reference: null });
+    expect(gitStateOf(getItem(handle.db, named.id)!)).toEqual({ branch: `eo/${named.key}`, pullRequest: null, baseBranch: "release/2.4", namedBranch: false, attachedAt: null, reference: null, reviewers: null });
   });
 
   it("wins over an unmerged same-feature dependency it would otherwise stack on", async () => {
@@ -1755,7 +1755,7 @@ describe("an existing branch named on the ticket", () => {
     const head = await git(["rev-parse", "--abbrev-ref", "HEAD"], result.workspace.cwd);
     expect(head.ok && head.stdout).toBe("feature/limits");
     expect(await branchExists(repoPath, `eo/${named.key}`)).toBe(false);
-    expect(gitStateOf(getItem(handle.db, named.id)!)).toEqual({ branch: "feature/limits", pullRequest: null, baseBranch: null, namedBranch: true, attachedAt: tip, reference: null });
+    expect(gitStateOf(getItem(handle.db, named.id)!)).toEqual({ branch: "feature/limits", pullRequest: null, baseBranch: null, namedBranch: true, attachedAt: tip, reference: null, reviewers: null });
   });
 
   it("keeps the first attachment's commit across a second dispatch", async () => {

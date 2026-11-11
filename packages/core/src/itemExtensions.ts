@@ -214,6 +214,16 @@ export const GitItemStateSchema = z.object({
    * already reads the branch. Always a value `referenceProblem` accepts.
    */
   reference: z.string().nullable().default(null),
+  /**
+   * Who is asked to review this item's pull request, in place of the
+   * repository's default reviewers (EO-742). Null — the ordinary state —
+   * means the item names none of its own: a story then reads its
+   * feature's, and a feature or a story under none reads the
+   * repository's (`effectiveReviewers`). An empty list means nobody is
+   * asked, whatever the repository's default says. Always a list
+   * `normaliseReviewers` left as it is.
+   */
+  reviewers: z.array(z.string()).nullable().default(null),
 });
 
 export type GitItemState = z.infer<typeof GitItemStateSchema>;
@@ -266,13 +276,15 @@ export function readGitState(data: unknown): GitItemState {
 /**
  * Whether this state is worth a row.
  *
- * An item with no branch, no pull request, no base branch and no
- * Reference named has had nothing git-shaped happen to it, which is what
+ * An item with no branch, no pull request, no base branch, no
+ * Reference and no reviewers named has had nothing git-shaped happen to it, which is what
  * no row already says.
  */
 export function isDefaultGitState(state: GitItemState): boolean {
-  const { branch, pullRequest, baseBranch, namedBranch, attachedAt, reference } = state;
-  return branch === null && pullRequest === null && baseBranch === null && !namedBranch && attachedAt === null && reference === null;
+  const { branch, pullRequest, baseBranch, namedBranch, attachedAt, reference, reviewers } = state;
+  return (
+    branch === null && pullRequest === null && baseBranch === null && !namedBranch && attachedAt === null && reference === null && reviewers === null
+  );
 }
 
 /**
@@ -410,4 +422,48 @@ export function effectiveReference(
   if (parent === null || parent === undefined) return null;
   const inherited = gitStateOf(parent).reference;
   return inherited === null ? null : { value: inherited, inheritedFrom: parent.key };
+}
+
+/**
+ * `ItemReviewers.inheritedFrom` when the list is the repository's
+ * default (EO-742). Never an item key, which always carries a dash.
+ */
+export const REVIEWERS_FROM_REPOSITORY = "repository";
+
+/**
+ * An item's pull request reviewers as they take effect, and where they
+ * came from (EO-742).
+ *
+ * `inheritedFrom` is named as `ItemReference.inheritedFrom` is: null
+ * when the item names the list itself, the parent's key when it is the
+ * parent's, and `REVIEWERS_FROM_REPOSITORY` when it is the repository's
+ * default. `value` may be empty, which asks nobody.
+ */
+export const ItemReviewersSchema = z.object({
+  value: z.array(z.string()),
+  inheritedFrom: z.string().nullable(),
+});
+
+export type ItemReviewers = z.infer<typeof ItemReviewersSchema>;
+
+/**
+ * Who is asked to review the pull request this item opens: its own
+ * list, or else its parent's own, or else `repositoryDefault` (EO-742).
+ *
+ * Shaped as `effectiveReference` is — one level, the parent's *own*
+ * list, read live — with the repository as the last place to look. A
+ * list that is set and empty stops the search: it says nobody, which is
+ * different from saying nothing. `repositoryDefault` is `[]` for an item
+ * on no git repository.
+ */
+export function effectiveReviewers(
+  item: { readonly extensions: ItemExtensions },
+  parent: { readonly key: string; readonly extensions: ItemExtensions } | null | undefined,
+  repositoryDefault: readonly string[],
+): ItemReviewers {
+  const { reviewers } = gitStateOf(item);
+  if (reviewers !== null) return { value: [...reviewers], inheritedFrom: null };
+  const inherited = parent === null || parent === undefined ? null : gitStateOf(parent).reviewers;
+  if (inherited !== null && parent) return { value: [...inherited], inheritedFrom: parent.key };
+  return { value: [...repositoryDefault], inheritedFrom: REVIEWERS_FROM_REPOSITORY };
 }

@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { GitItemStateSchema, ItemReferenceSchema } from "./itemExtensions.js";
+import { GitItemStateSchema, ItemReferenceSchema, ItemReviewersSchema } from "./itemExtensions.js";
 import { ItemOriginSchema } from "./schemas/jobs.js";
 import { AssistCardViewSchema } from "./schemas/assistCard.js";
 import { CommentOptionSchema } from "./schemas/commentOptions.js";
@@ -552,6 +552,14 @@ export const ItemDetailSchema = z.object({
      * alone is `git.reference`.
      */
     reference: ItemReferenceSchema.nullable().default(null),
+    /**
+     * Who is asked to review this item's pull request, as it takes
+     * effect — its own list, its parent feature's, or the repository's
+     * default — and which of the three it is (EO-742). Null only from a
+     * main process that predates it. The item's own list alone is
+     * `git.reviewers`.
+     */
+    reviewers: ItemReviewersSchema.nullable().default(null),
   }),
   /**
    * What a person may decide right now (EO-310, ARCHITECTURE.md, "The item").

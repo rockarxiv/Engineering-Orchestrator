@@ -27,6 +27,7 @@ import { attachWorkspace, createTestItem, openMigratedTestDb } from "../../../db
 import { REPOSITORY_INDEX_DIRECTORIES } from "../repositoryIntelligence/index.js";
 import { currentBranch, statusPorcelain } from "../workspace/git.js";
 import type { CliResult, CliRunner } from "./cli.js";
+import { updateItemText } from "../../../ipc/domainCommands.js";
 import { openPullRequestForItem } from "./openForItem.js";
 import { preparingAt } from "../../../supervisor/testWorkspaceKinds.js";
 
@@ -409,6 +410,57 @@ describe("asking a repository's default reviewers (EO-741)", () => {
   });
 });
 
+describe("asking an item's own reviewers over the repository's (EO-742)", () => {
+  const ghUrl = "https://github.com/acme/api/pull/7";
+  const readBack = json([{ url: ghUrl, state: "OPEN", author: { login: "eo-bot" } }]);
+  const asked: CliResult = { ok: true, stdout: ghUrl, error: "", notFound: false };
+
+  beforeEach(() => {
+    updateWorkspace(handle.db, repository.id, { config: { forgeReviewers: ["alice", "bob"] } });
+  });
+
+  it("requests the story's own list and not the repository's", async () => {
+    const item = story();
+    expect(updateItemText(handle.db, { itemId: item.id, reviewers: ["carol"] })).toEqual({ updated: true, problem: null });
+    expect(gitStateOf(getItem(handle.db, item.id)!).reviewers).toEqual(["carol"]);
+    const { run, calls } = recorder([noneYet, created, readBack, asked]);
+
+    expect(await mergeRequestStep(getItem(handle.db, item.id)!, run)).toMatchObject({ ok: true, result: "opened" });
+    expect(calls.slice(3)).toEqual([["pr", "edit", ghUrl, "--add-reviewer", "carol"]]);
+  });
+
+  it("requests nobody when the story's list is empty, running exactly the commands of a repository with none", async () => {
+    const item = story();
+    updateItemText(handle.db, { itemId: item.id, reviewers: [] });
+    const { run, calls } = recorder([noneYet, created, found]);
+
+    expect(await mergeRequestStep(getItem(handle.db, item.id)!, run)).toMatchObject({ ok: true, result: "opened" });
+    expect(calls).toHaveLength(3);
+    expect(calls.some((args) => args.includes("edit"))).toBe(false);
+  });
+
+  it("requests the feature's list for a story without its own", async () => {
+    const feature = createTestItem(handle.db, { type: "feature", title: "Outbox", stepId: null, workspaceId: repository.id });
+    const item = story({ parentId: feature.id });
+    updateItemText(handle.db, { itemId: feature.id, reviewers: ["dave"] });
+    const { run, calls } = recorder([noneYet, created, readBack, asked]);
+
+    expect(await mergeRequestStep(getItem(handle.db, item.id)!, run)).toMatchObject({ ok: true, result: "opened" });
+    expect(calls.slice(3)).toEqual([["pr", "edit", ghUrl, "--add-reviewer", "dave"]]);
+  });
+
+  it("names the list a refused reviewer came from in the comment", async () => {
+    const item = story();
+    updateItemText(handle.db, { itemId: item.id, reviewers: ["carol"] });
+    const refused: CliResult = { ok: false, stdout: "", error: "no such user", notFound: false };
+    const { run } = recorder([noneYet, created, readBack, refused]);
+
+    await mergeRequestStep(getItem(handle.db, item.id)!, run);
+    const refusal = listCommentsForItem(handle.db, item.id).find((comment) => comment.body.includes("could not ask"));
+    expect(refusal?.body).toContain(`correct the reviewers set on ${item.key}`);
+  });
+});
+
 describe("named after a Reference (EO-638)", () => {
   /** The title and the body the `create` call was given. */
   function capture(): { cli: CliRunner; sent: { title: string; body: string; creates: number; edits: number } } {
@@ -662,7 +714,7 @@ describe("when it cannot", () => {
     // sends it is the pipeline's business, not this function's.
     const saved = getItem(handle.db, item.id)!;
     expect(saved.stepId).toBe("review");
-    expect(gitStateOf(saved)).toEqual({ branch: "eo/API-4", pullRequest: null, baseBranch: null, namedBranch: false, attachedAt: null, reference: null });
+    expect(gitStateOf(saved)).toEqual({ branch: "eo/API-4", pullRequest: null, baseBranch: null, namedBranch: false, attachedAt: null, reference: null, reviewers: null });
   });
 });
 

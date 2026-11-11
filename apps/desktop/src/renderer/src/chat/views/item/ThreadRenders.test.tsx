@@ -90,6 +90,7 @@ function page(comments: CommentView[]): ItemPage {
       jiraSync: true,
       jiraConnected: false,
       reference: null,
+      reviewers: null,
       updatedAt: 1,
       stepEnteredAt: 1,
       heldAt: null,

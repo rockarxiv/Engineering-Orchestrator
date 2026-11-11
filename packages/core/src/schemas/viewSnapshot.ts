@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { GitItemStateSchema, ItemReferenceSchema } from "../itemExtensions.js";
+import { GitItemStateSchema, ItemReferenceSchema, ItemReviewersSchema } from "../itemExtensions.js";
 import { PageDescriptorSchema } from "./pageDescriptor.js";
 
 /**
@@ -169,6 +169,8 @@ export const ViewItemSchema = z.object({
   git: GitItemStateSchema,
   /** The Reference its work is filed under, own or inherited from its feature (EO-637). Null when none is. */
   reference: ItemReferenceSchema.nullable().default(null),
+  /** Who its pull request asks to review it, and whether that is its own list, its feature's or the repository's (EO-742). */
+  reviewers: ItemReviewersSchema.nullable().default(null),
 });
 
 export type ViewItem = z.infer<typeof ViewItemSchema>;

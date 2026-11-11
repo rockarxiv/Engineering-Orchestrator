@@ -11,6 +11,7 @@ import {
   jiraStateOf,
   missingSpecFields,
   namedBranchOf,
+  normaliseReviewers,
   referenceProblem,
   editAwaitingHoldLine,
   specIssues,
@@ -1900,6 +1901,31 @@ function judgeReferenceEdit(item: Item, sent: string | null | undefined): Branch
   return problem === null ? { kind: "write", value: next } : { kind: "refused", problem };
 }
 
+/**
+ * Judges an edit of the item's own pull request reviewers before
+ * anything is written (EO-742).
+ *
+ * A list is normalised and refused exactly as the repository's default
+ * is (`normaliseReviewers`), so one handle is turned away by the same
+ * words at either door. `[]` is a list — nobody is asked — and `null` is
+ * clearing, which leaves the item to inherit its feature's list or the
+ * repository's.
+ */
+type ReviewersEdit = { kind: "absent" } | { kind: "unchanged" } | { kind: "write"; value: string[] | null } | { kind: "refused"; problem: string };
+
+function judgeReviewersEdit(item: Item, sent: readonly string[] | null | undefined): ReviewersEdit {
+  if (sent === undefined) return { kind: "absent" };
+  let next: string[] | null = null;
+  if (sent !== null) {
+    const normalised = normaliseReviewers(sent);
+    if (!normalised.ok) return { kind: "refused", problem: normalised.problem };
+    next = normalised.reviewers;
+  }
+  const current = gitStateOf(item).reviewers;
+  const same = next === null || current === null ? next === current : next.length === current.length && next.every((handle, index) => handle === current[index]);
+  return same ? { kind: "unchanged" } : { kind: "write", value: next };
+}
+
 export function updateItemText(db: Db, input: IpcPayload<"items:update">): IpcResponse<"items:update"> {
   const itemId = input.itemId as Uuid;
   // Read before anything is written, because the Jira half needs the
@@ -1979,6 +2005,9 @@ export function updateItemText(db: Db, input: IpcPayload<"items:update">): IpcRe
   // first write, so nothing else sent with it lands either.
   const referenceEdit = judgeReferenceEdit(item, input.reference);
   if (referenceEdit.kind === "refused") return { updated: false, problem: referenceEdit.problem };
+  // The reviewers, on the same terms (EO-742).
+  const reviewersEdit = judgeReviewersEdit(item, input.reviewers);
+  if (reviewersEdit.kind === "refused") return { updated: false, problem: reviewersEdit.problem };
 
   // What it waits for (EO-600), judged whole before the first write for
   // the reason the criteria are: a refusal — a key naming nothing, a
@@ -2015,11 +2044,12 @@ export function updateItemText(db: Db, input: IpcPayload<"items:update">): IpcRe
   // (EO-365): dispatch already checks out a stored branch rather than
   // cutting one. Clearing it takes the name off and leaves EO to cut its
   // own, exactly as if none had been named.
-  if (baseEdit.kind === "write" || existingEdit.kind === "write" || referenceEdit.kind === "write") {
+  if (baseEdit.kind === "write" || existingEdit.kind === "write" || referenceEdit.kind === "write" || reviewersEdit.kind === "write") {
     patch.git = {
       ...(baseEdit.kind === "write" ? { baseBranch: baseEdit.value } : {}),
       ...(existingEdit.kind === "write" ? { branch: existingEdit.value, namedBranch: existingEdit.value !== null, attachedAt: null } : {}),
       ...(referenceEdit.kind === "write" ? { reference: referenceEdit.value } : {}),
+      ...(reviewersEdit.kind === "write" ? { reviewers: reviewersEdit.value } : {}),
     };
   }
 
@@ -2120,7 +2150,7 @@ export function updateItemText(db: Db, input: IpcPayload<"items:update">): IpcRe
   // sent unchanged count as named: the caller asked for a field and the
   // item holds what they asked for, which is `applyJiraEdit`'s answer
   // to the same question.
-  if (Object.keys(patch).length === 0 && !askedForJira && criteria === null && baseEdit.kind === "absent" && existingEdit.kind === "absent" && referenceEdit.kind === "absent" && !asksDependencies) {
+  if (Object.keys(patch).length === 0 && !askedForJira && criteria === null && baseEdit.kind === "absent" && existingEdit.kind === "absent" && referenceEdit.kind === "absent" && reviewersEdit.kind === "absent" && !asksDependencies) {
     return { updated: false, problem: null };
   }
 

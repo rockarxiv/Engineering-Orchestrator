@@ -3,6 +3,7 @@ import {
   acceptanceCriteriaOf,
   GIT_WORKTREE_KIND,
   effectiveReference,
+  effectiveReviewers,
   gitStateOf,
   ITEM_COMMENTS_PAGE,
   ITEM_SECTIONS,
@@ -30,6 +31,7 @@ import {
   type Run,
   type RunView,
   type Item,
+  type ItemReviewers,
   type ItemSummary,
   type Uuid,
   type WorkspaceBadge,
@@ -484,6 +486,27 @@ function olderVersionIndex(db: Db, rows: Item[]): Map<string, number> {
 /** The feature a story belongs to, for the tag on its card (ARCHITECTURE.md, "One work entity"). */
 function parentOf(db: Db, item: Item): Item | undefined {
   return item.parentId === null ? undefined : getItem(db, item.parentId);
+}
+
+/**
+ * Who is asked to review the pull request `item` opens, and where that
+ * list came from (EO-742): its own, its feature's, or its repository's
+ * default — `[]` from the repository when it is on none. `effectiveReviewers`
+ * is what decides, and the Merge Request step asks it too.
+ */
+export function itemReviewers(db: Db, item: Item): ItemReviewers {
+  const repository = item.workspaceId === null ? undefined : asGitWorkspace(getWorkspace(db, item.workspaceId));
+  return effectiveReviewers(item, parentOf(db, item), repository?.config.forgeReviewers ?? []);
+}
+
+/**
+ * The reviewers the Merge Request step will request for `item`
+ * (EO-742): `itemReviewers`' list on an item in a git repository, and
+ * `[]` on one that is not, where no pull request is ever opened.
+ */
+function pullRequestReviewersOf(db: Db, item: Item): string[] {
+  const inRepository = item.workspaceId !== null && asGitWorkspace(getWorkspace(db, item.workspaceId)) !== undefined;
+  return inRepository ? itemReviewers(db, item).value : [];
 }
 
 /**
@@ -947,6 +970,10 @@ export interface ModuleItemView {
     pullRequest: string | null;
     reference: string | null;
     targetBranch: string | null;
+    /** Its own list as stored: null when it inherits, `[]` when set to nobody (EO-742). */
+    reviewers: string[] | null;
+    /** Who the pull request step will ask to review it — own, feature's or repository's; `[]` off a repository (EO-742). */
+    pullRequestReviewers: string[];
   };
   extensions: Record<string, unknown>;
   parent: ModuleItemRelation | null;
@@ -968,7 +995,7 @@ export function moduleItemView(db: Db, item: Item, targetBranch: string | null):
   const pipeline = item.pipelineId === null ? undefined : getPipeline(db, item.pipelineId);
   const step = stepForItem(db, item);
   const version = item.pipelineVersionId === null ? undefined : getPipelineVersion(db, item.pipelineVersionId);
-  const { branch, pullRequest, baseBranch, namedBranch, attachedAt, reference } = gitStateOf(item);
+  const { branch, pullRequest, baseBranch, namedBranch, attachedAt, reference, reviewers } = gitStateOf(item);
 
   const edges = listAllDependencies(db);
   const byId = (id: string): Item[] => {
@@ -1026,7 +1053,17 @@ export function moduleItemView(db: Db, item: Item, targetBranch: string | null):
     pipeline: pipeline === undefined ? null : { id: pipeline.id, name: pipeline.name },
     step: step === undefined ? null : { id: step.id, name: step.name, kind: step.type, ownerRole: step.ownerRole },
     pipelineVersion: version === undefined ? null : { id: version.id, number: version.number },
-    git: { branch, baseBranch, namedBranch, attachedAt, pullRequest, reference, targetBranch },
+    git: {
+      branch,
+      baseBranch,
+      namedBranch,
+      attachedAt,
+      pullRequest,
+      reference,
+      targetBranch,
+      reviewers: reviewers === null ? null : [...reviewers],
+      pullRequestReviewers: pullRequestReviewersOf(db, item),
+    },
     extensions: { ...item.extensions },
     parent: parent[0] === undefined ? null : relation(parent[0]),
     children: children.map(relation),
@@ -1480,6 +1517,9 @@ function ownFieldsSection(db: Db, { item, step }: ItemDetailContext) {
       // read live off the parent, so changing the feature's changes what
       // every story under it without one of its own shows.
       reference: effectiveReference(item, parentOf(db, item)),
+      // Its own reviewers, its feature's, or its repository's (EO-742),
+      // read live for the Reference's reason.
+      reviewers: itemReviewers(db, item),
       // Which job made it (EO-304, ARCHITECTURE.md, "What a job records"). Resolved through the
       // occurrence that created it rather than read off a column,
       // because the occurrence is already the record of the firing.

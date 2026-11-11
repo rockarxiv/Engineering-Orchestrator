@@ -21,6 +21,8 @@ import {
   type IpcRequest,
   type IpcResponse,
   type ItemReference,
+  type ItemReviewers,
+  REVIEWERS_FROM_REPOSITORY,
   type MachineSpecificWarning,
   type McpServerView,
   type MemoryConsolidationSummary,
@@ -184,6 +186,22 @@ function referenceSource(reference: ItemReference): string {
   return reference.inheritedFrom === null ? "" : ` (inherited from ${reference.inheritedFrom})`;
 }
 
+/**
+ * Who a pull request for this item asks to review it, and where that
+ * list came from (EO-742) — or null when there is nothing to say: the
+ * repository's default is empty and nothing overrides it, which is the
+ * ordinary state, or a main process predating the field answered.
+ */
+function reviewersPhrase(reviewers: ItemReviewers | null | undefined): string | null {
+  if (reviewers === null || reviewers === undefined) return null;
+  const { value, inheritedFrom } = reviewers;
+  if (value.length === 0 && inheritedFrom === REVIEWERS_FROM_REPOSITORY) return null;
+  const who = value.length === 0 ? "nobody" : value.join(", ");
+  if (inheritedFrom === null) return `${who} (set here)`;
+  if (inheritedFrom === REVIEWERS_FROM_REPOSITORY) return `${who} (the repository's default)`;
+  return `${who} (inherited from ${inheritedFrom})`;
+}
+
 function renderViewItem(item: ViewItem): string[] {
   const lines = [
     `They are looking at a ticket: **${item.key}** (${item.type}) — ${item.title}`,
@@ -222,6 +240,8 @@ function renderViewItem(item: ViewItem): string[] {
   lines.push(`- Pull request: ${pullRequest === null ? "none opened" : pullRequest}`);
   // Only when one names the work (EO-637), as the base branch above.
   if (item.reference !== null) lines.push(`- Reference: \`${item.reference.value}\`${referenceSource(item.reference)}`);
+  const reviewers = reviewersPhrase(item.reviewers);
+  if (reviewers !== null) lines.push(`- Pull request reviewers: ${reviewers}`);
   lines.push("", `"this ticket", "it" and "here" mean **${item.key}** unless they name something else.`);
 
   return lines;
@@ -539,6 +559,8 @@ export function renderItem(data: IpcResponse<"items:getSections">, request?: Ipc
     if (baseBranch !== null) lines.push(`- base branch: ${baseBranch}`);
     if (pullRequest !== null) lines.push(`- pull request: ${pullRequest}`);
     if (item.reference !== null) lines.push(`- reference: ${item.reference.value}${referenceSource(item.reference)}`);
+    const reviewers = reviewersPhrase(item.reviewers);
+    if (reviewers !== null) lines.push(`- pull request reviewers: ${reviewers}`);
     if (item.jiraKey !== null) lines.push(`- Jira: ${item.jiraKey}`);
     if (item.heldAt !== null) lines.push(`- **held** since ${stamp(item.heldAt)} — the scheduler will not pick it up until it is resumed`);
     if (item.needsAttention) lines.push("- **needs attention** — someone is waiting on a person");
