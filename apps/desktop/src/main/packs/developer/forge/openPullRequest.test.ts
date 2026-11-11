@@ -341,3 +341,100 @@ describe("the body", () => {
     expect(result.ambiguousTemplates).toHaveLength(2);
   });
 });
+
+describe("asking for reviewers (EO-741)", () => {
+  const ghUrl = "https://github.com/acme/api/pull/7";
+  const glUrl = "https://gitlab.com/acme/api/-/merge_requests/3";
+  const refused = (error: string): CliResult => ({ ok: false, stdout: "", error, notFound: false });
+
+  it("asks gh for them after creating the pull request, in one command of its own", async () => {
+    const { run, calls } = recorder([empty, created(ghUrl), json([{ url: ghUrl, state: "OPEN", author: { login: "eo-bot" } }])]);
+
+    const result = await openPullRequest(input({ run, reviewers: ["alice", "bob"] }));
+
+    expect(result).toMatchObject({ ok: true, url: ghUrl, reviewers: { requested: ["alice", "bob"], refused: [], author: null } });
+    expect(calls.map((call) => call.args)).toEqual([
+      ["pr", "list", "--head", "eo/API-4", "--state", "all", "--json", "url,state", "--limit", "1"],
+      calls[1]!.args,
+      // The read-back asks who opened it, since that is the one reviewer gh refuses.
+      ["pr", "list", "--head", "eo/API-4", "--state", "all", "--json", "url,state,author", "--limit", "1"],
+      ["pr", "edit", ghUrl, "--add-reviewer", "alice,bob"],
+    ]);
+    expect(calls[1]!.args.slice(0, 2)).toEqual(["pr", "create"]);
+  });
+
+  it("asks glab for them by the merge request's iid, adding rather than replacing", async () => {
+    const { run, calls } = recorder([empty, created(glUrl), json([{ web_url: glUrl, iid: 3, state: "opened", author: { username: "eo-bot" } }])]);
+
+    const result = await openPullRequest(input({ run, forgeKind: "gitlab", reviewers: ["alice", "bob"] }));
+
+    expect(result.reviewers).toEqual({ requested: ["alice", "bob"], refused: [], author: null });
+    expect(calls[2]).toEqual({ cli: "glab", args: ["mr", "list", "--source-branch", "eo/API-4", "--all", "--output", "json"] });
+    expect(calls[3]).toEqual({ cli: "glab", args: ["mr", "update", "3", "--reviewer", "+alice,+bob"] });
+    expect(calls).toHaveLength(4);
+  });
+
+  it("still opens when the forge refuses one, and says which and what the forge said", async () => {
+    const { run, calls } = recorder([
+      empty,
+      created(ghUrl),
+      json([{ url: ghUrl, state: "OPEN", author: { login: "eo-bot" } }]),
+      refused("GraphQL: Could not resolve to a User with the login of 'nobody'."),
+      { ok: true, stdout: ghUrl, error: "", notFound: false },
+      refused("GraphQL: Could not resolve to a User with the login of 'nobody'."),
+    ]);
+
+    const result = await openPullRequest(input({ run, reviewers: ["alice", "nobody"] }));
+
+    expect(result).toMatchObject({ ok: true, url: ghUrl });
+    expect(result.reviewers).toEqual({
+      requested: ["alice"],
+      refused: [{ reviewer: "nobody", reason: "GraphQL: Could not resolve to a User with the login of 'nobody'." }],
+      author: null,
+    });
+    expect(calls.slice(3).map((call) => call.args)).toEqual([
+      ["pr", "edit", ghUrl, "--add-reviewer", "alice,nobody"],
+      ["pr", "edit", ghUrl, "--add-reviewer", "alice"],
+      ["pr", "edit", ghUrl, "--add-reviewer", "nobody"],
+    ]);
+  });
+
+  it("leaves the pull request's author out, whatever the case of their login", async () => {
+    const { run, calls } = recorder([empty, created(ghUrl), json([{ url: ghUrl, state: "OPEN", author: { login: "Alice" } }])]);
+
+    const result = await openPullRequest(input({ run, reviewers: ["alice", "bob"] }));
+
+    expect(result.reviewers).toEqual({ requested: ["bob"], refused: [], author: "alice" });
+    expect(calls.at(-1)!.args).toEqual(["pr", "edit", ghUrl, "--add-reviewer", "bob"]);
+  });
+
+  it("asks nobody when the author is the only reviewer", async () => {
+    const { run, calls } = recorder([empty, created(ghUrl), json([{ url: ghUrl, state: "OPEN", author: { login: "alice" } }])]);
+
+    const result = await openPullRequest(input({ run, reviewers: ["alice"] }));
+
+    expect(result.reviewers).toEqual({ requested: [], refused: [], author: "alice" });
+    expect(calls).toHaveLength(3);
+  });
+
+  it("asks nobody on a pull request it found already open", async () => {
+    const { run, calls } = recorder([json([{ url: ghUrl, state: "OPEN" }])]);
+
+    const result = await openPullRequest(input({ run, reviewers: ["alice", "bob"] }));
+
+    expect(result).toMatchObject({ ok: true, adopted: true, reviewers: null });
+    expect(calls).toHaveLength(1);
+  });
+
+  it("runs exactly the commands it always did when there is nobody to ask", async () => {
+    for (const reviewers of [undefined, []]) {
+      const { run, calls } = recorder([empty, created(ghUrl), json([{ url: ghUrl, state: "OPEN" }])]);
+
+      const result = await openPullRequest(input({ run, ...(reviewers ? { reviewers } : {}) }));
+
+      expect(result.reviewers).toBeNull();
+      expect(calls.map((call) => call.args[0] + " " + call.args[1])).toEqual(["pr list", "pr create", "pr list"]);
+      expect(calls[2]!.args).toEqual(calls[0]!.args);
+    }
+  });
+});

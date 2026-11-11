@@ -25,7 +25,7 @@ import type { PullRequestFacts } from "./body.js";
 import { createCliRunner, type CliRunner } from "./cli.js";
 import { classifyForgeError } from "./errors.js";
 import { forgePullRequestState, resolveMergeState } from "./mergeState.js";
-import { openPullRequest } from "./openPullRequest.js";
+import { openPullRequest, type ReviewerRequest } from "./openPullRequest.js";
 
 /**
  * Opening one item's pull request, inline, as the `open_pull_request`
@@ -394,6 +394,7 @@ async function openNew(
     run,
     ...(signal ? { signal } : {}),
     ...(ended ? { onlyAdoptOpen: true } : {}),
+    reviewers: pullRequestReviewers(item, workspace),
   });
 
   if (!result.ok) {
@@ -418,8 +419,48 @@ async function openNew(
     );
   }
   recordPullRequest(db, workspace, item, result.url, remarks);
+  if (result.reviewers) reportReviewers(db, item, result.reviewers, onProgress);
 
   return { kind: "opened", detail: result.adopted ? `Adopted the pull request already open: ${result.url}` : `Opened ${result.url}` };
+}
+
+/**
+ * Who is asked to review the pull request `item` opens (EO-741).
+ *
+ * The repository's default for now. The one place the list is read, so
+ * that an item's own list, or its feature's, is put in front of it here
+ * and nowhere else.
+ */
+export function pullRequestReviewers(_item: Item, workspace: GitWorkspace): string[] {
+  return workspace.config.forgeReviewers;
+}
+
+/**
+ * What came of asking for reviewers: a transcript line for whoever was
+ * asked and for an author left out — a forge will not have them review
+ * their own, so that is not something to tell anybody about — and one
+ * comment naming every reviewer the forge refused, with what it said.
+ * The pull request is open either way, so none of it is a failure.
+ */
+function reportReviewers(db: Db, item: Item, outcome: ReviewerRequest, onProgress?: (text: string) => void): void {
+  if (outcome.author !== null) {
+    onProgress?.(`Left ${outcome.author} out of the reviewers: they opened the pull request, and a forge does not let its author review it.`);
+  }
+  if (outcome.requested.length > 0) onProgress?.(`Asked for review from ${outcome.requested.join(", ")}.`);
+  if (outcome.refused.length === 0) return;
+
+  onProgress?.(`The forge refused ${outcome.refused.length === 1 ? "a reviewer" : "some reviewers"}: ${outcome.refused.map((refusal) => refusal.reviewer).join(", ")}.`);
+  const listed = outcome.refused.map((refusal) => `- \`${refusal.reviewer}\`: ${refusal.reason.replace(/\s*\n\s*/g, " ")}`);
+  postComment(db, {
+    itemId: item.id,
+    author: { type: "engine" },
+    kind: "note",
+    body: [
+      `The pull request is open, but EO could not ask ${outcome.refused.length === 1 ? "this reviewer" : "these reviewers"} to review it:`,
+      listed.join("\n"),
+      "Ask them on the forge, or correct the repository's default reviewers in Settings.",
+    ].join("\n\n"),
+  });
 }
 
 /**

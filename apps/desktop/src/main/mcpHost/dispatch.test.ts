@@ -1784,6 +1784,37 @@ describe("setting EO up, through the tools that do it", () => {
     expect(listed.data).toMatchObject({ repositories: [{ repoPath, name: "the api", buildCommand: "pnpm build" }] });
   });
 
+  it("saves a repository's default reviewers trimmed, without blanks or repeats, and lists them (EO-741)", async () => {
+    const repositoryId = await attach("api", repoPath);
+
+    const changed = await tool("repository_update").run(dispatch, { id: repositoryId, forgeReviewers: [" alice ", "", "bob", "alice"] });
+
+    expect(changed.ok).toBe(true);
+    if (!changed.ok) return;
+    expect(changed.refused).toBe(false);
+    const listed = await tool("repositories_list").run(dispatch, {});
+    expect(listed.ok).toBe(true);
+    if (!listed.ok) return;
+    expect((listed.data as IpcResponse<"repositories:list">).repositories[0]!.forge.reviewers).toEqual(["alice", "bob"]);
+    expect(listed.text).toContain("default pull request reviewers: alice, bob");
+  });
+
+  it("refuses a reviewer with a space or a comma in it by name, and changes nothing about the repository (EO-741)", async () => {
+    const repositoryId = await attach("api", repoPath);
+    await tool("repository_update").run(dispatch, { id: repositoryId, forgeReviewers: ["carol"] });
+    const before = listRepositoriesCommand(handle.db, credentials).repositories[0]!;
+
+    for (const bad of ["alice smith", "alice,bob"]) {
+      const refused = await tool("repository_update").run(dispatch, { id: repositoryId, testCommand: "pnpm test", forgeReviewers: ["dave", bad] });
+
+      expect(refused.ok).toBe(true);
+      if (!refused.ok) return;
+      expect(refused.refused).toBe(true);
+      expect(refused.text).toContain(`"${bad}"`);
+      expect(listRepositoriesCommand(handle.db, credentials).repositories[0]).toEqual(before);
+    }
+  });
+
   it("refuses a path that is not a git repository, and says which path", async () => {
     // The screen has a folder picker, which proves a folder exists and
     // nothing more; a client has not even got that. Stored unchecked, the

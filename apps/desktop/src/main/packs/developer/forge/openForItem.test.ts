@@ -90,7 +90,7 @@ function story(overrides: Partial<Parameters<typeof createTestItem>[1]> = {}): I
  * test whose worktrees live here while the answer came from `~/.eo`
  * would prove nothing about either.
  */
-async function mergeRequestStep(item: Item, run: CliRunner) {
+async function mergeRequestStep(item: Item, run: CliRunner, report: (text: string) => void = () => {}) {
   const runners = createBuiltinRunners(
     (db, subject, options) => openPullRequestForItem(db, subject, { ...options, run, sleep: async () => {} }),
     join(scratch, "worktrees"),
@@ -102,7 +102,7 @@ async function mergeRequestStep(item: Item, run: CliRunner) {
     // What the step would narrate into its transcript. Dropped here:
     // these tests are about what reaches the forge, and the transcript
     // has its own tests beside the supervisor that writes it.
-    report: () => {},
+    report,
     // The worktree builtin does not read this; the pull request one and a
     // custom module do (KAN-105).
     runId: "019fb8c6-0000-7000-8000-00000000dead" as Uuid,
@@ -308,6 +308,104 @@ describe("opening it", () => {
 
     expect(pendingPushesForItem(handle.db, item.id, "jira")).toEqual([]);
     expect(listCommentsForItem(handle.db, item.id).some((entry) => entry.body.includes("https://github.com/acme/api/pull/7"))).toBe(true);
+  });
+});
+
+describe("asking a repository's default reviewers (EO-741)", () => {
+  const ghUrl = "https://github.com/acme/api/pull/7";
+  const readBack = (login: string) => json([{ url: ghUrl, state: "OPEN", author: { login } }]);
+  const refusedCli = (error: string): CliResult => ({ ok: false, stdout: "", error, notFound: false });
+
+  beforeEach(() => {
+    updateWorkspace(handle.db, repository.id, { config: { forgeReviewers: ["alice", "bob"] } });
+  });
+
+  it("creates the pull request on GitHub and then requests review from them, answering opened", async () => {
+    const item = story();
+    const { run, calls } = recorder([noneYet, created, readBack("eo-bot"), { ok: true, stdout: ghUrl, error: "", notFound: false }]);
+
+    const result = await mergeRequestStep(item, run);
+
+    expect(result).toMatchObject({ ok: true, result: "opened" });
+    expect(calls[1]!.slice(0, 2)).toEqual(["pr", "create"]);
+    expect(calls.slice(3)).toEqual([["pr", "edit", ghUrl, "--add-reviewer", "alice,bob"]]);
+  });
+
+  it("requests them as merge request reviewers on GitLab", async () => {
+    updateWorkspace(handle.db, repository.id, { config: { forgeKind: "gitlab" } });
+    const glUrl = "https://gitlab.com/acme/api/-/merge_requests/12";
+    const item = story();
+    const { run, calls } = recorder([
+      noneYet,
+      { ok: true, stdout: glUrl, error: "", notFound: false },
+      json([{ web_url: glUrl, iid: 12, state: "opened", author: { username: "eo-bot" } }]),
+      { ok: true, stdout: "", error: "", notFound: false },
+    ]);
+
+    expect(await mergeRequestStep(item, run)).toMatchObject({ ok: true, result: "opened" });
+    expect(calls[1]!.slice(0, 2)).toEqual(["mr", "create"]);
+    expect(calls.slice(3)).toEqual([["mr", "update", "12", "--reviewer", "+alice,+bob"]]);
+  });
+
+  it("still answers opened when the forge refuses one, records the link, and names the refusal in one comment", async () => {
+    const item = story();
+    const message = "GraphQL: Could not resolve to a User with the login of 'bob'. (requestReviews)";
+    const ok: CliResult = { ok: true, stdout: ghUrl, error: "", notFound: false };
+    const { run } = recorder([noneYet, created, readBack("eo-bot"), refusedCli(message), ok, refusedCli(message)]);
+
+    expect(await mergeRequestStep(item, run)).toMatchObject({ ok: true, result: "opened" });
+
+    expect(gitStateOf(getItem(handle.db, item.id)!).pullRequest).toBe(ghUrl);
+    const comments = listCommentsForItem(handle.db, item.id);
+    const refusals = comments.filter((comment) => comment.body.includes("could not ask"));
+    expect(refusals).toHaveLength(1);
+    expect(refusals[0]!.body).toContain(`\`bob\`: ${message}`);
+    expect(refusals[0]!.body).not.toContain("`alice`");
+    expect(comments.some((comment) => comment.body.includes(`Opened ${ghUrl}`))).toBe(true);
+  });
+
+  it("leaves the author out without a comment, saying so in the transcript", async () => {
+    const item = story();
+    const transcript: string[] = [];
+    const { run, calls } = recorder([noneYet, created, readBack("alice"), { ok: true, stdout: ghUrl, error: "", notFound: false }]);
+
+    expect(await mergeRequestStep(item, run, (text) => transcript.push(text))).toMatchObject({ ok: true, result: "opened" });
+
+    expect(calls.slice(3)).toEqual([["pr", "edit", ghUrl, "--add-reviewer", "bob"]]);
+    expect(transcript.some((line) => line.includes("Left alice out of the reviewers"))).toBe(true);
+    const comments = listCommentsForItem(handle.db, item.id);
+    expect(comments).toHaveLength(1);
+    expect(comments[0]!.body).not.toContain("alice");
+  });
+
+  it("asks nobody on a pull request the forge already had open for the branch", async () => {
+    const item = story();
+    const { run, calls } = recorder([found]);
+
+    expect(await mergeRequestStep(item, run)).toMatchObject({ ok: true, result: "opened" });
+    expect(calls).toHaveLength(1);
+    expect(calls.some((args) => args.includes("edit"))).toBe(false);
+  });
+
+  it("asks nobody on the pass through with a pull request already recorded", async () => {
+    const item = story({ git: { branch: "eo/API-4", pullRequest: ghUrl } });
+    const { run, calls } = recorder([found]);
+
+    expect(await mergeRequestStep(item, run)).toMatchObject({ ok: true, result: "opened" });
+    expect(calls.some((args) => args.includes("edit") || args.includes("create"))).toBe(false);
+  });
+
+  it("runs exactly the commands it did before reviewers existed when the repository has none", async () => {
+    updateWorkspace(handle.db, repository.id, { config: { forgeReviewers: [] } });
+    const item = story();
+    const { run, calls } = recorder([noneYet, created, found]);
+
+    expect(await mergeRequestStep(item, run)).toMatchObject({ ok: true, result: "opened" });
+    const lookup = ["pr", "list", "--head", "eo/API-4", "--state", "all", "--json", "url,state", "--limit", "1"];
+    expect(calls).toHaveLength(3);
+    expect(calls[0]).toEqual(lookup);
+    expect(calls[1]!.slice(0, 2)).toEqual(["pr", "create"]);
+    expect(calls[2]).toEqual(lookup);
   });
 });
 

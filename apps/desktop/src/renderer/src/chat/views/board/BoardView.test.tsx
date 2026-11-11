@@ -152,7 +152,7 @@ function repository(connected: boolean) {
     lintCommand: null,
     buildCommand: null,
     itemCount: 0,
-    forge: { openPr: false, kind: null, remote: "origin", draft: false, templatePath: null },
+    forge: { openPr: false, kind: null, remote: "origin", draft: false, templatePath: null, reviewers: [] },
     jira: {
       baseUrl: connected ? "https://acme.atlassian.net" : null,
       flavour: connected ? "cloud" : null,

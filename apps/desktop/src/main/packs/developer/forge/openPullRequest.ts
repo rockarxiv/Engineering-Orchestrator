@@ -67,6 +67,23 @@ export interface OpenPullRequestInput {
    * the new commits would never get a pull request of their own.
    */
   onlyAdoptOpen?: boolean;
+  /**
+   * Asked to review a pull request this creates, after it is created
+   * (EO-741). Left out or empty, nothing is asked and the commands run
+   * are exactly those run before reviewers existed. A pull request that
+   * is adopted rather than created is left as it is.
+   */
+  reviewers?: readonly string[];
+}
+
+/** What came of asking for reviewers, on a pull request this created. */
+export interface ReviewerRequest {
+  /** Asked, and the forge took it. */
+  requested: string[];
+  /** Asked, and the forge said no — with what it said. */
+  refused: { reviewer: string; reason: string }[];
+  /** Left out because they opened the pull request, which a forge will not have review their own. */
+  author: string | null;
 }
 
 export interface OpenPullRequestResult {
@@ -87,15 +104,18 @@ export interface OpenPullRequestResult {
    */
   diverged: boolean;
   error: string;
+  /** Null when nobody was to be asked, or the pull request was adopted rather than created. */
+  reviewers: ReviewerRequest | null;
 }
 
-const OK: Pick<OpenPullRequestResult, "adopted" | "fallbackBody" | "ambiguousTemplates" | "final" | "diverged" | "error"> = {
+const OK: Pick<OpenPullRequestResult, "adopted" | "fallbackBody" | "ambiguousTemplates" | "final" | "diverged" | "error" | "reviewers"> = {
   adopted: false,
   fallbackBody: false,
   ambiguousTemplates: null,
   final: false,
   diverged: false,
   error: "",
+  reviewers: null,
 };
 
 function fail(error: string, final: boolean): OpenPullRequestResult {
@@ -213,21 +233,80 @@ export async function openPullRequest(input: OpenPullRequestInput): Promise<Open
     }
 
     // 8. Read the URL back rather than trusting what create printed —
-    //    stdout also carries warnings and notifier noise.
-    const readBack = await run(cli, commands.find(branch), repoPath, input.signal ? { signal: input.signal } : {});
+    //    stdout also carries warnings and notifier noise. Asking for the
+    //    author too when there are reviewers to ask, since it is the one
+    //    of them a forge will refuse.
+    const reviewers = input.reviewers ?? [];
+    const readBack = await run(cli, commands.find(branch, reviewers.length > 0), repoPath, input.signal ? { signal: input.signal } : {});
     const found = readBack.ok ? commands.parseFind(readBack.stdout) : null;
-    const fromStdout = lastUrlIn(created.stdout);
+    const url = found?.url ?? lastUrlIn(created.stdout);
+
+    // 9. Who reviews it. After the create, and in a command of its own,
+    //    so a reviewer the forge refuses cannot read as a create that
+    //    failed: the pull request is open either way (EO-741).
+    const requested = reviewers.length > 0 ? await requestReviewers(input, cli, commands, url, found?.author ?? null, reviewers) : null;
 
     return {
       ...OK,
       ok: true,
-      url: found?.url ?? fromStdout,
+      url,
       fallbackBody: body.fallback,
       ambiguousTemplates: template.ambiguous,
+      reviewers: requested,
     };
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
+}
+
+/**
+ * Asks the forge for `reviewers` on the pull request at `url`.
+ *
+ * All of them in one command first, which is the whole of it when the
+ * forge takes them. A forge refuses the command entire for one handle it
+ * will not take, and its answer does not always say which, so a refusal
+ * is followed by one command per reviewer — asking again for one already
+ * asked is harmless, since both CLIs add — and each refusal is then
+ * attributed to the reviewer it was about.
+ */
+async function requestReviewers(
+  input: OpenPullRequestInput,
+  cli: string,
+  commands: (typeof FORGE_COMMANDS)[ForgeKind],
+  url: string | null,
+  author: string | null,
+  reviewers: readonly string[],
+): Promise<ReviewerRequest> {
+  // Compared without case: a GitHub login is case-insensitive.
+  const isAuthor = (reviewer: string) => author !== null && reviewer.toLowerCase() === author.toLowerCase();
+  const asking = reviewers.filter((reviewer) => !isAuthor(reviewer));
+  const left = reviewers.find(isAuthor) ?? null;
+  const outcome: ReviewerRequest = { requested: [], refused: [], author: left };
+  if (asking.length === 0) return outcome;
+
+  if (url === null) {
+    const reason = "EO could not read the pull request back after creating it, so it had nothing to ask the forge about.";
+    return { ...outcome, refused: asking.map((reviewer) => ({ reviewer, reason })) };
+  }
+
+  const ask = async (group: readonly string[]): Promise<{ ok: true } | { ok: false; reason: string }> => {
+    const args = commands.requestReviewers(url, group);
+    if (args === null) return { ok: false, reason: `EO could not tell which pull request ${url} is, so it could not name it to \`${cli}\`.` };
+    const answered = await input.run(cli, args, input.repoPath, input.signal ? { signal: input.signal } : {});
+    if (answered.ok) return { ok: true };
+    return { ok: false, reason: answered.error.trim() || `\`${cli}\` refused without saying why.` };
+  };
+
+  const together = await ask(asking);
+  if (together.ok) return { ...outcome, requested: [...asking] };
+  if (asking.length === 1) return { ...outcome, refused: [{ reviewer: asking[0]!, reason: together.reason }] };
+
+  for (const reviewer of asking) {
+    const alone = await ask([reviewer]);
+    if (alone.ok) outcome.requested.push(reviewer);
+    else outcome.refused.push({ reviewer, reason: alone.reason });
+  }
+  return outcome;
 }
 
 /** The one seam through which template discovery reaches git. */
