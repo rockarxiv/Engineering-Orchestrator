@@ -284,6 +284,8 @@ function runCase(
         // So a case sees `waiting` refused, or accepted with its news,
         // exactly as a real run would (EO-458).
         watch: request.module.manifest.watch === true,
+        // Whether a `refuse` carries its reason (EO-736), as on a real run.
+        entryCheck: request.module.manifest.entryCheck === true,
         // The declarations, defaults and types both, so a case's inputs
         // are resolved and checked as a real run's are.
         inputs: request.module.manifest.inputs,

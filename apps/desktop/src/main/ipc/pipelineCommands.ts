@@ -22,6 +22,7 @@ import {
   versionGraph,
   versionSnapshot,
   versionAuthorName,
+  listModules,
 } from "../db/repos/index.js";
 import { recordFor } from "../record/localRecord.js";
 import { stepClearanceReason } from "../record/stepAuthority.js";
@@ -276,7 +277,7 @@ export function pipelineVersionsCommand(db: Db, input: IpcPayload<"pipeline:vers
   const after = versionGraph(db, to.id);
   if (!before || !after) return { versions, current, graph, diff: null, local };
 
-  return { versions, current, graph, diff: diffVersions({ number: from.number, ...before }, { number: to.number, ...after }), local };
+  return { versions, current, graph, diff: diffVersions({ number: from.number, ...before }, { number: to.number, ...after }, moduleNamesById(db)), local };
 }
 
 /**
@@ -372,6 +373,11 @@ function localChanges(db: Db, pipelineId: string): IpcResponse<"pipeline:version
   const before = base === undefined ? undefined : versionGraph(db, base.id);
   if (base === undefined || before === undefined) return null;
 
-  const diff = diffVersions({ number: base.number, ...before }, { number: base.number, ...liveGraph(db, pipelineId) });
+  const diff = diffVersions({ number: base.number, ...before }, { number: base.number, ...liveGraph(db, pipelineId) }, moduleNamesById(db));
   return { basedOn: base.number, diff };
+}
+
+/** Every module's name by id, archived ones included, so a version diff names the module a rule runs (EO-736). */
+function moduleNamesById(db: Db): Map<string, string> {
+  return new Map(listModules(db, true).map((module) => [module.id as string, module.name]));
 }

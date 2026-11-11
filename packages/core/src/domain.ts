@@ -693,6 +693,12 @@ export interface ModuleManifest {
    * the question existed reads as a module that runs once.
    */
   watch?: boolean | undefined;
+  /**
+   * Whether this module is an entry check a `module` entry rule may run
+   * (EO-736) — see `ModuleManifestSchema.entryCheck`. Optional, so a
+   * manifest written before the question existed reads as no check.
+   */
+  entryCheck?: boolean | undefined;
 }
 
 /** Who wrote a module: a person at the editor, or the pipeline architect. */

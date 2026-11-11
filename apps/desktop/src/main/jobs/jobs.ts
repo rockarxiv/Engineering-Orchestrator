@@ -16,6 +16,7 @@ import {
   type ItemTypeName,
   type UpdateJobInput,
   arrivalRefusal,
+  moduleRulesApply,
 } from "../db/repos/index.js";
 import { compileSchedule } from "../schedule/cron.js";
 import { isKnownTimeZone } from "../schedule/timeZone.js";
@@ -199,6 +200,29 @@ function templateRefusal(db: Db, projectId: Uuid | null, trigger: JobTrigger, pi
     hasWorkspace: false,
     extensions: {},
   });
+}
+
+/** Whether what this job files meets a `module` entry rule on its pipeline (EO-736). */
+export function jobMeetsModuleRules(db: Db, job: Pick<Job, "projectId" | "pipelineId" | "template">): boolean {
+  if (job.pipelineId === null || job.template === null) return false;
+  const pipeline = getPipeline(db, job.pipelineId);
+  if (pipeline === undefined) return false;
+  const type = resolveItemType(db, job.projectId as Uuid | null, templateType(job.template));
+  return type.ok && moduleRulesApply(db, pipeline.id, pipeline.entryStepId, type.type);
+}
+
+/**
+ * What a job's save says it did not check (EO-736): the pipeline's
+ * `module` entry rules, which need an item and so are run at each firing
+ * rather than on the template. Null where none apply to what it files.
+ */
+export function moduleRulesNotice(db: Db, job: Pick<Job, "projectId" | "pipelineId" | "template">): string | null {
+  if (!jobMeetsModuleRules(db, job)) return null;
+  const pipeline = getPipeline(db, job.pipelineId!)!;
+  return (
+    `"${pipeline.name}" also runs an entry check on what enters it, which was not run now because a job's template is not an item yet. ` +
+    "It runs each time this job fires; an item it refuses is a failed occurrence, and you are told why."
+  );
 }
 
 /** Stands for what a webhook's payload will supply. Never stored: it only has to be a value. */

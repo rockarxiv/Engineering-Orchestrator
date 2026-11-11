@@ -8,6 +8,7 @@ import { applyNewItem } from "../roles/discussion.js";
 import { activeProjectId } from "./repositoryCommands.js";
 import { actingPersonId } from "../identity/acting.js";
 import { emitPush } from "./push.js";
+import { withModuleEntryChecks } from "../modules/entryChecks.js";
 import type { EngineHandle } from "./domainCommands.js";
 
 /**
@@ -159,14 +160,16 @@ export async function submitItemCommand(
   attachmentStorage?: AttachmentStorage,
 ): Promise<IpcResponse<"work:submitItem">> {
   const paths = input.paths ?? [];
-  if (paths.length === 0) return submitItem(db, engine, input);
+  // The item's module entry rules are run before it is written (EO-736):
+  // `submitItem` refuses before minting a key until each has a verdict.
+  if (paths.length === 0) return withModuleEntryChecks(db, "creation", () => submitItem(db, engine, input));
   const granted = await checkItemUploads(input.pathsFrom, [paths], attachmentStorage);
   if (!granted.ok) return { created: false, key: null, problem: granted.problem };
   const stored = await storeItemUploads(granted, [paths]);
   if (!stored.ok) return { created: false, key: null, problem: stored.problem };
   let answer: IpcResponse<"work:submitItem">;
   try {
-    answer = submitItem(db, engine, input, stored.records[0] ?? []);
+    answer = await withModuleEntryChecks(db, "creation", () => submitItem(db, engine, input, stored.records[0] ?? []));
   } catch (error) {
     await rollbackItemUploads(granted.storage, stored.records);
     throw error;

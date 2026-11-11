@@ -4,7 +4,8 @@ import { getItem, latestOccurrence, latestOccurrenceWithStatus, recordOccurrence
 import { compileSchedule, nextOccurrenceAfter, type CronFields } from "../schedule/cron.js";
 import { formatZonedClock, zonedPartsOf } from "../schedule/timeZone.js";
 import { SKIP_OFFER_OPTIONS } from "./answer.js";
-import { fireJob } from "./fire.js";
+import { fireJob, jobEntryVerdicts } from "./fire.js";
+import { jobMeetsModuleRules } from "./jobs.js";
 import { JOB_MESSAGE_SOURCE, messageJobOwner } from "./ownerMessage.js";
 
 /**
@@ -35,6 +36,13 @@ import { JOB_MESSAGE_SOURCE, messageJobOwner } from "./ownerMessage.js";
 export interface CatchUpDeps {
   /** The moment the sweep is for. Injected so a test can drive the clock rather than wait for it. */
   now?: number;
+  /**
+   * What pipelines' module entry rules said of the items this sweep would
+   * file (EO-736), worked out beforehand by `catchUpEntryVerdicts` with the
+   * same `now`. Absent, a module rule refuses each such item, saying it
+   * cannot run here, and the occurrence is `failed`.
+   */
+  entryVerdicts?: ReadonlyMap<string, string | null>;
 }
 
 export interface JobCatchUpResult {
@@ -103,7 +111,7 @@ export function catchUpJob(db: Db, job: Job, deps: CatchUpDeps = {}): JobCatchUp
       result.skipped.push(skip(db, job, trigger, dueAt, "offline beyond grace", now, null));
       continue;
     }
-    const fired = fireJob(db, job, { dueAt });
+    const fired = fireJob(db, job, { dueAt, ...(deps.entryVerdicts === undefined ? {} : { entryVerdicts: deps.entryVerdicts }) });
     // A `failed` occurrence has already posted its own guard (`fire.ts`)
     // and belongs in neither list: nothing ran, and nothing was skipped
     // either.
@@ -113,6 +121,31 @@ export function catchUpJob(db: Db, job: Job, deps: CatchUpDeps = {}): JobCatchUp
   }
 
   return result;
+}
+
+/** Whether any of these jobs files onto a pipeline with a `module` entry rule for what it files (EO-736). */
+export function jobsWithModuleRules(db: Db, jobs: readonly Job[]): boolean {
+  return jobs.some((job) => job.trigger.kind === "schedule" && jobMeetsModuleRules(db, job));
+}
+
+/**
+ * The module entry rules' verdicts on every item `catchUpJob` could file
+ * for these jobs at `now` (EO-736): each occurrence it would consider,
+ * judged as its firing will judge it. Read-only, and asked before the
+ * sweep because the sweep cannot wait on a module. An occurrence the
+ * sweep then skips simply never uses its verdict.
+ */
+export async function catchUpEntryVerdicts(db: Db, jobs: readonly Job[], now: number): Promise<Map<string, string | null>> {
+  const verdicts = new Map<string, string | null>();
+  for (const job of jobs) {
+    if (job.trigger.kind !== "schedule" || job.pausedAt !== null) continue;
+    const compiled = compileSchedule(job.trigger.schedule);
+    if (!compiled.ok) continue;
+    for (const dueAt of dueSince(compiled.fields, job.trigger, startingFrom(db, job), now)) {
+      for (const [key, verdict] of await jobEntryVerdicts(db, job, { dueAt })) verdicts.set(key, verdict);
+    }
+  }
+  return verdicts;
 }
 
 /**

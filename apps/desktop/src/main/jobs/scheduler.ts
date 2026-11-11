@@ -3,7 +3,7 @@ import type { Db } from "../db/client.js";
 import { getProject, listAllJobs } from "../db/repos/index.js";
 import { isProjectReplica } from "../db/recordRole.js";
 import { startInterval } from "../schedule/interval.js";
-import { catchUpJob, type CatchUpDeps } from "./catchUp.js";
+import { catchUpEntryVerdicts, catchUpJob, jobsWithModuleRules, type CatchUpDeps } from "./catchUp.js";
 import { releaseHeldWebhookEvents, type WebhookDeps } from "./webhook.js";
 
 /**
@@ -141,7 +141,15 @@ export function startJobScheduler(db: Db, options: JobSchedulerOptions = {}): ()
       // not: optional call short-circuits its *arguments*, so with no
       // `onTick` — which is how the app itself starts this — the tick
       // never ran at all.
-      const result = runJobTick(db);
+      // A pipeline's module entry rules first (EO-736): the sweep files
+      // synchronously, so what they say of each item it could file is
+      // asked beforehand, against the same clock.
+      // Waited for only where a job's pipeline has one, so every other
+      // sweep runs in the same turn it always did.
+      const now = Date.now();
+      const jobs = listAllJobs(db);
+      const entryVerdicts = jobsWithModuleRules(db, jobs) ? await catchUpEntryVerdicts(db, jobs, now) : undefined;
+      const result = runJobTick(db, { now, ...(entryVerdicts === undefined ? {} : { entryVerdicts }) });
       options.onTick?.(result);
       // …and then what a webhook burst left waiting (EO-332, ARCHITECTURE.md, "Controls").
       // After the schedules and inside the same non-overlap flag, so a

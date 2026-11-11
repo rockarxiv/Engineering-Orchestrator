@@ -52,6 +52,7 @@ import { sideEffectingServersByStep } from "../connectors/sideEffects.js";
 import { readPolicy } from "../policy/policy.js";
 import { activeProjectId } from "./repositoryCommands.js";
 import { signedInPersonId } from "../identity/viewer.js";
+import { moduleRulesUnrunnableHere } from "../modules/entryChecks.js";
 import type { EngineHandle } from "./domainCommands.js";
 
 /** Guardrails live here rather than in code so they can be tuned without a release (U-06, E-05). */
@@ -1279,6 +1280,11 @@ export function savePipeline(
   const problems = [
     ...proposed.refused,
     ...validatePipeline(validationInput(db, input.pipelineId, steps, routes, input.entryStepId, proposed.registry, undefined, entryRules)),
+    // A module rule this installation could not run (EO-736): no module
+    // host, or a binary its module needs that is not here. Refused when
+    // it is published — on the record, where its doors are — rather than
+    // found by the first item at the door.
+    ...moduleRulesUnrunnableHere(db, entryRules ?? []).map((message) => ({ severity: "error" as const, stateId: null, message })),
     // Before the write rather than after it, and blocking: a step
     // pointed at another project's disk is not a warning about taste
     // (EO-301).

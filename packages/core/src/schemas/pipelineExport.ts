@@ -190,8 +190,19 @@ import { SpecShapeSchema } from "./specShape.js";
  *
  * Reading an older document is unchanged: the key is absent, so a
  * version 1 to 10 export imports a pipeline that asks for nothing.
+ *
+ * **12 (EO-736).** An entry rule may be a **module rule**, naming by slug
+ * an entry-check module the document carries, with its own time limit.
+ *
+ * Bumped for version 11's reason, and the silent harm here is a door that
+ * looks guarded and is not. A version-11 build parses `module` as a kind,
+ * drops the `module` and `timeoutMs` keys it does not know, and keeps a
+ * rule naming no module — or, judged as data, refuses everything. Neither
+ * is what the author published. "Update EO and try again" is.
+ *
+ * Reading an older document is unchanged: no rule in it is a module rule.
  */
-export const PIPELINE_EXPORT_VERSION = 11;
+export const PIPELINE_EXPORT_VERSION = 12;
 
 /**
  * An action a role defines, as the document carries it (EO-424).

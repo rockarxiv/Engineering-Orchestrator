@@ -460,6 +460,10 @@ export function applyApprovedProposal(
       db,
       {
         type: typeOf(child),
+        // As `createItem` is asked below, so that a module entry rule
+        // (EO-736) is run on the item as it will be written, once.
+        parentId: feature.id,
+        ...withGit(storyGitState(child)),
         workspaceId: routed[index]!.workspaceId,
         projectId: feature.projectId,
         title: child.title,
@@ -538,4 +542,9 @@ export function applyApprovedProposal(
 
     return { ok: true as const, stories, derivedEdgeCount };
   });
+}
+
+/** A story's git state as `CreateItemInput` takes it: absent rather than undefined. */
+function withGit(git: ReturnType<typeof storyGitState>): { git?: NonNullable<ReturnType<typeof storyGitState>> } {
+  return git === undefined ? {} : { git };
 }

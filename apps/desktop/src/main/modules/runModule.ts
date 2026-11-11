@@ -2,13 +2,21 @@ import { spawn } from "node:child_process";
 import { createHmac, randomBytes, randomUUID } from "node:crypto";
 import { Duplex } from "node:stream";
 import { DEFAULT_MODULE_TIMEOUT_MS, MAX_ATTACHMENT_ADD_PATHS, MAX_MODULE_CREATIONS_PER_RUN, MODULE_CREATION_WAITS, describeDuration, moduleInputProblems } from "@eo/core";
-import type { CustomModule, Item, ModuleCreation, ModuleCreationAnswer, ModuleCreationWait, RunProcessScope, WatchNews } from "@eo/core";
+import type { CustomModule, EntryDoor, Item, ModuleCreation, ModuleCreationAnswer, ModuleCreationWait, RunProcessScope, WatchNews } from "@eo/core";
 import type { StepAnswer } from "../roles/answers.js";
 import { killTree } from "../process/killTree.js";
 import { busEnv, launchInRunScope } from "../process/runScope.js";
 import { searchPath } from "../process/searchPath.js";
 import type { ModuleItemReader } from "./moduleItemRead.js";
-import type { ModuleRunContext } from "../ipc/domainQueries.js";
+import type { ModuleItemView, ModuleRunContext } from "../ipc/domainQueries.js";
+
+/** `ctx.entry` on an entry check (EO-736, ARCHITECTURE.md, "Entry rules"). */
+export interface ModuleEntryContext {
+  door: EntryDoor;
+  pipeline: { id: string; name: string };
+  /** The step a move or a route came from; null on creation and from a job. */
+  fromStep: { id: string; name: string | null } | null;
+}
 
 /**
  * Running one module, from the outside (KAN-105).
@@ -247,8 +255,13 @@ export type ModuleOutcome =
    * something that changed since EO last looked. Absent on every other
    * result.
    */
-  | { ok: true; result: string; detail: string; news?: WatchNews[] }
-  | { ok: false; reason: string; options?: string[] };
+  /**
+   * `reason` is on an entry check's `refuse` (EO-736): why it keeps the
+   * item out. Absent on every other result.
+   */
+  | { ok: true; result: string; detail: string; news?: WatchNews[]; reason?: string }
+  /** `timedOut` says the limit stopped it, for a caller that words that itself (EO-736). */
+  | { ok: false; reason: string; options?: string[]; timedOut?: true };
 
 export interface RunModuleRequest {
   module: CustomModule;
@@ -300,6 +313,18 @@ export interface RunModuleRequest {
    * and `ctx.workspace` hold nulls and `ctx.project` is null.
    */
   context?: ModuleRunContext;
+  /**
+   * On an entry check (EO-736): the door, the pipeline being entered and
+   * the step the item came from, which the host hands the module as
+   * `ctx.entry`. Absent on every other run, where `ctx.entry` is null.
+   */
+  entry?: ModuleEntryContext;
+  /**
+   * On an entry check (EO-736): the item as it would enter, which
+   * `ctx.item()` answers with instead of reading `item.key` — on creation
+   * there is no row to read.
+   */
+  entering?: ModuleItemView;
   /** Aborted when a person cancels the run, or EO shuts down. Kills the tree. */
   signal?: AbortSignal;
   /** Where the module's output goes as it arrives. */
@@ -732,8 +757,10 @@ export function runModule(launcher: ModuleHostLauncher, request: RunModuleReques
               ...(Array.isArray(outcome.news)
                 ? { news: outcome.news.map((entry) => ({ id: redactSecrets(entry.id, secrets), text: redactSecrets(entry.text, secrets) })) }
                 : {}),
+              // An entry check's refusal (EO-736), shown to whoever is at the door.
+              ...(typeof outcome.reason === "string" ? { reason: redactSecrets(outcome.reason, secrets) } : {}),
             }
-          : { ok: false, reason: redactSecrets(outcome.reason, secrets), ...redactedOptions(outcome.options) },
+          : { ok: false, reason: redactSecrets(outcome.reason, secrets), ...redactedOptions(outcome.options), ...(outcome.timedOut === true ? { timedOut: true as const } : {}) },
       );
     };
 
@@ -1150,6 +1177,7 @@ export function runModule(launcher: ModuleHostLauncher, request: RunModuleReques
       if (timedOut) {
         finish({
           ok: false,
+          timedOut: true,
           // Says which limit, because it is a setting now and the whole
           // point of raising it is knowing that you can (EO-162). The
           // sentence reaches the escalation comment `runBuiltin` posts,
@@ -1279,6 +1307,11 @@ export function runModule(launcher: ModuleHostLauncher, request: RunModuleReques
         // it changes while the run does and a module reads it without
         // `await`.
         context: request.context ?? null,
+        // An entry check (EO-736): `ctx.entry`, the item as it would
+        // enter, and whether a `refuse` carries its reason.
+        entry: request.entry ?? null,
+        entering: request.entering ?? null,
+        entryCheck: request.module.manifest.entryCheck === true,
         cwd: request.cwd,
         env: request.env,
       }),

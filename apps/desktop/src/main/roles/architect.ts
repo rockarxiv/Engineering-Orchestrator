@@ -596,7 +596,8 @@ export function renderDraft(
   const entryRules = draft.entryRules;
   const rulesChanged = entryRules !== undefined && JSON.stringify(entryRules) !== JSON.stringify(creating === undefined ? (pipeline?.entryRules ?? []) : []);
   if (rulesChanged) {
-    const words = entryRules.map((rule) => entryRuleWords(rule, registry.entryRuleKinds)).join(", ");
+    const moduleNames = new Map(listModules(db, true).map((module) => [module.id as string, module.name]));
+    const words = entryRules.map((rule) => entryRuleWords(rule, registry.entryRuleKinds, moduleNames)).join(", ");
     lines.push(entryRules.length === 0 ? "**Entry rules removed** — work enters with nothing asked of it" : `**To enter, work needs** ${words}`, "");
   }
   // The pipeline's icon (EO-520), which only an assistant draft can say.

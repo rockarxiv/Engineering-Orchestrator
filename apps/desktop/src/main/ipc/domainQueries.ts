@@ -36,6 +36,7 @@ import {
   type WorkspaceKindSlug,
   entryRefusalSentence,
   entryRuleWords,
+  shownEntryRule,
 } from "@eo/core";
 import type { Db } from "../db/client.js";
 import { featureIsDone, featureProgress } from "../roles/featureLifecycle.js";
@@ -106,6 +107,7 @@ import {
   stepForItem,
   stepsByItemVersion,
   versionAuthorName,
+  listModules,
 } from "../db/repos/index.js";
 import { actingCaller, visibleProjectIds } from "../identity/acting.js";
 import { viewerFor, viewerIds } from "../identity/viewer.js";
@@ -2300,6 +2302,7 @@ export function listPipelineStepViews(
   const projectId = getPipeline(db, input.pipelineId)?.projectId ?? activeProjectId(db);
   const inheritedKind = projectWorkspaceKind(db, projectId);
   const { entryRules = [], name: pipelineName = "" } = getPipeline(db, input.pipelineId) ?? {};
+  const moduleNames = new Map(listModules(db, true).map((module) => [module.id as string, module.name]));
   return {
     steps: onBoard.map(toStepView),
     // Where work enters, alongside the graph it enters: the configuration
@@ -2308,7 +2311,9 @@ export function listPipelineStepViews(
     // What it asks of work coming in (EO-610), and the sentence a refusal
     // would say, composed here for `pipeline_get` and the graph alike.
     entryRules,
-    entrySentence: entryRules.length === 0 ? null : entryRefusalSentence(pipelineName, entryRules.map((rule) => entryRuleWords(rule, registry.entryRuleKinds))),
+    // A module rule by its module's name (EO-736).
+    entrySentence: entryRules.length === 0 ? null : entryRefusalSentence(pipelineName, entryRules.map((rule) => entryRuleWords(rule, registry.entryRuleKinds, moduleNames))),
+    entryRuleLines: entryRules.map((rule) => shownEntryRule(rule, moduleNames, registry.entryRuleKinds)),
     routes: listRoutesForPipeline(db, input.pipelineId).map((route) => ({
       id: route.id,
       pipelineId: route.pipelineId,

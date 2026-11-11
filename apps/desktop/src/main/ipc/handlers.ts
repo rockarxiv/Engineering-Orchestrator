@@ -136,11 +136,11 @@ import {
   cancelRun,
   claimItem,
   takeOverItem,
-  decideItem,
+  decideItemChecked,
   engineStatus,
   holdItem,
   pauseEngine,
-  moveItem,
+  moveItemChecked,
   moveItemToVersion,
   postCommentCommand,
   readSettings,
@@ -193,7 +193,7 @@ import {
   listJobsCommand,
   pauseJobCommand,
   resumeJobCommand,
-  runJobNowCommand,
+  runJobNowChecked,
   updateJobCommand,
   type JobsContext,
 } from "./jobCommands.js";
@@ -1002,7 +1002,7 @@ export function registerAllHandlers(db: Db, engine: EngineHandle | undefined, re
   registerHandler("jobs:create", async (payload) => announcePipeline(await createJobCommand(db, jobs, payload)), opts);
   registerHandler("jobs:update", async (payload) => announcePipeline(await updateJobCommand(db, jobs, payload)), opts);
   registerHandler("jobs:placement", (payload) => jobPlacementCommand(db, jobs, payload), opts);
-  registerHandler("jobs:runNow", (payload) => runJobNowCommand(db, engine, payload), opts);
+  registerHandler("jobs:runNow", (payload) => runJobNowChecked(db, engine, payload), opts);
   registerHandler("jobs:delete", (payload) => announcePipeline(deleteJobCommand(db, payload)), opts);
   // EO-307: a paused job fires nothing, and what one has cost is asked
   // rather than stored.
@@ -1449,12 +1449,13 @@ export function registerAllHandlers(db: Db, engine: EngineHandle | undefined, re
   // change. Everything else is this database's, as it always was —
   // item files added by path and removed by id included (EO-704).
   registerHandler("items:update", (payload) => updateItemCommand(db, resources.record ?? recordFor(db), payload, attachmentStorage), opts);
-  registerHandler("items:move", (payload) => moveItem(db, engine, payload), opts);
+  // A pipeline's module entry rules are run before the move (EO-736).
+  registerHandler("items:move", (payload) => moveItemChecked(db, engine, payload), opts);
   registerHandler("items:moveToVersion", (payload) => moveItemToVersion(db, engine, payload), opts);
   // A person answering rather than dragging (EO-310). It goes near the
   // engine for `items:move`'s reason and one more: the step a decision
   // routes the item onto may be dispatchable the instant it arrives.
-  registerHandler("items:decide", (payload) => decideItem(db, engine, payload), opts);
+  registerHandler("items:decide", (payload) => decideItemChecked(db, engine, payload), opts);
   registerHandler("items:hold", (payload) => holdItem(db, engine, payload), opts);
   // Neither is a transition, so neither goes near the engine: the item
   // stays on its step and whatever is running stays running (EO-305).

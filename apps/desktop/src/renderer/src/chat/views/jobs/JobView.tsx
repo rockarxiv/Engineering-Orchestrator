@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 import { Play, Workflow } from "lucide-react";
 import { JOB_ID_FACET, describeJobTrigger, type JobMachine, type JobOccurrenceRow, type JobPlacement, type JobRunsOn, type JobSummary } from "@eo/core";
 import { budgetOf, draftOf, templateOf, triggerOf, type JobDraft } from "../../../shared/jobs/draft";
@@ -56,6 +56,10 @@ export function JobView({ jobId }: { jobId: string }) {
   const [tab, setTab] = useState<"history" | "events">("history");
   const [draft, setDraft] = useState<JobDraft | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
+  // What the save did not check (EO-736): a pipeline's entry check, which
+  // runs on each firing. Seeded from the page that created the job.
+  const location = useLocation();
+  const [notice, setNotice] = useState<string | null>(noticeFrom(location.state));
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [ran, setRan] = useState<string | null>(null);
   const [movedProblem, setMovedProblem] = useState<string | null>(null);
@@ -83,6 +87,7 @@ export function JobView({ jobId }: { jobId: string }) {
       }),
     onSuccess: (result) => {
       setProblem(result.problem);
+      setNotice(result.notice ?? null);
       if (result.job !== null) refresh();
     },
     onError: (error: unknown) => setProblem(error instanceof Error ? error.message : String(error)),
@@ -188,6 +193,7 @@ export function JobView({ jobId }: { jobId: string }) {
             <WebhookMappingTable draft={draft} itemType={registry.itemTypes.get(draft.type)} lastPayload={events.data?.lastPayload ?? null} onChange={setDraft} />
           )}
           {problem === null ? null : <ErrorLine>{problem}</ErrorLine>}
+          {problem === null && notice !== null ? <p className="text-[12px] text-ink-muted">{notice}</p> : null}
           <div className="flex items-center justify-end gap-2">
             {save.isSuccess && problem === null ? <span className="text-[12px] text-ink-subtle">Saved.</span> : null}
             <Button variant="primary" disabled={save.isPending} onClick={() => save.mutate(draft)}>
@@ -344,4 +350,10 @@ function History({ rows, timeZone }: { rows: JobOccurrenceRow[]; timeZone: strin
       </ul>
     </section>
   );
+}
+
+/** The notice a job's creation came back with, handed over in the navigation's state (EO-736). */
+function noticeFrom(state: unknown): string | null {
+  const notice = state !== null && typeof state === "object" ? (state as { notice?: unknown }).notice : undefined;
+  return typeof notice === "string" ? notice : null;
 }

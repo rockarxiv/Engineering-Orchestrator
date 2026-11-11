@@ -1,5 +1,6 @@
 import { z } from "zod";
-import { EntryRulesSchema, entryRuleWords, type EntryRule } from "./entryRules.js";
+import { EntryRulesSchema, MODULE_ENTRY_RULE_KIND, entryRuleWords, type EntryRule, type EntryRuleKind } from "./entryRules.js";
+import { describeDuration } from "./limits.js";
 import { PipelineStepViewSchema, StepRouteViewSchema } from "./ipc-schemas.js";
 import { StepWatchSchema, watchLine } from "./watch.js";
 
@@ -351,9 +352,29 @@ function shownResults(results: VersionStep["results"]): string {
 }
 
 /** Entry rules as one line. "none" for `shownResults`' reason, and each rule's types, since a change to them changes nothing else it says. */
-export function shownEntryRules(rules: readonly EntryRule[]): string {
+export function shownEntryRules(rules: readonly EntryRule[], moduleNames?: ReadonlyMap<string, string>): string {
   if (rules.length === 0) return "none";
-  return rules.map((rule) => `${entryRuleWords(rule, undefined)}${rule.types === undefined ? "" : ` (${rule.types.join(", ")})`}`).join(", ");
+  return rules.map((rule) => shownEntryRule(rule, moduleNames)).join(", ");
+}
+
+/**
+ * One entry rule as a line: its words, and its types. A module rule names
+ * its module and any time limit it sets (EO-736), since changing either
+ * changes what the door does. What the diff lists and what a pipeline's
+ * details list, so the two read the same.
+ */
+export function shownEntryRule(
+  rule: EntryRule,
+  moduleNames?: ReadonlyMap<string, string>,
+  /** The kinds packs contribute, so a pack's rule reads in its own words. Absent, by its kind. */
+  kinds?: ReadonlyMap<string, EntryRuleKind>,
+): string {
+  const words =
+    rule.kind === MODULE_ENTRY_RULE_KIND && rule.message !== undefined
+      ? `${rule.message} (a pass from "${moduleNames?.get(rule.module ?? "") ?? rule.module ?? "a module"}")`
+      : entryRuleWords(rule, kinds, moduleNames);
+  const limit = rule.kind === MODULE_ENTRY_RULE_KIND && rule.timeoutMs !== undefined ? `, within ${describeDuration(rule.timeoutMs)}` : "";
+  return `${words}${limit}${rule.types === undefined ? "" : ` (${rule.types.join(", ")})`}`;
 }
 
 /** One field of a step, as the diff prints it. */
@@ -384,6 +405,8 @@ function stepKind(step: VersionStep): VersionDiff["steps"][number]["kind"] {
 export function diffVersions(
   from: { number: number; steps: VersionStep[]; routes: VersionRoute[]; entryRules?: readonly EntryRule[] },
   to: { number: number; steps: VersionStep[]; routes: VersionRoute[]; entryRules?: readonly EntryRule[] },
+  /** Module names by id, so a module rule is listed by name (EO-736). Absent, by id. */
+  moduleNames?: ReadonlyMap<string, string>,
 ): VersionDiff {
   const before = new Map(from.steps.map((step) => [step.id, step] as const));
   const after = new Map(to.steps.map((step) => [step.id, step] as const));
@@ -447,7 +470,7 @@ export function diffVersions(
 
   const rulesBefore = from.entryRules ?? [];
   const rulesAfter = to.entryRules ?? [];
-  const entryRules = JSON.stringify(rulesBefore) === JSON.stringify(rulesAfter) ? null : { before: shownEntryRules(rulesBefore), after: shownEntryRules(rulesAfter) };
+  const entryRules = JSON.stringify(rulesBefore) === JSON.stringify(rulesAfter) ? null : { before: shownEntryRules(rulesBefore, moduleNames), after: shownEntryRules(rulesAfter, moduleNames) };
 
   return { from: from.number, to: to.number, steps, routes, entryRules };
 }

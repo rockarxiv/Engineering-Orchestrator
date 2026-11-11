@@ -115,7 +115,7 @@ describe("answering the offer", () => {
     expect(getMessage(handle.db, offered.offerCommentId!)).toMatchObject({ handledHow: "answered", answer: RUN_NOW_OPTION });
   });
 
-  it("fires it once, however many times the answer arrives", () => {
+  it("fires it once, however many times the answer arrives", async () => {
     const monday = job();
     const offered = skip(monday);
 
@@ -123,7 +123,7 @@ describe("answering the offer", () => {
     // The message is handled now, so a second press is refused…
     expect(press(offered, RUN_NOW_OPTION).ok).toBe(false);
     // …and a second answer reaching the hook anyway fires nothing.
-    expect(answerSkipMessage(handle.db, getMessage(handle.db, offered.offerCommentId!)!)).toBeNull();
+    expect(await answerSkipMessage(handle.db, getMessage(handle.db, offered.offerCommentId!)!)).toBeNull();
     expect(statuses(monday).filter((status) => status === "fired")).toHaveLength(1);
   });
 
@@ -172,7 +172,7 @@ describe("when more than one occurrence has been offered", () => {
     expect(firedTitles(monday)).toEqual(["Monday report for 2026-06-01"]);
   });
 
-  it("runs the newest when that is the one answered", () => {
+  it("runs the newest when that is the one answered", async () => {
     const monday = job();
     const { second } = twoSkips(monday);
 
@@ -181,7 +181,7 @@ describe("when more than one occurrence has been offered", () => {
     expect(firedTitles(monday)).toEqual(["Monday report for 2026-06-08"]);
   });
 
-  it("lets both be run, each once, without either answer touching the other", () => {
+  it("lets both be run, each once, without either answer touching the other", async () => {
     const monday = job();
     const { first, second } = twoSkips(monday);
 
@@ -194,7 +194,7 @@ describe("when more than one occurrence has been offered", () => {
 });
 
 describe("what carries no offer", () => {
-  it("offers nothing for a skip made because the previous item is still open", () => {
+  it("offers nothing for a skip made because the previous item is still open", async () => {
     const monday = job();
     catchUpJob(handle.db, monday, { now: MONDAY_0800 + 60_000 });
     catchUpJob(handle.db, monday, { now: MONDAY_0800 + A_WEEK + 60_000 });
@@ -205,16 +205,16 @@ describe("what carries no offer", () => {
     expect(blocked.offerCommentId).toBeNull();
     const told = messagesAboutJob(handle.db, monday.id).at(-1)!;
     expect(told.options).toBeNull();
-    expect(answerSkipMessage(handle.db, { ...told, handledAt: 1, handledHow: "answered", answer: RUN_NOW_OPTION })).toBeNull();
+    expect(await answerSkipMessage(handle.db, { ...told, handledAt: 1, handledHow: "answered", answer: RUN_NOW_OPTION })).toBeNull();
   });
 
-  it("ignores an answered message some other sender sent", () => {
+  it("ignores an answered message some other sender sent", async () => {
     const monday = job();
     const offered = skip(monday);
     const real = getMessage(handle.db, offered.offerCommentId!)!;
     const impostor: Message = { ...real, source: "template_conflict", handledAt: 1, handledHow: "answered", answer: RUN_NOW_OPTION };
 
-    expect(answerSkipMessage(handle.db, impostor)).toBeNull();
+    expect(await answerSkipMessage(handle.db, impostor)).toBeNull();
     expect(statuses(monday)).toEqual(["skipped"]);
   });
 });

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { coreRegistry, developerRegistry, EMPTY_SPEC_SHAPE, entryRuleWords, SpecShapeSchema, type EntryRule } from "@eo/core";
-import { entryRefusal, entryRuleProblems, unmetEntryRules, type EntryFacts } from "./entryRules.js";
+import { coreRegistry, developerRegistry, EMPTY_SPEC_SHAPE, entryRuleWords, SpecShapeSchema, type EntryRule, type Uuid } from "@eo/core";
+import { entryCheckModuleProblem, entryRefusal, entryRuleProblems, moduleEntryChecks, unmetEntryRules, type EntryCheckModule, type EntryFacts } from "./entryRules.js";
 import { validatePipeline } from "./pipelineValidation.js";
 
 const kinds = developerRegistry().entryRuleKinds;
@@ -122,5 +122,70 @@ describe("what a set of rules is refused for", () => {
     expect(judged().join()).not.toContain("entry rule");
     expect(judged([{ kind: "telepathy" }]).join()).toContain('"telepathy"');
     expect(validatePipeline({ ...input, registry: coreRegistry(), steps: [step], entryStepId: "a", entryRules: [{ kind: "jira_key" }] }).some((problem) => problem.severity === "error" && problem.message.includes("jira_key"))).toBe(true);
+  });
+});
+
+describe("a module rule (EO-736)", () => {
+  const manifest = { name: "Check", description: "A check.", inputs: {}, needs: { bin: [], env: [], network: true, item: true, comment: false, attach: false, create: false }, results: ["pass", "refuse"], entryCheck: true };
+  const fit: EntryCheckModule = { id: "m1" as Uuid, name: "No reviewers", approvedAt: 1, archivedAt: null, manifest };
+  const types = new Map([["developer:story", { specShape: EMPTY_SPEC_SHAPE }]]);
+
+  it("is never judged as data: the data rules answer without it", () => {
+    expect(unmetEntryRules([{ kind: "module", module: "m1" }], facts(), kinds)).toEqual([]);
+    expect(entryRefusal("Delivery", [{ kind: "module", module: "m1" }, { kind: "description" }], facts({ body: null }), kinds)).toBe(
+      '"Delivery" needs these before work can enter it: a description.',
+    );
+  });
+
+  it("lists one run per module, in the order rules first name them, for the types they apply to", () => {
+    const rules: EntryRule[] = [
+      { kind: "module", module: "a", timeoutMs: 20_000 },
+      { kind: "description" },
+      { kind: "module", module: "b", types: ["developer:bug"] },
+      { kind: "module", module: "c" },
+      { kind: "module", module: "a", timeoutMs: 5_000, message: "again" },
+    ];
+    const checks = moduleEntryChecks(rules, "developer:story");
+    expect(checks.map((check) => [check.module, check.rules.length, check.timeoutMs])).toEqual([
+      ["a", 2, 5_000],
+      ["c", 1, 30_000],
+    ]);
+    expect(moduleEntryChecks(rules, "developer:bug").map((check) => check.module)).toEqual(["a", "b", "c"]);
+  });
+
+  it("is never given more than a module may take", () => {
+    expect(moduleEntryChecks([{ kind: "module", module: "a", timeoutMs: 3_600_000 }], "developer:story")[0]?.timeoutMs).toBe(600_000);
+    expect(entryRuleProblems([{ kind: "module", module: "m1", timeoutMs: 3_600_000 }], types, kinds, [fit])[0]).toContain("more than the 10 minutes any module may");
+  });
+
+  it("is refused at publish for a module missing, deleted, unapproved, not an entry check, or reaching further than reading", () => {
+    const problems = (module: EntryCheckModule | undefined) => entryRuleProblems([{ kind: "module", module: "m1" }], types, kinds, module === undefined ? [] : [module]);
+    expect(problems(fit)).toEqual([]);
+    expect(problems(undefined)).toEqual(['The entry rule runs "m1", which is not a module this installation has.']);
+    expect(problems({ ...fit, archivedAt: 1 })).toEqual(['The entry rule runs "No reviewers", which is not a module this installation has.']);
+    expect(problems({ ...fit, approvedAt: null })).toEqual(['The entry rule runs "No reviewers", which has not been approved.']);
+    expect(problems({ ...fit, manifest: { ...manifest, entryCheck: false } })).toEqual(['The entry rule runs "No reviewers", which is not declared an entry check (entryCheck: true in its manifest).']);
+    expect(problems({ ...fit, manifest: { ...manifest, sideEffects: true } })[0]).toContain("may not declare sideEffects");
+    expect(entryRuleProblems([{ kind: "module" }], types, kinds, [fit])).toEqual(["An entry rule that runs a module does not say which module."]);
+  });
+
+  it("judges only its shape where no catalog is handed in", () => {
+    expect(entryRuleProblems([{ kind: "module", module: "anything" }], types, kinds)).toEqual([]);
+  });
+
+  it("is named by its module, or by its own words", () => {
+    expect(entryRuleWords({ kind: "module", module: "m1" }, kinds, new Map([["m1", "No reviewers"]]))).toBe('a pass from "No reviewers"');
+    expect(entryRuleWords({ kind: "module", module: "m1", message: "a reviewer" }, kinds)).toBe("a reviewer");
+    expect(entryCheckModuleProblem(fit)).toBeNull();
+  });
+
+  it("is what validatePipeline refuses, with the module catalog it is given", () => {
+    const step = { id: "a", pipelineId: "p", position: 0, name: "A", type: "user", ownerRole: null, entryAction: null, instructionsSummary: null, isTerminal: true, planMode: false, offBoard: false, results: [], inputs: {}, timeoutMs: null, watch: null, workspaceMode: "isolated", workspaceId: null, ownerPersonId: null, ownerGroupId: null } as never;
+    const judged = (modules: EntryCheckModule[]) =>
+      validatePipeline({ steps: [step], routes: [], entryStepId: "a", staffedRoles: [], itemCountByStep: {}, existingSteps: [], registry: developerRegistry(), modules: modules as never, entryRules: [{ kind: "module", module: "m1" }] })
+        .filter((problem) => problem.severity === "error" && problem.message.includes("entry rule"))
+        .map((problem) => problem.message);
+    expect(judged([fit])).toEqual([]);
+    expect(judged([{ ...fit, approvedAt: null }])).toEqual(['The entry rule runs "No reviewers", which has not been approved.']);
   });
 });

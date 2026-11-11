@@ -2,7 +2,7 @@
   "eoTemplateHistory": 1,
   "notes": "Watching pull request no longer gives up. It used to stop after a week and wait for you, and a pull request often waits longer than that for a review. It now checks every five minutes until the pull request is merged, closed or needs work, however long that takes.",
   "pack": {
-    "eoPipelineExport": 11,
+    "eoPipelineExport": 12,
     "template": {
       "slug": "software-feature-to-merge",
       "title": "Software feature to merge",

@@ -658,4 +658,4 @@ export {
   type TrialRound,
   type TrialStop,
 } from "./trialLoopsRepo.js";
-export { arrivalRefusal, itemEntryRefusal } from "./entryRulesRepo.js";
+export { arrivalRefusal, itemEntryRefusal, moduleRulesApply } from "./entryRulesRepo.js";

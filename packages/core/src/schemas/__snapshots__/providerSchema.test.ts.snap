@@ -311,6 +311,15 @@ exports[`the JSON Schema each provider receives > is unchanged for assist (undef
                         "type": "string",
                         "minLength": 1
                       },
+                      "module": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "timeoutMs": {
+                        "type": "integer",
+                        "exclusiveMinimum": 0,
+                        "maximum": 9007199254740991
+                      },
                       "types": {
                         "minItems": 1,
                         "type": "array",
@@ -599,6 +608,15 @@ exports[`the JSON Schema each provider receives > is unchanged for assist (undef
                           "type": "string",
                           "minLength": 1
                         },
+                        "module": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "timeoutMs": {
+                          "type": "integer",
+                          "exclusiveMinimum": 0,
+                          "maximum": 9007199254740991
+                        },
                         "types": {
                           "minItems": 1,
                           "type": "array",
@@ -811,6 +829,9 @@ exports[`the JSON Schema each provider receives > is unchanged for assist (undef
                         "type": "boolean"
                       },
                       "watch": {
+                        "type": "boolean"
+                      },
+                      "entryCheck": {
                         "type": "boolean"
                       }
                     },
@@ -1436,6 +1457,9 @@ exports[`the JSON Schema each provider receives > is unchanged for assist (undef
                               "type": "boolean"
                             },
                             "watch": {
+                              "type": "boolean"
+                            },
+                            "entryCheck": {
                               "type": "boolean"
                             }
                           },

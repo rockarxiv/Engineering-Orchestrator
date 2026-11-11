@@ -1999,6 +1999,8 @@ describe("what a module can reach", () => {
       // A work item, created by the parent and answered on fd 5 (EO-433).
       "createItem",
       "cwd",
+      // The door an entry check is run at, null on any other run (EO-736).
+      "entry",
       "exec",
       "inputs",
       // EO's own two reads, and — sorted after `inputs` — the

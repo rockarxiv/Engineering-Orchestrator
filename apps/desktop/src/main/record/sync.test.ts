@@ -1,6 +1,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { LOCAL_PERSON_ID, uuidv7, RecordPipelineSchema, withDeviceIdentity, type EntryRule, type IpcChannel, type IpcPayload, type IpcResponse, type IpcResult, type Item, type Uuid } from "@eo/core";
 import { buildTickInput } from "../supervisor/buildTickInput.js";
@@ -40,6 +41,8 @@ import { addItemAttachmentsCommand, removeItemAttachmentCommand } from "../ipc/i
 import { deleteAttachmentCommand } from "../ipc/attachmentCommands.js";
 import { forgetCommands, itemsWithQueuedMoves, pendingCommands, queuedCommandCount } from "../db/repos/recordCommandsRepo.js";
 import { createLocalRecord, type LocalItemRecord } from "./localRecord.js";
+import { approveModule } from "../db/repos/modulesRepo.js";
+import { configureEntryChecks } from "../modules/entryChecks.js";
 import { createDeviceRecord, type DeviceRecord } from "./deviceRecord.js";
 import {
   serveApply,
@@ -3027,6 +3030,40 @@ describe("a pipeline's entry rules on the record (EO-610)", () => {
     expect(queuedCommandCount(annaDb.db)).toBe(0);
   });
 
+  it("runs a module rule on the record itself before applying a move (EO-736)", async () => {
+    const gate = saveModule(recordDb.db, {
+      slug: "gate",
+      name: "Gate",
+      description: "Says no.",
+      code: `export default async function () { return { ok: true, result: "refuse", reason: "the record says no" }; }`,
+      manifest: { name: "Gate", description: "Says no.", inputs: {}, needs: { bin: [], env: [], network: false, item: true, comment: false, attach: false, create: false }, results: ["pass", "refuse"], entryCheck: true },
+    });
+    if (!gate.ok) throw new Error(gate.reason);
+    approveModule(recordDb.db, gate.module.id);
+    intakeOn(recordDb.db, [{ kind: "module", module: gate.module.id }]);
+    intakeOn(annaDb.db, []);
+    const item = onTheRecord();
+    await anna.record.sync();
+    const secrets = mkdtempSync(join(tmpdir(), "eo-record-secrets-"));
+    configureEntryChecks({
+      launcher: { execPath: process.execPath, hostPath: join(dirname(fileURLToPath(import.meta.url)), "..", "modules", "moduleHost.mjs"), hostEnv: { ELECTRON_RUN_AS_NODE: "1" } },
+      secrets: { directory: secrets, store: { isEncryptionAvailable: () => false, encryptString: () => Buffer.from(""), decryptString: () => "" } },
+    });
+    try {
+      expect(moveIn(anna, item).moved).toBe(true);
+      await anna.record.sync();
+
+      expect(getItem(recordDb.db, item.id)).toMatchObject({ stepId: "todo", pipelineId: "default" });
+      expect(seenBy(anna, item.id)).toMatchObject({ stepId: "todo", pipelineId: "default" });
+      expect(openMentionsForHuman(annaDb.db).map((mention) => mention.comment.body)).toEqual([
+        `Your move on ${item.key} was not applied: "Intake" needs these before work can enter it: a pass from "Gate", which refused it: the record says no.`,
+      ]);
+    } finally {
+      configureEntryChecks(null);
+      rmSync(secrets, { recursive: true, force: true });
+    }
+  });
+
   it("refuses it at the device first, where its copy has the rule", async () => {
     intakeOn(recordDb.db, [{ kind: "description" }]);
     intakeOn(annaDb.db, [{ kind: "description" }]);
@@ -3065,7 +3102,8 @@ describe("a pipeline's entry rules on the record (EO-610)", () => {
   });
 
   it("travels with a pipeline to a replica, on the pipeline and on its versions", () => {
-    const rules: EntryRule[] = [{ kind: "description" }];
+    // A module rule too (EO-736): its module id, its words and its limit.
+    const rules: EntryRule[] = [{ kind: "description" }, { kind: "module", module: "019fb8c6-0000-7000-8000-0000000000aa", message: "a reviewer", timeoutMs: 5000 }];
     replacePipelineGraph(recordDb.db, "default", listStepsForPipeline(recordDb.db, "default"), listRoutesForPipeline(recordDb.db, "default"), { entryRules: rules });
     const page = listPipelinesUpdatedSince(recordDb.db, { ts: 0, id: "" }, 500).find((pipeline) => pipeline.id === "default");
     const current = page!.versions.find((version) => version.id === page!.currentVersionId);

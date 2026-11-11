@@ -98,12 +98,19 @@ export function handleMessageHere(db: Db, request: MessageHandling, now: number 
   }
 }
 
-/** The answer is recorded whatever its consequence does: a fault in it is logged, not the press refused. */
+/**
+ * The answer is recorded whatever its consequence does: a fault in it is
+ * logged, not the press refused. A firing that must first run a pipeline's
+ * module entry rules (EO-736) is not waited for: the answer is already
+ * recorded.
+ */
 function actOnAnswer(db: Db, message: Message): void {
+  const failed = (error: unknown): void => console.error(`[eo] answering the message ${message.id} did not set off what it offered:`, error);
   try {
-    answerSkipMessage(db, message);
+    const fired = answerSkipMessage(db, message);
+    if (fired instanceof Promise) fired.catch(failed);
   } catch (error) {
-    console.error(`[eo] answering the message ${message.id} did not set off what it offered:`, error);
+    failed(error);
   }
 }
 

@@ -1,7 +1,8 @@
 import type { PipelineStep, Item } from "@eo/core";
 import { resolveRoute } from "@eo/engine";
 import type { Db } from "../db/client.js";
-import { boundGraphForItem, itemEntryRefusal, listRoutesForPipeline, postComment } from "../db/repos/index.js";
+import { boundGraphForItem, getItem, itemEntryRefusal, listRoutesForPipeline, postComment } from "../db/repos/index.js";
+import { withModuleEntryChecks } from "../modules/entryChecks.js";
 import type { NextStep } from "./runSupervisor.js";
 
 /**
@@ -106,8 +107,48 @@ export function routeResult(
  * letting the run succeed would dispatch it again on the next tick.
  */
 export function handOffRefusal(db: Db, item: Item, destination: { stepId: string; pipelineId: string }): string | null {
-  const refused = itemEntryRefusal(db, item, destination.pipelineId, destination.stepId);
-  if (refused === null) return null;
+  // The data rules: a route is decided where nothing can wait for a
+  // module, so its module rules are `handOffModuleRefusal`'s, run before
+  // the move is applied (EO-736).
+  const refused = itemEntryRefusal(db, item, destination.pipelineId, destination.stepId, false);
+  return refused === null ? null : parkRefusedHandOff(db, item, refused);
+}
+
+/**
+ * The same for the destination's `module` entry rules (EO-736,
+ * ARCHITECTURE.md, "Entry rules"), once its data rules have let the item
+ * in: the modules run, and a refusal asks the person and answers the
+ * reason to park on, as a refused route always has.
+ *
+ * `enter` is the move, and anything that must be written with it. It is
+ * called here, and only where the item may enter, in the same synchronous
+ * pass as the last judgement — of the item as it stands then, read afresh,
+ * not as it stood when the run began. So an edit to the item, a rule
+ * published or a module withdrawn while a module ran is judged rather than
+ * stepped round: the module runs again on what changed, and nothing is
+ * awaited between that judgement and the move.
+ */
+export async function handOffModuleRefusal(
+  db: Db,
+  item: Item,
+  destination: { stepId: string; pipelineId: string | null },
+  enter: () => void,
+): Promise<string | null> {
+  const { pipelineId } = destination;
+  if (pipelineId === null || pipelineId === item.pipelineId || item.trialAt !== null || item.previewAt !== null) {
+    enter();
+    return null;
+  }
+  const refused = await withModuleEntryChecks(db, "route", () => {
+    const current = getItem(db, item.id) ?? item;
+    const refusal = itemEntryRefusal(db, current, pipelineId, destination.stepId);
+    if (refusal === null) enter();
+    return refusal;
+  });
+  return refused === null ? null : parkRefusedHandOff(db, item, refused);
+}
+
+function parkRefusedHandOff(db: Db, item: Item, refused: string): string {
   const reason = `${refused} The item has stayed where it is. Add what is missing, then move it across.`;
   askTheHuman(db, item, reason);
   return reason;

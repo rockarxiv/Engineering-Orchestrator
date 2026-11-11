@@ -158,6 +158,8 @@ interface World {
   templateStatus?: unknown;
   /** What work must have to enter (EO-610). Absent is a pipeline that asks for nothing. */
   entrySentence?: string | null;
+  /** Each rule as a line (EO-736). Absent is a pipeline that asks for nothing. */
+  entryRuleLines?: string[];
 }
 
 function mockIpc({
@@ -178,6 +180,7 @@ function mockIpc({
   modules = [DEPLOY_MODULE],
   templateStatus = { origin: null, updated: null, waiting: null, problem: null },
   entrySentence = null,
+  entryRuleLines = [],
 }: World = {}) {
   const invoke = vi.fn(async (channel: string, payload?: unknown) => {
     void payload;
@@ -189,6 +192,7 @@ function mockIpc({
             steps,
             routes,
             entrySentence,
+            entryRuleLines,
             elsewhere: ELSEWHERE,
             verification,
             version: null,
@@ -868,6 +872,25 @@ describe("the pipeline's own setup, read-only (EO-524)", () => {
     expect(within(within(list).getByRole("listitem", { name: "v1" })).queryByRole("link")).toBeNull();
     fireEvent.click(within(list).getByRole("link", { name: "What v3 changed" }));
     expect(screen.getByTestId("where").textContent).toBe("/pipelines/default/changes?from=2&to=3");
+  });
+
+  it("lists its entry rules, a module rule by its module and limit, and offers no way to change them (EO-736)", async () => {
+    mockIpc({ entryRuleLines: ["a description", 'a pass from "No reviewers", within 5 seconds (developer:story)'] });
+    renderGraph();
+
+    const rules = await screen.findByRole("region", { name: "Entry rules" });
+    const list = await within(rules).findByRole("list", { name: "Entry rules" });
+    expect(within(list).getAllByRole("listitem").map((line) => line.textContent)).toEqual(["a description", 'a pass from "No reviewers", within 5 seconds (developer:story)']);
+    expect(rules).toHaveTextContent("ask the assistant");
+    expect(within(rules).queryByRole("button")).toBeNull();
+    expect(within(rules).queryByRole("textbox")).toBeNull();
+  });
+
+  it("says a pipeline with no entry rules asks for nothing (EO-736)", async () => {
+    mockIpc();
+    renderGraph();
+    const rules = await screen.findByRole("region", { name: "Entry rules" });
+    await waitFor(() => expect(rules).toHaveTextContent("None — work enters with nothing asked of it."));
   });
 
   it("says whether webhook items are sent on unread", async () => {

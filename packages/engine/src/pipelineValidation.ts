@@ -234,7 +234,7 @@ export function validatePipeline(input: ValidatePipelineInput): WorkflowProblem[
     return [{ severity: "error", stateId: null, message: "A pipeline needs at least one step." }];
   }
 
-  for (const message of entryRuleProblems(entryRules, itemTypes, registry.entryRuleKinds)) {
+  for (const message of entryRuleProblems(entryRules, itemTypes, registry.entryRuleKinds, modules)) {
     problems.push({ severity: "error", stateId: null, message });
   }
 
