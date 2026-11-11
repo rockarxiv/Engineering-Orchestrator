@@ -2932,7 +2932,10 @@ export function createRunSupervisor(
     if (run.provider !== null && run.provider !== backend) {
       return { kind: "fell_back", reason: `The run's thread is on ${run.provider}, and ${agent.name} now runs on ${backend}.` };
     }
-    const inner = providerFor(agent, item);
+    // In a scope of the run's, as the run's turns were (EO-738): the
+    // fork's CLI is a process EO starts for the run, and the scope is
+    // one more of the run's options the fork keeps (EO-732).
+    const inner = scopedProvider(providerFor(agent, item), processScopeOf(run.id));
     if (!inner.fork) return { kind: "fell_back", reason: `The ${backend} backend cannot fork a thread.` };
     const bridge = options.agentWriteBridge?.() ?? null;
     if (bridge === null) return { kind: "fell_back", reason: "EO has nowhere listening for the review's notes." };
