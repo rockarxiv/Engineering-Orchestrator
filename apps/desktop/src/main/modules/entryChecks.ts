@@ -1,6 +1,6 @@
-import { existsSync } from "node:fs";
+import { accessSync, constants, existsSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { posix, win32 } from "node:path";
 import {
   ENTRY_CHECK_PASS,
   ENTRY_CHECK_REFUSE,
@@ -229,11 +229,61 @@ async function judge(db: Db, check: ModuleEntryCheck, module: CustomModule | und
   return `answered "${outcome.result}", which is neither ${ENTRY_CHECK_PASS} nor ${ENTRY_CHECK_REFUSE}`;
 }
 
-/** The binaries a manifest declares that are on no directory EO searches. */
+/** The binaries a manifest declares that `ctx.exec` could not start from any directory EO searches. */
 function binariesNotFound(bins: readonly string[]): string[] {
   const directories = searchDirectories();
-  const extensions = process.platform === "win32" ? (process.env["PATHEXT"] ?? ".EXE;.CMD;.BAT").split(";").concat([""]) : [""];
-  return bins.filter((bin) => !directories.some((directory) => extensions.some((extension) => existsSync(join(directory, bin + extension)))));
+  return bins.filter((bin) => !launchable(bin, { directories }));
+}
+
+/**
+ * Scripts Node will not start without a shell (CVE-2024-27980), which
+ * `ctx.exec` never uses.
+ */
+const WINDOWS_SHELL_SCRIPTS = new Set([".bat", ".cmd"]);
+
+export interface LaunchableOptions {
+  directories: readonly string[];
+  platform?: NodeJS.Platform;
+  /** Whether the file at this path is one the platform would execute. */
+  runnable?: (path: string) => boolean;
+}
+
+/**
+ * Whether `ctx.exec(bin)` could start `bin` (EO-736): what the module
+ * host's `spawn`, which has no shell, finds on its PATH and can run —
+ * not merely a file of that name, which is what let a `.cmd` on Windows,
+ * or a file without its execute bit, pass the record's check at save and
+ * fail at the first door.
+ *
+ * Node's lookup, as libuv does it. On Windows a bare name is tried with
+ * `.com` and `.exe`, and a name with its own extension as given too,
+ * unless that extension is `.bat` or `.cmd`. Elsewhere the name itself,
+ * which must be a regular file with its execute bit. A name with a
+ * separator in it is not looked up but taken as written.
+ */
+export function launchable(bin: string, options: LaunchableOptions): boolean {
+  const platform = options.platform ?? process.platform;
+  const path = platform === "win32" ? win32 : posix;
+  const runnable = options.runnable ?? ((candidate: string) => runnableFile(candidate, platform));
+  const named = platform === "win32" ? /[\\/]/.test(bin) : bin.includes("/");
+  const bases = named ? [bin] : options.directories.map((directory) => path.join(directory, bin));
+  const forms = (base: string): string[] => {
+    if (platform !== "win32") return [base];
+    const extension = path.extname(bin).toLowerCase();
+    const asGiven = extension !== "" && !WINDOWS_SHELL_SCRIPTS.has(extension) ? [base] : [];
+    return [...asGiven, `${base}.com`, `${base}.exe`];
+  };
+  return bases.some((base) => forms(base).some(runnable));
+}
+
+function runnableFile(candidate: string, platform: NodeJS.Platform): boolean {
+  try {
+    if (!statSync(candidate).isFile()) return false;
+    if (platform !== "win32") accessSync(candidate, constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /**

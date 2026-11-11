@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { copyFileSync, linkSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, linkSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -47,7 +47,7 @@ import { openAssistConversation, postAssistReply } from "../roles/assist.js";
 import { ASSIST_ACTION } from "../roles/conversationSteps.js";
 import { PROPOSAL_KIND } from "../roles/proposal.js";
 import { createRunSupervisor } from "../supervisor/runSupervisor.js";
-import { configureEntryChecks, moduleEntryRefusal } from "./entryChecks.js";
+import { configureEntryChecks, launchable, moduleEntryRefusal } from "./entryChecks.js";
 import { moduleItemReader } from "./moduleItemRead.js";
 import type { ModuleHostLauncher } from "./runModule.js";
 import { runModuleTests } from "./runModuleTests.js";
@@ -814,6 +814,35 @@ describe("publishing a module rule", () => {
     rmSync(forgeBinary());
     expect(messages(save([{ kind: "module", module: id }]))).toContain('The entry rule runs "No reviewers", which this record cannot run: forge-default-branch is not installed here.');
   });
+
+  // A file of the binary's name is not enough: `ctx.exec` spawns with no
+  // shell, so the save has to refuse what that spawn could not start,
+  // and nothing is published.
+  const NOT_RUNNABLE = 'The entry rule runs "No reviewers", which this record cannot run: forge-default-branch is not installed here.';
+
+  it.skipIf(process.platform === "win32")("is refused where the binary is a file without its execute bit, or a directory", () => {
+    const id = module(NO_REVIEWERS);
+    rmSync(forgeBinary());
+    writeFileSync(forgeBinary(), "#!/bin/sh\necho main\n", { mode: 0o644 });
+    const answer = save([{ kind: "module", module: id }]);
+    expect(messages(answer)).toContain(NOT_RUNNABLE);
+    expect(answer.saved).toBe(false);
+    rmSync(forgeBinary());
+    mkdirSync(forgeBinary());
+    expect(messages(save([{ kind: "module", module: id }]))).toContain(NOT_RUNNABLE);
+  });
+
+  it.runIf(process.platform === "win32")("is refused where the binary is a .cmd or .bat script", () => {
+    const id = module(NO_REVIEWERS);
+    rmSync(forgeBinary());
+    for (const script of ["forge-default-branch.cmd", "forge-default-branch.bat"]) {
+      writeFileSync(join(bin, script), "@echo main\r\n");
+      const answer = save([{ kind: "module", module: id }]);
+      expect(messages(answer)).toContain(NOT_RUNNABLE);
+      expect(answer.saved).toBe(false);
+      rmSync(join(bin, script));
+    }
+  });
 });
 
 describe("versions and files", () => {
@@ -906,5 +935,30 @@ describe("approving an entry check", () => {
     const id = unapproved({ env: ["GITLAB_TOKEN"], network: true });
     // Past the entry-check gate, to the rule every module meets: it has no tests yet.
     expect((await approveModuleCommand(handle.db, neverRun, { id, acknowledgeLowCoverage: false })).problem).toContain("has no tests");
+  });
+});
+
+describe("whether ctx.exec could start a binary", () => {
+  const files = (...paths: string[]) => (candidate: string) => paths.includes(candidate);
+  const windows = (bin: string, ...paths: string[]) => launchable(bin, { directories: ["C:\\tools", "D:\\bin"], platform: "win32", runnable: files(...paths) });
+  const posixLaunchable = (bin: string, ...paths: string[]) => launchable(bin, { directories: ["/usr/bin", "/opt/bin"], platform: "linux", runnable: files(...paths) });
+
+  it("on Windows, finds a program by .exe or .com on any directory searched", () => {
+    expect(windows("gh", "D:\\bin\\gh.exe")).toBe(true);
+    expect(windows("gh", "C:\\tools\\gh.com")).toBe(true);
+    expect(windows("gh.exe", "C:\\tools\\gh.exe")).toBe(true);
+  });
+
+  it("on Windows, does not count a .cmd or .bat script, which Node will not spawn without a shell", () => {
+    expect(windows("gh", "C:\\tools\\gh.cmd", "D:\\bin\\gh.bat", "C:\\tools\\gh")).toBe(false);
+    expect(windows("gh.cmd", "C:\\tools\\gh.cmd")).toBe(false);
+    expect(windows("gh.BAT", "C:\\tools\\gh.BAT")).toBe(false);
+  });
+
+  it("elsewhere, finds the name itself, and takes a path as written", () => {
+    expect(posixLaunchable("gh", "/opt/bin/gh")).toBe(true);
+    expect(posixLaunchable("gh", "/opt/bin/gh.exe")).toBe(false);
+    expect(posixLaunchable("/usr/local/bin/gh", "/usr/local/bin/gh")).toBe(true);
+    expect(posixLaunchable("/usr/local/bin/gh", "/usr/bin/gh")).toBe(false);
   });
 });
