@@ -543,10 +543,13 @@ async function skillRead(args, writeBridge) {
  * reason `MEMORY_NOTE_TOOL_NAME` is and pinned to them by
  * `eoServer.test.ts`.
  *
- * Listed only on a turn whose write credential names them — the learning
- * review's fork, and no other turn of any agent. Unlike every other write
- * tool here, no grant lists them: a credential that names no writes
- * names none of these.
+ * Listed on every turn that could be reviewed — one with memory scopes
+ * and somewhere to hand a write — and served only on the learning
+ * review's fork, whose credential names them (EO-732). The review is sent
+ * the run's own tools, so the run lists them too, and a call from any turn
+ * whose credential does not name them is refused with `TOOL_NOT_SERVED`.
+ * Unlike every other write tool here, no grant serves them: a credential
+ * that names no writes serves none of these.
  */
 export const SKILL_VIEW_TOOL_NAME = "skill_view";
 export const SKILL_CREATE_TOOL_NAME = "skill_create";
@@ -554,6 +557,12 @@ export const SKILL_PATCH_TOOL_NAME = "skill_patch";
 export const SKILL_FILE_WRITE_TOOL_NAME = "skill_file_write";
 export const SKILL_FILE_REMOVE_TOOL_NAME = "skill_file_remove";
 export const SKILL_WRITE_TOOLS = [SKILL_VIEW_TOOL_NAME, SKILL_CREATE_TOOL_NAME, SKILL_PATCH_TOOL_NAME, SKILL_FILE_WRITE_TOOL_NAME, SKILL_FILE_REMOVE_TOOL_NAME];
+
+/** The refusal of a skill tool on a turn that is not a learning review (EO-732): `skillToolNotServed` in `@eo/core`, pinned to it by `eoServer.test.ts`. */
+export const SKILL_TOOL_NOT_SERVED = (name) => `Only a learning review may write skills, so EO serves ${name} to no other turn, and nothing was read or written.`;
+
+/** Every tool whose call this service hands to EO to make (`AGENT_WRITE_TOOLS` in `@eo/core`). */
+const WRITES_THROUGH_EO = ["comment", "attachment_add", "memory_note", "repository_checkout", "skill_read", ...SKILL_WRITE_TOOLS];
 
 /**
  * A change to what a skill says: the text it replaces is gone from the
@@ -563,6 +572,9 @@ const REVISES_ANNOTATIONS = Object.freeze({ readOnlyHint: false, destructiveHint
 
 const SKILL_SLUG_PROPERTY = { type: "string", description: "The skill's slug, as the review prompt lists it." };
 
+/** What every skill tool's description ends with (EO-732): it is listed on turns that are not served it. */
+const SKILL_TOOL_REFUSED = " Only a learning review may read or write skills with this tool: on any other turn EO refuses the call.";
+
 const SKILL_TOOLS = [
   {
     name: SKILL_VIEW_TOOL_NAME,
@@ -570,7 +582,7 @@ const SKILL_TOOLS = [
     description:
       "Read one of the skills this run's agent is given: with only `slug`, its description, who wrote it, whether a person " +
       "locked it, its files and its body; with `file` as well, that one file's content. A skill must be read here before " +
-      "skill_patch changes it, and a file before skill_file_write overwrites it or skill_file_remove removes it.",
+      "skill_patch changes it, and a file before skill_file_write overwrites it or skill_file_remove removes it." + SKILL_TOOL_REFUSED,
     inputSchema: {
       type: "object",
       properties: {
@@ -587,7 +599,7 @@ const SKILL_TOOLS = [
     description:
       "Create a skill for this project and give it to this run's agent. `slug` names the kind of task it is for, in lowercase " +
       "words joined by hyphens — never a ticket, an error string or a date. `description` says when an agent should load " +
-      "it; `body` says how the task is done. Refused where the slug is taken; patch that skill instead.",
+      "it; `body` says how the task is done. Refused where the slug is taken; patch that skill instead." + SKILL_TOOL_REFUSED,
     inputSchema: {
       type: "object",
       properties: {
@@ -604,7 +616,7 @@ const SKILL_TOOLS = [
     annotations: REVISES_ANNOTATIONS,
     description:
       "Change a skill's body: `old_text`, which the body holds exactly once, becomes `new_text`. Refused unless this review " +
-      "read the skill with skill_view first, and for a skill a person locked.",
+      "read the skill with skill_view first, and for a skill a person locked." + SKILL_TOOL_REFUSED,
     inputSchema: {
       type: "object",
       properties: {
@@ -621,7 +633,7 @@ const SKILL_TOOLS = [
     annotations: REVISES_ANNOTATIONS,
     description:
       "Write one file in a skill's folder, such as `references/<topic>.md`, adding it or replacing it whole. Replacing a " +
-      "file is refused unless this review read it with skill_view first, and any write to a skill a person locked is refused.",
+      "file is refused unless this review read it with skill_view first, and any write to a skill a person locked is refused." + SKILL_TOOL_REFUSED,
     inputSchema: {
       type: "object",
       properties: {
@@ -636,7 +648,7 @@ const SKILL_TOOLS = [
   {
     name: SKILL_FILE_REMOVE_TOOL_NAME,
     annotations: REVISES_ANNOTATIONS,
-    description: "Remove one file from a skill's folder. Refused unless this review read that file with skill_view first, and for a skill a person locked.",
+    description: "Remove one file from a skill's folder. Refused unless this review read that file with skill_view first, and for a skill a person locked." + SKILL_TOOL_REFUSED,
     inputSchema: {
       type: "object",
       properties: {
@@ -816,7 +828,7 @@ export function eoToolList({
   enableMemoryNote = false,
   enableRepositoryCheckout = false,
   enableSkillRead = false,
-  skillTools = [],
+  enableSkillTools = false,
 } = {}) {
   return [
     // EO's own name first, because a model reads a tool list in order
@@ -845,9 +857,9 @@ export function eoToolList({
     // a turn that was told its scopes (EO-479): without them there is
     // nowhere a note could go.
     ...(enableMemoryNote ? [MEMORY_NOTE_TOOL] : []),
-    // Only on the learning review's turn (EO-718), whose credential names
-    // them: the tools it writes skills with.
-    ...SKILL_TOOLS.filter((tool) => skillTools.includes(tool.name)),
+    // On every turn that could be reviewed (EO-732), served on the
+    // learning review's alone (EO-718): the tools it writes skills with.
+    ...(enableSkillTools ? SKILL_TOOLS : []),
     // The unbounded read. Gated for the same reason the seeded context
     // exists: an agent that can pull a whole thread in one call has
     // undone the seed, and the two decisions are made from one predicate
@@ -1697,7 +1709,16 @@ async function answerEoTool({
   skillTools = [],
   writeBridge = null,
   enableRepositoryCheckout = writeBridge !== null,
+  served = null,
 }) {
+  // The writes this turn is served, where its credential names them
+  // (EO-717): any other write is refused here, as EO's bridge refuses it
+  // too. The tool is listed all the same (EO-732) — a learning review is
+  // sent the run's tools — so the refusal is said when it is called.
+  if (served !== null && WRITES_THROUGH_EO.includes(name) && !served.includes(name)) {
+    // A skill tool's refusal says why, on a credential naming other writes too.
+    return toolError("TOOL_NOT_SERVED", SKILL_WRITE_TOOLS.includes(name) ? SKILL_TOOL_NOT_SERVED(name) : `This turn is not served ${name}, so nothing was written.`);
+  }
   if (CONFIG_TOOL_NAMES.includes(name)) {
     if (!enableConfigTools) return toolError("TOOL_DISABLED", `The ${name} tool is not enabled for this role.`);
     if (!db) return toolError("DATABASE_UNAVAILABLE", "EO's configuration store is unavailable.");
@@ -1844,7 +1865,7 @@ async function answerEoTool({
   }
 
   if (SKILL_WRITE_TOOLS.includes(name)) {
-    if (!skillTools.includes(name)) return toolError("TOOL_DISABLED", `Only the learning review is served ${name}.`);
+    if (!skillTools.includes(name)) return toolError("TOOL_NOT_SERVED", SKILL_TOOL_NOT_SERVED(name));
     return skillTool(name, args, writeBridge);
   }
 
@@ -1938,23 +1959,27 @@ export function createEoMcpService({
   // memory for an agent whose own turns may not, and posts nothing.
   // EO's bridge refuses any other write on that credential as well.
   const served = bridge !== null && Array.isArray(bridge.writes) ? bridge.writes : null;
-  const serves = (tool) => served === null || served.includes(tool);
+  // What is listed does not depend on the credential (EO-732): a learning
+  // review's fork is sent the run's own tools, so that the backend reads
+  // the run's thread from its prompt cache, and a tool listed on one and
+  // not the other would cost it the whole thread. What is served does:
+  // a call to a write its credential does not name is refused when made.
+  //
+  // A turn that could be reviewed — memory scopes, and a bridge to hand
+  // a write to — lists `memory_note` and the skill tools whatever its
+  // grant, since its review is served them.
+  const reviewable = readable.length > 0 && bridge !== null;
   const writable = readable.length > 0 && (served === null ? enableMemoryNote === true : served.includes(MEMORY_NOTE_TOOL_NAME));
-  const commenting = enableCommentTool && serves("comment");
-  const attaching = attach !== null && serves("attachment_add") ? attach : null;
   const listed = {
-    enableCommentTool: commenting,
+    enableCommentTool,
     enableConfigTools,
     enableFullThread,
-    enableAttachmentAdd: attaching !== null,
+    enableAttachmentAdd: attach !== null,
     enableMemoryRead: readable.length > 0,
-    enableMemoryNote: writable,
-    enableRepositoryCheckout: bridge !== null && serves(REPOSITORY_CHECKOUT_TOOL_NAME),
-    enableSkillRead: Array.isArray(skillSlugs) && skillSlugs.length > 0 && serves(SKILL_READ_TOOL_NAME),
-    // Named by the credential or not at all (EO-718): a turn whose
-    // credential names no writes — every turn but the learning review's —
-    // is served none of them, whatever its agent's grant.
-    skillTools: served === null ? [] : SKILL_WRITE_TOOLS.filter((tool) => served.includes(tool)),
+    enableMemoryNote: (readable.length > 0 && enableMemoryNote === true) || reviewable,
+    enableRepositoryCheckout: bridge !== null,
+    enableSkillRead: Array.isArray(skillSlugs) && skillSlugs.length > 0,
+    enableSkillTools: reviewable,
   };
 
   return {
@@ -1971,17 +1996,21 @@ export function createEoMcpService({
           name: request.params?.name,
           args: request.params?.arguments ?? {},
           db,
-          enableCommentTool: commenting,
+          enableCommentTool,
           enableConfigTools,
           enableFullThread,
           runtimeRoot,
-          attach: attaching,
+          attach,
           memoryScopes: readable,
           enableMemoryNote: writable,
           enableSkillRead: listed.enableSkillRead,
-          skillTools: listed.skillTools,
+          // Named by the credential or not at all (EO-718): a turn whose
+          // credential names no writes — every turn but the learning
+          // review's — is served none of them, whatever its agent's grant.
+          skillTools: served === null ? [] : SKILL_WRITE_TOOLS.filter((tool) => served.includes(tool)),
           enableRepositoryCheckout: listed.enableRepositoryCheckout,
           writeBridge: bridge,
+          served,
         });
         return { jsonrpc: "2.0", id: request.id, result };
       }

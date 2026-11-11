@@ -789,8 +789,6 @@ describe("createClaudeProvider", () => {
     const forked = await provider.fork!("sess-run", "review the run", {
       cwd: "/tmp/wt",
       memoryScopes: [{ kind: "project", id: "project-p", name: "Payments" }],
-      withoutSkills: true,
-      withoutAdminServer: true,
     });
     if (forked.ok) await collect(forked.events);
 
@@ -2580,5 +2578,141 @@ describe("a side call", () => {
     await collect(createClaudeProvider({ runQuery: small.runQuery, enableCommentTool: false, config: { effort: "xhigh" } }).sideCall!(sideCallOpts));
     expect(small.calls[0]!.options["model"]).toBe("claude-haiku-5-5");
     expect(small.calls[0]!.options).not.toHaveProperty("effort");
+  });
+});
+
+/**
+ * The learning review's fork (EO-732): opened with what a resume of the
+ * run's thread is opened with, so its request starts as the run's last
+ * one did — tools, then system, then messages — and the thread is read
+ * from the prompt cache. Compared field by field on the options handed
+ * to the SDK, the fork differs only in being a fork, in its credential,
+ * in the per-turn administrative bearer, and in the hook that refuses
+ * its calls, none of which is in the prompt.
+ */
+describe("the learning review's fork (EO-732)", () => {
+  let scratch: string;
+
+  beforeEach(() => {
+    scratch = mkdtempSync(join(tmpdir(), "eo-claude-review-fork-"));
+  });
+
+  afterEach(() => {
+    rmSync(scratch, { recursive: true, force: true });
+  });
+
+  const reviewCalls = ["memory_read", "memory_note", "skill_view", "skill_create", "skill_patch", "skill_file_write", "skill_file_remove"];
+
+  it("is opened with the servers, plugin, skills, allowlist, model, effort and answer schema a resume of the run's thread is, field by field", async () => {
+    const toolDirectory = join(scratch, "plugin");
+    writeToolDirectory(toolDirectory, {
+      servers: [
+        {
+          id: "srv-linear",
+          name: "linear",
+          description: "",
+          config: { transport: "stdio", command: "/usr/bin/linear-mcp", args: [] },
+          envNames: [],
+          enabled: true,
+          createdAt: 1,
+          updatedAt: 1,
+          archivedAt: null,
+          connector: null,
+        },
+      ],
+      skills: [
+        {
+          id: "0199cf00-0000-7000-8000-00000000000c",
+          slug: "pr-review",
+          name: "PR review",
+          description: "How this house reviews a pull request.",
+          body: "# PR review\n",
+          files: [],
+          disableModelInvocation: false,
+          enabled: true,
+          scope: { kind: "global" },
+          createdAt: 1,
+          updatedAt: 2,
+          archivedAt: null,
+          createdBy: "person",
+          locked: false,
+        },
+      ],
+    });
+    let bearer = 0;
+    const provider = (runQuery: never) =>
+      createClaudeProvider({
+        runQuery,
+        settingsReader: NO_SETTINGS,
+        config: { model: "claude-opus-5-5", effort: "high", allowedTools: ["Read", "mcp__eo__memory_note"] },
+        eoMcp: { serverPath: "/app/eoServer.mjs", dbPath: "/data/eo.db", enableCommentTool: true, enableMemoryNote: true },
+        admin: () => ({ server: { url: "http://127.0.0.1:9/mcp", envName: "EO_ADMIN_TOKEN" }, environment: { EO_ADMIN_TOKEN: `bearer-${String(++bearer)}` }, release: () => {} }),
+      });
+    const turn = {
+      cwd: scratch,
+      toolDirectory,
+      repositoryMcp: { name: "repo", command: "/opt/eo/index-tool", args: ["serve"], env: {} },
+      attachFrom: { runId: "018f0000-0000-7000-8000-000000000412", directory: scratch },
+      memoryScopes: [{ kind: "project" as const, id: "project-p", name: "Payments" }],
+      outputSchema: { type: "object", properties: { result: { type: "string" } }, required: ["result"], additionalProperties: false },
+      reasoningEffort: "high",
+      showReasoning: true,
+      streamDeltas: true,
+    };
+
+    const run = fakeQuery([result()]);
+    await collect(provider(run.runQuery).resume("sess_run", "carry on", { ...turn, writeBridge: { url: "http://127.0.0.1:1/agent-write", token: "item-1.signed" } }));
+    const reviewCredential = { url: "http://127.0.0.1:1/agent-write", token: "item-1~review.signed", writes: ["memory_note" as const, "skill_view" as const] };
+    const fork = fakeQuery([init("sess_fork"), result({ session_id: "sess_fork" })]);
+    const forked = await provider(fork.runQuery).fork!("sess_run", "review the run", { ...turn, writeBridge: reviewCredential, refuseCallsExcept: reviewCalls });
+    if (forked.ok) await collect(forked.events);
+
+    const runOptions = run.calls[0]!.options;
+    const forkOptions = fork.calls[0]!.options;
+    // What the CLI is spawned through and cancelled by is each turn's own.
+    const TURNS_OWN = new Set(["spawnClaudeCodeProcess", "abortController"]);
+    const keys = [...new Set([...Object.keys(runOptions), ...Object.keys(forkOptions)])].filter((key) => !TURNS_OWN.has(key)).sort();
+    const differing = keys.filter((key) => JSON.stringify(runOptions[key]) !== JSON.stringify(forkOptions[key]));
+    expect(differing).toEqual(["env", "forkSession", "hooks", "mcpServers"]);
+    // And what the run's turn had to be compared on was there.
+    for (const key of ["allowedTools", "effort", "extraArgs", "mcpServers", "model", "outputFormat", "plugins", "skills", "thinking"]) expect(runOptions[key], key).toBeDefined();
+
+    // The four, each differing only where it should.
+    expect(forkOptions["forkSession"]).toBe(true);
+    const env = (options: Record<string, unknown>) => {
+      const { EO_ADMIN_TOKEN: bearerOf, ...rest } = options["env"] as Record<string, string>;
+      return { bearer: bearerOf !== undefined, rest };
+    };
+    expect(env(forkOptions)).toEqual(env(runOptions));
+    expect(env(forkOptions).bearer).toBe(true);
+    const servers = (options: Record<string, unknown>) => {
+      const all = structuredClone(options["mcpServers"]) as Record<string, { env?: Record<string, string> }>;
+      const credential = all["eo"]?.env?.["EO_MCP_WRITE_BRIDGE"];
+      delete all["eo"]?.env?.["EO_MCP_WRITE_BRIDGE"];
+      return { all, credential: credential === undefined ? null : (JSON.parse(credential) as unknown) };
+    };
+    expect(servers(forkOptions).all).toEqual(servers(runOptions).all);
+    expect(Object.keys(servers(forkOptions).all).sort()).toEqual(["eo", "repo"]);
+    expect(servers(forkOptions).credential).toEqual(reviewCredential);
+    const preToolUse = (options: Record<string, unknown>) => (options["hooks"] as { PreToolUse?: { matcher?: string }[] } | undefined)?.PreToolUse ?? [];
+    expect(preToolUse(runOptions)).toEqual([]);
+    expect(preToolUse(forkOptions).map((entry) => entry.matcher)).toEqual([undefined]);
+  });
+
+  it("refuses in its hook every call but the ones it may make, and lets the answer through", async () => {
+    const fork = fakeQuery([init("sess_fork"), result({ session_id: "sess_fork" })]);
+    const forked = await createClaudeProvider({ runQuery: fork.runQuery, settingsReader: NO_SETTINGS }).fork!("sess_run", "review the run", {
+      cwd: scratch,
+      repositoryMcp: { name: "repo", command: "/opt/eo/index-tool", args: [], env: {} },
+      outputSchema: { type: "object", properties: {}, additionalProperties: false },
+      refuseCallsExcept: reviewCalls,
+    });
+    if (forked.ok) await collect(forked.events);
+    const hook = (fork.calls[0]!.options["hooks"] as { PreToolUse: { hooks: ((input: unknown) => Promise<{ hookSpecificOutput?: { permissionDecision?: string } }>)[] }[] }).PreToolUse[0]!.hooks[0]!;
+    const decided = async (tool: string) => (await hook({ hook_event_name: "PreToolUse", tool_name: tool, tool_input: {}, tool_use_id: "call-1", session_id: "sess_fork", transcript_path: "/tmp/t.jsonl", cwd: scratch })).hookSpecificOutput?.permissionDecision ?? "allow";
+    const refused = ["Bash", "Edit", "Write", "Read", "Skill", "Agent", "ToolSearch", "mcp__eo__comment", "mcp__eo__skill_read", "mcp__eo_admin__agent_save", "mcp__linear__create_issue"];
+    const allowed = ["StructuredOutput", "mcp__eo__memory_read", "mcp__eo__memory_note", "mcp__eo__skill_view", "mcp__eo__skill_patch", "mcp__repo__codewiki_search"];
+    expect(await Promise.all(refused.map(decided))).toEqual(refused.map(() => "deny"));
+    expect(await Promise.all(allowed.map(decided))).toEqual(allowed.map(() => "allow"));
   });
 });

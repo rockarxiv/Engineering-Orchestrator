@@ -827,7 +827,7 @@ describe("createCodexProvider", () => {
   describe("this turn's search hook (EO-379)", () => {
     const repositoryMcp = { name: "repo", command: "/opt/eo/index-tool", args: [], env: {}, answers: { symbol: "s", area: "a", reach: ["r"], files: "f" }, knows: async () => [] };
     const trust = { key: "/<session-flags>/config.toml:pre_tool_use:0:0", hash: "sha256:abc123" };
-    const hook = { command: "ELECTRON_RUN_AS_NODE=1 '/opt/eo/EO' '/opt/eo/hook.mjs'", env: { EO_SEARCH_HOOK_URL: "http://127.0.0.1:4123/", EO_SEARCH_HOOK_TOKEN: "minted" }, trust };
+    const hook = { command: "ELECTRON_RUN_AS_NODE=1 '/opt/eo/EO' '/opt/eo/hook.mjs'", env: { EO_SEARCH_HOOK_URL: "http://127.0.0.1:4123/", EO_SEARCH_HOOK_TOKEN: "minted" }, matcher: "Bash", trust };
     /** A nudge with something to say about every call, so a firing depends only on the hook being reached. */
     const always = async () => ({ kind: "symbol", needle: "x", nudge: "use the index" });
     const wired = { searchNudge: always, searchHookCommandPath: "/opt/eo/hook.mjs", searchHookTrust: async () => trust };
@@ -3905,5 +3905,134 @@ describe("a side call", () => {
     // nought is what a spent budget looks like by the time it arrives.
     const events = await collect(provider.sideCall!({ ...sideCallOpts, budgetCents: 0 }));
     expect(events.find((event) => event.type === "error")).toMatchObject({ budget: true });
+  });
+});
+
+/**
+ * The learning review's fork (EO-732): launched with what a resume of the
+ * run's thread is launched with, so its prompt starts as the run's last
+ * request did and Codex reads the thread from its prompt cache. Compared
+ * field by field on the options the adapter builds — the servers, the
+ * environment, the thread and the turn — the fork differs only in its
+ * credential and in the hook that refuses its calls.
+ */
+describe("the learning review's fork (EO-732)", () => {
+  let worktree: string;
+
+  beforeEach(() => {
+    worktree = mkdtempSync(join(tmpdir(), "eo codex review fork "));
+  });
+
+  afterEach(() => {
+    rmSync(worktree, { recursive: true, force: true });
+  });
+
+  const reviewCalls = ["memory_read", "memory_note", "skill_view", "skill_create", "skill_patch", "skill_file_write", "skill_file_remove"];
+  const runCredential = { url: "http://127.0.0.1:1/agent-write", token: "item-1.signed" };
+  const reviewCredential = { url: "http://127.0.0.1:1/agent-write", token: "item-1~review.signed", writes: ["memory_note" as const, "skill_view" as const] };
+
+  function launches() {
+    const built: CodexClientOptions[] = [];
+    const stubs: ReturnType<typeof stubCodex>[] = [];
+    let bearer = 0;
+    const options = {
+      executablePath: STUB_EXECUTABLE,
+      eoMcp: { serverPath: "/app/eoServer.mjs", dbPath: "/data/eo.db", enableCommentTool: true, enableMemoryNote: true },
+      attachedServers: [catalogueServer({ name: "linear" })],
+      attachedSkills: [
+        {
+          id: "0199cf00-0000-7000-8000-00000000000c",
+          slug: "pr-review",
+          name: "PR review",
+          description: "How this house reviews a pull request.",
+          body: "# PR review\n",
+          files: [],
+          disableModelInvocation: false,
+          enabled: true,
+          scope: { kind: "global" },
+          createdAt: 1,
+          updatedAt: 2,
+          archivedAt: null,
+          createdBy: "person",
+          locked: false,
+        } satisfies Skill,
+      ],
+      admin: () => ({ server: { url: "http://127.0.0.1:9/mcp", envName: "EO_ADMIN_TOKEN" }, environment: { EO_ADMIN_TOKEN: `bearer-${String(++bearer)}` }, release: () => {} }),
+      searchHookCommandPath: "/opt/eo/hook.mjs",
+      searchHookTrust: async () => ({ key: "/<session-flags>/config.toml:pre_tool_use:0:0", hash: "sha256:abc123" }),
+    };
+    const provider = createCodexProvider({
+      ...options,
+      createCodex: (...args: Parameters<typeof codexClientOptions> extends [unknown, ...infer Rest] ? Rest : never) => {
+        built.push(codexClientOptions(options, ...args));
+        const stub = stubCodex([{ type: "thread.started", thread_id: "t" }]);
+        stubs.push(stub);
+        return stub.codex as never;
+      },
+    });
+    return { provider, built, stubs };
+  }
+
+  const turn = () => ({
+    cwd: worktree,
+    repositoryMcp: { name: "repo", command: "/opt/eo/index-tool", args: ["serve"], env: {} },
+    attachFrom: { runId: "018f0000-0000-7000-8000-000000000412", directory: worktree },
+    memoryScopes: [{ kind: "project" as const, id: "project-p", name: "Payments" }],
+    skillScope: { projectId: "project-p", workspaceId: null },
+    outputSchema: { type: "object", properties: { result: { type: "string" } }, required: ["result"], additionalProperties: false },
+    model: "gpt-5",
+    reasoningEffort: "high",
+    showReasoning: true,
+  });
+
+  /** A launch's options with the credential and the per-turn bearer and hook taken out: what must be the same. */
+  function launchedWith(options: CodexClientOptions): unknown {
+    const config = structuredClone(options.config ?? {}) as { mcp_servers?: { eo?: { env?: Record<string, string> } }; hooks?: unknown };
+    delete config.mcp_servers?.eo?.env?.["EO_MCP_WRITE_BRIDGE"];
+    delete config.hooks;
+    const env = Object.fromEntries(Object.entries(options.env ?? {}).filter(([name]) => name !== "EO_ADMIN_TOKEN" && !name.startsWith("EO_SEARCH_HOOK_")));
+    return { executablePath: options.executablePath, config, env, perTurnEnv: options.perTurnEnv };
+  }
+
+  it("is launched with the servers, environment, thread and answer schema a resume of the run's thread is, field by field", async () => {
+    const { provider, built, stubs } = launches();
+    await collect(provider.resume("thr-run", "carry on", { ...turn(), writeBridge: runCredential }));
+    const forked = await provider.fork!("thr-run", "review the run", { ...turn(), writeBridge: reviewCredential, refuseCallsExcept: reviewCalls });
+    expect(forked.ok).toBe(true);
+    if (forked.ok) await collect(forked.events);
+
+    const [run, fork] = built;
+    expect(run && fork).toBeTruthy();
+    // The run's servers — `eo`, the repository server, the attached one
+    // and the administrative server — and every other setting, as the
+    // run's resume had them.
+    expect(Object.keys(mcpServersIn(run as never)).sort()).toEqual([ADMIN_MCP_SERVER_NAME, "eo", "linear", "repo"].sort());
+    expect(launchedWith(fork!)).toEqual(launchedWith(run!));
+    // The `eo` server is handed the same skills to serve with `skill_read`.
+    expect((mcpServersIn(fork as never)["eo"] as { env: Record<string, string> }).env["EO_MCP_SKILLS"]).toBe(JSON.stringify(["pr-review"]));
+    // The two differences: the credential, whole…
+    expect(JSON.parse((mcpServersIn(fork as never)["eo"] as { env: Record<string, string> }).env["EO_MCP_WRITE_BRIDGE"] ?? "null")).toEqual(reviewCredential);
+    // …and EO's hook, offered every call, where the run had none.
+    expect((run!.config as { hooks?: unknown }).hooks).toBeUndefined();
+    expect((fork!.config as { hooks?: { PreToolUse?: { matcher: string }[] } }).hooks?.PreToolUse?.map((entry) => entry.matcher)).toEqual(["*"]);
+    expect(fork!.env?.["EO_SEARCH_HOOK_REFUSES"]).toBe("1");
+
+    // The thread is opened with the run's model, effort and settings, and
+    // the turn sent the run's answer schema.
+    const resumedWith = stubs[0]!.codex.resumeThread.mock.calls[0]?.[1];
+    const forkedWith = stubs[1]!.codex.forkThread.mock.calls[0]?.[1];
+    expect(forkedWith).toEqual(resumedWith);
+    expect(forkedWith).toEqual(expect.objectContaining({ model: "gpt-5", modelReasoningEffort: "high" }));
+    expect(stubs[1]!.thread.runStreamed.mock.calls[0]?.[1]?.outputSchema).toEqual(stubs[0]!.thread.runStreamed.mock.calls[0]?.[1]?.outputSchema);
+    expect(stubs[1]!.thread.runStreamed.mock.calls[0]?.[1]?.outputSchema).toBeDefined();
+  });
+
+  it("is not run at all when the hook that refuses its calls cannot be set up, rather than run with nothing refusing them", async () => {
+    const { codex } = stubCodex([{ type: "thread.started", thread_id: "t" }]);
+    const provider = createCodexProvider({ createCodex: () => codex as never });
+    const forked = await provider.fork!("thr-run", "review the run", { ...turn(), writeBridge: reviewCredential, refuseCallsExcept: reviewCalls });
+    const failure = forked.ok ? await captureThrow(forked.events).catch((error: unknown) => error) : forked;
+    expect(String((failure as { message?: unknown }).message ?? failure)).toContain("could not set up the hook that refuses");
+    expect(codex.forkThread).not.toHaveBeenCalled();
   });
 });

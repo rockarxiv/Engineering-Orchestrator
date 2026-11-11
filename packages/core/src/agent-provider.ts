@@ -837,6 +837,20 @@ export interface ReasoningEvent {
   text: string;
 }
 
+/**
+ * How Codex copied a thread for a fork's turn (EO-732). `prediction` is
+ * the app-server's experimental fork that starts from the loaded parent's
+ * own config, tools and prompt-cache key, so the fork's first request
+ * reads the thread from the cache. `plain` is an ordinary `thread/fork`,
+ * which gets a cache key of its own, so the whole thread is written to
+ * the cache again. `fallbackReason` says why `plain` was used: the
+ * backend refused the prediction fork, in its own words.
+ */
+export interface ForkCopy {
+  mode: "prediction" | "plain";
+  fallbackReason?: string;
+}
+
 export type AgentEvent =
   | {
       type: "thread_started";
@@ -853,6 +867,11 @@ export type AgentEvent =
        * Absent where the backend does not say.
        */
       model?: string;
+      /**
+       * On a fork's turn, how the backend copied the thread (EO-732).
+       * Absent on any other turn, and on a backend with one way to fork.
+       */
+      fork?: ForkCopy;
     }
   | ServerStatusEvent
   | QuotaEvent
@@ -985,24 +1004,21 @@ export interface AgentProviderResumeOptions extends AgentTurnOverrides {
   /** Cancels this resumed turn without making the persisted session eligible for reuse. */
   signal?: AbortSignal;
   /**
-   * This turn is not served EO's administrative server (`eo_admin`),
-   * whoever the agent is, and no bearer for it is minted (EO-717). For
-   * the learning review on a fork of the system agent's thread, which
-   * may write memory and nothing else: the system agent's every other
-   * turn is given that server (invariant 11), and a review of its run is
-   * not one of its turns. Both adapters honour it, and
-   * `providerParity.test.ts` holds them to it.
+   * Every call this turn makes is refused when it is made, except to these
+   * of EO's own tools, by bare name, and to the repository server's tools,
+   * which only read (EO-732). The tools stay listed: the turn is sent the
+   * same tools, servers and skills as the turn it was forked from, so the
+   * backend reads that thread out of its prompt cache, and what it may do
+   * is held where it is done rather than by hiding a tool. A refused call
+   * does nothing and is answered with why — an edit, a command, an
+   * attached server's tool, the administrative server, a skill load.
+   *
+   * For the learning review on a fork of a run's thread. Claude refuses in
+   * a `PreToolUse` hook in EO's process; Codex in a `PreToolUse` hook it
+   * runs as a command, and a Codex turn whose hook cannot be set up is not
+   * run at all. `providerParity.test.ts` holds both to it.
    */
-  withoutAdminServer?: boolean;
-  /**
-   * This turn is given no skills (EO-717): none written, none offered,
-   * no Skills section, and no `skill_read` to load one with. For the
-   * learning review, which may use `memory_read` and `memory_note` and
-   * nothing else; a resume or fork otherwise gives the agent's skills
-   * back. Both adapters honour it, and `providerParity.test.ts` holds
-   * them to it.
-   */
-  withoutSkills?: boolean;
+  refuseCallsExcept?: readonly string[];
 }
 
 /**
@@ -1106,14 +1122,13 @@ export interface AgentSessionDescription {
 
 /**
  * The per-turn facts a session description depends on: the same fields
- * `start` and `resume` are handed — and, for a turn that is given less
- * than the agent's own (the learning review's fork, EO-734), the two
- * withholdings that change what it is opened with. The memory scopes are
- * among them because they are what grants an allowlisted agent
- * `memory_read` (EO-478); they are scope ids and labels, not secrets.
+ * `start` and `resume` are handed. The learning review's fork (EO-734) is
+ * opened with its run's own (EO-732), so it is described by the same
+ * fields. The memory scopes are among them because they are what grants
+ * an allowlisted agent `memory_read` (EO-478); they are scope ids and
+ * labels, not secrets.
  */
-export type AgentSessionQuery = Pick<AgentProviderStartOptions, "model" | "reasoningEffort" | "toolDirectory" | "repositoryMcp" | "skillScope" | "memoryScopes"> &
-  Pick<AgentProviderResumeOptions, "withoutSkills" | "withoutAdminServer"> & { cwd?: string };
+export type AgentSessionQuery = Pick<AgentProviderStartOptions, "model" | "reasoningEffort" | "toolDirectory" | "repositoryMcp" | "skillScope" | "memoryScopes"> & { cwd?: string };
 
 /**
  * A turn a provider may start its backend for before it is asked to run

@@ -21,6 +21,12 @@ export interface FakeAppServerScenario {
   threadId?: string;
   /** The id `thread/fork` answers with: the copy's (EO-716). */
   forkId?: string;
+  /**
+   * Refuse a `thread/fork` in prediction mode with this message, as an
+   * app-server would that cannot load the original or offers no
+   * experimental API (EO-732). A plain fork is still answered.
+   */
+  refusePredictionFork?: string;
   /** The id `turn/start` answers with. */
   turnId?: string;
   /**
@@ -42,8 +48,12 @@ export interface FakeAppServerScenario {
    * `{ fireHook }` posts that `PreToolUse` payload to the listener EO
    * named in this process's environment, as the hook command the real
    * CLI runs would (EO-379), and waits for the answer before going on.
+   * The answer is appended to `hookAnswers`, where the scenario names a
+   * file, one JSON line per payload: `{ status, body }` (EO-732).
    */
   after?: Record<string, ({ method: string; params: unknown } | { exit: number; stderr?: string } | { request: string } | { wait: number } | { fireHook: Record<string, unknown> })[]>;
+  /** Where each `{ fireHook }`'s answer is appended, one JSON line per payload (EO-732). */
+  hookAnswers?: string;
   /** Stay alive when stdin closes, as a wedged server would. */
   ignoreEof?: boolean;
   /** Stay alive on SIGTERM too, so only SIGKILL ends it (EO-493). */
@@ -86,6 +96,10 @@ lines.on("line", async (line) => {
   const message = JSON.parse(line);
   if (message.method === undefined || message.id === undefined) return;
   if (message.method === "thread/resume") thread = message.params.threadId;
+  if (message.method === "thread/fork" && message.params.experimentalPredictionMode && scenario.refusePredictionFork) {
+    send({ id: message.id, error: { code: -32600, message: scenario.refusePredictionFork } });
+    return;
+  }
   if (message.method === "thread/fork") thread = scenario.forkId || "thr-fork";
   const reply = (scenario.replies || {})[message.method];
   if (reply && reply.error) send({ id: message.id, error: reply.error });
@@ -96,11 +110,14 @@ lines.on("line", async (line) => {
       continue;
     }
     if (next.fireHook !== undefined) {
-      await fetch(process.env.EO_SEARCH_HOOK_URL, {
+      const answer = await fetch(process.env.EO_SEARCH_HOOK_URL, {
         method: "POST",
         headers: { authorization: "Bearer " + process.env.EO_SEARCH_HOOK_TOKEN },
         body: JSON.stringify(next.fireHook),
-      }).catch(() => {});
+      })
+        .then(async (response) => ({ status: response.status, body: await response.text() }))
+        .catch(() => ({ status: 0, body: "" }));
+      if (scenario.hookAnswers) require("node:fs").appendFileSync(scenario.hookAnswers, JSON.stringify(answer) + "\n");
       continue;
     }
     if (next.exit !== undefined) {

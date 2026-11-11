@@ -74,3 +74,29 @@ export function leadingWith<T>(first: readonly T[], stream: InterruptibleStream<
   if (stream.steer) wrapped.steer = (message, attachments) => stream.steer!(message, attachments);
   return wrapped;
 }
+
+/**
+ * The same stream without the events of these types (EO-732): on a turn
+ * whose calls are refused as they are made, what a call says by being
+ * made — a skill loaded, a file edited — did not happen. `interrupt` and
+ * `steer` pass straight through, as in `leadingWith`.
+ */
+export function withoutEvents(stream: InterruptibleStream<AgentEvent>, types: ReadonlySet<AgentEvent["type"]>): InterruptibleStream<AgentEvent> {
+  const wrapped: InterruptibleStream<AgentEvent> = {
+    [Symbol.asyncIterator]: () => {
+      const inner = stream[Symbol.asyncIterator]();
+      return {
+        next: async () => {
+          for (;;) {
+            const next = await inner.next();
+            if (next.done || !types.has(next.value.type)) return next;
+          }
+        },
+        return: async (value?: unknown) => (await inner.return?.(value)) ?? { done: true, value: value as AgentEvent },
+      };
+    },
+  };
+  if (stream.interrupt) wrapped.interrupt = () => stream.interrupt!();
+  if (stream.steer) wrapped.steer = (message, attachments) => stream.steer!(message, attachments);
+  return wrapped;
+}

@@ -87,6 +87,10 @@ describe("a learning review's spend row", () => {
     let launches = 0;
     const provider = createCodexProvider({
       executablePath: EXECUTABLE,
+      // The review's fork refuses its other calls through EO's hook (EO-732),
+      // and is not run without it.
+      searchHookCommandPath: "/opt/eo/hook.mjs",
+      searchHookTrust: async () => ({ key: "/<session-flags>/config.toml:pre_tool_use:0:0", hash: "sha256:stand-in" }),
       createCodex: () => new CodexClient({ executablePath: EXECUTABLE, spawn: (launches++ === 0 ? run : fork).spawn, shutdownGraceMs: 200 }),
     });
 

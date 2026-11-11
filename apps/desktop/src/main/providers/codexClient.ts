@@ -1,4 +1,4 @@
-import { PREWARM_IDLE_MS } from "@eo/core";
+import { PREWARM_IDLE_MS, type ForkCopy } from "@eo/core";
 import { AppServerConnection, type AppServerExit, AppServerExitedError, type AppServerNotification, type AppServerSpawn } from "./codexAppServer.js";
 
 /**
@@ -136,8 +136,12 @@ export type RateLimitSnapshot = {
 export type McpServerStartup = { name: string; status: string; error?: string };
 
 export type ThreadEvent =
-  /** `model` is EO's addition (EO-392): the model `thread/start` or `thread/resume` answered with, when it named one. */
-  | { type: "thread.started"; thread_id: string; model?: string }
+  /**
+   * `model` is EO's addition (EO-392): the model `thread/start` or
+   * `thread/resume` answered with, when it named one. `fork` too
+   * (EO-732): on a fork's turn, which of the app-server's forks copied it.
+   */
+  | { type: "thread.started"; thread_id: string; model?: string; fork?: ForkCopy }
   | { type: "turn.started" }
   /**
    * `model` is EO's addition (EO-374): the model the turn ran on, as the
@@ -379,6 +383,8 @@ interface WarmThread {
   pipe: Pipe;
   threadId: string;
   model: string | null;
+  /** On a fork, which of the app-server's forks copied the thread (EO-732). */
+  fork?: ForkCopy;
   /** Lets go of what the warm process was spawned with (`afterTurn`), once the turn that adopted it is over. */
   release?: () => void;
 }
@@ -565,7 +571,11 @@ export class CodexClient {
     threadOptions: CodexThreadOptions,
     ask: (method: string, params: unknown, connection: AppServerConnection) => Promise<unknown>,
   ): Promise<WarmThread> {
-    await opened.connection.initialize();
+    const forking = resumeId !== null && threadOptions.fork === true;
+    // A fork opts into the app-server's experimental API, which its
+    // prediction-mode fork is part of (EO-732). Nothing else does, so no
+    // other turn hears experimental fields it was not written for.
+    await opened.connection.initialize(forking ? { experimentalApi: true } : null);
     const cwd = threadOptions.workingDirectory ?? process.cwd();
     const threadParams = {
       ...(threadOptions.model ? { model: threadOptions.model } : {}),
@@ -575,19 +585,15 @@ export class CodexClient {
       ...(threadOptions.baseInstructions ? { baseInstructions: threadOptions.baseInstructions } : {}),
       ...(threadOptions.ephemeral ? { ephemeral: true } : {}),
     };
+    if (forking) return this.openFork(opened, resumeId, threadParams, ask);
     const answer = (resumeId === null
       ? await ask("thread/start", threadParams, opened.connection)
       : // `excludeTurns`: EO needs the thread, not its history replayed
         // back to it — and full-history hydration is deprecated for
         // the paginated threads 0.161.0 writes (`ThreadResumeParams` is
         // unchanged at 0.163.0, 0.165.0 and 0.166.0).
-        // `thread/fork` takes the same parameters (0.166.0's
-        // `ThreadForkParams`), and answers with the copy's id.
-        await ask(threadOptions.fork ? "thread/fork" : "thread/resume", { threadId: resumeId, ...threadParams, excludeTurns: true }, opened.connection)) as { thread?: { id?: unknown }; model?: unknown } | undefined;
-    // Never the thread asked for, on a fork: a copy that named no id of
-    // its own would otherwise be reported as the original, and the turn
-    // on it would be taken for one on the item's own thread.
-    const threadId = typeof answer?.thread?.id === "string" ? answer.thread.id : threadOptions.fork ? null : resumeId;
+        await ask("thread/resume", { threadId: resumeId, ...threadParams, excludeTurns: true }, opened.connection)) as { thread?: { id?: unknown }; model?: unknown } | undefined;
+    const threadId = typeof answer?.thread?.id === "string" ? answer.thread.id : resumeId;
     // The model the thread actually runs on (EO-374). Not necessarily
     // the one asked for: with none named, the CLI picks its own default
     // — which at 0.161.0 was not the model `model/list` calls default.
@@ -598,8 +604,63 @@ export class CodexClient {
     // model leaves it unknown, so the turn is reported unpriced unless
     // a `model/rerouted` names one later.
     const model = typeof answer?.model === "string" && answer.model ? answer.model : null;
-    if (!threadId) throw new Error(`${resumeId === null ? "thread/start" : threadOptions.fork ? "thread/fork" : "thread/resume"} returned no thread id`);
+    if (!threadId) throw new Error(`${resumeId === null ? "thread/start" : "thread/resume"} returned no thread id`);
     return { pipe: opened, threadId, model };
+  }
+
+  /**
+   * A fork's copy of the thread (EO-716), opened the way that keeps the
+   * thread's prompt cache (EO-732).
+   *
+   * A plain `thread/fork` gives the copy a prompt-cache key of its own,
+   * so its first request reads nothing of the thread from the cache and
+   * pays to write all of it again: measured at 0.166.0, 0 cached tokens
+   * where the original's last request read 10,240. The app-server's
+   * prediction-mode fork (`experimentalPredictionMode`, experimental API)
+   * starts instead from the loaded original's own config, tools and
+   * history, and keeps its cache key, so the copy's request starts as the
+   * original's would. It takes an original loaded in this process and an
+   * `ephemeral` copy, and no overrides: everything comes from the
+   * original, which `thread/resume` loads here with this process's
+   * configuration, exactly as a resumed turn on it would be. Loading it
+   * starts no turn, so nothing is written to it.
+   *
+   * Where the app-server refuses any of that — an original it cannot
+   * load, an experimental API it does not offer, a flag a later version
+   * dropped — the copy is the plain fork, as before EO-732, with the
+   * app-server's words for why. A missing original is missing either
+   * way, and the plain fork says so as it always has.
+   */
+  private async openFork(
+    opened: Pipe,
+    resumeId: string,
+    threadParams: Record<string, unknown>,
+    ask: (method: string, params: unknown, connection: AppServerConnection) => Promise<unknown>,
+  ): Promise<WarmThread> {
+    let fallbackReason: string;
+    try {
+      await ask("thread/resume", { threadId: resumeId, ...threadParams, excludeTurns: true }, opened.connection);
+      const answer = (await ask("thread/fork", { threadId: resumeId, experimentalPredictionMode: true, ephemeral: true, excludeTurns: true }, opened.connection)) as
+        | { thread?: { id?: unknown }; model?: unknown }
+        | undefined;
+      const threadId = typeof answer?.thread?.id === "string" ? answer.thread.id : null;
+      if (threadId === null) throw new Error("thread/fork returned no thread id");
+      const model = typeof answer?.model === "string" && answer.model ? answer.model : null;
+      return { pipe: opened, threadId, model, fork: { mode: "prediction" } };
+    } catch (error) {
+      // A process that has gone, or a turn cancelled under it, is not a
+      // refusal: there is no app-server left to ask for the plain fork.
+      if (opened.exit !== null || (error instanceof Error && error.name === "AbortError")) throw error;
+      fallbackReason = error instanceof Error ? error.message : String(error);
+    }
+    const answer = (await ask("thread/fork", { threadId: resumeId, ...threadParams, excludeTurns: true }, opened.connection)) as { thread?: { id?: unknown }; model?: unknown } | undefined;
+    // Never the thread asked for: a copy that named no id of its own
+    // would otherwise be reported as the original, and the turn on it
+    // taken for one on the item's own thread.
+    const threadId = typeof answer?.thread?.id === "string" ? answer.thread.id : null;
+    if (!threadId) throw new Error("thread/fork returned no thread id");
+    const model = typeof answer?.model === "string" && answer.model ? answer.model : null;
+    return { pipe: opened, threadId, model, fork: { mode: "plain", fallbackReason } };
   }
 
   private connect(threadOptions: CodexThreadOptions): AppServerConnection {
@@ -737,7 +798,7 @@ export class CodexClient {
       const { threadId, model } = opened;
       // On a resume too, with the same id: `codex exec resume` did the
       // same, and it is what records the thread a run is on (E-04).
-      yield { type: "thread.started", thread_id: threadId, ...(model === null ? {} : { model }) };
+      yield { type: "thread.started", thread_id: threadId, ...(model === null ? {} : { model }), ...(opened.fork ? { fork: opened.fork } : {}) };
 
       const started = (await ask("turn/start", {
         threadId,
@@ -1264,7 +1325,10 @@ export class TurnTranslator {
         const reading = params["tokenUsage"] as { total?: Breakdown; last?: Breakdown } | undefined;
         const total = usageOf(reading?.total);
         if (!this.isOurTurn(params["turnId"])) {
-          this.baseline = total;
+          // Only this thread's: a fork in prediction mode loads the
+          // original first (EO-732), which restates the original's total
+          // under the original's id, and that is no copy's starting point.
+          if (this.isOurThread(params["threadId"], true)) this.baseline = total;
           return { events: [], recognised: true };
         }
         // A reading that says nothing of its own response leaves where the

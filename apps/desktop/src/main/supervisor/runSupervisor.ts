@@ -60,6 +60,7 @@ import {
   LEARNING_REVIEW_TIMEOUT_MS,
   type AgentWriteTool,
   MEMORY_NOTE_TOOL_NAME,
+  MEMORY_READ_TOOL_NAME,
   REPOSITORY_CHECKOUT_TOOL_NAME,
   RepositoryCheckoutArgsSchema,
   SKILL_READ_TOOL_NAME,
@@ -121,12 +122,14 @@ import {
   type Run,
   type RunCheck,
   type RunInterruption,
+  type ForkCopy,
   type Item,
   type JobRunsOn,
   type UsageEvent,
   type Uuid,
   type PipelineStep,
   type WorkspaceKindSlug,
+  skillToolNotServed,
   uuidv7,
   WAITING_RESULT,
   watchDurationWords,
@@ -2500,14 +2503,16 @@ export function createRunSupervisor(
         case SKILL_READ_TOOL_NAME:
           return readSkillForAgent(runId, request.args);
         // The learning review's alone (EO-718), and a run's turn is never
-        // one: its credential names no writes, so the `eo` server lists
-        // none of these, and a call that reaches here anyway is refused.
+        // one. The `eo` server lists them on a run's turn all the same
+        // (EO-732), so that its review is sent the same tools, and refuses
+        // them there: a call that reaches here anyway is refused too, and
+        // nothing is read or written.
         case SKILL_VIEW_TOOL_NAME:
         case SKILL_CREATE_TOOL_NAME:
         case SKILL_PATCH_TOOL_NAME:
         case SKILL_FILE_WRITE_TOOL_NAME:
         case SKILL_FILE_REMOVE_TOOL_NAME:
-          return { ok: false, code: "TOOL_NOT_SERVED", problem: `Only the learning review is served ${request.tool}, so nothing was written.` };
+          return { ok: false, code: "TOOL_NOT_SERVED", problem: skillToolNotServed(request.tool) };
       }
     } catch (error) {
       return { ok: false, code: "WRITE_FAILED", problem: `EO could not write it, so nothing was written: ${error instanceof Error ? error.message : String(error)}` };
@@ -2794,7 +2799,7 @@ export function createRunSupervisor(
    * be forked, nothing in its place — extraction writes memory alone,
    * and the run wrote its own.
    */
-  async function reviewAfterRun(runId: Uuid, item: Item, agent: Agent): Promise<void> {
+  async function reviewAfterRun(runId: Uuid, item: Item, agent: Agent, action: string, runTurns: RunTurns | undefined): Promise<void> {
     if (shuttingDown) return;
     let outcome: LearningReviewOutcome;
     let review: LearningReviewKind = "full";
@@ -2806,7 +2811,7 @@ export function createRunSupervisor(
       const asked = learningReviewFor(run, current, runProduce(db, run), scopes);
       if ("skip" in asked) return;
       review = asked.review;
-      outcome = await reviewOnFork(run, current, agent, scopes, review);
+      outcome = await reviewOnFork(run, current, agent, scopes, review, { item, action, toolDirectory: runTurns?.toolDirectory, attachment: runTurns?.attachment });
     } catch (error) {
       outcome = { kind: "failed", entryIds: [], skillIds: [], reason: `The learning review could not be run: ${error instanceof Error ? error.message : String(error)}`, forkThreadId: null };
     }
@@ -2860,12 +2865,49 @@ export function createRunSupervisor(
   }
 
   /**
+   * What a learning review's fork is opened with, of the run's own
+   * options (EO-732): what `driveToCompletion` resumes a corrective turn
+   * with — the directory, the answer schema, the tool directory, the
+   * repository server, the run and where it attaches from, the memory
+   * scopes, and the model, effort and budget — less the credential and
+   * the signal, which are the review's own. The item is the run's as its
+   * turns saw it, before it moved: a conversation's settings and the
+   * answer schema are read off where it was.
+   */
+  function reviewForkOptions(run: Run, runTurn: { item: Item; action: string; toolDirectory: string | undefined; attachment: WorkspaceAttachment | undefined }, agent: Agent): AgentProviderResumeOptions {
+    const { item } = runTurn;
+    const actionSchema = outputSchemaFor(registryFor(item), runTurn.action, typeOf(item), definingRole(item, agent));
+    return {
+      ...(run.cwd ? { cwd: run.cwd } : {}),
+      ...(actionSchema ? { outputSchema: actionSchema } : {}),
+      ...(runTurn.toolDirectory ? { toolDirectory: runTurn.toolDirectory } : {}),
+      ...(runTurn.attachment?.mcpServers[0] ? { repositoryMcp: runTurn.attachment.mcpServers[0] } : {}),
+      ...attachOption(item, run),
+      ...memoryOption(item),
+      ...discussionTurnOptions(item, agent),
+    };
+  }
+
+  /**
    * The review turn on a fork of the run's thread, read to its end or its
    * time limit. A fork that cannot be opened is `fell_back`. A
    * `skills_only` review (EO-731) is sent the skill part alone and handed
-   * a credential naming the skill tools and not `memory_note`.
+   * a credential naming the skill tools and not `memory_note`, which is
+   * listed to it as to the run and refused when called.
+   *
+   * Opened with the run's own options (EO-732): the servers, the tool
+   * directory, the skills, the answer schema, the model and its effort —
+   * what `driveToCompletion` resumes a corrective turn with — so the
+   * fork's prompt starts exactly as the run's last request did and the
+   * backend reads the thread out of its prompt cache, rather than writing
+   * all of it again because one tool was missing. Two things differ, and
+   * neither changes the prompt: the credential, which names the writes
+   * the review is served, and `refuseCallsExcept`, under which the adapter
+   * refuses every other call as it is made. `runTurn` is the run as its
+   * turns saw it: the item before it moved, the action and what the run
+   * was lent.
    */
-  async function reviewOnFork(run: Run, item: Item, agent: Agent, scopes: readonly MemoryScopeInfo[], kind: LearningReviewKind): Promise<LearningReviewOutcome> {
+  async function reviewOnFork(run: Run, item: Item, agent: Agent, scopes: readonly MemoryScopeInfo[], kind: LearningReviewKind, runTurn: { item: Item; action: string; toolDirectory: string | undefined; attachment: WorkspaceAttachment | undefined }): Promise<LearningReviewOutcome> {
     const backend = runsOn(agent, item).provider;
     if (run.threadId === null) return { kind: "fell_back", reason: "The run has no thread to fork." };
     if (run.provider !== null && run.provider !== backend) {
@@ -2888,8 +2930,9 @@ export function createRunSupervisor(
             purpose: "learning_review",
             refusal: null,
             threadInstructions: threadInstructionsOf(run.id, agent),
-            // The review is held to no answer schema, so none is named.
-            outputSchemaName: "",
+            // The run's answer schema, which the fork is sent as the run
+            // was so that its prompt starts as the run's did (EO-732).
+            outputSchemaName: actionSchemaName(registryFor(runTurn.item), runTurn.action, typeOf(runTurn.item), definingRole(runTurn.item, agent)),
           },
           (sent) => recordSent(run.id, sent),
         )
@@ -2904,6 +2947,8 @@ export function createRunSupervisor(
     const loaded = new Set(skillsLoadedByRun(db, run.id));
     const skills = reviewableSkills(db, review.skills).map((skill) => ({ slug: skill.slug, description: skill.description, loaded: loaded.has(skill.id), locked: skill.locked }));
     const offered = { skills, canCreate: skillScope.projectId !== null };
+    /** The writes this review is served: the skill tools, and `memory_note` unless the run wrote its own notes (EO-731). */
+    const served: AgentWriteTool[] = kind === "full" ? [MEMORY_NOTE_TOOL_NAME, ...SKILL_WRITE_TOOLS] : [...SKILL_WRITE_TOOLS];
     // The fork's running total starts where the run left the thread, on
     // either backend, and the row is its own spend (EO-733) — taken off by
     // the rule a resumed run's is, wherever that rule lives. A Claude
@@ -2917,6 +2962,8 @@ export function createRunSupervisor(
     /** Whether the backend said anything about spend: a fork that reported none leaves no row claiming it cost nothing. */
     let reported = false;
     let forkThreadId: string | null = null;
+    /** How the backend copied the thread, where it said (EO-732): Codex's prediction-mode fork, or the plain one and why. */
+    let forkCopy: ForkCopy | undefined;
     let failure: string | null = null;
     let timedOut = false;
     let interrupt: (() => Promise<void>) | undefined;
@@ -2938,27 +2985,23 @@ export function createRunSupervisor(
     try {
       const forked = await Promise.race([
         provider.fork!(run.threadId, kind === "full" ? learningReviewPrompt(scopes, offered) : learningReviewSkillsPrompt(offered), {
-          ...(run.cwd ? { cwd: run.cwd } : {}),
-          // `memory_read` over the run's scopes, and a credential for
-          // `memory_note` and the skill tools (EO-718) alone: no other
-          // write tool is listed, and the bridge refuses any other write
-          // made with it. No other turn's credential names the skill
-          // tools, so no other turn is served them. A skill-only review
-          // (EO-731) has the skill tools alone: the run it reviews wrote
-          // its own notes, so `memory_note` is neither listed to it nor
-          // taken from it.
-          ...memoryOption(item),
-          writeBridge: bridge.tokenFor(item.id, kind === "full" ? [MEMORY_NOTE_TOOL_NAME, ...SKILL_WRITE_TOOLS] : [...SKILL_WRITE_TOOLS]),
-          // And not EO's administrative server, which either adapter
-          // otherwise gives every turn of the system agent's (invariant
-          // 11): a review of its run writes memory and nothing else.
-          withoutAdminServer: true,
-          // Nor skills as a run is given them: the review reads skills
-          // with `skill_view` (EO-718), which is how EO knows what it read
-          // before it lets it write — a `Skill` call or a `skill_read`
-          // would be a load, counted as the run's use, and no read.
-          withoutSkills: true,
-          ...turnBudget(item, agent),
+          ...reviewForkOptions(run, runTurn, agent),
+          // A credential for `memory_note` and the skill tools (EO-718)
+          // alone: the `eo` server lists what the run's did, and it and
+          // the bridge refuse any other write made with it. No other
+          // turn's credential names the skill tools, so no other turn is
+          // served them. A skill-only review (EO-731) has the skill tools
+          // alone: the run it reviews wrote its own notes, so
+          // `memory_note`, listed as on the run, is refused when called.
+          writeBridge: bridge.tokenFor(item.id, served),
+          // And every other call refused as it is made (EO-732): an edit,
+          // a command, an attached server, EO's administrative server —
+          // which the system agent's every turn is given (invariant 11)
+          // and so is listed here — and a `Skill` or `skill_read` load,
+          // which would count as the run's use: the review reads skills
+          // with `skill_view`, which is how EO knows what it read before
+          // it lets it write.
+          refuseCallsExcept: [MEMORY_READ_TOOL_NAME, ...served],
           signal: controller.signal,
         }),
         stopped,
@@ -2981,8 +3024,10 @@ export function createRunSupervisor(
           if (next.done) break;
           const event = next.value;
           if (recording) recordReviewActivity(run.id, forked.threadId, event);
-          if (event.type === "thread_started" && event.model) model = event.model;
-          else if (event.type === "usage" && usage.record(event)) reported = true;
+          if (event.type === "thread_started") {
+            if (event.model) model = event.model;
+            if (event.fork) forkCopy = event.fork;
+          } else if (event.type === "usage" && usage.record(event)) reported = true;
           else if (event.type === "error" && event.fatal !== false && failure === null) failure = event.message;
         }
       } catch (error) {
@@ -2990,8 +3035,8 @@ export function createRunSupervisor(
       }
       if (timedOut || shuttingDown || failure !== null) return failedReview(forkThreadId);
       return review.entryIds.length > 0 || review.skills.written.length > 0
-        ? { kind: "written", entryIds: [...review.entryIds], skillIds: [...review.skills.written], forkThreadId }
-        : { kind: "nothing_to_save", forkThreadId };
+        ? { kind: "written", entryIds: [...review.entryIds], skillIds: [...review.skills.written], forkThreadId, ...(forkCopy ? { fork: forkCopy } : {}) }
+        : { kind: "nothing_to_save", forkThreadId, ...(forkCopy ? { fork: forkCopy } : {}) };
     } finally {
       clearTimeout(timer);
       reviewControllers.delete(controller);
@@ -3005,7 +3050,7 @@ export function createRunSupervisor(
         : shuttingDown
           ? "EO shut down while the learning review was under way."
           : `The learning review's turn failed: ${failure ?? "it ended without saying why."}`;
-      return { kind: "failed", entryIds: [...review.entryIds], skillIds: [...review.skills.written], reason, forkThreadId: threadId };
+      return { kind: "failed", entryIds: [...review.entryIds], skillIds: [...review.skills.written], reason, forkThreadId: threadId, ...(forkCopy ? { fork: forkCopy } : {}) };
     }
 
     /**
@@ -5255,6 +5300,9 @@ export function createRunSupervisor(
    * `driveToCompletion` with that guarantee attached. Every caller goes
    * through here; nothing calls the driver directly.
    */
+  /** What a run's turns were opened with, beyond the item and the agent: `driveToCompletion`'s last argument. */
+  type RunTurns = Parameters<typeof driveToCompletion>[7];
+
   async function runToCompletion(
     ...args: Parameters<typeof driveToCompletion>
   ): Promise<void> {
@@ -5278,7 +5326,9 @@ export function createRunSupervisor(
       // that ended that way was closed by EO, not by its agent. The
       // learning review on a fork of the run's thread, or the extraction
       // it falls back to (EO-717).
-      await reviewAfterRun(run.id, item, agent);
+      // Handed what the run's turns were opened with, so the fork is
+      // opened with it too (EO-732).
+      await reviewAfterRun(run.id, item, agent, args[3], args[7]);
       // The run moved the counts of the skills it was given (EO-720).
       await archiveAfterRun(item);
     } finally {

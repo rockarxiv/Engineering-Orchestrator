@@ -39,7 +39,8 @@ import { toolResultEvent, toolResultText } from "./toolResult.js";
 import { withAttachmentNote } from "./attachmentNote.js";
 import { withSkillsSection } from "../agentAttachments/skillsPrompt.js";
 import { readToolDirectoryServers, TOOL_PLUGIN_NAME, toolDirectoryMcpConfigPath, toolDirectoryServerToolPrefixes, toolDirectorySkillNames, toolDirectorySkillsPromptSection } from "../agentAttachments/pluginDirectory.js";
-import { claudeSkillLoaded, leadingWith, skillsOffered } from "./skillUsage.js";
+import { claudeSkillLoaded, leadingWith, skillsOffered, withoutEvents } from "./skillUsage.js";
+import { REFUSED_CALL_EVENTS, refusalHookOutput, refusedCall, type CallRule } from "./callRefusal.js";
 import { openedFork } from "./threadFork.js";
 import type { SearchNudge } from "./searchNudge.js";
 import type { AdminMcpDispatch } from "../agentAttachments/adminDelivery.js";
@@ -1150,6 +1151,36 @@ function searchInterception(
   return { PreToolUse: [{ matcher: SEARCH_TOOL_MATCHER, hooks: [hook] }] };
 }
 
+/** One `PreToolUse` entry, as the SDK takes it. */
+type PreToolUseEntry = NonNullable<NonNullable<Options["hooks"]>["PreToolUse"]>[number];
+
+/**
+ * EO's `PreToolUse` hook for a turn that may make only some calls
+ * (EO-732, `refuseCallsExcept`): every call is offered to it — no matcher
+ * — and one `refusedCall` answers for is denied with its reason, so the
+ * tool is not run and the agent is told why. Unlike the interception
+ * above it decides, and a hook does not change the prompt, which is the
+ * point: the turn keeps the tools of the turn it was forked from.
+ *
+ * `bypassPermissions` does not reach past it: a hook's `deny` stands in
+ * every permission mode. The answer tool (`StructuredOutput`) is let
+ * through on a turn sent an answer schema, since the turn cannot end
+ * without calling it.
+ */
+function callRefusals(eoTools: readonly string[] | undefined, server: RepositoryMcpServer | undefined, answers: boolean): PreToolUseEntry | undefined {
+  if (eoTools === undefined) return undefined;
+  const rule: CallRule = { eoTools, repositoryServer: server?.name ?? null, ...(answers ? { answerTool: CLAUDE_ANSWER_TOOL } : {}) };
+  const hook = async (input: HookInput): Promise<HookJSONOutput> => {
+    if (input.hook_event_name !== "PreToolUse") return {};
+    const reason = refusedCall(input.tool_name, rule);
+    return reason === null ? {} : refusalHookOutput(reason);
+  };
+  return { hooks: [hook] };
+}
+
+/** The tool the CLI gives a turn sent an answer schema, which the turn ends by calling. */
+const CLAUDE_ANSWER_TOOL = "StructuredOutput";
+
 /**
  * Firings, held between two messages (EO-168).
  *
@@ -1229,6 +1260,8 @@ interface ClaudeTurn {
   memoryScopes?: MemoryReadScope[] | undefined;
   /** Where this turn's `eo` server hands what the agent writes (EO-543). On the turn for the same reason. */
   writeBridge?: AgentWriteBridgeAddress | undefined;
+  /** The only calls this turn may make, refused in a hook when made (EO-732, `AgentProviderResumeOptions.refuseCallsExcept`). */
+  refuseCallsExcept?: readonly string[] | undefined;
   /** The run's environment variables (EO-487, `AgentTurnOverrides.environmentVariables`). On the turn because they are the step's, read as it opens. */
   environmentVariables?: Record<string, string> | undefined;
   /** Names the CLI must start without, inherited or not (EO-584, `AgentTurnOverrides.withheldEnvironmentVariables`). On the turn for the reason the variables are. */
@@ -1528,6 +1561,10 @@ function buildOptions(opts: ClaudeTurn, adapter: ClaudeAdapter): Options {
   // asked for.
   const hooks = searchInterception(adapter.searchNudge, opts.repositoryMcp, opts.cwd, opts.onInterception ?? (() => {}));
   if (hooks) options.hooks = hooks;
+  // EO-732: a turn that may make only some calls refuses the rest as
+  // they are made, beside the interception rather than instead of it.
+  const refusals = callRefusals(opts.refuseCallsExcept, opts.repositoryMcp, opts.outputSchema !== undefined);
+  if (refusals) options.hooks = { ...options.hooks, PreToolUse: [...(options.hooks?.PreToolUse ?? []), refusals] };
 
   // EO-84: the CLI has no flag for a key — it reads `ANTHROPIC_API_KEY`
   // from its environment — so this is where a key EO stores is spent.
@@ -2453,6 +2490,8 @@ export function createClaudeProvider(options: ClaudeProviderOptions = {}): Agent
     ...(opts?.memoryScopes ? { memoryScopes: opts.memoryScopes } : {}),
     // And where the `eo` server it starts hands what the agent writes (EO-543).
     ...(opts?.writeBridge ? { writeBridge: opts.writeBridge } : {}),
+    // And the calls it may make, where it may make only some (EO-732).
+    ...(opts?.refuseCallsExcept ? { refuseCallsExcept: opts.refuseCallsExcept } : {}),
     // And the run's environment variables, for that reason too (EO-487):
     // they are in the environment of the process the resume spawns.
     ...(opts?.environmentVariables ? { environmentVariables: opts.environmentVariables } : {}),
@@ -2534,8 +2573,7 @@ export function createClaudeProvider(options: ClaudeProviderOptions = {}): Agent
   /** A turn on a session already written: the session itself, or (`fork`) a copy of it the CLI makes for this turn. */
   const resumed = (threadId: string, message: string, resumeOpts: AgentProviderResumeOptions | undefined, fork: boolean): InterruptibleStream<AgentEvent> =>
     leadingWith(
-      // None for a turn given no skills (EO-717).
-      offeredSkills(resumeOpts?.withoutSkills === true ? undefined : resumeOpts?.toolDirectory),
+      offeredSkills(resumeOpts?.toolDirectory),
       translatingLostSession(
         threadId,
         deferred(async () => {
@@ -2544,17 +2582,20 @@ export function createClaudeProvider(options: ClaudeProviderOptions = {}): Agent
           // counted the same way — its firings are this row's, not the
           // ones the session opened with (EO-168).
           const interceptions = interceptionQueue();
-          // No bearer for a turn not served the administrative server
-          // (EO-717): without one the server it names cannot be called.
-          const admin = resumeOpts?.withoutAdminServer === true ? null : (options.admin?.(resumeOpts?.cwd) ?? null);
+          // The administrative server as the agent's every turn has it,
+          // a fork of the system agent's thread included: its tools are
+          // listed, so the fork's prompt starts as the run's did, and a
+          // turn that may make only some calls is refused them (EO-732).
+          const admin = options.admin?.(resumeOpts?.cwd) ?? null;
           const sdkOptions = withAdminLease(admin, () => turnOptions(resumeSpec(threadId, resumeOpts, interceptions.record), admin));
           // Before `open`, which keys a warm query on these options: a
           // warm resume of this session is never adopted by a fork of it.
           if (fork) sdkOptions.forkSession = true;
-          // And none enabled, whatever the directory or the ambient
-          // configuration would have enabled (EO-717).
-          if (resumeOpts?.withoutSkills === true) sdkOptions.skills = [];
-          return open(sdk, withAttachmentNote(message, resumeOpts?.attachments), sdkOptions, interceptions, admin, resumeOpts?.warmKey, resumeOpts?.signal, resumeOpts?.streamDeltas === true);
+          const opened = open(sdk, withAttachmentNote(message, resumeOpts?.attachments), sdkOptions, interceptions, admin, resumeOpts?.warmKey, resumeOpts?.signal, resumeOpts?.streamDeltas === true);
+          // On a turn whose calls are refused, a `Skill` call loaded
+          // nothing and an `Edit` changed nothing: the hook refused them,
+          // so the events the call alone would say are not said (EO-732).
+          return resumeOpts?.refuseCallsExcept ? withoutEvents(opened, REFUSED_CALL_EVENTS) : opened;
         }),
       ),
     );
@@ -2741,8 +2782,7 @@ export function createClaudeProvider(options: ClaudeProviderOptions = {}): Agent
         // `${VAR}` references, which this does not read anyway.
         mcpServers: [...Object.keys(built.mcpServers ?? {}), ...(turn.toolDirectory ? Object.keys(readToolDirectoryServers(turn.toolDirectory)) : [])],
         allowedTools: built.allowedTools ?? null,
-        // None for a turn given no skills, as `resumed` enables none (EO-717).
-        skills: turn.withoutSkills === true ? [] : Array.isArray(built.skills) ? [...built.skills] : [],
+        skills: Array.isArray(built.skills) ? [...built.skills] : [],
         inheritsAmbientConfig: options.config?.inheritAmbientConfig === true,
       };
     },
