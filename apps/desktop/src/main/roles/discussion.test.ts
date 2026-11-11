@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { effectiveReference, gitStateOf, referenceProblem, EMPTY_SPEC_SHAPE, LOCAL_PERSON_ID, LOCAL_PERSON_NAME, type Agent, type DiscussionOutput, type DiscussionProposal, type DiscussionQuestion, type Item, type NewStoryProposal, type Uuid } from "@eo/core";
+import { effectiveReference, effectiveReviewers, gitStateOf, normaliseReviewers, referenceProblem, EMPTY_SPEC_SHAPE, LOCAL_PERSON_ID, LOCAL_PERSON_NAME, type Agent, type DiscussionOutput, type DiscussionProposal, type DiscussionQuestion, type Item, type NewStoryProposal, type Uuid } from "@eo/core";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { DbHandle } from "../db/client.js";
 import {
@@ -870,6 +870,122 @@ describe("the Reference a proposal names", () => {
     expect(summariseProposal(handle.db, conversation, bug({ reference: "PROJ-9" })).rows[0]).toMatchObject({ reference: "PROJ-9" });
     expect(summariseProposal(handle.db, conversation, bug({ reference: " " })).rows[0]).not.toHaveProperty("reference");
     expect(summariseProposal(handle.db, conversation, feature()).container).not.toHaveProperty("reference");
+  });
+});
+
+/**
+ * The reviewers a proposal names (EO-743): on the feature for a plan,
+ * which its stories inherit, and on the item for a single story or bug.
+ * Normalised and refused as `item_update` does, on any pipeline.
+ */
+describe("the reviewers a proposal names", () => {
+  const bug = (extra: Record<string, unknown> = {}): DiscussionProposal => ({
+    action: "new_bug",
+    title: "Login loops",
+    body: "It loops.",
+    steps_to_reproduce: "Sign in.",
+    expected: "Signed in.",
+    actual: "Back at sign-in.",
+    environment: "Chrome.",
+    acceptance_criteria: [],
+    ...extra,
+  });
+  const newStory = (extra: Record<string, unknown> = {}): DiscussionProposal => ({ action: "new_story", ...story("Add the limiter"), depends_on: [], ...extra });
+  const feature = (extra: Record<string, unknown> = {}): DiscussionProposal => ({
+    action: "new_feature",
+    title: "Rate limiting",
+    understanding: "Cap callers.",
+    decisions: [],
+    stories: [story("Count requests"), story("Refuse over the limit")],
+    ...extra,
+  });
+  const created = (title: string) => listItems(handle.db).find((item) => item.title === title)!;
+  const cardOf = (proposalId: Uuid) => listCommentsForItem(handle.db, conversation.id).find((comment) => comment.id === proposalId)!.body;
+  const refusalOf = (entry: string) => {
+    const normalised = normaliseReviewers([entry]);
+    return normalised.ok ? "" : normalised.problem;
+  };
+
+  it("writes a plan's onto the feature, and every story reads them from the feature", () => {
+    const { proposalIds } = turn(says("Here.", feature({ reviewers: ["erin"] })));
+
+    expect(cardOf(proposalIds[0]!)).toContain("_Reviewers: `erin`_");
+    expect(apply(proposalIds[0]!).ok).toBe(true);
+
+    const made = created("Rate limiting");
+    expect(gitStateOf(made).reviewers).toEqual(["erin"]);
+    for (const title of ["Count requests", "Refuse over the limit"]) {
+      const child = created(title);
+      expect(gitStateOf(child).reviewers).toBeNull();
+      expect(effectiveReviewers(child, getItem(handle.db, child.parentId!), ["repo-default"])).toEqual({ value: ["erin"], inheritedFrom: made.key });
+    }
+  });
+
+  it.each([
+    ["new_story", newStory({ reviewers: [" frank ", "", "frank"] }), "Add the limiter"],
+    ["new_bug", bug({ reviewers: [" frank ", "", "frank"] }), "Login loops"],
+  ])("writes a %s's onto it, normalised, on a pipeline that cuts no branch", (_action, proposal, title) => {
+    const { proposalIds } = turn(says("Here.", proposal));
+
+    expect(cardOf(proposalIds[0]!)).toContain("_Reviewers: `frank`_");
+    expect(apply(proposalIds[0]!).ok).toBe(true);
+    expect(gitStateOf(created(title)).reviewers).toEqual(["frank"]);
+  });
+
+  it.each([
+    ["new_feature", feature({ reviewers: [] }), "Rate limiting"],
+    ["new_story", newStory({ reviewers: [" "] }), "Add the limiter"],
+    ["new_bug", bug({ reviewers: [] }), "Login loops"],
+  ])("reads an empty list on a %s as nobody, as item_update does", (_action, proposal, title) => {
+    const { proposalIds } = turn(says("Here.", proposal));
+
+    expect(cardOf(proposalIds[0]!)).toContain("_Reviewers: nobody_");
+    expect(apply(proposalIds[0]!).ok).toBe(true);
+    expect(gitStateOf(created(title)).reviewers).toEqual([]);
+  });
+
+  it("leaves an item that names none to inherit, with no git row", () => {
+    const { proposalIds } = turn(says("Here.", newStory()));
+
+    expect(cardOf(proposalIds[0]!)).not.toContain("Reviewers");
+    expect(apply(proposalIds[0]!).ok).toBe(true);
+    expect(gitStateOf(created("Add the limiter")).reviewers).toBeNull();
+    expect(handle.db.all(sql`SELECT * FROM item_extensions WHERE extension = 'git'`)).toEqual([]);
+  });
+
+  it.each([
+    ["new_feature", "a space", feature({ reviewers: ["erin", "a b"] }), "a b"],
+    ["new_story", "a comma", newStory({ reviewers: ["erin,frank"] }), "erin,frank"],
+    ["new_bug", "a space", bug({ reviewers: ["a\tb"] }), "a\tb"],
+  ])("sends a %s whose entry holds %s back, naming the entry, with no card", (_action, _what, proposal, entry) => {
+    const before = listItems(handle.db).length;
+    const { proposalIds } = turn(says("Here.", proposal));
+
+    expect(proposalIds).toEqual([]);
+    const rejection = listCommentsForItem(handle.db, conversation.id).find((comment) => comment.kind === "rejection");
+    expect(rejection?.body).toContain(refusalOf(entry));
+    expect(rejection?.body).toContain(`"${entry}"`);
+    expect(listItems(handle.db)).toHaveLength(before);
+  });
+
+  it("refuses a bad entry at approval too, and creates nothing", () => {
+    const before = listItems(handle.db).length;
+    const result = applyNewItem(handle.db, null, { ...handedOver(newStory() as NewStoryProposal), reviewers: ["a b"] }, null);
+
+    expect(result.ok).toBe(false);
+    expect(!result.ok && result.reason).toContain(refusalOf("a b"));
+    expect(listItems(handle.db)).toHaveLength(before);
+  });
+
+  it("puts them on the card's container for a plan, and on the row for a single item", () => {
+    const plan = summariseProposal(handle.db, conversation, feature({ reviewers: [" erin ", "erin"] }));
+    expect(plan.container?.reviewers).toEqual(["erin"]);
+    for (const row of plan.rows) expect(row).not.toHaveProperty("reviewers");
+
+    expect(summariseProposal(handle.db, conversation, newStory({ reviewers: ["frank"] })).rows[0]).toMatchObject({ reviewers: ["frank"] });
+    expect(summariseProposal(handle.db, conversation, bug({ reviewers: [] })).rows[0]).toMatchObject({ reviewers: [] });
+    expect(summariseProposal(handle.db, conversation, bug()).rows[0]).not.toHaveProperty("reviewers");
+    expect(summariseProposal(handle.db, conversation, feature()).container).not.toHaveProperty("reviewers");
   });
 });
 

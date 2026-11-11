@@ -72,6 +72,7 @@ export function ProposalCard({ message, conversationId, onDone }: { message: Dis
         </div>
       ) : null}
       {summary?.container?.reference !== undefined ? <ReferenceLine reference={summary.container.reference} /> : null}
+      {summary?.container?.reviewers !== undefined ? <ReviewersLine reviewers={summary.container.reviewers} /> : null}
       {summary !== null ? (
         <ul aria-label={summary.rows.every((row) => row.kind === "change") ? "Proposed changes" : `Proposed ${several}`} className="flex flex-col gap-1.5">
           {summary.rows.map((row, index) => (
@@ -129,6 +130,7 @@ function ProposedRow({ row, to }: { row: ProposedItemRow; to: string }) {
         </p>
       ) : null}
       {row.reference !== undefined ? <ReferenceLine reference={row.reference} /> : null}
+      {row.reviewers !== undefined ? <ReviewersLine reviewers={row.reviewers} /> : null}
       {row.under !== null ? (
         <p className="truncate text-[11.5px] text-ink-subtle">
           Under {row.under.key} {row.under.title}
@@ -160,6 +162,16 @@ function PriorityLabel({ priority }: { priority: number | undefined }) {
  */
 function ReferenceLine({ reference }: { reference: string }) {
   return <p className="truncate text-[11.5px] text-ink-subtle">Reference {reference}</p>;
+}
+
+/**
+ * The reviewers a proposed item would be created with (EO-743), where
+ * the Reference is shown and for the same reason: on the container for
+ * a plan, whose items inherit them, and on the row for a single item.
+ * Nothing when the proposal names none; "nobody" for an empty list.
+ */
+function ReviewersLine({ reviewers }: { reviewers: readonly string[] }) {
+  return <p className="truncate text-[11.5px] text-ink-subtle">Reviewers {reviewers.length === 0 ? "nobody" : reviewers.join(", ")}</p>;
 }
 
 /** A change to an item that exists: its key, linking to its own view, and what changes. */

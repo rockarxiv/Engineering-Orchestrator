@@ -72,6 +72,10 @@ export function submitPlan(
         // judged by `applyNewFeature`, which refuses one git would not
         // take before anything is written.
         ...(input.reference === undefined ? {} : { reference: input.reference }),
+        // The feature's reviewers (EO-743), which its stories inherit,
+        // normalised and judged by `applyNewFeature` before anything is
+        // written.
+        ...(input.reviewers === undefined ? {} : { reviewers: input.reviewers }),
       },
       null,
       // What the submitter said about Jira, carried whole and defaulted

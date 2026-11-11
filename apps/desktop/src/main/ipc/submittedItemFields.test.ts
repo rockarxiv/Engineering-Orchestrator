@@ -324,6 +324,11 @@ const PROBES: Record<keyof IpcPayload<"work:submitItem">, FieldProbe> = {
     send: () => ({ reference: "  PROJ-739 " }),
     carried: (_world, item) => gitStateOf(item).reference === "PROJ-739",
   },
+  reviewers: {
+    // EO-743: normalised on the way in, so the probe sends it padded and repeated.
+    send: () => ({ reviewers: [" frank ", "frank"] }),
+    carried: (_world, item) => JSON.stringify(gitStateOf(item).reviewers) === JSON.stringify(["frank"]),
+  },
   touches: {
     send: () => ({ touches: ["src/probe.ts"] }),
     carried: (_world, item) => JSON.stringify(item.spec?.["touches"]) === JSON.stringify(["src/probe.ts"]),

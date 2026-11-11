@@ -261,21 +261,25 @@ export function storyBranchRefusal(db: Db, title: string, branches: { baseBranch
 
 /**
  * The `git` extension a new story is created with, when it names a base
- * branch, an existing branch (EO-364, EO-365) or a Reference (EO-739,
- * already trimmed and judged, null for none) — undefined when it names
- * none of them, so it gets no row.
+ * branch, an existing branch (EO-364, EO-365), a Reference (EO-739,
+ * already trimmed and judged, null for none) or reviewers of its own
+ * (EO-743, already normalised, null for none and `[]` for nobody) —
+ * undefined when it names none of them, so it gets no row.
  */
 export function storyGitState(branches: {
   baseBranch?: string;
   existingBranch?: string;
   reference?: string | null;
-}): { baseBranch?: string; branch?: string; namedBranch?: boolean; reference?: string } | undefined {
+  reviewers?: string[] | null;
+}): { baseBranch?: string; branch?: string; namedBranch?: boolean; reference?: string; reviewers?: string[] } | undefined {
   const reference = branches.reference ?? null;
-  if (branches.baseBranch === undefined && branches.existingBranch === undefined && reference === null) return undefined;
+  const reviewers = branches.reviewers ?? null;
+  if (branches.baseBranch === undefined && branches.existingBranch === undefined && reference === null && reviewers === null) return undefined;
   return {
     ...(branches.baseBranch === undefined ? {} : { baseBranch: branches.baseBranch }),
     ...(branches.existingBranch === undefined ? {} : { branch: branches.existingBranch, namedBranch: true }),
     ...(reference === null ? {} : { reference }),
+    ...(reviewers === null ? {} : { reviewers }),
   };
 }
 

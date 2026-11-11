@@ -1741,6 +1741,7 @@ describe("createCodexProvider", () => {
             environment: "Safari 18",
             acceptance_criteria: [],
             reference: null,
+            reviewers: null,
             ...fields,
           },
         ],
@@ -1801,6 +1802,7 @@ describe("createCodexProvider", () => {
         expect(proposal).not.toHaveProperty("parent");
         expect(proposal).not.toHaveProperty("pipeline");
         expect(proposal).not.toHaveProperty("reference");
+        expect(proposal).not.toHaveProperty("reviewers");
       }
     });
 

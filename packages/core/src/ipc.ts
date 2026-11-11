@@ -1130,6 +1130,15 @@ export const recordContract = {
        */
       reference: z.string().optional(),
       /**
+       * Who is asked to review the pull requests of the feature's stories,
+       * in place of the repository's default reviewers (EO-743): written
+       * onto the feature, and read by every story under it. Normalised as
+       * `items:update`'s are (`normaliseReviewers`), and an entry it
+       * refuses refuses the plan as `problem` with nothing created. `[]`
+       * asks nobody. The feature's only, like `reference`.
+       */
+      reviewers: z.array(z.string()).optional(),
+      /**
        * Each story as a plan's story is, plus `paths` (EO-704): files to
        * put on that story as its own. Added here rather than on
        * `RefineStorySchema`, which is also what the product owner's
@@ -1246,6 +1255,14 @@ export const recordContract = {
        * git branch name is refused as `problem` with nothing created.
        */
       reference: z.string().optional(),
+      /**
+       * Who is asked to review this item's pull request, in place of the
+       * repository's default reviewers (EO-743). Left out under a
+       * feature, the feature's are read. Normalised as `items:update`'s
+       * are (`normaliseReviewers`), and an entry it refuses is refused as
+       * `problem` with nothing created. `[]` asks nobody.
+       */
+      reviewers: z.array(z.string()).optional(),
       /**
        * The item's structured fields, under the names its type's shape
        * declares (KAN-147).

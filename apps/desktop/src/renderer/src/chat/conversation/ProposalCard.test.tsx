@@ -245,6 +245,34 @@ describe("the Reference a proposal creates work with (EO-739)", () => {
   });
 });
 
+describe("the reviewers a proposal creates work with (EO-743)", () => {
+  it("names a plan's on the feature, not on any of its rows", () => {
+    draw(message({ proposal: { ...PLAN, container: { title: "Rate limiting", typeLabel: "Feature", reviewers: ["erin", "org/team"] } } }));
+
+    const card = screen.getByRole("region", { name: "Proposal" });
+    expect(within(card).getByText("Reviewers erin, org/team")).toBeInTheDocument();
+    for (const row of rows()) expect(row).not.toHaveTextContent("Reviewers");
+  });
+
+  it("names a single item's on its row", () => {
+    draw(message({ proposal: { container: null, rows: [proposed("Refuse over the limit", { typeLabel: "Bug", reviewers: ["frank"] })], closed: null } }));
+
+    expect(within(rows()[0]!).getByText("Reviewers frank")).toBeInTheDocument();
+  });
+
+  it("says nobody for an empty list", () => {
+    draw(message({ proposal: { container: null, rows: [proposed("Refuse over the limit", { typeLabel: "Story", reviewers: [] })], closed: null } }));
+
+    expect(within(rows()[0]!).getByText("Reviewers nobody")).toBeInTheDocument();
+  });
+
+  it("has no reviewers line on a proposal that names none", () => {
+    draw(message({ proposal: PLAN }));
+
+    expect(screen.getByRole("region", { name: "Proposal" })).not.toHaveTextContent("Reviewers");
+  });
+});
+
 describe("a proposal that amends existing items", () => {
   const CHANGE: ProposalSummary = {
     container: null,

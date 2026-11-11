@@ -3184,6 +3184,12 @@ const UNGATED_WRITE_TOOLS: readonly ToolSpec[] = [
       "reference on item_update. It is trimmed, a blank one is none, and one that could not appear in a git branch " +
       "name — whitespace, .., ~, ^, :, ?, *, [, \\, @{, //, a leading - or /, a trailing . or /, or a part between " +
       "slashes that starts with . or ends with .lock — refuses the whole plan and creates nothing. " +
+      "Set reviewers to the forge handles — GitHub logins, GitHub org/team names, GitLab usernames — who are asked " +
+      "to review the pull requests of the feature's stories, in place of the repository's default reviewers. It goes " +
+      "on the feature, and every story under it inherits the feature's; a story's own is set later with reviewers on " +
+      "item_update. Leave it out to use the repository's default, or send [] to ask nobody. Each entry is trimmed, " +
+      "blanks and repeats are dropped, and an entry with whitespace or a comma in it refuses the whole plan and " +
+      "creates nothing — give each reviewer as its own entry. " +
       "paths puts files on the feature as its own, and paths on a story puts them on that story: files on the " +
       "machine running EO that become part of what the item is, beside its description, written with the item so " +
       "the first agent dispatched on it already has them. " +
@@ -3228,6 +3234,11 @@ const UNGATED_WRITE_TOOLS: readonly ToolSpec[] = [
       "read the feature's. It is trimmed, a blank one is none, and one that could not appear in a git branch name — " +
       "whitespace, .., ~, ^, :, ?, *, [, \\, @{, //, a leading - or /, a trailing . or /, or a part between " +
       "slashes that starts with . or ends with .lock — is refused and nothing is created. " +
+      "Set reviewers to the forge handles — GitHub logins, GitHub org/team names, GitLab usernames — who are asked " +
+      "to review this ticket's pull request, in place of its feature's or the repository's default reviewers; leave " +
+      "it out to inherit them, or send [] to ask nobody. Each entry is trimmed, blanks and repeats are dropped, and " +
+      "an entry with whitespace or a comma in it is refused and nothing is created — give each reviewer as its own " +
+      "entry. " +
       "paths puts files on the ticket as its own: files on the machine running EO that become part of what the " +
       "ticket is, beside its description, written with the ticket so the first agent dispatched on it already has " +
       "them. " +

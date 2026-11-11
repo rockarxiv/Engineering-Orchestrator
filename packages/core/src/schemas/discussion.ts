@@ -85,6 +85,16 @@ const NewFeatureProposalSchema = z.object({
    * the reason `base_branch` is one.
    */
   reference: z.string().optional(),
+  /**
+   * Who is asked to review the pull requests of this feature's stories,
+   * in place of the repository's default reviewers (EO-743). Written onto
+   * the feature's `git` extension, and its stories read it through
+   * `effectiveReviewers`, which is why `PlannedStorySchema` has no such
+   * field. Normalised as `item_update`'s are (`normaliseReviewers`), and
+   * an entry it refuses is sent back before the card is posted. `[]` asks
+   * nobody; left out, the repository's default is read.
+   */
+  reviewers: z.array(z.string()).optional(),
   /** Each may name a `base_branch` to be cut from (EO-364), or an `existing_branch` to work on (EO-365) — see `PlannedStorySchema`. */
   stories: z.array(PlannedStorySchema).min(1),
 });
@@ -115,6 +125,12 @@ const attachable = {
    * means the feature's is read.
    */
   reference: z.string().optional(),
+  /**
+   * Who is asked to review this item's pull request (EO-743) — see
+   * `NewFeatureProposalSchema.reviewers`. Left out, the feature's are
+   * read, else the repository's default; `[]` asks nobody.
+   */
+  reviewers: z.array(z.string()).optional(),
 };
 
 const NewStoryProposalSchema = z.object({

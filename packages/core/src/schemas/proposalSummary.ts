@@ -41,6 +41,12 @@ export const ProposedItemRowSchema = z.object({
    */
   reference: z.string().optional(),
   /**
+   * The reviewers a single item would be created with (EO-743),
+   * normalised; `[]` is "nobody". Absent when it names none of its own —
+   * and on a plan's rows, which read their feature's from the container.
+   */
+  reviewers: z.array(z.string()).optional(),
+  /**
    * The item this row became, once the proposal was approved (EO-408),
    * and null or absent until then — and for a created item deleted since.
    *
@@ -73,6 +79,8 @@ export const ProposalSummarySchema = z.object({
     priority: z.number().int().optional(),
     /** The container's Reference (EO-739), trimmed, which its items inherit. Absent when the proposal gave none. */
     reference: z.string().optional(),
+    /** The container's reviewers (EO-743), normalised, which its items inherit. Absent when the proposal gave none; `[]` is "nobody". */
+    reviewers: z.array(z.string()).optional(),
   }).nullable(),
   rows: z.array(ProposalRowSchema),
   /**
