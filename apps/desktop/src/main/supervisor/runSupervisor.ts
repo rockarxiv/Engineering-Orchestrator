@@ -251,7 +251,7 @@ import { noneWorkspaceKind } from "./noneKind.js";
 import { folderWorkspaceKind } from "./folderKind.js";
 import { scratchWorkspaceKind } from "./scratchKind.js";
 import { resolveItemWorkspace, skillRunScope } from "./workspaceResolution.js";
-import { EMPTY_ITEM_FILES_HASH, findReusableThread, itemFilesHash, staleAttachmentsRefusal, threadSpendNotice } from "./threadReuse.js";
+import { EMPTY_ITEM_FILES_HASH, findReusableThread, itemFilesHash, staleAttachmentsRefusal } from "./threadReuse.js";
 import {
   rerunContract,
   findPendingInterpretations,
@@ -6927,23 +6927,6 @@ export function createRunSupervisor(
         // this run is assembling a full context, and the earlier answer
         // was "there is a thread to carry on".
         body: staleReuse ?? (reuse?.kind === "refused" ? reuse.reason : ""),
-      });
-    }
-    // And the opposite case: a thread EO *is* carrying on, which has cost
-    // enough to be worth mentioning (EO-210). Said once, on the dispatch
-    // that crosses the line, because a provider summarising its own
-    // session tells nobody — and EO's "what is not here" sentence only
-    // ever covered contexts EO assembled. Deliberately a statement of
-    // spend rather than of window pressure, which EO has no way to
-    // measure; `threadSpendNotice` carries the reasoning.
-    const longThread = resuming ? threadSpendNotice(db, agent, resuming.run, action) : null;
-    if (longThread !== null) {
-      postComment(db, {
-        itemId: item.id,
-        runId: run.id,
-        author: { type: "engine" },
-        kind: "note",
-        body: longThread,
       });
     }
     // What the workspace could not lend, in its own words (EO-151,

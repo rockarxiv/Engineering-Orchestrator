@@ -19,7 +19,6 @@ import { promptHash } from "../roles/prompts.js";
 import { createRoleWiring } from "../packs/developer/wiring.js";
 import type { BuiltinRunner } from "./builtins.js";
 import { createRunSupervisor } from "./runSupervisor.js";
-import { THREAD_SPEND_NOTICE_TOKENS } from "./threadReuse.js";
 import { kindsPreparing } from "./testWorkspaceKinds.js";
 
 /**
@@ -347,22 +346,16 @@ describe("the system agent's other two actions, which are not conversations", ()
 });
 
 /**
- * What EO says once a reused conversation has become expensive (EO-210).
+ * What a reused thread costs, and what EO no longer says about it.
  *
- * When EO assembles a context it says what it left out. A provider
- * summarising its own session says nothing to anybody, so a long reused
- * thread could quietly stop holding what the agent answers as though it
- * held.
- *
- * The notice is deliberately about **spend** and not about window
- * pressure. `runs.tokens_in` is billed input summed over every model
- * turn of a dispatch — on Claude, the running total for a whole query
- * across subagents too — so it says nothing about how large a
- * conversation is, and the first cut of this feature read it as if it
- * did. These tests are mostly about that: the arithmetic EO is entitled
- * to do, and the claim it is entitled to make.
+ * EO-210 posted an engine note once a reused thread had been billed
+ * more than a million input tokens. EO-744 removed it at the person's
+ * request: nobody wants it in a chat or on an item. What stays is the
+ * accounting — `runs.tokensIn` is still EO's record of what each run was
+ * billed — so these pin that, and that a thread past a million tokens
+ * is carried on without a word about its spend.
  */
-describe("a conversation expensive enough for EO to mention", () => {
+describe("a conversation whose thread has been billed a lot", () => {
   const conversation = () => openAssistConversation(handle.db, null);
 
   /** Runs one turn of a chat, with whatever usage the test has scripted. */
@@ -372,12 +365,12 @@ describe("a conversation expensive enough for EO to mention", () => {
     return listRunsForItem(handle.db, chat.id).at(-1)!;
   }
 
-  const spendNotice = (itemId: Uuid) => engineNotes(itemId).find((body) => body.includes("input tokens on this thread"));
+  /** The removed note was the only engine comment to speak of billed input tokens. */
+  const spendNotes = (itemId: Uuid) => engineNotes(itemId).filter((body) => /input tokens/i.test(body));
 
   it("keeps Claude's running total rather than summing its re-reports", async () => {
-    // The accounting everything below rests on. One query, twelve model
-    // turns, re-reported three times as it grew: the run's figure is the
-    // last reading, not the sum of them.
+    // One query, twelve model turns, re-reported three times as it grew:
+    // the run's figure is the last reading, not the sum of them.
     const chat = conversation();
     usageReadings = claudeQuery(240_000, 12);
 
@@ -402,78 +395,22 @@ describe("a conversation expensive enough for EO to mention", () => {
     expect(first.tokensIn).toBe(480_000);
   });
 
-  it("says nothing about a short conversation that took an expensive query", async () => {
-    // The false positive this was rewritten to remove. Two messages, so
-    // the thread itself is a few thousand tokens — but the first turn
-    // called tools eighteen times and was billed 240k for it. Reading
-    // that as "the conversation is 240k long" announced compaction of a
-    // conversation nowhere near any window.
-    const chat = conversation();
-    usageReadings = claudeQuery(240_000, 18);
-
-    await turn(chat, "About billing.");
-    await turn(chat, "And the free tier?");
-
-    expect(turns.map((entry) => entry.kind)).toEqual(["start", "resume"]);
-    expect(engineNotes(chat.id)).toEqual([]);
-  });
-
-  it("says so once the whole thread's billing crosses the line, and says what it is", async () => {
+  it("posts no spend note in a chat whose thread has been billed past a million", async () => {
     const chat = conversation();
     usageReadings = claudeQuery(300_000, 9);
 
-    // Four turns billed 300k each: the fifth dispatch is the first whose
-    // thread has been billed more than a million.
-    for (const message of ["One.", "Two.", "Three.", "Four.", "Five."]) await turn(chat, message);
+    // Four turns billed 300k each: the fifth dispatch resumes a thread
+    // already billed 1.2M, and the turns after it more again.
+    for (const message of ["One.", "Two.", "Three.", "Four.", "Five.", "Six."]) await turn(chat, message);
 
-    const notice = spendNotice(chat.id);
-    expect(notice).toBeDefined();
-    // The figure is EO's own sum of what the backend reported, and it is
-    // named as billing rather than as the size of anything.
-    expect(notice).toContain("about 1.2M input tokens on this thread, over 4 messages");
-    expect(notice).toContain("not how large the conversation is");
-    // And it claims nothing about what the model is or is not still
-    // holding, which is the thing EO cannot see.
-    expect(notice).not.toMatch(/compact|summarised the|has dropped/);
-    expect(notice).toContain("Clear this conversation");
-  });
-
-  it("says it once and not on every turn afterwards", async () => {
-    const chat = conversation();
-    usageReadings = claudeQuery(300_000, 9);
-
-    for (const message of ["One.", "Two.", "Three.", "Four.", "Five.", "Six.", "Seven."]) await turn(chat, message);
-
-    expect(engineNotes(chat.id).filter((body) => body.includes("input tokens on this thread"))).toHaveLength(1);
-  });
-
-  it("stays quiet on an ordinary conversation", async () => {
-    const chat = conversation();
-    usageReadings = claudeQuery(4_000, 2);
-
-    for (const message of ["One.", "Two.", "Three."]) await turn(chat, message);
-
+    const runs = listRunsForItem(handle.db, chat.id);
+    expect(runs.slice(0, 4).reduce((total, run) => total + (run.tokensIn ?? 0), 0)).toBeGreaterThan(1_000_000);
+    expect(turns.map((entry) => entry.kind)).toEqual(["start", "resume", "resume", "resume", "resume", "resume"]);
+    expect(spendNotes(chat.id)).toEqual([]);
     expect(engineNotes(chat.id)).toEqual([]);
   });
 
-  it("counts a backend that reported nothing as nothing, rather than guessing", async () => {
-    // Null is the absence of a reading, and absent must never read as a
-    // large number any more than it reads as a small one. A run whose
-    // backend said nothing about usage contributes nothing to the sum,
-    // and the conversation stays quiet.
-    const chat = conversation();
-
-    for (const message of ["One.", "Two.", "Three."]) await turn(chat, message);
-
-    expect(listRunsForItem(handle.db, chat.id).every((run) => run.tokensIn === null)).toBe(true);
-    expect(engineNotes(chat.id)).toEqual([]);
-  });
-
-  it("says the same thing to a work item without inventing a control it does not have", async () => {
-    // The implementer has reused its thread since EO-86 and is billed the
-    // same way, so the account is owed there too — but there is no Clear
-    // on an item, and telling somebody to press one would be worse than
-    // the silence this replaces.
+  it("posts no spend note on a work item whose implementer resumes a thread billed past a million", async () => {
     const implementer = listAgents(handle.db).find((agent) => agent.role === "implementer")!;
     const work = createTestItem(handle.db, { type: "story", title: "Rate limit the API", stepId: "todo" });
     const prior = createRun(handle.db, {
@@ -486,15 +423,12 @@ describe("a conversation expensive enough for EO to mention", () => {
       instructionsHash: promptHash(implementer.instructions),
       cwd: CWD,
     });
-    updateRun(handle.db, prior.id, { startedAt: 1_000, endedAt: 1_000, tokensIn: THREAD_SPEND_NOTICE_TOKENS + 1 });
+    updateRun(handle.db, prior.id, { startedAt: 1_000, endedAt: 1_000, tokensIn: 1_000_001 });
 
     await supervisor().runOnce();
 
-    expect(turns.map((turn) => turn.kind)).toEqual(["resume"]);
-    const notice = spendNotice(work.id);
-    expect(notice).toBeDefined();
-    expect(notice).toContain("over 1 run");
-    expect(notice).toContain("this thread ends when the ticket does");
-    expect(notice).not.toContain("Clear this conversation");
+    expect(turns.map((entry) => entry.kind)).toEqual(["resume"]);
+    expect(turns[0]?.threadId).toBe("thread-earlier");
+    expect(spendNotes(work.id)).toEqual([]);
   });
 });
