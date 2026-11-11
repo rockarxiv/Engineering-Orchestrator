@@ -2738,7 +2738,8 @@ export function createClaudeProvider(options: ClaudeProviderOptions = {}): Agent
         // `${VAR}` references, which this does not read anyway.
         mcpServers: [...Object.keys(built.mcpServers ?? {}), ...(turn.toolDirectory ? Object.keys(readToolDirectoryServers(turn.toolDirectory)) : [])],
         allowedTools: built.allowedTools ?? null,
-        skills: Array.isArray(built.skills) ? [...built.skills] : [],
+        // None for a turn given no skills, as `resumed` enables none (EO-717).
+        skills: turn.withoutSkills === true ? [] : Array.isArray(built.skills) ? [...built.skills] : [],
         inheritsAmbientConfig: options.config?.inheritAmbientConfig === true,
       };
     },

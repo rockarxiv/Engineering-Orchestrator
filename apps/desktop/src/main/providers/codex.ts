@@ -1525,13 +1525,14 @@ function hasAdmin(options: CodexProviderOptions): boolean {
  * `providerParity.test.ts` holds the two to each other against the
  * launch itself.
  */
-export function codexServerNames(options: CodexProviderOptions, repositoryMcp?: RepositoryMcpServer): string[] {
+export function codexServerNames(options: CodexProviderOptions, repositoryMcp?: RepositoryMcpServer, withoutAdmin = false): string[] {
   return [
     ...new Set([
       ...deliveredServers(options.attachedServers ?? []).map((server) => server.name),
       ...(repositoryMcp ? [repositoryMcp.name] : []),
       ...(options.eoMcp ? [EO_MCP_SERVER] : []),
-      ...(hasAdmin(options) ? [ADMIN_MCP_SERVER_NAME] : []),
+      // Not on a turn told it is without it, which `buildCodexOptions` configures none for (EO-717).
+      ...(hasAdmin(options) && !withoutAdmin ? [ADMIN_MCP_SERVER_NAME] : []),
     ]),
   ];
 }
@@ -2722,13 +2723,14 @@ export function createCodexProvider(options: CodexProviderOptions = {}): AgentPr
           { name: "sandboxMode", value: String(thread.sandboxMode) },
           { name: "approvalPolicy", value: String(thread.approvalPolicy) },
         ],
-        mcpServers: codexServerNames(options, turn.repositoryMcp),
+        mcpServers: codexServerNames(options, turn.repositoryMcp, turn.withoutAdminServer === true),
         // Codex is handed no allowlist: what a server offers is what the
         // agent may call.
         allowedTools: null,
         // The same list `writeWorktreeSkills` delivers, by slug — which
         // is the name the prompt section calls each one.
-        skills: deliverableSkills(skillsForRun(options.attachedSkills ?? [], turn.skillScope)).map((skill) => skill.slug),
+        // None for a turn given no skills, which `resumedSkills` writes none for (EO-717).
+        skills: turn.withoutSkills === true ? [] : deliverableSkills(skillsForRun(options.attachedSkills ?? [], turn.skillScope)).map((skill) => skill.slug),
         inheritsAmbientConfig: options.config?.inheritAmbientConfig === true,
       };
     },

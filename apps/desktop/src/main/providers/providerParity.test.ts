@@ -522,6 +522,25 @@ const CAPABILITIES = [
     },
   },
   {
+    name: "debug capture of the learning review",
+    what: "a fork is recorded from above the adapter as a learning review's send (EO-734): on the thread it forked, with no instructions sent, the message as the backend then received it, and the session it was opened with — the backend's model, the servers it was handed and no administrative server, no skills — without the repository server's secret or the write credential",
+    same: {
+      purpose: "learning_review",
+      thread: { mode: "forked", threadId: "thr-persisted" },
+      instructionsSent: false,
+      prompt: "review the run",
+      promptIsWhatTheBackendGot: true,
+      describesItsSession: true,
+      model: "model-under-test",
+      modelIsWhatTheBackendGot: true,
+      servers: ["eo", "github", "repo"],
+      serversAreTheOnesHandedOver: true,
+      skills: [],
+      secretRecorded: false,
+      answered: "reviewed",
+    },
+  },
+  {
     name: "attaching files",
     what: "on a turn of a run with a workspace directory the `eo` server the backend is told to start lists attachment_add, on a start and on a resume alike, and on a turn without one it does not; a call is recorded under the tool's bare name with its arguments, and the tool's answer is recorded joined to it by the call's id",
     same: {
@@ -1708,11 +1727,44 @@ function cardRead(events: readonly AgentEvent[]): unknown {
  * Debug mode's capture, wrapped round an adapter the way the supervisor
  * wraps it (EO-392): one function for both backends, which is the point.
  */
-function capturing(provider: AgentProvider, backend: Backend) {
+function capturing(provider: AgentProvider, backend: Backend, purpose: DebugSent["purpose"] = "dispatch") {
   const sent: DebugSent[] = [];
   return {
     sent,
-    provider: capturingProvider(provider, { backend, purpose: "dispatch", refusal: null, threadInstructions: null, outputSchemaName: "implement" }, (record) => sent.push(record)),
+    provider: capturingProvider(provider, { backend, purpose, refusal: null, threadInstructions: null, outputSchemaName: "implement" }, (record) => sent.push(record)),
+  };
+}
+
+/**
+ * The learning review's fork as the supervisor opens it (EO-717), with a
+ * write credential carrying a value that must not be written down, the
+ * index server carrying another, and the administrative server and the
+ * agent's skills withheld (EO-734).
+ */
+const capturedReviewFork = (): AgentProviderResumeOptions => ({
+  cwd: "/tmp/wt",
+  repositoryMcp: repositoryMcpWithSecret,
+  writeBridge: { url: "http://127.0.0.1:1/agent-write", token: `item-1~${SECRET}`, writes: ["memory_note" as const] },
+  withoutAdminServer: true,
+  withoutSkills: true,
+});
+
+/** The observation for "debug capture of the learning review", held against what the backend's stub was handed. */
+function forkCaptured(sent: DebugSent | undefined, events: readonly AgentEvent[], got: { prompt: unknown; model: unknown; servers: string[] }): unknown {
+  return {
+    purpose: sent?.purpose,
+    thread: { mode: sent?.thread.mode, threadId: sent?.thread.threadId },
+    instructionsSent: sent?.instructions.sent,
+    prompt: sent?.prompt,
+    promptIsWhatTheBackendGot: sent !== undefined && sent.prompt === got.prompt,
+    describesItsSession: sent?.session.described,
+    model: sent?.session.model,
+    modelIsWhatTheBackendGot: sent?.session.model === got.model,
+    servers: [...(sent?.session.mcpServers ?? [])].sort(),
+    serversAreTheOnesHandedOver: JSON.stringify([...(sent?.session.mcpServers ?? [])].sort()) === JSON.stringify([...got.servers].sort()),
+    skills: sent?.session.skills,
+    secretRecorded: JSON.stringify(sent ?? null).includes(SECRET),
+    answered: events.flatMap((event) => (event.type === "output" ? [event.text] : [])).join(""),
   };
 }
 
@@ -2347,6 +2399,31 @@ const CLAUDE: Record<CapabilityName, Proof> = {
       sentAgainOnResume: resumed.calls[0]?.options["systemPrompt"] !== undefined,
       resumedUserTurn: await firstSaid(resumed.calls[0]),
     };
+  },
+
+  "debug capture of the learning review": async () => {
+    // An agent given an attached server, a skill and the administrative
+    // server, forked as the review forks it: the capture is wrapped round
+    // the adapter and held against what `query` was then called with.
+    const toolDirectory = join(scratchDirectory(), "plugin");
+    writeToolDirectory(toolDirectory, { servers: [catalogueServer("github", ["GITHUB_TOKEN"])], skills: [scopedSkill("house-style", { kind: "global" })] });
+    const { runQuery, calls } = scripted([sdk.init({ session_id: "sess-fork" }), sdk.says("reviewed"), sdk.result({ result: "reviewed", session_id: "sess-fork" })]);
+    const adapter = createClaudeProvider({
+      runQuery,
+      eoMcp: REVIEW_EO_MCP,
+      admin: countedAdmin().admin,
+      attachmentEnv: () => ({ env: { GITHUB_TOKEN: SECRET } }),
+      config: { model: "model-under-test" },
+    });
+    const captured = capturing(adapter, "claude", "learning_review");
+    const forked = await captured.provider.fork!("thr-persisted", "review the run", { ...capturedReviewFork(), toolDirectory });
+    const events = forked.ok ? await collect(forked.events) : [];
+    const options = calls[0]?.options ?? {};
+    return forkCaptured(captured.sent[0], events, {
+      prompt: await firstSaid(calls[0]),
+      model: options["model"],
+      servers: [...Object.keys((options["mcpServers"] as Record<string, unknown> | undefined) ?? {}), ...Object.keys(readToolDirectoryServers(toolDirectory))],
+    });
   },
 
   "debug capture": async () => {
@@ -3606,6 +3683,36 @@ const CODEX: Record<CapabilityName, Proof> = {
     };
   },
 
+  "debug capture of the learning review": async () => {
+    // The same agent, Codex's way: the attached server and the
+    // administrative one on the app-server's command line, the skill
+    // written into the worktree — held against the launch and the
+    // `turn/start` the fork's turn sent.
+    const { fake, provider } = codexOver(
+      {
+        forkId: "thr-fork",
+        after: { "turn/start": [note.turnStarted("turn-1", "thr-fork"), note.agentMessage("reviewed", "m", "turn-1", "thr-fork"), note.turnCompleted("completed", null, "turn-1", "thr-fork")] },
+      },
+      {
+        eoMcp: REVIEW_EO_MCP,
+        admin: countedAdmin().admin,
+        attachedServers: [catalogueServer("github", ["GITHUB_TOKEN"])],
+        serverSecret: (_serverId: string, name: string) => (name === "GITHUB_TOKEN" ? SECRET : null),
+        attachedSkills: [scopedSkill("house-style", { kind: "global" })],
+        config: { model: "model-under-test" },
+      },
+    );
+    const captured = capturing(provider, "codex", "learning_review");
+    const forked = await captured.provider.fork!("thr-persisted", "review the run", { ...capturedReviewFork(), cwd: scratchDirectory() });
+    const events = forked.ok ? await collect(forked.events) : [];
+    const [launch] = fake.launches;
+    return forkCaptured(captured.sent[0], events, {
+      prompt: (fake.paramsOf("turn/start")?.["input"] as { text: string }[] | undefined)?.map((part) => part.text).join("") ?? null,
+      model: fake.paramsOf("thread/fork")?.["model"],
+      servers: [...new Set((launch?.args ?? []).flatMap((argument) => /^mcp_servers\.([^.=]+)\./.exec(argument)?.[1] ?? []))],
+    });
+  },
+
   "debug capture": async () => {
     // The same two servers, delivered Codex's way: both inline on the
     // app-server's command line, the attached one reading its secret
@@ -4506,6 +4613,7 @@ describe("the shared list", () => {
       "cost reported",
       "instructions outside the user turn",
       "debug capture",
+      "debug capture of the learning review",
       "attaching files",
       "role-defined action schema",
       "streaming words",

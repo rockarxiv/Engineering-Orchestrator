@@ -43,6 +43,7 @@ import {
   asClarification,
   createQuotaRefusals,
   DEBUG_SENT_EVENT,
+  LEARNING_REVIEW_ACTIVITY_EVENTS,
   HUMAN_MESSAGE_EVENT,
   MEMORY_DELIVERED_EVENT,
   MEMORY_USED_EVENT,
@@ -2862,10 +2863,29 @@ export function createRunSupervisor(
     if (run.provider !== null && run.provider !== backend) {
       return { kind: "fell_back", reason: `The run's thread is on ${run.provider}, and ${agent.name} now runs on ${backend}.` };
     }
-    const provider = providerFor(agent, item);
-    if (!provider.fork) return { kind: "fell_back", reason: `The ${backend} backend cannot fork a thread.` };
+    const inner = providerFor(agent, item);
+    if (!inner.fork) return { kind: "fell_back", reason: `The ${backend} backend cannot fork a thread.` };
     const bridge = options.agentWriteBridge?.() ?? null;
     if (bridge === null) return { kind: "fell_back", reason: "EO has nowhere listening for the review's notes." };
+    // Recorded while debug mode is on, and only for a run whose own
+    // opening send was, for the reason a correction is (EO-734): a
+    // review alone would read as the whole of what the run was sent.
+    // Wrapped as every send is, above both adapters (invariant 12).
+    const recording = debugMode() && capturedRuns.has(run.id);
+    const provider = recording
+      ? capturingProvider(
+          inner,
+          {
+            backend,
+            purpose: "learning_review",
+            refusal: null,
+            threadInstructions: threadInstructionsOf(run.id, agent),
+            // The review is held to no answer schema, so none is named.
+            outputSchemaName: "",
+          },
+          (sent) => recordSent(run.id, sent),
+        )
+      : inner;
 
     const startedAt = now();
     const controller = new AbortController();
@@ -2908,7 +2928,7 @@ export function createRunSupervisor(
     }, LEARNING_REVIEW_TIMEOUT_MS);
     try {
       const forked = await Promise.race([
-        provider.fork(run.threadId, learningReviewPrompt(scopes, { skills, canCreate: skillScope.projectId !== null }), {
+        provider.fork!(run.threadId, learningReviewPrompt(scopes, { skills, canCreate: skillScope.projectId !== null }), {
           ...(run.cwd ? { cwd: run.cwd } : {}),
           // `memory_read` over the run's scopes, and a credential for
           // `memory_note` and the skill tools (EO-718) alone: no other
@@ -2948,6 +2968,7 @@ export function createRunSupervisor(
           }
           if (next.done) break;
           const event = next.value;
+          if (recording) recordReviewActivity(run.id, forked.threadId, event);
           if (event.type === "thread_started" && event.model) model = event.model;
           else if (event.type === "usage" && usage.record(event)) reported = true;
           else if (event.type === "error" && event.fatal !== false && failure === null) failure = event.message;
@@ -3165,14 +3186,50 @@ export function createRunSupervisor(
    * the buffer that is numbering everything else.
    */
   function recordSent(runId: Uuid, sent: DebugSent): void {
+    appendDebugRow(runId, DEBUG_SENT_EVENT, sent);
+  }
+
+  /** One row debug mode writes to a run's log, through its buffer when it has one, for `recordSent`'s reason. */
+  function appendDebugRow(runId: Uuid, type: string, payload: unknown): void {
     const buffer = activeEventBuffers.get(runId);
     if (buffer) {
-      buffer.append(runId, DEBUG_SENT_EVENT, sent);
+      buffer.append(runId, type, payload);
       buffer.flush();
     } else {
-      record.appendRunEvent(runId, DEBUG_SENT_EVENT, sent);
+      record.appendRunEvent(runId, type, payload);
     }
     onPushEvents?.(runId, []);
+  }
+
+  /**
+   * What a learning review's fork did, on the reviewed run's log while
+   * debug mode records it (EO-734): its tool calls, their results and its
+   * words, each under a learning-review type of its own and never the
+   * run's — so nothing counting the run's tool calls, skills, memory,
+   * turns or cost counts the review's — with the fork's thread beside it.
+   * Everything else the fork says is left out, as it is with debug mode
+   * off. A row that cannot be written says so on the console; the review
+   * goes on.
+   */
+  function recordReviewActivity(runId: Uuid, forkThreadId: string, event: AgentEvent): void {
+    if (event.type !== "tool_call" && event.type !== "tool_result" && event.type !== "output") return;
+    try {
+      appendDebugRow(runId, LEARNING_REVIEW_ACTIVITY_EVENTS[event.type], { ...event, forkThreadId });
+    } catch (error) {
+      console.warn(`[eo] debug mode could not record what the learning review of run ${runId} did: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  /**
+   * The instructions a resumed or forked thread keeps — the ones it was
+   * opened with, which the run row holds the hash of (EO-87). Where the
+   * agent's still hash to it, they are those instructions and can be
+   * shown; where they do not, EO no longer has the text and says so
+   * rather than showing the edited ones as though they had been sent.
+   */
+  function threadInstructionsOf(runId: Uuid, agent: Agent): string | null {
+    const bornWith = getRun(db, runId)?.instructionsHash ?? null;
+    return bornWith !== null && bornWith === promptHash(agent.instructions) ? agent.instructions : null;
   }
 
   /**
@@ -3207,19 +3264,13 @@ export function createRunSupervisor(
     const capturing = debugMode() && (send.purpose !== "correction" || capturedRuns.has(run.id));
     if (!capturing) return inner;
     capturedRuns.add(run.id);
-    // The instructions a resumed thread keeps are the ones it was opened
-    // with, and the run row holds their hash (EO-87). Where the agent's
-    // still hash to it, they are those instructions and can be shown;
-    // where they do not, EO no longer has the text and says so rather
-    // than showing the edited ones as though they had been sent.
-    const bornWith = getRun(db, run.id)?.instructionsHash ?? null;
     return capturingProvider(
       inner,
       {
         backend: runsOn(agent, item).provider,
         purpose: send.purpose,
         refusal: send.refusal ?? null,
-        threadInstructions: bornWith !== null && bornWith === promptHash(agent.instructions) ? agent.instructions : null,
+        threadInstructions: threadInstructionsOf(run.id, agent),
         // Resolved the way `outputSchemaFor` resolves the schema itself,
         // so the name is the schema's and not merely the action's: a
         // type may hold an action to another action's answer.
@@ -5209,7 +5260,6 @@ export function createRunSupervisor(
         runActivity.delete(run.id);
         settleSkillUsage(run.id);
         runSkills.delete(run.id);
-        capturedRuns.delete(run.id);
       }
       // After the run is terminal and its item has moved, and before the
       // caller gives the run's slot back (EO-479). Not on a throw: a run
@@ -5220,6 +5270,8 @@ export function createRunSupervisor(
       // The run moved the counts of the skills it was given (EO-720).
       await archiveAfterRun(item);
     } finally {
+      // Kept until the review is over, which is recorded when the run was (EO-734).
+      capturedRuns.delete(run.id);
       drivenRuns.delete(run.id);
       // A run with no lease gives its slot back here, not in a release:
       // a waiting side call may take it, and the tick may dispatch.

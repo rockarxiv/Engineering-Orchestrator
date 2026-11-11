@@ -1104,8 +1104,14 @@ export interface AgentSessionDescription {
   inheritsAmbientConfig: boolean;
 }
 
-/** The per-turn facts a session description depends on: the same fields `start` and `resume` are handed. */
-export type AgentSessionQuery = Pick<AgentProviderStartOptions, "model" | "reasoningEffort" | "toolDirectory" | "repositoryMcp" | "skillScope"> & { cwd?: string };
+/**
+ * The per-turn facts a session description depends on: the same fields
+ * `start` and `resume` are handed — and, for a turn that is given less
+ * than the agent's own (the learning review's fork, EO-734), the two
+ * withholdings that change what it is opened with.
+ */
+export type AgentSessionQuery = Pick<AgentProviderStartOptions, "model" | "reasoningEffort" | "toolDirectory" | "repositoryMcp" | "skillScope"> &
+  Pick<AgentProviderResumeOptions, "withoutSkills" | "withoutAdminServer"> & { cwd?: string };
 
 /**
  * A turn a provider may start its backend for before it is asked to run

@@ -6,12 +6,12 @@ import { withSkillsSection } from "../agentAttachments/skillsPrompt.js";
  * is handed over (EO-392).
  *
  * **Above both adapters, and that is the point** (invariant 12). This
- * wraps an `AgentProvider` and knows nothing about which one: `start`
- * and `resume` are recorded from the very arguments the adapter is then
- * called with, so the recorded instructions and prompt are byte-for-byte
- * what crossed the provider boundary on either backend, and a third
- * backend is captured the day it implements the interface. Nothing is
- * re-derived — re-assembling a context later would show what EO would
+ * wraps an `AgentProvider` and knows nothing about which one: `start`,
+ * `resume` and `fork` (the learning review's turn, EO-734) are recorded
+ * from the very arguments the adapter is then called with, so the
+ * recorded instructions and prompt are byte-for-byte what crossed the
+ * provider boundary on either backend, and a third backend is captured
+ * the day it implements the interface. Nothing is re-derived — re-assembling a context later would show what EO would
  * send now, not what it sent.
  *
  * What only an adapter can say — the model it resolves to, the sandbox
@@ -22,9 +22,10 @@ import { withSkillsSection } from "../agentAttachments/skillsPrompt.js";
  * `start`, from the skills it actually delivered.
  *
  * **No secret passes through this file's output.** The options it reads
- * carry one place a value could hide, the repository server's `env`,
- * and that is never read: a server is its name. The instructions and
- * the prompt are recorded as sent, which is what the window is for.
+ * carry two places a value could hide, the repository server's `env`
+ * and a fork's write-bridge credential, and neither is read: a server is
+ * its name. The instructions and the prompt are recorded as sent, which
+ * is what the window is for.
  */
 
 /** What the caller knows about a send that the provider's arguments do not say. */
@@ -57,6 +58,8 @@ function sessionOf(provider: AgentProvider, context: SendContext, turn: AgentSes
     ...(turn.toolDirectory !== undefined ? { toolDirectory: turn.toolDirectory } : {}),
     ...(turn.repositoryMcp !== undefined ? { repositoryMcp: turn.repositoryMcp } : {}),
     ...(turn.skillScope !== undefined ? { skillScope: turn.skillScope } : {}),
+    ...(turn.withoutSkills !== undefined ? { withoutSkills: turn.withoutSkills } : {}),
+    ...(turn.withoutAdminServer !== undefined ? { withoutAdminServer: turn.withoutAdminServer } : {}),
   });
   return {
     backend: context.backend,
@@ -94,6 +97,23 @@ export function sentOnResume(provider: AgentProvider, context: SendContext, thre
   return {
     purpose: context.purpose,
     thread: { mode: "resumed", threadId, refusal: null },
+    instructions: { sent: false, text: context.threadInstructions },
+    prompt: withSkillsSection(message, skillsSection),
+    session: sessionOf(provider, context, opts ?? {}),
+  };
+}
+
+/**
+ * What a `fork` of this thread with this message sends, as debug mode
+ * records it (EO-734): the learning review's turn. Like a resume, no
+ * instructions are sent — the copy keeps the ones the thread started
+ * with — and the thread named is the one forked, since the copy's own id
+ * is issued by the backend after this is written.
+ */
+export function sentOnFork(provider: AgentProvider, context: SendContext, threadId: string, message: string, opts: AgentProviderResumeOptions | undefined, skillsSection = ""): DebugSent {
+  return {
+    purpose: context.purpose,
+    thread: { mode: "forked", threadId, refusal: null },
     instructions: { sent: false, text: context.threadInstructions },
     prompt: withSkillsSection(message, skillsSection),
     session: sessionOf(provider, context, opts ?? {}),
@@ -147,8 +167,27 @@ export function capturingProvider(provider: AgentProvider, context: SendContext,
       }
     },
     ...(provider.describeSession ? { describeSession: (turn) => provider.describeSession!(turn) } : {}),
-    // Passed on, so debug mode does not take a backend's forking away
-    // (EO-716). What a fork's turn sends is not captured here.
-    ...(provider.fork ? { fork: (threadId: string, message: string, opts?: Parameters<NonNullable<AgentProvider["fork"]>>[2]) => provider.fork!(threadId, message, opts) } : {}),
+    // Recorded as a resume is (EO-734), and only where the backend can
+    // fork at all, so debug mode neither takes forking away (EO-716) nor
+    // invents it. Codex reports the Skills section it adds to a fork's
+    // message before `fork` returns its promise, as it does on a resume.
+    ...(provider.fork
+      ? {
+          fork: (threadId: string, message: string, opts?: AgentProviderResumeOptions) => {
+            let skillsSection = "";
+            try {
+              return provider.fork!(threadId, message, {
+                ...opts,
+                onSkillsSection: (section) => {
+                  skillsSection = section;
+                  opts?.onSkillsSection?.(section);
+                },
+              });
+            } finally {
+              capture(() => sentOnFork(provider, context, threadId, message, opts, skillsSection));
+            }
+          },
+        }
+      : {}),
   };
 }
