@@ -9,14 +9,11 @@ import {
   createStep,
   getPipelineOrigin,
   getMessage,
-  listMentionsForComment,
   listPeople,
   listUpdateConflicts,
   openUpdateConflict,
-  postComment,
   recordUpdateConflict,
   resolveUpdateConflict,
-  setUpdateConflictNotices,
 } from "../db/repos/index.js";
 import { createPerson } from "../db/repos/peopleRepo.js";
 import { createProject } from "../db/repos/projectsRepo.js";

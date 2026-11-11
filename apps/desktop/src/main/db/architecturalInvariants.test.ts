@@ -169,12 +169,22 @@ function migrationRecordRewrites(sql: string, table = "run_events"): string[] {
   return [...sql.replace(/--[^\n]*/g, "").matchAll(statement)].map((match) => match[0].replace(/\s+/g, " ").toLowerCase());
 }
 
+/**
+ * The one migration that removes `run_events` rows, and it is
+ * `itemsRepo.ts`'s exemption above (invariant #3's own): 0167 deletes the
+ * project and job threads outright (EO-730), so it deletes whatever an
+ * agent mentioned on one ran there, as `deleteItem` would — the item
+ * being gone, not a rewrite of what happened while it existed.
+ */
+const MIGRATIONS_DELETING_ITEMS: readonly string[] = ["0167_retire_threads.sql: delete from `run_events"];
+
 describe("architectural invariant: a record is never rewritten", () => {
   it("no migration updates, deletes or drops run_events rows (EO-555)", () => {
     const migrations = join(mainSrcRoot, "db", "migrations");
     const offenders = readdirSync(migrations)
       .filter((name) => name.endsWith(".sql"))
-      .flatMap((name) => migrationRecordRewrites(readFileSync(join(migrations, name), "utf8")).map((found) => `${name}: ${found}`));
+      .flatMap((name) => migrationRecordRewrites(readFileSync(join(migrations, name), "utf8")).map((found) => `${name}: ${found}`))
+      .filter((found) => !MIGRATIONS_DELETING_ITEMS.includes(found));
     expect(offenders).toEqual([]);
     // And the reader is not a tautology.
     expect(migrationRecordRewrites("UPDATE `run_events` SET payload = '{}';\nDELETE FROM run_events WHERE seq > 3;\nCREATE INDEX `idx_run_events_x` ON `run_events` (`ts`);")).toEqual([

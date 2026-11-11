@@ -15,7 +15,6 @@ import {
   getMessage,
   getProject,
   insertMessage,
-  listCommentsForItem,
   listOccurrences,
   listOpenMessages,
   markMessageHandled,

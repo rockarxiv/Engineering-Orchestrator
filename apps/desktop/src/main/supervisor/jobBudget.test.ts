@@ -9,7 +9,6 @@ import {
   listOccurrences,
   listRunsForItem,
   needsAttention,
-  openMentionsForHuman,
   transitionItem,
   updateRun,
 } from "../db/repos/index.js";

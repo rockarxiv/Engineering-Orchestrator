@@ -32,7 +32,6 @@ import {
   getConsolidation,
   listActiveRuns,
   listAgents,
-  listCommentsForItem,
   listConsolidations,
   listMemories,
   listSideCalls,

@@ -16,7 +16,6 @@ import { issueDevice } from "../db/repos/devicesRepo.js";
 import { archiveSkill, getSkill, getSkillBySlug, listHeldSkillCopies, listSkills, listSkillVersions, readProjectSkills, saveSkill, setSkillLocked, upsertReplicaSkill } from "../db/repos/skillsRepo.js";
 import { saveMcpServer } from "../db/repos/mcpServersRepo.js";
 import { setSetting } from "../db/repos/settingsRepo.js";
-import { listCommentsForItem } from "../db/repos/commentsRepo.js";
 import { countProjectRows, readProjectAgents, writeAdoptedPage, writeAdoptedProject } from "../db/repos/projectMoveRepo.js";
 import { MANAGED_PERSON_ID_KEY } from "../identity/viewer.js";
 import { createLocalRecord, type LocalItemRecord } from "./localRecord.js";
@@ -687,7 +686,7 @@ describe("Restore on a skill EO archived on the record (EO-728, review)", () => 
   }
 
   it("restores it on the record through the desktop's door, and another synced desktop takes it live", async () => {
-    const { support, skillId, archiveVersion } = await archivedOnTheRecord();
+    const { skillId, archiveVersion } = await archivedOnTheRecord();
     laptopDoor();
 
     const answer = await dispatchIpc("skills:restoreVersion", { id: skillId, versionId: archiveVersion.id });

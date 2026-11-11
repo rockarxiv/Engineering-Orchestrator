@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { LOCAL_PERSON_ID, type Skill, type Uuid } from "@eo/core";
+import { LOCAL_PERSON_ID, type Skill } from "@eo/core";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { DbHandle } from "../db/client.js";
 import { createProject } from "../db/repos/projectsRepo.js";
@@ -64,8 +64,8 @@ function expectNoComment(): void {
 
 describe("telling a person what their lock kept out", () => {
   it("sends one message to the person for a global skill, about no project, and only once", () => {
-    const shop = createProject(handle.db, { name: "Shop", keyPrefix: "SHOP" });
-    const api = createProject(handle.db, { name: "API", keyPrefix: "API" });
+    createProject(handle.db, { name: "Shop", keyPrefix: "SHOP" });
+    createProject(handle.db, { name: "API", keyPrefix: "API" });
     const problem = heldBehind();
 
     expect(tellHeldSkillCopies(handle.db, 50)).toBe(1);
@@ -82,7 +82,7 @@ describe("telling a person what their lock kept out", () => {
 
   it("is about the project a locked project skill belongs to", () => {
     const shop = createProject(handle.db, { name: "Shop", keyPrefix: "SHOP" });
-    const api = createProject(handle.db, { name: "API", keyPrefix: "API" });
+    createProject(handle.db, { name: "API", keyPrefix: "API" });
     heldBehind({ kind: "project", projectId: shop.id });
 
     tellHeldSkillCopies(handle.db);

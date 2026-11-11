@@ -1,8 +1,8 @@
-import { LOCAL_PERSON_ID, type Comment, type Job, type JobOccurrence, type JobTrigger, type Message, type Uuid } from "@eo/core";
+import { LOCAL_PERSON_ID, type Job, type JobOccurrence, type JobTrigger, type Message, type Uuid } from "@eo/core";
 import { eq } from "drizzle-orm";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { DbHandle } from "../db/client.js";
-import { getItem, getMessage, listOccurrences, postComment, recordOccurrence } from "../db/repos/index.js";
+import { getItem, getMessage, listOccurrences } from "../db/repos/index.js";
 import { jobs } from "../db/schema.js";
 import { messagesAboutJob, openMigratedTestDb } from "../db/testHelpers.js";
 import { handleMessageHere } from "../messages/messages.js";

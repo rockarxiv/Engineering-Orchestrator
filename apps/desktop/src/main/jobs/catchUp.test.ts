@@ -2,7 +2,7 @@ import { LOCAL_PERSON_ID, type Job, type JobTrigger, type Uuid } from "@eo/core"
 import { eq } from "drizzle-orm";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { DbHandle } from "../db/client.js";
-import { archivePipeline, listCommentsForItem, listOccurrences, openMentionsForHuman, setItemArchived } from "../db/repos/index.js";
+import { archivePipeline, listOccurrences, openMentionsForHuman, setItemArchived } from "../db/repos/index.js";
 import { jobs } from "../db/schema.js";
 import { messagesAboutJob, openMigratedTestDb } from "../db/testHelpers.js";
 import { catchUpJob } from "./catchUp.js";

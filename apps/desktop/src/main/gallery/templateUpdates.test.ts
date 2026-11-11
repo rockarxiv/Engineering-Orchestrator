@@ -425,7 +425,7 @@ describe("1.1 to 1.3: Watching pull request never gives up", () => {
   const watchStep = () => listStepsForPipeline(handle.db, "default").find((step) => step.id === "pull_request_watch");
 
   it("is applied with nothing held, as the one change of keep checking on the watch", () => {
-    const { projectId } = deliveryOn11();
+    deliveryOn11();
     expect(watchStep()?.watch).toEqual({ everyMinutes: 5, giveUpAfterHours: 168 });
 
     const results = applyTemplateUpdates(handle.db, history, { isTheRecord: false });

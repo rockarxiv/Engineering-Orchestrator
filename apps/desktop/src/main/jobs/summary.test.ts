@@ -2,7 +2,7 @@ import type { Job, JobTrigger, Uuid } from "@eo/core";
 import { eq } from "drizzle-orm";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { DbHandle } from "../db/client.js";
-import { createRun, getItem, getJob, listOccurrences, recordOccurrence, updateRun } from "../db/repos/index.js";
+import { createRun, getJob, listOccurrences, recordOccurrence, updateRun } from "../db/repos/index.js";
 import { items, jobs } from "../db/schema.js";
 import { openMigratedTestDb } from "../db/testHelpers.js";
 import { occurrenceOverBudget, pauseForBudget, pauseJob, resumeJob } from "./budget.js";

@@ -7,7 +7,6 @@ import {
   createProject,
   createRun,
   getSkill,
-  listCommentsForItem,
   listSkills,
   listSkillVersions,
   restoreSkillVersion,

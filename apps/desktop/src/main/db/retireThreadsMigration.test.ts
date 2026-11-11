@@ -16,6 +16,7 @@ import { getMessage } from "./repos/messagesRepo.js";
 import { listOccurrences } from "./repos/jobsRepo.js";
 import { listRetiredAttachmentFiles } from "./repos/attachmentsRepo.js";
 import { resolveUpdateConflict } from "./repos/pipelineUpdateConflictsRepo.js";
+import { appendRunEvent, createRun, listRunsForItem } from "./repos/index.js";
 import { createTestItem } from "./testHelpers.js";
 
 /**
@@ -112,6 +113,10 @@ function seed(db: DbHandle["db"], ids?: Partial<Seeded>): Seeded {
   mention(db, answered, ANNA, "addressed");
   const reply = comment(db, ids?.reply, notes, "I'll look at it on Monday.", null, 30, notice);
   db.run(sql`INSERT INTO comment_mentions (comment_id, target_type, target_id, status) VALUES (${reply}, 'agent', 'implementer', 'open')`);
+  // An agent somebody mentioned there, which ran on the thread.
+  const agentId = db.get<{ id: string }>(sql`SELECT id FROM agents LIMIT 1`)!.id;
+  const run = createRun(db, { itemId: notes, agentId: agentId as Uuid, action: "respond", status: "succeeded" });
+  appendRunEvent(db, run.id, "output", { type: "output", text: "Looking at the notes" });
   const filePath = `/managed/${reply}/notes.txt`;
   db.run(sql`INSERT INTO attachments (id, item_id, comment_id, storage_path, name, mime_type, size, managed, created_at)
              VALUES (${uuidv7()}, ${notes}, ${reply}, ${filePath}, 'notes.txt', 'text/plain', 5, 1, 1)`);
@@ -178,6 +183,8 @@ describe("migration 0167, retiring the project and job threads", () => {
     expect(handle.db.all(sql`SELECT id FROM comments`)).toEqual([]);
     expect(handle.db.all(sql`SELECT comment_id FROM comment_mentions`)).toEqual([]);
     expect(handle.db.all(sql`SELECT id FROM attachments`)).toEqual([]);
+    expect(listRunsForItem(handle.db, seeded.notesId)).toEqual([]);
+    expect(handle.db.all(sql`SELECT seq FROM run_events`)).toEqual([]);
     // Its bytes are left for the launch to remove.
     expect(listRetiredAttachmentFiles(handle.db)).toEqual([seeded.filePath]);
     expect(getItem(handle.db, seeded.work)?.title).toBe("Checkout");

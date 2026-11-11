@@ -95,10 +95,8 @@ const SCHEDULE: readonly Group[] = [
   },
   {
     owner: "pack-names-its-own",
-    why: "A caller that knows which pack's type it means says so (KAN-129). These pass a slug *to the registry* — `developerType(\"story\")`, resolved by `resolveItemType` against the project's rows — which is what this story's scope asked of the creation sites, so that a project whose developer types were renamed still works. The word is the resolver's argument, never a comparison: there is no `=== \"story\"` among them. They are developer-pack code that phase 1 left resident in core (`roles/`, and the placeholder backend's canned answers), and the path exclusion collects them when phase 7 moves it. `jobs/thread.ts` joins them for the reason `roles/assist.ts` is there: an off-board thread item wants the read-only shape a container type has — the repository itself rather than a worktree, no branch, no pull request — and `feature` is the container the only installed pack ships. It leaves when a container type can be asked for without naming one, which is the same phase 7 move. `projects/projectThread.ts` (EO-471) is the job thread's arrangement given to a project, and joins for the same reason.",
+    why: "A caller that knows which pack's type it means says so (KAN-129). These pass a slug *to the registry* — `developerType(\"story\")`, resolved by `resolveItemType` against the project's rows — which is what this story's scope asked of the creation sites, so that a project whose developer types were renamed still works. The word is the resolver's argument, never a comparison: there is no `=== \"story\"` among them. They are developer-pack code that phase 1 left resident in core (`roles/`, and the placeholder backend's canned answers), and the path exclusion collects them when phase 7 moves it.",
     files: [
-      "apps/desktop/src/main/jobs/thread.ts",
-      "apps/desktop/src/main/projects/projectThread.ts",
       "apps/desktop/src/main/providers/demo.ts",
       "apps/desktop/src/main/roles/assist.ts",
       "apps/desktop/src/main/roles/discussion.ts",

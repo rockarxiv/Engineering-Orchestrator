@@ -1685,7 +1685,7 @@ describe("a graph nobody owns", () => {
 describe("a job whose pipeline changes while the move runs", () => {
   it("arrives pointing where it points now", async () => {
     const support = localProject("Support", "SUP");
-    const thread = itemOn(support.id, "The weekly report");
+    itemOn(support.id, "The weekly report");
     const first = listPipelines(annaDb.db, support.id, true)[0]!;
     adoptPipeline(annaDb.db, first.id, support.id);
     const second = createPipeline(annaDb.db, { name: "The other flow", projectId: support.id });
@@ -2176,7 +2176,7 @@ describe("a scheduled job on a project that has moved", () => {
    */
   function jobFixture(): { projectId: Uuid; jobId: Uuid; due: number } {
     const support = localProject("Support", "SUP");
-    const thread = itemOn(support.id, "The weekly report");
+    itemOn(support.id, "The weekly report");
     const pipeline = listPipelines(annaDb.db, support.id, true)[0]!;
     adoptPipeline(annaDb.db, pipeline.id, support.id);
     const job = insertJob(annaDb.db, {
@@ -2231,7 +2231,7 @@ describe("a scheduled job on a project that has moved", () => {
     // it somebody else's replica — `isTheRecord`. Without that the
     // record would decline to fire the jobs it is the only one able to
     // fire, and a moved schedule would simply stop.
-    const thread = createTestItem(recordDb.db, { type: "story", title: "The weekly report", stepId: "todo" });
+    createTestItem(recordDb.db, { type: "story", title: "The weekly report", stepId: "todo" });
     const job = insertJob(recordDb.db, {
       projectId: null,
       name: "The weekly report",
@@ -2293,7 +2293,7 @@ describe("a pin changed during a move", () => {
 describe("a job whose project is mid-transfer", () => {
   /** A project with a weekly job on it, already due once. */
   function jobDueOn(projectId: Uuid): Uuid {
-    const thread = itemOn(projectId, "The weekly report");
+    itemOn(projectId, "The weekly report");
     const pipeline = listPipelines(annaDb.db, projectId, true)[0]!;
     adoptPipeline(annaDb.db, pipeline.id, projectId);
     const job = insertJob(annaDb.db, {

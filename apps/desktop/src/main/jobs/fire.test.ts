@@ -1,7 +1,7 @@
 import { LOCAL_PERSON_ID, type Job, type Uuid } from "@eo/core";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { DbHandle } from "../db/client.js";
-import { archivePipeline, getItem, getPipeline, listCommentsForItem, listOccurrences, openMentionsForHuman } from "../db/repos/index.js";
+import { archivePipeline, getPipeline, listOccurrences, openMentionsForHuman } from "../db/repos/index.js";
 import { messagesAboutJob, openMigratedTestDb } from "../db/testHelpers.js";
 import { openMessagesFor } from "../messages/messages.js";
 import { fireJob } from "./fire.js";

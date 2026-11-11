@@ -2,7 +2,7 @@ import { eq } from "drizzle-orm";
 import type { Job, JobTrigger, Message, Uuid } from "@eo/core";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { DbHandle } from "../db/client.js";
-import { getMessage, listCommentsForItem, listOccurrences } from "../db/repos/index.js";
+import { getMessage, listOccurrences } from "../db/repos/index.js";
 import { jobs } from "../db/schema.js";
 import { messagesAboutJob, openMigratedTestDb } from "../db/testHelpers.js";
 import { catchUpJob } from "../jobs/catchUp.js";
