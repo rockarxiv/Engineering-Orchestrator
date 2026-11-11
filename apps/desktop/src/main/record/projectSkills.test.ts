@@ -13,7 +13,7 @@ import { addWorkspaceToProject, createProject, getProject } from "../db/repos/pr
 import { createWorkspace } from "../db/repos/workspacesRepo.js";
 import { createPerson } from "../db/repos/peopleRepo.js";
 import { issueDevice } from "../db/repos/devicesRepo.js";
-import { getSkill, getSkillBySlug, listHeldSkillCopies, listSkills, listSkillVersions, readProjectSkills, saveSkill, setSkillLocked, upsertReplicaSkill } from "../db/repos/skillsRepo.js";
+import { archiveSkill, getSkill, getSkillBySlug, listHeldSkillCopies, listSkills, listSkillVersions, readProjectSkills, saveSkill, setSkillLocked, upsertReplicaSkill } from "../db/repos/skillsRepo.js";
 import { saveMcpServer } from "../db/repos/mcpServersRepo.js";
 import { setSetting } from "../db/repos/settingsRepo.js";
 import { listCommentsForItem } from "../db/repos/commentsRepo.js";
@@ -228,7 +228,7 @@ describe("handing a project to the record carries its own skills (EO-513)", () =
 });
 
 describe("what a consolidation reported about a skill, across the record (EO-728)", () => {
-  it("reaches the record with the move and a replica with the sync: who wrote it, its evidence and its diff", async () => {
+  it("reaches the record with the move and a new replica with the sync: every report, the create's evidence, the improvement's diff and EO's archive", async () => {
     const support = createProject(annaDb.db, { name: "Support", keyPrefix: "SUP", managed: false });
     const consolidation = { kind: "consolidation" as const, consolidationId: "c-9" };
     const created = saveSkill(
@@ -248,14 +248,18 @@ describe("what a consolidation reported about a skill, across the record (EO-728
       improvement,
     );
     if (!improved.ok) throw new Error(improved.problems.join("\n"));
-    const filed = listSkillVersions(annaDb.db, created.skill.id)[0]!;
+    // …and EO archives it, before the laptop has seen any of it (review).
+    expect(archiveSkill(annaDb.db, created.skill.id, Date.now() - 500, { kind: "eo" }, { kind: "unused", runsWithoutLoad: 30 }).ok).toBe(true);
+    const filed = listSkillVersions(annaDb.db, created.skill.id).filter((version) => version.report !== null);
+    expect(filed.map((version) => version.action)).toEqual(["archive", "edit", "create"]);
+    expect(filed[1]).toMatchObject({ author: consolidation, report: improvement });
 
     expect(await move(support.id)).toEqual({});
     await laptop.record.sync();
 
+    // Every report arrives, under its own id: the create's evidence, the improvement's diff, EO's archive.
     for (const db of [recordDb.db, laptopDb.db]) {
-      expect(listSkillVersions(db, created.skill.id).find((version) => version.id === filed.id)).toEqual(filed);
-      expect(filed).toMatchObject({ action: "edit", author: consolidation, report: improvement });
+      expect(listSkillVersions(db, created.skill.id).filter((version) => version.report !== null)).toEqual(filed);
     }
     // Nothing posted for it, on either side.
     expect(findProjectThread(recordDb.db, support.id)).toBeUndefined();

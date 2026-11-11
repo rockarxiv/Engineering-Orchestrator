@@ -1264,7 +1264,7 @@ export type RecordAgent = z.infer<typeof RecordAgentSchema>;
  * no workspace row to ask whose it is, and the skill says so itself, as
  * a workspace's memory does (`RecordMemorySchema.projectId`). The id is
  * the sender's and is kept: `agent_skills` names a skill by id. Its
- * newest reported version travels with it (`SkillCopySchema`, EO-728).
+ * reported versions travel with it (`SkillCopySchema`, EO-728).
  */
 export const RecordSkillSchema = SkillCopySchema.extend({ projectId: z.string() });
 export type RecordSkill = z.infer<typeof RecordSkillSchema>;

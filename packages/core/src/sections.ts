@@ -194,7 +194,7 @@ export type PublishedModule = z.infer<typeof PublishedModuleSchema>;
 export const SectionDocumentSchema = z.object({
   /** The agents section. */
   agents: z.array(PublishedAgentSchema).default([]),
-  /** The packs section: the skills a pack brings, each with its newest reported version (EO-728). */
+  /** The packs section: the skills a pack brings, each with its reported versions (EO-728). */
   skills: z.array(SkillCopySchema).default([]),
   /**
    * The pipelines section's code half — what a `module` step runs.

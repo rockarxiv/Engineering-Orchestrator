@@ -230,24 +230,24 @@ export function listSkillVersions(db: Db, skillId: string): SkillVersion[] {
 }
 
 /**
- * The newest of a skill's versions that carries a report (EO-728) — what
- * travels with a copy of it (`SkillCopySchema`), so the installation that
- * takes the copy can say who wrote it and why. Null where none does.
+ * Every one of a skill's versions that carries a report (EO-728), oldest
+ * first — what travels with a copy of it (`SkillCopySchema`), so the
+ * installation that takes the copy can say who wrote it and why, for each
+ * write it reported on. Empty where none does.
  */
-export function newestReportedVersion(db: Db, skillId: string): SkillVersion | null {
-  const row = db
+export function reportedVersionsOf(db: Db, skillId: string): SkillVersion[] {
+  return db
     .select()
     .from(skillVersions)
     .where(and(eq(skillVersions.skillId, skillId), isNotNull(skillVersions.report)))
-    .orderBy(desc(skillVersions.createdAt), desc(skillVersions.id))
-    .limit(1)
-    .get();
-  return row === undefined ? null : toVersion(row);
+    .orderBy(asc(skillVersions.createdAt), asc(skillVersions.id))
+    .all()
+    .map(toVersion);
 }
 
-/** A skill as it travels to another installation: the row and its newest reported version (EO-728). */
+/** A skill as it travels to another installation: the row and its reported versions (EO-728). */
 export function skillCopyOf(db: Db, skill: Skill): SkillCopy {
-  return { ...skill, reportedVersion: newestReportedVersion(db, skill.id) };
+  return { ...skill, reportedVersions: reportedVersionsOf(db, skill.id) };
 }
 
 /** What a write that is not a save answers with: the skill as it now stands, or the sentence saying why nothing was written. */
@@ -613,32 +613,33 @@ export function releaseHeldSkillCopies(db: Db): string[] {
  * a publication applied again, or a page read twice, adds nothing. The
  * write itself was made, and versioned, where the record is.
  *
- * Before it, the copy's newest reported version (EO-728), as the sender
- * filed it — its id, action, author, report, time and the skill as it
- * stood — where this history does not hold it yet: what a consolidation
- * drew the skill from and changed, or that EO archived it and after how
- * many runs without a load, says so here as it does there, and an EO
- * archive can be restored from it. Keyed by its id, so a copy sent again
- * files nothing.
+ * Before it, each of the copy's reported versions (EO-728), as the
+ * sender filed it — its id, action, author, report, time and the skill as
+ * it stood — that this history does not hold yet: what each consolidation
+ * drew the skill from and changed, and that EO archived it and after how
+ * many runs without a load, says so here as it does there, even where
+ * several were written between two copies, and an EO archive can be
+ * restored from it. Keyed by id, so a copy sent again files nothing.
  */
 function versionCopy(db: Db, before: Skill | undefined, copy: Skill | SkillCopy): void {
   const after = getSkill(db, copy.id);
   if (after === undefined) return;
-  const reported = "reportedVersion" in copy ? copy.reportedVersion : null;
-  if (reported !== null && reported.skillId === copy.id) {
+  const reported = "reportedVersions" in copy ? copy.reportedVersions : [];
+  for (const version of reported) {
+    if (version.skillId !== copy.id) continue;
     db.insert(skillVersions)
       .values({
-        id: reported.id,
+        id: version.id,
         skillId: copy.id,
-        action: reported.action,
-        description: reported.description,
-        body: reported.body,
-        files: reported.files,
-        authorKind: reported.author.kind,
-        authorId: authorIdOf(reported.author),
-        restoredFrom: reported.restoredFrom,
-        report: reported.report,
-        createdAt: reported.createdAt,
+        action: version.action,
+        description: version.description,
+        body: version.body,
+        files: version.files,
+        authorKind: version.author.kind,
+        authorId: authorIdOf(version.author),
+        restoredFrom: version.restoredFrom,
+        report: version.report,
+        createdAt: version.createdAt,
       })
       .onConflictDoNothing()
       .run();
