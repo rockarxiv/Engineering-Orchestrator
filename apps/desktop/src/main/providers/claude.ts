@@ -2724,6 +2724,9 @@ export function createClaudeProvider(options: ClaudeProviderOptions = {}): Agent
           ...(turn.reasoningEffort ? { reasoningEffort: turn.reasoningEffort } : {}),
           ...(turn.toolDirectory ? { toolDirectory: turn.toolDirectory } : {}),
           ...(turn.repositoryMcp ? { repositoryMcp: turn.repositoryMcp } : {}),
+          // What grants an allowlisted agent `memory_read` (EO-478), so
+          // the recorded allowlist is the one the turn is handed (EO-734).
+          ...(turn.memoryScopes ? { memoryScopes: turn.memoryScopes } : {}),
         },
         { config: options.config, enableCommentTool, executablePath: options.executablePath, eoMcp: options.eoMcp, apiKey: null },
       );

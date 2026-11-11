@@ -2,10 +2,11 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Options, SDKMessage, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
-import { developerRegistry, isThreadNotFound, outputSchemaFor, type AgentEvent, type ThreadNotFoundError } from "@eo/core";
+import { developerRegistry, isThreadNotFound, outputSchemaFor, type AgentEvent, type DebugSent, type ThreadNotFoundError } from "@eo/core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { answersTurn, buildSideCallOptions, createClaudeProvider, mapSdkMessage, normaliseToolName, stripSchemaDialect, type SearchNudge } from "./claude.js";
 import { writeToolDirectory } from "../agentAttachments/pluginDirectory.js";
+import { capturingProvider } from "./sentCapture.js";
 
 /** No settings files at all, so a test does not read the developer's own (EO-599). */
 const NO_SETTINGS = { readText: () => null, listDir: () => [] };
@@ -770,6 +771,31 @@ describe("createClaudeProvider", () => {
     const notServed = fakeQuery([init()]);
     await collect(createClaudeProvider({ runQuery: notServed.runQuery, eoMcp: { serverPath: "/app/eoServer.mjs" }, config: { allowedTools: ["Read"] } }).start(startOpts));
     expect(notServed.calls[0]?.options["allowedTools"] ?? []).not.toContain("mcp__eo__memory_read");
+  });
+
+  it("records a learning review's allowlist as the fork is handed it, memory_read grant included (EO-734)", async () => {
+    // The review's fork is given memory scopes, which is what grants an
+    // allowlisted agent `memory_read`: debug mode's record of the send
+    // must name the grant the SDK was actually handed, not the agent's
+    // list without it.
+    const { runQuery, calls } = fakeQuery([init("sess-fork"), result({ session_id: "sess-fork" })]);
+    const sent: DebugSent[] = [];
+    const provider = capturingProvider(
+      createClaudeProvider({ runQuery, eoMcp: { serverPath: "/app/eoServer.mjs" }, config: { allowedTools: ["Read"] } }),
+      { backend: "claude", purpose: "learning_review", refusal: null, threadInstructions: null, outputSchemaName: "implement" },
+      (record) => sent.push(record),
+    );
+
+    const forked = await provider.fork!("sess-run", "review the run", {
+      cwd: "/tmp/wt",
+      memoryScopes: [{ kind: "project", id: "project-p", name: "Payments" }],
+      withoutSkills: true,
+      withoutAdminServer: true,
+    });
+    if (forked.ok) await collect(forked.events);
+
+    expect(calls[0]?.options["allowedTools"]).toEqual(["Read", "mcp__eo__memory_read"]);
+    expect(sent[0]?.session.allowedTools).toEqual(calls[0]?.options["allowedTools"]);
   });
 
   it("adds nothing to an agent that has no allowlist", async () => {

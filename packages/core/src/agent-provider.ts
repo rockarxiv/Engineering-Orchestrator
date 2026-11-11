@@ -1108,9 +1108,11 @@ export interface AgentSessionDescription {
  * The per-turn facts a session description depends on: the same fields
  * `start` and `resume` are handed — and, for a turn that is given less
  * than the agent's own (the learning review's fork, EO-734), the two
- * withholdings that change what it is opened with.
+ * withholdings that change what it is opened with. The memory scopes are
+ * among them because they are what grants an allowlisted agent
+ * `memory_read` (EO-478); they are scope ids and labels, not secrets.
  */
-export type AgentSessionQuery = Pick<AgentProviderStartOptions, "model" | "reasoningEffort" | "toolDirectory" | "repositoryMcp" | "skillScope"> &
+export type AgentSessionQuery = Pick<AgentProviderStartOptions, "model" | "reasoningEffort" | "toolDirectory" | "repositoryMcp" | "skillScope" | "memoryScopes"> &
   Pick<AgentProviderResumeOptions, "withoutSkills" | "withoutAdminServer"> & { cwd?: string };
 
 /**
