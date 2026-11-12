@@ -253,6 +253,51 @@ function reportedNewsIds(db: Db, item: Item, stay: string): Set<string> {
 }
 
 /**
+ * The pull request comments and requests for changes this item's earlier
+ * checks handed on — acted on, or handed to planning — on every stay
+ * (EO-759).
+ *
+ * Read off the runs for `reportedNewsIds`' reason, from the `handled` each
+ * check's outcome carries. Not from its news: a comment posted as news
+ * beside a failed check has been seen and nothing more, and is still owed
+ * the answer that sends it somewhere.
+ *
+ * A run from before checks recorded what they handed on has no `handled`,
+ * and every id of its news counts. Those versions answered nothing for a
+ * comment, so a comment they reported was all EO was ever going to do with
+ * it, and a request for changes they reported was answered. Without this,
+ * every ticket watched across the update would hear every old comment on
+ * its pull request as new.
+ */
+function handledIds(db: Db, item: Item): Set<string> {
+  const ids = new Set<string>();
+  for (const run of listRunsForItem(db, item.id)) {
+    if (run.action !== WATCH_PULL_REQUEST_ACTION || run.result === null) continue;
+    const raw = run.result["raw"];
+    if (typeof raw !== "object" || raw === null) continue;
+    const recorded = "handled" in raw && Array.isArray(raw.handled) ? (raw.handled as unknown[]) : "news" in raw && Array.isArray(raw.news) ? (raw.news as unknown[]).map((entry) => (typeof entry === "object" && entry !== null && "id" in entry ? entry.id : null)) : [];
+    for (const id of recorded) if (typeof id === "string") ids.add(id);
+  }
+  return ids;
+}
+
+/**
+ * The comments EO posted on this item's pull request itself (EO-759): the
+ * `postedCommentIds` any run of the item recorded, in `forgeCommentId`'s
+ * spelling. Read from every run rather than one action's, since what posts
+ * them is whichever step replies on the pull request, not the watch.
+ */
+function ownCommentIds(db: Db, item: Item): Set<string> {
+  const ids = new Set<string>();
+  for (const run of listRunsForItem(db, item.id)) {
+    const raw = run.result?.["raw"];
+    if (typeof raw !== "object" || raw === null || !("postedCommentIds" in raw) || !Array.isArray(raw.postedCommentIds)) continue;
+    for (const id of raw.postedCommentIds as unknown[]) if (typeof id === "string") ids.add(id);
+  }
+  return ids;
+}
+
+/**
  * Whether an earlier check on this stay had an answer from the forge
  * (EO-620).
  *
@@ -314,8 +359,9 @@ function noteOnce({ db, item, runId, ensureRun }: BuiltinContext, body: string):
  * A check, made for a step that keeps checking: each call asks the forge
  * once, through the same `gh` or `glab` the pull request was opened with,
  * and answers `waiting` or one of its results — in the order
- * `judgePullRequest` documents — with news of failed checks, review
- * comments and a conflict.
+ * `judgePullRequest` documents — with news of failed checks, comments and
+ * a conflict, and the comments and requests for changes the answer hands
+ * on (`handledIds`).
  *
  * Three of the ways it can go wrong are answers rather than failures, and
  * two are failures. No pull request recorded on the ticket, one whose
@@ -376,8 +422,12 @@ function createWatchPullRequest(run: CliRunner): BuiltinRunner<BuiltinResult<"wa
       // holds this stay's news alone, including on a run from before runs
       // named their stay.
       reportedThisStay: new Set(item.stepId === null ? [] : currentWatch(db, item, item.stepId)?.postedNewsIds),
+      handled: handledIds(db, item),
+      ownComments: ownCommentIds(db, item),
     });
-    return { ok: true, result: judged.result, detail: judged.detail, stay, ...(judged.news.length > 0 ? { news: judged.news } : {}) };
+    // `handled` even when it is empty: a run that has it is one whose news
+    // is not to be taken for handled (`handledIds`).
+    return { ok: true, result: judged.result, detail: judged.detail, stay, handled: judged.handled, ...(judged.news.length > 0 ? { news: judged.news } : {}) };
   };
 }
 
