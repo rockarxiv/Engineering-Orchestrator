@@ -119,9 +119,14 @@ describe("a role's actions over registry:get (EO-423)", () => {
 });
 
 describe("the shipped pipeline, held to its actions' declared results (EO-423)", () => {
-  it("validates with no problems at all", () => {
+  it("validates with nothing to say but the two comment results its watch does not route yet (EO-759)", () => {
     const { steps, routes } = shipped();
-    expect(validatePipelineCommand(handle.db, { pipelineId: "default", steps, routes, entryStepId: "worktree" }).problems).toEqual([]);
+    // Template 1.3 predates `author_commented` and `others_commented`; a
+    // builtin's unrouted result is a warning, never an error.
+    expect(validatePipelineCommand(handle.db, { pipelineId: "default", steps, routes, entryStepId: "worktree" }).problems).toEqual([
+      expect.objectContaining({ severity: "warning", stateId: "pull_request_watch", resultKey: "author_commented" }),
+      expect.objectContaining({ severity: "warning", stateId: "pull_request_watch", resultKey: "others_commented" }),
+    ]);
   });
 
   it("is refused once Review loses the route for one of its verdicts", () => {

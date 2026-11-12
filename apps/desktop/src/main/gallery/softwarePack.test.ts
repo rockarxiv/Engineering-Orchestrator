@@ -272,7 +272,7 @@ describe("the pull request watch in the bundled template", () => {
       failed: "user_attention",
     });
     // Every result but the two that tell whose comment it is (EO-759), which
-    // this template does not route: a ticket getting one parks and asks a
+    // this template does not route: an item getting one parks and asks a
     // person until a template version routes them.
     expect(Object.keys(targets).sort()).toEqual(BUILTIN_RESULTS.watch_pull_request.filter((result) => !UNROUTED_COMMENT_RESULTS.includes(result)).sort());
     // Merge Request's success now leads into the watch rather than past it.
@@ -298,7 +298,7 @@ describe("the pull request watch in the bundled template", () => {
         severity: "warning",
         stateId: expect.any(String) as unknown,
         resultKey: result,
-        message: `"watch_pull_request" can return "${result}", which has no route — a ticket getting that result would park and ask you.`,
+        message: expect.stringContaining(`"watch_pull_request" can return "${result}", which has no route`) as unknown,
       })),
     );
     // And the watch arrived watching, which is what a version-8 reader

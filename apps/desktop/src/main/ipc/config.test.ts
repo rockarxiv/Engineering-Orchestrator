@@ -1684,6 +1684,18 @@ describe("handing work to another pipeline (EO-58, EO-69)", () => {
     return [
       ...currentRoutes(),
       { id: "r_review_hands_off", pipelineId: "default", fromStepId: "review", resultKey: "escalation", label: "Handed off", tone: "info", target, position: 3 },
+      // The watch's two comment results (EO-759), which the shipped graph
+      // does not route yet, so the graph has nothing else to say.
+      ...["author_commented", "others_commented"].map((resultKey, index) => ({
+        id: `r_watch_${resultKey}`,
+        pipelineId: "default",
+        fromStepId: "pull_request_watch",
+        resultKey,
+        label: resultKey,
+        tone: "info" as const,
+        target: USER_ATTENTION_TARGET,
+        position: 20 + index,
+      })),
     ];
   }
 
