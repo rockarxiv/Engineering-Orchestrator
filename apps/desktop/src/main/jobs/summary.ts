@@ -1,6 +1,6 @@
-import type { Job, JobOccurrenceRow, JobSummary, Uuid } from "@eo/core";
+import type { Job, JobOccurrenceRow, JobSummary, JobWatchState, Uuid } from "@eo/core";
 import type { Db } from "../db/client.js";
-import { getItem, latestOccurrence, latestOccurrenceWithStatus, listOccurrences, listRunsForItem, sumCostCentsForItem } from "../db/repos/index.js";
+import { getItem, getJobWatchState, latestOccurrence, latestOccurrenceWithStatus, listOccurrences, listRunsForItem, sumCostCentsForItem } from "../db/repos/index.js";
 import { compileSchedule, nextOccurrenceAfter } from "../schedule/cron.js";
 
 /**
@@ -69,8 +69,26 @@ export function jobSummary(db: Db, job: Job, now: number = Date.now()): JobSumma
     // and `lastStatus` beside it is what says the week happened.
     lastRunAt: lastFired?.firedAt ?? null,
     lastStatus: latest?.status ?? null,
+    watch: watchStateOf(db, job),
   };
 }
+
+/** A watch job's state as the jobs IPC returns it, or null for any other kind or before its first check. */
+export function watchStateOf(db: Db, job: Job): JobWatchState | null {
+  if (job.trigger.kind !== "watch") return null;
+  const row = getJobWatchState(db, job.id as Uuid);
+  if (row === undefined) return null;
+  return {
+    lastCheckedAt: row.lastCheckedAt,
+    lastAnswer: row.lastAnswer,
+    nextCheckAt: row.nextCheckAt,
+    consecutiveFailures: row.consecutiveFailures,
+    lastError: row.lastError,
+    waitingForItemId: row.waitingForItemId,
+    waitingForItemKey: row.waitingForItemId === null ? null : (getItem(db, row.waitingForItemId as Uuid)?.key ?? null),
+  };
+}
+
 
 /**
  * The job's history, newest first — including every skipped row (ARCHITECTURE.md, "The inbox, the

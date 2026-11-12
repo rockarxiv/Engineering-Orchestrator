@@ -38,6 +38,7 @@ import { recordFor } from "./record/localRecord.js";
 import type { ItemRecord } from "./record/record.js";
 import { createModuleRunnerLookup } from "./modules/registry.js";
 import { configureEntryChecks } from "./modules/entryChecks.js";
+import { configureWatchChecks } from "./jobs/watch.js";
 import type { ModuleHostLauncher } from "./modules/runModule.js";
 import { moduleItemReader } from "./modules/moduleItemRead.js";
 import { agentRunVariables, redirectWithheldVariables, type ModuleSecretsOptions } from "./modules/secrets.js";
@@ -381,6 +382,17 @@ export function createEngine(options: EngineOptions, packs: readonly CodePack[] 
           launcher: moduleLauncher,
           secrets: options.moduleSecrets,
           targetBranch: (item) => pullRequestTargetBranch(db, item),
+          ...(options.organisationSecrets ? { organisationSecrets: options.organisationSecrets } : {}),
+        }
+      : null,
+  );
+  // And what a watch job's intake check runs with (EO-753): the same
+  // host, with no item and no target branch to report.
+  configureWatchChecks(
+    moduleLauncher && options.moduleSecrets
+      ? {
+          launcher: moduleLauncher,
+          secrets: options.moduleSecrets,
           ...(options.organisationSecrets ? { organisationSecrets: options.organisationSecrets } : {}),
         }
       : null,

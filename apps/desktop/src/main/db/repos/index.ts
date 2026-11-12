@@ -561,7 +561,11 @@ export {
   type UpdateJiraConnectionInput,
 } from "./jiraConnectionsRepo.js";
 export {
+  createdEventFor,
   eventAccepted,
+  eventKeysForItems,
+  itemIdsCreatedByEvents,
+  latestRefusalFor,
   heldEventCount,
   heldEvents,
   jobsHoldingEvents,
@@ -571,6 +575,7 @@ export {
   webhookPayloadForItem,
   type RecordJobEventInput,
 } from "./jobEventsRepo.js";
+export { getJobWatchState, saveJobWatchState, type JobWatchStateRow } from "./jobWatchStatesRepo.js";
 export {
   firedOccurrencesForItems,
   firedSince,

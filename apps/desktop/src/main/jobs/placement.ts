@@ -106,6 +106,12 @@ export function placementForJob(db: Db, job: Job, facts: PlacementFacts): JobPla
   const machineBound: PlacementReason[] = [];
   const serverBound: PlacementReason[] = [];
   const placement = { runsOn: job.runsOn ?? DEFAULT_JOB_RUNS_ON, machineBound, serverBound };
+  // A watch job's intake runs its module here, while EO is open (EO-753):
+  // the server runs no intake check, whatever its pipeline needs.
+  if (job.trigger.kind === "watch") {
+    const module = getModule(db, job.trigger.moduleId);
+    machineBound.push(placementReason({ kind: "watch-intake", subject: module?.name ?? job.trigger.moduleId, stepName: null }));
+  }
   if (job.pipelineId === null) return placement;
 
   const policy = readPolicy(db);

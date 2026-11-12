@@ -93,6 +93,7 @@ export const PlacementReasonKindSchema = z.enum([
   "local-mcp-server",
   "organisation-secret",
   "organisation-mcp-server",
+  "watch-intake",
 ]);
 export type PlacementReasonKind = z.infer<typeof PlacementReasonKindSchema>;
 
@@ -243,6 +244,14 @@ export function placementReason(input: PlacementReasonInput): PlacementReason {
         ...base,
         line: `${step} is served "${input.subject}", which your organisation publishes and this machine has not installed.`,
         fix: `The organisation server serves it and this one does not. ${ASK_YOUR_ADMIN}`,
+      };
+    // A watch job (EO-753): its intake runs the module on this machine,
+    // while EO is open, and the organisation server runs no intake check.
+    case "watch-intake":
+      return {
+        ...base,
+        line: `${step} is a watch intake: it runs "${input.subject}" on this machine to find work.`,
+        fix: "A watch intake runs its module on this machine, so the job stays here.",
       };
   }
 }

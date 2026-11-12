@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { DEFAULT_JOB_RUNS_ON, JobRunsOnSchema } from "../placement.js";
 import { WebhookTriggerSchema } from "../webhook.js";
+import { MIN_WATCH_INTERVAL_MINUTES } from "../watch.js";
 
 /**
  * A job: the recurring definition that stamps work out (EO-304,
@@ -17,7 +18,7 @@ import { WebhookTriggerSchema } from "../webhook.js";
 /**
  * What makes an occurrence happen.
  *
- * Four kinds now that EO-332 has added `webhook`, which waited for the
+ * Five kinds now that EO-753 has added `watch` and EO-332 `webhook`, which waited for the
  * server that has a public address (ARCHITECTURE.md, "Trigger kinds") — that is what a
  * discriminated
  * union rather than an open string is for: a kind EO cannot fire is a
@@ -136,14 +137,38 @@ export const ScheduleTriggerSchema = z.object({
   catchUpWithinMinutes: z.number().int().min(0).default(DEFAULT_CATCH_UP_MINUTES),
 });
 
+/**
+ * A watch module as the job's intake (EO-753, ARCHITECTURE.md §9.1).
+ *
+ * While EO is open, the module — approved, and declaring `watch: true` —
+ * is run every `everyMinutes` with no item, as an intake check (EO-752).
+ * It answers `waiting` with what it found, and EO files each finding
+ * whose key has not yet made an item for this job, through the job's own
+ * door. The module files nothing itself.
+ *
+ * `inputs` are the module's declared inputs, as a module step's are.
+ * `waitWhileOpen` holds every check while an item this job filed is
+ * unfinished. Runs on this machine only, and never on a project an
+ * organisation's record holds: `createJob` refuses both.
+ */
+export const WatchTriggerSchema = z.object({
+  kind: z.literal("watch"),
+  moduleId: z.string().min(1),
+  inputs: z.record(z.string(), z.unknown()).default({}),
+  everyMinutes: z.number().int().min(MIN_WATCH_INTERVAL_MINUTES),
+  waitWhileOpen: z.boolean().default(false),
+});
+
 export const JobTriggerSchema = z.discriminatedUnion("kind", [
   ManualTriggerSchema,
   ScheduleTriggerSchema,
   FromDiscussionTriggerSchema,
   WebhookTriggerSchema,
+  WatchTriggerSchema,
 ]);
 export type JobTrigger = z.infer<typeof JobTriggerSchema>;
 export type ScheduleTrigger = z.infer<typeof ScheduleTriggerSchema>;
+export type WatchTrigger = z.infer<typeof WatchTriggerSchema>;
 
 /**
  * The three ways an occurrence that was due did not run (ARCHITECTURE.md, "Schedules, and a machine
@@ -174,7 +199,7 @@ export type JobSkipReason = z.infer<typeof JobSkipReasonSchema>;
  * the union's own `kind`, so a third kind added to the union and not
  * here stops compiling at every use.
  */
-export const JobTriggerKindSchema = z.enum(["manual", "schedule", "from-discussion", "webhook"]);
+export const JobTriggerKindSchema = z.enum(["manual", "schedule", "from-discussion", "webhook", "watch"]);
 export type JobTriggerKind = JobTrigger["kind"];
 
 /**
@@ -258,7 +283,11 @@ export type JobOccurrence = z.infer<typeof JobOccurrenceViewSchema>;
  * this job has spent" and "why this job is stopped" are two facts, and
  * no amount of reading the first recovers the second.
  */
-export const JobPauseReasonSchema = z.enum(["budget", "by hand"]);
+/**
+ * `watch` (EO-753): a watch job's checks failed six times in a row, or a
+ * check answered one of its module's declared results.
+ */
+export const JobPauseReasonSchema = z.enum(["budget", "by hand", "watch"]);
 export type JobPauseReason = z.infer<typeof JobPauseReasonSchema>;
 
 /** A job as the app reads it. */
@@ -324,6 +353,26 @@ export const JobViewSchema = z.object({
 /** The row and the view are the same shape — see `JobOccurrence`. */
 export type Job = z.infer<typeof JobViewSchema>;
 
+/**
+ * Where a watch job's checks stand (EO-753, ARCHITECTURE.md §9.1), kept
+ * in `job_watch_states` and returned with the job.
+ *
+ * `lastAnswer` is `waiting`, the declared result a check answered, or
+ * `failed`. `waitingForItemId` is the item a `waitWhileOpen` job holds
+ * its checks for, while it is unfinished.
+ */
+export const JobWatchStateSchema = z.object({
+  lastCheckedAt: z.number().nullable(),
+  lastAnswer: z.string().nullable(),
+  nextCheckAt: z.number().nullable(),
+  consecutiveFailures: z.number().int(),
+  lastError: z.string().nullable(),
+  waitingForItemId: z.string().nullable(),
+  /** The key of `waitingForItemId`, for a screen to name it. Null when it waits for nothing, or the item is gone. */
+  waitingForItemKey: z.string().nullable().default(null),
+});
+export type JobWatchState = z.infer<typeof JobWatchStateSchema>;
+
 
 /**
  * A job as the Jobs list draws it: the row, and the four things a
@@ -355,6 +404,8 @@ export const JobSummarySchema = JobViewSchema.extend({
   lastRunAt: z.number().nullable(),
   /** What the newest occurrence of any kind did — so a run of skips is visible in the list. */
   lastStatus: JobOccurrenceStatusSchema.nullable(),
+  /** A watch job's checks (EO-753). Null for every other kind, and for a watch job not yet checked. */
+  watch: JobWatchStateSchema.nullable().default(null),
 });
 export type JobSummary = z.infer<typeof JobSummarySchema>;
 
@@ -396,6 +447,7 @@ export function describeJobTrigger(trigger: JobTrigger): string {
   // copies from the Job page, and a list column repeating it would say
   // the same thing fifty times and fit none of them.
   if (trigger.kind === "webhook") return "When an event arrives at its webhook";
+  if (trigger.kind === "watch") return `When its module finds something, checking every ${trigger.everyMinutes === 1 ? "minute" : `${trigger.everyMinutes} minutes`}`;
   return describeJobSchedule(trigger.schedule);
 }
 
@@ -419,6 +471,7 @@ export function describeJobTrigger(trigger: JobTrigger): string {
 export function describeItemOriginKind(trigger: JobTriggerKind): string {
   if (trigger === "from-discussion") return "conversation";
   if (trigger === "webhook") return "webhook";
+  if (trigger === "watch") return "watch";
   return "job";
 }
 
@@ -466,5 +519,10 @@ export const ItemOriginSchema = z.object({
    * and an occurrence that spent nothing is a zero rather than a blank.
    */
   costCents: z.number(),
+  /**
+   * The key of the finding a watch job filed this item for (EO-753).
+   * Null for an item any other trigger filed.
+   */
+  findingKey: z.string().nullable().default(null),
 });
 export type ItemOrigin = z.infer<typeof ItemOriginSchema>;

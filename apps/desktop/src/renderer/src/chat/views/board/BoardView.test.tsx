@@ -713,7 +713,7 @@ describe("a card", () => {
   it("names what filed it on its hover, with the cost — nought included — and nothing for a person's", async () => {
     mockIpc({
       items: [
-        item({ origin: { jobId: "j1", jobName: "Monday report", trigger: "schedule", occurrenceId: "o1", firedAt: 1, costCents: 0 } }),
+        item({ origin: { jobId: "j1", jobName: "Monday report", trigger: "schedule", occurrenceId: "o1", firedAt: 1, costCents: 0, findingKey: null } }),
         item({ id: "t2", key: "EO-2", title: "Typed by hand" }),
       ],
     });
@@ -1679,7 +1679,7 @@ describe("narrowing the board", () => {
 
   it("narrows to exactly a job's items, names the job, and publishes it", async () => {
     const filed = (id: string, jobId: string, jobName: string, title: string) =>
-      item({ id, key: id.toUpperCase(), title, origin: { jobId, jobName, trigger: "schedule", occurrenceId: `o-${id}`, firedAt: 1, costCents: 12 } });
+      item({ id, key: id.toUpperCase(), title, origin: { jobId, jobName, trigger: "schedule", occurrenceId: `o-${id}`, firedAt: 1, costCents: 12, findingKey: null } });
     const invoke = mockIpc({ items: [filed("t1", "job-1", "Monday report", "For 1 June"), filed("t2", "job-2", "Nightly sweep", "Sweep"), item({ id: "t4", key: "EO-4", title: "By hand" })] });
     renderBoard("/pipelines/default?job=job-1");
 

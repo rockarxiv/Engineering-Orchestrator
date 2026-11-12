@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
 import { JobEventOutcomeSchema, uuidv7, type JobEvent, type JobEventOutcome, type Uuid } from "@eo/core";
 import type { Db } from "../client.js";
 import { jobEvents } from "../schema.js";
@@ -221,4 +221,52 @@ export function lastJobEventPayload(db: Db, jobId: Uuid): string | null {
     .orderBy(desc(jobEvents.receivedAt), desc(jobEvents.id))
     .get();
   return row?.payload ?? null;
+}
+
+/**
+ * The `created` row for this key on this job, if one was written
+ * (EO-753): a watch finding whose key has one is not filed again.
+ */
+export function createdEventFor(db: Db, jobId: Uuid, eventKey: string): JobEvent | undefined {
+  const row = db
+    .select()
+    .from(jobEvents)
+    .where(and(eq(jobEvents.jobId, jobId), eq(jobEvents.eventKey, eventKey), eq(jobEvents.outcome, "created")))
+    .get();
+  return row === undefined ? undefined : toEvent(row);
+}
+
+/** The newest `refused` row for this key on this job (EO-753): a refusal said once is not said again. */
+export function latestRefusalFor(db: Db, jobId: Uuid, eventKey: string): JobEvent | undefined {
+  const row = db
+    .select()
+    .from(jobEvents)
+    .where(and(eq(jobEvents.jobId, jobId), eq(jobEvents.eventKey, eventKey), eq(jobEvents.outcome, "refused")))
+    .orderBy(desc(jobEvents.receivedAt), desc(jobEvents.id))
+    .get();
+  return row === undefined ? undefined : toEvent(row);
+}
+
+/** The ids of the items this job's events created, oldest first (EO-753). */
+export function itemIdsCreatedByEvents(db: Db, jobId: Uuid): string[] {
+  return db
+    .select({ itemId: jobEvents.itemId })
+    .from(jobEvents)
+    .where(and(eq(jobEvents.jobId, jobId), eq(jobEvents.outcome, "created")))
+    .orderBy(asc(jobEvents.receivedAt), asc(jobEvents.id))
+    .all()
+    .flatMap((row) => (row.itemId === null ? [] : [row.itemId]));
+}
+
+/** The event key that created each of these items, where an event did (EO-753): a watch finding's key, for the item's origin. */
+export function eventKeysForItems(db: Db, itemIds: readonly string[]): Map<string, string> {
+  const keys = new Map<string, string>();
+  if (itemIds.length === 0) return keys;
+  const rows = db
+    .select({ itemId: jobEvents.itemId, eventKey: jobEvents.eventKey })
+    .from(jobEvents)
+    .where(and(eq(jobEvents.outcome, "created"), inArray(jobEvents.itemId, [...itemIds])))
+    .all();
+  for (const row of rows) if (row.itemId !== null) keys.set(row.itemId, row.eventKey);
+  return keys;
 }

@@ -1,6 +1,6 @@
 import type { ItemOrigin, Job, Uuid } from "@eo/core";
 import type { Db } from "../db/client.js";
-import { firedOccurrencesForItems, getJob, occurrenceForItem, sumCostCentsForItem } from "../db/repos/index.js";
+import { eventKeysForItems, firedOccurrencesForItems, getJob, occurrenceForItem, sumCostCentsForItem } from "../db/repos/index.js";
 
 /**
  * Where an item came from, when it did not come from a person typing it
@@ -39,6 +39,9 @@ export function originOfItem(db: Db, itemId: Uuid): ItemOrigin | null {
     // The item's own runs, which is what "the occurrence's cost" means:
     // one occurrence files one item, and the job's total is `jobs:cost`.
     costCents: sumCostCentsForItem(db, itemId),
+    // The finding a watch job filed it for (EO-753): the key its
+    // `created` event row carries.
+    findingKey: job.trigger.kind === "watch" ? (eventKeysForItems(db, [itemId]).get(itemId) ?? null) : null,
   };
 }
 
@@ -71,6 +74,7 @@ export function originOfItem(db: Db, itemId: Uuid): ItemOrigin | null {
 export function originIndex(db: Db, itemIds: string[]): Map<string, ItemOrigin> {
   const origins = new Map<string, ItemOrigin>();
   const jobs = new Map<string, Job | undefined>();
+  const findingKeys = eventKeysForItems(db, itemIds);
   for (const occurrence of firedOccurrencesForItems(db, itemIds as Uuid[])) {
     if (occurrence.itemId === null || origins.has(occurrence.itemId)) continue;
     if (!jobs.has(occurrence.jobId)) jobs.set(occurrence.jobId, getJob(db, occurrence.jobId as Uuid));
@@ -83,6 +87,7 @@ export function originIndex(db: Db, itemIds: string[]): Map<string, ItemOrigin> 
       occurrenceId: occurrence.id,
       firedAt: occurrence.firedAt,
       costCents: sumCostCentsForItem(db, occurrence.itemId as Uuid),
+      findingKey: job.trigger.kind === "watch" ? (findingKeys.get(occurrence.itemId) ?? null) : null,
     });
   }
   return origins;

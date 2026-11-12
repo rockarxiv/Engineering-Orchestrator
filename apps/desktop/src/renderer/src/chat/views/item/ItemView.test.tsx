@@ -1004,7 +1004,7 @@ describe("the pull request reviewers (EO-742)", () => {
 describe("the About card", () => {
   it("states where the item stands, and names the job that made it", async () => {
     const data = detail({ item: { ...detail().item, stepId: "review", git: { ...NO_GIT_STATE, branch: "feat/limits" } } });
-    data.item.origin = { jobId: "j1", jobName: "Monday report", trigger: "manual", costCents: 0, occurrenceId: "o1", firedAt: 5 };
+    data.item.origin = { jobId: "j1", jobName: "Monday report", trigger: "manual", costCents: 0, occurrenceId: "o1", firedAt: 5, findingKey: null };
     renderItem(data);
 
     const about = await screen.findByRole("complementary", { name: "About" });

@@ -31,6 +31,8 @@ export const JOB_MESSAGE_SOURCE = {
   webhook: "job_webhook",
   /** This machine declining to fire a job its organisation's record files. */
   declined: "job_declined",
+  /** A watch job: a finding refused, or checks stopped by failures or by a declared result (EO-753). */
+  watch: "job_watch",
 } as const;
 export type JobMessageSource = (typeof JOB_MESSAGE_SOURCE)[keyof typeof JOB_MESSAGE_SOURCE];
 
