@@ -178,7 +178,7 @@ async function judge(db: Db, check: ModuleEntryCheck, module: CustomModule | und
   // reads, and the item has no worktree before it is let in.
   const cwd = git !== undefined && existsSync(git.config.repoPath) ? git.config.repoPath : tmpdir();
 
-  let targetBranch: string | null = null;
+  let targetBranch: string | null;
   try {
     targetBranch = (await options.targetBranch?.(item)) ?? null;
   } catch {

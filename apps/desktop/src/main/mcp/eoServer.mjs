@@ -1131,7 +1131,7 @@ function renderItem(db, requestedKey, { withThread = false } = {}) {
   if (item.is_terminal) lines.push("- **finished** — propose a follow-up rather than an amendment");
   if (typeof item.body === "string" && item.body.trim() !== "") lines.push("", "## Description", "", item.body);
 
-  let spec = {};
+  let spec;
   try {
     spec = typeof item.spec === "string" ? JSON.parse(item.spec) : (item.spec ?? {});
   } catch {
@@ -1627,7 +1627,7 @@ function renderRuntimes(db, runtimeRoot) {
     { id: "codex", label: "Codex", prefixes: ["codex@"] },
   ];
 
-  let entries = [];
+  let entries;
   try {
     entries = runtimeRoot ? readdirSync(runtimeRoot) : [];
   } catch {

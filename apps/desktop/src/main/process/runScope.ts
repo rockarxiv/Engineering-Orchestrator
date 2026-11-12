@@ -546,7 +546,7 @@ class ScopeWatch {
     this.ending = (async () => {
       // A unit still stopping has not settled its result yet: the run's
       // process can be seen gone before systemd has finished with it.
-      let result = "";
+      let result: string;
       for (const deadline = Date.now() + SETTLE_MS; ; ) {
         const [state = "", said = ""] = ((await run(this.manager.systemctl, ["--user", "show", "--property=ActiveState,Result", "--value", this.unit])) ?? "").split("\n").map((line) => line.trim());
         result = said;

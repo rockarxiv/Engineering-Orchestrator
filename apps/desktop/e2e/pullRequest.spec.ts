@@ -200,7 +200,7 @@ test("a story reaching ready_to_merge is pushed and opened as a pull request", a
         .poll(async () => readFileSync(ghLog, "utf8"), { timeout: 20_000, message: "gh was never called" })
         .toContain("create");
     } catch (error) {
-      throw new Error(`${(error as Error).message}\n\n${whyNoPullRequest(home, mainLog)}`);
+      throw new Error(`${(error as Error).message}\n\n${whyNoPullRequest(home, mainLog)}`, { cause: error });
     }
 
     const calls = readFileSync(ghLog, "utf8")

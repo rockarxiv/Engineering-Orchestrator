@@ -759,7 +759,7 @@ function parse(raw: string | null): ThemeChoice {
 
 /** The same object for the same stored text, as `useSyncExternalStore` needs. */
 function read(): ThemeChoice {
-  let raw: string | null = null;
+  let raw: string | null;
   try {
     raw = window.localStorage.getItem(THEME_STORAGE_KEY);
   } catch {
