@@ -75,6 +75,8 @@ import {
   listAgents,
   getModuleBySlug,
   getPipeline,
+  getPipelineOrigin,
+  originBoardKey,
   getProject,
   getStep,
   listActionDefinitionsForRole,
@@ -158,7 +160,8 @@ export function exportPipeline(db: Db, pipelineId: string): { ok: true; document
   const slugById = new Map(used.map((module) => [module.id as string, module.slug]));
   const exported = new Set(steps.map((step) => step.id));
   const exportedBoards = boards.map((board) => exportedBoard(db, board, exported, slugById));
-  const [first, ...rest] = exportedBoards;
+  const [first, ...linked] = exportedBoards;
+  const rest = linked.map((board, index) => ({ key: exportedBoardKey(db, boards[index + 1]!.pipeline.id), ...board }));
 
   const roles = exportedRoles(db, steps, pipeline.projectId);
   // Refused here rather than written and refused on the far side. A
@@ -284,8 +287,20 @@ function linkedBoards(db: Db, pipelineId: string): BoardToExport[] {
   return boards;
 }
 
-/** One board as the document carries it. `exported` is every step on every board that leaves. */
-function exportedBoard(db: Db, board: BoardToExport, exported: ReadonlySet<string>, slugById: ReadonlyMap<string, string>): ExportedBoard {
+/**
+ * The key a further board travels under (EO-762, `ExportedBoardSchema.key`):
+ * the key of the template board the pipeline was made from, where it was
+ * made from one, so a template's next version exported from an
+ * installation of it names its boards as the last one did; otherwise the
+ * pipeline's own id, which is unique and means nothing else.
+ */
+function exportedBoardKey(db: Db, pipelineId: string): string {
+  const origin = getPipelineOrigin(db, pipelineId);
+  return (origin === null ? null : originBoardKey(origin)) ?? pipelineId;
+}
+
+/** One board as the document carries it, its key aside. `exported` is every step on every board that leaves. */
+function exportedBoard(db: Db, board: BoardToExport, exported: ReadonlySet<string>, slugById: ReadonlyMap<string, string>): Omit<ExportedBoard, "key"> {
   const { pipeline, steps } = board;
   return {
     // Null rather than a step the document does not carry, for the same
@@ -1286,6 +1301,8 @@ export type ImportResult =
       pipelineId: string;
       /** The document's other boards, as pipelines here, in its order (EO-762). Empty for a document of one board. */
       boardPipelineIds: string[];
+      /** Every step of every board, the document's id to the id it was written under here (EO-762): what the form's step inputs and owners are laid onto. */
+      stepIds: Record<string, string>;
       unapprovedModules: string[];
       /**
        * The ids of the modules this import wrote (EO-355), so the caller
@@ -1340,6 +1357,8 @@ function referenceProblem(document: PipelineExport): string | null {
   // another (EO-762), and a step id names one step in the whole document.
   const stepIds = new Set(steps.map((step) => step.id));
   if (stepIds.size !== steps.length) return "This document has two steps with the same id.";
+  // A board's key is what names it to the next version of a template, so two boards on one key would be one board twice.
+  if (new Set(document.boards.map((board) => board.key)).size !== document.boards.length) return "This document has two boards with the same key.";
 
   for (const board of boards) {
     const own = new Set(board.steps.map((step) => step.id));
@@ -1458,10 +1477,11 @@ export function importPipeline(db: Db, input: ImportPipelineInput): ImportResult
 
   let pipelineId = "";
   let boardPipelineIds: string[] = [];
+  let stepIds: Record<string, string> = {};
   let keptDefinitions: { role: string; action: string }[] = [];
   try {
     db.transaction(() => {
-      ({ pipelineId, boardPipelineIds, keptDefinitions } = writeImport(db, document, toCreate, idBySlug, input.projectId ?? null, input.signedInBackends ?? []));
+      ({ pipelineId, boardPipelineIds, stepIds, keptDefinitions } = writeImport(db, document, toCreate, idBySlug, input.projectId ?? null, input.signedInBackends ?? []));
     });
   } catch (error) {
     // Rolled back by the transaction, so there is nothing half-written to
@@ -1473,6 +1493,7 @@ export function importPipeline(db: Db, input: ImportPipelineInput): ImportResult
     ok: true,
     pipelineId,
     boardPipelineIds,
+    stepIds,
     keptDefinitions,
     createdModuleIds: toCreate.flatMap(({ from }) => {
       const id = idBySlug.get(from.slug);
@@ -1497,7 +1518,7 @@ function writeImport(
   idBySlug: Map<string, string>,
   projectId: Uuid | null,
   signedInBackends: readonly string[],
-): { pipelineId: string; boardPipelineIds: string[]; keptDefinitions: { role: string; action: string }[] } {
+): { pipelineId: string; boardPipelineIds: string[]; stepIds: Record<string, string>; keptDefinitions: { role: string; action: string }[] } {
   writeItemTypes(db, document, projectId);
   const keptDefinitions = writeRoles(db, document, signedInBackends, projectId);
   writeConnectors(db, document, projectId);
@@ -1637,7 +1658,7 @@ function writeImport(
     //
     // Each board's map names that board's steps and no others: that is
     // how a pipeline knows which of the template's boards it is
-    // (`boardHolding`, EO-762).
+    // (`boardHolding`, `sameBoard`, EO-762).
     if (isTemplateDocument(document)) {
       recordPipelineOrigin(db, { pipelineId: pipeline.id, document, stepIds: Object.fromEntries(board.steps.map((step) => [step.id, mapped(step.id)])) });
     }
@@ -1645,7 +1666,7 @@ function writeImport(
   });
 
   const [pipelineId, ...boardPipelineIds] = pipelineIds;
-  return { pipelineId: pipelineId!, boardPipelineIds, keptDefinitions };
+  return { pipelineId: pipelineId!, boardPipelineIds, stepIds: Object.fromEntries(stepIdMap), keptDefinitions };
 }
 
 /**

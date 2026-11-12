@@ -1,7 +1,7 @@
 import {
   boardDocument,
-  boardHolding,
   documentSteps,
+  sameBoard,
   PipelineStepViewSchema,
   StepRouteViewSchema,
   type IpcPayload,
@@ -40,7 +40,7 @@ import {
 import { isTemplateDocument, type TemplateDocument } from "../db/repos/pipelineOriginsRepo.js";
 import { savePipeline } from "../ipc/configCommands.js";
 import type { TemplateVersion } from "./history.js";
-import { compareWithTemplate, conflictStepNames, describeConflicts, FIELD_WORDS, heldByTheRecord, type PipelineComparison } from "./templateUpdates.js";
+import { compareWithTemplate, conflictStepNames, describeConflicts, FIELD_WORDS, heldByTheRecord, pointRoutesWaitingOn, type PipelineComparison } from "./templateUpdates.js";
 
 /**
  * A held template update, read whole for the assistant (EO-534), and
@@ -343,7 +343,7 @@ export function templateStepIdsProblem(db: Db, conflict: PipelineUpdateConflict,
   if (snapshot === null) return "The template version this update holds can no longer be read, so the draft's template step ids cannot be checked.";
   const origin = getPipelineOrigin(db, conflict.pipelineId);
   // This pipeline's board of it (EO-762): a draft maps the steps of the board it is.
-  const document = boardDocument(snapshot, boardHolding(snapshot, Object.keys(origin?.stepIds ?? {})));
+  const document = boardDocument(snapshot, origin === null ? 0 : (sameBoard(origin.base, Object.keys(origin.stepIds), snapshot) ?? 0));
   const byId = new Map(steps.map((step) => [step.id, step] as const));
   const named = new Set<string>();
   for (const [templateStepId, stepId] of entries) {
@@ -389,18 +389,24 @@ export function resolveHeldUpdate(
     return { ok: false, problem: "The template version this update holds can no longer be read, so the pipeline's base cannot be moved to it." };
   }
   const now = options.now ?? Date.now();
+  const previous = getPipelineOrigin(db, conflict.pipelineId)?.stepIds ?? {};
   const stepIds = stepMapFor(db, conflict.pipelineId, document, options.templateStepIds ?? {});
   db.transaction(() => {
     recordPipelineOrigin(db, { pipelineId: conflict.pipelineId, document, stepIds, baseMovedAt: now });
+    // The routes the template's other boards hold for a person until this
+    // pipeline had the steps they go to (EO-762): a draft that adds them
+    // is where they go now, by the ids the draft gave them.
+    pointRoutesWaitingOn(db, conflict.pipelineId, conflict.templateSlug, previous, stepIds, templateUpdateAuthor(conflict.templateSlug, conflict.toVersion));
     resolveUpdateConflict(db, conflict.id, resolution, now);
   });
   return { ok: true };
 }
 
 function stepMapFor(db: Db, pipelineId: string, template: TemplateDocument, published: TemplateStepIds): Record<string, string> {
-  const previous = getPipelineOrigin(db, pipelineId)?.stepIds ?? {};
-  // Only this pipeline's board of the template (EO-762): its map is what says which board it is.
-  const document = boardDocument(template, boardHolding(template, Object.keys(previous)));
+  const origin = getPipelineOrigin(db, pipelineId);
+  const previous = origin?.stepIds ?? {};
+  // Only this pipeline's board of the template (EO-762): its base and map say which board it is, and its key finds it in this version.
+  const document = boardDocument(template, origin === null ? 0 : (sameBoard(origin.base, Object.keys(previous), template) ?? 0));
   const held = new Set(listStepsForPipeline(db, pipelineId).filter((step) => !step.offBoard).map((step) => step.id));
   const map: Record<string, string> = {};
   for (const step of document.steps) {

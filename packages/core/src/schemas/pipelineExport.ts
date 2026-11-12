@@ -683,6 +683,16 @@ export const ExportedRouteSchema = StepRouteViewSchema.omit({ id: true, pipeline
  * `routes`, so a document with one board is exactly what it always was.
  */
 export const ExportedBoardSchema = z.object({
+  /**
+   * What names this board from one version of a template to the next.
+   *
+   * Not its name, which a person reads and an author rewords, and not its
+   * steps, which a version may replace every one of: the pipeline made
+   * from this board is compared with the board of the same key in the
+   * next version, whatever that board's steps are. Unique within a
+   * document. The first board has none, and stays the first.
+   */
+  key: z.string().min(1),
   pipeline: ExportedPipelineHeadSchema,
   steps: z.array(ExportedStepSchema),
   routes: z.array(ExportedRouteSchema),
@@ -824,17 +834,11 @@ export type ExportedVocabulary = z.infer<typeof ExportedVocabularySchema>;
 export type PreviewItem = z.infer<typeof PreviewItemSchema>;
 export type PipelineExport = z.infer<typeof PipelineExportSchema>;
 
-/**
- * The role in this document that asks for the admin grant, if any
- * (EO-314).
- *
- * The same question the schema refuses on, asked of a document that is
- * already parsed — which is what the preflight and the importer hold. A
- * document that reached them through `parseExport` cannot answer yes;
- * one built in code, or read by something that skipped the schema, can,
- * and invariant #11 is not a rule to enforce only on the paths somebody
- * remembered.
- */
+/** A board as `documentBoards` reads it: the first board's key is null. */
+export type DocumentBoard = Omit<ExportedBoard, "key"> & { key: string | null };
+
+type BoardsOf = Pick<PipelineExport, "pipeline" | "steps" | "routes" | "boards">;
+
 /**
  * Every board a document carries, its first board first (EO-762).
  *
@@ -843,31 +847,34 @@ export type PipelineExport = z.infer<typeof PipelineExportSchema>;
  * the import, a template update — reads it through this, so a second
  * board is never a board somebody forgot.
  */
-export function documentBoards(document: Pick<PipelineExport, "pipeline" | "steps" | "routes" | "boards">): ExportedBoard[] {
-  return [{ pipeline: document.pipeline, steps: document.steps, routes: document.routes }, ...document.boards];
+export function documentBoards(document: BoardsOf): DocumentBoard[] {
+  return [{ key: null, pipeline: document.pipeline, steps: document.steps, routes: document.routes }, ...document.boards];
 }
 
 /** Every step on every board of a document. */
-export function documentSteps(document: Pick<PipelineExport, "pipeline" | "steps" | "routes" | "boards">): ExportedBoard["steps"] {
+export function documentSteps(document: BoardsOf): ExportedBoard["steps"] {
   return documentBoards(document).flatMap((board) => board.steps);
 }
 
 /**
  * Which of a document's boards holds these step ids: the index of the
- * board holding the most of them, or 0 — the first board — where none
- * holds any.
+ * board holding the most of them. A document of one board answers 0
+ * whatever the ids are; one of several answers null where none of its
+ * boards holds any of them, since then nothing says which it is.
  *
- * How a pipeline made from a template knows which board of it it is
- * (EO-762): its step map is keyed by the template's step ids, and step
- * ids are unique across a document's boards, so the board its map names
- * is its board. A pipeline from before templates had boards names the
- * first board's steps, or nothing, and is the first board either way.
+ * Read of a pipeline's *base* and the step map recorded with it (EO-762):
+ * the map is keyed by that document's step ids, and step ids are unique
+ * across a document's boards, so the board its map names is its board.
+ * Never of a newer version — one may replace every step of a board — for
+ * which `sameBoard` follows the board's key.
  */
-export function boardHolding(document: Pick<PipelineExport, "pipeline" | "steps" | "routes" | "boards">, stepIds: Iterable<string>): number {
+export function boardHolding(document: BoardsOf, stepIds: Iterable<string>): number | null {
+  const boards = documentBoards(document);
+  if (boards.length === 1) return 0;
   const wanted = new Set(stepIds);
-  let best = 0;
+  let best: number | null = null;
   let most = 0;
-  for (const [index, board] of documentBoards(document).entries()) {
+  for (const [index, board] of boards.entries()) {
     const held = board.steps.filter((step) => wanted.has(step.id)).length;
     if (held > most) {
       best = index;
@@ -875,6 +882,28 @@ export function boardHolding(document: Pick<PipelineExport, "pipeline" | "steps"
     }
   }
   return best;
+}
+
+/** The index of the board with this key — null being the first board — or null where the document has none by it. */
+export function boardWithKey(document: BoardsOf, key: string | null): number | null {
+  const index = documentBoards(document).findIndex((board) => board.key === key);
+  return index === -1 ? null : index;
+}
+
+/**
+ * The board of `next` that a pipeline is, given the base it was made
+ * from (or last moved to) and the step map recorded with that base
+ * (EO-762): the board of `next` with the key of the base's board the map
+ * names. Null where the base cannot say which board, or `next` no longer
+ * has that board.
+ *
+ * By key, never by the steps `next` has, so a version that replaces
+ * every step of a board is still compared with that board.
+ */
+export function sameBoard(base: BoardsOf, stepIds: Iterable<string>, next: BoardsOf): number | null {
+  const index = boardHolding(base, stepIds);
+  if (index === null) return null;
+  return boardWithKey(next, documentBoards(base)[index]!.key);
 }
 
 /**
@@ -891,6 +920,17 @@ export function boardDocument<T extends PipelineExport>(document: T, index: numb
   return { ...document, pipeline: board.pipeline, steps: board.steps, routes: board.routes, boards: [] };
 }
 
+/**
+ * The role in this document that asks for the admin grant, if any
+ * (EO-314).
+ *
+ * The same question the schema refuses on, asked of a document that is
+ * already parsed — which is what the preflight and the importer hold. A
+ * document that reached them through `parseExport` cannot answer yes;
+ * one built in code, or read by something that skipped the schema, can,
+ * and invariant #11 is not a rule to enforce only on the paths somebody
+ * remembered.
+ */
 export function roleAskingForAdminGrant(document: Pick<PipelineExport, "roles">): string | null {
   const found = document.roles.find((role) => role.allowedTools !== null && namesAdminServer(role.allowedTools));
   return found?.slug ?? null;

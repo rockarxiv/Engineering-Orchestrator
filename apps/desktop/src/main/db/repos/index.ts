@@ -59,6 +59,7 @@ export {
   getTemplateSnapshot,
   isTemplateDocument,
   pipelinesWithoutOrigin,
+  originBoardKey,
   recordAppliedTemplateUpdate,
   recordPipelineOrigin,
   storeTemplateSnapshot,

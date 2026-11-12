@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { and, eq, isNull } from "drizzle-orm";
-import { PipelineExportSchema, uuidv7, type PipelineExport } from "@eo/core";
+import { boardHolding, documentBoards, PipelineExportSchema, uuidv7, type PipelineExport } from "@eo/core";
 import type { Db } from "../client.js";
 import { pipelines, templateVersions } from "../schema.js";
 
@@ -138,6 +138,19 @@ export function getPipelineOrigin(db: Db, pipelineId: string): PipelineOrigin | 
   if (!base.success) return null;
 
   return { pipelineId, slug: row.slug, version: row.version, baseId: row.baseId, base: base.data, stepIds: stepIdsOf(row.stepIds), baseMovedAt: row.baseMovedAt };
+}
+
+/**
+ * Which of its template's boards a pipeline is, by the board's key — null
+ * for the first board — or undefined where its origin cannot say (EO-762).
+ *
+ * Read of the base and the step map recorded with it, always together,
+ * and never of a newer version: a board keeps its key from one version
+ * to the next whatever its steps become (`sameBoard`).
+ */
+export function originBoardKey(origin: Pick<PipelineOrigin, "base" | "stepIds">): string | null | undefined {
+  const index = boardHolding(origin.base, Object.keys(origin.stepIds));
+  return index === null ? undefined : documentBoards(origin.base)[index]?.key;
 }
 
 /** A pipeline made from a template, as far as which of its boards it is (EO-762). */

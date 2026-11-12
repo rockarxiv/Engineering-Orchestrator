@@ -1,4 +1,4 @@
-import { builtinOpensPullRequest, moduleInputProblems, type GalleryNeedView, type GalleryStepView, type ModuleInputType, type PipelineExport, type StepInputs, type TemplateBlankKind } from "@eo/core";
+import { builtinOpensPullRequest, documentBoards, documentSteps, moduleInputProblems, type GalleryNeedView, type GalleryStepView, type ModuleInputType, type PipelineExport, type StepInputs, type TemplateBlankKind } from "@eo/core";
 import { agentNameFor, type ImportPreflight } from "../modules/pipelineTransfer.js";
 import { registry } from "../registry.js";
 import { RUNTIMES, type RuntimeId } from "../runtimes/catalog.js";
@@ -128,7 +128,10 @@ export function galleryBlanks(document: PipelineExport): GalleryBlank[] {
   // *questions* travel anyway, because the manifest does — so a template
   // can ask "which channel" without the pack carrying somebody else's
   // answer to it.
-  for (const step of document.steps) {
+  //
+  // Every board's steps (EO-762): a template's other boards are made with
+  // it, and a module step on one needs its answer as much as the first's.
+  for (const step of documentSteps(document)) {
     if (step.type !== "module" || step.entryAction === null) continue;
     const module = document.modules.find((candidate) => candidate.slug === step.entryAction);
     if (module === undefined) continue;
@@ -223,7 +226,7 @@ export function repositoryAnswer(document: PipelineExport, answers: Record<strin
  */
 export function wantsRepository(document: PipelineExport): boolean {
   if ((document.template?.blanks ?? []).some((blank) => blank.kind === "folder")) return false;
-  return document.steps.some((step) => step.type === "builtin");
+  return documentSteps(document).some((step) => step.type === "builtin");
 }
 
 /**
@@ -232,8 +235,9 @@ export function wantsRepository(document: PipelineExport): boolean {
  * the steps and the pack's own declaration, never off the template, so
  * the gallery names no pack (invariant 13).
  */
-export function opensPullRequests(document: Pick<PipelineExport, "steps">): boolean {
-  return document.steps.some((step) => step.type === "builtin" && builtinOpensPullRequest(registry, step.entryAction));
+export function opensPullRequests(document: Pick<PipelineExport, "steps"> & Partial<Pick<PipelineExport, "boards">>): boolean {
+  // Every board's steps (EO-762): a pull request opened on a template's second board needs the forge as much.
+  return [...document.steps, ...(document.boards ?? []).flatMap((board) => board.steps)].some((step) => step.type === "builtin" && builtinOpensPullRequest(registry, step.entryAction));
 }
 
 /** The key of the forge CLI line before a repository says which forge (EO-663). */
@@ -245,7 +249,7 @@ export const FORGE_NEED_KEY = "forge";
  * is that one of the two is needed. Once a repository is attached, the
  * needs check replaces this with one line per repository (`forgeNeeds`).
  */
-export function forgeCardNeed(document: Pick<PipelineExport, "steps">): GalleryNeed[] {
+export function forgeCardNeed(document: Pick<PipelineExport, "steps"> & Partial<Pick<PipelineExport, "boards">>): GalleryNeed[] {
   if (!opensPullRequests(document)) return [];
   return [
     {
@@ -265,12 +269,14 @@ export function gallerySteps(document: Pick<PipelineExport, "steps">): GallerySt
     .map((step) => ({ id: step.id, name: step.name, type: step.type, isTerminal: step.isTerminal }));
 }
 
-/** Every human step the document draws that somebody has to decide, in pipeline order. */
+/** Every human step the document draws that somebody has to decide, on every board (EO-762), each board's in pipeline order. */
 export function galleryRoleSlots(document: PipelineExport): GalleryRoleSlot[] {
-  return [...document.steps]
-    .filter((step) => step.type === "user" && !step.isTerminal && step.results.length > 0)
-    .sort((left, right) => left.position - right.position)
-    .map((step) => ({ stepId: step.id, name: step.name }));
+  return documentBoards(document).flatMap((board) =>
+    [...board.steps]
+      .filter((step) => step.type === "user" && !step.isTerminal && step.results.length > 0)
+      .sort((left, right) => left.position - right.position)
+      .map((step) => ({ stepId: step.id, name: step.name })),
+  );
 }
 
 /**
@@ -446,7 +452,7 @@ export function stepInputValues(
   // And the manifest's own word on the result, so a type this file
   // learns to parse and the module host does not is caught here.
   for (const [stepId, inputs] of byStep) {
-    const step = document.steps.find((candidate) => candidate.id === stepId);
+    const step = documentSteps(document).find((candidate) => candidate.id === stepId);
     const module = document.modules.find((candidate) => candidate.slug === step?.entryAction);
     if (module === undefined) continue;
     problems.push(...moduleInputProblems(module.manifest, inputs).map((problem) => `${step?.name ?? stepId}: ${problem}`));
