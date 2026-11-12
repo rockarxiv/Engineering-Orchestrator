@@ -6,11 +6,13 @@ import { type Uuid } from "@eo/core";
 import type { DbHandle } from "../db/client.js";
 import { pipelines } from "../db/schema.js";
 import {
+  adoptPipeline,
   createPerson,
   createPipeline,
   createProject,
   createRoute,
   createStep,
+  getPipeline,
   getPipelineOrigin,
   getStep,
   listPipelines,
@@ -616,10 +618,15 @@ describe("boards of one installation updated by the same version", () => {
 
   it("never removes a step another board still routes into: where Delivery's update is held, Comments' is held too, and Delivery's route still lands", () => {
     deliveryOn13();
+    // Delivery is the project's own, as every pipeline whose work a
+    // project has is since EO-766, so Comments is made on it too and
+    // Delivery's route into Comments is a hand-off within the project.
+    const project = createProject(handle.db, { name: "Shop", keyPrefix: "SHOP" });
+    adoptPipeline(handle.db, "default", project.id as Uuid);
     applyTemplateUpdates(handle.db, withVersions(twoBoards("1.4")), { isTheRecord: false });
     const comments = boardNamed("Comments").id;
+    expect(getPipeline(handle.db, comments)?.projectId).toBe(project.id);
     // An item on Index holds Delivery's update to 1.5, which drops it.
-    const project = createProject(handle.db, { name: "Shop", keyPrefix: "SHOP" });
     createTestItem(handle.db, { type: "story", title: "Indexing", stepId: "repository_index", projectId: project.id as Uuid });
 
     const results = applyTemplateUpdates(handle.db, withVersions(twoBoards("1.4"), twoBoards("1.5", { comments: "cx", dropIndex: true })), { isTheRecord: false });
