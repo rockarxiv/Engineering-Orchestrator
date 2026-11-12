@@ -1,4 +1,5 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PLAN_COMMENT_RESPONSE_ACTION, REVIEW_PLAN_ACTION, type Agent, type Item, type PlanCommentResponseOutput, type Uuid } from "@eo/core";
@@ -306,6 +307,76 @@ describe("checking a planning run", () => {
   it("fails a run that stopped to ask but left changes all the same", async () => {
     const checks = await verifyRun(kindWith(" M src/a.ts\n"), fresh(), run(null, "escalated"));
     expect(checks.map((check) => [check.key, check.passed])).toEqual([["untouched-tree", false]]);
+  });
+
+  describe("in a real repository", () => {
+    const sh = (...args: string[]) => execFileSync("git", args, { cwd: drive, stdio: "pipe" }).toString();
+    const realKind = () => gitWorkspaceKind({ db: handle.db, intelligenceFor: () => null });
+
+    beforeEach(() => {
+      sh("init", "-q", "-b", "main");
+      sh("config", "user.email", "eo@example.com");
+      sh("config", "user.name", "EO");
+      writeFileSync(join(drive, "a.ts"), "export const a = 1;\n");
+      sh("add", "a.ts");
+      sh("commit", "-q", "-m", "start");
+    });
+
+    it("fails a run that edited a file and committed it, leaving a clean status, and its note names the commit", async () => {
+      const kind = realKind();
+      await kind.attach(fresh(), implementer, run(PLAN).workspace);
+      writeFileSync(join(drive, "a.ts"), "export const total = 1;\n");
+      sh("commit", "-q", "-am", "rename a to total");
+      expect(sh("status", "--porcelain")).toBe("");
+
+      const [check, ...rest] = await verifyRun(kind, fresh(), run(PLAN));
+      expect(rest).toEqual([]);
+      expect(check?.key).toBe("untouched-tree");
+      expect(check?.passed).toBe(false);
+      expect(check?.blocks).toBe(true);
+      expect(check?.describes).toContain("committed changes to");
+      expect(check?.comment).toContain("Commits made during the run:");
+      expect(check?.comment).toContain("rename a to total");
+      expect(check?.comment).not.toContain("Changes in the worktree:");
+    });
+
+    it("fails a run that committed and then stopped to ask, and the turn the reply opens, until the branch is put back", async () => {
+      const kind = realKind();
+      await kind.attach(fresh(), implementer, run(PLAN).workspace);
+      const start = sh("rev-parse", "HEAD").trim();
+      writeFileSync(join(drive, "a.ts"), "export const total = 1;\n");
+      sh("commit", "-q", "-am", "rename a to total");
+      const parked = await verifyRun(kind, fresh(), run(null, "escalated"));
+      expect(parked.map((check) => [check.key, check.passed])).toEqual([["untouched-tree", false]]);
+
+      // The reply opens a turn on top of the planner's commit, which is still not the branch it was handed.
+      await kind.attach(fresh(), implementer, run(PLAN).workspace);
+      const [replied] = await verifyRun(kind, fresh(), run(PLAN));
+      expect(replied?.passed).toBe(false);
+      expect(replied?.comment).toContain("rename a to total");
+
+      sh("reset", "-q", "--hard", start);
+      await kind.attach(fresh(), implementer, run(PLAN).workspace);
+      const putBack = await verifyRun(kind, fresh(), run(PLAN));
+      expect(putBack.map((check) => [check.key, check.passed])).toEqual([
+        ["untouched-tree", true],
+        ["plan-coverage", true],
+      ]);
+    });
+
+    it("passes a run whose turn left HEAD and the tree as it found them, judged against the turn's own start", async () => {
+      // A commit before the turn is the branch the planner was handed, not one it made.
+      writeFileSync(join(drive, "b.ts"), "export const b = 2;\n");
+      sh("add", "b.ts");
+      sh("commit", "-q", "-m", "earlier work");
+      const kind = realKind();
+      await kind.attach(fresh(), implementer, run(PLAN).workspace);
+      const checks = await verifyRun(kind, fresh(), run(PLAN));
+      expect(checks.map((check) => [check.key, check.passed])).toEqual([
+        ["untouched-tree", true],
+        ["plan-coverage", true],
+      ]);
+    });
   });
 
   it("refuses a plan that leaves out a comment awaiting one, or names one that is not", async () => {
