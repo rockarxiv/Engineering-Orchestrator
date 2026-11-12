@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_WATCH_GIVE_UP_HOURS, itemWatchLines, settledWatch, StepWatchSchema, watchDurationWords, watchIntervalWords, watchLine, watchNeverGivesUp } from "./watch.js";
+import {
+  DEFAULT_WATCH_GIVE_UP_HOURS,
+  MAX_WATCH_FINDINGS,
+  WatchFindingSchema,
+  watchFindingsProblem,
+  itemWatchLines, settledWatch, StepWatchSchema, watchDurationWords, watchIntervalWords, watchLine, watchNeverGivesUp } from "./watch.js";
 
 describe("keep checking, as a column head says it (EO-456)", () => {
   it("says how often the step checks and when it gives up", () => {
@@ -76,5 +81,34 @@ describe("keep checking, as the item page says it (EO-456)", () => {
 
   it("says a watch that never gives up never does, instead of a date (EO-571)", () => {
     expect(itemWatchLines({ ...view, giveUpAt: null }, at)).toEqual(["Last checked t100", "Next check t200", "Never gives up"]);
+  });
+});
+
+describe("what an intake check found (EO-752)", () => {
+  it("takes a key, a title and the optional body, spec and existing branch", () => {
+    const finding = { key: "dependabot:owner/repo#123", title: "Bump zod", body: "From 4.6 to 4.7", spec: { pr: 123 }, existingBranch: "dependabot/zod" };
+    expect(WatchFindingSchema.parse(finding)).toEqual(finding);
+    expect(WatchFindingSchema.parse({ key: "a", title: "b" })).toEqual({ key: "a", title: "b" });
+  });
+
+  it("refuses a blank or over-long key, a blank title, a spec that is not an object and a blank branch", () => {
+    expect(WatchFindingSchema.safeParse({ key: "", title: "t" }).success).toBe(false);
+    expect(WatchFindingSchema.safeParse({ key: "   ", title: "t" }).success).toBe(false);
+    expect(WatchFindingSchema.safeParse({ key: "k".repeat(200), title: "t" }).success).toBe(true);
+    expect(WatchFindingSchema.safeParse({ key: "k".repeat(201), title: "t" }).success).toBe(false);
+    expect(WatchFindingSchema.safeParse({ key: "k", title: "" }).success).toBe(false);
+    expect(WatchFindingSchema.safeParse({ key: "k", title: "t", body: 3 }).success).toBe(false);
+    expect(WatchFindingSchema.safeParse({ key: "k", title: "t", spec: [1] }).success).toBe(false);
+    expect(WatchFindingSchema.safeParse({ key: "k", title: "t", existingBranch: "" }).success).toBe(false);
+  });
+
+  it("names what keeps a list of findings from being filed", () => {
+    expect(watchFindingsProblem([{ key: "a", title: "A" }, { key: "b", title: "B" }])).toBeNull();
+    const many = Array.from({ length: MAX_WATCH_FINDINGS + 1 }, (_, index) => ({ key: `k${index}`, title: "t" }));
+    expect(watchFindingsProblem(many)).toBe(`An intake check may report at most ${MAX_WATCH_FINDINGS} findings, and this one reported ${MAX_WATCH_FINDINGS + 1}.`);
+    expect(watchFindingsProblem([{ key: "a", title: "A" }, { key: "b" }])).toMatch(/^findings\[1\] is not a finding EO can file \(title\)/);
+    expect(watchFindingsProblem([{ key: "a", title: "A" }, { key: "b", title: "B" }, { key: "a", title: "C" }])).toBe(
+      'findings[0] and findings[2] both have the key "a". Each finding needs a key of its own.',
+    );
   });
 });

@@ -93,6 +93,66 @@ export const WatchNewsSchema = z.object({
 });
 export type WatchNews = z.infer<typeof WatchNewsSchema>;
 
+/** The most findings one intake check may report (EO-752). A check finding more reports the rest next time. */
+export const MAX_WATCH_FINDINGS = 100;
+
+/** The longest key a finding may have (EO-752). It is stored once per item filed, and read as an identifier, not prose. */
+export const MAX_WATCH_FINDING_KEY_CHARS = 200;
+
+/**
+ * One thing a watch module found while it ran as a pipeline's intake
+ * (EO-752): a check of a module declaring `watch: true` made for a job,
+ * with no item.
+ *
+ * The module does not file anything. It answers `waiting` with what it
+ * found, and EO files each finding as one item on the job's pipeline,
+ * from the job's template, with `title`, `body` and `spec` in place of
+ * the template's (EO-753).
+ *
+ * `key` is the module's own stable name for the thing it found —
+ * `dependabot:owner/repo#123` — and how EO files each thing once: a key
+ * that has already made an item for the job is not filed again, however
+ * many checks report it. `existingBranch` names a branch that already
+ * exists, to work on instead of cutting one, as `ctx.createItem`'s does.
+ *
+ * Mirrored by `findingProblem` in `moduleHost.mjs`, which cannot import
+ * this; the parent parses what the host sends with this schema again.
+ */
+export const WatchFindingSchema = z.object({
+  key: z.string().trim().min(1).max(MAX_WATCH_FINDING_KEY_CHARS),
+  title: z.string().trim().min(1),
+  body: z.string().optional(),
+  spec: z.record(z.string(), z.unknown()).optional(),
+  existingBranch: z.string().trim().min(1).optional(),
+});
+export type WatchFinding = z.infer<typeof WatchFindingSchema>;
+
+/**
+ * Why a list of findings cannot be filed, or null where it can (EO-752):
+ * more than `MAX_WATCH_FINDINGS`, a finding `WatchFindingSchema` refuses
+ * (named by its index), or two with one key (named). One problem is
+ * enough to keep all of them: a check that half-reports what it found is
+ * a check whose author never hears what was lost.
+ */
+export function watchFindingsProblem(findings: readonly unknown[]): string | null {
+  if (findings.length > MAX_WATCH_FINDINGS) {
+    return `An intake check may report at most ${MAX_WATCH_FINDINGS} findings, and this one reported ${findings.length}.`;
+  }
+  const seen = new Map<string, number>();
+  for (const [index, entry] of findings.entries()) {
+    const parsed = WatchFindingSchema.safeParse(entry);
+    if (!parsed.success) {
+      const issue = parsed.error.issues[0];
+      const path = issue === undefined || issue.path.length === 0 ? "" : ` (${issue.path.join(".")})`;
+      return `findings[${index}] is not a finding EO can file${path}: ${issue?.message ?? "it does not have the shape of one"}.`;
+    }
+    const before = seen.get(parsed.data.key);
+    if (before !== undefined) return `findings[${before}] and findings[${index}] both have the key "${parsed.data.key}". Each finding needs a key of its own.`;
+    seen.set(parsed.data.key, index);
+  }
+  return null;
+}
+
 /**
  * An item's watch as the item page shows it (EO-456).
  *
