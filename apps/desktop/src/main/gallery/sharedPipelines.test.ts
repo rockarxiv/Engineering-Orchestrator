@@ -38,13 +38,15 @@ import {
 } from "../db/repos/index.js";
 import { createProject } from "../db/repos/projectsRepo.js";
 import { createJob } from "../jobs/jobs.js";
+import { parseExport } from "../modules/pipelineTransfer.js";
+import type { TemplateDocument } from "../db/repos/index.js";
 import { listPipelineViews } from "../ipc/domainQueries.js";
 import { resolveDecisionRoute } from "../ipc/decisions.js";
 import { environmentFor, listSecretNames, storeSecret, storeVariable, type ModuleSecretsOptions } from "../modules/secrets.js";
 import { items, jobs, messages, projects } from "../db/schema.js";
 import { createTestItem, messagesFrom, openMigratedTestDb } from "../db/testHelpers.js";
 import { PREVIEW_PROJECT_KEY } from "./commands.js";
-import { loadTemplateHistory } from "./history.js";
+import { loadTemplateHistory, type TemplateHistory } from "./history.js";
 import { backfillPipelineOrigins } from "./origins.js";
 import { settleSeededPipelines, SPLIT_FAILED_SOURCE, splitSharedPipelines, splitSharedPipelinesOrHold } from "./sharedPipelines.js";
 import { applyTemplateUpdates } from "./templateUpdates.js";
@@ -475,6 +477,111 @@ describe("a split that fails (EO-766 review)", () => {
     expect(listed(beta)).toEqual([copyId]);
     expect(getItem(db, betaItem.id)?.pipelineId).toBe(copyId);
     expect(messagesFrom(db, SPLIT_FAILED_SOURCE).every((message) => message.handledHow === "resolved")).toBe(true);
+  });
+});
+
+/**
+ * The newest shipped Delivery, at a later version that adds a Comments
+ * board: Delivery gains a Reply step handing work to Comments, and
+ * Comments hands work back to Delivery's To Do.
+ */
+function withCommentsBoard(history: TemplateHistory): TemplateHistory {
+  const slug = "software-feature-to-merge";
+  const newest = history.get(slug)!.at(-1)!;
+  const raw = JSON.parse(JSON.stringify(newest.document)) as {
+    template: { version: string };
+    steps: unknown[];
+    routes: unknown[];
+    boards?: unknown[];
+  };
+  const human = (id: string, position: number, name: string, results: string[], isTerminal = false) => ({
+    id,
+    position,
+    name,
+    type: "user",
+    ownerRole: null,
+    entryAction: null,
+    instructionsSummary: null,
+    isTerminal,
+    planMode: false,
+    results: results.map((key) => ({ key, label: key, tone: "info", requiresComment: false })),
+  });
+  const route = (fromStepId: string, resultKey: string, target: string) => ({ fromStepId, resultKey, label: resultKey, tone: "info", target, position: 0 });
+  raw.template.version = "99.0";
+  raw.steps.push(human("dl_reply", 99, "Reply", ["replied"]));
+  raw.routes.push(route("dl_reply", "replied", "cm_plan"));
+  raw.boards = [
+    {
+      key: "comments",
+      pipeline: { name: "Comments", icon: null, entryStepId: "cm_plan", entryRules: [] },
+      steps: [human("cm_plan", 0, "Approve plan", ["approved", "rejected"]), human("cm_closed", 1, "Closed", [], true)],
+      routes: [route("cm_plan", "approved", "todo"), route("cm_plan", "rejected", "cm_closed")],
+    },
+  ];
+  const parsed = parseExport(JSON.stringify(raw));
+  if (!parsed.ok) throw new Error(parsed.reason);
+  const version = { slug, version: "99.0", notes: "Adds the Comments board.", document: parsed.document as TemplateDocument };
+  return new Map([[slug, [...history.get(slug)!, version]]]);
+}
+
+describe("a template update that adds a board while a split is held (EO-766 review)", () => {
+  let directory: string;
+  let moduleSecrets: ModuleSecretsOptions;
+
+  beforeEach(() => {
+    directory = mkdtempSync(join(tmpdir(), "eo held split "));
+    moduleSecrets = {
+      directory,
+      store: { isEncryptionAvailable: () => true, encryptString: (text: string) => Buffer.from(text), decryptString: (buffer: Buffer) => buffer.toString() },
+    };
+    secretCopies.copied = [];
+  });
+
+  afterEach(() => {
+    secretCopies.failAfter = undefined;
+    rmSync(directory, { recursive: true, force: true });
+  });
+
+  it("shares the new board with every project as Delivery is, and gives each project its own on the launch that splits", () => {
+    const db = handle.db;
+    const shipped = loadTemplateHistory(GALLERY_DIRECTORY);
+    backfillPipelineOrigins(db, shipped);
+    applyTemplateUpdates(db, shipped, { isTheRecord: false });
+    const alpha = projectAt("Alpha", "ALP", 1_000);
+    const beta = projectAt("Beta", "BET", 2_000);
+    createTestItem(db, { type: "story", title: "Alpha's story", projectId: alpha, stepId: "todo" });
+    const betaItem = createTestItem(db, { type: "story", title: "Beta's story", projectId: beta, stepId: "review" });
+    storeSecret(moduleSecrets, "FLY_API_TOKEN", "todo-token", "todo");
+
+    // The launch: the split fails, then the update adds Comments.
+    secretCopies.failAfter = 0;
+    expect(splitSharedPipelinesOrHold(db, { moduleSecrets })).toEqual([]);
+    const updated = applyTemplateUpdates(db, withCommentsBoard(shipped), { isTheRecord: false });
+    expect(updated).toEqual([expect.objectContaining({ pipelineId: "default", outcome: "applied", to: "99.0" })]);
+    const comments = listPipelines(db).find((pipeline) => pipeline.name === "Comments")!;
+    expect(comments.projectId).toBeNull();
+
+    // Shared with every project as Delivery is, and Delivery's hand-off lands on it.
+    expect(getSetting(db, SHARED_UNTIL_SPLIT_SETTING, [])).toEqual(["default", comments.id]);
+    expect(listed(alpha)).toEqual(["default", comments.id]);
+    expect(listed(beta)).toEqual(["default", comments.id]);
+    const reply = listRoutesForPipeline(db, "default").find((each) => each.resultKey === "replied")!;
+    expect(getStep(db, reply.target)?.pipelineId).toBe(comments.id);
+
+    // The next launch splits both, and Beta's copies hand work to each other.
+    secretCopies.failAfter = undefined;
+    const splits = splitSharedPipelinesOrHold(db, { moduleSecrets });
+    expect(splits.map((split) => split.pipelineId)).toEqual(["default", comments.id]);
+    expect(getSetting(db, SHARED_UNTIL_SPLIT_SETTING, null)).toBeNull();
+    const betaDelivery = splits[0]!.copies[0]!.pipelineId;
+    const betaComments = splits[1]!.copies[0]!.pipelineId;
+    expect(listed(alpha)).toEqual(["default", comments.id]);
+    expect(listed(beta).sort()).toEqual([betaDelivery, betaComments].sort());
+    expect(getItem(db, betaItem.id)?.pipelineId).toBe(betaDelivery);
+    const betaReply = listRoutesForPipeline(db, betaDelivery).find((each) => each.resultKey === "replied")!;
+    expect(getStep(db, betaReply.target)?.pipelineId).toBe(betaComments);
+    const backToTodo = listRoutesForPipeline(db, betaComments).find((each) => each.resultKey === "approved")!;
+    expect(getStep(db, backToTodo.target)?.pipelineId).toBe(betaDelivery);
   });
 });
 
