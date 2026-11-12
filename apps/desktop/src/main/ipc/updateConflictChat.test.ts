@@ -127,7 +127,7 @@ describe("pressing Fix with assistant", () => {
     const brief = comments[0]!;
     expect(brief.authorType).toBe("engine");
     expect(brief.body).toContain("Pipeline: Delivery (id: default)");
-    expect(brief.body).toContain("from version 1.0 (the pipeline's base) to version 1.3");
+    expect(brief.body).toContain("from version 1.0 (the pipeline's base) to version 1.4");
     expect(brief.body).toContain("CI failures, merge conflicts and review comments send the work back to the implementer");
     expect(brief.body).toContain("**Merge Request**'s 'opened' route");
     expect(opened.conversation!.messages.map((message) => message.id)).toEqual([brief.id]);

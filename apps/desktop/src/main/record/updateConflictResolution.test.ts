@@ -28,7 +28,7 @@ import {
 } from "../db/repos/index.js";
 import { pipelines } from "../db/schema.js";
 import { messagesFrom, openMigratedTestDb } from "../db/testHelpers.js";
-import { loadTemplateHistory } from "../gallery/history.js";
+import { templateHistoryUpTo } from "../gallery/historyTestHelpers.js";
 import { backfillPipelineOrigins } from "../gallery/origins.js";
 import { applyTemplateUpdates } from "../gallery/templateUpdates.js";
 import { openUpdateConflictAssist } from "../ipc/assistCommands.js";
@@ -188,7 +188,7 @@ async function heldOnTheRecord(): Promise<{ conflictId: string; projectId: Uuid 
   db.run(sql`DELETE FROM step_routes WHERE from_step_id = 'pull_request_watch'`);
   db.run(sql`UPDATE pipeline_steps SET retired_version = 1 WHERE id = 'pull_request_watch'`);
   db.run(sql`UPDATE step_routes SET target = 'merge_pr' WHERE from_step_id = 'merge_request' AND result_key = 'opened'`);
-  const history = loadTemplateHistory(GALLERY_DIRECTORY);
+  const history = templateHistoryUpTo(GALLERY_DIRECTORY, "software-feature-to-merge", "1.3");
   backfillPipelineOrigins(db, history);
   db.run(sql`UPDATE pipelines SET project_id = ${project.id} WHERE id = 'default'`);
   for (const pipelineId of ["default", merge.id]) publishSection(db, { section: "pipelines", subjectId: pipelineId, publishedAt: Date.now() });
@@ -321,7 +321,7 @@ describe("a template update the organisation's record holds", () => {
     expect(getPipelineOrigin(recordDb.db, "default")).toMatchObject({ version: "1.3", baseId: conflict.templateId });
     expect(getMessage(recordDb.db, conflict.noticeIds[0]!)?.handledHow).toBe("resolved");
     // Never raised again on the record.
-    expect(applyTemplateUpdates(recordDb.db, loadTemplateHistory(GALLERY_DIRECTORY), { isTheRecord: true })).toEqual([]);
+    expect(applyTemplateUpdates(recordDb.db, templateHistoryUpTo(GALLERY_DIRECTORY, "software-feature-to-merge", "1.3"), { isTheRecord: true })).toEqual([]);
 
     // Anna's copy follows the record's graph, and her notice closes, on the next pull.
     await anna.record.sync();
@@ -467,7 +467,7 @@ describe("a desktop conflict from before the record held the pipeline", () => {
     db.run(sql`DELETE FROM step_routes WHERE from_step_id = 'pull_request_watch'`);
     db.run(sql`UPDATE pipeline_steps SET retired_version = 1 WHERE id = 'pull_request_watch'`);
     db.run(sql`UPDATE step_routes SET target = 'user_attention' WHERE from_step_id = 'merge_request' AND result_key = 'opened'`);
-    const history = loadTemplateHistory(GALLERY_DIRECTORY);
+    const history = templateHistoryUpTo(GALLERY_DIRECTORY, "software-feature-to-merge", "1.3");
     backfillPipelineOrigins(db, history);
     applyTemplateUpdates(db, history, { isTheRecord: false });
     return openUpdateConflict(db, "default")!.id;

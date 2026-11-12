@@ -4,7 +4,7 @@
     "slug": "software-feature-to-merge",
     "title": "Software feature to merge",
     "description": "A feature is implemented on a branch of its own, reviewed, and opened as a pull request for you to approve. This is the pipeline EO ships for its own work.",
-    "version": "1.3",
+    "version": "1.4",
     "blanks": [
       {
         "key": "keyPrefix",
@@ -21,7 +21,8 @@
   "pipeline": {
     "name": "Delivery",
     "icon": "workflow",
-    "entryStepId": "worktree"
+    "entryStepId": "worktree",
+    "entryRules": []
   },
   "steps": [
     {
@@ -85,8 +86,20 @@
       "results": []
     },
     {
-      "id": "pull_request_watch",
+      "id": "pull_request_reply",
       "position": 5,
+      "name": "Reply on pull request",
+      "type": "builtin",
+      "ownerRole": null,
+      "entryAction": "reply_on_pull_request",
+      "instructionsSummary": "Answers on the pull request each comment EO has handled",
+      "isTerminal": false,
+      "planMode": false,
+      "results": []
+    },
+    {
+      "id": "pull_request_watch",
+      "position": 6,
       "name": "Watching pull request",
       "type": "builtin",
       "ownerRole": null,
@@ -97,12 +110,13 @@
       "results": [],
       "watch": {
         "everyMinutes": 5,
+        "giveUpAfterHours": 168,
         "neverGivesUp": true
       }
     },
     {
       "id": "ready_to_merge",
-      "position": 6,
+      "position": 7,
       "name": "Done",
       "type": "user",
       "ownerRole": null,
@@ -156,7 +170,7 @@
       "resultKey": "opened",
       "label": "Pull request open",
       "tone": "success",
-      "target": "pull_request_watch",
+      "target": "pull_request_reply",
       "position": 0
     },
     {
@@ -181,6 +195,14 @@
       "label": "Merged",
       "tone": "success",
       "target": "ready_to_merge",
+      "position": 0
+    },
+    {
+      "fromStepId": "pull_request_reply",
+      "resultKey": "replied",
+      "label": "Replied",
+      "tone": "success",
+      "target": "pull_request_watch",
       "position": 0
     },
     {
@@ -232,6 +254,14 @@
       "position": 1
     },
     {
+      "fromStepId": "pull_request_reply",
+      "resultKey": "nothing_to_reply",
+      "label": "Nothing to reply to",
+      "tone": "info",
+      "target": "pull_request_watch",
+      "position": 1
+    },
+    {
       "fromStepId": "review",
       "resultKey": "needs_user_input",
       "label": "Needs user input",
@@ -260,7 +290,15 @@
       "resultKey": "changes_requested",
       "label": "Changes requested",
       "tone": "warning",
-      "target": "todo",
+      "target": "pr_comments_plan",
+      "position": 2
+    },
+    {
+      "fromStepId": "pull_request_reply",
+      "resultKey": "failed",
+      "label": "Could not reply",
+      "tone": "danger",
+      "target": "user_attention",
       "position": 2
     },
     {
@@ -310,6 +348,148 @@
       "tone": "danger",
       "target": "user_attention",
       "position": 6
+    },
+    {
+      "fromStepId": "pull_request_watch",
+      "resultKey": "author_commented",
+      "label": "Your comments",
+      "tone": "warning",
+      "target": "todo",
+      "position": 7
+    },
+    {
+      "fromStepId": "pull_request_watch",
+      "resultKey": "others_commented",
+      "label": "Other accounts' comments",
+      "tone": "info",
+      "target": "pr_comments_plan",
+      "position": 8
+    }
+  ],
+  "boards": [
+    {
+      "key": "pull_request_comments",
+      "pipeline": {
+        "name": "Pull request comments",
+        "icon": "square-stack",
+        "entryStepId": "pr_comments_plan",
+        "entryRules": []
+      },
+      "steps": [
+        {
+          "id": "pr_comments_plan",
+          "position": 0,
+          "name": "Plan response",
+          "type": "agent",
+          "ownerRole": "implementer",
+          "entryAction": "plan_comment_response",
+          "instructionsSummary": "Proposes a change, or none, and a reply for each comment",
+          "isTerminal": false,
+          "planMode": false,
+          "results": []
+        },
+        {
+          "id": "pr_comments_review",
+          "position": 1,
+          "name": "Review plan",
+          "type": "agent",
+          "ownerRole": "reviewer",
+          "entryAction": "review_plan",
+          "instructionsSummary": "Checks the plan before a person sees it",
+          "isTerminal": false,
+          "planMode": false,
+          "results": []
+        },
+        {
+          "id": "pr_comments_approve",
+          "position": 2,
+          "name": "Approve plan",
+          "type": "user",
+          "ownerRole": null,
+          "entryAction": null,
+          "instructionsSummary": "Nothing in the plan is carried out without this",
+          "isTerminal": false,
+          "planMode": false,
+          "results": [
+            {
+              "key": "approved",
+              "label": "Approve",
+              "tone": "success",
+              "requiresComment": false
+            },
+            {
+              "key": "revise",
+              "label": "Revise",
+              "tone": "warning",
+              "requiresComment": true
+            },
+            {
+              "key": "rejected",
+              "label": "Reject",
+              "tone": "danger",
+              "requiresComment": true
+            }
+          ]
+        }
+      ],
+      "routes": [
+        {
+          "fromStepId": "pr_comments_plan",
+          "resultKey": "planned",
+          "label": "Planned",
+          "tone": "success",
+          "target": "pr_comments_review",
+          "position": 0
+        },
+        {
+          "fromStepId": "pr_comments_review",
+          "resultKey": "approved",
+          "label": "Approved",
+          "tone": "success",
+          "target": "pr_comments_approve",
+          "position": 0
+        },
+        {
+          "fromStepId": "pr_comments_approve",
+          "resultKey": "approved",
+          "label": "Approve",
+          "tone": "success",
+          "target": "todo",
+          "position": 0
+        },
+        {
+          "fromStepId": "pr_comments_review",
+          "resultKey": "changes_requested",
+          "label": "Changes requested",
+          "tone": "warning",
+          "target": "pr_comments_plan",
+          "position": 1
+        },
+        {
+          "fromStepId": "pr_comments_approve",
+          "resultKey": "revise",
+          "label": "Revise",
+          "tone": "warning",
+          "target": "pr_comments_plan",
+          "position": 1
+        },
+        {
+          "fromStepId": "pr_comments_review",
+          "resultKey": "needs_user_input",
+          "label": "Needs user input",
+          "tone": "info",
+          "target": "user_attention",
+          "position": 2
+        },
+        {
+          "fromStepId": "pr_comments_approve",
+          "resultKey": "rejected",
+          "label": "Reject",
+          "tone": "danger",
+          "target": "pull_request_reply",
+          "position": 2
+        }
+      ]
     }
   ],
   "roles": [
@@ -788,6 +968,14 @@
       {
         "key": "send_back",
         "label": "Send back"
+      },
+      {
+        "key": "revise",
+        "label": "Revise"
+      },
+      {
+        "key": "rejected",
+        "label": "Reject"
       }
     ]
   },

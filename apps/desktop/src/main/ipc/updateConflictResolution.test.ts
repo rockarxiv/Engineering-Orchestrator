@@ -43,7 +43,7 @@ import { attachWorkspace, createTestItem, openMigratedTestDb } from "../db/testH
 import { createBuiltinRunners } from "../packs/developer/builtins.js";
 import { checkRun, fakeGh, gitHubState } from "../packs/developer/forge/testForges.js";
 import type { BuiltinContext } from "../supervisor/builtins.js";
-import { loadTemplateHistory } from "../gallery/history.js";
+import { templateHistoryUpTo } from "../gallery/historyTestHelpers.js";
 import { backfillPipelineOrigins } from "../gallery/origins.js";
 import { applyTemplateUpdates } from "../gallery/templateUpdates.js";
 import { TOOLS } from "../mcpHost/catalog.js";
@@ -103,7 +103,7 @@ function heldUpdate(): { conflictId: string; noticeId: string } {
   handle.db.run(sql`DELETE FROM step_routes WHERE from_step_id = 'pull_request_watch'`);
   handle.db.run(sql`UPDATE pipeline_steps SET retired_version = 1 WHERE id = 'pull_request_watch'`);
   handle.db.run(sql`UPDATE step_routes SET target = 'merge_pr' WHERE from_step_id = 'merge_request' AND result_key = 'opened'`);
-  const history = loadTemplateHistory(GALLERY_DIRECTORY);
+  const history = templateHistoryUpTo(GALLERY_DIRECTORY, "software-feature-to-merge", "1.3");
   backfillPipelineOrigins(handle.db, history);
   handle.db.run(sql`UPDATE pipelines SET project_id = ${shop.id} WHERE id = 'default'`);
   applyTemplateUpdates(handle.db, history, { isTheRecord: false });
@@ -380,7 +380,7 @@ describe("pipeline_update_conflict", () => {
   });
 
   it("refuses, saying so, for a pipeline with no held update", async () => {
-    const history = loadTemplateHistory(GALLERY_DIRECTORY);
+    const history = templateHistoryUpTo(GALLERY_DIRECTORY, "software-feature-to-merge", "1.3");
     backfillPipelineOrigins(handle.db, history);
 
     const { data, refused, text } = await readConflict();
@@ -449,7 +449,7 @@ describe("resolving a held update from its chat", () => {
     // The notice closes.
     expect(getMessage(handle.db, noticeId)?.handledHow).toBe("resolved");
     // And the same conflict is never raised again.
-    expect(applyTemplateUpdates(handle.db, loadTemplateHistory(GALLERY_DIRECTORY), { isTheRecord: false })).toEqual([]);
+    expect(applyTemplateUpdates(handle.db, templateHistoryUpTo(GALLERY_DIRECTORY, "software-feature-to-merge", "1.3"), { isTheRecord: false })).toEqual([]);
     expect(openUpdateConflict(handle.db, "default")).toBeUndefined();
   });
 
@@ -519,7 +519,7 @@ describe("Keep my pipeline", () => {
     expect(listPipelineVersions(handle.db, "default")).toHaveLength(before.versions);
     expect(getMessage(handle.db, noticeId)?.handledHow).toBe("resolved");
     // Never raised again for this version, and pressing again is refused.
-    expect(applyTemplateUpdates(handle.db, loadTemplateHistory(GALLERY_DIRECTORY), { isTheRecord: false })).toEqual([]);
+    expect(applyTemplateUpdates(handle.db, templateHistoryUpTo(GALLERY_DIRECTORY, "software-feature-to-merge", "1.3"), { isTheRecord: false })).toEqual([]);
     expect((await call("assist:applyCard", { conversationId: chat.id, messageId: keep })).applied).toBe(false);
   });
 
@@ -605,7 +605,7 @@ describe("the person's edits since the base", () => {
       { createdBy: dana.id },
     );
     resolveUpdateConflict(handle.db, conflictId, "superseded");
-    expect(applyTemplateUpdates(handle.db, loadTemplateHistory(GALLERY_DIRECTORY), { isTheRecord: false }).find((update) => update.pipelineId === "default")?.outcome).toBe("caught-up");
+    expect(applyTemplateUpdates(handle.db, templateHistoryUpTo(GALLERY_DIRECTORY, "software-feature-to-merge", "1.3"), { isTheRecord: false }).find((update) => update.pipelineId === "default")?.outcome).toBe("caught-up");
     const movedAt = getPipelineOrigin(handle.db, "default")!.baseMovedAt;
     expect(movedAt).not.toBeNull();
 
@@ -640,7 +640,7 @@ describe("the person's edits since the base", () => {
 
 /** The shipped history with a 1.4 of the template on top, which checks the pull request every ten minutes instead of five. */
 function historyWithEveryTenMinutes() {
-  const history = loadTemplateHistory(GALLERY_DIRECTORY);
+  const history = templateHistoryUpTo(GALLERY_DIRECTORY, "software-feature-to-merge", "1.3");
   const versions = history.get("software-feature-to-merge")!;
   const latest = versions.at(-1)!;
   const document = structuredClone(latest.document);
