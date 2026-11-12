@@ -6,6 +6,7 @@ import { uuidv7, type Uuid } from "@eo/core";
 import { describeUpdateKey } from "@eo/engine";
 import type { DbHandle } from "../db/client.js";
 import {
+  adoptPipeline,
   createPipeline,
   createStep,
   currentVersion,
@@ -184,7 +185,12 @@ describe("an update with no conflict", () => {
     handle.db.run(sql`UPDATE pipeline_steps SET retired_version = 1 WHERE id = 'repository_index'`);
     handle.db.run(sql`UPDATE step_routes SET target = 'todo' WHERE from_step_id = 'worktree' AND target = 'repository_index'`);
     backfillPipelineOrigins(handle.db, history);
+    // Delivery is the project's own, as every pipeline whose work a
+    // project has is since EO-766, so the Pull request comments board
+    // 1.4 adds is made on it too and Delivery's routes into it are
+    // hand-offs within the project.
     const project = createProject(handle.db, { name: "Shop", keyPrefix: "SHOP" });
+    adoptPipeline(handle.db, "default", project.id as Uuid);
     return { projectId: project.id as Uuid };
   }
 
@@ -333,16 +339,18 @@ describe("a merged graph that does not validate", () => {
 
 describe("judged for the projects a pipeline serves, not the one on screen", () => {
   /**
-   * An unadopted Delivery carrying project B's work, whose Worktree hands
-   * `failed` to a step of B's own pipeline. Whichever project is
+   * A Delivery carrying project B's work, whose Worktree hands `failed`
+   * to a step of another of B's pipelines. Whichever project is
    * selected, the update is judged for B — the project whose work is on
-   * it — and applies.
+   * it — and applies. Delivery is B's own, as every pipeline whose work
+   * a project has is since EO-766, so the board 1.4 adds is B's too.
    */
   it.each(["the unrelated project", "the working project"])("applies the same update with %s selected", (selected) => {
     deliveryBeforeEo461("ready_to_merge");
     backfillPipelineOrigins(handle.db, history);
     const other = createProject(handle.db, { name: "Other", keyPrefix: "OTHER" });
     const working = createProject(handle.db, { name: "Work", keyPrefix: "WORK" });
+    adoptPipeline(handle.db, "default", working.id as Uuid);
     const handOff = createPipeline(handle.db, { projectId: working.id, name: "Hand off" });
     const target = createStep(handle.db, { pipelineId: handOff.id as Uuid, position: 0, name: "Hand off", type: "user", isTerminal: true });
     handle.db.run(sql`UPDATE step_routes SET target = ${target.id} WHERE from_step_id = 'worktree' AND result_key = 'failed'`);

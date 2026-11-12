@@ -47,6 +47,7 @@ import { items, jobs, messages, projects } from "../db/schema.js";
 import { createTestItem, messagesFrom, openMigratedTestDb } from "../db/testHelpers.js";
 import { PREVIEW_PROJECT_KEY } from "./commands.js";
 import { loadTemplateHistory, type TemplateHistory } from "./history.js";
+import { templateHistoryUpTo } from "./historyTestHelpers.js";
 import { backfillPipelineOrigins } from "./origins.js";
 import { settleSeededPipelines, SPLIT_FAILED_SOURCE, splitSharedPipelines, splitSharedPipelinesOrHold } from "./sharedPipelines.js";
 import { applyTemplateUpdates } from "./templateUpdates.js";
@@ -544,7 +545,9 @@ describe("a template update that adds a board while a split is held (EO-766 revi
 
   it("shares the new board with every project as Delivery is, and gives each project its own on the launch that splits", () => {
     const db = handle.db;
-    const shipped = loadTemplateHistory(GALLERY_DIRECTORY);
+    // 1.3, the last version whose Delivery is the template's only board,
+    // so the board the update below adds is the one board held.
+    const shipped = templateHistoryUpTo(GALLERY_DIRECTORY, "software-feature-to-merge", "1.3");
     backfillPipelineOrigins(db, shipped);
     applyTemplateUpdates(db, shipped, { isTheRecord: false });
     const alpha = projectAt("Alpha", "ALP", 1_000);
