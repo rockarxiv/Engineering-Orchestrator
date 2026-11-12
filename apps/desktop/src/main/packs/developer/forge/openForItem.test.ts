@@ -1385,6 +1385,105 @@ describe("before it opens or reuses one (EO-429)", () => {
     });
   });
 
+  /**
+   * A named branch rewritten on the remote after Worktree checked it out —
+   * what Dependabot does to its pull request whenever the base moves
+   * (EO-756). Nothing of EO's is on the local branch, so the remote's
+   * tip is taken rather than reported as divergence.
+   */
+  describe("a named branch the remote moved while EO had nothing on it (EO-756)", () => {
+    function rebasedUpstream(pullRequest: string | null = null): { item: Item; worktree: string; attached: string; rebased: string } {
+      git(["branch", "feature/limits", "eo/API-4"], repoPath);
+      git(["push", "--force", "origin", "feature/limits"], repoPath);
+      const attached = localTip("feature/limits");
+      const item = story({ git: { branch: "feature/limits", namedBranch: true, attachedAt: attached, pullRequest } });
+      const worktree = worktreeFor(item, "feature/limits");
+      // The same change on a new commit, as a rebase leaves it, written
+      // straight to the remote without the local branch knowing.
+      const rebased = git(["commit-tree", "eo/API-4^{tree}", "-p", "main", "-m", "the work, rebased by Dependabot"], repoPath).trim();
+      git(["push", "--force", "origin", `${rebased}:refs/heads/feature/limits`], repoPath);
+      expect(rebased).not.toBe(attached);
+      return { item, worktree, attached, rebased };
+    }
+
+    /** A forge whose only answer is that the pull request is open; it is never asked to create one. */
+    const findsOpen: CliRunner = async (_cli, args) => {
+      if (args.includes("create")) throw new Error(`nothing should have been created: ${args.join(" ")}`);
+      return args.includes("list") ? found : noneYet;
+    };
+
+    it("moves the local branch to the remote's tip, records it as attachedAt, says so, and opens as if nothing had moved", async () => {
+      const { item, worktree, attached, rebased } = rebasedUpstream();
+
+      const result = await mergeRequestStep(item, findsOpen);
+
+      expect(result).toMatchObject({ ok: true, result: "opened", detail: `Adopted the pull request already open: ${PULL_REQUEST}` });
+      expect(localTip("feature/limits")).toBe(rebased);
+      expect(git(["rev-parse", "HEAD"], worktree).trim()).toBe(rebased);
+      expect(remoteTip("feature/limits")).toBe(rebased);
+      const state = gitStateOf(getItem(handle.db, item.id)!);
+      expect(state.attachedAt).toBe(rebased);
+      expect(state.pullRequest).toBe(PULL_REQUEST);
+      const note = notes(item).find((body) => body.includes("moved on"))!;
+      expect(note).toContain(attached);
+      expect(note).toContain(rebased);
+      expect(notes(item).some((body) => body.includes("has diverged"))).toBe(false);
+    });
+
+    it("answers opened with the pull request already recorded on the item", async () => {
+      const { item, attached, rebased } = rebasedUpstream(PULL_REQUEST);
+
+      const result = await mergeRequestStep(item, onlyFinds(found));
+
+      expect(result).toMatchObject({ ok: true, result: "opened", detail: `Already open: ${PULL_REQUEST}` });
+      expect(localTip("feature/limits")).toBe(rebased);
+      expect(remoteTip("feature/limits")).toBe(rebased);
+      expect(gitStateOf(getItem(handle.db, item.id)!).attachedAt).toBe(rebased);
+      const note = notes(item).find((body) => body.includes("moved on"))!;
+      expect(note).toContain(attached);
+      expect(note).toContain(rebased);
+    });
+
+    it("answers as it always did, moving and pushing nothing, once the branch has a commit beyond attachedAt", async () => {
+      for (const pullRequest of [null, PULL_REQUEST]) {
+        const { item, worktree, attached, rebased } = rebasedUpstream(pullRequest);
+        commitIn(worktree, "more.ts", "EO's own work");
+        const mine = localTip("feature/limits");
+        const before = notes(item);
+
+        const outcome = await mergeRequestStep(item, onlyFinds(found));
+
+        expect(outcome.ok).toBe(false);
+        expect(outcome.ok ? "" : outcome.reason).toContain("EO will not force-push over work it did not write");
+        expect(localTip("feature/limits")).toBe(mine);
+        expect(remoteTip("feature/limits")).toBe(rebased);
+        expect(gitStateOf(getItem(handle.db, item.id)!).attachedAt).toBe(attached);
+        expect(notes(item)).toEqual(before);
+
+        // Cleared for the next pass round the loop.
+        git(["worktree", "remove", "--force", worktree], repoPath);
+        git(["branch", "-D", "feature/limits"], repoPath);
+      }
+    });
+
+    it("leaves a branch EO cut answering remote_diverged, however little is on it", async () => {
+      const item = story();
+      git(["push", "origin", "eo/API-4"], repoPath);
+      worktreeFor(item);
+      const mine = localTip();
+      const rebased = git(["commit-tree", "eo/API-4^{tree}", "-p", "main", "-m", "the work, rewritten upstream"], repoPath).trim();
+      git(["push", "--force", "origin", `${rebased}:refs/heads/eo/API-4`], repoPath);
+
+      const result = await mergeRequestStep(item, unreachable);
+
+      expect(result).toMatchObject({ ok: true, result: "remote_diverged" });
+      expect(localTip()).toBe(mine);
+      expect(remoteTip()).toBe(rebased);
+      expect(gitStateOf(getItem(handle.db, item.id)!).attachedAt).toBeNull();
+      expect(notes(item).some((body) => body.includes("moved on"))).toBe(false);
+    });
+  });
+
   describe("where it never looked or pushed, and still does not", () => {
     it("neither checks nor pushes for a repository that does not open pull requests", async () => {
       updateWorkspace(handle.db, repository.id, { config: { forgeOpenPr: false } });

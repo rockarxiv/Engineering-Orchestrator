@@ -16,7 +16,16 @@ import {
   type GitWorkspace,
 } from "../../../db/repos/index.js";
 import { withoutRepositoryIndex } from "../repositoryIntelligence/index.js";
-import { branchExists, commitsAhead, pushBranch, rebaseOntoBase, statusPorcelain } from "../workspace/git.js";
+import {
+  branchExists,
+  commitsAhead,
+  git,
+  NETWORK_TIMEOUT_MS,
+  NON_INTERACTIVE_GIT_ENV,
+  pushBranch,
+  rebaseOntoBase,
+  statusPorcelain,
+} from "../workspace/git.js";
 import { resolveStackTargetWithAnswer } from "../workspace/stackAnswer.js";
 import { baseRefFor } from "../workspace/stackTarget.js";
 import { worktreePathFor } from "../workspace/worktrees.js";
@@ -342,6 +351,7 @@ async function openNew(
   run: CliRunner,
   options: OpenForItemOptions,
   ended?: OpenTarget,
+  adopted = false,
 ): Promise<Attempt> {
   const { signal, onProgress } = options;
 
@@ -405,6 +415,11 @@ async function openNew(
     // the outbox: a retry is seconds away rather than half an hour, and
     // whichever way it ends the step reports it.
     if (result.diverged && !gitStateOf(item).namedBranch) return diverged(db, item, workspace.config.forgeRemote, branch, target.baseRef);
+    // Once per attempt: a remote that moves again in the seconds between
+    // is answered as it always was, rather than chased.
+    if (result.diverged && !adopted && (await adoptRemoteHead(db, workspace, item, branch, options))) {
+      return openNew(db, workspace, item, branch, run, options, ended, true);
+    }
     return result.final ? { kind: "failed", reason: result.error } : { kind: "retryable", reason: result.error };
   }
 
@@ -583,6 +598,7 @@ async function pushAlreadyOpen(
   alreadyOpen: Attempt,
   run: CliRunner,
   options: OpenForItemOptions,
+  adopted = false,
 ): Promise<Attempt> {
   const { signal, onProgress } = options;
   const { repoPath, forgeRemote: remote } = workspace.config;
@@ -606,7 +622,88 @@ async function pushAlreadyOpen(
     }
     return diverged(db, item, remote, branch, target.baseRef);
   }
+  if (classified.diverged && !adopted && (await adoptRemoteHead(db, workspace, item, branch, options))) {
+    return pushAlreadyOpen(db, workspace, item, branch, alreadyOpen, run, options, true);
+  }
   return classified.final ? { kind: "failed", reason: classified.message } : { kind: "retryable", reason: classified.message };
+}
+
+/**
+ * Takes the remote's tip of a named branch that has nothing of EO's on
+ * it (EO-756), and says whether it did.
+ *
+ * A branch a person named — a Dependabot branch, above all — can be
+ * rewritten on the remote after Worktree checked it out: Dependabot
+ * rebases its pull request whenever the base moves. The push is then
+ * rejected, but nothing is being lost by following the remote when the
+ * local branch is still exactly where EO found it (`attachedAt`) and its
+ * worktree holds nothing uncommitted. So the local branch is moved to the
+ * remote's tip, that commit becomes `attachedAt` — where the implementer's
+ * commits check counts from — and the caller carries on as if the remote
+ * had not moved.
+ *
+ * Anything short of that is left exactly as it was, and the caller
+ * answers as it always has: a local commit beyond `attachedAt` is work
+ * the remote does not hold, and EO never rewrites or force-pushes it.
+ * Every check that cannot be made — no worktree, an unreadable status, a
+ * fetch that fails — is a no as well.
+ */
+async function adoptRemoteHead(db: Db, workspace: GitWorkspace, item: Item, branch: string, options: OpenForItemOptions): Promise<boolean> {
+  const { signal, onProgress } = options;
+  const { repoPath, forgeRemote: remote } = workspace.config;
+  // Read fresh: the attempt's item may predate an adoption earlier in
+  // this run, and `attachedAt` is the whole of the question.
+  const { namedBranch, attachedAt } = gitStateOf(getItem(db, item.id) ?? item);
+  if (!namedBranch || attachedAt === null) return false;
+
+  // The worktree the branch is checked out in is where it moves, so a
+  // branch with none — or a worktree on some other branch — is not one
+  // this can follow without reaching past EO's own checkout.
+  const worktreePath = worktreePathFor(item.key, options.worktreeRoot);
+  if (!existsSync(worktreePath)) return false;
+  const head = await git(["symbolic-ref", "--quiet", "HEAD"], worktreePath);
+  if (!head.ok || head.stdout !== `refs/heads/${branch}`) return false;
+
+  const local = await git(["rev-parse", "--verify", `refs/heads/${branch}^{commit}`], worktreePath);
+  if (!local.ok) return false;
+  if (local.stdout !== attachedAt) {
+    onProgress?.(`"${branch}" has commits since EO checked it out at ${attachedAt.slice(0, 12)}, so EO will not move it to the remote's.`);
+    return false;
+  }
+
+  const status = await statusPorcelain(worktreePath);
+  if (!status.ok || withoutRepositoryIndex(status.stdout) !== "") return false;
+
+  // Into the remote-tracking ref and read back from there, never from
+  // `FETCH_HEAD`: another step's fetch in this repository can overwrite
+  // that between the two calls.
+  const tracking = `refs/remotes/${remote}/${branch}`;
+  const network = { env: NON_INTERACTIVE_GIT_ENV, timeoutMs: NETWORK_TIMEOUT_MS, ...(signal ? { signal } : {}) };
+  const fetched = await git(["fetch", "--no-tags", remote, `+refs/heads/${branch}:${tracking}`], repoPath, network);
+  if (!fetched.ok) {
+    onProgress?.(`Could not fetch "${branch}" from ${remote} to see where it has moved: ${fetched.error}`);
+    return false;
+  }
+  const theirs = await git(["rev-parse", "--verify", `${tracking}^{commit}`], repoPath);
+  if (!theirs.ok || theirs.stdout === "" || theirs.stdout === attachedAt) return false;
+
+  // `--keep` rather than `--hard`: the tree was clean a moment ago, and
+  // if that has changed since, git refuses instead of discarding it.
+  const moved = await git(["reset", "--keep", theirs.stdout], worktreePath);
+  if (!moved.ok) {
+    onProgress?.(`Could not move "${branch}" to ${theirs.stdout.slice(0, 12)}: ${moved.error}`);
+    return false;
+  }
+
+  updateItem(db, item.id, { git: { attachedAt: theirs.stdout } });
+  postComment(db, {
+    itemId: item.id,
+    author: { type: "engine" },
+    kind: "note",
+    body: `\`${branch}\` moved on \`${remote}\` since EO checked it out, from \`${attachedAt}\` to \`${theirs.stdout}\`, and nothing had been committed on it locally since. So EO moved the local branch to \`${theirs.stdout}\` and carried on; only commits after it count as this ticket's work.`,
+  });
+  onProgress?.(`"${branch}" moved on ${remote} from ${attachedAt.slice(0, 12)} to ${theirs.stdout.slice(0, 12)} with nothing of EO's on it, so EO took the remote's.`);
+  return true;
 }
 
 type RecordedPullRequest =
