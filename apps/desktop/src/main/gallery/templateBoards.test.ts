@@ -650,6 +650,23 @@ describe("boards of one installation updated by the same version", () => {
     expect(listStepsForPipeline(handle.db, comments).map((step) => step.id)).not.toContain("cm_triage");
     expect(storedErrors(comments)).toEqual([]);
   });
+  it("lists no step of an unrelated pipeline that holds the template's id of a step only the held update to another board adds", () => {
+    const comments = on14();
+    const project = createProject(handle.db, { name: "Shop", keyPrefix: "SHOP" });
+    createTestItem(handle.db, { type: "story", title: "Indexing", stepId: "repository_index", projectId: project.id as Uuid });
+    const other = createPipeline(handle.db, { projectId: null, name: "Unrelated" });
+    createStep(handle.db, { id: "dl_reply", pipelineId: other.id as Uuid, position: 0, name: "Someone else's reply", type: "user" });
+
+    applyTemplateUpdates(handle.db, withVersions(twoBoards("1.4", { reply: false }), twoBoards("1.5", { triage: true, dropIndex: true })), { isTheRecord: false });
+
+    expect(openUpdateConflict(handle.db, comments)).toBeDefined();
+    const answer = describeUpdateConflict(handle.db, comments);
+    const linked = answer.conflict?.linkedSteps ?? [];
+    // Delivery's To Do, which Delivery holds; never the unrelated pipeline's step, which no board of the template is.
+    expect(linked.map((step) => step.id)).toEqual(["todo"]);
+    expect(linked.every((step) => step.pipelineId === "default")).toBe(true);
+    expect(getStep(handle.db, "dl_reply")?.pipelineId).toBe(other.id);
+  });
 });
 
 describe("exporting a board that routes into another board of its template", () => {
@@ -674,6 +691,55 @@ describe("exporting a board that routes into another board of its template", () 
       const reply = listStepsForPipeline(target.db, imported.pipelineId).find((step) => step.name === "Reply")!.id;
       expect(routeOf(imported.pipelineId, reply, "replied", target.db)).toBe(plan);
       expect(routeOf(comments!, plan, "rejected", target.db)).toBe(reply);
+    } finally {
+      target.close();
+    }
+  });
+
+  it("gives two reachable boards made from the same template board keys of their own, and imports both", () => {
+    deliveryOn13();
+    applyTemplateUpdates(handle.db, withVersions(twoBoards("1.4")), { isTheRecord: false });
+    const comments = boardNamed("Comments").id;
+    // Another installation of the template, in a project of its own, with its own Comments board.
+    const project = createProject(handle.db, { name: "Elsewhere", keyPrefix: "ELS" });
+    const elsewhere = importPipeline(handle.db, { document: twoBoards("1.4").document, projectId: project.id as Uuid });
+    if (!elsewhere.ok) throw new Error(elsewhere.reason);
+    const theirs = elsewhere.boardPipelineIds[0]!;
+    const theirPlan = installed(theirs, "cm_plan");
+    // A route somebody added to Delivery's Reply, into that installation's plan.
+    const steps = listStepsForPipeline(handle.db, "default").map(({ ownerPersonId: _person, ownerGroupId: _group, ...step }) =>
+      step.id === "dl_reply" ? { ...step, results: [...step.results, { key: "escalated", label: "escalated", tone: "info" as const, requiresComment: false }] } : step,
+    );
+    const routes = [...listRoutesForPipeline(handle.db, "default").map(({ id: _id, ...each }) => each), { ...route("dl_reply", "escalated", theirPlan), pipelineId: "default" as Uuid, tone: "info" as const }];
+    expect(replacePipelineGraph(handle.db, "default", steps, routes)).toMatchObject({ replaced: true });
+
+    const built = exportPipeline(handle.db, "default");
+    if (!built.ok) throw new Error(built.reason);
+    // This installation's own Comments keeps the template's key; the other travels under its pipeline's id.
+    expect(built.document.boards.map((board) => [board.key, board.pipeline.name])).toEqual(
+      expect.arrayContaining([
+        ["comments", "Comments"],
+        [theirs, "Comments"],
+      ]),
+    );
+    // Their Comments hands work back to their Delivery, which travels too, under its id.
+    expect(built.document.boards.map((board) => board.key)).toEqual(expect.arrayContaining([elsewhere.pipelineId]));
+    expect(new Set(built.document.boards.map((board) => board.key)).size).toBe(built.document.boards.length);
+    expect(comments).not.toBe(theirs);
+
+    const parsed = parseExport(JSON.stringify(built.document));
+    if (!parsed.ok) throw new Error(parsed.reason);
+    const target = openMigratedTestDb();
+    try {
+      const imported = importPipeline(target.db, { document: parsed.document });
+      if (!imported.ok) throw new Error(imported.reason);
+      expect(imported.boardPipelineIds).toHaveLength(3);
+      const reply = listStepsForPipeline(target.db, imported.pipelineId).find((step) => step.name === "Reply")!.id;
+      const replied = routeOf(imported.pipelineId, reply, "replied", target.db)!;
+      const escalated = routeOf(imported.pipelineId, reply, "escalated", target.db)!;
+      expect(imported.boardPipelineIds).toContain(getStep(target.db, replied)?.pipelineId);
+      expect(imported.boardPipelineIds).toContain(getStep(target.db, escalated)?.pipelineId);
+      expect(getStep(target.db, replied)?.pipelineId).not.toBe(getStep(target.db, escalated)?.pipelineId);
     } finally {
       target.close();
     }

@@ -37,7 +37,7 @@ import {
   versionSnapshot,
   type PipelineUpdateConflict,
 } from "../db/repos/index.js";
-import { isTemplateDocument, type TemplateDocument } from "../db/repos/pipelineOriginsRepo.js";
+import { isTemplateDocument, templateBoardHolders, type TemplateDocument } from "../db/repos/pipelineOriginsRepo.js";
 import { savePipeline } from "../ipc/configCommands.js";
 import type { TemplateVersion } from "./history.js";
 import { compareWithTemplate, conflictStepNames, describeConflicts, FIELD_WORDS, heldByTheRecord, pointRoutesWaitingOn, type PipelineComparison } from "./templateUpdates.js";
@@ -136,7 +136,7 @@ export function describeUpdateConflict(db: Db, pipelineId: string, place: Confli
       changes: ordered.map((change) => keyChangeView(change, stepName)),
       problems: conflict.problems,
       takenStepIds,
-      linkedSteps: linkedSteps(db, compared),
+      linkedSteps: linkedSteps(db, pipelineId, compared),
       chatId: conflict.chatId,
       edits: editsSinceBase(db, pipelineId, conflict),
     },
@@ -149,20 +149,25 @@ export function describeUpdateConflict(db: Db, pipelineId: string, place: Confli
  * The steps of the template's other boards the held version routes into,
  * as this installation holds them (EO-762): read through the map of the
  * pipeline made from each board, so a step renamed here is named by the
- * id it has here. A step no pipeline here holds is left out — there is
- * nothing for a draft to route to.
+ * id it has here, and only where that pipeline still holds it. A step no
+ * board here holds is left out — there is nothing for a draft to route
+ * to — even where the comparison read the route as going to the
+ * template's id, which may be some unrelated pipeline's step.
  */
-function linkedSteps(db: Db, compared: PipelineComparison): UpdateConflictDetail["linkedSteps"] {
+function linkedSteps(db: Db, pipelineId: string, compared: PipelineComparison): UpdateConflictDetail["linkedSteps"] {
   const own = new Set(compared.nextBoard.steps.map((step) => step.id));
   const others = documentSteps(compared.template.document).filter((step) => !own.has(step.id));
   const targets = new Set(compared.next.routes.map((route) => route.target));
+  const holders = templateBoardHolders(db, compared.origin.slug, getPipeline(db, pipelineId)?.projectId ?? null).filter((holder) => holder.pipelineId !== pipelineId);
   const linked: UpdateConflictDetail["linkedSteps"] = [];
   for (const step of others) {
-    const id = compared.nextLocal(step.id);
-    if (!targets.has(id) || linked.some((entry) => entry.id === id)) continue;
-    const held = getStep(db, id);
-    if (held === undefined) continue;
-    linked.push({ id, name: held.name, templateStepId: step.id, pipelineId: held.pipelineId, pipelineName: getPipeline(db, held.pipelineId)?.name ?? held.pipelineId });
+    for (const holder of holders) {
+      const id = holder.stepIds[step.id];
+      if (id === undefined || !targets.has(id) || linked.some((entry) => entry.id === id)) continue;
+      const held = getStep(db, id);
+      if (held === undefined || held.pipelineId !== holder.pipelineId) continue;
+      linked.push({ id, name: held.name, templateStepId: step.id, pipelineId: held.pipelineId, pipelineName: getPipeline(db, held.pipelineId)?.name ?? held.pipelineId });
+    }
   }
   return linked;
 }

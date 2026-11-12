@@ -161,7 +161,8 @@ export function exportPipeline(db: Db, pipelineId: string): { ok: true; document
   const exported = new Set(steps.map((step) => step.id));
   const exportedBoards = boards.map((board) => exportedBoard(db, board, exported, slugById));
   const [first, ...linked] = exportedBoards;
-  const rest = linked.map((board, index) => ({ key: exportedBoardKey(db, boards[index + 1]!.pipeline.id), ...board }));
+  const keys = exportedBoardKeys(db, pipeline, boards.slice(1).map((board) => board.pipeline));
+  const rest = linked.map((board, index) => ({ key: keys[index]!, ...board }));
 
   const roles = exportedRoles(db, steps, pipeline.projectId);
   // Refused here rather than written and refused on the far side. A
@@ -288,15 +289,37 @@ function linkedBoards(db: Db, pipelineId: string): BoardToExport[] {
 }
 
 /**
- * The key a further board travels under (EO-762, `ExportedBoardSchema.key`):
- * the key of the template board the pipeline was made from, where it was
- * made from one, so a template's next version exported from an
- * installation of it names its boards as the last one did; otherwise the
- * pipeline's own id, which is unique and means nothing else.
+ * The keys the further boards travel under, in their order (EO-762,
+ * `ExportedBoardSchema.key`), which the import gate needs unique.
+ *
+ * A board keeps the key of the template board its pipeline was made
+ * from, so a template's next version exported from an installation of
+ * it names its boards as the last one did; otherwise it travels under
+ * its pipeline's own id, which is unique and means nothing else. Two
+ * boards made from the same template board — this installation's, and
+ * another one's a customised route reaches — cannot both keep it: the
+ * board of the exported pipeline's own installation (its template, its
+ * project) claims it first, then the rest in the order they were
+ * reached, and a board whose key is already claimed travels under its
+ * id.
  */
-function exportedBoardKey(db: Db, pipelineId: string): string {
-  const origin = getPipelineOrigin(db, pipelineId);
-  return (origin === null ? null : originBoardKey(origin)) ?? pipelineId;
+function exportedBoardKeys(db: Db, exported: Pipeline, further: readonly Pipeline[]): string[] {
+  const own = getPipelineOrigin(db, exported.id)?.slug ?? null;
+  const candidates = further.map((pipeline, index) => {
+    const origin = getPipelineOrigin(db, pipeline.id);
+    const sameInstallation = origin !== null && own !== null && origin.slug === own && pipeline.projectId === exported.projectId;
+    return { index, pipeline, key: (origin === null ? null : originBoardKey(origin)) ?? null, sameInstallation };
+  });
+  const keys: string[] = [];
+  const claimed = new Set<string>();
+  const order = [...candidates.filter((each) => each.sameInstallation), ...candidates.filter((each) => !each.sameInstallation)];
+  for (const { index, pipeline, key } of order) {
+    let chosen = key !== null && !claimed.has(key) ? key : pipeline.id;
+    for (let suffix = 2; claimed.has(chosen); suffix += 1) chosen = `${pipeline.id}-${suffix}`;
+    claimed.add(chosen);
+    keys[index] = chosen;
+  }
+  return keys;
 }
 
 /** One board as the document carries it, its key aside. `exported` is every step on every board that leaves. */
