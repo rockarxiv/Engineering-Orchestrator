@@ -43,7 +43,7 @@ const objectOf = (value: unknown): Record<string, unknown> | null => (typeof val
 const rawOf = (run: Run): Record<string, unknown> | null => objectOf(run.result?.["raw"]);
 
 /** The result key a run answered with, as the supervisor stored it. */
-const answerOf = (run: Run): string | null => {
+export const answerOf = (run: Run): string | null => {
   const reported = objectOf(parsedResultOf(run.result))?.["result"];
   return typeof reported === "string" ? reported : null;
 };
@@ -57,7 +57,12 @@ const answerOf = (run: Run): string | null => {
  * watch only after the plan was carried out or rejected.
  */
 export function latestWatchAnswer(runs: readonly Run[]): Run | undefined {
-  return runs.filter((run) => run.action === WATCH_PULL_REQUEST_ACTION && run.status === "succeeded" && answerOf(run) !== null && answerOf(run) !== "waiting").at(-1);
+  return watchAnswers(runs).at(-1);
+}
+
+/** Every answer the pull request watch gave on this item other than `waiting`, oldest first: each begins a round, and the next ends it. */
+export function watchAnswers(runs: readonly Run[]): Run[] {
+  return runs.filter((run) => run.action === WATCH_PULL_REQUEST_ACTION && run.status === "succeeded" && answerOf(run) !== null && answerOf(run) !== "waiting");
 }
 
 /**
@@ -108,17 +113,25 @@ export interface PlanRun {
 }
 
 /**
+ * The newest succeeded `plan_comment_response` run after `after`, when
+ * given, and before `before`, when given: the newest plan of the round between two
+ * watch answers.
+ */
+function newestPlanIn(runs: readonly Run[], after: Uuid | null, before: Uuid | null): PlanRun | undefined {
+  const run = runs.filter((candidate) => candidate.action === PLAN_COMMENT_RESPONSE_ACTION && candidate.status === "succeeded" && (after === null || candidate.id > after) && (before === null || candidate.id < before)).at(-1);
+  if (run === undefined) return undefined;
+  const parsed = PlanCommentResponseOutputSchema.safeParse(parsedResultOf(run.result));
+  return parsed.success ? { run, plan: parsed.data } : undefined;
+}
+
+/**
  * The newest plan of this planning round: the newest succeeded
  * `plan_comment_response` run since the watch's newest answer. Undefined
  * before the round's first plan, and once the watch has answered again.
  */
 export function currentPlan(db: Db, itemId: Uuid): PlanRun | undefined {
   const runs = listRunsForItem(db, itemId);
-  const since = latestWatchAnswer(runs)?.id ?? "";
-  const run = runs.filter((candidate) => candidate.action === PLAN_COMMENT_RESPONSE_ACTION && candidate.status === "succeeded" && candidate.id > since).at(-1);
-  if (run === undefined) return undefined;
-  const parsed = PlanCommentResponseOutputSchema.safeParse(parsedResultOf(run.result));
-  return parsed.success ? { run, plan: parsed.data } : undefined;
+  return newestPlanIn(runs, latestWatchAnswer(runs)?.id ?? null, null);
 }
 
 /**
@@ -139,12 +152,34 @@ export function planSentBackReasons(db: Db, itemId: Uuid): Comment[] {
 /** `decided "Approve"`, or `decided "Approve" on the person's behalf` — the label a decision's move records. */
 const DECIDED = /^decided "(.*)"(?: on the person's behalf)?$/;
 
+/** A person's decision on a plan: the move it made, and whether it took a result drawn as the good outcome. */
+interface PlanDecision {
+  /** The id of the decision's move. */
+  id: Uuid;
+  approved: boolean;
+}
+
+/**
+ * The newest decision anybody made on the ticket after `plan` and, when
+ * `before` is given, before it, read by the tone of the result it took —
+ * the same reading `items:decide` gives it when it files the person's words
+ * as an `approval`. Undefined when there is none, or its result is not one
+ * the step it was made on declares.
+ */
+function decisionOn(db: Db, itemId: Uuid, plan: PlanRun, before: Uuid | null): PlanDecision | undefined {
+  const decision = listTransitionsForItem(db, itemId)
+    .filter((transition) => transition.id > plan.run.id && (before === null || transition.id < before) && transition.reason !== null && DECIDED.test(transition.reason))
+    .at(-1);
+  if (decision === undefined || decision.fromStepId === null) return undefined;
+  const label = DECIDED.exec(decision.reason ?? "")?.[1];
+  const taken = getStep(db, decision.fromStepId)?.results.find((result) => result.label === label);
+  return taken === undefined ? undefined : { id: decision.id, approved: taken.tone === "success" };
+}
+
 /**
  * The plan a person approved, if this round has one: the round's newest
  * plan, provided the newest decision anybody made on the ticket since it
- * took a result drawn as the good outcome (`tone: "success"`) — the same
- * reading `items:decide` gives it when it files the person's words as an
- * `approval`.
+ * took a result drawn as the good outcome (`tone: "success"`).
  *
  * Undefined when nobody has decided on it yet, when the newest decision
  * sent it back or rejected it, and once the watch has answered again, by
@@ -153,13 +188,39 @@ const DECIDED = /^decided "(.*)"(?: on the person's behalf)?$/;
 export function approvedPlan(db: Db, itemId: Uuid): PlanRun | undefined {
   const plan = currentPlan(db, itemId);
   if (plan === undefined) return undefined;
-  const decision = listTransitionsForItem(db, itemId)
-    .filter((transition) => transition.id > plan.run.id && transition.reason !== null && DECIDED.test(transition.reason))
+  return decisionOn(db, itemId, plan, null)?.approved === true ? plan : undefined;
+}
+
+/** What a person decided on a round's plan (EO-761). */
+export type DecidedPlan = PlanRun &
+  (
+    | { approved: true; decidedAt: Uuid }
+    /** `reason` is the person's, exactly as written on the rejection, or null where they gave none. */
+    | { approved: false; decidedAt: Uuid; reason: string | null }
+  );
+
+/**
+ * What became of the plan of the round between the watch answers `after`
+ * and `before` (null for the round still open): its newest plan, and the
+ * newest decision on it within the round.
+ *
+ * A decision that is not an approval is a rejection here. A person asking
+ * for a revision decides the same way, but sends the ticket back to the
+ * planner, whose new plan is then the round's newest and has no decision
+ * yet; so once a round's replies are owed, a plan whose newest decision was
+ * not an approval is one that was rejected. Its reason is the `rejection` the
+ * decision filed, which is written just before its move.
+ */
+export function decidedPlan(db: Db, itemId: Uuid, after: Uuid, before: Uuid | null): DecidedPlan | undefined {
+  const plan = newestPlanIn(listRunsForItem(db, itemId), after, before);
+  if (plan === undefined) return undefined;
+  const decision = decisionOn(db, itemId, plan, before);
+  if (decision === undefined) return undefined;
+  if (decision.approved) return { ...plan, approved: true, decidedAt: decision.id };
+  const reason = listCommentsForItem(db, itemId)
+    .filter((comment) => comment.kind === "rejection" && comment.authorType !== "engine" && comment.id > plan.run.id && comment.id < decision.id)
     .at(-1);
-  if (decision === undefined || decision.fromStepId === null) return undefined;
-  const label = DECIDED.exec(decision.reason ?? "")?.[1];
-  const taken = getStep(db, decision.fromStepId)?.results.find((result) => result.label === label);
-  return taken?.tone === "success" ? plan : undefined;
+  return { ...plan, approved: false, decidedAt: decision.id, reason: reason?.body ?? null };
 }
 
 /** A plan as the ticket and the implementer read it. */

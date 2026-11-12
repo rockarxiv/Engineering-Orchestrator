@@ -133,6 +133,14 @@ describe("registry_get, as the action catalog", () => {
     expect(outcome.text).toContain("reviewer / review_plan (ships with the role, read-only)");
   });
 
+  it("lists the reply on the pull request as a built-in function, with its results (EO-761)", async () => {
+    const outcome = answered(await tool("registry_get").run(dispatch, {}));
+    const data = outcome.data as IpcResponse<"registry:get">;
+
+    expect(data.builtins.find((builtin) => builtin.action === "reply_on_pull_request")?.results).toEqual(["replied", "nothing_to_reply", "failed"]);
+    expect(outcome.text).toContain("- reply_on_pull_request: replied, nothing_to_reply, failed");
+  });
+
   it("says a definition no step dispatches is used by none", async () => {
     answered(await tool("role_action_save").run(dispatch, ALIGNMENT));
 

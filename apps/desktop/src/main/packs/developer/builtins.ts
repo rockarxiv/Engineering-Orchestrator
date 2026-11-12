@@ -7,18 +7,20 @@ import {
   WATCH_PULL_REQUEST_READY_WHEN,
   WATCH_PULL_REQUEST_READY_WHEN_INPUT,
   WATCH_PULL_REQUEST_REPORT_READY_INPUT,
+  REPLY_ON_PULL_REQUEST_ACTION,
   type WatchPullRequestReadyWhen,
   type BuiltinAction,
   type BuiltinResult,
   type Item,
 } from "@eo/core";
 import type { Db } from "../../db/client.js";
-import { getGitWorkspace, listCommentsForItem, listRunsForItem, postComment } from "../../db/repos/index.js";
+import { getGitWorkspace, listCommentsForItem, listRunsForItem, postComment, updateRun } from "../../db/repos/index.js";
 import { watchStayOf } from "../../db/repos/itemWatchesRepo.js";
 import type { BuiltinContext, BuiltinRunner } from "../../supervisor/builtins.js";
 import { currentWatch, hasQuietCheck } from "../../supervisor/watches.js";
 import { createCliRunner, type CliRunner } from "./forge/cli.js";
 import { openPullRequestForItem, type OpenForItemOptions, type ItemPullRequestOutcome } from "./forge/openForItem.js";
+import { postReplies, repliesOwed, unsettledReplies, type ReplyProgress } from "./forge/replyOnPullRequest.js";
 import { judgePullRequest, legacyReadyCommit, parsePullRequestUrl, readPullRequest, readyNewsId } from "./forge/watchPullRequest.js";
 import { fallbackRepositoryIntelligenceRoot, repositoryIntelligenceFor, sayable, type RepositoryIntelligenceFactory } from "./repositoryIntelligence/index.js";
 
@@ -44,7 +46,7 @@ import { fallbackRepositoryIntelligenceRoot, repositoryIntelligenceFor, sayable,
  * and paying a model to make one would add a way for it to go wrong
  * without adding anything that could go right.
  *
- * The four of them are the developer pack's, and only the four: what
+ * The five of them are the developer pack's, and only the five: what
  * a builtin *is* — the context it is handed and the outcome it returns
  * — stayed in `supervisor/builtins.ts`, where the supervisor and the
  * module host can be typed on it without importing a pack (KAN-144).
@@ -432,6 +434,71 @@ function createWatchPullRequest(run: CliRunner): BuiltinRunner<BuiltinResult<"wa
 }
 
 /**
+ * Replies on the pull request to every comment EO handled and has not
+ * replied to yet (EO-761), run after the branch is pushed.
+ *
+ * What is owed, and what each reply says, is `repliesOwed`'s reading of the
+ * runs; nothing is asked of the forge when nothing is owed, which on a
+ * ticket's first pass is always. Every comment posted is recorded on the run
+ * as `postedCommentIds`, which the watch skips — the replies are under the
+ * account it takes for the person — and every comment answered as
+ * `repliedTo`, so running it again posts nothing twice.
+ *
+ * Recorded as it goes, not only at the end: before each post the run's
+ * result names the reply in flight as `pending`, and after it the comment
+ * posted. A run EO stops in the middle of — a restart, a crash, a cancel —
+ * keeps on its row what it posted, and a reply in flight when it stopped is
+ * looked for on the forge by its mark before the next run posts it again.
+ *
+ * A refusal is `failed` with a note naming what was refused, answered as a
+ * result rather than a failed run so that what was posted before it is still
+ * recorded: a reply left off the record would come back as the person's.
+ */
+function createReplyOnPullRequest(run: CliRunner): BuiltinRunner<BuiltinResult<"reply_on_pull_request">> {
+  return async ({ db, item, runId, report, signal, ensureRun }) => {
+    const owed = repliesOwed(db, item.id);
+    const unsettled = unsettledReplies(db, item.id);
+    if (owed.length === 0 && unsettled.length === 0) return { ok: true, result: "nothing_to_reply", detail: "No pull request comment was handled since EO last replied, so there was nothing to reply to." };
+
+    let progress: ReplyProgress = { postedCommentIds: [], repliedTo: [], pending: [] };
+    const fail = (reason: string) => {
+      const posted = progress.postedCommentIds.length;
+      const stands = posted === 0 ? "" : ` The ${posted} repl${posted === 1 ? "y" : "ies"} posted before it stand${posted === 1 ? "s" : ""} and will not be posted again.`;
+      postComment(db, { itemId: item.id, runId, author: { type: "engine" }, kind: "note", body: `"${REPLY_ON_PULL_REQUEST_ACTION}" could not reply on the pull request. ${reason}${stands}`, parseBodyMentions: false });
+      return { ok: true as const, result: "failed" as const, detail: reason, ...progress };
+    };
+    const { pullRequest } = gitStateOf(item);
+    const workspace = item.workspaceId === null ? undefined : getGitWorkspace(db, item.workspaceId);
+    if (!pullRequest) return fail(`${item.key} has no pull request recorded, so there is nowhere to reply to the ${owed.length} comment${owed.length === 1 ? "" : "s"} EO handled.`);
+    const address = parsePullRequestUrl(pullRequest, workspace?.config.forgeKind ?? null);
+    if (address === null) return fail(`EO cannot tell which pull request ${pullRequest} is: it is not a GitHub pull request or a GitLab merge request address.`);
+
+    const repoPath = workspace?.config.repoPath;
+    const cwd = repoPath !== undefined && existsSync(repoPath) ? repoPath : tmpdir();
+    const record = (now: ReplyProgress): void => {
+      progress = now;
+      ensureRun?.();
+      updateRun(db, runId, { result: { raw: now, parsed: null } });
+    };
+    try {
+      const outcome = await postReplies({ address, url: pullRequest, owed, unsettled, ownComments: ownCommentIds(db, item), run, cwd, report, record, ...(signal ? { signal } : {}) });
+      progress = outcome.progress;
+      if (!outcome.ok) return fail(outcome.refused);
+      const posted = outcome.progress.postedCommentIds.length - outcome.found;
+      const found = outcome.found === 0 ? [] : [`Found ${outcome.found} repl${outcome.found === 1 ? "y" : "ies"} on ${pullRequest} that EO posted before without recording, and recorded ${outcome.found === 1 ? "it" : "them"} rather than post again.`];
+      const replied = posted === 0 ? [] : [`Replied to ${posted} comment${posted === 1 ? "" : "s"} on ${pullRequest}.`];
+      if (outcome.progress.postedCommentIds.length === 0) return { ok: true, result: "nothing_to_reply", detail: "Every reply owed is already on the pull request.", ...outcome.progress };
+      return { ok: true, result: "replied", detail: [...replied, ...found].join(" "), ...outcome.progress };
+    } catch (error) {
+      // Thrown rather than answered, it would be stored as a failed run
+      // whose result is the error alone, and what was posted would be off
+      // the record.
+      return fail(error instanceof Error ? error.message : String(error));
+    }
+  };
+}
+
+/**
  * Every shipped builtin, typed by what `BUILTIN_RESULTS` declares it returns.
  *
  * The mapped type is the whole point (EO-77): `ready`, `opened` and
@@ -495,6 +562,7 @@ export function createBuiltinRunners(
     index_repository: createIndexRepository(intelligence),
     open_pull_request: createOpenPullRequest(open, worktreeRoot),
     watch_pull_request: createWatchPullRequest(forge),
+    reply_on_pull_request: createReplyOnPullRequest(forge),
   };
 }
 

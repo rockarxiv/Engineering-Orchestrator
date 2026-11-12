@@ -136,8 +136,14 @@ export type BuiltinOutcome<R extends string = string> =
    * `postedCommentIds` are the forge ids of comments EO itself posted on a
    * pull request, in the watch's own spelling (`forgeCommentId`), so the
    * watch never reads EO's own reply back as somebody's comment.
+   *
+   * `repliedTo` are the ids of the comments those replies answered (EO-761),
+   * in the spelling the watch handed them on in, so no comment is answered
+   * twice. `pending` are those a reply was being posted to when the forge
+   * refused it, which it may hold all the same: the next reply looks for it
+   * there before posting it again.
    */
-  | { ok: true; result: R; detail: string; news?: readonly WatchNews[]; stay?: string; handled?: readonly string[]; postedCommentIds?: readonly string[] }
+  | { ok: true; result: R; detail: string; news?: readonly WatchNews[]; stay?: string; handled?: readonly string[]; postedCommentIds?: readonly string[]; repliedTo?: readonly string[]; pending?: readonly string[] }
   /**
    * `options` are the answers EO would accept, when the failure is a
    * question it is asking rather than a fact it is reporting — they

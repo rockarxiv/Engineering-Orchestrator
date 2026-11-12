@@ -76,9 +76,9 @@ describe("folding the installed packs", () => {
     // supplied.
     for (const hook of PACK_HOOKS) expect(typeof folded[hook], hook).toBe("function");
     // The pack's four, and the core's own beside them (EO-459, EO-460).
-    expect(Object.keys(folded.builtins).sort()).toEqual(["create_worktree", "index_repository", "open_pull_request", "wait_until", "watch_pull_request"]);
+    expect(Object.keys(folded.builtins).sort()).toEqual(["create_worktree", "index_repository", "open_pull_request", "reply_on_pull_request", "wait_until", "watch_pull_request"]);
     expect([...folded.registry.roles.keys()].sort()).toEqual(["implementer", "reviewer", "system"]);
-    expect([...folded.registry.builtins.keys()].sort()).toEqual(["create_worktree", "index_repository", "open_pull_request", "wait_until", "watch_pull_request"]);
+    expect([...folded.registry.builtins.keys()].sort()).toEqual(["create_worktree", "index_repository", "open_pull_request", "reply_on_pull_request", "wait_until", "watch_pull_request"]);
     // By `packSlug:slug` since KAN-129, which is what lets a second pack
     // ship a word this one already uses.
     expect([...folded.registry.itemTypes.keys()].sort()).toEqual(["developer:bug", "developer:feature", "developer:story"]);

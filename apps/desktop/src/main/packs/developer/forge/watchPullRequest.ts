@@ -56,6 +56,22 @@ export const forgeCommentId = {
 };
 
 /**
+ * The mark at the foot of every reply EO posts on a pull request (EO-761):
+ * an HTML comment, which neither forge shows, naming the comments the reply
+ * answers. It is how a reply EO posted but did not live to record is found
+ * again — by the next reply, so it is not posted twice, and by the watch,
+ * which counts such a comment by the signed-in account for nothing, as it
+ * does every comment EO recorded posting.
+ */
+export const replyMark = (answers: readonly string[]): string => `<!-- eo-reply-to: ${answers.join(" ")} -->`;
+
+/** The comments a reply's mark says it answers, or null for a comment with no mark. */
+export function markedReplyTo(body: string): string[] | null {
+  const marked = /<!-- eo-reply-to: ([^>]*?) -->/.exec(body);
+  return marked === null ? null : (marked[1] ?? "").split(/\s+/).filter((id) => id !== "");
+}
+
+/**
  * One thing somebody wrote on the pull request: a review's own text, a
  * comment on a line, or on GitHub a comment in the conversation (EO-759).
  */
@@ -828,7 +844,9 @@ export function judgePullRequest(snapshot: PullRequestSnapshot, options: JudgeOp
     if (!options.reported.has(entry.id) && !news.some((already) => already.id === entry.id)) news.push(entry);
   };
   const byAuthor = (login: string | null): boolean => viewer !== null && login !== null && sameLogin(login, viewer);
-  const comments = snapshot.comments.filter((comment) => !options.ownComments.has(comment.id));
+  // EO's own replies: recorded, or — posted in a run EO did not live to
+  // record — marked as EO's and under the account it posts as (EO-761).
+  const comments = snapshot.comments.filter((comment) => !options.ownComments.has(comment.id) && !(byAuthor(comment.author) && markedReplyTo(comment.body) !== null));
 
   if (snapshot.state === "open" && snapshot.conflicted) {
     add({ id: conflictNewsId(headSha), text: `The pull request conflicts with its base branch at ${short(headSha)}, so the forge cannot merge it.` });
