@@ -1459,6 +1459,10 @@ describe("the canvas", () => {
     await screen.findByRole("tab", { name: /INV-11/ });
 
     window.location.hash = "#/items/i1";
+    // Its own tab first: until the canvas has opened one for it, the item
+    // can be drawn under the last tab and drawn again once its tab exists,
+    // and a box opened on the first drawing is gone with it.
+    await waitFor(() => expect(screen.getByRole("tab", { name: /RPT-7/ })).toHaveAttribute("aria-selected", "true"));
     const first = await screen.findByRole("article", { name: "Week of 29 September" });
     fireEvent.click(within(first).getByRole("button", { name: "Send back → Draft" }));
     fireEvent.change(within(first).getByRole("textbox", { name: "Why Send back" }), { target: { value: "Meant for RPT-7 only" } });
