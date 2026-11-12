@@ -131,7 +131,7 @@ export async function excludeGeneratedDirectories(worktreePath: string, director
   const file = await excludeFilePath(worktreePath);
   if (!file.ok) return file;
 
-  let current = "";
+  let current: string;
   try {
     current = readFileSync(file.path, "utf8");
   } catch {

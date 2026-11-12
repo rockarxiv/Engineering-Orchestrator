@@ -103,10 +103,10 @@ async function listAllModels(connection: AppServerConnection): Promise<CodexMode
   } catch (error) {
     // Said the way this exchange always said it: the server's own words
     // for a refused request, and what the process wrote for one that died.
-    if (error instanceof AppServerRequestError) throw new Error(error.message);
+    if (error instanceof AppServerRequestError) throw new Error(error.message, { cause: error });
     if (error instanceof AppServerExitedError) {
       const { stderr, signal, code } = error.exit;
-      throw new Error(stderr.trim() || `app-server exited before replying (${signal ?? code ?? "unknown"})`);
+      throw new Error(stderr.trim() || `app-server exited before replying (${signal ?? code ?? "unknown"})`, { cause: error });
     }
     throw error;
   }

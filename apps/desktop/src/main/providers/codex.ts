@@ -2287,7 +2287,7 @@ export function createCodexProvider(options: CodexProviderOptions = {}): AgentPr
     } catch (error) {
       await hook?.close();
       const why = error instanceof Error ? error.message : String(error);
-      if (refusing) throw new Error(`EO could not set up the hook that refuses this turn's other calls, so the turn was not run: ${why}`);
+      if (refusing) throw new Error(`EO could not set up the hook that refuses this turn's other calls, so the turn was not run: ${why}`, { cause: error });
       console.warn(`[codex] the broad-search hook could not be set up, so this turn runs without it: ${why}`);
       return null;
     }

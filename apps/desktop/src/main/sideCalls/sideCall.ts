@@ -220,7 +220,7 @@ async function* untilAborted<T>(stream: AsyncIterable<T>, signal: AbortSignal, k
     onAbort = () => resolve({ aborted: true });
     signal.addEventListener("abort", onAbort, { once: true });
   });
-  let pending: Promise<IteratorResult<T>> | null = null;
+  let pending: Promise<IteratorResult<T>> | null;
   try {
     for (;;) {
       pending = iterator.next();

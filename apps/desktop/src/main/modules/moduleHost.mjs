@@ -1432,7 +1432,7 @@ const getCallSites = typeof nodeUtil.getCallSites === "function" ? nodeUtil.getC
  */
 function siteWhereItRan(moduleUrl, code) {
   if (getCallSites === null) return null;
-  let frames = [];
+  let frames;
   try {
     frames = getCallSites(STACK_DEPTH);
   } catch {

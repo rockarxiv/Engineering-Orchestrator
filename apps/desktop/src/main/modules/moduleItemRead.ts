@@ -115,7 +115,7 @@ export function moduleItemReader(db: Db, options: ModuleItemReaderOptions = {}):
     read: async (key) => {
       const item = getItemByKey(db, key);
       if (item === undefined) return null;
-      let targetBranch: string | null = null;
+      let targetBranch: string | null;
       try {
         targetBranch = options.targetBranch === undefined ? null : await options.targetBranch(item);
       } catch {
