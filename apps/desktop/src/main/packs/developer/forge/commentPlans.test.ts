@@ -345,7 +345,8 @@ describe("checking a planning run", () => {
     expect(check?.key).toBe("untouched-tree");
     expect(check?.passed).toBe(false);
     expect(check?.blocks).toBe(true);
-    expect(check?.describes).toContain("has commits made since the planning round started");
+    expect(check?.describes).toContain("moved EO-");
+    expect(check?.comment).toContain("Commits added since the round started:");
     expect(check?.comment).toContain("rename a to total");
     expect(check?.comment).not.toContain("Changes in the worktree:");
   });
@@ -371,6 +372,40 @@ describe("checking a planning run", () => {
     sh("reset", "-q", "--hard", start);
     const putBack = await verifyRun(await turn(kindWith()), fresh(), run(PLAN));
     expect(putBack.map((check) => [check.key, check.passed])).toEqual([
+      ["untouched-tree", true],
+      ["plan-coverage", true],
+    ]);
+  });
+
+  it("fails a run that reset the branch to an earlier commit, taking work away with a clean status, and again after EO restarts", async () => {
+    // Two commits before planning, so there is earlier work to reset to.
+    writeFileSync(join(drive, "b.ts"), "export const b = 2;\n");
+    sh("add", "b.ts");
+    sh("commit", "-q", "-m", "existing implementation work");
+    await turn();
+    const start = sh("rev-parse", "HEAD").trim();
+    sh("reset", "-q", "--hard", "HEAD~1");
+    expect(sh("status", "--porcelain")).toBe("");
+
+    const [check, ...rest] = await verifyRun(kindWith(), fresh(), run(PLAN));
+    expect(rest).toEqual([]);
+    expect(check?.key).toBe("untouched-tree");
+    expect(check?.passed).toBe(false);
+    expect(check?.blocks).toBe(true);
+    expect(check?.describes).toContain("moved");
+    expect(check?.comment).toContain("Commits the branch had when the round started and no longer has:");
+    expect(check?.comment).toContain("existing implementation work");
+    expect(check?.comment).not.toContain("Commits added since");
+    expect(check?.comment).toContain(`the branch on ${start.slice(0, 12)}`);
+
+    // A new process, and a turn opened on the reset branch: still not where the round started.
+    const [resumed] = await verifyRun(await turn(kindWith()), fresh(), run(PLAN));
+    expect(resumed?.passed).toBe(false);
+    expect(resumed?.comment).toContain("existing implementation work");
+
+    sh("reset", "-q", "--hard", start);
+    const putBack = await verifyRun(await turn(kindWith()), fresh(), run(PLAN));
+    expect(putBack.map((entry) => [entry.key, entry.passed])).toEqual([
       ["untouched-tree", true],
       ["plan-coverage", true],
     ]);

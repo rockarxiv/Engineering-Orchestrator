@@ -561,16 +561,17 @@ async function markPlanningRoundStart(db: Db, item: Item, cwd: string): Promise<
  * `plan_comment_response` produces, and changes left beside it would be
  * work nobody approved, on the branch the approved plan is carried out on.
  * Two ways to leave one, so two things are read. Changes left uncommitted
- * show in the status; changes committed leave a clean status, and show as
- * commits on `HEAD` that the commit the planning round started on does not
- * have. The generated repository index is not a change, as it is not for
- * the implementation's own check.
+ * show in the status. Changes to the branch — a commit, and as much a reset,
+ * rebase or checkout that takes commits away — leave a clean status, and
+ * show as `HEAD` no longer being the commit the planning round started on,
+ * which is the only `HEAD` that passes. The generated repository index is
+ * not a change, as it is not for the implementation's own check.
  *
  * It fails closed: a status that cannot be read, a round with no recorded
  * start, and a `HEAD` that cannot be compared with it are none of them
- * taken for an untouched tree. A planner that committed is held to the
- * round's start on every later turn of the round, whatever restarted in
- * between, until the branch is put back.
+ * taken for an untouched tree. A planner that moved the branch is held to
+ * the round's start on every later turn of the round, whatever restarted
+ * in between, until the branch is put back.
  */
 async function untouchedTreeCheck(db: Db, item: Item, workspace: PreparedWorkspace, readStatus: typeof statusPorcelain): Promise<Check> {
   const unreadable = (why: string): Check => ({
@@ -592,30 +593,39 @@ async function untouchedTreeCheck(db: Db, item: Item, workspace: PreparedWorkspa
   if (!start.ok || start.stdout === "") {
     return unreadable(`the commit this planning round started on was not recorded in the worktree (\`${PLAN_ROUND_REFS + round}\`), so commits made during it cannot be told apart.`);
   }
-  const log = await git(["log", "--oneline", `${start.stdout}..HEAD`], workspace.cwd);
-  if (!log.ok) return unreadable(log.error);
-  const commits = log.stdout === "" ? null : log.stdout;
+  const head = await git(["rev-parse", "--verify", "HEAD^{commit}"], workspace.cwd);
+  if (!head.ok || head.stdout === "") return unreadable(head.ok ? "the worktree has no `HEAD` commit." : head.error);
+  const moved = head.stdout !== start.stdout;
 
-  if (changes === "" && commits === null) {
+  if (changes === "" && !moved) {
     return { key: "untouched-tree", passed: true, blocks: true, describes: `This planning run left ${item.key}'s worktree as it found it.` };
   }
-  const found = [
-    ...(commits === null ? [] : [`Commits made since this planning round started on ${start.stdout.slice(0, 12)}:\n\n\`\`\`\n${commits.trimEnd()}\n\`\`\``]),
-    ...(changes === "" ? [] : [`Changes in the worktree:\n\n\`\`\`\n${changes.trimEnd()}\n\`\`\``]),
-  ];
+
+  // Either way off the round's start: commits added on top of it, and
+  // commits it had that the branch no longer has — a reset, a rebase or a
+  // checkout of another commit takes work away as surely as a commit adds it.
+  const was = start.stdout.slice(0, 12);
+  const is = head.stdout.slice(0, 12);
+  const sections: string[] = [];
+  if (moved) {
+    const added = await git(["log", "--oneline", `${start.stdout}..${head.stdout}`], workspace.cwd);
+    const removed = await git(["log", "--oneline", `${head.stdout}..${start.stdout}`], workspace.cwd);
+    sections.push(`The branch was on ${was} when this planning round started, and it is on ${is} now.`);
+    if (added.ok && added.stdout !== "") sections.push(`Commits added since the round started:\n\n\`\`\`\n${added.stdout}\n\`\`\``);
+    if (removed.ok && removed.stdout !== "") sections.push(`Commits the branch had when the round started and no longer has:\n\n\`\`\`\n${removed.stdout}\n\`\`\``);
+  }
+  if (changes !== "") sections.push(`Changes in the worktree:\n\n\`\`\`\n${changes.trimEnd()}\n\`\`\``);
+
+  const what = moved && changes !== "" ? `moved ${item.key}'s branch and left changes in its worktree` : moved ? `moved ${item.key}'s branch` : `left changes in ${item.key}'s worktree`;
   return {
     key: "untouched-tree",
     passed: false,
     blocks: true,
-    describes:
-      commits === null
-        ? `This planning run was to change nothing, and it left changes in ${item.key}'s worktree, so it failed.`
-        : `This planning run was to change nothing, and ${item.key}'s branch has commits made since the planning round started, so it failed.`,
+    describes: `This planning run was to change nothing, and it ${what}, so it failed.`,
     comment:
-      `This run was asked to plan a response to the pull request comments and change nothing, and ` +
-      `${commits === null ? "it left changes in" : changes === "" ? "commits were made on" : "commits were made on, and changes left in,"} ${item.key}'s worktree. ` +
-      `So the run failed, and its plan was not posted.\n\n${found.join("\n\n")}\n\n` +
-      `Nothing has been discarded or reverted. Whoever plans again must put the worktree and the branch back as they were first${commits === null ? "" : ` — the branch on ${start.stdout.slice(0, 12)}`}: a plan proposes, and changes are made only once a person approves it.`,
+      `This run was asked to plan a response to the pull request comments and change nothing, and it ${what}. ` +
+      `So the run failed, and its plan was not posted.\n\n${sections.join("\n\n")}\n\n` +
+      `Nothing has been discarded or reverted. Whoever plans again must put the worktree and the branch back as they were first${moved ? ` — the branch on ${was}` : ""}: a plan proposes, and changes are made only once a person approves it.`,
   };
 }
 
