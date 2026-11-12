@@ -650,17 +650,25 @@ export function listRoutesForStep(db: Db, stepId: string): StepRoute[] {
  * would hold a step hostage to a pipeline somebody deleted, which is a
  * refusal with nothing they can do about it — the route is not editable
  * from anywhere.
+ *
+ * `replacing` is the routes other pipelines will have once writes made
+ * in the same transaction land (EO-762): the boards of one template
+ * updated together, where one stops handing work to a step the other
+ * removes. Their stored routes are read as these instead.
  */
-export function listIncomingHandOffs(db: Db, pipelineId: string): IncomingHandOff[] {
+export function listIncomingHandOffs(db: Db, pipelineId: string, replacing: ReadonlyMap<string, readonly StepRoute[]> = new Map()): IncomingHandOff[] {
   const mine = new Set(listStepsForPipeline(db, pipelineId).map((step) => step.id));
   const live = new Map(listPipelines(db).map((pipeline) => [pipeline.id as string, pipeline.name]));
 
-  return db
+  const stored = db
     .select()
     .from(stepRoutes)
     .where(ne(stepRoutes.pipelineId, pipelineId))
     .all()
     .map(toRoute)
+    .filter((route) => !replacing.has(route.pipelineId));
+  const replaced = [...replacing].flatMap(([id, routes]) => (id === pipelineId ? [] : routes));
+  return [...stored, ...replaced]
     .filter((route) => mine.has(route.target) && live.has(route.pipelineId))
     .map((route) => ({ target: route.target, pipelineName: live.get(route.pipelineId)!, label: route.label }));
 }

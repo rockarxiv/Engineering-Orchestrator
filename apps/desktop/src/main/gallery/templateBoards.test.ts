@@ -1,8 +1,10 @@
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { USER_ATTENTION_TARGET, type Uuid } from "@eo/core";
+import { eq } from "drizzle-orm";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { type Uuid } from "@eo/core";
 import type { DbHandle } from "../db/client.js";
+import { pipelines } from "../db/schema.js";
 import {
   createPerson,
   createPipeline,
@@ -20,6 +22,9 @@ import {
   type TemplateDocument,
 } from "../db/repos/index.js";
 import { createTestItem, messagesFrom, openMigratedTestDb } from "../db/testHelpers.js";
+import { storedGraphProblems } from "../ipc/configCommands.js";
+import { decideItem, type EngineHandle } from "../ipc/domainCommands.js";
+import { createItemLock } from "../supervisor/itemLock.js";
 import { exportPipeline, importPipeline, parseExport } from "../modules/pipelineTransfer.js";
 import { useTemplate } from "./commands.js";
 import { galleryBlanks, galleryRoleSlots } from "./form.js";
@@ -92,11 +97,13 @@ interface Shape {
   comments?: string;
   /** Whether Comments has a step running a module with a required input, and a human step deciding its plan. */
   notify?: boolean;
+  /** Whether Comments has a Triage step, which Delivery's Reply hands work to instead of the plan. */
+  triage?: boolean;
 }
 
 /** 1.3, with a Comments board beside Delivery, at this version. */
 function twoBoards(version: string, shape: Shape = {}): TemplateVersion {
-  const { reply = true, dropIndex = false, everyMinutes, comments: cm = "cm", notify = false } = shape;
+  const { reply = true, dropIndex = false, everyMinutes, comments: cm = "cm", notify = false, triage = false } = shape;
   const raw = JSON.parse(JSON.stringify(shipped("1.3").document)) as {
     template: { version: string };
     steps: { id: string; watch?: { everyMinutes: number } }[];
@@ -107,7 +114,7 @@ function twoBoards(version: string, shape: Shape = {}): TemplateVersion {
   raw.template.version = version;
   if (reply) {
     raw.steps.push(human("dl_reply", 7, "Reply", ["replied"]));
-    raw.routes.push(route("dl_reply", "replied", `${cm}_plan`));
+    raw.routes.push(route("dl_reply", "replied", triage ? `${cm}_triage` : `${cm}_plan`));
   }
   if (dropIndex) {
     raw.steps = raw.steps.filter((step) => step.id !== "repository_index");
@@ -125,8 +132,10 @@ function twoBoards(version: string, shape: Shape = {}): TemplateVersion {
         human(`${cm}_plan`, 0, "Approve plan", ["approved", "rejected"]),
         human(`${cm}_closed`, 1, "Closed", [], true),
         ...(notify ? [{ ...human(`${cm}_notify`, 2, "Notify", ["sent"]), type: "module", entryAction: "notify" }] : []),
+        ...(triage ? [human(`${cm}_triage`, 3, "Triage", ["triaged"])] : []),
       ],
       routes: [
+        ...(triage ? [route(`${cm}_triage`, "triaged", `${cm}_plan`)] : []),
         route(`${cm}_plan`, "approved", "todo"),
         route(`${cm}_plan`, "rejected", reply ? "dl_reply" : `${cm}_closed`),
         ...(notify ? [route(`${cm}_notify`, "sent", `${cm}_closed`)] : []),
@@ -175,6 +184,37 @@ function installed(pipelineId: string, templateStepId: string, db = handle.db): 
   const id = getPipelineOrigin(db, pipelineId)?.stepIds[templateStepId];
   if (id === undefined) throw new Error(`${pipelineId} holds no ${templateStepId}`);
   return id;
+}
+
+function fakeEngine(): EngineHandle {
+  return {
+    resumeItem: vi.fn(async () => {}),
+    cancelRun: vi.fn(),
+    steerRun: vi.fn(async () => "no-live-run" as const),
+    pause: vi.fn(),
+    resume: vi.fn(),
+    isPaused: () => false,
+    dispatchBlockerFor: () => null,
+    activeRunCount: () => 0,
+    finishingRunCount: () => 0,
+    notifyStateChange: vi.fn(),
+    itemLock: createItemLock(),
+    offerWork: async () => [],
+  };
+}
+
+/** What the validator says is wrong with a pipeline as it is stored now. */
+function storedErrors(pipelineId: string): string[] {
+  const steps = listStepsForPipeline(handle.db, pipelineId);
+  const entry = listPipelines(handle.db).find((pipeline) => pipeline.id === pipelineId)?.entryStepId ?? null;
+  return storedGraphProblems(handle.db, pipelineId, steps, listRoutesForPipeline(handle.db, pipelineId), entry)
+    .filter((problem) => problem.severity === "error")
+    .map((problem) => problem.message);
+}
+
+/** Puts a pipeline first in the order the update walks them, which is by position. */
+function compareFirst(pipelineId: string): void {
+  handle.db.update(pipelines).set({ position: -1_000 }).where(eq(pipelines.id, pipelineId)).run();
 }
 
 describe("the import gate", () => {
@@ -425,22 +465,36 @@ describe("a new version that adds a board, where the update to Delivery is held"
     return { comments, plan: installed(comments, "cm_plan") };
   }
 
-  it("still makes the board, its route into a step Delivery has going there, and its route into the step the held update adds waiting for a person", () => {
+  it("still makes the board, with its route into a step Delivery has, and without the decision whose step only the held update adds", () => {
     const { comments, plan } = heldAt14();
 
     expect(listStepsForPipeline(handle.db, "default").map((step) => step.id)).not.toContain("dl_reply");
     expect(routeOf(comments, plan, "approved")).toBe("todo");
-    expect(routeOf(comments, plan, "rejected")).toBe(USER_ATTENTION_TARGET);
+    // Not routed to a person, which a decision cannot be: not offered, until its step is there.
+    expect(routeOf(comments, plan, "rejected")).toBeUndefined();
+    expect(getStep(handle.db, plan)?.results.map((result) => result.key)).toEqual(["approved"]);
     expect(getPipelineOrigin(handle.db, comments)?.version).toBe("1.4");
     expect(getPipelineOrigin(handle.db, "default")?.version).toBe("1.3");
   });
 
-  it("names the board it made, and the route waiting on the update, in the notice", () => {
+  it("makes a board that validates, whose every decision can be pressed while Delivery is held", () => {
+    const { comments, plan } = heldAt14();
+
+    expect(storedErrors(comments)).toEqual([]);
+    const approved = createTestItem(handle.db, { type: "story", title: "Approve me", stepId: plan });
+    expect(decideItem(handle.db, fakeEngine(), { itemId: approved.id, resultKey: "approved", comment: "" })).toMatchObject({ decided: true, toStepId: "todo", problem: null });
+    // The one it does not offer is refused as any button a step does not have, and nothing moves.
+    const rejected = createTestItem(handle.db, { type: "story", title: "Reject me", stepId: plan });
+    expect(decideItem(handle.db, fakeEngine(), { itemId: rejected.id, resultKey: "rejected", comment: "No." })).toMatchObject({ decided: false });
+    expect(getStep(handle.db, plan)?.id).toBe(plan);
+  });
+
+  it("names the board it made, and the decision waiting on the update, in the notice", () => {
     heldAt14();
 
     const [notice] = messagesFrom(handle.db, "template_conflict");
     expect(notice?.body).toContain("EO created the **Comments** board");
-    expect(notice?.body).toContain("Its 'rejected' route waits for a person until this update is resolved");
+    expect(notice?.body).toContain("'rejected' is not offered on it until this update is resolved");
   });
 
   it("lists the steps of the template's other boards the update routes into, by their installed ids", () => {
@@ -452,11 +506,11 @@ describe("a new version that adds a board, where the update to Delivery is held"
     // And the held version's route into that board, in the template's graph, already reads that id.
     expect(answer.conflict?.template.routes.find((each) => each.fromStepId === "dl_reply" && each.resultKey === "replied")?.target).toBe(plan);
   });
-  it("points the waiting route at the step the resolved update adds, by the id the person's draft gave it, on a later launch", () => {
+  it("offers the waiting decision again, routed to the step the resolved update adds by the id the person's draft gave it, on a later launch", () => {
     const { comments, plan } = heldAt14();
     // A later launch: nothing the first one knew is held anywhere but the database.
     applyTemplateUpdates(handle.db, withVersions(twoBoards("1.4", { dropIndex: true })), { isTheRecord: false });
-    expect(routeOf(comments, plan, "rejected")).toBe(USER_ATTENTION_TARGET);
+    expect(routeOf(comments, plan, "rejected")).toBeUndefined();
 
     // The person's draft adds the reply step under an id of its own, and routes it into Comments' plan.
     createStep(handle.db, { id: "my_reply", pipelineId: "default" as Uuid, position: 40, name: "Reply on the pull request", type: "user" });
@@ -467,32 +521,134 @@ describe("a new version that adds a board, where the update to Delivery is held"
 
     expect(routeOf(comments, plan, "rejected")).toBe("my_reply");
     expect(routeOf(comments, plan, "approved")).toBe("todo");
+    expect(getStep(handle.db, plan)?.results.map((result) => result.key)).toEqual(["approved", "rejected"]);
+    expect(storedErrors(comments)).toEqual([]);
     expect(listPipelineVersions(handle.db, comments).at(-1)?.releaseNotes).toContain("Pointed the routes that waited for Delivery");
     expect(getPipelineOrigin(handle.db, "default")?.stepIds.dl_reply).toBe("my_reply");
+    // And pressing it now takes the item there.
+    const item = createTestItem(handle.db, { type: "story", title: "Reject me", stepId: plan });
+    expect(decideItem(handle.db, fakeEngine(), { itemId: item.id, resultKey: "rejected", comment: "Not this." })).toMatchObject({ decided: true, toStepId: "my_reply", problem: null });
     // The board's next comparison reads the route as the template's, not as the person's change.
     applyTemplateUpdates(handle.db, withVersions(twoBoards("1.4", { dropIndex: true })), { isTheRecord: false });
     expect(routeOf(comments, plan, "rejected")).toBe("my_reply");
   });
 
-  it("leaves the route with a person where the update is resolved by keeping Delivery as it is", () => {
+  it("keeps the decision withheld where the update is resolved by keeping Delivery as it is", () => {
     const { comments, plan } = heldAt14();
 
     expect(resolveHeldUpdate(handle.db, openUpdateConflict(handle.db, "default")!, "kept")).toEqual({ ok: true });
 
-    expect(routeOf(comments, plan, "rejected")).toBe(USER_ATTENTION_TARGET);
+    expect(routeOf(comments, plan, "rejected")).toBeUndefined();
+    expect(storedErrors(comments)).toEqual([]);
   });
 
-  it("leaves a waiting route somebody pointed elsewhere meanwhile where they pointed it", () => {
+  it("leaves a decision somebody offered and routed elsewhere meanwhile where they pointed it", () => {
     const { comments, plan } = heldAt14();
     const closed = installed(comments, "cm_closed");
-    const steps = listStepsForPipeline(handle.db, comments).map(({ ownerPersonId: _person, ownerGroupId: _group, ...step }) => step);
-    const routes = listRoutesForPipeline(handle.db, comments).map(({ id: _id, ...each }) => (each.resultKey === "rejected" ? { ...each, target: closed } : each));
-    replacePipelineGraph(handle.db, comments, steps, routes);
+    const steps = listStepsForPipeline(handle.db, comments).map(({ ownerPersonId: _person, ownerGroupId: _group, ...step }) =>
+      step.id === plan ? { ...step, results: [...step.results, { key: "rejected", label: "Close it", tone: "danger" as const, requiresComment: true }] } : step,
+    );
+    const routes = [...listRoutesForPipeline(handle.db, comments).map(({ id: _id, ...each }) => each), { ...route(plan, "rejected", closed), pipelineId: comments as Uuid, tone: "danger" as const }];
+    expect(replacePipelineGraph(handle.db, comments, steps, routes)).toMatchObject({ replaced: true });
     createStep(handle.db, { id: "my_reply", pipelineId: "default" as Uuid, position: 40, name: "Reply", type: "user" });
 
     resolveHeldUpdate(handle.db, openUpdateConflict(handle.db, "default")!, "published", { templateStepIds: { dl_reply: "my_reply" } });
 
     expect(routeOf(comments, plan, "rejected")).toBe(closed);
+    expect(getStep(handle.db, plan)?.results.find((result) => result.key === "rejected")?.label).toBe("Close it");
+  });
+});
+
+describe("boards of one installation updated by the same version", () => {
+  /** Delivery and Comments on 1.4, where neither routes into a step the other lacks; `triage` is taken by another pipeline. */
+  function on14(): string {
+    deliveryOn13();
+    applyTemplateUpdates(handle.db, withVersions(twoBoards("1.4", { reply: false })), { isTheRecord: false });
+    const other = createPipeline(handle.db, { projectId: null, name: "Other" });
+    createStep(handle.db, { id: "cm_triage", pipelineId: other.id as Uuid, position: 0, name: "Someone else's triage", type: "user" });
+    return boardNamed("Comments").id;
+  }
+
+  // 1.5 adds Delivery's Reply, which hands work to Comments' new Triage, and Comments' rejection goes to that Reply: each routes into a step the other adds.
+  const next = () => withVersions(twoBoards("1.4", { reply: false }), twoBoards("1.5", { triage: true }));
+
+  for (const first of ["Delivery", "Comments"] as const) {
+    it(`applies both, each routing into the step the other adds, whichever is compared first (${first})`, () => {
+      const comments = on14();
+      compareFirst(first === "Delivery" ? "default" : comments);
+
+      const results = applyTemplateUpdates(handle.db, next(), { isTheRecord: false });
+
+      expect(results).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ pipelineId: "default", outcome: "applied", to: "1.5" }),
+          expect.objectContaining({ pipelineId: comments, outcome: "applied", to: "1.5" }),
+        ]),
+      );
+      const triage = installed(comments, "cm_triage");
+      expect(triage).not.toBe("cm_triage");
+      expect(routeOf("default", "dl_reply", "replied")).toBe(triage);
+      expect(routeOf(comments, installed(comments, "cm_plan"), "rejected")).toBe("dl_reply");
+      expect(openUpdateConflict(handle.db, "default")).toBeUndefined();
+      expect(openUpdateConflict(handle.db, comments)).toBeUndefined();
+      expect(messagesFrom(handle.db, "template_conflict")).toEqual([]);
+      // Nothing of the other pipeline's was touched.
+      expect(getStep(handle.db, "cm_triage")?.name).toBe("Someone else's triage");
+    });
+  }
+
+  it("moves a route into a step the other board's update replaces, along with it", () => {
+    deliveryOn13();
+    applyTemplateUpdates(handle.db, withVersions(twoBoards("1.4")), { isTheRecord: false });
+    const comments = boardNamed("Comments").id;
+
+    const results = applyTemplateUpdates(handle.db, withVersions(twoBoards("1.4"), twoBoards("1.5", { comments: "cx" })), { isTheRecord: false });
+
+    expect(results).toEqual(expect.arrayContaining([expect.objectContaining({ pipelineId: "default", outcome: "applied" }), expect.objectContaining({ pipelineId: comments, outcome: "applied" })]));
+    expect(routeOf("default", "dl_reply", "replied")).toBe("cx_plan");
+    expect(listStepsForPipeline(handle.db, comments).map((step) => step.id).sort()).toEqual(["cx_closed", "cx_plan"]);
+    expect(storedErrors("default")).toEqual([]);
+  });
+
+  it("never removes a step another board still routes into: where Delivery's update is held, Comments' is held too, and Delivery's route still lands", () => {
+    deliveryOn13();
+    applyTemplateUpdates(handle.db, withVersions(twoBoards("1.4")), { isTheRecord: false });
+    const comments = boardNamed("Comments").id;
+    // An item on Index holds Delivery's update to 1.5, which drops it.
+    const project = createProject(handle.db, { name: "Shop", keyPrefix: "SHOP" });
+    createTestItem(handle.db, { type: "story", title: "Indexing", stepId: "repository_index", projectId: project.id as Uuid });
+
+    const results = applyTemplateUpdates(handle.db, withVersions(twoBoards("1.4"), twoBoards("1.5", { comments: "cx", dropIndex: true })), { isTheRecord: false });
+
+    expect(results).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ pipelineId: "default", outcome: "conflict" }),
+        expect.objectContaining({ pipelineId: comments, outcome: "conflict" }),
+      ]),
+    );
+    const target = routeOf("default", "dl_reply", "replied")!;
+    expect(getStep(handle.db, target)?.pipelineId).toBe(comments);
+    expect(openUpdateConflict(handle.db, comments)?.problems.join("\n")).toContain("Delivery");
+    expect(storedErrors("default")).toEqual([]);
+  });
+
+  it("holds the update of a board whose new route goes into a step only the held update to another board adds, and says so", () => {
+    const comments = on14();
+    const project = createProject(handle.db, { name: "Shop", keyPrefix: "SHOP" });
+    createTestItem(handle.db, { type: "story", title: "Indexing", stepId: "repository_index", projectId: project.id as Uuid });
+
+    const results = applyTemplateUpdates(handle.db, withVersions(twoBoards("1.4", { reply: false }), twoBoards("1.5", { triage: true, dropIndex: true })), { isTheRecord: false });
+
+    expect(results).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ pipelineId: "default", outcome: "conflict" }),
+        expect.objectContaining({ pipelineId: comments, outcome: "conflict" }),
+      ]),
+    );
+    expect(openUpdateConflict(handle.db, comments)?.problems.join("\n")).toContain(`goes to "Reply" on Delivery`);
+    // Nothing of Comments' update landed, so nothing of it routes to the step of another pipeline that holds its id.
+    expect(listStepsForPipeline(handle.db, comments).map((step) => step.id)).not.toContain("cm_triage");
+    expect(storedErrors(comments)).toEqual([]);
   });
 });
 

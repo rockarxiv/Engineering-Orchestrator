@@ -1163,13 +1163,36 @@ function foreignWorkspaceProblems(db: Db, pipelineId: string, steps: PipelineSte
  * publish is — the same staffing, the same registry, the same hand-offs
  * in and out — so that an update and a person's publish cannot disagree
  * about whether one graph works.
+ *
+ * `alongside` is the graphs other pipelines are written with in the same
+ * transaction (EO-762): the boards of one template, updated together. A
+ * route into a step one of them adds resolves, and a step this one
+ * removes is stranded only by routes those boards still have once they
+ * are written.
  */
-export function storedGraphProblems(db: Db, pipelineId: string, steps: PipelineStep[], routes: StepRoute[], entryStepId: string | null): WorkflowProblem[] {
+export function storedGraphProblems(
+  db: Db,
+  pipelineId: string,
+  steps: PipelineStep[],
+  routes: StepRoute[],
+  entryStepId: string | null,
+  alongside: ReadonlyMap<string, { steps: readonly PipelineStep[]; routes: readonly StepRoute[] }> = new Map(),
+): WorkflowProblem[] {
   // Judged for the projects the pipeline serves, never the one on
   // screen: the same unadopted graph must not apply with one project
   // selected and be held with another (EO-532 review).
   const judgedFor: JudgedFor = { serving: projectsServedByPipeline(db, pipelineId) };
-  return [...validatePipeline(validationInput(db, pipelineId, steps, routes, entryStepId, undefined, judgedFor)), ...foreignWorkspaceProblems(db, pipelineId, steps, judgedFor)];
+  const input = validationInput(db, pipelineId, steps, routes, entryStepId, undefined, judgedFor);
+  const others = [...alongside].filter(([id]) => id !== pipelineId);
+  const judged =
+    others.length === 0
+      ? input
+      : {
+          ...input,
+          stepsElsewhere: [...input.stepsElsewhere.filter((step) => !alongside.has(step.pipelineId)), ...others.flatMap(([, graph]) => graph.steps)],
+          incomingHandOffs: listIncomingHandOffs(db, pipelineId, new Map(others.map(([id, graph]) => [id, graph.routes]))),
+        };
+  return [...validatePipeline(judged), ...foreignWorkspaceProblems(db, pipelineId, steps, judgedFor)];
 }
 
 /** Each step once, by id, keeping the first. */
