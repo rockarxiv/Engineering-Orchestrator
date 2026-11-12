@@ -32,8 +32,8 @@
   "devDependencies": {
     "@eo/eslint-config": "workspace:*",
     "@eo/tsconfig": "workspace:*",
-    "@testing-library/jest-dom": "^7.0.0",
-    "@testing-library/react": "^16.3.2",
+    "@testing-library/jest-dom": "^7.0.1",
+    "@testing-library/react": "^16.3.3",
     "@types/node": "catalog:",
     "@types/react": "catalog:",
     "@types/react-dom": "catalog:",
