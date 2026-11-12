@@ -50,6 +50,7 @@ function job(overrides: Partial<JobSummary> = {}): JobSummary {
     nextRunAt: MONDAY_0800_BERLIN,
     lastRunAt: null,
     lastStatus: null,
+    watch: null,
     pausedReason: null,
     ...overrides,
   };

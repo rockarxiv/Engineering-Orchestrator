@@ -21,6 +21,7 @@ import { deviceIdentity, markRevoked, readSecretsKey, readToken, sessionStatus }
 import { createPushClient } from "./managed/pushClient.js";
 import { createDeviceRecord } from "./record/deviceRecord.js";
 import { organisationSecretValues } from "./policy/organisationSecrets.js";
+import { configuredWatchCheck, startWatchIntake } from "./jobs/watch.js";
 import { forgetOrganisationState } from "./policy/forget.js";
 import { createPolicySync } from "./policy/sync.js";
 import { persistEnginePause } from "./engineActivity.js";
@@ -644,6 +645,20 @@ export function startMain(platform: Platform): RunningMain {
     webhooks: { storage: attachmentStorage },
   });
 
+  // EO-753: each watch job's module, run as an intake check while EO is
+  // open, and what it finds filed on the job's pipeline. On a machine
+  // only — a watch job runs on the person's, never the organisation
+  // server — and outside the dispatcher, so it takes no item's slot.
+  const stopWatchIntake = platform.hasMachine
+    ? startWatchIntake(db, {
+        check: configuredWatchCheck(db),
+        onFiled: (itemId) => {
+          emitPush("items:changed", { itemId });
+          engine.notifyStateChange();
+        },
+      })
+    : () => {};
+
   // Jira, the other way round: comments and edits written there reach
   // the project without anyone asking. Reads only — status stays EO's.
   const stopJiraPull = startJiraPull(db, jiraContext, {
@@ -728,6 +743,7 @@ export function startMain(platform: Platform): RunningMain {
     stopArchiveSweep();
     stopMessageSweep();
     stopJobScheduler();
+    stopWatchIntake();
     stopJiraPull();
     stopTrialLoop();
     updates.current().stop();

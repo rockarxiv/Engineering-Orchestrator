@@ -1,4 +1,4 @@
-import { EMPTY_WEBHOOK_MAPPING, parseQualifiedItemType, type Job, type JobRunsOn, type JobTemplate, type JobTrigger, type ScheduleTrigger, type Uuid } from "@eo/core";
+import { DEFAULT_JOB_RUNS_ON, EMPTY_WEBHOOK_MAPPING, parseQualifiedItemType, type Job, type JobRunsOn, type JobTemplate, type JobTrigger, type ScheduleTrigger, type Uuid } from "@eo/core";
 import type { Db } from "../db/client.js";
 import {
   getItem,
@@ -20,6 +20,7 @@ import {
 } from "../db/repos/index.js";
 import { compileSchedule } from "../schedule/cron.js";
 import { isKnownTimeZone } from "../schedule/timeZone.js";
+import { watchTriggerProblem } from "./watch.js";
 
 /**
  * Making a job, and being done with one (EO-304,
@@ -97,7 +98,9 @@ export function createJob(db: Db, input: CreateJobInput): CreateJobResult {
     };
   }
 
-  const fireable = checkFireable(db, input.projectId, input.trigger, pipelineId, template) ?? templateRefusal(db, input.projectId, input.trigger, pipelineId, template);
+  const fireable =
+    checkFireable(db, input.projectId, input.trigger, pipelineId, template, null, input.runsOn ?? DEFAULT_JOB_RUNS_ON) ??
+    templateRefusal(db, input.projectId, input.trigger, pipelineId, template);
   if (fireable !== null) return { ok: false, problem: fireable };
 
   return {
@@ -136,9 +139,16 @@ function checkFireable(
   pipelineId: string | null,
   template: JobTemplate | null,
   exceptJobId: Uuid | null = null,
+  runsOn: JobRunsOn = DEFAULT_JOB_RUNS_ON,
 ): string | null {
   if (pipelineId === null || template === null) {
     return "A job that fires on its own needs a pipeline to file work on and a template to file.";
+  }
+
+  if (trigger.kind === "watch") {
+    // Its module, its inputs and where it runs (EO-753).
+    const watch = watchTriggerProblem(db, trigger, { projectId, runsOn });
+    if (watch !== null) return watch;
   }
 
   if (trigger.kind === "webhook") {
@@ -273,7 +283,7 @@ export function updateJob(db: Db, input: EditJobInput): CreateJobResult {
   const pipelineId = input.pipelineId === undefined ? job.pipelineId : input.pipelineId;
   const template = input.template === undefined ? job.template : input.template;
 
-  const fireable = checkFireable(db, job.projectId as Uuid | null, trigger, pipelineId, template, job.id as Uuid);
+  const fireable = checkFireable(db, job.projectId as Uuid | null, trigger, pipelineId, template, job.id as Uuid, input.runsOn ?? job.runsOn ?? DEFAULT_JOB_RUNS_ON);
   if (fireable !== null) return { ok: false, problem: fireable };
   // Only where the save touches what the rules read, so a rule added
   // later cannot stop somebody renaming a job or changing its budget. A

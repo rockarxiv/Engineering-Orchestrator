@@ -36,11 +36,14 @@ import {
   type Uuid,
   type WorkspaceBadge,
   type WorkspaceKindSlug,
+  type Job,
+  SCRATCH_KIND,
   entryRefusalSentence,
   entryRuleWords,
   shownEntryRule,
 } from "@eo/core";
 import type { Db } from "../db/client.js";
+import type { Project } from "../db/repos/projectsRepo.js";
 import { featureIsDone, featureProgress } from "../roles/featureLifecycle.js";
 import { comments, commentMentions } from "../db/schema.js";
 import { runEvents } from "../db/schema.js";
@@ -1359,27 +1362,56 @@ export function moduleRunContext(
               },
             },
     },
-    project:
-      project === undefined
-        ? null
-        : {
-            id: project.id,
-            name: project.name,
-            keyPrefix: project.keyPrefix,
-            workspaces: projectWorkspaceList(db, project.id).map((workspace) => ({ kind: workspace.kind, id: workspace.id, name: workspaceLabel(workspace) })),
-            itemTypes: listItemTypes(db, project.id).map((type) => ({
-              id: type.id,
-              slug: type.slug,
-              label: type.label,
-              container: type.container,
-              fields: specFields(type.specShape).map(({ name, kind, required }) => ({ name, kind, required })),
-            })),
-            pipelines: listPipelines(db, project.id).map((each) => ({
-              id: each.id,
-              name: each.name,
-              steps: listStepsForPipeline(db, each.id).map((pipelineStep) => ({ id: pipelineStep.id, name: pipelineStep.name, kind: pipelineStep.type })),
-            })),
-          },
+    project: project === undefined ? null : moduleProjectSnapshot(db, project),
+  };
+}
+
+/** `ctx.project` (EO-711): the project, its workspaces, its item types and its pipelines. */
+function moduleProjectSnapshot(db: Db, project: Project): ModuleProjectSnapshot {
+  return {
+    id: project.id,
+    name: project.name,
+    keyPrefix: project.keyPrefix,
+    workspaces: projectWorkspaceList(db, project.id).map((workspace) => ({ kind: workspace.kind, id: workspace.id, name: workspaceLabel(workspace) })),
+    itemTypes: listItemTypes(db, project.id).map((type) => ({
+      id: type.id,
+      slug: type.slug,
+      label: type.label,
+      container: type.container,
+      fields: specFields(type.specShape).map(({ name, kind, required }) => ({ name, kind, required })),
+    })),
+    pipelines: listPipelines(db, project.id).map((each) => ({
+      id: each.id,
+      name: each.name,
+      steps: listStepsForPipeline(db, each.id).map((pipelineStep) => ({ id: pipelineStep.id, name: pipelineStep.name, kind: pipelineStep.type })),
+    })),
+  };
+}
+
+/**
+ * `ModuleRunContext` for a watch job's intake check (EO-752, EO-753),
+ * which has no item: no step and nowhere it came from, the job's
+ * pipeline, the job's project, and a scratch directory made for the
+ * check. `watch` says since when the job has been checking and how often.
+ */
+export function intakeRunContext(
+  db: Db,
+  input: { job: Pick<Job, "projectId" | "pipelineId" | "createdAt">; intervalMs: number; now: number },
+): ModuleRunContext {
+  const pipeline = input.job.pipelineId === null ? undefined : getPipeline(db, input.job.pipelineId);
+  const project = input.job.projectId === null ? undefined : getProject(db, input.job.projectId as Uuid);
+  const startedAt = input.job.createdAt;
+  return {
+    run: {
+      step: null,
+      pipeline: pipeline === undefined ? null : { id: pipeline.id, name: pipeline.name },
+      attempt: 1,
+      cameFrom: { step: null, result: null },
+      trial: false,
+      watch: { startedAt, waitingMs: Math.max(0, input.now - startedAt), intervalMs: input.intervalMs },
+    },
+    workspace: { kind: SCRATCH_KIND, id: null, name: null, git: null },
+    project: project === undefined ? null : moduleProjectSnapshot(db, project),
   };
 }
 

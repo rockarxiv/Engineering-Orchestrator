@@ -5,6 +5,7 @@ import { runWithEntryVerdicts } from "../db/repos/entryRulesRepo.js";
 import type { CreateItemInput } from "../db/repos/itemsRepo.js";
 import { withModuleEntryChecks } from "../modules/entryChecks.js";
 import { isProjectReplica } from "../db/recordRole.js";
+import { existingBranchRefusal, storyGitState } from "../roles/refine.js";
 import { fillTemplate } from "./template.js";
 import { JOB_MESSAGE_SOURCE, messageJobOwner } from "./ownerMessage.js";
 
@@ -65,6 +66,12 @@ export interface FireOptions {
    * saying it cannot run here.
    */
   entryVerdicts?: ReadonlyMap<string, string | null>;
+  /**
+   * Tell nobody about a refusal: the caller words it itself, or decides
+   * it was already said (EO-753, a watch finding refused again for the
+   * same reason). The `failed` occurrence is written all the same.
+   */
+  quiet?: boolean;
 }
 
 /** What a trigger may put in place of the template — see `FireOptions.overrides`. */
@@ -72,6 +79,13 @@ export interface FireOverrides {
   title?: string;
   body?: string;
   spec?: Record<string, unknown>;
+  /**
+   * A branch that already exists, to work on instead of cutting one
+   * (EO-753, a watch finding's). Judged as `ctx.createItem` judges it
+   * (EO-648): a name git would not take, or a pipeline whose entry works
+   * on no branch, refuses the firing.
+   */
+  existingBranch?: string;
 }
 
 export interface FireResult {
@@ -116,16 +130,38 @@ class Refused extends Error {
 function firingInput(job: Job, dueAt: number, overrides: FireOverrides, pipelineId: Uuid, entryStepId: string): CreateItemInput {
   const template = job.template!;
   const blanks = { dueAt, job: job.name };
+  const git = overrides.existingBranch === undefined ? undefined : storyGitState({ existingBranch: overrides.existingBranch });
   return {
     type: parseQualifiedItemType(template.type) ?? template.type,
     title: overrides.title ?? fillTemplate(template.title, blanks),
     body: overrides.body ?? (template.body === null ? null : fillTemplate(template.body, blanks)),
     ...(overrides.spec === undefined ? {} : { spec: overrides.spec }),
+    ...(git === undefined ? {} : { git }),
     projectId: job.projectId as Uuid | null,
     pipelineId,
     stepId: entryStepId,
     createdBy: job.ownerId as Uuid,
   };
+}
+
+/**
+ * Why the existing branch this firing names cannot be worked on, or null
+ * (EO-753): `existingBranchRefusal`, the check `ctx.createItem`'s door
+ * makes (EO-648), asked of the item as it would be created. A type that
+ * does not resolve is left to `createItem`, which refuses it in its own
+ * words.
+ */
+function existingBranchProblem(db: Db, input: CreateItemInput, branch: string): string | null {
+  const type = resolveItemType(db, input.projectId ?? null, input.type);
+  if (!type.ok) return null;
+  return existingBranchRefusal(db, input.title, branch, {
+    container: type.type.container,
+    workspaceId: input.workspaceId ?? null,
+    projectId: input.projectId ?? null,
+    pipelineId: input.pipelineId ?? null,
+    stepId: input.stepId ?? null,
+    pipelineVersionId: null,
+  });
 }
 
 /**
@@ -255,6 +291,9 @@ export function fireJob(db: Db, job: Job, options: FireOptions = {}): FireResult
       }
 
       const input = firingInput(job, dueAt, options.overrides ?? {}, pipeline.id as Uuid, pipeline.entryStepId);
+      const branch = options.overrides?.existingBranch;
+      const unusable = branch === undefined ? null : existingBranchProblem(db, input, branch);
+      if (unusable !== null) throw new Refused(unusable);
       // With the module rules' verdicts, where the caller worked them
       // out (EO-736); a rule with none refuses, saying it cannot run here.
       const { entryVerdicts } = options;
@@ -284,7 +323,7 @@ export function fireJob(db: Db, job: Job, options: FireOptions = {}): FireResult
       firedAt: options.firedAt ?? Date.now(),
       reason: error.reason,
     });
-    messageJobOwner(db, job, `"${job.name}" could not run. ${error.reason}`, { source: JOB_MESSAGE_SOURCE.failed });
+    if (options.quiet !== true) messageJobOwner(db, job, `"${job.name}" could not run. ${error.reason}`, { source: JOB_MESSAGE_SOURCE.failed });
     return { occurrence, item: null, problem: error.reason, ...(error.refusedAtEntry ? { refusedAtEntry: true as const } : {}) };
   }
 }

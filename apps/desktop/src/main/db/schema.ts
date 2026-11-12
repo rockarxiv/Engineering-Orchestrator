@@ -2801,6 +2801,27 @@ export const jobEvents = sqliteTable(
   ],
 );
 
+/**
+ * Where each watch job's checks stand (EO-753, migration 0169).
+ *
+ * State rather than history: one row per watch job, updated in place.
+ * What each finding did is `job_events`. No row until the first check.
+ */
+export const jobWatchStates = sqliteTable("job_watch_states", {
+  jobId: text("job_id")
+    .primaryKey()
+    .references((): AnySQLiteColumn => jobs.id, { onDelete: "cascade" }),
+  lastCheckedAt: integer("last_checked_at"),
+  /** `waiting`, the declared result the check answered, or `failed`. */
+  lastAnswer: text("last_answer"),
+  /** When the next check is due. Null while a declared result holds the job paused. */
+  nextCheckAt: integer("next_check_at"),
+  consecutiveFailures: integer("consecutive_failures").notNull().default(0),
+  lastError: text("last_error"),
+  /** The unfinished item a `waitWhileOpen` job holds its checks for. Not a foreign key: the item may be deleted. */
+  waitingForItemId: text("waiting_for_item_id"),
+});
+
 // ── The record and its devices ────────────────────────────────
 
 /**

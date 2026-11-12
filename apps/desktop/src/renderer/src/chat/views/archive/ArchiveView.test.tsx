@@ -214,7 +214,7 @@ describe("the archive narrowed by the address", () => {
   });
 
   it("shows only one job's rows and names the job", async () => {
-    const origin = { jobId: "job-1", jobName: "Monday report", trigger: "schedule" as const, occurrenceId: "o1", firedAt: 1, costCents: 12 };
+    const origin = { jobId: "job-1", jobName: "Monday report", trigger: "schedule" as const, occurrenceId: "o1", firedAt: 1, costCents: 12, findingKey: null };
     const calls = renderArchive(
       [
         item({ id: "t1", key: "EO-1", title: "Monday report for 1 June", origin }),

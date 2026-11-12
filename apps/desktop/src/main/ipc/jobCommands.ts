@@ -14,6 +14,7 @@ import { sessionStatus, type SessionStoreOptions } from "../managed/session.js";
 import { jobCostCents, pauseJob, resumeJob } from "../jobs/budget.js";
 import { fireJob, jobEntryVerdicts, type FireOptions } from "../jobs/fire.js";
 import { moduleRulesNotice, createJob, deleteJob, updateJob } from "../jobs/jobs.js";
+import { resumeWatch } from "../jobs/watch.js";
 import { jobSummary, occurrenceRows } from "../jobs/summary.js";
 import { activeProjectId } from "./repositoryCommands.js";
 import type { EngineHandle } from "./domainCommands.js";
@@ -79,8 +80,8 @@ export interface JobsContext {
   session?: SessionStoreOptions;
 }
 
-/** The job as placement reads one — the pipeline, and where it is being asked to run. */
-type PlacedJob = Pick<Job, "name" | "projectId" | "pipelineId" | "runsOn">;
+/** The job as placement reads one — the pipeline, its trigger, and where it is being asked to run. */
+type PlacedJob = Pick<Job, "name" | "projectId" | "pipelineId" | "runsOn"> & { trigger?: Job["trigger"] };
 
 /**
  * Why this job may not be placed there, or null.
@@ -120,7 +121,9 @@ function blankJob(job: PlacedJob): Job {
     id: "",
     projectId: job.projectId,
     name: job.name,
-    trigger: { kind: "manual" },
+    // A watch trigger binds the job to this machine (EO-753); any other
+    // kind says nothing placement reads.
+    trigger: job.trigger ?? { kind: "manual" },
     pipelineId: job.pipelineId,
     template: null,
     ownerId: "",
@@ -246,6 +249,7 @@ export async function updateJobCommand(
       name: input.name ?? standing.name,
       projectId: standing.projectId,
       pipelineId: input.pipelineId === undefined ? standing.pipelineId : input.pipelineId,
+      trigger: input.trigger ?? standing.trigger,
       runsOn: input.runsOn,
     });
     if (refusal !== null) return { job: null, problem: refusal };
@@ -275,6 +279,7 @@ export async function createJobCommand(
       name: input.name,
       projectId,
       pipelineId: input.pipelineId ?? null,
+      trigger: input.trigger,
       runsOn: input.runsOn,
     });
     if (refusal !== null) return { job: null, problem: refusal };
@@ -336,6 +341,16 @@ export function runJobNowCommand(
       problem: "This job files work when somebody presses Create in its conversation, so there is nothing to run now.",
     };
   }
+  // A watch job files what its module finds (EO-753); its template alone
+  // is not a finding, and firing it would file an item nothing found.
+  if (job.trigger.kind === "watch") {
+    return {
+      fired: false,
+      occurrence: null,
+      itemId: null,
+      problem: "This job files what its module finds, so there is nothing to run now. Pausing and resuming it checks it at once.",
+    };
+  }
 
   const result = fireJob(db, job, fire);
   if (result.item !== null) {
@@ -378,6 +393,9 @@ export function pauseJobCommand(db: Db, input: IpcPayload<"jobs:pause">): IpcRes
 
 export function resumeJobCommand(db: Db, input: IpcPayload<"jobs:resume">): IpcResponse<"jobs:resume"> {
   const job = resumeJob(db, input.jobId as Uuid);
+  // A watch job is checked again at once, its failure count started
+  // again (EO-753).
+  if (job !== undefined) resumeWatch(db, job);
   return { job: job === undefined ? null : jobSummary(db, job) };
 }
 
@@ -407,7 +425,7 @@ export function deleteJobCommand(db: Db, input: IpcPayload<"jobs:delete">): IpcR
  */
 export async function runJobNowChecked(db: Db, engine: EngineHandle | undefined, input: IpcPayload<"jobs:runNow">): Promise<IpcResponse<"jobs:runNow">> {
   const job = getJob(db, input.jobId as Uuid);
-  if (!job || job.deletedAt !== null || job.trigger.kind === "from-discussion") return runJobNowCommand(db, engine, input);
+  if (!job || job.deletedAt !== null || job.trigger.kind === "from-discussion" || job.trigger.kind === "watch") return runJobNowCommand(db, engine, input);
   const dueAt = Date.now();
   return runJobNowCommand(db, engine, input, { dueAt, entryVerdicts: await jobEntryVerdicts(db, job, { dueAt }) });
 }

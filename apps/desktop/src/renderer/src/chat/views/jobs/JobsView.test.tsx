@@ -33,6 +33,7 @@ function job(overrides: Partial<JobSummary> = {}): JobSummary {
     nextRunAt: Date.UTC(2026, 5, 1, 6, 0),
     lastRunAt: null,
     lastStatus: null,
+    watch: null,
     pausedReason: null,
     ...overrides,
   };
