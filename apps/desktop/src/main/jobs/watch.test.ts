@@ -82,14 +82,14 @@ function watchJob(overrides: Partial<WatchTrigger> = {}, moduleId = module().id)
 
 /** A module host that answers each check with the next scripted outcome, and counts the checks. */
 function scripted(...outcomes: (ModuleOutcome | Error)[]): WatchCheck & { calls: number } {
-  const check = (async () => {
-    check.calls += 1;
+  const counter = { calls: 0 };
+  const run: WatchCheck = async () => {
+    counter.calls += 1;
     const next = outcomes.length > 1 ? outcomes.shift()! : outcomes[0]!;
     if (next instanceof Error) throw next;
     return next;
-  }) as WatchCheck & { calls: number };
-  check.calls = 0;
-  return check;
+  };
+  return Object.defineProperty(run, "calls", { get: () => counter.calls }) as WatchCheck & { calls: number };
 }
 
 const waiting = (...findings: WatchFinding[]): ModuleOutcome => ({ ok: true, result: "waiting", detail: "", findings });
