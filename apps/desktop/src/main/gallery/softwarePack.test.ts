@@ -241,6 +241,9 @@ describe("the pull request step's results, routed in what EO ships", () => {
  * every result that step can give goes somewhere.
  */
 describe("the pull request watch in the bundled template", () => {
+  /** The watch's results this version of the template predates (EO-759). */
+  const UNROUTED_COMMENT_RESULTS: readonly string[] = ["author_commented", "others_commented"];
+
   it("keeps checking every five minutes for a week, after Merge Request and before Done", () => {
     const pack = bundled().document;
     const watch = pack.steps.find((step) => step.name === "Watching pull request");
@@ -268,12 +271,15 @@ describe("the pull request watch in the bundled template", () => {
       ready: "user_attention",
       failed: "user_attention",
     });
-    expect(Object.keys(targets).sort()).toEqual([...BUILTIN_RESULTS.watch_pull_request].sort());
+    // Every result but the two that tell whose comment it is (EO-759), which
+    // this template does not route: an item getting one parks and asks a
+    // person until a template version routes them.
+    expect(Object.keys(targets).sort()).toEqual(BUILTIN_RESULTS.watch_pull_request.filter((result) => !UNROUTED_COMMENT_RESULTS.includes(result)).sort());
     // Merge Request's success now leads into the watch rather than past it.
     expect(pack.routes.find((route) => route.fromStepId === "merge_request" && route.resultKey === "opened")?.target).toBe(watch.id);
   });
 
-  it("passes validatePipeline with nothing to say, once imported", () => {
+  it("passes validatePipeline with nothing to say but the comment results it does not route, once imported", () => {
     const imported = importPipeline(handle.db, { document: bundled().document, projectId: null, signedInBackends: [] });
     if (!imported.ok) throw new Error(imported.reason);
 
@@ -287,7 +293,14 @@ describe("the pull request watch in the bundled template", () => {
       registry: registryForProject(handle.db, null),
     });
 
-    expect(problems).toEqual([]);
+    expect(problems).toEqual(
+      UNROUTED_COMMENT_RESULTS.map((result) => ({
+        severity: "warning",
+        stateId: expect.any(String) as unknown,
+        resultKey: result,
+        message: expect.stringContaining(`"watch_pull_request" can return "${result}", which has no route`) as unknown,
+      })),
+    );
     // And the watch arrived watching, which is what a version-8 reader
     // would have dropped, and never giving up, which is what a version-9
     // reader would have (`PIPELINE_EXPORT_VERSION`).

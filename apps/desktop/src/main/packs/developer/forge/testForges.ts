@@ -4,9 +4,9 @@ import type { CliResult, CliRunner } from "./cli.js";
  * Scripted `gh` and `glab` for the pull-request watch's tests (EO-460).
  *
  * Each answers the questions `watchPullRequest.ts` asks in the shapes the
- * real forges answer them — GitHub's REST reviews, line comments, check
- * runs and combined status; GitLab's merge request, jobs, notes,
- * approvals and reviewers — and pages a list exactly as the API does, by
+ * real forges answer them — the signed-in user; GitHub's REST reviews,
+ * line comments, conversation comments, check runs and combined status;
+ * GitLab's merge request, jobs, notes, approvals and reviewers — and pages a list exactly as the API does, by
  * the `per_page` and `page` the request names. The state is a plain object
  * a test edits between checks, as a forge's changes between two of them.
  */
@@ -30,6 +30,10 @@ export interface GitHubState {
   reviews: Record<string, unknown>[];
   /** `GET /pulls/{n}/comments`, oldest first. */
   lineComments: Record<string, unknown>[];
+  /** `GET /issues/{n}/comments`, the conversation, oldest first. */
+  conversationComments: Record<string, unknown>[];
+  /** The login `GET /user` answers with, or null for a `gh` that will not say. */
+  viewer: string | null;
   /** `GET /commits/{sha}/check-runs`'s `check_runs`, for the head commit. */
   checkRuns: Record<string, unknown>[];
   /** `GET /commits/{sha}/status`'s `statuses`, for the head commit. */
@@ -38,10 +42,17 @@ export interface GitHubState {
 
 export const SHA = "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678";
 
+/** The account the scripted CLIs are signed in as, unless a test says otherwise. */
+export const VIEWER = "owner";
+
+const refused = (what: string): CliResult => ({ ok: false, stdout: "", error: `HTTP 403: cannot read ${what}`, notFound: false });
+
 export function gitHubState(overrides: Partial<Omit<GitHubState, "pr">> & { pr?: Partial<GitHubState["pr"]> } = {}): GitHubState {
   return {
     reviews: [],
     lineComments: [],
+    conversationComments: [],
+    viewer: VIEWER,
     checkRuns: [],
     statuses: [],
     ...overrides,
@@ -80,6 +91,8 @@ export function fakeGh(state: () => GitHubState): { run: CliRunner; calls: strin
       if (args[0] === "pr" && args[1] === "view") return ok(now.pr);
       if (args[0] !== "api") throw new Error(`unexpected gh call: ${args.join(" ")}`);
       const { path, page, perPage } = paging(args.at(-1)!);
+      if (path === "user") return now.viewer === null ? refused("the user") : ok({ login: now.viewer, id: 1, type: "User" });
+      if (/\/issues\/\d+\/comments$/.test(path)) return ok(pageOf(now.conversationComments, page, perPage));
       if (/\/pulls\/\d+\/reviews$/.test(path)) return ok(pageOf(now.reviews, page, perPage));
       if (/\/pulls\/\d+\/comments$/.test(path)) return ok(pageOf(now.lineComments, page, perPage));
       if (/\/commits\/[^/]+\/check-runs$/.test(path)) return ok({ total_count: now.checkRuns.length, check_runs: pageOf(now.checkRuns, page, perPage) });
@@ -97,6 +110,8 @@ export interface GitLabState {
   notes: Record<string, unknown>[];
   approvals: Record<string, unknown>;
   reviewers: Record<string, unknown>[];
+  /** The username `GET /user` answers with, or null for a `glab` that will not say. */
+  viewer: string | null;
 }
 
 export function gitLabState(overrides: Partial<GitLabState> = {}): GitLabState {
@@ -105,6 +120,7 @@ export function gitLabState(overrides: Partial<GitLabState> = {}): GitLabState {
     notes: [],
     approvals: { approved: false, approvals_left: 1, approved_by: [] },
     reviewers: [],
+    viewer: VIEWER,
     ...overrides,
     mr: { iid: 12, state: "opened", sha: SHA, has_conflicts: false, detailed_merge_status: "not_approved", head_pipeline: { id: 55, status: "success" }, ...overrides.mr },
   };
@@ -120,6 +136,7 @@ export function fakeGlab(state: () => GitLabState): { run: CliRunner; calls: str
       calls.push(args);
       const now = state();
       const { path, page, perPage } = paging(args.at(-1)!);
+      if (path === "user") return now.viewer === null ? refused("the user") : ok({ id: 1, username: now.viewer, name: "The Owner" });
       if (/\/pipelines\/\d+\/jobs$/.test(path)) return ok(pageOf(now.jobs, page, perPage));
       if (/\/merge_requests\/\d+\/notes$/.test(path)) return ok(pageOf(now.notes, page, perPage));
       if (/\/merge_requests\/\d+\/reviewers$/.test(path)) return ok(pageOf(now.reviewers, page, perPage));

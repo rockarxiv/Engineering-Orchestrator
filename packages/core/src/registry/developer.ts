@@ -223,7 +223,14 @@ export const BUILTIN_RESULTS = {
   // asks — is what is left once nothing is wrong. `failed` is an item with
   // no pull request to watch. `waiting` is not here: it is the reserved
   // outcome of every check, and never a route.
-  watch_pull_request: ["merged", "closed", "conflict", "checks_failed", "changes_requested", "ready", FAILED_RESULT],
+  //
+  // Comments are split by who wrote them (EO-759). `author_commented` is a
+  // comment, review or request for changes by the account the forge CLI is
+  // signed in as — the person EO works for — to be acted on. A formal
+  // request for changes by anybody else is `changes_requested`, and any
+  // other account's comment is `others_commented`: neither is an
+  // instruction until a plan for it is approved.
+  watch_pull_request: ["merged", "closed", "conflict", "checks_failed", "author_commented", "changes_requested", "others_commented", "ready", FAILED_RESULT],
 } as const satisfies Record<BuiltinAction, readonly [string, ...string[]]>;
 
 /**

@@ -126,8 +126,18 @@ export type BuiltinOutcome<R extends string = string> =
    * (`watchStayOf`). It is kept with the outcome on the run, so a later check
    * can tell that this stay has had an answer, and from an older stay's
    * (EO-620).
+   *
+   * `handled` names the pull request comments and requests for changes this
+   * answer hands on — to be acted on, or to be planned for (EO-759). Kept
+   * apart from `news`, because a comment is news the first time a check sees
+   * it whatever that check answers, and handled only by the answer that
+   * sends it somewhere.
+   *
+   * `postedCommentIds` are the forge ids of comments EO itself posted on a
+   * pull request, in the watch's own spelling (`forgeCommentId`), so the
+   * watch never reads EO's own reply back as somebody's comment.
    */
-  | { ok: true; result: R; detail: string; news?: readonly WatchNews[]; stay?: string }
+  | { ok: true; result: R; detail: string; news?: readonly WatchNews[]; stay?: string; handled?: readonly string[]; postedCommentIds?: readonly string[] }
   /**
    * `options` are the answers EO would accept, when the failure is a
    * question it is asking rather than a fact it is reporting — they
