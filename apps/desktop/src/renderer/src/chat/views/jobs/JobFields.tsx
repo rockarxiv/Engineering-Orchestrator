@@ -28,6 +28,10 @@ export function JobFields({ draft, projectId, onChange }: { draft: JobDraft; pro
         <Field label="Trigger" hint="Its address and its secret are above. To file work on a schedule instead, make a second job.">
           <span className="text-[13px] text-ink-muted">{describeJobTrigger(draft.webhook)}</span>
         </Field>
+      ) : draft.triggerKind === "watch" && draft.watch !== null ? (
+        <Field label="Trigger" hint="Its module and how often it checks are kept as they are. To file work on a schedule instead, make a second job.">
+          <span className="text-[13px] text-ink-muted">{describeJobTrigger(draft.watch)}</span>
+        </Field>
       ) : (
         <Field label="Trigger">
           <Select value={draft.triggerKind} onChange={(event) => set("triggerKind", event.target.value as JobDraft["triggerKind"])}>

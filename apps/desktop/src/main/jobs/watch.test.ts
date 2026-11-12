@@ -22,10 +22,11 @@ import { messagesAboutJob, openMigratedTestDb } from "../db/testHelpers.js";
 import { createJobCommand, getJobCommand, resumeJobCommand, runJobNowCommand } from "../ipc/jobCommands.js";
 import type { ModuleOutcome } from "../modules/runModule.js";
 import { pauseJob } from "./budget.js";
-import { createJob, updateJob } from "./jobs.js";
+import { jobEntryVerdicts } from "./fire.js";
+import { createJob, deleteJob, updateJob } from "./jobs.js";
 import { originOfItem } from "./origin.js";
 import { placementForJob } from "./placement.js";
-import { createWatchCheck, runWatchTick, type WatchCheck } from "./watch.js";
+import { createWatchCheck, runWatchTick, startWatchIntake, type WatchCheck } from "./watch.js";
 
 /**
  * A watch job (EO-753): its module run as an intake check, and what it
@@ -285,6 +286,114 @@ describe("a job overdue at launch", () => {
 
     expect(check.calls).toBe(1);
     expect(getJobWatchState(handle.db, job.id as Uuid)?.nextCheckAt).toBe(T0 + 15 * MINUTE);
+  });
+});
+
+/** A promise the test settles when it chooses. */
+function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((settle) => {
+    resolve = settle;
+  });
+  return { promise, resolve };
+}
+
+/** Lets awaited work move on until the condition holds, or fails after a bounded number of turns. */
+async function settle(condition: () => boolean): Promise<void> {
+  for (let turn = 0; turn < 200 && !condition(); turn += 1) await new Promise((next) => setTimeout(next, 0));
+  expect(condition()).toBe(true);
+}
+
+describe("a job changed while a check or an entry rule is running", () => {
+  /** Two watch jobs: the first's check is held open until the test lets it go. */
+  function twoJobs() {
+    const id = module().id;
+    const first = watchJob({}, id);
+    const second = watchJob({}, id);
+    const held = deferred<ModuleOutcome>();
+    const checked: string[] = [];
+    const check: WatchCheck = async (job) => {
+      checked.push(job.id);
+      return job.id === first.id ? held.promise : waiting(FIRST);
+    };
+    return { first, second, held, checked, check };
+  }
+
+  it("does not check a job paused while an earlier job's check ran", async () => {
+    const { first, second, held, checked, check } = twoJobs();
+    const tick = runWatchTick(handle.db, { check, now: () => T0 });
+    await settle(() => checked.length === 1);
+    pauseJob(handle.db, second.id as Uuid);
+    held.resolve(waiting());
+    const result = await tick;
+    expect(checked).toEqual([first.id]);
+    expect(result.checked).toEqual([first.id]);
+    expect(listJobEvents(handle.db, second.id as Uuid)).toEqual([]);
+  });
+
+  it("does not check a job deleted while an earlier job's check ran", async () => {
+    const { first, second, held, checked, check } = twoJobs();
+    const tick = runWatchTick(handle.db, { check, now: () => T0 });
+    await settle(() => checked.length === 1);
+    deleteJob(handle.db, second.id as Uuid);
+    held.resolve(waiting());
+    await tick;
+    expect(checked).toEqual([first.id]);
+  });
+
+  /** One job whose check finds two things, with the entry rules for the first held open. */
+  function heldEntryRule() {
+    const job = watchJob();
+    const held = deferred<void>();
+    let asked = 0;
+    const entryVerdicts: typeof jobEntryVerdicts = async (...args) => {
+      asked += 1;
+      if (asked === 1) await held.promise;
+      return jobEntryVerdicts(...args);
+    };
+    const check = scripted(waiting(FIRST, { key: "dependabot:eo/eo#2", title: "Bump vitest" }));
+    return { job, held, entryVerdicts, check, asked: () => asked };
+  }
+
+  it("files nothing once the job is paused while an entry rule ran, including the findings after it", async () => {
+    const { job, held, entryVerdicts, check, asked } = heldEntryRule();
+    const tick = runWatchTick(handle.db, { check, entryVerdicts, now: () => T0 });
+    await settle(() => asked() === 1);
+    pauseJob(handle.db, job.id as Uuid);
+    held.resolve();
+    const result = await tick;
+    expect(result.filed).toEqual([]);
+    expect(asked()).toBe(1);
+    expect(listJobEvents(handle.db, job.id as Uuid)).toEqual([]);
+    expect(listOccurrences(handle.db, job.id as Uuid)).toEqual([]);
+  });
+
+  it("files nothing once the job is deleted while an entry rule ran", async () => {
+    const { job, held, entryVerdicts, check, asked } = heldEntryRule();
+    const tick = runWatchTick(handle.db, { check, entryVerdicts, now: () => T0 });
+    await settle(() => asked() === 1);
+    deleteJob(handle.db, job.id as Uuid);
+    held.resolve();
+    const result = await tick;
+    expect(result.filed).toEqual([]);
+    expect(listJobEvents(handle.db, job.id as Uuid)).toEqual([]);
+    expect(listOccurrences(handle.db, job.id as Uuid)).toEqual([]);
+  });
+
+  it("checks a job resumed during another job's check as soon as that check ends, not at the next tick", async () => {
+    const { first, second, held, checked, check } = twoJobs();
+    pauseJob(handle.db, second.id as Uuid);
+    // An hour between ticks, so only the resume can bring the second job round.
+    const stop = startWatchIntake(handle.db, { check, intervalMs: 60 * MINUTE });
+    try {
+      await settle(() => checked.length === 1);
+      resumeJobCommand(handle.db, { jobId: second.id });
+      held.resolve(waiting());
+      await settle(() => checked.length === 2);
+      expect(checked).toEqual([first.id, second.id]);
+    } finally {
+      stop();
+    }
   });
 });
 

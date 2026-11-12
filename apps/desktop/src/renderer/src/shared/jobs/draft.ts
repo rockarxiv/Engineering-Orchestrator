@@ -1,4 +1,4 @@
-import { DEFAULT_CATCH_UP_MINUTES, EMPTY_WEBHOOK_MAPPING, type Job, type JobTemplate, type JobTrigger, type WebhookTrigger } from "@eo/core";
+import { DEFAULT_CATCH_UP_MINUTES, EMPTY_WEBHOOK_MAPPING, type Job, type JobTemplate, type JobTrigger, type WatchTrigger, type WebhookTrigger } from "@eo/core";
 
 /**
  * The Job page's form, as fields rather than as a job (EO-308,
@@ -25,10 +25,15 @@ import { DEFAULT_CATCH_UP_MINUTES, EMPTY_WEBHOOK_MAPPING, type Job, type JobTemp
  * at 08:00". Carrying the trigger through untouched is what stops that;
  * what a person may edit of it is the mapping, and the path and the
  * secret are the webhook panel's rather than the form's.
+ *
+ * `watch` is carried the same way, for the same reason (EO-753): until
+ * the form has controls for one, a draft that could not hold a watch
+ * trigger would turn a watch job into "daily at 08:00" the first time
+ * somebody renamed it.
  */
 export interface JobDraft {
   name: string;
-  triggerKind: "manual" | "schedule" | "webhook";
+  triggerKind: "manual" | "schedule" | "webhook" | "watch";
   scheduleKind: "daily" | "weekly" | "cron";
   hour: number;
   minute: number;
@@ -53,6 +58,8 @@ export interface JobDraft {
    * rather than only the pointers.
    */
   webhook: WebhookTrigger | null;
+  /** The watch trigger as it stands, for a job that has one (EO-753), carried through untouched. Null for every other kind. */
+  watch: WatchTrigger | null;
 }
 
 /** A new job, with the machine's own zone offered as the one a person most likely means. */
@@ -73,6 +80,7 @@ export function blankDraft(): JobDraft {
     body: "",
     budgetPerOccurrenceCents: "",
     webhook: null,
+    watch: null,
   };
 }
 
@@ -92,6 +100,10 @@ export function draftOf(job: Job): JobDraft {
     // does not edit the job the query cache is still holding.
     const mapping = job.trigger.mapping ?? EMPTY_WEBHOOK_MAPPING;
     draft.webhook = { ...job.trigger, mapping: { ...mapping, spec: { ...mapping.spec } } };
+  }
+  if (job.trigger.kind === "watch") {
+    draft.triggerKind = "watch";
+    draft.watch = { ...job.trigger, inputs: { ...job.trigger.inputs } };
   }
   if (job.trigger.kind === "schedule") {
     draft.triggerKind = "schedule";
@@ -117,6 +129,7 @@ export function triggerOf(draft: JobDraft): JobTrigger {
   // fabricated — but `draftOf` is the only way to reach that kind, and
   // it always fills this in.
   if (draft.triggerKind === "webhook" && draft.webhook !== null) return draft.webhook;
+  if (draft.triggerKind === "watch" && draft.watch !== null) return draft.watch;
   return {
     kind: "schedule",
     schedule:

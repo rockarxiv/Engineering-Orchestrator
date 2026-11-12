@@ -174,6 +174,8 @@ export interface WatchIntakeDeps {
   now?: () => number;
   /** Told each item a finding filed, so open windows and the scheduler hear of it. */
   onFiled?: (itemId: Uuid) => void;
+  /** The entry rules a finding is judged by before it is filed. `jobEntryVerdicts` unless a test holds them open. */
+  entryVerdicts?: typeof jobEntryVerdicts;
 }
 
 /** What one sweep did, for a test to assert on. */
@@ -193,13 +195,28 @@ export interface WatchTickResult {
  * passes over it.
  */
 function watchJobs(db: Db): Job[] {
-  return listAllJobs(db).filter(
-    (job) =>
-      job.trigger.kind === "watch" &&
-      job.pausedAt === null &&
-      !isProjectReplica(db, job.projectId as Uuid | null) &&
-      !(job.projectId !== null && getProject(db, job.projectId as Uuid)?.adoptingAt != null),
+  return listAllJobs(db).filter((job) => isCheckable(db, job));
+}
+
+function isCheckable(db: Db, job: Job): boolean {
+  return (
+    job.deletedAt === null &&
+    job.trigger.kind === "watch" &&
+    job.pausedAt === null &&
+    !isProjectReplica(db, job.projectId as Uuid | null) &&
+    !(job.projectId !== null && getProject(db, job.projectId as Uuid)?.adoptingAt != null)
   );
+}
+
+/**
+ * The job as it stands now, if it may still be checked and file — read
+ * again after every await, because a person may pause, delete or move it
+ * while a module runs, and a job object read before that wait would
+ * still say it was live.
+ */
+function liveWatchJob(db: Db, id: Uuid): Job | null {
+  const job = getJob(db, id);
+  return job !== undefined && isCheckable(db, job) ? job : null;
 }
 
 /**
@@ -212,7 +229,11 @@ function watchJobs(db: Db): Job[] {
 export async function runWatchTick(db: Db, deps: WatchIntakeDeps): Promise<WatchTickResult> {
   const now = deps.now ?? Date.now;
   const result: WatchTickResult = { checked: [], held: [], filed: [] };
-  for (const job of watchJobs(db)) {
+  // Ids rather than jobs: each is read again before it is checked, since
+  // the checks before it may have taken minutes.
+  for (const id of watchJobs(db).map((job) => job.id as Uuid)) {
+    const job = liveWatchJob(db, id);
+    if (job === null) continue;
     const trigger = job.trigger as WatchTrigger;
     const state = getJobWatchState(db, job.id as Uuid);
     if ((state?.nextCheckAt ?? 0) > now()) continue;
@@ -265,12 +286,13 @@ export async function checkWatchJob(db: Db, job: Job, deps: WatchIntakeDeps): Pr
     outcome = { ok: false, reason: `The check crashed: ${error instanceof Error ? error.message : String(error)}` };
   }
 
-  // Read again: a person may have paused or deleted it while the module ran.
-  const current = getJob(db, job.id as Uuid);
-  if (current === undefined || current.deletedAt !== null) return [];
+  // Read again: a person may have paused, deleted or moved it while the module ran.
   const id = job.id as Uuid;
+  const stored = getJob(db, id);
+  if (stored === undefined || stored.deletedAt !== null) return [];
   const before = getJobWatchState(db, id);
-  if (current.pausedAt !== null) {
+  const current = liveWatchJob(db, id);
+  if (current === null) {
     saveJobWatchState(db, id, { lastCheckedAt: now() });
     return [];
   }
@@ -283,10 +305,17 @@ export async function checkWatchJob(db: Db, job: Job, deps: WatchIntakeDeps): Pr
   if (outcome.result === WAITING_RESULT) {
     const filed: string[] = [];
     for (const finding of outcome.findings ?? []) {
-      const itemId = await fileFinding(db, current, finding, now());
-      if (itemId !== null) {
-        filed.push(itemId);
-        deps.onFiled?.(itemId as Uuid);
+      const answer = await fileFinding(db, id, finding, now(), deps.entryVerdicts ?? jobEntryVerdicts);
+      if (answer === STOPPED) {
+        // Paused, deleted or moved while an entry rule ran: what is left
+        // of this check is not filed, and the job's state says only that
+        // it looked.
+        if (getJob(db, id) !== undefined) saveJobWatchState(db, id, { lastCheckedAt: now() });
+        return filed;
+      }
+      if (answer !== null) {
+        filed.push(answer);
+        deps.onFiled?.(answer as Uuid);
       }
     }
     const ended = now();
@@ -346,6 +375,9 @@ function failed(db: Db, job: Job, before: JobWatchStateRow | undefined, reason: 
 /** Carries "already said" out through the transaction that must take back the repeat's occurrence. */
 class AlreadySaid extends Error {}
 
+/** What `fileFinding` answers when the job stopped being live while its entry rules ran. */
+const STOPPED = Symbol("stopped");
+
 /**
  * Files one finding, or does not, and answers the item's id where it
  * filed one.
@@ -357,8 +389,9 @@ class AlreadySaid extends Error {}
  * writes nothing at all — its `failed` occurrence is taken back with the
  * rest of the transaction.
  */
-async function fileFinding(db: Db, job: Job, finding: WatchFinding, at: number): Promise<string | null> {
-  const jobId = job.id as Uuid;
+async function fileFinding(db: Db, jobId: Uuid, finding: WatchFinding, at: number, entryVerdictsOf: typeof jobEntryVerdicts): Promise<string | null | typeof STOPPED> {
+  const before = liveWatchJob(db, jobId);
+  if (before === null) return STOPPED;
   if (createdEventFor(db, jobId, finding.key) !== undefined) return null;
   const options: FireOptions & { dueAt: number } = {
     dueAt: at,
@@ -371,10 +404,15 @@ async function fileFinding(db: Db, job: Job, finding: WatchFinding, at: number):
       ...(finding.existingBranch === undefined ? {} : { existingBranch: finding.existingBranch }),
     },
   };
-  const entryVerdicts = await jobEntryVerdicts(db, job, options);
-  let filed: { itemId: string } | { refused: string };
+  const entryVerdicts = await entryVerdictsOf(db, before, options);
+  let filed: { itemId: string } | { refused: string; job: Job } | typeof STOPPED;
   try {
     filed = db.transaction(() => {
+      // Read again in the transaction that files: the entry rules may
+      // have run for minutes, and `fireJob`'s own pause and deletion
+      // guards only see the job they are handed.
+      const job = liveWatchJob(db, jobId);
+      if (job === null) return STOPPED;
       const fired = fireJob(db, job, { ...options, entryVerdicts });
       if (fired.item !== null) {
         recordJobEvent(db, { jobId, receivedAt: at, eventKey: finding.key, payload: "", outcome: "created", itemId: fired.item.id as Uuid });
@@ -383,7 +421,7 @@ async function fileFinding(db: Db, job: Job, finding: WatchFinding, at: number):
       const reason = fired.problem ?? "EO could not file it.";
       if (latestRefusalFor(db, jobId, finding.key)?.reason === reason) throw new AlreadySaid();
       recordJobEvent(db, { jobId, receivedAt: at, eventKey: finding.key, payload: "", outcome: "refused", reason });
-      return { refused: reason };
+      return { refused: reason, job };
     });
   } catch (error) {
     if (error instanceof AlreadySaid) return null;
@@ -391,7 +429,9 @@ async function fileFinding(db: Db, job: Job, finding: WatchFinding, at: number):
     if (createdEventFor(db, jobId, finding.key) !== undefined) return null;
     throw error;
   }
+  if (filed === STOPPED) return STOPPED;
   if ("itemId" in filed) return filed.itemId;
+  const { job } = filed;
   messageJobOwner(db, job, `"${job.name}" could not file "${finding.title}" (${finding.key}), which its module found. ${filed.refused}`, { source: JOB_MESSAGE_SOURCE.watch });
   return null;
 }
@@ -406,7 +446,7 @@ export function resumeWatch(db: Db, job: Job, at: number = Date.now()): void {
   kickWatchIntake();
 }
 
-/** The running loop's kick, so a resume is checked now rather than at the next tick. */
+/** The running loop's kick, so a resume is checked now rather than at the next tick. Queued, not dropped, while a sweep runs. */
 let kick: (() => void) | null = null;
 
 /** Runs the sweep now, where the loop is running. */
@@ -421,18 +461,32 @@ export interface WatchIntakeOptions extends WatchIntakeDeps {
 /**
  * Sweeps every minute, and at launch, until stopped. The loop's
  * non-overlap flag is what keeps checks one at a time.
+ *
+ * The interval loop drops a kick while a tick is in flight, which here
+ * would leave a job resumed during another job's ten-minute check
+ * waiting for that check and then the next tick. So a kick is
+ * remembered, and the sweep that is running sweeps again before it
+ * lets go of the flag.
  */
 export function startWatchIntake(db: Db, options: WatchIntakeOptions): () => void {
+  let pending = false;
   const loop = startInterval({
     name: "watch intake",
     tick: async () => {
-      await runWatchTick(db, options);
+      do {
+        pending = false;
+        await runWatchTick(db, options);
+      } while (pending);
     },
     readIntervalMs: () => options.intervalMs ?? MINUTE_MS,
   });
-  kick = loop.kick;
+  const ownKick = (): void => {
+    pending = true;
+    loop.kick();
+  };
+  kick = ownKick;
   return () => {
-    if (kick === loop.kick) kick = null;
+    if (kick === ownKick) kick = null;
     loop.stop();
   };
 }
