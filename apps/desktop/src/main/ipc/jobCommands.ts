@@ -53,11 +53,11 @@ function scopeOf(db: Db, projectId: string | null | undefined): Uuid | null {
  * it is *for* is the "From: conversation …" line on the item, which
  * reads it directly.
  *
- * Listing one anyway would break the original design's own sentence — "a developer with
- * no jobs never sees the entry" — for every developer who has ever
- * pressed Create in a conversation, which is most of them. The sidebar's
- * entry is drawn from this list, so the rule lives here and both the
- * list and the page read it.
+ * Listing one anyway would fill the Jobs screen with rows nobody can
+ * edit for every developer who has ever pressed Create in a
+ * conversation, which is most of them. The rule lives here so the list
+ * and the page read the same one. The rail's Jobs row does not read it:
+ * it is always there (EO-757).
  */
 function keptByAPerson(job: Job): boolean {
   return job.trigger.kind !== "from-discussion";

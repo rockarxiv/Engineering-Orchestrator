@@ -2099,8 +2099,42 @@ describe("what is waiting on you, in the chat layout", () => {
 describe("the chat layout's rail", () => {
   it("reaches the Jobs screen for a project that has no job yet", async () => {
     open("/chat");
-    fireEvent.click(await within(await screen.findByRole("navigation", { name: "Main" })).findByRole("button", { name: "New job" }));
+    fireEvent.click(await within(await screen.findByRole("navigation", { name: "Main" })).findByRole("link", { name: "Jobs" }));
     await waitFor(() => expect(window.location.hash).toBe("#/jobs"));
+  });
+
+  // The rail never asks `jobs:list` (EO-757), which leaves out the jobs pressing Create in a
+  // conversation makes, so a row drawn from it never appeared on most projects. What the list
+  // would say is given anyway, to show the row does not depend on it.
+  const KEPT = { id: "j1", name: "Monday report", trigger: { kind: "manual" } };
+  it.each([
+    ["no jobs", []],
+    ["only from-discussion jobs, which the list leaves out", []],
+    ["a job a person set up", [KEPT]],
+  ])("lists Jobs after the pipelines and before New pipeline for a project with %s (EO-757)", async (_, jobs) => {
+    const invoke = open("/chat", bridge({ "jobs:list": { jobs } }));
+    const nav = await screen.findByRole("navigation", { name: "Main" });
+    const link = await within(nav).findByRole("link", { name: "Jobs" });
+    const lastPipeline = await within(nav).findByRole("link", { name: /Vendor invoices/ });
+    const newPipeline = within(nav).getByRole("button", { name: "New pipeline" });
+
+    expect(link).toHaveAttribute("href", "#/jobs");
+    expect(lastPipeline.compareDocumentPosition(link) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(link.compareDocumentPosition(newPipeline) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(invoke.mock.calls.some(([channel]) => channel === "jobs:list")).toBe(false);
+  });
+
+  it.each(["/jobs", "/jobs/j1"])("marks Jobs active on %s (EO-757)", async (path) => {
+    open(path, bridge({ "jobs:list": { jobs: [] }, "jobs:get": { job: null, occurrences: [] } }));
+    const link = await within(await screen.findByRole("navigation", { name: "Main" })).findByRole("link", { name: "Jobs" });
+    expect(link).toHaveAttribute("aria-current", "page");
+  });
+
+  it("has no New job button on the Pipelines heading (EO-757)", async () => {
+    open("/chat");
+    const nav = await screen.findByRole("navigation", { name: "Main" });
+    await within(nav).findByRole("link", { name: "Jobs" });
+    expect(within(nav).queryByRole("button", { name: "New job" })).toBeNull();
   });
 
   it("disables the pause control while its request is in flight, so a second press sends nothing (EO-562)", async () => {
