@@ -2,7 +2,7 @@ import { useCallback, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { IpcResponse } from "@eo/core";
 import { ipcQuery } from "./client";
-import { pipelineStepsRootKey, projectsKey, repositoriesKey, itemsKey, switchProjectKey, worktreesKey } from "./hooks";
+import { countProjectSwitchEdge, pipelineStepsRootKey, projectsKey, repositoriesKey, itemsKey, switchProjectKey, worktreesKey } from "./hooks";
 import { useInvalidateOnPush } from "./useInvalidateOnPush";
 import { archivedKey } from "../shared/pipeline/archive";
 import { assistRoomKey, assistThreadsKey } from "../shared/assist/useAssistRoom";
@@ -42,7 +42,11 @@ export function useProjects() {
     // after it and put that project's chat back on screen, ready to be
     // written in, so it is cancelled before the switch is asked for. Both
     // stay unread until the switch is through (`useSwitchingProject`).
+    // A write to either begun before the switch, or during it, answers
+    // for the project being left too; counting both ends of the switch
+    // is how its reply knows not to draw (`stillOnProject`).
     onMutate: async () => {
+      countProjectSwitchEdge(queryClient);
       await Promise.all([assistRoomKey, assistThreadsKey].map((queryKey) => queryClient.cancelQueries({ queryKey, exact: true })));
     },
     onSuccess: () => {
@@ -80,6 +84,7 @@ export function useProjects() {
       // covers the whole switch and the rail never flicks back to the old name.
       return queryClient.invalidateQueries({ queryKey: projectsKey });
     },
+    onSettled: () => countProjectSwitchEdge(queryClient),
   });
 
   // Live projects are the ones anything can switch to, list or pick

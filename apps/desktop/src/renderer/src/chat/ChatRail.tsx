@@ -8,12 +8,12 @@ import { NavLink, useNavigate } from "react-router-dom";
 import { Check, ChevronDown, Inbox, LoaderCircle, Pause, Play, Plus, Search, Settings, Workflow } from "lucide-react";
 import { CHAT_HOME_ROUTE, type IpcResponse } from "@eo/core";
 import { cn } from "@eo/ui";
-import { assistRoomKey, assistThreadsKey } from "../shared/assist/useAssistRoom";
+import { assistRoomKey, assistThreadsKey, showAssistReply } from "../shared/assist/useAssistRoom";
 import { pipelineIcon, places } from "../shared/layout/sidebar";
 import { ipcQuery } from "../query/client";
 import { engineStatusKey } from "../query/engine";
 import { isDispatchable } from "@eo/core";
-import { agentsKey, useChromeVocabulary, useMe, usePipelines, useProjectItems, useSwitchingProject } from "../query/hooks";
+import { agentsKey, projectSwitchStamp, stillOnProject, useChromeVocabulary, useMe, usePipelines, useProjectItems, useSwitchingProject } from "../query/hooks";
 import { useInvalidateOnPush } from "../query/useInvalidateOnPush";
 import { useProjects } from "../query/useRepositories";
 import { ConfirmDialog, ContextMenu, contextMenuAt, isContextMenuKey, StatusDot, type ContextMenuAt } from "./kit";
@@ -84,9 +84,11 @@ export function ChatRail({ onNewPipeline }: { onNewPipeline: () => void }) {
   // runs on. It was `assist:clear` while there could be one live thread.
   const newChat = useMutation({
     mutationFn: () => ipcQuery("assist:new", undefined),
-    onSuccess: (result) => {
+    onMutate: () => projectSwitchStamp(queryClient),
+    onSuccess: (result, _variables, stamp) => {
       setProblem(null);
-      queryClient.setQueryData(assistRoomKey, result);
+      // Not over another project's room, if the window left this one meanwhile (EO-765).
+      showAssistReply(queryClient, stamp, result);
       void queryClient.invalidateQueries({ queryKey: assistRoomKey });
       void queryClient.invalidateQueries({ queryKey: assistThreadsKey });
       void navigate(CHAT_HOME_ROUTE);
@@ -291,9 +293,10 @@ function ChatList({ onProblem }: { onProblem: (message: string | null) => void }
 
   const resume = useMutation({
     mutationFn: (conversationId: string) => ipcQuery("assist:resume", { conversationId }),
-    onSuccess: (result) => {
+    onMutate: () => projectSwitchStamp(queryClient),
+    onSuccess: (result, _conversationId, stamp) => {
       onProblem(result.problem);
-      queryClient.setQueryData(assistRoomKey, { conversation: result.conversation });
+      showAssistReply(queryClient, stamp, { conversation: result.conversation });
       void queryClient.invalidateQueries({ queryKey: assistRoomKey });
       // Which row is the current one is the list's to say (EO-438), now
       // that the chat on show is a row of it and not one drawn apart.
@@ -316,10 +319,14 @@ function ChatList({ onProblem }: { onProblem: (message: string | null) => void }
   const latestMove = useRef(0);
   const reorder = useMutation({
     mutationFn: ({ conversationId, index }: { conversationId: string; index: number; move: number }) => ipcQuery("assist:reorder", { conversationId, index }),
-    onSuccess: (result, { move }) => {
+    onMutate: () => projectSwitchStamp(queryClient),
+    onSuccess: (result, { move }, stamp) => {
       if (move !== latestMove.current) return;
       onProblem(result.problem);
-      queryClient.setQueryData<IpcResponse<"assist:list">>(assistThreadsKey, { conversations: result.conversations });
+      // The order of the project the move was made on: not drawn as
+      // another's list if the window has left it since (EO-765).
+      if (stillOnProject(queryClient, stamp)) queryClient.setQueryData<IpcResponse<"assist:list">>(assistThreadsKey, { conversations: result.conversations });
+      else void queryClient.invalidateQueries({ queryKey: assistThreadsKey });
       setPlaced(null);
     },
     onError: (error: unknown, { move }) => {
@@ -343,7 +350,8 @@ function ChatList({ onProblem }: { onProblem: (message: string | null) => void }
 
   const remove = useMutation({
     mutationFn: (conversationId: string) => ipcQuery("assist:remove", { conversationId }),
-    onSuccess: (result) => {
+    onMutate: () => projectSwitchStamp(queryClient),
+    onSuccess: (result, _conversationId, stamp) => {
       // Either way the list is not what it was: removed, or refused
       // because the chat had already gone from another window.
       void queryClient.invalidateQueries({ queryKey: assistThreadsKey });
@@ -354,7 +362,7 @@ function ChatList({ onProblem }: { onProblem: (message: string | null) => void }
       setRemoving(null);
       // The open chat was the one removed: the room is the new empty one, as after New chat.
       if (result.conversation) {
-        queryClient.setQueryData(assistRoomKey, { conversation: result.conversation });
+        showAssistReply(queryClient, stamp, { conversation: result.conversation });
         void queryClient.invalidateQueries({ queryKey: assistRoomKey });
         void navigate(CHAT_HOME_ROUTE);
       }
@@ -379,11 +387,12 @@ function ChatList({ onProblem }: { onProblem: (message: string | null) => void }
 
   const removeMany = useMutation({
     mutationFn: (conversationIds: string[]) => ipcQuery("assist:removeMany", { conversationIds }),
-    onSuccess: (result, conversationIds) => {
+    onMutate: () => projectSwitchStamp(queryClient),
+    onSuccess: (result, conversationIds, stamp) => {
       void queryClient.invalidateQueries({ queryKey: assistThreadsKey });
       // The chat on show was among them: the room is the one new empty chat, as after New chat.
       if (result.conversation) {
-        queryClient.setQueryData(assistRoomKey, { conversation: result.conversation });
+        showAssistReply(queryClient, stamp, { conversation: result.conversation });
         void queryClient.invalidateQueries({ queryKey: assistRoomKey });
         void navigate(CHAT_HOME_ROUTE);
       }

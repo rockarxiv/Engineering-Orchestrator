@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { isDispatchable, type DiscussionMessage, type DiscussionView, type IpcPayload, type IpcResponse } from "@eo/core";
 import { ipcQuery } from "../../query/client";
-import { agentsKey, useSwitchingProject } from "../../query/hooks";
+import { agentsKey, projectSwitchStamp, stillOnProject, switchProjectKey, useSwitchingProject } from "../../query/hooks";
 import { useInvalidateOnPush } from "../../query/useInvalidateOnPush";
 import { roomIdentity, useRoomPushes } from "../../query/useRoomPushes";
 import { usePageDescriptor } from "../view/ViewPublisher";
@@ -86,9 +86,33 @@ export const assistCardKey = (messageId: string) => ["assistCard", messageId] as
  * room open to draw into.
  */
 export function drawAssistReply(queryClient: QueryClient, conversation: DiscussionView): void {
+  // Nor while the window is between projects (EO-765): what is cached
+  // then is the project being left's, about to be dropped.
+  if (queryClient.isMutating({ mutationKey: switchProjectKey }) > 0) return;
   const shown = queryClient.getQueryData<IpcResponse<"assist:open">>(assistRoomKey);
   if (shown?.conversation.id !== conversation.id) return;
   queryClient.setQueryData<IpcResponse<"assist:open">>(assistRoomKey, { conversation });
+}
+
+/**
+ * Puts the chat a write answered with on show in the room — the write
+ * that changes which chat is shown: New chat, Clear, showing another,
+ * forking, removing the one on show (EO-765).
+ *
+ * Only when the window is still on the project the write was sent from,
+ * `stamp` being `projectSwitchStamp` taken as it was sent. Each project
+ * has its own chat on show and `assist:*` answers for the project active
+ * when it was asked, so a reply that lands after a switch is the project
+ * left's: drawn, its chat would be on screen on the new project, and the
+ * next message, and any draft in it, would go to the old one. Nothing is
+ * written then; the switch has already read the new project's room.
+ *
+ * Answers whether it wrote, for a caller with more to do only then.
+ */
+export function showAssistReply(queryClient: QueryClient, stamp: number, reply: IpcResponse<"assist:open">): boolean {
+  if (!stillOnProject(queryClient, stamp)) return false;
+  queryClient.setQueryData<IpcResponse<"assist:open">>(assistRoomKey, reply);
+  return true;
 }
 
 /**
@@ -305,7 +329,7 @@ export function useAssistRoom(open: boolean): AssistRoom {
   const refresh = useCallback(() => void queryClient.invalidateQueries({ queryKey: assistRoomKey }), [queryClient]);
 
   const send = useMutation({
-    mutationFn: ({ body, attachmentIds, conversationId }: { body: string; attachmentIds: string[]; conversationId: string | null; known: ReadonlySet<string> }) =>
+    mutationFn: ({ body, attachmentIds, conversationId }: { body: string; attachmentIds: string[]; conversationId: string | null; known: ReadonlySet<string>; stamp: number }) =>
       // `page` is where the person is *now*, which is not necessarily
       // where this thread began: the panel does not close when you
       // navigate. It decides which board a graph proposed by the turn
@@ -318,15 +342,19 @@ export function useAssistRoom(open: boolean): AssistRoom {
       // by the main process (EO-395), which is the only behaviour this
       // room offers. The answer says whether it got there.
       ipcQuery("assist:send", { page, conversationId, body, attachmentIds, interrupt: false }),
-    onSuccess: (result, { conversationId }) => {
+    onSuccess: (result, { conversationId, stamp }) => {
       setProblem(null);
+      void queryClient.invalidateQueries({ queryKey: assistRoomKey });
+      // Sent from the project the window has since left (EO-765): the
+      // message is in that project's chat, and neither it nor what became
+      // of it is this project's room's to draw.
+      if (!stillOnProject(queryClient, stamp)) return;
       setNotice(result.delivery?.note ?? null);
       // The message in the transcript as the box lets go of it, rather
       // than a refetch later (EO-548). A send to no chat in particular
       // started the one on show, so there is nothing to compare against.
-      if (conversationId === null) queryClient.setQueryData<IpcResponse<"assist:open">>(assistRoomKey, { conversation: result.conversation });
+      if (conversationId === null) showAssistReply(queryClient, stamp, { conversation: result.conversation });
       else drawAssistReply(queryClient, result.conversation);
-      void queryClient.invalidateQueries({ queryKey: assistRoomKey });
     },
     // A refused send is the composer's to report, under the box that
     // still holds the message, so nothing is recorded here. The room is
@@ -339,12 +367,13 @@ export function useAssistRoom(open: boolean): AssistRoom {
 
   const clear = useMutation({
     mutationFn: () => ipcQuery("assist:clear", undefined),
-    onSuccess: (result) => {
+    onMutate: () => projectSwitchStamp(queryClient),
+    onSuccess: (result, _variables, stamp) => {
       setProblem(null);
       // Written straight into the cache as well as invalidated: the
       // empty thread is the answer, and waiting for a refetch to say so
       // would leave the transcript somebody just cleared on screen.
-      queryClient.setQueryData(assistRoomKey, result);
+      showAssistReply(queryClient, stamp, result);
       void queryClient.invalidateQueries({ queryKey: assistRoomKey });
     },
     onError: (error: unknown) => setProblem(error instanceof Error ? error.message : String(error)),
@@ -352,12 +381,13 @@ export function useAssistRoom(open: boolean): AssistRoom {
 
   const startNew = useMutation({
     mutationFn: () => ipcQuery("assist:new", undefined),
-    onSuccess: (result) => {
+    onMutate: () => projectSwitchStamp(queryClient),
+    onSuccess: (result, _variables, stamp) => {
       setProblem(null);
       // Straight into the cache, for Clear's reason: the empty chat is
       // the answer, and the one left behind should not stay on screen
       // until a refetch says so.
-      queryClient.setQueryData(assistRoomKey, result);
+      showAssistReply(queryClient, stamp, result);
       void queryClient.invalidateQueries({ queryKey: assistRoomKey });
       void queryClient.invalidateQueries({ queryKey: assistThreadsKey });
     },
@@ -397,8 +427,9 @@ export function useAssistRoom(open: boolean): AssistRoom {
   });
   const withdraw = useMutation({
     mutationFn: (payload: IpcPayload<"assist:withdraw">) => ipcQuery("assist:withdraw", payload),
-    onSuccess: (result) => {
-      queryClient.setQueryData(assistRoomKey, { conversation: result.conversation });
+    onMutate: () => projectSwitchStamp(queryClient),
+    onSuccess: (result, _payload, stamp) => {
+      if (!showAssistReply(queryClient, stamp, { conversation: result.conversation })) return;
       if (result.withdrawn) setNotice("Taken back: the assistant will not answer that message.");
     },
     onError: (error: unknown) => setProblem(error instanceof Error ? error.message : String(error)),
@@ -408,8 +439,9 @@ export function useAssistRoom(open: boolean): AssistRoom {
 
   const stop = useMutation({
     mutationFn: (conversationId: string) => ipcQuery("assist:stop", { conversationId }),
-    onSuccess: (result) => {
-      queryClient.setQueryData(assistRoomKey, { conversation: result.conversation });
+    onMutate: () => projectSwitchStamp(queryClient),
+    onSuccess: (result, _conversationId, stamp) => {
+      showAssistReply(queryClient, stamp, { conversation: result.conversation });
       void queryClient.invalidateQueries({ queryKey: assistRoomKey });
     },
     onError: (error: unknown) => setProblem(error instanceof Error ? error.message : String(error)),
@@ -417,20 +449,22 @@ export function useAssistRoom(open: boolean): AssistRoom {
 
   const settings = useMutation({
     mutationFn: (payload: IpcPayload<"assist:settings">) => ipcQuery("assist:settings", payload),
-    onSuccess: (result) => {
+    onMutate: () => projectSwitchStamp(queryClient),
+    onSuccess: (result, _payload, stamp) => {
       setProblem(null);
-      queryClient.setQueryData(assistRoomKey, { conversation: result.conversation });
+      showAssistReply(queryClient, stamp, { conversation: result.conversation });
     },
     onError: (error: unknown) => setProblem(error instanceof Error ? error.message : String(error)),
   });
 
   const fork = useMutation({
     mutationFn: (payload: IpcPayload<"assist:fork">) => ipcQuery("assist:fork", payload),
-    onSuccess: (result) => {
+    onMutate: () => projectSwitchStamp(queryClient),
+    onSuccess: (result, _payload, stamp) => {
       setProblem(result.problem);
       // The new chat is the one on show: written straight in, for the
       // reason a new chat is, and the list learns it has another.
-      queryClient.setQueryData(assistRoomKey, { conversation: result.conversation });
+      showAssistReply(queryClient, stamp, { conversation: result.conversation });
       void queryClient.invalidateQueries({ queryKey: assistRoomKey });
       void queryClient.invalidateQueries({ queryKey: assistThreadsKey });
     },
@@ -447,13 +481,15 @@ export function useAssistRoom(open: boolean): AssistRoom {
     send: async (body: string, attachmentIds: string[] = []) => {
       if (!ready) throw new Error("Still switching project. Send it again once its chat is open.");
       const known = new Set([...(olderHere?.messages ?? []), ...(view?.messages ?? [])].map((message) => message.id));
-      await send.mutateAsync({ body, attachmentIds, conversationId: view?.id ?? null, known });
+      await send.mutateAsync({ body, attachmentIds, conversationId: view?.id ?? null, known, stamp: projectSwitchStamp(queryClient) });
     },
     sending: send.isPending,
     // The mutation's own variables while it is in flight: gone the moment
-    // it settles, so a failed send leaves no bubble behind.
+    // it settles, so a failed send leaves no bubble behind. Nor drawn once
+    // the window has left the project it was sent on (EO-765): it is that
+    // project's message, and the room is now another's.
     pending:
-      send.isPending && send.variables
+      send.isPending && send.variables && stillOnProject(queryClient, send.variables.stamp)
         ? { conversationId: send.variables.conversationId, body: send.variables.body, attachmentCount: send.variables.attachmentIds.length, known: send.variables.known }
         : null,
     clear: () => clear.mutate(),
@@ -526,9 +562,10 @@ export function useAssistChats(open: boolean): { chats: AssistChat[]; show: (con
 
   const show = useMutation({
     mutationFn: (conversationId: string) => ipcQuery("assist:resume", { conversationId }),
-    onSuccess: (result) => {
+    onMutate: () => projectSwitchStamp(queryClient),
+    onSuccess: (result, _conversationId, stamp) => {
       setProblem(result.problem);
-      queryClient.setQueryData(assistRoomKey, { conversation: result.conversation });
+      showAssistReply(queryClient, stamp, { conversation: result.conversation });
       void queryClient.invalidateQueries({ queryKey: assistRoomKey });
       void queryClient.invalidateQueries({ queryKey: assistThreadsKey });
     },

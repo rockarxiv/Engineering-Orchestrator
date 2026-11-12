@@ -4,7 +4,8 @@ import { useNavigate } from "react-router-dom";
 import { CHAT_HOME_ROUTE } from "@eo/core";
 import { ipcQuery } from "../query/client";
 import { useProjects } from "../query/useRepositories";
-import { assistRoomKey, assistThreadsKey } from "../shared/assist/useAssistRoom";
+import { projectSwitchStamp } from "../query/hooks";
+import { assistRoomKey, assistThreadsKey, showAssistReply } from "../shared/assist/useAssistRoom";
 
 /**
  * Opening the assistant chat about one held template update (EO-533):
@@ -30,7 +31,8 @@ export function useOpenUpdateConflictChat() {
 
   const open = useMutation({
     mutationFn: (request: { conflictId: string; commentId: string | null }) => ipcQuery("assist:openUpdateConflict", request),
-    onSuccess: async (result) => {
+    onMutate: () => projectSwitchStamp(queryClient),
+    onSuccess: async (result, _request, stamp) => {
       setProblem(result.problem);
       if (result.conversation === null) return;
       if (result.projectId !== null && result.projectId !== activeProjectId) {
@@ -45,8 +47,10 @@ export function useOpenUpdateConflictChat() {
       // the answer, and the one on show before should not linger. A read
       // of the room begun before the press is cancelled first, or it would
       // land after this and put the old chat back.
+      // Nor written if the person switched project while it was opening
+      // (EO-765): the room is that project's now.
       await queryClient.cancelQueries({ queryKey: assistRoomKey, exact: true });
-      queryClient.setQueryData(assistRoomKey, { conversation: result.conversation });
+      showAssistReply(queryClient, stamp, { conversation: result.conversation });
       void queryClient.invalidateQueries({ queryKey: assistRoomKey });
       void queryClient.invalidateQueries({ queryKey: assistThreadsKey });
       void navigate(CHAT_HOME_ROUTE);
