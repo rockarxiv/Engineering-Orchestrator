@@ -11,7 +11,7 @@ catalog:
   typescript-eslint: 8.65.0
   "@types/node": 26.6.6
   electron: 45.2.3
-  electron-vite: 5.0.0
+  electron-vite: 6.0.0
   electron-builder: 26.18.0
   react: 19.2.8
   react-dom: 19.2.8
