@@ -139,6 +139,22 @@ describe("verify, after an implement run", () => {
     expect(checks[0]?.comment).toContain(item.key);
   });
 
+  it("adds a blocking check of the commit messages when a Reference names the work (EO-768)", async () => {
+    const named = createTestItem(handle.db, { type: "story", title: "A story", stepId: "todo", workspaceId: workspace.id, git: { reference: "PROJ-1" } });
+    const outcome = await kind().prepare(named, "implement");
+    if (!outcome.ok) throw new Error(outcome.reason);
+    writeFileSync(join(outcome.workspace.cwd, "feature.txt"), "the work\n");
+    await run(["add", "-A"], outcome.workspace.cwd);
+    await run(["commit", "-m", `${named.key}: the work`], outcome.workspace.cwd);
+
+    const checks = await verifyRun(kind(), getItem(handle.db, named.id)!, succeededImplement(outcome.workspace));
+
+    expect(checks.map((check) => check.key)).toEqual(["implementation", "clean-tree", "borrowed-files", "commit-naming"]);
+    const naming = checks[3];
+    expect(naming).toMatchObject({ passed: false, blocks: true });
+    expect(naming?.comment).toContain(`${named.key}: the work — names ${named.key}`);
+  });
+
   /**
    * What the column head says this kind checks (EO-312, ARCHITECTURE.md, "What 'EO checks' means on
    * a step").
@@ -158,7 +174,7 @@ describe("verify, after an implement run", () => {
 
     expect(verificationLine({ id: "todo", type: "agent" }, [
       { stepId: "todo", checks: [...describesChecks(kind(), step("implement"))], verifiesAction: true, kindVerifies: true, waitsOn: null },
-    ])).toMatchInlineSnapshot(`"EO checks: commits, tests ran, the tree is clean, nothing borrowed from another ticket"`);
+    ])).toMatchInlineSnapshot(`"EO checks: commits, tests ran, the tree is clean, nothing borrowed from another ticket, commit messages name only the Reference"`);
 
     // And nothing to say about an action it does not check, which reads
     // as a head that promises nothing rather than one that implies the
