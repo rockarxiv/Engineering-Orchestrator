@@ -15,6 +15,7 @@ import {
   getStep,
   listCommentsForItem,
   listModules,
+  listProjects,
   listStepsForPipeline,
   markDiverged,
   publishSection,
@@ -50,6 +51,9 @@ let handle: DbHandle;
 
 beforeEach(() => {
   handle = openMigratedTestDb();
+  // A pipeline goes on a project (EO-766). The chats here are opened on
+  // none, so what they publish goes on the oldest: this one.
+  createProject(handle.db, { name: "Workbench", keyPrefix: "WRK" });
 });
 
 afterEach(() => {
@@ -337,7 +341,7 @@ describe("tuning a step that already exists", () => {
 
   it("refuses a workspace the project does not hold, naming the step", async () => {
     // The project the chat, and so the pipeline it creates, is on.
-    const home = createProject(handle.db, { name: "Home", keyPrefix: "HOM" });
+    const home = listProjects(handle.db)[0]!;
     const { conversation, pipelineId, moduleId } = await releasePipeline();
     expect(getPipeline(handle.db, pipelineId)?.projectId).toBe(home.id);
     const elsewhere = createProject(handle.db, { name: "Elsewhere", keyPrefix: "ELS" });

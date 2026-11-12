@@ -12,6 +12,7 @@ import { syncItemTypes } from "./db/repos/index.js";
 import { migrateCarriedSchemas } from "./actionDefinitionAdoption.js";
 import { loadTemplateHistory } from "./gallery/history.js";
 import { backfillPipelineOrigins } from "./gallery/origins.js";
+import { splitSharedPipelinesOrHold } from "./gallery/sharedPipelines.js";
 import { applyTemplateUpdates } from "./gallery/templateUpdates.js";
 import { codexHomeRootsOf, createEngine, sweepUnusedCodexHomes } from "./engine.js";
 import { installTrialLoop } from "./trials/loop.js";
@@ -527,6 +528,22 @@ export function startMain(platform: Platform): RunningMain {
   const templateHistory = loadTemplateHistory(resources.gallery);
   const backfilled = backfillPipelineOrigins(db, templateHistory);
   for (const origin of backfilled.recorded) console.log(`[eo] pipeline ${origin.pipelineId} comes from template ${origin.slug} ${origin.version}`);
+
+  // EO-766: no pipeline is shared between projects any more. Where one
+  // still is — the seeded Delivery, on an installation whose first
+  // project was not made from its template — the oldest project keeps it
+  // and every other gets its own copy, with its work moved onto it.
+  // After the backfill, so each copy remembers the template its original
+  // does; before the template updates, so the copies take them too.
+  // Each copied step takes its original's module secrets with it, so
+  // this is the same directory the engine reads them from. Should the
+  // split fail, it is undone whole, the pipeline stays shared among the
+  // projects as before, the person is told, and it is tried again on the
+  // next launch (`splitSharedPipelinesOrHold`).
+  for (const split of splitSharedPipelinesOrHold(db, { moduleSecrets: engineOptions.moduleSecrets, isTheRecord: !platform.hasMachine })) {
+    const copies = split.copies.map((copy) => `${copy.pipelineId} for project ${copy.projectId} (${copy.movedItems} items moved)`).join(", ");
+    console.log(`[eo] pipeline ${split.pipelineId} is project ${split.keptBy}'s now${copies === "" ? "" : `; copies: ${copies}`}`);
+  }
 
   // EO-532: and each pipeline whose template has shipped a newer version
   // than its base is compared three ways and, where nothing conflicts,

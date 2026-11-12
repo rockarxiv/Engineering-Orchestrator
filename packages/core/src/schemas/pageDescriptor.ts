@@ -1,5 +1,4 @@
 import { z } from "zod";
-import { DEFAULT_PIPELINE_ID } from "../domain.js";
 
 /**
  * Where an assist turn was asked from — the route, and the parameters
@@ -53,17 +52,16 @@ export interface AssistPageRoute {
    */
   key: string;
   /**
-   * The parameters this route's *path* does not carry and the screen
-   * picks for itself.
+   * Whether this route's parameter is one its *path* does not carry, and
+   * the screen picks for itself.
    *
-   * One route has any: `/project` draws the same board as
-   * `/pipelines/:pipelineId` with nothing in its address, and the chat
-   * layout falls back to `DEFAULT_PIPELINE_ID` there (EO-191). Stated here
-   * so both sides fill the gap the same way — the renderer still sends
-   * only what the router matched, and the id is supplied from this table
-   * rather than asserted by the side of the app with no database.
+   * One route does: `/project` draws the board of the active project's
+   * first pipeline with nothing in its address (EO-191, EO-766). Which
+   * pipeline that is depends on the database, so the side that asks
+   * supplies it — see `assistPageSubjectOf`'s `implied` — rather than
+   * this table naming one pipeline for every project.
    */
-  implied?: Readonly<Record<string, string>>;
+  implied?: true;
 }
 
 /**
@@ -202,10 +200,10 @@ export const ASSIST_PAGE_ROUTES: readonly AssistPageRoute[] = [
   { route: "/pipelines/:pipelineId", param: "pipelineId", key: "pipeline" },
   // The same board as the route above, reached without naming it: a
   // link that knows of no particular pipeline — a job or a template with
-  // none — points here. It resolves to the pipeline that screen draws
-  // and shares that pipeline's key, because one board is one screen
-  // however you walked onto it (EO-191).
-  { route: "/project", param: "pipelineId", key: "pipeline", implied: { pipelineId: DEFAULT_PIPELINE_ID } },
+  // none — points here. It resolves to the pipeline that screen draws —
+  // the active project's first (EO-766) — and shares that pipeline's key,
+  // because one board is one screen however you walked onto it (EO-191).
+  { route: "/project", param: "pipelineId", key: "pipeline", implied: true },
   // Both of Jobs' routes, sharing one key and naming no parameter
   // (EO-308). The list screen and one job's page are the same kind of
   // screen to the assistant, and `param` is null on the second
@@ -251,17 +249,18 @@ export function assistPageRouteOf(page: PageDescriptor): AssistPageRoute | undef
  * would: a page whose id is implied rather than carried (`/project`)
  * would otherwise need the fallback written out at both call sites, and
  * the failure that makes is a Publish button over a board nobody is
- * looking at.
+ * looking at. `implied` is that fallback — the active project's first
+ * pipeline, which only a side holding the database can name (EO-766).
  *
  * Null covers a route nobody listed, a screen that is about no row, and
  * a parameter that never arrived — which the caller treats the same way,
  * because in each case there is nothing to name.
  */
-export function assistPageSubjectOf(page: PageDescriptor): string | null {
+export function assistPageSubjectOf(page: PageDescriptor, implied?: Readonly<Record<string, string | null>>): string | null {
   const known = assistPageRouteOf(page);
   if (!known || known.param === null) return null;
 
-  const value = page.params[known.param] ?? known.implied?.[known.param];
+  const value = page.params[known.param] ?? (known.implied === true ? (implied?.[known.param] ?? undefined) : undefined);
   return value === undefined || value === "" ? null : value;
 }
 

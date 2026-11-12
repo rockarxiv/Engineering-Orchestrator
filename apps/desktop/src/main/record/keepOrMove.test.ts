@@ -40,6 +40,7 @@ import { appendRunEvent } from "../db/repos/runEventsRepo.js";
 import { setSetting } from "../db/repos/settingsRepo.js";
 import {
   adoptPipeline,
+  getPipeline,
   createPipeline,
   createRoute,
   createStep,
@@ -1638,10 +1639,10 @@ describe("a graph nobody owns", () => {
   it("is not rewritten by somebody moving a project that stands on it", async () => {
     const support = localProject("Support", "SUP");
     itemOn(support.id, "A refund");
-    // The seeded Delivery board, which `listPipelines` shows to
-    // whichever project asks — this project's in every way a person can
-    // see, and on an organisation's record *everybody's*.
-    const shared = listPipelines(annaDb.db, support.id, true)[0]!;
+    // The seeded Delivery board, still nobody's — as it was before EO-766
+    // gave every project its own — which this project's work stands on,
+    // and on an organisation's record *everybody's*.
+    const shared = getPipeline(annaDb.db, "default")!;
     expect(shared.projectId).toBeNull();
     const step = listStepsForPipeline(annaDb.db, shared.id)[0]!;
     updateStep(annaDb.db, step.id, { planMode: true });
@@ -1665,7 +1666,7 @@ describe("a graph nobody owns", () => {
 
   it("stops the move when the record's copy has no step the work is standing on", async () => {
     const support = localProject("Support", "SUP");
-    const shared = listPipelines(annaDb.db, support.id, true)[0]!;
+    const shared = getPipeline(annaDb.db, "default")!;
     const invented = createStep(annaDb.db, { pipelineId: shared.id, position: 97, name: "A step only here", type: "user" });
     itemOn(support.id, "A refund");
     signIn(anna);
@@ -1686,7 +1687,7 @@ describe("a job whose pipeline changes while the move runs", () => {
   it("arrives pointing where it points now", async () => {
     const support = localProject("Support", "SUP");
     itemOn(support.id, "The weekly report");
-    const first = listPipelines(annaDb.db, support.id, true)[0]!;
+    const first = getPipeline(annaDb.db, "default")!;
     adoptPipeline(annaDb.db, first.id, support.id);
     const second = createPipeline(annaDb.db, { name: "The other flow", projectId: support.id });
     createStep(annaDb.db, { pipelineId: second.id, position: 0, name: "Waiting", type: "user" });
@@ -2033,7 +2034,7 @@ describe("a project whose job has already fired", () => {
   function projectWithAJobBehindIt(): { id: Uuid; jobId: Uuid; fired: Uuid } {
     const support = localProject("Support", "SUP");
     const thread = itemOn(support.id, "The weekly report");
-    const pipeline = listPipelines(annaDb.db, support.id, true)[0]!;
+    const pipeline = getPipeline(annaDb.db, "default")!;
     adoptPipeline(annaDb.db, pipeline.id, support.id);
     const job = insertJob(annaDb.db, {
       projectId: support.id,
@@ -2177,7 +2178,7 @@ describe("a scheduled job on a project that has moved", () => {
   function jobFixture(): { projectId: Uuid; jobId: Uuid; due: number } {
     const support = localProject("Support", "SUP");
     itemOn(support.id, "The weekly report");
-    const pipeline = listPipelines(annaDb.db, support.id, true)[0]!;
+    const pipeline = getPipeline(annaDb.db, "default")!;
     adoptPipeline(annaDb.db, pipeline.id, support.id);
     const job = insertJob(annaDb.db, {
       projectId: support.id,
@@ -2294,7 +2295,7 @@ describe("a job whose project is mid-transfer", () => {
   /** A project with a weekly job on it, already due once. */
   function jobDueOn(projectId: Uuid): Uuid {
     itemOn(projectId, "The weekly report");
-    const pipeline = listPipelines(annaDb.db, projectId, true)[0]!;
+    const pipeline = getPipeline(annaDb.db, "default")!;
     adoptPipeline(annaDb.db, pipeline.id, projectId);
     const job = insertJob(annaDb.db, {
       projectId,

@@ -60,6 +60,7 @@ import {
   versionSnapshot,
 } from "../db/repos/index.js";
 import { activeProjectId } from "../ipc/repositoryCommands.js";
+import { chatPipelineProjectId } from "../ipc/pipelineHome.js";
 import { registry } from "../registry.js";
 import {
   draftStepResults,
@@ -1515,8 +1516,8 @@ function judgedAgainst(destination: { kind: "existing"; pipelineId: string } | {
  * `pipeline_manage`'s rule, applied here for its reason: work is placed
  * on a pipeline by name, matched trimmed and case-insensitively, so two
  * of the same name is work that could land on either. "The project can
- * see" is `listPipelines`' own: its pipelines, plus the ones no project
- * has adopted — and every pipeline, when there is no project at all.
+ * see" is `listPipelines`' own: its own pipelines (EO-766) — and every
+ * pipeline, when there is no project at all.
  * Archived ones hold no name, as there.
  */
 function pipelineNamed(db: Db, projectId: Uuid | null, name: string): { id: string; name: string } | undefined {
@@ -1568,7 +1569,7 @@ function draftRefusal(
   posted = false,
 ): string | null {
   if (destination.kind === "new") {
-    const clash = pipelineNamed(db, conversation.projectId, destination.name);
+    const clash = pipelineNamed(db, chatPipelineProjectId(db, conversation.projectId), destination.name);
     if (clash) {
       return (
         `Nothing would be created: this project already has a pipeline called "${clash.name}" (id: ${clash.id}), and work is placed on a ` +
@@ -1589,7 +1590,7 @@ function draftRefusal(
 
   if (destination.kind === "existing" && draft.name !== undefined) {
     const pipeline = getPipeline(db, destination.pipelineId);
-    const clash = pipeline && draft.name !== pipeline.name ? pipelineNamed(db, pipeline.projectId ?? conversation.projectId, draft.name) : undefined;
+    const clash = pipeline && draft.name !== pipeline.name ? pipelineNamed(db, pipeline.projectId ?? chatPipelineProjectId(db, conversation.projectId), draft.name) : undefined;
     if (clash && clash.id !== destination.pipelineId) {
       return (
         `This draft renames the pipeline to "${draft.name}", and this project already has a pipeline called "${clash.name}" (id: ${clash.id}). ` +
@@ -1696,7 +1697,7 @@ function workspaceRefusal(
 ): string | null {
   const named = draft.steps.filter((step) => step.workspaceId !== undefined && step.workspaceId !== ITEM_WORKSPACE && step.workspaceId !== NO_WORKSPACE);
   if (named.length === 0) return null;
-  const projectId = destination.kind === "existing" ? (getPipeline(db, destination.pipelineId)?.projectId ?? activeProjectId(db)) : conversation.projectId;
+  const projectId = destination.kind === "existing" ? (getPipeline(db, destination.pipelineId)?.projectId ?? activeProjectId(db)) : chatPipelineProjectId(db, conversation.projectId);
   const held = projectId === null ? [] : projectWorkspaceList(db, projectId);
   const stranger = named.find((step) => !held.some((workspace) => workspace.id === step.workspaceId));
   if (stranger === undefined) return null;

@@ -2788,6 +2788,7 @@ const PIPELINE_MANAGE_TOOL: ToolSpec = {
       if (!created.ok) return created;
 
       const pipeline = created.data.pipeline;
+      if (pipeline === null) return pipelineRefusal(created.data.problem ?? "Nothing was created.");
       return {
         ok: true,
         refused: false,

@@ -1,7 +1,6 @@
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { sql } from "drizzle-orm";
-import { listItemTypes } from "../db/repos/itemTypesRepo.js";
 import { join } from "node:path";
 import { AssistOutputSchema, PipelineExportSchema, pageDescriptorFor, type AssistReply, type IpcChannel, type IpcResponse, type Item, type Uuid } from "@eo/core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -9,6 +8,7 @@ import type { DbHandle } from "../db/client.js";
 import { markReplica } from "../db/recordRole.js";
 import {
   createPipeline,
+  createProject,
   createRoute,
   createRun,
   createStep,
@@ -38,6 +38,7 @@ import { fakePlatform } from "../testing/platform.js";
 import { savePipeline } from "./configCommands.js";
 import { listPipelineStepViews } from "./domainQueries.js";
 import { ACTIVE_PROJECT_KEY } from "./repositoryCommands.js";
+import { PIPELINE_NEEDS_PROJECT } from "./pipelineHome.js";
 import { clearHandlerRegistry, dispatchIpc } from "./registry.js";
 
 /**
@@ -252,6 +253,12 @@ describe("exporting a pipeline", () => {
 });
 
 describe("importing an attached pipeline file", () => {
+  // A pipeline goes on a project (EO-766): these chats are opened on
+  // none, so what they import goes on the oldest — this one.
+  beforeEach(() => {
+    createProject(handle.db, { name: "Workbench", keyPrefix: "WRK" });
+  });
+
   async function attachedExport(): Promise<{ conversation: Item; attachmentId: string }> {
     const exported = await call("pipelines:export", { pipelineId: shippingPipeline(), destination: "document" });
     const conversation = await chat("Import this.", [{ name: "shipping.eo-pipeline.json", text: exported.document! }]);
@@ -366,28 +373,50 @@ describe("importing into the chat's own project", () => {
     expect(handle.db.all(sql`SELECT project_id FROM item_types WHERE slug = 'bug'`)).toContainEqual({ project_id: a });
   });
 
-  it("keeps a chat with no project out of every project, rather than reading null as the active one", async () => {
+  /**
+   * A chat opened before any project existed is listed under the oldest
+   * project, and what it imports goes there (EO-766) — never onto no
+   * project, and never onto whichever project is active.
+   */
+  it("imports for a chat with no project onto the oldest project, not the active one", async () => {
     const exported = await call("pipelines:export", { pipelineId: shippingPipeline(), destination: "document" });
     const conversation = await chat("Import this.", [{ name: "shipping.eo-pipeline.json", text: exported.document! }]);
     expect(conversation.projectId).toBeNull();
     const before = new Set(listPipelines(handle.db).map((pipeline) => pipeline.id));
-    // A project exists, and is active, by the time the card is pressed.
-    const { a } = twoProjects();
-    setSetting(handle.db, ACTIVE_PROJECT_KEY, a);
+    // Projects exist by the time the card is pressed, and the newer is active.
+    const { a, b } = twoProjects();
+    setSetting(handle.db, ACTIVE_PROJECT_KEY, b);
     const attachmentId = listAttachmentsForItem(handle.db, conversation.id)[0]!.id;
     const { cardIds } = turn(conversation, { message: "Here.", card: { kind: "pipelineImport", attachmentId } });
+    handle.db.run(sql`DELETE FROM item_types WHERE slug = 'bug' AND project_id = ${a}`);
 
     const shown = await read(conversation, cardIds[0]!);
-    // Read in the installation's scope, where an import naming no project writes its types (EO-735) — never the active project's.
-    const installation = new Set(listItemTypes(handle.db, null).map((type) => `${type.packSlug}:${type.slug}`));
-    const preflight = shown.card?.kind === "pipelineImport" ? shown.card.preflight : null;
-    expect(preflight?.itemTypes.map((type) => type.present)).toEqual(preflight?.itemTypes.map((type) => installation.has(type.type)));
+    // Read against the oldest project's types, which lack the bug the active one has.
+    expect(shown.card?.kind).toBe("pipelineImport");
+    if (shown.card?.kind !== "pipelineImport") return;
+    expect(bugIn(shown.card.preflight)).toMatchObject({ present: false });
 
     expect((await press(conversation, cardIds[0]!, { deploy: "reuse" })).applied).toBe(true);
 
     const created = listPipelines(handle.db).filter((pipeline) => !before.has(pipeline.id));
-    expect(created).toHaveLength(1);
-    expect(created[0]!.projectId).toBeNull();
+    expect(created.map((pipeline) => pipeline.projectId)).toEqual([a]);
+  });
+
+  it("refuses the import, writing nothing, while there is no project at all", async () => {
+    const exported = await call("pipelines:export", { pipelineId: shippingPipeline(), destination: "document" });
+    const conversation = await chat("Import this.", [{ name: "shipping.eo-pipeline.json", text: exported.document! }]);
+    const before = listPipelines(handle.db, undefined, true).length;
+    const attachmentId = listAttachmentsForItem(handle.db, conversation.id)[0]!.id;
+    const { cardIds } = turn(conversation, { message: "Here.", card: { kind: "pipelineImport", attachmentId } });
+
+    const shown = await read(conversation, cardIds[0]!);
+
+    expect(shown.card).toBeNull();
+    expect(shown.problem).toBe(PIPELINE_NEEDS_PROJECT);
+    // And the editor's door says the same, with nothing written.
+    const imported = await call("pipelines:import", { document: exported.document!, choices: { deploy: "reuse" }, projectId: null });
+    expect(imported).toMatchObject({ imported: false, pipelineId: null, problem: PIPELINE_NEEDS_PROJECT });
+    expect(listPipelines(handle.db, undefined, true)).toHaveLength(before);
   });
 
   it("leaves the editor's Import on the active project, as it always was", async () => {

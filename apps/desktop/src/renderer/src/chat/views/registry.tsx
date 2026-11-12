@@ -16,7 +16,6 @@ import {
   SquareTerminal,
   Workflow,
 } from "lucide-react";
-import { DEFAULT_PIPELINE_ID } from "@eo/core";
 import { useChromeVocabulary } from "../../query/hooks";
 import { useItemKey, usePipelineName } from "./shared";
 import { useJobName } from "./jobs/useJobName";
@@ -101,7 +100,8 @@ export function chatViewFor(pathname: string, search: string): ChatView | null {
     "/settings": { kind: "settings" },
   };
   if (path in exact) return exact[path]!;
-  if (path === "/project") return graph ? { kind: "graph", pipelineId: DEFAULT_PIPELINE_ID } : { kind: "board", pipelineId: DEFAULT_PIPELINE_ID };
+  // `/project` draws nothing of its own: it is replaced by the board of
+  // the active project's first pipeline (`useProjectAddress`, EO-766).
   // The editor that drew this address is gone (EO-525): the frame
   // replaces it with the graph's (`movedAddressOf`), and until it has,
   // it is the graph.

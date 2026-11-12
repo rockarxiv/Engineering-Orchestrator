@@ -1,6 +1,7 @@
 import { normaliseReviewers, type IpcPayload, type IpcResponse, type Uuid } from "@eo/core";
 import type { Db } from "../db/client.js";
 import { previewProjectId } from "../gallery/commands.js";
+import { settleSeededPipelines } from "../gallery/sharedPipelines.js";
 import type { CredentialsOptions } from "../packs/developer/jira/credentials.js";
 import { isGitRepo } from "../packs/developer/workspace/git.js";
 import { jiraConfigView } from "./jiraCommands.js";
@@ -236,6 +237,8 @@ export async function createRepositoryCommand(db: Db, credentials: CredentialsOp
   } else {
     project = createDefaultProject(db, workspace, requested || suggestKeyPrefix(db, input.name));
     setSetting(db, ACTIVE_PROJECT_KEY, project.id);
+    // Made without a template, so it starts with no pipeline (EO-766).
+    settleSeededPipelines(db, project.id);
   }
 
   // Items written before any repo was attached belong to the first

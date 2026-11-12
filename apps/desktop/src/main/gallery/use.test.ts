@@ -13,6 +13,7 @@ import {
   createProject,
   getItem,
   getMcpServerByName,
+  getPipeline,
   getPipelineOrigin,
   itemTypesFor,
   listAgents,
@@ -24,6 +25,7 @@ import {
   localPerson,
 } from "../db/repos/index.js";
 import { openMigratedTestDb } from "../db/testHelpers.js";
+import { listPipelineViews } from "../ipc/domainQueries.js";
 import { setActiveProjectCommand } from "../ipc/projectCommands.js";
 import { activeProjectId } from "../ipc/repositoryCommands.js";
 import { galleryNeedsCommand, listGalleryCommand, previewGalleryCommand, useGalleryCommand } from "../ipc/galleryCommands.js";
@@ -111,6 +113,18 @@ describe("Use this on \"Weekly report\", with a folder and a Monday schedule", (
     const reporter = listAgents(handle.db).find((agent) => agent.role === "reporter");
     expect(reporter).toBeDefined();
     expect(reporter?.enabled).toBe(false);
+  });
+
+  /**
+   * The first project made from another template has its own pipeline and
+   * no other (EO-766): the seeded Delivery, which holds no work, is
+   * archived rather than shown to it.
+   */
+  it("archives the seeded Delivery when it makes the first project, and lists only its own pipeline", async () => {
+    const answer = await useGalleryCommand(handle.db, context(), monday());
+
+    expect(getPipeline(handle.db, "default")?.archivedAt).not.toBeNull();
+    expect(listPipelineViews(handle.db, { projectId: answer.projectId }).pipelines.map((pipeline) => pipeline.id)).toEqual([answer.pipelineId]);
   });
 
   it("makes the schedule job, owned by the local person", async () => {

@@ -123,9 +123,18 @@ async function member(base: string, name: string, email: string, isAdmin: boolea
   return { personId: invited.person.id, token: session.session.token };
 }
 
+/**
+ * A project with a pipeline for work to enter. `projects:create` makes an
+ * empty one (EO-766), so it is given the seeded Delivery's graph, the way
+ * a person brings a pipeline to a project: an import.
+ */
 async function project(base: string, name: string, keyPrefix: string): Promise<string> {
+  const delivery = await ask(base, "pipelines:export", { pipelineId: "default", destination: "document" }, OPERATOR);
+  if (delivery.document === null) throw new Error(delivery.problem ?? "not exported");
   const created = await ask(base, "projects:create", { name, keyPrefix, repositoryIds: [] }, OPERATOR);
   if (!created.ok || created.project === undefined) throw new Error(created.problem ?? "not created");
+  const imported = await ask(base, "pipelines:import", { document: delivery.document, choices: {}, projectId: created.project.id }, OPERATOR);
+  if (!imported.imported) throw new Error(imported.problem ?? "not imported");
   return created.project.id;
 }
 

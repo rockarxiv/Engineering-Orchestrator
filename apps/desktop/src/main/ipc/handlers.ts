@@ -2,6 +2,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { ArchivedItemListFiltersSchema, ItemListFiltersSchema, toRegistryView, type AgentRemovalImpact, type IpcChannel, type IpcResponse, type Message, type Uuid } from "@eo/core";
 import { AttachmentStorage } from "../attachments/storage.js";
+import { pipelineHome } from "./pipelineHome.js";
 import type { Db } from "../db/client.js";
 import { archiveAgentCommand, customiseAgent, deleteAgentCommand, listAgentDetails, projectStaffing, readGuards, saveAgent, setAgentBinding, savePipeline, validatePipelineCommand, writeGuards } from "./configCommands.js";
 import { runMemoryFacts } from "../process/runScope.js";
@@ -784,7 +785,11 @@ export function registerAllHandlers(db: Db, engine: EngineHandle | undefined, re
       // provider whether anybody is signed in.
       // Where the caller says it would land, when it says (EO-521) — the
       // same answer `pipelines:import` resolves from the same field.
-      const against = { signedInBackends: await signedInBackends(runtimes), projectId: importDestination(db, payload.into) };
+      // A pipeline belongs to a project (EO-766): with none to land in,
+      // said before the person is asked for a file.
+      const home = pipelineHome(db, importDestination(db, payload.into));
+      if (!home.ok) return { preflight: null, document: null, problem: home.problem };
+      const against = { signedInBackends: await signedInBackends(runtimes), projectId: home.projectId };
 
       // A caller that already has the document skips the picker — which
       // is the only part of this it could not have answered.
@@ -811,10 +816,15 @@ export function registerAllHandlers(db: Db, engine: EngineHandle | undefined, re
       const parsed = parseExport(payload.document);
       if (!parsed.ok) return { imported: false, pipelineId: null, unapprovedModules: [], keptDefinitions: [], problem: parsed.reason };
 
+      // Always onto a project (EO-766): the one named, otherwise the
+      // one the window is on, and refused with nothing written where
+      // there is none.
+      const home = pipelineHome(db, payload.into !== undefined ? importDestination(db, payload.into) : ((payload.projectId as Uuid | null) ?? activeProjectId(db)));
+      if (!home.ok) return { imported: false, pipelineId: null, unapprovedModules: [], keptDefinitions: [], problem: home.problem };
       const result = importPipeline(db, {
         document: parsed.document,
         choices: payload.choices,
-        projectId: payload.into !== undefined ? importDestination(db, payload.into) : ((payload.projectId as Uuid | null) ?? activeProjectId(db)),
+        projectId: home.projectId,
         // Asked again rather than carried from the preflight: the person
         // may have signed in on the strength of the line that said they
         // had not, which is exactly what the needs check is for.

@@ -3177,9 +3177,15 @@ export const recordContract = {
     z.object({ projectId: z.string().nullable().optional(), includeArchived: z.boolean().optional() }),
     z.object({ pipelines: z.array(PipelineViewSchema) }),
   ),
+  /**
+   * Makes an empty pipeline on a project (EO-766): `projectId`, or the
+   * active project where it is null. Every pipeline has a project, so with
+   * neither — or only the gallery's Preview — nothing is made, `pipeline`
+   * is null and `problem` says a project is needed.
+   */
   "pipelines:create": channel(
     z.object({ projectId: z.string().nullable(), name: z.string().min(1), icon: z.string().nullable().optional() }),
-    z.object({ pipeline: PipelineViewSchema }),
+    z.object({ pipeline: PipelineViewSchema.nullable(), problem: z.string().nullable().default(null) }),
   ),
   "pipelines:update": channel(
     z.object({ id: z.string(), name: z.string().min(1).optional(), icon: z.string().nullable().optional(), position: z.number().optional() }),

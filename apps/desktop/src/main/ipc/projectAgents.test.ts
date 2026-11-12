@@ -1,11 +1,11 @@
 import { McpServerDraftSchema, SkillDraftSchema, type Agent, type Uuid } from "@eo/core";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { DbHandle } from "../db/client.js";
-import { archiveAgent, createProject, getAgent, listAgents, listPipelineSteps, updateAgent } from "../db/repos/index.js";
+import { archiveAgent, copyPipeline, createProject, getAgent, listAgents, listPipelineSteps, updateAgent } from "../db/repos/index.js";
 import { getAgentAttachments, setAgentAttachment } from "../db/repos/agentAttachmentsRepo.js";
 import { saveMcpServer } from "../db/repos/mcpServersRepo.js";
 import { saveSkill } from "../db/repos/skillsRepo.js";
-import { openMigratedTestDb } from "../db/testHelpers.js";
+import { giveSeededDelivery, openMigratedTestDb } from "../db/testHelpers.js";
 import { writePolicy } from "../policy/policy.js";
 import { NO_POLICY } from "@eo/core";
 import { customiseAgent, projectStaffing, saveAgent } from "./configCommands.js";
@@ -126,6 +126,7 @@ describe("who a project's work goes to", () => {
 
   it("names the global agents in every role the project's pipelines use while the project has none of its own", () => {
     const project = createProject(handle.db, { name: "Support", keyPrefix: "SUP" });
+    giveSeededDelivery(handle.db, project.id);
 
     const { roles } = projectStaffing(handle.db, { projectId: project.id });
 
@@ -136,7 +137,9 @@ describe("who a project's work goes to", () => {
 
   it("names the project's own agent once it has one, and only for that project", () => {
     const project = createProject(handle.db, { name: "Support", keyPrefix: "SUP" });
+    giveSeededDelivery(handle.db, project.id);
     const other = createProject(handle.db, { name: "Shop", keyPrefix: "SHOP" });
+    copyPipeline(handle.db, "default", other.id);
     const own = customiseAgent(handle.db, { agentId: implementer.id, projectId: project.id }).agent!;
 
     const ours = projectStaffing(handle.db, { projectId: project.id }).roles.find((entry) => entry.role === "implementer");
@@ -148,6 +151,7 @@ describe("who a project's work goes to", () => {
 
   it("falls back to the global agent when the project's own is switched off, and says nobody when no agent holds the role", () => {
     const project = createProject(handle.db, { name: "Support", keyPrefix: "SUP" });
+    giveSeededDelivery(handle.db, project.id);
     const own = customiseAgent(handle.db, { agentId: implementer.id, projectId: project.id }).agent!;
     updateAgent(handle.db, own.id as Uuid, { enabled: false });
 

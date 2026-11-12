@@ -16,6 +16,7 @@ import {
 import { keepProjectLocal, listUndecidedProjects } from "../db/repos/projectsRepo.js";
 import { costCentsByProject } from "../db/repos/runsRepo.js";
 import { previewProjectId } from "../gallery/commands.js";
+import { settleSeededPipelines } from "../gallery/sharedPipelines.js";
 import { moveProjectToRecord, type MovedFileStore, type SendAdoptPage } from "../record/adopt.js";
 import { setSetting } from "../db/repos/settingsRepo.js";
 import { actingCaller, visibleProjectIds } from "../identity/acting.js";
@@ -219,6 +220,9 @@ export async function createProjectCommand(
   if (strandings.length > 0) return { ok: false, problem: `${strandings[0]} Nothing was created.` };
 
   const project = createProject(db, { name, keyPrefix, workspaceIds });
+  // An empty project (EO-766): the first one made this way archives the
+  // seeded Delivery rather than being shown it.
+  settleSeededPipelines(db, project.id);
   if (handover === undefined || !handover.signedIn()) return { ok: true, project: toView(db, project), problem: null };
 
   // Straight over, while the person is watching. A brand-new project is
