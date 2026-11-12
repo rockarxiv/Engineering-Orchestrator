@@ -1,4 +1,7 @@
 import {
+  boardWithKey,
+  documentBoards,
+  documentSteps,
   FOLDER_KIND,
   GIT_WORKTREE_KIND,
   PREVIEW_AGENT_KEY,
@@ -31,6 +34,7 @@ import {
   getModule,
   getPerson,
   getPipeline,
+  getPipelineOrigin,
   getProject,
   getSetting,
   hasItemType,
@@ -40,18 +44,22 @@ import {
   listPipelines,
   listProjects,
   listStepsForPipeline,
+  originBoardKey,
   projectWorkspaceList,
   recordPipelineOrigin,
   setSetting,
   takenKeyPrefixes,
+  templateBoardHolders,
   updateStep,
   workspaceProblem,
+  type TemplateDocument,
   type Workspace,
 } from "../db/repos/index.js";
 import { createJob } from "../jobs/jobs.js";
 import { ACTIVE_PROJECT_KEY } from "../ipc/repositoryCommands.js";
 import { importPipeline, type ImportPreflight } from "../modules/pipelineTransfer.js";
 import { galleryBlanks, galleryNeeds, galleryRoleSlots, runtimeName, stepInputValues, wantsRepository, type GalleryNeed } from "./form.js";
+import { createTemplateBoards } from "./templateUpdates.js";
 import type { GalleryTemplate } from "./templates.js";
 
 /**
@@ -138,8 +146,8 @@ export function previewTemplate(db: Db, template: GalleryTemplate): GalleryPrevi
   if (!prepared.ok) return { ok: false, reason: prepared.reason };
   const pipelineId = prepared.pipelineId;
 
+  // Nobody is put on its human steps: a preview's are whoever is there.
   staffForPreview(db, document);
-  claimHumanSteps(db, pipelineId, document, {});
 
   const pipeline = getPipeline(db, pipelineId);
   const entryStepId = pipeline?.entryStepId ?? null;
@@ -319,7 +327,7 @@ function freeProjectName(db: Db, wanted: string): string {
  * scheduler filters on, and only one of them passes it.
  */
 function staffForPreview(db: Db, document: PipelineExport): void {
-  const roles = [...new Set(document.steps.filter((step) => step.type === "agent" && step.ownerRole !== null).map((step) => step.ownerRole as string))];
+  const roles = [...new Set(documentSteps(document).filter((step) => step.type === "agent" && step.ownerRole !== null).map((step) => step.ownerRole as string))];
   // Global agents only (EO-474): a preview walks on the preview's own
   // project, which no agent is ever scoped to, so a project's own agent
   // cannot run it and must not be what leaves the role unstaffed here.
@@ -348,7 +356,7 @@ function staffForPreview(db: Db, document: PipelineExport): void {
 }
 
 /**
- * Puts a person on every human step of the imported pipeline (the original design).
+ * Puts a person on every human step of the installed boards (the original design).
  *
  * "In solo mode the approver slot is pre-filled with 'you' and hidden."
  * `chosen` is what the form sent for each slot, keyed by the document's
@@ -356,24 +364,24 @@ function staffForPreview(db: Db, document: PipelineExport): void {
  * `localPerson` is already what an unowned human step falls back to, so
  * an empty map leaves the pipeline behaving exactly as it would have.
  *
- * Matched by **position**, because `importPipeline` re-mints every step
- * id — a document's `approve` is a fresh uuid on the far side, and
- * position is what survives.
+ * Laid onto the steps through `installed`, the document's step id to the
+ * id it has here, on whichever of the template's boards it is (EO-762):
+ * an import re-mints every step id, a board made beside an adopted one
+ * keeps the template's id only where it was free, and position says
+ * nothing once two boards both have a step at 0.
  *
  * Every id here has already been checked against `people` by
  * `roleSlotProblem`, which is why this writes a `Uuid` without asking:
  * the foreign key is the backstop, not the gate, and a gate that ran
  * here would refuse in the middle of an install rather than before it.
- * Preview passes an empty map and so reaches none of this.
+ * Preview never calls this: its human steps are whoever is there.
  */
-function claimHumanSteps(db: Db, pipelineId: string, document: PipelineExport, chosen: Record<string, string>): void {
-  const written = new Map(listStepsForPipeline(db, pipelineId).map((step) => [step.position, step]));
+function claimHumanSteps(db: Db, document: PipelineExport, installed: ReadonlyMap<string, string>, chosen: Record<string, string>): void {
   for (const slot of galleryRoleSlots(document)) {
     const personId = chosen[slot.stepId];
     if (personId === undefined || personId === "") continue;
-    const source = document.steps.find((step) => step.id === slot.stepId);
-    const target = source === undefined ? undefined : written.get(source.position);
-    if (target !== undefined) updateStep(db, target.id, { ownerPersonId: personId as Uuid });
+    const target = installed.get(slot.stepId);
+    if (target !== undefined) updateStep(db, target, { ownerPersonId: personId as Uuid });
   }
 }
 
@@ -540,10 +548,13 @@ export function useTemplate(db: Db, input: UseTemplateInput): UseTemplateResult 
       // Caught below and answered as a reason, so the channel still
       // promises a typed result rather than an exception.
       let pipelineId: string;
+      // The document's step ids, on every board, to the ids they have here (EO-762).
+      let installed: Map<string, string>;
       if (already === null) {
         const imported = importPipeline(db, { document, projectId: project.id, signedInBackends: input.signedInBackends ?? [] });
         if (!imported.ok) throw new UseRefused(imported.reason);
         pipelineId = imported.pipelineId;
+        installed = new Map(Object.entries(imported.stepIds));
       } else {
         // The pipeline this document *is*, adopted rather than copied —
         // see `pipelineAlreadyHere` for what that costs and what it
@@ -555,13 +566,16 @@ export function useTemplate(db: Db, input: UseTemplateInput): UseTemplateResult 
         // otherwise recorded. The steps are the document's own by id —
         // that is what `pipelineAlreadyHere` matched on — so the map is
         // each id to itself.
+        installed = new Map(document.steps.map((step) => [step.id, step.id]));
         if (isTemplateDocument(document)) {
-          recordPipelineOrigin(db, { pipelineId, document, stepIds: Object.fromEntries(document.steps.map((step) => [step.id, step.id])) });
+          recordPipelineOrigin(db, { pipelineId, document, stepIds: Object.fromEntries(installed) });
+          // And its other boards, by the ids they were made or adopted under (EO-762).
+          for (const [templateId, id] of adoptTemplateBoards(db, document, project.id)) if (!installed.has(templateId)) installed.set(templateId, id);
         }
       }
 
-      writeStepInputs(db, pipelineId, document, inputs.byStep);
-      claimHumanSteps(db, pipelineId, document, input.roleSlots);
+      writeStepInputs(db, installed, inputs.byStep);
+      claimHumanSteps(db, document, installed, input.roleSlots);
 
       let jobId: Uuid | null = null;
       if (schedule !== null) {
@@ -626,9 +640,10 @@ function pipelineAlreadyHere(db: Db, document: PipelineExport): string | null {
   if (listProjects(db).some((project) => project.id !== preview)) return null;
 
   const live = listAgents(db).filter((agent) => agent.archivedAt === null && !isPreviewAgent(agent));
-  const rolesHere = document.steps
+  const rolesHere = documentSteps(document)
     .filter((step) => step.type === "agent" && step.ownerRole !== null)
     .every((step) => live.some((agent) => agent.role === step.ownerRole));
+  // Every board's roles (EO-762): the boards made beside an adopted one are made without the import that would write them.
   if (!rolesHere) return null;
   if (!document.itemTypes.every((type) => hasItemType(db, null, type.packSlug, type.slug))) return null;
 
@@ -640,6 +655,44 @@ function pipelineAlreadyHere(db: Db, document: PipelineExport): string | null {
     if (steps.every((step) => wanted.has(step.id))) return pipeline.id;
   }
   return null;
+}
+
+/**
+ * The template's other boards, beside a first board that was adopted
+ * rather than imported (EO-762): every board in the same transaction as
+ * the first, as an import makes them. Answers their template step ids
+ * to the ids they have here.
+ *
+ * A board EO already made for the unadopted Delivery — a template update
+ * adds boards to it before anybody has a project — is adopted with it,
+ * since it is that installation's; any board still missing is made, its
+ * routes into the first board landing on the steps adopted. Which board
+ * a pipeline is comes from its own base, followed into this document by
+ * key (`originBoardKey`).
+ */
+function adoptTemplateBoards(db: Db, document: TemplateDocument, projectId: Uuid): Map<string, string> {
+  const keyOf = (pipelineId: string): string | null | undefined => {
+    const origin = getPipelineOrigin(db, pipelineId);
+    return origin === null ? undefined : originBoardKey(origin);
+  };
+  // Its other boards only: a second copy of the first board is somebody's own, not this installation's.
+  for (const holder of templateBoardHolders(db, document.template.slug, null)) {
+    const key = keyOf(holder.pipelineId);
+    if (key !== null && key !== undefined && boardWithKey(document, key) !== null) adoptPipeline(db, holder.pipelineId, projectId);
+  }
+  const holders = templateBoardHolders(db, document.template.slug, projectId);
+  const held = new Set(holders.map((holder) => keyOf(holder.pipelineId)));
+  const missing = documentBoards(document)
+    .map((board, index) => ({ board, index }))
+    .filter(({ board }) => !held.has(board.key))
+    .map(({ index }) => index);
+  if (missing.length > 0) createTemplateBoards(db, document, missing, projectId, { createdBy: null, releaseNotes: null });
+
+  const installed = new Map<string, string>();
+  for (const holder of templateBoardHolders(db, document.template.slug, projectId)) {
+    for (const [templateId, id] of Object.entries(holder.stepIds)) if (!installed.has(templateId)) installed.set(templateId, id);
+  }
+  return installed;
 }
 
 /**
@@ -675,14 +728,11 @@ function roleSlotProblem(db: Db, document: PipelineExport, chosen: Record<string
   return null;
 }
 
-/** The step inputs the form answered, laid onto the imported steps (ARCHITECTURE.md, "The gallery"). */
-function writeStepInputs(db: Db, pipelineId: string, document: PipelineExport, byStep: ReadonlyMap<string, StepInputs>): void {
-  const written = new Map(listStepsForPipeline(db, pipelineId).map((step) => [step.position, step]));
-
+/** The step inputs the form answered, laid onto the installed steps of every board through `installed` (ARCHITECTURE.md, "The gallery"; EO-762). */
+function writeStepInputs(db: Db, installed: ReadonlyMap<string, string>, byStep: ReadonlyMap<string, StepInputs>): void {
   for (const [stepId, inputs] of byStep) {
-    const source = document.steps.find((step) => step.id === stepId);
-    const target = source === undefined ? undefined : written.get(source.position);
-    if (target !== undefined) updateStep(db, target.id, { inputs });
+    const target = installed.get(stepId);
+    if (target !== undefined) updateStep(db, target, { inputs });
   }
 }
 

@@ -3,6 +3,7 @@ import { delimiter, join } from "node:path";
 import type {
   Agent,
   CustomModule,
+  ExportedBoard,
   ExportedConnector,
   ExportedItemType,
   ExportedMcpServer,
@@ -10,7 +11,9 @@ import type {
   ExportedVocabulary,
   ItemTypeEntry,
   JsonSchemaDocument,
+  Pipeline,
   PipelineExport,
+  PipelineStep,
   Uuid,
 } from "@eo/core";
 import {
@@ -23,6 +26,8 @@ import {
   allowedToolsOf,
   deprecatedContextMethodsCalledIn,
   deprecatedToolsNamedIn,
+  documentBoards,
+  documentSteps,
   EO_SERVER_CAPABILITIES,
   instructionsMachineSpecificWarnings,
   isBoundAgent,
@@ -70,7 +75,10 @@ import {
   listAgents,
   getModuleBySlug,
   getPipeline,
+  getPipelineOrigin,
+  originBoardKey,
   getProject,
+  getStep,
   listActionDefinitionsForRole,
   listItemTypes,
   listModules,
@@ -126,10 +134,11 @@ export function exportPipeline(db: Db, pipelineId: string): { ok: true; document
   // export from, and asked for by id it is answered as it is seen.
   if (isTrialPipeline(db, pipelineId)) return { ok: false, reason: "That pipeline no longer exists." };
 
-  // Off-board steps are not columns and never leave: they exist so a
-  // conversation can host runs, and a conversation is not something a
-  // second machine should acquire by importing a pipeline.
-  const steps = listStepsForPipeline(db, pipelineId).filter((step) => !step.offBoard);
+  // The board asked for, then every board it hands work to (EO-762).
+  // A route into another board's step travels with that board, so the
+  // file imports elsewhere whole rather than with a route to nowhere.
+  const boards = linkedBoards(db, pipelineId);
+  const steps = boards.flatMap((board) => board.steps);
   const byId = new Map(listModules(db, true).map((module) => [module.id as string, module]));
 
   const used: CustomModule[] = [];
@@ -141,7 +150,7 @@ export function exportPipeline(db: Db, pipelineId: string): { ok: true; document
   }
   // And the modules its entry rules run (EO-736), which travel the same
   // way: by slug, with their code and their tests.
-  for (const rule of pipeline.entryRules) {
+  for (const rule of boards.flatMap((board) => board.pipeline.entryRules)) {
     if (rule.kind !== MODULE_ENTRY_RULE_KIND || rule.module === undefined) continue;
     const module = byId.get(rule.module);
     if (!module) return { ok: false, reason: `An entry rule runs a module this installation no longer has ("${rule.module}"), so the pipeline cannot be exported whole.` };
@@ -150,6 +159,10 @@ export function exportPipeline(db: Db, pipelineId: string): { ok: true; document
 
   const slugById = new Map(used.map((module) => [module.id as string, module.slug]));
   const exported = new Set(steps.map((step) => step.id));
+  const exportedBoards = boards.map((board) => exportedBoard(db, board, exported, slugById));
+  const [first, ...linked] = exportedBoards;
+  const keys = exportedBoardKeys(db, pipeline, boards.slice(1).map((board) => board.pipeline));
+  const rest = linked.map((board, index) => ({ key: keys[index]!, ...board }));
 
   const roles = exportedRoles(db, steps, pipeline.projectId);
   // Refused here rather than written and refused on the far side. A
@@ -182,58 +195,10 @@ export function exportPipeline(db: Db, pipelineId: string): { ok: true; document
       // `PackTemplateSchema`). A template is authored, and the gallery's
       // bundled packs are where the authored ones live.
       template: null,
-      // Null rather than a step the document does not carry, for the same
-      // reason: `pipelines.entry_step_id` is a foreign key.
-      pipeline: {
-        name: pipeline.name,
-        icon: pipeline.icon,
-        entryStepId: pipeline.entryStepId !== null && exported.has(pipeline.entryStepId) ? pipeline.entryStepId : null,
-        // Part of what the pipeline says rather than a fact about this
-        // machine (EO-610): a type is named by pack and word, and a field
-        // by the word its type declares, so both mean the same over there.
-        // A module rule names its module by slug, as a step does (EO-736).
-        entryRules: pipeline.entryRules.map((rule) =>
-          rule.kind === MODULE_ENTRY_RULE_KIND && rule.module !== undefined ? { ...rule, module: slugById.get(rule.module) ?? rule.module } : rule,
-        ),
-      },
-      steps: steps.map((step) => ({
-        id: step.id,
-        position: step.position,
-        name: step.name,
-        type: step.type,
-        ownerRole: step.ownerRole,
-        // Ids are local; a slug means the same thing on both machines.
-        entryAction: step.type === "module" && step.entryAction !== null ? (slugById.get(step.entryAction) ?? step.entryAction) : step.entryAction,
-        instructionsSummary: step.instructionsSummary,
-        isTerminal: step.isTerminal,
-        planMode: step.planMode,
-        // What a person may decide on a human step travels (EO-310).
-        // Unlike the inputs and the limits above it is not a fact about
-        // this installation: it is the graph's own shape — the buttons
-        // the pipeline offers and whether taking one needs a reason —
-        // and a document that carried the routes without them would
-        // import a step routing results nobody there can choose, which
-        // `validatePipeline` refuses.
-        results: step.results,
-        // And keep checking (EO-456), for the same reason: whether a step
-        // waits on something outside EO is what the step does, and a
-        // template that watches has to arrive watching.
-        watch: step.watch,
-      })),
-      // Only routes both of whose ends survive the off-board filter above.
-      // Exporting one that references a step the document does not carry
-      // produces a dangling reference — and the foreign key on the far
-      // side turns that into a half-written import.
-      routes: listRoutesForPipeline(db, pipelineId)
-        .filter((route) => exported.has(route.fromStepId) && (isSentinel(route.target) || exported.has(route.target)))
-        .map((route) => ({
-          fromStepId: route.fromStepId,
-          resultKey: route.resultKey,
-          label: route.label,
-          tone: route.tone,
-          target: route.target,
-          position: route.position,
-        })),
+      pipeline: first!.pipeline,
+      steps: first!.steps,
+      routes: first!.routes,
+      boards: rest,
       // The roles these steps name, with the prompt each runs on
       // (KAN-178, `ARCHITECTURE.md`, "One document"). What makes this
       // document a pack rather than a graph: a step says it wants an
@@ -273,6 +238,147 @@ export function exportPipeline(db: Db, pipelineId: string): { ok: true; document
       // Approval is absent by design: it records that somebody *here*
       // read this code, and a stranger's word for that is worth nothing.
     },
+  };
+}
+
+/** A pipeline being exported, with the steps of it that leave. */
+interface BoardToExport {
+  pipeline: Pipeline;
+  steps: PipelineStep[];
+}
+
+/**
+ * The pipeline asked for, then every pipeline it hands work to, and every
+ * one those hand work to, in the order they are reached (EO-762).
+ *
+ * A route may name a step of another pipeline (EO-58), and a template's
+ * boards are wired that way: Delivery sends a pull request's comments to
+ * the board they are planned on, and that board sends them back. Such a
+ * route used to be dropped on the way out, so the file imported with a
+ * result routed nowhere. Now the board it names travels with it, and the
+ * route lands on that board's step on the far side.
+ *
+ * Only the direction work goes: a pipeline that hands work *to* this one
+ * is somebody else's, and exporting this one does not export it. A
+ * trial is never reached (EO-582), and its routes are dropped as before.
+ *
+ * Off-board steps are not columns and never leave: they exist so a
+ * conversation can host runs, and a conversation is not something a
+ * second machine should acquire by importing a pipeline.
+ */
+function linkedBoards(db: Db, pipelineId: string): BoardToExport[] {
+  const boards: BoardToExport[] = [];
+  const queue = [pipelineId];
+  const seen = new Set(queue);
+  while (queue.length > 0) {
+    const id = queue.shift()!;
+    const pipeline = getPipeline(db, id);
+    if (pipeline === undefined) continue;
+    const steps = listStepsForPipeline(db, id).filter((step) => !step.offBoard);
+    boards.push({ pipeline, steps });
+    const own = new Set(steps.map((step) => step.id));
+    for (const route of listRoutesForPipeline(db, id)) {
+      if (isSentinel(route.target) || own.has(route.target) || !own.has(route.fromStepId)) continue;
+      const holder = getStep(db, route.target);
+      if (holder === undefined || holder.offBoard || seen.has(holder.pipelineId) || isTrialPipeline(db, holder.pipelineId)) continue;
+      seen.add(holder.pipelineId);
+      queue.push(holder.pipelineId);
+    }
+  }
+  return boards;
+}
+
+/**
+ * The keys the further boards travel under, in their order (EO-762,
+ * `ExportedBoardSchema.key`), which the import gate needs unique.
+ *
+ * A board keeps the key of the template board its pipeline was made
+ * from, so a template's next version exported from an installation of
+ * it names its boards as the last one did; otherwise it travels under
+ * its pipeline's own id, which is unique and means nothing else. Two
+ * boards made from the same template board — this installation's, and
+ * another one's a customised route reaches — cannot both keep it: the
+ * board of the exported pipeline's own installation (its template, its
+ * project) claims it first, then the rest in the order they were
+ * reached, and a board whose key is already claimed travels under its
+ * id.
+ */
+function exportedBoardKeys(db: Db, exported: Pipeline, further: readonly Pipeline[]): string[] {
+  const own = getPipelineOrigin(db, exported.id)?.slug ?? null;
+  const candidates = further.map((pipeline, index) => {
+    const origin = getPipelineOrigin(db, pipeline.id);
+    const sameInstallation = origin !== null && own !== null && origin.slug === own && pipeline.projectId === exported.projectId;
+    return { index, pipeline, key: (origin === null ? null : originBoardKey(origin)) ?? null, sameInstallation };
+  });
+  const keys: string[] = [];
+  const claimed = new Set<string>();
+  const order = [...candidates.filter((each) => each.sameInstallation), ...candidates.filter((each) => !each.sameInstallation)];
+  for (const { index, pipeline, key } of order) {
+    let chosen = key !== null && !claimed.has(key) ? key : pipeline.id;
+    for (let suffix = 2; claimed.has(chosen); suffix += 1) chosen = `${pipeline.id}-${suffix}`;
+    claimed.add(chosen);
+    keys[index] = chosen;
+  }
+  return keys;
+}
+
+/** One board as the document carries it, its key aside. `exported` is every step on every board that leaves. */
+function exportedBoard(db: Db, board: BoardToExport, exported: ReadonlySet<string>, slugById: ReadonlyMap<string, string>): Omit<ExportedBoard, "key"> {
+  const { pipeline, steps } = board;
+  return {
+    // Null rather than a step the document does not carry, for the same
+    // reason: `pipelines.entry_step_id` is a foreign key.
+    pipeline: {
+      name: pipeline.name,
+      icon: pipeline.icon,
+      entryStepId: pipeline.entryStepId !== null && exported.has(pipeline.entryStepId) ? pipeline.entryStepId : null,
+      // Part of what the pipeline says rather than a fact about this
+      // machine (EO-610): a type is named by pack and word, and a field
+      // by the word its type declares, so both mean the same over there.
+      // A module rule names its module by slug, as a step does (EO-736).
+      entryRules: pipeline.entryRules.map((rule) =>
+        rule.kind === MODULE_ENTRY_RULE_KIND && rule.module !== undefined ? { ...rule, module: slugById.get(rule.module) ?? rule.module } : rule,
+      ),
+    },
+    steps: steps.map((step) => ({
+      id: step.id,
+      position: step.position,
+      name: step.name,
+      type: step.type,
+      ownerRole: step.ownerRole,
+      // Ids are local; a slug means the same thing on both machines.
+      entryAction: step.type === "module" && step.entryAction !== null ? (slugById.get(step.entryAction) ?? step.entryAction) : step.entryAction,
+      instructionsSummary: step.instructionsSummary,
+      isTerminal: step.isTerminal,
+      planMode: step.planMode,
+      // What a person may decide on a human step travels (EO-310).
+      // Unlike the inputs and the limits above it is not a fact about
+      // this installation: it is the graph's own shape — the buttons
+      // the pipeline offers and whether taking one needs a reason —
+      // and a document that carried the routes without them would
+      // import a step routing results nobody there can choose, which
+      // `validatePipeline` refuses.
+      results: step.results,
+      // And keep checking (EO-456), for the same reason: whether a step
+      // waits on something outside EO is what the step does, and a
+      // template that watches has to arrive watching.
+      watch: step.watch,
+    })),
+    // Only routes both of whose ends the document carries — on this
+    // board or on another it carries (EO-762). Exporting one that
+    // references a step the document does not carry produces a dangling
+    // reference — and the foreign key on the far side turns that into a
+    // half-written import.
+    routes: listRoutesForPipeline(db, pipeline.id)
+      .filter((route) => exported.has(route.fromStepId) && (isSentinel(route.target) || exported.has(route.target)))
+      .map((route) => ({
+        fromStepId: route.fromStepId,
+        resultKey: route.resultKey,
+        label: route.label,
+        tone: route.tone,
+        target: route.target,
+        position: route.position,
+      })),
   };
 }
 
@@ -1075,7 +1181,7 @@ function oldNamesIn(document: PipelineExport): ImportPreflight["oldNames"] {
   for (const role of document.roles) {
     if (role.prompt !== null) add(`the ${role.slug} prompt`, deprecatedToolsNamedIn(role.prompt));
   }
-  for (const step of document.steps) {
+  for (const step of documentSteps(document)) {
     add(step.name, deprecatedToolsNamedIn(`${step.name}\n${step.instructionsSummary ?? ""}`));
   }
   for (const module of document.modules) {
@@ -1113,7 +1219,7 @@ function machineSpecificIn(document: PipelineExport): ImportPreflight["machineSp
   for (const role of document.roles) {
     if (role.prompt !== null) add(`the ${role.slug} prompt`, instructionsMachineSpecificWarnings(role.prompt, loadRolePrompt(role.slug) ?? null));
   }
-  for (const step of document.steps) {
+  for (const step of documentSteps(document)) {
     add(step.name, pipelineStepMachineSpecificWarnings({ name: step.name, instructionsSummary: step.instructionsSummary, inputs: templateInputsFor(document, step.id) }));
   }
   for (const module of document.modules) {
@@ -1168,7 +1274,7 @@ function roleSlotsIn(db: Db, document: PipelineExport, signedInBackends: readonl
   const agents = listAgents(db).filter(isBoundAgent);
   const filledFor = (slug: string): boolean => staffingAgents(agents, slug, { previewAt: null, projectId }).length > 0;
   const carried = new Map(document.roles.map((role) => [role.slug, role]));
-  const wanted = [...new Set(document.steps.filter((step) => step.type === "agent" && step.ownerRole !== null).map((step) => step.ownerRole as string))];
+  const wanted = [...new Set(documentSteps(document).filter((step) => step.type === "agent" && step.ownerRole !== null).map((step) => step.ownerRole as string))];
 
   return wanted.map((slug) => {
     const role = carried.get(slug);
@@ -1214,7 +1320,12 @@ export interface ImportPipelineInput {
 export type ImportResult =
   | {
       ok: true;
+      /** The document's first board, as a pipeline here. */
       pipelineId: string;
+      /** The document's other boards, as pipelines here, in its order (EO-762). Empty for a document of one board. */
+      boardPipelineIds: string[];
+      /** Every step of every board, the document's id to the id it was written under here (EO-762): what the form's step inputs and owners are laid onto. */
+      stepIds: Record<string, string>;
       unapprovedModules: string[];
       /**
        * The ids of the modules this import wrote (EO-355), so the caller
@@ -1263,21 +1374,31 @@ function freeSlug(slug: string, taken: Set<string>): string {
  * comment says must never happen.
  */
 function referenceProblem(document: PipelineExport): string | null {
-  const stepIds = new Set(document.steps.map((step) => step.id));
+  const boards = documentBoards(document);
+  const steps = documentSteps(document);
+  // Every board's steps, because a route on one board may name a step on
+  // another (EO-762), and a step id names one step in the whole document.
+  const stepIds = new Set(steps.map((step) => step.id));
+  if (stepIds.size !== steps.length) return "This document has two steps with the same id.";
+  // A board's key is what names it to the next version of a template, so two boards on one key would be one board twice.
+  if (new Set(document.boards.map((board) => board.key)).size !== document.boards.length) return "This document has two boards with the same key.";
 
-  if (document.pipeline.entryStepId !== null && !stepIds.has(document.pipeline.entryStepId)) {
-    return `This document says work enters at "${document.pipeline.entryStepId}", which is not one of its steps.`;
-  }
-  for (const route of document.routes) {
-    if (!stepIds.has(route.fromStepId)) return `A route leaves "${route.fromStepId}", which is not one of this document's steps.`;
-    if (!isSentinel(route.target) && !stepIds.has(route.target)) {
-      return `A route sends "${route.resultKey}" to "${route.target}", which is not one of this document's steps.`;
+  for (const board of boards) {
+    const own = new Set(board.steps.map((step) => step.id));
+    if (board.pipeline.entryStepId !== null && !own.has(board.pipeline.entryStepId)) {
+      return `This document says work enters "${board.pipeline.name}" at "${board.pipeline.entryStepId}", which is not one of that board's steps.`;
+    }
+    for (const route of board.routes) {
+      if (!own.has(route.fromStepId)) return `A route leaves "${route.fromStepId}", which is not one of the steps of "${board.pipeline.name}" in this document.`;
+      if (!isSentinel(route.target) && !stepIds.has(route.target)) {
+        return `A route sends "${route.resultKey}" to "${route.target}", which is not a step on any of this document's boards.`;
+      }
     }
   }
   if (new Set(document.modules.map((module) => module.slug)).size !== document.modules.length) {
     return "This document declares the same module slug twice.";
   }
-  for (const step of document.steps) {
+  for (const step of steps) {
     if (step.type !== "module" || step.entryAction === null) continue;
     if (!document.modules.some((module) => module.slug === step.entryAction)) {
       return `"${step.name}" runs a module ("${step.entryAction}") that this document does not carry.`;
@@ -1292,7 +1413,7 @@ function referenceProblem(document: PipelineExport): string | null {
  * every item at the door.
  */
 function entryRuleModuleProblem(db: Db, document: PipelineExport): string | null {
-  for (const rule of document.pipeline.entryRules) {
+  for (const rule of documentBoards(document).flatMap((board) => board.pipeline.entryRules)) {
     if (rule.kind !== MODULE_ENTRY_RULE_KIND || rule.module === undefined) continue;
     const slug = rule.module;
     if (!document.modules.some((module) => module.slug === slug) && getModuleBySlug(db, slug) === undefined) {
@@ -1309,7 +1430,11 @@ function entryRuleModuleProblem(db: Db, document: PipelineExport): string | null
  */
 function entryRulesProblem(db: Db, document: PipelineExport, projectId: Uuid | null): string | null {
   const types = new Map([...itemTypesFor(db, projectId), ...document.itemTypes.map((type) => [qualifiedItemType(type), type] as const)]);
-  return entryRuleProblems(document.pipeline.entryRules, types, registry.entryRuleKinds)[0] ?? null;
+  for (const board of documentBoards(document)) {
+    const problem = entryRuleProblems(board.pipeline.entryRules, types, registry.entryRuleKinds)[0];
+    if (problem !== undefined) return problem;
+  }
+  return null;
 }
 
 /**
@@ -1374,10 +1499,12 @@ export function importPipeline(db: Db, input: ImportPipelineInput): ImportResult
   // ── The writes ──────────────────────────────────────────────
 
   let pipelineId = "";
+  let boardPipelineIds: string[] = [];
+  let stepIds: Record<string, string> = {};
   let keptDefinitions: { role: string; action: string }[] = [];
   try {
     db.transaction(() => {
-      ({ pipelineId, keptDefinitions } = writeImport(db, document, toCreate, idBySlug, input.projectId ?? null, input.signedInBackends ?? []));
+      ({ pipelineId, boardPipelineIds, stepIds, keptDefinitions } = writeImport(db, document, toCreate, idBySlug, input.projectId ?? null, input.signedInBackends ?? []));
     });
   } catch (error) {
     // Rolled back by the transaction, so there is nothing half-written to
@@ -1388,6 +1515,8 @@ export function importPipeline(db: Db, input: ImportPipelineInput): ImportResult
   return {
     ok: true,
     pipelineId,
+    boardPipelineIds,
+    stepIds,
     keptDefinitions,
     createdModuleIds: toCreate.flatMap(({ from }) => {
       const id = idBySlug.get(from.slug);
@@ -1412,7 +1541,7 @@ function writeImport(
   idBySlug: Map<string, string>,
   projectId: Uuid | null,
   signedInBackends: readonly string[],
-): { pipelineId: string; keptDefinitions: { role: string; action: string }[] } {
+): { pipelineId: string; boardPipelineIds: string[]; stepIds: Record<string, string>; keptDefinitions: { role: string; action: string }[] } {
   writeItemTypes(db, document, projectId);
   const keptDefinitions = writeRoles(db, document, signedInBackends, projectId);
   writeConnectors(db, document, projectId);
@@ -1446,17 +1575,6 @@ function writeImport(
     idBySlug.set(module.slug, saved.module.id);
   }
 
-  const pipeline = createPipeline(db, {
-    projectId,
-    name: document.pipeline.name,
-    icon: document.pipeline.icon,
-    position: Date.now(),
-    // The pack's example, kept as the pack wrote it (EO-314). Nothing is
-    // filed from it: making it into an item is Preview's, and doing it
-    // here would put an item on somebody's board that nobody asked for.
-    previewItem: document.previewItem,
-  });
-
   // Step ids are re-minted rather than kept.
   //
   // `pipeline_steps.id` is a primary key across the whole table, not one
@@ -1467,84 +1585,111 @@ function writeImport(
   //
   // Everything that references a step therefore moves with them: a
   // route's `fromStepId`, a route's `target` when it names a step rather
-  // than a sentinel, and where work enters.
-  const stepIdMap = new Map(document.steps.map((step) => [step.id, uuidv7() as string]));
+  // than a sentinel, and where work enters. One map across every board
+  // (EO-762), so a route from one board into another lands on the step
+  // as it is written here.
+  const stepIdMap = new Map(documentSteps(document).map((step) => [step.id, uuidv7() as string]));
   const mapped = (id: string): string => stepIdMap.get(id) ?? id;
 
-  // Into a pipeline created a moment ago, which has no steps and so no
-  // items on any of them: the graph write cannot meet the refusal a
-  // removed step with items on it earns (EO-230). Asserted rather than
-  // ignored, because a result that says the write did not happen is not
-  // one to walk past on the way to reporting a success.
-  const written = replacePipelineGraph(
-    db,
-    pipeline.id,
-    document.steps.map((step) => ({
-      id: mapped(step.id),
-      pipelineId: pipeline.id,
-      position: step.position,
-      name: step.name,
-      type: step.type,
-      ownerRole: step.ownerRole,
-      entryAction: step.type === "module" && step.entryAction !== null ? (idBySlug.get(step.entryAction) ?? step.entryAction) : step.entryAction,
-      instructionsSummary: step.instructionsSummary,
-      isTerminal: step.isTerminal,
-      planMode: step.planMode,
-      offBoard: false,
-      // The keys travel unchanged (EO-310): only ids are local, and a
-      // result key is a word the document chose, matched to the route
-      // that carries the same one.
-      //
-      // Run through the same helper every other writer of a graph uses,
-      // so an imported human step offers exactly the branches the
-      // document draws, labelled the way the document draws them. What
-      // the declaration brings with it and the routes cannot is
-      // `requiresComment`, and that is what the helper keeps — a
-      // document whose two halves disagreed about a button's words
-      // would otherwise be imported disagreeing, and nothing here
-      // edits either side afterwards.
-      results: resultsFromRoutes(step, document.routes),
-      // Keep checking arrives as the document says (EO-456): part of
-      // the graph, and absent from a document written before it existed,
-      // which reads as a step that runs once.
-      watch: step.watch,
-    })),
-    document.routes.map((route) => ({
-      ...route,
-      pipelineId: pipeline.id,
-      fromStepId: mapped(route.fromStepId),
-      // `user_attention` and `terminal` are sentinels, not steps, and
-      // `mapped` leaves anything it does not know alone.
-      target: mapped(route.target),
-    })),
-    // Where work enters lands with the graph, inside the same
-    // transaction and inside the version that freezes both (EO-327):
-    // an imported pipeline whose entry step arrived a statement later
-    // would have a v1 that froze the wrong one.
-    {
-      entryStepId: document.pipeline.entryStepId === null ? null : mapped(document.pipeline.entryStepId),
-      // A module rule's slug back to the module it means here (EO-736): one
-      // this document brought, or the one this installation already has.
-      entryRules: document.pipeline.entryRules.map((rule) => {
-        if (rule.kind !== MODULE_ENTRY_RULE_KIND || rule.module === undefined) return rule;
-        return { ...rule, module: idBySlug.get(rule.module) ?? getModuleBySlug(db, rule.module)?.id ?? rule.module };
-      }),
-    },
-  );
-  if (!written.replaced) throw new Error(`A freshly created pipeline refused its graph: ${written.holding.map((hold) => hold.stepId).join(", ")}`);
+  // Every board, each a pipeline of its own, in this one transaction
+  // (EO-762): a template whose second board failed to write is not
+  // installed at all, rather than installed with routes into nothing.
+  const pipelineIds = documentBoards(document).map((board, index) => {
+    const pipeline = createPipeline(db, {
+      projectId,
+      name: board.pipeline.name,
+      icon: board.pipeline.icon,
+      // In the document's order, after everything already on the rail.
+      position: Date.now() + index,
+      // The pack's example, kept as the pack wrote it (EO-314), on the
+      // board it is an example for. Nothing is filed from it: making it
+      // into an item is Preview's, and doing it here would put an item on
+      // somebody's board that nobody asked for.
+      previewItem: index === 0 ? document.previewItem : null,
+    });
 
-  // Where it came from (EO-531), inside the same transaction as the
-  // graph. A document carrying a `template` block is a template version
-  // — installed from the gallery, previewed, or dropped in as a file —
-  // and the pipeline made from it remembers which one, with the
-  // document itself stored as its base. The step map is written here
-  // because this is the only place it exists: the ids were re-minted a
-  // moment ago, and nothing afterwards could say which uuid was `review`.
-  if (isTemplateDocument(document)) {
-    recordPipelineOrigin(db, { pipelineId: pipeline.id, document, stepIds: Object.fromEntries(stepIdMap) });
-  }
+    // Into a pipeline created a moment ago, which has no steps and so no
+    // items on any of them: the graph write cannot meet the refusal a
+    // removed step with items on it earns (EO-230). Asserted rather than
+    // ignored, because a result that says the write did not happen is not
+    // one to walk past on the way to reporting a success.
+    const written = replacePipelineGraph(
+      db,
+      pipeline.id,
+      board.steps.map((step) => ({
+        id: mapped(step.id),
+        pipelineId: pipeline.id,
+        position: step.position,
+        name: step.name,
+        type: step.type,
+        ownerRole: step.ownerRole,
+        entryAction: step.type === "module" && step.entryAction !== null ? (idBySlug.get(step.entryAction) ?? step.entryAction) : step.entryAction,
+        instructionsSummary: step.instructionsSummary,
+        isTerminal: step.isTerminal,
+        planMode: step.planMode,
+        offBoard: false,
+        // The keys travel unchanged (EO-310): only ids are local, and a
+        // result key is a word the document chose, matched to the route
+        // that carries the same one.
+        //
+        // Run through the same helper every other writer of a graph uses,
+        // so an imported human step offers exactly the branches the
+        // document draws, labelled the way the document draws them. What
+        // the declaration brings with it and the routes cannot is
+        // `requiresComment`, and that is what the helper keeps — a
+        // document whose two halves disagreed about a button's words
+        // would otherwise be imported disagreeing, and nothing here
+        // edits either side afterwards.
+        results: resultsFromRoutes(step, board.routes),
+        // Keep checking arrives as the document says (EO-456): part of
+        // the graph, and absent from a document written before it existed,
+        // which reads as a step that runs once.
+        watch: step.watch,
+      })),
+      board.routes.map((route) => ({
+        ...route,
+        pipelineId: pipeline.id,
+        fromStepId: mapped(route.fromStepId),
+        // `user_attention` and `terminal` are sentinels, not steps, and
+        // `mapped` leaves anything it does not know alone. A step of
+        // another board is mapped like one of this board's.
+        target: mapped(route.target),
+      })),
+      // Where work enters lands with the graph, inside the same
+      // transaction and inside the version that freezes both (EO-327):
+      // an imported pipeline whose entry step arrived a statement later
+      // would have a v1 that froze the wrong one.
+      {
+        entryStepId: board.pipeline.entryStepId === null ? null : mapped(board.pipeline.entryStepId),
+        // A module rule's slug back to the module it means here (EO-736): one
+        // this document brought, or the one this installation already has.
+        entryRules: board.pipeline.entryRules.map((rule) => {
+          if (rule.kind !== MODULE_ENTRY_RULE_KIND || rule.module === undefined) return rule;
+          return { ...rule, module: idBySlug.get(rule.module) ?? getModuleBySlug(db, rule.module)?.id ?? rule.module };
+        }),
+      },
+    );
+    if (!written.replaced) throw new Error(`A freshly created pipeline refused its graph: ${written.holding.map((hold) => hold.stepId).join(", ")}`);
 
-  return { pipelineId: pipeline.id, keptDefinitions };
+    // Where it came from (EO-531), inside the same transaction as the
+    // graph. A document carrying a `template` block is a template version
+    // — installed from the gallery, previewed, or dropped in as a file —
+    // and the pipeline made from it remembers which one, with the
+    // document itself stored as its base. The step map is written here
+    // because this is the only place it exists: the ids were re-minted a
+    // moment ago, and nothing afterwards could say which uuid was `review`.
+    //
+    // Each board's map names that board's steps and no others: that is
+    // how a pipeline knows which of the template's boards it is
+    // (`boardHolding`, `sameBoard`, EO-762).
+    if (isTemplateDocument(document)) {
+      recordPipelineOrigin(db, { pipelineId: pipeline.id, document, stepIds: Object.fromEntries(board.steps.map((step) => [step.id, mapped(step.id)])) });
+    }
+    return pipeline.id;
+  });
+
+  const [pipelineId, ...boardPipelineIds] = pipelineIds;
+  return { pipelineId: pipelineId!, boardPipelineIds, stepIds: Object.fromEntries(stepIdMap), keptDefinitions };
 }
 
 /**

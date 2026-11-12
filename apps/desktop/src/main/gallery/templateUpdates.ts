@@ -1,7 +1,24 @@
-import { DEFAULT_WORKSPACE_MODE, uuidv7, type CommentOption, type PipelineExport, type PipelineStep, type StepRoute, type Uuid } from "@eo/core";
-import { hasBlockingProblem, mergeThreeWay, type ComparableGraph, type ComparedStepField, type KeyChange } from "@eo/engine";
+import {
+  boardDocument,
+  boardHolding,
+  DEFAULT_WORKSPACE_MODE,
+  documentBoards,
+  documentSteps,
+  MODULE_ENTRY_RULE_KIND,
+  sameBoard,
+  TERMINAL_TARGET,
+  USER_ATTENTION_TARGET,
+  uuidv7,
+  type CommentOption,
+  type PipelineExport,
+  type PipelineStep,
+  type StepRoute,
+  type Uuid,
+} from "@eo/core";
+import { mergeThreeWay, type ComparableGraph, type ComparedStepField, type KeyChange } from "@eo/engine";
 import type { Db } from "../db/client.js";
 import {
+  createPipeline,
   getModuleBySlug,
   getPipeline,
   getPipelineOrigin,
@@ -20,10 +37,12 @@ import {
   resolveUpdateConflict,
   setUpdateConflictNotices,
   storeTemplateSnapshot,
+  templateBoardHolders,
   templateUpdateAuthor,
   updateConflictNoticed,
   type PipelineOrigin,
   type PipelineUpdateConflict,
+  type TemplateDocument,
 } from "../db/repos/index.js";
 import { TEMPLATE_CONFLICT_SOURCE } from "../db/repos/pipelineUpdateConflictsRepo.js";
 import { projectMovedToTheRecord } from "../db/repos/projectsRepo.js";
@@ -83,25 +102,275 @@ export type TemplateUpdateResult =
  * Compares and updates every pipeline this installation holds whose
  * template has shipped a newer version than its base.
  *
- * Not one pipeline's failure for another's: each is its own
- * transaction, and an update that throws is logged and left for the
- * next launch rather than stopping the rest or the app.
+ * Not one installation's failure for another's: the boards one project
+ * holds of one template are compared and written together, in one
+ * transaction (EO-762), and an update that throws is logged and left for
+ * the next launch rather than stopping the rest or the app.
  */
 export function applyTemplateUpdates(db: Db, history: TemplateHistory, options: TemplateUpdateOptions): TemplateUpdateResult[] {
-  const results: TemplateUpdateResult[] = [];
+  const now = options.now ?? Date.now();
+  // The boards a newer version adds, first (EO-762): before any board of
+  // the same template is compared, so an update that routes into one
+  // finds its steps — and whether or not that update is then held, so a
+  // person resolving it has them to route into.
+  const created = createAddedBoards(db, history, options.isTheRecord, now);
+  // A route on a board just made that waits for a step the update to
+  // another of its boards adds is pointed at it when that update applies
+  // (`pointRoutesWaitingOn`), on this launch or whenever it is resolved.
+  const installations = new Map<string, string[]>();
   for (const pipeline of listPipelines(db)) {
     if (!options.isTheRecord && heldByTheRecord(db, pipeline.id)) {
-      retireObsoleteHold(db, pipeline.id, options.now ?? Date.now());
+      retireObsoleteHold(db, pipeline.id, now);
       continue;
     }
+    if (created.some((board) => board.pipelineId === pipeline.id)) continue;
+    const slug = getPipelineOrigin(db, pipeline.id)?.slug;
+    if (slug === undefined) continue;
+    const key = JSON.stringify([slug, pipeline.projectId]);
+    installations.set(key, [...(installations.get(key) ?? []), pipeline.id]);
+  }
+  const results: TemplateUpdateResult[] = [];
+  for (const pipelineIds of installations.values()) {
     try {
-      const result = updatePipeline(db, pipeline.id, history, options.now ?? Date.now(), options.isTheRecord);
-      if (result !== null) results.push(result);
+      results.push(...updateInstallation(db, pipelineIds, history, now, options.isTheRecord, created));
     } catch (error) {
-      console.warn(`[eo] the template update for pipeline ${pipeline.id} could not be compared and was left for the next launch: ${error instanceof Error ? error.message : String(error)}`);
+      console.warn(`[eo] the template update for pipelines ${pipelineIds.join(", ")} could not be compared and was left for the next launch: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
   return results;
+}
+
+/** A board EO made for a template's newer version (EO-762). */
+export interface CreatedBoard {
+  pipelineId: string;
+  name: string;
+  slug: string;
+  version: string;
+  projectId: string | null;
+  /**
+   * Its routes into a step of another of the template's boards that the
+   * project does not hold yet — one the update to that board adds, where
+   * that update is held. Each waits until it is pointed: an agent's or a
+   * builtin's result for a person, and a person's decision (`decision`)
+   * by not being offered.
+   */
+  waiting: { fromStepId: string; resultKey: string; templateTarget: string; decision: boolean }[];
+}
+
+/**
+ * Makes, for every project holding a template, the boards a newer
+ * version of it adds (EO-762).
+ *
+ * One installation of a template is the pipelines made from it in one
+ * project (`templateBoardHolders`), archived ones included. A board of
+ * the newest version is made where none of their bases had a board of
+ * its key: a board one of them is was in its base, and a board the
+ * template had before, which somebody deleted, is theirs to have deleted
+ * and is not made again. The first board is never made here.
+ *
+ * Made whether or not the update to the template's other boards will
+ * then apply — before they are compared, so an update whose routes go
+ * into the new board finds its steps, and a person resolving a held one
+ * has them to route into. Each project's boards in their own
+ * transaction, and one that fails is logged and left for the next launch.
+ */
+function createAddedBoards(db: Db, history: TemplateHistory, isTheRecord: boolean, now: number): CreatedBoard[] {
+  const installations = new Map<string, { slug: string; projectId: string | null; origins: PipelineOrigin[] }>();
+  for (const pipeline of listPipelines(db)) {
+    if (!isTheRecord && heldByTheRecord(db, pipeline.id)) continue;
+    const origin = getPipelineOrigin(db, pipeline.id);
+    if (origin === null) continue;
+    const key = JSON.stringify([origin.slug, pipeline.projectId]);
+    const installation = installations.get(key) ?? { slug: origin.slug, projectId: pipeline.projectId, origins: [] };
+    installation.origins.push(origin);
+    installations.set(key, installation);
+  }
+
+  const created: CreatedBoard[] = [];
+  for (const { slug, projectId, origins } of installations.values()) {
+    const newest = history.get(slug)?.at(-1);
+    if (newest === undefined || !origins.some((origin) => compareTemplateVersions(newest.version, origin.version) > 0)) continue;
+    // Every base of the installation, an archived board's included, so a board somebody archived is not made again.
+    const bases = templateBoardHolders(db, slug, projectId).flatMap((holder) => {
+      const origin = getPipelineOrigin(db, holder.pipelineId);
+      return origin === null ? [] : [origin.base];
+    });
+    const known = new Set(bases.flatMap((base) => documentBoards(base).map((board) => board.key)));
+    const added = documentBoards(newest.document)
+      .map((board, index) => ({ board, index }))
+      .filter(({ board, index }) => index > 0 && board.steps.length > 0 && !known.has(board.key))
+      .map(({ index }) => index);
+    if (added.length === 0) continue;
+    try {
+      created.push(
+        ...createTemplateBoards(db, newest.document, added, projectId, {
+          createdBy: templateUpdateAuthor(slug, newest.version),
+          releaseNotes: `Created by the ${newest.document.template.title} template's ${newest.version} update, which adds this board.`,
+          now,
+        }),
+      );
+    } catch (error) {
+      console.warn(`[eo] the boards the ${slug} ${newest.version} template adds could not be made and are left for the next launch: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  return created;
+}
+
+/**
+ * Makes these boards of a template document as pipelines in this
+ * project, in one transaction, each remembering the document as its
+ * base (EO-762). What a template update does with the boards a version
+ * adds, and what using a template does with the boards beside a
+ * pipeline it adopted rather than imported.
+ *
+ * A step keeps the template's id where no pipeline here has it — as a
+ * step a template update adds does (`placeMerge`) — and gets a fresh one
+ * where another does. A route into another of the template's boards
+ * goes to that step as this project holds it, read through the map of
+ * the pipeline made from that board. Where the project does not hold it
+ * — the step is one the held update to that board adds — the route
+ * waits, and says so in `waiting`, rather than naming a step that is in
+ * no pipeline, where an item would stop with nothing said. An agent's or
+ * a builtin's result waits for a person (`user_attention`), which parks
+ * the item and asks. A person's decision cannot: routed to a person it
+ * would be a button that leaves the item where it stands, which the
+ * validator refuses and `items:decide` refuses every time it is pressed.
+ * So the step does not offer it — neither the result nor its route —
+ * until the step it goes to is there (`pointRoutesWaitingOn`). Every
+ * button the board does offer works.
+ */
+export function createTemplateBoards(
+  db: Db,
+  document: TemplateDocument,
+  indexes: readonly number[],
+  projectId: string | null,
+  version: { createdBy: string | null; releaseNotes: string | null; now?: number },
+): CreatedBoard[] {
+  const boards = documentBoards(document);
+  const making = indexes.flatMap((index) => {
+    const board = boards[index];
+    return board === undefined ? [] : [{ index, board }];
+  });
+  const fresh = new Map<string, string>();
+  const claimed = new Set<string>();
+  for (const { board } of making) {
+    for (const step of board.steps) {
+      const id = getStep(db, step.id) === undefined && !claimed.has(step.id) ? step.id : (uuidv7() as string);
+      fresh.set(step.id, id);
+      claimed.add(id);
+    }
+  }
+  const elsewhere = new Map<string, string>();
+  for (const holder of templateBoardHolders(db, document.template.slug, projectId)) {
+    for (const [templateId, id] of Object.entries(holder.stepIds)) if (!elsewhere.has(templateId) && getStep(db, id) !== undefined) elsewhere.set(templateId, id);
+  }
+  const target = (id: string): string | null => (id === USER_ATTENTION_TARGET || id === TERMINAL_TARGET ? id : (fresh.get(id) ?? elsewhere.get(id) ?? null));
+  const moduleId = (slug: string): string => getModuleBySlug(db, slug)?.id ?? slug;
+
+  return db.transaction(() =>
+    making.map(({ index, board }) => {
+      const pipeline = createPipeline(db, { projectId: projectId as Uuid | null, name: board.pipeline.name, icon: board.pipeline.icon, position: (version.now ?? Date.now()) + index });
+      const waiting: CreatedBoard["waiting"] = [];
+      const routes = board.routes.flatMap((route) => {
+        const to = target(route.target);
+        const fromStepId = fresh.get(route.fromStepId) ?? route.fromStepId;
+        if (to !== null) return [{ ...route, pipelineId: pipeline.id, fromStepId, target: to }];
+        const decision = board.steps.find((step) => step.id === route.fromStepId)?.type === "user";
+        waiting.push({ fromStepId, resultKey: route.resultKey, templateTarget: route.target, decision });
+        return decision ? [] : [{ ...route, pipelineId: pipeline.id, fromStepId, target: USER_ATTENTION_TARGET }];
+      });
+      const withheld = (stepId: string, key: string): boolean => waiting.some((route) => route.decision && route.fromStepId === stepId && route.resultKey === key);
+      const written = replacePipelineGraph(
+        db,
+        pipeline.id,
+        board.steps.map((step) => {
+          const id = fresh.get(step.id) ?? step.id;
+          return {
+            ...step,
+            id,
+            pipelineId: pipeline.id,
+            entryAction: step.type === "module" && step.entryAction !== null ? moduleId(step.entryAction) : step.entryAction,
+            results: step.results.filter((result) => !withheld(id, result.key)),
+            offBoard: false,
+          };
+        }),
+        routes,
+        {
+          entryStepId: board.pipeline.entryStepId === null ? null : (fresh.get(board.pipeline.entryStepId) ?? null),
+          entryRules: board.pipeline.entryRules.map((rule) => (rule.kind === MODULE_ENTRY_RULE_KIND && rule.module !== undefined ? { ...rule, module: moduleId(rule.module) } : rule)),
+          createdBy: version.createdBy,
+          releaseNotes: version.releaseNotes,
+        },
+      );
+      if (!written.replaced) throw new Error(`A freshly created pipeline refused its graph: ${written.holding.map((hold) => hold.stepId).join(", ")}`);
+      recordPipelineOrigin(db, { pipelineId: pipeline.id, document, stepIds: Object.fromEntries(board.steps.map((step) => [step.id, fresh.get(step.id) ?? step.id])) });
+      return { pipelineId: pipeline.id, name: board.pipeline.name, slug: document.template.slug, version: document.template.version, projectId, waiting };
+    }),
+  );
+}
+
+/**
+ * Points the routes that wait for a step of this pipeline's board at it,
+ * now that the board has it (EO-762).
+ *
+ * A board EO makes for a template's new version may route into a step the
+ * update to another of its boards adds, and while that update is held the
+ * step is in no pipeline: an agent's or a builtin's result waits for a
+ * person (`user_attention`), and a person's decision is not offered at all
+ * (`createTemplateBoards`). Nothing about that is kept apart from what the
+ * origins already say, so it survives a restart and a move to the record
+ * alike: the waiting board's base routes the result to the template step,
+ * this pipeline's map did not hold that step before (`previous`) and does
+ * now (`next`), and the board as it is either still sends the result to a
+ * person, or — a decision — neither offers it nor routes it. Each such
+ * route is pointed at the step as this pipeline holds it, a withheld
+ * decision is offered again as the template words it, and the board files
+ * a version by the template update.
+ *
+ * Called wherever a pipeline's map moves: an update applied or caught up
+ * on a launch, and a held one resolved, the step map then being the
+ * published draft's. A route somebody pointed elsewhere meanwhile is
+ * theirs and stays. One that goes to a person as the template says it
+ * should is not one of these: its template target is no step.
+ */
+export function pointRoutesWaitingOn(db: Db, pipelineId: string, slug: string, previous: Readonly<Record<string, string>>, next: Readonly<Record<string, string>>, createdBy: string): void {
+  const gained = new Map(Object.entries(next).filter(([templateId, id]) => previous[templateId] !== id && getStep(db, id)?.pipelineId === pipelineId));
+  if (gained.size === 0) return;
+  const projectId = getPipeline(db, pipelineId)?.projectId ?? null;
+  for (const holder of templateBoardHolders(db, slug, projectId)) {
+    if (holder.pipelineId === pipelineId) continue;
+    const origin = getPipelineOrigin(db, holder.pipelineId);
+    const index = origin === null ? null : boardHolding(origin.base, Object.keys(origin.stepIds));
+    if (origin === null || index === null) continue;
+    const based = documentBoards(origin.base)[index]!;
+    const steps = listStepsForPipeline(db, holder.pipelineId).map(({ ownerPersonId: _person, ownerGroupId: _group, ...step }) => step);
+    const routes = listRoutesForPipeline(db, holder.pipelineId).map(({ id: _id, ...route }) => route);
+    let changed = false;
+    for (const route of based.routes) {
+      const to = gained.get(route.target);
+      const from = origin.stepIds[route.fromStepId];
+      if (to === undefined || from === undefined) continue;
+      const current = routes.find((each) => each.fromStepId === from && each.resultKey === route.resultKey);
+      if (current !== undefined) {
+        if (current.target !== USER_ATTENTION_TARGET) continue;
+        current.target = to;
+        changed = true;
+        continue;
+      }
+      // A decision withheld until its step was there: offered again, as the template words it.
+      const step = steps.find((each) => each.id === from);
+      const result = based.steps.find((each) => each.id === route.fromStepId)?.results.find((each) => each.key === route.resultKey);
+      if (step === undefined || step.type !== "user" || result === undefined || step.results.some((each) => each.key === route.resultKey)) continue;
+      step.results = [...step.results, result];
+      routes.push({ pipelineId: holder.pipelineId as Uuid, fromStepId: from, resultKey: route.resultKey, label: route.label, tone: route.tone, target: to, position: route.position });
+      changed = true;
+    }
+    if (!changed) continue;
+    replacePipelineGraph(db, holder.pipelineId, steps, routes, {
+      createdBy,
+      releaseNotes: `Pointed the routes that waited for ${getPipeline(db, pipelineId)?.name ?? "another board"} at the steps its template update added.`,
+    });
+  }
 }
 
 /** How a desktop's conflict is closed once its organisation's record holds the pipeline (EO-534). */
@@ -158,11 +427,29 @@ export interface PipelineComparison {
   current: ComparableGraph<PipelineStep, StepRoute>;
   next: ComparableGraph<PipelineStep, StepRoute>;
   merge: ReturnType<typeof mergeThreeWay<PipelineStep, StepRoute>>;
+  /**
+   * This pipeline's board of the base and of the new version, each as a
+   * document of one board (EO-762). Where the template has one board,
+   * that board; where it has several, the one this pipeline's step map
+   * names (`boardHolding`).
+   */
+  baseBoard: PipelineExport;
+  nextBoard: TemplateDocument;
+  /** The new version's step ids as this installation holds them: this board's through the origin's map, the template's other boards' through theirs. */
+  nextLocal: (id: string) => string;
 }
 
 /**
  * Compares one pipeline with a template version, or null where it has
- * no origin.
+ * no origin, or its board of the template cannot be told or is gone
+ * from that version (EO-762).
+ *
+ * `nextSiblings` is the template's other boards' steps as this project
+ * will hold them once the boards updated with this one are written
+ * (`updateInstallation`); the new version's routes into them are read
+ * through it. Absent, they are read as the project holds them now. The
+ * base is always read as they are now: it is what the person's routes
+ * are compared with.
  *
  * Both template documents are read through the origin's step map, so
  * the comparison is in this pipeline's ids: an imported pipeline's
@@ -170,88 +457,328 @@ export interface PipelineComparison {
  * A template step with no entry in the map keeps the template's id —
  * either a step the person removed, or one the template adds.
  */
-export function compareWithTemplate(db: Db, pipelineId: string, template: TemplateVersion): PipelineComparison | null {
+export function compareWithTemplate(db: Db, pipelineId: string, template: TemplateVersion, nextSiblings?: ReadonlyMap<string, string>): PipelineComparison | null {
   const origin = getPipelineOrigin(db, pipelineId);
   if (origin === null) return null;
-  const local = (id: string): string => origin.stepIds[id] ?? id;
-  const base = graphOfDocument(db, pipelineId, origin.base, local);
-  const next = graphOfDocument(db, pipelineId, template.document, local);
+  // Which board it is, read of its base and followed into the new
+  // version by key (EO-762); nothing to compare where either cannot say,
+  // or the new version no longer has its board.
+  const held = Object.keys(origin.stepIds);
+  const baseIndex = boardHolding(origin.base, held);
+  const nextIndex = sameBoard(origin.base, held, template.document);
+  if (baseIndex === null || nextIndex === null) return null;
+  const baseBoard = boardDocument(origin.base, baseIndex);
+  const nextBoard = boardDocument(template.document, nextIndex);
+  const nextLocal = installedStepIds(db, origin, template.document, nextIndex, nextSiblings);
+  const base = graphOfDocument(db, pipelineId, baseBoard, installedStepIds(db, origin, origin.base, baseIndex));
+  const next = graphOfDocument(db, pipelineId, nextBoard, nextLocal);
   const current: ComparableGraph<PipelineStep, StepRoute> = {
     // Off-board steps are not the graph a template describes, and a
     // publish never sees them either (`savePipeline`).
     steps: listStepsForPipeline(db, pipelineId).filter((step) => !step.offBoard),
     routes: listRoutesForPipeline(db, pipelineId),
   };
-  return { origin, template, base, current, next, merge: mergeThreeWay(base, current, next) };
+  return { origin, template, base, current, next, merge: mergeThreeWay(base, current, next), baseBoard, nextBoard, nextLocal };
 }
 
-function updatePipeline(db: Db, pipelineId: string, history: TemplateHistory, now: number, isTheRecord: boolean): TemplateUpdateResult | null {
-  const origin = getPipelineOrigin(db, pipelineId);
-  if (origin === null) return null;
-  const template = newerTemplateVersion(origin, history);
-  if (template === null) return null;
+/**
+ * A template document's step ids as this installation holds them, for
+ * the pipeline made from one of its boards (EO-762).
+ *
+ * A step of the pipeline's own board through its origin's map, as
+ * always; a step the map does not name is one the person removed, or
+ * one the template adds, and keeps the template's id. A step of another
+ * of the template's boards through the map of the pipeline made from
+ * that board in the same project — which may hold it under another id,
+ * renamed because the template's was taken or re-minted by an import —
+ * so a route between boards is compared with where it actually goes.
+ * `siblings`, where given, is that map instead (`compareWithTemplate`).
+ */
+export function installedStepIds(db: Db, origin: PipelineOrigin, document: PipelineExport, board: number, siblings?: ReadonlyMap<string, string>): (id: string) => string {
+  const own = new Set((documentBoards(document)[board] ?? documentBoards(document)[0]!).steps.map((step) => step.id));
+  const elsewhere = siblings ?? siblingStepIds(db, origin.slug, origin.pipelineId, own);
+  return (id) => origin.stepIds[id] ?? (own.has(id) ? id : (elsewhere.get(id) ?? id));
+}
 
-  // Already held at this version: the same comparison raised again on
-  // every launch would be noise. Only its notice may still be owed — a
-  // conflict held before there were notices, or while nobody could be
-  // told (EO-533).
-  const open = openUpdateConflict(db, pipelineId);
-  if (open !== undefined && open.toVersion === template.version) {
-    return announceHeldUpdate(db, open, isTheRecord, { pipelineId, slug: origin.slug, from: open.fromVersion, to: open.toVersion }, now);
+/** The step maps of the other pipelines made from this template in this pipeline's project, leaving out this board's own steps. */
+function siblingStepIds(db: Db, slug: string, pipelineId: string, own: ReadonlySet<string>): Map<string, string> {
+  const projectId = getPipeline(db, pipelineId)?.projectId ?? null;
+  const ids = new Map<string, string>();
+  for (const holder of templateBoardHolders(db, slug, projectId)) {
+    if (holder.pipelineId === pipelineId) continue;
+    for (const [templateId, id] of Object.entries(holder.stepIds)) if (!own.has(templateId) && !ids.has(templateId)) ids.set(templateId, id);
+  }
+  return ids;
+}
+
+/** A pipeline whose template has a newer version to compare it with, on this launch. */
+interface Candidate {
+  pipelineId: string;
+  origin: PipelineOrigin;
+  template: TemplateVersion;
+  /** An update held at an older version, which this one supersedes. */
+  open: PipelineUpdateConflict | undefined;
+}
+
+/** A candidate compared, merged and placed, ready to be judged and written. */
+interface Prepared {
+  candidate: Candidate;
+  compared: PipelineComparison;
+  /** The template's changes it takes; none is only its base moving. */
+  taken: KeyChange[];
+  steps: PipelineStep[];
+  routes: StepRoute[];
+  stepIds: Record<string, string>;
+  entryStepId: string | null;
+  /** The template's other boards' steps as the batch leaves them, in this project's ids. */
+  siblings: ReadonlyMap<string, string>;
+}
+
+/**
+ * Updates the boards one project holds of one template, together
+ * (EO-762).
+ *
+ * A board's new version may route into a step the new version of another
+ * of them adds, and may stop routing into one the other removes. Compared
+ * one at a time against the database, either would be held for nothing
+ * but the order: the step it routes into is not there yet, or the route
+ * it stops taking is still there. So every board due an update is
+ * compared reading the others' steps as their updates will leave them
+ * (`plannedStepIds`), judged with the others' graphs as they will be
+ * written (`storedGraphProblems`' `alongside`), and the boards that pass
+ * are written in one transaction. A board that is held — a conflict, a
+ * merge that does not validate, or a step it removes still holding items
+ * — leaves the batch, and the rest are compared again without it, its
+ * steps as they are now: a board whose new routes go into a step only the
+ * held one adds is held too, and its notice says which.
+ */
+function updateInstallation(db: Db, pipelineIds: readonly string[], history: TemplateHistory, now: number, isTheRecord: boolean, created: readonly CreatedBoard[]): TemplateUpdateResult[] {
+  const results: TemplateUpdateResult[] = [];
+  let batch: Candidate[] = [];
+  for (const pipelineId of pipelineIds) {
+    const origin = getPipelineOrigin(db, pipelineId);
+    if (origin === null) continue;
+    const template = newerTemplateVersion(origin, history);
+    if (template === null) continue;
+    // Already held at this version: the same comparison raised again on
+    // every launch would be noise. Only its notice may still be owed — a
+    // conflict held before there were notices, or while nobody could be
+    // told (EO-533).
+    const open = openUpdateConflict(db, pipelineId);
+    if (open !== undefined && open.toVersion === template.version) {
+      const announced = announceHeldUpdate(db, open, isTheRecord, { pipelineId, slug: origin.slug, from: open.fromVersion, to: open.toVersion }, now);
+      if (announced !== null) results.push(announced);
+      continue;
+    }
+    batch.push({ pipelineId, origin, template, open });
   }
 
-  const compared = compareWithTemplate(db, pipelineId, template);
-  if (compared === null) return null;
-  const notes = releaseNotes(history, origin, template);
-  const summary = { pipelineId, slug: origin.slug, from: origin.version, to: template.version };
-  const held = (conflictId: string): TemplateUpdateResult => ({ ...summary, outcome: "conflict", conflictId });
+  // The ids given to steps whose template id another pipeline holds, kept
+  // across rounds, so a board and the routes into it agree on one.
+  const minted = new Map<string, string>();
+  const summaryOf = (candidate: Candidate) => ({ pipelineId: candidate.pipelineId, slug: candidate.origin.slug, from: candidate.origin.version, to: candidate.template.version });
+  const notesOf = (candidate: Candidate): { notes: string; madeHere: CreatedBoard[] } => {
+    // The boards of this template made on this launch for this project
+    // (EO-762), which the update — applied or held — names.
+    const projectId = getPipeline(db, candidate.pipelineId)?.projectId ?? null;
+    const madeHere = created.filter((board) => board.slug === candidate.origin.slug && board.projectId === projectId);
+    const notes = [releaseNotes(history, candidate.origin, candidate.template), ...madeHere.map((board) => `Created the ${board.name} board this version adds.`)].filter((line) => line !== "").join("\n");
+    return { notes, madeHere };
+  };
+  const hold = (prepared: Pick<Prepared, "candidate" | "compared">, conflicts: KeyChange[], problems: string[]): void => {
+    const { notes, madeHere } = notesOf(prepared.candidate);
+    const conflictId = holdUpdate(db, prepared.compared, notes, conflicts, problems, now, isTheRecord, madeHere);
+    results.push({ ...summaryOf(prepared.candidate), outcome: "conflict", conflictId });
+  };
 
-  if (!compared.merge.ok) return held(holdUpdate(db, compared, notes, compared.merge.comparison.conflicts, [], now, isTheRecord));
+  while (batch.length > 0) {
+    const planned = plannedStepIds(db, batch, minted);
+    // Compared and merged. A board whose comparison cannot be made, or
+    // whose merge conflicts, leaves the batch before anything is judged,
+    // since the others read its steps as its update would leave them.
+    const prepared: Prepared[] = [];
+    const leaving = new Set<string>();
+    for (const candidate of batch) {
+      const siblings = nextSiblingStepIds(db, candidate, planned);
+      const compared = compareWithTemplate(db, candidate.pipelineId, candidate.template, siblings);
+      if (compared === null) {
+        leaving.add(candidate.pipelineId);
+        continue;
+      }
+      if (!compared.merge.ok) {
+        hold({ candidate, compared }, compared.merge.comparison.conflicts, []);
+        leaving.add(candidate.pipelineId);
+        continue;
+      }
+      const placed = placeMerge(db, compared, compared.merge.merged, (id) => mintedId(minted, candidate.pipelineId, id));
+      const entryStepId = mergedEntryStep(compared, getPipeline(db, candidate.pipelineId)?.entryStepId ?? null, placed.stepIds);
+      prepared.push({ candidate, compared, taken: compared.merge.comparison.changes.filter((change) => change.outcome === "template"), ...placed, entryStepId, siblings });
+    }
+    if (leaving.size > 0) {
+      batch = batch.filter((candidate) => !leaving.has(candidate.pipelineId));
+      continue;
+    }
 
-  const taken = compared.merge.comparison.changes.filter((change) => change.outcome === "template");
-  const { steps, routes, stepIds } = placeMerge(db, compared, compared.merge.merged);
+    // Judged, each with the others as they will be written.
+    const alongside = new Map(prepared.map((each) => [each.candidate.pipelineId, { steps: each.steps, routes: each.routes }]));
+    for (const each of prepared) {
+      if (each.taken.length === 0) continue;
+      const problems = [...unheldLinks(db, each), ...storedGraphProblems(db, each.candidate.pipelineId, each.steps, each.routes, each.entryStepId, alongside).filter((problem) => problem.severity === "error").map((problem) => problem.message)];
+      if (problems.length === 0) continue;
+      hold(each, [], problems);
+      leaving.add(each.candidate.pipelineId);
+    }
+    if (leaving.size > 0) {
+      batch = batch.filter((candidate) => !leaving.has(candidate.pipelineId));
+      continue;
+    }
 
-  if (taken.length === 0) {
-    db.transaction(() => {
-      recordPipelineOrigin(db, { pipelineId, document: template.document, stepIds });
-      if (open !== undefined) resolveUpdateConflict(db, open.id, "superseded", now);
-    });
-    return { ...summary, outcome: "caught-up" };
-  }
-
-  const entryStepId = getPipeline(db, pipelineId)?.entryStepId ?? null;
-  const problems = storedGraphProblems(db, pipelineId, steps, routes, entryStepId);
-  if (hasBlockingProblem(problems)) {
-    const messages = problems.filter((problem) => problem.severity === "error").map((problem) => problem.message);
-    return held(holdUpdate(db, compared, notes, [], messages, now, isTheRecord));
-  }
-
-  const preserved = listStepsForPipeline(db, pipelineId).filter((step) => step.offBoard);
-  // The graph, its release notes and the origin in one transaction: the
-  // version an update files always says what the update was (EO-728).
-  const written = db.transaction(() => {
-    const replaced = replacePipelineGraph(
-      db,
-      pipelineId,
-      [...steps, ...preserved].map(({ ownerPersonId: _person, ownerGroupId: _group, ...step }) => step),
-      routes.map(({ id: _id, ...route }) => route),
-      { createdBy: templateUpdateAuthor(origin.slug, template.version), releaseNotes: notes === "" ? null : notes },
+    const written = writeInstallation(db, prepared, notesOf, now);
+    if ("refused" in written) {
+      // The validator refuses removing a step that holds items; this is
+      // the repository's guard under it, answering the same thing.
+      hold(written.refused, [], written.messages);
+      batch = batch.filter((candidate) => candidate.pipelineId !== written.refused.candidate.pipelineId);
+      continue;
+    }
+    results.push(
+      ...written.applied.map(({ prepared: each, version }): TemplateUpdateResult =>
+        version === null ? { ...summaryOf(each.candidate), outcome: "caught-up" } : { ...summaryOf(each.candidate), outcome: "applied", version, changes: each.taken },
+      ),
     );
-    if (!replaced.replaced) return replaced;
-    recordPipelineOrigin(db, { pipelineId, document: template.document, stepIds });
-    // What the pipeline's head says for a few days (EO-536), kept here
-    // rather than read from the version just filed, which a save may prune.
-    recordAppliedTemplateUpdate(db, pipelineId, { version: template.version, pipelineVersion: replaced.version, at: now });
-    if (open !== undefined) resolveUpdateConflict(db, open.id, "superseded", now);
-    return replaced;
-  });
-  if (!written.replaced) {
-    // The validator refuses removing a step that holds items; this is
-    // the repository's guard under it, answering the same thing.
-    const messages = written.holding.map((hold) => `"${hold.stepName}" still holds ${hold.count} item(s), and the update removes it.`);
-    return held(holdUpdate(db, compared, notes, [], messages, now, isTheRecord));
+    break;
   }
-  return { ...summary, outcome: "applied", version: written.version, changes: taken };
+  return results;
+}
+
+/** A replacement the repository refused, which rolls the whole batch back. */
+class RefusedReplacement extends Error {
+  constructor(
+    readonly prepared: Prepared,
+    readonly messages: string[],
+  ) {
+    super("a template update's graph was refused");
+  }
+}
+
+/**
+ * Writes a batch of boards' updates in one transaction (EO-762): each
+ * graph, its release notes and its origin — the version an update files
+ * always says what the update was (EO-728) — then the routes on other
+ * boards that waited for a step one of them added. A board with nothing
+ * left to take only has its base moved. Where the repository refuses a
+ * graph, nothing of the batch is written, and that board is answered.
+ */
+function writeInstallation(
+  db: Db,
+  prepared: readonly Prepared[],
+  notesOf: (candidate: Candidate) => { notes: string },
+  now: number,
+): { applied: { prepared: Prepared; version: number | null }[] } | { refused: Prepared; messages: string[] } {
+  try {
+    return db.transaction(() => {
+      const applied = prepared.map((each) => {
+        const { pipelineId, origin, template, open } = each.candidate;
+        const author = templateUpdateAuthor(origin.slug, template.version);
+        let version: number | null = null;
+        if (each.taken.length > 0) {
+          const { notes } = notesOf(each.candidate);
+          const preserved = listStepsForPipeline(db, pipelineId).filter((step) => step.offBoard);
+          const replaced = replacePipelineGraph(
+            db,
+            pipelineId,
+            [...each.steps, ...preserved].map(({ ownerPersonId: _person, ownerGroupId: _group, ...step }) => step),
+            each.routes.map(({ id: _id, ...route }) => route),
+            { entryStepId: each.entryStepId, createdBy: author, releaseNotes: notes === "" ? null : notes },
+          );
+          if (!replaced.replaced) throw new RefusedReplacement(each, replaced.holding.map((hold) => `"${hold.stepName}" still holds ${hold.count} item(s), and the update removes it.`));
+          version = replaced.version;
+          // What the pipeline's head says for a few days (EO-536), kept here
+          // rather than read from the version just filed, which a save may prune.
+          recordAppliedTemplateUpdate(db, pipelineId, { version: template.version, pipelineVersion: replaced.version, at: now });
+        }
+        recordPipelineOrigin(db, { pipelineId, document: template.document, stepIds: each.stepIds });
+        if (open !== undefined) resolveUpdateConflict(db, open.id, "superseded", now);
+        return { prepared: each, version };
+      });
+      // Once every board of the batch has its steps.
+      for (const each of prepared) {
+        const { pipelineId, origin, template } = each.candidate;
+        pointRoutesWaitingOn(db, pipelineId, origin.slug, origin.stepIds, each.stepIds, templateUpdateAuthor(origin.slug, template.version));
+      }
+      return { applied };
+    });
+  } catch (error) {
+    if (error instanceof RefusedReplacement) return { refused: error.prepared, messages: error.messages };
+    throw error;
+  }
+}
+
+/**
+ * The step ids each board of a batch will hold once its update is
+ * written, by template step (EO-762): its map's where it has the step,
+ * the template's where nothing else holds that id, and otherwise the id
+ * minted for it — which `placeMerge` gives the step itself. Its new
+ * version's steps only: a step it drops is not there to route into.
+ */
+function plannedStepIds(db: Db, batch: readonly Candidate[], minted: Map<string, string>): Map<string, Map<string, string>> {
+  const planned = new Map<string, Map<string, string>>();
+  for (const { pipelineId, origin, template } of batch) {
+    const index = sameBoard(origin.base, Object.keys(origin.stepIds), template.document);
+    if (index === null) continue;
+    const ids = new Map<string, string>();
+    for (const step of documentBoards(template.document)[index]!.steps) {
+      const holder = getStep(db, step.id);
+      ids.set(step.id, origin.stepIds[step.id] ?? (holder === undefined || holder.pipelineId === pipelineId ? step.id : mintedId(minted, pipelineId, step.id)));
+    }
+    planned.set(pipelineId, ids);
+  }
+  return planned;
+}
+
+/** The fresh id for a template step on one board, the same one every time it is asked for. */
+function mintedId(minted: Map<string, string>, pipelineId: string, templateStepId: string): string {
+  const key = JSON.stringify([pipelineId, templateStepId]);
+  const id = minted.get(key) ?? (uuidv7() as string);
+  minted.set(key, id);
+  return id;
+}
+
+/** The template's other boards' steps as this project holds them once the batch is written: a board in the batch as planned, any other as it is. */
+function nextSiblingStepIds(db: Db, candidate: Candidate, planned: ReadonlyMap<string, ReadonlyMap<string, string>>): Map<string, string> {
+  const projectId = getPipeline(db, candidate.pipelineId)?.projectId ?? null;
+  const ids = new Map<string, string>();
+  for (const holder of templateBoardHolders(db, candidate.origin.slug, projectId)) {
+    if (holder.pipelineId === candidate.pipelineId) continue;
+    for (const [templateId, id] of planned.get(holder.pipelineId) ?? Object.entries(holder.stepIds)) if (!ids.has(templateId)) ids.set(templateId, id);
+  }
+  return ids;
+}
+
+/**
+ * The routes of the merged board into a step of another of the template's
+ * boards that this project will not hold (EO-762) — the update to that
+ * board adds it and is held, or somebody removed the step or the board —
+ * each said as a problem. Asked apart from the validator, because the
+ * route names the template's id, and another pipeline may hold a step of
+ * that id that has nothing to do with this template.
+ */
+function unheldLinks(db: Db, prepared: Prepared): string[] {
+  const { compared, routes, stepIds, siblings } = prepared;
+  const boards = documentBoards(compared.template.document);
+  const own = new Set(compared.nextBoard.steps.map((step) => step.id));
+  return compared.nextBoard.routes.flatMap((route) => {
+    if (own.has(route.target) || siblings.has(route.target)) return [];
+    const board = boards.find((each) => each.steps.some((step) => step.id === route.target));
+    const from = stepIds[route.fromStepId];
+    if (board === undefined || from === undefined || !routes.some((each) => each.fromStepId === from && each.resultKey === route.resultKey && each.target === route.target)) return [];
+    const target = board.steps.find((step) => step.id === route.target)!;
+    const source = getStep(db, from)?.name ?? compared.nextBoard.steps.find((step) => step.id === route.fromStepId)?.name ?? from;
+    return [
+      `"${route.label}" out of "${source}" goes to "${target.name}" on ${board.pipeline.name}, which ${board.pipeline.name} does not have here: the update that adds it was not applied, or the step was removed. ` +
+        `Resolve ${board.pipeline.name}'s update first, or point the route elsewhere.`,
+    ];
+  });
 }
 
 /**
@@ -283,6 +810,7 @@ function holdUpdate(
   problems: string[],
   now: number,
   isTheRecord: boolean,
+  created: readonly CreatedBoard[] = [],
 ): string {
   const pipelineId = compared.origin.pipelineId;
   const noticed = updateConflictNoticed(db, pipelineId, compared.template.version);
@@ -302,6 +830,8 @@ function holdUpdate(
       conflicts,
       problems,
       stepName: comparisonStepNames(db, compared),
+      // Only the routes that wait on this board's update are this notice's to name.
+      created: created.map((board) => ({ ...board, waiting: board.waiting.filter((route) => compared.nextBoard.steps.some((step) => step.id === route.templateTarget)) })),
     });
     return recordUpdateConflict(
       db,
@@ -428,7 +958,9 @@ export function conflictStepNames(db: Db, conflict: PipelineUpdateConflict): (id
   const names = new Map<string, string>();
   for (const step of listStepsForPipeline(db, conflict.pipelineId)) names.set(step.id, step.name);
   const stepIds = getPipelineOrigin(db, conflict.pipelineId)?.stepIds ?? {};
-  for (const step of getTemplateSnapshot(db, conflict.templateId)?.steps ?? []) {
+  const snapshot = getTemplateSnapshot(db, conflict.templateId);
+  // Every board's steps (EO-762): a held update may route into another of the template's boards.
+  for (const step of snapshot === null ? [] : documentSteps(snapshot)) {
     const id = stepIds[step.id] ?? step.id;
     if (!names.has(id)) names.set(id, step.name);
   }
@@ -446,6 +978,8 @@ interface ConflictNoticeFacts {
   conflicts: readonly KeyChange[];
   problems: readonly string[];
   stepName: (id: string) => string;
+  /** The boards this version adds, made for this pipeline's project on this launch (EO-762). */
+  created?: readonly CreatedBoard[];
 }
 
 function conflictNoticeBody(db: Db, facts: ConflictNoticeFacts): string {
@@ -459,6 +993,22 @@ function conflictNoticeBody(db: Db, facts: ConflictNoticeFacts): string {
     lines.push("", "You and the template both changed the same things:", ...describeConflicts(conflicts, facts.stepName, "person").map((line) => `- ${line}`));
   }
   if (problems.length > 0) lines.push("", "The merged pipeline would not be valid:", ...problems.map((problem) => `- ${problem}`));
+  for (const board of facts.created ?? []) {
+    const routes = board.waiting.filter((route) => !route.decision);
+    const decisions = board.waiting.filter((route) => route.decision);
+    lines.push(
+      "",
+      `EO created the **${board.name}** board, which this version adds, so its steps are there to route into while you resolve this.` +
+        (routes.length === 0
+          ? ""
+          : ` ${routes.map((route) => `Its '${route.resultKey}' route`).join(", ")} ${routes.length === 1 ? "waits" : "wait"} for a person until this update is resolved: ` +
+            `${routes.length === 1 ? "it goes" : "they go"} to a step this update adds.`) +
+        (decisions.length === 0
+          ? ""
+          : ` ${decisions.map((route) => `'${route.resultKey}'`).join(", ")} ${decisions.length === 1 ? "is" : "are"} not offered on it until this update is resolved: ` +
+            `${decisions.length === 1 ? "that decision goes" : "those decisions go"} to a step this update adds.`),
+    );
+  }
   if (notes !== "") lines.push("", "Release notes:", ...notes.split("\n").map((line) => `- ${line}`));
   lines.push("", `**${FIX_WITH_ASSISTANT}** opens a chat in which the assistant compares the versions and proposes drafts. Nothing changes until you publish one or keep your own.`);
   return lines.join("\n");
@@ -472,16 +1022,22 @@ function conflictNoticeBody(db: Db, facts: ConflictNoticeFacts): string {
  * has it — EO's own Delivery is the template by id, and its new step
  * should be `pull_request_watch` like everybody else's. Where another
  * pipeline already has that id (step ids are global), it gets a fresh
- * one, and the routes are re-pointed with it.
+ * one (`mint`, which a batch of boards shares, so the routes into it from
+ * the others name the same one), and the routes are re-pointed with it.
  */
-function placeMerge(db: Db, compared: PipelineComparison, merged: { steps: PipelineStep[]; routes: StepRoute[] }): { steps: PipelineStep[]; routes: StepRoute[]; stepIds: Record<string, string> } {
+function placeMerge(
+  db: Db,
+  compared: PipelineComparison,
+  merged: { steps: PipelineStep[]; routes: StepRoute[] },
+  mint: (templateStepId: string) => string = () => uuidv7(),
+): { steps: PipelineStep[]; routes: StepRoute[]; stepIds: Record<string, string> } {
   const pipelineId = compared.origin.pipelineId;
   const before = new Set(compared.current.steps.map((step) => step.id));
   const renamed = new Map<string, string>();
   for (const step of merged.steps) {
     if (before.has(step.id)) continue;
     const holder = getStep(db, step.id);
-    if (holder !== undefined && holder.pipelineId !== pipelineId) renamed.set(step.id, uuidv7());
+    if (holder !== undefined && holder.pipelineId !== pipelineId) renamed.set(step.id, mint(step.id));
   }
   const placed = (id: string): string => renamed.get(id) ?? id;
   const added = merged.steps.some((step) => !before.has(step.id)) || merged.steps.length !== compared.current.steps.length;
@@ -501,7 +1057,7 @@ function placeMerge(db: Db, compared: PipelineComparison, merged: { steps: Pipel
   const local = (id: string): string => placed(compared.origin.stepIds[id] ?? id);
   const held = new Set(steps.map((step) => step.id));
   const stepIds: Record<string, string> = {};
-  for (const step of compared.template.document.steps) {
+  for (const step of compared.nextBoard.steps) {
     const id = local(step.id);
     if (held.has(id)) stepIds[step.id] = id;
   }
@@ -541,6 +1097,23 @@ function graphOfDocument(db: Db, pipelineId: string, document: PipelineExport, l
     target: local(route.target),
   }));
   return { steps, routes };
+}
+
+/**
+ * Where work enters the merged pipeline: the new version's entry step,
+ * as the merge placed it, where the person left the base's where it was
+ * and the pipeline holds the new one; otherwise the pipeline's own.
+ *
+ * Needed once a version may replace every step of a board (EO-762): the
+ * board's old entry step goes with the rest, and a merge that kept
+ * pointing at it would not validate.
+ */
+function mergedEntryStep(compared: PipelineComparison, current: string | null, stepIds: Readonly<Record<string, string>>): string | null {
+  const based = compared.baseBoard.pipeline.entryStepId;
+  const base = based === null ? null : (compared.origin.stepIds[based] ?? null);
+  const wanted = compared.nextBoard.pipeline.entryStepId;
+  const next = wanted === null ? null : (stepIds[wanted] ?? null);
+  return current === base && next !== null ? next : current;
 }
 
 /** The release notes of every version after the base, up to and including the new one. */

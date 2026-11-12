@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { and, eq, isNull } from "drizzle-orm";
-import { PipelineExportSchema, uuidv7, type PipelineExport } from "@eo/core";
+import { boardHolding, documentBoards, PipelineExportSchema, uuidv7, type PipelineExport } from "@eo/core";
 import type { Db } from "../client.js";
 import { pipelines, templateVersions } from "../schema.js";
 
@@ -138,6 +138,47 @@ export function getPipelineOrigin(db: Db, pipelineId: string): PipelineOrigin | 
   if (!base.success) return null;
 
   return { pipelineId, slug: row.slug, version: row.version, baseId: row.baseId, base: base.data, stepIds: stepIdsOf(row.stepIds), baseMovedAt: row.baseMovedAt };
+}
+
+/**
+ * Which of its template's boards a pipeline is, by the board's key — null
+ * for the first board — or undefined where its origin cannot say (EO-762).
+ *
+ * Read of the base and the step map recorded with it, always together,
+ * and never of a newer version: a board keeps its key from one version
+ * to the next whatever its steps become (`sameBoard`).
+ */
+export function originBoardKey(origin: Pick<PipelineOrigin, "base" | "stepIds">): string | null | undefined {
+  const index = boardHolding(origin.base, Object.keys(origin.stepIds));
+  return index === null ? undefined : documentBoards(origin.base)[index]?.key;
+}
+
+/** A pipeline made from a template, as far as which of its boards it is (EO-762). */
+export interface TemplateBoardHolder {
+  pipelineId: string;
+  projectId: string | null;
+  /** Its origin's step map: the template's step ids to its own. */
+  stepIds: Record<string, string>;
+}
+
+/**
+ * Every pipeline made from this template in this project — the same
+ * project, or none for none — archived ones included and trials never
+ * (EO-762).
+ *
+ * The boards of one installation of a template: a template of several
+ * boards installs them together into one project, and a route on one
+ * names the others' steps as that project holds them. Archived boards
+ * count, so a board somebody archived is not made again. Read without
+ * the stored snapshots, which are large and nobody here needs.
+ */
+export function templateBoardHolders(db: Db, slug: string, projectId: string | null): TemplateBoardHolder[] {
+  return db
+    .select({ pipelineId: pipelines.id, projectId: pipelines.projectId, stepIds: pipelines.templateStepIds })
+    .from(pipelines)
+    .where(and(eq(pipelines.templateSlug, slug), isNull(pipelines.trialAt), projectId === null ? isNull(pipelines.projectId) : eq(pipelines.projectId, projectId)))
+    .all()
+    .map((row) => ({ pipelineId: row.pipelineId, projectId: row.projectId, stepIds: stepIdsOf(row.stepIds) }));
 }
 
 /** A stored template snapshot by its `template_versions.id`, or null where there is none or it no longer parses. */

@@ -25,7 +25,7 @@ const CLIS = {
   gitlab: { forge: "GitLab", name: "GitLab CLI", bin: "glab", host: "gitlab.com", install: "https://gitlab.com/gitlab-org/cli#installation" },
 } as const;
 
-export async function forgeNeeds(db: Db, projectId: Uuid, document: Pick<PipelineExport, "steps">, detect: DetectForge): Promise<GalleryNeed[]> {
+export async function forgeNeeds(db: Db, projectId: Uuid, document: Pick<PipelineExport, "steps"> & Partial<Pick<PipelineExport, "boards">>, detect: DetectForge): Promise<GalleryNeed[]> {
   if (!opensPullRequests(document)) return [];
   const repositories = projectWorkspaceList(db, projectId).flatMap((workspace) => {
     const git = workspace.kind === GIT_WORKTREE_KIND ? asGitWorkspace(workspace) : null;
