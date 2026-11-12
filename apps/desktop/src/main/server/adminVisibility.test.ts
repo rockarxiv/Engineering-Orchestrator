@@ -133,7 +133,7 @@ async function item(base: string, projectId: string, title: string, token: strin
   const submitted = await ask(
     base,
     "work:submitItem",
-    { projectId, type: "story", title, body: "Something to do.", acceptanceCriteria: ["It is done."] },
+    { projectId, pipeline: "Delivery", type: "story", title, body: "Something to do.", acceptanceCriteria: ["It is done."] },
     token,
   );
   if (!submitted.created || submitted.key === null) throw new Error(submitted.problem ?? "not submitted");
