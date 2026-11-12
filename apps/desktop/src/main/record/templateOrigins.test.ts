@@ -25,7 +25,8 @@ import { issueDevice } from "../db/repos/devicesRepo.js";
 import { createPerson } from "../db/repos/peopleRepo.js";
 import { createProject, getProject } from "../db/repos/projectsRepo.js";
 import { createTestItem, openMigratedTestDb } from "../db/testHelpers.js";
-import { loadTemplateHistory, type TemplateHistory } from "../gallery/history.js";
+import type { TemplateHistory } from "../gallery/history.js";
+import { templateHistoryUpTo } from "../gallery/historyTestHelpers.js";
 import { describeTemplateStatus } from "../gallery/templateStatus.js";
 import { applyTemplateUpdates } from "../gallery/templateUpdates.js";
 import { MANAGED_PERSON_ID_KEY } from "../identity/viewer.js";
@@ -62,7 +63,7 @@ let files: string;
 beforeEach(() => {
   recordDb = openMigratedTestDb();
   deskDb = openMigratedTestDb();
-  history = loadTemplateHistory(GALLERY_DIRECTORY);
+  history = templateHistoryUpTo(GALLERY_DIRECTORY, "software-feature-to-merge", "1.3");
   files = mkdtempSync(join(tmpdir(), "eo-template-origins-"));
   const theRecord = createLocalRecord(recordDb.db);
   serving = {

@@ -213,10 +213,11 @@ describe("the bundled set", () => {
     expect(weekly?.roleSlots.map((slot) => slot.name)).toEqual(["Approve"]);
     expect(weekly?.blanks.map((blank) => blank.kind)).toEqual(["folder", "schedule", "keyPrefix"]);
 
-    // And the software template, whose one human step is terminal, asks
-    // for nobody at all.
+    // And the software template, whose one human step on Delivery is
+    // terminal, asks only who approves a plan for other accounts' pull
+    // request comments, on its second board (EO-763).
     const software = answer.templates.find((template) => template.slug === "software-feature-to-merge");
-    expect(software?.roleSlots).toEqual([]);
+    expect(software?.roleSlots.map((slot) => slot.name)).toEqual(["Approve plan"]);
   });
 
   /** The card's strip (EO-690) is the template's own steps, in pipeline order, owner and end included. */
@@ -230,6 +231,7 @@ describe("the bundled set", () => {
       ["To Do", "agent", false],
       ["Review", "agent", false],
       ["Merge Request", "builtin", false],
+      ["Reply on pull request", "builtin", false],
       ["Watching pull request", "builtin", false],
       ["Done", "user", true],
     ]);

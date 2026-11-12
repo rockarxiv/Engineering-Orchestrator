@@ -31,6 +31,9 @@ import { parseScheduleAnswer } from "./commands.js";
 import { forgetListed } from "./session.js";
 import type { ServerClient } from "../managed/serverClient.js";
 import { bundledTemplates } from "./templates.js";
+import { loadTemplateHistory } from "./history.js";
+import { backfillPipelineOrigins } from "./origins.js";
+import { applyTemplateUpdates } from "./templateUpdates.js";
 
 /**
  * "Use this" (EO-316, `ARCHITECTURE.md`, "The gallery" into "The needs check").
@@ -800,6 +803,10 @@ describe("where the pipeline came from (EO-531)", () => {
 
   it("records it on the seeded Delivery when first run adopts it rather than importing a twin", async () => {
     const software = bundledTemplates(GALLERY_DIRECTORY).find((candidate) => candidate.slug === "software-feature-to-merge")!;
+    // The first launch has brought the seeded Delivery up to the template, as startup does before anybody reaches the gallery.
+    const history = loadTemplateHistory(GALLERY_DIRECTORY);
+    backfillPipelineOrigins(handle.db, history);
+    applyTemplateUpdates(handle.db, history, { isTheRecord: false });
     const answer = await useGalleryCommand(handle.db, context(), { slug: "software-feature-to-merge", answers: { keyPrefix: "ACME" }, roleSlots: {} });
     expect(answer.problem).toBeNull();
     expect(answer.pipelineId).toBe("default");

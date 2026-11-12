@@ -28,7 +28,8 @@ import { createItemLock } from "../supervisor/itemLock.js";
 import { exportPipeline, importPipeline, parseExport } from "../modules/pipelineTransfer.js";
 import { useTemplate } from "./commands.js";
 import { galleryBlanks, galleryRoleSlots } from "./form.js";
-import { loadTemplateHistory, type TemplateHistory, type TemplateVersion } from "./history.js";
+import type { TemplateHistory, TemplateVersion } from "./history.js";
+import { templateHistoryUpTo } from "./historyTestHelpers.js";
 import { backfillPipelineOrigins } from "./origins.js";
 import { tokenFor, type GalleryTemplate } from "./templates.js";
 import { applyTemplateUpdates } from "./templateUpdates.js";
@@ -54,7 +55,10 @@ let history: TemplateHistory;
 
 beforeEach(() => {
   handle = openMigratedTestDb();
-  history = loadTemplateHistory(GALLERY_DIRECTORY);
+  // Up to 1.3, the last version with one board: the versions below are
+  // this file's own, made from it, and the real 1.4 (EO-763) would be
+  // compared first.
+  history = templateHistoryUpTo(GALLERY_DIRECTORY, SOFTWARE, "1.3");
 });
 
 afterEach(() => {

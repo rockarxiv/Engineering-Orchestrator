@@ -22,7 +22,7 @@ import {
   openUpdateConflict,
 } from "../db/repos/index.js";
 import { messagesFrom, openMigratedTestDb } from "../db/testHelpers.js";
-import { loadTemplateHistory } from "../gallery/history.js";
+import { templateHistoryUpTo } from "../gallery/historyTestHelpers.js";
 import { backfillPipelineOrigins } from "../gallery/origins.js";
 import { applyTemplateUpdates } from "../gallery/templateUpdates.js";
 import { openUpdateConflictAssist } from "../ipc/assistCommands.js";
@@ -134,7 +134,7 @@ async function heldOnTheRecord(): Promise<{ conflictId: string; projectId: Uuid 
   db.run(sql`DELETE FROM step_routes WHERE from_step_id = 'pull_request_watch'`);
   db.run(sql`UPDATE pipeline_steps SET retired_version = 1 WHERE id = 'pull_request_watch'`);
   db.run(sql`UPDATE step_routes SET target = 'merge_pr' WHERE from_step_id = 'merge_request' AND result_key = 'opened'`);
-  const history = loadTemplateHistory(GALLERY_DIRECTORY);
+  const history = templateHistoryUpTo(GALLERY_DIRECTORY, "software-feature-to-merge", "1.3");
   backfillPipelineOrigins(db, history);
   const project = createProject(db, { name: "Support", keyPrefix: "SUP", managed: true });
   db.run(sql`UPDATE pipelines SET project_id = ${project.id} WHERE id = 'default'`);

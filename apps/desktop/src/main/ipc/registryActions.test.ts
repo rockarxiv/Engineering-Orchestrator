@@ -1,10 +1,15 @@
 import { rmSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { fromRegistryView, RegistryViewSchema, type PipelineStepView, type RegistryView, type StepRouteView } from "@eo/core";
 import { validatePipeline, type ValidatePipelineInput } from "@eo/engine";
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { DbHandle } from "../db/client.js";
 import { saveActionDefinition } from "../db/repos/actionDefinitionsRepo.js";
 import { openMigratedTestDb } from "../db/testHelpers.js";
+import { loadTemplateHistory } from "../gallery/history.js";
+import { backfillPipelineOrigins } from "../gallery/origins.js";
+import { applyTemplateUpdates } from "../gallery/templateUpdates.js";
 import { registryForProject } from "../registry.js";
 import { fakePlatform } from "../testing/platform.js";
 import { validatePipelineCommand } from "./configCommands.js";
@@ -49,6 +54,8 @@ async function registryOverIpc(): Promise<RegistryView> {
   if (!answer.ok) throw new Error("registry:get refused");
   return RegistryViewSchema.parse(JSON.parse(JSON.stringify(answer.data)));
 }
+
+const GALLERY_DIRECTORY = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "resources", "gallery");
 
 function shipped(): { steps: PipelineStepView[]; routes: StepRouteView[] } {
   const { steps, routes } = listPipelineStepViews(handle.db, { pipelineId: "default" });
@@ -129,14 +136,23 @@ describe("a role's actions over registry:get (EO-423)", () => {
 });
 
 describe("the shipped pipeline, held to its actions' declared results (EO-423)", () => {
-  it("validates with nothing to say but the two comment results its watch does not route yet (EO-759)", () => {
+  it("validates with nothing to say but the two comment results the seeded graph's watch does not route (EO-759)", () => {
     const { steps, routes } = shipped();
-    // Template 1.3 predates `author_commented` and `others_commented`; a
+    // The seed predates `author_commented` and `others_commented`; a
     // builtin's unrouted result is a warning, never an error.
     expect(validatePipelineCommand(handle.db, { pipelineId: "default", steps, routes, entryStepId: "worktree" }).problems).toEqual([
       expect.objectContaining({ severity: "warning", stateId: "pull_request_watch", resultKey: "author_commented" }),
       expect.objectContaining({ severity: "warning", stateId: "pull_request_watch", resultKey: "others_commented" }),
     ]);
+  });
+
+  it("validates with no problems at all once the first launch has brought it up to the template, which routes both (EO-763)", () => {
+    const history = loadTemplateHistory(GALLERY_DIRECTORY);
+    backfillPipelineOrigins(handle.db, history);
+    applyTemplateUpdates(handle.db, history, { isTheRecord: false });
+    const { steps, routes } = shipped();
+
+    expect(validatePipelineCommand(handle.db, { pipelineId: "default", steps, routes, entryStepId: "worktree" }).problems).toEqual([]);
   });
 
   it("is refused once Review loses the route for one of its verdicts", () => {

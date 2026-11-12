@@ -11,6 +11,8 @@ import {
   currentVersion,
   getItem,
   getPipelineOrigin,
+  getStep,
+  listPipelines,
   listPipelineVersions,
   listRoutesForPipeline,
   listStepsForPipeline,
@@ -23,10 +25,12 @@ import {
   versionAuthorName,
 } from "../db/repos/index.js";
 import { createProject } from "../db/repos/projectsRepo.js";
-import { createTestItem, openMigratedTestDb } from "../db/testHelpers.js";
+import { createTestItem, messagesFrom, openMigratedTestDb } from "../db/testHelpers.js";
+import { storedGraphProblems } from "../ipc/configCommands.js";
 import { pipelineVersionsCommand } from "../ipc/pipelineCommands.js";
 import { ACTIVE_PROJECT_KEY } from "../ipc/repositoryCommands.js";
 import { loadTemplateHistory, type TemplateHistory, type TemplateVersion } from "./history.js";
+import { templateHistoryUpTo } from "./historyTestHelpers.js";
 import { backfillPipelineOrigins } from "./origins.js";
 import { applyTemplateUpdates, compareWithTemplate } from "./templateUpdates.js";
 
@@ -68,6 +72,11 @@ function mergePipeline(): void {
   const merge = createPipeline(handle.db, { projectId: null, name: "Merge" });
   createStep(handle.db, { id: "merge_pr", pipelineId: merge.id as Uuid, position: 0, name: "Merge PR", type: "user" });
   createStep(handle.db, { pipelineId: merge.id as Uuid, position: 1, name: "Merged", type: "user", isTerminal: true });
+}
+
+/** The history as it stood when `version` was the newest this template shipped. */
+function upTo(version: string): TemplateHistory {
+  return templateHistoryUpTo(GALLERY_DIRECTORY, SOFTWARE, version);
 }
 
 function shipped(version: string): TemplateVersion {
@@ -117,7 +126,7 @@ describe("EO's own Delivery against the current template", () => {
 
     const results = applyTemplateUpdates(handle.db, history, { isTheRecord: false });
 
-    expect(results).toEqual([expect.objectContaining({ pipelineId: "default", outcome: "conflict", from: "1.0", to: "1.3" })]);
+    expect(results).toEqual([expect.objectContaining({ pipelineId: "default", outcome: "conflict", from: "1.0", to: "1.4" })]);
     expect(listStepsForPipeline(handle.db, "default")).toEqual(stepsBefore);
     expect(listRoutesForPipeline(handle.db, "default")).toEqual(routesBefore);
     expect(listPipelineVersions(handle.db, "default")).toHaveLength(versionsBefore);
@@ -125,14 +134,14 @@ describe("EO's own Delivery against the current template", () => {
     expect(getPipelineOrigin(handle.db, "default")?.version).toBe("1.0");
 
     const open = openUpdateConflict(handle.db, "default");
-    expect(open).toMatchObject({ templateSlug: SOFTWARE, fromVersion: "1.0", toVersion: "1.3", problems: [] });
+    expect(open).toMatchObject({ templateSlug: SOFTWARE, fromVersion: "1.0", toVersion: "1.4", problems: [] });
     expect(open?.notes).toContain("CI failures, merge conflicts and review comments send the work back to the implementer");
     expect(open?.conflicts).toHaveLength(1);
     expect(open?.conflicts[0]).toMatchObject({
       key: { kind: "route", fromStepId: "merge_request", resultKey: "opened" },
       base: { target: "ready_to_merge" },
       current: { target: "merge_pr" },
-      template: { target: "pull_request_watch" },
+      template: { target: "pull_request_reply" },
     });
   });
 
@@ -152,14 +161,14 @@ describe("EO's own Delivery against the current template", () => {
     applyTemplateUpdates(handle.db, history, { isTheRecord: false });
     const first = openUpdateConflict(handle.db, "default")!;
 
-    const v13 = shipped("1.3");
-    const v14: TemplateVersion = { ...v13, version: "1.4", notes: "A later version.", document: { ...v13.document, template: { ...v13.document.template, version: "1.4" } } };
-    applyTemplateUpdates(handle.db, new Map([[SOFTWARE, [...history.get(SOFTWARE)!, v14]]]), { isTheRecord: false });
+    const v14 = shipped("1.4");
+    const v15: TemplateVersion = { ...v14, version: "1.5", notes: "A later version.", document: { ...v14.document, template: { ...v14.document.template, version: "1.5" } } };
+    applyTemplateUpdates(handle.db, new Map([[SOFTWARE, [...history.get(SOFTWARE)!, v15]]]), { isTheRecord: false });
 
     const all = listUpdateConflicts(handle.db, "default");
     expect(all.map((conflict) => [conflict.toVersion, conflict.resolution])).toEqual([
-      ["1.3", "superseded"],
-      ["1.4", null],
+      ["1.4", "superseded"],
+      ["1.5", null],
     ]);
     expect(openUpdateConflict(handle.db, "default")?.id).not.toBe(first.id);
     expect(openUpdateConflict(handle.db, "default")?.notes).toContain("A later version.");
@@ -186,23 +195,23 @@ describe("an update with no conflict", () => {
 
     const results = applyTemplateUpdates(handle.db, history, { isTheRecord: false });
 
-    expect(results).toEqual([expect.objectContaining({ pipelineId: "default", outcome: "applied", from: "1.0", to: "1.3", version: before.number + 1 })]);
+    expect(results).toEqual([expect.objectContaining({ pipelineId: "default", outcome: "applied", from: "1.0", to: "1.4", version: before.number + 1 })]);
     const after = currentVersion(handle.db, "default")!;
     expect(after.number).toBe(before.number + 1);
-    expect(after.createdBy).toBe(`template:${SOFTWARE}@1.3`);
-    expect(versionAuthorName(after.createdBy, () => null)).toBe(`the ${SOFTWARE} 1.3 template update`);
+    expect(after.createdBy).toBe(`template:${SOFTWARE}@1.4`);
+    expect(versionAuthorName(after.createdBy, () => null)).toBe(`the ${SOFTWARE} 1.4 template update`);
 
     const steps = listStepsForPipeline(handle.db, "default");
-    expect(steps.map((step) => step.id)).toEqual(["worktree", "todo", "review", "merge_request", "pull_request_watch", "ready_to_merge"]);
+    expect(steps.map((step) => step.id)).toEqual(["worktree", "todo", "review", "merge_request", "pull_request_reply", "pull_request_watch", "ready_to_merge"]);
     expect(steps.find((step) => step.id === "pull_request_watch")).toMatchObject({ entryAction: "watch_pull_request", watch: { everyMinutes: 5, giveUpAfterHours: 168, neverGivesUp: true } });
     const routes = listRoutesForPipeline(handle.db, "default");
     // The person's own change is kept: still no Index.
     expect(routes.find((route) => route.fromStepId === "worktree" && route.resultKey === "ready")?.target).toBe("todo");
-    expect(routes.find((route) => route.fromStepId === "merge_request" && route.resultKey === "opened")?.target).toBe("pull_request_watch");
-    expect(routes.filter((route) => route.fromStepId === "pull_request_watch")).toHaveLength(7);
+    expect(routes.find((route) => route.fromStepId === "merge_request" && route.resultKey === "opened")?.target).toBe("pull_request_reply");
+    expect(routes.filter((route) => route.fromStepId === "pull_request_watch")).toHaveLength(9);
 
     const origin = getPipelineOrigin(handle.db, "default");
-    expect(origin?.version).toBe("1.3");
+    expect(origin?.version).toBe("1.4");
     expect(origin?.stepIds["pull_request_watch"]).toBe("pull_request_watch");
     expect(origin?.stepIds).not.toHaveProperty("repository_index");
     expect(openUpdateConflict(handle.db, "default")).toBeUndefined();
@@ -234,7 +243,8 @@ describe("an update with no conflict", () => {
     // No comment written anywhere.
     expect(handle.db.all(sql`select id from comments`)).toEqual([]);
 
-    const notes = [shipped("1.1"), shipped("1.2"), shipped("1.3")].map((version) => `${version.version}: ${version.notes}`).join("\n");
+    // And the board 1.4 adds, which the update made beside Delivery (EO-763).
+    const notes = [...[shipped("1.1"), shipped("1.2"), shipped("1.3"), shipped("1.4")].map((version) => `${version.version}: ${version.notes}`), "Created the Pull request comments board this version adds."].join("\n");
     expect(currentVersion(handle.db, "default")!.releaseNotes).toBe(notes);
     const listed = pipelineVersionsCommand(handle.db, { pipelineId: "default" }).versions;
     expect(listed.find((version) => version.number === before.number + 1)?.releaseNotes).toBe(notes);
@@ -245,10 +255,10 @@ describe("an update with no conflict", () => {
 
 describe("a pipeline whose step ids were re-minted on import", () => {
   it("gives a step the template adds a fresh id where another pipeline holds the template's, and maps it", () => {
-    // Delivery is on 1.3 and holds `pull_request_watch` itself.
+    // Delivery is on 1.4 and holds `pull_request_watch` itself.
     backfillPipelineOrigins(handle.db, history);
     applyTemplateUpdates(handle.db, history, { isTheRecord: false });
-    expect(getPipelineOrigin(handle.db, "default")?.version).toBe("1.3");
+    expect(getPipelineOrigin(handle.db, "default")?.version).toBe("1.4");
     const v10 = shipped("1.0");
     const copy = createPipeline(handle.db, { projectId: null, name: "Imported" });
     const ids = new Map(v10.document.steps.map((step) => [step.id, uuidv7() as string]));
@@ -269,7 +279,10 @@ describe("a pipeline whose step ids were re-minted on import", () => {
     expect(watch).toBeDefined();
     expect(watch!.id).not.toBe("pull_request_watch");
     const routes = listRoutesForPipeline(handle.db, copy.id);
-    expect(routes.find((route) => route.fromStepId === local("merge_request") && route.resultKey === "opened")?.target).toBe(watch!.id);
+    const reply = listStepsForPipeline(handle.db, copy.id).find((step) => step.entryAction === "reply_on_pull_request");
+    expect(reply!.id).not.toBe("pull_request_reply");
+    expect(routes.find((route) => route.fromStepId === local("merge_request") && route.resultKey === "opened")?.target).toBe(reply!.id);
+    expect(routes.find((route) => route.fromStepId === reply!.id && route.resultKey === "replied")?.target).toBe(watch!.id);
     expect(routes.find((route) => route.fromStepId === watch!.id && route.resultKey === "merged")?.target).toBe(local("ready_to_merge"));
     expect(getPipelineOrigin(handle.db, copy.id)?.stepIds["pull_request_watch"]).toBe(watch!.id);
     // Delivery's own step is where it was.
@@ -279,17 +292,17 @@ describe("a pipeline whose step ids were re-minted on import", () => {
 
 describe("a merged graph that does not validate", () => {
   it("is not applied, and is recorded as a conflict with the reasons", () => {
-    // A 1.4 that removes Index, which an item is standing on. Nothing
+    // A 1.5 that removes Index, which an item is standing on. Nothing
     // conflicts — the person never touched Index — but the graph would
     // strand the item, and `validatePipeline` refuses it.
-    const current = shipped("1.3");
+    const current = shipped("1.4");
     const withoutIndex: TemplateVersion = {
       ...current,
-      version: "1.4",
+      version: "1.5",
       notes: "Index is no longer a step of its own.",
       document: {
         ...current.document,
-        template: { ...current.document.template, version: "1.4" },
+        template: { ...current.document.template, version: "1.5" },
         steps: current.document.steps.filter((step) => step.id !== "repository_index"),
         routes: current.document.routes
           .filter((route) => route.fromStepId !== "repository_index")
@@ -299,7 +312,7 @@ describe("a merged graph that does not validate", () => {
     const withNext: TemplateHistory = new Map([[SOFTWARE, [...history.get(SOFTWARE)!, withoutIndex]]]);
     backfillPipelineOrigins(handle.db, history);
     applyTemplateUpdates(handle.db, history, { isTheRecord: false });
-    expect(getPipelineOrigin(handle.db, "default")?.version).toBe("1.3");
+    expect(getPipelineOrigin(handle.db, "default")?.version).toBe("1.4");
     const project = createProject(handle.db, { name: "Shop", keyPrefix: "SHOP" });
     createTestItem(handle.db, { type: "story", title: "Indexing", stepId: "repository_index", projectId: project.id as Uuid });
     const versionsBefore = listPipelineVersions(handle.db, "default").length;
@@ -307,12 +320,13 @@ describe("a merged graph that does not validate", () => {
     expect(compareWithTemplate(handle.db, "default", withoutIndex)?.merge.comparison.conflicts).toEqual([]);
     const results = applyTemplateUpdates(handle.db, withNext, { isTheRecord: false });
 
-    expect(results).toEqual([expect.objectContaining({ outcome: "conflict", to: "1.4" })]);
+    // The Pull request comments board, which 1.5 leaves as it was, only has its base moved.
+    expect(results).toEqual([expect.objectContaining({ pipelineId: "default", outcome: "conflict", to: "1.5" }), expect.objectContaining({ outcome: "caught-up", to: "1.5" })]);
     expect(listStepsForPipeline(handle.db, "default").map((step) => step.id)).toContain("repository_index");
     expect(listPipelineVersions(handle.db, "default")).toHaveLength(versionsBefore);
-    expect(getPipelineOrigin(handle.db, "default")?.version).toBe("1.3");
+    expect(getPipelineOrigin(handle.db, "default")?.version).toBe("1.4");
     const open = openUpdateConflict(handle.db, "default");
-    expect(open).toMatchObject({ fromVersion: "1.3", toVersion: "1.4", conflicts: [] });
+    expect(open).toMatchObject({ fromVersion: "1.4", toVersion: "1.5", conflicts: [] });
     expect(open?.problems.length).toBeGreaterThan(0);
   });
 });
@@ -354,8 +368,8 @@ describe("a project in the middle of a move", () => {
     const applied = applyTemplateUpdates(handle.db, history, { isTheRecord: false });
 
     expect(applied).toEqual([expect.objectContaining({ pipelineId: "default", outcome: "applied" })]);
-    expect(getPipelineOrigin(handle.db, "default")?.version).toBe("1.3");
-    expect(currentVersion(handle.db, "default")!.releaseNotes).toContain(shipped("1.3").notes);
+    expect(getPipelineOrigin(handle.db, "default")?.version).toBe("1.4");
+    expect(currentVersion(handle.db, "default")!.releaseNotes).toContain(shipped("1.4").notes);
   });
 });
 
@@ -388,7 +402,7 @@ describe("organisation mode", () => {
     publishSection(handle.db, { section: "pipelines", subjectId: "default", publishedAt: Date.now() });
 
     expect(applyTemplateUpdates(handle.db, history, { isTheRecord: true })).toEqual([expect.objectContaining({ pipelineId: "default", outcome: "applied" })]);
-    expect(getPipelineOrigin(handle.db, "default")?.version).toBe("1.3");
+    expect(getPipelineOrigin(handle.db, "default")?.version).toBe("1.4");
   });
 });
 
@@ -396,7 +410,7 @@ describe("pipelines with nothing to compare", () => {
   it("leaves a pipeline already on the newest version alone", () => {
     backfillPipelineOrigins(handle.db, history);
     applyTemplateUpdates(handle.db, history, { isTheRecord: false });
-    expect(getPipelineOrigin(handle.db, "default")?.version).toBe("1.3");
+    expect(getPipelineOrigin(handle.db, "default")?.version).toBe("1.4");
     expect(applyTemplateUpdates(handle.db, history, { isTheRecord: false })).toEqual([]);
   });
 
@@ -412,8 +426,15 @@ describe("pipelines with nothing to compare", () => {
  * from 1.1 whose watch is still the week it shipped with takes that as a
  * clean update — the setting is the template's change alone — and one
  * whose person set their own deadline keeps it, held as a conflict.
+ *
+ * Against the history as it stood at 1.3, since 1.4 (EO-763) changes the
+ * graph too, and is compared below.
  */
 describe("1.1 to 1.3: Watching pull request never gives up", () => {
+  beforeEach(() => {
+    history = upTo("1.3");
+  });
+
   function deliveryOn11(): { projectId: Uuid } {
     const project = createProject(handle.db, { name: "Shop", keyPrefix: "SHOP" });
     handle.db.run(sql`UPDATE pipelines SET project_id = ${project.id} WHERE id = 'default'`);
@@ -469,5 +490,101 @@ describe("1.1 to 1.3: Watching pull request never gives up", () => {
     expect(openUpdateConflict(handle.db, "default")?.conflicts).toEqual([
       expect.objectContaining({ key: { kind: "setting", stepId: "pull_request_watch", field: "watch" }, current: { everyMinutes: 5, giveUpAfterHours: 24 } }),
     ]);
+  });
+});
+
+/**
+ * 1.4 (EO-763): Delivery replies on the pull request, and other accounts'
+ * comments go to a board of their own, Pull request comments, which every
+ * installation on the template gets — whether its Delivery takes the
+ * update or holds it.
+ */
+describe("1.3 to 1.4: the Pull request comments board", () => {
+  const board = () => listPipelines(handle.db).find((pipeline) => pipeline.name === "Pull request comments");
+  const routeOf = (pipelineId: string, fromStepId: string, resultKey: string) =>
+    listRoutesForPipeline(handle.db, pipelineId).find((route) => route.fromStepId === fromStepId && route.resultKey === resultKey)?.target;
+  const errorsOf = (pipelineId: string) =>
+    storedGraphProblems(
+      handle.db,
+      pipelineId,
+      listStepsForPipeline(handle.db, pipelineId),
+      listRoutesForPipeline(handle.db, pipelineId),
+      listPipelines(handle.db).find((pipeline) => pipeline.id === pipelineId)?.entryStepId ?? null,
+    ).filter((problem) => problem.severity === "error");
+
+  /** Delivery made from 1.3 and on it, as an installation that last launched before 1.4 shipped. */
+  function deliveryOn13(): void {
+    backfillPipelineOrigins(handle.db, upTo("1.3"));
+    applyTemplateUpdates(handle.db, upTo("1.3"), { isTheRecord: false });
+    expect(getPipelineOrigin(handle.db, "default")?.version).toBe("1.3");
+    expect(board()).toBeUndefined();
+  }
+
+  it("gives a new installation both boards on its first launch, routed into each other", () => {
+    backfillPipelineOrigins(handle.db, history);
+
+    const results = applyTemplateUpdates(handle.db, history, { isTheRecord: false });
+
+    expect(results).toEqual([expect.objectContaining({ pipelineId: "default", outcome: "applied", from: "1.1", to: "1.4" })]);
+    const comments = board()!;
+    expect(getPipelineOrigin(handle.db, comments.id)?.version).toBe("1.4");
+    expect(listStepsForPipeline(handle.db, comments.id).map((step) => step.id)).toEqual(["pr_comments_plan", "pr_comments_review", "pr_comments_approve"]);
+    expect(routeOf("default", "pull_request_watch", "author_commented")).toBe("todo");
+    expect(routeOf("default", "pull_request_watch", "others_commented")).toBe("pr_comments_plan");
+    expect(routeOf("default", "pull_request_watch", "changes_requested")).toBe("pr_comments_plan");
+    expect(routeOf("default", "merge_request", "opened")).toBe("pull_request_reply");
+    expect(routeOf(comments.id, "pr_comments_approve", "approved")).toBe("todo");
+    expect(routeOf(comments.id, "pr_comments_approve", "rejected")).toBe("pull_request_reply");
+    expect(errorsOf("default")).toEqual([]);
+    expect(errorsOf(comments.id)).toEqual([]);
+  });
+
+  it("updates a Delivery with no edits of its own to 1.4, and makes the new board beside it", () => {
+    deliveryOn13();
+
+    const results = applyTemplateUpdates(handle.db, history, { isTheRecord: false });
+
+    expect(results).toEqual([expect.objectContaining({ pipelineId: "default", outcome: "applied", from: "1.3", to: "1.4" })]);
+    expect(getPipelineOrigin(handle.db, "default")?.version).toBe("1.4");
+    expect(openUpdateConflict(handle.db, "default")).toBeUndefined();
+    const comments = board()!;
+    expect(getPipelineOrigin(handle.db, comments.id)?.version).toBe("1.4");
+    expect(routeOf("default", "pull_request_watch", "others_commented")).toBe("pr_comments_plan");
+    expect(routeOf("default", "pull_request_reply", "replied")).toBe("pull_request_watch");
+    expect(routeOf(comments.id, "pr_comments_approve", "rejected")).toBe("pull_request_reply");
+    expect(currentVersion(handle.db, "default")!.releaseNotes).toContain("Created the Pull request comments board this version adds.");
+    // Made once: a later launch has nothing left to do.
+    expect(applyTemplateUpdates(handle.db, history, { isTheRecord: false })).toEqual([]);
+    expect(listPipelines(handle.db).filter((pipeline) => pipeline.name === "Pull request comments")).toHaveLength(1);
+  });
+
+  it("makes the new board for a Delivery with edits of its own, and holds Delivery's update with a notice", () => {
+    deliveryOn13();
+    // The person's own edit, which 1.4 changes too: a request for changes goes to them rather than to the implementer.
+    handle.db.run(sql`UPDATE step_routes SET target = 'user_attention' WHERE from_step_id = 'pull_request_watch' AND result_key = 'changes_requested'`);
+    // Work on it, in a project for the notice to be about.
+    const project = createProject(handle.db, { name: "Shop", keyPrefix: "SHOP" });
+    createTestItem(handle.db, { type: "story", title: "On it", stepId: "todo", projectId: project.id as Uuid });
+    const stepsBefore = listStepsForPipeline(handle.db, "default");
+
+    const results = applyTemplateUpdates(handle.db, history, { isTheRecord: false });
+
+    expect(results).toEqual([expect.objectContaining({ pipelineId: "default", outcome: "conflict", from: "1.3", to: "1.4" })]);
+    expect(listStepsForPipeline(handle.db, "default")).toEqual(stepsBefore);
+    expect(getPipelineOrigin(handle.db, "default")?.version).toBe("1.3");
+    expect(openUpdateConflict(handle.db, "default")?.conflicts).toEqual([
+      expect.objectContaining({ key: { kind: "route", fromStepId: "pull_request_watch", resultKey: "changes_requested" } }),
+    ]);
+
+    const comments = board()!;
+    expect(getPipelineOrigin(handle.db, comments.id)?.version).toBe("1.4");
+    expect(routeOf(comments.id, "pr_comments_approve", "approved")).toBe("todo");
+    // Reject goes to the reply step only the held update adds, so it is not offered until that update is resolved.
+    expect(routeOf(comments.id, "pr_comments_approve", "rejected")).toBeUndefined();
+    expect(getStep(handle.db, "pr_comments_approve")?.results.map((result) => result.key)).toEqual(["approved", "revise"]);
+    expect(errorsOf(comments.id)).toEqual([]);
+
+    const [notice] = messagesFrom(handle.db, "template_conflict");
+    expect(notice?.body).toContain("EO created the **Pull request comments** board");
   });
 });

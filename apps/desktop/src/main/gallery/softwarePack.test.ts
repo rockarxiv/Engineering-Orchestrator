@@ -14,6 +14,7 @@ import { bundledTemplates } from "./templates.js";
 import { loadTemplateHistory } from "./history.js";
 import { backfillPipelineOrigins } from "./origins.js";
 import { applyTemplateUpdates } from "./templateUpdates.js";
+import { storedGraphProblems } from "../ipc/configCommands.js";
 
 /**
  * "Software feature to merge" is the shipped Delivery pipeline, as a
@@ -101,13 +102,16 @@ describe("the bundled software template", () => {
    * graph, and 1.2 (EO-571) reaches the seed as a template version like
    * it reaches every other pipeline made from 1.1 — never as a migration
    * (ARCHITECTURE.md §15.5). Along with 1.3 (EO-664), which changed the
-   * template's opening question and nothing in the graph.
+   * template's opening question and nothing in the graph. And 1.4
+   * (EO-763), which adds the Pull request comments board: the export of
+   * Delivery carries it, since Delivery routes into it.
    */
   it("is exactly what exporting the shipped Delivery pipeline produces, once the first launch has brought it up to date", () => {
     syncRolePrompts(handle.db, PROMPTS_DIRECTORY);
     const history = loadTemplateHistory(GALLERY_DIRECTORY);
     backfillPipelineOrigins(handle.db, history);
-    expect(applyTemplateUpdates(handle.db, history, { isTheRecord: false })).toEqual([expect.objectContaining({ pipelineId: "default", outcome: "applied", from: "1.1", to: "1.3" })]);
+    expect(applyTemplateUpdates(handle.db, history, { isTheRecord: false })).toEqual([expect.objectContaining({ pipelineId: "default", outcome: "applied", from: "1.1", to: "1.4" })]);
+    expect(listPipelines(handle.db).map((pipeline) => pipeline.name)).toContain("Pull request comments");
     const built = exportPipeline(handle.db, "default");
     expect(built.ok).toBe(true);
     if (!built.ok) return;
@@ -169,7 +173,7 @@ describe("the bundled software template", () => {
 
     expect(pack.vocabulary.types.map((entry) => entry.type).sort()).toEqual(["developer:bug", "developer:feature", "developer:story"]);
     // Every word on a button its human step offers.
-    expect(pack.vocabulary.results.map((entry) => entry.key).sort()).toEqual(["approved", "send_back"]);
+    expect(pack.vocabulary.results.map((entry) => entry.key).sort()).toEqual(["approved", "rejected", "revise", "send_back"]);
   });
 
   /**
@@ -241,19 +245,16 @@ describe("the pull request step's results, routed in what EO ships", () => {
  * every result that step can give goes somewhere.
  */
 describe("the pull request watch in the bundled template", () => {
-  /** The watch's results this version of the template predates (EO-759). */
-  const UNROUTED_COMMENT_RESULTS: readonly string[] = ["author_commented", "others_commented"];
-
-  it("keeps checking every five minutes for a week, after Merge Request and before Done", () => {
+  it("keeps checking every five minutes for a week, after Merge Request and its reply, and before Done", () => {
     const pack = bundled().document;
     const watch = pack.steps.find((step) => step.name === "Watching pull request");
 
     expect(watch).toMatchObject({ type: "builtin", entryAction: "watch_pull_request", ownerRole: null, isTerminal: false, watch: { everyMinutes: 5, giveUpAfterHours: 168 } });
     const order = [...pack.steps].sort((a, b) => a.position - b.position).map((step) => step.name);
-    expect(order.slice(-3)).toEqual(["Merge Request", "Watching pull request", "Done"]);
+    expect(order.slice(-4)).toEqual(["Merge Request", "Reply on pull request", "Watching pull request", "Done"]);
   });
 
-  it("routes merged to Done, what the implementer can fix to To Do, and the rest to a person", () => {
+  it("routes merged to Done, what the implementer can fix and the person's comments to To Do, other accounts' comments to planning, and the rest to a person", () => {
     const pack = bundled().document;
     const watch = pack.steps.find((step) => step.entryAction === "watch_pull_request")!;
     const done = pack.steps.find((step) => step.name === "Done")!;
@@ -263,44 +264,42 @@ describe("the pull request watch in the bundled template", () => {
     expect(targets).toEqual({
       merged: done.id,
       checks_failed: implementer.id,
-      changes_requested: implementer.id,
       conflict: implementer.id,
+      author_commented: implementer.id,
+      // Other accounts' comments are never instructions on their own
+      // (EO-763): they are planned for on the Pull request comments board.
+      changes_requested: "pr_comments_plan",
+      others_commented: "pr_comments_plan",
       closed: "user_attention",
       // Never answered here — the step does not set `reportReady` — and
       // routed so that nothing the step can return is left unrouted.
       ready: "user_attention",
       failed: "user_attention",
     });
-    // Every result but the two that tell whose comment it is (EO-759), which
-    // this template does not route: an item getting one parks and asks a
-    // person until a template version routes them.
-    expect(Object.keys(targets).sort()).toEqual(BUILTIN_RESULTS.watch_pull_request.filter((result) => !UNROUTED_COMMENT_RESULTS.includes(result)).sort());
-    // Merge Request's success now leads into the watch rather than past it.
-    expect(pack.routes.find((route) => route.fromStepId === "merge_request" && route.resultKey === "opened")?.target).toBe(watch.id);
+    expect(Object.keys(targets).sort()).toEqual([...BUILTIN_RESULTS.watch_pull_request].sort());
+    // Merge Request's success leads into the reply, and every answer of the reply into the watch, but a refusal.
+    const reply = pack.steps.find((step) => step.entryAction === "reply_on_pull_request")!;
+    expect(pack.routes.find((route) => route.fromStepId === "merge_request" && route.resultKey === "opened")?.target).toBe(reply.id);
+    const replied = Object.fromEntries(pack.routes.filter((route) => route.fromStepId === reply.id).map((route) => [route.resultKey, route.target]));
+    expect(replied).toEqual({ replied: watch.id, nothing_to_reply: watch.id, failed: "user_attention" });
+    expect(Object.keys(replied).sort()).toEqual([...BUILTIN_RESULTS.reply_on_pull_request].sort());
   });
 
-  it("passes validatePipeline with nothing to say but the comment results it does not route, once imported", () => {
+  /**
+   * Both boards (EO-763), each judged as a stored pipeline is: Delivery's
+   * hand-offs land on the Pull request comments board's steps, and that
+   * board's on Delivery's, so neither is judged as a graph on its own.
+   */
+  it("passes validatePipeline with nothing to say, on both of its boards, once imported", () => {
     const imported = importPipeline(handle.db, { document: bundled().document, projectId: null, signedInBackends: [] });
     if (!imported.ok) throw new Error(imported.reason);
 
-    const problems = validatePipeline({
-      steps: listStepsForPipeline(handle.db, imported.pipelineId),
-      routes: listRoutesForPipeline(handle.db, imported.pipelineId),
-      entryStepId: listPipelines(handle.db).find((pipeline) => pipeline.id === imported.pipelineId)?.entryStepId ?? null,
-      staffedRoles: ["implementer", "reviewer"],
-      itemCountByStep: {},
-      existingSteps: [],
-      registry: registryForProject(handle.db, null),
-    });
-
-    expect(problems).toEqual(
-      UNROUTED_COMMENT_RESULTS.map((result) => ({
-        severity: "warning",
-        stateId: expect.any(String) as unknown,
-        resultKey: result,
-        message: expect.stringContaining(`"watch_pull_request" can return "${result}", which has no route`) as unknown,
-      })),
-    );
+    expect(imported.boardPipelineIds).toHaveLength(1);
+    for (const pipelineId of [imported.pipelineId, ...imported.boardPipelineIds]) {
+      const steps = listStepsForPipeline(handle.db, pipelineId);
+      const entry = listPipelines(handle.db).find((pipeline) => pipeline.id === pipelineId)?.entryStepId ?? null;
+      expect(storedGraphProblems(handle.db, pipelineId, steps, listRoutesForPipeline(handle.db, pipelineId), entry), pipelineId).toEqual([]);
+    }
     // And the watch arrived watching, which is what a version-8 reader
     // would have dropped, and never giving up, which is what a version-9
     // reader would have (`PIPELINE_EXPORT_VERSION`).
@@ -340,10 +339,12 @@ describe("the role slots a template names", () => {
     expect(galleryRoleSlots(weekly.document).map((slot) => slot.name)).toEqual(["Approve"]);
   });
 
-  it("names nothing at all on the software template, whose only human step is Done", () => {
+  it("names Approve plan on the software template, and not Done", () => {
     const software = bundled();
 
     expect(software.document.steps.filter((step) => step.type === "user").map((step) => step.name)).toEqual(["Done"]);
-    expect(galleryRoleSlots(software.document)).toEqual([]);
+    // The person approving a plan for other accounts' comments, on the
+    // Pull request comments board (EO-763).
+    expect(galleryRoleSlots(software.document)).toEqual([{ stepId: "pr_comments_approve", name: "Approve plan" }]);
   });
 });

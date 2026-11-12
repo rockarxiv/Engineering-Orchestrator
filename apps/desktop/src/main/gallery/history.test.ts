@@ -65,7 +65,7 @@ describe("Software feature to merge", () => {
   const versions = () => loadTemplateHistory(GALLERY_DIRECTORY).get(SOFTWARE)!;
 
   it("has the graph from before EO-461, the one that gave up after a week, and the current one", () => {
-    expect(versions().map((version) => version.version)).toEqual(["1.0", "1.1", "1.2", "1.3"]);
+    expect(versions().map((version) => version.version)).toEqual(["1.0", "1.1", "1.2", "1.3", "1.4"]);
   });
 
   it("1.0 opens the pull request and waits at Done, with no step watching it", () => {
@@ -126,6 +126,61 @@ describe("Software feature to merge", () => {
     expect(strip(current!.document)).toEqual(strip(before!.document));
   });
 
+  /**
+   * 1.4 (EO-763) is the first version with two boards: Delivery replies on
+   * the pull request and sends other accounts' comments to the Pull request
+   * comments board, where a plan is made, reviewed and approved before any
+   * of it reaches the implementer.
+   */
+  it("1.4 adds the Pull request comments board and the reply step, and says so for the person (EO-763)", () => {
+    const current = versions()[4]!;
+    const delivery = current.document;
+    const board = delivery.boards.find((each) => each.key === "pull_request_comments");
+    expect(board?.pipeline.name).toBe("Pull request comments");
+    expect(board?.steps.map((step) => [step.id, step.name, step.type, step.ownerRole, step.entryAction])).toEqual([
+      ["pr_comments_plan", "Plan response", "agent", "implementer", "plan_comment_response"],
+      ["pr_comments_review", "Review plan", "agent", "reviewer", "review_plan"],
+      ["pr_comments_approve", "Approve plan", "user", null, null],
+    ]);
+    expect(board?.steps[2]!.results.map((result) => [result.label, result.requiresComment])).toEqual([
+      ["Approve", false],
+      ["Revise", true],
+      ["Reject", true],
+    ]);
+    const target = (fromStepId: string, resultKey: string) => [...delivery.routes, ...(board?.routes ?? [])].find((route) => route.fromStepId === fromStepId && route.resultKey === resultKey)?.target;
+    expect(target("merge_request", "opened")).toBe("pull_request_reply");
+    expect(target("pull_request_reply", "replied")).toBe("pull_request_watch");
+    expect(target("pull_request_reply", "nothing_to_reply")).toBe("pull_request_watch");
+    expect(target("pull_request_reply", "failed")).toBe("user_attention");
+    expect(target("pull_request_watch", "author_commented")).toBe("todo");
+    expect(target("pull_request_watch", "changes_requested")).toBe("pr_comments_plan");
+    expect(target("pull_request_watch", "others_commented")).toBe("pr_comments_plan");
+    expect(target("pr_comments_plan", "planned")).toBe("pr_comments_review");
+    expect(target("pr_comments_review", "approved")).toBe("pr_comments_approve");
+    expect(target("pr_comments_review", "changes_requested")).toBe("pr_comments_plan");
+    expect(target("pr_comments_review", "needs_user_input")).toBe("user_attention");
+    expect(target("pr_comments_approve", "approved")).toBe("todo");
+    expect(target("pr_comments_approve", "revise")).toBe("pr_comments_plan");
+    expect(target("pr_comments_approve", "rejected")).toBe("pull_request_reply");
+    expect(current.notes).toContain("Pull request comments board");
+    expect(current.notes).toContain("for a plan you approve");
+    expect(current.notes).toContain("EO now replies on the pull request");
+  });
+
+  it("differs between 1.3 and 1.4 only in the reply step, the comment routes and the new board", () => {
+    const [, , , before, current] = versions();
+    const changed = new Set(["pull_request_reply", "pull_request_watch:author_commented", "pull_request_watch:others_commented", "pull_request_watch:changes_requested", "merge_request:opened"]);
+    const strip = (document: TemplateVersion["document"]) => ({
+      ...document,
+      template: { ...document.template, version: "" },
+      boards: [],
+      vocabulary: { ...document.vocabulary, results: document.vocabulary.results.filter((result) => result.key === "approved" || result.key === "send_back") },
+      steps: document.steps.filter((step) => !changed.has(step.id)).map((step) => ({ ...step, position: 0 })),
+      routes: document.routes.filter((route) => !changed.has(route.fromStepId) && !changed.has(`${route.fromStepId}:${route.resultKey}`)),
+    });
+    expect(strip(current!.document)).toEqual(strip(before!.document));
+  });
+
   it("differs between 1.0 and 1.1 only in what EO-461 changed", () => {
     const [before, current] = versions();
     const strip = (document: TemplateVersion["document"]) => ({
@@ -155,7 +210,9 @@ describe("the templates with no job", () => {
     for (const template of withoutJob()) {
       expect(template.document.template!.openingQuestion, `${template.slug} has no opening question`).toMatch(/\?/);
       const versions = history.get(template.slug)!;
-      const [before, current] = versions.slice(-2);
+      // The version that brought the question in, which a later one may follow (1.4 of the software template, EO-763).
+      const asked = versions.findIndex((version) => version.document.template!.openingQuestion !== undefined);
+      const [before, current] = [versions[asked - 1], versions[asked]];
       expect(current!.notes).toContain("chat with the assistant");
       expect(before!.document.template!.openingQuestion).toBeUndefined();
       const strip = (document: TemplateVersion["document"]) => ({ ...document, template: { ...document.template!, version: "", openingQuestion: undefined } });
@@ -181,7 +238,7 @@ describe("reading the history", () => {
   it("skips a damaged file and keeps the versions around it", () => {
     const directory = copyOfHistory();
     writeFileSync(join(templateHistoryDirectory(directory), SOFTWARE, "1.0.json"), "{ not json");
-    expect(loadTemplateHistory(directory).get(SOFTWARE)?.map((version) => version.version)).toEqual(["1.1", "1.2", "1.3"]);
+    expect(loadTemplateHistory(directory).get(SOFTWARE)?.map((version) => version.version)).toEqual(["1.1", "1.2", "1.3", "1.4"]);
   });
 
   it("skips a file whose path disagrees with the version it carries", () => {
@@ -193,7 +250,7 @@ describe("reading the history", () => {
 
     const history = loadTemplateHistory(directory);
     expect(history.has("somebody-else")).toBe(false);
-    expect(history.get(SOFTWARE)?.map((version) => version.version)).toEqual(["1.0", "1.1", "1.2", "1.3"]);
+    expect(history.get(SOFTWARE)?.map((version) => version.version)).toEqual(["1.0", "1.1", "1.2", "1.3", "1.4"]);
   });
 
   it("refuses a pack that asks for the admin grant, as every other door does", () => {

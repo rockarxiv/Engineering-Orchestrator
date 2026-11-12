@@ -17,6 +17,9 @@ import { createWorkspaceCommand } from "../ipc/workspaceCommands.js";
 import DEVELOPER_FIRST_RUN from "../../renderer/src/chat/views/gallery/__fixtures__/developerFirstRun.json" with { type: "json" };
 import { forgeCardNeed } from "./form.js";
 import { forgetListed } from "./session.js";
+import { loadTemplateHistory } from "./history.js";
+import { backfillPipelineOrigins } from "./origins.js";
+import { applyTemplateUpdates } from "./templateUpdates.js";
 
 /**
  * The needs check, line by line (EO-317, `ARCHITECTURE.md`,
@@ -165,11 +168,18 @@ describe("a developer's first run, through everybody's screen", () => {
    * fresh installation adopts the pipeline it is already holding.
    */
   it("lands on the Delivery board EO ships rather than a second copy of it", async () => {
+    // The first launch has brought the seeded Delivery up to the template, as startup does before anybody reaches the gallery.
+    const history = loadTemplateHistory(GALLERY_DIRECTORY);
+    backfillPipelineOrigins(handle.db, history);
+    applyTemplateUpdates(handle.db, history, { isTheRecord: false });
+
     const installed = await install("software-feature-to-merge", { keyPrefix: "ACME" });
 
     expect(installed.pipelineId).toBe(DEFAULT_PIPELINE_ID);
     const boards = listPipelines(handle.db, installed.projectId as never).map((pipeline) => pipeline.name);
     expect(boards.filter((name) => name === "Delivery")).toHaveLength(1);
+    // And the board that update made beside it, adopted with it rather than made twice (EO-763).
+    expect(boards.filter((name) => name === "Pull request comments")).toHaveLength(1);
   });
 
   /**

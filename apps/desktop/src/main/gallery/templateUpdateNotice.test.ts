@@ -19,7 +19,8 @@ import { createPerson } from "../db/repos/peopleRepo.js";
 import { createProject } from "../db/repos/projectsRepo.js";
 import { createTestItem, messagesFrom, openMigratedTestDb } from "../db/testHelpers.js";
 import { listInbox } from "../ipc/domainQueries.js";
-import { loadTemplateHistory, type TemplateHistory, type TemplateVersion } from "./history.js";
+import type { TemplateHistory, TemplateVersion } from "./history.js";
+import { templateHistoryUpTo } from "./historyTestHelpers.js";
 import { backfillPipelineOrigins } from "./origins.js";
 import { applyTemplateUpdates, conflictNoticeOptions, FIX_WITH_ASSISTANT, updateConflictBrief } from "./templateUpdates.js";
 
@@ -38,7 +39,9 @@ let history: TemplateHistory;
 
 beforeEach(() => {
   handle = openMigratedTestDb();
-  history = loadTemplateHistory(GALLERY_DIRECTORY);
+  // As it stood at 1.3: what a notice says is the same for any version,
+  // and the conflict below reads as the 1.1 to 1.3 graphs drew it.
+  history = templateHistoryUpTo(GALLERY_DIRECTORY, SOFTWARE, "1.3");
 });
 
 afterEach(() => {
