@@ -43,7 +43,7 @@ const objectOf = (value: unknown): Record<string, unknown> | null => (typeof val
 const rawOf = (run: Run): Record<string, unknown> | null => objectOf(run.result?.["raw"]);
 
 /** The result key a run answered with, as the supervisor stored it. */
-const answerOf = (run: Run): string | null => {
+export const answerOf = (run: Run): string | null => {
   const reported = objectOf(parsedResultOf(run.result))?.["result"];
   return typeof reported === "string" ? reported : null;
 };
@@ -160,6 +160,34 @@ export function approvedPlan(db: Db, itemId: Uuid): PlanRun | undefined {
   const label = DECIDED.exec(decision.reason ?? "")?.[1];
   const taken = getStep(db, decision.fromStepId)?.results.find((result) => result.label === label);
   return taken?.tone === "success" ? plan : undefined;
+}
+
+/**
+ * The plan a person rejected, if this round's was (EO-761), with the
+ * person's reason exactly as they wrote it on the rejection.
+ *
+ * The round's newest plan, provided the newest decision on it took a
+ * result not drawn as the good outcome. A person asking for a revision
+ * decides the same way, but sends the ticket back to the planner, whose new
+ * plan is then the round's newest and has no decision yet; so on the step
+ * that replies, a plan whose newest decision was not an approval is one that
+ * was rejected. The reason is the `rejection` the decision filed, which is
+ * written just before its move. Null when the person gave none.
+ */
+export function rejectedPlan(db: Db, itemId: Uuid): (PlanRun & { reason: string | null }) | undefined {
+  const plan = currentPlan(db, itemId);
+  if (plan === undefined) return undefined;
+  const decision = listTransitionsForItem(db, itemId)
+    .filter((transition) => transition.id > plan.run.id && transition.reason !== null && DECIDED.test(transition.reason))
+    .at(-1);
+  if (decision === undefined || decision.fromStepId === null) return undefined;
+  const label = DECIDED.exec(decision.reason ?? "")?.[1];
+  const taken = getStep(db, decision.fromStepId)?.results.find((result) => result.label === label);
+  if (taken === undefined || taken.tone === "success") return undefined;
+  const reason = listCommentsForItem(db, itemId)
+    .filter((comment) => comment.kind === "rejection" && comment.authorType !== "engine" && comment.id > plan.run.id && comment.id < decision.id)
+    .at(-1);
+  return { ...plan, reason: reason?.body ?? null };
 }
 
 /** A plan as the ticket and the implementer read it. */

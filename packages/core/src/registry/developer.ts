@@ -132,7 +132,7 @@ const PROMPT_FILE_BY_ROLE: Record<BuiltinRole, string> = {
  * optional — and removing a step is a row, which is what invariant #7 is
  * for.
  */
-export const BUILTIN_ACTIONS = ["create_worktree", "index_repository", "open_pull_request", "watch_pull_request"] as const;
+export const BUILTIN_ACTIONS = ["create_worktree", "index_repository", "open_pull_request", "watch_pull_request", "reply_on_pull_request"] as const;
 export type BuiltinAction = (typeof BUILTIN_ACTIONS)[number];
 
 /**
@@ -143,6 +143,14 @@ export type BuiltinAction = (typeof BUILTIN_ACTIONS)[number];
  * sent back — or, when the step asks for it, ready.
  */
 export const WATCH_PULL_REQUEST_ACTION = "watch_pull_request";
+
+/**
+ * Answers on the pull request each comment EO handled since it last
+ * replied (EO-761): what changed, and the commit it was pushed in, for a
+ * comment the implementer acted on; the person's own words for a comment
+ * whose plan they rejected. Run after the branch is pushed.
+ */
+export const REPLY_ON_PULL_REQUEST_ACTION = "reply_on_pull_request";
 
 /**
  * The step input that asks `watch_pull_request` to say `ready` — approved,
@@ -232,6 +240,10 @@ export const BUILTIN_RESULTS = {
   // other account's comment is `others_commented`: neither is an
   // instruction until a plan for it is approved.
   watch_pull_request: ["merged", "closed", "conflict", "checks_failed", "author_commented", "changes_requested", "others_commented", "ready", FAILED_RESULT],
+  // `nothing_to_reply` is a pass with nothing handled since the last reply,
+  // which on an item's first pass is every time (EO-761). `failed` is the
+  // forge refusing a reply, or a pull request EO cannot address.
+  reply_on_pull_request: ["replied", "nothing_to_reply", FAILED_RESULT],
 } as const satisfies Record<BuiltinAction, readonly [string, ...string[]]>;
 
 /**
@@ -263,6 +275,8 @@ export const BUILTIN_SIDE_EFFECTS = {
   // Reads a pull request and writes nothing to the forge: the comments it
   // posts are on the item, which is EO's own.
   watch_pull_request: false,
+  // Posts on the pull request, where everybody watching it reads it.
+  reply_on_pull_request: true,
 } as const satisfies Record<BuiltinAction, boolean>;
 
 /**
@@ -279,6 +293,7 @@ export const BUILTIN_LABELS = {
   index_repository: "Index the code for the agents",
   open_pull_request: "Open the pull request",
   watch_pull_request: "Watch the pull request",
+  reply_on_pull_request: "Reply on the pull request",
 } as const satisfies Record<BuiltinAction, string>;
 
 /**
@@ -316,6 +331,7 @@ export const BUILTIN_WATCH = {
   index_repository: false,
   open_pull_request: false,
   watch_pull_request: true,
+  reply_on_pull_request: false,
 } as const satisfies Record<BuiltinAction, boolean>;
 
 /** The outcomes one built-in function can return; every one of them by default. */
