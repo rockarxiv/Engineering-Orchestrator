@@ -180,6 +180,13 @@
  *     one of `creation`, `move`, `route` and `job`, `fromStep` null on
  *     creation and from a job. Null unless scripted. On creation the
  *     `item` fixture's `id` and `key` are left out, as a real door's are.
+ *   - `intake`: `{ job: { id, name } }` runs the module as a pipeline's
+ *     intake check (EO-752) — a check a watch job makes, with no item.
+ *     `ctx.run.intake` is the fixture, `ctx.run.step` and
+ *     `ctx.run.cameFrom` are null whatever `run` says, `ctx.item()`
+ *     finds nothing, and `ctx.comment`, `ctx.attach` and
+ *     `ctx.createItem` refuse. Taken with no `item` fixture. Absent, the
+ *     run is not one and `ctx.run.intake` is null.
  *   - `answer`: what `ctx.answer()` answers, `{ text, offered, matched }`
  *     or null (the default).
  *   - `inputs`: the step's values, laid over the manifest's defaults and
@@ -201,7 +208,10 @@
  *     that is still waiting (EO-458) is
  *     `{ ok: true, result: "waiting", detail, news: [{ id, text }] }`,
  *     `news` always a list — and the failure a real run gets when its
- *     manifest does not declare `watch: true`.
+ *     manifest does not declare `watch: true`. On an intake check
+ *     (`intake`) it also has `findings: [{ key, title, body?, spec?,
+ *     existingBranch? }]`, always a list, parsed as a real run parses
+ *     them; anywhere else a module returning `findings` fails.
  *   - `comments`: `[{ key, body }]`, every comment `ctx.comment()` and
  *     `ctx.commentOn()` would have posted, under the same caps. Recorded,
  *     never posted: nothing reaches any thread.
@@ -1989,20 +1999,78 @@ function pipelineRefShape(value) {
  * what brought the item here (the step it left and the result that
  * routed it), whether it is a trial's test item, and — on a step that
  * keeps checking — since when, how long so far and how often.
+ *
+ * On an intake check (EO-752) — `intake` as `intakeShape` made it —
+ * there is no step and nothing came from anywhere, so `step` and
+ * `cameFrom` are null whatever was sent; `pipeline` is the job's, and
+ * `intake` says which job. Null on every other run.
  */
-function runContextShape(value) {
+function runContextShape(value, intake = null) {
   const run = value !== null && typeof value === "object" ? value : {};
   const cameFrom = run.cameFrom !== null && typeof run.cameFrom === "object" ? run.cameFrom : {};
   return Object.freeze({
-    step: shapedOrNull(run.step, stepRefShape),
+    step: intake === null ? shapedOrNull(run.step, stepRefShape) : null,
     pipeline: shapedOrNull(run.pipeline, pipelineRefShape),
     attempt: asNumber(run.attempt),
-    cameFrom: Object.freeze({ step: shapedOrNull(cameFrom.step, stepRefShape), result: asText(cameFrom.result) }),
+    cameFrom:
+      intake === null ? Object.freeze({ step: shapedOrNull(cameFrom.step, stepRefShape), result: asText(cameFrom.result) }) : null,
     trial: run.trial === true,
     watch: shapedOrNull(run.watch, (watch) =>
       Object.freeze({ startedAt: asNumber(watch.startedAt), waitingMs: asNumber(watch.waitingMs), intervalMs: asNumber(watch.intervalMs) }),
     ),
+    intake,
   });
+}
+
+/**
+ * `ctx.run.intake` (EO-752): on an intake check — a run of a watch
+ * module made for a job, with no item — the job it checks for,
+ * `{ job: { id, name } }`. Null where nothing was sent, which is every
+ * run that is not one.
+ */
+function intakeShape(value) {
+  if (value === null || typeof value !== "object") return null;
+  const job = value.job !== null && typeof value.job === "object" ? value.job : {};
+  return Object.freeze({ job: Object.freeze({ id: asText(job.id), name: asText(job.name) }) });
+}
+
+/**
+ * What an intake check is answered when it asks for something that needs
+ * an item (EO-752). Every one says an intake check has no item, and what
+ * to do instead where there is something.
+ */
+const INTAKE_NO_ITEM = "An intake check has no item";
+
+/** `ctx.item()` and `ctx.ticket()` on an intake check (EO-752). */
+function intakeItemRead(intake) {
+  const answer = Object.freeze({ found: false, reason: `${INTAKE_NO_ITEM}: this run checks for the job "${intake.job.name}". ctx.itemByKey still reads any item by its key.` });
+  return () => answer;
+}
+
+/**
+ * `ctx.comment`, `ctx.attach` and `ctx.createItem` on an intake check
+ * (EO-752): each refuses, in the shape it answers with anywhere else,
+ * and says so in the transcript as its other refusals do (invariant #8).
+ * `ctx.commentOn` is not among them: it names its item.
+ */
+function intakeWrites() {
+  const refused = (said, reason, answer) => {
+    emit({ type: "output", text: `${said}: ${reason}\n` });
+    return Object.freeze(answer(reason));
+  };
+  const { Promise: NativePromise } = PRIMORDIALS;
+  return {
+    comment: () => refused("EO did not post a comment", `${INTAKE_NO_ITEM} to comment on. ctx.commentOn can still comment on another item by its key.`, (reason) => ({ posted: false, reason })),
+    attach: async () => refused("EO did not attach files", `${INTAKE_NO_ITEM} to attach files to.`, (reason) => ({ attached: false, reason })),
+    createItem: () => {
+      const answer = refused(
+        "EO did not create an item",
+        `${INTAKE_NO_ITEM} to create items from. Return what the check found as findings on a "${WAITING_RESULT}" answer, and EO files each one on the job's pipeline.`,
+        (reason) => ({ created: false, reason }),
+      );
+      return new NativePromise((resolve) => resolve(answer));
+    },
+  };
 }
 
 /**
@@ -2322,6 +2390,8 @@ function makeItemReads(ask, runningKey) {
       deprecated();
       return read(key);
     },
+    /** Says the deprecated names are deprecated, once — for `ctx.ticket()` on an intake check (EO-752), which reads nothing. */
+    deprecated,
     resolve,
     // Asynchronous by contract (EO-710), though answered the way the
     // two reads above are: a later EO is free to answer them without
@@ -2860,6 +2930,10 @@ async function main() {
   // Never a way to write — a write is asked for below and granted by
   // the parent, never done here.
   const reads = makeItemReads(makeReadChannel(request.replyKey), request.itemKey);
+  // An intake check (EO-752): a watch module run for a job, with no item.
+  const intake = intakeShape(request.intake);
+  const noItem = intake === null ? null : intakeItemRead(intake);
+  const intakeRefuses = intake === null ? null : intakeWrites();
   // An entry check (EO-736) is about an item as it would enter, which on
   // creation is no row at all: the parent built it and sent it, so
   // `ctx.item()` answers with that rather than asking for a key.
@@ -2915,12 +2989,12 @@ async function main() {
      */
     answer: makeAnswer(request.answer ?? null),
     // The run, the workspace and the project (EO-711): sent with the run.
-    run: runContextShape(request.context?.run),
+    run: runContextShape(request.context?.run, intake),
     workspace: workspaceContextShape(request.context?.workspace, request.cwd),
     project: shapedOrNull(request.context?.project, projectContextShape),
     // Which door, on an entry check (EO-736); null on every other run.
     entry: entryContextShape(request.entry),
-    item: entering === null ? reads.item : readEntering,
+    item: noItem ?? (entering === null ? reads.item : readEntering),
     itemByKey: reads.itemByKey,
     // An item's history, the board and a file's bytes (EO-710).
     runs: reads.runs,
@@ -2936,14 +3010,22 @@ async function main() {
      * approved it to approve it again. They answer identically and put
      * one line in the transcript saying they are on a clock.
      */
-    ticket: entering === null ? reads.ticket : readEntering,
+    ticket:
+      noItem === null
+        ? entering === null
+          ? reads.ticket
+          : readEntering
+        : () => {
+            reads.deprecated();
+            return noItem();
+          },
     ticketByKey: reads.ticketByKey,
-    comment: says.comment,
+    comment: intakeRefuses?.comment ?? says.comment,
     commentOn: says.commentOn,
-    attach: says.attach,
+    attach: intakeRefuses?.attach ?? says.attach,
     // And work (EO-433): the parent creates the item, and answers on
     // the one channel that runs back this way.
-    createItem: makeCreations(request, makeCreationChannel(request.replyKey)),
+    createItem: intakeRefuses?.createItem ?? makeCreations(request, makeCreationChannel(request.replyKey)),
     exec: makeExec(request, childEnv),
     log: (line) => emit({ type: "output", text: `${line}\n` }),
   };
@@ -2985,7 +3067,7 @@ async function main() {
     // a fired guard does not end in a module's own account of events
     // (invariant #5).
     const refusal = guard.refusal();
-    respond(refusal === null ? normalize(outcome, request.options, request.watch === true, request.entryCheck === true) : { ok: false, reason: refusal });
+    respond(refusal === null ? normalize(outcome, request.options, request.watch === true, request.entryCheck === true, intake !== null) : { ok: false, reason: refusal });
   } catch (error) {
     const refusal = guard.refusal();
     respond({ ok: false, reason: refusal ?? (error instanceof Error ? (error.stack ?? error.message) : String(error)) });
@@ -3004,7 +3086,7 @@ async function main() {
  * fails when a name here is missing from the system agent's prompt or
  * from module_test_save's description.
  */
-export const FIXTURE_NAMES = new Set(["exec", "item", "itemByKey", "runs", "transitions", "items", "attachments", "run", "workspace", "project", "entry", "answer", "inputs", "timeoutMs", "createItem"]);
+export const FIXTURE_NAMES = new Set(["exec", "item", "itemByKey", "runs", "transitions", "items", "attachments", "run", "workspace", "project", "entry", "intake", "answer", "inputs", "timeoutMs", "createItem"]);
 
 /**
  * The `runs` or `transitions` a case scripted, `{ KEY: [entry, …] }`,
@@ -3925,11 +4007,11 @@ async function testMain(request) {
 
   const run = async (fixtures = {}) => {
     if (fixtures === null || typeof fixtures !== "object" || Array.isArray(fixtures)) {
-      throw new TypeError("harness.run takes one object of fixtures: { exec, item, itemByKey, runs, transitions, items, attachments, run, workspace, project, entry, answer, inputs, createItem, timeoutMs }.");
+      throw new TypeError("harness.run takes one object of fixtures: { exec, item, itemByKey, runs, transitions, items, attachments, run, workspace, project, entry, intake, answer, inputs, createItem, timeoutMs }.");
     }
     const unknown = Object.keys(fixtures).filter((name) => !FIXTURE_NAMES.has(name));
     if (unknown.length > 0) {
-      throw new TypeError(`harness.run does not take ${unknown.map((name) => JSON.stringify(name)).join(", ")}. It takes exec, item, itemByKey, runs, transitions, items, attachments, run, workspace, project, entry, answer, inputs, createItem and timeoutMs.`);
+      throw new TypeError(`harness.run does not take ${unknown.map((name) => JSON.stringify(name)).join(", ")}. It takes exec, item, itemByKey, runs, transitions, items, attachments, run, workspace, project, entry, intake, answer, inputs, createItem and timeoutMs.`);
     }
     const script = readScript(fixtures.exec);
     const creationAnswers = readCreationAnswers(fixtures.createItem);
@@ -3951,6 +4033,16 @@ async function testMain(request) {
       if (value === undefined || (name === "project" && value === null)) continue;
       if (value === null || typeof value !== "object" || Array.isArray(value)) throw new TypeError(`harness.run's ${name} is an object, a partial of ctx.${name}.`);
     }
+    // An intake check (EO-752): the job it runs for, and no item.
+    if (fixtures.intake !== undefined && fixtures.intake !== null) {
+      const job = typeof fixtures.intake === "object" && !Array.isArray(fixtures.intake) ? fixtures.intake.job : undefined;
+      if (job === null || typeof job !== "object" || typeof job.id !== "string" || typeof job.name !== "string") {
+        throw new TypeError('harness.run\'s intake is { job: { id, name } }, the job an intake check runs for: { job: { id: "job-1", name: "Dependabot" } }.');
+      }
+      if (fixtures.item !== undefined && fixtures.item !== null) {
+        throw new TypeError("harness.run's intake runs the module as an intake check, which has no item, so it takes no item fixture.");
+      }
+    }
     if (fixtures.itemByKey !== undefined && (fixtures.itemByKey === null || typeof fixtures.itemByKey !== "object" || Array.isArray(fixtures.itemByKey))) {
       throw new TypeError('harness.run\'s itemByKey is an object of keys to items: { "EO-2": { title: "…" } }.');
     }
@@ -3969,7 +4061,8 @@ async function testMain(request) {
     const { inputs, problems } = fixtureInputs(request.inputs, fixtures.inputs ?? {});
     if (problems.length > 0) return result({ ok: false, reason: `The module was not run: ${problems.join(" ")}` });
 
-    const item = fixtures.item === null ? null : fixtureItem(fixtures.item, FIXTURE_ITEM_KEY);
+    const intake = intakeShape(fixtures.intake);
+    const item = fixtures.item === null || intake !== null ? null : fixtureItem(fixtures.item, FIXTURE_ITEM_KEY);
     const known = new Map();
     for (const [key, value] of Object.entries(fixtures.itemByKey ?? {})) known.set(key, fixtureItem({ ...value, key }, key));
     if (item !== null) known.set(item.key, item);
@@ -3983,7 +4076,8 @@ async function testMain(request) {
       const at = lookup(key);
       return at.item === undefined ? Object.freeze({ found: false, reason: at.reason }) : Object.freeze({ found: true, item: at.item, ticket: at.item });
     };
-    const readRunning = () => (item === null ? Object.freeze({ found: false, reason: "This test case runs the module with no item (item: null)." }) : read(item.key));
+    const noItem = intake === null ? null : intakeItemRead(intake);
+    const readRunning = () => noItem?.() ?? (item === null ? Object.freeze({ found: false, reason: "This test case runs the module with no item (item: null)." }) : read(item.key));
     let warned = false;
     const deprecated = () => {
       if (warned) return;
@@ -4108,12 +4202,13 @@ async function testMain(request) {
       settle({ created: true, key, existing: false });
     });
 
+    const intakeRefuses = intake === null ? null : intakeWrites();
     const ctx = {
       cwd: process.cwd(),
       inputs: Object.freeze({ ...inputs }),
       timeoutMs,
       answer: makeAnswer(fixtures.answer ?? null),
-      run: runContextShape(fixtures.run),
+      run: runContextShape(fixtures.run, intake),
       workspace: workspaceContextShape(fixtures.workspace, process.cwd()),
       project: shapedOrNull(fixtures.project, projectContextShape),
       entry: entryContextShape(fixtures.entry),
@@ -4131,10 +4226,11 @@ async function testMain(request) {
         deprecated();
         return read(key);
       },
-      comment: says.comment,
+      // Refused as a real intake check refuses them (EO-752), and recorded nowhere.
+      comment: intakeRefuses?.comment ?? says.comment,
       commentOn: says.commentOn,
-      attach: says.attach,
-      createItem,
+      attach: intakeRefuses?.attach ?? says.attach,
+      createItem: intakeRefuses?.createItem ?? createItem,
       exec: makeScriptedExec({
         needs: request.needs,
         script,
@@ -4161,7 +4257,7 @@ async function testMain(request) {
       try {
         const returned = await loaded.module.default(ctx);
         const refusal = moduleGuard.refusal();
-        return result(refusal === null ? normalize(returned, request.options, request.watch === true, request.entryCheck === true) : { ok: false, reason: refusal });
+        return result(refusal === null ? normalize(returned, request.options, request.watch === true, request.entryCheck === true, intake !== null) : { ok: false, reason: refusal });
       } catch (error) {
         return result({ ok: false, reason: moduleGuard.refusal() ?? describeThrown(error, names) });
       }
@@ -4245,7 +4341,7 @@ async function testMain(request) {
  * rather than repeating the question, is what stops an answered question
  * looking unread.
  */
-function normalize(outcome, optionLimits, watch, entryCheck = false) {
+function normalize(outcome, optionLimits, watch, entryCheck = false, intake = false) {
   if (outcome === null || typeof outcome !== "object") {
     return { ok: false, reason: `A module must return { ok: true, result, detail } or { ok: false, reason }; this one returned ${JSON.stringify(outcome) ?? "undefined"}.` };
   }
@@ -4258,7 +4354,13 @@ function normalize(outcome, optionLimits, watch, entryCheck = false) {
     if (typeof outcome.result !== "string" || outcome.result === "") {
       return { ok: false, reason: "A module that succeeded must name the result it produced, so the pipeline knows where to send the ticket." };
     }
-    if (outcome.result === WAITING_RESULT) return waitingOutcome(outcome, watch);
+    // Findings are an intake check's, on a `waiting` answer (EO-752).
+    // Anywhere else nothing would file them, and a module that believes
+    // it filed something it did not is told so rather than ignored.
+    if (outcome.findings !== undefined && outcome.findings !== null && !(intake && outcome.result === WAITING_RESULT)) {
+      return { ok: false, reason: findingsElsewhere(intake, outcome.result) };
+    }
+    if (outcome.result === WAITING_RESULT) return waitingOutcome(outcome, watch, intake);
     // An entry check's refusal carries why (EO-736): the person at the
     // door reads it in the refusal sentence. Only there, so every other
     // module's outcome is exactly what it was.
@@ -4311,7 +4413,7 @@ const ENTRY_CHECK_REFUSE = "refuse";
  * how the author finds out. Always an array on a waiting outcome, so a
  * case can assert on `outcome.news` whether or not the module gave any.
  */
-function waitingOutcome(outcome, watch) {
+function waitingOutcome(outcome, watch, intake = false) {
   if (!watch) {
     return {
       ok: false,
@@ -4327,7 +4429,95 @@ function waitingOutcome(outcome, watch) {
     }
     news.push({ id: entry.id, text: entry.text });
   }
-  return { ok: true, result: WAITING_RESULT, detail: String(outcome.detail ?? ""), news };
+  if (!intake) return { ok: true, result: WAITING_RESULT, detail: String(outcome.detail ?? ""), news };
+  const read = readFindings(outcome.findings);
+  if (read.problem !== undefined) return { ok: false, reason: read.problem };
+  return { ok: true, result: WAITING_RESULT, detail: String(outcome.detail ?? ""), news, findings: read.findings };
+}
+
+/** The most findings one intake check may report (EO-752). `MAX_WATCH_FINDINGS` in `@eo/core`, which this file cannot import. */
+const MAX_FINDINGS = 100;
+/** The longest a finding's key may be. `MAX_WATCH_FINDING_KEY_CHARS` in `@eo/core`. */
+const MAX_FINDING_KEY_CHARS = 200;
+
+/** Why a run that is not an intake check's `waiting` answer may not return findings (EO-752). */
+function findingsElsewhere(intake, result) {
+  if (!intake) {
+    return "This module returned findings, but findings are only read when the module runs as a pipeline's intake — a check a watch job makes, with no item. On a step, say what changed as news, or create items with ctx.createItem.";
+  }
+  return `This module returned findings with the result "${result}", but findings are only read when the module runs as a pipeline's intake and answers "${WAITING_RESULT}". Return findings on a "${WAITING_RESULT}" answer; a result tells the job's owner something is wrong.`;
+}
+
+/**
+ * What an intake check found (EO-752), held to `WatchFindingSchema` in
+ * `@eo/core` — which this file cannot import, so it is written out
+ * again here and the parent parses what arrives with the schema itself.
+ *
+ * All or nothing, like `news`: one finding EO cannot file keeps every
+ * one of them, and the check fails with the sentence naming it. A check
+ * that filed most of what it found would leave its author never hearing
+ * about the rest; a failing check is retried and, failing on, reaches
+ * the job's owner with this sentence. So does a check reporting more
+ * than `MAX_FINDINGS`, or two findings with one key — the key is how EO
+ * files a thing once, and two things under one key would be one filed
+ * and the other lost.
+ *
+ * Always a list on an intake check's `waiting`, so a case can assert on
+ * `outcome.findings` whether or not the module found anything.
+ */
+function readFindings(value) {
+  const shape =
+    `An intake check that is still waiting returns { ok: true, result: "${WAITING_RESULT}", detail, findings: [{ key, title, body?, spec?, existingBranch? }, …] }, ` +
+    `where each key is the module's own stable name for what it found, at most ${MAX_FINDING_KEY_CHARS} characters, and each title is text.`;
+  if (value === undefined || value === null) return { findings: [] };
+  if (!Array.isArray(value)) return { problem: `${shape} This one's findings is not a list.` };
+  if (value.length > MAX_FINDINGS) return { problem: `An intake check may report at most ${MAX_FINDINGS} findings, and this one reported ${value.length}. EO kept none of them.` };
+  const findings = [];
+  const seen = new Map();
+  for (let index = 0; index < value.length; index += 1) {
+    const read = findingShape(value[index]);
+    if (read.problem !== undefined) return { problem: `${shape} findings[${index}] ${read.problem} EO kept none of them.` };
+    const before = seen.get(read.finding.key);
+    if (before !== undefined) {
+      return { problem: `findings[${before}] and findings[${index}] both have the key "${read.finding.key}", and each finding needs a key of its own: it is how EO files a thing once. EO kept none of them.` };
+    }
+    seen.set(read.finding.key, index);
+    findings.push(read.finding);
+  }
+  return { findings };
+}
+
+/** One finding as `WatchFindingSchema` reads it — trimmed where it trims — or what is wrong with it. */
+function findingShape(entry) {
+  if (entry === null || typeof entry !== "object" || Array.isArray(entry)) return { problem: "is not an object." };
+  const text = (name) => (typeof entry[name] === "string" ? entry[name].trim() : null);
+  const key = text("key");
+  if (key === null || key === "") return { problem: "has no key: it needs one, as non-empty text." };
+  if (key.length > MAX_FINDING_KEY_CHARS) return { problem: `has a key of ${key.length} characters, and a key may be at most ${MAX_FINDING_KEY_CHARS}.` };
+  const title = text("title");
+  if (title === null || title === "") return { problem: "has no title: it needs one, as non-empty text." };
+  const finding = { key, title };
+  if (entry.body !== undefined) {
+    if (typeof entry.body !== "string") return { problem: "has a body that is not text." };
+    finding.body = entry.body;
+  }
+  if (entry.spec !== undefined) {
+    if (entry.spec === null || typeof entry.spec !== "object" || Array.isArray(entry.spec)) return { problem: "has a spec that is not an object of the item type's fields." };
+    try {
+      // A copy, and the proof it can cross, as `ctx.createItem`'s spec is.
+      finding.spec = JSON.parse(JSON.stringify(entry.spec));
+    } catch {
+      return { problem: "has a spec that is not plain data that can be written as JSON." };
+    }
+    // A `toJSON` can write a spec as something else entirely.
+    if (finding.spec === null || typeof finding.spec !== "object" || Array.isArray(finding.spec)) return { problem: "has a spec that is not an object of the item type's fields." };
+  }
+  if (entry.existingBranch !== undefined) {
+    const branch = text("existingBranch");
+    if (branch === null || branch === "") return { problem: "has an existingBranch that is not a branch's name, as non-empty text." };
+    finding.existingBranch = branch;
+  }
+  return { finding };
 }
 
 /**

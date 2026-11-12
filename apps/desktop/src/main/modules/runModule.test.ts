@@ -849,6 +849,188 @@ describe("a module that is a check", () => {
 });
 
 /**
+ * A watch module run as a pipeline's intake (EO-752, ARCHITECTURE.md
+ * §4.6): a check a job makes, with no item. It answers `waiting` with
+ * findings for EO to file, and everything that needs an item refuses.
+ */
+describe("a module that is a pipeline's intake", () => {
+  const JOB = { id: "019fb8c6-0000-7000-8000-0000000000j1", name: "Dependabot" };
+  const SECRET_NEEDS = { bin: [], env: ["TOKEN"], network: false, item: true, comment: true, attach: true, create: true };
+
+  function intakeRun(code: string, extra: { env?: Record<string, string>; watch?: boolean; onOutput?: (text: string) => void } = {}) {
+    const writes: string[] = [];
+    const outcome = runModule(launcher, {
+      module: moduleWith(code, { watch: extra.watch ?? true, needs: SECRET_NEEDS }),
+      item: null,
+      intake: { job: JOB },
+      context: {
+        run: { step: { id: "s-1", name: "Should not show" }, pipeline: { id: "pl-1", name: "Dependency update" }, attempt: 1, cameFrom: { step: { id: "s-0", name: "Nor this" }, result: "done" }, trial: false, watch: { startedAt: 5, waitingMs: 10, intervalMs: 3_600_000 } },
+        workspace: { kind: "scratch", id: null, name: null, git: null },
+        project: null,
+      },
+      cwd: process.cwd(),
+      env: extra.env ?? {},
+      ...(extra.onOutput ? { onOutput: extra.onOutput } : {}),
+      onComment: (comment) => {
+        writes.push(`comment ${comment.key}`);
+        return null;
+      },
+      onAttach: async () => {
+        writes.push("attach");
+        return null;
+      },
+      onCreate: () => {
+        writes.push("create");
+        return { created: true, key: "EO-9", existing: false };
+      },
+    });
+    return { outcome, writes };
+  }
+  const returning = (findings: string) => `export default async function run() { return { ok: true, result: "waiting", detail: "looked", findings: ${findings} }; }`;
+  const failure = (outcome: ModuleOutcome): string => (outcome.ok ? `succeeded: ${JSON.stringify(outcome)}` : outcome.reason);
+
+  it("answers waiting with its findings, parsed and trimmed, and no findings as an empty list", async () => {
+    const outcome = await intakeRun(
+      returning(`[
+        { key: "dependabot:o/r#1", title: " Bump zod ", body: "From 4.6", spec: { pr: 1 }, existingBranch: "dependabot/zod", ignored: true },
+        { key: "dependabot:o/r#2", title: "Bump vite" },
+      ]`),
+    ).outcome;
+    expect(outcome).toEqual({
+      ok: true,
+      result: "waiting",
+      detail: "looked",
+      news: [],
+      findings: [
+        { key: "dependabot:o/r#1", title: "Bump zod", body: "From 4.6", spec: { pr: 1 }, existingBranch: "dependabot/zod" },
+        { key: "dependabot:o/r#2", title: "Bump vite" },
+      ],
+    });
+    expect(await intakeRun(`export default async function run() { return { ok: true, result: "waiting" }; }`).outcome).toEqual({ ok: true, result: "waiting", detail: "", news: [], findings: [] });
+  });
+
+  it("refuses findings from a run that is not an intake check, saying where they are read", async () => {
+    for (const result of ["waiting", "ok"]) {
+      const outcome = await run(moduleWith(`export default async function run() { return { ok: true, result: "${result}", findings: [{ key: "k", title: "t" }] }; }`, { watch: true }));
+      expect(failure(outcome)).toContain("findings are only read when the module runs as a pipeline's intake");
+    }
+  });
+
+  it("refuses findings on an intake check's result other than waiting", async () => {
+    const outcome = await intakeRun(`export default async function run() { return { ok: true, result: "ok", findings: [{ key: "k", title: "t" }] }; }`).outcome;
+    expect(failure(outcome)).toContain('findings are only read when the module runs as a pipeline\'s intake and answers "waiting"');
+  });
+
+  it("still lets an intake check answer one of its results, with no findings", async () => {
+    expect(await intakeRun(`export default async function run() { return { ok: true, result: "ok", detail: "token expired" }; }`).outcome).toEqual({ ok: true, result: "ok", detail: "token expired" });
+  });
+
+  it("refuses more than 100 findings, and keeps none of them", async () => {
+    const outcome = await intakeRun(returning(`Array.from({ length: 101 }, (_, i) => ({ key: "k" + i, title: "t" }))`)).outcome;
+    expect(failure(outcome)).toContain("An intake check may report at most 100 findings, and this one reported 101. EO kept none of them.");
+    expect(outcome.ok).toBe(false);
+  });
+
+  it("refuses a finding the schema refuses, naming it by its index", async () => {
+    const cases: Array<[string, string]> = [
+      [`"k"`, "findings is not a list"],
+      [`[{ key: "a", title: "A" }, null]`, "findings[1] is not an object"],
+      [`[{ title: "no key" }]`, "findings[0] has no key"],
+      [`[{ key: "   ", title: "blank key" }]`, "findings[0] has no key"],
+      [`[{ key: "${"k".repeat(201)}", title: "long" }]`, "findings[0] has a key of 201 characters, and a key may be at most 200"],
+      [`[{ key: "a", title: "A" }, { key: "b", title: "" }]`, "findings[1] has no title"],
+      [`[{ key: "a", title: "A", body: 3 }]`, "findings[0] has a body that is not text"],
+      [`[{ key: "a", title: "A", spec: [1] }]`, "findings[0] has a spec that is not an object"],
+      [`[{ key: "a", title: "A", existingBranch: "" }]`, "findings[0] has an existingBranch that is not a branch's name"],
+    ];
+    for (const [findings, reason] of cases) {
+      const outcome = await intakeRun(returning(findings)).outcome;
+      expect(failure(outcome), findings).toContain(reason);
+    }
+  });
+
+  it("refuses two findings with one key, naming the key", async () => {
+    const outcome = await intakeRun(returning(`[{ key: "a", title: "A" }, { key: "b", title: "B" }, { key: " a", title: "A again" }]`)).outcome;
+    expect(failure(outcome)).toContain('findings[0] and findings[2] both have the key "a"');
+  });
+
+  it("redacts a secret from a finding's key, title, body, spec strings and existing branch", async () => {
+    const outcome = await intakeRun(
+      `export default async function run() {
+        const t = process.env.TOKEN;
+        return { ok: true, result: "waiting", findings: [{ key: "k-" + t, title: "T " + t, body: "B " + t, spec: { note: "S " + t, nested: [t], count: 2 }, existingBranch: "b-" + t }] };
+      }`,
+      { env: { TOKEN: "s3cr3t-value" } },
+    ).outcome;
+    expect(JSON.stringify(outcome)).not.toContain("s3cr3t-value");
+    expect(outcome.ok && outcome.findings).toEqual([{ key: "k-«TOKEN»", title: "T «TOKEN»", body: "B «TOKEN»", spec: { note: "S «TOKEN»", nested: ["«TOKEN»"], count: 2 }, existingBranch: "b-«TOKEN»" }]);
+  });
+
+  it("refuses findings that redaction leaves sharing a key", async () => {
+    const outcome = await intakeRun(
+      `export default async function run() { return { ok: true, result: "waiting", findings: [{ key: process.env.TOKEN, title: "A" }, { key: "«TOKEN»", title: "B" }] }; }`,
+      { env: { TOKEN: "s3cr3t-value" } },
+    ).outcome;
+    expect(failure(outcome)).toContain('findings[0] and findings[1] both have the key "«TOKEN»"');
+    expect(JSON.stringify(outcome)).not.toContain("s3cr3t-value");
+  });
+
+  it("finds no item, and refuses comment, attach and createItem saying an intake check has no item", async () => {
+    const { outcome, writes } = intakeRun(`export default async function run(ctx) {
+      const said = { item: ctx.item(), comment: ctx.comment("hello"), attach: await ctx.attach("x.txt"), create: await ctx.createItem({ idempotencyKey: "k", type: "story", title: "t" }) };
+      return { ok: true, result: "ok", detail: JSON.stringify(said) };
+    }`);
+    const done = await outcome;
+    const said = JSON.parse(done.ok ? done.detail : "{}") as Record<string, { reason: string } & Record<string, unknown>>;
+    expect(said["item"]).toMatchObject({ found: false });
+    expect(said["item"]?.reason).toContain(`An intake check has no item: this run checks for the job "${JOB.name}"`);
+    expect(said["comment"]).toMatchObject({ posted: false });
+    expect(said["attach"]).toMatchObject({ attached: false });
+    expect(said["create"]).toMatchObject({ created: false });
+    for (const name of ["comment", "attach", "create"]) expect(said[name]?.reason, name).toContain("An intake check has no item");
+    expect(writes).toEqual([]);
+  });
+
+  it("refuses comment, attach and create events written straight to fd 3, and calls no writer", async () => {
+    const lines: string[] = [];
+    const { outcome, writes } = intakeRun(
+      `import { writeSync } from "node:fs";
+      export default async function run() {
+        writeSync(3, JSON.stringify({ type: "comment", body: "smuggled" }) + "\\n");
+        writeSync(3, JSON.stringify({ type: "attach", paths: ["package.json"], caption: "" }) + "\\n");
+        writeSync(3, JSON.stringify({ type: "create", id: "c-1", creation: { idempotencyKey: "k", type: "story", title: "t" } }) + "\\n");
+        return { ok: true, result: "waiting" };
+      }`,
+      { onOutput: (text) => lines.push(text) },
+    );
+    expect(await outcome).toMatchObject({ ok: true, result: "waiting" });
+    expect(writes).toEqual([]);
+    const transcript = lines.join("");
+    expect(transcript).toContain("EO did not post a comment: an intake check has no item to comment on.");
+    expect(transcript).toContain(`EO did not attach files to the intake check for the job "${JOB.name}": an intake check has no item to attach files to.`);
+    expect(transcript).toContain(`EO did not create an item from the intake check for the job "${JOB.name}": an intake check has no item to create items from.`);
+  });
+
+  it("says it is an intake check on ctx.run, with no step, the job's pipeline and the watch's timing", async () => {
+    const outcome = await intakeRun(`export default async function run(ctx) { return { ok: true, result: "ok", detail: JSON.stringify(ctx.run) }; }`).outcome;
+    expect(JSON.parse(outcome.ok ? outcome.detail : "null")).toEqual({
+      step: null,
+      pipeline: { id: "pl-1", name: "Dependency update" },
+      attempt: 1,
+      cameFrom: null,
+      trial: false,
+      watch: { startedAt: 5, waitingMs: 10, intervalMs: 3_600_000 },
+      intake: { job: JOB },
+    });
+  });
+
+  it("leaves ctx.run.intake null on a run that is not an intake check", async () => {
+    const outcome = await run(moduleWith(`export default async function run(ctx) { return { ok: true, result: "ok", detail: JSON.stringify(ctx.run.intake) }; }`));
+    expect(outcome).toMatchObject({ ok: true, detail: "null" });
+  });
+});
+
+/**
  * The same host, on the runtime EO actually ships (EO-80).
  *
  * Everything above runs on plain Node, because under vitest

@@ -723,7 +723,7 @@ describe("runModuleTests", () => {
           export default async function (harness) {
             const run = await harness.run();
             const read = JSON.parse(run.outcome.detail);
-            assert.deepEqual(read.run, { step: null, pipeline: null, attempt: null, cameFrom: { step: null, result: null }, trial: false, watch: null });
+            assert.deepEqual(read.run, { step: null, pipeline: null, attempt: null, cameFrom: { step: null, result: null }, trial: false, watch: null, intake: null });
             assert.deepEqual(read.workspace, { kind: null, id: null, name: null, git: null });
             assert.equal(read.project, null);
           }`, "unscripted"),
@@ -1141,6 +1141,103 @@ describe("runModuleTests", () => {
       });
       expect(run.cases[0]).toMatchObject({ passed: false });
       expect(run.cases[1]).toMatchObject({ passed: true });
+    });
+  });
+
+  /**
+   * The `intake` fixture (EO-752): the module run as a pipeline's intake
+   * check, with no item, its findings parsed into `run.outcome.findings`
+   * and refused exactly as a real run refuses them.
+   */
+  describe("a module run as a pipeline's intake (EO-752)", () => {
+    const INTAKE = `{ job: { id: "job-1", name: "Dependabot" } }`;
+    const WATCH = manifest({ watch: true, needs: { bin: [], env: [], network: false, item: true, comment: true, attach: true, create: true } });
+    const returning = (findings: string) => `export default async function () { return { ok: true, result: "waiting", findings: ${findings} }; }`;
+    const refusedWith = (pattern: string) => `import assert from "node:assert/strict";
+      export default async function (harness) {
+        const run = await harness.run({ intake: ${INTAKE} });
+        assert.equal(run.outcome.ok, false, JSON.stringify(run.outcome));
+        assert.ok(run.outcome.reason.includes(${JSON.stringify(pattern)}), run.outcome.reason);
+      }`;
+
+    it("runs the module with no item, says so on ctx.run, refuses what needs an item, and records nothing", async () => {
+      const module = `
+        export default async function (ctx) {
+          const said = { run: ctx.run, item: ctx.item(), comment: ctx.comment("hi"), attach: await ctx.attach("x.txt"), create: await ctx.createItem({ idempotencyKey: "k", type: "story", title: "t" }) };
+          return { ok: true, result: "waiting", detail: JSON.stringify(said), findings: [{ key: "dependabot:o/r#1", title: "Bump zod", spec: { pr: 1 } }] };
+        }`;
+      const run = await runModuleTests(launcher, {
+        module: { code: module, manifest: WATCH },
+        tests: [
+          testCase(`import assert from "node:assert/strict";
+            export default async function (harness) {
+              const run = await harness.run({ intake: ${INTAKE}, run: { step: { id: "s", name: "S" }, cameFrom: { step: { id: "s0", name: "S0" }, result: "done" }, pipeline: { id: "pl-1", name: "Dependency update" }, watch: { intervalMs: 60000 } } });
+              assert.equal(run.outcome.ok, true, run.outcome.reason);
+              assert.deepEqual(run.outcome.findings, [{ key: "dependabot:o/r#1", title: "Bump zod", spec: { pr: 1 } }]);
+              const said = JSON.parse(run.outcome.detail);
+              assert.deepEqual(said.run.intake, { job: { id: "job-1", name: "Dependabot" } });
+              assert.equal(said.run.step, null);
+              assert.equal(said.run.cameFrom, null);
+              assert.deepEqual(said.run.pipeline, { id: "pl-1", name: "Dependency update" });
+              assert.deepEqual(said.run.watch, { startedAt: null, waitingMs: null, intervalMs: 60000 });
+              assert.equal(said.item.found, false);
+              assert.match(said.item.reason, /An intake check has no item/);
+              assert.equal(said.comment.posted, false);
+              assert.equal(said.attach.attached, false);
+              assert.equal(said.create.created, false);
+              for (const refused of [said.comment, said.attach, said.create]) assert.match(refused.reason, /An intake check has no item/);
+              assert.deepEqual([run.comments, run.attachments, run.created], [[], [], []]);
+            }`, "an intake check"),
+          testCase(`import assert from "node:assert/strict";
+            export default async function (harness) {
+              const run = await harness.run();
+              assert.equal(run.outcome.ok, false);
+              assert.match(run.outcome.reason, /findings are only read when the module runs as a pipeline's intake/);
+            }`, "the same module on a step"),
+        ],
+      });
+      expect(run.cases.map((entry) => entry.failure)).toEqual([null, null]);
+    });
+
+    it("answers an intake check that found nothing with an empty list of findings", async () => {
+      const run = await runModuleTests(launcher, {
+        module: { code: `export default async function () { return { ok: true, result: "waiting" }; }`, manifest: WATCH },
+        tests: [
+          testCase(`import assert from "node:assert/strict";
+            export default async function (harness) {
+              const run = await harness.run({ intake: ${INTAKE} });
+              assert.deepEqual(run.outcome, { ok: true, result: "waiting", detail: "", news: [], findings: [] });
+            }`),
+        ],
+      });
+      expect(run.cases[0]).toMatchObject({ passed: true });
+    });
+
+    it("refuses too many findings, one the schema refuses, a repeated key, and findings on a result, as a real run does", async () => {
+      const cases: Array<[string, string]> = [
+        [returning(`Array.from({ length: 101 }, (_, i) => ({ key: "k" + i, title: "t" }))`), "may report at most 100 findings, and this one reported 101"],
+        [returning(`[{ key: "a", title: "A" }, { key: "b" }]`), "findings[1] has no title"],
+        [returning(`[{ key: "a", title: "A" }, { key: "a", title: "B" }]`), 'findings[0] and findings[1] both have the key "a"'],
+        [`export default async function () { return { ok: true, result: "merged", findings: [] }; }`, 'answers "waiting"'],
+      ];
+      for (const [code, reason] of cases) {
+        const run = await runModuleTests(launcher, { module: { code, manifest: WATCH }, tests: [testCase(refusedWith(reason))] });
+        expect(run.cases[0]?.failure, reason).toBeNull();
+      }
+    });
+
+    it("refuses an intake fixture of the wrong shape, and one beside an item", async () => {
+      const run = await runModuleTests(launcher, {
+        module: { code: `export default async function () { return { ok: true, result: "waiting" }; }`, manifest: WATCH },
+        tests: [
+          testCase(`export default async function (harness) { await harness.run({ intake: { job: "Dependabot" } }); }`, "shape"),
+          testCase(`export default async function (harness) { await harness.run({ intake: ${INTAKE}, item: { key: "EO-1" } }); }`, "item"),
+        ],
+      });
+      expect(run.cases.map((entry) => entry.failure)).toEqual([
+        expect.stringContaining("harness.run's intake is { job: { id, name } }"),
+        expect.stringContaining("harness.run's intake runs the module as an intake check, which has no item"),
+      ]);
     });
   });
 

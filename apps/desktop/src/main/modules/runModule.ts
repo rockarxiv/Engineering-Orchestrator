@@ -1,8 +1,17 @@
 import { spawn } from "node:child_process";
 import { createHmac, randomBytes, randomUUID } from "node:crypto";
 import { Duplex } from "node:stream";
-import { DEFAULT_MODULE_TIMEOUT_MS, MAX_ATTACHMENT_ADD_PATHS, MAX_MODULE_CREATIONS_PER_RUN, MODULE_CREATION_WAITS, describeDuration, moduleInputProblems } from "@eo/core";
-import type { CustomModule, EntryDoor, Item, ModuleCreation, ModuleCreationAnswer, ModuleCreationWait, RunProcessScope, WatchNews } from "@eo/core";
+import {
+  DEFAULT_MODULE_TIMEOUT_MS,
+  MAX_ATTACHMENT_ADD_PATHS,
+  MAX_MODULE_CREATIONS_PER_RUN,
+  MODULE_CREATION_WAITS,
+  describeDuration,
+  moduleInputProblems,
+  WatchFindingSchema,
+  watchFindingsProblem,
+} from "@eo/core";
+import type { CustomModule, EntryDoor, Item, ModuleCreation, ModuleCreationAnswer, ModuleCreationWait, RunProcessScope, WatchFinding, WatchNews } from "@eo/core";
 import type { StepAnswer } from "../roles/answers.js";
 import { killTree } from "../process/killTree.js";
 import { busEnv, launchInRunScope } from "../process/runScope.js";
@@ -16,6 +25,15 @@ export interface ModuleEntryContext {
   pipeline: { id: string; name: string };
   /** The step a move or a route came from; null on creation and from a job. */
   fromStep: { id: string; name: string | null } | null;
+}
+
+/**
+ * What makes a run a pipeline's intake check (EO-752, ARCHITECTURE.md
+ * §4.6): the job it checks for. The host hands it to the module as
+ * `ctx.run.intake`.
+ */
+export interface ModuleIntakeContext {
+  job: { id: string; name: string };
 }
 
 /**
@@ -259,13 +277,28 @@ export type ModuleOutcome =
    * `reason` is on an entry check's `refuse` (EO-736): why it keeps the
    * item out. Absent on every other result.
    */
-  | { ok: true; result: string; detail: string; news?: WatchNews[]; reason?: string }
+  /**
+   * `findings` is on an intake check's `waiting` (EO-752): what the
+   * module found, for EO to file on the job's pipeline. Always a list
+   * there, redacted and parsed with `WatchFindingSchema`; absent on
+   * every other result.
+   */
+  | { ok: true; result: string; detail: string; news?: WatchNews[]; findings?: WatchFinding[]; reason?: string }
   /** `timedOut` says the limit stopped it, for a caller that words that itself (EO-736). */
   | { ok: false; reason: string; options?: string[]; timedOut?: true };
 
 export interface RunModuleRequest {
   module: CustomModule;
-  item: Item;
+  /** The item the step runs on. Null on an intake check (EO-752), which has none and must say whose job it is in `intake`. */
+  item: Item | null;
+  /**
+   * On a pipeline's intake check (EO-752): the job it checks for. The
+   * module answers `waiting` with findings rather than working on an
+   * item; `ctx.item()` finds nothing, and `ctx.comment`, `ctx.attach`
+   * and `ctx.createItem` refuse — in the host, and here again. Absent on
+   * every other run.
+   */
+  intake?: ModuleIntakeContext;
   cwd: string;
   /** The step's configured values, before the manifest's defaults are applied. */
   inputs?: Record<string, unknown>;
@@ -554,6 +587,12 @@ function secretEnv(request: RunModuleRequest): Record<string, string> {
 export function runModule(launcher: ModuleHostLauncher, request: RunModuleRequest): Promise<ModuleOutcome> {
   const timeoutMs = request.timeoutMs ?? DEFAULT_MODULE_TIMEOUT_MS;
   const secrets = secretEnv(request);
+  // An intake check (EO-752) has no item, and every other run has one.
+  const intake = request.intake ?? null;
+  if (intake === null && request.item === null) throw new Error("runModule needs an item, or an intake job to check for.");
+  const item = intake === null ? request.item : null;
+  /** What the transcript calls the item a write was refused on: its key, or the intake check that has none. */
+  const runningOn = item?.key ?? `the intake check for the job "${intake?.job.name ?? ""}"`;
 
   // A configured value that is not what the manifest declared (EO-78).
   //
@@ -735,6 +774,13 @@ export function runModule(launcher: ModuleHostLauncher, request: RunModuleReques
 
     const conclude = (outcome: ModuleOutcome): void => {
       emitRest();
+      resolve(redactedOutcome(outcome));
+    };
+
+    /**
+     * What a module answered, made safe to keep.
+     */
+    const redactedOutcome = (outcome: ModuleOutcome): ModuleOutcome => {
       // The outcome reaches `runs.error`, `runs.result` and an escalation
       // comment, so it is redacted like everything else. A module has no
       // need to put a token in its own `reason` — but the ordinary way it
@@ -748,20 +794,35 @@ export function runModule(launcher: ModuleHostLauncher, request: RunModuleReques
       // News too (EO-458), the id as well as the text: the text becomes a
       // comment, and the id is kept on the watch row for as long as the
       // watch lasts.
-      resolve(
-        outcome.ok
-          ? {
-              ok: true,
-              result: outcome.result,
-              detail: redactSecrets(outcome.detail, secrets),
-              ...(Array.isArray(outcome.news)
-                ? { news: outcome.news.map((entry) => ({ id: redactSecrets(entry.id, secrets), text: redactSecrets(entry.text, secrets) })) }
-                : {}),
-              // An entry check's refusal (EO-736), shown to whoever is at the door.
-              ...(typeof outcome.reason === "string" ? { reason: redactSecrets(outcome.reason, secrets) } : {}),
-            }
-          : { ok: false, reason: redactSecrets(outcome.reason, secrets), ...redactedOptions(outcome.options), ...(outcome.timedOut === true ? { timedOut: true as const } : {}) },
-      );
+      //
+      // Findings as well (EO-752): each becomes an item, its title on a
+      // board and its key kept for as long as the job lasts. Only an
+      // intake check may carry them, which the host decides and this
+      // side holds again; and they are parsed again after redaction,
+      // with the schema the host mirrors, because replacing a value with
+      // its name can lengthen a key or make two keys one.
+      if (!outcome.ok) {
+        return { ok: false, reason: redactSecrets(outcome.reason, secrets), ...redactedOptions(outcome.options), ...(outcome.timedOut === true ? { timedOut: true as const } : {}) };
+      }
+      let findings: WatchFinding[] | undefined;
+      if (outcome.findings !== undefined) {
+        if (intake === null || !Array.isArray(outcome.findings)) {
+          return { ok: false, reason: "This module returned findings, but findings are only read when the module runs as a pipeline's intake." };
+        }
+        const redacted = outcome.findings.map((finding) => redactDeep(finding, secrets));
+        const problem = watchFindingsProblem(redacted);
+        if (problem !== null) return { ok: false, reason: redactSecrets(problem, secrets) };
+        findings = redacted.map((finding) => WatchFindingSchema.parse(finding));
+      }
+      return {
+        ok: true,
+        result: outcome.result,
+        detail: redactSecrets(outcome.detail, secrets),
+        ...(Array.isArray(outcome.news) ? { news: outcome.news.map((entry) => ({ id: redactSecrets(entry.id, secrets), text: redactSecrets(entry.text, secrets) })) } : {}),
+        ...(findings === undefined ? {} : { findings }),
+        // An entry check's refusal (EO-736), shown to whoever is at the door.
+        ...(typeof outcome.reason === "string" ? { reason: redactSecrets(outcome.reason, secrets) } : {}),
+      };
     };
 
     // The module's own stdout and stderr — a `console.log`, or a crash in
@@ -802,7 +863,12 @@ export function runModule(launcher: ModuleHostLauncher, request: RunModuleReques
      * a thing it is free to ignore.
      */
     const postComment = (rawKey: string | undefined, rawBody: string): void => {
-      const key = typeof rawKey === "string" && rawKey.trim() !== "" ? rawKey.trim() : request.item.key;
+      const key = typeof rawKey === "string" && rawKey.trim() !== "" ? rawKey.trim() : (item?.key ?? null);
+      // No key on an intake check is a comment on an item there is not (EO-752).
+      if (key === null) {
+        emit(`EO did not post a comment: an intake check has no item to comment on.\n`);
+        return;
+      }
       const refuse = (problem: string): void => emit(`EO did not post a comment on ${key}: ${problem}\n`);
 
       if (rawBody.length > MAX_COMMENT_CHARS) {
@@ -858,7 +924,11 @@ export function runModule(launcher: ModuleHostLauncher, request: RunModuleReques
      * transcript (invariant #8).
      */
     const postAttachment = async (rawPaths: unknown, rawCaption: unknown): Promise<void> => {
-      const refuse = (problem: string): void => emit(`EO did not attach files to ${request.item.key}: ${problem}\n`);
+      const refuse = (problem: string): void => emit(`EO did not attach files to ${runningOn}: ${problem}\n`);
+      if (item === null) {
+        refuse("an intake check has no item to attach files to.");
+        return;
+      }
 
       if (!Array.isArray(rawPaths) || rawPaths.length === 0 || rawPaths.some((path) => typeof path !== "string" || path === "")) {
         refuse("an attach names one or more file paths.");
@@ -978,7 +1048,8 @@ export function runModule(launcher: ModuleHostLauncher, request: RunModuleReques
         else if (what === "runs") signedAnswer(readPipe, id, { runs: key === "" ? null : items.runs(key) });
         else if (what === "transitions") signedAnswer(readPipe, id, { transitions: key === "" ? null : items.transitions(key) });
         else if (what === "items") {
-          const page = items.items(request.item.projectId, event.filter);
+          // The running item's project, or on an intake check the job's (EO-752), which the context names.
+          const page = items.items(item === null ? (request.context?.project?.id ?? null) : item.projectId, event.filter);
           signedAnswer(readPipe, id, "refused" in page ? page : { items: page });
         } else if (what === "attachment") {
           const file = key === "" ? null : await items.readAttachment(key);
@@ -1017,10 +1088,14 @@ export function runModule(launcher: ModuleHostLauncher, request: RunModuleReques
      */
     const postCreation = async (id: unknown, raw: unknown): Promise<void> => {
       const refuse = (problem: string): void => {
-        emit(`EO did not create an item from ${request.item.key}: ${problem}\n`);
+        emit(`EO did not create an item from ${runningOn}: ${problem}\n`);
         reply(id, { created: false, reason: problem });
       };
 
+      if (item === null) {
+        refuse("an intake check has no item to create items from. Return what it found as findings, and EO files each one on the job's pipeline.");
+        return;
+      }
       if (request.module.manifest.needs.create !== true) {
         refuse(`"${request.module.name}" does not declare needs.create in its manifest, so it may not create items.`);
         return;
@@ -1272,7 +1347,9 @@ export function runModule(launcher: ModuleHostLauncher, request: RunModuleReques
         // fd 6 each time it is read (EO-709), so `ctx.item()` and
         // `ctx.itemByKey()` answer with one shape built in one place —
         // a copy sent here would be a second, staler version of it.
-        itemKey: request.item.key,
+        itemKey: item?.key ?? null,
+        // An intake check (EO-752): `ctx.run.intake`, and no item.
+        intake,
         // One source for the caps (EO-75). The host applies them so a
         // module gets an immediate, accurate refusal; this side applies
         // them again because it is what writes.
