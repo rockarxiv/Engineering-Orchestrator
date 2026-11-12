@@ -198,6 +198,10 @@ export const GitItemStateSchema = z.object({
    * item's work; a branch a person named may carry any number of commits
    * from before EO arrived, and counting those would pass a run that
    * committed nothing.
+   *
+   * Moved once it is set only when the remote branch moves on while the
+   * local one still stands here with nothing uncommitted — a Dependabot
+   * rebase — and `open_pull_request` takes the remote's tip (EO-756).
    */
   attachedAt: z.string().nullable().default(null),
   /**

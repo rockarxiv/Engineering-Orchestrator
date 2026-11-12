@@ -276,13 +276,19 @@ export function createWorktreeWorkspace(db: Db, worktreeRoot?: string, run: CliR
     if (!worktree.ok) return { ok: false, reason: worktree.reason, ...(worktree.options ? { options: worktree.options } : {}) };
 
     // Where a named branch stood when EO first had it (EO-365), recorded
-    // once and never moved: the implementer's commits check counts from
-    // here, so commits the branch already carried are not taken for this
+    // once here and never moved by Worktree: the implementer's commits
+    // check counts from here, so commits the branch already carried are not taken for this
     // item's work. It is also what makes the branch "in git" for the
     // ticket's edit rules, so a name can no longer be swapped under a
     // worktree already on it. Refused rather than skipped when it cannot
     // be read, because a check with no starting point would count the
     // person's own commits (invariant #5).
+    //
+    // The one thing that moves it is `open_pull_request`, when the
+    // remote branch moved on while this one still stood exactly here with
+    // a clean worktree (EO-756) — a Dependabot rebase. Then the local
+    // branch follows the remote and this follows the branch, since
+    // nothing between the two commits is this item's work either.
     if (namedBranch && attachedAt === null) {
       const tip = await git(["rev-parse", "--verify", "HEAD^{commit}"], worktree.value.path);
       if (!tip.ok || tip.stdout === "") {
