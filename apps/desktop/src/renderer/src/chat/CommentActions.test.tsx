@@ -101,18 +101,22 @@ describe("a comment's actions", () => {
     const late = new Promise<void>((resolve) => {
       answerLate = resolve;
     });
-    const stale = client.fetchQuery({
-      queryKey: assistRoomKey,
-      queryFn: async () => {
-        await late;
-        return { conversation: { id: "chat-before", key: "ASK-1", messages: [] } };
-      },
-    });
+    // The press cancels this read, which rejects it: handled from the
+    // start, or the rejection is unhandled while the press is awaited.
+    const stale = client
+      .fetchQuery({
+        queryKey: assistRoomKey,
+        queryFn: async () => {
+          await late;
+          return { conversation: { id: "chat-before", key: "ASK-1", messages: [] } };
+        },
+      })
+      .catch(() => undefined);
 
     fireEvent.click(screen.getByRole("button", { name: "Fix with assistant" }));
     await waitFor(() => expect(screen.getByTestId("current-route")).toHaveTextContent("/chat"));
     answerLate();
-    await stale.catch(() => undefined);
+    await stale;
 
     expect(client.getQueryData(assistRoomKey)).toEqual({ conversation: CHAT });
   });
