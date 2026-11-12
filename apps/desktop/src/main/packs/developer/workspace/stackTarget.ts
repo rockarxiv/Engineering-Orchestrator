@@ -190,11 +190,6 @@ export async function baseRefFor(
         `Push \`${branch}\` to \`${workspace.config.forgeRemote}\` or check the remote is reachable, or change or clear the ticket's base branch, then reply to retry.`,
     };
   }
-  // The commit this fetch confirmed, for a named base, wherever the ref
-  // name might not be it (EO-364): a tracking ref a restricted refspec
-  // left behind, or a `FETCH_HEAD` the next fetch would overwrite. The
-  // repository's base and stacked dependencies read the ref, as before.
-  if (resolved.kind === "remote" && decision.kind === "named-base" && resolved.fetched !== undefined) return { ok: true, value: resolved.fetched };
   if (resolved.kind === "remote") return { ok: true, value: resolved.ref };
   if (resolved.kind === "no-remote" && decision.kind === "named-base") {
     return {

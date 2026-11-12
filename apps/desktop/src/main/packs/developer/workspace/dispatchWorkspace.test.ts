@@ -1796,6 +1796,51 @@ describe("an existing branch named on the ticket", () => {
     expect(await branchExists(repoPath, `eo/${named.key}`)).toBe(false);
   });
 
+  it("checks a remote-only branch out at its own tip when another fetch lands while it is being resolved (EO-755)", async () => {
+    const remotePath = join(scratch, "the remote.git");
+    await run(["init", "--bare", "-b", "main", remotePath], scratch);
+    await run(["remote", "add", "origin", remotePath], repoPath);
+    await run(["push", "-u", "origin", "main"], repoPath);
+    const tip = await localBranchWithWork();
+    await run(["push", "origin", "feature/limits"], repoPath);
+    await run(["branch", "-D", "feature/limits"], repoPath);
+    // `main` moves on after the branch was cut, as it had on EO-747.
+    writeFileSync(join(repoPath, "main-only.txt"), "landed on main later\n");
+    await run(["add", "-A"], repoPath);
+    await run(["commit", "-m", "later on main"], repoPath);
+    await run(["push", "origin", "main"], repoPath);
+    const mainTip = await git(["rev-parse", "main"], repoPath);
+    const named = namedItem("feature/limits");
+
+    // Another item's builtin step fetches `main` in the same repository
+    // the moment this one's fetch of the named branch returns — before
+    // `resolveRemoteRef` has answered — and so rewrites `FETCH_HEAD`.
+    const gitModule = await import("./git.js");
+    const realFetchBranch = gitModule.fetchBranch;
+    let interleaved = false;
+    vi.spyOn(gitModule, "fetchBranch").mockImplementation(async (path, remote, branch, options) => {
+      const fetched = await realFetchBranch(path, remote, branch, options);
+      if (branch === "feature/limits") {
+        await run(["fetch", "origin", "main"], repoPath);
+        interleaved = true;
+      }
+      return fetched;
+    });
+
+    const result = await createWorktreeWorkspace(handle.db, worktreeRoot)(named, "create_worktree");
+
+    vi.restoreAllMocks();
+    expect(interleaved).toBe(true);
+    const fetchHead = await git(["rev-parse", "FETCH_HEAD"], repoPath);
+    expect(fetchHead.ok && fetchHead.stdout).toBe(mainTip.ok && mainTip.stdout);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const head = await git(["rev-parse", "HEAD"], result.workspace.cwd);
+    expect(head.ok && head.stdout).toBe(tip);
+    expect(existsSync(join(result.workspace.cwd, "main-only.txt"))).toBe(false);
+    expect(gitStateOf(getItem(handle.db, named.id)!).attachedAt).toBe(tip);
+  });
+
   it("refuses, naming the branch, and creates nothing when it exists neither locally nor on the remote", async () => {
     const remotePath = join(scratch, "the remote.git");
     await run(["init", "--bare", "-b", "main", remotePath], scratch);

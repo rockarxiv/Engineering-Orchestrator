@@ -131,7 +131,7 @@ describe("resolveRemoteRef", () => {
     expect(resolved.kind === "remote" && resolved.unconfirmed).toBeTruthy();
   });
 
-  it("reports the fetched tip when a restricted refspec left the tracking ref behind it", async () => {
+  it("moves the tracking ref even when the remote's refspec does not cover the branch", async () => {
     // `release/2.4` fetched once into a tracking ref, then the remote is
     // set to fetch only `main` — a mirror-ish or hand-configured remote.
     await run(["push", "origin", "main:release/2.4"], repoPath);
@@ -150,9 +150,12 @@ describe("resolveRemoteRef", () => {
 
     const resolved = await resolveRemoteRef(repoPath, "origin", "release/2.4");
 
-    // The fetch succeeded and moved FETCH_HEAD, not the tracking ref.
-    expect(await git(["rev-parse", "origin/release/2.4"], repoPath)).toEqual(old);
-    expect(resolved).toEqual({ kind: "remote", ref: "origin/release/2.4", fetched: tip.ok && tip.stdout });
+    // The fetch names the tracking ref as its destination, so it is the
+    // remote's tip whatever the configured refspec covers.
+    expect(resolved).toEqual({ kind: "remote", ref: "origin/release/2.4" });
+    const after = await git(["rev-parse", "origin/release/2.4"], repoPath);
+    expect(after).not.toEqual(old);
+    expect(after.ok && after.stdout).toBe(tip.ok && tip.stdout);
   });
 
   it("says nothing extra when the fetch moved the tracking ref itself", async () => {

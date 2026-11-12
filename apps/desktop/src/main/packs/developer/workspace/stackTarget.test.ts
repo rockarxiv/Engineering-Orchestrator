@@ -393,26 +393,6 @@ describe("a base branch set on the item", () => {
     expect(resolved.reason).toContain("couldn't find remote ref");
   });
 
-  it("cuts from the commit this fetch confirmed when the tracking ref did not move", async () => {
-    const resolved = await baseRefFor({ kind: "named-base", branch: "release/2.4" }, repository, async (_path, remote, branch) => ({
-      kind: "remote",
-      ref: `${remote}/${branch}`,
-      fetched: "0123456789abcdef0123456789abcdef01234567",
-    }));
-
-    expect(resolved).toEqual({ ok: true, value: "0123456789abcdef0123456789abcdef01234567" });
-  });
-
-  it("leaves the repository's own base reading the ref name, as before", async () => {
-    const resolved = await baseRefFor({ kind: "base" }, repository, async (_path, remote, branch) => ({
-      kind: "remote",
-      ref: `${remote}/${branch}`,
-      fetched: "0123456789abcdef0123456789abcdef01234567",
-    }));
-
-    expect(resolved).toEqual({ ok: true, value: `${repository.config.forgeRemote}/main` });
-  });
-
   it("leaves the repository's own base accepting an unrefreshed tracking ref, as before", async () => {
     const resolved = await baseRefFor({ kind: "base" }, repository, async (_path, remote, branch) => ({
       kind: "remote",

@@ -1,4 +1,4 @@
-import { fetchBranch, git, refExists, remoteUrl, type NetworkGitOptions } from "./git.js";
+import { fetchBranch, refExists, remoteUrl, type NetworkGitOptions } from "./git.js";
 
 /**
  * What a branch name resolves to when the remote — not the local
@@ -19,17 +19,12 @@ export type RemoteRefResolution =
    * upstream leaves behind, so a caller that needs to know the branch is
    * *there now* reads this and refuses. Carries what the fetch said.
    *
-   * `fetched` is the commit this call's own fetch brought back, set
-   * whenever `ref` is not certain to be it (EO-364): a remote whose fetch
-   * refspec does not cover this branch writes `FETCH_HEAD` and leaves an
-   * existing `origin/<branch>` wherever an earlier, wider fetch put it, so
-   * the tracking ref can be stale *after a successful fetch*. And
-   * `FETCH_HEAD` itself is overwritten by the next fetch anyone runs. A
-   * caller that must start from what the remote holds now — a base a
-   * person named — uses this commit; the repository's base keeps reading
-   * `ref`, exactly as it always has.
+   * Without `unconfirmed`, `ref` is what this call's own fetch wrote: the
+   * fetch names the tracking ref as its destination, so neither a remote
+   * whose fetch refspec leaves the branch out (EO-364) nor another fetch
+   * running in the same repository (EO-755) can leave it anywhere else.
    */
-  | { kind: "remote"; ref: string; unconfirmed?: string; fetched?: string }
+  | { kind: "remote"; ref: string; unconfirmed?: string }
   /** No such remote in this repository. The local branch is all there is. */
   | { kind: "no-remote" }
   /** A remote exists, but this branch could not be resolved on it. */
@@ -66,40 +61,14 @@ export async function resolveRemoteRef(repoPath: string, remote: string, branch:
   if (!(await remoteUrl(repoPath, remote)).ok) return { kind: "no-remote" };
 
   // The one call here that reaches the network, and so the only one that
-  // needs a timeout and a way to be cancelled. The two `refExists` reads
-  // below are local and return in milliseconds.
+  // needs a timeout and a way to be cancelled. It writes the tracking ref
+  // itself rather than leaving its answer at `FETCH_HEAD`, which any other
+  // fetch in this repository — another item's step, running now —
+  // replaces (EO-755).
   const fetched = await fetchBranch(repoPath, remote, branch, options);
 
   const ref = `${remote}/${branch}`;
-  // What this fetch brought back, as a commit rather than as the name
-  // `FETCH_HEAD`, which the next fetch anywhere in this repository
-  // overwrites. Only read after a fetch that succeeded — otherwise
-  // `FETCH_HEAD` holds whatever some earlier, unrelated fetch left there.
-  const tip = fetched.ok ? await commitOf(repoPath, "FETCH_HEAD") : null;
-
-  if (await refExists(repoPath, ref)) {
-    if (!fetched.ok) return { kind: "remote", ref, unconfirmed: fetched.error };
-    // The fetch succeeded, but that does not prove it moved the tracking
-    // ref: a refspec that covers only `main` updates `FETCH_HEAD` and
-    // leaves `origin/<branch>` at whatever a wider fetch once wrote.
-    // When the two disagree, the fetched commit is the remote's tip.
-    if (tip !== null && tip !== (await commitOf(repoPath, ref))) return { kind: "remote", ref, fetched: tip };
-    return { kind: "remote", ref };
-  }
-
-  // A remote whose fetch refspec writes no remote-tracking ref (a mirror,
-  // or a hand-configured remote) still leaves the fetched tip at
-  // FETCH_HEAD, which is a perfectly good start point.
-  if (tip !== null) return { kind: "remote", ref: "FETCH_HEAD", fetched: tip };
-
-  return {
-    kind: "unresolved",
-    problem: fetched.ok ? `\`${remote}\` has no branch \`${branch}\`.` : `\`git fetch ${remote} ${branch}\` failed: ${fetched.error}`,
-  };
-}
-
-/** The commit a ref names, or null when it names none. */
-async function commitOf(repoPath: string, ref: string): Promise<string | null> {
-  const resolved = await git(["rev-parse", "--verify", "--quiet", `${ref}^{commit}`], repoPath);
-  return resolved.ok && resolved.stdout !== "" ? resolved.stdout : null;
+  if (fetched.ok) return { kind: "remote", ref };
+  if (await refExists(repoPath, ref)) return { kind: "remote", ref, unconfirmed: fetched.error };
+  return { kind: "unresolved", problem: `\`git fetch ${remote} ${branch}\` failed: ${fetched.error}` };
 }

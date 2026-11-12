@@ -555,12 +555,10 @@ async function attachRemoteBranch(
     };
   }
 
-  // The tracking ref when it is the remote's tip, so the branch tracks
-  // it; the fetched commit when a restricted refspec left the tracking
-  // ref behind, or wrote none.
-  const tracks = resolved.fetched === undefined && resolved.ref !== "FETCH_HEAD";
-  const start = resolved.fetched ?? resolved.ref;
-  const args = tracks ? ["worktree", "add", "--track", "-b", branch, path, start] : ["worktree", "add", "-b", branch, path, start];
+  // The tracking ref this call's own fetch wrote, so the branch starts at
+  // the remote's tip and tracks it (EO-755: never `FETCH_HEAD`, which a
+  // fetch for another item can replace before this line runs).
+  const args = ["worktree", "add", "--track", "-b", branch, path, resolved.ref];
   const added = await git(args, config.repoPath, options.signal ? { signal: options.signal } : {});
   if (!added.ok) {
     return { ok: false, reason: `Could not check out "${branch}" from ${remote} for ${itemKey} at ${path}: ${added.error}` };
