@@ -3,6 +3,7 @@ import { JIRA_EXTENSION } from "../itemExtensions.js";
 import { AssistOutputSchema } from "../schemas/assist.js";
 import { ScenarioOutputSchema } from "../schemas/scenario.js";
 import { CLARIFY_ACTION, ClarifyOutputSchema } from "../schemas/clarify.js";
+import { PLAN_COMMENT_RESPONSE_ACTION, PlanCommentResponseOutputSchema, REVIEW_PLAN_ACTION, ReviewPlanOutputSchema } from "../schemas/commentPlan.js";
 import { ImplementOutputSchema } from "../schemas/implement.js";
 import { INTAKE_ACTION, intakeOutputSchemaFor } from "../schemas/intake.js";
 import { InterpretOutputSchema } from "../schemas/interpret.js";
@@ -344,6 +345,11 @@ export const SCHEMAS_BY_ACTION: Record<string, z.ZodType> = {
   [CLARIFY_ACTION]: ClarifyOutputSchema,
   implement: ImplementOutputSchema,
   review: ReviewOutputSchema,
+  // Planning a response to other accounts' pull request comments, and
+  // judging that plan (EO-760): the implementer's and the reviewer's, on
+  // the Pull request comments board.
+  [PLAN_COMMENT_RESPONSE_ACTION]: PlanCommentResponseOutputSchema,
+  [REVIEW_PLAN_ACTION]: ReviewPlanOutputSchema,
   // The conversational action (EO-188): what the assistant's room runs.
   // Not a step any pipeline dispatches — the `assist` step is
   // human-owned, so `tick()` never dispatches it and the mention path is
@@ -390,6 +396,8 @@ export const SCHEMAS_BY_ACTION: Record<string, z.ZodType> = {
 const SCHEMA_OWNER: Record<string, BuiltinRole> = {
   implement: "implementer",
   review: "reviewer",
+  [PLAN_COMMENT_RESPONSE_ACTION]: "implementer",
+  [REVIEW_PLAN_ACTION]: "reviewer",
 };
 
 /** This pack's name, and the namespace its item types are in (ARCHITECTURE.md, "An item type is data"). */
@@ -483,7 +491,7 @@ const ACTION_DEFAULTS: Record<string, ActionDefaults> = { [REFINE_ACTION]: REFIN
  * routing each key, exactly as it holds a step to an action a role
  * defined for itself.
  *
- * Only the four a pipeline step dispatches. The rest of
+ * Only the ones a pipeline step dispatches. The rest of
  * `SCHEMAS_BY_ACTION` is run by EO for itself and routes nothing
  * (`UNDISPATCHED_ACTIONS`).
  *
@@ -499,6 +507,18 @@ export const DEVELOPER_ACTIONS: Record<string, Omit<ActionFacts, "packShipped">>
   },
   review: {
     description: "Reviews the work against the item and gives a verdict.",
+    results: [
+      { key: "approved", label: "Approved" },
+      { key: "changes_requested", label: "Changes requested" },
+      { key: NEEDS_USER_INPUT_RESULT, label: "Needs user input" },
+    ],
+  },
+  [PLAN_COMMENT_RESPONSE_ACTION]: {
+    description: "Proposes, for each pull request comment by another account awaiting a plan, what to change or that nothing should, and the reply to post. Changes nothing.",
+    results: [{ key: "planned", label: "Planned" }],
+  },
+  [REVIEW_PLAN_ACTION]: {
+    description: "Reviews a plan for answering pull request comments before a person sees it.",
     results: [
       { key: "approved", label: "Approved" },
       { key: "changes_requested", label: "Changes requested" },

@@ -170,9 +170,10 @@ describe("verify, after an implement run", () => {
     const prepared = await preparedWorktree();
 
     // No checks rather than passing ones, and the reason is on the kind
-    // rather than inside the verifier: `implement` is the one key this
-    // kind registers, so a reviewer's run finds nothing to run (EO-297).
-    expect(Object.keys(kind().verifiers)).toEqual(["implement"]);
+    // rather than inside the verifier: `implement` and the plan for pull
+    // request comments (EO-760) are the keys this kind registers, so a
+    // reviewer's run finds nothing to run (EO-297).
+    expect(Object.keys(kind().verifiers)).toEqual(["implement", "plan_comment_response"]);
     expect(await verifyRun(kind(), item, { ...succeededImplement(prepared), action: "review" })).toEqual([]);
   });
 });

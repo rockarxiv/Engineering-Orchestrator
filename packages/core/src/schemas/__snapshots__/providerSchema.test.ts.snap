@@ -2148,6 +2148,29 @@ exports[`the JSON Schema each provider receives > is unchanged for implement (un
               "items": {
                 "type": "string"
               }
+            },
+            "replies": {
+              "description": "For each pull request comment this run addressed, its forge id and a sentence saying what changed. Leave it out when the run addressed none.",
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "comment_id": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "The comment's forge id, as EO named it to you."
+                  },
+                  "reply": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "One sentence saying what changed in answer to it."
+                  }
+                },
+                "required": [
+                  "comment_id",
+                  "reply"
+                ]
+              }
             }
           },
           "required": [
@@ -2486,6 +2509,128 @@ exports[`the JSON Schema each provider receives > is unchanged for interpret (un
                 "problem"
               ]
             }
+          ]
+        }
+      ]
+    }
+  },
+  "required": [
+    "outcome"
+  ]
+}"
+`;
+
+exports[`the JSON Schema each provider receives > is unchanged for plan_comment_response (undefined) 1`] = `
+"{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "outcome": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "status": {
+              "type": "string",
+              "const": "clarification_required"
+            },
+            "questions": {
+              "minItems": 1,
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "question": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "why": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "options": {
+                    "default": [],
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "allow_free_text": {
+                    "default": true,
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "id",
+                  "question",
+                  "why"
+                ]
+              }
+            }
+          },
+          "required": [
+            "status",
+            "questions"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "summary": {
+              "type": "string",
+              "minLength": 1,
+              "description": "The plan in a sentence or two, for the person who approves it."
+            },
+            "comments": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "comment_id": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "The comment's forge id, exactly as it is listed under the comments awaiting a plan."
+                  },
+                  "change": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "description": "What you propose to change in answer to this comment, specific enough to carry out. null when you propose no change."
+                  },
+                  "reply": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "The reply to post on the pull request for this comment, once the plan has been carried out or rejected."
+                  }
+                },
+                "required": [
+                  "comment_id",
+                  "change",
+                  "reply"
+                ]
+              }
+            },
+            "memoryUsed": {
+              "description": "The ids of the memory entries you were given and relied on in this work. Leave out any you were not given.",
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "required": [
+            "summary",
+            "comments"
           ]
         }
       ]
@@ -3285,6 +3430,154 @@ exports[`the JSON Schema each provider receives > is unchanged for review (undef
                 "verdict",
                 "feedback",
                 "criteria_coverage",
+                "blocking_issues"
+              ]
+            },
+            {
+              "type": "object",
+              "properties": {
+                "verdict": {
+                  "type": "string",
+                  "const": "needs_user_input"
+                },
+                "feedback": {
+                  "type": "string"
+                },
+                "memoryUsed": {
+                  "description": "The ids of the memory entries you were given and relied on in this work. Leave out any you were not given.",
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              },
+              "required": [
+                "verdict",
+                "feedback"
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "required": [
+    "outcome"
+  ]
+}"
+`;
+
+exports[`the JSON Schema each provider receives > is unchanged for review_plan (undefined) 1`] = `
+"{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "outcome": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "status": {
+              "type": "string",
+              "const": "clarification_required"
+            },
+            "questions": {
+              "minItems": 1,
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "question": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "why": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "options": {
+                    "default": [],
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "allow_free_text": {
+                    "default": true,
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "id",
+                  "question",
+                  "why"
+                ]
+              }
+            }
+          },
+          "required": [
+            "status",
+            "questions"
+          ]
+        },
+        {
+          "oneOf": [
+            {
+              "type": "object",
+              "properties": {
+                "verdict": {
+                  "type": "string",
+                  "const": "approve"
+                },
+                "feedback": {
+                  "type": "string"
+                },
+                "memoryUsed": {
+                  "description": "The ids of the memory entries you were given and relied on in this work. Leave out any you were not given.",
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              },
+              "required": [
+                "verdict",
+                "feedback"
+              ]
+            },
+            {
+              "type": "object",
+              "properties": {
+                "verdict": {
+                  "type": "string",
+                  "const": "reject"
+                },
+                "feedback": {
+                  "type": "string"
+                },
+                "blocking_issues": {
+                  "minItems": 1,
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "memoryUsed": {
+                  "description": "The ids of the memory entries you were given and relied on in this work. Leave out any you were not given.",
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              },
+              "required": [
+                "verdict",
+                "feedback",
                 "blocking_issues"
               ]
             },

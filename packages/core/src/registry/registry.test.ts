@@ -489,7 +489,7 @@ describe("the actions a registry declares (EO-423)", () => {
 
   it("lists a role's own actions and the pack's it falls back to, and nothing only another role defined", () => {
     // The role's own first, `review` once and as its own; then the pack's.
-    expect(actionsAvailableTo(withDefinitions, "qa").map((entry) => entry.action)).toEqual(["alignment", "review", "refine", "intake", "implement"]);
+    expect(actionsAvailableTo(withDefinitions, "qa").map((entry) => entry.action)).toEqual(["alignment", "review", "refine", "intake", "implement", "plan_comment_response", "review_plan"]);
     expect(actionsAvailableTo(withDefinitions, "tester").map((entry) => entry.action)).not.toContain("alignment");
     expect(actionsAvailableTo(withDefinitions, null).map((entry) => entry.action)).not.toContain("alignment");
     // The list is `actionFactsFor` enumerated: each entry is what a dispatch would resolve.

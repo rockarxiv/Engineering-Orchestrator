@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { GIT_WORKTREE_KIND, type Agent, type Item } from "@eo/core";
+import { GIT_WORKTREE_KIND, PLAN_COMMENT_RESPONSE_ACTION, PlanCommentResponseOutputSchema, type Agent, type Item } from "@eo/core";
 import type { Db } from "../../../db/client.js";
 import { getGitWorkspace, stepForItem } from "../../../db/repos/index.js";
 import { emitPush } from "../../../ipc/push.js";
@@ -13,6 +13,8 @@ import {
   type RepositoryIntelligenceFactory,
 } from "../repositoryIntelligence/index.js";
 import { borrowedFromSiblings } from "./borrowed.js";
+import { commentsAwaitingPlan } from "../forge/commentPlans.js";
+import { withoutRepositoryIndex } from "../repositoryIntelligence/indexPaths.js";
 import { createWorktreeWorkspace, forgetIndexesForReleasedWorktrees, releaseStaleWorktrees, releaseWorktreeFor } from "./dispatchWorkspace.js";
 import { git, statusPorcelain } from "./git.js";
 import { referenceCheckoutFor, releaseReferenceCheckouts, releaseStaleReferenceCheckouts } from "./referenceCheckouts.js";
@@ -218,6 +220,23 @@ export function gitWorkspaceKind(options: GitWorkspaceKindOptions): WorkspaceKin
         if (clean) checks.push({ key: "clean-tree", passed: true, describes: `Nothing was left uncommitted in ${item.key}'s worktree.` });
         checks.push(await borrowedCheck(db, item, run.workspace, worktreeRoot));
         return checks;
+      }),
+      /**
+       * A plan for other accounts' pull request comments (EO-760): that it
+       * changed nothing, and that it answers for exactly the comments
+       * awaiting a plan. Both block, so a plan that broke either fails the
+       * run and the planner's next attempt reads why — the plan is not
+       * posted, reviewed or offered to anybody to approve.
+       *
+       * The tree is checked whatever the run ended as: a planner that
+       * stopped to ask has claimed no plan, but a prompt is a request, and
+       * the change it was told not to make is just as made.
+       */
+      [PLAN_COMMENT_RESPONSE_ACTION]: verifier(["the tree is untouched", "every comment awaiting a plan is planned for"], async (item: Item, run: VerifiableRun): Promise<readonly Check[]> => {
+        if (run.packAction === false) return [];
+        const untouched = await untouchedTreeCheck(item, run.workspace, options.readStatus ?? statusPorcelain);
+        if (run.ended === "escalated" || !untouched.passed) return [untouched];
+        return [untouched, planCoverageCheck(db, item, run.result)];
       }),
     },
 
@@ -491,5 +510,77 @@ export function borrowedFilesCheck(borrowed: readonly { path: string; fromItemKe
       `${borrowed.map((file) => `- ${file.path} (from ${file.fromItemKey})`).join("\n")}\n\n` +
       `That work is not merged and may still change or be dropped. Copying across repositories is sometimes the only option — ` +
       `but if this outlives what it was copied from, it is now the only copy, and nobody decided that.`,
+  };
+}
+
+/**
+ * Did a run that was to change nothing leave the worktree as it found it
+ * (EO-760)?
+ *
+ * Unlike plan mode's check, this blocks: a plan is the whole of what
+ * `plan_comment_response` produces, and changes left beside it would be
+ * work nobody approved, on the branch the approved plan is carried out on.
+ * The generated repository index is not a change, as it is not for the
+ * implementation's own check. A tree whose status cannot be read is not
+ * taken for clean.
+ */
+async function untouchedTreeCheck(item: Item, workspace: PreparedWorkspace, readStatus: typeof statusPorcelain): Promise<Check> {
+  const status = await readStatus(workspace.cwd);
+  if (!status.ok) {
+    return {
+      key: "untouched-tree",
+      passed: false,
+      blocks: true,
+      describes: `EO could not read whether this planning run left ${item.key}'s worktree as it found it: ${status.error}`,
+    };
+  }
+  const changes = withoutRepositoryIndex(status.stdout);
+  if (changes === "") return { key: "untouched-tree", passed: true, blocks: true, describes: `This planning run left ${item.key}'s worktree as it found it.` };
+  return {
+    key: "untouched-tree",
+    passed: false,
+    blocks: true,
+    describes: `This planning run was to change nothing, and it left changes in ${item.key}'s worktree, so it failed.`,
+    comment:
+      `This run was asked to plan a response to the pull request comments and change nothing, and it left changes in ${item.key}'s worktree. ` +
+      `So the run failed, and its plan was not posted.\n\nChanges in the worktree:\n\n\`\`\`\n${changes.trimEnd()}\n\`\`\`\n\n` +
+      "Nothing has been discarded. Whoever plans again must put the worktree back as it was first: a plan proposes, and changes are made only once a person approves it.",
+  };
+}
+
+/**
+ * Does the plan answer for exactly the comments awaiting one (EO-760)?
+ *
+ * The comments awaiting a plan are what the watch handed to planning
+ * (`commentsAwaitingPlan`), which the engine knows first-hand; the plan is
+ * the planner's claim about them. One left out is a comment nobody would
+ * answer, and one that is not awaiting a plan is a comment the plan has no
+ * business deciding about.
+ */
+function planCoverageCheck(db: Db, item: Item, result: unknown): Check {
+  const awaiting = commentsAwaitingPlan(db, item.id).map((comment) => comment.id);
+  const parsed = PlanCommentResponseOutputSchema.safeParse(result);
+  const named = parsed.success ? parsed.data.comments.map((entry) => entry.comment_id) : [];
+  const missing = awaiting.filter((id) => !named.includes(id));
+  const unknown = [...new Set(named.filter((id) => !awaiting.includes(id)))];
+  const twice = [...new Set(named.filter((id, index) => named.indexOf(id) !== index && awaiting.includes(id)))];
+  if (parsed.success && missing.length === 0 && unknown.length === 0 && twice.length === 0) {
+    return { key: "plan-coverage", passed: true, blocks: true, describes: `The plan answers for each of the ${awaiting.length} comment${awaiting.length === 1 ? "" : "s"} awaiting a plan, and for nothing else.` };
+  }
+  const list = (ids: readonly string[]): string => ids.map((id) => `\`${id}\``).join(", ");
+  const problems = [
+    ...(parsed.success ? [] : ["The answer could not be read as a plan."]),
+    ...(missing.length === 0 ? [] : [`It leaves out ${missing.length === 1 ? "a comment" : "comments"} awaiting a plan: ${list(missing)}.`]),
+    ...(unknown.length === 0 ? [] : [`It names ${unknown.length === 1 ? "a comment" : "comments"} not awaiting a plan: ${list(unknown)}.`]),
+    ...(twice.length === 0 ? [] : [`It plans for ${twice.length === 1 ? "a comment" : "comments"} more than once: ${list(twice)}.`]),
+  ];
+  return {
+    key: "plan-coverage",
+    passed: false,
+    blocks: true,
+    describes: `The plan does not answer for exactly the comments awaiting one, so it was refused.`,
+    comment:
+      `The plan was refused: it must answer once for every comment awaiting a plan, and for no other. ${problems.join(" ")}\n\n` +
+      (awaiting.length === 0 ? "No comment is awaiting a plan." : `The comments awaiting a plan: ${list(awaiting)}.`),
   };
 }

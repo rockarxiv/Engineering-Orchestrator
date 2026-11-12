@@ -278,6 +278,37 @@ type EoToolResult = { isError?: boolean; content: { type: string; text?: string 
 const IMPLEMENT_ANSWER = { branch: "eo/EO-1", summary: "Did the work.", files_changed: [], tests_run: true, handoff: "Nothing to flag." };
 const REVIEW_ANSWER = { verdict: "approve", feedback: "Looks right." };
 const MEMORY_USED_SCHEMAS = { implement: outputSchemaFor(developerRegistry(), "implement")!, review: outputSchemaFor(developerRegistry(), "review")! };
+/**
+ * The answers the "pull request comment plans" row reads (EO-760): a plan,
+ * a request for changes to it, an approval of it, and an implement answer
+ * with the replies the step answering on the pull request posts.
+ */
+const PLAN_ANSWER = {
+  summary: "Rename the helper; no changelog.",
+  comments: [
+    { comment_id: "review-comment:11", change: "Rename `a` to `total`.", reply: "Renamed it." },
+    { comment_id: "issue-comment:12", change: null, reply: "No changelog for internal changes." },
+  ],
+};
+const PLAN_REJECTED = { verdict: "reject", feedback: "Close.", blocking_issues: ["The reply to issue-comment:12 does not answer it."] };
+const PLAN_APPROVED = { verdict: "approve", feedback: "Fine." };
+const IMPLEMENT_WITH_REPLIES = { ...IMPLEMENT_ANSWER, replies: [{ comment_id: "review-comment:11", reply: "Renamed `a` to `total`." }] };
+const COMMENT_PLAN_SCHEMAS = {
+  plan: outputSchemaFor(developerRegistry(), "plan_comment_response")!,
+  planReview: outputSchemaFor(developerRegistry(), "review_plan")!,
+  implement: MEMORY_USED_SCHEMAS.implement,
+};
+/** What each of the three answers is read for, which the schema that crossed has to declare. */
+const COMMENT_PLAN_FIELDS: Record<keyof typeof COMMENT_PLAN_SCHEMAS, readonly string[]> = {
+  plan: ['"comment_id"', '"change"', '"reply"'],
+  planReview: ['"blocking_issues"', '"needs_user_input"'],
+  implement: ['"replies"', '"comment_id"'],
+};
+const commentPlanDeclared = (name: string, schema: unknown): boolean => {
+  const text = JSON.stringify(schema ?? null);
+  return (COMMENT_PLAN_FIELDS[name as keyof typeof COMMENT_PLAN_SCHEMAS] ?? ["\u0000"]).every((field) => text.includes(field));
+};
+
 /** How many times a schema that crossed to a backend declares `memoryUsed`. */
 const memoryUsedDeclared = (schema: unknown): number => JSON.stringify(schema ?? null).match(/"memoryUsed":\{/g)?.length ?? 0;
 
@@ -747,6 +778,17 @@ const CAPABILITIES = [
       review: { kind: "result", data: { outcome: { ...REVIEW_ANSWER, memoryUsed: ["m-1", "m-2"] } } },
       leftOut: { kind: "result", data: { outcome: IMPLEMENT_ANSWER } },
       reviewLeftOut: { kind: "result", data: { outcome: REVIEW_ANSWER } },
+    },
+  },
+  {
+    name: "pull request comment plans",
+    what: "the plan_comment_response and review_plan answer schemas (EO-760) cross to the backend with what each is read for — a plan's comments with their change and reply, a plan review's blocking issues — and so does implement's optional replies; a plan with a comment proposing no change (null), a request for changes to a plan, an approval of one and an implement answer with replies each hand EO the answer as the agent wrote it, less the optional fields a strict schema made it write as null",
+    same: {
+      sent: { plan: true, planReview: true, implement: true },
+      plan: { kind: "result", data: { outcome: PLAN_ANSWER } },
+      planRejected: { kind: "result", data: { outcome: PLAN_REJECTED } },
+      planApproved: { kind: "result", data: { outcome: PLAN_APPROVED } },
+      replies: { kind: "result", data: { outcome: IMPLEMENT_WITH_REPLIES } },
     },
   },
   {
@@ -3084,6 +3126,24 @@ const CLAUDE: Record<CapabilityName, Proof> = {
     };
   },
 
+  "pull request comment plans": async () => {
+    const sent: Record<string, boolean> = {};
+    for (const [name, outputSchema] of Object.entries(COMMENT_PLAN_SCHEMAS)) {
+      const { runQuery, calls } = scripted([sdk.init(), sdk.result()]);
+      await collect(createClaudeProvider({ runQuery, enableCommentTool: false }).start({ ...startOpts, outputSchema }));
+      sent[name] = commentPlanDeclared(name, (calls[0]?.options["outputFormat"] as { schema?: unknown } | undefined)?.schema);
+    }
+    const answered = async (outputSchema: Record<string, unknown>, outcome: Record<string, unknown>) =>
+      outcomeOf(await claudeTurn([sdk.init(), sdk.result({ structured_output: { outcome } })], { outputSchema }));
+    return {
+      sent,
+      plan: await answered(COMMENT_PLAN_SCHEMAS.plan, PLAN_ANSWER),
+      planRejected: await answered(COMMENT_PLAN_SCHEMAS.planReview, PLAN_REJECTED),
+      planApproved: await answered(COMMENT_PLAN_SCHEMAS.planReview, PLAN_APPROVED),
+      replies: await answered(COMMENT_PLAN_SCHEMAS.implement, IMPLEMENT_WITH_REPLIES),
+    };
+  },
+
   "agent writes through EO": async () => {
     // Claude's delivery: the bridge's address goes in the inline `eo`
     // server's environment with the rest of the turn's (EO-543). Each
@@ -4469,6 +4529,27 @@ const CODEX: Record<CapabilityName, Proof> = {
     };
   },
 
+  "pull request comment plans": async () => {
+    // Strict: every optional key is written, as null where the agent has
+    // nothing to say, and taken back out — but a plan's `change` is
+    // nullable and required, so its null is the agent's answer and stays.
+    const sent: Record<string, boolean> = {};
+    for (const [name, outputSchema] of Object.entries(COMMENT_PLAN_SCHEMAS)) {
+      const { fake, provider } = codexOver({ after: { "turn/start": [note.turnStarted(), note.agentMessage("{}"), note.turnCompleted()] } });
+      await collect(provider.start({ ...startOpts, outputSchema }));
+      sent[name] = commentPlanDeclared(name, fake.paramsOf("turn/start")?.["outputSchema"]);
+    }
+    const answered = async (outputSchema: Record<string, unknown>, outcome: Record<string, unknown>) =>
+      outcomeOf(await codexTurn([note.turnStarted(), note.agentMessage(JSON.stringify({ outcome })), note.turnCompleted()], { outputSchema }));
+    return {
+      sent,
+      plan: await answered(COMMENT_PLAN_SCHEMAS.plan, { ...PLAN_ANSWER, memoryUsed: null }),
+      planRejected: await answered(COMMENT_PLAN_SCHEMAS.planReview, { ...PLAN_REJECTED, memoryUsed: null }),
+      planApproved: await answered(COMMENT_PLAN_SCHEMAS.planReview, { ...PLAN_APPROVED, memoryUsed: null }),
+      replies: await answered(COMMENT_PLAN_SCHEMAS.implement, { ...IMPLEMENT_WITH_REPLIES, memoryUsed: null }),
+    };
+  },
+
   "agent writes through EO": async () => {
     // Codex's delivery: the bridge's address is one more
     // `mcp_servers.eo.env.<NAME>` override on the app-server's command
@@ -4925,6 +5006,7 @@ describe("the shared list", () => {
       "memory delivery and memory_read",
       "memory_note",
       "memory used in an answer",
+      "pull request comment plans",
       "agent writes through EO",
       "repository_checkout",
       "reading the item's own files",

@@ -177,13 +177,16 @@ describe("folding the installed packs", () => {
     expect(folded.sectionRenderers.map((renderer) => renderer.id)).toEqual(["first", "second"]);
   });
 
-  it("supplies the developer pack's five sections, and none with nothing installed", () => {
+  it("supplies the developer pack's eight sections, and none with nothing installed", () => {
     expect(foldPacks([developerPack({ db: handle.db })]).sectionRenderers.map((renderer) => renderer.id)).toEqual([
       "clarify",
       "planModeCheck",
       "currentOutput",
       "acceptanceCriteria",
       "ticketFiles",
+      "planCommentResponse",
+      "reviewPlan",
+      "approvedPlan",
     ]);
     // A core with no pack sends the sections it writes itself and no
     // others — it does not invent the ones a pack would have supplied.

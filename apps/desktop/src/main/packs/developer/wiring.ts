@@ -4,7 +4,10 @@ import {
   INTAKE_ACTION,
   INTERPRET_ACTION,
   IntakeAnswerSchema,
+  PLAN_COMMENT_RESPONSE_ACTION,
+  REVIEW_PLAN_ACTION,
   ReviewOutputSchema,
+  ReviewPlanOutputSchema,
   UNKNOWN_ITEM_TYPE,
   type Agent,
   type Registry,
@@ -30,6 +33,7 @@ import { postInterpretation } from "../../roles/interpretation.js";
 import { postMentionReply } from "../../roles/mentionReply.js";
 import { postReviewFeedback } from "../../roles/reviewVerdict.js";
 import { createPosters } from "./posters.js";
+import { postCommentPlan, postPlanReview } from "./forge/commentPlans.js";
 import { continueTrialLoop } from "../../trials/design.js";
 
 /**
@@ -119,6 +123,17 @@ function resultKeyFor(
     // The verdict *is* the result key, spelled the way a step declares it.
     // A reviewer that cannot decide says so and the route sends it to the
     // human, rather than the engine picking a direction on its behalf.
+    if (parsed.data.verdict === "needs_user_input") return "needs_user_input";
+    return parsed.data.verdict === "approve" ? "approved" : "changes_requested";
+  }
+
+  // The plan for other accounts' pull request comments, and its review
+  // (EO-760). A plan has one way on; its review reads as a code review's
+  // verdict does, under the same three keys.
+  if (action === PLAN_COMMENT_RESPONSE_ACTION) return "planned";
+  if (action === REVIEW_PLAN_ACTION) {
+    const parsed = ReviewPlanOutputSchema.safeParse(parsedResult);
+    if (!parsed.success) return null;
     if (parsed.data.verdict === "needs_user_input") return "needs_user_input";
     return parsed.data.verdict === "approve" ? "approved" : "changes_requested";
   }
@@ -308,6 +323,18 @@ export function createRoleWiring(db: Db, contributed: Registry = developerRegist
       // reviewer that the transition dispatches.
       if (action === "implement") {
         postImplementHandoff(db, item, agent.id, runId, parsedResult);
+        return;
+      }
+
+      // The plan for other accounts' pull request comments and the
+      // reviewer's verdict on it (EO-760), each in the thread where the
+      // next step — the reviewer, the person, the planner sent back — reads it.
+      if (action === PLAN_COMMENT_RESPONSE_ACTION) {
+        postCommentPlan(db, item, agent.id, runId, parsedResult);
+        return;
+      }
+      if (action === REVIEW_PLAN_ACTION) {
+        postPlanReview(db, item, agent.id, runId, parsedResult);
         return;
       }
 

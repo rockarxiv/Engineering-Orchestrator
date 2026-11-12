@@ -69,9 +69,19 @@ describe("a role's actions over registry:get (EO-423)", () => {
         // The shipped pipeline's own step, by name (EO-425).
         usedBy: [{ pipelineId: "default", pipelineName: "Delivery", stepId: "todo", stepName: "To Do" }],
       },
+      // Planning a response to other accounts' pull request comments
+      // (EO-760), which no step of the shipped Delivery dispatches.
+      {
+        action: "plan_comment_response",
+        description: expect.any(String),
+        results: [{ key: "planned", label: "Planned" }],
+        packShipped: true,
+        usedBy: [],
+      },
     ]);
     expect(actionsOf("reviewer").map((action) => [action.action, action.results.map((result) => result.key), action.packShipped])).toEqual([
       ["review", ["approved", "changes_requested", "needs_user_input"], true],
+      ["review_plan", ["approved", "changes_requested", "needs_user_input"], true],
     ]);
     expect(Object.fromEntries(actionsOf("system").map((action) => [action.action, action.results.map((result) => result.key)]))).toEqual({
       refine: ["decomposed", "clarified"],

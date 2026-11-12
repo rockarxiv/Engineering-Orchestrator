@@ -30,6 +30,8 @@ const PROVIDER_SCHEMAS: ReadonlyArray<readonly [action: string, itemType: string
   ["refine", "bug"],
   ["implement", undefined],
   ["review", undefined],
+  ["plan_comment_response", undefined],
+  ["review_plan", undefined],
   ["assist", undefined],
   ["respond", undefined],
   ["interpret", undefined],

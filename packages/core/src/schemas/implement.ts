@@ -42,6 +42,24 @@ export const ImplementOutputSchema = z.object({
    * and recorded as dropped (`memory/memoryUse.ts`).
    */
   memoryUsed: MemoryUsedSchema,
+  /**
+   * What became of each pull request comment this run addressed (EO-760):
+   * the comment's forge id and a sentence saying what changed, which the
+   * step replying on the pull request posts as the answer to it.
+   *
+   * Optional: most runs address no pull request comment, and one that
+   * does but says nothing leaves the reply to name the commit and the
+   * summary.
+   */
+  replies: z
+    .array(
+      z.object({
+        comment_id: z.string().min(1).describe("The comment's forge id, as EO named it to you."),
+        reply: z.string().min(1).describe("One sentence saying what changed in answer to it."),
+      }),
+    )
+    .optional()
+    .describe("For each pull request comment this run addressed, its forge id and a sentence saying what changed. Leave it out when the run addressed none."),
 });
 
 export type ImplementOutput = z.infer<typeof ImplementOutputSchema>;
