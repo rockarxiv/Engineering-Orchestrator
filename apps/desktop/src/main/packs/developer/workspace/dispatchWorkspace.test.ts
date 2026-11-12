@@ -1796,6 +1796,30 @@ describe("an existing branch named on the ticket", () => {
     expect(await branchExists(repoPath, `eo/${named.key}`)).toBe(false);
   });
 
+  it("checks a remote-only branch out at its tip when the remote's fetch refspec covers only main", async () => {
+    const remotePath = join(scratch, "the remote.git");
+    await run(["init", "--bare", "-b", "main", remotePath], scratch);
+    await run(["remote", "add", "origin", remotePath], repoPath);
+    await run(["push", "-u", "origin", "main"], repoPath);
+    const tip = await localBranchWithWork();
+    await run(["push", "origin", "feature/limits"], repoPath);
+    await run(["branch", "-D", "feature/limits"], repoPath);
+    await run(["update-ref", "-d", "refs/remotes/origin/feature/limits"], repoPath);
+    // git refuses `--track` from a tracking ref no configured refspec maps to.
+    await run(["config", "remote.origin.fetch", "+refs/heads/main:refs/remotes/origin/main"], repoPath);
+    const named = namedItem("feature/limits");
+
+    const result = await createWorktreeWorkspace(handle.db, worktreeRoot)(named, "create_worktree");
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const head = await git(["rev-parse", "HEAD"], result.workspace.cwd);
+    expect(head.ok && head.stdout).toBe(tip);
+    const branchName = await git(["rev-parse", "--abbrev-ref", "HEAD"], result.workspace.cwd);
+    expect(branchName.ok && branchName.stdout).toBe("feature/limits");
+    expect(gitStateOf(getItem(handle.db, named.id)!).attachedAt).toBe(tip);
+  });
+
   it("checks a remote-only branch out at its own tip when another fetch lands while it is being resolved (EO-755)", async () => {
     const remotePath = join(scratch, "the remote.git");
     await run(["init", "--bare", "-b", "main", remotePath], scratch);
