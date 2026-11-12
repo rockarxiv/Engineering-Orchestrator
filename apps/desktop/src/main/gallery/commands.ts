@@ -1,4 +1,6 @@
 import {
+  boardHolding,
+  documentBoards,
   FOLDER_KIND,
   GIT_WORKTREE_KIND,
   PREVIEW_AGENT_KEY,
@@ -44,14 +46,17 @@ import {
   recordPipelineOrigin,
   setSetting,
   takenKeyPrefixes,
+  templateBoardHolders,
   updateStep,
   workspaceProblem,
+  type TemplateDocument,
   type Workspace,
 } from "../db/repos/index.js";
 import { createJob } from "../jobs/jobs.js";
 import { ACTIVE_PROJECT_KEY } from "../ipc/repositoryCommands.js";
 import { importPipeline, type ImportPreflight } from "../modules/pipelineTransfer.js";
 import { galleryBlanks, galleryNeeds, galleryRoleSlots, runtimeName, stepInputValues, wantsRepository, type GalleryNeed } from "./form.js";
+import { createTemplateBoards } from "./templateUpdates.js";
 import type { GalleryTemplate } from "./templates.js";
 
 /**
@@ -557,6 +562,7 @@ export function useTemplate(db: Db, input: UseTemplateInput): UseTemplateResult 
         // each id to itself.
         if (isTemplateDocument(document)) {
           recordPipelineOrigin(db, { pipelineId, document, stepIds: Object.fromEntries(document.steps.map((step) => [step.id, step.id])) });
+          adoptTemplateBoards(db, document, project.id);
         }
       }
 
@@ -640,6 +646,28 @@ function pipelineAlreadyHere(db: Db, document: PipelineExport): string | null {
     if (steps.every((step) => wanted.has(step.id))) return pipeline.id;
   }
   return null;
+}
+
+/**
+ * The template's other boards, beside a first board that was adopted
+ * rather than imported (EO-762): every board in the same transaction as
+ * the first, as an import makes them.
+ *
+ * A board EO already made for the unadopted Delivery — a template update
+ * adds boards to it before anybody has a project — is adopted with it,
+ * since it is that installation's; any board still missing is made, its
+ * routes into the first board landing on the steps adopted.
+ */
+function adoptTemplateBoards(db: Db, document: TemplateDocument, projectId: Uuid): void {
+  // Its other boards only: a second copy of the first board is somebody's own, not this installation's.
+  for (const holder of templateBoardHolders(db, document.template.slug, null)) {
+    if (boardHolding(document, Object.keys(holder.stepIds)) !== 0) adoptPipeline(db, holder.pipelineId, projectId);
+  }
+  const held = new Set(templateBoardHolders(db, document.template.slug, projectId).map((holder) => boardHolding(document, Object.keys(holder.stepIds))));
+  const missing = documentBoards(document)
+    .map((_board, index) => index)
+    .filter((index) => !held.has(index));
+  if (missing.length > 0) createTemplateBoards(db, document, missing, projectId, { createdBy: null, releaseNotes: null });
 }
 
 /**

@@ -96,6 +96,15 @@ export const UpdateConflictDetailSchema = z.object({
    * and say which template step it is in the draft's `templateStepIds`.
    */
   takenStepIds: z.array(z.string()),
+  /**
+   * The steps of the template's other boards that the held version's
+   * routes go to, by the ids this installation holds them under, each
+   * with the board it is on (EO-762). A draft routes to these ids: the
+   * template's own may name a step renamed here, or none.
+   */
+  linkedSteps: z
+    .array(z.object({ id: z.string(), name: z.string(), templateStepId: z.string(), pipelineId: z.string(), pipelineName: z.string() }))
+    .default([]),
   /** The assistant chat Fix with assistant opened for this update, where one has been: the chat whose drafts resolve it. */
   chatId: z.string().nullable(),
   /** The person's own versions since the base, oldest first. */

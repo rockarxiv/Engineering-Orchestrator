@@ -62,9 +62,11 @@ export {
   recordAppliedTemplateUpdate,
   recordPipelineOrigin,
   storeTemplateSnapshot,
+  templateBoardHolders,
   type AppliedTemplateUpdate,
   type PipelineOrigin,
   type RecordPipelineOriginInput,
+  type TemplateBoardHolder,
   type TemplateDocument,
 } from "./pipelineOriginsRepo.js";
 export {

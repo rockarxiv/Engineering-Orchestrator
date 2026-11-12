@@ -201,8 +201,19 @@ import { SpecShapeSchema } from "./specShape.js";
  * is what the author published. "Update EO and try again" is.
  *
  * Reading an older document is unchanged: no rule in it is a module rule.
+ *
+ * **13 (EO-762).** A document may carry **more than one board**
+ * (`boards`), with routes from a step on one to a step on another.
+ *
+ * Bumped for version 4's reason, and the silent drop here is a whole
+ * board. A version-12 build strips `boards` and imports the first board
+ * alone: where it routes into the others it is refused as damaged, and
+ * where it does not it imports half a template, under the template's
+ * name, and nothing says so. "Update EO and try again" is the sentence.
+ *
+ * Reading an older document is unchanged: it carries one board.
  */
-export const PIPELINE_EXPORT_VERSION = 12;
+export const PIPELINE_EXPORT_VERSION = 13;
 
 /**
  * An action a role defines, as the document carries it (EO-424).
@@ -641,16 +652,46 @@ export const ExportedModuleSchema = z.object({
   tests: z.array(ModuleTestCaseInputSchema).default([]),
 });
 
+/** A board's own head: its name, icon, where work enters and what it must have to. */
+export const ExportedPipelineHeadSchema = z.object({
+  name: z.string().min(1),
+  icon: z.string().nullable().default(null),
+  /** A step id within this board. */
+  entryStepId: z.string().nullable(),
+  /** What an item must have to enter (EO-610). Part of what the pipeline says, so it travels. */
+  entryRules: EntryRulesSchema.default([]),
+});
+
+/** A step as the document carries it — see `PipelineExportSchema.steps` for what is left out and why. */
+export const ExportedStepSchema = PipelineStepViewSchema.omit({ pipelineId: true, inputs: true, timeoutMs: true, workspaceMode: true, workspaceId: true });
+/** A route as the document carries it. Its target is a step of any board in the document, or a sentinel. */
+export const ExportedRouteSchema = StepRouteViewSchema.omit({ id: true, pipelineId: true });
+
+/**
+ * A board the document carries besides its first (EO-762,
+ * ARCHITECTURE.md, "The gallery").
+ *
+ * A template may ship several boards that hand work to each other —
+ * Delivery and the board its pull request comments are planned on — and
+ * they are installed, updated and exported together. Each is a pipeline
+ * of its own when installed, with its own head, steps and routes; what
+ * ties them is that a route on one may name a step on another. Step ids
+ * are therefore unique across the whole document, which is what lets a
+ * route name a step without saying which board it is on.
+ *
+ * The first board is the document's own `pipeline`, `steps` and
+ * `routes`, so a document with one board is exactly what it always was.
+ */
+export const ExportedBoardSchema = z.object({
+  pipeline: ExportedPipelineHeadSchema,
+  steps: z.array(ExportedStepSchema),
+  routes: z.array(ExportedRouteSchema),
+});
+export type ExportedBoard = z.infer<typeof ExportedBoardSchema>;
+
 export const PipelineExportSchema = z.object({
   eoPipelineExport: z.number().int().positive(),
-  pipeline: z.object({
-    name: z.string().min(1),
-    icon: z.string().nullable().default(null),
-    /** A step id within this document. */
-    entryStepId: z.string().nullable(),
-    /** What an item must have to enter (EO-610). Part of what the pipeline says, so it travels. */
-    entryRules: EntryRulesSchema.default([]),
-  }),
+  pipeline: ExportedPipelineHeadSchema,
   /**
    * Steps as the editor sees them, minus the pipeline they belonged to.
    *
@@ -693,8 +734,14 @@ export const PipelineExportSchema = z.object({
   // the buttons that take them would import a step nobody can act on,
   // and `validatePipeline` would refuse it on the far side. Carrying
   // them is what makes the format version above a 3.
-  steps: z.array(PipelineStepViewSchema.omit({ pipelineId: true, inputs: true, timeoutMs: true, workspaceMode: true, workspaceId: true })),
-  routes: z.array(StepRouteViewSchema.omit({ id: true, pipelineId: true })),
+  steps: z.array(ExportedStepSchema),
+  routes: z.array(ExportedRouteSchema),
+  /**
+   * The boards it carries besides the first (EO-762) — see
+   * `ExportedBoardSchema`. Empty on a document with one board, which is
+   * every document written before this field.
+   */
+  boards: z.array(ExportedBoardSchema).default([]),
   modules: z.array(ExportedModuleSchema).default([]),
   /**
    * The roles the steps above name, with their prompts (KAN-178).
@@ -788,6 +835,62 @@ export type PipelineExport = z.infer<typeof PipelineExportSchema>;
  * and invariant #11 is not a rule to enforce only on the paths somebody
  * remembered.
  */
+/**
+ * Every board a document carries, its first board first (EO-762).
+ *
+ * The first is the document's own `pipeline`, `steps` and `routes`; the
+ * rest are `boards`. Whatever reads a document whole — the import gate,
+ * the import, a template update — reads it through this, so a second
+ * board is never a board somebody forgot.
+ */
+export function documentBoards(document: Pick<PipelineExport, "pipeline" | "steps" | "routes" | "boards">): ExportedBoard[] {
+  return [{ pipeline: document.pipeline, steps: document.steps, routes: document.routes }, ...document.boards];
+}
+
+/** Every step on every board of a document. */
+export function documentSteps(document: Pick<PipelineExport, "pipeline" | "steps" | "routes" | "boards">): ExportedBoard["steps"] {
+  return documentBoards(document).flatMap((board) => board.steps);
+}
+
+/**
+ * Which of a document's boards holds these step ids: the index of the
+ * board holding the most of them, or 0 — the first board — where none
+ * holds any.
+ *
+ * How a pipeline made from a template knows which board of it it is
+ * (EO-762): its step map is keyed by the template's step ids, and step
+ * ids are unique across a document's boards, so the board its map names
+ * is its board. A pipeline from before templates had boards names the
+ * first board's steps, or nothing, and is the first board either way.
+ */
+export function boardHolding(document: Pick<PipelineExport, "pipeline" | "steps" | "routes" | "boards">, stepIds: Iterable<string>): number {
+  const wanted = new Set(stepIds);
+  let best = 0;
+  let most = 0;
+  for (const [index, board] of documentBoards(document).entries()) {
+    const held = board.steps.filter((step) => wanted.has(step.id)).length;
+    if (held > most) {
+      best = index;
+      most = held;
+    }
+  }
+  return best;
+}
+
+/**
+ * One board of a document, as a document of one board (EO-762): its head,
+ * steps and routes in the first board's place and no others. Everything
+ * else — the template block, the roles, the modules — is the document's.
+ *
+ * What reading one pipeline's board through code written for a one-board
+ * document takes: a template update compares a pipeline with its own
+ * board, never with the first.
+ */
+export function boardDocument<T extends PipelineExport>(document: T, index: number): T {
+  const board = documentBoards(document)[index] ?? documentBoards(document)[0]!;
+  return { ...document, pipeline: board.pipeline, steps: board.steps, routes: board.routes, boards: [] };
+}
+
 export function roleAskingForAdminGrant(document: Pick<PipelineExport, "roles">): string | null {
   const found = document.roles.find((role) => role.allowedTools !== null && namesAdminServer(role.allowedTools));
   return found?.slug ?? null;

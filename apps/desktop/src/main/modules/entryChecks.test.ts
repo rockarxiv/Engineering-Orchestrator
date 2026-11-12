@@ -880,7 +880,7 @@ describe("versions and files", () => {
     setRules("default", [{ kind: "module", module: id, message: "a reviewer or another branch" }]);
     const built = exportPipeline(handle.db, "default");
     if (!built.ok) throw new Error(built.reason);
-    expect(built.document.eoPipelineExport).toBe(12);
+    expect(built.document.eoPipelineExport).toBeGreaterThanOrEqual(12);
     expect(built.document.pipeline.entryRules).toEqual([{ kind: "module", module: "no-reviewers", message: "a reviewer or another branch" }]);
     expect(built.document.modules.map((each) => each.slug)).toContain("no-reviewers");
 

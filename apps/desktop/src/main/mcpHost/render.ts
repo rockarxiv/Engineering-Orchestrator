@@ -2382,6 +2382,13 @@ export function renderUpdateConflict(data: IpcResponse<"pipeline:updateConflict"
           `Step ids the template adds that another pipeline already holds: ${conflict.takenStepIds.join(", ")}. ` +
             'A draft gives each a fresh id and says which it is in `templateStepIds` — `{ "<template step id>": "<fresh id>" }` — so the next template version still knows the step.',
         ]),
+    ...(conflict.linkedSteps.length === 0
+      ? []
+      : [
+          "",
+          "Steps of the template's other boards that this version routes to, by the ids they have here — a draft's routes into another board use these ids:",
+          ...conflict.linkedSteps.map((step) => `- ${step.id}: "${step.name}" on ${step.pipelineName} (${step.pipelineId}), the template's ${step.templateStepId}`),
+        ]),
     "",
     "The person's edits since the base, oldest first:",
     ...(edits.length === 0 ? ["- (none filed)"] : edits),

@@ -140,6 +140,34 @@ export function getPipelineOrigin(db: Db, pipelineId: string): PipelineOrigin | 
   return { pipelineId, slug: row.slug, version: row.version, baseId: row.baseId, base: base.data, stepIds: stepIdsOf(row.stepIds), baseMovedAt: row.baseMovedAt };
 }
 
+/** A pipeline made from a template, as far as which of its boards it is (EO-762). */
+export interface TemplateBoardHolder {
+  pipelineId: string;
+  projectId: string | null;
+  /** Its origin's step map: the template's step ids to its own. */
+  stepIds: Record<string, string>;
+}
+
+/**
+ * Every pipeline made from this template in this project — the same
+ * project, or none for none — archived ones included and trials never
+ * (EO-762).
+ *
+ * The boards of one installation of a template: a template of several
+ * boards installs them together into one project, and a route on one
+ * names the others' steps as that project holds them. Archived boards
+ * count, so a board somebody archived is not made again. Read without
+ * the stored snapshots, which are large and nobody here needs.
+ */
+export function templateBoardHolders(db: Db, slug: string, projectId: string | null): TemplateBoardHolder[] {
+  return db
+    .select({ pipelineId: pipelines.id, projectId: pipelines.projectId, stepIds: pipelines.templateStepIds })
+    .from(pipelines)
+    .where(and(eq(pipelines.templateSlug, slug), isNull(pipelines.trialAt), projectId === null ? isNull(pipelines.projectId) : eq(pipelines.projectId, projectId)))
+    .all()
+    .map((row) => ({ pipelineId: row.pipelineId, projectId: row.projectId, stepIds: stepIdsOf(row.stepIds) }));
+}
+
 /** A stored template snapshot by its `template_versions.id`, or null where there is none or it no longer parses. */
 export function getTemplateSnapshot(db: Db, id: string): PipelineExport | null {
   const snapshot = db.select({ document: templateVersions.document }).from(templateVersions).where(eq(templateVersions.id, id)).get();
