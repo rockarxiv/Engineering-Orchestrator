@@ -5,7 +5,7 @@ import { SortableContext, arrayMove, useSortable, verticalListSortingStrategy } 
 import { CSS } from "@dnd-kit/utilities";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { NavLink, useNavigate } from "react-router-dom";
-import { Check, ChevronDown, Inbox, LoaderCircle, Pause, Play, Plus, Search, Settings } from "lucide-react";
+import { Check, ChevronDown, Inbox, LoaderCircle, Pause, Play, Plus, Search, Settings, Workflow } from "lucide-react";
 import { CHAT_HOME_ROUTE, type IpcResponse } from "@eo/core";
 import { cn } from "@eo/ui";
 import { assistRoomKey, assistThreadsKey } from "../shared/assist/useAssistRoom";
@@ -13,7 +13,7 @@ import { pipelineIcon, places } from "../shared/layout/sidebar";
 import { ipcQuery } from "../query/client";
 import { engineStatusKey } from "../query/engine";
 import { isDispatchable } from "@eo/core";
-import { agentsKey, jobsKey, useChromeVocabulary, useMe, usePipelines, useProjectItems } from "../query/hooks";
+import { agentsKey, useChromeVocabulary, useMe, usePipelines, useProjectItems } from "../query/hooks";
 import { useInvalidateOnPush } from "../query/useInvalidateOnPush";
 import { useProjects } from "../query/useRepositories";
 import { ConfirmDialog, ContextMenu, contextMenuAt, isContextMenuKey, StatusDot, type ContextMenuAt } from "./kit";
@@ -28,8 +28,8 @@ const rowTone = (active: boolean) => (active ? "bg-canvas-raised text-ink" : "te
  * The chat layout's rail (ARCHITECTURE.md, "The chat-centric layout").
  *
  * Top to bottom: the project, a new conversation, search, what is waiting
- * on you, the conversation, and the project's pipelines with what each
- * holds. Every pipeline the project has is listed, whoever made it — the
+ * on you, the conversation, the project's pipelines with what each
+ * holds, and Jobs. Every pipeline the project has is listed, whoever made it — the
  * rail reads `pipelines:list` and nothing else, so a template from the
  * gallery and a pipeline drawn last week are the same row.
  *
@@ -50,9 +50,6 @@ export function ChatRail({ onNewPipeline }: { onNewPipeline: () => void }) {
   const { blocking: parked, messages } = useWaitingOnYou();
   // Parked runs and EO's open messages: both need you before anything moves.
   const blocking = parked + messages;
-
-  const jobs = useQuery({ queryKey: jobsKey(projectId), queryFn: () => ipcQuery("jobs:list", { projectId }) });
-  const hasJobs = (jobs.data?.jobs ?? []).length > 0;
 
   // Added up from what the main process said about each item — the
   // needs-attention flag is derived there (invariant 6), never here, and
@@ -180,24 +177,7 @@ export function ChatRail({ onNewPipeline }: { onNewPipeline: () => void }) {
       <ChatList onProblem={(message) => setProblem(message)} />
 
       <div className="px-2.5 pb-1.5 pt-3.5">
-        <GroupLabel
-          trailing={
-            // The classic rail's "+" (ARCHITECTURE.md, "The classic layout"): the way in to Jobs
-            // for a
-            // project that has no job yet.
-            <button
-              type="button"
-              aria-label="New job"
-              title="New job"
-              onClick={() => void navigate("/jobs")}
-              className="grid place-items-center rounded-sm p-0.5 text-ink-subtle hover:bg-canvas-subtle hover:text-ink"
-            >
-              <Plus size={12} />
-            </button>
-          }
-        >
-          Pipelines
-        </GroupLabel>
+        <GroupLabel>Pipelines</GroupLabel>
       </div>
       {pipelines.map((pipeline, index) => {
         const Icon = pipelineIcon(pipeline.icon, index);
@@ -219,12 +199,15 @@ export function ChatRail({ onNewPipeline }: { onNewPipeline: () => void }) {
           </NavLink>
         );
       })}
-      {hasJobs ? (
-        <NavLink to="/jobs" className={({ isActive }) => cn(ROW, "shrink-0", rowTone(isActive))}>
-          <span className="w-3.5 shrink-0" />
-          <span className="truncate">Jobs</span>
-        </NavLink>
-      ) : null}
+      {/* Always here, whatever jobs the project has (EO-757): a project whose
+          only jobs came from pressing Create in a conversation lists none on
+          the Jobs screen, and a row drawn from that list never appeared. The
+          Jobs screen's own New job button is how a job is made. Not `end`, so
+          a job's page (`/jobs/:id`) marks it active too. */}
+      <NavLink to="/jobs" className={({ isActive }) => cn(ROW, "shrink-0", rowTone(isActive))}>
+        <Workflow size={14} className="shrink-0" />
+        <span className="truncate">Jobs</span>
+      </NavLink>
       {/* A pipeline is drawn by saying what it is for (EO-525): this hands
           the person to the conversation, box focused, and creates nothing.
           An empty pipeline opened in an editor was the other way, and the

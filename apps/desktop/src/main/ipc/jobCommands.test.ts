@@ -58,6 +58,19 @@ describe("jobs:create", () => {
   });
 });
 
+describe("jobs:list", () => {
+  it("leaves out a from-discussion job, which nobody set up (EO-757)", async () => {
+    const conversation = openAssistConversation(handle.db, null);
+    recordItemsFromConversation(handle.db, conversation, [
+      createTestItem(handle.db, { type: "story", title: "Page the importer", stepId: "todo", projectId: null }),
+    ]);
+    const kept = (await create()).job!;
+
+    expect(listJobs(handle.db, null)).toHaveLength(2);
+    expect(listJobsCommand(handle.db, { projectId: null }).jobs.map((job) => job.id)).toEqual([kept.id]);
+  });
+});
+
 describe("jobs:runNow", () => {
   it("creates exactly one item and one fired occurrence", async () => {
     const job = (await create()).job!;

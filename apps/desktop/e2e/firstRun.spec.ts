@@ -345,9 +345,9 @@ test("a developer's first run reaches the board it reaches today, through the sa
     // The columns EO ships, which is the board a developer reaches
     // today.
     await expect(openView(window).getByRole("heading", { level: 2, name: "To Do" })).toBeVisible({ timeout: 15_000 });
-    // And no Jobs entry: the developer template makes no job, and the
-    // rail lists Jobs only for a project that has one (`ChatRail.tsx`).
-    await expect(rail.getByRole("link", { name: "Jobs" })).toHaveCount(0);
+    // And a Jobs entry, though the developer template makes no job: the
+    // rail lists Jobs on every project (EO-757, `ChatRail.tsx`).
+    await expect(rail.getByRole("link", { name: "Jobs" })).toHaveCount(1);
   } finally {
     await closeApp(app);
     cleanUp();
