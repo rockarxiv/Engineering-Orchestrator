@@ -1,5 +1,5 @@
 import { useMemo } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useIsMutating, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   chromeVocabulary,
   emptyRegistry,
@@ -96,6 +96,22 @@ export const tourKey = ["tour"] as const;
 
 export const workspacesKey = ["workspaces"] as const;
 export const projectsKey = ["projects"] as const;
+/**
+ * The key every project switch runs under (`useProjects().setActive`),
+ * whichever hook started it — so a surface that must not act on the
+ * project being left can tell one is under way (EO-765).
+ */
+export const switchProjectKey = ["projects:setActive"] as const;
+
+/**
+ * Whether the window is between projects: a switch has been asked for
+ * and the main process has not yet answered, nor the project list caught
+ * up. The assistant's room and rail draw nothing and take nothing in
+ * that time (EO-765): what they held is the project being left's.
+ */
+export function useSwitchingProject(): boolean {
+  return useIsMutating({ mutationKey: switchProjectKey }) > 0;
+}
 export const connectionsKey = ["jiraConnections"] as const;
 /**
  * The module catalog (KAN-103).

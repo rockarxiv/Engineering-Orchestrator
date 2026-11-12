@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { isDispatchable, type DiscussionMessage, type DiscussionView, type IpcPayload, type IpcResponse } from "@eo/core";
 import { ipcQuery } from "../../query/client";
-import { agentsKey } from "../../query/hooks";
+import { agentsKey, useSwitchingProject } from "../../query/hooks";
 import { useInvalidateOnPush } from "../../query/useInvalidateOnPush";
 import { roomIdentity, useRoomPushes } from "../../query/useRoomPushes";
 import { usePageDescriptor } from "../view/ViewPublisher";
@@ -154,6 +154,18 @@ export interface AssistRoom {
   /** The conversation, once it has been opened. */
   conversation: DiscussionView | null;
   loading: boolean;
+  /**
+   * False while the window is between projects (EO-765): a switch has
+   * been asked for and is not through. The composer takes nothing then,
+   * and `send` refuses — the main process still answers for the project
+   * being left, so a message would land in its chat and a draft in it be
+   * checked against, and published onto, that project.
+   *
+   * Once the switch is through the room is empty until the new project's
+   * chat is read, and a message sent then names no chat: the main
+   * process puts it in the chat on show on the project now active.
+   */
+  ready: boolean;
   /** Why the last clear did not work — the main process's own sentence. */
   problem: string | null;
   /**
@@ -267,13 +279,18 @@ export function useAssistRoom(open: boolean): AssistRoom {
   // anybody in it.
   const available = (agents.data?.agents ?? []).some((agent) => agent.role === "system" && isDispatchable(agent));
 
+  // Not read while the window is between projects (EO-765): the answer
+  // could be the chat of the project being left. The switch resets the
+  // room when it is through, and the read starts then.
+  const switchingProject = useSwitchingProject();
   const room = useQuery({
     queryKey: assistRoomKey,
     queryFn: () => ipcQuery("assist:open", undefined),
-    enabled: open && available,
+    enabled: open && available && !switchingProject,
   });
 
-  const view = room.data?.conversation ?? null;
+  const view = switchingProject ? null : (room.data?.conversation ?? null);
+  const ready = !switchingProject;
 
   // The same three pushes the scenario room listens to — a turn writes
   // comments, starts and finishes a run, and streams output as it thinks
@@ -423,10 +440,12 @@ export function useAssistRoom(open: boolean): AssistRoom {
   return {
     available,
     conversation: view,
-    loading: agents.isLoading || room.isLoading,
+    loading: agents.isLoading || room.isLoading || switchingProject,
+    ready,
     problem,
     notice,
     send: async (body: string, attachmentIds: string[] = []) => {
+      if (!ready) throw new Error("Still switching project. Send it again once its chat is open.");
       const known = new Set([...(olderHere?.messages ?? []), ...(view?.messages ?? [])].map((message) => message.id));
       await send.mutateAsync({ body, attachmentIds, conversationId: view?.id ?? null, known });
     },
@@ -498,7 +517,8 @@ export interface AssistChat {
 export function useAssistChats(open: boolean): { chats: AssistChat[]; show: (conversationId: string) => void; switching: boolean; problem: string | null } {
   const queryClient = useQueryClient();
   const [problem, setProblem] = useState<string | null>(null);
-  const threads = useQuery({ queryKey: assistThreadsKey, queryFn: () => ipcQuery("assist:list", undefined), enabled: open });
+  const switchingProject = useSwitchingProject();
+  const threads = useQuery({ queryKey: assistThreadsKey, queryFn: () => ipcQuery("assist:list", undefined), enabled: open && !switchingProject });
   // A chat started, shown, put away or removed in any window pushes the
   // first; one moved in the rail, the second (EO-439).
   useInvalidateOnPush("items:changed", assistThreadsKey);
@@ -516,7 +536,8 @@ export function useAssistChats(open: boolean): { chats: AssistChat[]; show: (con
   });
 
   return {
-    chats: (threads.data?.conversations ?? []).filter((thread) => thread.live).map(({ id, title, shown }) => ({ id, title, shown })),
+    // None while the window is between projects (EO-765): they are the project being left's.
+    chats: switchingProject ? [] : (threads.data?.conversations ?? []).filter((thread) => thread.live).map(({ id, title, shown }) => ({ id, title, shown })),
     show: (conversationId: string) => show.mutate(conversationId),
     switching: show.isPending,
     problem,

@@ -30,17 +30,25 @@ export function useOpenUpdateConflictChat() {
 
   const open = useMutation({
     mutationFn: (request: { conflictId: string; commentId: string | null }) => ipcQuery("assist:openUpdateConflict", request),
-    onSuccess: (result) => {
+    onSuccess: async (result) => {
       setProblem(result.problem);
       if (result.conversation === null) return;
-      // Straight into the cache, as New chat does: the chat just opened is
-      // the answer, and the one on show before should not linger.
-      queryClient.setQueryData(assistRoomKey, { conversation: result.conversation });
-      if (result.projectId !== null && result.projectId !== activeProjectId) setActive(result.projectId);
-      else {
-        void queryClient.invalidateQueries({ queryKey: assistRoomKey });
-        void queryClient.invalidateQueries({ queryKey: assistThreadsKey });
+      if (result.projectId !== null && result.projectId !== activeProjectId) {
+        // The switch drops the room and the rail and reads both again once
+        // it is through, and the main process has already put this chat on
+        // show on that project — so that read answers with it.
+        setActive(result.projectId);
+        void navigate(CHAT_HOME_ROUTE);
+        return;
       }
+      // Straight into the cache, as New chat does: the chat just opened is
+      // the answer, and the one on show before should not linger. A read
+      // of the room begun before the press is cancelled first, or it would
+      // land after this and put the old chat back.
+      await queryClient.cancelQueries({ queryKey: assistRoomKey, exact: true });
+      queryClient.setQueryData(assistRoomKey, { conversation: result.conversation });
+      void queryClient.invalidateQueries({ queryKey: assistRoomKey });
+      void queryClient.invalidateQueries({ queryKey: assistThreadsKey });
       void navigate(CHAT_HOME_ROUTE);
     },
     onError: (error: unknown) => setProblem(error instanceof Error ? error.message : String(error)),

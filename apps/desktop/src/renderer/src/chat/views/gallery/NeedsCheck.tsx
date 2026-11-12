@@ -94,12 +94,21 @@ export function NeedsCheck({
    */
   const brief = useMutation({
     mutationFn: () => ipcQuery("gallery:openFirstItemChat", { projectId, slug: template.slug, token: template.token, pipelineId }),
-    onSuccess: (result) => {
+    onSuccess: async (result) => {
       if (result.conversation === null) return;
+      // The chat is on this project's rail (EO-765), so the window follows
+      // it there; the switch reads the room and the rail again once it is
+      // through, and the main process has already put this chat on show.
+      if (projectId !== activeProjectId) {
+        setActive(projectId);
+        leave(CHAT_HOME_ROUTE);
+        return;
+      }
+      // A read of the room begun before this is cancelled first, or it
+      // would land after the write and put the old chat back.
+      await queryClient.cancelQueries({ queryKey: assistRoomKey, exact: true });
       queryClient.setQueryData(assistRoomKey, { conversation: result.conversation });
       void queryClient.invalidateQueries({ queryKey: assistThreadsKey });
-      // The chat is on this project's rail (EO-765), so the window follows it there.
-      if (projectId !== activeProjectId) setActive(projectId);
       leave(CHAT_HOME_ROUTE);
     },
   });

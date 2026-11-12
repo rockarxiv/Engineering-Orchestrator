@@ -1,7 +1,8 @@
 import { useCallback, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import type { IpcResponse } from "@eo/core";
 import { ipcQuery } from "./client";
-import { pipelineStepsRootKey, projectsKey, repositoriesKey, itemsKey, worktreesKey } from "./hooks";
+import { pipelineStepsRootKey, projectsKey, repositoriesKey, itemsKey, switchProjectKey, worktreesKey } from "./hooks";
 import { useInvalidateOnPush } from "./useInvalidateOnPush";
 import { archivedKey } from "../shared/pipeline/archive";
 import { assistRoomKey, assistThreadsKey } from "../shared/assist/useAssistRoom";
@@ -33,8 +34,17 @@ export function useProjects() {
   useInvalidateOnPush("config:changed", projectsKey);
   useInvalidateOnPush("items:changed", projectsKey);
 
-  const setActive = useMutation({
+  const setActive = useMutation<IpcResponse<"projects:setActive">, Error, string>({
+    mutationKey: switchProjectKey,
     mutationFn: (id: string) => ipcQuery("projects:setActive", { id }),
+    // The assistant's room and rail are the project being left's
+    // (EO-765). A read of either begun before the switch would land
+    // after it and put that project's chat back on screen, ready to be
+    // written in, so it is cancelled before the switch is asked for. Both
+    // stay unread until the switch is through (`useSwitchingProject`).
+    onMutate: async () => {
+      await Promise.all([assistRoomKey, assistThreadsKey].map((queryKey) => queryClient.cancelQueries({ queryKey, exact: true })));
+    },
     onSuccess: () => {
       // Everything on screen belongs to one project, so switching
       // invalidates all of it rather than each screen doing its own.
@@ -48,11 +58,7 @@ export function useProjects() {
       // rejects them — the picker and the validator disagreeing, which is
       // exactly what EO-72 set out to stop. The root key covers every
       // pipeline, because which one is open is not knowable from here.
-      //
-      // The assistant's chats are among it (EO-765): each project has its
-      // own list and its own chat on show, and `assist:open` and
-      // `assist:list` answer for whichever is active.
-      for (const key of [repositoriesKey, worktreesKey, pipelineStepsRootKey, assistRoomKey, assistThreadsKey]) {
+      for (const key of [repositoriesKey, worktreesKey, pipelineStepsRootKey]) {
         void queryClient.invalidateQueries({ queryKey: key });
       }
       // The item lists are not keyed by project — `items:list` answers for
@@ -61,7 +67,13 @@ export function useProjects() {
       // (EO-562). Resetting them drops that answer, cancels any read begun
       // before the switch, and asks again: every screen reading them shows
       // its loading state until the new project's items arrive.
-      for (const key of [itemsKey, archivedKey]) {
+      //
+      // The assistant's room and rail likewise (EO-765): each project has
+      // its own chats and its own chat on show, and `assist:open` and
+      // `assist:list` answer for whichever is active. Kept, the previous
+      // project's chat would stay on screen with its composer live, and a
+      // message sent there would be about the project just left.
+      for (const key of [itemsKey, archivedKey, assistRoomKey, assistThreadsKey]) {
         void queryClient.resetQueries({ queryKey: key, exact: true });
       }
       // Held until the list says which project is active, so `switchingTo`

@@ -22,7 +22,7 @@ function CurrentRoute() {
 
 function renderActions(
   options: CommentOption[] | null,
-  answer: { conversation: unknown; problem: string | null; projectId?: string | null } = { conversation: CHAT, problem: null },
+  answer: { conversation: unknown; problem: string | null; projectId: string | null } = { conversation: CHAT, problem: null, projectId: null },
   activeProjectId: string | null = null,
 ) {
   const calls: { channel: string; payload: unknown }[] = [];
@@ -95,8 +95,30 @@ describe("a comment's actions", () => {
     expect(calls.some((call) => call.channel === "projects:setActive")).toBe(false);
   });
 
+  it("keeps the chat it opened when a read of the room begun before the press answers after it", async () => {
+    const { client } = renderActions([FIX], { conversation: CHAT, problem: null, projectId: null });
+    let answerLate = () => {};
+    const late = new Promise<void>((resolve) => {
+      answerLate = resolve;
+    });
+    const stale = client.fetchQuery({
+      queryKey: assistRoomKey,
+      queryFn: async () => {
+        await late;
+        return { conversation: { id: "chat-before", key: "ASK-1", messages: [] } };
+      },
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Fix with assistant" }));
+    await waitFor(() => expect(screen.getByTestId("current-route")).toHaveTextContent("/chat"));
+    answerLate();
+    await stale.catch(() => undefined);
+
+    expect(client.getQueryData(assistRoomKey)).toEqual({ conversation: CHAT });
+  });
+
   it("says why when the chat cannot be opened, and stays where it is", async () => {
-    renderActions([FIX], { conversation: null, problem: "That template update has already been resolved." });
+    renderActions([FIX], { conversation: null, problem: "That template update has already been resolved.", projectId: null });
 
     fireEvent.click(screen.getByRole("button", { name: "Fix with assistant" }));
 

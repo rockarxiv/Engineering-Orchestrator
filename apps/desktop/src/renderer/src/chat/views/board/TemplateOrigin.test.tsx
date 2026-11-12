@@ -34,7 +34,7 @@ function Where() {
   return <output data-testid="where">{useLocation().pathname}</output>;
 }
 
-function renderHead(answer: PipelineTemplateStatus, opened: { conversation: unknown; problem: string | null } = { conversation: CHAT, problem: null }) {
+function renderHead(answer: PipelineTemplateStatus, opened: { conversation: unknown; problem: string | null; projectId: string | null } = { conversation: CHAT, problem: null, projectId: null }) {
   const calls: { channel: string; payload: unknown }[] = [];
   window.eo.ipc.invoke = vi.fn(async (channel: string, payload: unknown) => {
     calls.push({ channel, payload });
@@ -147,7 +147,7 @@ describe("with an update held", () => {
   });
 
   it("says why when the chat cannot be opened, and stays where it is", async () => {
-    renderHead(status({ waiting: waiting({ chatId: "chat-1" }) }), { conversation: null, problem: "That template update has already been resolved." });
+    renderHead(status({ waiting: waiting({ chatId: "chat-1" }) }), { conversation: null, problem: "That template update has already been resolved.", projectId: null });
 
     fireEvent.click(await screen.findByRole("button", { name: /^Update waiting/ }));
 

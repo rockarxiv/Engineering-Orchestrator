@@ -5,7 +5,8 @@ import { renderHook, waitFor } from "@testing-library/react";
 import { act } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createQueryClient } from "../../query/client";
-import { useAssistRoom } from "./useAssistRoom";
+import { useProjects } from "../../query/useRepositories";
+import { useAssistChats, useAssistRoom } from "./useAssistRoom";
 import { usePageDescriptor } from "../view/ViewPublisher";
 
 /**
@@ -564,5 +565,133 @@ describe("the pushes the room is re-read for", () => {
 
     await waitFor(() => expect(opens()).toBe(before + 2));
     for (const key of cards) expect(client.getQueryState(key)?.isInvalidated).toBe(false);
+  });
+});
+
+/**
+ * Switching project (EO-765). Each project has its own chats and its own
+ * chat on show, so the room and the rail must never go on holding, or
+ * sending into, the chat of the project being left — not while the
+ * switch is under way, and not when a read begun before it answers late.
+ */
+describe("switching project", () => {
+  const CHAT_ON = { a: { ...CONVERSATION, id: "chat-on-a", key: "ASK-1" }, b: { ...CONVERSATION, id: "chat-on-b", key: "ASK-2" } };
+  const PROJECTS = [
+    { id: "a", name: "Shop", archivedAt: null },
+    { id: "b", name: "Blog", archivedAt: null },
+  ];
+
+  function deferred(): { promise: Promise<void>; release: () => void } {
+    let release = () => {};
+    const promise = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    return { promise, release };
+  }
+
+  /**
+   * The main process, as far as these hooks ask it: which project is
+   * active, and each project's one chat. `holdSwitch` keeps
+   * `projects:setActive` from answering until released; `holdFirstOpen`
+   * does the same to the first `assist:open`, which still answers with
+   * the chat of the project active when it was asked.
+   */
+  function mainProcess(options: { holdSwitch?: Promise<void>; holdFirstOpen?: Promise<void> } = {}) {
+    let active: "a" | "b" = "a";
+    let opens = 0;
+    const invoke = staffed(async (channel, payload) => {
+      if (channel === "projects:list") return { ok: true, data: { projects: PROJECTS, activeProjectId: active } };
+      if (channel === "projects:setActive") {
+        await options.holdSwitch;
+        active = (payload as { id: "a" | "b" }).id;
+        return { ok: true, data: { activeProjectId: active } };
+      }
+      if (channel === "assist:open") {
+        const askedOn = active;
+        opens += 1;
+        if (opens === 1) await options.holdFirstOpen;
+        return { ok: true, data: { conversation: CHAT_ON[askedOn] } };
+      }
+      if (channel === "assist:list") {
+        const chat = CHAT_ON[active];
+        return { ok: true, data: { conversations: [{ id: chat.id, key: chat.key, title: chat.key, startedAt: 0, lastActivityAt: 0, live: true, shown: true, state: "idle" }] } };
+      }
+      if (channel === "assist:send") {
+        const { conversationId } = payload as { conversationId: string | null };
+        return { ok: true, data: { conversation: conversationId === CHAT_ON.a.id ? CHAT_ON.a : CHAT_ON[active] } };
+      }
+      return { ok: true, data: {} };
+    });
+    window.eo.ipc.invoke = invoke as never;
+    return invoke;
+  }
+
+  function mounted() {
+    return renderHook(() => ({ projects: useProjects(), room: useAssistRoom(true), chats: useAssistChats(true) }), { wrapper: wrapper("/chat") });
+  }
+
+  const sentTo = (invoke: ReturnType<typeof mainProcess>) =>
+    invoke.mock.calls.filter(([channel]) => channel === "assist:send").map(([, payload]) => (payload as { conversationId: string | null }).conversationId);
+
+  it("drops the left project's chat and rail at once, refuses a send until the switch is through, and sends into the new project's chat after", async () => {
+    const hold = deferred();
+    const invoke = mainProcess({ holdSwitch: hold.promise });
+    const { result } = mounted();
+    await waitFor(() => expect(result.current.room.conversation?.id).toBe(CHAT_ON.a.id));
+    await waitFor(() => expect(result.current.chats.chats.map((chat) => chat.id)).toEqual([CHAT_ON.a.id]));
+
+    act(() => result.current.projects.setActive("b"));
+
+    // Nothing of A's left to read or write in while the switch is under way.
+    await waitFor(() => expect(result.current.room.conversation).toBeNull());
+    expect(result.current.room.ready).toBe(false);
+    expect(result.current.chats.chats).toEqual([]);
+    await expect(result.current.room.send("Draft a release pipeline.")).rejects.toThrow(/switching project/i);
+    expect(sentTo(invoke)).toEqual([]);
+
+    hold.release();
+
+    await waitFor(() => expect(result.current.room.conversation?.id).toBe(CHAT_ON.b.id));
+    await waitFor(() => expect(result.current.chats.chats.map((chat) => chat.id)).toEqual([CHAT_ON.b.id]));
+    expect(result.current.room.ready).toBe(true);
+    await act(() => result.current.room.send("Draft a release pipeline."));
+    expect(sentTo(invoke)).toEqual([CHAT_ON.b.id]);
+  });
+
+  it("sends a message straight after the switch into the new project's chat, never the old one's", async () => {
+    const invoke = mainProcess();
+    const { result } = mounted();
+    await waitFor(() => expect(result.current.room.conversation?.id).toBe(CHAT_ON.a.id));
+
+    act(() => result.current.projects.setActive("b"));
+    await waitFor(() => expect(result.current.projects.activeProjectId).toBe("b"));
+    await waitFor(() => expect(result.current.room.ready).toBe(true));
+    // As soon as the composer takes anything again: B's chat, or no chat
+    // named — which the main process answers with B's — never A's.
+    await act(() => result.current.room.send("Draft a release pipeline."));
+
+    expect(sentTo(invoke)).toHaveLength(1);
+    expect(sentTo(invoke)[0]).not.toBe(CHAT_ON.a.id);
+    await waitFor(() => expect(result.current.room.conversation?.id).toBe(CHAT_ON.b.id));
+  });
+
+  it("never takes the left project's chat from a read that answers after the switch", async () => {
+    const hold = deferred();
+    mainProcess({ holdFirstOpen: hold.promise });
+    const { result } = mounted();
+    // The first read of the room is asked on A, and has not answered.
+    await waitFor(() => expect(window.eo.ipc.invoke).toHaveBeenCalledWith("assist:open", undefined));
+    expect(result.current.room.conversation).toBeNull();
+
+    act(() => result.current.projects.setActive("b"));
+    await waitFor(() => expect(result.current.room.conversation?.id).toBe(CHAT_ON.b.id));
+
+    // A's answer arrives late.
+    hold.release();
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+
+    expect(result.current.room.conversation?.id).toBe(CHAT_ON.b.id);
   });
 });

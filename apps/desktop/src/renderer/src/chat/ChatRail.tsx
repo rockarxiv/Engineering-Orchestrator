@@ -13,7 +13,7 @@ import { pipelineIcon, places } from "../shared/layout/sidebar";
 import { ipcQuery } from "../query/client";
 import { engineStatusKey } from "../query/engine";
 import { isDispatchable } from "@eo/core";
-import { agentsKey, useChromeVocabulary, useMe, usePipelines, useProjectItems } from "../query/hooks";
+import { agentsKey, useChromeVocabulary, useMe, usePipelines, useProjectItems, useSwitchingProject } from "../query/hooks";
 import { useInvalidateOnPush } from "../query/useInvalidateOnPush";
 import { useProjects } from "../query/useRepositories";
 import { ConfirmDialog, ContextMenu, contextMenuAt, isContextMenuKey, StatusDot, type ContextMenuAt } from "./kit";
@@ -266,7 +266,11 @@ const CHATS_SHOWN = 6;
 function ChatList({ onProblem }: { onProblem: (message: string | null) => void }) {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
-  const threads = useQuery({ queryKey: assistThreadsKey, queryFn: () => ipcQuery("assist:list", undefined) });
+  // Not read, and not drawn, while the window is between projects
+  // (EO-765): the list is the project being left's. The switch resets it
+  // when it is through.
+  const switchingProject = useSwitchingProject();
+  const threads = useQuery({ queryKey: assistThreadsKey, queryFn: () => ipcQuery("assist:list", undefined), enabled: !switchingProject });
   const [showingAll, setShowingAll] = useState(false);
 
   // When the list moves: a thread is started, put away or shown (all push
@@ -425,7 +429,7 @@ function ChatList({ onProblem }: { onProblem: (message: string | null) => void }
     },
   });
 
-  const all = threads.data?.conversations ?? [];
+  const all = switchingProject ? [] : (threads.data?.conversations ?? []);
   const openOnes = arrangedAs(placed, all.filter((thread) => thread.live));
   const earlier = all.filter((thread) => !thread.live);
   const shown = showingAll ? earlier : earlier.slice(0, CHATS_SHOWN);
