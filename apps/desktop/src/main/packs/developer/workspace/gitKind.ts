@@ -2,7 +2,7 @@ import { existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { GIT_WORKTREE_KIND, PLAN_COMMENT_RESPONSE_ACTION, PlanCommentResponseOutputSchema, type Agent, type Item } from "@eo/core";
 import type { Db } from "../../../db/client.js";
-import { getGitWorkspace, stepForItem } from "../../../db/repos/index.js";
+import { getGitWorkspace, getItem, stepForItem } from "../../../db/repos/index.js";
 import { emitPush } from "../../../ipc/push.js";
 import { verifier } from "../../../supervisor/workspaceKind.js";
 import type { Artifact, Check, PreparedWorkspace, ReferenceCheckoutRequest, VerifiableRun, WorkspaceAttachment, WorkspaceKind, ReleaseRequest } from "../../../supervisor/workspaceKind.js";
@@ -18,6 +18,7 @@ import { withoutRepositoryIndex } from "../repositoryIntelligence/indexPaths.js"
 import { createWorktreeWorkspace, forgetIndexesForReleasedWorktrees, releaseStaleWorktrees, releaseWorktreeFor } from "./dispatchWorkspace.js";
 import { git, statusPorcelain } from "./git.js";
 import { referenceCheckoutFor, releaseReferenceCheckouts, releaseStaleReferenceCheckouts } from "./referenceCheckouts.js";
+import { commitNamingCheck } from "./commitNaming.js";
 import { createImplementationVerifier, createVerifiedRange } from "./implementationVerifier.js";
 import type { VerificationResult, VerifyOptions } from "./verify.js";
 
@@ -166,7 +167,8 @@ export function gitWorkspaceKind(options: GitWorkspaceKindOptions): WorkspaceKin
        * only to propose (KAN-18), and whether any file on the branch was
        * copied out of another item's unmerged work (KAN-27). Three hooks
        * until EO-295, fired at three different moments and in three
-       * different voices.
+       * different voices. A fourth, only where a Reference names the work:
+       * that no commit the item added names its EO or Jira keys (EO-768).
        *
        * The phrases are what a column head says (EO-312): one per thing
        * looked at, in the order they are looked at, so "EO checks:
@@ -177,7 +179,7 @@ export function gitWorkspaceKind(options: GitWorkspaceKindOptions): WorkspaceKin
        * a head saying more than it should — which is the argument for
        * naming what is checked here rather than what was found.
        */
-      implement: verifier(["commits", "tests ran", "the tree is clean", "nothing borrowed from another ticket"], async (item: Item, run: VerifiableRun): Promise<readonly Check[]> => {
+      implement: verifier(["commits", "tests ran", "the tree is clean", "nothing borrowed from another ticket", "commit messages name only the Reference"], async (item: Item, run: VerifiableRun): Promise<readonly Check[]> => {
         // An `implement` the dispatched role defined for itself is not
         // the action this entry vouches for (EO-422). It answered in the
         // role's own shape and promised no commits, so holding it to a
@@ -220,6 +222,11 @@ export function gitWorkspaceKind(options: GitWorkspaceKindOptions): WorkspaceKin
         const clean = verified.verification?.steps.find((step) => step.name === "clean");
         if (clean) checks.push({ key: "clean-tree", passed: true, describes: `Nothing was left uncommitted in ${item.key}'s worktree.` });
         checks.push(await borrowedCheck(db, item, run.workspace, worktreeRoot));
+        // Over the range just verified, which is after its rebase, so the
+        // hashes it names are the ones on the branch the next attempt gets.
+        // Absent unless a Reference names the work (EO-768).
+        const naming = await commitNamingCheck(db, getItem(db, item.id) ?? item, await verifiedRange(item));
+        if (naming) checks.push(naming);
         return checks;
       }),
       /**

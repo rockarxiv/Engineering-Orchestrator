@@ -2,6 +2,7 @@ import { assembleContext, assembleFollowUpContext, assembleSeedContext, type Ass
 import { acceptanceCriteriaOf, actionOverridesFor, definedActionFor, renderActionDefinitionTask, UNKNOWN_ITEM_TYPE, fullThreadEnabled, parsedResultOf, HUMAN_MESSAGE_EVENT, INTERPRET_ACTION, type Agent, type Comment, type CommentKind, type HumanMessageEvent, type Run, type Item, type Uuid } from "@eo/core";
 import type { Db } from "../db/client.js";
 import { reviewAppendix } from "../packs/developer/forge/reviewAppendix.js";
+import { implementAppendix } from "../packs/developer/workspace/commitNaming.js";
 import {
   asGitWorkspace,
   projectWorkspaceList,
@@ -251,6 +252,7 @@ function excerptForTask(text: string): string {
 async function taskAppendixFor(db: Db, item: Item, action: string, role: string | null): Promise<string | null> {
   const framing =
     (await reviewAppendix(db, item, action, role)) ??
+    implementAppendix(db, item, action, role) ??
     (action === SCENARIO_ACTION ? scenarioTaskAppendix(db, item) : null) ??
     interpretAppendix(db, item, action) ??
     mentionAppendix(action);
