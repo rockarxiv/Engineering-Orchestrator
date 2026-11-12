@@ -123,19 +123,29 @@ describe("composeGitArgs", () => {
 });
 
 describe("fetchBranch", () => {
-  it("fetches a branch that only exists on the remote, without creating a local ref", async () => {
+  it("fetches a branch that only exists on the remote into its tracking ref, without creating a local branch", async () => {
     const result = await fetchBranch(repoPath, "origin", "still-open");
     expect(result.ok).toBe(true);
+    if (!result.ok) return;
 
-    // No local branch or remote-tracking ref was created for it — the
-    // fetched commit is reachable only via FETCH_HEAD.
     const localBranch = await git(["show-ref", "--verify", "--quiet", "refs/heads/still-open"], repoPath);
     expect(localBranch.ok).toBe(false);
 
+    // The commit it answers with is the one it wrote to the tracking ref,
+    // not something to be read back off `FETCH_HEAD` later (EO-755).
+    expect(result.ref).toBe("refs/remotes/origin/still-open");
+    const tracking = await git(["rev-parse", "refs/remotes/origin/still-open"], repoPath);
+    expect(tracking.ok && tracking.stdout).toBe(result.commit);
+  });
+
+  it("answers with its own branch's commit even after another fetch has rewritten FETCH_HEAD", async () => {
+    const fetched = await fetchBranch(repoPath, "origin", "still-open");
+    await fetchBranch(repoPath, "origin", "already-merged");
+
     const fetchHead = await git(["rev-parse", "FETCH_HEAD"], repoPath);
-    expect(fetchHead.ok).toBe(true);
-    if (!fetchHead.ok) return;
-    expect(fetchHead.stdout).not.toBe("");
+    const stillOpen = await git(["rev-parse", "refs/remotes/origin/still-open"], repoPath);
+    expect(fetched.ok && fetched.commit).toBe(stillOpen.ok && stillOpen.stdout);
+    expect(fetchHead.ok && fetchHead.stdout).not.toBe(fetched.ok && fetched.commit);
   });
 
   it("fails against a remote that doesn't exist", async () => {
@@ -224,13 +234,14 @@ describe("commitsAhead", () => {
 
 describe("isAncestor", () => {
   it("is true when the fetched branch's tip is already on the base branch", async () => {
-    await fetchBranch(repoPath, "origin", "already-merged");
-    expect(await isAncestor(repoPath, "FETCH_HEAD", "main")).toBe(true);
+    const fetched = await fetchBranch(repoPath, "origin", "already-merged");
+    expect(fetched.ok && (await isAncestor(repoPath, fetched.commit, "main"))).toBe(true);
   });
 
   it("is false when the fetched branch has a commit the base branch doesn't", async () => {
-    await fetchBranch(repoPath, "origin", "still-open");
-    expect(await isAncestor(repoPath, "FETCH_HEAD", "main")).toBe(false);
+    const fetched = await fetchBranch(repoPath, "origin", "still-open");
+    expect(fetched.ok).toBe(true);
+    expect(fetched.ok && (await isAncestor(repoPath, fetched.commit, "main"))).toBe(false);
   });
 
   it("is false — not thrown — for a ref that doesn't exist", async () => {

@@ -135,9 +135,10 @@ export function normaliseForgeState(raw: string): MergeState | null {
  * function does: a merge state EO is unsure of is not this adapter's to
  * escalate.
  *
- * The base ref is resolved *before* the dependency's branch is fetched,
- * because both fetches write `FETCH_HEAD` and the dependency's tip is the
- * one that has to survive to the comparison below.
+ * The dependency's side of the comparison is the commit its own fetch
+ * brought back, never `FETCH_HEAD`: every fetch in this repository —
+ * another item's step, running at the same moment — rewrites that one
+ * file (EO-755).
  */
 async function gitFallback(repoPath: string, remote: string, branch: string, baseBranch: string, options: NetworkGitOptions): Promise<MergeState> {
   const base = await resolveRemoteRef(repoPath, remote, baseBranch, options);
@@ -145,5 +146,5 @@ async function gitFallback(repoPath: string, remote: string, branch: string, bas
 
   const fetched = await fetchBranch(repoPath, remote, branch, options);
   if (!fetched.ok) return "open";
-  return (await isAncestor(repoPath, "FETCH_HEAD", baseRef)) ? "merged" : "open";
+  return (await isAncestor(repoPath, fetched.commit, baseRef)) ? "merged" : "open";
 }

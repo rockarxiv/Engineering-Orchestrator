@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CliResult, CliRunner } from "./cli.js";
 import { resolveMergeState, type ResolveMergeStateInput } from "./mergeState.js";
 
@@ -136,6 +136,7 @@ describe("falling back to git", () => {
   });
 
   afterEach(() => {
+    vi.restoreAllMocks();
     rmSync(scratch, { recursive: true, force: true });
   });
 
@@ -174,6 +175,27 @@ describe("falling back to git", () => {
     const localMain = execFileSync("git", ["rev-parse", "main"], { cwd: repoPath, encoding: "utf8" }).trim();
     const localOrigin = execFileSync("git", ["rev-parse", "origin/main"], { cwd: repoPath, encoding: "utf8" }).trim();
     expect(localMain).not.toBe(localOrigin);
+  });
+
+  it("compares the commit its own fetch brought back, even when another fetch rewrites FETCH_HEAD straight after (EO-755)", async () => {
+    // Another item's step fetches a branch that has landed, in the same
+    // repository, the moment this fetch of an open one returns. Read off
+    // `FETCH_HEAD`, the open branch would be reported merged.
+    const gitModule = await import("../workspace/git.js");
+    const realFetchBranch = gitModule.fetchBranch;
+    vi.spyOn(gitModule, "fetchBranch").mockImplementation(async (path, remote, branch, options) => {
+      const fetched = await realFetchBranch(path, remote, branch, options);
+      if (branch === "eo/EO-open") git(["fetch", "origin", "eo/EO-merged"], repoPath);
+      return fetched;
+    });
+
+    const { run } = recorder([notFound]);
+    const result = await resolveMergeState(input({ run, repoPath, branch: "eo/EO-open", forgeKind: "github" }));
+
+    const fetchHead = execFileSync("git", ["rev-parse", "FETCH_HEAD"], { cwd: repoPath, encoding: "utf8" }).trim();
+    const merged = execFileSync("git", ["rev-parse", "origin/eo/EO-merged"], { cwd: repoPath, encoding: "utf8" }).trim();
+    expect(fetchHead).toBe(merged);
+    expect(result).toBe("open");
   });
 
   it("never reports 'closed' from the fallback, even for a branch that never merged", async () => {

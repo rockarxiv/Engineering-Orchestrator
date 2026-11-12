@@ -514,8 +514,8 @@ async function reattachWorktree(
  *
  * The local branch it makes carries the same name and starts at the
  * commit the remote has now, so nothing is renamed and every commit on
- * it is kept; it tracks the remote's branch where a tracking ref exists,
- * so a push later goes back to the same branch. A branch the remote does
+ * it is kept; it tracks the remote's branch where the remote's fetch
+ * refspec covers it, so a push later goes back to the same branch. A branch the remote does
  * not have, a repository with no such remote, or a remote this call could
  * not reach is refused naming the branch, and nothing is created — a
  * stale tracking ref is not taken as proof the branch is still there,
@@ -555,16 +555,21 @@ async function attachRemoteBranch(
     };
   }
 
-  // The tracking ref when it is the remote's tip, so the branch tracks
-  // it; the fetched commit when a restricted refspec left the tracking
-  // ref behind, or wrote none.
-  const tracks = resolved.fetched === undefined && resolved.ref !== "FETCH_HEAD";
-  const start = resolved.fetched ?? resolved.ref;
-  const args = tracks ? ["worktree", "add", "--track", "-b", branch, path, start] : ["worktree", "add", "-b", branch, path, start];
+  // From the tracking ref this call's own fetch wrote, so the branch
+  // starts at the remote's tip (EO-755: never `FETCH_HEAD`, which a fetch
+  // for another item can replace before this line runs).
+  //
+  // Tracking is set up afterwards rather than with `--track`, because git
+  // refuses `--track` outright — and so the whole checkout — when the
+  // remote's configured fetch refspec does not cover the branch, even
+  // though the tracking ref exists. Where it refuses, the branch is left
+  // untracked; EO's own push sets the upstream when it publishes.
+  const args = ["worktree", "add", "--no-track", "-b", branch, path, resolved.ref];
   const added = await git(args, config.repoPath, options.signal ? { signal: options.signal } : {});
   if (!added.ok) {
     return { ok: false, reason: `Could not check out "${branch}" from ${remote} for ${itemKey} at ${path}: ${added.error}` };
   }
+  await git(["branch", `--set-upstream-to=${resolved.ref}`, branch], config.repoPath);
   options.onProgress?.(`Checked out "${branch}" from ${remote} at ${path}, keeping every commit already on it.`);
   await excludeEoDirectories(path, options);
   return { ok: true, value: { itemKey, path, branch } };

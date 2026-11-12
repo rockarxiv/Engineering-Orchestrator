@@ -200,27 +200,42 @@ export async function commitsAhead(repoPath: string, base: string, branch: strin
   return { ok: true, count };
 }
 
+/** What `fetchBranch` brought back: the remote-tracking ref it wrote, and the commit that ref named once it had. */
+export type FetchedBranch = { ok: true; ref: string; commit: string } | { ok: false; error: string };
+
 /**
- * Fetches one branch from `remote` without touching the working tree or
- * any local ref (EO-10 / KAN-42's git fallback for merge-state).
+ * Fetches one branch from `remote` into its remote-tracking ref,
+ * `refs/remotes/<remote>/<branch>`, without touching the working tree or
+ * any local branch (EO-10 / KAN-42's git fallback for merge-state).
  *
- * Deliberately doesn't ask for a local or remote-tracking ref name to be
- * written — the fetched commit lands at `FETCH_HEAD`, which is all a
- * caller needs to pass to `isAncestor` next, and avoids picking a ref
- * name that might collide with something else in the repo.
+ * Into that ref, by an explicit refspec, rather than read back off
+ * `FETCH_HEAD` (EO-755). `FETCH_HEAD` is one file shared by the
+ * repository and every worktree of it, and EO runs builtin steps for
+ * different items at the same time, so any fetch that lands between this
+ * one and the read replaces it — which is how a named branch was once
+ * checked out from `main`'s tip. The tracking ref can only be moved by a
+ * fetch of this same branch, which puts it at this branch's tip again.
+ * The refspec also moves the tracking ref where the remote's own fetch
+ * refspec does not cover the branch, so it is never left stale behind
+ * what this fetch saw.
  */
-export async function fetchBranch(repoPath: string, remote: string, branch: string, options: NetworkGitOptions = {}): Promise<GitOutcome> {
-  return git(["fetch", remote, branch], repoPath, {
+export async function fetchBranch(repoPath: string, remote: string, branch: string, options: NetworkGitOptions = {}): Promise<FetchedBranch> {
+  const ref = `refs/remotes/${remote}/${branch}`;
+  const fetched = await git(["fetch", remote, `+refs/heads/${branch}:${ref}`], repoPath, {
     env: NON_INTERACTIVE_GIT_ENV,
     timeoutMs: options.timeoutMs ?? NETWORK_TIMEOUT_MS,
     ...(options.signal ? { signal: options.signal } : {}),
   });
+  if (!fetched.ok) return fetched;
+  const commit = await git(["rev-parse", "--verify", "--quiet", `${ref}^{commit}`], repoPath);
+  if (!commit.ok || commit.stdout === "") return { ok: false, error: `\`git fetch ${remote} ${branch}\` succeeded, but wrote no commit to \`${ref}\`.` };
+  return { ok: true, ref, commit: commit.stdout };
 }
 
 /**
  * Is `ancestor` an ancestor of `descendant` — i.e. already fully
- * contained in its history? Used to tell whether a branch (typically
- * `FETCH_HEAD`, right after `fetchBranch`) has landed on a base branch.
+ * contained in its history? Used to tell whether a branch (typically the
+ * commit `fetchBranch` just brought back) has landed on a base branch.
  *
  * A non-zero exit means "not an ancestor" here, same as everywhere else
  * in this file — it does not distinguish "diverged" from "unknown ref"
