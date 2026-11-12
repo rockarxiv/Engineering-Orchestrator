@@ -73,7 +73,7 @@
     "electron": "catalog:",
     "electron-builder": "catalog:",
     "electron-vite": "catalog:",
-    "jsdom": "^30.0.1",
+    "jsdom": "^31.0.0",
     "playwright": "catalog:",
     "tailwindcss": "catalog:",
     "typescript": "catalog:",
