@@ -54,7 +54,7 @@ export function NeedsCheck({
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const vocabulary = useChromeVocabulary();
-  const { activeProjectId, setActive } = useProjects();
+  const { activeProjectId, setActive, switchProject } = useProjects();
   const key = galleryNeedsKey(projectId, template.slug);
 
   const needs = useQuery({
@@ -118,12 +118,15 @@ export function NeedsCheck({
   /**
    * The exit for somebody who cannot get a line green: a rehearsal in
    * EO's preview project, landing on its board. The window is pointed at
-   * that project first, because a board draws the project it is on.
+   * that project first, because a board draws the project it is on —
+   * through the same switch the rail's picker makes (EO-765), so the
+   * assistant's room and rail drop the project being left at once and a
+   * reply to something sent there is not drawn over the preview's.
    */
   const previewOnly = useMutation({
     mutationFn: async () => {
       const result = await ipcQuery("gallery:preview", { slug: template.slug, token: template.token });
-      if (result.projectId !== null) await ipcQuery("projects:setActive", { id: result.projectId });
+      if (result.projectId !== null) await switchProject(result.projectId);
       return result;
     },
     onSuccess: (result) => {

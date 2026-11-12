@@ -107,8 +107,11 @@ export function useProjects() {
 
   // Stable identity: callers put this in effect dependencies, and a new
   // function every render would re-run those effects every render.
-  const { mutate } = setActive;
+  const { mutate, mutateAsync } = setActive;
   const switchTo = useCallback((id: string) => mutate(id), [mutate]);
+  const switchToAndWait = useCallback(async (id: string): Promise<void> => {
+    await mutateAsync(id);
+  }, [mutateAsync]);
 
   return {
     projects,
@@ -117,6 +120,13 @@ export function useProjects() {
     active: projects.find((project) => project.id === activeProjectId) ?? null,
     isLoading: query.isLoading,
     setActive: switchTo,
+    /**
+     * The same switch, for a caller that must not go on until it is
+     * through — every project switch goes through this hook, so the
+     * assistant's room and rail are dropped and a late reply for the
+     * project left is not drawn (EO-765). Rejects as `projects:setActive` does.
+     */
+    switchProject: switchToAndWait,
     /** The project a switch made through this hook is on its way to, until the main process has answered (EO-562). */
     switchingTo: setActive.isPending ? (setActive.variables ?? null) : null,
   };
