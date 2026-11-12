@@ -128,7 +128,10 @@ export function descriptionFor(step: PipelineStepView): string {
  * the number on exactly the cards a person is most likely to hover.
  * "Nought so far" is an answer; a missing clause is a person wondering
  * whether EO knows.
+ *
+ * An item a watch job filed names the finding's key as well (EO-754).
  */
 export function originHover(origin: NonNullable<ItemSummary["origin"]>): string {
-  return `From ${describeItemOriginKind(origin.trigger)} "${origin.jobName}" · ${costOf(origin.costCents)}`;
+  const finding = origin.findingKey ? ` · finding ${origin.findingKey}` : "";
+  return `From ${describeItemOriginKind(origin.trigger)} "${origin.jobName}"${finding} · ${costOf(origin.costCents)}`;
 }

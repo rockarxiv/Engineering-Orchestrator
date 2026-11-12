@@ -230,20 +230,36 @@ function parsePayload(raw: string | null): unknown {
  * at 1 a burst also needs "38 waiting" said, or the team sees one item
  * and assumes the rest were lost (ARCHITECTURE.md, "Webhooks").
  */
-export function JobEvents({ events, heldCount, timeZone }: { events: JobEventRow[]; heldCount: number; timeZone: string | undefined }) {
+export function JobEvents({
+  events,
+  heldCount,
+  timeZone,
+  showKeys = false,
+  empty = "Nothing has been delivered here yet.",
+}: {
+  events: JobEventRow[];
+  heldCount: number;
+  timeZone: string | undefined;
+  /** Each row's event key, for a watch job (EO-754), whose keys are its module's names for what it found. A webhook's are often a hash. */
+  showKeys?: boolean;
+  empty?: string;
+}) {
   return (
     <section aria-label="Events" className="flex min-w-0 flex-col gap-2">
       {heldCount === 0 ? null : (
         <p className="text-[13px] text-ink-muted">{heldCount} waiting. EO files them in the order they arrived, as the job&apos;s own limit lets it.</p>
       )}
       {events.length === 0 ? (
-        <EmptyState title="Nothing has been delivered here yet." />
+        <EmptyState title={empty} />
       ) : (
         <ul className="flex min-w-0 flex-col [&>li+li]:border-t [&>li+li]:border-line/60">
           {events.map((event) => (
             <li key={event.id} className="flex min-w-0 items-start gap-3 py-2">
               <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-                <span className="text-[13px] text-ink">{describeJobEventOutcome(event.outcome)}</span>
+                <span className="text-[13px] text-ink">
+                  {describeJobEventOutcome(event.outcome)}
+                  {showKeys ? <span className="ml-2 font-mono text-[12px] text-ink-muted">{event.eventKey}</span> : null}
+                </span>
                 {event.reason ? <span className="text-[12px] leading-snug text-ink-muted">{event.reason}</span> : null}
                 <span className="text-[11px] text-ink-subtle">{whenOf(event.receivedAt, timeZone)}</span>
               </div>

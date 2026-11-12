@@ -1,7 +1,8 @@
 import { JOB_TEMPLATE_BLANKS, WEEKDAY_NAMES, describeJobTrigger, qualifiedItemType } from "@eo/core";
-import type { JobDraft } from "../../../shared/jobs/draft";
+import { blankWatch, type JobDraft } from "../../../shared/jobs/draft";
 import { usePipelines, useRegistry } from "../../../query/hooks";
 import { Field, Select, TextArea, TextInput } from "../../kit";
+import { WatchFields } from "./Watch";
 
 /**
  * The editable half of a job, shared by the new-job form and the job's
@@ -12,6 +13,9 @@ import { Field, Select, TextArea, TextInput } from "../../kit";
  * (EO-333): moving to a webhook needs a path and a secret this form has
  * no business minting, and moving away from one would quietly discard an
  * address somebody's helpdesk is already configured with.
+ *
+ * A watch job is a kind the select offers (EO-754): its module, inputs,
+ * interval and switch are all things a person sets here.
  */
 export function JobFields({ draft, projectId, onChange }: { draft: JobDraft; projectId: string | null; onChange: (next: JobDraft) => void }) {
   const { pipelines } = usePipelines(projectId);
@@ -28,18 +32,24 @@ export function JobFields({ draft, projectId, onChange }: { draft: JobDraft; pro
         <Field label="Trigger" hint="Its address and its secret are above. To file work on a schedule instead, make a second job.">
           <span className="text-[13px] text-ink-muted">{describeJobTrigger(draft.webhook)}</span>
         </Field>
-      ) : draft.triggerKind === "watch" && draft.watch !== null ? (
-        <Field label="Trigger" hint="Its module and how often it checks are kept as they are. To file work on a schedule instead, make a second job.">
-          <span className="text-[13px] text-ink-muted">{describeJobTrigger(draft.watch)}</span>
-        </Field>
       ) : (
         <Field label="Trigger">
-          <Select value={draft.triggerKind} onChange={(event) => set("triggerKind", event.target.value as JobDraft["triggerKind"])}>
+          <Select
+            value={draft.triggerKind}
+            onChange={(event) => {
+              const kind = event.target.value as JobDraft["triggerKind"];
+              // A watch draft is made the first time it is picked and kept after, as the schedule's fields are.
+              onChange({ ...draft, triggerKind: kind, watch: kind === "watch" ? (draft.watch ?? blankWatch()) : draft.watch });
+            }}
+          >
             <option value="schedule">On a schedule</option>
             <option value="manual">Only when you run it</option>
+            <option value="watch">When a module finds something</option>
           </Select>
         </Field>
       )}
+
+      {draft.triggerKind === "watch" ? <WatchFields draft={draft} onChange={onChange} /> : null}
 
       {draft.triggerKind === "schedule" ? (
         <>

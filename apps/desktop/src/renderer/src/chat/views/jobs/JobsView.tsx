@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate } from "react-router-dom";
 import { ChevronRight, Plus, Workflow } from "lucide-react";
 import { describeJobTrigger } from "@eo/core";
-import { blankDraft, budgetOf, templateOf, triggerOf, type JobDraft } from "../../../shared/jobs/draft";
+import { blankDraft, budgetOf, templateOf, triggerOf, watchDraftProblem, type JobDraft } from "../../../shared/jobs/draft";
 import { pauseChipOf, whenOf, zoneOf } from "../../../shared/jobs/format";
 import { ipcQuery } from "../../../query/client";
 import { jobsKey, jobsRootKey } from "../../../query/hooks";
@@ -83,7 +83,15 @@ export function JobsView() {
           <JobFields draft={draft} projectId={projectId} onChange={setDraft} />
           {problem === null ? null : <ErrorLine>{problem}</ErrorLine>}
           <div className="flex justify-end">
-            <Button variant="primary" disabled={create.isPending} onClick={() => create.mutate(draft)}>
+            <Button
+              variant="primary"
+              disabled={create.isPending}
+              onClick={() => {
+                const unsent = watchDraftProblem(draft);
+                if (unsent === null) create.mutate(draft);
+                else setProblem(unsent);
+              }}
+            >
               Create job
             </Button>
           </div>

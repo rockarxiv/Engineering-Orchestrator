@@ -69,6 +69,13 @@ describe("jobs:list", () => {
     expect(listJobs(handle.db, null)).toHaveLength(2);
     expect(listJobsCommand(handle.db, { projectId: null }).jobs.map((job) => job.id)).toEqual([kept.id]);
   });
+
+  it("narrows to the jobs filing onto one pipeline, for its board to say what feeds it (EO-754)", async () => {
+    const job = (await create()).job!;
+
+    expect(listJobsCommand(handle.db, { pipelineId: "default" }).jobs.map((one) => one.id)).toEqual([job.id]);
+    expect(listJobsCommand(handle.db, { pipelineId: "somewhere-else" }).jobs).toEqual([]);
+  });
 });
 
 describe("jobs:runNow", () => {

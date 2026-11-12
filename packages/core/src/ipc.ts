@@ -4919,9 +4919,13 @@ export const recordContract = {
    * the schedule parser and the chip needs the occurrences — both in the
    * main process — and a renderer that derived them would be a second
    * opinion about when a job fires.
+   *
+   * `pipelineId` narrows it to the jobs filing onto that pipeline,
+   * whatever project they are on (EO-754): a board says what feeds it,
+   * and the pipeline rather than the active project is what it knows.
    */
   "jobs:list": channel(
-    z.object({ projectId: z.string().nullable().optional() }),
+    z.object({ projectId: z.string().nullable().optional(), pipelineId: z.string().optional() }),
     z.object({ jobs: z.array(JobSummarySchema) }),
   ),
   /**

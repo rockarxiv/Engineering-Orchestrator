@@ -1014,6 +1014,15 @@ describe("the About card", () => {
     expect(within(about).getByText("Delivery")).toBeInTheDocument();
   });
 
+  it("names the watch job that filed it and the finding's key (EO-754)", async () => {
+    const data = detail();
+    data.item.origin = { jobId: "j1", jobName: "Dependabot", trigger: "watch", costCents: 0, occurrenceId: "o1", firedAt: 5, findingKey: "pr-412" };
+    renderItem(data);
+
+    const about = await screen.findByRole("complementary", { name: "About" });
+    expect(await within(about).findByText("watch “Dependabot”, finding pr-412")).toBeInTheDocument();
+  });
+
   it("has no From for an item a person filed", async () => {
     renderItem(detail());
     const about = await screen.findByRole("complementary", { name: "About" });

@@ -1,11 +1,11 @@
 import { JobViewSchema, type Job, type JobTrigger } from "@eo/core";
 import { describe, expect, it } from "vitest";
-import { draftOf, triggerOf } from "./draft";
+import { blankDraft, draftOf, triggerOf, watchDraftProblem } from "./draft";
 
 /**
- * A trigger the Job page cannot edit is carried through it untouched
- * (EO-333 for a webhook, EO-753 for a watch): opening the page and
- * pressing Save after a rename must not turn it into "daily at 08:00".
+ * A webhook or watch trigger is carried through the draft whole (EO-333,
+ * EO-753, EO-754): opening the page and pressing Save after a rename must
+ * not turn it into "daily at 08:00".
  */
 
 function jobWith(trigger: JobTrigger): Job {
@@ -38,5 +38,16 @@ describe("a watch job read into the form and saved again", () => {
     const job = jobWith(watch);
     const draft = draftOf(job);
     expect(draft.watch?.inputs).not.toBe(job.trigger.kind === "watch" ? job.trigger.inputs : undefined);
+  });
+});
+
+describe("a watch draft not yet fit to send", () => {
+  it("asks for a module, then for a whole interval, and otherwise lets it go", () => {
+    const draft = { ...blankDraft(), triggerKind: "watch" as const };
+    expect(watchDraftProblem(draft)).toBe("Pick the module it checks with.");
+    const picked = { ...draft, watch: { kind: "watch" as const, moduleId: "pr-watch", inputs: {}, everyMinutes: 0, waitWhileOpen: false } };
+    expect(watchDraftProblem(picked)).toMatch(/whole number of minutes/);
+    expect(watchDraftProblem({ ...picked, watch: { ...picked.watch, everyMinutes: 15 } })).toBeNull();
+    expect(watchDraftProblem(blankDraft())).toBeNull();
   });
 });

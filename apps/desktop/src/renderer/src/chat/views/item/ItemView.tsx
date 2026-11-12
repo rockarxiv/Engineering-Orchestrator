@@ -574,8 +574,15 @@ export function ItemView({ itemId }: { itemId: string }) {
                     ...(item.repositoryName ? [{ term: "Repository", value: item.repositoryName }] : []),
                     ...(branch ? [{ term: "Branch", value: <span className="font-mono text-[12px]">{branch}</span> }] : []),
                     // Which job made it, said as the original design says it: "From: job ‘Monday
-                    // report’".
-                    ...(item.origin ? [{ term: "From", value: `${describeItemOriginKind(item.origin.trigger)} “${item.origin.jobName}”` }] : []),
+                    // report’". A watch job's item names its finding too (EO-754).
+                    ...(item.origin
+                      ? [
+                          {
+                            term: "From",
+                            value: `${describeItemOriginKind(item.origin.trigger)} “${item.origin.jobName}”${item.origin.findingKey ? `, finding ${item.origin.findingKey}` : ""}`,
+                          },
+                        ]
+                      : []),
                     { term: "Created", value: new Date(item.createdAt).toLocaleDateString() },
                     { term: "Updated", value: new Date(item.updatedAt).toLocaleDateString() },
                   ]}

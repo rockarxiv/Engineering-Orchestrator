@@ -8,7 +8,7 @@ import {
   type Uuid,
 } from "@eo/core";
 import type { Db } from "../db/client.js";
-import { getJob, listDevices, listJobs } from "../db/repos/index.js";
+import { getJob, listAllJobs, listDevices, listJobs } from "../db/repos/index.js";
 import { placementForJob, runsOnOf, type PlacementFacts } from "../jobs/placement.js";
 import { sessionStatus, type SessionStoreOptions } from "../managed/session.js";
 import { jobCostCents, pauseJob, resumeJob } from "../jobs/budget.js";
@@ -197,8 +197,10 @@ export function listJobsCommand(db: Db, input: IpcPayload<"jobs:list">): IpcResp
   // moment their turn in the loop came round — `runJobTick`'s rule, for
   // its reason.
   const now = Date.now();
+  const pipelineId = input.pipelineId;
+  const jobs = pipelineId === undefined ? listJobs(db, scopeOf(db, input.projectId)) : listAllJobs(db).filter((job) => job.pipelineId === pipelineId);
   return {
-    jobs: listJobs(db, scopeOf(db, input.projectId))
+    jobs: jobs
       .filter(keptByAPerson)
       .map((job) => jobSummary(db, job, now)),
   };
