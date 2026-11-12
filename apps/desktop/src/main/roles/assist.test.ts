@@ -17,9 +17,11 @@ import {
   offBoardStepIds,
   postComment,
   setItemArchived,
+  setSetting,
   updateRun,
   updateItem,
 } from "../db/repos/index.js";
+import { createProject, listProjects } from "../db/repos/projectsRepo.js";
 import { createTestItem, openMigratedTestDb } from "../db/testHelpers.js";
 import { findPendingResponses } from "../supervisor/manualDispatch.js";
 import {
@@ -29,6 +31,7 @@ import {
   assistAgent,
   assistBoardFor,
   ASSIST_ORDER_KEY,
+  SHOWN_ASSIST_KEY,
   assistBoards,
   clearAssistRoom,
   listAssistThreads,
@@ -509,7 +512,7 @@ describe("several live chats", () => {
     expect(liveAssistConversations(handle.db).map((item) => item.id).sort()).toEqual([first.id, started.conversation.id].sort());
     // The new one is what every opening answers with from here.
     expect(openAssistRoom(handle.db, null).conversation.id).toBe(started.conversation.id);
-    expect(shownAssistConversation(handle.db)?.id).toBe(started.conversation.id);
+    expect(shownAssistConversation(handle.db, null)?.id).toBe(started.conversation.id);
   });
 
   it("shows another live chat without writing to the one left behind", () => {
@@ -537,7 +540,7 @@ describe("several live chats", () => {
     const only = openAssistConversation(handle.db, null);
     says(only, "From before there were several.");
 
-    expect(shownAssistConversation(handle.db)?.id).toBe(only.id);
+    expect(shownAssistConversation(handle.db, null)?.id).toBe(only.id);
     const opened = openAssistRoom(handle.db, null);
     expect(opened).toMatchObject({ resumed: true, conversation: { id: only.id } });
     expect(getItem(handle.db, only.id)?.archivedAt).toBeNull();
@@ -550,7 +553,7 @@ describe("several live chats", () => {
     says(second, "What does Hold do?");
     setItemArchived(handle.db, second.id, Date.now());
 
-    expect(shownAssistConversation(handle.db)?.id).toBe(first.id);
+    expect(shownAssistConversation(handle.db, null)?.id).toBe(first.id);
   });
 
   it("marks every live chat in the list, and exactly one as shown", () => {
@@ -560,7 +563,7 @@ describe("several live chats", () => {
     says(second, "What does Hold do?");
     clearAssistRoom(handle.db, null);
 
-    const listed = listAssistThreads(handle.db).map((thread) => [thread.title, thread.conversation.archivedAt === null, thread.shown]);
+    const listed = listAssistThreads(handle.db, null).map((thread) => [thread.title, thread.conversation.archivedAt === null, thread.shown]);
     expect(listed).toEqual(
       expect.arrayContaining([
         ["Rework the release pipeline.", true, false],
@@ -603,10 +606,10 @@ describe("the order of the open chats", () => {
     return started;
   }
 
-  const order = () => orderedAssistConversations(handle.db).map((item) => item.id);
+  const order = () => orderedAssistConversations(handle.db, null).map((item) => item.id);
   /** What `assist:list` is built from: the open chats, then the put-away ones. */
   const listed = (live: boolean) =>
-    listAssistThreads(handle.db)
+    listAssistThreads(handle.db, null)
       .filter((thread) => (thread.conversation.archivedAt === null) === live)
       .map((thread) => thread.conversation.id);
 
@@ -641,7 +644,7 @@ describe("the order of the open chats", () => {
     expect(listed(true)).toEqual(before);
 
     // The activity is still there to be read, and still newest in the chat just spoken in.
-    const activity = new Map(listAssistThreads(handle.db).map((thread) => [thread.conversation.id, thread.lastActivityAt]));
+    const activity = new Map(listAssistThreads(handle.db, null).map((thread) => [thread.conversation.id, thread.lastActivityAt]));
     expect(activity.get(a.id)).toBeGreaterThan(activity.get(c.id)!);
     // Nothing above was a person arranging anything, so nothing was stored.
     expect(getSetting<unknown>(handle.db, ASSIST_ORDER_KEY, null)).toBeNull();
@@ -812,7 +815,7 @@ describe("expiry", () => {
     expect(listRunsForItem(handle.db, stale!.id)).toHaveLength(1);
     // And the fresh one starts empty rather than inheriting any of it.
     expect(listCommentsForItem(handle.db, fresh!.id)).toEqual([]);
-    expect(shownAssistConversation(handle.db)?.id).toBe(fresh!.id);
+    expect(shownAssistConversation(handle.db, null)?.id).toBe(fresh!.id);
   });
 
   /**
@@ -929,7 +932,7 @@ describe("expiry", () => {
       expect(listCommentsForItem(handle.db, opened.conversation.id)).toEqual([]);
       expect(getItem(handle.db, shown!.id)?.archivedAt).toBe(Date.now());
       expect(getItem(handle.db, other!.id)?.archivedAt).toBeNull();
-      expect(shownAssistConversation(handle.db)?.id).toBe(opened.conversation.id);
+      expect(shownAssistConversation(handle.db, null)?.id).toBe(opened.conversation.id);
     });
   });
 
@@ -1133,5 +1136,182 @@ describe("a turn", () => {
     const next = wiring.resolveNextState(step, [step], { message: "Hi", questions: [], proposals: [] }, ASSIST_ACTION, conversation);
 
     expect(next).toBeNull();
+  });
+});
+
+/**
+ * Chats on two projects (EO-765): the rail lists the project the person
+ * is on, each project remembers its own chat on show and its own order,
+ * and New chat and Clear only ever make or reuse a chat on the project
+ * they are pressed on.
+ */
+describe("chats on two projects", () => {
+  const start = new Date("2026-08-01T09:00:00Z").getTime();
+  let clock = start;
+  let a: Uuid;
+  let b: Uuid;
+
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    clock = start;
+    vi.setSystemTime(clock);
+    a = createProject(handle.db, { name: "Shop", keyPrefix: "SHOP" }).id as Uuid;
+    b = createProject(handle.db, { name: "Blog", keyPrefix: "BLOG" }).id as Uuid;
+  });
+
+  function later(): void {
+    clock += 60_000;
+    vi.setSystemTime(clock);
+  }
+
+  /** A new chat on `projectId` with something said in it, started after everything before it. */
+  function chat(projectId: Uuid, body: string): Item {
+    later();
+    const started = newAssistRoom(handle.db, projectId).conversation;
+    says(started, body);
+    return started;
+  }
+
+  const listedOn = (projectId: Uuid | null) => listAssistThreads(handle.db, projectId).map((thread) => thread.conversation.id);
+  const orderOn = (projectId: Uuid) => orderedAssistConversations(handle.db, projectId).map((item) => item.id);
+
+  it("lists only the project's own chats, open and put away", () => {
+    const onA = chat(a, "Rework the release pipeline.");
+    const putAwayOnA = chat(a, "What does Hold do?");
+    const onB = chat(b, "Why is the weekly report late?");
+    const putAwayOnB = chat(b, "Draft a hotfix pipeline.");
+    setItemArchived(handle.db, putAwayOnA.id, Date.now());
+    setItemArchived(handle.db, putAwayOnB.id, Date.now());
+
+    expect(listedOn(a)).toEqual([onA.id, putAwayOnA.id]);
+    expect(listedOn(b)).toEqual([onB.id, putAwayOnB.id]);
+    expect(liveAssistConversations(handle.db, a).map((item) => item.id)).toEqual([onA.id]);
+    // The idle sweep still weighs every project's.
+    expect(liveAssistConversations(handle.db).map((item) => item.id).sort()).toEqual([onA.id, onB.id].sort());
+  });
+
+  it("remembers the chat on show on each project", () => {
+    const x = chat(a, "Rework the release pipeline.");
+    const other = chat(a, "What does Hold do?");
+    resumeAssistRoom(handle.db, x.id);
+    expect(shownAssistConversation(handle.db, a)?.id).toBe(x.id);
+    expect(other.id).not.toBe(x.id);
+
+    // Switching to B opens B's own chat, not A's.
+    const firstOnB = openAssistRoom(handle.db, b).conversation;
+    expect(firstOnB.projectId).toBe(b);
+    const y = chat(b, "Why is the weekly report late?");
+    chat(b, "Draft a hotfix pipeline.");
+    resumeAssistRoom(handle.db, y.id);
+
+    // Back on A: X, as it was left.
+    expect(openAssistRoom(handle.db, a)).toMatchObject({ resumed: true, conversation: { id: x.id } });
+    expect(shownAssistConversation(handle.db, b)?.id).toBe(y.id);
+    expect(listAssistThreads(handle.db, a).filter((thread) => thread.shown).map((thread) => thread.conversation.id)).toEqual([x.id]);
+    expect(listAssistThreads(handle.db, b).filter((thread) => thread.shown).map((thread) => thread.conversation.id)).toEqual([y.id]);
+  });
+
+  it("reads a chat on show stored before it was per project as its own project's, and keeps it when another project's is shown", () => {
+    const x = chat(a, "Rework the release pipeline.");
+    chat(a, "What does Hold do?");
+    setSetting(handle.db, SHOWN_ASSIST_KEY, x.id);
+    expect(shownAssistConversation(handle.db, a)?.id).toBe(x.id);
+    expect(shownAssistConversation(handle.db, b)).toBeUndefined();
+
+    const y = chat(b, "Why is the weekly report late?");
+
+    expect(shownAssistConversation(handle.db, b)?.id).toBe(y.id);
+    expect(shownAssistConversation(handle.db, a)?.id).toBe(x.id);
+  });
+
+  it("keeps each project's order its own when chats are dragged", () => {
+    const a1 = chat(a, "One");
+    const b1 = chat(b, "Uno");
+    const a2 = chat(a, "Two");
+    const b2 = chat(b, "Dos");
+    const a3 = chat(a, "Three");
+    reorderAssistConversation(handle.db, b1.id, 0);
+    expect(orderOn(b)).toEqual([b1.id, b2.id]);
+    expect(orderOn(a)).toEqual([a3.id, a2.id, a1.id]);
+
+    expect(reorderAssistConversation(handle.db, a1.id, 0)).toEqual({ problem: null });
+    reorderAssistConversation(handle.db, a3.id, 99);
+
+    expect(orderOn(a)).toEqual([a1.id, a2.id, a3.id]);
+    expect(listedOn(a)).toEqual([a1.id, a2.id, a3.id]);
+    // None of B's moved.
+    expect(orderOn(b)).toEqual([b1.id, b2.id]);
+    // A chat gone back to from Earlier on A joins A's list at the bottom, and B's still does not move.
+    later();
+    setItemArchived(handle.db, a2.id, Date.now());
+    later();
+    resumeAssistRoom(handle.db, a2.id);
+    expect(orderOn(a)).toEqual([a1.id, a3.id, a2.id]);
+    expect(orderOn(b)).toEqual([b1.id, b2.id]);
+  });
+
+  it("makes or reuses an empty chat on B with New chat, never one on A", () => {
+    const emptyOnA = openAssistRoom(handle.db, a).conversation;
+    expect(listCommentsForItem(handle.db, emptyOnA.id)).toEqual([]);
+
+    const started = newAssistRoom(handle.db, b).conversation;
+
+    expect(started.id).not.toBe(emptyOnA.id);
+    expect(started.projectId).toBe(b);
+    // Pressed again, B's empty chat is what there is.
+    expect(newAssistRoom(handle.db, b).conversation.id).toBe(started.id);
+    // A's empty chat is still A's chat on show.
+    expect(shownAssistConversation(handle.db, a)?.id).toBe(emptyOnA.id);
+    expect(listedOn(a)).toEqual([emptyOnA.id]);
+    expect(listedOn(b)).toEqual([started.id]);
+  });
+
+  it("clears B's chat on show with Clear on B, leaves an empty chat on B, and touches nothing on A", () => {
+    const onA = chat(a, "Rework the release pipeline.");
+    const emptyOnA = newAssistRoom(handle.db, a).conversation;
+    const onB = chat(b, "Why is the weekly report late?");
+
+    const cleared = clearAssistRoom(handle.db, b);
+
+    expect(cleared.expired?.id).toBe(onB.id);
+    expect(getItem(handle.db, onB.id)?.archivedAt).not.toBeNull();
+    // Not A's empty chat: a new one on B.
+    expect(cleared.conversation.id).not.toBe(emptyOnA.id);
+    expect(cleared.conversation.projectId).toBe(b);
+    expect(getItem(handle.db, onA.id)?.archivedAt).toBeNull();
+    expect(shownAssistConversation(handle.db, a)?.id).toBe(emptyOnA.id);
+
+    // Clear on B again: B's empty chat is already what Clear leaves.
+    expect(clearAssistRoom(handle.db, b)).toMatchObject({ resumed: true, conversation: { id: cleared.conversation.id } });
+    expect(shownAssistConversation(handle.db, a)?.id).toBe(emptyOnA.id);
+  });
+
+  it("opens the chat a draft is checked against on the project switched to", () => {
+    const onA = chat(a, "Rework the release pipeline.");
+    expect(openAssistRoom(handle.db, a).conversation.id).toBe(onA.id);
+
+    const onB = openAssistRoom(handle.db, b).conversation;
+
+    expect(onB.id).not.toBe(onA.id);
+    expect(onB.projectId).toBe(b);
+  });
+});
+
+describe("a chat opened before any project existed", () => {
+  it("is listed under the first project made, not on every project", () => {
+    expect(listProjects(handle.db)).toEqual([]);
+    const early = open().conversation;
+    says(early, "What can EO do?");
+    expect(listAssistThreads(handle.db, null).map((thread) => thread.conversation.id)).toEqual([early.id]);
+
+    const first = createProject(handle.db, { name: "Shop", keyPrefix: "SHOP" }).id as Uuid;
+    const second = createProject(handle.db, { name: "Blog", keyPrefix: "BLOG" }).id as Uuid;
+
+    expect(listAssistThreads(handle.db, first).map((thread) => thread.conversation.id)).toEqual([early.id]);
+    expect(listAssistThreads(handle.db, second)).toEqual([]);
+    expect(openAssistRoom(handle.db, first).conversation.id).toBe(early.id);
+    const onSecond = openAssistRoom(handle.db, second).conversation;
+    expect(onSecond.id).not.toBe(early.id);
+    expect(onSecond.projectId).toBe(second);
   });
 });

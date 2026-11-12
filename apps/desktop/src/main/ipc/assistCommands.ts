@@ -38,6 +38,7 @@ import {
   listMentionsForComment,
   pipelineHasWebhookEntry,
   postComment,
+  setSetting,
   updateItem,
   currentVersion,
   listRoutesForPipeline,
@@ -74,6 +75,7 @@ import {
   reorderAssistConversation,
   resumeAssistRoom,
   shownAssistConversation,
+  assistChatProjectId,
 } from "../roles/assist.js";
 import { designCardView } from "../trials/designCard.js";
 import { discardTrial } from "../trials/discard.js";
@@ -94,7 +96,7 @@ import { assistDeltaSeq } from "./assistDeltas.js";
 import { publishedPage } from "./currentView.js";
 import { deliverToLiveRun, type EngineHandle } from "./domainCommands.js";
 import { emitPush } from "./push.js";
-import { activeProjectId } from "./repositoryCommands.js";
+import { ACTIVE_PROJECT_KEY, activeProjectId } from "./repositoryCommands.js";
 
 /**
  * The assistant's half of the conversation machinery (EO-189).
@@ -342,13 +344,36 @@ export async function openUpdateConflictAssist(
     commentId: input.commentId,
     fallbackProjectId: activeProjectId(db),
   });
-  if (!answer.ok) return { conversation: null, problem: answer.problem };
+  if (!answer.ok) return { conversation: null, problem: answer.problem, projectId: null };
   const shown = resumeAssistRoom(db, answer.chat.id as Uuid);
-  if ("problem" in shown) return { conversation: null, problem: shown.problem };
+  if ("problem" in shown) return { conversation: null, problem: shown.problem, projectId: null };
+  const projectId = followChat(db, shown.conversation);
   // The first turn starts on the next tick, as a person's message does —
   // here only where it is this desktop's to answer.
   if (answer.firstTurn) engine?.notifyStateChange({ promptly: true });
-  return { conversation: toView(db, shown.conversation), problem: null };
+  return { conversation: toView(db, shown.conversation), problem: null, projectId };
+}
+
+/**
+ * Puts the window on the project a chat EO just showed is on (EO-765),
+ * and answers with that project.
+ *
+ * A chat is shown on its own project's rail and nowhere else, so a chat
+ * EO opens about a pipeline on another project — Fix with assistant on a
+ * notice read while on this one — would be on show where the person is
+ * not looking. Written here, before the answer, so that the room opened
+ * next already answers with this chat; the renderer then switches
+ * through `projects:setActive`, which is what asks every project-scoped
+ * screen again.
+ *
+ * Not onto a project that is archived or gone: the window stays where it
+ * is, and the answer says which project that is.
+ */
+function followChat(db: Db, conversation: Item): string | null {
+  const projectId = assistChatProjectId(db, conversation);
+  const project = projectId === null ? undefined : getProject(db, projectId);
+  if (project && project.archivedAt === null) setSetting(db, ACTIVE_PROJECT_KEY, project.id);
+  return activeProjectId(db);
 }
 
 /**
@@ -377,6 +402,7 @@ export function openBriefedAssist(
   const chat = db.transaction(() => openBriefedChat(db, { projectId: request.projectId, pipelineId: request.pipelineId, brief: request.brief, asking: assistant.id }));
   const shown = resumeAssistRoom(db, chat.id as Uuid);
   if ("problem" in shown) return { conversation: null, problem: shown.problem };
+  followChat(db, shown.conversation);
   // The first turn starts on the next tick, as a person's message does.
   engine?.notifyStateChange({ promptly: true });
   return { conversation: toView(db, shown.conversation), problem: null };
@@ -450,7 +476,7 @@ function stopTurnInPutAway(db: Db, engine: EngineHandle | undefined, live: Retur
 export function listAssist(db: Db): IpcResponse<"assist:list"> {
   const working = new Set(listActiveRuns(db).map((run) => run.itemId as string));
   return {
-    conversations: listAssistThreads(db).map(({ conversation, title, lastActivityAt, shown }) => ({
+    conversations: listAssistThreads(db, activeProjectId(db)).map(({ conversation, title, lastActivityAt, shown }) => ({
       id: conversation.id,
       key: conversation.key,
       title,
@@ -538,7 +564,7 @@ export async function removeAssist(
 ): Promise<IpcResponse<"assist:remove">> {
   const target = removableAssist(db, input.conversationId);
   if (!target) return { removed: false, problem: NOT_REMOVABLE };
-  const wasShown = shownAssistConversation(db)?.id === target.id;
+  const wasShown = shownAssistConversation(db, activeProjectId(db))?.id === target.id;
 
   await deleteConversationItem(db, engine, target, attachmentStorage);
 
@@ -576,7 +602,7 @@ export async function removeManyAssist(
   input: IpcPayload<"assist:removeMany">,
   attachmentStorage: AttachmentStorage,
 ): Promise<IpcResponse<"assist:removeMany">> {
-  const shownId = shownAssistConversation(db)?.id;
+  const shownId = shownAssistConversation(db, activeProjectId(db))?.id;
   const removed: string[] = [];
   const refused: { conversationId: string; problem: string }[] = [];
   for (const conversationId of new Set(input.conversationIds)) {

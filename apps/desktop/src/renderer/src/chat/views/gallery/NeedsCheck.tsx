@@ -5,10 +5,10 @@ import { Check, Download, ExternalLink, FolderOpen, Plus, RefreshCw, X } from "l
 import { CHAT_HOME_ROUTE, GIT_WORKTREE_KIND, type GalleryNeedView, type GalleryTemplateView, type RuntimeStatusView, type SectionLock } from "@eo/core";
 import { machineAvailable } from "../../../ipc/bridge";
 import { ipcQuery } from "../../../query/client";
-import { galleryNeedsKey, projectsKey, repositoriesKey, useChromeVocabulary, useModules } from "../../../query/hooks";
+import { galleryNeedsKey, projectSwitchStamp, projectsKey, repositoriesKey, useChromeVocabulary, useModules } from "../../../query/hooks";
 import { useProjects, useRepositories } from "../../../query/useRepositories";
 import { useInvalidateOnPush } from "../../../query/useInvalidateOnPush";
-import { assistRoomKey, assistThreadsKey } from "../../../shared/assist/useAssistRoom";
+import { assistRoomKey, assistThreadsKey, showAssistReply } from "../../../shared/assist/useAssistRoom";
 import { ConnectorNeeds } from "../../connectors/ConnectorNeeds";
 import { ManagedLockNotice } from "../../managed/ManagedSection";
 import { Button, Card, ErrorLine, Loading, TextInput, ViewHeader } from "../../kit";
@@ -54,6 +54,7 @@ export function NeedsCheck({
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const vocabulary = useChromeVocabulary();
+  const { activeProjectId, setActive, switchProject } = useProjects();
   const key = galleryNeedsKey(projectId, template.slug);
 
   const needs = useQuery({
@@ -93,9 +94,22 @@ export function NeedsCheck({
    */
   const brief = useMutation({
     mutationFn: () => ipcQuery("gallery:openFirstItemChat", { projectId, slug: template.slug, token: template.token, pipelineId }),
-    onSuccess: (result) => {
+    onMutate: () => projectSwitchStamp(queryClient),
+    onSuccess: async (result, _variables, stamp) => {
       if (result.conversation === null) return;
-      queryClient.setQueryData(assistRoomKey, { conversation: result.conversation });
+      // The chat is on this project's rail (EO-765), so the window follows
+      // it there; the switch reads the room and the rail again once it is
+      // through, and the main process has already put this chat on show.
+      if (projectId !== activeProjectId) {
+        setActive(projectId);
+        leave(CHAT_HOME_ROUTE);
+        return;
+      }
+      // A read of the room begun before this is cancelled first, or it
+      // would land after the write and put the old chat back.
+      // Nor written if a switch began meanwhile (EO-765).
+      await queryClient.cancelQueries({ queryKey: assistRoomKey, exact: true });
+      showAssistReply(queryClient, stamp, { conversation: result.conversation });
       void queryClient.invalidateQueries({ queryKey: assistThreadsKey });
       leave(CHAT_HOME_ROUTE);
     },
@@ -104,12 +118,15 @@ export function NeedsCheck({
   /**
    * The exit for somebody who cannot get a line green: a rehearsal in
    * EO's preview project, landing on its board. The window is pointed at
-   * that project first, because a board draws the project it is on.
+   * that project first, because a board draws the project it is on —
+   * through the same switch the rail's picker makes (EO-765), so the
+   * assistant's room and rail drop the project being left at once and a
+   * reply to something sent there is not drawn over the preview's.
    */
   const previewOnly = useMutation({
     mutationFn: async () => {
       const result = await ipcQuery("gallery:preview", { slug: template.slug, token: template.token });
-      if (result.projectId !== null) await ipcQuery("projects:setActive", { id: result.projectId });
+      if (result.projectId !== null) await switchProject(result.projectId);
       return result;
     },
     onSuccess: (result) => {

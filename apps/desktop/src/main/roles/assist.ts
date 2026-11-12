@@ -47,6 +47,7 @@ import {
   listStepsForPipeline,
   listItemsOnStepIncludingArchived,
   listModuleTests,
+  listProjects,
   archivedProjectOf,
   itemsOnArchivedProjects,
   pipelineVersionByNumber,
@@ -295,24 +296,66 @@ export function openAssistConversation(db: Db, projectId: Uuid | null): Item {
 }
 
 /**
- * Where the id of the chat on show is kept (EO-391).
+ * Where the chat on show is kept (EO-391): one id for each project
+ * (EO-765), as an object from the project's id to its chat's.
  *
  * A setting rather than something each window remembers, because every
  * window that draws the chat layout's conversation opens the room with
  * `assist:open` and has to be handed the same chat. It is the one thing
  * "which chat" is decided by now that being live no longer singles one
  * out.
+ *
+ * Per project because a chat is: the rail lists the chats of the project
+ * the person is on, so the one on show is one of those, and coming back
+ * to a project comes back to the chat left open on it. A database from
+ * before that stores a single id here, and it is read as the chat on
+ * show of whichever project that chat is on — the id is only ever looked
+ * for among one project's chats.
  */
 export const SHOWN_ASSIST_KEY = "assist.shownConversationId";
 
 /**
- * Every live assistant chat, newest first. Which chats are live, not
+ * The project a chat counts as on (EO-765): its own, or — for one
+ * opened before any project existed — the first project made. Asked of a
+ * project the person is on as well, so that the two sides of every
+ * comparison resolve alike: with no project yet both are null.
+ *
+ * Read rather than written onto the chat. Nothing else about a chat with
+ * no project changes, and the rail is the one place that has to put it
+ * somewhere.
+ */
+function chatProjectKey(projectId: Uuid | null, firstProjectId: Uuid | null): string {
+  return projectId ?? firstProjectId ?? "";
+}
+
+function firstProjectId(db: Db): Uuid | null {
+  return listProjects(db)[0]?.id ?? null;
+}
+
+/** The project a chat is listed on (`chatProjectKey`): its own, or the first one made, or none while there is no project. */
+export function assistChatProjectId(db: Db, conversation: Item): Uuid | null {
+  return conversation.projectId ?? firstProjectId(db);
+}
+
+/** Which of `conversations` count as on `projectId` (`chatProjectKey`). */
+function onProject(db: Db, conversations: Item[], projectId: Uuid | null): Item[] {
+  const first = firstProjectId(db);
+  const wanted = chatProjectKey(projectId, first);
+  return conversations.filter((item) => chatProjectKey(item.projectId, first) === wanted);
+}
+
+/**
+ * Every live assistant chat, newest first — of every project, or of
+ * `projectId` alone when one is given (EO-765). Which chats are live, not
  * where each is drawn — that is `orderedAssistConversations`.
  *
  * Several can be live at once (EO-391): each is its own item, and so its
  * own provider thread — `supervisor/threadReuse.ts` keys a resumable
  * session on the item and the agent, so nothing said in one is replayed
  * into another.
+ *
+ * Every project's is what the idle sweep weighs: each chat goes quiet on
+ * its own last word, whichever project the person happens to be on.
  *
  * A chat on an archived project is not one of them (EO-347), though its
  * own row is not archived: nothing on an archived project is dispatched,
@@ -323,36 +366,60 @@ export const SHOWN_ASSIST_KEY = "assist.shownConversationId";
  * It is not put away either: restoring the project brings it back as it
  * was.
  */
-export function liveAssistConversations(db: Db): Item[] {
+export function liveAssistConversations(db: Db, projectId?: Uuid | null): Item[] {
   const shelved = itemsOnArchivedProjects(db);
-  return listItemsOnStepIncludingArchived(db, ASSIST_STEP)
+  const live = listItemsOnStepIncludingArchived(db, ASSIST_STEP)
     .filter((item) => item.stepId === ASSIST_STEP && item.archivedAt === null && !shelved.has(item.id))
     .sort((a, b) => b.createdAt - a.createdAt || (a.id < b.id ? 1 : -1));
+  return projectId === undefined ? live : onProject(db, live, projectId);
+}
+
+/** What `SHOWN_ASSIST_KEY` holds, as one object whatever was written. */
+function storedShown(db: Db): { byProject: Record<string, string>; legacy: string | null } {
+  const stored = getSetting<unknown>(db, SHOWN_ASSIST_KEY, null);
+  if (typeof stored === "string") return { byProject: {}, legacy: stored };
+  if (!stored || typeof stored !== "object" || Array.isArray(stored)) return { byProject: {}, legacy: null };
+  const byProject = Object.fromEntries(Object.entries(stored).filter((entry): entry is [string, string] => typeof entry[1] === "string"));
+  return { byProject, legacy: null };
 }
 
 /**
- * The chat on show, however old it is, or none.
+ * The chat on show on `projectId`, however old it is, or none.
  *
- * The one `SHOWN_ASSIST_KEY` names, while it is still live. Otherwise the
- * newest live chat — never one on an archived project, stored or not —
- * which is what makes this need no migration: on a
- * database written before EO-391 nothing is stored, and the one live
- * thread there is simply is the newest. The same answer covers a stored
- * id whose chat has since been removed or put away by another path.
+ * The one `SHOWN_ASSIST_KEY` names for that project, while it is still
+ * live there. Otherwise the project's newest live chat — never one on an
+ * archived project, stored or not — which is what makes this need no
+ * migration: on a database written before EO-391 nothing is stored, and
+ * the one live thread there is simply is the newest. The same answer
+ * covers a stored id whose chat has since been removed or put away by
+ * another path.
  *
  * Separate from `openAssistRoom` because the two answer different
  * questions: this is "is there a chat on show", and that is "give me the
  * chat to talk in". Only the second one is allowed to write anything.
  */
-export function shownAssistConversation(db: Db): Item | undefined {
-  const live = liveAssistConversations(db);
-  const stored = getSetting<unknown>(db, SHOWN_ASSIST_KEY, null);
-  return (typeof stored === "string" ? live.find((item) => item.id === stored) : undefined) ?? live[0];
+export function shownAssistConversation(db: Db, projectId: Uuid | null): Item | undefined {
+  const live = liveAssistConversations(db, projectId);
+  const { byProject, legacy } = storedShown(db);
+  const stored = byProject[chatProjectKey(projectId, firstProjectId(db))] ?? legacy;
+  return (stored !== null ? live.find((item) => item.id === stored) : undefined) ?? live[0];
 }
 
-/** Makes `conversation` the chat every surface shows. Changes nothing else, about it or about any other chat. */
+/**
+ * Makes `conversation` the chat every surface shows on its project.
+ * Changes nothing else, about it, about any other chat, or about which
+ * chat is on show on another project.
+ */
 function show(db: Db, conversation: Item): Item {
-  setSetting(db, SHOWN_ASSIST_KEY, conversation.id);
+  const first = firstProjectId(db);
+  const { byProject, legacy } = storedShown(db);
+  const next = { ...byProject };
+  // A single id from before EO-765 is the chat on show of its own
+  // project, and stays that when another project's is written.
+  const was = legacy === null ? undefined : getItem(db, legacy as Uuid);
+  if (was) next[chatProjectKey(was.projectId, first)] ??= was.id;
+  next[chatProjectKey(conversation.projectId, first)] = conversation.id;
+  setSetting(db, SHOWN_ASSIST_KEY, next);
   return conversation;
 }
 
@@ -364,6 +431,11 @@ function show(db: Db, conversation: Item): Item {
  * rail draws `assist:list` in every window that shows it, so where a
  * chat stands is the main process's to say and not something one window
  * remembers.
+ *
+ * One list for every project, and still each project's own order
+ * (EO-765): a project's order is its chats' ids read from it, and
+ * arranging one project's chats only writes over their own slots, so no
+ * other project's chat moves.
  *
  * It is the person's order. Nothing that merely happens in a chat — a
  * message, a reply, being shown — writes here; the list used to be
@@ -379,7 +451,7 @@ function storedAssistOrder(db: Db): string[] {
 }
 
 /**
- * The open chats in the order they are drawn (EO-438).
+ * The open chats on `projectId` in the order they are drawn (EO-438).
  *
  * The ones with a stored place, in that order, below the ones with none
  * — newest-started first. That second half is every automatic placement
@@ -389,28 +461,29 @@ function storedAssistOrder(db: Db): string[] {
  * first until something is dragged. A stored id whose chat has since
  * been removed or put away is simply not answered with.
  */
-export function orderedAssistConversations(db: Db): Item[] {
-  const live = liveAssistConversations(db);
+export function orderedAssistConversations(db: Db, projectId: Uuid | null): Item[] {
+  const live = liveAssistConversations(db, projectId);
   const place = new Map(storedAssistOrder(db).map((id, index) => [id, index]));
   const placed = live.filter((item) => place.has(item.id)).sort((a, b) => place.get(a.id)! - place.get(b.id)!);
   return [...live.filter((item) => !place.has(item.id)), ...placed];
 }
 
 /**
- * Stores the open chats as `arrange` leaves them, every one of them now
- * with a place.
+ * Stores the open chats on `projectId` as `arrange` leaves them, every
+ * one of them now with a place.
  *
  * Written whole, so that the order on screen is the order stored: a chat
  * that stood where it did only for being newer keeps standing there once
  * another has been moved around it.
  *
- * A chat on an archived project is not open, and keeps its slot: it
- * comes back where it was when the project is restored. Anything else
- * that is not open — removed, or put away — is dropped, which is what
- * makes a chat gone back to from Earlier one with no place yet.
+ * A chat on another project keeps its slot (EO-765), and so does one on
+ * an archived project: neither is open here, and each is where it was
+ * when it is next drawn. Anything else that is not open — removed, or
+ * put away — is dropped, which is what makes a chat gone back to from
+ * Earlier one with no place yet.
  */
-function arrangeAssistConversations(db: Db, arrange: (ids: string[]) => string[]): void {
-  const open = orderedAssistConversations(db).map((item): string => item.id);
+function arrangeAssistConversations(db: Db, projectId: Uuid | null, arrange: (ids: string[]) => string[]): void {
+  const open = orderedAssistConversations(db, projectId).map((item): string => item.id);
   const isOpen = new Set(open);
   const kept = new Set(
     listItemsOnStepIncludingArchived(db, ASSIST_STEP)
@@ -431,8 +504,9 @@ function arrangeAssistConversations(db: Db, arrange: (ids: string[]) => string[]
 }
 
 /**
- * Moves one open chat to `index` among the open chats, as a person
- * dragging it there (EO-438). The others keep their relative order.
+ * Moves one open chat to `index` among the open chats of its project, as
+ * a person dragging it there (EO-438). The others keep their relative
+ * order, and no other project's chat moves (EO-765).
  *
  * `index` is clamped rather than refused — a list drawn a moment ago may
  * be one longer than the list there is now. Refused, with the sentence
@@ -440,11 +514,10 @@ function arrangeAssistConversations(db: Db, arrange: (ids: string[]) => string[]
  * dragging never changes whether a chat is put away.
  */
 export function reorderAssistConversation(db: Db, conversationId: Uuid, index: number): { problem: string | null } {
-  if (!orderedAssistConversations(db).some((item) => item.id === conversationId)) {
-    return { problem: "That chat is not open any more, so it was not moved." };
-  }
+  const target = liveAssistConversations(db).find((item) => item.id === conversationId);
+  if (!target) return { problem: "That chat is not open any more, so it was not moved." };
   db.transaction(() =>
-    arrangeAssistConversations(db, (ids) => {
+    arrangeAssistConversations(db, target.projectId, (ids) => {
       const rest = ids.filter((id) => id !== conversationId);
       rest.splice(Math.max(0, Math.min(Math.trunc(index), rest.length)), 0, conversationId);
       return rest;
@@ -454,8 +527,8 @@ export function reorderAssistConversation(db: Db, conversationId: Uuid, index: n
 }
 
 /**
- * An empty chat, shown: a live one nobody has said anything in, or a new
- * one when there is none.
+ * An empty chat on `projectId`, shown: a live one there nobody has said
+ * anything in, or a new one when there is none.
  *
  * The first half is `clearAssistRoom`'s rule about empty threads applied
  * to several: New chat pressed twice, or pressed and then walked away
@@ -470,7 +543,7 @@ export function reorderAssistConversation(db: Db, conversationId: Uuid, index: n
  * does not answer with at all) would never be answered.
  */
 function showEmptyAssistConversation(db: Db, projectId: Uuid | null): Item {
-  const empty = liveAssistConversations(db).find((item) => isEmptyChatOn(db, item, projectId));
+  const empty = liveAssistConversations(db, projectId).find((item) => listCommentsForItem(db, item.id).length === 0);
   return show(db, empty ?? openAssistConversation(db, projectId));
 }
 
@@ -479,13 +552,10 @@ function showEmptyAssistConversation(db: Db, projectId: Uuid | null): Item {
  * with nothing said in it?
  *
  * One predicate for every place that would rather show an empty chat
- * than make another, the chat already on show included. Asked without
- * the project, "the one on show is empty" answers New chat with a chat
- * on the project the person has since left — and they could not start
- * one on the project they are on until somebody wrote in that one.
+ * than make another, the chat already on show included.
  */
 function isEmptyChatOn(db: Db, conversation: Item, projectId: Uuid | null): boolean {
-  return conversation.projectId === projectId && listCommentsForItem(db, conversation.id).length === 0;
+  return onProject(db, [conversation], projectId).length === 1 && listCommentsForItem(db, conversation.id).length === 0;
 }
 
 /** The room's own object in `items.spec`, or an empty one. `null` is an object and an array is one too. */
@@ -674,7 +744,8 @@ export interface OpenedAssistRoom {
 }
 
 /**
- * The chat to talk in: the one on show, or a new one.
+ * The chat to talk in on `projectId`: the one on show there, or a new
+ * one.
  *
  * Creating on read, because this is opened by a person deciding to talk.
  * (The Architecture panel, retired in EO-526, was part of a screen and
@@ -698,7 +769,9 @@ export interface OpenedAssistRoom {
 export function openAssistRoom(db: Db, projectId: Uuid | null): OpenedAssistRoom {
   const now = Date.now();
   const allowed = readAssistExpiryDays(db) * MS_PER_DAY;
-  const shown = shownAssistConversation(db);
+  const shown = shownAssistConversation(db, projectId);
+  // Every project's chats, not this one's: each goes quiet on its own
+  // last word, whichever project the person is on (EO-765).
   const live = liveAssistConversations(db);
   const spoke = lastSpokeAtEach(db, live);
   const stale = live.filter((conversation) => now - spoke.get(conversation.id)! > allowed);
@@ -734,9 +807,8 @@ export function openAssistRoom(db: Db, projectId: Uuid | null): OpenedAssistRoom
  *
  * A chat nobody has said anything in, on the project the person is on,
  * is already what is being asked for, so that one is shown rather than a
- * second one made. An empty chat on another project is not it: the one
- * on show is left as it is, like any other, and a chat for this project
- * is shown instead.
+ * second one made. An empty chat on another project is never it, and is
+ * left as it is (EO-765).
  */
 export function newAssistRoom(db: Db, projectId: Uuid | null): OpenedAssistRoom {
   const opened = openAssistRoom(db, projectId);
@@ -753,8 +825,9 @@ export function newAssistRoom(db: Db, projectId: Uuid | null): OpenedAssistRoom 
  * safe to do in one click with no dialog: there is nothing to confirm
  * because there is nothing to lose.
  *
- * Only the chat on show (EO-391). Every other live chat is left exactly
- * as it is, a turn running in it included.
+ * Only the chat on show (EO-391), on the project the person is on
+ * (EO-765). Every other live chat is left exactly as it is, a turn
+ * running in it included.
  *
  * An empty thread is cleared by archiving nothing at all. Archiving one and
  * creating another leaves an `ASK-` row nobody ever said anything in and
@@ -766,15 +839,12 @@ export function newAssistRoom(db: Db, projectId: Uuid | null): OpenedAssistRoom 
  * the engine's move. See `clearAssist` in `ipc/assistCommands.ts`.
  */
 export function clearAssistRoom(db: Db, projectId: Uuid | null): OpenedAssistRoom {
-  const shown = shownAssistConversation(db);
+  // The chat on show on the project the person is on (EO-765): another
+  // project's is never the one Clear puts away.
+  const shown = shownAssistConversation(db, projectId);
   if (!shown) return { conversation: db.transaction(() => showEmptyAssistConversation(db, projectId)), resumed: false };
-  if (listCommentsForItem(db, shown.id).length === 0) {
-    // Nothing to archive either way. But "an empty thread" means one on
-    // the project the person is on: an empty chat they left on another
-    // stays where it is, and this project's is what Clear leaves.
-    if (shown.projectId === projectId) return { conversation: show(db, shown), resumed: true };
-    return { conversation: db.transaction(() => showEmptyAssistConversation(db, projectId)), resumed: false };
-  }
+  // Nothing to archive: it is already the empty thread Clear leaves.
+  if (listCommentsForItem(db, shown.id).length === 0) return { conversation: show(db, shown), resumed: true };
 
   const now = Date.now();
   return db.transaction(() => {
@@ -801,7 +871,7 @@ export interface AssistThread {
   /** The first thing the person said in it, cut to a line. */
   title: string;
   lastActivityAt: number;
-  /** The chat every surface is showing. At most one. */
+  /** The chat every surface is showing on this project. At most one. */
   shown: boolean;
 }
 
@@ -812,9 +882,10 @@ const TITLE_LENGTH = 80;
 export const EMPTY_ASSIST_TITLE = "Assistant";
 
 /**
- * Every live chat, in the order the person keeps them in
- * (`orderedAssistConversations`), and then every put-away chat somebody
- * said something in, most recently active first.
+ * The chats on `projectId` (EO-765): every live one, in the order the
+ * person keeps them in (`orderedAssistConversations`), and then every
+ * put-away one somebody said something in, most recently active first.
+ * Another project's chats, open or put away, are its own list's.
  *
  * The live ones are not sorted by activity (EO-438): opening a chat or a
  * message landing in one would move it, and nobody could rely on where
@@ -831,11 +902,15 @@ export const EMPTY_ASSIST_TITLE = "Assistant";
  * - a thread on an archived project (EO-347): nothing there is
  *   dispatched, so going back to it would be talking to nobody.
  */
-export function listAssistThreads(db: Db): AssistThread[] {
+export function listAssistThreads(db: Db, projectId: Uuid | null): AssistThread[] {
   const shelved = itemsOnArchivedProjects(db);
-  const shownId = shownAssistConversation(db)?.id;
-  const place = new Map(orderedAssistConversations(db).map((item, index) => [item.id as string, index]));
-  const conversations = listItemsOnStepIncludingArchived(db, ASSIST_STEP).filter((item) => item.stepId === ASSIST_STEP && !shelved.has(item.id));
+  const shownId = shownAssistConversation(db, projectId)?.id;
+  const place = new Map(orderedAssistConversations(db, projectId).map((item, index) => [item.id as string, index]));
+  const conversations = onProject(
+    db,
+    listItemsOnStepIncludingArchived(db, ASSIST_STEP).filter((item) => item.stepId === ASSIST_STEP && !shelved.has(item.id)),
+    projectId,
+  );
   // Every thread's last word in one statement, and of each thread only
   // the two comments that can name it (EO-552): a put-away chat is a row
   // in a list, and reading all it ever said to draw that row was the
@@ -867,7 +942,9 @@ export function listAssistThreads(db: Db): AssistThread[] {
 }
 
 /**
- * Shows another chat: a live one, or an earlier one made live again.
+ * Shows another chat: a live one, or an earlier one made live again. It
+ * is shown on its own project (EO-765): a caller showing a chat on a
+ * project other than the one the window is on moves the window there.
  *
  * Navigation and nothing else (EO-391). The chat that was on show stays
  * live, with whatever is running or waiting in it, and no other chat is
@@ -887,7 +964,7 @@ export function resumeAssistRoom(db: Db, conversationId: Uuid): OpenedAssistRoom
   if (!target || target.stepId !== ASSIST_STEP) return { problem: "That is not one of your conversations with the assistant." };
   const shelvedOn = archivedProjectOf(db, target.id);
   if (shelvedOn) return { problem: `That conversation is on ${shelvedOn.name}, which is archived. Restore the project to go back to it.` };
-  if (target.archivedAt === null && shownAssistConversation(db)?.id === target.id) return { conversation: show(db, target), resumed: true };
+  if (target.archivedAt === null && shownAssistConversation(db, target.projectId)?.id === target.id) return { conversation: show(db, target), resumed: true };
 
   const now = Date.now();
   return db.transaction(() => {
@@ -895,7 +972,7 @@ export function resumeAssistRoom(db: Db, conversationId: Uuid): OpenedAssistRoom
       setItemArchived(db, target.id, null);
       // Back among the open chats, below the ones already there (EO-438):
       // it had no place, and taking one must not move a chat that has.
-      arrangeAssistConversations(db, (ids) => [...ids.filter((id) => id !== target.id), target.id]);
+      arrangeAssistConversations(db, target.projectId, (ids) => [...ids.filter((id) => id !== target.id), target.id]);
     }
     // Read again for the spec: the row as it is now, not as the list saw it.
     const current = getItem(db, target.id)!;

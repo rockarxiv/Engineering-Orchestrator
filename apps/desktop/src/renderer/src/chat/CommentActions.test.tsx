@@ -20,11 +20,17 @@ function CurrentRoute() {
   return <div data-testid="current-route">{useLocation().pathname}</div>;
 }
 
-function renderActions(options: CommentOption[] | null, answer: { conversation: unknown; problem: string | null } = { conversation: CHAT, problem: null }) {
+function renderActions(
+  options: CommentOption[] | null,
+  answer: { conversation: unknown; problem: string | null; projectId: string | null } = { conversation: CHAT, problem: null, projectId: null },
+  activeProjectId: string | null = null,
+) {
   const calls: { channel: string; payload: unknown }[] = [];
   window.eo.ipc.invoke = vi.fn(async (channel: string, payload: unknown) => {
     calls.push({ channel, payload });
     if (channel === "assist:openUpdateConflict") return { ok: true, data: answer };
+    if (channel === "projects:list") return { ok: true, data: { projects: [], activeProjectId } };
+    if (channel === "projects:setActive") return { ok: true, data: { activeProjectId: (payload as { id: string }).id } };
     return { ok: true, data: {} };
   }) as never;
   window.eo.ipc.subscribe = vi.fn(() => () => {}) as never;
@@ -68,8 +74,55 @@ describe("a comment's actions", () => {
     expect(client.getQueryData(assistRoomKey)).toEqual({ conversation: CHAT });
   });
 
+  /** EO-765: the chat is in its own project's rail, so the window switches there. */
+  it("switches the window to the chat's project when it is on another one", async () => {
+    const { calls } = renderActions([FIX], { conversation: CHAT, problem: null, projectId: "shop" }, "blog");
+    await waitFor(() => expect(calls.some((call) => call.channel === "projects:list")).toBe(true));
+
+    fireEvent.click(screen.getByRole("button", { name: "Fix with assistant" }));
+
+    await waitFor(() => expect(calls.filter((call) => call.channel === "projects:setActive").map((call) => call.payload)).toEqual([{ id: "shop" }]));
+    expect(screen.getByTestId("current-route")).toHaveTextContent("/chat");
+  });
+
+  it("switches nothing when the chat is on the project the window is on", async () => {
+    const { calls, client } = renderActions([FIX], { conversation: CHAT, problem: null, projectId: "shop" }, "shop");
+    await waitFor(() => expect(client.getQueryData(["projects"])).toMatchObject({ activeProjectId: "shop" }));
+
+    fireEvent.click(screen.getByRole("button", { name: "Fix with assistant" }));
+
+    await waitFor(() => expect(screen.getByTestId("current-route")).toHaveTextContent("/chat"));
+    expect(calls.some((call) => call.channel === "projects:setActive")).toBe(false);
+  });
+
+  it("keeps the chat it opened when a read of the room begun before the press answers after it", async () => {
+    const { client } = renderActions([FIX], { conversation: CHAT, problem: null, projectId: null });
+    let answerLate = () => {};
+    const late = new Promise<void>((resolve) => {
+      answerLate = resolve;
+    });
+    // The press cancels this read, which rejects it: handled from the
+    // start, or the rejection is unhandled while the press is awaited.
+    const stale = client
+      .fetchQuery({
+        queryKey: assistRoomKey,
+        queryFn: async () => {
+          await late;
+          return { conversation: { id: "chat-before", key: "ASK-1", messages: [] } };
+        },
+      })
+      .catch(() => undefined);
+
+    fireEvent.click(screen.getByRole("button", { name: "Fix with assistant" }));
+    await waitFor(() => expect(screen.getByTestId("current-route")).toHaveTextContent("/chat"));
+    answerLate();
+    await stale;
+
+    expect(client.getQueryData(assistRoomKey)).toEqual({ conversation: CHAT });
+  });
+
   it("says why when the chat cannot be opened, and stays where it is", async () => {
-    renderActions([FIX], { conversation: null, problem: "That template update has already been resolved." });
+    renderActions([FIX], { conversation: null, problem: "That template update has already been resolved.", projectId: null });
 
     fireEvent.click(screen.getByRole("button", { name: "Fix with assistant" }));
 

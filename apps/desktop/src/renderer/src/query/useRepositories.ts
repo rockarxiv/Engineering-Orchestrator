@@ -1,9 +1,11 @@
 import { useCallback, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import type { IpcResponse } from "@eo/core";
 import { ipcQuery } from "./client";
-import { pipelineStepsRootKey, projectsKey, repositoriesKey, itemsKey, worktreesKey } from "./hooks";
+import { countProjectSwitchEdge, pipelineStepsRootKey, projectsKey, repositoriesKey, itemsKey, switchProjectKey, worktreesKey } from "./hooks";
 import { useInvalidateOnPush } from "./useInvalidateOnPush";
 import { archivedKey } from "../shared/pipeline/archive";
+import { assistRoomKey, assistThreadsKey } from "../shared/assist/useAssistRoom";
 
 /** The configured repositories. Which one you are *looking* at is a project question — see `useProjects`. */
 export function useRepositories() {
@@ -32,8 +34,21 @@ export function useProjects() {
   useInvalidateOnPush("config:changed", projectsKey);
   useInvalidateOnPush("items:changed", projectsKey);
 
-  const setActive = useMutation({
+  const setActive = useMutation<IpcResponse<"projects:setActive">, Error, string>({
+    mutationKey: switchProjectKey,
     mutationFn: (id: string) => ipcQuery("projects:setActive", { id }),
+    // The assistant's room and rail are the project being left's
+    // (EO-765). A read of either begun before the switch would land
+    // after it and put that project's chat back on screen, ready to be
+    // written in, so it is cancelled before the switch is asked for. Both
+    // stay unread until the switch is through (`useSwitchingProject`).
+    // A write to either begun before the switch, or during it, answers
+    // for the project being left too; counting both ends of the switch
+    // is how its reply knows not to draw (`stillOnProject`).
+    onMutate: async () => {
+      countProjectSwitchEdge(queryClient);
+      await Promise.all([assistRoomKey, assistThreadsKey].map((queryKey) => queryClient.cancelQueries({ queryKey, exact: true })));
+    },
     onSuccess: () => {
       // Everything on screen belongs to one project, so switching
       // invalidates all of it rather than each screen doing its own.
@@ -56,13 +71,20 @@ export function useProjects() {
       // (EO-562). Resetting them drops that answer, cancels any read begun
       // before the switch, and asks again: every screen reading them shows
       // its loading state until the new project's items arrive.
-      for (const key of [itemsKey, archivedKey]) {
+      //
+      // The assistant's room and rail likewise (EO-765): each project has
+      // its own chats and its own chat on show, and `assist:open` and
+      // `assist:list` answer for whichever is active. Kept, the previous
+      // project's chat would stay on screen with its composer live, and a
+      // message sent there would be about the project just left.
+      for (const key of [itemsKey, archivedKey, assistRoomKey, assistThreadsKey]) {
         void queryClient.resetQueries({ queryKey: key, exact: true });
       }
       // Held until the list says which project is active, so `switchingTo`
       // covers the whole switch and the rail never flicks back to the old name.
       return queryClient.invalidateQueries({ queryKey: projectsKey });
     },
+    onSettled: () => countProjectSwitchEdge(queryClient),
   });
 
   // Live projects are the ones anything can switch to, list or pick
@@ -85,8 +107,11 @@ export function useProjects() {
 
   // Stable identity: callers put this in effect dependencies, and a new
   // function every render would re-run those effects every render.
-  const { mutate } = setActive;
+  const { mutate, mutateAsync } = setActive;
   const switchTo = useCallback((id: string) => mutate(id), [mutate]);
+  const switchToAndWait = useCallback(async (id: string): Promise<void> => {
+    await mutateAsync(id);
+  }, [mutateAsync]);
 
   return {
     projects,
@@ -95,6 +120,13 @@ export function useProjects() {
     active: projects.find((project) => project.id === activeProjectId) ?? null,
     isLoading: query.isLoading,
     setActive: switchTo,
+    /**
+     * The same switch, for a caller that must not go on until it is
+     * through — every project switch goes through this hook, so the
+     * assistant's room and rail are dropped and a late reply for the
+     * project left is not drawn (EO-765). Rejects as `projects:setActive` does.
+     */
+    switchProject: switchToAndWait,
     /** The project a switch made through this hook is on its way to, until the main process has answered (EO-562). */
     switchingTo: setActive.isPending ? (setActive.variables ?? null) : null,
   };

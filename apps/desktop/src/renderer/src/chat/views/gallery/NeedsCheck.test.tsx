@@ -1,11 +1,13 @@
+import type { ReactNode } from "react";
 import { QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes, useParams } from "react-router-dom";
 import { describe, expect, it, vi } from "vitest";
 import { ThemeProvider } from "@eo/ui";
 import { CHAT_HOME_ROUTE, GIT_WORKTREE_KIND, sectionLockedLine } from "@eo/core";
 import type { GalleryNeedView, GalleryTemplateView, RuntimeStatusView, SectionLock } from "@eo/core";
 import { createQueryClient } from "../../../query/client";
+import { useAssistRoom, type AssistRoom } from "../../../shared/assist/useAssistRoom";
 import { absent, signedOut } from "../agents/testRuntimes";
 import { NeedsCheck } from "./NeedsCheck";
 import DEVELOPER_FIRST_RUN from "./__fixtures__/developerFirstRun.json" with { type: "json" };
@@ -81,6 +83,23 @@ const GREEN: GalleryNeedView[] = [
   { key: "workspace", line: "A folder — somewhere its work happens", met: true, why: null, fix: null },
   { key: "backend", line: "A coding agent signed in", met: true, why: null, fix: null },
 ];
+
+/** A staffed installation, so the assistant's room opens (EO-190). */
+const SYSTEM_AGENT = { id: "agent-1", name: "Assistant", role: "system", provider: "claude", model: null, enabled: true, archivedAt: null };
+
+/** An empty chat, as `assist:open` answers it. */
+const ASSIST_CHAT = {
+  id: "chat",
+  key: "ASK-1",
+  startedAt: 0,
+  closedAt: null,
+  thinking: false,
+  thinkingSince: null,
+  liveOutput: "",
+  liveActivity: [],
+  settings: { agentId: "agent-1", agentName: "Assistant", provider: "claude", model: null, defaultModel: null, reasoningEffort: null, defaultReasoningEffort: null },
+  messages: [],
+};
 
 function mockIpc(options: {
   needs: GalleryNeedView[];
@@ -187,11 +206,15 @@ function Board() {
   return <span data-testid="board">{pipelineId}</span>;
 }
 
-function renderNeeds(needs: GalleryNeedView[], overrides: { jobId?: string | null; onFinished?: () => void; template?: GalleryTemplateView } = {}) {
+function renderNeeds(
+  needs: GalleryNeedView[],
+  overrides: { jobId?: string | null; onFinished?: () => void; template?: GalleryTemplateView; beside?: ReactNode } = {},
+) {
   return render(
     <ThemeProvider>
       <QueryClientProvider client={createQueryClient()}>
         <MemoryRouter initialEntries={["/gallery"]}>
+          {overrides.beside}
           <Routes>
             <Route
               path="/gallery"
@@ -427,6 +450,108 @@ describe("the two ways out", () => {
     // And first run is behind them, so this exit is not a loop back to
     // step 1 on the next launch.
     expect(finished).toHaveBeenCalled();
+  });
+
+  /**
+   * Preview only switches project, so it is the same switch as the
+   * rail's picker (EO-765): the assistant's room drops the project being
+   * left while the switch is under way, and a reply to something asked
+   * there — New chat, answered after the preview's room is on show — is
+   * neither drawn nor what the next message goes to.
+   */
+  it("leaves the left project's chat behind, even when New chat there answers after the preview's room is open", async () => {
+    const CHAT = { ...ASSIST_CHAT, id: "chat-on-p1" };
+    const PREVIEW_CHAT = { ...ASSIST_CHAT, id: "chat-on-preview" };
+    const base = mockIpc({ needs: [MISSING_FOLDER, NO_BACKEND] });
+    let active = "p1";
+    let opensOnPreview = 0;
+    const held = () => {
+      let release = () => {};
+      const promise = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      return { promise, release };
+    };
+    const switching = held();
+    const answering = held();
+    const invoke = vi.fn(async (channel: string, payload?: unknown) => {
+      switch (channel) {
+        case "agents:list":
+          return { ok: true, data: { agents: [SYSTEM_AGENT] } };
+        case "projects:list":
+          return {
+            ok: true,
+            data: {
+              projects: [
+                { id: "p1", name: "Shop", archivedAt: null, repositoryIds: [] },
+                { id: "p-preview", name: "Preview", archivedAt: null, repositoryIds: [] },
+              ],
+              archivedProjects: [],
+              activeProjectId: active,
+            },
+          };
+        case "projects:setActive":
+          await switching.promise;
+          active = (payload as { id: string }).id;
+          return { ok: true, data: { activeProjectId: active } };
+        case "assist:open":
+          // The preview's room is read once; a later read would put it
+          // back over a wrong write, and is held so it cannot hide one.
+          if (active !== "p1" && ++opensOnPreview > 1) await new Promise<void>(() => {});
+          return { ok: true, data: { conversation: active === "p1" ? CHAT : PREVIEW_CHAT } };
+        case "assist:new": {
+          const askedOn = active;
+          await answering.promise;
+          return { ok: true, data: { conversation: askedOn === "p1" ? CHAT : PREVIEW_CHAT } };
+        }
+        case "assist:send": {
+          const { conversationId } = payload as { conversationId: string | null };
+          return { ok: true, data: { conversation: conversationId === CHAT.id ? CHAT : PREVIEW_CHAT, delivery: { note: null } } };
+        }
+        default:
+          return base(channel, payload);
+      }
+    });
+    window.eo.ipc.invoke = invoke as never;
+    const drawn: (string | null)[] = [];
+    const room: { current: AssistRoom | null } = { current: null };
+    function Probe() {
+      room.current = useAssistRoom(true);
+      drawn.push(room.current.conversation?.id ?? null);
+      return null;
+    }
+    renderNeeds([MISSING_FOLDER, NO_BACKEND], { beside: <Probe /> });
+    await waitFor(() => expect(room.current?.conversation?.id).toBe(CHAT.id));
+
+    // New chat, asked on the project being left.
+    act(() => room.current!.startNew());
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("assist:new", undefined));
+
+    fireEvent.click(screen.getByRole("button", { name: "Continue with Preview only" }));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("projects:setActive", { id: "p-preview" }));
+    // The left project's chat is gone while the switch is under way, and takes nothing.
+    await waitFor(() => expect(room.current?.conversation).toBeNull());
+    expect(room.current?.ready).toBe(false);
+
+    switching.release();
+    expect(await screen.findByTestId("board")).toHaveTextContent("preview-pl");
+    await waitFor(() => expect(room.current?.conversation?.id).toBe(PREVIEW_CHAT.id));
+    const sincePreview = drawn.lastIndexOf(PREVIEW_CHAT.id);
+
+    // New chat's answer, with the left project's chat, lands now.
+    answering.release();
+    await waitFor(() => expect(room.current?.startingNew).toBe(false));
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+
+    expect(room.current?.conversation?.id).toBe(PREVIEW_CHAT.id);
+    expect(drawn.slice(sincePreview)).not.toContain(CHAT.id);
+    await act(() => room.current!.send("Draft a release pipeline."));
+    const sentTo = invoke.mock.calls
+      .filter(([channel]) => channel === "assist:send")
+      .map(([, sentPayload]) => (sentPayload as { conversationId: string | null }).conversationId);
+    expect(sentTo).toEqual([PREVIEW_CHAT.id]);
   });
 
   /**

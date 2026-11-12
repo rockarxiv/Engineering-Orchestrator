@@ -303,6 +303,8 @@ export function ChatConversation({
               textareaRef={composer}
               ariaLabel="Message the assistant"
               busy={room.sending}
+              // Nothing is sent while the window is between projects (EO-765).
+              readOnly={!room.ready}
               running={thinking}
               onStop={room.stop}
               stopping={room.stopping}

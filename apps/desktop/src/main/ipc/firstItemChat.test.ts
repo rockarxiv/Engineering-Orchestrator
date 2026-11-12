@@ -1,3 +1,4 @@
+import { activeProjectId } from "./repositoryCommands.js";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -73,7 +74,7 @@ describe("pressing the needs check's way on, for a template with no job", () => 
     const chat = getItem(handle.db, opened.conversation!.id as Uuid)!;
     expect(chat.stepId).toBe(ASSIST_STEP);
     expect(chat.projectId).toBe(projectId);
-    expect(shownAssistConversation(handle.db)?.id).toBe(chat.id);
+    expect(shownAssistConversation(handle.db, activeProjectId(handle.db))?.id).toBe(chat.id);
 
     const comments = listCommentsForItem(handle.db, chat.id);
     expect(comments).toHaveLength(1);
@@ -96,7 +97,7 @@ describe("pressing the needs check's way on, for a template with no job", () => 
     // Pinned: what the assistant raises in answer lands on this pipeline.
     expect(assistBoards(chat)).toEqual([{ from: brief.id, pipelineId }]);
     // Listed by what it is about before anybody has said anything.
-    expect(listAssistThreads(handle.db).find((thread) => thread.conversation.id === chat.id)?.title).toBe("Help the person file the first piece of work for Blog.");
+    expect(listAssistThreads(handle.db, activeProjectId(handle.db)).find((thread) => thread.conversation.id === chat.id)?.title).toBe("Help the person file the first piece of work for Blog.");
   });
 
   it("finds the project's own pipeline when the needs check had none to name", async () => {
@@ -111,12 +112,12 @@ describe("pressing the needs check's way on, for a template with no job", () => 
     const { projectId, pipelineId } = await useContent();
     updateAgent(handle.db, assistAgent(handle.db)!.id, { enabled: false });
     const engine = engineStub();
-    const before = listAssistThreads(handle.db).length;
+    const before = listAssistThreads(handle.db, activeProjectId(handle.db)).length;
 
     const opened = await openFirstItemChatCommand(handle.db, context(), engine, { projectId, slug: CONTENT, pipelineId });
 
     expect(opened).toEqual({ conversation: null, problem: "There is no enabled system agent to talk to." });
-    expect(listAssistThreads(handle.db)).toHaveLength(before);
+    expect(listAssistThreads(handle.db, activeProjectId(handle.db))).toHaveLength(before);
     expect(engine.notifyStateChange).not.toHaveBeenCalled();
   });
 

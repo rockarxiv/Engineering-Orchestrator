@@ -359,7 +359,7 @@ describe("the thread", () => {
         ],
       }),
       onCall,
-      { "assist:openUpdateConflict": { conversation: { id: "chat-1", messages: [] }, problem: null } },
+      { "assist:openUpdateConflict": { conversation: { id: "chat-1", messages: [] }, problem: null, projectId: null } },
     );
 
     const button = await screen.findByRole("button", { name: "Fix with assistant" });

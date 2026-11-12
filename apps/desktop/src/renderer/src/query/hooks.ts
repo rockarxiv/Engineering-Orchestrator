@@ -1,5 +1,5 @@
 import { useMemo } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useIsMutating, useMutation, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import {
   chromeVocabulary,
   emptyRegistry,
@@ -96,6 +96,50 @@ export const tourKey = ["tour"] as const;
 
 export const workspacesKey = ["workspaces"] as const;
 export const projectsKey = ["projects"] as const;
+/**
+ * The key every project switch runs under (`useProjects().setActive`),
+ * whichever hook started it — so a surface that must not act on the
+ * project being left can tell one is under way (EO-765).
+ */
+export const switchProjectKey = ["projects:setActive"] as const;
+
+/**
+ * Whether the window is between projects: a switch has been asked for
+ * and the main process has not yet answered, nor the project list caught
+ * up. The assistant's room and rail draw nothing and take nothing in
+ * that time (EO-765): what they held is the project being left's.
+ */
+export function useSwitchingProject(): boolean {
+  return useIsMutating({ mutationKey: switchProjectKey }) > 0;
+}
+
+/**
+ * How many times the window has started or finished a project switch,
+ * per query client (EO-765). Counted at both ends, so a write that began
+ * before a switch, or during one, sees a different number when its reply
+ * arrives than it did when it was sent.
+ */
+const projectSwitchEdges = new WeakMap<QueryClient, number>();
+
+/** The count a write takes when it is sent, to hand to `stillOnProject` with its reply. */
+export function projectSwitchStamp(queryClient: QueryClient): number {
+  return projectSwitchEdges.get(queryClient) ?? 0;
+}
+
+/** Called by the project switch as it starts and as it settles, and by nothing else. */
+export function countProjectSwitchEdge(queryClient: QueryClient): void {
+  projectSwitchEdges.set(queryClient, projectSwitchStamp(queryClient) + 1);
+}
+
+/**
+ * Whether the window is still on the project a write was sent from: no
+ * switch has started or finished since `stamp` was taken, and none is
+ * under way now. A reply that fails this is the project left's, and is
+ * not drawn over the one the window is on (EO-765).
+ */
+export function stillOnProject(queryClient: QueryClient, stamp: number): boolean {
+  return stamp === projectSwitchStamp(queryClient) && queryClient.isMutating({ mutationKey: switchProjectKey }) === 0;
+}
 export const connectionsKey = ["jiraConnections"] as const;
 /**
  * The module catalog (KAN-103).
