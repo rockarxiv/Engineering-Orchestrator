@@ -4,6 +4,7 @@ import { ipcQuery } from "./client";
 import { pipelineStepsRootKey, projectsKey, repositoriesKey, itemsKey, worktreesKey } from "./hooks";
 import { useInvalidateOnPush } from "./useInvalidateOnPush";
 import { archivedKey } from "../shared/pipeline/archive";
+import { assistRoomKey, assistThreadsKey } from "../shared/assist/useAssistRoom";
 
 /** The configured repositories. Which one you are *looking* at is a project question — see `useProjects`. */
 export function useRepositories() {
@@ -47,7 +48,11 @@ export function useProjects() {
       // rejects them — the picker and the validator disagreeing, which is
       // exactly what EO-72 set out to stop. The root key covers every
       // pipeline, because which one is open is not knowable from here.
-      for (const key of [repositoriesKey, worktreesKey, pipelineStepsRootKey]) {
+      //
+      // The assistant's chats are among it (EO-765): each project has its
+      // own list and its own chat on show, and `assist:open` and
+      // `assist:list` answer for whichever is active.
+      for (const key of [repositoriesKey, worktreesKey, pipelineStepsRootKey, assistRoomKey, assistThreadsKey]) {
         void queryClient.invalidateQueries({ queryKey: key });
       }
       // The item lists are not keyed by project — `items:list` answers for

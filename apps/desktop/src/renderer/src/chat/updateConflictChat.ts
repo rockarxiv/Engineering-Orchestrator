@@ -3,6 +3,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import { CHAT_HOME_ROUTE } from "@eo/core";
 import { ipcQuery } from "../query/client";
+import { useProjects } from "../query/useRepositories";
 import { assistRoomKey, assistThreadsKey } from "../shared/assist/useAssistRoom";
 
 /**
@@ -14,10 +15,17 @@ import { assistRoomKey, assistThreadsKey } from "../shared/assist/useAssistRoom"
  * while it exists, or a new one with EO's brief — and the renderer sends
  * which conflict, and which notice was pressed where one was. The chat is
  * put on show and the chat home is opened, as New chat does.
+ *
+ * The chat is on the project of the pipeline it is about, and is shown on
+ * that project's rail (EO-765). Pressed while on another project, the
+ * main process has already moved the window there, and the switch is
+ * finished here the way the project switcher finishes one: everything
+ * project-scoped is asked again.
  */
 export function useOpenUpdateConflictChat() {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
+  const { activeProjectId, setActive } = useProjects();
   const [problem, setProblem] = useState<string | null>(null);
 
   const open = useMutation({
@@ -28,8 +36,11 @@ export function useOpenUpdateConflictChat() {
       // Straight into the cache, as New chat does: the chat just opened is
       // the answer, and the one on show before should not linger.
       queryClient.setQueryData(assistRoomKey, { conversation: result.conversation });
-      void queryClient.invalidateQueries({ queryKey: assistRoomKey });
-      void queryClient.invalidateQueries({ queryKey: assistThreadsKey });
+      if (result.projectId !== null && result.projectId !== activeProjectId) setActive(result.projectId);
+      else {
+        void queryClient.invalidateQueries({ queryKey: assistRoomKey });
+        void queryClient.invalidateQueries({ queryKey: assistThreadsKey });
+      }
       void navigate(CHAT_HOME_ROUTE);
     },
     onError: (error: unknown) => setProblem(error instanceof Error ? error.message : String(error)),

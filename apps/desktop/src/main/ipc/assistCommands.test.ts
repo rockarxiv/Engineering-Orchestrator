@@ -1,3 +1,4 @@
+import { activeProjectId } from "./repositoryCommands.js";
 import {
   ADMIN_MCP_SERVER_NAME,
   CHAT_HOME_ROUTE,
@@ -804,21 +805,24 @@ describe("several live chats", () => {
   });
 
   /**
-   * The chat on show is the same wherever the widget is opened, so it
-   * can be one opened on a project the person has since left. Empty, it
-   * is still not a new chat for the project they are on: a draft raised
-   * in it would be checked against the other project's pipelines.
+   * Each project has its own chat on show (EO-765), so an empty chat
+   * left on show on a project the person has since left is not the one
+   * the room shows on the project they are on — and is never a new chat
+   * for it: a draft raised in it would be checked against the other
+   * project's pipelines.
    */
   describe("an empty chat on show from another active project", () => {
-    /** An empty chat opened on P and on show, with Q now the active project. Both projects live. */
+    /** An empty chat opened on P and on show there, with Q now the active project. Both projects live. */
     function emptyOnPWhileOnQ() {
       const p = createProject(handle.db, { name: "Support", keyPrefix: "SUP" });
       const onP = openAssist(handle.db).conversation;
       expect(rowOf(onP.id).projectId).toBe(p.id);
       const q = createProject(handle.db, { name: "Platform", keyPrefix: "PLT" });
       setSetting(handle.db, "ui.activeProjectId", q.id);
-      // Still the chat on show: opening is not what moves the room.
-      expect(openAssist(handle.db).conversation.id).toBe(onP.id);
+      // Switching project switches chat: Q's room is Q's own.
+      const opened = openAssist(handle.db).conversation;
+      expect(opened.id).not.toBe(onP.id);
+      expect(rowOf(opened.id).projectId).toBe(q.id);
       return { p, q, onP };
     }
 
@@ -835,7 +839,8 @@ describe("several live chats", () => {
       expect(rowOf(onP.id).archivedAt).toBeNull();
       // And pressed again on Q, the empty Q chat is what there is — not a third.
       expect(newAssist(handle.db).conversation.id).toBe(started.id);
-      expect(listAssist(handle.db).conversations.filter((thread) => thread.live)).toHaveLength(2);
+      // Q's list is Q's chats alone.
+      expect(listAssist(handle.db).conversations.map((thread) => thread.id)).toEqual([started.id]);
     });
 
     it("is not what Clear leaves: a chat for the active project is shown, and nothing is archived", async () => {
@@ -1061,7 +1066,7 @@ describe("removing a chat for good", () => {
     expect(result).toMatchObject({ removed: true, conversation: { id: fresh.id } });
     expect(fresh.id).not.toBe(open.id);
     expect(fresh.messages).toEqual([]);
-    expect(shownAssistConversation(handle.db)?.id).toBe(fresh.id);
+    expect(shownAssistConversation(handle.db, activeProjectId(handle.db))?.id).toBe(fresh.id);
     // Exactly one live entry in the list, the new empty one, and the chat removed is not in it.
     const listed = listAssist(handle.db).conversations;
     expect(listed.filter((thread) => thread.live).map((thread) => [thread.id, thread.title])).toEqual([[fresh.id, "Assistant"]]);
@@ -1107,7 +1112,7 @@ describe("removing a chat for good", () => {
       const other = (await send("/settings", "Which pipeline is slowest?")).conversation;
       newAssist(handle.db);
       const shown = (await send("/settings", "Summarise today")).conversation;
-      expect(shownAssistConversation(handle.db)?.id).toBe(shown.id);
+      expect(shownAssistConversation(handle.db, activeProjectId(handle.db))?.id).toBe(shown.id);
       return { first, second, other, shown };
     }
 
@@ -1156,7 +1161,7 @@ describe("removing a chat for good", () => {
 
       const fresh = openAssist(handle.db).conversation;
       expect(result).toMatchObject({ removed: [shown.id, other.id, first.id, second.id], refused: [], conversation: { id: fresh.id, messages: [] } });
-      expect(shownAssistConversation(handle.db)?.id).toBe(fresh.id);
+      expect(shownAssistConversation(handle.db, activeProjectId(handle.db))?.id).toBe(fresh.id);
       const listed = listAssist(handle.db).conversations;
       expect(listed.map((thread) => [thread.id, thread.live, thread.title])).toEqual([[fresh.id, true, "Assistant"]]);
       expect(listItemsForProject(handle.db, rowOf(fresh.id).projectId).filter((item) => item.stepId === ASSIST_STEP).map((item) => item.id)).toEqual([fresh.id]);
@@ -1267,7 +1272,7 @@ describe("saying something from a page", () => {
   it("refuses an empty message and a conversation that does not exist, leaving no thread behind", async () => {
     await expect(send("/settings", "   ")).rejects.toThrow(/needs text/);
     await expect(send("/settings", "hello", "019fb8c6-de92-7a41-9c33-4471f0c2b1de")).rejects.toThrow(/does not exist/);
-    expect(shownAssistConversation(handle.db)).toBeUndefined();
+    expect(shownAssistConversation(handle.db, activeProjectId(handle.db))).toBeUndefined();
   });
 
   it("refuses to graft a help thread onto a piece of work", async () => {
@@ -1390,7 +1395,7 @@ describe("sending a file with the message", () => {
 
     expect(tooMany.ok).toBe(false);
     // And nothing was created for a message that was never accepted.
-    expect(shownAssistConversation(handle.db)).toBeUndefined();
+    expect(shownAssistConversation(handle.db, activeProjectId(handle.db))).toBeUndefined();
   });
 
   /** Ids with no storage behind them are a refusal, not a silently text-only message. */
@@ -1398,7 +1403,7 @@ describe("sending a file with the message", () => {
     await expect(send("/settings", "look at this", null, ["019fb8c6-de92-7a41-9c33-4471f0c2b1de"])).rejects.toThrow(
       /Attachment storage is unavailable/,
     );
-    expect(shownAssistConversation(handle.db)).toBeUndefined();
+    expect(shownAssistConversation(handle.db, activeProjectId(handle.db))).toBeUndefined();
   });
 });
 
@@ -1777,7 +1782,7 @@ describe("an assist turn asked to move the item it is looking at", () => {
     const second = (await send(`/items/${item.id}/runs`, "did that work?", null)).conversation;
 
     expect(second.id).toBe(first.id);
-    expect(shownAssistConversation(handle.db)?.id).toBe(first.id);
+    expect(shownAssistConversation(handle.db, activeProjectId(handle.db))?.id).toBe(first.id);
   });
 });
 
@@ -3149,6 +3154,31 @@ describe("a pipeline built from the chat", () => {
     expect(rejections.join(" ")).toContain(`already has a pipeline called "Release" (id: ${existing.id})`);
     // A refused card saves no module either.
     expect(listModules(handle.db).some((module) => module.slug === "release-merge")).toBe(false);
+  });
+
+  /** EO-765: switching project switches chat, so the draft is the new project's. */
+  it("checks a pipeline drafted after switching project against that project, and publishes it there", async () => {
+    allowAnHourPerRun();
+    const shop = createProject(handle.db, { name: "Shop", keyPrefix: "SHOP" });
+    setSetting(handle.db, "ui.activeProjectId", shop.id);
+    const onShop = await openedOn("/settings");
+    expect(onShop.projectId).toBe(shop.id);
+    // A's own Release would clash on A, and is no business of B's.
+    createPipeline(handle.db, { projectId: shop.id, name: "Release" });
+    const blog = createProject(handle.db, { name: "Blog", keyPrefix: "BLOG" });
+    setSetting(handle.db, "ui.activeProjectId", blog.id);
+
+    const conversation = await openedOn("/settings");
+    expect(conversation.id).not.toBe(onShop.id);
+    expect(conversation.projectId).toBe(blog.id);
+    const { cardIds, rejections } = turn(conversation, { message: "Here.", draft: releaseDraft({ newPipeline: "Release" }), modules: [MERGE_MODULE] });
+    expect(rejections).toEqual([]);
+    approvedLater(listModules(handle.db).find((module) => module.slug === "release-merge")!.id);
+
+    const published = publishNewAssistPipeline(handle.db, undefined, { conversationId: conversation.id, messageId: cardIds[0]! });
+
+    expect(published).toMatchObject({ saved: true, problem: null });
+    expect(pipelinesNamed("Release").find((pipeline) => pipeline.id === published.pipelineId)?.projectId).toBe(blog.id);
   });
 
   it("refuses at Publish a name somebody took after the card was drawn, and creates nothing", async () => {

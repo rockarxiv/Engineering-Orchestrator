@@ -2216,10 +2216,14 @@ export const recordContract = {
    * Refused, with the sentence to show and no chat, for a conflict this
    * installation does not hold, or one resolved before a chat was ever
    * opened for it.
+   *
+   * The chat is shown on its own project's rail (EO-765), and the window
+   * is moved there: `projectId` is the project the window is on now,
+   * which the renderer switches to. Null with no chat.
    */
   "assist:openUpdateConflict": channel(
     z.object({ conflictId: z.string().min(1), commentId: z.string().nullable() }),
-    z.object({ conversation: DiscussionSchema.nullable(), problem: z.string().nullable() }),
+    z.object({ conversation: DiscussionSchema.nullable(), problem: z.string().nullable(), projectId: z.string().nullable() }),
   ),
   /**
    * Archives the chat on show and leaves an empty one (EO-193).

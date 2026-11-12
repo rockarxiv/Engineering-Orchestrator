@@ -54,6 +54,7 @@ export function NeedsCheck({
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const vocabulary = useChromeVocabulary();
+  const { activeProjectId, setActive } = useProjects();
   const key = galleryNeedsKey(projectId, template.slug);
 
   const needs = useQuery({
@@ -97,6 +98,8 @@ export function NeedsCheck({
       if (result.conversation === null) return;
       queryClient.setQueryData(assistRoomKey, { conversation: result.conversation });
       void queryClient.invalidateQueries({ queryKey: assistThreadsKey });
+      // The chat is on this project's rail (EO-765), so the window follows it there.
+      if (projectId !== activeProjectId) setActive(projectId);
       leave(CHAT_HOME_ROUTE);
     },
   });

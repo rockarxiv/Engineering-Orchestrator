@@ -1,3 +1,4 @@
+import { activeProjectId } from "../ipc/repositoryCommands.js";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -204,7 +205,7 @@ describe("a conflict the organisation's record holds", () => {
     // Copied here, shown, with the brief first and the pipeline as its subject.
     const chat = getItem(anna.handle.db, chatId)!;
     expect(chat.stepId).toBe(ASSIST_STEP);
-    expect(shownAssistConversation(anna.handle.db)?.id).toBe(chatId);
+    expect(shownAssistConversation(anna.handle.db, activeProjectId(anna.handle.db))?.id).toBe(chatId);
     const [brief, ...rest] = listCommentsForItem(anna.handle.db, chatId);
     expect(rest).toEqual([]);
     expect(brief!.authorType).toBe("engine");
@@ -298,7 +299,7 @@ describe("a conflict the organisation's record holds", () => {
     expect(fromLaptop.problem).toBeNull();
     expect(fromLaptop.conversation!.id).toBe(chatId);
     expect(again.conversation!.id).toBe(chatId);
-    expect(shownAssistConversation(laptop.handle.db)?.id).toBe(chatId);
+    expect(shownAssistConversation(laptop.handle.db, activeProjectId(laptop.handle.db))?.id).toBe(chatId);
     // The brief once, on the record and on the laptop's copy; nothing new dispatched.
     expect(listCommentsForItem(recordDb.db, chatId as Uuid)).toHaveLength(1);
     expect(listCommentsForItem(laptop.handle.db, chatId as Uuid)).toHaveLength(1);

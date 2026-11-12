@@ -1,3 +1,4 @@
+import { activeProjectId } from "./repositoryCommands.js";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { sql } from "drizzle-orm";
@@ -25,7 +26,7 @@ import { loadTemplateHistory } from "../gallery/history.js";
 import { backfillPipelineOrigins } from "../gallery/origins.js";
 import { applyTemplateUpdates } from "../gallery/templateUpdates.js";
 import { createFakeProvider } from "../providers/fake.js";
-import { SHOWN_ASSIST_KEY, assistAgent, assistBoards, listAssistThreads, postAssistReply, shownAssistConversation } from "../roles/assist.js";
+import { SHOWN_ASSIST_KEY, assistAgent, assistBoards, listAssistThreads, openAssistRoom, postAssistReply, shownAssistConversation } from "../roles/assist.js";
 import { ASSIST_ACTION, ASSIST_STEP } from "../roles/conversationSteps.js";
 import { createRunSupervisor } from "../supervisor/runSupervisor.js";
 import { openUpdateConflictAssist } from "./assistCommands.js";
@@ -117,7 +118,7 @@ describe("pressing Fix with assistant", () => {
     expect(chat.stepId).toBe(ASSIST_STEP);
     expect(chat.projectId).toBe(projectId);
     // On show, and recorded on the conflict.
-    expect(shownAssistConversation(handle.db)?.id).toBe(chat.id);
+    expect(shownAssistConversation(handle.db, activeProjectId(handle.db))?.id).toBe(chat.id);
     expect(getUpdateConflict(handle.db, conflictId)?.chatId).toBe(chat.id);
 
     // EO's brief, first and only, asking the assistant.
@@ -135,7 +136,7 @@ describe("pressing Fix with assistant", () => {
     // The pipeline is the board a draft raised in answer is published against.
     expect(assistBoards(chat)).toEqual([{ from: brief.id, pipelineId: "default" }]);
     // Listed by what it is about, before the person has said anything.
-    expect(listAssistThreads(handle.db).find((thread) => thread.conversation.id === chat.id)?.title).toBe('Resolve the held template update to the pipeline "Delivery".');
+    expect(listAssistThreads(handle.db, activeProjectId(handle.db)).find((thread) => thread.conversation.id === chat.id)?.title).toBe('Resolve the held template update to the pipeline "Delivery".');
     // The scheduler is woken at once.
     expect(engine.notifyStateChange).toHaveBeenCalledWith({ promptly: true });
 
@@ -162,19 +163,39 @@ describe("pressing Fix with assistant", () => {
     expect(listMentionsForComment(handle.db, brief.id as Uuid).map((mention) => mention.status)).not.toContain("open");
   });
 
+  /** EO-765: a chat is shown on its own project's rail, so the window goes where the chat is. */
+  it("moves the window to the pipeline's project when pressed while on another, and shows the chat in that project's rail", async () => {
+    const { conflictId, noticeId, projectId } = heldUpdate();
+    const blog = createProject(handle.db, { name: "Blog", keyPrefix: "BLOG" });
+    setSetting(handle.db, "ui.activeProjectId", blog.id);
+    const onBlog = openAssistRoom(handle.db, blog.id as Uuid).conversation;
+
+    const opened = await press(conflictId, noticeId);
+
+    const chat = getItem(handle.db, opened.conversation!.id as Uuid)!;
+    expect(chat.projectId).toBe(projectId);
+    expect(opened.projectId).toBe(projectId);
+    expect(activeProjectId(handle.db)).toBe(projectId);
+    expect(shownAssistConversation(handle.db, projectId)?.id).toBe(chat.id);
+    expect(listAssistThreads(handle.db, projectId).map((thread) => thread.conversation.id)).toContain(chat.id);
+    // Blog's rail is untouched: its chat is still the one on show there, and the new one is not in it.
+    expect(shownAssistConversation(handle.db, blog.id as Uuid)?.id).toBe(onBlog.id);
+    expect(listAssistThreads(handle.db, blog.id as Uuid).map((thread) => thread.conversation.id)).toEqual([onBlog.id]);
+  });
+
   it("opens the same chat when pressed again while that chat exists, from any copy of the notice", async () => {
     const { conflictId, noticeId } = heldUpdate();
     const first = (await press(conflictId, noticeId)).conversation!;
     // The person moves on to a chat of their own.
     const other = createTestItem(handle.db, { type: "feature", title: "Assistance", stepId: ASSIST_STEP, projectId: null });
     setSetting(handle.db, SHOWN_ASSIST_KEY, other.id);
-    expect(shownAssistConversation(handle.db)?.id).toBe(other.id);
+    expect(shownAssistConversation(handle.db, activeProjectId(handle.db))?.id).toBe(other.id);
 
     const again = await press(conflictId, null);
 
     expect(again.problem).toBeNull();
     expect(again.conversation!.id).toBe(first.id);
-    expect(shownAssistConversation(handle.db)?.id).toBe(first.id);
+    expect(shownAssistConversation(handle.db, activeProjectId(handle.db))?.id).toBe(first.id);
     // Still the one brief: nothing posted, nothing dispatched again.
     expect(listCommentsForItem(handle.db, first.id as Uuid)).toHaveLength(1);
   });
@@ -209,10 +230,10 @@ describe("pressing Fix with assistant", () => {
   it("is refused, writing nothing, for a conflict this installation does not hold or one resolved before any chat", async () => {
     const { conflictId, noticeId } = heldUpdate();
 
-    expect(await press("no-such-conflict", null)).toEqual({ conversation: null, problem: "That template update is not held here any more." });
+    expect(await press("no-such-conflict", null)).toEqual({ conversation: null, problem: "That template update is not held here any more.", projectId: null });
 
     resolveUpdateConflict(handle.db, conflictId, "kept");
-    expect(await press(conflictId, noticeId)).toEqual({ conversation: null, problem: "That template update has already been resolved." });
+    expect(await press(conflictId, noticeId)).toEqual({ conversation: null, problem: "That template update has already been resolved.", projectId: null });
     expect(getUpdateConflict(handle.db, conflictId)?.chatId).toBeNull();
   });
 });
