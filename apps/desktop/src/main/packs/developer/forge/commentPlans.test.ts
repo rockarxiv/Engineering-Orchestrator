@@ -272,8 +272,14 @@ describe("the implementer after a person approved the plan", () => {
 });
 
 describe("checking a planning run", () => {
-  const kindWith = (porcelain: string) =>
-    gitWorkspaceKind({ db: handle.db, intelligenceFor: () => null, readStatus: () => Promise.resolve({ ok: true, stdout: porcelain, stderr: "" } as never) });
+  const sh = (...args: string[]) => execFileSync("git", args, { cwd: drive, stdio: "pipe" }).toString();
+  /** The kind as a fresh process builds it, reading the real tree unless a status is given. */
+  const kindWith = (porcelain?: string) =>
+    gitWorkspaceKind({
+      db: handle.db,
+      intelligenceFor: () => null,
+      ...(porcelain === undefined ? {} : { readStatus: () => Promise.resolve({ ok: true, stdout: porcelain, stderr: "" } as never) }),
+    });
   const run = (result: unknown, ended: VerifiableRun["ended"] = "succeeded"): VerifiableRun => ({
     id: "01a0" as never,
     action: PLAN_COMMENT_RESPONSE_ACTION,
@@ -281,10 +287,28 @@ describe("checking a planning run", () => {
     result,
     ended,
   });
+  /** A turn opened in the worktree, the way every dispatch, reply and recovery opens one. */
+  const turn = async (kind = kindWith()) => {
+    await kind.attach(fresh(), implementer, run(PLAN).workspace);
+    return kind;
+  };
+  const commitRename = () => {
+    writeFileSync(join(drive, "a.ts"), "export const total = 1;\n");
+    sh("commit", "-q", "-am", "rename a to total");
+  };
 
-  beforeEach(() => watchAnswered("others_commented", ["review-comment:11", "issue-comment:12"]));
+  beforeEach(() => {
+    sh("init", "-q", "-b", "main");
+    sh("config", "user.email", "eo@example.com");
+    sh("config", "user.name", "EO");
+    writeFileSync(join(drive, "a.ts"), "export const a = 1;\n");
+    sh("add", "a.ts");
+    sh("commit", "-q", "-m", "start");
+    watchAnswered("others_commented", ["review-comment:11", "issue-comment:12"]);
+  });
 
   it("passes a plan that changed nothing and answers for exactly the comments awaiting one", async () => {
+    await turn();
     // The generated repository index is not a change.
     const checks = await verifyRun(kindWith(`?? ${REPOSITORY_INDEX_DIRECTORIES[0]}/\n`), fresh(), run(PLAN));
     expect(checks.map((check) => [check.key, check.passed, check.blocks])).toEqual([
@@ -294,6 +318,7 @@ describe("checking a planning run", () => {
   });
 
   it("fails a run that left changes in the worktree, and its note says so", async () => {
+    await turn();
     const [check, ...rest] = await verifyRun(kindWith(" M src/a.ts\n?? notes.md\n"), fresh(), run(PLAN));
     expect(rest).toEqual([]);
     expect(check?.passed).toBe(false);
@@ -305,81 +330,75 @@ describe("checking a planning run", () => {
   });
 
   it("fails a run that stopped to ask but left changes all the same", async () => {
+    await turn();
     const checks = await verifyRun(kindWith(" M src/a.ts\n"), fresh(), run(null, "escalated"));
     expect(checks.map((check) => [check.key, check.passed])).toEqual([["untouched-tree", false]]);
   });
 
-  describe("in a real repository", () => {
-    const sh = (...args: string[]) => execFileSync("git", args, { cwd: drive, stdio: "pipe" }).toString();
-    const realKind = () => gitWorkspaceKind({ db: handle.db, intelligenceFor: () => null });
+  it("fails a run that edited a file and committed it, leaving a clean status, and its note names the commit", async () => {
+    const kind = await turn();
+    commitRename();
+    expect(sh("status", "--porcelain")).toBe("");
 
-    beforeEach(() => {
-      sh("init", "-q", "-b", "main");
-      sh("config", "user.email", "eo@example.com");
-      sh("config", "user.name", "EO");
-      writeFileSync(join(drive, "a.ts"), "export const a = 1;\n");
-      sh("add", "a.ts");
-      sh("commit", "-q", "-m", "start");
-    });
+    const [check, ...rest] = await verifyRun(kind, fresh(), run(PLAN));
+    expect(rest).toEqual([]);
+    expect(check?.key).toBe("untouched-tree");
+    expect(check?.passed).toBe(false);
+    expect(check?.blocks).toBe(true);
+    expect(check?.describes).toContain("has commits made since the planning round started");
+    expect(check?.comment).toContain("rename a to total");
+    expect(check?.comment).not.toContain("Changes in the worktree:");
+  });
 
-    it("fails a run that edited a file and committed it, leaving a clean status, and its note names the commit", async () => {
-      const kind = realKind();
-      await kind.attach(fresh(), implementer, run(PLAN).workspace);
-      writeFileSync(join(drive, "a.ts"), "export const total = 1;\n");
-      sh("commit", "-q", "-am", "rename a to total");
-      expect(sh("status", "--porcelain")).toBe("");
+  it("still fails the planner's commit after EO restarts and the turn is resumed or retried, until the branch is put back", async () => {
+    await turn();
+    const start = sh("rev-parse", "HEAD").trim();
+    commitRename();
+    const parked = await verifyRun(kindWith(), fresh(), run(null, "escalated"));
+    expect(parked.map((check) => [check.key, check.passed])).toEqual([["untouched-tree", false]]);
 
-      const [check, ...rest] = await verifyRun(kind, fresh(), run(PLAN));
-      expect(rest).toEqual([]);
-      expect(check?.key).toBe("untouched-tree");
-      expect(check?.passed).toBe(false);
-      expect(check?.blocks).toBe(true);
-      expect(check?.describes).toContain("committed changes to");
-      expect(check?.comment).toContain("Commits made during the run:");
-      expect(check?.comment).toContain("rename a to total");
-      expect(check?.comment).not.toContain("Changes in the worktree:");
-    });
+    // A new process: nothing of the first one's memory, and a turn opened on top of the planner's commit.
+    const restarted = await turn(kindWith());
+    const [resumed] = await verifyRun(restarted, fresh(), run(PLAN));
+    expect(resumed?.passed).toBe(false);
+    expect(resumed?.comment).toContain("rename a to total");
+    expect(resumed?.comment).toContain(`the branch on ${start.slice(0, 12)}`);
 
-    it("fails a run that committed and then stopped to ask, and the turn the reply opens, until the branch is put back", async () => {
-      const kind = realKind();
-      await kind.attach(fresh(), implementer, run(PLAN).workspace);
-      const start = sh("rev-parse", "HEAD").trim();
-      writeFileSync(join(drive, "a.ts"), "export const total = 1;\n");
-      sh("commit", "-q", "-am", "rename a to total");
-      const parked = await verifyRun(kind, fresh(), run(null, "escalated"));
-      expect(parked.map((check) => [check.key, check.passed])).toEqual([["untouched-tree", false]]);
+    // And again for a retry in yet another process.
+    const [retried] = await verifyRun(await turn(kindWith()), fresh(), run(PLAN));
+    expect(retried?.passed).toBe(false);
 
-      // The reply opens a turn on top of the planner's commit, which is still not the branch it was handed.
-      await kind.attach(fresh(), implementer, run(PLAN).workspace);
-      const [replied] = await verifyRun(kind, fresh(), run(PLAN));
-      expect(replied?.passed).toBe(false);
-      expect(replied?.comment).toContain("rename a to total");
+    sh("reset", "-q", "--hard", start);
+    const putBack = await verifyRun(await turn(kindWith()), fresh(), run(PLAN));
+    expect(putBack.map((check) => [check.key, check.passed])).toEqual([
+      ["untouched-tree", true],
+      ["plan-coverage", true],
+    ]);
+  });
 
-      sh("reset", "-q", "--hard", start);
-      await kind.attach(fresh(), implementer, run(PLAN).workspace);
-      const putBack = await verifyRun(kind, fresh(), run(PLAN));
-      expect(putBack.map((check) => [check.key, check.passed])).toEqual([
-        ["untouched-tree", true],
-        ["plan-coverage", true],
-      ]);
-    });
+  it("holds each round to its own start, so the work a plan was carried out with is not a later plan's change", async () => {
+    await turn();
+    commitRename(); // as if an approved plan was carried out
+    watchAnswered("others_commented", ["review-comment:21"]);
+    await turn();
+    const checks = await verifyRun(kindWith(), fresh(), run({ summary: "Nothing to change.", comments: [{ comment_id: "review-comment:21", change: null, reply: "Nothing to change here." }] }));
+    expect(checks.map((check) => [check.key, check.passed])).toEqual([
+      ["untouched-tree", true],
+      ["plan-coverage", true],
+    ]);
+    expect(sh("for-each-ref", "--format=%(refname)", "refs/worktree/eo/plan-round/").trim().split("\n")).toHaveLength(1);
+  });
 
-    it("passes a run whose turn left HEAD and the tree as it found them, judged against the turn's own start", async () => {
-      // A commit before the turn is the branch the planner was handed, not one it made.
-      writeFileSync(join(drive, "b.ts"), "export const b = 2;\n");
-      sh("add", "b.ts");
-      sh("commit", "-q", "-m", "earlier work");
-      const kind = realKind();
-      await kind.attach(fresh(), implementer, run(PLAN).workspace);
-      const checks = await verifyRun(kind, fresh(), run(PLAN));
-      expect(checks.map((check) => [check.key, check.passed])).toEqual([
-        ["untouched-tree", true],
-        ["plan-coverage", true],
-      ]);
-    });
+  it("fails closed when the round's start was never recorded", async () => {
+    const [check, ...rest] = await verifyRun(kindWith(), fresh(), run(PLAN));
+    expect(rest).toEqual([]);
+    expect(check?.passed).toBe(false);
+    expect(check?.blocks).toBe(true);
+    expect(check?.comment).toContain("was not recorded in the worktree");
   });
 
   it("refuses a plan that leaves out a comment awaiting one, or names one that is not", async () => {
+    await turn();
     const leftOut = { ...PLAN, comments: [PLAN.comments[0]!] };
     const [, missing] = await verifyRun(kindWith(""), fresh(), run(leftOut));
     expect(missing?.passed).toBe(false);

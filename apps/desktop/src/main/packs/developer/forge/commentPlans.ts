@@ -61,6 +61,15 @@ export function latestWatchAnswer(runs: readonly Run[]): Run | undefined {
 }
 
 /**
+ * The planning round the item is in: the id of the watch answer that began
+ * it, or null when the watch's newest answer handed nothing to planning.
+ */
+export function planningRound(db: Db, itemId: Uuid): Uuid | null {
+  const answer = latestWatchAnswer(listRunsForItem(db, itemId));
+  return answer !== undefined && PLANNING_ANSWERS.has(answerOf(answer) ?? "") ? answer.id : null;
+}
+
+/**
  * The comments awaiting a plan: what the watch's newest answer handed to
  * planning, when that answer was `others_commented` or `changes_requested`.
  *

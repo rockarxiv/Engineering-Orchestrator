@@ -2,7 +2,7 @@ import { existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { GIT_WORKTREE_KIND, PLAN_COMMENT_RESPONSE_ACTION, PlanCommentResponseOutputSchema, type Agent, type Item } from "@eo/core";
 import type { Db } from "../../../db/client.js";
-import { getGitWorkspace, listRunsForItem, stepForItem } from "../../../db/repos/index.js";
+import { getGitWorkspace, stepForItem } from "../../../db/repos/index.js";
 import { emitPush } from "../../../ipc/push.js";
 import { verifier } from "../../../supervisor/workspaceKind.js";
 import type { Artifact, Check, PreparedWorkspace, ReferenceCheckoutRequest, VerifiableRun, WorkspaceAttachment, WorkspaceKind, ReleaseRequest } from "../../../supervisor/workspaceKind.js";
@@ -13,10 +13,10 @@ import {
   type RepositoryIntelligenceFactory,
 } from "../repositoryIntelligence/index.js";
 import { borrowedFromSiblings } from "./borrowed.js";
-import { commentsAwaitingPlan, latestWatchAnswer } from "../forge/commentPlans.js";
+import { commentsAwaitingPlan, planningRound } from "../forge/commentPlans.js";
 import { withoutRepositoryIndex } from "../repositoryIntelligence/indexPaths.js";
 import { createWorktreeWorkspace, forgetIndexesForReleasedWorktrees, releaseStaleWorktrees, releaseWorktreeFor } from "./dispatchWorkspace.js";
-import { canonicalPath, git, statusPorcelain, type GitOutcome } from "./git.js";
+import { git, statusPorcelain } from "./git.js";
 import { referenceCheckoutFor, releaseReferenceCheckouts, releaseStaleReferenceCheckouts } from "./referenceCheckouts.js";
 import { createImplementationVerifier, createVerifiedRange } from "./implementationVerifier.js";
 import type { VerificationResult, VerifyOptions } from "./verify.js";
@@ -55,12 +55,6 @@ export interface GitWorkspaceKindOptions {
    */
   readStatus?: typeof statusPorcelain;
   /**
-   * How the worktree's `HEAD` is read, for the same check: at the start of
-   * each turn and again when the run is verified. A seam of the same kind
-   * as `readStatus`.
-   */
-  readHead?: (cwd: string) => Promise<GitOutcome>;
-  /**
    * Whether a directory is inside a Git repository, for the question
    * asked before every turn (EO-386).
    *
@@ -97,34 +91,6 @@ export function gitWorkspaceKind(options: GitWorkspaceKindOptions): WorkspaceKin
   const insideRepository = options.isGitRepository ?? isInsideGitRepository;
   const verifyImplementation = createImplementationVerifier(db, worktreeRoot, options.verifyOptions ?? {});
   const verifiedRange = createVerifiedRange(db, worktreeRoot);
-  const readHead = options.readHead ?? headOf;
-  /**
-   * Each worktree's `HEAD` as the latest turn in it found it, for the
-   * planning check (EO-760): a planner that commits leaves a clean status
-   * behind, and only the commit it moved `HEAD` to gives it away.
-   *
-   * Recorded per turn rather than per run because `attach` is what every
-   * path that opens a turn calls — a fresh dispatch, a reply and a
-   * recovery alike — and every turn of a planning run is verified as it
-   * ends, a turn that stops to ask included. Held in memory, keyed by the
-   * directory: a capacity of one per checkout means one turn at a time in
-   * it, and a turn does not survive a restart of this process, so the one
-   * verified is always the one recorded.
-   */
-  const headAtTurnStart = new Map<string, string>();
-  /**
-   * The `HEAD` a planning round's runs are held to once one of them was
-   * caught committing, keyed by directory, with the round it belongs to.
-   *
-   * A reply to a planner that stopped to ask, and the retry of one that
-   * failed, open a new turn, and the turn's start would otherwise be the
-   * commit the planner made — so the commit would pass the next time it
-   * is looked at. Pinned to the commit before it, the round's later runs
-   * fail until the branch is put back. A round is named by the watch
-   * answer that began it, so a pin outlives no round; a plan that passes
-   * lets it go, and so does a restart of this process.
-   */
-  const pinnedHead = new Map<string, { round: string; head: string }>();
 
   return {
     slug: GIT_WORKTREE_KIND,
@@ -156,9 +122,7 @@ export function gitWorkspaceKind(options: GitWorkspaceKindOptions): WorkspaceKin
      * rides on the turn.
      */
     async attach(item: Item, agent: Agent, workspace: PreparedWorkspace): Promise<WorkspaceAttachment> {
-      const head = await readHead(workspace.cwd);
-      if (head.ok && head.stdout !== "") headAtTurnStart.set(canonicalPath(workspace.cwd), head.stdout);
-      else headAtTurnStart.delete(canonicalPath(workspace.cwd));
+      await markPlanningRoundStart(db, item, workspace.cwd);
       const delivery = await repositoryQueryServerFor(intelligenceFor, {
         db,
         item,
@@ -268,19 +232,14 @@ export function gitWorkspaceKind(options: GitWorkspaceKindOptions): WorkspaceKin
        * The tree is checked whatever the run ended as: a planner that
        * stopped to ask has claimed no plan, but a prompt is a request, and
        * the change it was told not to make is just as made. "Untouched" is
-       * the status and `HEAD` both: a commit leaves a clean status behind.
+       * the status and the branch both: a commit leaves a clean status
+       * behind, so the branch is held to the commit the round started on.
        */
       [PLAN_COMMENT_RESPONSE_ACTION]: verifier(["the tree is untouched", "every comment awaiting a plan is planned for"], async (item: Item, run: VerifiableRun): Promise<readonly Check[]> => {
         if (run.packAction === false) return [];
-        const directory = canonicalPath(run.workspace.cwd);
-        const round = latestWatchAnswer(listRunsForItem(db, item.id))?.id ?? "";
-        const pinned = pinnedHead.get(directory);
-        const before = pinned !== undefined && pinned.round === round ? pinned.head : (headAtTurnStart.get(directory) ?? null);
-        const untouched = await untouchedTreeCheck(item, run.workspace, options.readStatus ?? statusPorcelain, { before, read: readHead });
-        if (untouched.headMoved && before !== null) pinnedHead.set(directory, { round, head: before });
-        else if (untouched.check.passed && run.ended !== "escalated") pinnedHead.delete(directory);
-        if (run.ended === "escalated" || !untouched.check.passed) return [untouched.check];
-        return [untouched.check, planCoverageCheck(db, item, run.result)];
+        const untouched = await untouchedTreeCheck(db, item, run.workspace, options.readStatus ?? statusPorcelain);
+        if (run.ended === "escalated" || !untouched.passed) return [untouched];
+        return [untouched, planCoverageCheck(db, item, run.result)];
       }),
     },
 
@@ -557,9 +516,41 @@ export function borrowedFilesCheck(borrowed: readonly { path: string; fromItemKe
   };
 }
 
-/** The commit a checkout's `HEAD` is at. */
-function headOf(cwd: string): Promise<GitOutcome> {
-  return git(["rev-parse", "HEAD"], cwd);
+/**
+ * Where a planning round's starting commit is kept (EO-760): a ref per
+ * worktree, named for the watch answer that began the round.
+ *
+ * In the checkout rather than in memory, because the planner it holds to
+ * account can commit, stop to ask and be resumed after EO restarts — and
+ * in git rather than on a run row, because what it records is a fact about
+ * the branch and `refs/worktree/` is git's own place for one: private to
+ * this worktree, never pushed, gone with the worktree.
+ */
+const PLAN_ROUND_REFS = "refs/worktree/eo/plan-round/";
+
+/**
+ * Records the commit the item's planning round started on, the first time
+ * a turn is opened in it (EO-760).
+ *
+ * Asked on every turn, since `attach` is what every path that opens one
+ * calls — a fresh dispatch, a reply and a recovery alike — but written only
+ * once a round: a later turn of the same round, the planner's retry or a
+ * revision among them, finds the ref already there and leaves it, so a
+ * commit a planner made is never taken for where the round began. A new
+ * round replaces the last one's ref. Nothing here fails a turn: a ref that
+ * could not be written is a baseline that cannot be established, and the
+ * planning check fails closed on that.
+ */
+async function markPlanningRoundStart(db: Db, item: Item, cwd: string): Promise<void> {
+  const round = planningRound(db, item.id);
+  if (round === null) return;
+  const listed = await git(["for-each-ref", "--format=%(refname)", PLAN_ROUND_REFS], cwd);
+  if (!listed.ok) return;
+  const refs = listed.stdout === "" ? [] : listed.stdout.split("\n");
+  if (refs.includes(PLAN_ROUND_REFS + round)) return;
+  for (const ref of refs) await git(["update-ref", "-d", ref], cwd);
+  // The empty old value makes this a create: it refuses rather than move a ref already there.
+  await git(["update-ref", PLAN_ROUND_REFS + round, "HEAD", ""], cwd);
 }
 
 /**
@@ -571,63 +562,61 @@ function headOf(cwd: string): Promise<GitOutcome> {
  * work nobody approved, on the branch the approved plan is carried out on.
  * Two ways to leave one, so two things are read. Changes left uncommitted
  * show in the status; changes committed leave a clean status, and show as
- * `HEAD` no longer being the commit the turn started on. The generated
- * repository index is not a change, as it is not for the implementation's
- * own check. A tree whose status or `HEAD` cannot be read is not taken for
- * clean. Where no `HEAD` was recorded at the turn's start — nothing in
- * this process opened the turn — only the status can be judged.
+ * commits on `HEAD` that the commit the planning round started on does not
+ * have. The generated repository index is not a change, as it is not for
+ * the implementation's own check.
+ *
+ * It fails closed: a status that cannot be read, a round with no recorded
+ * start, and a `HEAD` that cannot be compared with it are none of them
+ * taken for an untouched tree. A planner that committed is held to the
+ * round's start on every later turn of the round, whatever restarted in
+ * between, until the branch is put back.
  */
-async function untouchedTreeCheck(
-  item: Item,
-  workspace: PreparedWorkspace,
-  readStatus: typeof statusPorcelain,
-  head: { before: string | null; read: (cwd: string) => Promise<GitOutcome> },
-): Promise<{ check: Check; headMoved: boolean }> {
-  const unreadable = (error: string): { check: Check; headMoved: boolean } => ({
-    headMoved: false,
-    check: {
+async function untouchedTreeCheck(db: Db, item: Item, workspace: PreparedWorkspace, readStatus: typeof statusPorcelain): Promise<Check> {
+  const unreadable = (why: string): Check => ({
     key: "untouched-tree",
     passed: false,
     blocks: true,
-    describes: `EO could not read whether this planning run left ${item.key}'s worktree as it found it: ${error}`,
-    },
+    describes: `EO could not read whether this planning run left ${item.key}'s worktree as it found it: ${why}`,
+    comment:
+      `This run was asked to plan a response to the pull request comments and change nothing, and EO could not confirm that it did: ${why} ` +
+      "So the run failed, and its plan was not posted.",
   });
   const status = await readStatus(workspace.cwd);
   if (!status.ok) return unreadable(status.error);
   const changes = withoutRepositoryIndex(status.stdout);
 
-  let commits: string | null = null;
-  if (head.before !== null) {
-    const after = await head.read(workspace.cwd);
-    if (!after.ok) return unreadable(after.error);
-    if (after.stdout !== head.before) {
-      const log = await git(["log", "--oneline", `${head.before}..${after.stdout}`], workspace.cwd);
-      commits = log.ok && log.stdout !== "" ? log.stdout : `HEAD moved from ${head.before} to ${after.stdout}.`;
-    }
+  const round = planningRound(db, item.id);
+  if (round === null) return unreadable(`${item.key} is in no planning round, so there is no commit the plan was to leave the branch on.`);
+  const start = await git(["rev-parse", "--verify", "--quiet", `${PLAN_ROUND_REFS + round}^{commit}`], workspace.cwd);
+  if (!start.ok || start.stdout === "") {
+    return unreadable(`the commit this planning round started on was not recorded in the worktree (\`${PLAN_ROUND_REFS + round}\`), so commits made during it cannot be told apart.`);
   }
+  const log = await git(["log", "--oneline", `${start.stdout}..HEAD`], workspace.cwd);
+  if (!log.ok) return unreadable(log.error);
+  const commits = log.stdout === "" ? null : log.stdout;
 
   if (changes === "" && commits === null) {
-    return { headMoved: false, check: { key: "untouched-tree", passed: true, blocks: true, describes: `This planning run left ${item.key}'s worktree as it found it.` } };
+    return { key: "untouched-tree", passed: true, blocks: true, describes: `This planning run left ${item.key}'s worktree as it found it.` };
   }
   const found = [
-    ...(commits === null ? [] : [`Commits made during the run:\n\n\`\`\`\n${commits.trimEnd()}\n\`\`\``]),
+    ...(commits === null ? [] : [`Commits made since this planning round started on ${start.stdout.slice(0, 12)}:\n\n\`\`\`\n${commits.trimEnd()}\n\`\`\``]),
     ...(changes === "" ? [] : [`Changes in the worktree:\n\n\`\`\`\n${changes.trimEnd()}\n\`\`\``]),
   ];
-  const check: Check = {
+  return {
     key: "untouched-tree",
     passed: false,
     blocks: true,
     describes:
       commits === null
         ? `This planning run was to change nothing, and it left changes in ${item.key}'s worktree, so it failed.`
-        : `This planning run was to change nothing, and it committed changes to ${item.key}'s branch, so it failed.`,
+        : `This planning run was to change nothing, and ${item.key}'s branch has commits made since the planning round started, so it failed.`,
     comment:
-      `This run was asked to plan a response to the pull request comments and change nothing, and it ` +
-      `${commits === null ? "left changes in" : changes === "" ? "committed changes to" : "committed changes to and left changes in"} ${item.key}'s worktree. ` +
+      `This run was asked to plan a response to the pull request comments and change nothing, and ` +
+      `${commits === null ? "it left changes in" : changes === "" ? "commits were made on" : "commits were made on, and changes left in,"} ${item.key}'s worktree. ` +
       `So the run failed, and its plan was not posted.\n\n${found.join("\n\n")}\n\n` +
-      "Nothing has been discarded or reverted. Whoever plans again must put the worktree and the branch back as they were first: a plan proposes, and changes are made only once a person approves it.",
+      `Nothing has been discarded or reverted. Whoever plans again must put the worktree and the branch back as they were first${commits === null ? "" : ` — the branch on ${start.stdout.slice(0, 12)}`}: a plan proposes, and changes are made only once a person approves it.`,
   };
-  return { check, headMoved: commits !== null };
 }
 
 /**
