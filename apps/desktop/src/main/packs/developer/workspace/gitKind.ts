@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { GIT_WORKTREE_KIND, type Agent, type Item } from "@eo/core";
+import { GIT_WORKTREE_KIND, PLAN_COMMENT_RESPONSE_ACTION, PlanCommentResponseOutputSchema, type Agent, type Item } from "@eo/core";
 import type { Db } from "../../../db/client.js";
 import { getGitWorkspace, stepForItem } from "../../../db/repos/index.js";
 import { emitPush } from "../../../ipc/push.js";
@@ -13,6 +13,8 @@ import {
   type RepositoryIntelligenceFactory,
 } from "../repositoryIntelligence/index.js";
 import { borrowedFromSiblings } from "./borrowed.js";
+import { commentsAwaitingPlan, planningRound } from "../forge/commentPlans.js";
+import { withoutRepositoryIndex } from "../repositoryIntelligence/indexPaths.js";
 import { createWorktreeWorkspace, forgetIndexesForReleasedWorktrees, releaseStaleWorktrees, releaseWorktreeFor } from "./dispatchWorkspace.js";
 import { git, statusPorcelain } from "./git.js";
 import { referenceCheckoutFor, releaseReferenceCheckouts, releaseStaleReferenceCheckouts } from "./referenceCheckouts.js";
@@ -120,6 +122,7 @@ export function gitWorkspaceKind(options: GitWorkspaceKindOptions): WorkspaceKin
      * rides on the turn.
      */
     async attach(item: Item, agent: Agent, workspace: PreparedWorkspace): Promise<WorkspaceAttachment> {
+      await markPlanningRoundStart(db, item, workspace.cwd);
       const delivery = await repositoryQueryServerFor(intelligenceFor, {
         db,
         item,
@@ -218,6 +221,25 @@ export function gitWorkspaceKind(options: GitWorkspaceKindOptions): WorkspaceKin
         if (clean) checks.push({ key: "clean-tree", passed: true, describes: `Nothing was left uncommitted in ${item.key}'s worktree.` });
         checks.push(await borrowedCheck(db, item, run.workspace, worktreeRoot));
         return checks;
+      }),
+      /**
+       * A plan for other accounts' pull request comments (EO-760): that it
+       * changed nothing, and that it answers for exactly the comments
+       * awaiting a plan. Both block, so a plan that broke either fails the
+       * run and the planner's next attempt reads why — the plan is not
+       * posted, reviewed or offered to anybody to approve.
+       *
+       * The tree is checked whatever the run ended as: a planner that
+       * stopped to ask has claimed no plan, but a prompt is a request, and
+       * the change it was told not to make is just as made. "Untouched" is
+       * the status and the branch both: a commit leaves a clean status
+       * behind, so the branch is held to the commit the round started on.
+       */
+      [PLAN_COMMENT_RESPONSE_ACTION]: verifier(["the tree is untouched", "every comment awaiting a plan is planned for"], async (item: Item, run: VerifiableRun): Promise<readonly Check[]> => {
+        if (run.packAction === false) return [];
+        const untouched = await untouchedTreeCheck(db, item, run.workspace, options.readStatus ?? statusPorcelain);
+        if (run.ended === "escalated" || !untouched.passed) return [untouched];
+        return [untouched, planCoverageCheck(db, item, run.result)];
       }),
     },
 
@@ -491,5 +513,155 @@ export function borrowedFilesCheck(borrowed: readonly { path: string; fromItemKe
       `${borrowed.map((file) => `- ${file.path} (from ${file.fromItemKey})`).join("\n")}\n\n` +
       `That work is not merged and may still change or be dropped. Copying across repositories is sometimes the only option — ` +
       `but if this outlives what it was copied from, it is now the only copy, and nobody decided that.`,
+  };
+}
+
+/**
+ * Where a planning round's starting commit is kept (EO-760): a ref per
+ * worktree, named for the watch answer that began the round.
+ *
+ * In the checkout rather than in memory, because the planner it holds to
+ * account can commit, stop to ask and be resumed after EO restarts — and
+ * in git rather than on a run row, because what it records is a fact about
+ * the branch and `refs/worktree/` is git's own place for one: private to
+ * this worktree, never pushed, gone with the worktree.
+ */
+const PLAN_ROUND_REFS = "refs/worktree/eo/plan-round/";
+
+/**
+ * Records the commit the item's planning round started on, the first time
+ * a turn is opened in it (EO-760).
+ *
+ * Asked on every turn, since `attach` is what every path that opens one
+ * calls — a fresh dispatch, a reply and a recovery alike — but written only
+ * once a round: a later turn of the same round, the planner's retry or a
+ * revision among them, finds the ref already there and leaves it, so a
+ * commit a planner made is never taken for where the round began. A new
+ * round replaces the last one's ref. Nothing here fails a turn: a ref that
+ * could not be written is a baseline that cannot be established, and the
+ * planning check fails closed on that.
+ */
+async function markPlanningRoundStart(db: Db, item: Item, cwd: string): Promise<void> {
+  const round = planningRound(db, item.id);
+  if (round === null) return;
+  const listed = await git(["for-each-ref", "--format=%(refname)", PLAN_ROUND_REFS], cwd);
+  if (!listed.ok) return;
+  const refs = listed.stdout === "" ? [] : listed.stdout.split("\n");
+  if (refs.includes(PLAN_ROUND_REFS + round)) return;
+  for (const ref of refs) await git(["update-ref", "-d", ref], cwd);
+  // The empty old value makes this a create: it refuses rather than move a ref already there.
+  await git(["update-ref", PLAN_ROUND_REFS + round, "HEAD", ""], cwd);
+}
+
+/**
+ * Did a run that was to change nothing leave the worktree as it found it
+ * (EO-760)?
+ *
+ * Unlike plan mode's check, this blocks: a plan is the whole of what
+ * `plan_comment_response` produces, and changes left beside it would be
+ * work nobody approved, on the branch the approved plan is carried out on.
+ * Two ways to leave one, so two things are read. Changes left uncommitted
+ * show in the status. Changes to the branch — a commit, and as much a reset,
+ * rebase or checkout that takes commits away — leave a clean status, and
+ * show as `HEAD` no longer being the commit the planning round started on,
+ * which is the only `HEAD` that passes. The generated repository index is
+ * not a change, as it is not for the implementation's own check.
+ *
+ * It fails closed: a status that cannot be read, a round with no recorded
+ * start, and a `HEAD` that cannot be compared with it are none of them
+ * taken for an untouched tree. A planner that moved the branch is held to
+ * the round's start on every later turn of the round, whatever restarted
+ * in between, until the branch is put back.
+ */
+async function untouchedTreeCheck(db: Db, item: Item, workspace: PreparedWorkspace, readStatus: typeof statusPorcelain): Promise<Check> {
+  const unreadable = (why: string): Check => ({
+    key: "untouched-tree",
+    passed: false,
+    blocks: true,
+    describes: `EO could not read whether this planning run left ${item.key}'s worktree as it found it: ${why}`,
+    comment:
+      `This run was asked to plan a response to the pull request comments and change nothing, and EO could not confirm that it did: ${why} ` +
+      "So the run failed, and its plan was not posted.",
+  });
+  const status = await readStatus(workspace.cwd);
+  if (!status.ok) return unreadable(status.error);
+  const changes = withoutRepositoryIndex(status.stdout);
+
+  const round = planningRound(db, item.id);
+  if (round === null) return unreadable(`${item.key} is in no planning round, so there is no commit the plan was to leave the branch on.`);
+  const start = await git(["rev-parse", "--verify", "--quiet", `${PLAN_ROUND_REFS + round}^{commit}`], workspace.cwd);
+  if (!start.ok || start.stdout === "") {
+    return unreadable(`the commit this planning round started on was not recorded in the worktree (\`${PLAN_ROUND_REFS + round}\`), so commits made during it cannot be told apart.`);
+  }
+  const head = await git(["rev-parse", "--verify", "HEAD^{commit}"], workspace.cwd);
+  if (!head.ok || head.stdout === "") return unreadable(head.ok ? "the worktree has no `HEAD` commit." : head.error);
+  const moved = head.stdout !== start.stdout;
+
+  if (changes === "" && !moved) {
+    return { key: "untouched-tree", passed: true, blocks: true, describes: `This planning run left ${item.key}'s worktree as it found it.` };
+  }
+
+  // Either way off the round's start: commits added on top of it, and
+  // commits it had that the branch no longer has — a reset, a rebase or a
+  // checkout of another commit takes work away as surely as a commit adds it.
+  const was = start.stdout.slice(0, 12);
+  const is = head.stdout.slice(0, 12);
+  const sections: string[] = [];
+  if (moved) {
+    const added = await git(["log", "--oneline", `${start.stdout}..${head.stdout}`], workspace.cwd);
+    const removed = await git(["log", "--oneline", `${head.stdout}..${start.stdout}`], workspace.cwd);
+    sections.push(`The branch was on ${was} when this planning round started, and it is on ${is} now.`);
+    if (added.ok && added.stdout !== "") sections.push(`Commits added since the round started:\n\n\`\`\`\n${added.stdout}\n\`\`\``);
+    if (removed.ok && removed.stdout !== "") sections.push(`Commits the branch had when the round started and no longer has:\n\n\`\`\`\n${removed.stdout}\n\`\`\``);
+  }
+  if (changes !== "") sections.push(`Changes in the worktree:\n\n\`\`\`\n${changes.trimEnd()}\n\`\`\``);
+
+  const what = moved && changes !== "" ? `moved ${item.key}'s branch and left changes in its worktree` : moved ? `moved ${item.key}'s branch` : `left changes in ${item.key}'s worktree`;
+  return {
+    key: "untouched-tree",
+    passed: false,
+    blocks: true,
+    describes: `This planning run was to change nothing, and it ${what}, so it failed.`,
+    comment:
+      `This run was asked to plan a response to the pull request comments and change nothing, and it ${what}. ` +
+      `So the run failed, and its plan was not posted.\n\n${sections.join("\n\n")}\n\n` +
+      `Nothing has been discarded or reverted. Whoever plans again must put the worktree and the branch back as they were first${moved ? ` — the branch on ${was}` : ""}: a plan proposes, and changes are made only once a person approves it.`,
+  };
+}
+
+/**
+ * Does the plan answer for exactly the comments awaiting one (EO-760)?
+ *
+ * The comments awaiting a plan are what the watch handed to planning
+ * (`commentsAwaitingPlan`), which the engine knows first-hand; the plan is
+ * the planner's claim about them. One left out is a comment nobody would
+ * answer, and one that is not awaiting a plan is a comment the plan has no
+ * business deciding about.
+ */
+function planCoverageCheck(db: Db, item: Item, result: unknown): Check {
+  const awaiting = commentsAwaitingPlan(db, item.id).map((comment) => comment.id);
+  const parsed = PlanCommentResponseOutputSchema.safeParse(result);
+  const named = parsed.success ? parsed.data.comments.map((entry) => entry.comment_id) : [];
+  const missing = awaiting.filter((id) => !named.includes(id));
+  const unknown = [...new Set(named.filter((id) => !awaiting.includes(id)))];
+  const twice = [...new Set(named.filter((id, index) => named.indexOf(id) !== index && awaiting.includes(id)))];
+  if (parsed.success && missing.length === 0 && unknown.length === 0 && twice.length === 0) {
+    return { key: "plan-coverage", passed: true, blocks: true, describes: `The plan answers for each of the ${awaiting.length} comment${awaiting.length === 1 ? "" : "s"} awaiting a plan, and for nothing else.` };
+  }
+  const list = (ids: readonly string[]): string => ids.map((id) => `\`${id}\``).join(", ");
+  const problems = [
+    ...(parsed.success ? [] : ["The answer could not be read as a plan."]),
+    ...(missing.length === 0 ? [] : [`It leaves out ${missing.length === 1 ? "a comment" : "comments"} awaiting a plan: ${list(missing)}.`]),
+    ...(unknown.length === 0 ? [] : [`It names ${unknown.length === 1 ? "a comment" : "comments"} not awaiting a plan: ${list(unknown)}.`]),
+    ...(twice.length === 0 ? [] : [`It plans for ${twice.length === 1 ? "a comment" : "comments"} more than once: ${list(twice)}.`]),
+  ];
+  return {
+    key: "plan-coverage",
+    passed: false,
+    blocks: true,
+    describes: `The plan does not answer for exactly the comments awaiting one, so it was refused.`,
+    comment:
+      `The plan was refused: it must answer once for every comment awaiting a plan, and for no other. ${problems.join(" ")}\n\n` +
+      (awaiting.length === 0 ? "No comment is awaiting a plan." : `The comments awaiting a plan: ${list(awaiting)}.`),
   };
 }

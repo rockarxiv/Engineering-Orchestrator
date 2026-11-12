@@ -9,6 +9,7 @@ import { createPosters } from "./posters.js";
 import { createRoleWiring } from "./wiring.js";
 import { createDispatchGate } from "./scheduling.js";
 import { developerSectionRenderers } from "./sections.js";
+import { commentPlanSectionRenderers } from "./forge/commentPlans.js";
 
 /**
  * What the developer pack needs from the process to build its hooks.
@@ -97,7 +98,10 @@ export function developerPack(options: DeveloperPackOptions): CodePack {
     // it is the git kind's `capacityKeyOf` now, because the bucket is
     // the checkout rather than anything the pack as a whole knows.
     dispatchGate: createDispatchGate(db),
-    sectionRenderers: developerSectionRenderers,
+    // And what the planner, the plan's reviewer and the implementer
+    // carrying out an approved plan are told about the pull request
+    // comments (EO-760), read off the item's runs as each is dispatched.
+    sectionRenderers: [...developerSectionRenderers, ...commentPlanSectionRenderers(db)],
     // The words around the one server this pack has anything to say
     // about (EO-315). See `connectors.ts` for why its setup kind is
     // `none` and why it is on the list at all.

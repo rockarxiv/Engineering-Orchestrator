@@ -120,6 +120,19 @@ describe("registry_get, as the action catalog", () => {
     expect(outcome.text).toContain("reviewer / review (ships with the role, read-only)");
   });
 
+  it("lists the plan for other accounts' pull request comments and its review as shipped, with their results (EO-760)", async () => {
+    const outcome = answered(await tool("registry_get").run(dispatch, {}));
+    const data = outcome.data as IpcResponse<"registry:get">;
+    const actionOf = (role: string, action: string) => data.roles.find((entry) => entry.slug === role)?.actions?.find((entry) => entry.action === action);
+
+    expect(actionOf("implementer", "plan_comment_response")?.packShipped).toBe(true);
+    expect(actionOf("implementer", "plan_comment_response")?.results.map((result) => result.key)).toEqual(["planned"]);
+    expect(actionOf("reviewer", "review_plan")?.packShipped).toBe(true);
+    expect(actionOf("reviewer", "review_plan")?.results.map((result) => result.key)).toEqual(["approved", "changes_requested", "needs_user_input"]);
+    expect(outcome.text).toContain("implementer / plan_comment_response (ships with the role, read-only)");
+    expect(outcome.text).toContain("reviewer / review_plan (ships with the role, read-only)");
+  });
+
   it("says a definition no step dispatches is used by none", async () => {
     answered(await tool("role_action_save").run(dispatch, ALIGNMENT));
 

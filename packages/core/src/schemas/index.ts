@@ -17,6 +17,7 @@ export * from "./commentOptions.js";
 export * from "./configure.js";
 export * from "./connectorBindings.js";
 export * from "./connectors.js";
+export * from "./commentPlan.js";
 export * from "./discussion.js";
 export * from "./environmentVariables.js";
 export * from "./gallery.js";
