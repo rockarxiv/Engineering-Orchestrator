@@ -1,7 +1,7 @@
 import type { ItemSummary } from "@eo/core";
 import { NO_GIT_STATE } from "@eo/core";
 import { describe, expect, it } from "vitest";
-import { resolveDropTarget } from "./dashboard";
+import { originHover, resolveDropTarget } from "./dashboard";
 
 function item(overrides: Partial<ItemSummary> = {}): ItemSummary {
   return {
@@ -69,5 +69,13 @@ describe("resolveDropTarget", () => {
   it("is a no-op when dropped outside any column", () => {
     expect(resolveDropTarget(columns, items, "t1", undefined)).toBeNull();
     expect(resolveDropTarget(columns, items, "unknown", "review")).toBeNull();
+  });
+});
+
+describe("originHover", () => {
+  it("names the finding a watch job filed the item for (EO-754)", () => {
+    const origin = { jobId: "j1", jobName: "Dependabot", trigger: "watch" as const, occurrenceId: "o1", firedAt: 5, costCents: 12, findingKey: "pr-412" };
+    expect(originHover(origin)).toBe('From watch "Dependabot" · finding pr-412 · 12¢');
+    expect(originHover({ ...origin, trigger: "manual", jobName: "Monday report", findingKey: null })).toBe('From job "Monday report" · 12¢');
   });
 });

@@ -5,6 +5,7 @@ import { useAskAssistant } from "../../askAssistant";
 import { DivergedChip } from "../../managed/DivergedPipeline";
 import { WebhookUnattendedChip } from "../../managed/WebhookUnattended";
 import { TemplateOrigin } from "./TemplateOrigin";
+import { WatchIntakeChips } from "./WatchIntake";
 
 /**
  * The head both ways of seeing a pipeline share: its name and the
@@ -21,7 +22,8 @@ import { TemplateOrigin } from "./TemplateOrigin";
  * a webhook files here is sent on with nobody reading it first (EO-405)
  * — on the head the board and the graph share, so it is said wherever
  * this pipeline is looked at. And the template it came from, with any
- * update applied lately or waiting for the person (EO-536).
+ * update applied lately or waiting for the person (EO-536). And each
+ * watch job that files onto it, linking to the job (EO-754).
  */
 export function PipelineTitle({ name, pipelineId }: { name: string; pipelineId: string }) {
   // Two groups that wrap rather than squeeze (EO-536): the name keeps its
@@ -37,6 +39,7 @@ export function PipelineTitle({ name, pipelineId }: { name: string; pipelineId: 
         <DivergedChip pipelineId={pipelineId} />
         <WebhookUnattendedChip pipelineId={pipelineId} />
         <TemplateOrigin pipelineId={pipelineId} />
+        <WatchIntakeChips pipelineId={pipelineId} />
       </span>
     </span>
   );

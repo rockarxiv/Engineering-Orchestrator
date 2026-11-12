@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { Play, Workflow } from "lucide-react";
 import { JOB_ID_FACET, describeJobTrigger, type JobMachine, type JobOccurrenceRow, type JobPlacement, type JobRunsOn, type JobSummary } from "@eo/core";
-import { budgetOf, draftOf, templateOf, triggerOf, type JobDraft } from "../../../shared/jobs/draft";
+import { budgetOf, draftOf, templateOf, triggerOf, watchDraftProblem, type JobDraft } from "../../../shared/jobs/draft";
 import { NOTHING, costOf, durationOf, pauseChipOf, timeZoneNote, whenOf, zoneOf } from "../../../shared/jobs/format";
 import { archivedKey } from "../../../shared/pipeline/archive";
 import { ipcQuery } from "../../../query/client";
@@ -12,6 +12,7 @@ import { Button, Card, CardSection, Chip, Dialog, EmptyState, ErrorLine, Loading
 import { ItemKeyLink } from "../inbox/references";
 import { JobFields } from "./JobFields";
 import { RunsOn } from "./RunsOn";
+import { WatchStatus } from "./Watch";
 import { JobEvents, WebhookAddress, WebhookMappingTable } from "./Webhook";
 
 /**
@@ -43,12 +44,14 @@ export function JobView({ jobId }: { jobId: string }) {
     enabled: managed,
   });
 
-  // The deliveries, for a webhook job and no other (EO-333).
+  // The deliveries, for a webhook job (EO-333), and the findings filed
+  // or refused, for a watch job (EO-754): both are `job_events` rows.
   const webhook = job?.trigger.kind === "webhook" ? job.trigger : null;
+  const watch = job?.trigger.kind === "watch";
   const events = useQuery({
     queryKey: [...jobKey(jobId), "events"],
     queryFn: () => ipcQuery("jobs:events", { jobId }),
-    enabled: webhook !== null,
+    enabled: webhook !== null || watch,
   });
 
   const { registry } = useRegistry();
@@ -152,9 +155,12 @@ export function JobView({ jobId }: { jobId: string }) {
         title={job.name}
         actions={
           <>
-            <Button icon={<Play size={13} />} onClick={() => runNow.mutate()} disabled={runNow.isPending}>
-              Run now
-            </Button>
+            {/* Refused for a watch job: the template alone is not a finding. */}
+            {watch ? null : (
+              <Button icon={<Play size={13} />} onClick={() => runNow.mutate()} disabled={runNow.isPending}>
+                Run now
+              </Button>
+            )}
             <Button variant="ghost" onClick={() => setConfirmingDelete(true)}>
               Delete
             </Button>
@@ -196,7 +202,15 @@ export function JobView({ jobId }: { jobId: string }) {
           {problem === null && notice !== null ? <p className="text-[12px] text-ink-muted">{notice}</p> : null}
           <div className="flex items-center justify-end gap-2">
             {save.isSuccess && problem === null ? <span className="text-[12px] text-ink-subtle">Saved.</span> : null}
-            <Button variant="primary" disabled={save.isPending} onClick={() => save.mutate(draft)}>
+            <Button
+              variant="primary"
+              disabled={save.isPending}
+              onClick={() => {
+                const unsent = watchDraftProblem(draft);
+                if (unsent === null) save.mutate(draft);
+                else setProblem(unsent);
+              }}
+            >
               Save
             </Button>
           </div>
@@ -205,9 +219,10 @@ export function JobView({ jobId }: { jobId: string }) {
 
       {/* Two records for a webhook job, answering different questions:
           what it filed, and what arrived — including what arrived and
-          filed nothing. */}
+          filed nothing. A watch job's events are its findings, each
+          filed or refused, named by its key. */}
       <Card label="Record">
-        {webhook === null ? (
+        {webhook === null && !watch ? (
           <History rows={occurrences} timeZone={zone} />
         ) : (
           <>
@@ -223,7 +238,12 @@ export function JobView({ jobId }: { jobId: string }) {
             {tab === "history" ? (
               <History rows={occurrences} timeZone={zone} />
             ) : (
-              <JobEvents events={events.data?.events ?? []} heldCount={events.data?.heldCount ?? 0} timeZone={zone} />
+              <JobEvents
+                events={events.data?.events ?? []}
+                heldCount={events.data?.heldCount ?? 0}
+                timeZone={zone}
+                {...(watch ? { showKeys: true, empty: "It has not found anything yet." } : {})}
+              />
             )}
           </>
         )}
@@ -295,6 +315,7 @@ function JobStatus({
     <Card label="Status">
       <p className="text-[13px] text-ink">{describeJobTrigger(job.trigger)}</p>
       {job.trigger.kind === "schedule" ? <p className="text-[12.5px] text-ink-subtle">{timeZoneNote(job.trigger)}</p> : null}
+      {job.trigger.kind === "watch" ? <WatchStatus job={job} /> : null}
       {/* The design's sentence, and in managed mode the control it became.
           Solo mode keeps the sentence: a picker with one option is a
           question with no answer to give. */}
@@ -306,8 +327,13 @@ function JobStatus({
       {/* Beside the control that asked, not under Save: nothing typed was rejected. */}
       {movedProblem === null ? null : <ErrorLine>{movedProblem}</ErrorLine>}
       <div className="flex flex-wrap gap-x-4 gap-y-1 text-[12.5px] text-ink-muted">
-        <span>Next run {whenOf(job.nextRunAt, zoneOf(job))}</span>
-        <span>Last run {whenOf(job.lastRunAt, zoneOf(job))}</span>
+        {/* A watch job has no calendar: when it checks is said above. */}
+        {job.trigger.kind === "watch" ? null : (
+          <>
+            <span>Next run {whenOf(job.nextRunAt, zoneOf(job))}</span>
+            <span>Last run {whenOf(job.lastRunAt, zoneOf(job))}</span>
+          </>
+        )}
         <span>Spent {costOf(costCents)}</span>
       </div>
       <div className="-ml-2.5 flex flex-wrap gap-1">

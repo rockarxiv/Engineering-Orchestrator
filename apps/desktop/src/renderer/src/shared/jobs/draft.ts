@@ -1,4 +1,4 @@
-import { DEFAULT_CATCH_UP_MINUTES, EMPTY_WEBHOOK_MAPPING, type Job, type JobTemplate, type JobTrigger, type WatchTrigger, type WebhookTrigger } from "@eo/core";
+import { DEFAULT_CATCH_UP_MINUTES, EMPTY_WEBHOOK_MAPPING, MIN_WATCH_INTERVAL_MINUTES, type Job, type JobTemplate, type JobTrigger, type WatchTrigger, type WebhookTrigger } from "@eo/core";
 
 /**
  * The Job page's form, as fields rather than as a job (EO-308,
@@ -26,10 +26,13 @@ import { DEFAULT_CATCH_UP_MINUTES, EMPTY_WEBHOOK_MAPPING, type Job, type JobTemp
  * what a person may edit of it is the mapping, and the path and the
  * secret are the webhook panel's rather than the form's.
  *
- * `watch` is carried the same way, for the same reason (EO-753): until
- * the form has controls for one, a draft that could not hold a watch
- * trigger would turn a watch job into "daily at 08:00" the first time
- * somebody renamed it.
+ * `watch` is carried whole in the draft too (EO-753), and unlike a
+ * webhook it is a kind the form offers (EO-754): its module, inputs,
+ * interval and switch are all a person sets, so the form edits the
+ * trigger in place rather than flattening it into fields. An input a
+ * person never touched stays absent, which is how the module's default
+ * applies, and is why opening a watch job and saving it unchanged writes
+ * back the trigger it was read from.
  */
 export interface JobDraft {
   name: string;
@@ -58,7 +61,11 @@ export interface JobDraft {
    * rather than only the pointers.
    */
   webhook: WebhookTrigger | null;
-  /** The watch trigger as it stands, for a job that has one (EO-753), carried through untouched. Null for every other kind. */
+  /**
+   * The watch trigger as the form has it (EO-753, EO-754). Null until a
+   * person picks "When a module finds something", and kept when they
+   * pick another kind and come back, as the schedule's fields are.
+   */
   watch: WatchTrigger | null;
 }
 
@@ -82,6 +89,34 @@ export function blankDraft(): JobDraft {
     webhook: null,
     watch: null,
   };
+}
+
+/** How often a new watch job checks, until a person says otherwise: hourly. */
+export const DEFAULT_WATCH_JOB_MINUTES = 60;
+
+/** A watch trigger with nothing picked yet, for a form that has just been switched to one. */
+export function blankWatch(): WatchTrigger {
+  return { kind: "watch", moduleId: "", inputs: {}, everyMinutes: DEFAULT_WATCH_JOB_MINUTES, waitWhileOpen: false };
+}
+
+/**
+ * What stops a watch draft being sent at all, or null.
+ *
+ * Only the two things the trigger's own schema would refuse with a parse
+ * error naming a path rather than a sentence: no module picked, and an
+ * interval that is not a whole number of minutes at least the least.
+ * Everything about the module itself — approved, watching, its inputs —
+ * is the main process's to answer, and the form shows that answer.
+ */
+export function watchDraftProblem(draft: JobDraft): string | null {
+  if (draft.triggerKind !== "watch") return null;
+  const watch = draft.watch ?? blankWatch();
+  if (watch.moduleId === "") return "Pick the module it checks with.";
+  const minutes = watch.everyMinutes;
+  if (!Number.isInteger(minutes) || minutes < MIN_WATCH_INTERVAL_MINUTES) {
+    return `It checks every whole number of minutes, at least ${MIN_WATCH_INTERVAL_MINUTES}.`;
+  }
+  return null;
 }
 
 /** An existing job read back into the form. Fields its trigger does not use keep their defaults. */
@@ -129,7 +164,7 @@ export function triggerOf(draft: JobDraft): JobTrigger {
   // fabricated — but `draftOf` is the only way to reach that kind, and
   // it always fills this in.
   if (draft.triggerKind === "webhook" && draft.webhook !== null) return draft.webhook;
-  if (draft.triggerKind === "watch" && draft.watch !== null) return draft.watch;
+  if (draft.triggerKind === "watch") return draft.watch ?? blankWatch();
   return {
     kind: "schedule",
     schedule:

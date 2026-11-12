@@ -7,6 +7,7 @@ import { useInvalidateOnPush } from "../../../query/useInvalidateOnPush";
 import { pipelineHistoryKey, pipelineVersionsKey } from "../../../shared/pipeline/history";
 import { CardSection, Chip, ErrorLine, Facts, Loading } from "../../kit";
 import { TemplateUpdateChip } from "../changes/PipelineChangesView";
+import { WatchIntakeFact } from "./WatchIntake";
 
 /**
  * What a pipeline is beyond its steps, read-only (EO-524): what work must
@@ -66,6 +67,7 @@ function Settings({ pipelineId }: { pipelineId: string }) {
         label="Pipeline settings"
         items={[
           { term: "Webhook items", value: webhook },
+          { term: "Watch intake", value: <WatchIntakeFact pipelineId={pipelineId} /> },
           { term: "Organisation pipeline", value: organisation },
         ]}
       />
