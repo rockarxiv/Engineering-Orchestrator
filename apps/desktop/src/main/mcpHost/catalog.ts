@@ -3696,7 +3696,7 @@ const UNGATED_WRITE_TOOLS: readonly ToolSpec[] = [
       "(creation, move, route or job), pipeline ({ id, name }), fromStep ({ id, name } or null) }, null unless scripted; leave id and key " +
       "out of item to test the creation door. An entry check answers { ok: true, result: \"pass\" } or { ok: true, result: \"refuse\", reason }, " +
       "and outcome carries that reason. intake — { job: { id, name } }, runs the module as a pipeline's intake check (a watch job's check, " +
-      "with no item; take no item fixture with it): ctx.run.intake is the fixture, ctx.run.step and cameFrom.step are null, ctx.item() finds " +
+      "with no item; take no item fixture with it): ctx.run.intake is the fixture, ctx.run.step and ctx.run.cameFrom are null, ctx.item() finds " +
       "nothing and ctx.comment, ctx.attach and ctx.createItem refuse. A waiting outcome then carries findings, [{ key, title, body?, spec?, " +
       "existingBranch? }], parsed as a real run parses them; findings anywhere else fail the run. answer — " +
       "ctx.answer(). inputs — the step's values. timeoutMs — ctx.timeoutMs. createItem — [{ key } or { reason }], the answers ctx.createItem gets in order (NEW-1, NEW-2… when none is scripted). Nothing real happens: no process is " +

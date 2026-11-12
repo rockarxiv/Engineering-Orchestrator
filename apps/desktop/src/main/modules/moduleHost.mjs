@@ -183,7 +183,7 @@
  *   - `intake`: `{ job: { id, name } }` runs the module as a pipeline's
  *     intake check (EO-752) — a check a watch job makes, with no item.
  *     `ctx.run.intake` is the fixture, `ctx.run.step` and
- *     `ctx.run.cameFrom.step` are null whatever `run` says, `ctx.item()`
+ *     `ctx.run.cameFrom` are null whatever `run` says, `ctx.item()`
  *     finds nothing, and `ctx.comment`, `ctx.attach` and
  *     `ctx.createItem` refuse. Taken with no `item` fixture. Absent, the
  *     run is not one and `ctx.run.intake` is null.
@@ -2002,17 +2002,18 @@ function pipelineRefShape(value) {
  *
  * On an intake check (EO-752) — `intake` as `intakeShape` made it —
  * there is no step and nothing came from anywhere, so `step` and
- * `cameFrom.step` are null whatever was sent; `pipeline` is the job's,
- * and `intake` says which job. Null on every other run.
+ * `cameFrom` are null whatever was sent; `pipeline` is the job's, and
+ * `intake` says which job. Null on every other run.
  */
 function runContextShape(value, intake = null) {
   const run = value !== null && typeof value === "object" ? value : {};
-  const cameFrom = run.cameFrom !== null && typeof run.cameFrom === "object" && intake === null ? run.cameFrom : {};
+  const cameFrom = run.cameFrom !== null && typeof run.cameFrom === "object" ? run.cameFrom : {};
   return Object.freeze({
     step: intake === null ? shapedOrNull(run.step, stepRefShape) : null,
     pipeline: shapedOrNull(run.pipeline, pipelineRefShape),
     attempt: asNumber(run.attempt),
-    cameFrom: Object.freeze({ step: shapedOrNull(cameFrom.step, stepRefShape), result: asText(cameFrom.result) }),
+    cameFrom:
+      intake === null ? Object.freeze({ step: shapedOrNull(cameFrom.step, stepRefShape), result: asText(cameFrom.result) }) : null,
     trial: run.trial === true,
     watch: shapedOrNull(run.watch, (watch) =>
       Object.freeze({ startedAt: asNumber(watch.startedAt), waitingMs: asNumber(watch.waitingMs), intervalMs: asNumber(watch.intervalMs) }),

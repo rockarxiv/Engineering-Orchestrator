@@ -1039,7 +1039,7 @@ When you do write one:
     how long it has waited and how often it checks. `intake` is null
     except on a pipeline's intake check (below), where it is
     `{ job: { id, name } }` — the job checking — `step` and
-    `cameFrom.step` are null, `pipeline` is the job's pipeline and
+    `cameFrom` are null, `pipeline` is the job's pipeline and
     `watch` is the job's timing.
   - `ctx.workspace` — `{ kind, id, name, git }`. `kind` is the
     workspace kind (`git-worktree`, `folder`, `scratch`, `none`). `git`
@@ -1338,7 +1338,7 @@ export default async function (harness) {
     of `item` to test the creation door, as a real one has neither.
   - `intake`: `{ job: { id, name } }` runs the module as a pipeline's
     intake check — no ticket, so take no `item` with it. `ctx.run.intake`
-    is the fixture, `ctx.run.step` and `cameFrom.step` are null whatever
+    is the fixture, `ctx.run.step` and `ctx.run.cameFrom` are null whatever
     `run` says, `ctx.item()` finds nothing, and `ctx.comment`,
     `ctx.attach` and `ctx.createItem` refuse. Without it a module
     returning `findings` fails, as on a real step.

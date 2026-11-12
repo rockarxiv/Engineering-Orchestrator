@@ -1017,7 +1017,7 @@ describe("a module that is a pipeline's intake", () => {
       step: null,
       pipeline: { id: "pl-1", name: "Dependency update" },
       attempt: 1,
-      cameFrom: { step: null, result: null },
+      cameFrom: null,
       trial: false,
       watch: { startedAt: 5, waitingMs: 10, intervalMs: 3_600_000 },
       intake: { job: JOB },

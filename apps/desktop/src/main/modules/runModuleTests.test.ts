@@ -1171,13 +1171,13 @@ describe("runModuleTests", () => {
         tests: [
           testCase(`import assert from "node:assert/strict";
             export default async function (harness) {
-              const run = await harness.run({ intake: ${INTAKE}, run: { step: { id: "s", name: "S" }, pipeline: { id: "pl-1", name: "Dependency update" }, watch: { intervalMs: 60000 } } });
+              const run = await harness.run({ intake: ${INTAKE}, run: { step: { id: "s", name: "S" }, cameFrom: { step: { id: "s0", name: "S0" }, result: "done" }, pipeline: { id: "pl-1", name: "Dependency update" }, watch: { intervalMs: 60000 } } });
               assert.equal(run.outcome.ok, true, run.outcome.reason);
               assert.deepEqual(run.outcome.findings, [{ key: "dependabot:o/r#1", title: "Bump zod", spec: { pr: 1 } }]);
               const said = JSON.parse(run.outcome.detail);
               assert.deepEqual(said.run.intake, { job: { id: "job-1", name: "Dependabot" } });
               assert.equal(said.run.step, null);
-              assert.deepEqual(said.run.cameFrom, { step: null, result: null });
+              assert.equal(said.run.cameFrom, null);
               assert.deepEqual(said.run.pipeline, { id: "pl-1", name: "Dependency update" });
               assert.deepEqual(said.run.watch, { startedAt: null, waitingMs: null, intervalMs: 60000 });
               assert.equal(said.item.found, false);
