@@ -70,6 +70,19 @@ export function listDependents(db: Db, dependsOnId: Uuid): ItemDep[] {
   return db.select().from(itemDeps).where(eq(itemDeps.dependsOnId, dependsOnId)).all().map(toDomain);
 }
 
+/**
+ * Gives an edge that already exists a new rule (EO-777). No cycle check:
+ * the edge is the same edge, and acyclicity is about which edges exist,
+ * not what they wait for. Nothing is written for an edge that is not
+ * there — `judgeDependencyChange` refuses that before anything is.
+ */
+export function setDependencyGate(db: Db, itemId: Uuid, dependsOnId: Uuid, gate: DependencyGate): void {
+  db.update(itemDeps)
+    .set({ wait: gate.wait, waitStepId: gate.wait === "reached" ? gate.stepId : null })
+    .where(and(eq(itemDeps.itemId, itemId), eq(itemDeps.dependsOnId, dependsOnId)))
+    .run();
+}
+
 export function removeDependency(db: Db, itemId: Uuid, dependsOnId: Uuid): void {
   db.delete(itemDeps)
     .where(and(eq(itemDeps.itemId, itemId), eq(itemDeps.dependsOnId, dependsOnId)))

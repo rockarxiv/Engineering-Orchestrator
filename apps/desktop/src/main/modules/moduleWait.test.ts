@@ -16,6 +16,7 @@ import {
   getItem,
   getItemByKey,
   getModule,
+  getStep,
   listAllDependencies,
   listCommentsForItem,
   listDependencies,
@@ -311,6 +312,87 @@ describe("dependsOn", () => {
       expect(refused(result.answer)).toContain("dependsOn is a list of item keys");
     }
     expect(everyItem()).toHaveLength(1);
+  });
+});
+
+describe("dependsOn with a rule (EO-777)", () => {
+  /** The seeded Delivery's review step, by its name as a module would write it. */
+  const review = () => getStep(handle.db, "review")!.name;
+
+  it("takes { item, wait, step } beside a bare key, and stores the step's id", async () => {
+    const api = createTestItem(handle.db, { type: "story", title: "The API", stepId: "todo" });
+    const docs = createTestItem(handle.db, { type: "story", title: "The docs", stepId: "todo" });
+    const made = created(
+      (
+        await run(
+          `answer = await ctx.createItem({ idempotencyKey: "a", ${STORY}, dependsOn: [${JSON.stringify(docs.key)}, { item: ${JSON.stringify(api.key)}, wait: "reached", step: ${JSON.stringify(review())} }] });`,
+        )
+      ).answer,
+    );
+
+    const edges = listDependencies(handle.db, made.id);
+    expect(edges).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ dependsOnId: docs.id, wait: "finished", waitStepId: null }),
+        expect.objectContaining({ dependsOnId: api.id, wait: "reached", waitStepId: "review" }),
+      ]),
+    );
+    // Released by the arrival, not by finishing.
+    finish(docs.id);
+    expect(dispatched()).not.toContain(made.id);
+    transitionItem(handle.db, { itemId: api.id, toStepId: "review", actor: "human" });
+    expect(dispatched()).toContain(made.id);
+  });
+
+  it("refuses a step not on the item's pipeline, naming the item and its steps, and creates nothing", async () => {
+    const api = createTestItem(handle.db, { type: "story", title: "The API", stepId: "todo" });
+    const before = everyItem().length;
+
+    const result = await run(`answer = await ctx.createItem({ idempotencyKey: "a", ${STORY}, dependsOn: [{ item: ${JSON.stringify(api.key)}, wait: "reached", step: "Deploy" }] });`);
+
+    const reason = refused(result.answer);
+    expect(reason).toContain(`${api.key}'s pipeline has no step "Deploy"`);
+    expect(reason).toContain(`"${review()}"`);
+    expect(everyItem()).toHaveLength(before);
+    expect(listAllDependencies(handle.db)).toEqual([]);
+  });
+
+  it("refuses a step with wait: none, and an entry of the wrong shape, in the host before anything is sent", async () => {
+    const api = createTestItem(handle.db, { type: "story", title: "The API", stepId: "todo" });
+
+    const stepped = await run(`answer = await ctx.createItem({ idempotencyKey: "a", ${STORY}, dependsOn: [{ item: ${JSON.stringify(api.key)}, wait: "none", step: ${JSON.stringify(review())} }] });`);
+    expect(refused(stepped.answer)).toContain('A step goes only with wait: "reached"');
+
+    for (const bad of [`[{ item: ${JSON.stringify(api.key)}, wait: "soon" }]`, `[{ key: ${JSON.stringify(api.key)}, wait: "none" }]`]) {
+      const result = await run(`answer = await ctx.createItem({ idempotencyKey: "b", ${STORY}, dependsOn: ${bad} });`);
+      expect(refused(result.answer)).toContain("or of { item, wait, step? }");
+    }
+    expect(listAllDependencies(handle.db)).toEqual([]);
+  });
+
+  it("refuses wait: created_waits beside a dependsOn naming the originating item with another rule, and creates nothing", async () => {
+    const before = everyItem().length;
+
+    for (const [index, entry] of [`{ item: ${JSON.stringify(item.key)}, wait: "reached", step: ${JSON.stringify(review())} }`, `{ item: ${JSON.stringify(item.key)}, wait: "none" }`].entries()) {
+      const result = await run(`answer = await ctx.createItem({ idempotencyKey: "k${index}", ${STORY}, wait: "created_waits", dependsOn: [${entry}] });`);
+      const reason = refused(result.answer);
+      expect(reason).toContain(`wait: "created_waits" says the new item waits for ${item.key} to finish, and dependsOn names ${item.key} with wait: "${index === 0 ? "reached" : "none"}"`);
+      expect(reason).toContain("nothing was created");
+    }
+    expect(everyItem()).toHaveLength(before);
+    expect(listAllDependencies(handle.db)).toEqual([]);
+    expect(engineComments(item.id)).toEqual([]);
+  });
+
+  it("refuses the same on a repeat, adding no edge to the item the first call made", async () => {
+    const made = created((await run(`answer = await ctx.createItem({ idempotencyKey: "a", ${STORY} });`)).answer);
+
+    const repeat = await run(
+      `answer = await ctx.createItem({ idempotencyKey: "a", ${STORY}, wait: "created_waits", dependsOn: [{ item: ${JSON.stringify(item.key)}, wait: "reached", step: ${JSON.stringify(review())} }] });`,
+    );
+
+    expect(refused(repeat.answer)).toContain(`wait: "created_waits" says the new item waits for ${item.key} to finish`);
+    expect(waitsFor(made.id)).toEqual([]);
   });
 });
 

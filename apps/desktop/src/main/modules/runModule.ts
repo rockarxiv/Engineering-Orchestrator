@@ -3,6 +3,8 @@ import { createHmac, randomBytes, randomUUID } from "node:crypto";
 import { Duplex } from "node:stream";
 import {
   DEFAULT_MODULE_TIMEOUT_MS,
+  DependencyOnItemSchema,
+  type DependencyOnItem,
   MAX_ATTACHMENT_ADD_PATHS,
   MAX_MODULE_CREATIONS_PER_RUN,
   MODULE_CREATION_WAITS,
@@ -132,6 +134,10 @@ export type { ModuleCreation, ModuleCreationAnswer };
 /** The names a creation may carry. Shared with nothing: the host holds its own copy, and this side is the one that decides. */
 const CREATION_FIELDS = new Set(["idempotencyKey", "type", "title", "body", "spec", "pipeline", "parent", "repository", "existingBranch", "wait", "dependsOn"]);
 
+/** What a `dependsOn` that is not one is refused with. Shows both forms, so the refusal is also the fix. */
+export const CREATION_DEPENDS_ON_REFUSAL =
+  'dependsOn is a list of item keys, like ["EO-40"], or of { item, wait, step? }, like [{ item: "EO-40", wait: "reached", step: "Review" }].';
+
 /** What a `wait` that is none of the three is refused with. Names them, so the refusal is also the fix. */
 export function creationWaitRefusal(): string {
   return `wait is one of ${MODULE_CREATION_WAITS.map((value) => JSON.stringify(value)).join(", ")}.`;
@@ -184,19 +190,30 @@ function readCreation(raw: unknown): { ok: true; creation: ModuleCreation } | { 
   // a `wait` this does not know is refused rather than read as `none`,
   // because a module that asked to be held and was not is one that runs
   // ahead of the work it filed.
-  const waiting: { wait?: ModuleCreationWait; dependsOn?: string[] } = {};
+  const waiting: { wait?: ModuleCreationWait; dependsOn?: DependencyOnItem[] } = {};
   // Only an absent `wait` defaults: `null` was supplied, and is not one.
   if (given.wait !== undefined) {
     if (!(MODULE_CREATION_WAITS as readonly unknown[]).includes(given.wait)) return { ok: false, problem: creationWaitRefusal() };
     waiting.wait = given.wait as ModuleCreationWait;
   }
   if (given.dependsOn !== undefined && given.dependsOn !== null) {
-    const keys = given.dependsOn;
-    if (!Array.isArray(keys) || keys.some((key) => typeof key !== "string" || key.trim() === "")) {
-      return { ok: false, problem: 'dependsOn is a list of item keys, like ["EO-40"].' };
+    // A key, or `{ item, wait, step? }` with a rule (EO-777). Whether the
+    // rule fits the item's pipeline is the door's to judge, as it is for
+    // every edge (`judgeGate`); this holds it to its shape.
+    const entries = DependencyOnItemSchema.array().safeParse(given.dependsOn);
+    if (!entries.success || entries.data.some((entry) => (typeof entry === "string" ? entry : entry.item).trim() === "")) {
+      return { ok: false, problem: CREATION_DEPENDS_ON_REFUSAL };
     }
-    // Each key once: an edge is a fact, and saying it twice is not two.
-    waiting.dependsOn = [...new Set((keys as string[]).map((key) => key.trim()))];
+    // Each entry once: an edge is a fact, and saying it twice is not two.
+    const seen = new Set<string>();
+    waiting.dependsOn = [];
+    for (const entry of entries.data) {
+      const trimmed: DependencyOnItem = typeof entry === "string" ? entry.trim() : { ...entry, item: entry.item.trim() };
+      const said = JSON.stringify(trimmed);
+      if (seen.has(said)) continue;
+      seen.add(said);
+      waiting.dependsOn.push(trimmed);
+    }
   }
   return {
     ok: true,

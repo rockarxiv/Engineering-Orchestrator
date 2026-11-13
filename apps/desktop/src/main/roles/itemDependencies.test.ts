@@ -180,7 +180,7 @@ describe("a refused change", () => {
 
   it("refuses an edge to add that is already there", () => {
     addDependency(handle.db, release.id, other.id);
-    expect(refusedLeavesEverything([other.key])).toBe(`${release.key} already waits for ${other.key}.`);
+    expect(refusedLeavesEverything([other.key])).toBe(`${release.key} already waits for ${other.key}. To change the rule it waits by, name it in updateDependsOn instead.`);
   });
 
   it("refuses an edge to remove that is not there", () => {

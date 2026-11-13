@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { DependencyOnItemSchema } from "./dependencyGates.js";
 
 /**
  * A custom module, as it crosses every boundary (KAN-103).
@@ -741,8 +742,12 @@ export const ModuleCreationSchema = z.object({
   existingBranch: z.string().min(1).optional(),
   /** Left out means `none`. */
   wait: ModuleCreationWaitSchema.optional(),
-  /** Keys of other existing items the new one waits for. Left out means none. */
-  dependsOn: z.array(z.string().min(1)).optional(),
+  /**
+   * Other existing items the new one waits for, left out meaning none: a
+   * bare key waits for that item to finish, and `{ item, wait, step? }`
+   * sets another rule (EO-777), judged as `items:update` judges one.
+   */
+  dependsOn: z.array(DependencyOnItemSchema).optional(),
 });
 export type ModuleCreation = z.infer<typeof ModuleCreationSchema>;
 

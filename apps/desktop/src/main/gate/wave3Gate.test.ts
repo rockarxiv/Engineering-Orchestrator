@@ -83,7 +83,7 @@ describe("Wave 3 gate", () => {
     );
     children.forEach((story, index) => {
       for (const dependsOnIndex of story.depends_on) {
-        addDependency(handle.db, stories[index]!.id, stories[dependsOnIndex]!.id);
+        addDependency(handle.db, stories[index]!.id, stories[typeof dependsOnIndex === "number" ? dependsOnIndex : dependsOnIndex.story]!.id);
       }
     });
     // The feature is not moved anywhere: it is on no pipeline at all

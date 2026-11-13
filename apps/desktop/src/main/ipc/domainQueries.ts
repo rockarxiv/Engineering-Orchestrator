@@ -17,6 +17,7 @@ import {
   type CommentView,
   type InboxItem,
   type ItemDetail,
+  type DependencyWait,
   type ItemDep,
   type ItemSection,
   type ArchivedItemListFilters,
@@ -943,6 +944,17 @@ export interface ModuleItemRelation {
   finished: boolean;
 }
 
+/**
+ * One item a module's item waits for (EO-777): the relation, and the
+ * rule the edge waits by — `finished`, `reached` with the name of the
+ * step it waits for, or `none`. `waitStep` is null but for `reached`,
+ * and for a `reached` edge whose step no longer exists.
+ */
+export interface ModuleItemDependency extends ModuleItemRelation {
+  wait: DependencyWait;
+  waitStep: string | null;
+}
+
 /** One comment, as `ctx.item().comments` has always carried it (EO-74). */
 export interface ModuleItemComment {
   id: string;
@@ -1007,7 +1019,7 @@ export interface ModuleItemView {
   extensions: Record<string, unknown>;
   parent: ModuleItemRelation | null;
   children: ModuleItemRelation[];
-  dependsOn: ModuleItemRelation[];
+  dependsOn: ModuleItemDependency[];
   dependedOnBy: ModuleItemRelation[];
   attachments: { id: string; name: string; mimeType: string; size: number; commentId: string | null; createdAt: number }[];
 }
@@ -1033,7 +1045,8 @@ export function moduleItemView(db: Db, item: Item, targetBranch: string | null):
   };
   const parent = item.parentId === null ? [] : byId(item.parentId);
   const children = listChildItemsIncludingArchived(db, item.id);
-  const dependsOn = edges.filter((edge) => edge.itemId === item.id).flatMap((edge) => byId(edge.dependsOnId));
+  const outgoing = edges.filter((edge) => edge.itemId === item.id).flatMap((edge) => byId(edge.dependsOnId).map((other) => ({ edge, other })));
+  const dependsOn = outgoing.map(({ other }) => other);
   const dependedOnBy = edges.filter((edge) => edge.dependsOnId === item.id).flatMap((edge) => byId(edge.itemId));
   // Once for every related item, as the board reads a column of cards,
   // and by each one's own version (EO-327).
@@ -1096,7 +1109,7 @@ export function moduleItemView(db: Db, item: Item, targetBranch: string | null):
     extensions: { ...item.extensions },
     parent: parent[0] === undefined ? null : relation(parent[0]),
     children: children.map(relation),
-    dependsOn: dependsOn.map(relation),
+    dependsOn: outgoing.map(({ edge, other }) => ({ ...relation(other), wait: edge.wait, waitStep: waitStepName(db, edge) })),
     dependedOnBy: dependedOnBy.map(relation),
     // Every file on the item, its comments' included; `commentId` says
     // which. What a file holds is not here: reading one is its own call.
@@ -1732,6 +1745,11 @@ function runsSection(db: Db, item: Item, agentsById: Map<string, Agent>, newest:
   );
 }
 
+/** The name of the step a `reached` edge waits for (EO-777); null for any other rule, or a step that no longer exists. */
+function waitStepName(db: Db, edge: Pick<ItemDep, "wait" | "waitStepId">): string | null {
+  return edge.wait === "reached" && edge.waitStepId !== null ? (getStep(db, edge.waitStepId)?.name ?? null) : null;
+}
+
 /** The `dependsOn` section: what the item waits for, each with the name of the step it is on. */
 function dependsOnSection(db: Db, item: Item) {
   return listAllDependencies(db)
@@ -1749,6 +1767,11 @@ function dependsOnSection(db: Db, item: Item) {
               // in another pipeline entirely (cross-pipeline blocking is
               // legitimate), so the item's own steps cannot name it.
               stepName: stepLabel(db, dependency),
+              // The edge's rule (EO-777), its step by id and by name, for
+              // the same reason: the step is on the dependency's pipeline.
+              wait: edge.wait,
+              waitStepId: edge.wait === "reached" ? edge.waitStepId : null,
+              waitStepName: waitStepName(db, edge),
             },
           ]
         : [];

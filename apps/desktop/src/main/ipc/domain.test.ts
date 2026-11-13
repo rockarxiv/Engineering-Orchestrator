@@ -413,7 +413,7 @@ describe("items:get", () => {
     expect(detail.runs[0]).toMatchObject({ agentName: implementer.name, verificationOk: true });
     // The step's name comes with the dependency: it can sit in another
     // pipeline, whose steps this item's detail never loaded.
-    expect(detail.dependsOn).toEqual([{ id: dependency.id, key: dependency.key, title: "First", stepId: "todo", stepName: "To Do" }]);
+    expect(detail.dependsOn).toEqual([{ id: dependency.id, key: dependency.key, title: "First", stepId: "todo", stepName: "To Do", wait: "finished", waitStepId: null, waitStepName: null }]);
   });
 
   it("carries the Jira switch, which the rail is the only reader of", async () => {

@@ -3154,7 +3154,9 @@ const UNGATED_WRITE_TOOLS: readonly ToolSpec[] = [
       "work is, in your words, which is pinned on the feature and is what every agent downstream reads instead of " +
       "your conversation — the `decisions` you settled, and `stories`, each with acceptance criteria someone who did " +
       "not write it could check. Read the pipelines from pipelines_list before naming a `pipeline`: its name is preferred " +
-      "and its id is accepted, and one this project does not have is refused, not guessed at. `depends_on` holds indices into your own stories array, and " +
+      "and its id is accepted, and one this project does not have is refused, not guessed at. `depends_on` holds indices into your own stories array — each waits for that story to finish; leave `wait` out " +
+      "unless the person asked for something else, and then write { story, wait, step? } instead: { story: 0, wait: \"reached\", step: \"Review\" } " +
+      "waits until story 0 first reaches its pipeline's Review step, { story: 0, wait: \"none\" } keeps the link without waiting — and " +
       "`touches` holds repository-relative paths, which EO uses to serialise work that would collide. `priority` is an " +
       "integer, 0 or more, that the scheduler picks highest first — 0 Normal, 1 High, 2 Urgent — and left out it is 0: " +
       "the plan's own `priority` is the feature's, and each story takes only the one it carries, so a story sent without " +
@@ -3354,15 +3356,22 @@ const UNGATED_WRITE_TOOLS: readonly ToolSpec[] = [
       "inherits again. Entries are trimmed, blanks and repeats dropped, and an entry with a space or comma in it refuses " +
       "the call, naming that entry, with nothing else in the call changed. " +
       "Dependencies can be changed after filing: addDependsOn lists tickets this one is to wait for from now on, and " +
-      "removeDependsOn tickets it is to stop waiting for, each by key — EO-42 — or id. The whole change is judged " +
+      "removeDependsOn tickets it is to stop waiting for, each by key — EO-42 — or id. A bare key waits for that ticket to " +
+      "finish; leave wait out unless the person asked for something else, and then name it as { item, wait, step? }: " +
+      "{ item: \"EO-14\", wait: \"reached\", step: \"Watch merge request\" } waits until EO-14 first reaches that step of its own " +
+      "pipeline (or finishes), and { item: \"EO-15\", wait: \"none\" } keeps the link without ever waiting. step goes with " +
+      "reached only, is a step name on that ticket's current pipeline and not the step where it finishes — a step it does " +
+      "not have is refused with the names it does. updateDependsOn, in the same object form, changes the rule of a " +
+      "dependency the ticket already has; addDependsOn on one it already has is refused. The whole change is judged " +
       "before anything is written: a ticket that does not exist, the ticket itself, one on another project, an edge " +
       "to add that is already there or one to remove that is not, or an addition that would make the dependencies " +
       "circular refuses the whole call, naming the tickets, and nothing in it is changed. They change on the same " +
       "terms as the criteria — not while an agent is working on the ticket, in review, or once it is finished. One " +
-      "comment on the ticket says what it now waits for and no longer waits for, and who asked; a ticket that " +
-      "waits for an unfinished one is not picked up until that one finishes, and the answer says when a removal " +
-      "has left it free to be picked up on the next tick. On a project your organisation's record holds, the record " +
-      "makes the change: send the two lists in a call of their own, and if the record cannot be reached nothing " +
+      "comment on the ticket says what it now waits for and no longer waits for, each rule other than finishing in " +
+      "words, and who asked; a ticket is not picked up while something it waits for holds it, and the answer says " +
+      "when a removal or a changed rule has left it free to be picked up on the next tick. On a project your " +
+      "organisation's record holds, the record makes the change: send the lists in a call of their own, as bare keys — " +
+      "a rule other than finishing is refused there for now — and if the record cannot be reached nothing " +
       "changes and the answer says so. " +
       "paths adds files to the ticket as its own — part of what it is, beside its description, not said on a " +
       "comment — and removeAttachmentIds takes the ticket's own files off it by id, from ticket_get; a comment's " +
@@ -3678,7 +3687,7 @@ const UNGATED_WRITE_TOOLS: readonly ToolSpec[] = [
       "({ id, number }), git ({ branch, baseBranch, namedBranch, attachedAt, pullRequest, reference, targetBranch, reviewers — the " +
       "ticket's own pull request reviewers, null when it inherits and [] when set to nobody — and pullRequestReviewers — the list " +
       "the pull request step will request: its own, its feature's or the repository's default, [] off a repository }), extensions, " +
-      "parent, children, dependsOn, dependedOnBy (each { key, title, type, stepName, finished }) and attachments ([{ id, name, " +
+      "parent, children, dependsOn, dependedOnBy (each { key, title, type, stepName, finished }, and a dependsOn entry also { wait, waitStep }) and attachments ([{ id, name, " +
       "mimeType, size, commentId, createdAt }]); a field left out is null, false, [] or {}. itemByKey — { KEY: item } in the same " +
       "shape, for ctx.itemByKey and ctx.commentOn. runs — { KEY: [{ id, step ({ id, name }), action, agentName, status, resultKey, answer, error, " +
       "attempt, startedAt, endedAt, costCents }] }, what await ctx.runs(key) answers. transitions — { KEY: [{ from, to (each { id, name }), " +

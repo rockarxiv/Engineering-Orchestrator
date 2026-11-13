@@ -232,8 +232,8 @@ describe("the item view", () => {
     const data = detail({
       item: { ...detail().item, acceptanceCriteria: ["EO-9 must land before this"] },
       dependsOn: [
-        { id: "d1", key: "EO-9", title: "Do this first", stepId: "todo", stepName: "Implementer" },
-        { id: "other-project-item", key: "WEB-7", title: "Ship the web change", stepId: "todo", stepName: "Implementer" },
+        { id: "d1", key: "EO-9", title: "Do this first", stepId: "todo", stepName: "Implementer", wait: "finished", waitStepId: null, waitStepName: null },
+        { id: "other-project-item", key: "WEB-7", title: "Ship the web change", stepId: "todo", stepName: "Implementer", wait: "finished", waitStepId: null, waitStepName: null },
       ],
     });
     renderItem(data);
@@ -380,7 +380,7 @@ describe("the thread", () => {
     renderItem(
       detail({
         comments: [comment({ body: "Which dependency?", kind: "question", options: ["Wait for EO-2"], awaitingHuman: true })],
-        dependsOn: [{ id: "t2", key: "EO-2", title: "Dependency", stepId: "todo", stepName: "Implementer" }],
+        dependsOn: [{ id: "t2", key: "EO-2", title: "Dependency", stepId: "todo", stepName: "Implementer", wait: "finished", waitStepId: null, waitStepName: null }],
       }),
       onCall,
     );

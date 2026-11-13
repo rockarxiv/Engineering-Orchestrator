@@ -4,6 +4,7 @@ import { jsonSchemaOutputSchema, type OutputSchema } from "./outputSchema.js";
 import { specFromAnswer } from "./intake.js";
 import { narrowEnvelopeField, withoutEoKeywords, type ComposableItemType, type SpecShape } from "./specShape.js";
 import { ItemPrioritySchema } from "./priority.js";
+import { DependencyGateOnStorySchema, DependencyOnStorySchema, type DependencyOnStory } from "./dependencyGates.js";
 
 /**
  * What the product owner returns from `refine` (ARCHITECTURE.md, "What it proposes, and what a
@@ -56,8 +57,12 @@ export const RefineStorySchema = z.object({
    * nothing to check the implementer's claim against.
    */
   acceptance_criteria: z.array(z.string().min(1)).min(1),
-  /** Indices into the sibling `stories` array — real item ids don't exist yet at this point. */
-  depends_on: z.array(z.number().int().nonnegative()).default([]),
+  /**
+   * Indices into the sibling `stories` array — real item ids don't exist
+   * yet at this point. A bare index waits for that story to finish; the
+   * object form `{ story, wait, step? }` sets another rule (EO-777).
+   */
+  depends_on: z.array(DependencyOnStorySchema).default([]),
   /**
    * Repository-relative paths this story touches; feeds
    * deriveDepsFromTouches (ARCHITECTURE.md, "One work entity"), which serialises work that would
@@ -245,6 +250,20 @@ export const REFINE_ACTION = "refine";
 /** The keys a child carries itself. Everything else it answers with is its spec. */
 export const REFINE_CHILD_ENVELOPE: readonly string[] = ["type", "title", "body", "repository", "depends_on", "touches"];
 
+/** The object form of a child's `depends_on` entry, as the composed document spells it (EO-777). */
+const CHILD_GATE_SCHEMA = {
+  type: "object",
+  properties: {
+    story: { type: "integer", minimum: 0 },
+    wait: { type: "string", enum: ["finished", "reached", "none"] },
+    step: { type: "string", minLength: 1 },
+  },
+  // Every field but the step, which goes with `reached` only — the
+  // shape `DependencyGateOnStorySchema` gives a plan's story.
+  required: Object.keys(DependencyGateOnStorySchema.shape).filter((name) => name !== "step"),
+  additionalProperties: false,
+};
+
 function childBranch(type: ComposableItemType): JsonSchema {
   const properties: Record<string, unknown> = {
     type: { type: "string", const: type.slug },
@@ -256,8 +275,10 @@ function childBranch(type: ComposableItemType): JsonSchema {
      * name that is not on the project rather than guessing.
      */
     repository: { type: "string" },
-    // Indices into the sibling array — real ids do not exist yet.
-    depends_on: { default: [], type: "array", items: { type: "integer", minimum: 0 } },
+    // Indices into the sibling array — real ids do not exist yet. A bare
+    // index waits for that child to finish; the object form sets another
+    // rule (EO-777), as a plan's story may.
+    depends_on: { default: [], type: "array", items: { anyOf: [{ type: "integer", minimum: 0 }, CHILD_GATE_SCHEMA] } },
     // Paths, not prose: the overlap check compares these against each
     // other, so an entry with a space in it can never match anything
     // (KAN-31).
@@ -335,8 +356,8 @@ export interface RefineChild {
   title: string;
   body: string;
   repository?: string;
-  /** Indices into the sibling array. */
-  depends_on: number[];
+  /** Indices into the sibling array: a bare index, or `{ story, wait, step? }` (EO-777). */
+  depends_on: DependencyOnStory[];
   /** Repository-relative paths, which EO serialises colliding work against (E-01). */
   touches: string[];
   /** Everything the answer carried that the envelope does not name. Narrowed to the type's shape when one is in hand. */
@@ -367,7 +388,7 @@ const ChildEnvelopeSchema = z.looseObject({
   title: z.string().min(1),
   body: z.string().default(""),
   repository: z.string().optional(),
-  depends_on: z.array(z.number().int().nonnegative()).default([]),
+  depends_on: z.array(DependencyOnStorySchema).default([]),
   touches: z.array(z.string().min(1)).default([]),
 });
 

@@ -1,6 +1,8 @@
 import {
   childrenFromStories,
   branchNameProblem,
+  dependencyOnItem,
+  type DependencyOnItem,
   developerType,
   DiscussionOutputSchema,
   JiraIssueKeySchema,
@@ -50,6 +52,7 @@ import {
   resolveItemType,
   updateItem,
   type ItemType,
+  type DependencyGate,
   type ItemTypeName,
   type Workspace,
 } from "../db/repos/index.js";
@@ -59,7 +62,7 @@ import { ASSIST_ACTION } from "./conversationSteps.js";
 import { runOf, threadOf, type ConversationThread } from "./conversationThread.js";
 import { PROPOSAL_KIND } from "./proposal.js";
 import { refuseIfUntouchable } from "./itemGuards.js";
-import { changeItemDependencies, circularRefusal } from "./itemDependencies.js";
+import { changeItemDependencies, circularRefusal, judgeGate, type GatedDependency } from "./itemDependencies.js";
 import {
   applyApprovedProposal,
   baseBranchLine,
@@ -938,8 +941,11 @@ export interface HandedOverItem {
    * nothing renders it.
    */
   spec: Record<string, unknown>;
-  /** Existing items' keys this waits for. */
-  depends_on: string[];
+  /**
+   * Existing items' keys this waits for: a bare key waits for it to
+   * finish, and `{ item, wait, step? }` sets another rule (EO-777).
+   */
+  depends_on: DependencyOnItem[];
   /** An existing container's key to file this under. Absent means standalone. */
   parent?: string;
   pipeline?: string;
@@ -1195,7 +1201,7 @@ export function applyNewItem(
   // for.
   const waitedFor = resolveDependsOn(db, projectId, handed.depends_on);
   if (!waitedFor.ok) return waitedFor;
-  const dependsOn = waitedFor.items;
+  const dependsOn = waitedFor.dependencies;
 
   // The type, and what it demands of the spec (KAN-147).
   //
@@ -1319,7 +1325,7 @@ export function applyNewItem(
   noteJiraSubmission(db, item);
 
   for (const dependency of dependsOn) {
-    const problem = addEdge(db, item, dependency);
+    const problem = addEdge(db, item, dependency.item, dependency.gate);
     if (problem) return { ok: false, reason: problem };
   }
 
@@ -1334,15 +1340,33 @@ export function applyNewItem(
  * know them before the item exists — it asks whether the edges would be
  * circular first — and must refuse in the same words.
  */
-export function resolveDependsOn(db: Db, projectId: Uuid | null, keys: readonly string[]): { ok: true; items: Item[] } | { ok: false; reason: string } {
-  const items: Item[] = [];
-  for (const key of keys) {
+export function resolveDependsOn(
+  db: Db,
+  projectId: Uuid | null,
+  entries: readonly DependencyOnItem[],
+): { ok: true; items: Item[]; dependencies: GatedDependency[] } | { ok: false; reason: string } {
+  // Each item once, by the item the key resolved to: an edge is a fact,
+  // and two spellings of it are one edge — unless they ask for two
+  // different rules, which is not clear enough to write (EO-777).
+  const found = new Map<string, GatedDependency>();
+  for (const entry of entries) {
+    const { reference, gate } = dependencyOnItem(entry);
+    const key = reference.trim();
     const dependency = getItemByKey(db, key);
     if (!dependency) return { ok: false, reason: `There is no ticket ${key} for this to depend on.` };
     if (dependency.projectId !== projectId) return { ok: false, reason: `${dependency.key} is on a different project.` };
-    items.push(dependency);
+    // The rule, held to the dependency's pipeline by the one judge every
+    // door that writes an edge asks.
+    const judged = judgeGate(db, { label: dependency.key, pipelineId: dependency.stepId === null ? null : dependency.pipelineId }, gate);
+    if (!judged.ok) return judged;
+    const earlier = found.get(dependency.id);
+    if (earlier !== undefined && JSON.stringify(earlier.gate) !== JSON.stringify(judged.gate)) {
+      return { ok: false, reason: `${dependency.key} is named twice with two different rules, so it is not clear what this should wait for.` };
+    }
+    found.set(dependency.id, { item: dependency, gate: judged.gate });
   }
-  return { ok: true, items };
+  const dependencies = [...found.values()];
+  return { ok: true, items: dependencies.map((dependency) => dependency.item), dependencies };
 }
 
 function applyAmendment(db: Db, proposal: AmendProposal): ApplyDiscussionResult {
@@ -1452,9 +1476,9 @@ function onlyChangesPriority(proposal: AmendProposal): boolean {
  * against a live graph it only partly knows, so a cycle is an ordinary
  * outcome that needs an ordinary answer, in keys a person can read.
  */
-export function addEdge(db: Db, item: Item, dependsOn: Item): string | null {
+export function addEdge(db: Db, item: Item, dependsOn: Item, gate: DependencyGate = { wait: "finished" }): string | null {
   try {
-    addDependency(db, item.id, dependsOn.id);
+    addDependency(db, item.id, dependsOn.id, gate);
     return null;
   } catch {
     const cycle = detectCycle([...listAllDependencies(db), { itemId: item.id, dependsOnId: dependsOn.id }]);
@@ -1743,7 +1767,7 @@ export function summariseProposal(db: Db, conversation: Item, proposal: Discussi
         title: handed.title,
         typeLabel: labelOf(handed.type),
         acceptanceCriteria: Array.isArray(criteria) ? criteria.filter((entry): entry is string => typeof entry === "string") : [],
-        waitsOn: handed.depends_on.map(existing),
+        waitsOn: handed.depends_on.map((entry) => existing(dependencyOnItem(entry).reference)),
         under: handed.parent === undefined ? null : existing(handed.parent),
         ...(handed.priority === undefined ? {} : { priority: handed.priority }),
         ...(handed.reference === undefined ? {} : { reference: handed.reference }),

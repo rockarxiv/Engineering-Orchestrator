@@ -167,6 +167,7 @@ import {
 } from "./schemas/modules.js";
 import { EnvironmentVariableNameSchema, EnvironmentVariableSchema } from "./schemas/environmentVariables.js";
 import { RefineStorySchema } from "./schemas/refine.js";
+import { DependencyGateOnItemSchema, DependencyOnItemSchema } from "./schemas/dependencyGates.js";
 import { ItemPrioritySchema } from "./schemas/priority.js";
 import { OutsideReachByStepSchema } from "./trialPlan.js";
 import {
@@ -1283,8 +1284,12 @@ export const recordContract = {
       spec: z.record(z.string().min(1), z.unknown()).optional(),
       /** Repository-relative paths, which EO uses to serialise work that would collide. */
       touches: z.array(z.string().min(1)).default([]),
-      /** Existing item *keys* this waits for. Unlike a plan's indices, these already exist. */
-      dependsOn: z.array(z.string()).default([]),
+      /**
+       * Existing item *keys* this waits for. Unlike a plan's indices,
+       * these already exist. A bare key waits for that item to finish;
+       * `{ item, wait, step? }` sets another rule (EO-777).
+       */
+      dependsOn: z.array(DependencyOnItemSchema).default([]),
       /**
        * Files to put on the item as its own, in the same transaction as
        * the item (EO-704). Honoured only where a door stamped
@@ -1612,8 +1617,16 @@ export const recordContract = {
        * on the item. On a project the organisation's record holds, the
        * record makes the change.
        */
-      addDependsOn: z.array(z.string().min(1)).optional(),
+      addDependsOn: z.array(DependencyOnItemSchema).optional(),
       removeDependsOn: z.array(z.string().min(1)).optional(),
+      /**
+       * New rules for edges this item already has (EO-777): each
+       * `{ item, wait, step? }` names an item it waits for now and the
+       * rule it is to wait by from now on. One naming an item it does not
+       * wait for is refused — that is `addDependsOn`'s — and judged and
+       * written with the other two lists, whole or not at all.
+       */
+      updateDependsOn: z.array(DependencyGateOnItemSchema).optional(),
       /**
        * Files to add to the item as its own (EO-704), and ids of its own
        * files to take off it. Judged whole with the rest of the call: a
@@ -1643,6 +1656,8 @@ export const recordContract = {
         .object({
           added: z.array(z.string()),
           removed: z.array(z.string()),
+          /** The edges whose rule `updateDependsOn` changed (EO-777); absent where none did. */
+          updated: z.array(z.string()).optional(),
           stillWaitsFor: z.array(z.string()),
           freed: z.boolean(),
         })

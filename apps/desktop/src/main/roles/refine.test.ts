@@ -90,7 +90,7 @@ describe("mergeRefineEdges", () => {
   it("keeps the agent's own depends_on", () => {
     const { edges, derivedEdgeCount } = mergeRefineEdges(output(story("A"), story("B", { depends_on: [0] })));
 
-    expect(edges).toEqual([{ from: 1, to: 0 }]);
+    expect(edges).toEqual([{ from: 1, to: 0, gate: { wait: "finished", step: null } }]);
     expect(derivedEdgeCount).toBe(0);
   });
 
@@ -99,7 +99,7 @@ describe("mergeRefineEdges", () => {
       output(story("A", { touches: ["src/api.ts"] }), story("B", { touches: ["src/api.ts"] })),
     );
 
-    expect(edges).toContainEqual({ from: 1, to: 0 }); // serialised, though the agent never said so
+    expect(edges).toContainEqual({ from: 1, to: 0, gate: { wait: "finished", step: null } }); // serialised, though the agent never said so
     expect(derivedEdgeCount).toBe(1);
   });
 
@@ -108,7 +108,7 @@ describe("mergeRefineEdges", () => {
       output(story("A", { touches: ["src/api.ts"] }), story("B", { depends_on: [0], touches: ["src/api.ts"] })),
     );
 
-    expect(edges).toEqual([{ from: 1, to: 0 }]);
+    expect(edges).toEqual([{ from: 1, to: 0, gate: { wait: "finished", step: null } }]);
     expect(derivedEdgeCount).toBe(0);
   });
 
@@ -1323,7 +1323,7 @@ describe("decomposing into a type the pack shipped (KAN-147)", () => {
     const at = (value: unknown, ...path: (string | number)[]): unknown =>
       path.reduce<unknown>((cursor, key) => (typeof cursor === "object" && cursor !== null ? (cursor as Record<string, unknown>)[String(key)] : undefined), value);
     const branch = at(refineOutputSchemaFor([{ slug: "confused", container: false, specShape: confused.specShape }]).toJsonSchema(), "properties", "children", "items", "anyOf", 0);
-    expect(at(branch, "properties", "depends_on")).toMatchObject({ type: "array", items: { type: "integer" } });
+    expect(at(branch, "properties", "depends_on")).toMatchObject({ type: "array", items: { anyOf: expect.arrayContaining([expect.objectContaining({ type: "integer" })]) } });
 
     await supervisorReturning({ children: [{ type: "confused", title: "Chase it", body: "Ring them.", depends_on: "prior" }] }).runOnce();
 

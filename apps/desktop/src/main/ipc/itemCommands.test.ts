@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { DbHandle } from "../db/client.js";
 import {
   getItemByKey,
+  listDependencies,
   isJiraPullPending,
   listCommentsForItem,
   listItemsForProject,
@@ -66,6 +67,26 @@ describe("handing over a single item", () => {
     const created = getItemByKey(handle.db, result.key!);
     expect(created?.type).toBe("bug");
     expect(created?.stepId).not.toBeNull();
+  });
+
+  it("takes { item, wait, step } in dependsOn beside a bare key, and refuses a step the item's pipeline lacks (EO-777)", () => {
+    const first = getItemByKey(handle.db, submitItem(handle.db, undefined, story({ title: "First" })).key!)!;
+    const second = getItemByKey(handle.db, submitItem(handle.db, undefined, story({ title: "Second" })).key!)!;
+
+    const result = submitItem(handle.db, undefined, story({ title: "Third", dependsOn: [first.key, { item: second.key, wait: "reached", step: "review" }] }));
+
+    expect(result.problem).toBeNull();
+    const third = getItemByKey(handle.db, result.key!)!;
+    expect(listDependencies(handle.db, third.id)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ dependsOnId: first.id, wait: "finished", waitStepId: null }),
+        expect.objectContaining({ dependsOnId: second.id, wait: "reached", waitStepId: "review" }),
+      ]),
+    );
+
+    const refused = submitItem(handle.db, undefined, story({ title: "Fourth", dependsOn: [{ item: second.key, wait: "reached", step: "Deploy" }] }));
+    expect(refused.created).toBe(false);
+    expect(refused.problem).toContain(`${second.key}'s pipeline has no step "Deploy"`);
   });
 
   it("creates a story as a story", () => {

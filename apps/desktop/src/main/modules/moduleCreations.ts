@@ -2,6 +2,7 @@ import {
   MAX_ITEM_GENERATION,
   MAX_MODULE_CREATIONS_PER_RUN,
   MODULE_CREATION_WAITS,
+  type DependencyOnItem,
   type Item,
   type ModuleCreation,
   type ModuleCreationAnswer,
@@ -21,8 +22,10 @@ import {
   recordItemOrigin,
   resolveItemType,
   updateItem,
+  type DependencyGate,
 } from "../db/repos/index.js";
 import { addEdge, applyNewItem, circularRefusal, resolveDependsOn } from "../roles/discussion.js";
+import type { GatedDependency } from "../roles/itemDependencies.js";
 import type { ModuleCommentContext } from "./moduleComments.js";
 import { creationCapRefusal, creationWaitRefusal } from "./runModule.js";
 
@@ -104,10 +107,37 @@ function isWait(value: unknown): value is ModuleCreationWait {
   return (MODULE_CREATION_WAITS as readonly unknown[]).includes(value);
 }
 
-/** Adds the edge unless it is already there. An edge is a fact, and a repeat states it again rather than twice. */
-function ensureEdge(db: Db, item: Item, dependsOn: Item): string | null {
+/**
+ * Adds the edge unless it is already there. An edge is a fact, and a
+ * repeat states it again rather than twice — whatever rule it asks for:
+ * an edge already there keeps the rule it was written with (EO-777).
+ */
+function ensureEdge(db: Db, item: Item, dependsOn: Item, gate: DependencyGate = { wait: "finished" }): string | null {
   if (listDependencies(db, item.id as Uuid).some((edge) => edge.dependsOnId === dependsOn.id)) return null;
-  return addEdge(db, item, dependsOn);
+  return addEdge(db, item, dependsOn, gate);
+}
+
+/** A resolved dependency as the door takes it again: by key, with its rule, its step by id. */
+function asEntry(item: Item, gate: DependencyGate): DependencyOnItem {
+  if (gate.wait === "finished") return item.key;
+  return gate.wait === "reached" ? { item: item.key, wait: "reached", step: gate.stepId } : { item: item.key, wait: "none" };
+}
+
+/**
+ * `wait: "created_waits"` says the new item waits for the originating
+ * one to finish; a `dependsOn` entry naming the originating item with
+ * another rule says something else about the same edge (EO-777). Neither
+ * is taken over the other: the creation is refused, before anything is
+ * written, saying which two disagree. The same rule twice is one edge.
+ */
+function contradictsWait(origin: Item, wait: ModuleCreation["wait"], dependencies: readonly GatedDependency[]): string | null {
+  if (wait !== "created_waits") return null;
+  const named = dependencies.find((other) => other.item.id === origin.id);
+  if (named === undefined || named.gate.wait === "finished") return null;
+  return (
+    `wait: "created_waits" says the new item waits for ${origin.key} to finish, and dependsOn names ${origin.key} with wait: "${named.gate.wait}", ` +
+    `so it is not clear what the new item should wait for, and nothing was created. Leave ${origin.key} out of dependsOn, or leave wait out and say the rule in dependsOn.`
+  );
 }
 
 /** The edge `wait` names between the two items, if it names one. */
@@ -178,7 +208,10 @@ export function postModuleCreation(db: Db, context: ModuleCommentContext, creati
   // Only leaving it out means `none` — a `null` is refused with the rest.
   const wait: unknown = creation.wait === undefined ? "none" : creation.wait;
   if (!isWait(wait)) return { created: false, reason: creationWaitRefusal() };
-  const dependsOnKeys = [...new Set(creation.dependsOn ?? [])];
+  // Each entry a key or `{ item, wait, step? }` (EO-777): resolved, and
+  // its rule judged against the item's pipeline, by `resolveDependsOn` —
+  // the judge every door that writes an edge asks.
+  const dependsOnEntries = creation.dependsOn ?? [];
 
   let made: Item;
   try {
@@ -198,11 +231,13 @@ export function postModuleCreation(db: Db, context: ModuleCommentContext, creati
           // named no `wait`, or somebody removed it — is added, because
           // a step that reruns and asks to be held must be. One that
           // cannot be added refuses the call and adds none of them.
-          const waitedFor = resolveDependsOn(db, origin.projectId, dependsOnKeys);
+          const waitedFor = resolveDependsOn(db, origin.projectId, dependsOnEntries);
           if (!waitedFor.ok) return { created: false, reason: waitedFor.reason };
+          const contradiction = contradictsWait(origin, wait, waitedFor.dependencies);
+          if (contradiction !== null) return { created: false, reason: contradiction };
           const edgesBefore = listAllDependencies(db).length;
-          for (const other of waitedFor.items) {
-            const problem = ensureEdge(db, existing, other);
+          for (const other of waitedFor.dependencies) {
+            const problem = ensureEdge(db, existing, other.item, other.gate);
             if (problem) throw new CreationRefused(problem);
           }
           const problem = ensureWaitEdge(db, origin, existing, wait);
@@ -242,8 +277,10 @@ export function postModuleCreation(db: Db, context: ModuleCommentContext, creati
       // What it waits for, and whether saying so would be circular —
       // settled before the item exists, so a refusal has nothing to
       // take back and names nothing that is about to disappear.
-      const waitedFor = resolveDependsOn(db, projectId, dependsOnKeys);
+      const waitedFor = resolveDependsOn(db, projectId, dependsOnEntries);
       if (!waitedFor.ok) return { created: false, reason: waitedFor.reason };
+      const contradiction = contradictsWait(origin, wait, waitedFor.dependencies);
+      if (contradiction !== null) return { created: false, reason: contradiction };
       const circular = circularBeforeCreating(db, origin, wait, waitedFor.items);
       if (circular !== null) return { created: false, reason: circular };
 
@@ -262,7 +299,11 @@ export function postModuleCreation(db: Db, context: ModuleCommentContext, creati
           // already says it, so the edge is written once.
           // By the items the keys resolved to rather than by the keys
           // as written, so two spellings of one item are one edge.
-          depends_on: [...new Set(waitedFor.items.filter((other) => !(wait === "created_waits" && other.id === origin.id)).map((other) => other.key))],
+          // Each with the rule it asked for (EO-777), judged a second
+          // time by the door, which is the same judge.
+          depends_on: waitedFor.dependencies
+            .filter((other) => !(wait === "created_waits" && other.item.id === origin.id))
+            .map((other) => asEntry(other.item, other.gate)),
           ...(creation.parent === undefined ? {} : { parent: creation.parent }),
           // The pipeline the module named, or none — and with none the
           // door's own rule applies: the project's only pipeline, or a
