@@ -470,14 +470,30 @@ export function applyApprovedProposal(
   // story's dependency is on it too. Asked before the transaction for the
   // reason the rest of this is, and refused whole, naming the story by
   // its place in the plan: it has no key yet.
-  const gates: DependencyGate[] = [];
-  for (const edge of edges) {
-    const dependency = children[edge.to];
-    const label = `"${dependency?.title ?? "?"}" (story ${edge.to} of the plan)`;
-    const judged = judgeGate(db, { label, pipelineId: placement.pipelineId }, edge.gate);
-    if (!judged.ok) return { ok: false as const, reason: `"${children[edge.from]?.title ?? "?"}" cannot wait as it asks. ${judged.reason}` };
-    gates.push(judged.gate);
+  //
+  // Every entry the plan wrote, and not only the edges left once
+  // `mergeRefineEdges` has kept the first of each pair: a later entry
+  // naming the same story is judged too, and one asking for a different
+  // rule is refused, as `resolveDependsOn` refuses an item named twice —
+  // rather than dropped in favour of whichever came first.
+  const asked = new Map<string, DependencyGate>();
+  for (const [from, child] of children.entries()) {
+    for (const entry of child.depends_on) {
+      const { story: to, gate } = dependencyOnStory(entry);
+      const label = `"${children[to]?.title ?? "?"}" (story ${to} of the plan)`;
+      const judged = judgeGate(db, { label, pipelineId: placement.pipelineId }, gate);
+      if (!judged.ok) return { ok: false as const, reason: `"${child.title}" cannot wait as it asks. ${judged.reason}` };
+      const key = `${from}->${to}`;
+      const earlier = asked.get(key);
+      if (earlier !== undefined && JSON.stringify(earlier) !== JSON.stringify(judged.gate)) {
+        return { ok: false as const, reason: `"${child.title}" names ${label} twice with two different rules, so it is not clear what it should wait for.` };
+      }
+      asked.set(key, judged.gate);
+    }
   }
+  // An edge derived from `touches` waits for the story to finish; one
+  // the plan also wrote keeps the rule the plan gave it.
+  const gates: DependencyGate[] = edges.map((edge) => asked.get(`${edge.from}->${edge.to}`) ?? { wait: "finished" });
 
   // The pipeline's entry rules (EO-610), asked of every child here for
   // the reason the rest of this is: the plan is refused whole, by the name

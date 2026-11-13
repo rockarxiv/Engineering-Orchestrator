@@ -146,7 +146,7 @@ function sameGate(a: DependencyGate, b: DependencyGate): boolean {
  * new item's `dependsOn` and a module's creation through
  * `resolveDependsOn`, and a plan's stories through `applyRefine`.
  *
- * - `step` goes with `reached` and nothing else.
+ * - `step` goes with `reached` and nothing else — a blank one included.
  * - `reached` needs a step, on the dependency's *current* pipeline, that
  *   is not terminal: arriving at a terminal step is finishing, which is
  *   what `finished` says. A name is matched as written and then without
@@ -162,7 +162,10 @@ export function judgeGate(
 ): { ok: true; gate: DependencyGate } | { ok: false; reason: string } {
   const step = request.step?.trim() ?? "";
   if (request.wait !== "reached") {
-    if (step !== "") {
+    // Any step supplied at all, blank or not: a caller who wrote one
+    // meant something by it, and leaving it unread would be deciding
+    // for them what it meant.
+    if (request.step !== null && request.step !== undefined) {
       return {
         ok: false,
         reason: `A step goes only with wait: "reached", and the rule for ${dependency.label} is wait: "${request.wait}". Leave step out, or use wait: "reached" to wait for ${dependency.label} to reach it.`,

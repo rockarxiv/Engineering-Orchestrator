@@ -234,6 +234,32 @@ describe("a rule that cannot be written", () => {
     );
   });
 
+  it.each(["none", "finished"] as const)("refuses a blank step with wait: %s, through the contract as well as behind it", async (wait) => {
+    const entry = { item: story.key, wait, step: "   " };
+    // The contract lets it through — it is a string — so the judge is
+    // what refuses it, and must.
+    expect(ipcContract["items:update"].request.safeParse({ itemId: release.id, addDependsOn: [entry] }).success).toBe(true);
+
+    expect(refused({ addDependsOn: [entry] })).toContain(`A step goes only with wait: "reached", and the rule for ${story.key} is wait: "${wait}".`);
+    const update = updateItemText(handle.db, { itemId: release.id, updateDependsOn: [{ item: other.key, wait, step: "  " }] });
+    expect(update.problem).toContain(`the rule for ${other.key} is wait: "${wait}"`);
+    expect(rawEdge(release.id, other.id)).toMatchObject({ wait: "finished", waitStepId: null });
+
+    const platform = fakePlatform();
+    const { registerAllHandlers } = await import("../ipc/handlers.js");
+    registerAllHandlers(handle.db, undefined, { platform });
+    try {
+      const answer = await answerToolCall({ name: "item_update", arguments: { itemId: release.key, addDependsOn: [entry] } }, "admin", true);
+      // A refusal is an answer, not an error: it says nothing changed, and why.
+      const text = answer.content.map((part) => ("text" in part ? part.text : "")).join("");
+      expect(text).toContain(`the rule for ${story.key} is wait: "${wait}". Leave step out`);
+      expect(text).toContain("Nothing has changed.");
+      expect(rawEdge(release.id, story.id)).toBeUndefined();
+    } finally {
+      rmSync(platform.userDataPath, { recursive: true, force: true });
+    }
+  });
+
   it("refuses one item named twice with two different rules", () => {
     const problem = refused({ addDependsOn: [story.key, { item: story.key, wait: "none" }] });
 
@@ -326,5 +352,34 @@ describe("a plan's stories", () => {
     expect(result.problem).toContain(`"${reviewName()}"`);
     expect(listAllDependencies(handle.db)).toHaveLength(before);
     expect(getItemByKey(handle.db, "EO-4")).toBeUndefined();
+  });
+
+  it("judges every entry naming a story, not only the first, and creates nothing when a later one cannot be written", () => {
+    const before = listAllDependencies(handle.db).length;
+    const result = submitPlan(handle.db, undefined, plan([planned("Groundwork"), planned("Builds on it", [0, { story: 0, wait: "reached", step: "Nonexistent" }])]));
+
+    expect(result.created).toBe(false);
+    expect(result.problem).toContain(`"Groundwork" (story 0 of the plan)'s pipeline has no step "Nonexistent"`);
+    expect(listAllDependencies(handle.db)).toHaveLength(before);
+    expect(getItemByKey(handle.db, "EO-4")).toBeUndefined();
+  });
+
+  it("refuses one story named twice with two different rules, and creates nothing", () => {
+    const before = listAllDependencies(handle.db).length;
+    const result = submitPlan(handle.db, undefined, plan([planned("Groundwork"), planned("Builds on it", [0, { story: 0, wait: "reached", step: reviewName() }])]));
+
+    expect(result.created).toBe(false);
+    expect(result.problem).toBe(`"Builds on it" names "Groundwork" (story 0 of the plan) twice with two different rules, so it is not clear what it should wait for.`);
+    expect(listAllDependencies(handle.db)).toHaveLength(before);
+    expect(getItemByKey(handle.db, "EO-4")).toBeUndefined();
+  });
+
+  it("takes one story named twice with the same rule as one edge", () => {
+    const result = submitPlan(handle.db, undefined, plan([planned("Groundwork"), planned("Builds on it", [{ story: 0, wait: "none" }, { story: 0, wait: "none" }])]));
+
+    expect(result.problem).toBeNull();
+    const [first, second] = result.storyKeys.map((key) => getItemByKey(handle.db, key)!);
+    expect(listDependencies(handle.db, second!.id)).toHaveLength(1);
+    expect(rawEdge(second!.id, first!.id)).toMatchObject({ wait: "none" });
   });
 });

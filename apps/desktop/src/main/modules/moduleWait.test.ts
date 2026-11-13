@@ -369,6 +369,31 @@ describe("dependsOn with a rule (EO-777)", () => {
     }
     expect(listAllDependencies(handle.db)).toEqual([]);
   });
+
+  it("refuses wait: created_waits beside a dependsOn naming the originating item with another rule, and creates nothing", async () => {
+    const before = everyItem().length;
+
+    for (const [index, entry] of [`{ item: ${JSON.stringify(item.key)}, wait: "reached", step: ${JSON.stringify(review())} }`, `{ item: ${JSON.stringify(item.key)}, wait: "none" }`].entries()) {
+      const result = await run(`answer = await ctx.createItem({ idempotencyKey: "k${index}", ${STORY}, wait: "created_waits", dependsOn: [${entry}] });`);
+      const reason = refused(result.answer);
+      expect(reason).toContain(`wait: "created_waits" says the new item waits for ${item.key} to finish, and dependsOn names ${item.key} with wait: "${index === 0 ? "reached" : "none"}"`);
+      expect(reason).toContain("nothing was created");
+    }
+    expect(everyItem()).toHaveLength(before);
+    expect(listAllDependencies(handle.db)).toEqual([]);
+    expect(engineComments(item.id)).toEqual([]);
+  });
+
+  it("refuses the same on a repeat, adding no edge to the item the first call made", async () => {
+    const made = created((await run(`answer = await ctx.createItem({ idempotencyKey: "a", ${STORY} });`)).answer);
+
+    const repeat = await run(
+      `answer = await ctx.createItem({ idempotencyKey: "a", ${STORY}, wait: "created_waits", dependsOn: [{ item: ${JSON.stringify(item.key)}, wait: "reached", step: ${JSON.stringify(review())} }] });`,
+    );
+
+    expect(refused(repeat.answer)).toContain(`wait: "created_waits" says the new item waits for ${item.key} to finish`);
+    expect(waitsFor(made.id)).toEqual([]);
+  });
 });
 
 describe("a creation whose edges would be circular", () => {

@@ -25,6 +25,7 @@ import {
   type DependencyGate,
 } from "../db/repos/index.js";
 import { addEdge, applyNewItem, circularRefusal, resolveDependsOn } from "../roles/discussion.js";
+import type { GatedDependency } from "../roles/itemDependencies.js";
 import type { ModuleCommentContext } from "./moduleComments.js";
 import { creationCapRefusal, creationWaitRefusal } from "./runModule.js";
 
@@ -122,6 +123,23 @@ function asEntry(item: Item, gate: DependencyGate): DependencyOnItem {
   return gate.wait === "reached" ? { item: item.key, wait: "reached", step: gate.stepId } : { item: item.key, wait: "none" };
 }
 
+/**
+ * `wait: "created_waits"` says the new item waits for the originating
+ * one to finish; a `dependsOn` entry naming the originating item with
+ * another rule says something else about the same edge (EO-777). Neither
+ * is taken over the other: the creation is refused, before anything is
+ * written, saying which two disagree. The same rule twice is one edge.
+ */
+function contradictsWait(origin: Item, wait: ModuleCreation["wait"], dependencies: readonly GatedDependency[]): string | null {
+  if (wait !== "created_waits") return null;
+  const named = dependencies.find((other) => other.item.id === origin.id);
+  if (named === undefined || named.gate.wait === "finished") return null;
+  return (
+    `wait: "created_waits" says the new item waits for ${origin.key} to finish, and dependsOn names ${origin.key} with wait: "${named.gate.wait}", ` +
+    `so it is not clear what the new item should wait for, and nothing was created. Leave ${origin.key} out of dependsOn, or leave wait out and say the rule in dependsOn.`
+  );
+}
+
 /** The edge `wait` names between the two items, if it names one. */
 function ensureWaitEdge(db: Db, origin: Item, created: Item, wait: ModuleCreation["wait"]): string | null {
   if (wait === "this_waits") return ensureEdge(db, origin, created);
@@ -215,6 +233,8 @@ export function postModuleCreation(db: Db, context: ModuleCommentContext, creati
           // cannot be added refuses the call and adds none of them.
           const waitedFor = resolveDependsOn(db, origin.projectId, dependsOnEntries);
           if (!waitedFor.ok) return { created: false, reason: waitedFor.reason };
+          const contradiction = contradictsWait(origin, wait, waitedFor.dependencies);
+          if (contradiction !== null) return { created: false, reason: contradiction };
           const edgesBefore = listAllDependencies(db).length;
           for (const other of waitedFor.dependencies) {
             const problem = ensureEdge(db, existing, other.item, other.gate);
@@ -259,6 +279,8 @@ export function postModuleCreation(db: Db, context: ModuleCommentContext, creati
       // take back and names nothing that is about to disappear.
       const waitedFor = resolveDependsOn(db, projectId, dependsOnEntries);
       if (!waitedFor.ok) return { created: false, reason: waitedFor.reason };
+      const contradiction = contradictsWait(origin, wait, waitedFor.dependencies);
+      if (contradiction !== null) return { created: false, reason: contradiction };
       const circular = circularBeforeCreating(db, origin, wait, waitedFor.items);
       if (circular !== null) return { created: false, reason: circular };
 
