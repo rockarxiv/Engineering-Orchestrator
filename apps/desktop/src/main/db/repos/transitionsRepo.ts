@@ -504,3 +504,54 @@ export function stepEntryTimes(db: Db, itemIds: readonly string[]): Map<string, 
 
   return new Map(rows.map((row) => [row.itemId, row.entered]));
 }
+
+/**
+ * For every `reached` dependency edge, whether its dependency has ever
+ * arrived at the step the edge waits for (EO-776): what the scheduler
+ * reads as `EligibilityInput.arrivals`, keyed by the dependency's id.
+ *
+ * Read from `transitions`, which is append-only, so an arrival once
+ * recorded stays recorded: the edge latches, and the dependency going
+ * back afterwards holds nothing again. Never stored anywhere else.
+ *
+ * The dependency standing on the step right now counts as well. Creating
+ * an item writes no transition (`stepEntryTimes`), so an item made on the
+ * gate step has arrived there without a row saying so.
+ *
+ * Only the gated edges are asked about, in one query through
+ * `idx_transitions_item`, because this runs on every tick.
+ */
+export function gateArrivals(
+  db: Db,
+  edges: readonly { dependsOnId: string; wait: string; waitStepId: string | null }[],
+): Map<string, Set<string>> {
+  const arrivals = new Map<string, Set<string>>();
+  const gates = new Map<string, Set<string>>();
+  for (const edge of edges) {
+    if (edge.wait !== "reached" || edge.waitStepId === null) continue;
+    const steps = gates.get(edge.dependsOnId);
+    if (steps === undefined) gates.set(edge.dependsOnId, new Set([edge.waitStepId]));
+    else steps.add(edge.waitStepId);
+  }
+  if (gates.size === 0) return arrivals;
+
+  const note = (itemId: string, stepId: string | null): void => {
+    if (stepId === null || !gates.get(itemId)?.has(stepId)) return;
+    const seen = arrivals.get(itemId);
+    if (seen === undefined) arrivals.set(itemId, new Set([stepId]));
+    else seen.add(stepId);
+  };
+  const dependencyIds = [...gates.keys()];
+  const stepIds = [...new Set([...gates.values()].flatMap((steps) => [...steps]))];
+  for (const row of db
+    .select({ itemId: transitions.itemId, stepId: transitions.toStepId })
+    .from(transitions)
+    .where(and(inArray(transitions.itemId, dependencyIds), inArray(transitions.toStepId, stepIds)))
+    .all()) {
+    note(row.itemId, row.stepId);
+  }
+  for (const row of db.select({ id: items.id, stepId: items.stepId }).from(items).where(inArray(items.id, dependencyIds)).all()) {
+    note(row.id, row.stepId);
+  }
+  return arrivals;
+}

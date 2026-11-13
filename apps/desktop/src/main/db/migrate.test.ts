@@ -3966,3 +3966,27 @@ describe("0160: skill ownership, history and lock (EO-714)", () => {
     }
   });
 });
+
+describe("0171: a dependency edge's wait rule (EO-776)", () => {
+  it("reads every edge that existed as `finished`, with no step", () => {
+    const handle = openDb(":memory:");
+    const tempDir = mkdtempSync(join(tmpdir(), "eo-item-dep-wait-"));
+    try {
+      writeMigrationSetBefore(tempDir, "0171_item_dep_wait");
+      runMigrations(handle.db, tempDir);
+      const first = createTestItem(handle.db, { type: "story", title: "Goes first", stepId: "todo" });
+      const second = createTestItem(handle.db, { type: "story", title: "Waits", stepId: "todo" });
+      handle.db.run(sql`INSERT INTO item_deps (item_id, depends_on_id) VALUES (${second.id}, ${first.id})`);
+
+      runMigrations(handle.db, join(dirname(fileURLToPath(import.meta.url)), "migrations"));
+
+      expect(handle.db.all(sql`SELECT item_id, depends_on_id, wait, wait_step_id FROM item_deps`)).toEqual([
+        { item_id: second.id, depends_on_id: first.id, wait: "finished", wait_step_id: null },
+      ]);
+      expect(listDependencies(handle.db, second.id)).toEqual([{ itemId: second.id, dependsOnId: first.id, wait: "finished", waitStepId: null }]);
+    } finally {
+      handle.close();
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+});

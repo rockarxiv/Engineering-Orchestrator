@@ -3,13 +3,12 @@ import {
   MAX_MODULE_CREATIONS_PER_RUN,
   MODULE_CREATION_WAITS,
   type Item,
-  type ItemDep,
   type ModuleCreation,
   type ModuleCreationAnswer,
   type ModuleCreationWait,
   type Uuid,
 } from "@eo/core";
-import { detectCycle, formatCyclePath } from "@eo/engine";
+import { detectCycle, formatCyclePath, type Edge } from "@eo/engine";
 import type { Db } from "../db/client.js";
 import {
   createdItemFor,
@@ -86,7 +85,7 @@ const NEW_ITEM = "the new item" as Uuid;
  * rather than that one case reasoned out here.
  */
 function circularBeforeCreating(db: Db, origin: Item, wait: ModuleCreation["wait"], waitedFor: readonly Item[]): string | null {
-  const proposed: ItemDep[] = waitedFor.map((other) => ({ itemId: NEW_ITEM, dependsOnId: other.id as Uuid }));
+  const proposed: Edge[] = waitedFor.map((other) => ({ itemId: NEW_ITEM, dependsOnId: other.id as Uuid }));
   if (wait === "this_waits") proposed.push({ itemId: origin.id as Uuid, dependsOnId: NEW_ITEM });
   if (wait === "created_waits") proposed.push({ itemId: NEW_ITEM, dependsOnId: origin.id as Uuid });
   const cycle = detectCycle([...listAllDependencies(db), ...proposed]);

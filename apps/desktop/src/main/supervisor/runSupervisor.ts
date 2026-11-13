@@ -242,7 +242,7 @@ import { readPolicy } from "../policy/policy.js";
 import { ownerOfItem, parkForPersonBudget } from "../policy/personBudget.js";
 import { postClarificationQuestions, unansweredQuestions } from "../roles/clarificationQuestions.js";
 import { buildTurnContext, followUpComments } from "./buildDispatchContext.js";
-import { archivedProjectBlocker, buildEligibilityInput, buildTickInput, type PackScheduling } from "./buildTickInput.js";
+import { archivedProjectBlocker, buildEligibilityInput, buildTickInput, namedBlocker, type PackScheduling } from "./buildTickInput.js";
 import { createLocalRecord } from "../record/localRecord.js";
 import type { ItemRecord, WorkOffer } from "../record/record.js";
 import { LOCAL_DEVICE_ID, type Device, type DispatchAttempt, type DispatchSubject, type PreflightOutcome } from "../record/device.js";
@@ -267,6 +267,7 @@ import { ASSIST_ACTION, conversationTurnOptions, CONVERSATION_SETTINGS_KEY, SCEN
 import { attachRunFiles } from "./runAttachments.js";
 import { blockedByActiveRunRefusal, createItemLock, type ItemHold, type ItemLock } from "./itemLock.js";
 import { archivedAgentRefusal, mentionDepthRefusal, outOfProjectDispatchRefusal, outOfProjectMentionRefusal, outOfProjectRecoveryNote, rerunRefusal, stoppedByHandNote, type GateRefusal, type ItemBlocker, type OutOfProject, type RerunBlocker } from "./dispatchBlockers.js";
+import { watchDependencyRegressions } from "./dependencyGates.js";
 import { declaresNoCriteria, isMissingCriteriaAsk, missingCriteriaRefusal } from "./reviewCriteria.js";
 import { recordStop, stopStands } from "./stoppedByHand.js";
 import { promptHash } from "../roles/prompts.js";
@@ -3671,6 +3672,7 @@ export function createRunSupervisor(
   let intervalTimer: ReturnType<typeof setInterval> | undefined;
   let watchdogTimer: ReturnType<typeof setInterval> | undefined;
   let stopHearingWakes: (() => void) | undefined;
+  let stopWatchingRegressions: (() => void) | undefined;
   /**
    * What the inactivity guard knows of each run in flight: when its
    * backend last said anything, which tool calls it has open, and the
@@ -8940,7 +8942,7 @@ export function createRunSupervisor(
       return { kind: "step_reassigned", stepName: now.nowAt, rerunWith: now.rerunWith };
     }
 
-    const blocker = dispatchBlocker(eligibilityNow(), itemId);
+    const blocker = namedBlocker(db, dispatchBlocker(eligibilityNow(), itemId));
     // A retry's wait is EO pacing its own retries, not a reason to turn
     // a person away: somebody asking for the step again is exactly the
     // fresh look the wait was buying time for.
@@ -10101,6 +10103,9 @@ export function createRunSupervisor(
     watchdogTimer = setInterval(watchLiveRuns, watchdogIntervalMs);
     watchdogTimer.unref?.();
     stopHearingWakes = onWake?.(() => noteWake());
+    // A dependency going back after it released a `reached` edge is said
+    // on the items it released (EO-776).
+    stopWatchingRegressions = watchDependencyRegressions(db);
     memoryConsolidator.start();
     void runTickOnce(); // do not rely on the interval alone — also tick once at startup
   }
@@ -10111,6 +10116,8 @@ export function createRunSupervisor(
     if (debounceTimer) clearTimeout(debounceTimer);
     if (watchdogTimer) clearInterval(watchdogTimer);
     stopHearingWakes?.();
+    stopWatchingRegressions?.();
+    stopWatchingRegressions = undefined;
     memoryConsolidator.stop();
     intervalTimer = undefined;
     debounceTimer = undefined;
@@ -10601,7 +10608,7 @@ export function createRunSupervisor(
   function dispatchBlockerFor(itemId: Uuid): ItemBlocker | null {
     // The project first (EO-347): an item on an archived one is not in
     // the scheduler's input, and the engine would call it unknown.
-    return archivedProjectBlocker(db, itemId) ?? dispatchBlocker(eligibilityNow(), itemId);
+    return archivedProjectBlocker(db, itemId) ?? namedBlocker(db, dispatchBlocker(eligibilityNow(), itemId));
   }
 
   function isPaused(): boolean {

@@ -1198,6 +1198,13 @@
       "when": 1798473600000,
       "tag": "0170_module_version_pins",
       "breakpoints": true
+    },
+    {
+      "idx": 171,
+      "version": "6",
+      "when": 1798560000000,
+      "tag": "0171_item_dep_wait",
+      "breakpoints": true
     }
   ]
 }

@@ -338,7 +338,7 @@ describe("a leased module on a signed-in desktop creating work", () => {
       `**Release** (module) created ${blocker.key}: Write the changelog\n\n${item.key} now waits for ${blocker.key}.`,
     );
 
-    expect(dispatchBlocker(buildEligibilityInput(recordDb.db, false), follower.id as Uuid)).toEqual({ kind: "open_dependency" });
+    expect(dispatchBlocker(buildEligibilityInput(recordDb.db, false), follower.id as Uuid)).toMatchObject({ kind: "open_dependency", wait: "finished" });
     expect(dispatchBlocker(buildEligibilityInput(recordDb.db, false), blocker.id as Uuid)).toBeNull();
 
     // Nothing was written to the replica by the creations themselves…

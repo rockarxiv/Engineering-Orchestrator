@@ -1,16 +1,38 @@
 import { and, eq, or } from "drizzle-orm";
-import type { ItemDep, RecordItemWaits, Uuid } from "@eo/core";
+import { DEPENDENCY_WAITS, type DependencyWait, type ItemDep, type RecordItemWaits, type Uuid } from "@eo/core";
 import { detectCycle, formatCyclePath, wouldCreateCycle } from "@eo/engine";
 import type { Db } from "../client.js";
 import { isReplica } from "../recordRole.js";
 import { itemDeps, items } from "../schema.js";
 
+/**
+ * The column's text as a rule (EO-776). Anything this build has no word
+ * for reads as `finished`, the rule that holds longest: a row a newer
+ * build wrote with a rule this one does not know is safer waiting for
+ * its dependency to finish than released early.
+ */
+function waitOf(raw: string): DependencyWait {
+  return (DEPENDENCY_WAITS as readonly string[]).includes(raw) ? (raw as DependencyWait) : "finished";
+}
+
 function toDomain(row: typeof itemDeps.$inferSelect): ItemDep {
+  const wait = waitOf(row.wait);
   return {
     itemId: row.itemId as Uuid,
     dependsOnId: row.dependsOnId as Uuid,
+    wait,
+    // A step only means something on a `reached` edge, and a `reached`
+    // edge with none can never be met, so it falls back to `finished`
+    // above rather than holding forever: see `scheduler.ts`.
+    waitStepId: wait === "reached" ? row.waitStepId : null,
   };
 }
+
+/**
+ * The rule an edge is written with (EO-776). Absent is `finished`, which
+ * is what every caller that predates the rule means.
+ */
+export type DependencyGate = { wait: "finished" } | { wait: "none" } | { wait: "reached"; stepId: string };
 
 function listAllEdges(db: Db): ItemDep[] {
   return db.select().from(itemDeps).all().map(toDomain);
@@ -26,8 +48,8 @@ export function listAllDependencies(db: Db): ItemDep[] {
  * against every existing edge in the table, not just itemId's own,
  * before the insert runs.
  */
-export function addDependency(db: Db, itemId: Uuid, dependsOnId: Uuid): ItemDep {
-  const candidate = { itemId, dependsOnId };
+export function addDependency(db: Db, itemId: Uuid, dependsOnId: Uuid, gate: DependencyGate = { wait: "finished" }): ItemDep {
+  const candidate = { itemId, dependsOnId, wait: gate.wait, waitStepId: gate.wait === "reached" ? gate.stepId : null };
   const existingEdges = listAllEdges(db);
 
   if (wouldCreateCycle(existingEdges, candidate)) {
@@ -41,6 +63,11 @@ export function addDependency(db: Db, itemId: Uuid, dependsOnId: Uuid): ItemDep 
 
 export function listDependencies(db: Db, itemId: Uuid): ItemDep[] {
   return db.select().from(itemDeps).where(eq(itemDeps.itemId, itemId)).all().map(toDomain);
+}
+
+/** The edges waiting on one item — what it blocks — through `idx_item_deps_depends_on`. */
+export function listDependents(db: Db, dependsOnId: Uuid): ItemDep[] {
+  return db.select().from(itemDeps).where(eq(itemDeps.dependsOnId, dependsOnId)).all().map(toDomain);
 }
 
 export function removeDependency(db: Db, itemId: Uuid, dependsOnId: Uuid): void {

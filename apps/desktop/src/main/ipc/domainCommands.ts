@@ -90,7 +90,7 @@ import { agentStopAnswerRefusal, answerTrialStop } from "../trials/loop.js";
 import { decisionRefusal, dispatchBlocker } from "@eo/engine";
 import { stepNotInVersionMessage } from "@eo/core";
 import { resolveAndValidateMentions } from "../supervisor/escalation.js";
-import { archivedProjectBlocker, buildEligibilityInput } from "../supervisor/buildTickInput.js";
+import { archivedProjectBlocker, buildEligibilityInput, namedBlocker } from "../supervisor/buildTickInput.js";
 import { resumeOutlook, type ItemBlocker } from "../supervisor/dispatchBlockers.js";
 import type { Cancellation, ResumeItemOptions, SteerResult, SteeredMessage } from "../supervisor/runSupervisor.js";
 import { clearStop } from "../supervisor/stoppedByHand.js";
@@ -1105,7 +1105,7 @@ export function resumeHeldItem(db: Db, engine: EngineHandle | undefined, input: 
   // or a process that never composed one.
   const blocker = engine
     ? engine.dispatchBlockerFor(itemId)
-    : (archivedProjectBlocker(db, itemId) ?? dispatchBlocker(buildEligibilityInput(db, false), itemId));
+    : (archivedProjectBlocker(db, itemId) ?? namedBlocker(db, dispatchBlocker(buildEligibilityInput(db, false), itemId)));
   const outlook = resumeOutlook(stepName, blocker);
   postComment(db, {
     itemId,

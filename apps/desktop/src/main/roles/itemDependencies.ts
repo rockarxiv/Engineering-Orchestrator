@@ -1,5 +1,5 @@
 import type { Comment, Item, Uuid } from "@eo/core";
-import { detectCycle, formatCyclePath } from "@eo/engine";
+import { detectCycle, formatCyclePath, type Edge } from "@eo/engine";
 import type { Db } from "../db/client.js";
 import {
   addDependency,
@@ -141,7 +141,7 @@ export function judgeDependencyChange(db: Db, item: Item, request: DependencyCha
   // additions merged in one at a time, so the one that closes a loop is
   // the one named.
   const removed = new Set(remove.items.map((other) => other.id as string));
-  const graph = listAllDependencies(db).filter((edge) => !(edge.itemId === item.id && removed.has(edge.dependsOnId)));
+  const graph: Edge[] = listAllDependencies(db).filter((edge) => !(edge.itemId === item.id && removed.has(edge.dependsOnId)));
   for (const other of add.items) {
     graph.push({ itemId: item.id, dependsOnId: other.id });
     const cycle = detectCycle(graph);

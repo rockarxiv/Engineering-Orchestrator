@@ -57,6 +57,7 @@ import {
   getItemType,
   listActiveRuns,
   listAgents,
+  gateArrivals,
   listAllDependencies,
   listCommentsForItem,
   countCommentsForItem,
@@ -661,6 +662,9 @@ function summarise(db: Db, rows: Item[], stories: Item[] = rows, reads: SummaryR
   const dependencyIds = new Set([...edgesOut.values()].flatMap((out) => out.map((edge) => edge.dependsOnId as string)));
   const dependencyById = new Map(listItemsByIds(db, [...dependencyIds]).map((item) => [item.id as string, item]));
   const finished = finishedItemIds(db, [...dependencyById.values(), ...all.filter((item) => !dependencyById.has(item.id))]);
+  // Where each `reached` edge's dependency has arrived (EO-776), read as
+  // the scheduler's input reads it, so the count and the scheduler agree.
+  const arrivals = gateArrivals(db, [...edgesOut.values()].flat());
 
   // What a feature's *name* and a feature *dependency* are counted over:
   // every live item, as `featureProgress` reads when asked alone — read
@@ -691,6 +695,11 @@ function summarise(db: Db, rows: Item[], stories: Item[] = rows, reads: SummaryR
       // this item is waiting for; saying otherwise blocks it for good
       // and tells the person to go and wait for a ghost.
       if (dependency === undefined) return false;
+      // The edge's own rule (EO-776), as `hasOpenDep` in `scheduler.ts`
+      // reads it: `none` never holds, and `reached` stops holding once
+      // the dependency has arrived at its step.
+      if (edge.wait === "none") return false;
+      if (edge.wait === "reached" && edge.waitStepId !== null && arrivals.get(edge.dependsOnId)?.has(edge.waitStepId)) return false;
       return !isFinished(db, dependency, finished, dependency.stepId === null ? liveStoriesOf(dependency.id) : []);
     });
 
