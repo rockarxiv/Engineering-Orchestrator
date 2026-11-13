@@ -1,7 +1,10 @@
 import type { Item, Uuid } from "@eo/core";
-import type { CapacityKeyOf, DispatchGate, EligibilityInput, TickInput, WatchHold } from "@eo/engine";
+import type { CapacityKeyOf, DispatchBlocker, DispatchGate, EligibilityInput, TickInput, WatchHold } from "@eo/engine";
 import type { Db } from "../db/client.js";
 import {
+  gateArrivals,
+  getItem,
+  getStep,
   listActiveRuns,
   listAgents,
   listAllDependencies,
@@ -12,12 +15,13 @@ import {
   listRunsFailedSince,
   listRunsForItem,
   listTransitionsForItem,
+  stepForItem,
   stepsByItemVersion,
   trialItemsInRunningLoops,
 } from "../db/repos/index.js";
 import { archivedProjectOf, itemsMidAdoption, itemsOnArchivedProjects } from "../db/repos/projectsRepo.js";
 import { parkedForMissingCriteria } from "./reviewCriteria.js";
-import type { GateRefusal, ProjectArchived } from "./dispatchBlockers.js";
+import type { GateRefusal, ItemBlocker, ProjectArchived } from "./dispatchBlockers.js";
 import { watchesHeld, watchingUntil } from "./watches.js";
 
 /**
@@ -109,9 +113,13 @@ export function buildEligibilityInput(
   // stands on keeps checking (EO-456).
   const liveSteps = new Map(steps.map((step) => [step.id, step]));
   const stepFor = (item: Item) => stepsByItem.get(item.id) ?? (item.stepId === null ? undefined : liveSteps.get(item.stepId));
+  const deps = listAllDependencies(db);
   return {
     items,
-    deps: listAllDependencies(db),
+    deps,
+    // Where each `reached` edge's dependency has ever arrived (EO-776),
+    // read from `transitions` here because the engine reads no table.
+    arrivals: gateArrivals(db, deps),
     dependencyItems: everyItem,
     steps,
     // What each item finishing on an older version must be dispatched
@@ -251,6 +259,27 @@ function schedulingParks(db: Db): Set<Uuid> {
 export function archivedProjectBlocker(db: Db, itemId: Uuid): ProjectArchived | null {
   const project = archivedProjectOf(db, itemId);
   return project ? { kind: "project_archived", projectName: project.name } : null;
+}
+
+/**
+ * The scheduler's answer about an item, with an open dependency's ids
+ * resolved to the names a person reads (EO-776, `WaitingOnDependency`).
+ * Every other reason passes through as it is.
+ *
+ * Wherever EO turns the engine's `dispatchBlocker` into words, it goes
+ * through here first: the engine has ids and no database.
+ */
+export function namedBlocker(db: Db, blocker: DispatchBlocker<GateRefusal>): ItemBlocker;
+export function namedBlocker(db: Db, blocker: DispatchBlocker<GateRefusal> | null): ItemBlocker | null;
+export function namedBlocker(db: Db, blocker: DispatchBlocker<GateRefusal> | null): ItemBlocker | null {
+  if (blocker?.kind !== "open_dependency") return blocker;
+  const dependency = getItem(db, blocker.dependsOnId as Uuid);
+  return {
+    ...blocker,
+    dependencyKey: dependency?.key ?? blocker.dependsOnId,
+    nowAt: dependency === undefined ? null : (stepForItem(db, dependency)?.name ?? null),
+    gateStepName: blocker.waitStepId === null ? null : (getStep(db, blocker.waitStepId)?.name ?? null),
+  };
 }
 
 /** Assembles tick()'s pure input from the current DB state. */

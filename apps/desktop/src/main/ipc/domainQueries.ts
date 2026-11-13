@@ -57,6 +57,7 @@ import {
   getItemType,
   listActiveRuns,
   listAgents,
+  gateArrivals,
   listAllDependencies,
   listCommentsForItem,
   countCommentsForItem,
@@ -127,6 +128,7 @@ import { activeProjectId } from "./repositoryCommands.js";
 import { workspaceView } from "./workspaceCommands.js";
 import { providerSteersLiveTurns } from "../providers/capabilities.js";
 import { currentWatch, currentWatchViews, itemWatchView } from "../supervisor/watches.js";
+import { gateWords } from "../supervisor/dispatchBlockers.js";
 import { watchIntervalMs } from "@eo/engine";
 import { runActionName } from "../modules/runName.js";
 import { registry, registryForProject } from "../registry.js";
@@ -661,6 +663,9 @@ function summarise(db: Db, rows: Item[], stories: Item[] = rows, reads: SummaryR
   const dependencyIds = new Set([...edgesOut.values()].flatMap((out) => out.map((edge) => edge.dependsOnId as string)));
   const dependencyById = new Map(listItemsByIds(db, [...dependencyIds]).map((item) => [item.id as string, item]));
   const finished = finishedItemIds(db, [...dependencyById.values(), ...all.filter((item) => !dependencyById.has(item.id))]);
+  // Where each `reached` edge's dependency has arrived (EO-776), read as
+  // the scheduler's input reads it, so the count and the scheduler agree.
+  const arrivals = gateArrivals(db, [...edgesOut.values()].flat());
 
   // What a feature's *name* and a feature *dependency* are counted over:
   // every live item, as `featureProgress` reads when asked alone — read
@@ -691,6 +696,11 @@ function summarise(db: Db, rows: Item[], stories: Item[] = rows, reads: SummaryR
       // this item is waiting for; saying otherwise blocks it for good
       // and tells the person to go and wait for a ghost.
       if (dependency === undefined) return false;
+      // The edge's own rule (EO-776), as `hasOpenDep` in `scheduler.ts`
+      // reads it: `none` never holds, and `reached` stops holding once
+      // the dependency has arrived at its step.
+      if (edge.wait === "none") return false;
+      if (edge.wait === "reached" && edge.waitStepId !== null && arrivals.get(edge.dependsOnId)?.has(edge.waitStepId)) return false;
       return !isFinished(db, dependency, finished, dependency.stepId === null ? liveStoriesOf(dependency.id) : []);
     });
 
@@ -759,6 +769,19 @@ function summarise(db: Db, rows: Item[], stories: Item[] = rows, reads: SummaryR
       // same thing about the same item.
       preview: item.previewAt !== null,
       openDependencyCount: openDeps.length,
+      // The open `reached` edges in words (EO-776), from the same
+      // sentence the item page's "why is this not moving" says, so the
+      // card and the page cannot word one gate two ways.
+      openDependencyGates: openDeps.flatMap((edge) => {
+        const dependency = dependencyById.get(edge.dependsOnId)!;
+        const words = gateWords({
+          wait: edge.wait,
+          dependencyKey: dependency.key,
+          nowAt: stepForItem(db, dependency)?.name ?? null,
+          gateStepName: edge.waitStepId === null ? null : (getStep(db, edge.waitStepId)?.name ?? null),
+        });
+        return words === null ? [] : [words];
+      }),
       latestRunStatus: latest?.status ?? null,
       watch: watches.get(item.id) ?? null,
       // Who is actually on it (ARCHITECTURE.md, "Vocabulary"): the agent that ran most recently,
@@ -1493,6 +1516,7 @@ function ownFieldsSection(db: Db, { item, step }: ItemDetailContext) {
         // has not computed.
         atTerminalStep: step?.isTerminal === true,
         openDependencyCount: 0,
+        openDependencyGates: [],
         latestRunStatus: null,
         assigneeName: null,
         // The item's own mark (EO-313, ARCHITECTURE.md, "Preview"). Not a default of `false`

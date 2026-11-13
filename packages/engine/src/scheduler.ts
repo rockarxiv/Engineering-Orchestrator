@@ -1,6 +1,20 @@
 import { staffingAgents } from "@eo/core";
-import type { Agent, Run, Item, PipelineStep } from "@eo/core";
+import type { Agent, DependencyWait, Run, Item, PipelineStep } from "@eo/core";
 import type { Edge } from "./dag.js";
+
+/**
+ * A dependency edge as the scheduler reads it: the pair, and the rule
+ * that releases the waiting item (EO-776, `DependencyWait`).
+ *
+ * Both optional, and absent is `finished` — what every edge meant before
+ * the rule existed, so a caller that knows nothing of it schedules
+ * exactly as it always did. A `reached` edge with no step can never be
+ * met, and reads as `finished` too rather than holding for ever.
+ */
+export interface DependencyEdge extends Edge {
+  wait?: DependencyWait;
+  waitStepId?: string | null;
+}
 
 export interface Dispatch {
   item: Item;
@@ -80,7 +94,20 @@ export type CapacityKeyOf = (item: Item) => string | null;
  */
 export interface EligibilityInput<R extends DispatchRefusal = DispatchRefusal> {
   items: Item[];
-  deps: Edge[];
+  deps: DependencyEdge[];
+  /**
+   * The steps each dependency of a `reached` edge has ever arrived at,
+   * keyed by the dependency's id (EO-776).
+   *
+   * Worked out by the host from `transitions`, which is append-only, for
+   * the gated edges only: this package reads no table (invariant #2).
+   * That is what makes the release latch — once an arrival is recorded
+   * it is recorded for good, so the dependency going back to an earlier
+   * step does not hold the waiting item again. Absent, or a dependency
+   * missing from it, is "has arrived nowhere", which leaves a `reached`
+   * edge holding until its dependency finishes.
+   */
+  arrivals?: ReadonlyMap<string, ReadonlySet<string>>;
   /**
    * Every item a `deps` edge may point *at* — including the ones
    * `items` deliberately leaves out (EO-335).
@@ -285,8 +312,17 @@ export type DispatchBlocker<R extends DispatchRefusal = DispatchRefusal> =
   | { kind: "unknown_step" }
   /** A `user` step or a terminal one: EO was told not to act here. */
   | { kind: "step_not_dispatchable"; stepId: string }
-  /** At least one item it depends on has not finished. */
-  | { kind: "open_dependency" }
+  /**
+   * At least one edge out of it still holds (EO-776): its dependency has
+   * not finished, and the edge's rule has not released it either.
+   *
+   * Names the first edge that holds — `dependsOnId`, and the rule it is
+   * waiting under, with `waitStepId` the step a `reached` edge waits for
+   * and null otherwise — so whoever explains it can say which item and
+   * what it is waiting for that item to do. A `none` edge never appears
+   * here: it never holds.
+   */
+  | { kind: "open_dependency"; dependsOnId: string; wait: Exclude<DependencyWait, "none">; waitStepId: string | null }
   /** Its most recent run parked waiting for a reply. */
   | { kind: "awaiting_input" }
   /** Somebody parked it by hand. */
@@ -340,6 +376,15 @@ export type DispatchBlocker<R extends DispatchRefusal = DispatchRefusal> =
 export type WatchHold = { reason: "offline" } | { reason: "waking"; until: number };
 
 /**
+ * The rule an edge holds under, as `open_dependency` reports it: absent,
+ * and a `reached` edge naming no step, are both `finished` (see
+ * `DependencyEdge`). Only asked of an edge that holds, so never `none`.
+ */
+function gateOf(edge: DependencyEdge): { wait: "finished" | "reached"; waitStepId: string | null } {
+  return edge.wait === "reached" && edge.waitStepId ? { wait: "reached", waitStepId: edge.waitStepId } : { wait: "finished", waitStepId: null };
+}
+
+/**
  * The lookups every eligibility question needs, built once.
  *
  * `tick()` builds this for the whole board and asks it per item;
@@ -381,7 +426,7 @@ function eligibility<R extends DispatchRefusal>(input: EligibilityInput<R>) {
   // the same map where it does not — see `dependencyItems`.
   const dependencyById = input.dependencyItems ? new Map(input.dependencyItems.map((item) => [item.id, item])) : itemById;
 
-  const depsByItem = new Map<string, Edge[]>();
+  const depsByItem = new Map<string, DependencyEdge[]>();
   for (const edge of deps) {
     const list = depsByItem.get(edge.itemId);
     if (list) list.push(edge);
@@ -389,6 +434,36 @@ function eligibility<R extends DispatchRefusal>(input: EligibilityInput<R>) {
   }
 
   const activeRunItemIds = new Set(activeRuns.map((run) => run.itemId));
+
+  /**
+   * Whether this edge still holds the item waiting on it (EO-776).
+   *
+   * A finished dependency releases every edge, whatever its rule, and is
+   * asked first for that reason: a `reached` edge whose step a later
+   * save retired, or whose dependency moved to another pipeline, can then
+   * never block for good (EO-335). After that the rule: `none` never
+   * holds, and `reached` holds until the host has recorded the
+   * dependency arriving at its step.
+   */
+  const hasOpenDep = (edge: DependencyEdge): boolean => {
+    const depItem = dependencyById.get(edge.dependsOnId);
+    // An edge pointing at no item at all cannot be waiting for
+    // anything (EO-335). There is nothing left to finish it and no
+    // tick that will ever resolve it differently, so counting it as
+    // open is not caution — it is a permanent block chosen by a
+    // lookup miss. The dangling edge is what is wrong; the item
+    // waiting behind it is not.
+    if (!depItem) return false;
+    // A dependency resolves against *its own* pipeline. Cross-pipeline
+    // dependencies are legitimate now — a story in one pipeline can
+    // block a story in another — so this must not reuse the current
+    // item's pipeline to look the step up.
+    if (stepFor(depItem)?.isTerminal) return false;
+    const gate = edge.wait ?? "finished";
+    if (gate === "none") return false;
+    if (gate === "reached" && edge.waitStepId) return !input.arrivals?.get(edge.dependsOnId)?.has(edge.waitStepId);
+    return true;
+  };
 
   /**
    * Somebody enabled and staffed for this role, capacity aside.
@@ -446,22 +521,12 @@ function eligibility<R extends DispatchRefusal>(input: EligibilityInput<R>) {
     // nowhere new is an item with no active run.
     if (step.type === "user" || step.isTerminal) return { kind: "step_not_dispatchable", stepId: step.id };
 
-    const hasOpenDep = (depsByItem.get(item.id) ?? []).some((edge) => {
-      const depItem = dependencyById.get(edge.dependsOnId);
-      // An edge pointing at no item at all cannot be waiting for
-      // anything (EO-335). There is nothing left to finish it and no
-      // tick that will ever resolve it differently, so counting it as
-      // open is not caution — it is a permanent block chosen by a
-      // lookup miss. The dangling edge is what is wrong; the item
-      // waiting behind it is not.
-      if (!depItem) return false;
-      // A dependency resolves against *its own* pipeline. Cross-pipeline
-      // dependencies are legitimate now — a story in one pipeline can
-      // block a story in another — so this must not reuse the current
-      // item's pipeline to look the step up.
-      return !stepFor(depItem)?.isTerminal;
-    });
-    if (hasOpenDep) return { kind: "open_dependency" }; // 2. blocked by another item
+    const holding = (depsByItem.get(item.id) ?? []).find((edge) => hasOpenDep(edge));
+    if (holding) {
+      // 2. blocked by another item
+      const gate = gateOf(holding);
+      return { kind: "open_dependency", dependsOnId: holding.dependsOnId, wait: gate.wait, waitStepId: gate.waitStepId };
+    }
 
     if (awaitingInput.has(item.id)) return { kind: "awaiting_input" }; // 3. blocked on a reply
 

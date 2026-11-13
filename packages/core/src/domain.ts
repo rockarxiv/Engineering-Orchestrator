@@ -1099,7 +1099,28 @@ export function acceptanceCriteriaOf(item: Pick<Item, "spec">, shape?: SpecShape
   return raw.filter((entry): entry is string => typeof entry === "string" && entry.trim() !== "");
 }
 
+/**
+ * What releases an item from one of its dependency edges (EO-776, EO-775).
+ *
+ * - `finished`: the dependency stands on a terminal step of its own
+ *   pipeline. The default, and what every edge meant before the rule
+ *   existed, so leaving it out always means this.
+ * - `reached`: the first time the dependency arrives at the edge's
+ *   `waitStepId`, or when it finishes, whichever comes first. Latched:
+ *   whether it has arrived is read from `transitions`, never stored, so
+ *   going back afterwards does not hold anything again.
+ * - `none`: never holds. The link stays for the board, the item page
+ *   and the agent's dependency summary.
+ *
+ * A finished dependency releases every edge, whatever its rule.
+ */
+export const DEPENDENCY_WAITS = ["finished", "reached", "none"] as const;
+export type DependencyWait = (typeof DEPENDENCY_WAITS)[number];
+
 export interface ItemDep {
   itemId: Uuid;
   dependsOnId: Uuid;
+  wait: DependencyWait;
+  /** The step of the dependency's pipeline a `reached` edge waits for; null for `finished` and `none`. */
+  waitStepId: string | null;
 }

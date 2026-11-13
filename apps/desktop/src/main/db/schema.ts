@@ -1198,6 +1198,20 @@ export const itemDeps = sqliteTable(
     dependsOnId: text("depends_on_id")
       .notNull()
       .references(() => items.id),
+    /**
+     * What releases `itemId` from this edge (EO-776, migration 0171):
+     * `finished`, the default and every edge made before it, `reached`
+     * — the first time `dependsOnId` arrives at `waitStepId` — or `none`.
+     * See `DependencyWait` in `@eo/core`.
+     */
+    wait: text("wait").notNull().default("finished"),
+    /**
+     * The step of the dependency's own pipeline a `reached` edge waits
+     * for; null for the other two. No foreign key: a step a later save
+     * retired must not take the edge with it, and a finished dependency
+     * releases the edge whatever this names.
+     */
+    waitStepId: text("wait_step_id"),
   },
   (table) => [
     primaryKey({ columns: [table.itemId, table.dependsOnId] }),

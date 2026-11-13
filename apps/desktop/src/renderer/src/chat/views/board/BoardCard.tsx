@@ -8,6 +8,7 @@ import { runStatusOf, type RunStatus } from "../../../shared/items/status";
 import type { WorkState } from "../../../shared/items/workState";
 import { Elapsed } from "../../../shared/items/Elapsed";
 import { watchStatusOf } from "../../../shared/items/watchStatus";
+import { openDependencyTitle } from "../../../shared/items/openDependencies";
 import { useMinuteTick } from "../../../hooks/useMinuteTick";
 import { PREVIEW_BANNER } from "../../../shared/items/previewBanner";
 import { priorityLabel, showsPriorityBadge } from "../../../shared/pipeline/priority";
@@ -223,7 +224,7 @@ export function CardBody({
           </span>
         ) : null}
         {item.openDependencyCount > 0 ? (
-          <span className="tabular-nums text-ink-subtle" title={`Blocked by ${item.openDependencyCount} unfinished dependency(ies)`}>
+          <span className="tabular-nums text-ink-subtle" title={openDependencyTitle(item)}>
             blocked ×{item.openDependencyCount}
           </span>
         ) : null}

@@ -6,6 +6,7 @@ import { cn } from "@eo/ui";
 import { itemViewFilter, matchesFilters } from "../../../shared/items/itemList";
 import { RUN_STATUSES, runStatusOf } from "../../../shared/items/status";
 import { Elapsed } from "../../../shared/items/Elapsed";
+import { openDependencyTitle } from "../../../shared/items/openDependencies";
 import { priorityLabel, priorityTone, showsPriorityBadge } from "../../../shared/pipeline/priority";
 import { useChromeVocabulary, usePipelines, useProjectItems, useRegistry } from "../../../query/hooks";
 import { useFeatureJiraProject, useProjects } from "../../../query/useRepositories";
@@ -343,7 +344,7 @@ function ItemRow({ item, pipelineName, mixed }: { item: ItemSummary; pipelineNam
       trailing={
         <>
           {item.openDependencyCount > 0 ? (
-            <span className="text-[11px] text-ink-subtle" title={`Blocked by ${item.openDependencyCount} unfinished dependency(ies)`}>
+            <span className="text-[11px] text-ink-subtle" title={openDependencyTitle(item)}>
               blocked ×{item.openDependencyCount}
             </span>
           ) : null}

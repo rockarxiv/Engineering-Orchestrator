@@ -207,6 +207,15 @@ export const ItemSummarySchema = z.object({
   atTerminalStep: z.boolean().default(false),
   /** Dependencies not yet in a terminal state — why a ready-looking item isn't moving. */
   openDependencyCount: z.number(),
+  /**
+   * What each open `reached` edge is waiting for, as EO says it (EO-776):
+   * "Waits for EO-12 to reach Watch merge request (now at Review)". One
+   * sentence per such edge, counted in `openDependencyCount` as well; a
+   * `finished` edge has none and keeps the count's words.
+   *
+   * Defaulted, for `pipelineVersion`'s reason.
+   */
+  openDependencyGates: z.array(z.string()).default([]),
   /** The status of its most recent run, if it has ever run. */
   latestRunStatus: z.string().nullable(),
   /**

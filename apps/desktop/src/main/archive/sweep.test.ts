@@ -352,7 +352,7 @@ describe("a dependency that has been archived", () => {
     setItemArchived(handle.db, unfinished.id, Date.now());
 
     expect(openDepsFor(waiting.id)).toBe(1);
-    expect(dispatchBlocker(buildEligibilityInput(handle.db, false), waiting.id)).toEqual({ kind: "open_dependency" });
+    expect(dispatchBlocker(buildEligibilityInput(handle.db, false), waiting.id)).toMatchObject({ kind: "open_dependency", wait: "finished" });
     expect(tick(buildTickInput(handle.db, LIMITS, false)).map((dispatch) => dispatch.item.id)).not.toContain(waiting.id);
   });
 });

@@ -261,7 +261,7 @@ export {
   type RepositoryIndexKey,
   type RepositoryIndexPatch,
 } from "./repositoryIndexesRepo.js";
-export { addDependency, listAllDependencies, listDependencies, removeDependency } from "./itemDepsRepo.js";
+export { addDependency, listAllDependencies, listDependencies, listDependents, removeDependency, type DependencyGate } from "./itemDepsRepo.js";
 export {
   adoptProjectlessItems,
   clearJiraPullPending,
@@ -315,6 +315,7 @@ export {
   type ItemTypeSeedReport,
 } from "./itemTypesRepo.js";
 export {
+  gateArrivals,
   hasTransition,
   lastEntryIntoStates,
   listTransitionsForItem,

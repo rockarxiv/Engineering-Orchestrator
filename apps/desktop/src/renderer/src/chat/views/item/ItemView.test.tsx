@@ -83,6 +83,7 @@ function detail(overrides: Partial<ItemDetailData> = {}): ItemDetailData {
       needsAttention: false,
       atTerminalStep: false,
       openDependencyCount: 0,
+      openDependencyGates: [],
       latestRunStatus: null,
       assigneeName: null,
       assigneePerson: null,

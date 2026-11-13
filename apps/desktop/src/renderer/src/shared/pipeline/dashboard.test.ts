@@ -34,6 +34,7 @@ function item(overrides: Partial<ItemSummary> = {}): ItemSummary {
     needsAttention: false,
     atTerminalStep: false,
     openDependencyCount: 0,
+    openDependencyGates: [],
     latestRunStatus: null,
     assigneeName: null,
     assigneePerson: null,

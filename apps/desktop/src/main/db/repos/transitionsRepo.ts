@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, or, sql } from "drizzle-orm";
 import { onProject } from "./projectScope.js";
 import { uuidv7, type Item, type PipelineStepType, type RecordCursor, type Transition, type Uuid } from "@eo/core";
 import type { Db } from "../client.js";
@@ -503,4 +503,63 @@ export function stepEntryTimes(db: Db, itemIds: readonly string[]): Map<string, 
     .all();
 
   return new Map(rows.map((row) => [row.itemId, row.entered]));
+}
+
+/**
+ * For every `reached` dependency edge, whether its dependency has ever
+ * arrived at the step the edge waits for (EO-776): what the scheduler
+ * reads as `EligibilityInput.arrivals`, keyed by the dependency's id.
+ *
+ * Read from `transitions`, which is append-only, so an arrival once
+ * recorded stays recorded: the edge latches, and the dependency going
+ * back afterwards holds nothing again. Never stored anywhere else.
+ *
+ * The dependency standing on the step right now counts as well, and so
+ * does any move *out of* it. Creating an item writes no transition
+ * (`stepEntryTimes`), so an item made on the gate step has arrived there
+ * without a row saying so; once it leaves, the move's `fromStepId` is the
+ * record that it stood there, which keeps the edge released.
+ *
+ * Only the gated edges are asked about, in one query through
+ * `idx_transitions_item`, because this runs on every tick.
+ */
+export function gateArrivals(
+  db: Db,
+  edges: readonly { dependsOnId: string; wait: string; waitStepId: string | null }[],
+): Map<string, Set<string>> {
+  const arrivals = new Map<string, Set<string>>();
+  const gates = new Map<string, Set<string>>();
+  for (const edge of edges) {
+    if (edge.wait !== "reached" || edge.waitStepId === null) continue;
+    const steps = gates.get(edge.dependsOnId);
+    if (steps === undefined) gates.set(edge.dependsOnId, new Set([edge.waitStepId]));
+    else steps.add(edge.waitStepId);
+  }
+  if (gates.size === 0) return arrivals;
+
+  const note = (itemId: string, stepId: string | null): void => {
+    if (stepId === null || !gates.get(itemId)?.has(stepId)) return;
+    const seen = arrivals.get(itemId);
+    if (seen === undefined) arrivals.set(itemId, new Set([stepId]));
+    else seen.add(stepId);
+  };
+  const dependencyIds = [...gates.keys()];
+  const stepIds = [...new Set([...gates.values()].flatMap((steps) => [...steps]))];
+  for (const row of db
+    .select({ itemId: transitions.itemId, toStepId: transitions.toStepId, fromStepId: transitions.fromStepId })
+    .from(transitions)
+    .where(
+      and(
+        inArray(transitions.itemId, dependencyIds),
+        or(inArray(transitions.toStepId, stepIds), inArray(transitions.fromStepId, stepIds)),
+      ),
+    )
+    .all()) {
+    note(row.itemId, row.toStepId);
+    note(row.itemId, row.fromStepId);
+  }
+  for (const row of db.select({ id: items.id, stepId: items.stepId }).from(items).where(inArray(items.id, dependencyIds)).all()) {
+    note(row.id, row.stepId);
+  }
+  return arrivals;
 }

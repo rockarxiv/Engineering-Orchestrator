@@ -1,7 +1,7 @@
 import { acceptanceCriteriaOf } from "@eo/core";
 import type { Agent, Run, RunStatus, Item, Uuid, PipelineStep } from "@eo/core";
 import { describe, expect, it } from "vitest";
-import { dispatchBlocker, dispatchBlockers, hasDispatchableItem, tick, type CapacityKeyOf, type DispatchGate, type TickInput } from "./scheduler.js";
+import { dispatchBlocker, dispatchBlockers, hasDispatchableItem, tick, type CapacityKeyOf, type DependencyEdge, type DispatchGate, type TickInput } from "./scheduler.js";
 
 
 /** Any `item_types` row: these fixtures never read the type's row, only the word on it. */
@@ -308,7 +308,7 @@ describe("tick — skip conditions", () => {
       }),
       "A",
     );
-    expect(blocker).toEqual({ kind: "open_dependency" });
+    expect(blocker).toEqual({ kind: "open_dependency", dependsOnId: "B", wait: "finished", waitStepId: null });
   });
 
   it("2e. does not block on an edge pointing at no item at all", () => {
@@ -1279,5 +1279,95 @@ describe("uncappedRoles (EO-616)", () => {
     const input = full({ items: [makeItem("first", { stepId: "steward" })], activeRuns: [makeRun("first", "steward-1")] });
     expect(tick(input)).toEqual([]);
     expect(dispatchBlocker(input, "first")).toEqual({ kind: "run_active" });
+  });
+});
+
+/**
+ * The wait rule on a dependency edge (EO-776): `finished` is what every
+ * edge meant before, `none` never holds, and `reached` holds until the
+ * host says the dependency has arrived at its step — and a finished
+ * dependency releases any edge at all.
+ */
+describe("dependency wait rules", () => {
+  const steps = [
+    makeState("todo"),
+    makeState("implement", { position: 1 }),
+    makeState("review", { position: 2, ownerRole: "reviewer", entryAction: "review" }),
+    makeState("merge", { position: 3 }),
+    makeState("done", { position: 4, isTerminal: true, ownerRole: null }),
+  ];
+  const input = (dependsOnStep: string, edge: Partial<DependencyEdge>, overrides: Partial<TickInput> = {}): TickInput =>
+    baseInput({
+      items: [makeItem("A"), makeItem("B", { stepId: dependsOnStep })],
+      deps: [{ itemId: "A" as Uuid, dependsOnId: "B" as Uuid, ...edge }],
+      steps,
+      agents: [makeAgent("agent-1"), makeAgent("reviewer-1", { role: "reviewer" })],
+      ...overrides,
+    });
+  const dispatched = (tickInput: TickInput): string[] => tick(tickInput).map((dispatch) => dispatch.item.id);
+
+  it("does not hold an item whose only edge is `none`, to an item that has not finished", () => {
+    const tickInput = input("implement", { wait: "none", waitStepId: null });
+    expect(dispatchBlocker(tickInput, "A")).toBeNull();
+    expect(dispatched(tickInput)).toContain("A");
+  });
+
+  it("holds on a `finished` edge, and on one that says nothing, as it always has", () => {
+    for (const edge of [{}, { wait: "finished" as const, waitStepId: null }]) {
+      expect(dispatchBlocker(input("review", edge), "A")).toEqual({ kind: "open_dependency", dependsOnId: "B", wait: "finished", waitStepId: null });
+    }
+  });
+
+  it("holds a `reached` edge until the arrival is supplied, then releases it even with the dependency back on an earlier step", () => {
+    const edge = { wait: "reached" as const, waitStepId: "review" };
+    // Standing on an earlier step, never arrived: held, and the blocker
+    // names the dependency and the step it waits for.
+    expect(dispatchBlocker(input("implement", edge), "A")).toEqual({ kind: "open_dependency", dependsOnId: "B", wait: "reached", waitStepId: "review" });
+    expect(dispatched(input("implement", edge))).not.toContain("A");
+    // An arrival somewhere else is not this one.
+    expect(dispatchBlocker(input("implement", edge, { arrivals: new Map([["B", new Set(["merge"])]]) }), "A")).toMatchObject({ kind: "open_dependency" });
+    // Arrived once, and now back on `implement`: released, and stays so.
+    const arrived = input("implement", edge, { arrivals: new Map([["B", new Set(["implement", "review"])]]) });
+    expect(dispatchBlocker(arrived, "A")).toBeNull();
+    expect(dispatched(arrived)).toContain("A");
+  });
+
+  it("releases every edge whose dependency is on a terminal step, whatever its rule and step", () => {
+    const edges: Partial<DependencyEdge>[] = [
+      {},
+      { wait: "finished", waitStepId: null },
+      { wait: "none", waitStepId: null },
+      { wait: "reached", waitStepId: "review" },
+      // A step no pipeline has any more: a later save retired it, or the
+      // dependency moved pipelines. Finishing still releases it.
+      { wait: "reached", waitStepId: "retired-step" },
+    ];
+    for (const edge of edges) {
+      const tickInput = input("done", edge);
+      expect(dispatchBlocker(tickInput, "A")).toBeNull();
+      expect(dispatched(tickInput)).toContain("A");
+    }
+  });
+
+  it("names the edge that holds when another has released", () => {
+    const tickInput = baseInput({
+      items: [makeItem("A"), makeItem("B", { stepId: "implement" }), makeItem("C", { stepId: "implement" })],
+      deps: [
+        { itemId: "A" as Uuid, dependsOnId: "B" as Uuid, wait: "none", waitStepId: null },
+        { itemId: "A" as Uuid, dependsOnId: "C" as Uuid, wait: "reached", waitStepId: "merge" },
+      ],
+      steps,
+      agents: [makeAgent("agent-1")],
+    });
+    expect(dispatchBlocker(tickInput, "A")).toEqual({ kind: "open_dependency", dependsOnId: "C", wait: "reached", waitStepId: "merge" });
+  });
+
+  it("reads a `reached` edge that names no step as `finished`", () => {
+    expect(dispatchBlocker(input("implement", { wait: "reached", waitStepId: null }), "A")).toEqual({
+      kind: "open_dependency",
+      dependsOnId: "B",
+      wait: "finished",
+      waitStepId: null,
+    });
   });
 });

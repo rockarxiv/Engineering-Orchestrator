@@ -30,12 +30,41 @@ export type GateRefusal = { kind: "no_acceptance_criteria" };
 export type ProjectArchived = { kind: "project_archived"; projectName: string };
 
 /**
+ * The scheduler's `open_dependency`, with the names a person reads it in
+ * (EO-776): the engine carries ids only, and this file has no database,
+ * so `namedBlocker` in `buildTickInput.ts` resolves them.
+ *
+ * `dependencyKey` is the item holding this one, `nowAt` the name of the
+ * step it stands on (null on none), and `gateStepName` the name of the
+ * step a `reached` edge waits for it to reach (null for `finished`).
+ */
+export type WaitingOnDependency = Extract<DispatchBlocker<GateRefusal>, { kind: "open_dependency" }> & {
+  dependencyKey: string;
+  nowAt: string | null;
+  gateStepName: string | null;
+};
+
+/**
  * Why an item is not going to be dispatched, as EO says it (EO-347).
  *
  * The scheduler's reasons, plus the one that is decided before the
  * scheduler is asked. What `EngineHandle.dispatchBlockerFor` answers.
+ * An open dependency is the scheduler's own reason with its names
+ * resolved (`WaitingOnDependency`).
  */
-export type ItemBlocker = DispatchBlocker<GateRefusal> | ProjectArchived;
+export type ItemBlocker = Exclude<DispatchBlocker<GateRefusal>, { kind: "open_dependency" }> | WaitingOnDependency | ProjectArchived;
+
+/**
+ * "Waits for EO-12 to reach Watch merge request (now at Review)": what a
+ * `reached` edge that still holds is waiting for, in one sentence
+ * (EO-776). Null for a `finished` edge, which keeps the words it has
+ * always had.
+ */
+export function gateWords(blocker: Pick<WaitingOnDependency, "dependencyKey" | "gateStepName" | "nowAt"> & { wait: string }): string | null {
+  if (blocker.wait !== "reached") return null;
+  const gate = blocker.gateStepName ?? "a step its pipeline no longer has";
+  return `Waits for ${blocker.dependencyKey} to reach ${gate} (now at ${blocker.nowAt ?? "no step"})`;
+}
 
 /**
  * Why a *rerun* will not run: the scheduler's reasons, plus the one only
@@ -232,11 +261,20 @@ export function blockerWords(blocker: Exclude<RerunBlocker, { kind: "run_active"
         condition: "the last run here is waiting for an answer from you",
         fix: "Answer it above and this step carries on by itself.",
       };
-    case "open_dependency":
-      return {
-        condition: "this ticket is waiting on another that has not finished",
-        fix: "Finish that ticket, or remove the dependency.",
-      };
+    case "open_dependency": {
+      // A `reached` edge says which item and which step (EO-776); a
+      // `finished` edge keeps today's words.
+      const gate = gateWords(blocker);
+      return gate === null
+        ? {
+            condition: "this ticket is waiting on another that has not finished",
+            fix: "Finish that ticket, or remove the dependency.",
+          }
+        : {
+            condition: `it ${gate.charAt(0).toLowerCase()}${gate.slice(1)}`,
+            fix: `Nothing to do: it carries on by itself once ${blocker.dependencyKey} gets there or finishes. Or remove the dependency.`,
+          };
+    }
     case "no_enabled_agent":
       return {
         condition:

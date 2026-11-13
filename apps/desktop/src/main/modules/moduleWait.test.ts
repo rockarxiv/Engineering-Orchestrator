@@ -183,7 +183,7 @@ describe("wait: this_waits", () => {
 
     // Held where it landed, by a dependency it gained after it entered
     // its pipeline — while the item it waits for is free to be worked.
-    expect(blocker(origin.id)).toEqual({ kind: "open_dependency" });
+    expect(blocker(origin.id)).toMatchObject({ kind: "open_dependency", wait: "finished" });
     expect(dispatched()).not.toContain(origin.id);
     expect(dispatched()).toContain(made.id);
 
@@ -206,7 +206,7 @@ describe("wait: this_waits", () => {
       finish(one.id);
     }
     // Two of three finished: still held.
-    expect(blocker(item.id)).toEqual({ kind: "open_dependency" });
+    expect(blocker(item.id)).toMatchObject({ kind: "open_dependency", wait: "finished" });
     expect(dispatched()).not.toContain(item.id);
 
     finish(made[2]!.id);
@@ -240,7 +240,7 @@ describe("wait: created_waits", () => {
     expect(made.stepId).toBe(ENTRY);
     expect(waitsFor(made.id)).toEqual([item.id]);
     expect(waitsFor(item.id)).toEqual([]);
-    expect(blocker(made.id)).toEqual({ kind: "open_dependency" });
+    expect(blocker(made.id)).toMatchObject({ kind: "open_dependency", wait: "finished" });
     expect(dispatched()).not.toContain(made.id);
     // The originating item is held by nothing.
     expect(dispatched()).toContain(item.id);
@@ -441,7 +441,7 @@ describe("a repeat that names who waits", () => {
       const repeat = await run(`answer = await ctx.createItem({ idempotencyKey: "a", ${STORY}, wait: "created_waits" });`);
       expect(repeat.answer).toEqual({ created: true, key: made.key, existing: true });
     }
-    expect(listAllDependencies(handle.db)).toEqual([{ itemId: made.id, dependsOnId: item.id }]);
+    expect(listAllDependencies(handle.db)).toEqual([{ itemId: made.id, dependsOnId: item.id, wait: "finished", waitStepId: null }]);
   });
 
   it("is refused, and adds none of its edges, where one of them would be circular", async () => {
