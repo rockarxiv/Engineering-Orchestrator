@@ -2,6 +2,7 @@ import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { eq } from "drizzle-orm";
 import type { ModuleManifest, PipelineExport, StepWatch, Uuid } from "@eo/core";
 import { resetSearchPathForTests, resolveSearchPath } from "../process/searchPath.js";
 import {
@@ -21,6 +22,7 @@ import {
   validateActionResult,
 } from "@eo/core";
 import type { Db, DbHandle } from "../db/client.js";
+import { pipelineSteps, pipelines } from "../db/schema.js";
 import {
   addMemory,
   addModuleTests,
@@ -36,6 +38,7 @@ import {
   createStep,
   getJiraBinding,
   getModuleBySlug,
+  getModuleVersion,
   insertItemType,
   isJiraConnected,
   getAgentAttachments,
@@ -3273,5 +3276,158 @@ describe("a module's test cases in a document", () => {
     } finally {
       target.close();
     }
+  });
+});
+
+/**
+ * The module version an export carries (EO-772, ARCHITECTURE.md §18.1).
+ *
+ * The pinned version's code, manifest and tests — not the module's head,
+ * which may be an edit nobody approved and no pipeline runs — with its
+ * number on each step and module entry rule that pins it. An import pins
+ * the version it files, because the document's number is the exporting
+ * machine's history and names nothing on the far side.
+ */
+describe("the module version an export carries", () => {
+  const says = (word: string) => `export default async function run() { return { ok: true, result: "deployed", detail: "${word}" }; }`;
+
+  /** "Deploy" at v1, v2 (approved, with its own case) and an unapproved v3 head; a step and an entry rule pinning v2. */
+  function pinnedUnderANewerHead(rulePin = 2) {
+    const first = saveModule(handle.db, { slug: "deploy", name: "Deploy", description: "Deploys.", code: says("v1"), manifest, approve: true });
+    if (!first.ok) throw new Error(first.reason);
+    const id = first.module.id;
+    const save = (word: string, approve: boolean, description: string) => {
+      const saved = saveModule(handle.db, { id, slug: "deploy", name: "Deploy", description: "Deploys.", code: says(word), manifest: { ...manifest, description }, approve });
+      if (!saved.ok) throw new Error(saved.reason);
+    };
+    save("v2", true, "The second.");
+    addModuleTests(handle.db, id, [{ description: "v2 case", source: "expect(true).toBe(true)" }]);
+    save("v3", false, "The third.");
+    addModuleTests(handle.db, id, [{ description: "v3 case", source: "expect(1).toBe(1)" }]);
+
+    const pipeline = createPipeline(handle.db, { name: "Shipping" });
+    createStep(handle.db, { id: "deploy-step", pipelineId: pipeline.id, position: 0, name: "Deploy", type: "module", entryAction: id, moduleVersion: 2 });
+    createStep(handle.db, { id: "done", pipelineId: pipeline.id, position: 1, name: "Done", type: "user", isTerminal: true });
+    createRoute(handle.db, { pipelineId: pipeline.id, fromStepId: "deploy-step", resultKey: "deployed", label: "Deployed", target: "done" });
+    createRoute(handle.db, { pipelineId: pipeline.id, fromStepId: "deploy-step", resultKey: "failed", label: "Failed", target: "user_attention", position: 1 });
+    setEntryStep(handle.db, pipeline.id, "deploy-step");
+    handle.db.update(pipelines).set({ entryRules: [{ kind: "module", module: id, moduleVersion: rulePin }] }).where(eq(pipelines.id, pipeline.id)).run();
+    return { pipelineId: pipeline.id, moduleId: id };
+  }
+
+  it("writes the pinned version's code, manifest and tests, and names its number on the step and the entry rule", () => {
+    const { pipelineId, moduleId } = pinnedUnderANewerHead();
+    expect(getModuleBySlug(handle.db, "deploy")?.code).toBe(says("v3"));
+    expect(getModuleVersion(handle.db, moduleId, 3)).toBeDefined();
+
+    const built = exportPipeline(handle.db, pipelineId);
+    if (!built.ok) throw new Error(built.reason);
+
+    expect(built.document.eoPipelineExport).toBe(14);
+    const [carried] = built.document.modules;
+    expect(carried).toMatchObject({ slug: "deploy", version: 2, code: says("v2") });
+    expect(carried?.manifest.description).toBe("The second.");
+    expect(carried?.tests).toEqual([{ description: "v2 case", source: "expect(true).toBe(true)" }]);
+    expect(built.document.steps.find((step) => step.id === "deploy-step")?.moduleVersion).toBe(2);
+    expect(built.document.steps.find((step) => step.id === "done")).not.toHaveProperty("moduleVersion");
+    expect(built.document.pipeline.entryRules).toEqual([{ kind: "module", module: "deploy", moduleVersion: 2 }]);
+  });
+
+  it("imports into an empty installation as a module whose pinned version is v2's code, pinned by the step and the entry rule", () => {
+    const { pipelineId } = pinnedUnderANewerHead();
+    const built = exportPipeline(handle.db, pipelineId);
+    if (!built.ok) throw new Error(built.reason);
+    const parsed = parseExport(JSON.stringify(built.document));
+    if (!parsed.ok) throw new Error(parsed.reason);
+
+    const target = openMigratedTestDb();
+    try {
+      const imported = importPipeline(target.db, { document: parsed.document });
+      if (!imported.ok) throw new Error(imported.reason);
+      const module = getModuleBySlug(target.db, "deploy")!;
+      const step = listStepsForPipeline(target.db, imported.pipelineId).find((each) => each.type === "module")!;
+      expect(step.entryAction).toBe(module.id);
+      expect(step.moduleVersion).not.toBeNull();
+      const pinned = getModuleVersion(target.db, module.id, step.moduleVersion!);
+      expect(pinned?.code).toBe(says("v2"));
+      expect(pinned?.manifest.description).toBe("The second.");
+      expect(pinned?.tests.map((test) => test.description)).toEqual(["v2 case"]);
+      expect(getPipeline(target.db, imported.pipelineId)?.entryRules).toEqual([{ kind: "module", module: module.id, moduleVersion: step.moduleVersion }]);
+    } finally {
+      target.close();
+    }
+  });
+
+  it("pins the version it files, not the document's number, where this installation's history is longer", () => {
+    const { pipelineId } = pinnedUnderANewerHead();
+    const built = exportPipeline(handle.db, pipelineId);
+    if (!built.ok) throw new Error(built.reason);
+
+    // Imported alongside the module it came from, as a copy whose own v1 is the code it carried.
+    const copied = importPipeline(handle.db, { document: built.document, choices: { deploy: "import" } });
+    if (!copied.ok) throw new Error(copied.reason);
+    const copy = copied.createdModuleIds[0]!;
+    const step = listStepsForPipeline(handle.db, copied.pipelineId).find((each) => each.type === "module")!;
+    expect(step).toMatchObject({ entryAction: copy, moduleVersion: 1 });
+    expect(getModuleVersion(handle.db, copy, 1)?.code).toBe(says("v2"));
+    expect(getPipeline(handle.db, copied.pipelineId)?.entryRules).toEqual([{ kind: "module", module: copy, moduleVersion: 1 }]);
+  });
+
+  it("imports a document in the previous format pinned to the version the import filed", () => {
+    const { pipelineId } = pinnedUnderANewerHead();
+    const built = exportPipeline(handle.db, pipelineId);
+    if (!built.ok) throw new Error(built.reason);
+    // Format 13: no pin on a step or a rule, and a module entry naming no version.
+    const raw = JSON.parse(JSON.stringify(built.document)) as {
+      eoPipelineExport: number;
+      steps: Record<string, unknown>[];
+      modules: Record<string, unknown>[];
+      pipeline: { entryRules: Record<string, unknown>[] };
+    };
+    raw.eoPipelineExport = 13;
+    for (const step of raw.steps) delete step["moduleVersion"];
+    for (const module of raw.modules) delete module["version"];
+    for (const rule of raw.pipeline.entryRules) delete rule["moduleVersion"];
+    const parsed = parseExport(JSON.stringify(raw));
+    if (!parsed.ok) throw new Error(parsed.reason);
+
+    const target = openMigratedTestDb();
+    try {
+      const imported = importPipeline(target.db, { document: parsed.document });
+      if (!imported.ok) throw new Error(imported.reason);
+      const module = getModuleBySlug(target.db, "deploy")!;
+      const step = listStepsForPipeline(target.db, imported.pipelineId).find((each) => each.type === "module")!;
+      expect(step.moduleVersion).toBe(1);
+      expect(getModuleVersion(target.db, module.id, 1)?.code).toBe(says("v2"));
+      expect(getPipeline(target.db, imported.pipelineId)?.entryRules).toEqual([{ kind: "module", module: module.id, moduleVersion: 1 }]);
+    } finally {
+      target.close();
+    }
+  });
+
+  it("is refused by a build that predates the format with \"Update EO and try again\"", () => {
+    const { pipelineId } = pinnedUnderANewerHead();
+    const built = exportPipeline(handle.db, pipelineId);
+    if (!built.ok) throw new Error(built.reason);
+    const refused = parseExport(JSON.stringify({ ...built.document, eoPipelineExport: built.document.eoPipelineExport + 1 }));
+    expect(refused.ok).toBe(false);
+    expect(!refused.ok && refused.reason).toContain("Update EO and try again");
+  });
+
+  it("refuses a pipeline that pins two versions of one module, naming both", () => {
+    const { pipelineId } = pinnedUnderANewerHead(1);
+    expect(exportPipeline(handle.db, pipelineId)).toEqual({
+      ok: false,
+      reason: '"Deploy" runs "Deploy" v2 and an entry rule runs v1. An export carries one version of each module, so pin both to the same version and export again.',
+    });
+  });
+
+  it("refuses a pipeline whose pinned version is no longer kept", () => {
+    const { pipelineId } = pinnedUnderANewerHead(9);
+    handle.db.update(pipelineSteps).set({ moduleVersion: 9 }).where(eq(pipelineSteps.id, "deploy-step")).run();
+    expect(exportPipeline(handle.db, pipelineId)).toEqual({
+      ok: false,
+      reason: '"Deploy" v9 is pinned by this pipeline and no longer kept, so the pipeline cannot be exported whole.',
+    });
   });
 });
