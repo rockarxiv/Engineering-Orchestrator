@@ -1133,6 +1133,7 @@ describe("a pipeline's Changes view", () => {
         timeoutMs: step.timeoutMs,
         watch: step.watch,
         results: step.results,
+        moduleVersion: null,
       }));
     const save = (steps: PipelineStep[]) => savePipeline(handle.db, { notifyStateChange: () => {} }, { pipelineId, steps: asView(steps), routes: [], entryStepId: intake.id });
     // An item binds the pipeline to v1, so each save after files a version.

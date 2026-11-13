@@ -14,6 +14,7 @@ import {
   writeTrialDesign,
   type ItemTypeName,
   type TrialRound,
+  newestModuleVersion,
 } from "../db/repos/index.js";
 import { savePipeline } from "../ipc/configCommands.js";
 import type { EngineHandle } from "../ipc/domainCommands.js";
@@ -385,6 +386,9 @@ function applyToTrial(db: Db, deps: DesignDeps, live: LiveTrial, conversation: I
       id: mapped(step.id),
       pipelineId: live.trial.id,
       entryAction: step.type === "module" && step.entryAction !== null ? (moduleIds[step.entryAction] ?? step.entryAction) : step.entryAction,
+      // The newest version of what it runs here (EO-770): a round tests the
+      // module as the draft has just saved it.
+      moduleVersion: step.type === "module" && step.entryAction !== null ? newestModuleVersion(db, moduleIds[step.entryAction] ?? step.entryAction) : null,
     })),
     routes: graph.routes.map((route) => ({ ...route, pipelineId: live.trial.id, fromStepId: mapped(route.fromStepId), target: mapped(route.target) })),
     entryStepId: mapped(graph.entryStepId),

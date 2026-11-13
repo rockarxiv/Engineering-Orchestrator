@@ -103,6 +103,9 @@ export const DraftStepSchema = PipelineStepViewSchema.omit({
   workspaceId: true,
   results: true,
   watch: true,
+  // Not the architect's to choose (EO-770): a draft names a module, and a
+  // save pins it to that module's newest approved version.
+  moduleVersion: true,
 });
 
 /**

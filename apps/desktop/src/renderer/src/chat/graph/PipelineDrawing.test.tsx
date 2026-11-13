@@ -22,6 +22,7 @@ function step(id: string, name: string, position: number, overrides: Partial<Pip
     timeoutMs: null,
     watch: null,
     results: [],
+    moduleVersion: null,
     ...overrides,
   };
 }
@@ -77,6 +78,13 @@ describe("a step in the pipeline drawing (EO-680)", () => {
       expect(chips(id)[0]!.className, id).toContain("font-mono");
     }
     expect(chips("done")).toHaveLength(0);
+  });
+
+  it("shows the module version a script step pins in its head, and nothing on a step that pins none (EO-770)", () => {
+    const pinned = STEPS.map((each) => (each.id === "merge" ? { ...each, moduleVersion: 4 } : each));
+    const { box } = draw({ steps: pinned });
+    expect(box("merge").querySelector("[data-module-version]")).toHaveTextContent("v4");
+    expect(box("todo").querySelector("[data-module-version]")).toBeNull();
   });
 
   it("is one row on a raised hairline box: no owner line under the name, only the entry note on the entry step", () => {

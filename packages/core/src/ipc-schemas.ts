@@ -980,6 +980,15 @@ export const PipelineStepViewSchema = z.object({
    * would be a step offering buttons that go nowhere.
    */
   results: z.array(StepResultSchema).default([]),
+  /**
+   * Which version of its module a `module` step runs (EO-770): a
+   * `module_versions.number`. Null on every other step.
+   *
+   * On a save, absent or null on a module step pins the module's newest
+   * approved version (its newest version where none is approved), so a
+   * caller that names only a module gets the code a person approved.
+   */
+  moduleVersion: z.number().int().positive().nullable().default(null),
 });
 
 /**

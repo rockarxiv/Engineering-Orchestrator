@@ -1114,6 +1114,8 @@ function graphOfDocument(db: Db, pipelineId: string, document: PipelineExport, l
       offBoard: false,
       ownerPersonId: null,
       ownerGroupId: null,
+      // A document carries no module pin (EO-770); the save chooses one.
+      moduleVersion: null,
     }));
   const routes: StepRoute[] = document.routes.map((route) => ({
     ...route,

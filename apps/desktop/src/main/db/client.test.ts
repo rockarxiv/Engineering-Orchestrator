@@ -76,6 +76,8 @@ describe("db client", () => {
         // Part of the current version, which is what a step is until a
         // save removes it (EO-327).
         retiredVersion: null,
+        // And no module version pinned (EO-770): only a module step pins one.
+        moduleVersion: null,
       },
     ]);
   });

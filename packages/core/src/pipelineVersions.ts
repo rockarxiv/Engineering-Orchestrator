@@ -217,6 +217,13 @@ export const VersionStepSchema = z.object({
    * step that runs once.
    */
   watch: StepWatchSchema.nullable().default(null),
+  /**
+   * The version of its module a module step runs (EO-770). Carried for
+   * `results`' reason: it is the code the step runs, so two versions
+   * pinning different module versions are different pipelines. Defaulted
+   * so a document written before pins parses as pinning nothing.
+   */
+  moduleVersion: z.number().int().positive().nullable().default(null),
 });
 export type VersionStep = z.infer<typeof VersionStepSchema>;
 
@@ -369,12 +376,30 @@ export function shownEntryRule(
   /** The kinds packs contribute, so a pack's rule reads in its own words. Absent, by its kind. */
   kinds?: ReadonlyMap<string, EntryRuleKind>,
 ): string {
+  // The version a module rule pins (EO-770), since moving it changes the code the door runs.
+  const pinned = rule.kind === MODULE_ENTRY_RULE_KIND && rule.moduleVersion !== undefined ? ` ${versionLabel(rule.moduleVersion)}` : "";
   const words =
     rule.kind === MODULE_ENTRY_RULE_KIND && rule.message !== undefined
-      ? `${rule.message} (a pass from "${moduleNames?.get(rule.module ?? "") ?? rule.module ?? "a module"}")`
-      : entryRuleWords(rule, kinds, moduleNames);
+      ? `${rule.message} (a pass from "${moduleNames?.get(rule.module ?? "") ?? rule.module ?? "a module"}"${pinned})`
+      : `${entryRuleWords(rule, kinds, moduleNames)}${pinned}`;
   const limit = rule.kind === MODULE_ENTRY_RULE_KIND && rule.timeoutMs !== undefined ? `, within ${describeDuration(rule.timeoutMs)}` : "";
   return `${words}${limit}${rule.types === undefined ? "" : ` (${rule.types.join(", ")})`}`;
+}
+
+/**
+ * A changed module pin as the diff lists it (EO-770): "Notify v3 → v4",
+ * the module named on the side it was before, and again on the other
+ * side only where the step now runs another module. Null where the pin
+ * did not change, or where one side pins nothing — a document from before
+ * pins, which says nothing about versions rather than "no version".
+ */
+function moduleVersionChange(was: VersionStep, step: VersionStep, moduleNames: ReadonlyMap<string, string> | undefined): { field: string; before: string | null; after: string | null } | null {
+  if (was.moduleVersion === null || step.moduleVersion === null) return null;
+  if (was.entryAction === step.entryAction && was.moduleVersion === step.moduleVersion) return null;
+  const name = (id: string | null) => moduleNames?.get(id ?? "") ?? id ?? "module";
+  const before = `${name(was.entryAction)} ${versionLabel(was.moduleVersion)}`;
+  const after = was.entryAction === step.entryAction ? versionLabel(step.moduleVersion) : `${name(step.entryAction)} ${versionLabel(step.moduleVersion)}`;
+  return { field: "module", before, after };
 }
 
 /** One field of a step, as the diff prints it. */
@@ -419,11 +444,13 @@ export function diffVersions(
       steps.push({ stepId: id, name: step.name, change: "added", kind: stepKind(step), fields: [] });
       continue;
     }
-    const fields = DIFFED_FIELDS.flatMap((field) =>
+    const fields: VersionDiff["steps"][number]["fields"] = DIFFED_FIELDS.flatMap((field) =>
       shownStepField(field, was) === shownStepField(field, step)
         ? []
         : [{ field, before: shownStepField(field, was), after: shownStepField(field, step) }],
     );
+    const pin = moduleVersionChange(was, step, moduleNames);
+    if (pin !== null) fields.push(pin);
     if (fields.length > 0) steps.push({ stepId: id, name: step.name, change: "changed", kind: stepKind(step), fields });
   }
   for (const [id, step] of before) {

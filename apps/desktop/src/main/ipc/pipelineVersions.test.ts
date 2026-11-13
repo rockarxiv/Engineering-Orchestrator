@@ -66,6 +66,7 @@ describe("a board whose pipeline has moved on", () => {
       timeoutMs: step.timeoutMs,
       watch: step.watch,
       results: step.results,
+      moduleVersion: null,
     }));
 
   const save = (steps: PipelineStep[], routes: StepRouteView[] = []) =>
@@ -459,6 +460,7 @@ describe("a board whose pipeline has moved on", () => {
       timeoutMs: step.timeoutMs,
       watch: step.watch,
       results: step.results,
+      moduleVersion: step.moduleVersion,
     }));
     expect(savePipeline(handle.db, fakeEngine(), { pipelineId: receiverId, steps: withoutReview, routes: [], entryStepId: reception.id }).saved).toBe(true);
     expect(listStepsForPipeline(handle.db, receiverId).map((step) => step.id)).not.toContain(review.id);

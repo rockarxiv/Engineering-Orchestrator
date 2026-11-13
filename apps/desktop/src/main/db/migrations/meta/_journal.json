@@ -1191,6 +1191,13 @@
       "when": 1798387200000,
       "tag": "0169_job_watch_states",
       "breakpoints": true
+    },
+    {
+      "idx": 170,
+      "version": "6",
+      "when": 1798473600000,
+      "tag": "0170_module_version_pins",
+      "breakpoints": true
     }
   ]
 }

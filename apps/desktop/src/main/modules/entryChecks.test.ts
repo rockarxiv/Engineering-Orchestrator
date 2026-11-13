@@ -796,8 +796,8 @@ describe("publishing a module rule", () => {
     if (!unapproved.ok) throw new Error(unapproved.reason);
     const plain = module(NO_REVIEWERS, { name: "Plain", entryCheck: false }, "plain");
     expect(messages(save([{ kind: "module", module: "gone" }]))).toContain('The entry rule runs "gone", which is not a module this installation has.');
-    expect(messages(save([{ kind: "module", module: unapproved.module.id }]))).toContain('The entry rule runs "Draft check", which has not been approved.');
-    expect(messages(save([{ kind: "module", module: plain }]))).toContain('The entry rule runs "Plain", which is not declared an entry check (entryCheck: true in its manifest).');
+    expect(messages(save([{ kind: "module", module: unapproved.module.id }]))).toContain('The entry rule runs "Draft check" v1, which has not been approved.');
+    expect(messages(save([{ kind: "module", module: plain }]))).toContain('The entry rule runs "Plain" v1, which is not declared an entry check (entryCheck: true in its manifest).');
   });
 
   it("is saved and frozen into the version when the module is fit", () => {
@@ -859,10 +859,11 @@ describe("versions and files", () => {
     save([{ kind: "module", module: id, timeoutMs: 5000 }]);
 
     const versions = pipelineVersionsCommand(handle.db, { pipelineId: "default", graph: before.number });
-    expect(versions.diff?.entryRules).toEqual({ before: "none", after: 'a pass from "No reviewers", within 5 seconds' });
+    // Pinned to the module's newest approved version (EO-770), and the diff names it.
+    expect(versions.diff?.entryRules).toEqual({ before: "none", after: 'a pass from "No reviewers" v1, within 5 seconds' });
     expect(versions.graph?.entryRules).toEqual([]);
     const now = pipelineVersionsCommand(handle.db, { pipelineId: "default", graph: before.number + 1 });
-    expect(now.graph?.entryRules).toEqual([{ kind: "module", module: id, timeoutMs: 5000 }]);
+    expect(now.graph?.entryRules).toEqual([{ kind: "module", module: id, moduleVersion: 1, timeoutMs: 5000 }]);
   });
 
   it("lists each rule as a line for the pipeline's details, a module rule by name and limit", () => {
@@ -887,7 +888,8 @@ describe("versions and files", () => {
     // Into an installation that already has it, reusing it.
     const reused = importPipeline(handle.db, { document: built.document, choices: { "no-reviewers": "reuse" } });
     if (!reused.ok) throw new Error(reused.reason);
-    expect(getPipeline(handle.db, reused.pipelineId)?.entryRules).toEqual([{ kind: "module", module: id, message: "a reviewer or another branch" }]);
+    // Pinned on the way in (EO-770): the document carries no version.
+    expect(getPipeline(handle.db, reused.pipelineId)?.entryRules).toEqual([{ kind: "module", module: id, moduleVersion: 1, message: "a reviewer or another branch" }]);
 
     // Imported alongside it, the rule follows the copy it brought.
     const copied = importPipeline(handle.db, { document: built.document, choices: { "no-reviewers": "import" } });
@@ -960,5 +962,43 @@ describe("whether ctx.exec could start a binary", () => {
     expect(posixLaunchable("gh", "/opt/bin/gh.exe")).toBe(false);
     expect(posixLaunchable("/usr/local/bin/gh", "/usr/local/bin/gh")).toBe(true);
     expect(posixLaunchable("/usr/local/bin/gh", "/usr/bin/gh")).toBe(false);
+  });
+});
+
+/**
+ * The version a module rule pins (EO-770): the door runs that version's
+ * code and is gated on that version's approval, whatever the module has
+ * been edited to since.
+ */
+describe("the version a module rule pins", () => {
+  const answers = (result: string, reason = "") => `export default async function () { return { ok: true, result: ${JSON.stringify(result)}, reason: ${JSON.stringify(reason)} }; }`;
+
+  it("runs the pinned version's code at the door", async () => {
+    const id = module(answers("pass"), {}, "pinned-check");
+    // v2 refuses everything and is approved; v3 is an edit nobody approved.
+    const edit = (code: string, approve: boolean) => {
+      const saved = saveModule(handle.db, { id, slug: "pinned-check", name: CHECK_MANIFEST.name, description: "An entry check.", code, manifest: CHECK_MANIFEST, approve });
+      if (!saved.ok) throw new Error(saved.reason);
+    };
+    edit(answers("refuse", "v2 says no"), true);
+    edit(answers("refuse", "v3 says no"), false);
+
+    setRules("default", [{ kind: "module", module: id, moduleVersion: 1 }]);
+    expect(await submitItemCommand(handle.db, undefined, submission(false))).toMatchObject({ created: true });
+
+    setRules("default", [{ kind: "module", module: id, moduleVersion: 2 }]);
+    expect((await submitItemCommand(handle.db, undefined, submission(false))).problem).toBe(
+      '"Delivery" needs these before work can enter it: a pass from "No reviewers", which refused it: v2 says no.',
+    );
+
+    setRules("default", [{ kind: "module", module: id, moduleVersion: 3 }]);
+    expect((await submitItemCommand(handle.db, undefined, submission(false))).problem).toBe(
+      '"Delivery" needs these before work can enter it: a pass from "No reviewers", which cannot run: its v3 has not been approved.',
+    );
+
+    setRules("default", [{ kind: "module", module: id, moduleVersion: 7 }]);
+    expect((await submitItemCommand(handle.db, undefined, submission(false))).problem).toBe(
+      '"Delivery" needs these before work can enter it: a pass from "No reviewers", which cannot run: the v7 it pins is not kept any more.',
+    );
   });
 });

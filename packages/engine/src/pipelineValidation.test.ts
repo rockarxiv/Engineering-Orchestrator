@@ -2,6 +2,7 @@ import type { CustomModule, PipelineStep, StepRoute, Uuid } from "@eo/core";
 import { coreRegistry, developerRegistry, fromRegistryView, toRegistryView, type ActionFacts, type RegistryFacts } from "@eo/core";
 import { describe, expect, it } from "vitest";
 import { hasBlockingProblem, outsideReachByStep, validatePipeline, type ValidatePipelineInput } from "./pipelineValidation.js";
+import type { ModuleVersionFacts } from "./modulePins.js";
 
 function step(id: string, position: number, overrides: Partial<PipelineStep> = {}): PipelineStep {
   return {
@@ -23,6 +24,7 @@ function step(id: string, position: number, overrides: Partial<PipelineStep> = {
     watch: null,
     ownerPersonId: null,
     ownerGroupId: null,
+    moduleVersion: null,
     results: [],
     ...overrides,
   };
@@ -472,6 +474,57 @@ describe("validatePipeline", () => {
     expect(unapproved(errors({ ...input, trialGrantedModuleIds: [moduleId] }))).toEqual([]);
     expect(unapproved(errors({ ...input, trialGrantedModuleIds: ["some-other-module"] }))).toHaveLength(1);
     expect(unapproved(errors(input))).toHaveLength(1);
+  });
+
+  /**
+   * A module step pins a version (EO-770), and is judged by that version:
+   * it has to exist and be approved, whatever the module's head is, and
+   * its manifest is what the routes are held to.
+   */
+  describe("a module step's pinned version", () => {
+    const versions = (moduleId: string, ...entries: { number: number; approvedAt: number | null; results?: string[] }[]): ModuleVersionFacts[] =>
+      entries.map((entry) => ({
+        moduleId,
+        number: entry.number,
+        approvedAt: entry.approvedAt,
+        manifest: { ...deployModule().manifest, ...(entry.results === undefined ? {} : { results: entry.results }) },
+      }));
+
+    it("accepts a pin on an approved version while the module's own head is unapproved", () => {
+      const input = withModuleStep({ moduleVersion: 2 }, { approvedAt: null });
+      const moduleId = input.modules![0]!.id;
+      expect(validatePipeline({ ...input, moduleVersions: versions(moduleId, { number: 2, approvedAt: 900 }, { number: 3, approvedAt: null }) })).toEqual([]);
+    });
+
+    it("refuses a pin on a version that does not exist, naming the step and the version", () => {
+      const input = withModuleStep({ moduleVersion: 7 });
+      const moduleId = input.modules![0]!.id;
+      expect(errors({ ...input, moduleVersions: versions(moduleId, { number: 1, approvedAt: 900 }) })).toContain(
+        '"deploy" runs v7 of "Deploy", which "Deploy" does not have — it was never filed, or is no longer kept. Pick a version Settings → Modules lists.',
+      );
+    });
+
+    it("refuses a pin on an unapproved version, naming the step and the version, even where the module is approved", () => {
+      const input = withModuleStep({ moduleVersion: 3 });
+      const moduleId = input.modules![0]!.id;
+      expect(errors({ ...input, moduleVersions: versions(moduleId, { number: 2, approvedAt: 900 }, { number: 3, approvedAt: null }) })).toContain(
+        '"deploy" runs v3 of "Deploy", which has not been approved. Read it in Settings → Modules and approve it, or pin a version that was approved — approving runs its tests, and it needs at least one, all passing.',
+      );
+    });
+
+    it("accepts an unapproved pinned version on a trial granted that module", () => {
+      const input = withModuleStep({ moduleVersion: 3 }, { approvedAt: null });
+      const moduleId = input.modules![0]!.id;
+      expect(validatePipeline({ ...input, trialGrantedModuleIds: [moduleId], moduleVersions: versions(moduleId, { number: 3, approvedAt: null }) })).toEqual([]);
+    });
+
+    it("holds the routes to the pinned version's results, not the head's", () => {
+      const input = withModuleStep({ moduleVersion: 1 });
+      const moduleId = input.modules![0]!.id;
+      expect(errors({ ...input, moduleVersions: versions(moduleId, { number: 1, approvedAt: 900, results: ["deployed"] }) })).toContain(
+        '"failed" is not a result "Deploy" can return (deployed).',
+      );
+    });
   });
 
   it("rejects a route declaring a result the module cannot return", () => {

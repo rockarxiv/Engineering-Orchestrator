@@ -15,6 +15,7 @@ import {
   writeTrialStepSources,
   type ItemTypeName,
   type TrialPipeline,
+  newestModuleVersion,
 } from "../db/repos/index.js";
 import { projectMovedToTheRecord } from "../db/repos/projectsRepo.js";
 import { readAssistDraftForPublish } from "../ipc/assistCommands.js";
@@ -183,8 +184,14 @@ export function createTrialFromDraft(
       // Before the graph is saved too, because the save judges it: a
       // module step on a trial is accepted on a grant for that trial.
       const moduleIds = grantModules(db, pipeline.id, read.steps, place.grantedBy ?? "human", place.carriedCopies ?? {});
-      const runs = (step: (typeof read.steps)[number]): (typeof read.steps)[number] =>
-        step.type === "module" && step.entryAction !== null && moduleIds[step.entryAction] !== undefined ? { ...step, entryAction: moduleIds[step.entryAction]! } : step;
+      // A trial runs the code under test (EO-770): each module step pins the
+      // newest version of the module it runs here, approved or not — the
+      // trial grant is what lets an unapproved one run, on this trial alone.
+      const runs = (step: (typeof read.steps)[number]): (typeof read.steps)[number] => {
+        if (step.type !== "module" || step.entryAction === null) return step;
+        const entryAction = moduleIds[step.entryAction] ?? step.entryAction;
+        return { ...step, entryAction, moduleVersion: newestModuleVersion(db, entryAction) };
+      };
       const saved = savePipeline(db, engine, {
         pipelineId: pipeline.id,
         steps: read.steps.map((step) => ({ ...runs(step), id: mapped(step.id), pipelineId: pipeline.id })),

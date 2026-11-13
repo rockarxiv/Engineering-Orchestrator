@@ -243,6 +243,8 @@ function toRecordPipeline(db: Db, row: typeof pipelines.$inferSelect): RecordPip
         ownerPersonId: step.ownerPersonId,
         ownerGroupId: step.ownerGroupId,
         results: step.results as RecordPipeline["steps"][number]["results"],
+        // The module version it runs (EO-770), so a replica runs what the record pins.
+        moduleVersion: step.moduleVersion,
       })),
     routes: db
       .select()

@@ -187,6 +187,8 @@ export function documentGraph(document: PipelineExport): { steps: VersionStep[];
       planMode: step.planMode,
       offBoard: false,
       watch: step.watch,
+      // A document carries no module pin yet (EO-770), so it says nothing about one.
+      moduleVersion: null,
       results: step.results.map((result) => ({
         key: result.key,
         label: result.label,
@@ -219,7 +221,20 @@ export function suggestionDiff(input: {
   published: { number: number; steps: VersionStep[]; routes: VersionRoute[]; entryRules?: readonly EntryRule[] };
   document: PipelineExport;
 }): VersionDiff {
-  return diffVersions({ ...input.published, ...onBoard(input.published) }, { number: input.published.number + 1, ...documentGraph(input.document) });
+  return diffVersions({ ...input.published, ...withoutPins({ ...onBoard(input.published), ...(input.published.entryRules === undefined ? {} : { entryRules: input.published.entryRules }) }) }, { number: input.published.number + 1, ...documentGraph(input.document) });
+}
+
+/**
+ * The published side without its module pins (EO-770). A document does
+ * not carry them yet, so a side that did would read every pin as taken
+ * away by whoever suggested the change.
+ */
+function withoutPins(graph: { steps: VersionStep[]; routes: VersionRoute[]; entryRules?: readonly EntryRule[] }): { steps: VersionStep[]; routes: VersionRoute[]; entryRules?: readonly EntryRule[] } {
+  return {
+    ...graph,
+    steps: graph.steps.map((step) => ({ ...step, moduleVersion: null })),
+    ...(graph.entryRules === undefined ? {} : { entryRules: graph.entryRules.map(({ moduleVersion: _moduleVersion, ...rule }) => rule) }),
+  };
 }
 
 /**

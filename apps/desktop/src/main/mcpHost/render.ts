@@ -974,6 +974,12 @@ export function renderPipeline(data: IpcResponse<"pipelineSteps:list">): string 
     // to run for real, redirect or mock, said on the step it is about.
     const reach = outsideReachLine(data.outsideReach[step.id]);
     if (reach !== null) lines.push(`  ${reach}`);
+    // The module version it runs (EO-770), with the field as pipeline_save
+    // takes it: a pipeline runs the version it pins, not the module's
+    // newest, and a save that leaves the field out pins the newest approved.
+    if (step.type === "module" && step.moduleVersion !== null) {
+      lines.push(`  runs module ${step.entryAction ?? "?"} at ${versionLabel(step.moduleVersion)} — \`moduleVersion: ${String(step.moduleVersion)}\``);
+    }
     // What a person may answer here, and which answers refuse to be
     // given without a reason (EO-310). Said on the step rather than left
     // to the routes below, because the routes say where a key *goes* and
@@ -1100,7 +1106,9 @@ export function renderModuleVersions(data: IpcResponse<"moduleVersions:list">): 
     data.versions.map(
       (version) =>
         `- ${versionLabel(version.number)}, saved ${new Date(version.createdAt).toISOString()} — ${version.approved ? "approved" : "not approved"}, ` +
-        `${version.testCount} test case(s)${version.current ? " (current)" : ""}`,
+        `${version.testCount} test case(s)${version.current ? " (current)" : ""}` +
+        // Which pipelines run it (EO-770): a pipeline runs the version it pins, not the newest.
+        (version.pinnedBy.length === 0 ? "" : `; pinned by ${version.pinnedBy.map((name) => `"${name}"`).join(", ")}`),
     ),
     "This module has no versions.",
   );

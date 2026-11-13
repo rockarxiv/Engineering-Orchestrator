@@ -1,6 +1,6 @@
 import type { CustomModule, Item, Uuid } from "@eo/core";
 import type { Db } from "../db/client.js";
-import { activeTrialGrants, getModule, latestTrialGrant, listTrialGrantsForModule, needsBeyondGrant, stepForItem } from "../db/repos/index.js";
+import { activeTrialGrants, getModule, latestTrialGrant, listModuleVersions, listTrialGrantsForModule, moduleAtVersion, needsBeyondGrant, stepForItem } from "../db/repos/index.js";
 import { answerToLastAsk } from "../roles/answers.js";
 import type { BuiltinContext, BuiltinOutcome, BuiltinRunner } from "../supervisor/builtins.js";
 import { postModuleAttachment, postModuleComment } from "./moduleComments.js";
@@ -132,17 +132,47 @@ function organisationReader(store: OrganisationSecretsOptions | undefined): ((na
 
 export function createModuleRunnerLookup(options: ModuleRegistryOptions): (action: string) => BuiltinRunner | undefined {
   return (action: string) => {
-    const module = getModule(options.db, action);
-    if (!module || module.archivedAt !== null) return undefined;
-    const onTrialGrant = module.approvedAt === null;
+    const catalogued = getModule(options.db, action);
+    if (!catalogued || catalogued.archivedAt !== null) return undefined;
     // Any grant, held or withdrawn: a module whose grant was withdrawn is
     // refused by the runner, which can say why, rather than here.
-    if (onTrialGrant && listTrialGrantsForModule(options.db, module.id).length === 0) return undefined;
+    const granted = listTrialGrantsForModule(options.db, catalogued.id).length > 0;
+    // A module nobody has ever approved, in any version, and nobody
+    // granted a trial, is nothing a step may run. Which version a step
+    // runs depends on the item, so one that has an approved version
+    // resolves to a runner, which asks.
+    const everApproved = catalogued.approvedAt !== null || listModuleVersions(options.db, catalogued.id).some((version) => version.approved);
+    if (!everApproved && !granted) return undefined;
 
     return async (context: BuiltinContext): Promise<BuiltinOutcome> => {
-      // Before anything else, the preview included: an unapproved module
+      // The version this step pins *as the item's own pipeline version
+      // defines it* (EO-770, EO-327): its code, its manifest and its
+      // approval are what run here, not the module's head — so an edit to
+      // the module, which files a new unapproved version, changes nothing
+      // live work runs, and an item that entered on an older pipeline
+      // version runs the module version that version pins. A step written
+      // before pins, or one this item is not on, runs the module as it
+      // stands.
+      //
+      // A trial's test item runs the module as it stands too, under its
+      // trial grant where it is unapproved (EO-583): a trial exists to run
+      // the draft's code as it is saved now, round after round, and every
+      // edit the loop makes is the code its next item is testing.
+      const pinnedStep = context.item.trialAt !== null ? undefined : stepForItem(options.db, context.item);
+      const pin = pinnedStep?.type === "module" && pinnedStep.entryAction === catalogued.id ? pinnedStep.moduleVersion : null;
+      const pinned = moduleAtVersion(options.db, catalogued, pin);
+      if (!pinned.ok) return { ok: false, reason: pinned.reason };
+      const module = pinned.module;
+
+      // Before anything else, the preview included: an unapproved version
       // runs on its own trial's items or not at all.
-      if (onTrialGrant) {
+      if (module.approvedAt === null) {
+        if (!granted) {
+          return {
+            ok: false,
+            reason: `${pinned.version === null ? `"${module.name}"` : `v${pinned.version} of "${module.name}"`} has not been approved, so this step does not run it. Approve it under Settings → Modules, or publish the pipeline pinning a version that was approved.`,
+          };
+        }
         const refusal = trialGrantRefusal(options.db, module, context.item);
         if (refusal !== null) return { ok: false, reason: refusal };
       }

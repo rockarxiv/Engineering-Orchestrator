@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { coreRegistry, developerRegistry, EMPTY_SPEC_SHAPE, entryRuleWords, SpecShapeSchema, type EntryRule, type Uuid } from "@eo/core";
 import { entryCheckModuleProblem, entryRefusal, entryRuleProblems, moduleEntryChecks, unmetEntryRules, type EntryCheckModule, type EntryFacts } from "./entryRules.js";
 import { validatePipeline } from "./pipelineValidation.js";
+import type { ModuleVersionFacts } from "./modulePins.js";
 
 const kinds = developerRegistry().entryRuleKinds;
 
@@ -167,6 +168,29 @@ describe("a module rule (EO-736)", () => {
     expect(problems({ ...fit, manifest: { ...manifest, entryCheck: false } })).toEqual(['The entry rule runs "No reviewers", which is not declared an entry check (entryCheck: true in its manifest).']);
     expect(problems({ ...fit, manifest: { ...manifest, sideEffects: true } })[0]).toContain("may not declare sideEffects");
     expect(entryRuleProblems([{ kind: "module" }], types, kinds, [fit])).toEqual(["An entry rule that runs a module does not say which module."]);
+  });
+
+  it("is judged by the version it pins (EO-770): one that does not exist, or nobody approved, is refused by number", () => {
+    const facts = (number: number, approvedAt: number | null): ModuleVersionFacts => ({ moduleId: "m1", number, approvedAt, manifest });
+    const problems = (moduleVersion: number) => entryRuleProblems([{ kind: "module", module: "m1", moduleVersion }], types, kinds, [{ ...fit, approvedAt: null }], [facts(2, 900), facts(3, null)]);
+    expect(problems(2)).toEqual([]);
+    expect(problems(3)).toEqual(['The entry rule runs "No reviewers" v3, which has not been approved.']);
+    expect(problems(9)).toEqual(['The entry rule runs "No reviewers" v9, which "No reviewers" does not have — it was never filed, or is no longer kept.']);
+  });
+
+  it("runs once per pinned version, so two pins of one module are two runs", () => {
+    const checks = moduleEntryChecks(
+      [
+        { kind: "module", module: "a", moduleVersion: 1 },
+        { kind: "module", module: "a", moduleVersion: 2 },
+        { kind: "module", module: "a", moduleVersion: 1, message: "again" },
+      ],
+      "developer:story",
+    );
+    expect(checks.map((check) => [check.module, check.moduleVersion, check.rules.length])).toEqual([
+      ["a", 1, 2],
+      ["a", 2, 1],
+    ]);
   });
 
   it("judges only its shape where no catalog is handed in", () => {

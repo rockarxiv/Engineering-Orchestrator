@@ -455,8 +455,12 @@ const CAPABILITIES = [
           name: "Release",
           icon: "workflow",
           restoredFrom: 3,
-          // A draft is how the assistant sets a pipeline's entry rules (EO-610).
-          entryRules: [{ kind: "field", field: "customer", types: ["developer:story"], message: "the customer's name" }, { kind: "description" }],
+          // A draft is how the assistant sets a pipeline's entry rules (EO-610), a module rule's pinned version among them (EO-770).
+          entryRules: [
+            { kind: "field", field: "customer", types: ["developer:story"], message: "the customer's name" },
+            { kind: "description" },
+            { kind: "module", module: "no-reviewers", moduleVersion: 2 },
+          ],
         },
       },
     },

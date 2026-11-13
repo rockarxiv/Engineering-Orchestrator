@@ -87,7 +87,7 @@ import {
 } from "../ipc/skillCommands.js";
 import { readMcpServerSecret, type McpServerSecretsOptions } from "../mcp/serverSecrets.js";
 import { storeOrganisationSecret } from "../policy/organisationSecrets.js";
-import { approveModuleCommand, saveModuleCommand } from "../ipc/moduleCommands.js";
+import { approveModuleCommand, listModuleVersionsCommand, saveModuleCommand } from "../ipc/moduleCommands.js";
 import {
   addRepositoryToProjectCommand,
   createProjectCommand,
@@ -4015,5 +4015,42 @@ describe("keep checking through pipeline_get and pipeline_save", () => {
     expect((outcome.data as IpcResponse<"pipeline:save">).watchTurnedOff).toEqual([{ stepId: "pull_request_watch", name: "Watching pull request" }]);
     expect(outcome.text).toContain("Keep checking is now off on these steps");
     expect(outcome.text).toContain("- Watching pull request (id: pull_request_watch)");
+  });
+});
+
+/**
+ * The module version a step pins (EO-770), as an agent working over MCP
+ * meets it: pipeline_get says which version a module step runs, with the
+ * field as pipeline_save takes it, and module_versions_list says which
+ * pipelines pin each version.
+ */
+describe("a module step's pinned version through pipeline_get and module_versions_list", () => {
+  beforeEach(() => {
+    registerHandler("pipelineSteps:list", (payload) => listPipelineStepViews(handle.db, payload), opts);
+    registerHandler("moduleVersions:list", (payload) => listModuleVersionsCommand(handle.db, payload), opts);
+  });
+
+  it("names the pinned version on the step, and the pipeline pinning it on the version", async () => {
+    const manifest = { name: "Notify", description: "Tells the channel.", inputs: {}, needs: { bin: [], env: [], network: false, item: false, comment: false, attach: false, create: false }, results: ["sent"] };
+    const first = saveModule(handle.db, { slug: "notify", name: "Notify", description: "Tells the channel.", code: "export default async () => ({ ok: true, result: 'sent' });", manifest, approve: true });
+    if (!first.ok) throw new Error(first.reason);
+    const edited = saveModule(handle.db, { id: first.module.id, slug: "notify", name: "Notify", description: "Tells the channel.", code: "export default async () => ({ ok: true, result: 'sent', detail: 'v2' });", manifest });
+    if (!edited.ok) throw new Error(edited.reason);
+    createStep(handle.db, { id: "notify_step", pipelineId: "default" as Uuid, position: 90, name: "Notify team", type: "module", entryAction: first.module.id });
+
+    const graph = await tool("pipeline_get").run(dispatch, { pipelineId: "default" });
+    expect(graph.ok).toBe(true);
+    if (!graph.ok) return;
+    const lines = graph.text.split("\n");
+    const at = lines.findIndex((line) => line.startsWith("- Notify team (id: notify_step)"));
+    expect(lines.slice(at + 1)).toContain(`  runs module ${first.module.id} at v1 — \`moduleVersion: 1\``);
+    expect((graph.data as IpcResponse<"pipelineSteps:list">).steps.find((step) => step.id === "notify_step")?.moduleVersion).toBe(1);
+
+    const versions = await tool("module_versions_list").run(dispatch, { moduleId: first.module.id });
+    expect(versions.ok).toBe(true);
+    if (!versions.ok) return;
+    const pipelineName = getPipeline(handle.db, "default")!.name;
+    expect(versions.text).toMatch(new RegExp(`^- v1, .*; pinned by "${pipelineName}"$`, "m"));
+    expect(versions.text).toMatch(/^- v2, .*\(current\)$/m);
   });
 });

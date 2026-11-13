@@ -240,6 +240,10 @@ export function mergeThreeWay<S extends ComparableStep, R extends ComparableRout
     }
     const updated: Record<string, unknown> = { ...step };
     for (const field of fields) updated[field] = fromTemplate[field];
+    // A pinned module version belongs to the module it pins (EO-770): a
+    // step taking the template's module takes the template's pin with it,
+    // which a document without one leaves to the save to choose.
+    if (fields.includes("entryAction") && "moduleVersion" in step) updated["moduleVersion"] = (fromTemplate as Record<string, unknown>)["moduleVersion"] ?? null;
     steps.push(updated as S);
   }
 

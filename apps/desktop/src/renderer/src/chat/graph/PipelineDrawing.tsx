@@ -1,6 +1,6 @@
 import { useId, useMemo } from "react";
 import { Link } from "react-router-dom";
-import { USER_ATTENTION_TARGET, type HandOffTargets, type PipelineStepView, type StepRouteView } from "@eo/core";
+import { USER_ATTENTION_TARGET, versionLabel, type HandOffTargets, type PipelineStepView, type StepRouteView } from "@eo/core";
 import { cn } from "@eo/ui";
 import { StepKindChip, stepLane } from "../kit";
 import { BOX_PAD_X, layoutPipeline, type LaidArrow, type Rect } from "./layout";
@@ -228,6 +228,12 @@ export function PipelineDrawing({
                       >
                         {here} here
                       </Link>
+                    ) : null}
+                    {/* The module version a script step runs (EO-770): a pipeline runs the version it pins, not the newest. */}
+                    {step.type === "module" && step.moduleVersion !== null ? (
+                      <span data-module-version title={`Runs version ${step.moduleVersion} of this module`} className="font-mono text-[12px] leading-none text-ink-muted">
+                        {versionLabel(step.moduleVersion)}
+                      </span>
                     ) : null}
                     {/* An end is not a kind of work: no chip, and the outline says it. Said aloud, since the outline is not. */}
                     {step.isTerminal ? <span className="sr-only">end</span> : <StepKindChip step={step} />}

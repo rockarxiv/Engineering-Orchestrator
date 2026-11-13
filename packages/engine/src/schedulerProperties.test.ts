@@ -79,6 +79,7 @@ function stepFor(pipelineId: string, position: number, role: string): PipelineSt
     watch: null,
     ownerPersonId: null,
     ownerGroupId: null,
+    moduleVersion: null,
     results: [],
   };
 }

@@ -15,9 +15,10 @@ import {
 } from "@eo/core";
 import { moduleEntryChecks, type ModuleEntryCheck } from "@eo/engine";
 import type { Db } from "../db/client.js";
-import { moduleRefusalWords, runWithEntryVerdicts, unfitModuleClause, type PendingEntryCheck } from "../db/repos/entryRulesRepo.js";
+import { entryCheckModule, moduleRefusalWords, runWithEntryVerdicts, unfitModuleClause, type PendingEntryCheck } from "../db/repos/entryRulesRepo.js";
 import { getItemType } from "../db/repos/itemTypesRepo.js";
 import { getModule } from "../db/repos/modulesRepo.js";
+import { moduleAtVersion } from "../db/repos/moduleVersionsRepo.js";
 import { getPipeline, getStep } from "../db/repos/pipelineStepsRepo.js";
 import { entryRulesForArrival } from "../db/repos/pipelineVersionsRepo.js";
 import { asGitWorkspace, getWorkspace } from "../db/repos/workspacesRepo.js";
@@ -134,7 +135,8 @@ export async function moduleEntryRefusal(
   if (checks.length === 0) return null;
   const pipelineName = getPipeline(db, item.pipelineId)?.name ?? "This pipeline";
   for (const check of checks) {
-    const module = check.module === "" ? undefined : getModule(db, check.module);
+    // The version the rule pins (EO-770): its code runs at the door.
+    const module = entryCheckModule(db, check);
     const why = await judge(db, check, module, arrival, pipelineName);
     if (why !== null) return entryRefusalSentence(pipelineName, [moduleRefusalWords(check.rules[0]!, module, check.module, why)]);
   }
@@ -293,9 +295,12 @@ function runnableFile(candidate: string, platform: NodeJS.Platform): boolean {
  * published rather than discovered by the first item at the door.
  */
 export function moduleRulesUnrunnableHere(db: Db, rules: readonly EntryRule[]): string[] {
-  const ids = [...new Set(rules.filter((rule) => rule.kind === MODULE_ENTRY_RULE_KIND && rule.module !== undefined).map((rule) => rule.module!))];
-  return ids.flatMap((id) => {
-    const module = getModule(db, id);
+  const pins = new Map(rules.filter((rule) => rule.kind === MODULE_ENTRY_RULE_KIND && rule.module !== undefined).map((rule) => [`${rule.module!}\u0000${rule.moduleVersion ?? ""}`, rule] as const));
+  return [...pins.values()].flatMap((rule) => {
+    const catalogued = getModule(db, rule.module!);
+    // The binaries the pinned version needs (EO-770), which are what its doors would launch.
+    const pinned = catalogued === undefined ? undefined : moduleAtVersion(db, catalogued, rule.moduleVersion);
+    const module = pinned?.ok === true ? pinned.module : catalogued;
     if (module === undefined) return [];
     if (configured === null) return [`The entry rule runs "${module.name}", which this record cannot run: ${NO_HOST}.`];
     const missing = binariesNotFound(module.manifest.needs.bin);

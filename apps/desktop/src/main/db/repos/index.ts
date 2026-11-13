@@ -498,6 +498,13 @@ export {
   recordModuleVersion,
   restoreModuleVersion,
   setModuleVersionsToKeep,
+  defaultModuleVersion,
+  newestModuleVersion,
+  pinEntryRules,
+  stepModuleVersion,
+  listModuleVersionFacts,
+  moduleAtVersion,
+  pinnedModuleVersions,
   type RestoreModuleVersionResult,
 } from "./moduleVersionsRepo.js";
 export {

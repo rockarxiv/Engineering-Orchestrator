@@ -58,6 +58,7 @@ import {
   setItemArchived,
   updateItem,
   versionSnapshot,
+  listModuleVersions,
 } from "../db/repos/index.js";
 import { activeProjectId } from "../ipc/repositoryCommands.js";
 import { chatPipelineProjectId } from "../ipc/pipelineHome.js";
@@ -2501,7 +2502,9 @@ function draftWaitingModules(db: Db, draft: AssistDraft, proposed: readonly Prop
   for (const step of draft.steps) {
     if (step.type !== "module" || step.entryAction === null || proposedSlugs.has(step.entryAction)) continue;
     const named = byId.get(step.entryAction);
-    if (!named || named.archivedAt !== null || named.approvedAt !== null) continue;
+    // A module with an approved version is not waited on (EO-770): the
+    // publish pins that version, whatever edit its head has had since.
+    if (!named || named.archivedAt !== null || named.approvedAt !== null || listModuleVersions(db, named.id).some((version) => version.approved)) continue;
     waiting.set(named.slug, { id: named.id, slug: named.slug, name: named.name, state: "unapproved" });
   }
   return [...waiting.values()];
@@ -2638,6 +2641,9 @@ export function assistDraftForPublish(db: Db, conversation: Item, commentId: Uui
         // that only rewired around it — and "Needs a reason" is the
         // draft's wherever its branch says it (EO-520).
         results: draftStepResults(step, read.draft.routes, existing?.results ?? []),
+        // A draft names a module and no version (EO-770): the save pins the
+        // module's newest approved version.
+        moduleVersion: null,
       };
     }),
     // "Needs a reason" is the result's, carried above, not the route's.

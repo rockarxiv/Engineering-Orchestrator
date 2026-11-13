@@ -954,3 +954,90 @@ describe("environment variables", () => {
     expect(await lookup()(probe.id)!(context(run.id, elsewhere))).toMatchObject({ ok: true, detail: "true" });
   });
 });
+
+/**
+ * The module version a step pins (EO-770, ARCHITECTURE.md, "Modules: a
+ * step that is a script").
+ *
+ * Through a real host, because what is asserted is which code ran: each
+ * version answers with its own name. The gate is the pinned version's own
+ * approval, so an edit to the module — which files a new, unapproved
+ * version — leaves live work running the version it pins.
+ */
+describe("the module version a step pins", () => {
+  const says = (word: string) => `export default async function run() { return { ok: true, result: "ok", detail: "${word}" }; }`;
+
+  function edit(moduleId: string, code: string, approve: boolean): void {
+    const saved = saveModule(handle.db, { id: moduleId, slug: "probe", name: "Probe", description: "Says something and stops.", code, manifest, approve });
+    if (!saved.ok) throw new Error(saved.reason);
+  }
+
+  function stepOn(moduleId: string, moduleVersion?: number): void {
+    createStep(handle.db, {
+      id: "pinned",
+      pipelineId: "default" as Uuid,
+      position: 60,
+      name: "pinned",
+      type: "module",
+      entryAction: moduleId,
+      ...(moduleVersion === undefined ? {} : { moduleVersion }),
+    });
+  }
+
+  const dispatch = (moduleId: string, on: Item) => {
+    const run = createRun(handle.db, { itemId: on.id, agentId: null, action: moduleId, status: "running", provider: "module" });
+    return lookup()(moduleId)!(context(run.id, on));
+  };
+
+  it("keeps running the approved version it pins after an edit files a newer, unapproved one", async () => {
+    const module = register(says("v1"));
+    edit(module.id, says("v2"), true);
+    stepOn(module.id);
+    // A step that names no version pins the newest approved one.
+    expect(getStep(handle.db, "pinned")?.moduleVersion).toBe(2);
+    const on = createTestItem(handle.db, { type: "story", title: "Pinned", stepId: "pinned" });
+
+    // Saving an edit files v3 and withdraws the module's own approval.
+    edit(module.id, says("v3"), false);
+
+    expect(await dispatch(module.id, on)).toEqual({ ok: true, result: "ok", detail: "v2" });
+  });
+
+  it("runs the version an item's own pipeline version pins after the current version moves on", async () => {
+    const module = register(says("v1"));
+    stepOn(module.id, 1);
+    const first = createPipelineVersion(handle.db, "default", null);
+    const older = createTestItem(handle.db, { type: "story", title: "Entered on v1's pin", stepId: "pinned" });
+    expect(getItem(handle.db, older.id)?.pipelineVersionId).toBe(first.id);
+
+    // v2 is approved and the pipeline is published pinning it.
+    edit(module.id, says("v2"), true);
+    const moved = listStepsForPipeline(handle.db, "default").map((step) => (step.id === "pinned" ? { ...step, moduleVersion: 2 } : step));
+    expect(replacePipelineGraph(handle.db, "default", moved, listRoutesForPipeline(handle.db, "default"))).toMatchObject({ replaced: true });
+
+    expect(await dispatch(module.id, getItem(handle.db, older.id)!)).toEqual({ ok: true, result: "ok", detail: "v1" });
+    const newer = createTestItem(handle.db, { type: "story", title: "Entered on v2's pin", stepId: "pinned" });
+    expect(await dispatch(module.id, newer)).toEqual({ ok: true, result: "ok", detail: "v2" });
+  });
+
+  it("refuses to run a pinned version nobody approved, naming it", async () => {
+    const module = register(says("v1"));
+    edit(module.id, says("v2"), false);
+    stepOn(module.id, 2);
+    const on = createTestItem(handle.db, { type: "story", title: "Pinned to a draft", stepId: "pinned" });
+
+    const outcome = await dispatch(module.id, on);
+    expect(outcome).toMatchObject({ ok: false });
+    expect(!outcome.ok && outcome.reason).toContain('v2 of "Probe" has not been approved');
+  });
+
+  it("refuses to run a pinned version the module does not keep, naming it", async () => {
+    const module = register(says("v1"));
+    stepOn(module.id, 9);
+    const on = createTestItem(handle.db, { type: "story", title: "Pinned to nothing", stepId: "pinned" });
+
+    const outcome = await dispatch(module.id, on);
+    expect(outcome).toMatchObject({ ok: false });
+    expect(!outcome.ok && outcome.reason).toContain('"Probe" v9 is not kept any more');
+  });
+});

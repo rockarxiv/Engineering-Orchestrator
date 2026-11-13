@@ -125,10 +125,10 @@ export function changeKind(step: PipelineStepView, type: PipelineStepView["type"
   // `watch` goes too (EO-456): keep checking belongs to the function or
   // module the step ran, which every branch clears, and only a builtin or
   // a module step can keep checking at all.
-  if (type === "agent") return { type, ownerRole: step.ownerRole ?? roles[0] ?? null, entryAction: null, inputs: {}, timeoutMs: null, watch: null, isTerminal: false };
-  if (type === "builtin" || type === "module") return { type, ownerRole: null, entryAction: null, inputs: {}, timeoutMs: null, watch: null, isTerminal: false };
+  if (type === "agent") return { type, ownerRole: step.ownerRole ?? roles[0] ?? null, entryAction: null, inputs: {}, timeoutMs: null, watch: null, moduleVersion: null, isTerminal: false };
+  if (type === "builtin" || type === "module") return { type, ownerRole: null, entryAction: null, inputs: {}, timeoutMs: null, watch: null, moduleVersion: null, isTerminal: false };
   // Only a `user` step may be terminal — nothing runs where work is done.
-  return { type, ownerRole: null, entryAction: null, inputs: {}, timeoutMs: null, watch: null };
+  return { type, ownerRole: null, entryAction: null, inputs: {}, timeoutMs: null, watch: null, moduleVersion: null };
 }
 
 /**

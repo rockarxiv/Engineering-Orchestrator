@@ -24,6 +24,9 @@ import {
   listAgents,
   listIncomingHandOffs,
   listModules,
+  listModuleVersionFacts,
+  pinEntryRules,
+  stepModuleVersion,
   trialGrantedModuleIds,
   listItemsIncludingArchived,
   listPipelineSteps,
@@ -794,6 +797,11 @@ function toDomainSteps(db: Db, pipelineId: string, steps: IpcPayload<"pipeline:s
     // this function's whole contract is to hand that claim to the
     // validator unaltered (invariant #5: verify, don't trust).
     results: step.results,
+    // The module version it runs (EO-770): the one it names, or — a
+    // module named without a version — that module's newest approved
+    // version. Settled here, before the validator, so what is judged is
+    // what is written.
+    moduleVersion: stepModuleVersion(db, step),
   }));
 }
 
@@ -999,7 +1007,9 @@ function validationInput(
   }
 
   return {
-    steps,
+    // Each module step pinned (EO-770), for a caller that did not settle
+    // it: the version a write would pin is the version judged.
+    steps: steps.map((step) => ({ ...step, moduleVersion: stepModuleVersion(db, step) })),
     routes,
     entryStepId,
     archivedCountByStep,
@@ -1022,6 +1032,9 @@ function validationInput(
     // problem from one naming a module that was never here, and the
     // validator can only tell them apart if it is given both (KAN-104).
     modules: listModules(db, true),
+    // And every version each keeps (EO-770), since a step and an entry
+    // rule are judged by the version they pin.
+    moduleVersions: listModuleVersionFacts(db),
     // What this pipeline may run unapproved because it is a trial and the
     // person granted it (EO-583). Nothing on any other pipeline.
     trialGrantedModuleIds: trialGrantedModuleIds(db, pipelineId),
@@ -1086,7 +1099,8 @@ function validationInput(
     // The rules this save sets, and the types of the projects it would
     // file for (EO-610): the pipeline's own project where one adopted it,
     // as `foreignWorkspaceProblems` reads it. Absent judges nothing.
-    ...(entryRules === undefined ? {} : { entryRules, itemTypes: itemTypesJudged(db, pipelineId, judgedFor) }),
+    // Each module rule pinned (EO-770), as a write would pin it.
+    ...(entryRules === undefined ? {} : { entryRules: pinEntryRules(db, entryRules), itemTypes: itemTypesJudged(db, pipelineId, judgedFor) }),
   };
 }
 
@@ -1296,7 +1310,10 @@ export function savePipeline(
   // A restored version brings its entry rules back with it (EO-610): they
   // are part of what it says. Rules the caller sent speak for themselves.
   const restoredVersion = input.restoredFrom === undefined ? undefined : pipelineVersionByNumber(db, input.pipelineId, input.restoredFrom);
-  const entryRules = input.entryRules ?? (restoredVersion === undefined ? undefined : versionSnapshot(db, restoredVersion.id)?.entryRules);
+  const told = input.entryRules ?? (restoredVersion === undefined ? undefined : versionSnapshot(db, restoredVersion.id)?.entryRules);
+  // Each module rule pinned to a version (EO-770): the one it names, or
+  // its module's newest approved version.
+  const entryRules = told === undefined ? undefined : pinEntryRules(db, told);
 
   // Judged with the definitions it is being published with.
   const proposed = registryWith(db, actions);
