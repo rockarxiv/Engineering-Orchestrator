@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { versionLabel } from "./pipelineVersions.js";
-import { ModuleTestCaseSchema, ModuleViewSchema } from "./schemas/modules.js";
+import { ModuleTestCaseSchema, ModuleVersionSchema, ModuleViewSchema } from "./schemas/modules.js";
 import { SkillCopySchema } from "./schemas/skills.js";
 import type { IpcChannel } from "./ipc.js";
 
@@ -187,6 +187,18 @@ export const PublishedModuleSchema = ModuleViewSchema.omit({ usedByStepCount: tr
    * is the record's account of running the code, not the code.
    */
   tests: z.array(ModuleTestCaseSchema.omit({ moduleId: true })).optional(),
+  /**
+   * The module's kept versions (EO-772), each whole and under the
+   * record's own id and number, because a pipeline pins a module version
+   * *by number*. A replica that filed its own numbers would read the
+   * record's pin on v2 as whatever it happened to call v2 — or as
+   * nothing — and run code the record does not.
+   *
+   * Optional, for `tests`' reason: a publication from before the pin
+   * travelled carries no field, and absent leaves the replica's history
+   * alone. Present is the whole history, and replaces the replica's.
+   */
+  versions: z.array(ModuleVersionSchema.pick({ number: true, name: true, description: true, code: true, manifest: true, tests: true, approvedAt: true, createdAt: true }).extend({ id: z.string() })).optional(),
 });
 
 export type PublishedModule = z.infer<typeof PublishedModuleSchema>;

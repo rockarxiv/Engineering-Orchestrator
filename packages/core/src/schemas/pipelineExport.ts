@@ -700,7 +700,12 @@ export const ExportedPipelineHeadSchema = z.object({
  * which version the author pinned; it names nothing on the far side,
  * where an import pins the version it creates or matches.
  */
-export const ExportedStepSchema = PipelineStepViewSchema.omit({ pipelineId: true, inputs: true, timeoutMs: true, workspaceMode: true, workspaceId: true });
+export const ExportedStepSchema = PipelineStepViewSchema.omit({ pipelineId: true, inputs: true, timeoutMs: true, workspaceMode: true, workspaceId: true }).extend({
+  // Optional rather than defaulted: written on a module step that pins a
+  // version and absent everywhere else, so a document with no module step
+  // reads exactly as it did at format 13.
+  moduleVersion: z.number().int().positive().nullable().optional(),
+});
 /** A route as the document carries it. Its target is a step of any board in the document, or a sentinel. */
 export const ExportedRouteSchema = StepRouteViewSchema.omit({ id: true, pipelineId: true });
 

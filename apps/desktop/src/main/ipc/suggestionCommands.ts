@@ -603,7 +603,10 @@ function applyDocument(
     ...(entryStepId === null ? {} : { entryStepId }),
     // What the suggestion says work must have to enter (EO-610): part of
     // the document, and shown on the diff the admin approved.
-    entryRules: document.pipeline.entryRules,
+    // Without the module pin an export now carries (EO-772): it is a
+    // number on the suggesting machine, which may have filed versions the
+    // record never saw, so the save pins as it did before pins travelled.
+    entryRules: document.pipeline.entryRules.map(({ moduleVersion: _moduleVersion, ...rule }) => rule),
     createdBy: by,
   });
   if (!replaced.replaced) {

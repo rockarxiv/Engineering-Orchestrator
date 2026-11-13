@@ -735,6 +735,9 @@ export function upsertReplicaPipeline(db: Db, pipeline: RecordPipeline): "writte
           ownerPersonId: knownPerson(db, step.ownerPersonId),
           ownerGroupId: step.ownerGroupId,
           results: step.results,
+          // The module version it runs (EO-772): the record's number, which
+          // is this replica's too once the section's modules have applied.
+          moduleVersion: step.moduleVersion,
         })
         .onConflictDoUpdate({
           target: pipelineSteps.id,
@@ -757,6 +760,7 @@ export function upsertReplicaPipeline(db: Db, pipeline: RecordPipeline): "writte
                 ownerPersonId: knownPerson(db, step.ownerPersonId),
                 ownerGroupId: step.ownerGroupId,
                 results: step.results,
+                moduleVersion: step.moduleVersion,
                 // `workspaceId` is absent on purpose — see this
                 // function's header. It is the one thing on a step that
                 // belongs to the machine rather than to the graph.
@@ -1705,6 +1709,8 @@ export function writeAdoptedPage(db: Db, project: RecordProject, page: RecordAdo
             ownerPersonId: knownPerson(db, step.ownerPersonId),
             ownerGroupId: step.ownerGroupId,
             results: step.results,
+            // The module version it runs (EO-772), as the sender pins it.
+            moduleVersion: step.moduleVersion,
           })
           // Wholesale, because a step carries no timestamp of its own
           // and travels with the pipeline that does. What the sender
@@ -1728,6 +1734,7 @@ export function writeAdoptedPage(db: Db, project: RecordProject, page: RecordAdo
               ownerPersonId: knownPerson(db, step.ownerPersonId),
               ownerGroupId: step.ownerGroupId,
               results: step.results,
+              moduleVersion: step.moduleVersion,
             },
           })
           .run();

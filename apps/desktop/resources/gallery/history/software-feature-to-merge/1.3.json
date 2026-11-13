@@ -2,7 +2,7 @@
   "eoTemplateHistory": 1,
   "notes": "When everything this template needs is in place, setting it up now ends in a chat with the assistant, which asks what your first feature is and proposes it for you to approve. Before, it ended on an empty board. Nothing about the pipeline itself changed.",
   "pack": {
-    "eoPipelineExport": 13,
+    "eoPipelineExport": 14,
     "template": {
       "slug": "software-feature-to-merge",
       "title": "Software feature to merge",

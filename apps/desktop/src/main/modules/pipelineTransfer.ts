@@ -67,6 +67,7 @@ import {
   getMcpServerByName,
   getModule,
   getModuleVersion,
+  newestModuleVersion,
   hasItemType,
   insertItemType,
   isJiraConnected,
@@ -1589,6 +1590,12 @@ function writeImport(
   writeConnectors(db, document, projectId);
   attachDeclaredServers(db, document, writeMcpServers(db, document));
 
+  // Slug → the version a step or rule naming it pins here (EO-772), for
+  // the modules this import creates. A module reused from this
+  // installation is absent, and its steps and rules pin its default
+  // version, as any save naming none does: the document's number is
+  // another machine's history and names nothing here.
+  const versionBySlug = new Map<string, number>();
   for (const { slug, from: module } of toCreate) {
     const saved = saveModule(db, {
       slug,
@@ -1615,6 +1622,11 @@ function writeImport(
       if (!added.ok) throw new Error(added.reason);
     }
     idBySlug.set(module.slug, saved.module.id);
+    // The version this import filed (EO-772), which holds the code the
+    // document carried — the version its author's pipeline pinned, or on
+    // a document from before the pin travelled, the module as it stood.
+    const filed = newestModuleVersion(db, saved.module.id);
+    if (filed !== null) versionBySlug.set(module.slug, filed);
   }
 
   // Step ids are re-minted rather than kept.
@@ -1666,6 +1678,9 @@ function writeImport(
         type: step.type,
         ownerRole: step.ownerRole,
         entryAction: step.type === "module" && step.entryAction !== null ? (idBySlug.get(step.entryAction) ?? step.entryAction) : step.entryAction,
+        // The version this import filed of the module it runs (EO-772); null
+        // pins the default, which is right for a module reused from here.
+        moduleVersion: step.type === "module" && step.entryAction !== null ? (versionBySlug.get(step.entryAction) ?? null) : null,
         instructionsSummary: step.instructionsSummary,
         isTerminal: step.isTerminal,
         planMode: step.planMode,
@@ -1705,11 +1720,17 @@ function writeImport(
         entryStepId: board.pipeline.entryStepId === null ? null : mapped(board.pipeline.entryStepId),
         // A module rule's slug back to the module it means here (EO-736): one
         // this document brought, or the one this installation already has.
-        // Pinned anew here (EO-770), to the module's newest approved version:
-        // a version number from another machine names nothing on this one.
+        // Its pin is the version this import filed (EO-772), or — for a
+        // module reused from here — none, which pins the default: the
+        // document's number is another machine's history.
         entryRules: board.pipeline.entryRules.map(({ moduleVersion: _moduleVersion, ...rule }) => {
           if (rule.kind !== MODULE_ENTRY_RULE_KIND || rule.module === undefined) return rule;
-          return { ...rule, module: idBySlug.get(rule.module) ?? getModuleBySlug(db, rule.module)?.id ?? rule.module };
+          const filed = versionBySlug.get(rule.module);
+          return {
+            ...rule,
+            module: idBySlug.get(rule.module) ?? getModuleBySlug(db, rule.module)?.id ?? rule.module,
+            ...(filed === undefined ? {} : { moduleVersion: filed }),
+          };
         }),
       },
     );

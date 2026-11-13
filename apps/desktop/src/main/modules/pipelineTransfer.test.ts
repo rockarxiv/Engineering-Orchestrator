@@ -1361,6 +1361,7 @@ describe("preflight: values that only hold on the machine a pack was written on"
       manifest: { ...manifest, name: "Local build", needs: { ...manifest.needs, bin: ["/usr/bin/git"] } },
       originalScript: null,
       tests: [],
+      version: null,
     };
     const document: PipelineExport = {
       ...built.document,
