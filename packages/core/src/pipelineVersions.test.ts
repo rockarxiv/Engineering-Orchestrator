@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { EntryRule } from "./entryRules.js";
-import { diffVersions, ghostColumnLabel, PipelineGraphSnapshotSchema, pipelineUpdatedBanner, versionLabel, type VersionRoute, type VersionStep } from "./pipelineVersions.js";
+import { diffVersions, ghostColumnLabel, moduleUpdateAuthor, moduleUpdateOfAuthor, PipelineGraphSnapshotSchema, pipelineUpdatedBanner, versionLabel, type VersionRoute, type VersionStep } from "./pipelineVersions.js";
 
 /**
  * What changed between two versions (EO-327, ARCHITECTURE.md, "Publish, lock and versions").
@@ -363,5 +363,15 @@ describe("a version's entry rules (EO-610)", () => {
 describe("a document older than entry rules", () => {
   it("reads as a version that asks for nothing", () => {
     expect(PipelineGraphSnapshotSchema.parse({ steps: [], routes: [] }).entryRules).toEqual([]);
+  });
+});
+
+describe("the module update author (EO-771)", () => {
+  it("names the module and the version, and reads back", () => {
+    expect(moduleUpdateAuthor("notify", 4)).toBe("module:notify@4");
+    expect(moduleUpdateOfAuthor("module:notify@4")).toEqual({ slug: "notify", version: 4 });
+    expect(moduleUpdateOfAuthor("module:notify")).toEqual({ slug: "notify", version: null });
+    expect(moduleUpdateOfAuthor("template:software@1.4")).toBeNull();
+    expect(moduleUpdateOfAuthor(null)).toBeNull();
   });
 });
