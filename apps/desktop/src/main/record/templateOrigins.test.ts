@@ -92,7 +92,7 @@ function importedPipeline(projectId: Uuid): { pipelineId: string; ids: Map<strin
   replacePipelineGraph(
     deskDb.db,
     pipeline.id,
-    v10.document.steps.map((step) => ({ ...step, id: local(step.id), pipelineId: pipeline.id as Uuid })),
+    v10.document.steps.map((step) => ({ ...step, id: local(step.id), pipelineId: pipeline.id as Uuid, moduleVersion: null })),
     v10.document.routes.map((route) => ({ ...route, pipelineId: pipeline.id as Uuid, fromStepId: local(route.fromStepId), target: local(route.target) })),
     { entryStepId: local("worktree") },
   );

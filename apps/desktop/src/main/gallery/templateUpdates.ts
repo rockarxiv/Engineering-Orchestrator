@@ -316,6 +316,9 @@ export function createTemplateBoards(
             id,
             pipelineId: pipeline.id,
             entryAction: step.type === "module" && step.entryAction !== null ? moduleId(step.entryAction) : step.entryAction,
+            // The document's pin is a number on the machine that wrote it
+            // (EO-772), and names nothing here: the save pins the default.
+            moduleVersion: null,
             results: step.results.filter((result) => !withheld(id, result.key)),
             offBoard: false,
           };
@@ -323,7 +326,9 @@ export function createTemplateBoards(
         routes,
         {
           entryStepId: board.pipeline.entryStepId === null ? null : (fresh.get(board.pipeline.entryStepId) ?? null),
-          entryRules: board.pipeline.entryRules.map((rule) => (rule.kind === MODULE_ENTRY_RULE_KIND && rule.module !== undefined ? { ...rule, module: moduleId(rule.module) } : rule)),
+          entryRules: board.pipeline.entryRules.map(({ moduleVersion: _moduleVersion, ...rule }) =>
+            rule.kind === MODULE_ENTRY_RULE_KIND && rule.module !== undefined ? { ...rule, module: moduleId(rule.module) } : rule,
+          ),
           createdBy: version.createdBy,
           releaseNotes: version.releaseNotes,
         },
@@ -1114,7 +1119,8 @@ function graphOfDocument(db: Db, pipelineId: string, document: PipelineExport, l
       offBoard: false,
       ownerPersonId: null,
       ownerGroupId: null,
-      // A document carries no module pin (EO-770); the save chooses one.
+      // A document's pin is the writing machine's number (EO-772), which
+      // names nothing here; the save chooses one.
       moduleVersion: null,
     }));
   const routes: StepRoute[] = document.routes.map((route) => ({

@@ -1,6 +1,6 @@
 import { and, asc, eq, inArray, notInArray, sql } from "drizzle-orm";
 import { DEFAULT_MODULE_VERSIONS_TO_KEEP, MODULE_ENTRY_RULE_KIND, ModuleVersionsToKeepSchema, uuidv7 } from "@eo/core";
-import type { CustomModule, EntryRule, ModuleManifest, ModuleVersion, ModuleVersionSummary, ModuleVersionTest } from "@eo/core";
+import type { CustomModule, EntryRule, ModuleManifest, ModuleVersion, ModuleVersionSummary, ModuleVersionTest, PublishedModule } from "@eo/core";
 import type { ModuleVersionFacts } from "@eo/engine";
 import type { Db } from "../client.js";
 import { moduleTests, moduleVersions, modules } from "../schema.js";
@@ -114,6 +114,60 @@ export function getModuleVersion(db: Db, moduleId: string, number: number): Modu
     manifest: row.manifest as ModuleManifest,
     tests,
   };
+}
+
+/**
+ * Every kept version of a module, whole and under its own id, oldest
+ * first — as the pipelines section publishes them (EO-772). The current
+ * version holds the live cases, as `getModuleVersion` gives them.
+ */
+export function publishedModuleVersions(db: Db, moduleId: string): NonNullable<PublishedModule["versions"]> {
+  const rows = versionRows(db, moduleId);
+  const newest = rows.at(-1);
+  return rows.map((row) => ({
+    id: row.id,
+    number: row.number,
+    name: row.name,
+    description: row.description,
+    code: row.code,
+    manifest: row.manifest as ModuleManifest,
+    tests: testsOf(db, row, row.id === newest?.id),
+    approvedAt: row.approvedAt,
+    createdAt: row.createdAt,
+  }));
+}
+
+/**
+ * A replica's history of a module becomes the record's (EO-772): every
+ * row it held goes, and the record's arrive under their own ids and
+ * numbers.
+ *
+ * Numbers are the point. A pipeline the record publishes pins a module
+ * version by number, and a replica that numbered its own versions — one
+ * per publication it applied — would read the record's pin on v2 as
+ * whichever code it happened to file second, or as a version it never
+ * had. Replaced rather than merged for `upsertReplicaPipeline`'s reason
+ * about routes: on a published section the history is the
+ * organisation's, and a row the record pruned is one it no longer keeps.
+ */
+export function replaceReplicaModuleVersions(db: Db, moduleId: string, versions: NonNullable<PublishedModule["versions"]>): void {
+  db.delete(moduleVersions).where(eq(moduleVersions.moduleId, moduleId)).run();
+  for (const version of versions) {
+    db.insert(moduleVersions)
+      .values({
+        id: version.id,
+        moduleId,
+        number: version.number,
+        name: version.name,
+        description: version.description,
+        code: version.code,
+        manifest: version.manifest,
+        tests: version.tests,
+        approvedAt: version.approvedAt,
+        createdAt: version.createdAt,
+      })
+      .run();
+  }
 }
 
 /**

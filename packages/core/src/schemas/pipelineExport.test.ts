@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
-import { ADMIN_GRANT_REFUSAL, PIPELINE_EXPORT_VERSION, PipelineExportSchema } from "./pipelineExport.js";
+import { ADMIN_GRANT_REFUSAL, ExportedModuleSchema, ExportedStepSchema, PIPELINE_EXPORT_VERSION, PipelineExportSchema } from "./pipelineExport.js";
 
 /**
  * The pack format and its gate (EO-314, `ARCHITECTURE.md`, "One document",
@@ -137,7 +137,7 @@ describe("a watch that never gives up, in a document", () => {
   });
 
   it("parses under the watch a version-9 build reads, so that build reaches its format check and refuses it there", () => {
-    expect(neverGivesUp.eoPipelineExport).toBe(13);
+    expect(neverGivesUp.eoPipelineExport).toBe(14);
     // `StepWatchSchema` as format 9 had it.
     const version9Watch = z.object({ everyMinutes: z.number().finite(), giveUpAfterHours: z.number().finite().default(168) });
     const watch = (JSON.parse(JSON.stringify(neverGivesUp)) as { steps: { watch: unknown }[] }).steps[0]!.watch;
@@ -148,5 +148,60 @@ describe("a watch that never gives up, in a document", () => {
     const parsed = PipelineExportSchema.parse(JSON.parse(JSON.stringify(neverGivesUp)));
     expect(parsed.steps[0]?.watch).toEqual({ everyMinutes: 5, giveUpAfterHours: 168, neverGivesUp: true });
     expect(PipelineExportSchema.parse(JSON.parse(JSON.stringify(parsed))).steps[0]?.watch).toEqual(parsed.steps[0]?.watch);
+  });
+});
+
+/**
+ * Format 14 (EO-772): a module step and a module entry rule carry the
+ * version they pin, and each module entry is that version.
+ *
+ * Bumped for format 10's reason, and held by the same test: a build that
+ * predates the pin still *parses* the document — its step and module
+ * schemas strip the two keys rather than refusing them — so it reaches
+ * its format check and says "Update EO and try again" instead of calling
+ * the file damaged or importing the module's code as if no version had
+ * been pinned.
+ */
+describe("a pinned module version, in a document", () => {
+  const module = {
+    slug: "deploy",
+    name: "Deploy",
+    description: "Deploys.",
+    code: "export default async function run() { return { ok: true, result: 'deployed', detail: '' }; }",
+    manifest: { name: "Deploy", description: "Deploys.", inputs: {}, needs: { bin: [], env: [], network: false, item: false, comment: false, attach: false, create: false }, results: ["deployed"] },
+    originalScript: null,
+    tests: [],
+    version: 2,
+  };
+  const step = { id: "deploy", position: 0, name: "Deploy", type: "module", ownerRole: null, entryAction: "deploy", moduleVersion: 2, instructionsSummary: null, isTerminal: true, planMode: false };
+  const pinned = document({
+    pipeline: { name: "Shipping", icon: null, entryStepId: "deploy", entryRules: [{ kind: "module", module: "deploy", moduleVersion: 2 }] },
+    steps: [step],
+    modules: [module],
+  });
+
+  it("parses under the step and module schemas a version-13 build reads, so that build reaches its format check and refuses it there", () => {
+    expect(pinned.eoPipelineExport).toBe(14);
+    const version13Step = ExportedStepSchema.omit({ moduleVersion: true });
+    const version13Module = ExportedModuleSchema.omit({ version: true });
+    expect(version13Step.safeParse(step).success).toBe(true);
+    expect(version13Module.safeParse(module).success).toBe(true);
+  });
+
+  it("reads back the pins unchanged", () => {
+    const parsed = PipelineExportSchema.parse(JSON.parse(JSON.stringify(pinned)));
+    expect(parsed.steps[0]?.moduleVersion).toBe(2);
+    expect(parsed.modules[0]?.version).toBe(2);
+    expect(parsed.pipeline.entryRules[0]?.moduleVersion).toBe(2);
+  });
+
+  it("reads a format-13 document as pinning nothing", () => {
+    const unpinnedStep: Record<string, unknown> = { ...step };
+    delete unpinnedStep["moduleVersion"];
+    const unpinnedModule: Record<string, unknown> = { ...module };
+    delete unpinnedModule["version"];
+    const parsed = PipelineExportSchema.parse(document({ eoPipelineExport: 13, steps: [unpinnedStep], modules: [unpinnedModule] }));
+    expect(parsed.steps[0]?.moduleVersion).toBeUndefined();
+    expect(parsed.modules[0]?.version).toBeNull();
   });
 });

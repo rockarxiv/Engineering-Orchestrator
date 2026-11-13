@@ -4,6 +4,7 @@ import { getAgentAttachments, replaceReplicaAttachments } from "../db/repos/agen
 import { listAgents, revisionOf, takesRecordCopy, updateAgent, upsertReplicaAgent } from "../db/repos/agentsRepo.js";
 import { listModules, upsertReplicaModule } from "../db/repos/modulesRepo.js";
 import { listModuleTests, replaceReplicaModuleTests } from "../db/repos/moduleTestsRepo.js";
+import { publishedModuleVersions, replaceReplicaModuleVersions } from "../db/repos/moduleVersionsRepo.js";
 import { holdSkillCopy, listSkills, skillCopyOf, upsertReplicaSkill } from "../db/repos/skillsRepo.js";
 
 /**
@@ -112,6 +113,10 @@ export function sectionDocument(db: Db, section: PublishedSection): SectionDocum
         modules: listModules(db, true).map((module) => ({
           ...module,
           tests: listModuleTests(db, module.id).map((test) => ({ id: test.id, description: test.description, source: test.source, createdAt: test.createdAt, updatedAt: test.updatedAt })),
+          // And its history (EO-772): a published pipeline pins a version
+          // by number, and a replica runs the record's v2 only if it holds
+          // the record's v2.
+          versions: publishedModuleVersions(db, module.id),
         })),
       });
   }
@@ -174,6 +179,11 @@ export function applySectionDocument(db: Db, document: SectionDocument | null): 
     // Absent on a publication from before tests travelled, and absent
     // leaves this replica's cases alone — see `PublishedModuleSchema`.
     if (module.tests !== undefined) replaceReplicaModuleTests(db, module.id, module.tests);
+    // Its history last, over the version `upsertReplicaModule` filed for
+    // the code that just arrived: the record's numbers are the ones its
+    // pipelines pin (EO-772). Absent, on an older publication, leaves the
+    // replica's own.
+    if (module.versions !== undefined) replaceReplicaModuleVersions(db, module.id, module.versions);
     written += 1;
   }
   for (const agent of document.agents) {

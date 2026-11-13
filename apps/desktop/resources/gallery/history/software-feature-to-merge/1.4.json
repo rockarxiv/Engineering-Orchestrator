@@ -2,7 +2,7 @@
   "eoTemplateHistory": 1,
   "notes": "Comments on a pull request are now told apart by who wrote them. Your own comments, under the account EO is signed in to the forge with, send the work straight back to To Do. Comments and requests for changes by any other account are no longer instructions: they go to the new Pull request comments board for a plan you approve. There the implementer proposes a change, or none, and a reply for each comment, the reviewer checks the plan, and you approve it, ask for a revision, or reject it. An approved plan goes back to To Do to be carried out, and a rejection is answered on the pull request in your own words. EO now replies on the pull request, after each push, to every comment it handled, saying what changed.",
   "pack": {
-    "eoPipelineExport": 13,
+    "eoPipelineExport": 14,
     "template": {
       "slug": "software-feature-to-merge",
       "title": "Software feature to merge",

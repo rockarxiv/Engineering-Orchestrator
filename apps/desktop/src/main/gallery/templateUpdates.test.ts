@@ -272,7 +272,7 @@ describe("a pipeline whose step ids were re-minted on import", () => {
     replacePipelineGraph(
       handle.db,
       copy.id,
-      v10.document.steps.map((step) => ({ ...step, id: local(step.id), pipelineId: copy.id as Uuid })),
+      v10.document.steps.map((step) => ({ ...step, id: local(step.id), pipelineId: copy.id as Uuid, moduleVersion: null })),
       v10.document.routes.map((route) => ({ ...route, pipelineId: copy.id as Uuid, fromStepId: local(route.fromStepId), target: local(route.target) })),
       { entryStepId: local("worktree") },
     );

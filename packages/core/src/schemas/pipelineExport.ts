@@ -212,8 +212,26 @@ import { SpecShapeSchema } from "./specShape.js";
  * name, and nothing says so. "Update EO and try again" is the sentence.
  *
  * Reading an older document is unchanged: it carries one board.
+ *
+ * **14 (EO-772).** A module step and a module entry rule carry the
+ * **module version they pin** (`moduleVersion`), and each module entry
+ * is that version — its code, manifest and tests, with its number
+ * (`version`) — rather than the module's head.
+ *
+ * Bumped for version 4's reason, and the silent drop here is the promise
+ * the pin exists to keep. A version-13 build strips the numbers and
+ * reads each module entry as the module as it stands, so the file says
+ * which version its author's pipeline ran and nothing on the far side
+ * hears it. "Update EO and try again" is the sentence somebody can act
+ * on. Both keys are ones a version-13 build drops rather than refuses,
+ * so it parses the document and reaches its format check.
+ *
+ * Reading an older document is unchanged in kind: its steps pin nothing
+ * and its modules name no version, so an import pins each module it
+ * creates to the version that import filed, which holds the code the
+ * document carried.
  */
-export const PIPELINE_EXPORT_VERSION = 13;
+export const PIPELINE_EXPORT_VERSION = 14;
 
 /**
  * An action a role defines, as the document carries it (EO-424).
@@ -650,6 +668,17 @@ export const ExportedModuleSchema = z.object({
    * rather than being refused as damaged — see `PIPELINE_EXPORT_VERSION`.
    */
   tests: z.array(ModuleTestCaseInputSchema).default([]),
+  /**
+   * Which of the module's versions this entry is (EO-772): the number on
+   * the exporting machine of the version the document's steps and entry
+   * rules pin, whose code, manifest and tests are the ones above — not
+   * the module's head, which may be a later edit nobody approved and no
+   * pipeline runs.
+   *
+   * Null on a document from before the pin travelled (format 13 and
+   * older), whose module entries are the module as it stood.
+   */
+  version: z.number().int().positive().nullable().default(null),
 });
 
 /** A board's own head: its name, icon, where work enters and what it must have to. */
@@ -662,9 +691,21 @@ export const ExportedPipelineHeadSchema = z.object({
   entryRules: EntryRulesSchema.default([]),
 });
 
-/** A step as the document carries it — see `PipelineExportSchema.steps` for what is left out and why. */
-// A module pin (EO-770) does not travel yet: an import pins each module step to its newest approved version, as any save that names none does.
-export const ExportedStepSchema = PipelineStepViewSchema.omit({ pipelineId: true, inputs: true, timeoutMs: true, workspaceMode: true, workspaceId: true, moduleVersion: true });
+/**
+ * A step as the document carries it — see `PipelineExportSchema.steps` for what is left out and why.
+ *
+ * A module step keeps its pin (EO-772): `moduleVersion` is the number of
+ * the version it runs *on the exporting machine*, and the module entry
+ * the document carries for it is that version's code. The number says
+ * which version the author pinned; it names nothing on the far side,
+ * where an import pins the version it creates or matches.
+ */
+export const ExportedStepSchema = PipelineStepViewSchema.omit({ pipelineId: true, inputs: true, timeoutMs: true, workspaceMode: true, workspaceId: true }).extend({
+  // Optional rather than defaulted: written on a module step that pins a
+  // version and absent everywhere else, so a document with no module step
+  // reads exactly as it did at format 13.
+  moduleVersion: z.number().int().positive().nullable().optional(),
+});
 /** A route as the document carries it. Its target is a step of any board in the document, or a sentinel. */
 export const ExportedRouteSchema = StepRouteViewSchema.omit({ id: true, pipelineId: true });
 
