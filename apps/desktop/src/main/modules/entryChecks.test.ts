@@ -796,8 +796,8 @@ describe("publishing a module rule", () => {
     if (!unapproved.ok) throw new Error(unapproved.reason);
     const plain = module(NO_REVIEWERS, { name: "Plain", entryCheck: false }, "plain");
     expect(messages(save([{ kind: "module", module: "gone" }]))).toContain('The entry rule runs "gone", which is not a module this installation has.');
-    expect(messages(save([{ kind: "module", module: unapproved.module.id }]))).toContain('The entry rule runs "Draft check", which has not been approved.');
-    expect(messages(save([{ kind: "module", module: plain }]))).toContain('The entry rule runs "Plain", which is not declared an entry check (entryCheck: true in its manifest).');
+    expect(messages(save([{ kind: "module", module: unapproved.module.id }]))).toContain('The entry rule runs "Draft check" v1, which has not been approved.');
+    expect(messages(save([{ kind: "module", module: plain }]))).toContain('The entry rule runs "Plain" v1, which is not declared an entry check (entryCheck: true in its manifest).');
   });
 
   it("is saved and frozen into the version when the module is fit", () => {
@@ -859,10 +859,11 @@ describe("versions and files", () => {
     save([{ kind: "module", module: id, timeoutMs: 5000 }]);
 
     const versions = pipelineVersionsCommand(handle.db, { pipelineId: "default", graph: before.number });
-    expect(versions.diff?.entryRules).toEqual({ before: "none", after: 'a pass from "No reviewers", within 5 seconds' });
+    // Pinned to the module's newest approved version (EO-770), and the diff names it.
+    expect(versions.diff?.entryRules).toEqual({ before: "none", after: 'a pass from "No reviewers" v1, within 5 seconds' });
     expect(versions.graph?.entryRules).toEqual([]);
     const now = pipelineVersionsCommand(handle.db, { pipelineId: "default", graph: before.number + 1 });
-    expect(now.graph?.entryRules).toEqual([{ kind: "module", module: id, timeoutMs: 5000 }]);
+    expect(now.graph?.entryRules).toEqual([{ kind: "module", module: id, moduleVersion: 1, timeoutMs: 5000 }]);
   });
 
   it("lists each rule as a line for the pipeline's details, a module rule by name and limit", () => {
@@ -887,7 +888,8 @@ describe("versions and files", () => {
     // Into an installation that already has it, reusing it.
     const reused = importPipeline(handle.db, { document: built.document, choices: { "no-reviewers": "reuse" } });
     if (!reused.ok) throw new Error(reused.reason);
-    expect(getPipeline(handle.db, reused.pipelineId)?.entryRules).toEqual([{ kind: "module", module: id, message: "a reviewer or another branch" }]);
+    // Pinned on the way in (EO-770): the document carries no version.
+    expect(getPipeline(handle.db, reused.pipelineId)?.entryRules).toEqual([{ kind: "module", module: id, moduleVersion: 1, message: "a reviewer or another branch" }]);
 
     // Imported alongside it, the rule follows the copy it brought.
     const copied = importPipeline(handle.db, { document: built.document, choices: { "no-reviewers": "import" } });

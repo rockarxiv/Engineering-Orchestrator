@@ -119,7 +119,7 @@ function withoutThreadSteps(rows: unknown[]): unknown[] {
  * later one and hold the step rows to what was there before.
  */
 function afterNeverGivingUp(rows: unknown[]): unknown[] {
-  return rows.map((row) => (typeof row === "object" && row !== null ? { ...row, watch_never_gives_up: 0 } : row));
+  return rows.map((row) => (typeof row === "object" && row !== null ? { ...row, watch_never_gives_up: 0, module_version: null } : row));
 }
 
 /**
@@ -2190,6 +2190,7 @@ describe("runMigrations", () => {
       approved: true,
       current: true,
       testCount: 2,
+      pinnedBy: [],
       name: "Approved",
       description: "Approved one.",
       code: "code a",
@@ -3391,7 +3392,10 @@ describe("0123: the pull request is watched after Merge Request opens it", () =>
     handle.db.run(sql`ALTER TABLE pipeline_versions ADD entry_rules text DEFAULT '[]' NOT NULL`);
     // And the one 0166 adds (EO-728).
     handle.db.run(sql`ALTER TABLE pipeline_versions ADD release_notes text`);
+    // And the one 0170 adds (EO-770).
+    handle.db.run(sql`ALTER TABLE pipeline_steps ADD module_version integer`);
     const before = ensureCurrentVersion(handle.db, "default")!;
+    handle.db.run(sql`ALTER TABLE pipeline_steps DROP COLUMN module_version`);
     handle.db.run(sql`ALTER TABLE pipeline_steps DROP COLUMN watch_never_gives_up`);
     handle.db.run(sql`ALTER TABLE pipelines DROP COLUMN entry_rules`);
     handle.db.run(sql`ALTER TABLE pipeline_versions DROP COLUMN entry_rules`);
@@ -3778,10 +3782,12 @@ describe("0154: follow-ups are gone", () => {
       handle.db.run(sql`ALTER TABLE pipelines ADD entry_rules text DEFAULT '[]' NOT NULL`);
       handle.db.run(sql`ALTER TABLE pipeline_versions ADD entry_rules text DEFAULT '[]' NOT NULL`);
       handle.db.run(sql`ALTER TABLE pipeline_versions ADD release_notes text`);
-      // …and the column 0167 adds to item types (EO-735).
+      // …and the column 0167 adds to item types (EO-735), and the one 0170 adds to steps (EO-770).
       handle.db.run(sql`ALTER TABLE item_types ADD updated_at integer`);
+      handle.db.run(sql`ALTER TABLE pipeline_steps ADD module_version integer`);
       const finished = createTestItem(handle.db, { type: "story", title: "A finished story", stepId: "todo" });
       const waiting = createTestItem(handle.db, { type: "story", title: "A story with a question", stepId: "todo" });
+      handle.db.run(sql`ALTER TABLE pipeline_steps DROP COLUMN module_version`);
       handle.db.run(sql`ALTER TABLE pipelines DROP COLUMN entry_rules`);
       handle.db.run(sql`ALTER TABLE pipeline_versions DROP COLUMN entry_rules`);
       handle.db.run(sql`ALTER TABLE pipeline_versions DROP COLUMN release_notes`);
@@ -3881,10 +3887,12 @@ describe("0158: an attachment owned by the item (EO-702)", () => {
       writeMigrationSetBefore(tempDir, "0158_item_attachments");
       runMigrations(handle.db, tempDir);
       // Filed by today's repository, which reads the column 0166 adds (EO-728)
-      // and the one 0167 adds to item types (EO-735).
+      // and the one 0167 adds to item types (EO-735), and the one 0170 adds to steps (EO-770).
       handle.db.run(sql`ALTER TABLE pipeline_versions ADD release_notes text`);
       handle.db.run(sql`ALTER TABLE item_types ADD updated_at integer`);
+      handle.db.run(sql`ALTER TABLE pipeline_steps ADD module_version integer`);
       const item = createTestItem(handle.db, { type: "story", title: "Has a file", stepId: "todo" });
+      handle.db.run(sql`ALTER TABLE pipeline_steps DROP COLUMN module_version`);
       handle.db.run(sql`ALTER TABLE pipeline_versions DROP COLUMN release_notes`);
       handle.db.run(sql`ALTER TABLE item_types DROP COLUMN updated_at`);
       const comment = postComment(handle.db, { itemId: item.id, author: { type: "human" }, body: "Here is the mock." });

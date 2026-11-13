@@ -336,7 +336,9 @@ function exportedBoard(db: Db, board: BoardToExport, exported: ReadonlySet<strin
       // machine (EO-610): a type is named by pack and word, and a field
       // by the word its type declares, so both mean the same over there.
       // A module rule names its module by slug, as a step does (EO-736).
-      entryRules: pipeline.entryRules.map((rule) =>
+      // Without its pinned version (EO-770): a number is this machine's
+      // module history, not the other's, so an import pins the rule anew.
+      entryRules: pipeline.entryRules.map(({ moduleVersion: _moduleVersion, ...rule }) =>
         rule.kind === MODULE_ENTRY_RULE_KIND && rule.module !== undefined ? { ...rule, module: slugById.get(rule.module) ?? rule.module } : rule,
       ),
     },
@@ -1663,7 +1665,9 @@ function writeImport(
         entryStepId: board.pipeline.entryStepId === null ? null : mapped(board.pipeline.entryStepId),
         // A module rule's slug back to the module it means here (EO-736): one
         // this document brought, or the one this installation already has.
-        entryRules: board.pipeline.entryRules.map((rule) => {
+        // Pinned anew here (EO-770), to the module's newest approved version:
+        // a version number from another machine names nothing on this one.
+        entryRules: board.pipeline.entryRules.map(({ moduleVersion: _moduleVersion, ...rule }) => {
           if (rule.kind !== MODULE_ENTRY_RULE_KIND || rule.module === undefined) return rule;
           return { ...rule, module: idBySlug.get(rule.module) ?? getModuleBySlug(db, rule.module)?.id ?? rule.module };
         }),

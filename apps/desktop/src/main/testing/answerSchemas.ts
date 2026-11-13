@@ -195,7 +195,12 @@ export const ASSIST_ANSWER_WITH_MAPS = {
         routes: [{ ...DRAFT_ROUTE, requiresComment: true }],
         icon: "workflow",
         restoredFrom: 3,
-        entryRules: [{ kind: "field", field: "customer", types: ["developer:story"], message: "the customer's name" }, { kind: "description" }],
+        entryRules: [
+          { kind: "field", field: "customer", types: ["developer:story"], message: "the customer's name" },
+          { kind: "description" },
+          // A module rule pinning a version (EO-770).
+          { kind: "module", module: "no-reviewers", moduleVersion: 2 },
+        ],
         // Which step is a template's under a fresh id (EO-534): a map.
         templateStepIds: { release_merge: "merge" },
       },
@@ -254,8 +259,9 @@ export const ASSIST_ANSWER_WITH_MAPS = {
         icon: "workflow",
         restoredFrom: 3,
         entryRules: [
-          { kind: "field", field: "customer", types: ["developer:story"], message: "the customer's name", module: null, timeoutMs: null },
-          { kind: "description", field: null, types: null, message: null, module: null, timeoutMs: null },
+          { kind: "field", field: "customer", types: ["developer:story"], message: "the customer's name", module: null, moduleVersion: null, timeoutMs: null },
+          { kind: "description", field: null, types: null, message: null, module: null, moduleVersion: null, timeoutMs: null },
+          { kind: "module", field: null, types: null, message: null, module: "no-reviewers", moduleVersion: 2, timeoutMs: null },
         ],
         templateStepIds: [{ name: "release_merge", value: "merge" }],
       },

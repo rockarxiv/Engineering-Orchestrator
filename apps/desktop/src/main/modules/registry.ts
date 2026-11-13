@@ -153,7 +153,12 @@ export function createModuleRunnerLookup(options: ModuleRegistryOptions): (actio
       // version runs the module version that version pins. A step written
       // before pins, or one this item is not on, runs the module as it
       // stands.
-      const pinnedStep = stepForItem(options.db, context.item);
+      //
+      // A trial's test item runs the module as it stands too, under its
+      // trial grant where it is unapproved (EO-583): a trial exists to run
+      // the draft's code as it is saved now, round after round, and every
+      // edit the loop makes is the code its next item is testing.
+      const pinnedStep = context.item.trialAt !== null ? undefined : stepForItem(options.db, context.item);
       const pin = pinnedStep?.type === "module" && pinnedStep.entryAction === catalogued.id ? pinnedStep.moduleVersion : null;
       const pinned = moduleAtVersion(options.db, catalogued, pin);
       if (!pinned.ok) return { ok: false, reason: pinned.reason };

@@ -96,7 +96,11 @@ function seed(db: DbHandle["db"], ids?: Partial<Seeded>): Seeded {
   db.run(sql`INSERT INTO people (id, name, created_at, is_admin) VALUES (${ANNA}, 'Anna', 1, 1), (${BEN}, 'Ben', 1, 1)`);
   const notes = ids?.notesId ?? (uuidv7() as Uuid);
   const jobThread = ids?.jobThreadId ?? (uuidv7() as Uuid);
+  // Filed by today's repository, which reads the column 0170 adds to steps
+  // (EO-770): there for the filing, and gone before the upgrade adds it.
+  db.run(sql`ALTER TABLE pipeline_steps ADD module_version integer`);
   const work = createTestItem(db, { type: "story", title: "Checkout", stepId: "todo", projectId: project });
+  db.run(sql`ALTER TABLE pipeline_steps DROP COLUMN module_version`);
   db.run(sql`INSERT INTO items (id, key, type_id, title, project_id, pipeline_id, step_id, created_at, updated_at)
              VALUES (${notes}, 'SHOP-NOTES', ${work.typeId}, 'Project notes', ${project}, 'discussions', 'project-thread', 1, 1),
                     (${jobThread}, 'JOB-1', ${work.typeId}, 'Job: Monday report', NULL, 'discussions', 'job-thread', 1, 1)`);
