@@ -66,6 +66,7 @@ import {
   getJiraBinding,
   getMcpServerByName,
   getModule,
+  getModuleVersion,
   hasItemType,
   insertItemType,
   isJiraConnected,
@@ -141,12 +142,28 @@ export function exportPipeline(db: Db, pipelineId: string): { ok: true; document
   const steps = boards.flatMap((board) => board.steps);
   const byId = new Map(listModules(db, true).map((module) => [module.id as string, module]));
 
-  const used: CustomModule[] = [];
+  // Each module the document carries, with the version its steps and
+  // entry rules pin (EO-772) and who pins it, for the sentence when two
+  // of them disagree.
+  const used: { module: CustomModule; version: number | null; pinnedBy: string }[] = [];
+  const use = (module: CustomModule, version: number | null, by: string): string | null => {
+    const already = used.find((candidate) => candidate.module.id === module.id);
+    if (already === undefined) {
+      used.push({ module, version, pinnedBy: by });
+      return null;
+    }
+    if (already.version === version) return null;
+    return (
+      `${already.pinnedBy} runs "${module.name}" ${pinLabel(already.version)} and ${by} runs ${pinLabel(version)}. ` +
+      `An export carries one version of each module, so pin both to the same version and export again.`
+    );
+  };
   for (const step of steps) {
     if (step.type !== "module" || step.entryAction === null) continue;
     const module = byId.get(step.entryAction);
     if (!module) return { ok: false, reason: `"${step.name}" runs a module this installation no longer has, so the pipeline cannot be exported whole.` };
-    if (!used.some((candidate) => candidate.id === module.id)) used.push(module);
+    const disagreement = use(module, step.moduleVersion, `"${step.name}"`);
+    if (disagreement !== null) return { ok: false, reason: disagreement };
   }
   // And the modules its entry rules run (EO-736), which travel the same
   // way: by slug, with their code and their tests.
@@ -154,10 +171,36 @@ export function exportPipeline(db: Db, pipelineId: string): { ok: true; document
     if (rule.kind !== MODULE_ENTRY_RULE_KIND || rule.module === undefined) continue;
     const module = byId.get(rule.module);
     if (!module) return { ok: false, reason: `An entry rule runs a module this installation no longer has ("${rule.module}"), so the pipeline cannot be exported whole.` };
-    if (!used.some((candidate) => candidate.id === module.id)) used.push(module);
+    const disagreement = use(module, rule.moduleVersion ?? null, "an entry rule");
+    if (disagreement !== null) return { ok: false, reason: disagreement };
   }
 
-  const slugById = new Map(used.map((module) => [module.id as string, module.slug]));
+  // The pinned version's code, manifest and tests (EO-772), not the
+  // module's head: the head may be an edit nobody approved and no
+  // pipeline runs. No pin — a step written before pins, on a module with
+  // no version — is the module as it stands, which is what such a step runs.
+  const modules: PipelineExport["modules"] = [];
+  for (const { module, version } of used) {
+    const pinned = version === null ? undefined : getModuleVersion(db, module.id, version);
+    if (version !== null && pinned === undefined) {
+      return { ok: false, reason: `"${module.name}" v${version} is pinned by this pipeline and no longer kept, so the pipeline cannot be exported whole.` };
+    }
+    modules.push({
+      slug: module.slug,
+      name: module.name,
+      description: module.description,
+      code: pinned?.code ?? module.code,
+      manifest: pinned?.manifest ?? module.manifest,
+      originalScript: module.originalScript,
+      // The cases approving it runs (EO-355), by description and
+      // source — the pinned version's. Their latest result stays here,
+      // with approval: it is a record of this machine running the code.
+      tests: (pinned?.tests ?? listModuleTests(db, module.id)).map((test) => ({ description: test.description, source: test.source })),
+      version,
+    });
+  }
+
+  const slugById = new Map(used.map(({ module }) => [module.id as string, module.slug]));
   const exported = new Set(steps.map((step) => step.id));
   const exportedBoards = boards.map((board) => exportedBoard(db, board, exported, slugById));
   const [first, ...linked] = exportedBoards;
@@ -223,22 +266,16 @@ export function exportPipeline(db: Db, pipelineId: string): { ok: true; document
       // a pack was *written* with, which is the column an import wrote
       // and null on every pipeline somebody drew here.
       previewItem: pipeline.previewItem,
-      modules: used.map((module) => ({
-        slug: module.slug,
-        name: module.name,
-        description: module.description,
-        code: module.code,
-        manifest: module.manifest,
-        originalScript: module.originalScript,
-        // The cases approving it runs (EO-355), by description and
-        // source. Their latest result stays here, with approval: it is
-        // a record of this machine running the code.
-        tests: listModuleTests(db, module.id).map((test) => ({ description: test.description, source: test.source })),
-      })),
+      modules,
       // Approval is absent by design: it records that somebody *here*
       // read this code, and a stranger's word for that is worth nothing.
     },
   };
+}
+
+/** A pin as a sentence names it: "v2", or "as it stands" where nothing is pinned. */
+function pinLabel(version: number | null): string {
+  return version === null ? "as it stands" : `v${version}`;
 }
 
 /** A pipeline being exported, with the steps of it that leave. */
@@ -335,10 +372,10 @@ function exportedBoard(db: Db, board: BoardToExport, exported: ReadonlySet<strin
       // Part of what the pipeline says rather than a fact about this
       // machine (EO-610): a type is named by pack and word, and a field
       // by the word its type declares, so both mean the same over there.
-      // A module rule names its module by slug, as a step does (EO-736).
-      // Without its pinned version (EO-770): a number is this machine's
-      // module history, not the other's, so an import pins the rule anew.
-      entryRules: pipeline.entryRules.map(({ moduleVersion: _moduleVersion, ...rule }) =>
+      // A module rule names its module by slug, as a step does (EO-736),
+      // and keeps its pinned version (EO-772): the module entry the
+      // document carries is that version.
+      entryRules: pipeline.entryRules.map((rule) =>
         rule.kind === MODULE_ENTRY_RULE_KIND && rule.module !== undefined ? { ...rule, module: slugById.get(rule.module) ?? rule.module } : rule,
       ),
     },
@@ -350,6 +387,9 @@ function exportedBoard(db: Db, board: BoardToExport, exported: ReadonlySet<strin
       ownerRole: step.ownerRole,
       // Ids are local; a slug means the same thing on both machines.
       entryAction: step.type === "module" && step.entryAction !== null ? (slugById.get(step.entryAction) ?? step.entryAction) : step.entryAction,
+      // The version it runs (EO-772), on a module step only: the module
+      // entry the document carries is that version.
+      ...(step.type === "module" && step.moduleVersion !== null ? { moduleVersion: step.moduleVersion } : {}),
       instructionsSummary: step.instructionsSummary,
       isTerminal: step.isTerminal,
       planMode: step.planMode,
