@@ -335,6 +335,51 @@ describe("the hard links earlier versions left in homes that are kept", () => {
 
     expect(lstatSync(join(root, AGENT, "auth.json")).isSymbolicLink()).toBe(true);
   });
+
+  /**
+   * The sweep awaits between seeing the hard link and removing it, and a
+   * dispatch prepares the home synchronously in between: the symlink it
+   * makes is what the agent signs in through, and must survive the sweep.
+   */
+  it("leave the symlink a dispatch made while the sweep was waiting, after it saw the hard link", async () => {
+    const person = personHome();
+    const root = directory();
+    mkdirSync(join(root, AGENT));
+    linkSync(join(person, "auth.json"), join(root, AGENT, "auth.json"));
+    symlinkSync(join(person, "sessions"), join(root, AGENT, "sessions"), "dir");
+    let reached!: () => void;
+    const suspended = new Promise<void>((resolve) => (reached = resolve));
+    let release!: () => void;
+    const released = new Promise<void>((resolve) => (release = resolve));
+    const fs: CodexHomeSweepFs = {
+      readdir: (path) => readdir(path),
+      // The look at the hard link answers, then waits until the test says so.
+      lstat: async (path) => {
+        const stat = await lstat(path);
+        if (path === join(root, AGENT, "auth.json")) {
+          reached();
+          await released;
+        }
+        return stat;
+      },
+      unlink: (path) => unlink(path),
+      rm: (path, options) => rm(path, options),
+      renameSync: (from, to) => renameSync(from, to),
+      lstatSync: (path) => lstatSync(path),
+      unlinkSync: (path) => unlinkSync(path),
+    };
+
+    const sweep = sweepCodexHomes(root, () => new Set([AGENT]), fs);
+    await suspended;
+    const again = ready(prepareCodexHome({ root, agentId: AGENT, personHome: person, platform: "linux" }));
+    expect(lstatSync(join(again.path, "auth.json")).isSymbolicLink()).toBe(true);
+    release();
+
+    expect(await sweep).toEqual([]);
+    expect(lstatSync(join(again.path, "auth.json")).isSymbolicLink()).toBe(true);
+    expect(readFileSync(join(again.path, "auth.json"), "utf8")).toContain("first");
+    expect(statSync(join(person, "auth.json")).nlink).toBe(1);
+  });
 });
 
 describe("removing the homes no agent uses any more", () => {
@@ -395,6 +440,8 @@ describe("removing the homes no agent uses any more", () => {
       },
       rm: (path, options) => rm(path, options),
       renameSync: (from, to) => renameSync(from, to),
+      lstatSync: (path) => lstatSync(path),
+      unlinkSync: (path) => unlinkSync(path),
     };
     let inUse = false;
 

@@ -420,7 +420,7 @@ function symlinkCredential(
  * Codex 0.167.0 and later, or a stale copy. Only ever by name, so the
  * person's file is untouched. Null when there is none left.
  */
-function dropCredentialThatIsNotALinkSync(fs: CodexHomeFs, credential: string): string | null {
+function dropCredentialThatIsNotALinkSync(fs: { lstatSync: (path: string) => LinkStat; unlinkSync: (path: string) => void }, credential: string): string | null {
   const stat = lstatOrNull(fs, credential);
   if (stat === null || stat.isSymbolicLink() || !stat.isFile()) return null;
   try {
@@ -431,12 +431,28 @@ function dropCredentialThatIsNotALinkSync(fs: CodexHomeFs, credential: string): 
   }
 }
 
-/** `dropCredentialThatIsNotALinkSync` for the sweep, on every home it keeps. */
+/**
+ * `dropCredentialThatIsNotALinkSync` for the sweep, on every home it keeps.
+ *
+ * **The decision and the unlink are one synchronous step.** The sweep
+ * awaits, and while it does a dispatch can prepare this very home —
+ * synchronously — and replace the hard link it saw with the symlink the
+ * agent is about to sign in through. So what the awaited look found is
+ * only a reason to look again: the home and its `auth.json` are asked
+ * once more, and the file unlinked, with nothing awaited in between. A
+ * symlink made while the sweep was waiting is left alone.
+ */
 async function dropCredentialThatIsNotALink(fs: CodexHomeSweepFs, home: string): Promise<void> {
   const credential = join(home, CODEX_CREDENTIAL_FILE);
-  const stat = await lstatOrNullAsync(fs, credential);
-  if (stat === null || stat.isSymbolicLink() || !stat.isFile()) return;
-  await unlinkIfPresent(fs, credential);
+  const seen = await lstatOrNullAsync(fs, credential);
+  if (seen === null || seen.isSymbolicLink() || !seen.isFile()) return;
+  // From here on, nothing is awaited.
+  const now = lstatOrNull(fs, home);
+  if (now === null || now.isSymbolicLink() || !now.isDirectory()) return;
+  const dropped = dropCredentialThatIsNotALinkSync(fs, credential);
+  // Left for the next sweep, or for preparing the home, which refuses
+  // the dispatch with the same sentence.
+  if (dropped !== null) console.warn(`[eo] ${dropped}`);
 }
 
 /**
@@ -482,9 +498,12 @@ export function removeCodexHome(path: string, fs: CodexHomeFs = NODE_FS): void {
 
 /**
  * The filesystem calls the sweep makes, as a seam: asynchronous, but for
- * the one rename that claims a home (`sweepCodexHomes`). Production
- * passes nothing and gets `node:fs`; a test holds a call open to prove
- * that a home brought back into use mid-removal is not the one removed.
+ * the two steps that must not let a preparation run in the middle of
+ * them — the rename that claims a home (`sweepCodexHomes`), and the last
+ * look at a kept home's `auth.json` with its unlink
+ * (`dropCredentialThatIsNotALink`). Production passes nothing and gets
+ * `node:fs`; a test holds a call open to prove that a home brought back
+ * into use mid-sweep is not the one the sweep changes.
  */
 export interface CodexHomeSweepFs {
   readdir: (path: string) => Promise<string[]>;
@@ -492,6 +511,8 @@ export interface CodexHomeSweepFs {
   unlink: (path: string) => Promise<void>;
   rm: (path: string, options: { recursive: true; force: true }) => Promise<void>;
   renameSync: (from: string, to: string) => void;
+  lstatSync: (path: string) => LinkStat;
+  unlinkSync: (path: string) => void;
 }
 
 const NODE_SWEEP_FS: CodexHomeSweepFs = {
@@ -500,6 +521,8 @@ const NODE_SWEEP_FS: CodexHomeSweepFs = {
   unlink: (path) => unlink(path),
   rm: (path, options) => rm(path, options),
   renameSync: (from, to) => renameSync(from, to),
+  lstatSync: (path) => lstatSync(path),
+  unlinkSync: (path) => unlinkSync(path),
 };
 
 /**
@@ -562,8 +585,7 @@ function realSessionsProblem(sessionsPath: string, sessions: LinkStat, home: str
  * can run between the decision and the claim, and once claimed the
  * home's path is free. A preparation that runs while the removal awaits
  * builds a new home there, and the removal only ever touches the renamed
- * one. That rename is the sweep's one synchronous call, and it is a
- * single one.
+ * one. That rename is a single synchronous call.
  *
  * A home whose `sessions` is a real directory is refused where it stands,
  * looked at before it is claimed so its rollouts are never moved.
@@ -577,7 +599,9 @@ function realSessionsProblem(sessionsPath: string, sessions: LinkStat, home: str
  * Windows before then, in the homes of agents that are not dispatched
  * again, and in the side calls' own. Each would keep the person's own
  * credential file at more than one link, which Codex 0.167.0 refuses to
- * save a refreshed sign-in into.
+ * save a refreshed sign-in into. The last look and the unlink are again
+ * one synchronous step, so the symlink a dispatch makes while the sweep
+ * awaits is never the file it removes.
  */
 export async function sweepCodexHomes(root: string, keep: () => ReadonlySet<string>, fs: CodexHomeSweepFs = NODE_SWEEP_FS): Promise<string[]> {
   let names: string[];
@@ -807,7 +831,7 @@ export function codexHomeRefusal(
   return null;
 }
 
-function lstatOrNull(fs: CodexHomeFs, path: string): LinkStat | null {
+function lstatOrNull(fs: Pick<CodexHomeFs, "lstatSync">, path: string): LinkStat | null {
   try {
     return fs.lstatSync(path);
   } catch {
