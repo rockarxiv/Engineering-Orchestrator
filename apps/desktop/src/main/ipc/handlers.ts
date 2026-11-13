@@ -741,14 +741,14 @@ export function registerAllHandlers(db: Db, engine: EngineHandle | undefined, re
   registerHandler("moduleTests:run", async (payload) => runModuleTestsCommand(moduleTests, payload), opts);
   // Approving runs the module's tests at that moment (EO-353), in the
   // same queue as every other run of them.
-  registerHandler("modules:approve", async (payload) => announcePipeline(await approveModuleCommand(db, moduleTests, payload)), opts);
+  registerHandler("modules:approve", async (payload) => announcePipeline(await approveModuleCommand(db, moduleTests, payload, { isTheRecord: !platform.hasMachine })), opts);
   registerHandler("modules:archive", (payload) => announcePipeline(archiveModuleCommand(db, payload)), opts);
   // A module's history (EO-360). A restore is a save: it changes the
   // code and the cases, so the tests re-run in the background after it —
   // always, which `restoreModuleVersionCommand` sees to.
   registerHandler("moduleVersions:list", (payload) => listModuleVersionsCommand(db, payload), opts);
   registerHandler("moduleVersions:get", (payload) => getModuleVersionCommand(db, payload), opts);
-  registerHandler("moduleVersions:restore", (payload) => announcePipeline(restoreModuleVersionCommand(db, moduleTests, payload)), opts);
+  registerHandler("moduleVersions:restore", (payload) => announcePipeline(restoreModuleVersionCommand(db, moduleTests, payload, { isTheRecord: !platform.hasMachine })), opts);
 
   // Moving a pipeline between machines (KAN-108). The file dialogs live
   // here because a renderer has no filesystem access by design (F-02).
