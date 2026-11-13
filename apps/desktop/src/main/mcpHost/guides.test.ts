@@ -125,8 +125,8 @@ describe("the guides", () => {
     const guide = guideNamed("eo_submit_work")!.body.replace(/\s+/g, " ");
 
     expect(guide).toContain("Leave `wait` out unless the person asked for something else");
-    expect(guide).toContain('{ "item": "KAN-14", "wait": "reached", "step": "Review" }');
-    expect(guide).toContain('{ "story": 0, "wait": "reached", "step": "Review" }');
+    expect(guide).toContain('{ item: "KAN-14", wait: "reached", step: "Review" }');
+    expect(guide).toContain('{ story: 0, wait: "reached", step: "Review" }');
     expect(guide).toContain("`updateDependsOn`");
   });
 

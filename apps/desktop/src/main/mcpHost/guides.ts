@@ -233,14 +233,14 @@ bare entry:
 \`\`\`
 addDependsOn: [
   "KAN-12",
-  { "item": "KAN-14", "wait": "reached", "step": "Review" },
-  { "item": "KAN-15", "wait": "none" }
+  { item: "KAN-14", wait: "reached", step: "Review" },
+  { item: "KAN-15", wait: "none" }
 ]
 \`\`\`
 
-\`{ "story": 0, "wait": "reached", "step": "Review" }\` in a plan's
-\`depends_on\`, and \`{ "item": … }\` in \`work_submit_ticket\`'s \`dependsOn\`.
-\`reached\` waits until the other ticket first arrives at that step of
+\`{ story: 0, wait: "reached", step: "Review" }\` in a plan's
+\`depends_on\`, and \`{ item: … }\` in \`work_submit_ticket\`'s \`dependsOn\`.
+\`reached\` waits until that work first arrives at that step of
 its own pipeline (or finishes); \`step\` is the step's name, goes with
 \`reached\` only, and cannot be the step where that pipeline finishes —
 that is \`finished\`. \`none\` keeps the link and never holds anything.

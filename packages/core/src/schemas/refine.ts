@@ -4,7 +4,7 @@ import { jsonSchemaOutputSchema, type OutputSchema } from "./outputSchema.js";
 import { specFromAnswer } from "./intake.js";
 import { narrowEnvelopeField, withoutEoKeywords, type ComposableItemType, type SpecShape } from "./specShape.js";
 import { ItemPrioritySchema } from "./priority.js";
-import { DependencyOnStorySchema, type DependencyOnStory } from "./dependencyGates.js";
+import { DependencyGateOnStorySchema, DependencyOnStorySchema, type DependencyOnStory } from "./dependencyGates.js";
 
 /**
  * What the product owner returns from `refine` (ARCHITECTURE.md, "What it proposes, and what a
@@ -258,9 +258,11 @@ const CHILD_GATE_SCHEMA = {
     wait: { type: "string", enum: ["finished", "reached", "none"] },
     step: { type: "string", minLength: 1 },
   },
-  required: ["story", "wait"],
+  // Every field but the step, which goes with `reached` only — the
+  // shape `DependencyGateOnStorySchema` gives a plan's story.
+  required: Object.keys(DependencyGateOnStorySchema.shape).filter((name) => name !== "step"),
   additionalProperties: false,
-} as const;
+};
 
 function childBranch(type: ComposableItemType): JsonSchema {
   const properties: Record<string, unknown> = {
