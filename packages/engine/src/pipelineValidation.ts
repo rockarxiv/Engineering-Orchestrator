@@ -992,11 +992,14 @@ function moduleProblems(
     ];
   }
   if (version !== null && moduleVersions !== undefined && module.approvedAt === null && !trialGranted.has(module.id)) {
+    const another = moduleVersions.some((each) => each.moduleId === module.id && each.number !== version && each.approvedAt !== null);
     return [
       {
         severity: "error",
         stateId: step.id,
-        message: `"${step.name}" runs v${version} of "${module.name}", which has not been approved. Approve that version in Settings → Modules, or pin a version that was — approving runs its tests, and it needs at least one, all passing.`,
+        message:
+          `"${step.name}" runs v${version} of "${module.name}", which has not been approved. ` +
+          `Read it in Settings → Modules and approve it${another ? ", or pin a version that was approved" : " before a step runs it"} — approving runs its tests, and it needs at least one, all passing.`,
       },
     ];
   }

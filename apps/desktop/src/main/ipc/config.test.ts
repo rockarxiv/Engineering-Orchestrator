@@ -2764,3 +2764,108 @@ describe("keep checking across a save that does not mention it (EO-506)", () => 
     expect(again.watchTurnedOff).toEqual([]);
   });
 });
+
+/**
+ * A module step pins a module version (EO-770), and a publish is judged
+ * by the version it pins: one that does not exist, or nobody approved, is
+ * refused by step and version. A step that names its module and no
+ * version pins the newest approved one.
+ */
+describe("a module step's pinned version", () => {
+  const says = (word: string) => `export default async function run() { return { ok: true, result: 'merged', detail: '${word}' }; }`;
+  const merge = {
+    name: "Merge",
+    description: "Waits for CI and merges.",
+    inputs: {},
+    needs: { bin: [], env: [], network: false, item: false, comment: false, attach: false, create: false },
+    results: ["merged"],
+  };
+
+  /** "Merge" at v1 and v2 approved, and v3 an edit nobody approved. */
+  function mergeModule(): string {
+    let id: string | undefined;
+    for (const [word, approve] of [["v1", true], ["v2", true], ["v3", false]] as const) {
+      const saved = saveModule(handle.db, { ...(id === undefined ? {} : { id }), slug: "merge", name: "Merge", description: "Waits for CI and merges.", code: says(word), manifest: merge, approve });
+      if (!saved.ok) throw new Error(saved.reason);
+      id = saved.module.id;
+    }
+    return id!;
+  }
+
+  function publish(moduleId: string, moduleVersion: number | null | undefined) {
+    const step = {
+      id: "merge_step",
+      pipelineId: "default",
+      position: 0,
+      name: "Merge",
+      type: "module" as const,
+      ownerRole: null,
+      entryAction: moduleId,
+      instructionsSummary: null,
+      isTerminal: false,
+      planMode: false,
+      workspaceMode: "isolated" as const,
+      workspaceId: null,
+      inputs: {},
+      timeoutMs: null,
+      watch: null,
+      results: [],
+      ...(moduleVersion === undefined ? {} : { moduleVersion }),
+    };
+    // The graph as it stands without the step, which an earlier publish in the same test may have added.
+    const others = currentStates().filter((current) => current.id !== "merge_step");
+    const steps = [step, ...others.map((current) => ({ ...current, position: current.position + 1 }))];
+    return savePipeline(
+      handle.db,
+      fakeEngine(),
+      ipcContract["pipeline:save"].request.parse({
+        pipelineId: "default",
+        steps,
+        routes: [...currentRoutes().filter((route) => route.fromStepId !== "merge_step"), { id: "r-merge", pipelineId: "default", fromStepId: "merge_step", resultKey: "merged", label: "Merged", tone: "info", target: "worktree", position: 0 }],
+        entryStepId: "merge_step",
+      }),
+    );
+  }
+
+  const pinOf = () => listPipelineSteps(handle.db).find((step) => step.id === "merge_step")?.moduleVersion;
+  const errors = (answer: ReturnType<typeof publish>) => answer.problems.filter((problem) => problem.severity === "error").map((problem) => problem.message);
+
+  it("pins the newest approved version where the save names none, and keeps one it names", () => {
+    const id = mergeModule();
+    expect(publish(id, undefined).saved).toBe(true);
+    expect(pinOf()).toBe(2);
+    expect(publish(id, null).saved).toBe(true);
+    expect(pinOf()).toBe(2);
+    expect(publish(id, 1).saved).toBe(true);
+    expect(pinOf()).toBe(1);
+  });
+
+  it("refuses a pin on a version that is not approved, naming the step and the version", () => {
+    const id = mergeModule();
+    const answer = publish(id, 3);
+    expect(answer.saved).toBe(false);
+    expect(errors(answer)).toContain(
+      '"Merge" runs v3 of "Merge", which has not been approved. Read it in Settings → Modules and approve it, or pin a version that was approved — approving runs its tests, and it needs at least one, all passing.',
+    );
+  });
+
+  it("refuses a pin on a version that does not exist, naming the step and the version", () => {
+    const id = mergeModule();
+    const answer = publish(id, 9);
+    expect(answer.saved).toBe(false);
+    expect(errors(answer)).toContain('"Merge" runs v9 of "Merge", which "Merge" does not have — it was never filed, or is no longer kept. Pick a version Settings → Modules lists.');
+  });
+
+  it("pins each module entry rule that names no version, as it pins a step", () => {
+    const id = mergeModule();
+    const saved = savePipeline(handle.db, fakeEngine(), {
+      pipelineId: "default",
+      steps: currentStates(),
+      routes: currentRoutes(),
+      entryStepId: "worktree",
+      entryRules: [{ kind: "description" }, { kind: "module", module: id }],
+    });
+    // Refused for not being an entry check, but judged at the pin it would have had.
+    expect(saved.problems.map((problem) => problem.message)).toContain('The entry rule runs "Merge" v2, which is not declared an entry check (entryCheck: true in its manifest).');
+  });
+});

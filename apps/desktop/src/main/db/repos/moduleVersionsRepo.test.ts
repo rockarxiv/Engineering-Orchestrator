@@ -1,13 +1,18 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { ModuleManifest } from "@eo/core";
 import type { DbHandle } from "../client.js";
+import { eq } from "drizzle-orm";
 import { openMigratedTestDb } from "../testHelpers.js";
+import { pipelines, pipelineSteps } from "../schema.js";
+import { createPipeline, createStep } from "./pipelineStepsRepo.js";
+import { createPipelineVersion } from "./pipelineVersionsRepo.js";
 import { approveModule, getModule, saveModule, upsertReplicaModule } from "./modulesRepo.js";
 import { deleteModuleTest, listModuleTests, saveModuleTest } from "./moduleTestsRepo.js";
 import {
   getModuleVersion,
   listModuleVersions,
   moduleVersionsToKeep,
+  pinnedModuleVersions,
   pruneModuleVersions,
   restoreModuleVersion,
   setModuleVersionsToKeep,
@@ -311,5 +316,38 @@ describe("retention", () => {
     save(id, { code: code(2) });
     restoreModuleVersion(handle.db, id, 1, tick());
     expect(numbers(id)).toEqual([3, 2]);
+  });
+});
+
+/**
+ * A version a pipeline pins is never pruned (EO-770): a live step, a live
+ * entry rule or a kept pipeline version runs it, and a pin on a version
+ * that has gone is code nothing can load.
+ */
+describe("retention of pinned versions", () => {
+  it("keeps every version a live step, a live entry rule or a kept pipeline version pins, past the keep count", () => {
+    const id = create();
+    for (const n of [2, 3]) save(id, { code: code(n) });
+
+    // v1 pinned by a live step.
+    const live = createPipeline(handle.db, { name: "Live", position: 1 });
+    createStep(handle.db, { pipelineId: live.id, position: 0, name: "Deploy", type: "module", entryAction: id, moduleVersion: 1 });
+    // v2 pinned by a live entry rule.
+    handle.db.update(pipelines).set({ entryRules: [{ kind: "module", module: id, moduleVersion: 2 }] }).where(eq(pipelines.id, live.id)).run();
+    // v3 pinned only by a kept pipeline version: the live step has moved on since.
+    const kept = createPipeline(handle.db, { name: "Kept", position: 2 });
+    const step = createStep(handle.db, { pipelineId: kept.id, position: 0, name: "Deploy", type: "module", entryAction: id, moduleVersion: 3 });
+    createPipelineVersion(handle.db, kept.id, null);
+    handle.db.update(pipelineSteps).set({ moduleVersion: 1 }).where(eq(pipelineSteps.id, step.id)).run();
+
+    expect([...pinnedModuleVersions(handle.db, id)].sort()).toEqual([1, 2, 3]);
+
+    setModuleVersionsToKeep(handle.db, 2);
+    for (const n of [4, 5, 6, 7]) save(id, { code: code(n) });
+
+    // The two newest, and the three pinned, whatever the count says.
+    expect(numbers(id)).toEqual([7, 6, 3, 2, 1]);
+    expect(pruneModuleVersions(handle.db, id, 1)).toEqual([6]);
+    expect(numbers(id)).toEqual([7, 3, 2, 1]);
   });
 });

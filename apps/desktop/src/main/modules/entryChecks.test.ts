@@ -964,3 +964,41 @@ describe("whether ctx.exec could start a binary", () => {
     expect(posixLaunchable("/usr/local/bin/gh", "/usr/bin/gh")).toBe(false);
   });
 });
+
+/**
+ * The version a module rule pins (EO-770): the door runs that version's
+ * code and is gated on that version's approval, whatever the module has
+ * been edited to since.
+ */
+describe("the version a module rule pins", () => {
+  const answers = (result: string, reason = "") => `export default async function () { return { ok: true, result: ${JSON.stringify(result)}, reason: ${JSON.stringify(reason)} }; }`;
+
+  it("runs the pinned version's code at the door", async () => {
+    const id = module(answers("pass"), {}, "pinned-check");
+    // v2 refuses everything and is approved; v3 is an edit nobody approved.
+    const edit = (code: string, approve: boolean) => {
+      const saved = saveModule(handle.db, { id, slug: "pinned-check", name: CHECK_MANIFEST.name, description: "An entry check.", code, manifest: CHECK_MANIFEST, approve });
+      if (!saved.ok) throw new Error(saved.reason);
+    };
+    edit(answers("refuse", "v2 says no"), true);
+    edit(answers("refuse", "v3 says no"), false);
+
+    setRules("default", [{ kind: "module", module: id, moduleVersion: 1 }]);
+    expect(await submitItemCommand(handle.db, undefined, submission(false))).toMatchObject({ created: true });
+
+    setRules("default", [{ kind: "module", module: id, moduleVersion: 2 }]);
+    expect((await submitItemCommand(handle.db, undefined, submission(false))).problem).toBe(
+      '"Delivery" needs these before work can enter it: a pass from "No reviewers", which refused it: v2 says no.',
+    );
+
+    setRules("default", [{ kind: "module", module: id, moduleVersion: 3 }]);
+    expect((await submitItemCommand(handle.db, undefined, submission(false))).problem).toBe(
+      '"Delivery" needs these before work can enter it: a pass from "No reviewers", which cannot run: its v3 has not been approved.',
+    );
+
+    setRules("default", [{ kind: "module", module: id, moduleVersion: 7 }]);
+    expect((await submitItemCommand(handle.db, undefined, submission(false))).problem).toBe(
+      '"Delivery" needs these before work can enter it: a pass from "No reviewers", which cannot run: the v7 it pins is not kept any more.',
+    );
+  });
+});

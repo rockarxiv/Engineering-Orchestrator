@@ -3809,7 +3809,27 @@ describe("a pipeline built from the chat", () => {
       approvedLater(held.id);
       expect(read(conversation.id, cardIds[0]!).waiting).toEqual([]);
       expect(publishNewAssistPipeline(handle.db, undefined, { conversationId: conversation.id, messageId: cardIds[0]! })).toMatchObject({ saved: true });
-      expect(listStepsForPipeline(handle.db, pipelinesNamed("Release")[0]!.id)[0]).toMatchObject({ entryAction: held.id });
+      // Named without a version, so pinned to the newest approved one (EO-770).
+      expect(listStepsForPipeline(handle.db, pipelinesNamed("Release")[0]!.id)[0]).toMatchObject({ entryAction: held.id, moduleVersion: 1 });
+    });
+
+    // A draft names a module, never a version (EO-770): it is published
+    // pinning the newest approved version, so an edit to the module since
+    // — which nobody has approved — neither holds the card nor runs.
+    it("publishes a draft naming a catalog module whose newest edit is unapproved, pinned to its newest approved version", async () => {
+      allowAnHourPerRun();
+      const held = inTheCatalogUnapproved();
+      approvedLater(held.id);
+      const edited = saveModule(handle.db, { id: held.id, slug: held.slug, name: held.name, description: held.description, code: `${MERGE_MODULE.code}\n// edited`, manifest: held.manifest });
+      if (!edited.ok) throw new Error(edited.reason);
+      expect(edited.module.approvedAt).toBeNull();
+      const conversation = await openedOn("/settings");
+
+      const { cardIds } = turn(conversation, { message: "Here.", draft: releaseDraft({ newPipeline: "Release" }, { entryAction: held.id }) });
+
+      expect(read(conversation.id, cardIds[0]!).waiting).toEqual([]);
+      expect(publishNewAssistPipeline(handle.db, undefined, { conversationId: conversation.id, messageId: cardIds[0]! })).toMatchObject({ saved: true });
+      expect(listStepsForPipeline(handle.db, pipelinesNamed("Release")[0]!.id)[0]).toMatchObject({ entryAction: held.id, moduleVersion: 1 });
     });
 
     it("still refuses a draft naming by id a module that has been deleted", async () => {
@@ -3846,7 +3866,7 @@ describe("a pipeline built from the chat", () => {
 
       const saved = savePipeline(handle.db, undefined, { pipelineId: pipeline.id, steps: waiting.steps, routes: waiting.routes, entryStepId: waiting.entryStepId! });
       expect(saved.saved).toBe(false);
-      expect(saved.problems.map((problem) => problem.message).join(" ")).toContain('"Catalog merge" has not been approved');
+      expect(saved.problems.map((problem) => problem.message).join(" ")).toContain('runs v1 of "Catalog merge", which has not been approved');
       expect(listStepsForPipeline(handle.db, pipeline.id)).toEqual([]);
       expect(listRoutesForPipeline(handle.db, pipeline.id)).toEqual([]);
     });

@@ -508,7 +508,7 @@ describe("validatePipeline", () => {
       const input = withModuleStep({ moduleVersion: 3 });
       const moduleId = input.modules![0]!.id;
       expect(errors({ ...input, moduleVersions: versions(moduleId, { number: 2, approvedAt: 900 }, { number: 3, approvedAt: null }) })).toContain(
-        '"deploy" runs v3 of "Deploy", which has not been approved. Approve that version in Settings → Modules, or pin a version that was — approving runs its tests, and it needs at least one, all passing.',
+        '"deploy" runs v3 of "Deploy", which has not been approved. Read it in Settings → Modules and approve it, or pin a version that was approved — approving runs its tests, and it needs at least one, all passing.',
       );
     });
 

@@ -32,6 +32,7 @@ import {
   saveModule,
   transitionItem,
   updateRun,
+  listModuleVersions,
 } from "../db/repos/index.js";
 import { createTestItem, openMigratedTestDb } from "../db/testHelpers.js";
 import { publishTrialCommand, readAssistCardCommand, sendToAssist } from "../ipc/assistCommands.js";
@@ -529,6 +530,13 @@ describe("publishing a tested draft", () => {
     expect(listStepsForPipeline(handle.db, target.id).find((entry) => entry.id === "rel_notify")?.timeoutMs).toBeNull();
     expect(getModule(handle.db, copyId)).toMatchObject({ name: "Notify", archivedAt: null });
     expect(getModule(handle.db, copyId)?.approvedAt).not.toBeNull();
+    // Pinned to the version approving the copy just recorded (EO-770) —
+    // the code the trial ran, after the loop's edits — not the one the
+    // trial's graph was first saved with.
+    const [approvedCopy] = listModuleVersions(handle.db, copyId);
+    expect(approvedCopy).toMatchObject({ current: true, approved: true });
+    expect(approvedCopy!.number).toBeGreaterThan(1);
+    expect(listStepsForPipeline(handle.db, target.id).find((entry) => entry.id === "rel_notify")?.moduleVersion).toBe(approvedCopy!.number);
     // The original is untouched, and the live item still runs it, on the version it entered on.
     expect(getModule(handle.db, originalId)).toEqual(originalBefore);
     expect(getItem(handle.db, live.id)!.pipelineVersionId).toBe(liveVersion);
