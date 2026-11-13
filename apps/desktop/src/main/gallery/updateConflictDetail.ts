@@ -245,7 +245,7 @@ export function editsSinceBase(db: Db, pipelineId: string, conflict: Pick<Pipeli
       previousVersion: previous?.number ?? null,
       createdAt: version.createdAt,
       createdBy: version.createdBy,
-      createdByName: versionAuthorName(version.createdBy, (personId) => getPerson(db, personId as Uuid)?.name ?? null),
+      createdByName: versionAuthorName(version.createdBy, (personId) => getPerson(db, personId as Uuid)?.name ?? null, (slug) => getModuleBySlug(db, slug)?.name ?? null),
       changes: before === undefined || after === undefined ? [] : snapshotChanges(before, after),
     });
   }

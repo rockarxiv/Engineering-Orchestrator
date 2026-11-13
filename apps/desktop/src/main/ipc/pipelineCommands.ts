@@ -22,6 +22,7 @@ import {
   versionGraph,
   versionSnapshot,
   versionAuthorName,
+  getModuleBySlug,
   listModules,
 } from "../db/repos/index.js";
 import { recordFor } from "../record/localRecord.js";
@@ -265,7 +266,7 @@ export function pipelineVersionsCommand(db: Db, input: IpcPayload<"pipeline:vers
   const rows = listPipelineVersions(db, input.pipelineId);
   const versions: PipelineVersion[] = rows.map((version) => ({
     ...version,
-    createdByName: versionAuthorName(version.createdBy, (personId) => getPerson(db, personId as Uuid)?.name ?? null),
+    createdByName: versionAuthorName(version.createdBy, (personId) => getPerson(db, personId as Uuid)?.name ?? null, (slug) => getModuleBySlug(db, slug)?.name ?? null),
   }));
 
   // Asked first, and answered whatever the history says, because it is
