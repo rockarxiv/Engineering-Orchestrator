@@ -1367,6 +1367,7 @@ export function registerAllHandlers(db: Db, engine: EngineHandle | undefined, re
     "assist:publishTrial",
     async (payload) => {
       const result = await publishTrialCommand(db, engine, moduleTests, { attachmentStorage }, payload, {
+        isTheRecord: !platform.hasMachine,
         onStepsRemoved: (stepIds) => {
           for (const stepId of stepIds) clearStepSecrets(moduleSecrets, stepId);
         },

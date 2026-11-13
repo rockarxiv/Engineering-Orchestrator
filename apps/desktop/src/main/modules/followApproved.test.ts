@@ -31,6 +31,7 @@ import { markTrialPipeline } from "../db/repos/trialsRepo.js";
 import { loadTemplateHistory, type TemplateVersion } from "../gallery/history.js";
 import { compareWithTemplate } from "../gallery/templateUpdates.js";
 import { approveModuleCommand } from "../ipc/moduleCommands.js";
+import type { ModuleTestRunAnswer } from "./moduleTestRunner.js";
 import { followApprovedModule, MODULE_UPDATE_HELD_SOURCE } from "./followApproved.js";
 
 /**
@@ -285,7 +286,7 @@ describe("approving a module version", () => {
     if (!test.ok) throw new Error(test.reason);
     edit(id, "v4");
     const runner = {
-      run: async (moduleId: string) => {
+      run: async (moduleId: string): Promise<ModuleTestRunAnswer> => {
         const now = getModule(handle.db, moduleId)!;
         return {
           fingerprint: moduleTestFingerprint(now, listModuleTests(handle.db, moduleId)),
@@ -295,7 +296,7 @@ describe("approving a module version", () => {
             cases: [{ testId: "t", description: "sends", passed: true, failure: null, durationMs: 1, output: "" }],
             coverage: { lines: { covered: 100, total: 100, percent: 100 }, branches: { covered: 1, total: 1, percent: 100 } },
           },
-        } as const;
+        };
       },
     };
 
