@@ -18,6 +18,7 @@ import {
   itemTypesFor,
   listAgents,
   listJobs,
+  listPeople,
   listPipelines,
   listProjects,
   listStepsForPipeline,
@@ -505,6 +506,21 @@ describe("the people a role slot names, on a desktop signed in to an organisatio
     const answer = await useGalleryCommand(handle.db, signedIn(false), { ...monday(), roleSlots: { approve: "" } });
     const approve = listStepsForPipeline(handle.db, answer.pipelineId!).find((step) => step.name === "Approve");
     expect(approve?.ownerPersonId).toBeNull();
+  });
+
+  /** EO-767 review: the colleague's row is written with the install, so a name clash writes no person either. */
+  it("writes no colleague when the project already has a pipeline of the template's name", async () => {
+    const project = createProject(handle.db, { name: "Acme", keyPrefix: "ACME" });
+    setActiveProjectCommand(handle.db, { id: project.id });
+    const first = await useGalleryCommand(handle.db, signedIn(), monday());
+    expect(first.problem).toBeNull();
+    const people = listPeople(handle.db).map((person) => person.id);
+    expect(people).not.toContain(dana.id);
+
+    const clash = await useGalleryCommand(handle.db, signedIn(), { ...monday(), roleSlots: { approve: dana.id } });
+
+    expect(clash.problem).toContain('already has a pipeline called "Weekly report"');
+    expect(listPeople(handle.db).map((person) => person.id)).toEqual(people);
   });
 
   it("refuses, creating nothing, a colleague it cannot name while the server cannot be reached", async () => {

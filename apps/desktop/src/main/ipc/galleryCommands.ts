@@ -112,6 +112,9 @@ async function rolePeople(
   return { solo, people: solo ? [] : listPeople(db).map((person) => ({ id: person.id, name: person.name })), organisation: false, reached: true };
 }
 
+/** `useTemplate`'s refusal, thrown so the transaction around it rolls back the colleagues' rows written before it. */
+class UseRefusal extends Error {}
+
 /** Said when a chosen colleague cannot be named because the organisation could not be asked. Nothing is created. */
 const ORGANISATION_UNREACHABLE =
   "EO could not reach your organisation just now, so it cannot say who you chose for a role. Nothing was created; try again in a moment.";
@@ -212,6 +215,9 @@ export async function useGalleryCommand(db: Db, context: GalleryContext, payload
   if (template === null) return { projectId: null, pipelineId: null, jobId: null, needs: [], problem: missing(payload.slug, payload.token) };
 
   const roleSlots = { ...payload.roleSlots };
+  // Colleagues to write a row for, written with the install and rolled
+  // back with any refusal of it, so a refused template writes nothing.
+  const colleagues: { id: string; name: string }[] = [];
   const who = await rolePeople(db, context);
   if (who.solo) {
     const you = localPerson(db).id as Uuid;
@@ -224,14 +230,12 @@ export async function useGalleryCommand(db: Db, context: GalleryContext, payload
     // Resolved before anything is written: a colleague neither list
     // names, while the server cannot be asked, is refused here rather
     // than dropped or swapped for somebody else.
-    const colleagues: { id: string; name: string }[] = [];
     for (const personId of Object.values(roleSlots)) {
       if (personId.trim() === "" || getPerson(db, personId as Uuid) !== undefined) continue;
       const colleague = who.people.find((person) => person.id === personId);
       if (colleague !== undefined) colleagues.push(colleague);
       else if (!who.reached) return { projectId: null, pipelineId: null, jobId: null, needs: [], problem: ORGANISATION_UNREACHABLE };
     }
-    for (const colleague of colleagues) ensurePerson(db, colleague.id as Uuid, colleague.name);
   }
 
   // The project it goes on (EO-767): the one the form said, or — from a
@@ -259,15 +263,29 @@ export async function useGalleryCommand(db: Db, context: GalleryContext, payload
     }
   }
 
-  const result = useTemplate(db, {
-    template,
-    answers: payload.answers,
-    roleSlots,
-    ...(payload.projectName === undefined ? {} : { projectName: payload.projectName }),
-    ...(target === null ? {} : { projectId: target }),
-    signedInBackends: context.signedInBackends,
-  });
-  if (!result.ok) return { projectId: null, pipelineId: null, jobId: null, needs: [], problem: result.reason };
+  // The colleagues' rows and the install in one transaction (EO-767): a
+  // refusal — the project already has a pipeline of this name, say —
+  // rolls the rows back too, so nothing at all is written. The rows go
+  // first because `useTemplate` checks every role slot names a person.
+  let result: Extract<ReturnType<typeof useTemplate>, { ok: true }>;
+  try {
+    result = db.transaction(() => {
+      for (const colleague of colleagues) ensurePerson(db, colleague.id as Uuid, colleague.name);
+      const used = useTemplate(db, {
+        template,
+        answers: payload.answers,
+        roleSlots,
+        ...(payload.projectName === undefined ? {} : { projectName: payload.projectName }),
+        ...(target === null ? {} : { projectId: target }),
+        signedInBackends: context.signedInBackends,
+      });
+      if (!used.ok) throw new UseRefusal(used.reason);
+      return used;
+    });
+  } catch (error) {
+    if (error instanceof UseRefusal) return { projectId: null, pipelineId: null, jobId: null, needs: [], problem: error.message };
+    throw error;
+  }
 
   // A project this made does not end first run (EO-317): the needs
   // check is step 5, its lines are this call's own answer, and a flow
