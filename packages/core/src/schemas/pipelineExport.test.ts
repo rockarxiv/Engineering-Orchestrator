@@ -196,8 +196,10 @@ describe("a pinned module version, in a document", () => {
   });
 
   it("reads a format-13 document as pinning nothing", () => {
-    const { moduleVersion: _step, ...unpinnedStep } = step;
-    const { version: _module, ...unpinnedModule } = module;
+    const unpinnedStep: Record<string, unknown> = { ...step };
+    delete unpinnedStep["moduleVersion"];
+    const unpinnedModule: Record<string, unknown> = { ...module };
+    delete unpinnedModule["version"];
     const parsed = PipelineExportSchema.parse(document({ eoPipelineExport: 13, steps: [unpinnedStep], modules: [unpinnedModule] }));
     expect(parsed.steps[0]?.moduleVersion).toBeUndefined();
     expect(parsed.modules[0]?.version).toBeNull();
