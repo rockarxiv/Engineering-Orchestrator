@@ -447,9 +447,9 @@ export function startMain(platform: Platform): RunningMain {
     // goes — its sign-in and saved conversations linked in from the
     // person's, and nothing else of theirs.
     codexHomeRoot: join(userDataPath, "codex-homes"),
-    // And where one goes instead when that folder is on a different
-    // drive from the person's Codex home, which on Windows a hard link
-    // to their sign-in cannot cross: EO's folder in their profile.
+    // And where one goes instead when it cannot be made there: EO's
+    // folder in their profile (until EO-774, also where a Windows hard
+    // link went that could not cross drives).
     codexHomeAlternateRoot: join(homedir(), ".eo", "codex-homes"),
     // And where EO's own administrative server is, for the one agent
     // whose allowlist names it (EO-182). Asked per dispatch: this is

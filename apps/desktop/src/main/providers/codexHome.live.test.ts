@@ -1,12 +1,11 @@
 import { execFileSync, spawnSync } from "node:child_process";
-import * as nodeFs from "node:fs";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 import { isMissingCodexSession } from "./codex.js";
 import { CodexClient, type ThreadEvent } from "./codexClient.js";
-import { prepareCodexHome, removeCodexHome, type CodexHomeFs } from "./codexHome.js";
+import { prepareCodexHome, removeCodexHome } from "./codexHome.js";
 
 /**
  * What a redirected `CODEX_HOME` does to authentication and to
@@ -223,9 +222,9 @@ describe.skipIf(!OPTED_IN)("what a redirected CODEX_HOME does to auth and to res
 
 /**
  * The home EO itself builds for a locked-down agent (EO-378), rather than
- * one made by hand: signed in through it, and a credential write through
- * the hard link the Windows path uses. Free — `login status` and
- * `login --with-api-key` are not turns.
+ * one made by hand: signed in through it, and on Windows a credential
+ * write through the file symlink made there (EO-774). Free — `login
+ * status` and `login --with-api-key` are not turns.
  */
 describe.skipIf(!OPTED_IN)("the Codex home EO builds for an agent", () => {
   it("is signed in through the person's own credential", () => {
@@ -242,37 +241,30 @@ describe.skipIf(!OPTED_IN)("the Codex home EO builds for an agent", () => {
     expect(existsSync(REAL_AUTH), "removing the home took the person's credential with it").toBe(true);
   });
 
-  it("writes a credential through the hard link it makes on Windows", () => {
-    // Under the home directory rather than the temp one, which may be a
-    // different filesystem — and a hard link cannot cross one.
-    const root = mkdtempSync(join(homedir(), ".eo378-hardlink-"));
+  /**
+   * EO-774: on Windows `auth.json` is a file symlink, and Codex 0.167.0
+   * and later save a credential by writing a temporary file and renaming
+   * it over `auth.json` — the call that refused the hard link EO made
+   * there before. This is whether, on real Windows, that rename lands in
+   * the person's file through the symlink, or replaces the link with a
+   * separate copy and leaves their refresh token revoked. Only Windows
+   * can answer it, so it runs only there, and needs Developer Mode (or an
+   * administrator) for EO to make the link at all.
+   */
+  it.skipIf(process.platform !== "win32")("writes a credential through the file symlink it makes on Windows", () => {
+    const root = mkdtempSync(join(homedir(), ".eo774-symlink-"));
     try {
       const person = join(root, "person");
       mkdirSync(person);
-      writeFileSync(join(person, "auth.json"), JSON.stringify({ auth_mode: "apikey", OPENAI_API_KEY: "sk-eo378-before", tokens: null, last_refresh: null }));
-      const windowsFs: CodexHomeFs = {
-        existsSync: nodeFs.existsSync,
-        linkSync: nodeFs.linkSync,
-        lstatSync: (path) => nodeFs.lstatSync(path),
-        mkdirSync: nodeFs.mkdirSync,
-        readdirSync: (path) => nodeFs.readdirSync(path),
-        readlinkSync: (path) => nodeFs.readlinkSync(path),
-        rmSync: nodeFs.rmSync,
-        statSync: (path) => nodeFs.statSync(path, { bigint: true }),
-        symlinkSync: (target, path, type) => {
-          if (type !== "junction") throw new Error("EPERM: no symbolic links without Developer Mode");
-          nodeFs.symlinkSync(target, path, "dir");
-        },
-        unlinkSync: nodeFs.unlinkSync,
-      };
-      const prepared = prepareCodexHome({ root: join(root, "homes"), agentId: "eo378-live", personHome: person, platform: "win32", fs: windowsFs });
+      writeFileSync(join(person, "auth.json"), JSON.stringify({ auth_mode: "apikey", OPENAI_API_KEY: "sk-eo774-before", tokens: null, last_refresh: null }));
+      const prepared = prepareCodexHome({ root: join(root, "homes"), agentId: "eo774-live", personHome: person });
       if (!prepared.ok) throw new Error(prepared.problem);
 
-      const wrote = runCodex(prepared.path, ["login", "--with-api-key"], 60_000, "sk-eo378-after\n");
+      const wrote = runCodex(prepared.path, ["login", "--with-api-key"], 60_000, "sk-eo774-after\n");
       expect(wrote.ok, `the credential write did not run: ${wrote.stderr}`).toBe(true);
 
-      expect(statSync(join(prepared.path, "auth.json")).ino, "the write replaced the hard link with a new file").toBe(statSync(join(person, "auth.json")).ino);
-      expect(readFileSync(join(person, "auth.json"), "utf8"), "the write did not reach the person's file").toContain("sk-eo378-after");
+      expect(lstatSync(join(prepared.path, "auth.json")).isSymbolicLink(), "the write replaced the symlink with a separate file").toBe(true);
+      expect(readFileSync(join(person, "auth.json"), "utf8"), "the write did not reach the person's file").toContain("sk-eo774-after");
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

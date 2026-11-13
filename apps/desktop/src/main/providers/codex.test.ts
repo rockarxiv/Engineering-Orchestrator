@@ -1,4 +1,4 @@
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative, sep } from "node:path";
 import { ADMIN_MCP_SERVER_NAME, ModuleManifestSchema, developerRegistry, isThreadNotFound, jsonSchemaOutputSchema, outputSchemaFor, validateActionResult, type AgentEvent, type McpServer, type Skill, type ThreadNotFoundError } from "@eo/core";
@@ -22,7 +22,7 @@ import {
 } from "./codex.js";
 import { AppServerExitedError } from "./codexAppServer.js";
 import { chooseCodexHome, prepareCodexHome, type CodexHomePreparation } from "./codexHome.js";
-import { linksOnlyWithin } from "../testing/unprivilegedWindowsFs.js";
+import { windowsWithDeveloperMode } from "../testing/unprivilegedWindowsFs.js";
 import { CodexClient, serializeConfigOverrides, type CodexClientOptions, type CodexThread, type CodexThreadOptions, type CodexTurnOptions } from "./codexClient.js";
 import { fakeAppServer, note, type FakeAppServerScenario } from "../testing/fakeCodexAppServer.js";
 import { filesUnder } from "../testing/tree.js";
@@ -2129,14 +2129,9 @@ describe("createCodexProvider over a stubbed app-server", () => {
     expect(fake.launches[0]?.options.env).toMatchObject({ CODEX_HOME: home, PATH: "/probe/bin:/usr/bin" });
     // The home, whole: two links and nothing else EO put there.
     expect(readdirSync(home).sort()).toEqual(["auth.json", "sessions"]);
-    // Which kind of link is the platform's: a symlink, or on Windows a
-    // hard link, which needs no privilege. Either way it is the person's
-    // own file rather than a copy of it.
-    if (process.platform === "win32") {
-      expect(statSync(join(home, "auth.json"), { bigint: true }).ino).toBe(statSync(join(person, "auth.json"), { bigint: true }).ino);
-    } else {
-      expect(lstatSync(join(home, "auth.json")).isSymbolicLink()).toBe(true);
-    }
+    // A symlink on every platform (EO-774): the person's own file rather
+    // than a copy of it.
+    expect(lstatSync(join(home, "auth.json")).isSymbolicLink()).toBe(true);
     expect(readFileSync(join(home, "auth.json"), "utf8")).toBe('{"tokens":{}}');
     // A thread recorded before this story is still where a resume looks.
     expect(existsSync(join(home, "sessions", "2026", "08", "12", "rollout-earlier.jsonl"))).toBe(true);
@@ -2206,29 +2201,28 @@ describe("createCodexProvider over a stubbed app-server", () => {
     expect(readdirSync(home).sort()).toEqual(["auth.json", "sessions"]);
   });
 
-  it("launches a Windows agent locked down from the root on the person's drive when EO's data folder is on another", async () => {
-    // No admin rights, no Developer Mode, and a hard link cannot cross
-    // drives: the home is made under the second root, and that is the
-    // CODEX_HOME the app-server is launched with.
+  it("launches a Windows agent locked down, its sign-in a file symlink, where Developer Mode is on", async () => {
+    // EO-774: a symlink rather than the hard link earlier versions made,
+    // which Codex 0.167.0 refuses to save a refreshed sign-in through.
     const person = worktree();
     writeFileSync(join(person, "auth.json"), '{"tokens":{}}');
     writeFileSync(join(person, "config.toml"), '[mcp_servers.theirs]\ncommand = "their-server"\n');
-    const otherDrive = worktree();
-    const sameDrive = worktree();
+    const root = worktree();
     const { fake, provider } = providerOver(
       { after: { "turn/start": [note.turnStarted(), note.agentMessage("ok"), note.turnCompleted()] } },
       {
         codexHome: () => {
-          const choice = chooseCodexHome({ roots: [otherDrive, sameDrive], agentId: "agent-on-windows", personHome: person, platform: "win32", fs: linksOnlyWithin(sameDrive) });
+          const choice = chooseCodexHome({ roots: [root], agentId: "agent-on-windows", personHome: person, platform: "win32", fs: windowsWithDeveloperMode() });
           return choice.kind === "own" ? choice.path : null;
         },
       },
     );
     await collect(provider.start({ ...startOpts, cwd: worktree() }));
 
-    const home = join(sameDrive, "agent-on-windows");
+    const home = join(root, "agent-on-windows");
     expect(fake.launches[0]?.options.env).toMatchObject({ CODEX_HOME: home });
     expect(readdirSync(home).sort()).toEqual(["auth.json", "sessions"]);
+    expect(lstatSync(join(home, "auth.json")).isSymbolicLink()).toBe(true);
     expect(readFileSync(join(home, "auth.json"), "utf8")).toBe('{"tokens":{}}');
   });
 

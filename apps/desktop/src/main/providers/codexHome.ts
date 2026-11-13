@@ -1,4 +1,4 @@
-import { existsSync, linkSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync, symlinkSync, unlinkSync } from "node:fs";
 import { lstat, readdir, readFile, rm, unlink } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
@@ -23,11 +23,15 @@ import { uuidv7 } from "@eo/core";
  * Both are *links* to the person's own, never copies:
  *
  * - `auth.json` because a ChatGPT credential rotates. Codex rewrites the
- *   file in place when it refreshes (truncate and write, not
- *   write-and-rename — measured through a symlink in the spike and
- *   through a hard link for this story), so a refresh during a run lands
- *   in the person's own file. A copy would strand the new refresh token
- *   in this directory and leave the person's one revoked.
+ *   file when it refreshes, through the link, so a refresh during a run
+ *   lands in the person's own file. A copy would strand the new refresh
+ *   token in this directory and leave the person's one revoked. Up to
+ *   0.166.0 it truncated and wrote in place; from 0.167.0 it writes a
+ *   temporary file beside the link's *target* and renames it over the
+ *   target, which a symlink survives and a hard link does not — Codex
+ *   refuses a credential file with more than one link outright
+ *   ("atomic credential replacement does not support hard-linked
+ *   files"), after the refresh token has already been spent (EO-774).
  * - `sessions` because a thread is found by its rollout file. Shared, a
  *   thread started under any home — the person's own, before this story
  *   existed, or another agent's — resumes under this one, and rollouts go
@@ -37,24 +41,26 @@ import { uuidv7 } from "@eo/core";
  * departs from carrying the whole home: carrying it would carry the person's MCP
  * servers and model settings, which is the thing being locked out.
  *
- * **Windows, without admin rights or Developer Mode.** A symbolic link
- * needs one of the two there; a directory *junction* and a file *hard
- * link* need neither. So on Windows `sessions` is a junction and
- * `auth.json` a hard link, and a file symlink is only tried when the
- * hard link cannot be made. A hard link is one file under two names, so
- * it writes through exactly as a symlink does — but it does not follow
- * the person replacing the file (`codex login` deletes `auth.json` and
- * writes a new one), so it is checked and remade every time the home is
- * prepared, which is every turn.
+ * **Windows.** `sessions` is a directory *junction*, which needs no
+ * privilege, and `auth.json` a file symlink, as everywhere else. Windows
+ * makes a file symlink only for an administrator or where Developer Mode
+ * is on; where neither holds, a locked-down Codex agent's dispatch is
+ * refused, saying to turn Developer Mode on or to tick the agent over to
+ * the person's own setup (`DEVELOPER_MODE_PROBLEM`, `codexHomeRefusal`).
+ * Until EO-774 `auth.json` was a hard link there, which needs no
+ * privilege; Codex 0.167.0 refuses to save a credential through one (see
+ * above), and a person decided on EO-774 that a symlink or a refusal
+ * replaces it. The hard links earlier versions left are removed — by
+ * preparing the home, and from every home by the sweep
+ * (`sweepCodexHomes`) — because while one exists the person's own
+ * `auth.json` has two links, and their own Codex refuses it too.
  *
- * **And when the two are on different drives**, where no hard link can
- * be made — a redirected `%APPDATA%`, a `CODEX_HOME` on `D:` — the home
- * is made under the next root instead (`chooseCodexHome`): EO's folder
- * in the person's profile, `~/.eo/codex-homes`, which shares a drive
- * with `~/.codex`. Where no root can carry the sign-in at all, the agent
- * dispatch is refused with the reason (`codexHomeRefusal`): running an
- * agent nobody ticked over in the person's own home is the keyring's way
- * out, which a person agreed to, and not a link failure's.
+ * Where a home cannot be made under the first root, the next is tried
+ * (`chooseCodexHome`): EO's folder in the person's profile,
+ * `~/.eo/codex-homes`. Where no root can carry the sign-in at all, the
+ * agent dispatch is refused with the reason (`codexHomeRefusal`): running
+ * an agent nobody ticked over in the person's own home is the keyring's
+ * way out, which a person agreed to, and not a link failure's.
  *
  * **And nothing an agent writes into its home is configuration next
  * turn.** `prepareCodexHome` clears the home down to Codex's own state
@@ -130,34 +136,31 @@ export interface LinkStat {
 /**
  * The filesystem calls this module makes, as a seam.
  *
- * Production passes nothing and gets `node:fs`. The Windows test passes
- * the real thing wrapped so that every symbolic link fails the way it
- * does on a Windows account without admin rights or Developer Mode —
- * which is how "it works there" is asserted on a machine that is not
- * Windows.
+ * Production passes nothing and gets `node:fs`. The Windows tests pass
+ * the real thing wrapped so that a junction is made the way Windows
+ * makes one, and a file symlink fails the way it does on a Windows
+ * account without admin rights or Developer Mode, or works as it does
+ * with Developer Mode on — which is how both are asserted on a machine
+ * that is not Windows.
  */
 export interface CodexHomeFs {
   existsSync: typeof existsSync;
-  linkSync: typeof linkSync;
   lstatSync: (path: string) => LinkStat;
   mkdirSync: typeof mkdirSync;
   readdirSync: (path: string) => string[];
   readlinkSync: (path: string) => string;
   rmSync: typeof rmSync;
-  statSync: (path: string) => { dev: bigint; ino: bigint };
   symlinkSync: typeof symlinkSync;
   unlinkSync: typeof unlinkSync;
 }
 
 const NODE_FS: CodexHomeFs = {
   existsSync,
-  linkSync,
   lstatSync: (path) => lstatSync(path),
   mkdirSync,
   readdirSync: (path) => readdirSync(path),
   readlinkSync: (path) => readlinkSync(path),
   rmSync,
-  statSync: (path) => statSync(path, { bigint: true }),
   symlinkSync,
   unlinkSync,
 };
@@ -183,7 +186,7 @@ export interface CodexHomeOptions {
  */
 export type CodexHomePreparation =
   | { ok: true; path: string; credential: "carried" | "absent"; credentialPath: string }
-  | { ok: false; path: string; problem: string };
+  | { ok: false; path: string; problem: string; developerMode?: true };
 
 /**
  * Makes sure `root/<agentId>` exists and carries the person's sign-in and
@@ -219,13 +222,20 @@ export function prepareCodexHome(options: CodexHomeOptions): CodexHomePreparatio
   const scrubbed = scrubCodexHome(fs, path);
   if (scrubbed !== null) return { ok: false, path, problem: scrubbed };
 
+  // A step of its own (EO-774): an `auth.json` here that is not a symlink
+  // — the hard link EO made on Windows before EO-774 — goes before
+  // anything is linked, whether or not a symlink can then be made. While
+  // it exists the person's own `auth.json` has two links, and Codex
+  // 0.167.0 and later will not save a refreshed sign-in into it, in this
+  // home or in theirs.
+  const dropped = dropCredentialThatIsNotALinkSync(fs, join(path, CODEX_CREDENTIAL_FILE));
+  if (dropped !== null) return { ok: false, path, problem: dropped };
+
   const sessions = linkSessions(fs, windows, join(person, CODEX_SESSIONS_DIRECTORY), join(path, CODEX_SESSIONS_DIRECTORY));
   if (sessions !== null) return { ok: false, path, problem: sessions };
 
-  const credential = windows
-    ? hardLinkCredential(fs, credentialPath, join(path, CODEX_CREDENTIAL_FILE))
-    : symlinkCredential(fs, credentialPath, join(path, CODEX_CREDENTIAL_FILE));
-  if (typeof credential === "object") return { ok: false, path, problem: credential.problem };
+  const credential = symlinkCredential(fs, windows, credentialPath, join(path, CODEX_CREDENTIAL_FILE));
+  if (typeof credential === "object") return { ok: false, path, ...credential };
   return { ok: true, path, credential, credentialPath };
 }
 
@@ -365,16 +375,38 @@ function linkSessions(fs: CodexHomeFs, windows: boolean, target: string, link: s
 }
 
 /**
- * `auth.json` on Linux and macOS: a symlink, made whether or not the
- * person's file exists yet, so signing in later needs nothing from EO.
+ * What a locked-down Codex agent's dispatch is refused with on Windows
+ * where a file symlink cannot be made (EO-774): no Developer Mode, and EO
+ * not running as an administrator. `codexHomeRefusal` adds the other way
+ * out, ticking the agent over to the person's own setup.
  */
-function symlinkCredential(fs: CodexHomeFs, target: string, link: string): "carried" | "absent" | { problem: string } {
+export const DEVELOPER_MODE_PROBLEM =
+  "Windows lets EO link your Codex sign-in into it only where Developer Mode is on, and it is not. " +
+  "Turn Developer Mode on in Windows Settings (System, For developers).";
+
+/**
+ * `auth.json`: a symlink to the person's, on every platform, made whether
+ * or not their file exists yet, so signing in later needs nothing from
+ * EO. A symlink that names something else is replaced; anything that is
+ * not a symlink has already gone (`dropCredentialThatIsNotALinkSync`).
+ */
+function symlinkCredential(
+  fs: CodexHomeFs,
+  windows: boolean,
+  target: string,
+  link: string,
+): "carried" | "absent" | { problem: string; developerMode?: true } {
   const existing = lstatOrNull(fs, link);
-  if (existing === null || !existing.isSymbolicLink() || !samePath(readlinkOrNull(fs, link), target, false)) {
+  if (existing === null || !existing.isSymbolicLink() || !samePath(readlinkOrNull(fs, link), target, windows)) {
     try {
       if (existing !== null) fs.unlinkSync(link);
+    } catch (error) {
+      return { problem: `EO could not replace ${link} with a link to your Codex sign-in at ${target}: ${messageOf(error)}` };
+    }
+    try {
       fs.symlinkSync(target, link, "file");
     } catch (error) {
+      if (windows && errorCode(error) === "EPERM") return { problem: DEVELOPER_MODE_PROBLEM, developerMode: true };
       return { problem: `EO could not link ${link} to your Codex sign-in at ${target}: ${messageOf(error)}` };
     }
   }
@@ -382,46 +414,29 @@ function symlinkCredential(fs: CodexHomeFs, target: string, link: string): "carr
 }
 
 /**
- * `auth.json` on Windows: a hard link, which needs no privilege. Remade
- * when it no longer names the person's file, and removed when they have
- * none, so a credential they signed out of does not linger here.
+ * Removes an `auth.json` from a home that is not a symlink (EO-774): a
+ * hard link to the person's file an EO before EO-774 made on Windows,
+ * which keeps their own `auth.json` at two links and so unwritable to
+ * Codex 0.167.0 and later, or a stale copy. Only ever by name, so the
+ * person's file is untouched. Null when there is none left.
  */
-function hardLinkCredential(fs: CodexHomeFs, target: string, link: string): "carried" | "absent" | { problem: string } {
-  const present = lstatOrNull(fs, link) !== null;
-  if (!fs.existsSync(target)) {
-    if (present) {
-      try {
-        fs.unlinkSync(link);
-      } catch (error) {
-        return { problem: `EO could not remove the stale sign-in at ${link}: ${messageOf(error)}` };
-      }
-    }
-    return "absent";
-  }
-  if (present && sameFile(fs, target, link)) return "carried";
+function dropCredentialThatIsNotALinkSync(fs: CodexHomeFs, credential: string): string | null {
+  const stat = lstatOrNull(fs, credential);
+  if (stat === null || stat.isSymbolicLink() || !stat.isFile()) return null;
   try {
-    if (present) fs.unlinkSync(link);
+    fs.unlinkSync(credential);
+    return null;
   } catch (error) {
-    return { problem: `EO could not replace the stale sign-in at ${link}: ${messageOf(error)}` };
+    return `EO could not remove ${credential}, a hard link to your Codex sign-in that an earlier version of EO made: ${messageOf(error)}`;
   }
-  try {
-    fs.linkSync(target, link);
-    return "carried";
-  } catch (hardLinkError) {
-    // Different drives, most likely. A symbolic link crosses them, and
-    // succeeds where Developer Mode is on; where it is not, both reasons
-    // are reported, because the first is the one a person can act on.
-    try {
-      fs.symlinkSync(target, link, "file");
-      return "carried";
-    } catch {
-      return {
-        problem:
-          `EO could not link your Codex sign-in at ${target} into ${link}: ${messageOf(hardLinkError)}. ` +
-          `A hard link needs both on the same drive.`,
-      };
-    }
-  }
+}
+
+/** `dropCredentialThatIsNotALinkSync` for the sweep, on every home it keeps. */
+async function dropCredentialThatIsNotALink(fs: CodexHomeSweepFs, home: string): Promise<void> {
+  const credential = join(home, CODEX_CREDENTIAL_FILE);
+  const stat = await lstatOrNullAsync(fs, credential);
+  if (stat === null || stat.isSymbolicLink() || !stat.isFile()) return;
+  await unlinkIfPresent(fs, credential);
 }
 
 /**
@@ -556,6 +571,13 @@ function realSessionsProblem(sessionsPath: string, sessions: LinkStat, home: str
  * A home that cannot be removed now — on Windows, one a running Codex
  * still holds open, which also refuses the rename — is reported and left
  * for the next sweep.
+ *
+ * **Every home it keeps loses an `auth.json` that is not a symlink**
+ * (EO-774, `dropCredentialThatIsNotALink`): the hard links EO made on
+ * Windows before then, in the homes of agents that are not dispatched
+ * again, and in the side calls' own. Each would keep the person's own
+ * credential file at more than one link, which Codex 0.167.0 refuses to
+ * save a refreshed sign-in into.
  */
 export async function sweepCodexHomes(root: string, keep: () => ReadonlySet<string>, fs: CodexHomeSweepFs = NODE_SWEEP_FS): Promise<string[]> {
   let names: string[];
@@ -570,13 +592,16 @@ export async function sweepCodexHomes(root: string, keep: () => ReadonlySet<stri
     // EO's own side calls' home is nobody's agent and always kept: it is
     // made ready again before every call, and a sweep that removed it
     // mid-call would sign the call out (EO-477).
-    if (name === SIDE_CALL_CODEX_HOME) continue;
     const path = join(root, name);
     if (retiringNow.has(path)) continue;
     try {
       let retiring = path;
       if (!name.startsWith(RETIRING_CODEX_HOME_PREFIX)) {
-        if (keep().has(name)) continue;
+        if (name === SIDE_CALL_CODEX_HOME || keep().has(name)) {
+          const home = await lstatOrNullAsync(fs, path);
+          if (home !== null && home.isDirectory() && !home.isSymbolicLink()) await dropCredentialThatIsNotALink(fs, path);
+          continue;
+        }
         // Looked at in place: nothing is removed by this, and a refusal
         // leaves the home exactly where it is.
         const sessionsPath = join(path, CODEX_SESSIONS_DIRECTORY);
@@ -690,15 +715,16 @@ export type CodexHomeChoice =
  * ready (EO-378).
  *
  * The roots are tried in order and the first that can be linked wins:
- * `userData/codex-homes`, then EO's folder in the person's profile. On
- * Linux and macOS the first always can — a symlink crosses filesystems.
- * On Windows a hard link cannot cross drives, so the second root is what
- * carries a sign-in when EO's data folder and the person's Codex home
- * are on different ones. An agent has one home: once a root works, a
- * home it had under another is removed.
+ * `userData/codex-homes`, then EO's folder in the person's profile. A
+ * symlink and a junction both cross drives, so the second is for a first
+ * that cannot be made at all; before EO-774 it was also where a Windows
+ * hard link to a sign-in on another drive went. An agent has one home:
+ * once a root works, a home it had under another is removed.
  *
- * Where no root works — on Windows, a `CODEX_HOME` on a drive neither
- * root is on — the answer is `unavailable`, and nothing runs.
+ * Where no root works the answer is `unavailable`, and nothing runs. On
+ * Windows without Developer Mode no root can hold the symlink, so the
+ * others are not tried and the answer is that one reason
+ * (`DEVELOPER_MODE_PROBLEM`), said once.
  */
 export function chooseCodexHome(options: Omit<CodexHomeOptions, "root"> & { roots: readonly string[] }): CodexHomeChoice {
   const fs = options.fs ?? NODE_FS;
@@ -710,6 +736,7 @@ export function chooseCodexHome(options: Omit<CodexHomeOptions, "root"> & { root
   for (const root of options.roots) {
     const prepared = prepareCodexHome({ ...options, root, personHome });
     if (!prepared.ok) {
+      if (prepared.developerMode) return { kind: "unavailable", problem: prepared.problem };
       problems.push(prepared.problem);
       continue;
     }
@@ -806,7 +833,11 @@ async function unlinkIfPresent(fs: CodexHomeSweepFs, path: string): Promise<void
 }
 
 function isMissing(error: unknown): boolean {
-  return typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT";
+  return errorCode(error) === "ENOENT";
+}
+
+function errorCode(error: unknown): unknown {
+  return typeof error === "object" && error !== null && "code" in error ? error.code : undefined;
 }
 
 function readlinkOrNull(fs: CodexHomeFs, path: string): string | null {
@@ -822,16 +853,6 @@ function samePath(actual: string | null, expected: string, windows: boolean): bo
   // Windows hands a junction's target back with the `\\?\` prefix.
   const clean = (path: string) => resolve(path.replace(/^\\\\\?\\/, ""));
   return windows ? clean(actual).toLowerCase() === clean(expected).toLowerCase() : clean(actual) === clean(expected);
-}
-
-function sameFile(fs: CodexHomeFs, a: string, b: string): boolean {
-  try {
-    const first = fs.statSync(a);
-    const second = fs.statSync(b);
-    return first.dev === second.dev && first.ino === second.ino;
-  } catch {
-    return false;
-  }
 }
 
 function readOrNull(path: string): string | null {

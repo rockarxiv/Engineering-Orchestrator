@@ -162,11 +162,12 @@ export interface EngineOptions {
    */
   codexHomeRoot?: string;
   /**
-   * Where such a home goes when it cannot be linked under the root above
-   * (EO-378): `~/.eo/codex-homes` in production. On Windows a hard link
-   * to the person's `auth.json` cannot cross drives, and EO's data folder
-   * is not always on the drive their Codex home is on; EO's folder in
-   * their profile is. Ignored without `codexHomeRoot`.
+   * Where such a home goes when it cannot be made under the root above
+   * (EO-378): `~/.eo/codex-homes` in production. Until EO-774 that was
+   * also where a Windows hard link to the person's `auth.json` went when
+   * EO's data folder was on another drive; a symlink crosses drives, and
+   * homes made here before then are still swept. Ignored without
+   * `codexHomeRoot`.
    */
   codexHomeAlternateRoot?: string;
   /**

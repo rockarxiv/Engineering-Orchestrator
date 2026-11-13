@@ -225,8 +225,8 @@ export interface CodexProviderOptions {
    *
    * Called where a Codex client is constructed — once per turn — because
    * that is the last moment before the app-server reads it, and a link
-   * in it can go stale between turns (`prepareCodexHome` on Windows'
-   * hard links), and what an earlier turn wrote into the home is
+   * in it can go stale between turns (an agent can replace one), and
+   * what an earlier turn wrote into the home is
    * cleared before the next one reads it. Throws when no home could be
    * made, which fails the turn rather than running it in the person's
    * own home; the dispatch preflight refuses that case first, with a
