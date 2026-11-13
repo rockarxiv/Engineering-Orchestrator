@@ -344,7 +344,9 @@ describe("a moved pin on a pipeline made from a template", () => {
         ...step,
         id: local(step.id),
         pipelineId: copy.id as Uuid,
-        ...(step.type === "module" ? { entryAction: id, moduleVersion: 3 } : {}),
+        // The document's own number names nothing here (EO-772); only the Notify step pins one.
+        moduleVersion: step.type === "module" ? 3 : null,
+        ...(step.type === "module" ? { entryAction: id } : {}),
       })),
       base.routes.map((route) => ({ ...route, pipelineId: copy.id as Uuid, fromStepId: local(route.fromStepId), target: local(route.target) })),
       { entryStepId: local(v10.document.pipeline.entryStepId ?? "worktree") },
