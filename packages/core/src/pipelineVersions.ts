@@ -76,6 +76,32 @@ export function versionLabel(number: number): string {
   return `v${number}`;
 }
 
+const MODULE_UPDATE_AUTHOR_PREFIX = "module:";
+
+/**
+ * The author a pipeline version is filed under when approving a module
+ * version moved the pipeline's pin to it (EO-771): `module:<slug>@<number>`.
+ * Read back by `moduleUpdateOfAuthor`, as `templateUpdateAuthor` is by
+ * `templateUpdateOfAuthor`.
+ */
+export function moduleUpdateAuthor(slug: string, number: number): string {
+  return `${MODULE_UPDATE_AUTHOR_PREFIX}${slug}@${number}`;
+}
+
+/**
+ * The module update a version's `createdBy` names, or null for a version
+ * a person, EO or a template update filed. `version` is null where the
+ * author names no number this build can read.
+ */
+export function moduleUpdateOfAuthor(createdBy: string | null): { slug: string; version: number | null } | null {
+  if (createdBy === null || !createdBy.startsWith(MODULE_UPDATE_AUTHOR_PREFIX)) return null;
+  const named = createdBy.slice(MODULE_UPDATE_AUTHOR_PREFIX.length);
+  const at = named.lastIndexOf("@");
+  if (at <= 0) return { slug: named, version: null };
+  const number = Number(named.slice(at + 1));
+  return { slug: named.slice(0, at), version: Number.isInteger(number) && number > 0 ? number : null };
+}
+
 /**
  * The banner above a board whose pipeline has moved on (the original design).
  *

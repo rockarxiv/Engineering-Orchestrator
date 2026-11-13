@@ -17,6 +17,7 @@ import {
   saveModule,
   type StoredModuleTestRun,
 } from "../db/repos/index.js";
+import { followApprovedModule } from "../modules/followApproved.js";
 import type { ModuleTestRunner } from "../modules/moduleTestRunner.js";
 
 /**
@@ -201,6 +202,8 @@ export async function approveModuleCommand(
   db: Db,
   runner: Pick<ModuleTestRunner, "run">,
   input: IpcPayload<"modules:approve">,
+  /** Whether this installation is the organisation's record (`!platform.hasMachine`): which pipelines approving moves, and who hears of one it cannot (EO-771). */
+  options: { isTheRecord?: boolean } = {},
 ): Promise<IpcResponse<"modules:approve">> {
   const judged = await judgeModuleForApproval(db, runner, input.id, input.acknowledgeLowCoverage);
   if (!judged.ready) return judged.answer;
@@ -212,6 +215,9 @@ export async function approveModuleCommand(
   const approved = db.transaction(() => {
     if (!stillAsJudged(db, judged)) return false;
     approveModule(db, judged.module.id);
+    // Every pipeline pinning an older version moves to this one, in the
+    // same transaction as the approval (EO-771).
+    followApprovedModule(db, judged.module.id, { isTheRecord: options.isTheRecord ?? false });
     return true;
   });
   if (!approved) return changedWhileTesting(judged.module);
@@ -360,8 +366,16 @@ export function restoreModuleVersionCommand(
   db: Db,
   runner: Pick<ModuleTestRunner, "schedule">,
   input: IpcPayload<"moduleVersions:restore">,
+  options: { isTheRecord?: boolean } = {},
 ): IpcResponse<"moduleVersions:restore"> {
-  const result = restoreModuleVersion(db, input.moduleId, input.number);
+  // A restore that comes back approved — the code and cases of a version a
+  // person approved — is an approval of the version it files, and moves
+  // pipelines to it as approving would (EO-771).
+  const result = db.transaction(() => {
+    const restored = restoreModuleVersion(db, input.moduleId, input.number);
+    if (restored.ok && getModule(db, input.moduleId)?.approvedAt != null) followApprovedModule(db, input.moduleId, { isTheRecord: options.isTheRecord ?? false });
+    return restored;
+  });
   if (!result.ok) return { restored: false, module: null, version: null, problem: result.reason };
   runner.schedule(input.moduleId, { force: true });
   const module = getModule(db, input.moduleId)!;

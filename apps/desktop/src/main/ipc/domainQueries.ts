@@ -112,6 +112,7 @@ import {
   stepForItem,
   stepsByItemVersion,
   versionAuthorName,
+  getModuleBySlug,
   listModules,
 } from "../db/repos/index.js";
 import { actingCaller, visibleProjectIds } from "../identity/acting.js";
@@ -2456,7 +2457,7 @@ function versionView(db: Db, pipelineId: string): PipelineVersion | null {
     ...version,
     // Resolved here rather than stored on the row, so a person who
     // changes their name changes it everywhere at once.
-    createdByName: versionAuthorName(version.createdBy, (personId) => getPerson(db, personId as Uuid)?.name ?? null),
+    createdByName: versionAuthorName(version.createdBy, (personId) => getPerson(db, personId as Uuid)?.name ?? null, (slug) => getModuleBySlug(db, slug)?.name ?? null),
   };
 }
 

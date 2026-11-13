@@ -1,5 +1,5 @@
 import { and, asc, desc, eq, inArray, isNotNull, isNull, sql, type SQL } from "drizzle-orm";
-import { DEFAULT_PIPELINE_VERSIONS_TO_KEEP, EntryRulesSchema, PipelineGraphSnapshotSchema, PipelineVersionsToKeepSchema, templateUpdateAuthor, templateUpdateOfAuthor, uuidv7 } from "@eo/core";
+import { DEFAULT_PIPELINE_VERSIONS_TO_KEEP, EntryRulesSchema, PipelineGraphSnapshotSchema, PipelineVersionsToKeepSchema, moduleUpdateOfAuthor, templateUpdateAuthor, templateUpdateOfAuthor, uuidv7, versionLabel } from "@eo/core";
 import type { EntryRule, PipelineGraphSnapshot, PipelineStep, StepRoute, Uuid, VersionRoute, VersionStep } from "@eo/core";
 import type { Db } from "../client.js";
 import { items, pipelineVersions, pipelines, publishedSections } from "../schema.js";
@@ -40,10 +40,21 @@ export { templateUpdateAuthor };
 
 /**
  * The name to show for a version's author: the template update that
- * filed it, or the person's name through `personName`, or null.
+ * filed it, the module update that did ("the Notify v4 update", EO-771,
+ * the module named through `moduleName` by its slug), or the person's
+ * name through `personName`, or null.
  */
-export function versionAuthorName(createdBy: string | null, personName: (personId: string) => string | null): string | null {
+export function versionAuthorName(
+  createdBy: string | null,
+  personName: (personId: string) => string | null,
+  moduleName: (slug: string) => string | null = () => null,
+): string | null {
   if (createdBy === null) return null;
+  const moved = moduleUpdateOfAuthor(createdBy);
+  if (moved !== null) {
+    const name = moduleName(moved.slug) ?? moved.slug;
+    return moved.version === null ? `a ${name} update` : `the ${name} ${versionLabel(moved.version)} update`;
+  }
   const update = templateUpdateOfAuthor(createdBy);
   if (update !== null) return update.version === null ? "a template update" : `the ${update.slug} ${update.version} template update`;
   return personName(createdBy);

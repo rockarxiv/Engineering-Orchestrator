@@ -1191,12 +1191,14 @@ export function storedGraphProblems(
   routes: StepRoute[],
   entryStepId: string | null,
   alongside: ReadonlyMap<string, { steps: readonly PipelineStep[]; routes: readonly StepRoute[] }> = new Map(),
+  /** The entry rules it would be written with, judged as a publish judges them (EO-771). Absent judges none. */
+  entryRules?: readonly EntryRule[],
 ): WorkflowProblem[] {
   // Judged for the projects the pipeline serves, never the one on
   // screen: the same unadopted graph must not apply with one project
   // selected and be held with another (EO-532 review).
   const judgedFor: JudgedFor = { serving: projectsServedByPipeline(db, pipelineId) };
-  const input = validationInput(db, pipelineId, steps, routes, entryStepId, undefined, judgedFor);
+  const input = validationInput(db, pipelineId, steps, routes, entryStepId, undefined, judgedFor, entryRules);
   const others = [...alongside].filter(([id]) => id !== pipelineId);
   const judged =
     others.length === 0

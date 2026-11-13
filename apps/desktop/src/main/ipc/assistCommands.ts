@@ -52,6 +52,7 @@ import {
 import { resolveHeldUpdate, templateStepIdsProblem, updateHeldElsewhere, type ConflictPlace } from "../gallery/updateConflictDetail.js";
 import { recordFor } from "../record/localRecord.js";
 import type { ItemRecord } from "../record/record.js";
+import { followApprovedModule } from "../modules/followApproved.js";
 import type { ModuleTestRunner } from "../modules/moduleTestRunner.js";
 import { appliedChangeNote } from "../roles/moduleChange.js";
 import { assistCardOf, assistCardView, cardOutcome, fileCardOutcome, liveStep } from "../roles/assistCards.js";
@@ -1650,6 +1651,7 @@ export async function approveAndPublishAssistDraft(
   let written: { pipelineId: string; created: boolean; renamed: boolean; resolveConflict: boolean };
   try {
     written = db.transaction(() => {
+      const approvedHere: string[] = [];
       // Read again inside the transaction: the tests took time, and the
       // card, the catalog or the pipeline may have moved meanwhile.
       const again = readAssistDraftForPublish(db, asked, place);
@@ -1668,11 +1670,21 @@ export async function approveAndPublishAssistDraft(
           );
         }
         // One approved elsewhere while the tests ran keeps that approval.
-        if (getModule(db, judgement.module.id)?.approvedAt === null) approveModule(db, judgement.module.id);
+        if (getModule(db, judgement.module.id)?.approvedAt === null) {
+          approveModule(db, judgement.module.id);
+          approvedHere.push(judgement.module.id);
+        }
       }
+      // Every other pipeline pinning an older version of a module approved
+      // here moves to it (EO-771), once this one is written, so the
+      // pipeline being published is not given a second version for it.
+      const follow = (): void => {
+        for (const moduleId of approvedHere) followApprovedModule(db, moduleId, { isTheRecord: place.onTheRecord === true });
+      };
 
       if (again.newPipelineName !== null) {
         const pipelineId = createAndSavePipeline(db, engine, chatPipelineProjectId(db, conversation.projectId), again.newPipelineName, again);
+        follow();
         return { pipelineId, created: true, renamed: false, resolveConflict: false };
       }
       if (again.pipelineId === null) throw new PublishRefused("That draft names no pipeline to publish into.");
@@ -1697,6 +1709,7 @@ export async function approveAndPublishAssistDraft(
       if (renamed) {
         updatePipelineCommand(db, { id: again.pipelineId, ...(again.rename !== null ? { name: again.rename } : {}), ...(again.icon !== null ? { icon: again.icon } : {}) });
       }
+      follow();
       return { pipelineId: again.pipelineId, created: false, renamed, resolveConflict: again.updateConflictId !== null };
     });
   } catch (error) {
@@ -1766,7 +1779,8 @@ export async function publishTrialCommand(
   runner: Pick<ModuleTestRunner, "run">,
   deps: PublishTrialDeps,
   input: IpcPayload<"assist:publishTrial">,
-  options: { onStepsRemoved?: (stepIds: string[]) => void } = {},
+  /** `isTheRecord` decides which pipelines approving a module here moves, and who hears of one it cannot (EO-771). */
+  options: { onStepsRemoved?: (stepIds: string[]) => void; isTheRecord?: boolean } = {},
 ): Promise<PublishTrialAnswer> {
   const refuse = (problem: string, modules: ModuleOutcome[] = [], coverage: PublishTrialAnswer["coverage"] = []): PublishTrialAnswer => ({
     saved: false,
@@ -1883,11 +1897,18 @@ export async function publishTrialCommand(
           replaced.push({ copy: module.name, original: module.replaces.name });
         }
         const approved: string[] = [];
+        const approvedIds: string[] = [];
         for (const judgement of judged) {
           if (getModule(db, judgement.module.id)?.approvedAt !== null) continue;
           approveModule(db, judgement.module.id);
           approved.push(getModule(db, judgement.module.id)?.name ?? judgement.module.name);
+          approvedIds.push(judgement.module.id);
         }
+        // Every other pipeline pinning an older version of a module
+        // approved here moves to it once this one is written (EO-771).
+        const follow = (): void => {
+          for (const moduleId of approvedIds) followApprovedModule(db, moduleId, { isTheRecord: options.isTheRecord === true });
+        };
 
         // Each module step pinned to the version it tested, now approved
         // (EO-770): for a copy taking an original's place, the version
@@ -1900,6 +1921,7 @@ export async function publishTrialCommand(
         };
         if (published.newPipelineName !== null) {
           const pipelineId = createAndSavePipeline(db, engine, chatPipelineProjectId(db, conversation.projectId), published.newPipelineName, published);
+          follow();
           return { pipelineId, created: true, name: published.newPipelineName, replaced, approved };
         }
         if (published.pipelineId === null) throw new PublishRefused("That draft names no pipeline to publish into.");
@@ -1920,6 +1942,7 @@ export async function publishTrialCommand(
         if (published.rename !== null || published.icon !== null) {
           updatePipelineCommand(db, { id: published.pipelineId, ...(published.rename !== null ? { name: published.rename } : {}), ...(published.icon !== null ? { icon: published.icon } : {}) });
         }
+        follow();
         return { pipelineId: published.pipelineId, created: false, name: again.view.pipelineName, replaced, approved };
       });
     } catch (error) {
