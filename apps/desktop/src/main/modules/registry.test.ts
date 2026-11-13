@@ -7,6 +7,7 @@ import { DEFAULT_MODULE_TIMEOUT_MS } from "@eo/core";
 import type { ModuleManifest, Item, Uuid } from "@eo/core";
 import type { DbHandle } from "../db/client.js";
 import {
+  approveModule,
   archiveModule,
   createPipelineVersion,
   createRun,
@@ -24,6 +25,7 @@ import {
   updateStep,
 } from "../db/repos/index.js";
 import { createTestItem, openMigratedTestDb } from "../db/testHelpers.js";
+import { followApprovedModule } from "./followApproved.js";
 import { createModuleRunnerLookup } from "./registry.js";
 import { clearVariable, storeReference, storeSecret, storeVariable, type ModuleSecretsOptions } from "./secrets.js";
 import { preparingAt } from "../supervisor/testWorkspaceKinds.js";
@@ -1014,6 +1016,22 @@ describe("the module version a step pins", () => {
     edit(module.id, says("v2"), true);
     const moved = listStepsForPipeline(handle.db, "default").map((step) => (step.id === "pinned" ? { ...step, moduleVersion: 2 } : step));
     expect(replacePipelineGraph(handle.db, "default", moved, listRoutesForPipeline(handle.db, "default"))).toMatchObject({ replaced: true });
+
+    expect(await dispatch(module.id, getItem(handle.db, older.id)!)).toEqual({ ok: true, result: "ok", detail: "v1" });
+    const newer = createTestItem(handle.db, { type: "story", title: "Entered on v2's pin", stepId: "pinned" });
+    expect(await dispatch(module.id, newer)).toEqual({ ok: true, result: "ok", detail: "v2" });
+  });
+
+  it("keeps an item in flight on the module version its pipeline version pins after approving a newer one moves the pipeline (EO-771)", async () => {
+    const module = register(says("v1"));
+    stepOn(module.id, 1);
+    const older = createTestItem(handle.db, { type: "story", title: "Entered on v1's pin", stepId: "pinned" });
+
+    // v2 is saved and approved: the pipeline follows it on its own.
+    edit(module.id, says("v2"), false);
+    approveModule(handle.db, module.id);
+    expect(followApprovedModule(handle.db, module.id, { isTheRecord: false })).toEqual([expect.objectContaining({ pipelineId: "default", outcome: "moved", from: [1], to: 2 })]);
+    expect(getStep(handle.db, "pinned")?.moduleVersion).toBe(2);
 
     expect(await dispatch(module.id, getItem(handle.db, older.id)!)).toEqual({ ok: true, result: "ok", detail: "v1" });
     const newer = createTestItem(handle.db, { type: "story", title: "Entered on v2's pin", stepId: "pinned" });
