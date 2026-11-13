@@ -90,7 +90,7 @@ function mockIpc(
       case "session:signIn":
         return { ok: true, data: { status: { state: "signed-out" }, problem: options.signInProblem ?? null } };
       case "gallery:list":
-        return { ok: true, data: { templates: options.templates ?? [], fetched: false, people: [] } };
+        return { ok: true, data: { templates: options.templates ?? [], fetched: false, people: [], project: null } };
       // A template with no job, every line green (EO-664).
       case "gallery:use":
         return { ok: true, data: { projectId: "p1", pipelineId: "pl1", jobId: null, needs: [], problem: null } };

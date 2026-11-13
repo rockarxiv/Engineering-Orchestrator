@@ -36,7 +36,7 @@ import {
 import { isAdopting } from "../db/repos/projectsRepo.js";
 import { forgeCardNeed, galleryBlanks, galleryNeeds, galleryRoleSlots, gallerySteps, repositoryAnswer } from "../gallery/form.js";
 import { forgeNeeds, type DetectForge } from "../gallery/forgeNeeds.js";
-import { assistantRow, previewTemplate, projectNeeds, useTemplate } from "../gallery/commands.js";
+import { assistantRow, previewProjectId, previewTemplate, projectNeeds, templateTargetProjectId, useTemplate } from "../gallery/commands.js";
 import { firstItemBrief } from "../gallery/firstItemBrief.js";
 import { openBriefedAssist } from "./assistCommands.js";
 import { setAgentBinding } from "./configCommands.js";
@@ -147,7 +147,17 @@ export async function listGalleryCommand(db: Db, context: GalleryContext): Promi
     // a control nobody draws would be EO putting a name on the wire for
     // nothing. A signed-in desktop offers its organisation's people.
     people,
+    // The project Use this adds to (EO-767), named so the form can say
+    // so; null when it makes a brand-new one.
+    project: templateTarget(db),
   };
+}
+
+/** `templateTargetProjectId`, with the name the form shows. */
+function templateTarget(db: Db): { id: string; name: string } | null {
+  const id = templateTargetProjectId(db);
+  const project = id === null ? undefined : getProject(db, id);
+  return project === undefined ? null : { id: project.id, name: project.name };
 }
 
 /** One card, with its needs derived from the same preflight the needs check reads (ARCHITECTURE.md, "The needs check"). */
@@ -224,6 +234,18 @@ export async function useGalleryCommand(db: Db, context: GalleryContext, payload
     for (const colleague of colleagues) ensurePerson(db, colleague.id as Uuid, colleague.name);
   }
 
+  // The project it goes on (EO-767): the one the form said, or — from a
+  // caller that named none — the one the window shows. Null makes a
+  // brand-new project, which is only when there is no real one.
+  const target = payload.projectId === undefined ? templateTargetProjectId(db) : (payload.projectId as Uuid);
+  if (target !== null) {
+    const project = getProject(db, target);
+    if (project === undefined || project.archivedAt !== null) return { projectId: null, pipelineId: null, jobId: null, needs: [], problem: "That project no longer exists." };
+    if (target === previewProjectId(db)) {
+      return { projectId: null, pipelineId: null, jobId: null, needs: [], problem: "A template is not added to the Preview project. Switch to one of your own projects first." };
+    }
+  }
+
   // The repository the form asked for (EO-662), checked before anything
   // is written — a path git does not know, or one EO already holds, is a
   // sentence on the form rather than a project with a red line.
@@ -231,6 +253,10 @@ export async function useGalleryCommand(db: Db, context: GalleryContext, payload
   if (repository !== "") {
     const problem = (await repositoryPathProblem(repository)) ?? (listGitWorkspaces(db).some((workspace) => workspace.config.repoPath === repository) ? `${repository} is already attached to EO as a repository.` : null);
     if (problem !== null) return { projectId: null, pipelineId: null, jobId: null, needs: [], problem };
+    // A project mid-move to the record takes no repository, and nothing is written.
+    if (target !== null && isAdopting(db, target)) {
+      return { projectId: null, pipelineId: null, jobId: null, needs: [], problem: movingProjectRefusal(getProject(db, target)?.name ?? "") };
+    }
   }
 
   const result = useTemplate(db, {
@@ -238,17 +264,18 @@ export async function useGalleryCommand(db: Db, context: GalleryContext, payload
     answers: payload.answers,
     roleSlots,
     ...(payload.projectName === undefined ? {} : { projectName: payload.projectName }),
+    ...(target === null ? {} : { projectId: target }),
     signedInBackends: context.signedInBackends,
   });
   if (!result.ok) return { projectId: null, pipelineId: null, jobId: null, needs: [], problem: result.reason };
 
-  // The project this made does not end first run (EO-317): the needs
+  // A project this made does not end first run (EO-317): the needs
   // check is step 5, its lines are this call's own answer, and a flow
   // that ended itself at step 4 would take that screen away at the
   // moment it was produced. See `noteFirstRunProject`.
-  noteFirstRunProject(db, result.projectId);
+  if (target === null) noteFirstRunProject(db, result.projectId);
 
-  // Through the needs check's own door, onto the project just made. A
+  // Through the needs check's own door, onto the project it went on. A
   // refusal now (the path vanished meanwhile) leaves the repository line
   // red with its reason, which is where it is answered.
   if (repository !== "") await attachWorkspaceCommand(db, { projectId: result.projectId, path: repository, kind: "git" });

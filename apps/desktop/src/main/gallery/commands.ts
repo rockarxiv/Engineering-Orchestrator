@@ -56,7 +56,7 @@ import {
   type Workspace,
 } from "../db/repos/index.js";
 import { createJob } from "../jobs/jobs.js";
-import { ACTIVE_PROJECT_KEY } from "../ipc/repositoryCommands.js";
+import { ACTIVE_PROJECT_KEY, activeProjectId } from "../ipc/repositoryCommands.js";
 import { importPipeline, type ImportPreflight } from "../modules/pipelineTransfer.js";
 import { settleSeededPipelines } from "./sharedPipelines.js";
 import { galleryBlanks, galleryNeeds, galleryRoleSlots, runtimeName, stepInputValues, wantsRepository, type GalleryNeed } from "./form.js";
@@ -290,6 +290,36 @@ export function previewProjectId(db: Db): Uuid | null {
 }
 
 /**
+ * The project "Use this" adds a template's pipeline to, or null when it
+ * makes a brand-new project (EO-767).
+ *
+ * The project the window shows, when that is a real one. Only when there
+ * is no real project at all — a fresh installation, or only the Preview
+ * project — is a project made. A window on the Preview project while a
+ * real one exists adds to the oldest real one, as the window would
+ * otherwise fall back to: a template makes a project only when there is
+ * none.
+ */
+export function templateTargetProjectId(db: Db): Uuid | null {
+  const preview = previewProjectId(db);
+  const real = listProjects(db).filter((project) => project.archivedAt === null && project.id !== preview);
+  if (real.length === 0) return null;
+  const shown = activeProjectId(db);
+  return (real.find((project) => project.id === shown) ?? real[0]!).id;
+}
+
+/**
+ * The pipeline of `projectId`'s that has the name one of the template's
+ * boards would be given, or null (EO-767). A project with two pipelines
+ * of one name is two boards nobody can tell apart in the rail.
+ */
+function pipelineNameClash(db: Db, document: PipelineExport, projectId: Uuid): string | null {
+  const names = new Set(documentBoards(document).map((board) => board.pipeline.name.trim().toLowerCase()));
+  const clash = listPipelines(db, projectId).find((pipeline) => names.has(pipeline.name.trim().toLowerCase()));
+  return clash?.name ?? null;
+}
+
+/**
  * "Preview", "Preview 2", … — the first name no project is already
  * using.
  *
@@ -400,8 +430,14 @@ export interface UseTemplateInput {
    * process either way.
    */
   roleSlots: Record<string, string>;
-  /** The project's name. Defaults to the template's title, which is what the card said. */
+  /** The project's name. Defaults to the template's title, which is what the card said. Unused when `projectId` is given. */
   projectName?: string;
+  /**
+   * The project to add the template to (EO-767), which asks for no name
+   * and no key prefix. Absent makes a brand-new project, as on a fresh
+   * installation (`templateTargetProjectId`).
+   */
+  projectId?: Uuid;
   /** The backends this machine is signed in to, so an imported role binds where it can (ARCHITECTURE.md, "An agent is a row"). */
   signedInBackends?: readonly string[];
 }
@@ -439,17 +475,33 @@ export function useTemplate(db: Db, input: UseTemplateInput): UseTemplateResult 
   const document = template.document;
   const blanks = galleryBlanks(document);
 
-  const missing = blanks.filter((blank) => blank.required && (answers[blank.key] ?? blank.default).trim() === "");
+  // Onto a project that already exists, or a new one (EO-767). An
+  // existing project keeps its own key prefix, so the form's prefix
+  // blank is not asked.
+  const existing = input.projectId === undefined ? null : (getProject(db, input.projectId) ?? null);
+  if (input.projectId !== undefined && existing === null) return { ok: false, reason: "That project no longer exists." };
+
+  const missing = blanks.filter((blank) => blank.required && !(existing !== null && blank.kind === "keyPrefix") && (answers[blank.key] ?? blank.default).trim() === "");
   if (missing.length > 0) return { ok: false, reason: `${missing.map((blank) => `"${blank.label}"`).join(", ")} still needs an answer.` };
 
   const answer = (key: string): string => (answers[key] ?? blanks.find((blank) => blank.key === key)?.default ?? "").trim();
   const keyPrefixBlank = blanks.find((blank) => blank.kind === "keyPrefix");
   const keyPrefix = (keyPrefixBlank === undefined ? "" : answer(keyPrefixBlank.key)).toUpperCase();
-  if (!/^[A-Z][A-Z0-9]*$/.test(keyPrefix)) {
-    return { ok: false, reason: "A key prefix is letters and digits, starting with a letter — REP, DOC2." };
-  }
-  if (takenKeyPrefixes(db).has(keyPrefix)) {
-    return { ok: false, reason: `${keyPrefix} is already in use by another project, and a prefix numbers exactly one project's items.` };
+  if (existing === null) {
+    if (!/^[A-Z][A-Z0-9]*$/.test(keyPrefix)) {
+      return { ok: false, reason: "A key prefix is letters and digits, starting with a letter — REP, DOC2." };
+    }
+    if (takenKeyPrefixes(db).has(keyPrefix)) {
+      return { ok: false, reason: `${keyPrefix} is already in use by another project, and a prefix numbers exactly one project's items.` };
+    }
+  } else {
+    // Two pipelines of one name on one project are two boards nobody can
+    // tell apart, and work is placed on a pipeline by name. Refused, with
+    // nothing written.
+    const clash = pipelineNameClash(db, document, existing.id);
+    if (clash !== null) {
+      return { ok: false, reason: `${existing.name} already has a pipeline called "${clash}". Rename or archive that one first, or use this template on another project.` };
+    }
   }
 
   const folderBlank = blanks.find((blank) => blank.kind === "folder");
@@ -494,7 +546,9 @@ export function useTemplate(db: Db, input: UseTemplateInput): UseTemplateResult 
   // Whether this installation is already holding the very pipeline this
   // document is an export of (EO-317). Read before anything is written,
   // because the answer is partly "and there is no project yet".
-  const already = pipelineAlreadyHere(db, document);
+  // Never onto an existing project: there, the seeded Delivery was
+  // settled when that project was made.
+  const already = existing === null ? pipelineAlreadyHere(db, document) : null;
 
   const files = schedule === null ? null : jobItemType(document);
   if (schedule !== null && files === null) {
@@ -518,7 +572,7 @@ export function useTemplate(db: Db, input: UseTemplateInput): UseTemplateResult 
       // agent runs previews and nothing else, so it staffs no role here,
       // silences no warning, and fills no line. There is nothing left
       // for this to clear up, and the rehearsal on screen keeps running.
-      const project = createProject(db, { name: (input.projectName ?? template.title).trim() || template.title, keyPrefix });
+      const project = existing ?? createProject(db, { name: (input.projectName ?? template.title).trim() || template.title, keyPrefix });
       // And the window looks at it (EO-316).
       //
       // `activeProjectId` keeps whatever was stored as long as it still
@@ -558,7 +612,7 @@ export function useTemplate(db: Db, input: UseTemplateInput): UseTemplateResult 
         installed = new Map(Object.entries(imported.stepIds));
         // Another template made the first project, so the seeded Delivery
         // is nobody's: archived rather than shown to it (EO-766).
-        settleSeededPipelines(db, project.id);
+        if (existing === null) settleSeededPipelines(db, project.id);
       } else {
         // The pipeline this document *is*, adopted rather than copied —
         // see `pipelineAlreadyHere` for what that costs and what it

@@ -23,6 +23,7 @@ import {
   listStepsForPipeline,
   projectWorkspaceList,
   localPerson,
+  setProjectArchived,
 } from "../db/repos/index.js";
 import { openMigratedTestDb } from "../db/testHelpers.js";
 import { listPipelineViews } from "../ipc/domainQueries.js";
@@ -144,24 +145,17 @@ describe("Use this on \"Weekly report\", with a folder and a Monday schedule", (
   });
 
   /**
-   * And the window is looking at it (EO-316).
-   *
-   * `activeProjectId` keeps whatever is stored as long as it still
-   * resolves, so on an installation that already had a project the one
-   * just created was not the one on screen: the sidebar listed somebody
-   * else's pipelines and "Go to the board" opened their board. A person
-   * who has just answered three questions about a template is looking at
-   * that template next.
+   * And the window is looking at it (EO-316): a project made while the
+   * window showed the Preview project is the one it shows next.
    */
   it("makes the project it created the one the window is on", async () => {
-    // Somebody's existing project, and the one EO is showing.
-    const theirs = createProject(handle.db, { name: "Acme API", keyPrefix: "ACME" });
-    setActiveProjectCommand(handle.db, { id: theirs.id });
-    expect(activeProjectId(handle.db)).toBe(theirs.id);
+    const preview = await previewGalleryCommand(handle.db, context(), { slug: "weekly-report" });
+    setActiveProjectCommand(handle.db, { id: preview.projectId! });
 
     const answer = await useGalleryCommand(handle.db, context(), monday());
 
     expect(answer.problem).toBeNull();
+    expect(answer.projectId).not.toBe(preview.projectId);
     expect(activeProjectId(handle.db)).toBe(answer.projectId);
   });
 
@@ -252,8 +246,10 @@ describe("the form's refusals", () => {
     expect(listProjects(handle.db)).toHaveLength(0);
   });
 
+  /** An archived project is no real one to add to, and still numbers by its prefix. */
   it("will not take a prefix another project is numbering by", async () => {
-    await useGalleryCommand(handle.db, context(), monday());
+    const archived = createProject(handle.db, { name: "Old reports", keyPrefix: "REP" });
+    setProjectArchived(handle.db, archived.id, Date.now());
     const again = await useGalleryCommand(handle.db, context(), monday());
 
     expect(again.problem).toContain("already in use");
@@ -830,5 +826,136 @@ describe("where the pipeline came from (EO-531)", () => {
     expect(origin?.version).toBe(software.version);
     expect(origin?.base).toEqual(software.document);
     expect(origin?.stepIds).toEqual(Object.fromEntries(software.document.steps.map((step) => [step.id, step.id])));
+  });
+});
+
+/**
+ * On the project the window shows (EO-767): Use this adds the template's
+ * pipeline to it, and makes a project only when there is no real one.
+ */
+describe("Use this on a project that already exists", () => {
+  function acme() {
+    const project = createProject(handle.db, { name: "Acme", keyPrefix: "ACME" });
+    setActiveProjectCommand(handle.db, { id: project.id });
+    return project;
+  }
+
+  it("adds the pipeline, its types, agents, folder and job to that project, and makes none", async () => {
+    const project = acme();
+    const weekly = bundledTemplates(GALLERY_DIRECTORY).find((candidate) => candidate.slug === "weekly-report")!;
+
+    // No key prefix: the project keeps its own.
+    const answer = await useGalleryCommand(handle.db, context(), { slug: "weekly-report", answers: { folder, schedule: "monday 08:00" }, roleSlots: {} });
+
+    expect(answer.problem).toBeNull();
+    expect(answer.projectId).toBe(project.id);
+    expect(listProjects(handle.db).map((candidate) => [candidate.id, candidate.keyPrefix])).toEqual([[project.id, "ACME"]]);
+    expect(activeProjectId(handle.db)).toBe(project.id);
+
+    expect(listPipelines(handle.db, project.id).find((pipeline) => pipeline.id === answer.pipelineId)?.projectId).toBe(project.id);
+    expect([...itemTypesFor(handle.db, project.id).values()].some((type) => type.slug === "report")).toBe(true);
+    expect(listAgents(handle.db).some((agent) => agent.role === "reporter" && agent.archivedAt === null && !isPreviewAgent(agent))).toBe(true);
+    const workspaces = projectWorkspaceList(handle.db, project.id);
+    expect(workspaces.map((workspace) => asFolderWorkspace(workspace)?.config.path)).toEqual([folder]);
+    expect(listJobs(handle.db, project.id).map((job) => [job.id, job.pipelineId])).toEqual([[answer.jobId, answer.pipelineId]]);
+
+    // It remembers its template and version, which is what a held update follows.
+    const origin = getPipelineOrigin(handle.db, answer.pipelineId!);
+    expect(origin?.slug).toBe("weekly-report");
+    expect(origin?.version).toBe(weekly.version);
+
+    // The needs check reads that project.
+    expect(answer.needs.find((need) => need.key === "workspace")?.met).toBe(true);
+    const again = await galleryNeedsCommand(handle.db, context(), { slug: "weekly-report", projectId: project.id });
+    expect(again.problem).toBeNull();
+    expect(again.jobId).toBe(answer.jobId);
+    expect(again.needs.find((need) => need.key === "workspace")?.met).toBe(true);
+  });
+
+  it("adds to the project the window shows, not the oldest", async () => {
+    acme();
+    const other = createProject(handle.db, { name: "Docs", keyPrefix: "DOC" });
+    setActiveProjectCommand(handle.db, { id: other.id });
+
+    const answer = await useGalleryCommand(handle.db, context(), monday());
+
+    expect(answer.problem).toBeNull();
+    expect(answer.projectId).toBe(other.id);
+    expect(listProjects(handle.db)).toHaveLength(2);
+  });
+
+  it("adds to the project the form named, even once the window has moved", async () => {
+    const project = acme();
+    const other = createProject(handle.db, { name: "Docs", keyPrefix: "DOC" });
+    setActiveProjectCommand(handle.db, { id: other.id });
+
+    const answer = await useGalleryCommand(handle.db, context(), { ...monday(), projectId: project.id });
+
+    expect(answer.projectId).toBe(project.id);
+  });
+
+  it("refuses, writing nothing, when the project already has a pipeline of the template's name", async () => {
+    const project = acme();
+    const first = await useGalleryCommand(handle.db, context(), monday());
+    expect(first.problem).toBeNull();
+    const pipelines = listPipelines(handle.db, undefined, true).length;
+    const agents = listAgents(handle.db).length;
+
+    const clash = await useGalleryCommand(handle.db, context(), { slug: "weekly-report", answers: { folder, schedule: "daily 09:00" }, roleSlots: {} });
+
+    expect(clash.problem).toBe('Acme already has a pipeline called "Weekly report". Rename or archive that one first, or use this template on another project.');
+    expect(clash.projectId).toBeNull();
+    expect(listPipelines(handle.db, undefined, true)).toHaveLength(pipelines);
+    expect(listAgents(handle.db)).toHaveLength(agents);
+    expect(listJobs(handle.db, project.id)).toHaveLength(1);
+    expect(projectWorkspaceList(handle.db, project.id)).toHaveLength(1);
+    expect(listProjects(handle.db)).toHaveLength(1);
+  });
+
+  it("never adds to the Preview project", async () => {
+    const preview = await previewGalleryCommand(handle.db, context(), { slug: "weekly-report" });
+
+    const answer = await useGalleryCommand(handle.db, context(), { ...monday(), projectId: preview.projectId! });
+
+    expect(answer.problem).toContain("Preview project");
+    expect(listProjects(handle.db)).toHaveLength(1);
+  });
+
+  it("tells the form which project it adds to, and none before there is a real one", async () => {
+    expect((await listGalleryCommand(handle.db, context())).project).toBeNull();
+    await previewGalleryCommand(handle.db, context(), { slug: "weekly-report" });
+    expect((await listGalleryCommand(handle.db, context())).project).toBeNull();
+
+    const project = acme();
+    expect((await listGalleryCommand(handle.db, context())).project).toEqual({ id: project.id, name: "Acme" });
+  });
+});
+
+describe("Use this with no real project", () => {
+  it("makes a brand-new project beside the Preview project", async () => {
+    const preview = await previewGalleryCommand(handle.db, context(), { slug: "weekly-report" });
+
+    const answer = await useGalleryCommand(handle.db, context(), monday());
+
+    expect(answer.problem).toBeNull();
+    expect(answer.projectId).not.toBe(preview.projectId);
+    const made = listProjects(handle.db).find((project) => project.id === answer.projectId);
+    expect(made?.keyPrefix).toBe("REP");
+    expect(listPipelines(handle.db).filter((pipeline) => pipeline.projectId === answer.projectId).map((pipeline) => pipeline.id)).toEqual([answer.pipelineId]);
+  });
+
+  it("adopts the seeded Delivery for \"Software feature to merge\" on a fresh installation, after a preview", async () => {
+    // As startup does before anybody reaches the gallery.
+    const history = loadTemplateHistory(GALLERY_DIRECTORY);
+    backfillPipelineOrigins(handle.db, history);
+    applyTemplateUpdates(handle.db, history, { isTheRecord: false });
+    await previewGalleryCommand(handle.db, context(), { slug: "weekly-report" });
+
+    const answer = await useGalleryCommand(handle.db, context(), { slug: "software-feature-to-merge", answers: { keyPrefix: "ACME" }, roleSlots: {} });
+
+    expect(answer.problem).toBeNull();
+    expect(answer.pipelineId).toBe("default");
+    expect(getPipeline(handle.db, "default")?.projectId).toBe(answer.projectId);
+    expect(listProjects(handle.db).map((project) => project.keyPrefix)).toEqual(["PRV", "ACME"]);
   });
 });

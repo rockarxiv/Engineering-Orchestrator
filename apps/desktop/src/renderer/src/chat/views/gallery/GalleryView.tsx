@@ -98,6 +98,7 @@ export function Gallery({
       <UseForm
         template={chosen}
         people={gallery.data?.people ?? []}
+        project={gallery.data?.project ?? null}
         onCancel={() => setChosen(null)}
         onCreated={(result) => {
           void queryClient.invalidateQueries();
@@ -296,12 +297,19 @@ const DAYS = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday"
 function UseForm({
   template,
   people,
+  project,
   onCancel,
   onCreated,
 }: {
   template: GalleryTemplateView;
   /** Who a role slot may be given to. Empty in solo mode, where no picker is drawn. */
   people: readonly { id: string; name: string }[];
+  /**
+   * The project the pipeline is added to (EO-767), which keeps its own
+   * name and key prefix, so neither is asked. Null makes a new project,
+   * named here.
+   */
+  project: { id: string; name: string } | null;
   onCancel: () => void;
   onCreated: (result: { needs: GalleryNeedView[]; projectId: string; pipelineId: string | null; jobId: string | null }) => void;
 }) {
@@ -321,7 +329,14 @@ function UseForm({
 
   const create = useMutation({
     // The token as well as the slug: install the pack whose form this is.
-    mutationFn: () => ipcQuery("gallery:use", { slug: template.slug, token: template.token, answers, roleSlots, projectName: name }),
+    mutationFn: () =>
+      ipcQuery("gallery:use", {
+        slug: template.slug,
+        token: template.token,
+        answers,
+        roleSlots,
+        ...(project === null ? { projectName: name } : { projectId: project.id }),
+      }),
     onSuccess: (result) => {
       if (result.problem === null && result.projectId !== null) {
         onCreated({ needs: result.needs, projectId: result.projectId, pipelineId: result.pipelineId, jobId: result.jobId });
@@ -334,11 +349,18 @@ function UseForm({
       <ViewHeader icon={<LayoutGrid size={15} />} title={template.title} meta="A few things EO cannot guess." />
 
       <CardSection title="Set it up" className="max-w-[40rem]">
-        <Field label="Project name">
-          <TextInput value={name} onChange={(event) => setName(event.target.value)} />
-        </Field>
+        {project === null ? (
+          <Field label="Project name">
+            <TextInput value={name} onChange={(event) => setName(event.target.value)} />
+          </Field>
+        ) : (
+          <p className="text-[13px] text-ink-muted">
+            Adds the “{template.pipelineName}” pipeline to <span className="font-medium text-ink">{project.name}</span>.
+          </p>
+        )}
 
-        {template.blanks.map((blank) => (
+        {/* An existing project keeps its own key prefix (EO-767). */}
+        {(project === null ? template.blanks : template.blanks.filter((blank) => blank.kind !== "keyPrefix")).map((blank) => (
           <Field key={blank.key} label={blank.label} {...(blank.help === "" ? {} : { hint: blank.help })}>
             {blank.kind === "folder" || blank.kind === "repository" ? (
               // A repository is a path too (EO-662): the checkout, attached to the project when it is made.
@@ -410,7 +432,7 @@ function UseForm({
 
         <div className="flex items-center gap-2 pt-1">
           <Button variant="primary" disabled={create.isPending} onClick={() => create.mutate()}>
-            Create
+            {project === null ? "Create" : "Add to project"}
           </Button>
           <Button variant="ghost" onClick={onCancel}>
             Back
