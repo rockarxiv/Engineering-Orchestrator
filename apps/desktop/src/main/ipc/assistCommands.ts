@@ -47,6 +47,7 @@ import {
   publishedSectionRow,
   renameModule,
   type PipelineUpdateConflict,
+  defaultModuleVersion,
 } from "../db/repos/index.js";
 import { resolveHeldUpdate, templateStepIdsProblem, updateHeldElsewhere, type ConflictPlace } from "../gallery/updateConflictDetail.js";
 import { recordFor } from "../record/localRecord.js";
@@ -1888,7 +1889,15 @@ export async function publishTrialCommand(
           approved.push(getModule(db, judgement.module.id)?.name ?? judgement.module.name);
         }
 
-        const published = again.graph;
+        // Each module step pinned to the version it tested, now approved
+        // (EO-770): for a copy taking an original's place, the version
+        // approving it just recorded — the code the trial ran, under the
+        // original's name — rather than whatever version the trial graph
+        // was saved with.
+        const published = {
+          ...again.graph,
+          steps: again.graph.steps.map((step) => (step.type === "module" && step.entryAction !== null ? { ...step, moduleVersion: defaultModuleVersion(db, step.entryAction) } : step)),
+        };
         if (published.newPipelineName !== null) {
           const pipelineId = createAndSavePipeline(db, engine, chatPipelineProjectId(db, conversation.projectId), published.newPipelineName, published);
           return { pipelineId, created: true, name: published.newPipelineName, replaced, approved };

@@ -22,6 +22,7 @@ function step(id: string, position: number, overrides: Partial<PipelineStep> = {
     watch: null,
     ownerPersonId: null,
     ownerGroupId: null,
+    moduleVersion: null,
     results: [],
     ...overrides,
   };

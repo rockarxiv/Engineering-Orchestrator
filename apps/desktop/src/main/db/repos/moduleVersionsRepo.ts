@@ -1,6 +1,7 @@
-import { and, asc, eq, inArray, notInArray } from "drizzle-orm";
-import { DEFAULT_MODULE_VERSIONS_TO_KEEP, ModuleVersionsToKeepSchema, uuidv7 } from "@eo/core";
-import type { ModuleManifest, ModuleVersion, ModuleVersionSummary, ModuleVersionTest } from "@eo/core";
+import { and, asc, eq, inArray, notInArray, sql } from "drizzle-orm";
+import { DEFAULT_MODULE_VERSIONS_TO_KEEP, MODULE_ENTRY_RULE_KIND, ModuleVersionsToKeepSchema, uuidv7 } from "@eo/core";
+import type { CustomModule, EntryRule, ModuleManifest, ModuleVersion, ModuleVersionSummary, ModuleVersionTest } from "@eo/core";
+import type { ModuleVersionFacts } from "@eo/engine";
 import type { Db } from "../client.js";
 import { moduleTests, moduleVersions, modules } from "../schema.js";
 import { withdrawTrialGrantsBeyond } from "./moduleTrialGrantsRepo.js";
@@ -57,20 +58,45 @@ function testsOf(db: Db, row: VersionRow, current: boolean): ModuleVersionTest[]
   return current ? liveTests(db, row.moduleId) : (row.tests as ModuleVersionTest[]);
 }
 
-function toSummary(row: VersionRow, current: boolean, testCount: number): ModuleVersionSummary {
-  return { number: row.number, createdAt: row.createdAt, approvedAt: row.approvedAt, approved: row.approvedAt !== null, current, testCount };
+function toSummary(row: VersionRow, current: boolean, testCount: number, pinnedBy: readonly string[] = []): ModuleVersionSummary {
+  return { number: row.number, createdAt: row.createdAt, approvedAt: row.approvedAt, approved: row.approvedAt !== null, current, testCount, pinnedBy: [...pinnedBy] };
 }
 
 /** Every kept version of a module, newest first. */
 export function listModuleVersions(db: Db, moduleId: string): ModuleVersionSummary[] {
   const rows = versionRows(db, moduleId);
   const newest = rows.at(-1);
+  const pins = livePins(db, moduleId);
   return rows
     .map((row) => {
       const current = row.id === newest?.id;
-      return toSummary(row, current, current ? liveTests(db, moduleId).length : (row.tests as ModuleVersionTest[]).length);
+      return toSummary(row, current, current ? liveTests(db, moduleId).length : (row.tests as ModuleVersionTest[]).length, pins.get(row.number));
     })
     .reverse();
+}
+
+/**
+ * Which pipelines' current graph pins each version of this module
+ * (EO-770), by name: a step on it, or an entry rule naming it. Pipelines
+ * a person can see only — not archived ones, and not trials.
+ */
+function livePins(db: Db, moduleId: string): Map<number, string[]> {
+  const rows = db.all<{ version: unknown; name: string }>(sql`
+    select s.module_version as version, p.name as name from pipeline_steps s join pipelines p on p.id = s.pipeline_id
+      where s.type = 'module' and s.entry_action = ${moduleId} and s.module_version is not null and s.retired_version is null
+        and p.archived_at is null and p.trial_at is null
+    union
+    select json_extract(r.value, '$.moduleVersion'), p.name from pipelines p, json_each(p.entry_rules) r
+      where json_valid(p.entry_rules) and json_type(p.entry_rules) = 'array'
+        and json_extract(r.value, '$.kind') = ${MODULE_ENTRY_RULE_KIND} and json_extract(r.value, '$.module') = ${moduleId}
+        and p.archived_at is null and p.trial_at is null
+  `);
+  const pins = new Map<number, string[]>();
+  for (const row of rows) {
+    if (typeof row.version !== "number") continue;
+    pins.set(row.version, [...new Set([...(pins.get(row.version) ?? []), row.name])].sort((a, b) => a.localeCompare(b)));
+  }
+  return pins;
 }
 
 /** One kept version, whole. Undefined when this module has no such version, or no longer keeps it. */
@@ -81,7 +107,7 @@ export function getModuleVersion(db: Db, moduleId: string, number: number): Modu
   const current = row.id === rows.at(-1)?.id;
   const tests = testsOf(db, row, current);
   return {
-    ...toSummary(row, current, tests.length),
+    ...toSummary(row, current, tests.length, livePins(db, moduleId).get(row.number)),
     name: row.name,
     description: row.description,
     code: row.code,
@@ -303,7 +329,12 @@ export function pruneModuleVersions(db: Db, moduleId: string, keep: number): num
   const limit = Math.max(1, Math.floor(keep));
   const rows = versionRows(db, moduleId);
   if (rows.length <= limit) return [];
-  const doomed = rows.slice(0, rows.length - limit).filter((row) => row.id !== rows.at(-1)?.id);
+  // Never one a pipeline pins (EO-770), however old: a live step, a live
+  // entry rule or a kept pipeline version runs it, and a pin on a version
+  // that is gone is a step nothing can run. Kept beyond `keep`, and
+  // counted against nothing.
+  const pinned = pinnedModuleVersions(db, moduleId);
+  const doomed = rows.slice(0, rows.length - limit).filter((row) => row.id !== rows.at(-1)?.id && !pinned.has(row.number));
   if (doomed.length === 0) return [];
   db.delete(moduleVersions)
     .where(inArray(
@@ -312,4 +343,105 @@ export function pruneModuleVersions(db: Db, moduleId: string, keep: number): num
     ))
     .run();
   return doomed.map((row) => row.number);
+}
+
+// ── Pins (EO-770) ─────────────────────────────────────────────
+
+/**
+ * The version a module step or a module entry rule that names no version
+ * is pinned to (EO-770): the module's newest approved version, or its
+ * newest where none is approved — which leaves the step refused at
+ * publish, or blocked at run, exactly as an unapproved module is. Null
+ * for a module with no version at all.
+ */
+export function defaultModuleVersion(db: Db, moduleId: string): number | null {
+  const rows = versionRows(db, moduleId);
+  return (rows.filter((row) => row.approvedAt !== null).at(-1) ?? rows.at(-1))?.number ?? null;
+}
+
+/**
+ * The version a step being saved runs (EO-770): the one it pins, or — on
+ * a module step that names none — `defaultModuleVersion`. Null on every
+ * step that is not a module step.
+ */
+export function stepModuleVersion(db: Db, step: { type?: string | undefined; entryAction?: string | null | undefined; moduleVersion?: number | null | undefined }): number | null {
+  if (step.type !== "module" || step.entryAction === null || step.entryAction === undefined) return null;
+  return step.moduleVersion ?? defaultModuleVersion(db, step.entryAction);
+}
+
+/** The module's newest version, approved or not, or null for one with none. */
+export function newestModuleVersion(db: Db, moduleId: string): number | null {
+  return currentRow(db, moduleId)?.number ?? null;
+}
+
+/** The rules, each module rule that names no version pinned to `defaultModuleVersion`. Every other rule as it was. */
+export function pinEntryRules(db: Db, rules: readonly EntryRule[]): EntryRule[] {
+  return rules.map((rule) => {
+    if (rule.kind !== MODULE_ENTRY_RULE_KIND || rule.module === undefined || rule.moduleVersion !== undefined) return rule;
+    const version = defaultModuleVersion(db, rule.module);
+    return version === null ? rule : { ...rule, moduleVersion: version };
+  });
+}
+
+/**
+ * Every kept version of every module, as `validatePipeline` judges a pin
+ * against it: its number, its manifest and its own approval.
+ */
+export function listModuleVersionFacts(db: Db): ModuleVersionFacts[] {
+  return db
+    .select({ moduleId: moduleVersions.moduleId, number: moduleVersions.number, manifest: moduleVersions.manifest, approvedAt: moduleVersions.approvedAt })
+    .from(moduleVersions)
+    .all()
+    .map((row) => ({ moduleId: row.moduleId, number: row.number, manifest: row.manifest as ModuleManifest, approvedAt: row.approvedAt }));
+}
+
+/**
+ * A module as a pin makes it (EO-770): the catalog row with the code, the
+ * manifest and the approval of the version pinned — what the runner
+ * runs, and what it gates on. The name stays the module's own.
+ *
+ * No pin is the module as it stands, which is what a step written before
+ * pins runs. A pin on a version this module does not keep answers why.
+ */
+export function moduleAtVersion(
+  db: Db,
+  module: CustomModule,
+  version: number | null | undefined,
+): { ok: true; module: CustomModule; version: number | null } | { ok: false; reason: string } {
+  if (version === null || version === undefined) return { ok: true, module, version: null };
+  const row = db
+    .select()
+    .from(moduleVersions)
+    .where(and(eq(moduleVersions.moduleId, module.id), eq(moduleVersions.number, version)))
+    .get();
+  if (row === undefined) {
+    return { ok: false, reason: `"${module.name}" v${version} is not kept any more, so this step has no code to run. Pin a version of "${module.name}" that Settings → Modules lists.` };
+  }
+  return { ok: true, module: { ...module, code: row.code, manifest: row.manifest as ModuleManifest, approvedAt: row.approvedAt }, version };
+}
+
+/**
+ * The version numbers of this module that something pins (EO-770): a
+ * step of any pipeline, retired ones included, an entry rule a pipeline
+ * holds, and a step or entry rule of any kept pipeline version — the
+ * versions `pruneModuleVersions` must never delete.
+ */
+export function pinnedModuleVersions(db: Db, moduleId: string): Set<number> {
+  const rows = db.all<{ version: unknown }>(sql`
+    select module_version as version from pipeline_steps
+      where type = 'module' and entry_action = ${moduleId} and module_version is not null
+    union
+    select json_extract(r.value, '$.moduleVersion') from pipelines, json_each(pipelines.entry_rules) r
+      where json_valid(pipelines.entry_rules) and json_type(pipelines.entry_rules) = 'array'
+        and json_extract(r.value, '$.kind') = ${MODULE_ENTRY_RULE_KIND} and json_extract(r.value, '$.module') = ${moduleId}
+    union
+    select json_extract(r.value, '$.moduleVersion') from pipeline_versions, json_each(pipeline_versions.entry_rules) r
+      where json_valid(pipeline_versions.entry_rules) and json_type(pipeline_versions.entry_rules) = 'array'
+        and json_extract(r.value, '$.kind') = ${MODULE_ENTRY_RULE_KIND} and json_extract(r.value, '$.module') = ${moduleId}
+    union
+    select json_extract(s.value, '$.moduleVersion') from pipeline_versions, json_each(pipeline_versions.steps) s
+      where json_valid(pipeline_versions.steps) and json_type(pipeline_versions.steps) = 'array'
+        and json_extract(s.value, '$.type') = 'module' and json_extract(s.value, '$.entryAction') = ${moduleId}
+  `);
+  return new Set(rows.flatMap((row) => (typeof row.version === "number" ? [row.version] : [])));
 }

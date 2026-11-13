@@ -135,6 +135,7 @@ function asPublished(draft: PipelineDraft) {
       workspaceId: current.get(step.id)?.workspaceId ?? null,
       results: current.get(step.id)?.results ?? [],
       watch: current.get(step.id)?.watch ?? null,
+      moduleVersion: current.get(step.id)?.moduleVersion ?? null,
     })),
     routes: draft.routes.map((route, index) => ({ ...route, id: `draft-route-${index}`, pipelineId: "default" })),
     entryStepId: draft.entryStepId,

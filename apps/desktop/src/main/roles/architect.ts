@@ -400,6 +400,10 @@ export function toDomainSteps(pipelineId: string, draft: DraftWithLimits, existi
       // version's own document at Publish.
       ownerPersonId: null,
       ownerGroupId: null,
+      // Nor which version of a module a step runs (EO-770): a draft names
+      // a module, and the save pins it to that module's newest approved
+      // version. Judged meanwhile against the module as it stands.
+      moduleVersion: null,
       // What a person may decide on a human step, derived from the branches
       // the draft drew out of it (EO-310). A draft says nothing about
       // results directly — the architect proposes a *graph*, and on a human

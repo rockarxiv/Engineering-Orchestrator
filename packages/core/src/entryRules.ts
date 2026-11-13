@@ -26,6 +26,12 @@ export const EntryRuleSchema = z.object({
   /** The module a `module` rule runs, by id (EO-736). An export carries its slug instead. */
   module: z.string().min(1).optional(),
   /**
+   * Which version of that module a `module` rule runs (EO-770), a
+   * `module_versions.number`. A save that leaves it out pins the module's
+   * newest approved version.
+   */
+  moduleVersion: z.number().int().positive().optional(),
+  /**
    * How long a `module` rule's check may take, in milliseconds (EO-736).
    * Absent is `DEFAULT_ENTRY_CHECK_TIMEOUT_MS`; never above the module limit.
    */

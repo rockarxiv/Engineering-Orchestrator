@@ -26,6 +26,7 @@ function step(overrides: Partial<VersionStep> = {}): VersionStep {
     offBoard: false,
     results: [],
     watch: null,
+    moduleVersion: null,
     ...overrides,
   };
 }
@@ -276,6 +277,34 @@ describe("the difference between two versions", () => {
     const diff = diffVersions({ number: 6, steps: [], routes: [] }, { number: 7, steps: [step({ type: "oracle" })], routes: [] });
 
     expect(diff.steps[0]?.kind).toBeNull();
+  });
+
+  /**
+   * A module pin is the code a step runs (EO-770), so moving it is a change
+   * to the version, said as "<Module> v3 → v4".
+   */
+  it("lists a module step's pin moving as the module's name and both versions", () => {
+    const notify = (moduleVersion: number) => step({ id: "notify", name: "Notify team", type: "module", entryAction: "mod-notify", moduleVersion });
+    const names = new Map([["mod-notify", "Notify"], ["mod-page", "Page"]]);
+    const diff = diffVersions({ number: 6, steps: [notify(3)], routes: [] }, { number: 7, steps: [notify(4)], routes: [] }, names);
+
+    expect(diff.steps).toEqual([expect.objectContaining({ name: "Notify team", change: "changed", fields: [{ field: "module", before: "Notify v3", after: "v4" }] })]);
+    expect(`${diff.steps[0]!.fields[0]!.before} → ${diff.steps[0]!.fields[0]!.after}`).toBe("Notify v3 → v4");
+    expect(diffVersions({ number: 6, steps: [notify(3)], routes: [] }, { number: 7, steps: [notify(3)], routes: [] }, names).steps).toEqual([]);
+
+    const swapped = diffVersions({ number: 6, steps: [notify(3)], routes: [] }, { number: 7, steps: [{ ...notify(1), entryAction: "mod-page" }], routes: [] }, names);
+    expect(swapped.steps[0]!.fields).toContainEqual({ field: "module", before: "Notify v3", after: "Page v1" });
+  });
+
+  it("says nothing about a pin where one side pins nothing, as a document from before pins does", () => {
+    const notify = step({ id: "notify", type: "module", entryAction: "mod-notify", moduleVersion: 3 });
+    expect(diffVersions({ number: 6, steps: [notify], routes: [] }, { number: 7, steps: [{ ...notify, moduleVersion: null }], routes: [] }).steps).toEqual([]);
+  });
+
+  it("names the version a module entry rule pins, so moving it is a change", () => {
+    const rule = (moduleVersion: number): EntryRule => ({ kind: "module", module: "mod-gate", moduleVersion });
+    const diff = diffVersions({ number: 1, steps: [], routes: [], entryRules: [rule(2)] }, { number: 2, steps: [], routes: [], entryRules: [rule(3)] }, new Map([["mod-gate", "Gate"]]));
+    expect(diff.entryRules).toEqual({ before: 'a pass from "Gate" v2', after: 'a pass from "Gate" v3' });
   });
 });
 

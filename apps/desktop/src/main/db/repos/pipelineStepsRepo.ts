@@ -9,6 +9,7 @@ import { pipelines, pipelineSteps, projects, stepRoutes, items } from "../schema
 // both modules have loaded, which is what makes it safe.
 import { catchUpCurrentVersion, createPipelineVersion, ensureCurrentVersion, pipelineVersionsToKeep, prunePipelineVersions, setCurrentVersion } from "./pipelineVersionsRepo.js";
 import { getSetting } from "./settingsRepo.js";
+import { pinEntryRules, stepModuleVersion } from "./moduleVersionsRepo.js";
 
 /**
  * The setting naming the pipelines still shared because splitting them
@@ -72,6 +73,8 @@ function toStep(row: typeof pipelineSteps.$inferSelect): PipelineStep {
     // person could decide at all — and a step showing no buttons is a
     // step that waits, which is what it always did.
     results: StepResultsSchema.safeParse(row.results).data ?? [],
+    // The module version a module step runs (EO-770).
+    moduleVersion: row.moduleVersion,
   };
 }
 
@@ -403,6 +406,14 @@ export interface CreateStepInput {
    * buttons nobody can reach.
    */
   results?: StepResult[];
+  /**
+   * Which version of its module a `module` step runs (EO-770).
+   *
+   * Absent or null on a module step pins the module's newest approved
+   * version (its newest where none is approved) — what a caller naming a
+   * module without a version means. Cleared on every other kind of step.
+   */
+  moduleVersion?: number | null;
 }
 
 export function createStep(db: Db, input: CreateStepInput): PipelineStep {
@@ -427,6 +438,7 @@ export function createStep(db: Db, input: CreateStepInput): PipelineStep {
       ...watchColumns(input.watch ?? null),
       ownerPersonId: input.ownerPersonId ?? null,
       results: input.results ?? [],
+      moduleVersion: stepModuleVersion(db, { type: input.type ?? "agent", entryAction: input.entryAction, moduleVersion: input.moduleVersion }),
     })
     .returning()
     .get();
@@ -938,6 +950,10 @@ export function replacePipelineGraph(
         // re-adding "Review" by the same id gets the row they had
         // rather than a second one, items and all (EO-327).
         retiredVersion: null,
+        // The module version it runs (EO-770): what the caller pinned, or
+        // the module's newest approved version where it named none. Part
+        // of the graph document, so written on every save rather than kept.
+        moduleVersion: stepModuleVersion(inTx, { type: step.type ?? "agent", entryAction: step.entryAction, moduleVersion: step.moduleVersion }),
       };
       // Omitted from the update when the caller said nothing about it
       // (EO-78), which is the one field here that is not "publish what
@@ -1027,7 +1043,8 @@ export function replacePipelineGraph(
     // cannot point at a step that does not exist yet, and a brand-new
     // entry step is inserted by the loop above.
     if (options.entryStepId !== undefined) setEntryStep(inTx, pipelineId, options.entryStepId);
-    if (options.entryRules !== undefined) tx.update(pipelines).set({ entryRules: options.entryRules }).where(eq(pipelines.id, pipelineId)).run();
+    // Each module rule pinned to a version (EO-770), as a module step is.
+    if (options.entryRules !== undefined) tx.update(pipelines).set({ entryRules: pinEntryRules(inTx, options.entryRules) }).where(eq(pipelines.id, pipelineId)).run();
 
     // A graph that changed has to page to the devices drawing it
     // (EO-329). `pipelines.updated_at` is the only timestamp the graph

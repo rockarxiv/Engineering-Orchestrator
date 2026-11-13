@@ -4,6 +4,7 @@ import type { Db } from "../client.js";
 import { registry } from "../../registry.js";
 import { getItemType, type ItemType } from "./itemTypesRepo.js";
 import { getModule } from "./modulesRepo.js";
+import { moduleAtVersion } from "./moduleVersionsRepo.js";
 import { getPipeline } from "./pipelineStepsRepo.js";
 import { entryRulesForArrival } from "./pipelineVersionsRepo.js";
 
@@ -151,6 +152,7 @@ function basisOf(checks: readonly ModuleEntryCheck[], modules: readonly (CustomM
       const module = modules[index];
       return {
         module: check.module,
+        moduleVersion: check.moduleVersion,
         timeoutMs: check.timeoutMs,
         rules: check.rules.map((rule) => rule.message ?? null),
         revision: module === undefined ? null : [module.updatedAt, module.approvedAt, module.archivedAt],
@@ -177,9 +179,33 @@ export function moduleRefusalWords(rule: EntryRule, module: CustomModule | undef
  */
 export function unfitModuleClause(check: ModuleEntryCheck, module: CustomModule | undefined): string | null {
   if (check.module === "") return "cannot run: the rule names no module";
+  if (module !== undefined && pinnedVersionGone.has(module)) return `cannot run: the v${check.moduleVersion ?? "?"} it pins is not kept any more`;
   const problem = entryCheckModuleProblem(module);
-  if (problem !== null || module === undefined) return `cannot run: it ${problem ?? "is not a module this installation has"}`;
-  return null;
+  if (problem === null && module !== undefined) return null;
+  // The version the rule pins, by number (EO-770): it is what has to be
+  // approved and declared an entry check, whatever the module's head is.
+  const subject = module !== undefined && module.archivedAt === null && check.moduleVersion !== null ? `its v${check.moduleVersion}` : "it";
+  return `cannot run: ${subject} ${problem ?? "is not a module this installation has"}`;
+}
+
+/** Modules `entryCheckModule` answered with whose pinned version is not kept, for `unfitModuleClause` to say so. */
+const pinnedVersionGone = new WeakSet<CustomModule>();
+
+/**
+ * The module an entry check runs (EO-770): the version its rules pin —
+ * its code, manifest and approval — or the module as it stands for rules
+ * written before pins. Undefined for a module this installation does not
+ * have; one whose pinned version is not kept is answered as it stands and
+ * refused by `unfitModuleClause`, which says which version is gone.
+ */
+export function entryCheckModule(db: Db, check: ModuleEntryCheck): CustomModule | undefined {
+  const catalogued = check.module === "" ? undefined : getModule(db, check.module);
+  if (catalogued === undefined) return undefined;
+  const pinned = moduleAtVersion(db, catalogued, check.moduleVersion);
+  if (pinned.ok) return pinned.module;
+  const gone = { ...catalogued };
+  pinnedVersionGone.add(gone);
+  return gone;
 }
 
 /**
@@ -197,7 +223,7 @@ function moduleVerdict(db: Db, item: Item, creating: boolean, fromStepId: string
   if (type === undefined) return null;
   const checks = moduleEntryChecks(entryRulesForArrival(db, item.pipelineId, item.stepId), qualifiedItemType(type));
   if (checks.length === 0) return null;
-  const modules = checks.map((check) => (check.module === "" ? undefined : getModule(db, check.module)));
+  const modules = checks.map((check) => entryCheckModule(db, check));
   const pipelineName = getPipeline(db, item.pipelineId)?.name ?? "This pipeline";
   const refusing = (index: number, why: string): string =>
     entryRefusalSentence(pipelineName, [moduleRefusalWords(checks[index]!.rules[0]!, modules[index], checks[index]!.module, why)]);

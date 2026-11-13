@@ -15,6 +15,10 @@ import {
   WAITING_RESULT,
 } from "@eo/core";
 import { entryRuleProblems } from "./entryRules.js";
+import { moduleAtPin, type ModuleVersionFacts } from "./modulePins.js";
+
+/** The module a step runs, as its pin makes it (EO-770), or undefined for one it does not run or this installation does not have. */
+type ModuleOf<M> = (step: PipelineStep) => M | undefined;
 
 export interface WorkflowProblem {
   /** `error` blocks the save; `warning` is worth saying but the user may know better. */
@@ -178,6 +182,17 @@ export interface ValidatePipelineInput {
    */
   trialGrantedModuleIds?: readonly string[];
   /**
+   * Every kept version of every module in `modules` (EO-770).
+   *
+   * A module step and a module entry rule pin a version, and are judged
+   * against that version: it has to exist, it has to be approved (or the
+   * module trial-granted here), and its manifest is what the routes, the
+   * inputs and keep checking are held to. Absent — a caller judging a
+   * draft's shape with no versions to hand — judges each against the
+   * module as it stands, as before pins.
+   */
+  moduleVersions?: readonly ModuleVersionFacts[];
+  /**
    * The entry rules being published with this graph (EO-610,
    * ARCHITECTURE.md, "Entry rules"). Absent is a save with no opinion
    * about them, which judges nothing: a rule that has since gone stale
@@ -226,6 +241,7 @@ export function validatePipeline(input: ValidatePipelineInput): WorkflowProblem[
     sideEffectingServersByStep = {},
     webhookUnattended = false,
     trialGrantedModuleIds = [],
+    moduleVersions,
     entryRules = [],
     itemTypes = registry.itemTypes,
   } = input;
@@ -234,7 +250,7 @@ export function validatePipeline(input: ValidatePipelineInput): WorkflowProblem[
     return [{ severity: "error", stateId: null, message: "A pipeline needs at least one step." }];
   }
 
-  for (const message of entryRuleProblems(entryRules, itemTypes, registry.entryRuleKinds, modules)) {
+  for (const message of entryRuleProblems(entryRules, itemTypes, registry.entryRuleKinds, modules, moduleVersions)) {
     problems.push({ severity: "error", stateId: null, message });
   }
 
@@ -434,7 +450,14 @@ export function validatePipeline(input: ValidatePipelineInput): WorkflowProblem[
 
   // ── Steps ───────────────────────────────────────────────────
   const staffed = new Set(staffedRoles);
-  const moduleById = new Map(modules.map((module) => [module.id, module]));
+  const moduleById = new Map<string, CustomModule>(modules.map((module) => [module.id, module]));
+  // Each module step's module as its pin makes it (EO-770): the manifest
+  // and the approval of the version it runs.
+  const moduleOf: ModuleOf<CustomModule> = (step) => {
+    if (step.type !== "module" || step.entryAction === null) return undefined;
+    const module = moduleById.get(step.entryAction);
+    return module === undefined ? undefined : moduleAtPin(module, step.moduleVersion, moduleVersions).module;
+  };
   const trialGranted = new Set(trialGrantedModuleIds);
   for (const step of steps) {
     if (step.type === "agent") {
@@ -504,10 +527,10 @@ export function validatePipeline(input: ValidatePipelineInput): WorkflowProblem[
       }
     }
 
-    if (step.type === "module") problems.push(...moduleProblems(step, routes, moduleById, trialGranted));
+    if (step.type === "module") problems.push(...moduleProblems(step, routes, moduleById, moduleVersions, trialGranted));
     problems.push(...decisionProblems(step, routes));
     problems.push(...timeLimitProblems(step, runTimeoutMs));
-    problems.push(...watchProblems(step, registry, moduleById));
+    problems.push(...watchProblems(step, registry, moduleOf));
     problems.push(...waitingRouteProblems(step, routes));
   }
 
@@ -542,7 +565,7 @@ export function validatePipeline(input: ValidatePipelineInput): WorkflowProblem[
   // entry is missing or is not in it has a problem about that already,
   // and a walk from nowhere would add a second sentence about the first.
   if (entryReachedByWebhook && entryStepId !== null && byId.has(entryStepId)) {
-    problems.push(...webhookSideEffectProblems(entryStepId, steps, routes, registry, moduleById, sideEffectingServersByStep, webhookUnattended));
+    problems.push(...webhookSideEffectProblems(entryStepId, steps, routes, registry, moduleOf, sideEffectingServersByStep, webhookUnattended));
   }
 
   return problems;
@@ -575,13 +598,13 @@ export function validatePipeline(input: ValidatePipelineInput): WorkflowProblem[
 export function webhookReach(
   step: PipelineStep,
   registry: RegistryFacts,
-  moduleById: ReadonlyMap<string, Pick<CustomModule, "manifest">>,
+  moduleOf: ModuleOf<Pick<CustomModule, "manifest">>,
   sideEffectingServersByStep: Readonly<Record<string, readonly string[]>>,
 ): StepOutsideReach | null {
   if ((sideEffectingServersByStep[step.id] ?? []).length > 0) return "sends";
   if (step.type === "builtin") return builtinHasSideEffects(registry, step.entryAction) ? "sends" : null;
   if (step.type === "module" && step.entryAction !== null) {
-    const manifest = moduleById.get(step.entryAction)?.manifest;
+    const manifest = moduleOf(step)?.manifest;
     if (manifest?.sideEffects === true) return "sends";
     // Optional chaining twice: a manifest stored before `needs.create`
     // existed, and handed here unparsed, is one that creates nothing.
@@ -608,13 +631,19 @@ export function webhookReach(
 export function outsideReachByStep(input: {
   steps: readonly PipelineStep[];
   registry: RegistryFacts;
-  modules?: readonly Pick<CustomModule, "id" | "manifest">[];
+  modules?: readonly Pick<CustomModule, "id" | "manifest" | "approvedAt">[];
+  /** Each module's kept versions, so a step is read by the version it pins (EO-770). */
+  moduleVersions?: readonly ModuleVersionFacts[] | undefined;
   sideEffectingServersByStep?: Readonly<Record<string, readonly string[]>>;
 }): OutsideReachByStep {
-  const moduleById = new Map((input.modules ?? []).map((module) => [module.id, module]));
+  const moduleById = new Map<string, Pick<CustomModule, "id" | "manifest" | "approvedAt">>((input.modules ?? []).map((module) => [module.id, module]));
+  const moduleOf: ModuleOf<Pick<CustomModule, "manifest">> = (step) => {
+    const module = step.entryAction === null ? undefined : moduleById.get(step.entryAction);
+    return module === undefined ? undefined : moduleAtPin(module, step.moduleVersion, input.moduleVersions).module;
+  };
   const reach: OutsideReachByStep = {};
   for (const step of input.steps) {
-    const found = webhookReach(step, input.registry, moduleById, input.sideEffectingServersByStep ?? {});
+    const found = webhookReach(step, input.registry, moduleOf, input.sideEffectingServersByStep ?? {});
     if (found !== null) reach[step.id] = found;
   }
   return reach;
@@ -666,7 +695,7 @@ function webhookSideEffectProblems(
   steps: PipelineStep[],
   routes: StepRoute[],
   registry: RegistryFacts,
-  moduleById: Map<string, CustomModule>,
+  moduleOf: ModuleOf<CustomModule>,
   sideEffectingServersByStep: Record<string, readonly string[]>,
   unattended: boolean,
 ): WorkflowProblem[] {
@@ -680,7 +709,7 @@ function webhookSideEffectProblems(
     const step = byId.get(queue.pop()!);
     if (!step) continue;
 
-    const reach = webhookReach(step, registry, moduleById, sideEffectingServersByStep);
+    const reach = webhookReach(step, registry, moduleOf, sideEffectingServersByStep);
     if (reach === "sends") {
       problems.push(
         unattended
@@ -793,8 +822,8 @@ function timeLimitProblems(step: PipelineStep, runTimeoutMs: number): WorkflowPr
  * A step naming a function or module this installation does not have is
  * not refused again here: it already has an error saying so.
  */
-function watchProblems(step: PipelineStep, registry: RegistryFacts, moduleById: Map<string, CustomModule>): WorkflowProblem[] {
-  if (step.watch === null) return runOnceProblems(step, registry, moduleById);
+function watchProblems(step: PipelineStep, registry: RegistryFacts, moduleOf: ModuleOf<CustomModule>): WorkflowProblem[] {
+  if (step.watch === null) return runOnceProblems(step, registry, moduleOf);
   if (step.type !== "builtin" && step.type !== "module") {
     return [
       {
@@ -833,7 +862,7 @@ function watchProblems(step: PipelineStep, registry: RegistryFacts, moduleById: 
     });
   }
   if (step.type === "module" && step.entryAction !== null) {
-    const module = moduleById.get(step.entryAction);
+    const module = moduleOf(step);
     if (module !== undefined && module.manifest.watch !== true) {
       problems.push({
         severity: "error",
@@ -852,7 +881,7 @@ function watchProblems(step: PipelineStep, registry: RegistryFacts, moduleById: 
  * one change that makes the step work; a route on `waiting` would not,
  * and `waitingRouteProblems` refuses one.
  */
-function runOnceProblems(step: PipelineStep, registry: RegistryFacts, moduleById: Map<string, CustomModule>): WorkflowProblem[] {
+function runOnceProblems(step: PipelineStep, registry: RegistryFacts, moduleOf: ModuleOf<CustomModule>): WorkflowProblem[] {
   if (step.entryAction === null) return [];
   if (step.type === "builtin" && builtinCanWait(registry, step.entryAction)) {
     return [
@@ -864,7 +893,7 @@ function runOnceProblems(step: PipelineStep, registry: RegistryFacts, moduleById
     ];
   }
   if (step.type === "module") {
-    const module = moduleById.get(step.entryAction);
+    const module = moduleOf(step);
     if (module !== undefined && module.manifest.watch === true) {
       return [
         {
@@ -921,12 +950,20 @@ function waitingRouteProblems(step: PipelineStep, routes: StepRoute[]): Workflow
  * step can have any: an input comes into existence by being declared in
  * a manifest, so nothing else has one to get wrong.
  */
-function moduleProblems(step: PipelineStep, routes: StepRoute[], moduleById: Map<string, CustomModule>, trialGranted: ReadonlySet<string>): WorkflowProblem[] {
+function moduleProblems(
+  step: PipelineStep,
+  routes: StepRoute[],
+  moduleById: Map<string, CustomModule>,
+  moduleVersions: readonly ModuleVersionFacts[] | undefined,
+  trialGranted: ReadonlySet<string>,
+): WorkflowProblem[] {
   if (step.entryAction === null) {
     return [{ severity: "error", stateId: step.id, message: `"${step.name}" runs a module but does not say which.` }];
   }
 
-  const module = moduleById.get(step.entryAction);
+  const catalogued = moduleById.get(step.entryAction);
+  const pinned = catalogued === undefined ? undefined : moduleAtPin(catalogued, step.moduleVersion, moduleVersions);
+  const module = pinned?.module;
   if (!module) {
     return [
       {
@@ -940,6 +977,28 @@ function moduleProblems(step: PipelineStep, routes: StepRoute[], moduleById: Map
   }
   if (module.archivedAt !== null) {
     return [{ severity: "error", stateId: step.id, message: `"${step.name}" runs "${module.name}", which has been deleted.` }];
+  }
+  // The version it pins (EO-770): one this module no longer keeps — never
+  // filed, or pruned — is code nothing can load, and one nobody approved
+  // is code nobody read.
+  const version = step.moduleVersion ?? null;
+  if (pinned?.missing === true && version !== null) {
+    return [
+      {
+        severity: "error",
+        stateId: step.id,
+        message: `"${step.name}" runs v${version} of "${module.name}", which "${module.name}" does not have — it was never filed, or is no longer kept. Pick a version Settings → Modules lists.`,
+      },
+    ];
+  }
+  if (version !== null && moduleVersions !== undefined && module.approvedAt === null && !trialGranted.has(module.id)) {
+    return [
+      {
+        severity: "error",
+        stateId: step.id,
+        message: `"${step.name}" runs v${version} of "${module.name}", which has not been approved. Approve that version in Settings → Modules, or pin a version that was — approving runs its tests, and it needs at least one, all passing.`,
+      },
+    ];
   }
   // The check that makes accepting an imported module safe: it arrives
   // unapproved, and this is what keeps it inert until somebody has read

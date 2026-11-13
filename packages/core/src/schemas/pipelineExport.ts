@@ -663,7 +663,8 @@ export const ExportedPipelineHeadSchema = z.object({
 });
 
 /** A step as the document carries it — see `PipelineExportSchema.steps` for what is left out and why. */
-export const ExportedStepSchema = PipelineStepViewSchema.omit({ pipelineId: true, inputs: true, timeoutMs: true, workspaceMode: true, workspaceId: true });
+// A module pin (EO-770) does not travel yet: an import pins each module step to its newest approved version, as any save that names none does.
+export const ExportedStepSchema = PipelineStepViewSchema.omit({ pipelineId: true, inputs: true, timeoutMs: true, workspaceMode: true, workspaceId: true, moduleVersion: true });
 /** A route as the document carries it. Its target is a step of any board in the document, or a sentinel. */
 export const ExportedRouteSchema = StepRouteViewSchema.omit({ id: true, pipelineId: true });
 

@@ -556,6 +556,12 @@ export const ModuleVersionSummarySchema = z.object({
   current: z.boolean(),
   /** How many test cases go with it. The current version's are the module's live cases. */
   testCount: z.number().int().nonnegative(),
+  /**
+   * The pipelines whose current graph pins this version (EO-770) — a
+   * module step or a module entry rule running it — by name. Empty where
+   * none does. Defaulted, so an answer from an older build reads as none.
+   */
+  pinnedBy: z.array(z.string()).default([]),
 });
 
 /** One version, whole: what restoring it would bring back. */

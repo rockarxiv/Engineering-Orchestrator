@@ -1873,7 +1873,8 @@ const READ_TOOLS: readonly ToolSpec[] = [
     channel: "moduleVersions:list",
     description:
       "A custom module's history, newest first: every kept version's number, when it was saved, whether a person " +
-      "approved it, how many test cases went with it, and which one is current. Every save that changes a module's " +
+      "approved it, how many test cases went with it, which one is current, and which pipelines pin it — a pipeline " +
+      "runs the version its step or entry rule pins, not the newest. Every save that changes a module's " +
       "code or manifest files a version; renaming it files none. module_version_get reads one whole.",
     kind: "read",
     list: "versions",

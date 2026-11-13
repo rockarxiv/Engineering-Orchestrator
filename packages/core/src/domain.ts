@@ -576,6 +576,22 @@ export interface PipelineStep {
    * every row written before it existed.
    */
   results: StepResult[];
+  /**
+   * Which version of its module a `module` step runs (EO-770,
+   * ARCHITECTURE.md, "Modules: a step that is a script").
+   *
+   * A `module_versions.number` of the module `entryAction` names. The
+   * runner loads that version's code and manifest and gates on that
+   * version's approval, so an edit to the module — which files a new,
+   * unapproved version — changes nothing a pipeline runs until a pin
+   * moves. Part of the graph document, so every pipeline version is exact
+   * about the code its steps run.
+   *
+   * Null on every other kind of step. Null on a module step only where
+   * its module has no version at all; such a step runs the module as it
+   * stands, which is what every step did before pins.
+   */
+  moduleVersion: number | null;
 }
 
 /**

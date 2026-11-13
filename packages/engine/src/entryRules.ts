@@ -10,6 +10,7 @@ import {
   hasEntryValue,
 } from "@eo/core";
 import type { CustomModule, EntryRule, EntryRuleKind, ItemTypeEntry } from "@eo/core";
+import { moduleAtPin, type ModuleVersionFacts } from "./modulePins.js";
 
 /**
  * Judging a pipeline's entry rules (EO-610, ARCHITECTURE.md, "Entry
@@ -65,7 +66,12 @@ export function unmetEntryRules(rules: readonly EntryRule[], facts: EntryFacts, 
 export interface ModuleEntryCheck {
   /** The module's id. */
   module: string;
-  /** Every applicable rule naming it, in the order the pipeline lists them. */
+  /**
+   * The version of it the rules pin (EO-770), or null for rules written
+   * before pins, which run the module as it stands.
+   */
+  moduleVersion: number | null;
+  /** Every applicable rule naming it at that version, in the order the pipeline lists them. */
   rules: EntryRule[];
   /** The one run's limit: the tightest any of those rules sets, or the default. */
   timeoutMs: number;
@@ -85,9 +91,13 @@ export function moduleEntryChecks(rules: readonly EntryRule[], itemType: string)
   for (const rule of rules) {
     if (rule.kind !== MODULE_ENTRY_RULE_KIND || !appliesTo(rule, itemType)) continue;
     const id = rule.module ?? "";
+    const version = rule.moduleVersion ?? null;
+    // One run per module *version*: two rules pinning different versions
+    // of one module run different code (EO-770).
+    const key = `${id}\u0000${version ?? ""}`;
     const limit = Math.min(rule.timeoutMs ?? DEFAULT_ENTRY_CHECK_TIMEOUT_MS, MAX_ENTRY_CHECK_TIMEOUT_MS);
-    const found = checks.get(id);
-    if (found === undefined) checks.set(id, { module: id, rules: [rule], timeoutMs: limit });
+    const found = checks.get(key);
+    if (found === undefined) checks.set(key, { module: id, moduleVersion: version, rules: [rule], timeoutMs: limit });
     else {
       found.rules.push(rule);
       found.timeoutMs = Math.min(found.timeoutMs, limit);
@@ -131,6 +141,8 @@ export function entryRuleProblems(
    * `validatePipeline` passes it, so nothing is published unjudged.
    */
   modules?: readonly EntryCheckModule[],
+  /** Every kept version of those modules, so a rule is judged by the version it pins (EO-770). */
+  moduleVersions?: readonly ModuleVersionFacts[],
 ): string[] {
   const moduleNames = new Map((modules ?? []).map((module) => [module.id, module.name]));
   return rules.flatMap((rule) => {
@@ -147,9 +159,11 @@ export function entryRuleProblems(
       if (rule.module === undefined) problems.push("An entry rule that runs a module does not say which module.");
       else if (modules !== undefined) {
         const { module: id } = rule;
-        const module = modules.find((each) => each.id === id);
-        const problem = entryCheckModuleProblem(module);
-        if (problem !== null) problems.push(`The entry rule runs "${module?.name ?? id}", which ${problem}.`);
+        const catalogued = modules.find((each) => each.id === id);
+        const pinned = catalogued === undefined ? undefined : moduleAtPin(catalogued, rule.moduleVersion, moduleVersions);
+        const runs = `"${catalogued?.name ?? id}"${rule.moduleVersion === undefined || catalogued === undefined ? "" : ` v${rule.moduleVersion}`}`;
+        const problem = pinned?.missing === true ? `"${catalogued?.name ?? id}" does not have — it was never filed, or is no longer kept` : entryCheckModuleProblem(pinned?.module);
+        if (problem !== null) problems.push(`The entry rule runs ${runs}, which ${problem}.`);
       }
     }
     if (rule.kind === "field") {

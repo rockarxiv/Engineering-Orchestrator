@@ -2638,6 +2638,9 @@ export function assistDraftForPublish(db: Db, conversation: Item, commentId: Uui
         // that only rewired around it — and "Needs a reason" is the
         // draft's wherever its branch says it (EO-520).
         results: draftStepResults(step, read.draft.routes, existing?.results ?? []),
+        // A draft names a module and no version (EO-770): the save pins the
+        // module's newest approved version.
+        moduleVersion: null,
       };
     }),
     // "Needs a reason" is the result's, carried above, not the route's.

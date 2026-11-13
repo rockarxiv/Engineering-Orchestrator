@@ -443,6 +443,7 @@ describe("a module step's time limit", () => {
       timeoutMs,
       watch: null,
       results: [],
+      moduleVersion: null,
     };
   }
 
@@ -1242,7 +1243,7 @@ describe("workflow saving", () => {
     saveAgent(handle.db, { name: "Tester", role: "tester", provider: "fake", model: null, instructions: "", enabled: true, config: {} });
 
     const next = withStepBefore(
-      { id: "qa", pipelineId: "default", position: 0, name: "qa", type: "agent", ownerRole: "tester", entryAction: "test", instructionsSummary: null, isTerminal: false, planMode: false, workspaceMode: "isolated", workspaceId: null, inputs: {}, timeoutMs: null, watch: null, results: [] },
+      { id: "qa", pipelineId: "default", position: 0, name: "qa", type: "agent", ownerRole: "tester", entryAction: "test", instructionsSummary: null, isTerminal: false, planMode: false, workspaceMode: "isolated", workspaceId: null, inputs: {}, timeoutMs: null, watch: null, results: [], moduleVersion: null },
       "merge_request",
     );
 
@@ -1299,6 +1300,7 @@ describe("workflow saving", () => {
       timeoutMs: null,
       watch: null,
       results: [],
+      moduleVersion: null,
     });
 
     it("survives a publish and the reload after it", () => {
@@ -1335,7 +1337,7 @@ describe("workflow saving", () => {
 
   it("creates a working human gate when owner_role is none", () => {
     const next = withStepBefore(
-      { id: "sign_off", pipelineId: "default", position: 0, name: "sign_off", type: "user", ownerRole: null, entryAction: null, instructionsSummary: null, isTerminal: false, planMode: false, workspaceMode: "isolated", workspaceId: null, inputs: {}, timeoutMs: null, watch: null, results: [] },
+      { id: "sign_off", pipelineId: "default", position: 0, name: "sign_off", type: "user", ownerRole: null, entryAction: null, instructionsSummary: null, isTerminal: false, planMode: false, workspaceMode: "isolated", workspaceId: null, inputs: {}, timeoutMs: null, watch: null, results: [], moduleVersion: null },
       "todo",
     );
 
@@ -1842,6 +1844,7 @@ describe("handing work to another pipeline (EO-58, EO-69)", () => {
             timeoutMs: null,
             watch: null,
             results: [{ key: "ready", label: "Ready", tone: "success", requiresComment: false }],
+            moduleVersion: null,
           },
         ],
       };
@@ -2308,7 +2311,7 @@ describe("the project reflects config changes", () => {
       routes: currentRoutes(),
       steps: [
         ...currentStates().map((state) => (state.position >= 5 ? { ...state, position: state.position + 1 } : state)),
-        { id: "qa", pipelineId: "default", position: 5, name: "qa", type: "agent", ownerRole: "tester", entryAction: "test", instructionsSummary: null, isTerminal: false, planMode: false, workspaceMode: "isolated", workspaceId: null, inputs: {}, timeoutMs: null, watch: null, results: [] },
+        { id: "qa", pipelineId: "default", position: 5, name: "qa", type: "agent", ownerRole: "tester", entryAction: "test", instructionsSummary: null, isTerminal: false, planMode: false, workspaceMode: "isolated", workspaceId: null, inputs: {}, timeoutMs: null, watch: null, results: [], moduleVersion: null },
       ],
     });
 
@@ -2488,6 +2491,7 @@ describe("a pipeline a webhook can enter", () => {
       timeoutMs: null,
       watch: null,
       results: [],
+      moduleVersion: null,
     });
     const steps = ordered.map((step, index) => ({ ...step, position: index }));
     const routes = [

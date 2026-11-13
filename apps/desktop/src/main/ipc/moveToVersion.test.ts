@@ -66,6 +66,7 @@ describe("moving an item to another version of its pipeline", () => {
       timeoutMs: step.timeoutMs,
       watch: step.watch,
       results: step.results,
+      moduleVersion: null,
     }));
 
   const route = (target: string): StepRouteView => ({

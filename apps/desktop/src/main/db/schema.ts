@@ -602,6 +602,22 @@ export const pipelineSteps = sqliteTable(
      * its own version had.
      */
     retiredVersion: integer("retired_version"),
+    /**
+     * Which version of its module a `module` step runs (EO-770,
+     * ARCHITECTURE.md, "Modules: a step that is a script"): a
+     * `module_versions.number` of the module `entry_action` names.
+     *
+     * The runner loads that version's code and manifest and gates on that
+     * version's approval, so saving an edit to a module — which files a
+     * new, unapproved version — changes nothing a pipeline runs. NULL on
+     * every other kind of step, and on a module step whose module has no
+     * version, which runs the module as it stands. 0170 pins every step
+     * that existed before it.
+     *
+     * No foreign key: a version is named by its number within a module,
+     * not by its row id, and `pruneModuleVersions` keeps every pinned one.
+     */
+    moduleVersion: integer("module_version"),
   },
   (table) => [index("idx_pipeline_steps_pipeline").on(table.pipelineId, table.position)],
 );

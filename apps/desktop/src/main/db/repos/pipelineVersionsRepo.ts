@@ -435,6 +435,8 @@ function diffableGraph(snapshot: PipelineGraphSnapshot): DiffableGraph {
       planMode: step.planMode,
       offBoard: step.offBoard,
       watch: step.watch,
+      // The module version it runs (EO-770), so a pin moving is a change.
+      moduleVersion: step.moduleVersion,
       // What a person may decide here (EO-310), carried so the diff can
       // report a save that renamed, retoned or withdrew a button. A
       // human step's results are executable — an item finishing on an

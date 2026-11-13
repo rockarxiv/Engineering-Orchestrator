@@ -2193,6 +2193,9 @@ function toStepView(step: PipelineStep): PipelineStepView {
     // to — a screen that could not see them would publish a graph with
     // its buttons silently cleared.
     results: step.results,
+    // The module version a module step runs (EO-770): what the step's
+    // head shows, and what a save sends back to keep the pin.
+    moduleVersion: step.moduleVersion,
   };
 }
 

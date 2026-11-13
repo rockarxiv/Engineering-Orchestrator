@@ -20,6 +20,7 @@ function step(id: string, name: string, position: number, overrides: Partial<Pip
     timeoutMs: null,
     watch: null,
     results: [],
+    moduleVersion: null,
     ...overrides,
   };
 }
