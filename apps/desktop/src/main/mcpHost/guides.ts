@@ -222,13 +222,39 @@ work is one ticket, send one ticket.
 Either way, use it for real ordering only: a story that merely touches
 related code is not a dependency.
 
+## Leave \`wait\` out unless the person asked for something else
+
+A bare index or key waits for that work to **finish**, which is what a
+dependency almost always means. Leave \`wait\` out unless the person
+asked for something else. When they did — "start once KAN-14 reaches
+Review", "link it but don't wait" — use the object form instead of the
+bare entry:
+
+\`\`\`
+addDependsOn: [
+  "KAN-12",
+  { "item": "KAN-14", "wait": "reached", "step": "Review" },
+  { "item": "KAN-15", "wait": "none" }
+]
+\`\`\`
+
+\`{ "story": 0, "wait": "reached", "step": "Review" }\` in a plan's
+\`depends_on\`, and \`{ "item": … }\` in \`work_submit_ticket\`'s \`dependsOn\`.
+\`reached\` waits until the other ticket first arrives at that step of
+its own pipeline (or finishes); \`step\` is the step's name, goes with
+\`reached\` only, and cannot be the step where that pipeline finishes —
+that is \`finished\`. \`none\` keeps the link and never holds anything.
+A step the pipeline does not have is refused with the names it does.
+
 Dependencies can be changed after filing, with \`item_update\`:
 \`addDependsOn\` names tickets it is to wait for from now on and
 \`removeDependsOn\` ones it is to stop waiting for, by key. So a ticket
 that turns out to need work filed after it — a release waiting on the
-stories that go into it — is changed in place, not filed again. The
-change is refused whole, naming the tickets, if any part of it cannot
-be made, a cycle included.
+stories that go into it — is changed in place, not filed again.
+\`updateDependsOn\` changes the rule of a dependency it already has,
+in the object form above; \`addDependsOn\` on one it already has is
+refused. The change is refused whole, naming the tickets, if any part
+of it cannot be made, a cycle included.
 
 ## Acceptance criteria are what gets checked
 

@@ -224,7 +224,11 @@ function itemNamed(db: Db, reference: string): Item | undefined {
  * naming nothing, the item itself, an item on another project, an item
  * named both to add and to remove, an edge to add that is already there
  * or one to remove that is not, and an addition that would close a cycle
- * once the whole change is merged into the live graph.
+ * once the whole change is merged into the live graph. And for a rule
+ * (EO-777): a rule `judgeGate` refuses, a rule to change on an edge that
+ * is not there, one item named twice with two rules, and one named both
+ * to change and to add or remove. A new rule equal to the edge's own is
+ * dropped from the plan, so it writes and says nothing.
  *
  * A request asking for nothing is allowed and plans nothing — no guard
  * runs, because nothing would change.

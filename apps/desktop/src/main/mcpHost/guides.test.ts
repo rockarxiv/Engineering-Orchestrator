@@ -121,6 +121,15 @@ describe("the guides", () => {
     expect(guide).toContain("`removeDependsOn`");
   });
 
+  it("says to leave wait out unless the person asked for something else, and shows the object form (EO-777)", () => {
+    const guide = guideNamed("eo_submit_work")!.body.replace(/\s+/g, " ");
+
+    expect(guide).toContain("Leave `wait` out unless the person asked for something else");
+    expect(guide).toContain('{ "item": "KAN-14", "wait": "reached", "step": "Review" }');
+    expect(guide).toContain('{ "story": 0, "wait": "reached", "step": "Review" }');
+    expect(guide).toContain("`updateDependsOn`");
+  });
+
   it("says an unknown pipeline name is refused rather than guessed at", () => {
     // Work placed on a pipeline nobody asked for, reported as a success,
     // is the failure this refusal exists to prevent.

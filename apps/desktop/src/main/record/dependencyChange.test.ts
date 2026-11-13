@@ -146,6 +146,19 @@ describe("a project the organisation holds", () => {
     expect(dependsOn(recordDb, release)).toEqual([]);
   });
 
+  it("refuses a rule other than finishing rather than writing it as one, and asks the record nothing (EO-777)", async () => {
+    const { release, story } = await organisationItems();
+
+    for (const request of [{ addDependsOn: [{ item: story.key, wait: "none" as const }] }, { updateDependsOn: [{ item: story.key, wait: "none" as const }] }]) {
+      const answer = await updateItemFields(anna.handle.db, anna.record, { itemId: release.id, ...request });
+
+      expect(answer.updated).toBe(false);
+      expect(answer.problem).toContain("the record does not take a rule for what an item waits by yet");
+    }
+    expect(dependsOn(recordDb, release)).toEqual([]);
+    expect(dependsOn(anna.handle, release)).toEqual([]);
+  });
+
   it("changes nothing anywhere when the record cannot be reached, and says why", async () => {
     const { release, story } = await organisationItems();
     anna.online = false;
