@@ -264,7 +264,7 @@ describe("with no network", () => {
     // The whole point: there is nowhere in this answer for an error to
     // be, and `fetched` is a fact rather than a failure.
     expect(answer.fetched).toBe(false);
-    expect(Object.keys(answer)).toEqual(["templates", "fetched", "people"]);
+    expect(Object.keys(answer)).toEqual(["templates", "fetched", "people", "project"]);
   });
 
   /** The other three shapes of "not available", each of which used to be a different kind of throw. */

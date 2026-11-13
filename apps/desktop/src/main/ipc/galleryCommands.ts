@@ -36,7 +36,7 @@ import {
 import { isAdopting } from "../db/repos/projectsRepo.js";
 import { forgeCardNeed, galleryBlanks, galleryNeeds, galleryRoleSlots, gallerySteps, repositoryAnswer } from "../gallery/form.js";
 import { forgeNeeds, type DetectForge } from "../gallery/forgeNeeds.js";
-import { assistantRow, previewTemplate, projectNeeds, useTemplate } from "../gallery/commands.js";
+import { assistantRow, previewProjectId, previewTemplate, projectNeeds, templateTargetProjectId, useTemplate } from "../gallery/commands.js";
 import { firstItemBrief } from "../gallery/firstItemBrief.js";
 import { openBriefedAssist } from "./assistCommands.js";
 import { setAgentBinding } from "./configCommands.js";
@@ -112,6 +112,9 @@ async function rolePeople(
   return { solo, people: solo ? [] : listPeople(db).map((person) => ({ id: person.id, name: person.name })), organisation: false, reached: true };
 }
 
+/** `useTemplate`'s refusal, thrown so the transaction around it rolls back the colleagues' rows written before it. */
+class UseRefusal extends Error {}
+
 /** Said when a chosen colleague cannot be named because the organisation could not be asked. Nothing is created. */
 const ORGANISATION_UNREACHABLE =
   "EO could not reach your organisation just now, so it cannot say who you chose for a role. Nothing was created; try again in a moment.";
@@ -147,7 +150,17 @@ export async function listGalleryCommand(db: Db, context: GalleryContext): Promi
     // a control nobody draws would be EO putting a name on the wire for
     // nothing. A signed-in desktop offers its organisation's people.
     people,
+    // The project Use this adds to (EO-767), named so the form can say
+    // so; null when it makes a brand-new one.
+    project: templateTarget(db),
   };
+}
+
+/** `templateTargetProjectId`, with the name the form shows. */
+function templateTarget(db: Db): { id: string; name: string } | null {
+  const id = templateTargetProjectId(db);
+  const project = id === null ? undefined : getProject(db, id);
+  return project === undefined ? null : { id: project.id, name: project.name };
 }
 
 /** One card, with its needs derived from the same preflight the needs check reads (ARCHITECTURE.md, "The needs check"). */
@@ -202,6 +215,9 @@ export async function useGalleryCommand(db: Db, context: GalleryContext, payload
   if (template === null) return { projectId: null, pipelineId: null, jobId: null, needs: [], problem: missing(payload.slug, payload.token) };
 
   const roleSlots = { ...payload.roleSlots };
+  // Colleagues to write a row for, written with the install and rolled
+  // back with any refusal of it, so a refused template writes nothing.
+  const colleagues: { id: string; name: string }[] = [];
   const who = await rolePeople(db, context);
   if (who.solo) {
     const you = localPerson(db).id as Uuid;
@@ -214,14 +230,24 @@ export async function useGalleryCommand(db: Db, context: GalleryContext, payload
     // Resolved before anything is written: a colleague neither list
     // names, while the server cannot be asked, is refused here rather
     // than dropped or swapped for somebody else.
-    const colleagues: { id: string; name: string }[] = [];
     for (const personId of Object.values(roleSlots)) {
       if (personId.trim() === "" || getPerson(db, personId as Uuid) !== undefined) continue;
       const colleague = who.people.find((person) => person.id === personId);
       if (colleague !== undefined) colleagues.push(colleague);
       else if (!who.reached) return { projectId: null, pipelineId: null, jobId: null, needs: [], problem: ORGANISATION_UNREACHABLE };
     }
-    for (const colleague of colleagues) ensurePerson(db, colleague.id as Uuid, colleague.name);
+  }
+
+  // The project it goes on (EO-767): the one the form said, or — from a
+  // caller that named none — the one the window shows. Null makes a
+  // brand-new project, which is only when there is no real one.
+  const target = payload.projectId === undefined ? templateTargetProjectId(db) : (payload.projectId as Uuid);
+  if (target !== null) {
+    const project = getProject(db, target);
+    if (project === undefined || project.archivedAt !== null) return { projectId: null, pipelineId: null, jobId: null, needs: [], problem: "That project no longer exists." };
+    if (target === previewProjectId(db)) {
+      return { projectId: null, pipelineId: null, jobId: null, needs: [], problem: "A template is not added to the Preview project. Switch to one of your own projects first." };
+    }
   }
 
   // The repository the form asked for (EO-662), checked before anything
@@ -231,24 +257,43 @@ export async function useGalleryCommand(db: Db, context: GalleryContext, payload
   if (repository !== "") {
     const problem = (await repositoryPathProblem(repository)) ?? (listGitWorkspaces(db).some((workspace) => workspace.config.repoPath === repository) ? `${repository} is already attached to EO as a repository.` : null);
     if (problem !== null) return { projectId: null, pipelineId: null, jobId: null, needs: [], problem };
+    // A project mid-move to the record takes no repository, and nothing is written.
+    if (target !== null && isAdopting(db, target)) {
+      return { projectId: null, pipelineId: null, jobId: null, needs: [], problem: movingProjectRefusal(getProject(db, target)?.name ?? "") };
+    }
   }
 
-  const result = useTemplate(db, {
-    template,
-    answers: payload.answers,
-    roleSlots,
-    ...(payload.projectName === undefined ? {} : { projectName: payload.projectName }),
-    signedInBackends: context.signedInBackends,
-  });
-  if (!result.ok) return { projectId: null, pipelineId: null, jobId: null, needs: [], problem: result.reason };
+  // The colleagues' rows and the install in one transaction (EO-767): a
+  // refusal — the project already has a pipeline of this name, say —
+  // rolls the rows back too, so nothing at all is written. The rows go
+  // first because `useTemplate` checks every role slot names a person.
+  let result: Extract<ReturnType<typeof useTemplate>, { ok: true }>;
+  try {
+    result = db.transaction(() => {
+      for (const colleague of colleagues) ensurePerson(db, colleague.id as Uuid, colleague.name);
+      const used = useTemplate(db, {
+        template,
+        answers: payload.answers,
+        roleSlots,
+        ...(payload.projectName === undefined ? {} : { projectName: payload.projectName }),
+        ...(target === null ? {} : { projectId: target }),
+        signedInBackends: context.signedInBackends,
+      });
+      if (!used.ok) throw new UseRefusal(used.reason);
+      return used;
+    });
+  } catch (error) {
+    if (error instanceof UseRefusal) return { projectId: null, pipelineId: null, jobId: null, needs: [], problem: error.message };
+    throw error;
+  }
 
-  // The project this made does not end first run (EO-317): the needs
+  // A project this made does not end first run (EO-317): the needs
   // check is step 5, its lines are this call's own answer, and a flow
   // that ended itself at step 4 would take that screen away at the
   // moment it was produced. See `noteFirstRunProject`.
-  noteFirstRunProject(db, result.projectId);
+  if (target === null) noteFirstRunProject(db, result.projectId);
 
-  // Through the needs check's own door, onto the project just made. A
+  // Through the needs check's own door, onto the project it went on. A
   // refusal now (the path vanished meanwhile) leaves the repository line
   // red with its reason, which is where it is answered.
   if (repository !== "") await attachWorkspaceCommand(db, { projectId: result.projectId, path: repository, kind: "git" });

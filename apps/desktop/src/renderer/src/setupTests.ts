@@ -95,7 +95,7 @@ const EMPTY_RESPONSES: Record<string, unknown> = {
   "items:list": { items: [] },
   // EO-316. A gallery with no templates and no index reached — which is
   // a real state of that screen (ARCHITECTURE.md, "The gallery") rather than a missing mock.
-  "gallery:list": { templates: [], fetched: false, people: [] },
+  "gallery:list": { templates: [], fetched: false, people: [], project: null },
   /*
    * First run, behind them (EO-317).
    *

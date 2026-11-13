@@ -68,6 +68,7 @@ function mockIpc(
     people?: { id: string; name: string }[];
     republished?: GalleryTemplateView[];
     locked?: string[];
+    project?: { id: string; name: string } | null;
   } = {},
 ) {
   let listings = 0;
@@ -78,7 +79,7 @@ function mockIpc(
       case "gallery:list": {
         listings += 1;
         const templates = listings > 1 && options.republished !== undefined ? options.republished : (options.templates ?? [WEEKLY]);
-        return { ok: true, data: { templates, fetched: false, people: options.people ?? [] } };
+        return { ok: true, data: { templates, fetched: false, people: options.people ?? [], project: options.project ?? null } };
       }
       case "gallery:preview":
         return { ok: true, data: { itemId: "item-1", projectId: "p-preview", problem: null } };
@@ -380,6 +381,41 @@ describe("the form", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Go to the board" }));
     expect(await screen.findByTestId("pipeline-board")).toHaveTextContent("pl1");
+  });
+
+  /** EO-767: on a real project, the pipeline goes on it, so no project name or key prefix is asked. */
+  it("adds to the project the window is on, asking for no name or prefix", async () => {
+    const invoke = mockIpc({ project: { id: "p-acme", name: "Acme" } });
+    renderGallery();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Use this" }));
+
+    await screen.findByText("Where the material lives");
+    expect(screen.getByText(/Adds the “Weekly report” pipeline to/)).toHaveTextContent("Adds the “Weekly report” pipeline to Acme.");
+    expect(screen.queryByText("Project name")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Report prefix")).not.toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("Where the material lives"), { target: { value: "/home/anna/reports" } });
+    fireEvent.click(screen.getByRole("button", { name: "Add to project" }));
+
+    await waitFor(() => expect(sent(invoke, "gallery:use")).toBeDefined());
+    expect(sent(invoke, "gallery:use")).toEqual({
+      slug: "weekly-report",
+      token: "weekly-v1",
+      answers: { folder: "/home/anna/reports", schedule: "monday 08:00", keyPrefix: "REP" },
+      roleSlots: {},
+      projectId: "p-acme",
+    });
+  });
+
+  it("says so on the form when the project already has a pipeline of that name", async () => {
+    const clash = 'Acme already has a pipeline called "Weekly report". Rename or archive that one first, or use this template on another project.';
+    mockIpc({ project: { id: "p-acme", name: "Acme" }, useProblem: clash });
+    renderGallery();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Use this" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Add to project" }));
+
+    expect(await screen.findByText(clash)).toBeInTheDocument();
   });
 
   it("stays on the form and says why when the main process refused", async () => {

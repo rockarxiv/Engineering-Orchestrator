@@ -5223,6 +5223,14 @@ export const recordContract = {
        * displays no names).
        */
       people: z.array(z.object({ id: z.string(), name: z.string() })).default([]),
+      /**
+       * The project "Use this" adds a template's pipeline to (EO-767): the
+       * one the window shows, when it is a real one. The form says so and
+       * asks for no project name or key prefix. Null when there is no real
+       * project yet — a fresh installation, or only the Preview project —
+       * and Use this makes a brand-new one.
+       */
+      project: z.object({ id: z.string(), name: z.string() }).nullable().default(null),
     }),
   ),
   /**
@@ -5256,8 +5264,9 @@ export const recordContract = {
   /**
    * "Use this" — the design.
    *
-   * The project, the workspace, the pipeline, the agents, the job and
-   * the item types, from one submission. Answers with the needs check's
+   * The pipeline, the workspace, the agents, the job and the item types,
+   * from one submission — on the project the window shows, or on a new
+   * project when there is no real one yet (EO-767). Answers with the needs check's
    * lines, which is where the screen lands.
    */
   "gallery:use": channel(
@@ -5268,8 +5277,14 @@ export const recordContract = {
       answers: z.record(z.string(), z.string()).default({}),
       /** Who fills each role slot, keyed by the pack's own step id. Empty in solo mode (ARCHITECTURE.md, "The gallery"). */
       roleSlots: z.record(z.string(), z.string()).default({}),
-      /** What to call the project. Absent means the template's title. */
+      /** What to call the project, when one is made. Absent means the template's title. */
       projectName: z.string().optional(),
+      /**
+       * The project the form said the pipeline goes on (EO-767),
+       * `gallery:list`'s `project`. Absent means the one the window shows,
+       * or a brand-new project when there is no real one.
+       */
+      projectId: z.string().optional(),
     }),
     z.object({
       projectId: z.string().nullable(),
