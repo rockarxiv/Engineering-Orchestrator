@@ -58,6 +58,7 @@ import {
 import { createJob } from "../jobs/jobs.js";
 import { ACTIVE_PROJECT_KEY } from "../ipc/repositoryCommands.js";
 import { importPipeline, type ImportPreflight } from "../modules/pipelineTransfer.js";
+import { settleSeededPipelines } from "./sharedPipelines.js";
 import { galleryBlanks, galleryNeeds, galleryRoleSlots, runtimeName, stepInputValues, wantsRepository, type GalleryNeed } from "./form.js";
 import { createTemplateBoards } from "./templateUpdates.js";
 import type { GalleryTemplate } from "./templates.js";
@@ -555,6 +556,9 @@ export function useTemplate(db: Db, input: UseTemplateInput): UseTemplateResult 
         if (!imported.ok) throw new UseRefused(imported.reason);
         pipelineId = imported.pipelineId;
         installed = new Map(Object.entries(imported.stepIds));
+        // Another template made the first project, so the seeded Delivery
+        // is nobody's: archived rather than shown to it (EO-766).
+        settleSeededPipelines(db, project.id);
       } else {
         // The pipeline this document *is*, adopted rather than copied —
         // see `pipelineAlreadyHere` for what that costs and what it
@@ -619,10 +623,10 @@ export function useTemplate(db: Db, input: UseTemplateInput): UseTemplateResult 
  *
  *  - **Nothing of their own yet.** A preview project does not count; it
  *    is step 3 of the flow. On any installation that has a real project,
- *    an unadopted pipeline is shown to *every* project (see
- *    `listPipelines`), so adopting it would take a board away from the
- *    others — which is a change to somebody's window they did not ask
- *    for, to avoid a duplicate they might have wanted.
+ *    the seeded pipeline was settled when that project was made — kept by
+ *    the oldest on upgrade, archived when the first project was made
+ *    another way (EO-766, `gallery/sharedPipelines.ts`) — so there is
+ *    nothing unadopted left to find.
  *  - **Unadopted.** A pipeline that belongs to a project is that
  *    project's, and this is not a way to move one.
  *  - **The same steps, by id.** Not by name: two templates may both call

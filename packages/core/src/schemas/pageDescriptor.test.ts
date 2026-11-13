@@ -1,5 +1,4 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_PIPELINE_ID } from "../domain.js";
 import { ipcContract } from "../ipc.js";
 import {
   ASSIST_PAGE_ROUTES,
@@ -66,12 +65,18 @@ describe("resolving a path to a descriptor", () => {
   /**
    * The screen the app launches on, and the one it was silently blind to
    * (EO-191). It draws a board with no pipeline in its address, so what
-   * makes it resolvable is the route table naming the pipeline the
-   * screen itself falls back to.
+   * makes it resolvable is the asking side naming the pipeline the screen
+   * falls back to: the active project's first (EO-766), never `default`.
    */
   it("matches the project board the app opens on", () => {
     expect(pageDescriptorFor("/project")).toEqual({ route: "/project", params: {} });
-    expect(assistPageSubjectOf(pageDescriptorFor("/project"))).toBe(DEFAULT_PIPELINE_ID);
+    expect(assistPageSubjectOf(pageDescriptorFor("/project"), { pipelineId: "p1" })).toBe("p1");
+    expect(assistPageSubjectOf(pageDescriptorFor("/project"))).toBeNull();
+    expect(assistPageSubjectOf(pageDescriptorFor("/project"), { pipelineId: null })).toBeNull();
+  });
+
+  it("takes an implied id only for the route whose path carries none", () => {
+    expect(assistPageSubjectOf(pageDescriptorFor("/pipelines/p2"), { pipelineId: "p1" })).toBe("p2");
   });
 
   /**
@@ -147,7 +152,7 @@ describe("keying a conversation on a page", () => {
    */
   it("still resolves the two addresses of one screen to one row", () => {
     expect(assistPageSubjectOf(pageDescriptorFor("/items/019f"))).toBe(assistPageSubjectOf(pageDescriptorFor("/items/019f/runs")));
-    expect(assistPageSubjectOf(pageDescriptorFor("/project"))).toBe(assistPageSubjectOf(pageDescriptorFor(`/pipelines/${DEFAULT_PIPELINE_ID}`)));
+    expect(assistPageSubjectOf(pageDescriptorFor("/project"), { pipelineId: "p1" })).toBe(assistPageSubjectOf(pageDescriptorFor("/pipelines/p1")));
   });
 });
 

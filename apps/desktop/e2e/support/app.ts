@@ -109,26 +109,63 @@ export async function closeApp(app: ElectronApplication): Promise<void> {
  * when the flow changed a word, which is exactly the coupling that made
  * thirteen of them go through the old panel in the first place.
  *
- * It goes through the real channel, so what it creates is what the app
- * creates: a repository, the project it gets, and the active-project
- * setting that follows. First run ends the moment that project exists —
- * see `firstRunDone` — and the window is told by the same
- * `config:changed` push any other window would get.
+ * It goes through the real channels, so what it creates is what the app
+ * creates. On an installation with no project yet that is the developer's
+ * first run — "Software feature to merge", named after the repository,
+ * with the repository as its answer — because since EO-766 a project
+ * made any other way starts with no pipeline, and every spec here wants
+ * the seeded Delivery board: the template adopts it, step ids and all,
+ * so `todo`, `review` and `ready_to_merge` are still what a seeded step
+ * or route names. First run is then left the way "Go to the board" leaves
+ * it, with the tour marked seen so no callout sits over the board a spec
+ * is about to press. On an installation that already has a project, the
+ * repository joins it through `repositories:create`, as Settings does.
  */
 export async function attachRepository(window: Page, repoPath: string): Promise<void> {
+  const name = repoPath.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || repoPath;
+  const state = (await window.evaluate(() => window.eo.ipc.invoke("firstRun:state" as never, undefined as never))) as {
+    ok: boolean;
+    data?: { done: boolean };
+    error?: string;
+  };
+  if (!state.ok) throw new Error(`attachRepository(${repoPath}): firstRun:state failed: ${state.error ?? "unknown"}`);
+
+  if (state.data?.done !== true) {
+    // The prefix `repositories:create` would have suggested for the name.
+    const keyPrefix = (name.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 4) || "EO").replace(/^[0-9]+/, "") || "EO";
+    const used = (await window.evaluate(
+      ([projectName, prefix, path]) =>
+        window.eo.ipc.invoke("gallery:use" as never, {
+          slug: "software-feature-to-merge",
+          answers: { keyPrefix: prefix, repository: path },
+          roleSlots: {},
+          projectName,
+        } as never),
+      [name, keyPrefix, repoPath],
+    )) as { ok: boolean; data?: { problem: string | null }; error?: string };
+    if (!used.ok || used.data?.problem !== null) {
+      throw new Error(`attachRepository(${repoPath}) failed: ${used.data?.problem ?? used.error ?? "unknown"}`);
+    }
+    await window.evaluate(async () => {
+      await window.eo.ipc.invoke("firstRun:tourSeen" as never, undefined as never);
+      await window.eo.ipc.invoke("firstRun:finish" as never, undefined as never);
+    });
+    return;
+  }
+
   const answer = await window.evaluate(
-    ([path]) =>
+    ([path, repoName]) =>
       window.eo.ipc.invoke("repositories:create" as never, {
         // The directory's name, which is what the first-run panel sent
         // and what the needs check sends now.
-        name: (path as string).replace(/[\\/]+$/, "").split(/[\\/]/).pop() || path,
+        name: repoName,
         repoPath: path,
         baseBranch: "main",
         testCommand: null,
         lintCommand: null,
         buildCommand: null,
       } as never),
-    [repoPath],
+    [repoPath, name],
   );
 
   const result = answer as { ok: boolean; data?: { ok: boolean; problem: string | null }; error?: string };

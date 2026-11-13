@@ -23,6 +23,7 @@ import {
   getPipeline,
   getPipelineOrigin,
   getStep,
+  getSetting,
   getTemplateSnapshot,
   listPipelines,
   listRoutesForPipeline,
@@ -35,7 +36,9 @@ import {
   recordUpdateConflict,
   replacePipelineGraph,
   resolveUpdateConflict,
+  setSetting,
   setUpdateConflictNotices,
+  SHARED_UNTIL_SPLIT_SETTING,
   storeTemplateSnapshot,
   templateBoardHolders,
   templateUpdateAuthor,
@@ -203,10 +206,14 @@ function createAddedBoards(db: Db, history: TemplateHistory, isTheRecord: boolea
     if (added.length === 0) continue;
     try {
       created.push(
-        ...createTemplateBoards(db, newest.document, added, projectId, {
-          createdBy: templateUpdateAuthor(slug, newest.version),
-          releaseNotes: `Created by the ${newest.document.template.title} template's ${newest.version} update, which adds this board.`,
-          now,
+        ...db.transaction(() => {
+          const boards = createTemplateBoards(db, newest.document, added, projectId, {
+            createdBy: templateUpdateAuthor(slug, newest.version),
+            releaseNotes: `Created by the ${newest.document.template.title} template's ${newest.version} update, which adds this board.`,
+            now,
+          });
+          shareWhileUnsplit(db, projectId, origins, boards);
+          return boards;
         }),
       );
     } catch (error) {
@@ -214,6 +221,25 @@ function createAddedBoards(db: Db, history: TemplateHistory, isTheRecord: boolea
     }
   }
   return created;
+}
+
+/**
+ * Keeps a board made for a still-shared installation as reachable as the
+ * installation itself (EO-766 review).
+ *
+ * Where the split that gives every project its own pipelines failed at
+ * this launch, the pipelines it was splitting stay shared among every
+ * project (`SHARED_UNTIL_SPLIT_SETTING`) until a later launch splits
+ * them. A board an update adds to such an installation has no project
+ * either, so it is shared the same way, or no project could open it or
+ * hand work to it; the next split takes it with the rest, and each
+ * project's copy of it is routed to by that project's copy of the others.
+ */
+function shareWhileUnsplit(db: Db, projectId: string | null, origins: readonly PipelineOrigin[], boards: readonly CreatedBoard[]): void {
+  if (projectId !== null || boards.length === 0) return;
+  const unsplit = getSetting<string[]>(db, SHARED_UNTIL_SPLIT_SETTING, []);
+  if (!origins.some((origin) => unsplit.includes(origin.pipelineId))) return;
+  setSetting(db, SHARED_UNTIL_SPLIT_SETTING, [...unsplit, ...boards.map((board) => board.pipelineId).filter((id) => !unsplit.includes(id))]);
 }
 
 /**

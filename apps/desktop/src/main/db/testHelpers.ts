@@ -6,7 +6,7 @@ import { openDb, type Db, type DbHandle } from "./client.js";
 import { runMigrations } from "./migrate.js";
 import { createItem, type CreateItemInput } from "./repos/itemsRepo.js";
 import { getMessage } from "./repos/messagesRepo.js";
-import { messages } from "./schema.js";
+import { messages, pipelines } from "./schema.js";
 import { createDefaultProject } from "./repos/projectsRepo.js";
 import { createGitWorkspace, getGitWorkspace, type GitWorkspace } from "./repos/workspacesRepo.js";
 import { settleDailyBudgetNotice } from "../guardDefaultNotice.js";
@@ -106,6 +106,10 @@ export function createTestItem(db: Db, input: CreateItemInput): Item {
  * The input is flat rather than `{ config: { ... } }`, because a fixture
  * saying `repoPath` reads better than one spelling out which kind's
  * config it is filling in.
+ *
+ * The first project made this way is given the seeded Delivery, as first
+ * run from its template gives it (EO-766): a fixture of a configured
+ * installation is one whose project has a pipeline.
  */
 export function attachWorkspace(
   db: Db,
@@ -113,7 +117,12 @@ export function attachWorkspace(
 ): GitWorkspace {
   const { keyPrefix, ...config } = input;
   const workspace = createGitWorkspace(db, { config });
-  createDefaultProject(db, workspace, keyPrefix);
+  const project = createDefaultProject(db, workspace, keyPrefix);
+  // The first project of a fixture works on the seeded Delivery, as the
+  // first project of an installation set up from its template does
+  // (EO-766). A later one has no pipeline until a test gives it one.
+  const seeded = db.select({ projectId: pipelines.projectId, archivedAt: pipelines.archivedAt }).from(pipelines).where(eq(pipelines.id, "default")).get();
+  if (seeded !== undefined && seeded.projectId === null && seeded.archivedAt === null) giveSeededDelivery(db, project.id);
   // Read back: the project is what attaches it, so the row the caller is
   // handed must be the attached one rather than the detached row the
   // insert returned a moment earlier.
@@ -138,4 +147,16 @@ export function messagesAboutJob(db: Db, jobId: string): Message[] {
     const message = getMessage(db, row.id);
     return message ? [message] : [];
   });
+}
+
+/**
+ * The seeded Delivery given to a project, as first run does when the first
+ * project is made from the template it is an export of (EO-317, EO-766).
+ *
+ * No pipeline is shown to a project that is not its own any more, so a
+ * fixture whose project works on Delivery says so with this rather than
+ * relying on Delivery being shared.
+ */
+export function giveSeededDelivery(db: Db, projectId: string): void {
+  db.update(pipelines).set({ projectId, updatedAt: Date.now() }).where(eq(pipelines.id, "default")).run();
 }

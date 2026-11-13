@@ -7,7 +7,7 @@ import type { CustomModule, IpcPayload, Item, ModuleCreation, ModuleManifest, Re
 import { dispatchBlocker } from "@eo/engine";
 import { buildTickInput } from "../supervisor/buildTickInput.js";
 import type { DbHandle } from "../db/client.js";
-import { createTestItem, openMigratedTestDb } from "../db/testHelpers.js";
+import { createTestItem, openMigratedTestDb, giveSeededDelivery } from "../db/testHelpers.js";
 import {
   createProject,
   createRun,
@@ -418,6 +418,7 @@ describe("a project handed to a record, with items a module created on it", () =
 
   it("keeps what made each one, so a repeat still answers and a generation 3 item still cannot create", async () => {
     const project = createProject(annaDb.db, { name: "Support", keyPrefix: "SUP", managed: false });
+    giveSeededDelivery(annaDb.db, project.id);
     const on = (title: string): Item => createTestItem(annaDb.db, { type: "story", title, stepId: "todo", projectId: project.id });
     const module = saved(annaDb, "release");
     const create = (item: Item, idempotencyKey: string) => {

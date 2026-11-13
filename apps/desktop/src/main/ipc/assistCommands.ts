@@ -97,6 +97,7 @@ import { publishedPage } from "./currentView.js";
 import { deliverToLiveRun, type EngineHandle } from "./domainCommands.js";
 import { emitPush } from "./push.js";
 import { ACTIVE_PROJECT_KEY, activeProjectId } from "./repositoryCommands.js";
+import { chatPipelineProjectId, PIPELINE_NEEDS_PROJECT, pipelineHome, projectBoardPipelineId } from "./pipelineHome.js";
 
 /**
  * The assistant's half of the conversation machinery (EO-189).
@@ -226,10 +227,11 @@ export function assistDeltaView(db: Db, conversationId: string): DiscussionView 
  *
  * Asked of `@eo/core`'s route table rather than parsed out of the path,
  * so `/project` — the board with no pipeline in its address — resolves
- * to the same id the screen itself draws (EO-191). A route this build
+ * to the same id the screen itself draws (EO-191): the active project's
+ * first pipeline (EO-766). A route this build
  * does not know, and every screen that is not a board, answer null.
  */
-function pipelineOnScreen(page: PageDescriptor): string | null {
+function pipelineOnScreen(db: Db, page: PageDescriptor): string | null {
   // The chat layout's home is not a screen about anything (EO-383).
   //
   // With the canvas popped out into its own window the conversation is
@@ -250,8 +252,9 @@ function pipelineOnScreen(page: PageDescriptor): string | null {
   if (screen === null) return null;
   // A pipeline's Changes view names its pipeline as its board does
   // (EO-524): "undo that" asked over a diff is a draft against it.
-  const key = assistPageRouteOf(screen)?.key;
-  return key === "pipeline" || key === "pipelineChanges" ? assistPageSubjectOf(screen) : null;
+  const route = assistPageRouteOf(screen);
+  const key = route?.key;
+  return key === "pipeline" || key === "pipelineChanges" ? assistPageSubjectOf(screen, route?.implied === true ? { pipelineId: projectBoardPipelineId(db) } : undefined) : null;
 }
 
 /**
@@ -688,7 +691,7 @@ export async function sendToAssist(
   // stray keystroke is a conversation nobody had.
   const conversation = existing ?? openedRoom(db, announce);
   const commentId = uuidv7();
-  const updated = recordAssistBoard(db, conversation, commentId, pipelineOnScreen(input.page));
+  const updated = recordAssistBoard(db, conversation, commentId, pipelineOnScreen(db, input.page));
 
   const activeRun = listActiveRuns(db).find((run) => run.itemId === updated.id);
   if (input.interrupt && activeRun && engine) {
@@ -1466,7 +1469,7 @@ export function publishNewAssistPipeline(
 
   try {
     return db.transaction(() => {
-      const pipelineId = createAndSavePipeline(db, engine, conversation.projectId, name, graph);
+      const pipelineId = createAndSavePipeline(db, engine, chatPipelineProjectId(db, conversation.projectId), name, graph);
       return { saved: true, pipelineId, problem: null };
     });
   } catch (error) {
@@ -1500,8 +1503,11 @@ function entryRulesOf(graph: { entryRules?: EntryRule[] | undefined }): { entryR
  * created pipeline back with it.
  */
 function createAndSavePipeline(db: Db, engine: EngineHandle | undefined, projectId: Uuid | null, name: string, graph: PublishedGraph): string {
+  // Always onto a project (EO-766); thrown, so nothing is written.
+  const home = pipelineHome(db, projectId);
+  if (!home.ok) throw new PublishRefused(home.problem);
   // With the icon the draft gave it (EO-520), if it gave one.
-  const pipeline = createPipeline(db, { projectId, name, icon: graph.icon, position: Date.now() });
+  const pipeline = createPipeline(db, { projectId: home.projectId, name, icon: graph.icon, position: Date.now() });
   const saved = savePipeline(db, engine, {
     pipelineId: pipeline.id,
     steps: graph.steps.map((step) => ({ ...step, pipelineId: pipeline.id })),
@@ -1665,7 +1671,7 @@ export async function approveAndPublishAssistDraft(
       }
 
       if (again.newPipelineName !== null) {
-        const pipelineId = createAndSavePipeline(db, engine, conversation.projectId, again.newPipelineName, again);
+        const pipelineId = createAndSavePipeline(db, engine, chatPipelineProjectId(db, conversation.projectId), again.newPipelineName, again);
         return { pipelineId, created: true, renamed: false, resolveConflict: false };
       }
       if (again.pipelineId === null) throw new PublishRefused("That draft names no pipeline to publish into.");
@@ -1884,7 +1890,7 @@ export async function publishTrialCommand(
 
         const published = again.graph;
         if (published.newPipelineName !== null) {
-          const pipelineId = createAndSavePipeline(db, engine, conversation.projectId, published.newPipelineName, published);
+          const pipelineId = createAndSavePipeline(db, engine, chatPipelineProjectId(db, conversation.projectId), published.newPipelineName, published);
           return { pipelineId, created: true, name: published.newPipelineName, replaced, approved };
         }
         if (published.pipelineId === null) throw new PublishRefused("That draft names no pipeline to publish into.");
@@ -2019,10 +2025,12 @@ export async function readAssistCardCommand(db: Db, doors: AssistCardDoors, inpu
   if (card.kind === "pipelineImport") {
     const file = await attachedDocument(db, doors, conversation, card.attachmentId);
     if (!file.ok) return nothing(file.reason);
-    // Against the chat's own project — `null` included — which is where
-    // Import will put it, never whichever project happens to be active.
-    const checked = await dispatched(doors, "pipelines:importPreflight", { document: file.text, into: { projectId: conversation.projectId } });
+    // Against the chat's own project — the oldest, for a chat opened
+    // before there was one (EO-766) — which is where Import will put it,
+    // never whichever project happens to be active.
+    const checked = await dispatched(doors, "pipelines:importPreflight", { document: file.text, into: { projectId: chatPipelineProjectId(db, conversation.projectId) } });
     if (!checked.ok) return nothing(checked.reason);
+    if (checked.data.problem === PIPELINE_NEEDS_PROJECT) return nothing(PIPELINE_NEEDS_PROJECT);
     if (checked.data.preflight === null) return nothing(`${file.name} is not a pipeline EO can import: ${checked.data.problem ?? "it could not be read."}`);
     return { card: { kind: card.kind, attachmentName: file.name, preflight: checked.data.preflight }, problem: null };
   }
@@ -2253,9 +2261,9 @@ async function carryOut(
     if (!file.ok) return { done: false, said: `Nothing was imported: ${file.reason}` };
     // Into the project the chat was opened on — the one its card was
     // read against — as a draft that creates a pipeline is (EO-381). Named
-    // in `into`, so a chat with no project imports into none rather than
-    // into the active one.
-    const imported = await dispatched(doors, "pipelines:import", { document: file.text, choices, projectId: null, into: { projectId: conversation.projectId } });
+    // in `into`, so it is the chat's project rather than the active one;
+    // for a chat with no project, the oldest, where it is listed (EO-766).
+    const imported = await dispatched(doors, "pipelines:import", { document: file.text, choices, projectId: null, into: { projectId: chatPipelineProjectId(db, conversation.projectId) } });
     if (!imported.ok) return { done: false, said: `Nothing was imported: ${imported.reason}` };
     if (!imported.data.imported || imported.data.pipelineId === null) return { done: false, said: `Nothing was imported: ${imported.data.problem ?? "EO refused it."}` };
     return { done: true, said: importedNote(db, imported.data) };

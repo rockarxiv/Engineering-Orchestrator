@@ -71,7 +71,13 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      # tsc over the desktop main process needs a little over 2 GB of
+      # heap, and Node's default on a 7 GB macOS runner is 2 GB, where
+      # it ran out of memory (EO-766). The same on every runner, so a
+      # typecheck that passes here passes on each of them.
       - name: Typecheck
+        env:
+          NODE_OPTIONS: --max-old-space-size=4096
         run: pnpm typecheck
 
       - name: Lint
@@ -174,8 +180,11 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      # With the heap `test` gives it, for its reason.
       - name: Typecheck
         if: matrix.shard == 1
+        env:
+          NODE_OPTIONS: --max-old-space-size=4096
         run: pnpm typecheck
 
       - name: Lint
@@ -259,8 +268,11 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      # With the heap `test` gives it, for its reason.
       - name: Typecheck
         if: matrix.shard == 1
+        env:
+          NODE_OPTIONS: --max-old-space-size=4096
         run: pnpm typecheck
 
       - name: Lint

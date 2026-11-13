@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { SecretStore } from "../secrets/store.js";
 
@@ -589,6 +589,36 @@ export function clearStepSecrets(options: ModuleSecretsOptions, stepId: string):
   // And its trial-only values (EO-584), which are reachable through the
   // same id and no other.
   rmSync(directoryFor(options, trialScopeOf(stepId)), { force: true, recursive: true });
+}
+
+/**
+ * Gives one step everything another step set, as it is on disk (EO-766).
+ *
+ * For a pipeline copied onto another project: the copy's step is a new
+ * id, and a step's secrets, references and variables are reachable
+ * through its id and no other, so without this the copy's deploy step
+ * would run on the shared value its original was set up to replace.
+ *
+ * The files are copied byte for byte rather than read and stored again.
+ * A value is encrypted with the machine's key and nothing about the step,
+ * so the copy decrypts exactly as the original does; and one that no
+ * longer decrypts stays unreadable on the copy, still stopping the
+ * fallback to the shared value as it does on the original. Its
+ * trial-only values (EO-584) go with it, for the reason
+ * `clearStepSecrets` removes them with it.
+ *
+ * Refuses, by throwing, to copy over a step that already has a scope of
+ * its own: the copy's ids are fresh, so one is a caller's mistake.
+ */
+export function copyStepSecrets(options: ModuleSecretsOptions, fromStepId: string, toStepId: string): void {
+  for (const [from, to] of [
+    [fromStepId, toStepId],
+    [trialScopeOf(fromStepId), trialScopeOf(toStepId)],
+  ] as const) {
+    const source = directoryFor(options, from);
+    if (!existsSync(source)) continue;
+    cpSync(source, directoryFor(options, to), { recursive: true, errorOnExist: true, force: false });
+  }
 }
 
 /**

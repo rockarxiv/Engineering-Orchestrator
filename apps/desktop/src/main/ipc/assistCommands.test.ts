@@ -29,7 +29,7 @@ import { AttachmentStorage } from "../attachments/storage.js";
 import type { DbHandle } from "../db/client.js";
 import { markReplica } from "../db/recordRole.js";
 import { sectionLockFor } from "../managed/locks.js";
-import { modules as modulesTable, pipelines } from "../db/schema.js";
+import { items, modules as modulesTable, pipelines } from "../db/schema.js";
 import {
   appendRunEvent,
   createPipeline,
@@ -55,6 +55,8 @@ import {
   approveModule,
   deleteModuleTest,
   listModules,
+  listProjects,
+  clearSetting,
   listModuleTests,
   getModule,
   currentVersion,
@@ -74,6 +76,9 @@ import {
   versionSnapshot,
 } from "../db/repos/index.js";
 import { createTestItem, openMigratedTestDb } from "../db/testHelpers.js";
+import { PREVIEW_PROJECT_KEY } from "../gallery/commands.js";
+import { PIPELINE_NEEDS_PROJECT } from "./pipelineHome.js";
+import { ACTIVE_PROJECT_KEY } from "./repositoryCommands.js";
 import { DEFAULT_ASSIST_EXPIRY_DAYS, assistAgent, assistBoards, assistDraftForPublish, shownAssistConversation, postAssistReply } from "../roles/assist.js";
 import { ASSIST_ACTION, ASSIST_STEP } from "../roles/conversationSteps.js";
 import { buildDispatchContext } from "../supervisor/buildDispatchContext.js";
@@ -2977,6 +2982,12 @@ describe("the buttons on a card", () => {
  * after the module is approved and Publish is pressed creates all of it.
  */
 describe("a pipeline built from the chat", () => {
+  // A pipeline goes on a project (EO-766). These chats are opened on none,
+  // so what they publish goes on the oldest project: this one.
+  beforeEach(() => {
+    createProject(handle.db, { name: "Workbench", keyPrefix: "WRK" });
+  });
+
   /** A succeeded `assist` run carrying `output`, its log holding `reads`, and what it posted. */
   function turn(conversation: Item, output: unknown, reads: ScriptedRead[] = []): { cardIds: Uuid[]; rejections: string[] } {
     const parsed: AssistOutput = AssistOutputSchema.parse(output);
@@ -3140,6 +3151,35 @@ describe("a pipeline built from the chat", () => {
 
     expect(response).toMatchObject({ ok: true, data: { saved: true } });
     expect(pipelinesNamed("Release")).toHaveLength(1);
+  });
+
+  /**
+   * A chat opened before any project existed publishes onto the oldest
+   * (EO-766); with no project but the gallery's Preview there is nowhere
+   * to put a pipeline, and the publish says so and writes nothing.
+   */
+  it("puts what a chat with no project publishes on the oldest project, and refuses it where there is none", async () => {
+    allowAnHourPerRun();
+    const workbench = listProjects(handle.db)[0]!;
+    const conversation = await openedOn("/settings");
+    handle.db.update(items).set({ projectId: null }).where(eq(items.id, conversation.id)).run();
+    const { cardIds } = turn(getItem(handle.db, conversation.id)!, { message: "Here.", draft: releaseDraft({ newPipeline: "Release" }), modules: [MERGE_MODULE] });
+    approvedLater(listModules(handle.db).find((module) => module.slug === "release-merge")!.id);
+
+    // Only Preview, as far as a pipeline is concerned.
+    setSetting(handle.db, PREVIEW_PROJECT_KEY, workbench.id);
+    const before = listPipelines(handle.db, undefined, true).length;
+    const refused = publishNewAssistPipeline(handle.db, undefined, { conversationId: conversation.id, messageId: cardIds[0]! });
+    expect(refused).toMatchObject({ saved: false, pipelineId: null, problem: `Nothing was created: ${PIPELINE_NEEDS_PROJECT}` });
+    expect(listPipelines(handle.db, undefined, true)).toHaveLength(before);
+
+    // A real project again, and a newer one on screen: the oldest still gets it.
+    clearSetting(handle.db, PREVIEW_PROJECT_KEY);
+    const later = createProject(handle.db, { name: "Later", keyPrefix: "LAT" });
+    setSetting(handle.db, ACTIVE_PROJECT_KEY, later.id);
+    const published = publishNewAssistPipeline(handle.db, undefined, { conversationId: conversation.id, messageId: cardIds[0]! });
+    expect(published).toMatchObject({ saved: true, problem: null });
+    expect(getPipeline(handle.db, published.pipelineId!)?.projectId).toBe(workbench.id);
   });
 
   it("refuses a name another pipeline on the project already has, as pipeline_manage does", async () => {

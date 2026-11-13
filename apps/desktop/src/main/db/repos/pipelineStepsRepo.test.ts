@@ -482,9 +482,9 @@ describe("hand-off targets", () => {
 
       const ids = listStepsElsewhere(handle.db, ours.pipeline.id, theirsProject.id).map((candidate) => candidate.id);
       expect(ids).not.toContain(theirs.step.id);
-      // The project-less ones are still everybody's, which is the half of
-      // the rule that always worked.
-      expect(ids).toContain("todo");
+      // A project-less pipeline is nobody's to hand work to any more
+      // (EO-766): no pipeline is shared between projects.
+      expect(ids).not.toContain("todo");
     });
 
     // `wiring.ts` hands `resolveRoute` every step of every other pipeline

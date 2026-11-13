@@ -7,7 +7,7 @@ import { FOLDER_KIND, NONE_KIND, NO_WORKSPACE, SCRATCH_KIND, type Uuid } from "@
 import type { DbHandle } from "../db/client.js";
 import { createStep, createWorkspace, getPipeline, type Workspace } from "../db/repos/index.js";
 import { createDefaultProject } from "../db/repos/projectsRepo.js";
-import { workspaces } from "../db/schema.js";
+import { pipelines, workspaces } from "../db/schema.js";
 import { attachWorkspace, createTestItem, openMigratedTestDb } from "../db/testHelpers.js";
 import { folderWorkspaceKind } from "./folderKind.js";
 import { resolveItemWorkspace, workspaceFor } from "./workspaceResolution.js";
@@ -194,7 +194,10 @@ describe("a step pick stored on a pipeline every project shares", () => {
     const here = attachWorkspace(handle.db, { keyPrefix: "EO", name: "the api", repoPath: directory("the api") });
     const elsewhere = attachWorkspace(handle.db, { keyPrefix: "WEB", name: "the web", repoPath: directory("the web") });
     // The shipped pipeline is project-less, which is what makes it
-    // shared. Asserted rather than assumed: the whole case rests on it.
+    // shared. Only on an installation not yet upgraded since EO-766, or
+    // as an organisation serves it — so put back to that here, and
+    // asserted rather than assumed: the whole case rests on it.
+    handle.db.update(pipelines).set({ projectId: null }).where(eq(pipelines.id, "default")).run();
     expect(getPipeline(handle.db, "default")?.projectId ?? null).toBeNull();
     return { here, elsewhere };
   }

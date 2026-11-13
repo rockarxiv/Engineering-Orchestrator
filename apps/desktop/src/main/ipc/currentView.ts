@@ -52,6 +52,7 @@ import { listAgentDetails } from "./configCommands.js";
 import { itemReviewers, listArchivedSummaries, listInbox, listItemSummaries } from "./domainQueries.js";
 import { originIndex } from "../jobs/origin.js";
 import { activeProjectId } from "./repositoryCommands.js";
+import { projectBoardPipelineId } from "./pipelineHome.js";
 import { pipelineVersionsCommand } from "./pipelineCommands.js";
 
 /**
@@ -239,10 +240,11 @@ export function readCurrentView(db: Db, deps: CurrentViewDeps): IpcResponse<"vie
 
   // `assistPageSubjectOf` rather than reading the parameter off the path,
   // because one route's id is not in its path at all: `/project` draws
-  // the default pipeline's board with nothing in its address (EO-191).
-  // Asking the shared answer here is what stops this file and the
-  // conversation key disagreeing about which row a page is about.
-  const id = assistPageSubjectOf(snapshot.page);
+  // the active project's first pipeline with nothing in its address
+  // (EO-191, EO-766). Asking the shared answer here is what stops this
+  // file and the conversation key disagreeing about which row a page is
+  // about.
+  const id = assistPageSubjectOf(snapshot.page, route.implied === true ? { pipelineId: projectBoardPipelineId(db) } : undefined);
   if (route.param !== null && id === null) {
     return nothing(`\`${snapshot.page.route}\` names no ${route.param}, so there is nothing to look up.`);
   }

@@ -21,6 +21,7 @@ import { TourHost } from "./tour/Tour";
 import { UpdateCard } from "./UpdateCard";
 import { CONTROLS_HEIGHT, useTitleBar, useTitleBarColours } from "./windowChrome";
 import { DEEP } from "./parts";
+import { isProjectAddress, ProjectAddress } from "./projectAddress";
 import { chatViewFor, isWide, movedAddressOf, tabKeyOf, type ChatViewKind } from "./views/registry";
 
 /**
@@ -201,11 +202,15 @@ function ChatFrame() {
   }, [moved, poppedOut, navigate]);
   // An address nothing in this layout draws — `/`, a stale bookmark — is
   // the conversation.
-  if (!home && view === null) return <Navigate to={CHAT_HOME_ROUTE} replace />;
+  if (!home && view === null && !isProjectAddress(pathname)) return <Navigate to={CHAT_HOME_ROUTE} replace />;
 
   return (
     // The first-board tour (EO-667) over the whole window: it points at the rail and the conversation as well as at views.
     <TourHost view={view}>
+      {/* `/project` names no pipeline: it becomes the active project's first
+          board once that is known (EO-766). Not while the canvas is out, for
+          the reason above. */}
+      {isProjectAddress(pathname) && !poppedOut ? <ProjectAddress search={search} navigate={navigate} /> : null}
       {/* Positioned and clipped, so nothing in the layout ever lengthens the
           document: an absolutely placed element with no positioned ancestor
           (a screen-reader label in a long transcript) escapes its scroller,

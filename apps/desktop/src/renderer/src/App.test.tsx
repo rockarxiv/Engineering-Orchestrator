@@ -33,7 +33,16 @@ describe("App shell", () => {
     expect(await screen.findByRole("region", { name: "Conversation" })).toBeInTheDocument();
   });
 
-  it.each(["#/project", "#/inbox", "#/items", "#/archive", "#/jobs", "#/agents", "#/agent-tools", "#/settings", "#/gallery", "#/mentions"])(
+  // `#/project` names no pipeline, and opens the active project's first
+  // board (EO-766) — with none here, the conversation.
+  it("opens #/project, which names no pipeline, as the active project's first board, or the conversation where it has none", async () => {
+    window.location.hash = "#/project";
+    render(<App />);
+
+    await waitFor(() => expect(window.location.hash).toBe("#/chat"));
+  });
+
+  it.each(["#/inbox", "#/items", "#/archive", "#/jobs", "#/agents", "#/agent-tools", "#/settings", "#/gallery", "#/mentions"])(
     "opens %s, an address the classic layout had, as the chat layout's view of it",
     async (hash) => {
       window.location.hash = hash;

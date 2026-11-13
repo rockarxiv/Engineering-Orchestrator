@@ -270,7 +270,8 @@ describe("which view an address names", () => {
     expect(chatViewFor("/pipelines/p1/changes", "")).toEqual({ kind: "changes", pipelineId: "p1" });
     expect(chatViewFor("/pipelines/p1/changes", "?from=2&to=3")).toEqual({ kind: "changes", pipelineId: "p1" });
     expect(chatViewFor("/pipelines/p1/changes/", "?local")).toEqual({ kind: "changes", pipelineId: "p1" });
-    expect(chatViewFor("/project", "")).toMatchObject({ kind: "board" });
+    // `/project` names no pipeline: it is replaced by the active project's first board (EO-766).
+    expect(chatViewFor("/project", "")).toBeNull();
     expect(chatViewFor("/items/i1", "")).toEqual({ kind: "item", itemId: "i1" });
     expect(chatViewFor("/items/i1/runs", "")).toEqual({ kind: "runs", itemId: "i1" });
     expect(chatViewFor("/jobs/j1", "")).toEqual({ kind: "job", jobId: "j1" });
@@ -334,12 +335,23 @@ describe("a window, whatever layout it once chose", () => {
     },
   );
 
-  it("opens the board the classic layout opened on as the chat layout's board", async () => {
+  it("opens the board the classic layout opened on as the active project's first board (EO-766)", async () => {
     window.localStorage.setItem("eo.layout", "classic");
-    open("/project");
+    const invoke = open("/project");
     await screen.findByRole("region", { name: "Canvas" });
-    expect(window.location.hash).toBe("#/project");
+    await waitFor(() => expect(window.location.hash).toBe(`#/pipelines/${PIPELINES[0]!.id}`));
     expect(screen.getByRole("region", { name: "Conversation" })).toBeInTheDocument();
+    // Asked of the active project's pipelines, and never of `default` by name.
+    expect(invoke.mock.calls.some(([channel, payload]) => channel === "pipelineSteps:list" && JSON.stringify(payload).includes('"default"'))).toBe(false);
+  });
+
+  it("keeps the graph view on the way, and sends a project with no pipeline to the conversation", async () => {
+    open("/project?view=graph");
+    await waitFor(() => expect(window.location.hash).toBe(`#/pipelines/${PIPELINES[0]!.id}?view=graph`));
+    cleanup();
+
+    open("/project", bridge({ "pipelines:list": { pipelines: [] } }));
+    await waitFor(() => expect(window.location.hash).toBe("#/chat"));
   });
 
   it("sends the assistant's old window address to the conversation, with no window of its own (EO-529)", async () => {
@@ -1447,6 +1459,10 @@ describe("the canvas", () => {
     await screen.findByRole("tab", { name: /INV-11/ });
 
     window.location.hash = "#/items/i1";
+    // Its own tab first: until the canvas has opened one for it, the item
+    // can be drawn under the last tab and drawn again once its tab exists,
+    // and a box opened on the first drawing is gone with it.
+    await waitFor(() => expect(screen.getByRole("tab", { name: /RPT-7/ })).toHaveAttribute("aria-selected", "true"));
     const first = await screen.findByRole("article", { name: "Week of 29 September" });
     fireEvent.click(within(first).getByRole("button", { name: "Send back → Draft" }));
     fireEvent.change(within(first).getByRole("textbox", { name: "Why Send back" }), { target: { value: "Meant for RPT-7 only" } });

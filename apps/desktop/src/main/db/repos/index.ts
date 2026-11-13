@@ -361,6 +361,7 @@ export {
   saveJiraBinding,
   type ConnectorBinding,
 } from "./connectorBindingsRepo.js";
+export { copyPipeline, fileRetargetedVersion, ownStepIds, versionTargets, type CopyPipelineOptions, type PipelineCopy } from "./pipelineCopyRepo.js";
 export {
   adoptPipeline,
   archivePipeline,
@@ -384,6 +385,8 @@ export {
   updateStep,
   listPipelineSteps,
   offBoardStepIds,
+  staysShared,
+  SHARED_UNTIL_SPLIT_SETTING,
   type CreateStepInput,
 } from "./pipelineStepsRepo.js";
 export {

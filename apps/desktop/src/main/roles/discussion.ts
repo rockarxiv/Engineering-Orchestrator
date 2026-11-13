@@ -54,6 +54,7 @@ import {
   type Workspace,
 } from "../db/repos/index.js";
 import { isReplica } from "../db/recordRole.js";
+import { chatPipelineProjectId } from "../ipc/pipelineHome.js";
 import { ASSIST_ACTION } from "./conversationSteps.js";
 import { runOf, threadOf, type ConversationThread } from "./conversationThread.js";
 import { PROPOSAL_KIND } from "./proposal.js";
@@ -139,7 +140,18 @@ export type ApplyDiscussionResult =
   | { ok: false; reason: string; needsPipeline?: true }
   | { ok: false; reason: string };
 
-/** The pipelines work on this project can be placed on: its own and the shared ones, each with at least one step on the board. */
+/**
+ * The project a conversation's work is filed on (EO-766): its own, and
+ * for a chat opened before any project existed, the oldest — where that
+ * chat is listed. Work from such a chat used to land on the shared
+ * Delivery with no project; no pipeline is shared any more, so it lands
+ * on that project's pipelines instead.
+ */
+function workProjectId(db: Db, conversation: Item): Uuid | null {
+  return chatPipelineProjectId(db, conversation.projectId);
+}
+
+/** The pipelines work on this project can be placed on: its own, each with at least one step on the board. */
 function placeablePipelines(db: Db, projectId: Uuid | null): Pipeline[] {
   return listPipelines(db, projectId).filter((pipeline) => listStepsForPipeline(db, pipeline.id).some((step) => !step.offBoard));
 }
@@ -449,7 +461,7 @@ function applyOne(
   chosenType?: ItemTypeName,
   addedValues: AddedFieldValues = [],
 ): ApplyDiscussionResult {
-  const projectId = conversation.projectId;
+  const projectId = workProjectId(db, conversation);
   switch (proposal.action) {
     case "new_feature": {
       if (addedValues.length === 0) return applyNewFeature(db, projectId, proposal, pipelineId);
@@ -1527,7 +1539,7 @@ export function renderProposal(db: Db, conversation: Item, proposal: DiscussionP
     case "new_feature": {
       // The cycle check runs here as well as at apply time, so an
       // unbuildable plan never reaches the human as approvable.
-      const plan = buildProposal(db, conversation.projectId, childrenFromStories(proposal.stories));
+      const plan = buildProposal(db, workProjectId(db, conversation), childrenFromStories(proposal.stories));
       if (!plan.ok) return plan;
       // The feature's Reference, judged here as well as at apply time
       // (EO-739), so a value git would not take is never approvable.
@@ -1684,7 +1696,7 @@ export function renderProposal(db: Db, conversation: Item, proposal: DiscussionP
  * card's place in the conversation, not about the proposal.
  */
 export function summariseProposal(db: Db, conversation: Item, proposal: DiscussionProposal): Omit<ProposalSummary, "closed"> {
-  const projectId = conversation.projectId;
+  const projectId = workProjectId(db, conversation);
   const labelOf = (name: ItemTypeName): string => {
     const resolved = resolveItemType(db, projectId, name);
     return resolved.ok ? resolved.type.label : typeof name === "string" ? name : name.slug;
@@ -1789,12 +1801,12 @@ export interface ProposalAtLength {
 export function describeProposal(db: Db, conversation: Item, proposal: DiscussionProposal): ProposalAtLength {
   if (proposal.action === "amend" || proposal.action === "reorder") return { descriptions: [], addedFields: [], landsOn: null };
 
-  const placement = resolvePlacement(db, conversation.projectId, null, proposal.pipeline);
-  const pipeline = "problem" in placement ? undefined : listPipelines(db, conversation.projectId).find((entry) => entry.id === placement.pipelineId);
+  const projectId = workProjectId(db, conversation);
+  const placement = resolvePlacement(db, projectId, null, proposal.pipeline);
+  const pipeline = "problem" in placement ? undefined : listPipelines(db, projectId).find((entry) => entry.id === placement.pipelineId);
   const step = "problem" in placement ? undefined : listStepsForPipeline(db, placement.pipelineId).find((entry) => entry.id === placement.entryStepId);
   const landsOn = pipeline && step ? { pipelineName: pipeline.name, stepName: step.name } : null;
 
-  const projectId = conversation.projectId;
   if (proposal.action === "new_feature") {
     const children = childrenFromStories(proposal.stories);
     return {
@@ -1837,7 +1849,7 @@ function missingReference(db: Db, conversation: Item, proposal: NewStoryProposal
   for (const key of keys) {
     const item = getItemByKey(db, key);
     if (!item) return `This proposal refers to ${key}, which does not exist on this project.`;
-    if (item.projectId !== conversation.projectId) return `${key} is on a different project.`;
+    if (item.projectId !== conversation.projectId && item.projectId !== workProjectId(db, conversation)) return `${key} is on a different project.`;
   }
 
   if (proposal.parent !== undefined) {

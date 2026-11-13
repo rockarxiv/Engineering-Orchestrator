@@ -9,6 +9,7 @@ import { ChatCanvas } from "./ChatCanvas";
 import { useChatTheme } from "./theme";
 import { useCanvasTabs } from "./useCanvasTabs";
 import { chatViewFor, movedAddressOf, tabKeyOf } from "./views/registry";
+import { isProjectAddress, ProjectAddress } from "./projectAddress";
 
 /**
  * The canvas, as a whole window (EO-383).
@@ -92,7 +93,8 @@ export function CanvasWindow() {
 
   // Nothing to draw is the canvas closed: an address no view has (a link
   // home to the conversation, which is in the other window).
-  const nothingToDraw = view === null || tabKey === null;
+  // `/project` is on its way to a board (EO-766), not an address with nothing on it.
+  const nothingToDraw = (view === null || tabKey === null) && !isProjectAddress(pathname);
   useEffect(() => {
     if (nothingToDraw) close();
   }, [nothingToDraw, close]);
@@ -100,6 +102,8 @@ export function CanvasWindow() {
   // As in the main window's frame: a retired address is replaced by where it went (EO-525).
   const moved = movedAddressOf(pathname);
   if (moved !== null) return <Navigate to={moved} replace />;
+  // `/project` names no pipeline: it becomes the active project's first board (EO-766).
+  if (isProjectAddress(pathname)) return <ProjectAddress search={search} navigate={navigate} />;
   if (view === null || tabKey === null) return null;
 
   return (

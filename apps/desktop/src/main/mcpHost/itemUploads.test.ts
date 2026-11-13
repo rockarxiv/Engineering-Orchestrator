@@ -18,7 +18,7 @@ import {
   listItemAttachments,
   listItemsForProject,
 } from "../db/repos/index.js";
-import { attachWorkspace, openMigratedTestDbAt } from "../db/testHelpers.js";
+import { attachWorkspace, giveSeededDelivery, openMigratedTestDbAt } from "../db/testHelpers.js";
 import { postCommentCommand } from "../ipc/domainCommands.js";
 import { submitItemCommand } from "../ipc/itemCommands.js";
 import { updateItemCommand } from "../ipc/itemAttachmentCommands.js";
@@ -84,6 +84,7 @@ beforeEach(() => {
   systemAgentId = createAgent(handle.db, { name: "Assistant", role: "system", provider: "fake", instructions: "", config: { allowedTools: ["mcp__eo_admin"] } }).id;
   projectId = createProject(handle.db, { name: "Board", keyPrefix: "BRD" }).id;
   addWorkspaceToProject(handle.db, projectId, attachWorkspace(handle.db, { name: "app", keyPrefix: "APP", repoPath: join(root, "repo") }).id);
+  giveSeededDelivery(handle.db, projectId);
   registerHandler("work:submitItem", (payload) => submitItemCommand(handle.db, undefined, payload, storage), opts);
   registerHandler("work:submitPlan", (payload) => submitPlanCommand(handle.db, undefined, payload, storage), opts);
   registerHandler("items:update", (payload) => updateItemCommand(handle.db, NO_RECORD, payload, storage), opts);

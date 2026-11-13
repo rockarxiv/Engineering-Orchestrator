@@ -28,10 +28,19 @@ import { recordFor } from "../record/localRecord.js";
 import { stepClearanceReason } from "../record/stepAuthority.js";
 import { pipelines } from "../db/schema.js";
 import { eq } from "drizzle-orm";
+import { pipelineHome } from "./pipelineHome.js";
+import { activeProjectId } from "./repositoryCommands.js";
 
+/**
+ * An empty pipeline, on the project named or else the one the window is
+ * on (EO-766). Refused, with nothing written, where there is no project
+ * to put it on: no pipeline is shared between projects any more.
+ */
 export function createPipelineCommand(db: Db, input: IpcPayload<"pipelines:create">): IpcResponse<"pipelines:create"> {
+  const home = pipelineHome(db, (input.projectId as Uuid | null) ?? activeProjectId(db));
+  if (!home.ok) return { pipeline: null, problem: home.problem };
   const pipeline = createPipeline(db, {
-    projectId: (input.projectId as Uuid | null) ?? null,
+    projectId: home.projectId,
     name: input.name,
     icon: input.icon ?? null,
     position: Date.now(),
@@ -46,6 +55,7 @@ export function createPipelineCommand(db: Db, input: IpcPayload<"pipelines:creat
       position: pipeline.position,
       archivedAt: pipeline.archivedAt,
     },
+    problem: null,
   };
 }
 

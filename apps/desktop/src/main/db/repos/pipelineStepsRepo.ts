@@ -1,13 +1,24 @@
 import { and, asc, count, eq, inArray, isNotNull, isNull, ne } from "drizzle-orm";
-import { DEFAULT_WORKSPACE_MODE, EntryRulesSchema, PreviewItemSchema, StepInputsSchema, StepResultsSchema, WorkspaceModeSchema, uuidv7 } from "@eo/core";
+import { DEFAULT_WORKSPACE_MODE, EntryRulesSchema, SUGGESTIONS_PIPELINE_NAME, PreviewItemSchema, StepInputsSchema, StepResultsSchema, WorkspaceModeSchema, uuidv7 } from "@eo/core";
 import type { EntryRule, IncomingHandOff, Pipeline, PipelineStep, PipelineStepType, PreviewItem, StepHoldingItems, StepInputs, StepResult, StepRoute, StepWatch, Uuid, WorkspaceMode } from "@eo/core";
 import type { Db } from "../client.js";
-import { pipelines, pipelineSteps, stepRoutes, items } from "../schema.js";
+import { pipelines, pipelineSteps, projects, stepRoutes, items } from "../schema.js";
 // A cycle with `pipelineVersionsRepo`, and a deliberate one: the graph
 // needs the version it is retiring a step out of, and a version is a
 // snapshot of the graph. Both directions are function calls made after
 // both modules have loaded, which is what makes it safe.
 import { catchUpCurrentVersion, createPipelineVersion, ensureCurrentVersion, pipelineVersionsToKeep, prunePipelineVersions, setCurrentVersion } from "./pipelineVersionsRepo.js";
+import { getSetting } from "./settingsRepo.js";
+
+/**
+ * The setting naming the pipelines still shared because splitting them
+ * among their projects failed (EO-766 review, `splitSharedPipelinesOrHold`).
+ *
+ * Until the split is made, every project is shown them as it was before
+ * the upgrade, so a failed split leaves no board out of reach. Cleared
+ * when a later launch makes it.
+ */
+export const SHARED_UNTIL_SPLIT_SETTING = "pipelines.sharedUntilSplit";
 
 function toStep(row: typeof pipelineSteps.$inferSelect): PipelineStep {
   return {
@@ -220,22 +231,70 @@ export function listPipelines(db: Db, projectId?: Uuid | null, includeArchived =
     .map(toPipeline);
   const live = includeArchived ? rows : rows.filter((pipeline) => pipeline.archivedAt === null);
   if (projectId === undefined) return live;
-  // A project-less pipeline is one nothing has adopted yet, so it belongs
-  // to whichever project is asking — the same rule `items.workspaceId`
-  // follows before the first workspace exists.
-  return live.filter((pipeline) => pipeline.projectId === projectId || pipeline.projectId === null);
+  if (projectId === null) return live.filter((pipeline) => pipeline.projectId === null);
+  // A project's own pipelines, and no other project's (EO-766). A
+  // pipeline with no project used to be shown to every project; none is
+  // shared any more but the two kinds below, and the upgrade gave every
+  // other one a project (`splitSharedPipelines`).
+  //
+  // The organisation's Suggestions queue is shown wherever an admin is
+  // looking, and the pipeline that hosts conversations to every project
+  // (`staysShared`). And a project the organisation manages sees what it is
+  // served exactly as served: the record sends the pipelines its items
+  // stand on as well as its own (`listPipelinesUpdatedSince`), and one
+  // of those may name no project here, or this machine's own project.
+  const managedAt = db.select({ managedAt: projects.managedAt }).from(projects).where(eq(projects.id, projectId)).get()?.managedAt;
+  const managed = managedAt !== undefined && managedAt !== null;
+  const served = managed
+    ? new Set(
+        db
+          .selectDistinct({ pipelineId: items.pipelineId })
+          .from(items)
+          .where(eq(items.projectId, projectId))
+          .all()
+          .map((row) => row.pipelineId),
+      )
+    : new Set<string | null>();
+  // And one the upgrade has not yet managed to split, to every project,
+  // as before it — until it is split, each project's work stands on it.
+  const unsplit = new Set(getSetting<string[]>(db, SHARED_UNTIL_SPLIT_SETTING, []));
+  return live.filter(
+    (pipeline) =>
+      pipeline.projectId === projectId ||
+      (pipeline.projectId === null && (managed || unsplit.has(pipeline.id) || staysShared(db, pipeline))) ||
+      served.has(pipeline.id),
+  );
+}
+
+/**
+ * Whether a pipeline may stay without a project (EO-766). Two kinds may.
+ *
+ * The organisation's Suggestions review queue, which belongs to its
+ * admins rather than to any one project.
+ *
+ * And a pipeline whose every step is off the board — the seeded
+ * Discussions, which hosts the assistant's chats as items. It holds
+ * conversations rather than work, no board or rail lists it, and every
+ * project's chats stand on its steps by their ids, so copying it per
+ * project would move each chat off the step EO looks for it on.
+ *
+ * Every other pipeline has a project.
+ */
+export function staysShared(db: Db, pipeline: Pick<Pipeline, "id" | "name">): boolean {
+  if (pipeline.name === SUGGESTIONS_PIPELINE_NAME) return true;
+  const steps = db.select({ offBoard: pipelineSteps.offBoard }).from(pipelineSteps).where(eq(pipelineSteps.pipelineId, pipeline.id)).all();
+  return steps.length > 0 && steps.every((step) => step.offBoard);
 }
 
 /**
  * Gives a project-less pipeline a project (EO-317).
  *
- * The one pipeline this is about today is the "Delivery" board every
- * installation is seeded with: `listPipelines` shows an unadopted
- * pipeline to whichever project is asking, which is what lets EO work
- * before anything is configured — and what makes a *second* copy of it
- * visible the moment somebody installs the pack that it is an export
- * of. First run adopts it instead of importing a twin; see
- * `pipelineAlreadyHere`.
+ * The one pipeline this is about is the "Delivery" board every
+ * installation is seeded with. First run adopts it when the first
+ * project is made from the template it is an export of, instead of
+ * importing a twin (see `pipelineAlreadyHere`); and the upgrade that
+ * stopped pipelines being shared between projects gives it to the
+ * oldest project (EO-766, `splitSharedPipelines`).
  */
 export function adoptPipeline(db: Db, id: string, projectId: Uuid): void {
   db.update(pipelines).set({ projectId, updatedAt: Date.now() }).where(eq(pipelines.id, id)).run();
@@ -493,12 +552,12 @@ export function listPipelineSteps(db: Db): PipelineStep[] {
  * it depends on the pipeline doing the asking.
  *
  * A pipeline a project has adopted names that project, and sees its
- * pipelines — plus the project-less ones, which belong to everybody, by the
- * adoption rule `listPipelines` applies.
+ * pipelines — by the rule `listPipelines` applies, which since EO-766 is
+ * that project's own and nobody else's.
  *
- * A pipeline no project has adopted has no project of its own to name, so
- * the answer is the project it is being edited in, which is what
- * `editingProjectId` carries. Asking `listPipelines` with its own `null`
+ * A pipeline no project has adopted (the Suggestions queue, the one kind
+ * left) has no project of its own to name, so the answer is the project
+ * it is being edited in, which is what `editingProjectId` carries. Asking `listPipelines` with its own `null`
  * collapsed the filter to "the other project-less ones" and hid, from the
  * shipped project-less Delivery pipeline, every pipeline anyone had created
  * on the project. Asking with `undefined` swings as far the other way: work

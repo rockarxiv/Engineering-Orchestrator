@@ -7,6 +7,7 @@ import { AttachmentStorage } from "../attachments/storage.js";
 import type { Db, DbHandle } from "../db/client.js";
 import {
   addWorkspaceToProject,
+  copyPipeline,
   createProject,
   createRun,
   getItem,
@@ -20,7 +21,7 @@ import {
 import { listPipelines } from "../db/repos/pipelineStepsRepo.js";
 import { issueDevice } from "../db/repos/devicesRepo.js";
 import { createPerson, findPersonByEmail } from "../db/repos/peopleRepo.js";
-import { attachWorkspace, openMigratedTestDb } from "../db/testHelpers.js";
+import { attachWorkspace, openMigratedTestDb, giveSeededDelivery } from "../db/testHelpers.js";
 import { applyDiscussionProposal } from "../roles/discussion.js";
 import { openAssistConversation, postAssistReply } from "../roles/assist.js";
 import { ASSIST_ACTION } from "../roles/conversationSteps.js";
@@ -380,6 +381,9 @@ describe("no field this channel accepts is dropped in silence", () => {
   function build(): World {
     const project = createProject(handle.db, { name: "Svc", keyPrefix: "SVC" });
     const other = createProject(handle.db, { name: "Other", keyPrefix: "OTH" });
+    giveSeededDelivery(handle.db, project.id);
+    // Its own Delivery, as the upgrade gave every project after the first (EO-766).
+    copyPipeline(handle.db, "default", other.id);
     // Two, so `repository` is a choice rather than the only answer —
     // on a single-repository project the name is never consulted and
     // the probe would pass without proving anything.

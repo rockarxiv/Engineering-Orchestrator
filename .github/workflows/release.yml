@@ -198,8 +198,12 @@ jobs:
 
       # Everything that is not the desktop suite: quick enough on any
       # runner to share one job.
+      # With the heap CI's typecheck has, for the reason given there:
+      # tsc over the desktop main process outgrew macOS's default.
       - name: Typecheck, lint and the package suites
         if: matrix.shard == 0
+        env:
+          NODE_OPTIONS: --max-old-space-size=4096
         run: pnpm typecheck && pnpm lint && pnpm exec turbo run test '--filter=!@eo/desktop'
 
       # Windows only (EO-502): the suite ends agent processes by reading
