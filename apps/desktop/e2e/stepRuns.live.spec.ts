@@ -124,8 +124,8 @@ async function implementerOn(page: Page, provider: "claude" | "codex", executabl
 
 /** Where the managed runtime keeps each backend's executable, in the person's own install. */
 const REAL_EXECUTABLES = {
-  claude: path.join(homedir(), ".config/EO/runtimes/claude@0.3.318/claude"),
-  codex: path.join(homedir(), ".config/EO/runtimes/codex@0.166.0-linux-x64/vendor/x86_64-unknown-linux-musl/bin/codex"),
+  claude: path.join(homedir(), ".config/EO/runtimes/claude@0.3.322/claude"),
+  codex: path.join(homedir(), ".config/EO/runtimes/codex@0.167.1-linux-x64/vendor/x86_64-unknown-linux-musl/bin/codex"),
 } as const;
 
 /**

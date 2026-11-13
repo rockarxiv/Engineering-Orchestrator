@@ -1,21 +1,23 @@
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { lstat, readdir, rm, unlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { errno, linksOnlyWithin, windowsWithoutPrivileges } from "../testing/unprivilegedWindowsFs.js";
+import { errno, windowsWithDeveloperMode, windowsWithoutPrivileges } from "../testing/unprivilegedWindowsFs.js";
 import {
   agentCodexHomePath,
   agentsWithCodexHomes,
   chooseCodexHome,
   codexCredentialStore,
   codexHomeRefusal,
+  DEVELOPER_MODE_PROBLEM,
   keyringNotice,
   personCodexHome,
   prepareCodexHome,
   removeCodexHome,
   removeCodexHomeAsync,
   RETIRING_CODEX_HOME_PREFIX,
+  SIDE_CALL_CODEX_HOME,
   sideCallCodexHome,
   sideCallKeyringRefusal,
   signInIsInKeyring,
@@ -101,7 +103,8 @@ describe("an agent's own Codex home", () => {
     const person = personHome();
     const prepared = ready(prepareCodexHome({ root: directory(), agentId: AGENT, personHome: person, platform: "linux" }));
 
-    // What Codex does on a refresh: open the path, truncate, write.
+    // What Codex up to 0.166.0 did on a refresh: open the path, truncate,
+    // write. 0.167.0's write-and-rename is the Windows block's test below.
     writeFileSync(join(prepared.path, "auth.json"), '{"tokens":{"refresh_token":"rotated"}}');
 
     expect(readFileSync(join(person, "auth.json"), "utf8")).toContain("rotated");
@@ -155,146 +158,138 @@ describe("an agent's own Codex home", () => {
 });
 
 /**
- * The Windows code path, run against a filesystem that refuses every
- * symbolic link the way an unprivileged Windows account does.
+ * The Windows code path, run against a filesystem that makes a junction
+ * the way Windows does, and a file symlink only with Developer Mode on.
  */
-describe("an agent's own Codex home on Windows, without admin rights or Developer Mode", () => {
-  it("is made from a junction and a hard link, and nothing that needs a privilege", () => {
+describe("an agent's own Codex home on Windows", () => {
+  it("is made from a junction and a file symlink, with Developer Mode on", () => {
     const person = personHome();
     const calls: string[] = [];
 
-    const prepared = ready(prepareCodexHome({ root: directory(), agentId: AGENT, personHome: person, platform: "win32", fs: windowsWithoutPrivileges(calls) }));
+    const prepared = ready(prepareCodexHome({ root: directory(), agentId: AGENT, personHome: person, platform: "win32", fs: windowsWithDeveloperMode(calls) }));
 
-    expect(calls).toEqual(["symlink:junction", "link"]);
+    expect(calls).toEqual(["symlink:junction", "symlink:file"]);
     expect(prepared.credential).toBe("carried");
-    // One file under two names.
-    expect(lstatSync(join(prepared.path, "auth.json")).isSymbolicLink()).toBe(false);
-    expect(statSync(join(prepared.path, "auth.json")).ino).toBe(statSync(join(person, "auth.json")).ino);
+    expect(lstatSync(join(prepared.path, "auth.json")).isSymbolicLink()).toBe(true);
     expect(readdirSync(prepared.path).sort()).toEqual(["auth.json", "sessions"]);
     expect(existsSync(join(prepared.path, "sessions", "2026", "08", "12", "rollout-earlier.jsonl"))).toBe(true);
   });
 
-  it("writes a token refresh through the hard link", () => {
+  /**
+   * What Codex 0.167.0 and later do to save a refreshed sign-in: write a
+   * temporary file beside the link's target and rename it over the
+   * target. Through a symlink that lands in the person's own file, and
+   * the link stays a link. (The real CLI on real Windows is the opt-in
+   * live test in `codexHome.live.test.ts`.)
+   */
+  it("carries a token refresh saved by replacing the file into the person's own", () => {
     const person = personHome();
-    const prepared = ready(prepareCodexHome({ root: directory(), agentId: AGENT, personHome: person, platform: "win32", fs: windowsWithoutPrivileges() }));
+    const prepared = ready(prepareCodexHome({ root: directory(), agentId: AGENT, personHome: person, platform: "win32", fs: windowsWithDeveloperMode() }));
 
-    writeFileSync(join(prepared.path, "auth.json"), '{"tokens":{"refresh_token":"rotated"}}');
+    const target = realpathSync(join(prepared.path, "auth.json"));
+    writeFileSync(`${target}.tmp`, '{"tokens":{"refresh_token":"rotated"}}');
+    renameSync(`${target}.tmp`, target);
 
     expect(readFileSync(join(person, "auth.json"), "utf8")).toContain("rotated");
+    expect(lstatSync(join(prepared.path, "auth.json")).isSymbolicLink()).toBe(true);
+    expect(readFileSync(join(prepared.path, "auth.json"), "utf8")).toContain("rotated");
   });
 
-  it("follows the person signing in again, and signing out", () => {
-    const person = personHome();
-    const root = directory();
-    const fs = windowsWithoutPrivileges();
-    ready(prepareCodexHome({ root, agentId: AGENT, personHome: person, platform: "win32", fs }));
-
-    // `codex login` deletes the file and writes a new one, which leaves a
-    // hard link holding the old credential until it is remade.
-    unlinkSync(join(person, "auth.json"));
-    writeFileSync(join(person, "auth.json"), '{"tokens":{"refresh_token":"new sign-in"}}');
-    const again = ready(prepareCodexHome({ root, agentId: AGENT, personHome: person, platform: "win32", fs }));
-    expect(readFileSync(join(again.path, "auth.json"), "utf8")).toContain("new sign-in");
-
-    unlinkSync(join(person, "auth.json"));
-    const signedOut = ready(prepareCodexHome({ root, agentId: AGENT, personHome: person, platform: "win32", fs }));
-    expect(signedOut.credential).toBe("absent");
-    expect(existsSync(join(signedOut.path, "auth.json"))).toBe(false);
-  });
-
-  it("leaves a hard link that is already right alone", () => {
+  it("follows the person signing in again, and signing out, with nothing to remake", () => {
     const person = personHome();
     const root = directory();
     const calls: string[] = [];
-    const fs = windowsWithoutPrivileges(calls);
-    ready(prepareCodexHome({ root, agentId: AGENT, personHome: person, platform: "win32", fs }));
+    const fs = windowsWithDeveloperMode(calls);
+    const prepared = ready(prepareCodexHome({ root, agentId: AGENT, personHome: person, platform: "win32", fs }));
     calls.length = 0;
 
+    unlinkSync(join(person, "auth.json"));
+    writeFileSync(join(person, "auth.json"), '{"tokens":{"refresh_token":"new sign-in"}}');
+    expect(readFileSync(join(prepared.path, "auth.json"), "utf8")).toContain("new sign-in");
     ready(prepareCodexHome({ root, agentId: AGENT, personHome: person, platform: "win32", fs }));
-
     expect(calls).toEqual([]);
+
+    unlinkSync(join(person, "auth.json"));
+    expect(ready(prepareCodexHome({ root, agentId: AGENT, personHome: person, platform: "win32", fs })).credential).toBe("absent");
   });
 
-  it("cannot hard-link across drives into one root, which is what the next root is for", () => {
+  /**
+   * An EO before EO-774 made `auth.json` a hard link on Windows. Codex
+   * 0.167.0 and later refuse to save a credential with more than one
+   * link — in the agent's home and in the person's own — so preparing
+   * the home removes it, whether or not the symlink can then be made.
+   */
+  it("removes the hard link an earlier EO left, and links the sign-in instead", () => {
     const person = personHome();
-    const fs = windowsWithoutPrivileges([], {
-      linkSync: () => {
-        throw errno("EXDEV", "cross-device link not permitted");
+    const root = directory();
+    mkdirSync(join(root, AGENT));
+    linkSync(join(person, "auth.json"), join(root, AGENT, "auth.json"));
+    expect(statSync(join(person, "auth.json")).nlink).toBe(2);
+
+    const prepared = ready(prepareCodexHome({ root, agentId: AGENT, personHome: person, platform: "win32", fs: windowsWithDeveloperMode() }));
+
+    expect(lstatSync(join(prepared.path, "auth.json")).isSymbolicLink()).toBe(true);
+    expect(statSync(join(person, "auth.json")).nlink).toBe(1);
+    expect(readFileSync(join(person, "auth.json"), "utf8")).toContain("first");
+  });
+
+  it("removes that hard link even where Developer Mode is off and the dispatch is refused", () => {
+    const person = personHome();
+    const root = directory();
+    mkdirSync(join(root, AGENT));
+    linkSync(join(person, "auth.json"), join(root, AGENT, "auth.json"));
+
+    const choice = chooseCodexHome({ roots: [root], agentId: AGENT, personHome: person, platform: "win32", fs: windowsWithoutPrivileges() });
+
+    expect(choice.kind).toBe("unavailable");
+    expect(existsSync(join(root, AGENT, "auth.json"))).toBe(false);
+    expect(statSync(join(person, "auth.json")).nlink).toBe(1);
+    expect(readFileSync(join(person, "auth.json"), "utf8")).toContain("first");
+  });
+
+  /**
+   * No admin rights and no Developer Mode: no file symlink, under any
+   * root. The agent was not ticked over to the person's own setup, so it
+   * does not run there — the dispatch is refused, naming both ways out.
+   */
+  it("refuses the dispatch without Developer Mode, saying to turn it on or tick the agent over", () => {
+    const person = personHome();
+    const roots = [directory(), directory()];
+    const calls: string[] = [];
+
+    const choice = chooseCodexHome({ roots, agentId: AGENT, personHome: person, platform: "win32", fs: windowsWithoutPrivileges(calls) });
+
+    expect(choice).toEqual({ kind: "unavailable", problem: DEVELOPER_MODE_PROBLEM });
+    // The second root cannot do better, so it is not tried.
+    expect(calls).toEqual(["symlink:junction", "symlink:file"]);
+    const refusal = codexHomeRefusal(choice, "signed_in", "Implementer");
+    expect(refusal).toContain("Developer Mode");
+    expect(refusal).toContain('Tick "Let this agent use your own Codex setup" on Implementer');
+    // Refused whatever the card says: this is not about the sign-in.
+    expect(codexHomeRefusal(choice, "unknown", "Implementer")).toContain("Developer Mode");
+    for (const root of roots) expect(existsSync(join(root, AGENT, "auth.json"))).toBe(false);
+  });
+
+  it("says what failed, not Developer Mode, when the symlink fails for another reason", () => {
+    const person = personHome();
+    const fs = windowsWithDeveloperMode([], {
+      symlinkSync: (target, path, type) => {
+        if (type === "junction") return symlinkSync(target, path, "dir");
+        throw errno("EACCES", "permission denied, symlink");
       },
     });
 
     const prepared = prepareCodexHome({ root: directory(), agentId: AGENT, personHome: person, platform: "win32", fs });
 
     expect(prepared.ok).toBe(false);
-    expect(!prepared.ok && prepared.problem).toMatch(/EXDEV/);
-    expect(!prepared.ok && prepared.problem).toMatch(/same drive/);
+    expect(!prepared.ok && prepared.problem).toMatch(/EACCES/);
+    expect(!prepared.ok && prepared.problem).not.toMatch(/Developer Mode/);
   });
 
-  /**
-   * EO's data folder on one drive and the person's Codex home on another
-   * — a redirected `%APPDATA%`, a `CODEX_HOME` on `D:`. No hard link
-   * crosses, and no symbolic link is allowed, so the home goes under the
-   * root that shares a drive with the person's.
-   */
-  it("makes the home under the root that shares a drive with the person's sign-in, and the agent is still locked down", () => {
-    const person = personHome();
-    const otherDrive = directory();
-    const sameDrive = directory();
-    const fs = linksOnlyWithin(sameDrive);
-
-    const choice = chooseCodexHome({ roots: [otherDrive, sameDrive], agentId: AGENT, personHome: person, platform: "win32", fs });
-
-    expect(choice).toMatchObject({ kind: "own", path: join(sameDrive, AGENT), credential: "carried" });
-    expect(statSync(join(sameDrive, AGENT, "auth.json")).ino).toBe(statSync(join(person, "auth.json")).ino);
-    expect(existsSync(join(sameDrive, AGENT, "sessions", "2026", "08", "12", "rollout-earlier.jsonl"))).toBe(true);
-    for (const theirs of ["config.toml", "AGENTS.md", "skills"]) expect(existsSync(join(sameDrive, AGENT, theirs))).toBe(false);
-    // A token refresh there still reaches the person's own file.
-    writeFileSync(join(sameDrive, AGENT, "auth.json"), '{"tokens":{"refresh_token":"rotated"}}');
-    expect(readFileSync(join(person, "auth.json"), "utf8")).toContain("rotated");
-  });
-
-  it("keeps one home per agent: a home under another root goes once a root works", () => {
-    const person = personHome();
-    const first = directory();
-    const second = directory();
-    const fs = windowsWithoutPrivileges();
-    ready(prepareCodexHome({ root: second, agentId: AGENT, personHome: person, platform: "win32", fs }));
-
-    const choice = chooseCodexHome({ roots: [first, second], agentId: AGENT, personHome: person, platform: "win32", fs });
-
-    expect(choice).toMatchObject({ kind: "own", path: join(first, AGENT) });
-    expect(existsSync(join(second, AGENT))).toBe(false);
-    expect(readFileSync(join(person, "auth.json"), "utf8")).toContain("first");
-  });
-
-  /**
-   * A file-backed sign-in in a `CODEX_HOME` on a third drive: neither
-   * root shares it, so nothing can be hard-linked. The agent was not
-   * ticked over to the person's own setup, so it does not run there —
-   * the dispatch is refused, saying why.
-   */
-  it("refuses, rather than run with the person's own setup, when the sign-in is on a drive no root shares", () => {
-    const person = personHome();
-    const roots = [directory(), directory()];
-    const fs = linksOnlyWithin(directory());
-
-    const choice = chooseCodexHome({ roots, agentId: AGENT, personHome: person, platform: "win32", fs });
-
-    expect(choice.kind).toBe("unavailable");
-    const refusal = codexHomeRefusal(choice, "signed_in", "Implementer");
-    expect(refusal).toMatch(/EXDEV/);
-    expect(refusal).toMatch(/same drive/);
-    expect(refusal).toContain('Tick "Let this agent use your own Codex setup" on Implementer');
-    // Refused whatever the card says: this is not about the sign-in.
-    expect(codexHomeRefusal(choice, "unknown", "Implementer")).not.toBeNull();
-    // And no home was left holding their credential.
-    for (const root of roots) expect(existsSync(join(root, AGENT, "auth.json"))).toBe(false);
-  });
-
-  it("is removed without reaching through the junction or the hard link", () => {
+  it("is removed without reaching through the junction or the symlink", () => {
     const person = personHome();
     const root = directory();
-    const fs = windowsWithoutPrivileges();
+    const fs = windowsWithDeveloperMode();
     ready(prepareCodexHome({ root, agentId: AGENT, personHome: person, platform: "win32", fs }));
 
     removeCodexHome(join(root, AGENT), fs);
@@ -302,6 +297,88 @@ describe("an agent's own Codex home on Windows, without admin rights or Develope
     expect(existsSync(join(root, AGENT))).toBe(false);
     expect(readFileSync(join(person, "auth.json"), "utf8")).toContain("first");
     expect(existsSync(join(person, "sessions", "2026", "08", "12", "rollout-earlier.jsonl"))).toBe(true);
+  });
+});
+
+/**
+ * The hard links an EO before EO-774 left in homes nobody dispatches
+ * again: each keeps the person's own `auth.json` at two links, which
+ * their own Codex 0.167 will not save a refreshed sign-in into.
+ */
+describe("the hard links earlier versions left in homes that are kept", () => {
+  it("are removed from every kept home and the side calls' by a sweep, and the homes kept", async () => {
+    const person = personHome();
+    const root = directory();
+    for (const name of [AGENT, SIDE_CALL_CODEX_HOME]) {
+      mkdirSync(join(root, name));
+      linkSync(join(person, "auth.json"), join(root, name, "auth.json"));
+      symlinkSync(join(person, "sessions"), join(root, name, "sessions"), "dir");
+    }
+    expect(statSync(join(person, "auth.json")).nlink).toBe(3);
+
+    expect(await sweepCodexHomes(root, () => new Set([AGENT]))).toEqual([]);
+
+    for (const name of [AGENT, SIDE_CALL_CODEX_HOME]) {
+      expect(readdirSync(join(root, name))).toEqual(["sessions"]);
+    }
+    expect(statSync(join(person, "auth.json")).nlink).toBe(1);
+    expect(readFileSync(join(person, "auth.json"), "utf8")).toContain("first");
+    expect(existsSync(join(person, "sessions", "2026", "08", "12", "rollout-earlier.jsonl"))).toBe(true);
+  });
+
+  it("leave a kept home's symlinked sign-in alone", async () => {
+    const person = personHome();
+    const root = directory();
+    ready(prepareCodexHome({ root, agentId: AGENT, personHome: person, platform: "linux" }));
+
+    await sweepCodexHomes(root, () => new Set([AGENT]));
+
+    expect(lstatSync(join(root, AGENT, "auth.json")).isSymbolicLink()).toBe(true);
+  });
+
+  /**
+   * The sweep awaits between seeing the hard link and removing it, and a
+   * dispatch prepares the home synchronously in between: the symlink it
+   * makes is what the agent signs in through, and must survive the sweep.
+   */
+  it("leave the symlink a dispatch made while the sweep was waiting, after it saw the hard link", async () => {
+    const person = personHome();
+    const root = directory();
+    mkdirSync(join(root, AGENT));
+    linkSync(join(person, "auth.json"), join(root, AGENT, "auth.json"));
+    symlinkSync(join(person, "sessions"), join(root, AGENT, "sessions"), "dir");
+    let reached!: () => void;
+    const suspended = new Promise<void>((resolve) => (reached = resolve));
+    let release!: () => void;
+    const released = new Promise<void>((resolve) => (release = resolve));
+    const fs: CodexHomeSweepFs = {
+      readdir: (path) => readdir(path),
+      // The look at the hard link answers, then waits until the test says so.
+      lstat: async (path) => {
+        const stat = await lstat(path);
+        if (path === join(root, AGENT, "auth.json")) {
+          reached();
+          await released;
+        }
+        return stat;
+      },
+      unlink: (path) => unlink(path),
+      rm: (path, options) => rm(path, options),
+      renameSync: (from, to) => renameSync(from, to),
+      lstatSync: (path) => lstatSync(path),
+      unlinkSync: (path) => unlinkSync(path),
+    };
+
+    const sweep = sweepCodexHomes(root, () => new Set([AGENT]), fs);
+    await suspended;
+    const again = ready(prepareCodexHome({ root, agentId: AGENT, personHome: person, platform: "linux" }));
+    expect(lstatSync(join(again.path, "auth.json")).isSymbolicLink()).toBe(true);
+    release();
+
+    expect(await sweep).toEqual([]);
+    expect(lstatSync(join(again.path, "auth.json")).isSymbolicLink()).toBe(true);
+    expect(readFileSync(join(again.path, "auth.json"), "utf8")).toContain("first");
+    expect(statSync(join(person, "auth.json")).nlink).toBe(1);
   });
 });
 
@@ -363,6 +440,8 @@ describe("removing the homes no agent uses any more", () => {
       },
       rm: (path, options) => rm(path, options),
       renameSync: (from, to) => renameSync(from, to),
+      lstatSync: (path) => lstatSync(path),
+      unlinkSync: (path) => unlinkSync(path),
     };
     let inUse = false;
 
@@ -551,7 +630,7 @@ describe("what an earlier turn wrote into the agent's home", () => {
   it("is gone on the Windows path too", () => {
     const person = personHome();
     const root = directory();
-    const fs = windowsWithoutPrivileges();
+    const fs = windowsWithDeveloperMode();
     const first = ready(prepareCodexHome({ root, agentId: AGENT, personHome: person, platform: "win32", fs }));
     writeFileSync(join(first.path, "config.toml"), '[mcp_servers.mine]\ncommand = "anything"\n');
 
@@ -669,7 +748,7 @@ describe("an agent's home that has been replaced by a link to the person's", () 
     const root = directory();
     const home = replacedHome(root, person);
 
-    ready(prepareCodexHome({ root, agentId: AGENT, personHome: person, platform: "win32", fs: windowsWithoutPrivileges() }));
+    ready(prepareCodexHome({ root, agentId: AGENT, personHome: person, platform: "win32", fs: windowsWithDeveloperMode() }));
 
     expect(lstatSync(home).isSymbolicLink()).toBe(false);
     expectPersonWhole(person);

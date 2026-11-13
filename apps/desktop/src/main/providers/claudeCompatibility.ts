@@ -1,14 +1,17 @@
 /**
  * What EO hands the Claude CLI so its agents behave as they did on the
- * pins before this one (EO-599, EO-644).
+ * pins before this one (EO-599, EO-644, EO-774).
  *
  * claude@0.3.312 (Claude Code 2.1.312) changed defaults that claude@0.3.302
  * (2.1.302) decided differently, each in a configuration EO's agents can be
  * dispatched in — behind a person's gateway, or on Bedrock, Vertex,
- * Foundry or Mantle. claude@0.3.318 (2.1.318), the pin now, keeps those
- * four switches as 2.1.312 read them, and adds one more change EO's own
- * default setup meets: a built-in plugin that refuses an unattended agent
- * some calls holding the person's account email (`privacyPluginHeldOff`).
+ * Foundry or Mantle. claude@0.3.318 (2.1.318) kept those four switches as
+ * 2.1.312 read them, and added one more change EO's own default setup
+ * meets: a built-in plugin that refuses an unattended agent some calls
+ * holding the person's account email (`privacyPluginHeldOff`).
+ * claude@0.3.322 (2.1.322), the pin now, reads all five switches as
+ * 2.1.318 did and narrows that plugin's check without removing it, so
+ * every hold below stands as it was (EO-774).
  * A pin bump is not a decision to adopt them, so each
  * that can be kept exactly is held here to the old answer, in exactly the
  * case the old CLI gave it and nowhere else, and never over a choice the
@@ -354,6 +357,18 @@ export const CLAUDE_PRIVACY_PLUGIN = "cc-plugin-privacy@builtin";
  * The account-email check off, as before 2.1.317 ("Added a check that
  * asks before a web or shell tool call sends your account email address
  * to the network").
+ *
+ * 2.1.321 narrowed the check without removing it ("Changed the account
+ * email check to refuse only a shell command that holds your email and
+ * names a User-Agent, without asking"), and 2.1.322 keeps it so: the
+ * hook now covers shell calls alone, and refuses one whose input holds the
+ * email beside a User-Agent setting (`user-agent`, `--user-agent`, a
+ * `-A` flag on a fetching command, `ua=`). Measured as below at 2.1.322:
+ * `echo curl --user-agent <the account's email>` ran with EO's flag and
+ * was refused with the plugin on ("denied by plugin cc-plugin-privacy"),
+ * while 2.1.312, which had no such plugin, ran it. So the hold is still
+ * what keeps the old answer, and it stays (EO-774). What is written next
+ * is the plugin as 2.1.317 shipped it.
  *
  * It is a built-in plugin, `cc-plugin-privacy`, on by default: a
  * `tool.check` hook on Bash, PowerShell, Monitor, Tmux, WebFetch,

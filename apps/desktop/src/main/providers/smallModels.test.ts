@@ -23,7 +23,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 
 /** What the pinned Codex reports, through the same reader the Agents screen and a side call use. */
 async function pinnedCodexModels(): Promise<ProviderModel[]> {
-  const fixture = JSON.parse(readFileSync(join(here, "__fixtures__", "codex-0.166.0-model-list.json"), "utf8")) as { data: unknown[] };
+  const fixture = JSON.parse(readFileSync(join(here, "__fixtures__", "codex-0.167.1-model-list.json"), "utf8")) as { data: unknown[] };
   const listed = await fetchCodexModels("/opt/codex", async () => fixture.data as never);
   if (!listed.ok) throw new Error(listed.reason);
   return listed.models;

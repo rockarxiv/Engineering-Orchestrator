@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DEFAULT_REPOSITORY_INTELLIGENCE_PROVIDER, McpServerDraftSchema, SkillDraftSchema, type Agent, type McpServer } from "@eo/core";
@@ -12,7 +12,7 @@ import { codexHomePreflight, codexOwnSetupNotices, codexServerSecretReader, prov
 import { storeOrganisationSecret, type OrganisationSecretsOptions } from "./policy/organisationSecrets.js";
 import { buildCodexOptions, SECRET_WITHHELD } from "./providers/codex.js";
 import { agentRunVariables, clearVariable, storeVariable, type ModuleSecretsOptions } from "./modules/secrets.js";
-import { linksOnlyWithin } from "./testing/unprivilegedWindowsFs.js";
+import { windowsWithDeveloperMode, windowsWithoutPrivileges } from "./testing/unprivilegedWindowsFs.js";
 import { readRepositoryIntelligenceConfig, writeRepositoryIntelligenceConfig } from "./packs/developer/repositoryIntelligence/index.js";
 
 /**
@@ -652,42 +652,32 @@ describe("codexHomePreflight", () => {
   });
 
   /**
-   * Windows, no admin rights and no Developer Mode, with EO's data
-   * folder on a different drive from the person's Codex home.
+   * Windows, where `auth.json` is a file symlink (EO-774), which needs
+   * Developer Mode or an administrator.
    */
-  describe("on Windows with EO's data folder on another drive", () => {
-    let sameDrive: string;
+  describe("on Windows", () => {
+    beforeEach(() => writeFileSync(join(person, "auth.json"), "{}"));
 
-    beforeEach(() => {
-      writeFileSync(join(person, "auth.json"), "{}");
-      sameDrive = mkdtempSync(join(tmpdir(), "eo codex homes same drive "));
-    });
+    it("dispatches locked down where Developer Mode is on", async () => {
+      const seams = { platform: "win32" as const, fs: windowsWithDeveloperMode() };
 
-    afterEach(() => rmSync(sameDrive, { recursive: true, force: true }));
-
-    it("dispatches locked down, from the root that shares a drive with the sign-in", async () => {
-      const seams = { platform: "win32" as const, fs: linksOnlyWithin(sameDrive) };
-
-      const verdict = await codexHomePreflight(currentAgent(), handle.db, [root, sameDrive], async () => "signed_in", seams);
+      const verdict = await codexHomePreflight(currentAgent(), handle.db, [root], async () => "signed_in", seams);
 
       expect(verdict).toEqual({ ok: true });
-      expect(readdirSync(join(sameDrive, implementer.id)).sort()).toEqual(["auth.json", "sessions"]);
-      expect(codexOwnSetupNotices(currentAgent(), [root, sameDrive], seams)).toEqual([]);
+      expect(readdirSync(join(root, implementer.id)).sort()).toEqual(["auth.json", "sessions"]);
+      expect(lstatSync(join(root, implementer.id, "auth.json")).isSymbolicLink()).toBe(true);
     });
 
-    it("refuses the dispatch when the sign-in is on a drive no root shares, and never runs it in the person's own home", async () => {
-      // A file-backed sign-in in a `CODEX_HOME` on a third drive. The
-      // agent is not ticked over to the person's own setup, so a link
-      // that cannot be made must not become their config and MCP servers.
-      const seams = { platform: "win32" as const, fs: linksOnlyWithin(join(sameDrive, "nowhere")) };
+    it("refuses the dispatch without Developer Mode, saying to turn it on or tick the agent over, and never runs it in the person's own home", async () => {
+      const seams = { platform: "win32" as const, fs: windowsWithoutPrivileges() };
 
-      const verdict = await codexHomePreflight(currentAgent(), handle.db, [root, sameDrive], async () => "signed_in", seams);
+      const verdict = await codexHomePreflight(currentAgent(), handle.db, [root], async () => "signed_in", seams);
 
       expect(verdict.ok).toBe(false);
-      expect(verdict.reason).toContain("EXDEV");
+      expect(verdict.reason).toContain("Developer Mode");
       expect(verdict.reason).toContain("Let this agent use your own Codex setup");
       // Not a notice about running unlocked: nothing runs.
-      expect(codexOwnSetupNotices(currentAgent(), [root, sameDrive], seams)).toEqual([]);
+      expect(codexOwnSetupNotices(currentAgent(), [root], seams)).toEqual([]);
     });
   });
 
