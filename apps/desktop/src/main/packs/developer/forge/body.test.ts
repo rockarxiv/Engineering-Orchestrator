@@ -43,6 +43,39 @@ describe("the title under a Reference (EO-638)", () => {
   });
 });
 
+describe("a title that already starts with the name (EO-782)", () => {
+  it.each(["PROJ-123 - Fix login", "PROJ-123: Fix login", "PROJ-123 – Fix login", "PROJ-123 — Fix login", "PROJ-123 Fix login", "proj-123 - Fix login"])(
+    "names the Reference once for %j",
+    (itemTitle) => {
+      expect(buildPullRequestTitle(facts({ reference: "PROJ-123", itemTitle }))).toBe("PROJ-123: Fix login");
+    },
+  );
+
+  it("removes the Jira key when it is the name", () => {
+    expect(buildPullRequestTitle(facts({ itemTitle: "KAN-8 - Outbox" }))).toBe("KAN-8: Outbox");
+  });
+
+  it("removes the EO item key when it is the name", () => {
+    expect(buildPullRequestTitle(facts({ jiraKey: null, jiraUrl: null, itemTitle: "API-4: Outbox" }))).toBe("API-4: Outbox");
+  });
+
+  it("leaves a name mentioned elsewhere in the title alone", () => {
+    expect(buildPullRequestTitle(facts({ reference: "PROJ-123", itemTitle: "Fix login for PROJ-123" }))).toBe("PROJ-123: Fix login for PROJ-123");
+  });
+
+  it("leaves a longer key that only starts like the name alone", () => {
+    expect(buildPullRequestTitle(facts({ reference: "PROJ-123", itemTitle: "PROJ-1234 - Fix login" }))).toBe("PROJ-123: PROJ-1234 - Fix login");
+  });
+
+  it.each(["PROJ-123 -", "PROJ-123:", "PROJ-123 — ", "PROJ-123"])("still gives a non-empty title for %j", (itemTitle) => {
+    expect(buildPullRequestTitle(facts({ reference: "PROJ-123", itemTitle }))).toBe("PROJ-123");
+  });
+
+  it("treats the name literally rather than as a pattern", () => {
+    expect(buildPullRequestTitle(facts({ reference: "A.B", itemTitle: "AxB - Fix login" }))).toBe("A.B: AxB - Fix login");
+  });
+});
+
 describe("the facts block under a Reference (EO-638)", () => {
   // EO-45 under feature EO-40, its own Reference PROJ-123, mirroring KAN-9.
   const named = facts({

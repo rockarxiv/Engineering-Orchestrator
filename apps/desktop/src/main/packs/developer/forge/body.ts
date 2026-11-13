@@ -59,8 +59,27 @@ export interface PullRequestBody {
 /** GitLab has no `--description-file`, so the body travels as an argv entry. Windows caps a command line at 32767. */
 export const MAX_BODY_CHARS = 20_000;
 
+/**
+ * `NAME: title`, naming the work once (EO-782). Item titles pick up the key
+ * when a person or an agent writes it in, so a title already starting with
+ * the name — any case, as a whole key, then a separator — has that lead
+ * removed before the name is put back. A title that was nothing else
+ * leaves the name alone rather than `NAME: `.
+ */
 export function buildPullRequestTitle(facts: PullRequestFacts): string {
-  return `${facts.reference ?? facts.jiraKey ?? facts.itemKey}: ${facts.itemTitle}`;
+  const name = facts.reference ?? facts.jiraKey ?? facts.itemKey;
+  const rest = withoutLeadingName(facts.itemTitle, name);
+  return rest === "" ? name : `${name}: ${rest}`;
+}
+
+/** Hyphen, colon, en dash or em dash, with any spacing; or whitespace alone; or the end of the title. */
+const SEPARATOR = String.raw`(?:\s*[-:\u2013\u2014]\s*|\s+|$)`;
+
+function withoutLeadingName(title: string, name: string): string {
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const lead = new RegExp(`^\\s*${escaped}${SEPARATOR}`, "i");
+  const match = lead.exec(title);
+  return match === null ? title : title.slice(match[0].length).trim();
 }
 
 export function buildPullRequestBody(input: BuildPullRequestBodyInput): PullRequestBody {
