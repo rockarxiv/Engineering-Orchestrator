@@ -12,6 +12,7 @@ import { SpecShapeSchema } from "./schemas/specShape.js";
 import { StepHoldingItemsSchema } from "./stepHolds.js";
 import { DEFAULT_WORKSPACE_MODE, WorkspaceModeSchema } from "./schemas/workspaces.js";
 import { ItemWatchViewSchema, StepWatchSchema } from "./watch.js";
+import { DependencyWaitSchema } from "./schemas/dependencyGates.js";
 
 /*
  * Wire shapes for the domain IPC surface (F-05).
@@ -609,7 +610,23 @@ export const ItemDetailSchema = z.object({
   // `stepName` travels with the dependency rather than being looked up by
   // the renderer: a dependency may sit in a different pipeline, whose steps
   // this item's detail never loaded.
-  dependsOn: z.array(z.object({ id: z.string(), key: z.string(), title: z.string(), stepId: z.string().nullable(), stepName: z.string() })),
+  //
+  // `wait` and the step it names are the edge's rule (EO-777): `finished`
+  // with no step, `reached` with the step of the dependency's pipeline it
+  // waits for, or `none`. Defaulted so that a reader written before the
+  // rule — a replica's copy, a fixture — still reads as `finished`.
+  dependsOn: z.array(
+    z.object({
+      id: z.string(),
+      key: z.string(),
+      title: z.string(),
+      stepId: z.string().nullable(),
+      stepName: z.string(),
+      wait: DependencyWaitSchema.default("finished"),
+      waitStepId: z.string().nullable().default(null),
+      waitStepName: z.string().nullable().default(null),
+    }),
+  ),
   /**
    * The watch on the step this item stands on, when that step keeps
    * checking (EO-456): when the last check ran, when the next is due and

@@ -15,7 +15,16 @@ export type RefineGraphResult = { ok: true } | { ok: false; error: string };
  */
 export interface GraphChild {
   title: string;
-  depends_on: readonly number[];
+  /**
+   * A bare index, or an entry naming one with the rule it waits by
+   * (EO-777). The rule is no business of the graph's: every edge counts
+   * towards a cycle, whatever it waits for.
+   */
+  depends_on: readonly (number | { readonly story: number })[];
+}
+
+function indexOf(entry: number | { readonly story: number }): number {
+  return typeof entry === "number" ? entry : entry.story;
 }
 
 /**
@@ -34,7 +43,7 @@ export function validateRefineGraph(children: readonly GraphChild[]): RefineGrap
   const problems: string[] = [];
 
   children.forEach((child, index) => {
-    for (const dependsOnIndex of child.depends_on) {
+    for (const dependsOnIndex of child.depends_on.map(indexOf)) {
       if (dependsOnIndex >= children.length) {
         problems.push(
           `children[${index}] ("${child.title}") depends_on index ${dependsOnIndex}, but there ` +
@@ -52,7 +61,7 @@ export function validateRefineGraph(children: readonly GraphChild[]): RefineGrap
 
   // Indices are known valid now, so they can stand in as node ids.
   const edges: Edge[] = children.flatMap((child, index) =>
-    child.depends_on.map((dependsOnIndex) => ({ itemId: String(index) as Uuid, dependsOnId: String(dependsOnIndex) as Uuid })),
+    child.depends_on.map(indexOf).map((dependsOnIndex) => ({ itemId: String(index) as Uuid, dependsOnId: String(dependsOnIndex) as Uuid })),
   );
 
   const cycle = detectCycle(edges);

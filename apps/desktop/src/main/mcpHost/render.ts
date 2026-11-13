@@ -577,7 +577,7 @@ export function renderItem(data: IpcResponse<"items:getSections">, request?: Ipc
     if (item.parentKey !== null) lines.push("", `## Parent`, "", `${item.parentKey} — ${item.parentTitle ?? ""}`.trimEnd());
   }
   if (dependsOn !== undefined && dependsOn.length > 0) {
-    lines.push("", "## Waits for", "", ...dependsOn.map((dep) => `- ${dep.key} (${dep.stepName}) — ${dep.title}`));
+    lines.push("", "## Waits for", "", ...dependsOn.map((dep) => `- ${dep.key} (${dep.stepName}) — ${dep.title}${waitClause(dep)}`));
   } else if (narrowed && dependsOn !== undefined) {
     lines.push("", "## Waits for", "", "Nothing — it waits on no other ticket.");
   }
@@ -1870,6 +1870,17 @@ export function renderCommentPinned(data: IpcResponse<"comments:setPinned">): st
     : "Comment unpinned. It is still in the thread, but it is now ordinary chatter and can be dropped from an agent's context once the thread is too long to fit.";
 }
 
+/**
+ * The rule a dependency is waited for by, after its line in "Waits for"
+ * (EO-777): nothing for `finished`, which is what every edge meant before
+ * rules existed; wait: "reached" with the step's name; wait: "none".
+ */
+function waitClause(dep: { wait?: string; waitStepName?: string | null }): string {
+  if (dep.wait === "reached") return ` — wait: "reached", step: "${dep.waitStepName ?? "a step its pipeline no longer has"}" (released once it gets there)`;
+  if (dep.wait === "none") return ` — wait: "none" (linked, never waited for)`;
+  return "";
+}
+
 export function renderItemUpdated(data: IpcResponse<"items:update">): string {
   if (data.updated) return data.dependencies === undefined ? "Ticket updated." : `Ticket updated. ${dependencyChangeSentences(data.dependencies)}`;
   // Two ways to change nothing, and they are not the same answer. A
@@ -1888,8 +1899,9 @@ function dependencyChangeSentences(change: NonNullable<IpcResponse<"items:update
   const sentences: string[] = [];
   if (change.added.length > 0) sentences.push(`It now waits for ${change.added.join(", ")}.`);
   if (change.removed.length > 0) sentences.push(`It no longer waits for ${change.removed.join(", ")}.`);
+  if (change.updated !== undefined && change.updated.length > 0) sentences.push(`The rule it waits by changed for ${change.updated.join(", ")}.`);
   if (change.freed) sentences.push("Nothing it waits for is still open, so it can be picked up on the next tick.");
-  else if (change.stillWaitsFor.length > 0) sentences.push(`It still waits for ${change.stillWaitsFor.join(", ")}, until each reaches a finished step.`);
+  else if (change.stillWaitsFor.length > 0) sentences.push(`It still waits for ${change.stillWaitsFor.join(", ")}, until each finishes or reaches the step it is waited for at.`);
   sentences.push("A comment on it says what changed.");
   return sentences.join(" ");
 }

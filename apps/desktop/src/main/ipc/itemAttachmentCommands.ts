@@ -140,7 +140,7 @@ export async function updateItemCommand(
   const paths = sentPaths ?? [];
   const removals = [...new Set(removeAttachmentIds ?? [])];
   const itemId = input.itemId as Uuid;
-  const recordMakesIt = asksForDependencyChange({ add: input.addDependsOn ?? [], remove: input.removeDependsOn ?? [] }) && isReplica(db, itemId);
+  const recordMakesIt = asksForDependencyChange({ add: input.addDependsOn ?? [], remove: input.removeDependsOn ?? [], update: input.updateDependsOn ?? [] }) && isReplica(db, itemId);
   if ((paths.length === 0 && removals.length === 0) || recordMakesIt) return updateItemFields(db, record, input);
 
   const item = getItem(db, itemId);

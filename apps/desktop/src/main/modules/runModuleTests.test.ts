@@ -345,7 +345,7 @@ describe("runModuleTests", () => {
               { created: true, key: "EO-41", existing: false },
               { created: true, key: "NEW-1", existing: false },
               { created: false, reason: 'wait is one of "none", "this_waits", "created_waits".' },
-              { created: false, reason: 'dependsOn is a list of item keys, like ["EO-40"].' },
+              { created: false, reason: 'dependsOn is a list of item keys, like ["EO-40"], or of { item, wait, step? }, like [{ item: "EO-40", wait: "reached", step: "Review" }].' },
               { created: false, reason: "EO-1 cannot wait for the new item — that would make the dependencies circular: EO-1 → the new item → EO-1." },
               // Only leaving it out is the default; null is a value, and not one of the three.
               { created: false, reason: 'wait is one of "none", "this_waits", "created_waits".' },
@@ -571,7 +571,7 @@ describe("runModuleTests", () => {
               assert.equal(read.parentKey, "EO-0");
               assert.deepEqual(read.extensions, { jira: { key: "KAN-1" } });
               assert.deepEqual(read.parent, full.parent);
-              assert.deepEqual([read.children, read.dependsOn, read.dependedOnBy], [[relation], [relation], [relation]]);
+              assert.deepEqual([read.children, read.dependsOn, read.dependedOnBy], [[relation], [{ ...relation, wait: "finished", waitStep: null }], [relation]]);
               assert.deepEqual(read.attachments, full.attachments);
             }
             assert.equal(other.key, "EO-9");

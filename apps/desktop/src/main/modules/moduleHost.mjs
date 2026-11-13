@@ -233,7 +233,9 @@
  *     `pipeline`, `parent`, `repository` and `existingBranch` are null
  *     where the module gave none (EO-648). `wait` is "none"
  *     and `dependsOn` `[]` where the module gave none (EO-434); nothing
- *     is held in a case, they are recorded as asked. A `dependsOn` key
+ *     is held in a case, they are recorded as asked — an entry with a
+ *     rule (EO-777) as the `{ item, wait, step? }` it was given, its step
+ *     unjudged, since a case has no pipeline. A `dependsOn` key
  *     that is neither the running item's nor one in `itemByKey` is
  *     refused, and so is a `wait` that is none of the three.
  *   - `logs`: every line given to `ctx.log()`.
@@ -1702,6 +1704,20 @@ function relationShape(value) {
 }
 
 /**
+ * An item this one waits for (EO-777): the relation, and the rule the
+ * edge waits by — `finished`, `reached` with `waitStep` the name of the
+ * step it waits for, or `none`.
+ */
+function dependencyShape(value) {
+  const wait = ["finished", "reached", "none"].includes(value.wait) ? value.wait : "finished";
+  return Object.freeze({
+    ...relationShape(value),
+    wait,
+    waitStep: typeof value.waitStep === "string" ? value.waitStep : null,
+  });
+}
+
+/**
  * What a module is told about an item (EO-74, EO-709).
  *
  * ## Everything, because modules may read everything
@@ -1789,7 +1805,7 @@ function itemShape(value) {
     extensions: frozenRecord(item.extensions),
     parent,
     children: frozenList(item.children, relationShape),
-    dependsOn: frozenList(item.dependsOn, relationShape),
+    dependsOn: frozenList(item.dependsOn, dependencyShape),
     dependedOnBy: frozenList(item.dependedOnBy, relationShape),
     attachments: frozenList(item.attachments, (attachment) =>
       Object.freeze({
@@ -2568,7 +2584,29 @@ const CREATION_FIELDS = ["idempotencyKey", "type", "title", "body", "spec", "pip
  */
 const CREATION_WAITS = ["none", "this_waits", "created_waits"];
 const CREATION_WAIT_REFUSAL = `wait is one of ${CREATION_WAITS.map((value) => JSON.stringify(value)).join(", ")}.`;
-const CREATION_DEPENDS_ON_REFUSAL = 'dependsOn is a list of item keys, like ["EO-40"].';
+const CREATION_DEPENDS_ON_REFUSAL =
+  'dependsOn is a list of item keys, like ["EO-40"], or of { item, wait, step? }, like [{ item: "EO-40", wait: "reached", step: "Review" }].';
+/** The rules a dependency may wait by (EO-777). The parent keeps its own copy, judges the step against the pipeline, and is the side that decides. */
+const DEPENDENCY_WAITS = ["finished", "reached", "none"];
+
+/**
+ * One `dependsOn` entry held to its shape, or null: a key, or
+ * `{ item, wait, step? }` with a rule (EO-777). Whether the step is on
+ * the item's pipeline is the parent's to judge — it has the pipelines.
+ */
+function dependencyEntry(given) {
+  if (typeof given === "string") return given.trim() === "" ? null : given.trim();
+  if (given === null || typeof given !== "object" || Array.isArray(given)) return null;
+  if (Object.keys(given).some((name) => !["item", "wait", "step"].includes(name))) return null;
+  if (typeof given.item !== "string" || given.item.trim() === "" || !DEPENDENCY_WAITS.includes(given.wait)) return null;
+  if (given.step !== undefined && (typeof given.step !== "string" || given.step.trim() === "")) return null;
+  return given.step === undefined ? { item: given.item.trim(), wait: given.wait } : { item: given.item.trim(), wait: given.wait, step: given.step.trim() };
+}
+
+/** The key a `dependsOn` entry names, whichever form it has. */
+function dependencyKey(entry) {
+  return typeof entry === "string" ? entry : entry.item;
+}
 const CREATION_EXISTING_BRANCH_REFUSAL = "existingBranch is the name of a branch that already exists, as text.";
 
 /**
@@ -2690,13 +2728,18 @@ function makeCreations(request, ask) {
       }
       if (spec.dependsOn !== undefined && spec.dependsOn !== null) {
         if (!Array.isArray(spec.dependsOn)) return refuse(CREATION_DEPENDS_ON_REFUSAL);
-        const keys = [];
+        const entries = [];
+        const seen = [];
         for (const given of spec.dependsOn) {
-          const key = named(given);
-          if (key === null) return refuse(CREATION_DEPENDS_ON_REFUSAL);
-          if (!keys.includes(key)) keys.push(key);
+          const entry = dependencyEntry(given);
+          if (entry === null) return refuse(CREATION_DEPENDS_ON_REFUSAL);
+          const said = JSON.stringify(entry);
+          if (!seen.includes(said)) {
+            seen.push(said);
+            entries.push(entry);
+          }
         }
-        creation.dependsOn = keys;
+        creation.dependsOn = entries;
       }
 
       // Asked before this function returns, so the event is on fd 3 by
@@ -4156,13 +4199,14 @@ async function testMain(request) {
       // a graph only a real run has. Asked first, of a repeat too: a
       // real run holds a repeat to what it says about waiting.
       const dependsOn = creation.dependsOn ?? [];
-      const unknownKey = dependsOn.find((key) => !known.has(key) && key !== runningKey);
+      const dependsOnKeys = dependsOn.map(dependencyKey);
+      const unknownKey = dependsOnKeys.find((key) => !known.has(key) && key !== runningKey);
       if (unknownKey !== undefined) {
         refuse(`There is no ticket ${unknownKey} for this to depend on.`);
         return;
       }
       const wait = creation.wait ?? "none";
-      if (wait === "this_waits" && dependsOn.includes(runningKey)) {
+      if (wait === "this_waits" && dependsOnKeys.includes(runningKey)) {
         refuse(`${runningKey} cannot wait for the new item — that would make the dependencies circular: ${runningKey} → the new item → ${runningKey}.`);
         return;
       }
@@ -4196,7 +4240,7 @@ async function testMain(request) {
           repository: creation.repository ?? null,
           existingBranch: creation.existingBranch ?? null,
           wait,
-          dependsOn: Object.freeze(dependsOn.slice()),
+          dependsOn: Object.freeze(dependsOn.map((entry) => (typeof entry === "string" ? entry : Object.freeze({ ...entry })))),
         }),
       );
       settle({ created: true, key, existing: false });

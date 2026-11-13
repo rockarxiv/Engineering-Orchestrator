@@ -6,13 +6,17 @@ import {
   specFields,
   specIssues,
   withShapeDefaults,
+  dependencyOnStory,
+  FINISHED_GATE,
+  type DependencyGateRequest,
   type ItemTypeRef,
   type RefineChild,
   type Item,
   type Uuid,
 } from "@eo/core";
 import { deriveDepsFromTouches, detectCycle, formatCyclePath } from "@eo/engine";
-import { addDependency, projectWorkspaceList, createItem, creationRefusal, resolveItemType, workspaceLabel, type Workspace } from "../db/repos/index.js";
+import { addDependency, projectWorkspaceList, createItem, creationRefusal, resolveItemType, workspaceLabel, type DependencyGate, type Workspace } from "../db/repos/index.js";
+import { judgeGate } from "./itemDependencies.js";
 import type { Db } from "../db/client.js";
 import { worksOnABranch, type WorkspaceSubject } from "../supervisor/workspaceResolution.js";
 
@@ -73,6 +77,8 @@ export interface StoryJiraLink {
 interface IndexEdge {
   from: number; // story index that depends
   to: number; // story index depended upon
+  /** The rule it waits by, as the plan asked (EO-777); `finished` for a bare index and every edge derived from `touches`. */
+  gate: DependencyGateRequest;
 }
 
 function edgeKey(edge: IndexEdge): string {
@@ -101,12 +107,15 @@ export function mergeRefineEdges(children: readonly RefineChild[]): { edges: Ind
   };
 
   children.forEach((child, index) => {
-    for (const dependsOn of child.depends_on) add({ from: index, to: dependsOn });
+    for (const entry of child.depends_on) {
+      const { story, gate } = dependencyOnStory(entry);
+      add({ from: index, to: story, gate });
+    }
   });
 
   let derivedEdgeCount = 0;
   for (const derived of deriveDepsFromTouches(children.map((child) => ({ touches: child.touches })))) {
-    if (add({ from: derived.storyIndex, to: derived.dependsOnIndex })) derivedEdgeCount++;
+    if (add({ from: derived.storyIndex, to: derived.dependsOnIndex, gate: FINISHED_GATE })) derivedEdgeCount++;
   }
 
   return { edges, derivedEdgeCount };
@@ -125,7 +134,10 @@ export function renderProposal(db: Db, projectId: Uuid | null, children: readonl
   children.forEach((child, index) => {
     lines.push(`**${index + 1}. ${child.title}**`, "", child.body);
     lines.push(...specLines(db, projectId, child));
-    const dependsOn = edges.filter((edge) => edge.from === index).map((edge) => `#${edge.to + 1}`);
+    // A rule other than `finished` is said beside the story it is on (EO-777).
+    const dependsOn = edges
+      .filter((edge) => edge.from === index)
+      .map((edge) => `#${edge.to + 1}${edge.gate.wait === "none" ? " (without waiting for it)" : edge.gate.wait === "reached" ? ` (until it reaches ${edge.gate.step ?? "a step"})` : ""}`);
     if (dependsOn.length > 0) lines.push("", `_Depends on ${dependsOn.join(", ")}._`);
     if (child.baseBranch !== undefined) lines.push("", baseBranchLine(child.baseBranch));
     if (child.existingBranch !== undefined) lines.push("", existingBranchLine(child.existingBranch));
@@ -453,6 +465,20 @@ export function applyApprovedProposal(
     if (refusal !== null) return { ok: false as const, reason: refusal };
   }
 
+  // The rule each edge waits by (EO-777), held to the pipeline the
+  // stories land on — every story of a plan lands on the same one, so a
+  // story's dependency is on it too. Asked before the transaction for the
+  // reason the rest of this is, and refused whole, naming the story by
+  // its place in the plan: it has no key yet.
+  const gates: DependencyGate[] = [];
+  for (const edge of edges) {
+    const dependency = children[edge.to];
+    const label = `"${dependency?.title ?? "?"}" (story ${edge.to} of the plan)`;
+    const judged = judgeGate(db, { label, pipelineId: placement.pipelineId }, edge.gate);
+    if (!judged.ok) return { ok: false as const, reason: `"${children[edge.from]?.title ?? "?"}" cannot wait as it asks. ${judged.reason}` };
+    gates.push(judged.gate);
+  }
+
   // The pipeline's entry rules (EO-610), asked of every child here for
   // the reason the rest of this is: the plan is refused whole, by the name
   // of the child that failed, before a row exists. `createItem` asks again
@@ -540,9 +566,9 @@ export function applyApprovedProposal(
       return created.item;
     });
 
-    for (const edge of edges) {
-      addDependency(db, stories[edge.from]!.id, stories[edge.to]!.id);
-    }
+    edges.forEach((edge, index) => {
+      addDependency(db, stories[edge.from]!.id, stories[edge.to]!.id, gates[index]);
+    });
 
     return { ok: true as const, stories, derivedEdgeCount };
   });

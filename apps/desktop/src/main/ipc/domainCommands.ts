@@ -78,6 +78,7 @@ import type { ItemRecord, WorkOffer } from "../record/record.js";
 import { refuseIfUntouchable } from "../roles/itemGuards.js";
 import {
   applyDependencyChange,
+  asksForGate,
   asksForDependencyChange,
   dependencyChangeHeader,
   judgeDependencyChange,
@@ -2033,11 +2034,14 @@ export function updateItemText(db: Db, input: IpcPayload<"items:update">): IpcRe
   // project the organisation's record holds the record makes the change,
   // through `updateItemFields`; one arriving here anyway is refused
   // rather than written to a replica the record would never hear from.
-  const dependencyRequest = { add: input.addDependsOn ?? [], remove: input.removeDependsOn ?? [] };
+  const dependencyRequest = { add: input.addDependsOn ?? [], remove: input.removeDependsOn ?? [], update: input.updateDependsOn ?? [] };
   const asksDependencies = asksForDependencyChange(dependencyRequest);
   if (asksDependencies && isReplica(db, item.id)) return { updated: false, problem: dependenciesOnTheRecordLine(item.key) };
   const dependencies = judgeDependencyChange(db, item, dependencyRequest);
   if (!dependencies.ok) return { updated: false, problem: dependencies.reason };
+  // A request whose only part was a rule an edge already has plans
+  // nothing (EO-777): nothing is written, and nothing said on the item.
+  const plansDependencies = dependencies.plan.add.length > 0 || dependencies.plan.remove.length > 0 || dependencies.plan.update.length > 0;
 
   // Jira next, because it is the other half that can be refused: a key
   // another item holds has to leave this one exactly as it was, title
@@ -2166,7 +2170,7 @@ export function updateItemText(db: Db, input: IpcPayload<"items:update">): IpcRe
   // sent unchanged count as named: the caller asked for a field and the
   // item holds what they asked for, which is `applyJiraEdit`'s answer
   // to the same question.
-  if (Object.keys(patch).length === 0 && !askedForJira && criteria === null && baseEdit.kind === "absent" && existingEdit.kind === "absent" && referenceEdit.kind === "absent" && reviewersEdit.kind === "absent" && !asksDependencies) {
+  if (Object.keys(patch).length === 0 && !askedForJira && criteria === null && baseEdit.kind === "absent" && existingEdit.kind === "absent" && referenceEdit.kind === "absent" && reviewersEdit.kind === "absent" && !plansDependencies) {
     return { updated: false, problem: null };
   }
 
@@ -2187,7 +2191,7 @@ export function updateItemText(db: Db, input: IpcPayload<"items:update">): IpcRe
   // Last, and in one transaction of its own with its one comment: every
   // refusal this call could meet has been met by now, so the change
   // lands whole or the call was already refused.
-  const applied = asksDependencies ? applyDependencyChange(db, dependencies.plan, dependencyChangeHeader(item.key, whoAsked(db, input.actingDeviceId))) : null;
+  const applied = plansDependencies ? applyDependencyChange(db, dependencies.plan, dependencyChangeHeader(item.key, whoAsked(db, input.actingDeviceId))) : null;
   return announceItem(itemId, { updated: true, problem: null, ...(applied === null ? {} : { dependencies: summariseDependencyChange(applied) }) });
 }
 
@@ -2217,17 +2221,30 @@ export async function updateItemFields(
   const itemId = input.itemId as Uuid;
   const add = input.addDependsOn ?? [];
   const remove = input.removeDependsOn ?? [];
-  if (!asksForDependencyChange({ add, remove }) || !isReplica(db, itemId)) return updateItemText(db, input);
+  const update = input.updateDependsOn ?? [];
+  if (!asksForDependencyChange({ add, remove, update }) || !isReplica(db, itemId)) return updateItemText(db, input);
 
   const item = getItem(db, itemId);
   if (!item) return { updated: false, problem: "That ticket no longer exists." };
+
+  // A rule other than `finished` (EO-777) is not one the record takes
+  // yet: it is asked for keys, and a key alone would write `finished`
+  // where the caller asked for something else. Refused, saying so,
+  // rather than written as a rule nobody asked for.
+  if (asksForGate({ add, update })) {
+    return {
+      updated: false,
+      problem: `${item.key} is on a project your organisation's record holds, and the record does not take a rule for what an item waits by yet — only bare keys, which wait for each item to finish.`,
+    };
+  }
+  const addKeys = add.filter((entry): entry is string => typeof entry === "string");
 
   // `pathsFrom` is not an edit: it is the grant EO's MCP hosts stamp on
   // every call of this channel (EO-704), files or none. And an empty
   // list of files to add or remove asks for nothing.
   const others = Object.entries(input)
-    .filter(([name, value]) => value !== undefined && !["itemId", "actingDeviceId", "addDependsOn", "removeDependsOn", PATHS_FROM_KEY].includes(name))
-    .filter(([name, value]) => !(["paths", "removeAttachmentIds"].includes(name) && Array.isArray(value) && value.length === 0))
+    .filter(([name, value]) => value !== undefined && !["itemId", "actingDeviceId", "addDependsOn", "removeDependsOn", "updateDependsOn", PATHS_FROM_KEY].includes(name))
+    .filter(([name, value]) => !(["paths", "removeAttachmentIds", "updateDependsOn"].includes(name) && Array.isArray(value) && value.length === 0))
     .map(([name]) => `\`${name}\``);
   if (others.length > 0) {
     return {
@@ -2240,7 +2257,7 @@ export async function updateItemFields(
   const notTheirs = refusedOnGroupStep(db, item, input.actingDeviceId, "edit") ?? refusedEditOnReplica(db, item);
   if (notTheirs !== null) return { updated: false, problem: notTheirs };
 
-  const answer = await record.changeDependencies({ itemId, add, remove, by: whoAsked(db, input.actingDeviceId) });
+  const answer = await record.changeDependencies({ itemId, add: addKeys, remove, by: whoAsked(db, input.actingDeviceId) });
   if (!answer.ok) return { updated: false, problem: answer.problem };
   if (answer.dependencies === null) return { updated: false, problem: null };
   return announceItem(itemId, { updated: true, problem: null, dependencies: answer.dependencies });
