@@ -60,7 +60,7 @@ export type ItemBlocker = Exclude<DispatchBlocker<GateRefusal>, { kind: "open_de
  * (EO-776). Null for a `finished` edge, which keeps the words it has
  * always had.
  */
-export function gateWords(blocker: WaitingOnDependency): string | null {
+export function gateWords(blocker: Pick<WaitingOnDependency, "dependencyKey" | "gateStepName" | "nowAt"> & { wait: string }): string | null {
   if (blocker.wait !== "reached") return null;
   const gate = blocker.gateStepName ?? "a step its pipeline no longer has";
   return `Waits for ${blocker.dependencyKey} to reach ${gate} (now at ${blocker.nowAt ?? "no step"})`;

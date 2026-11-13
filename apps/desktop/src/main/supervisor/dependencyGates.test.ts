@@ -79,6 +79,19 @@ describe("where a gated dependency has arrived", () => {
     const arrivals = gateArrivals(handle.db, listAllDependencies(handle.db));
     expect([...arrivals.keys()]).toEqual([madeThere.id]);
   });
+
+  it("keeps an item made on the gate step arrived after it leaves, so the edge stays released", () => {
+    const madeThere = story("Made on Review", "review");
+    const waiting = story("Waits", "todo");
+    addDependency(handle.db, waiting.id, madeThere.id, { wait: "reached", stepId: "review" });
+    expect(blockerOf(waiting.id)?.kind).not.toBe("open_dependency");
+
+    // Its only transition is Review → To Do: no row arrives at Review.
+    move(madeThere.id, "todo");
+    expect([...(gateArrivals(handle.db, listAllDependencies(handle.db)).get(madeThere.id) ?? [])]).toEqual(["review"]);
+    expect(blockerOf(waiting.id)?.kind).not.toBe("open_dependency");
+    expect(openDepsFor(waiting.id)).toBe(0);
+  });
 });
 
 describe("the scheduler, the board and the blocker, read from the database", () => {

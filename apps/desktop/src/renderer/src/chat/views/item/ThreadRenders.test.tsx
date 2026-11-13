@@ -97,6 +97,7 @@ function page(comments: CommentView[]): ItemPage {
       needsAttention: false,
       atTerminalStep: false,
       openDependencyCount: 0,
+      openDependencyGates: [],
       latestRunStatus: null,
       assigneeName: null,
       assigneePerson: null,

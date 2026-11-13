@@ -128,6 +128,7 @@ import { activeProjectId } from "./repositoryCommands.js";
 import { workspaceView } from "./workspaceCommands.js";
 import { providerSteersLiveTurns } from "../providers/capabilities.js";
 import { currentWatch, currentWatchViews, itemWatchView } from "../supervisor/watches.js";
+import { gateWords } from "../supervisor/dispatchBlockers.js";
 import { watchIntervalMs } from "@eo/engine";
 import { runActionName } from "../modules/runName.js";
 import { registry, registryForProject } from "../registry.js";
@@ -768,6 +769,19 @@ function summarise(db: Db, rows: Item[], stories: Item[] = rows, reads: SummaryR
       // same thing about the same item.
       preview: item.previewAt !== null,
       openDependencyCount: openDeps.length,
+      // The open `reached` edges in words (EO-776), from the same
+      // sentence the item page's "why is this not moving" says, so the
+      // card and the page cannot word one gate two ways.
+      openDependencyGates: openDeps.flatMap((edge) => {
+        const dependency = dependencyById.get(edge.dependsOnId)!;
+        const words = gateWords({
+          wait: edge.wait,
+          dependencyKey: dependency.key,
+          nowAt: stepForItem(db, dependency)?.name ?? null,
+          gateStepName: edge.waitStepId === null ? null : (getStep(db, edge.waitStepId)?.name ?? null),
+        });
+        return words === null ? [] : [words];
+      }),
       latestRunStatus: latest?.status ?? null,
       watch: watches.get(item.id) ?? null,
       // Who is actually on it (ARCHITECTURE.md, "Vocabulary"): the agent that ran most recently,
@@ -1502,6 +1516,7 @@ function ownFieldsSection(db: Db, { item, step }: ItemDetailContext) {
         // has not computed.
         atTerminalStep: step?.isTerminal === true,
         openDependencyCount: 0,
+        openDependencyGates: [],
         latestRunStatus: null,
         assigneeName: null,
         // The item's own mark (EO-313, ARCHITECTURE.md, "Preview"). Not a default of `false`

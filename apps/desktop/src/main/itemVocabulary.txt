@@ -367,6 +367,8 @@ apps/desktop/src/main/supervisor/codexBudget.test.ts: expect(run?.error).toConta
 apps/desktop/src/main/supervisor/codexBudget.test.ts: expect(run?.error).toContain("Per-ticket cost budget of 200¢ reached");
 apps/desktop/src/main/supervisor/codexBudget.test.ts: expect(said[0]!.body).toContain("per-ticket and daily budgets cannot see it");
 apps/desktop/src/main/supervisor/contextActions.test.ts: item: { key: "EO-1", title: "A ticket", body: null, acceptanceCriteria: [], actionOverrides: new Map(), workspaceKind: "none" },
+apps/desktop/src/main/supervisor/dependencyGates.test.ts: 'Nothing will pick it up from "To Do" yet, though: this ticket is waiting on another that has not finished. Finish that ticket, or remove the dependency.',
+apps/desktop/src/main/supervisor/dependencyGates.ts: `This ticket stopped waiting for ${dependency.key} when it reached "${gateName}", so it carries on and is not held again — ` +
 apps/desktop/src/main/supervisor/dispatchAuthorisation.test.ts: expect(engineNotes().some((body) => body.includes("Run cancelled: you moved this ticket"))).toBe(true);
 apps/desktop/src/main/supervisor/dispatchBlockers.ts: "Give this ticket's project an agent of its own in this role, or use a global one. Nothing has changed."
 apps/desktop/src/main/supervisor/dispatchBlockers.ts: "Mention an agent that works for this ticket's project, or a global one. Nothing has changed."

@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, or, sql } from "drizzle-orm";
 import { onProject } from "./projectScope.js";
 import { uuidv7, type Item, type PipelineStepType, type RecordCursor, type Transition, type Uuid } from "@eo/core";
 import type { Db } from "../client.js";
@@ -514,9 +514,11 @@ export function stepEntryTimes(db: Db, itemIds: readonly string[]): Map<string, 
  * recorded stays recorded: the edge latches, and the dependency going
  * back afterwards holds nothing again. Never stored anywhere else.
  *
- * The dependency standing on the step right now counts as well. Creating
- * an item writes no transition (`stepEntryTimes`), so an item made on the
- * gate step has arrived there without a row saying so.
+ * The dependency standing on the step right now counts as well, and so
+ * does any move *out of* it. Creating an item writes no transition
+ * (`stepEntryTimes`), so an item made on the gate step has arrived there
+ * without a row saying so; once it leaves, the move's `fromStepId` is the
+ * record that it stood there, which keeps the edge released.
  *
  * Only the gated edges are asked about, in one query through
  * `idx_transitions_item`, because this runs on every tick.
@@ -544,11 +546,17 @@ export function gateArrivals(
   const dependencyIds = [...gates.keys()];
   const stepIds = [...new Set([...gates.values()].flatMap((steps) => [...steps]))];
   for (const row of db
-    .select({ itemId: transitions.itemId, stepId: transitions.toStepId })
+    .select({ itemId: transitions.itemId, toStepId: transitions.toStepId, fromStepId: transitions.fromStepId })
     .from(transitions)
-    .where(and(inArray(transitions.itemId, dependencyIds), inArray(transitions.toStepId, stepIds)))
+    .where(
+      and(
+        inArray(transitions.itemId, dependencyIds),
+        or(inArray(transitions.toStepId, stepIds), inArray(transitions.fromStepId, stepIds)),
+      ),
+    )
     .all()) {
-    note(row.itemId, row.stepId);
+    note(row.itemId, row.toStepId);
+    note(row.itemId, row.fromStepId);
   }
   for (const row of db.select({ id: items.id, stepId: items.stepId }).from(items).where(inArray(items.id, dependencyIds)).all()) {
     note(row.id, row.stepId);

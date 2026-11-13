@@ -108,6 +108,7 @@ function item(overrides: Partial<ItemSummary> = {}): ItemSummary {
     needsAttention: false,
     atTerminalStep: false,
     openDependencyCount: 0,
+    openDependencyGates: [],
     latestRunStatus: null,
     assigneeName: null,
     assigneePerson: null,
@@ -633,6 +634,20 @@ describe("a card", () => {
     expect(within(todo).getByTitle(/Blocked by 2/)).toBeInTheDocument();
     expect(within(todo).getByText("Paused")).toBeInTheDocument();
     expect(within(todo).getByText("Urgent")).toBeInTheDocument();
+  });
+
+  it("says on a blocked card what a `reached` edge waits for, and today's words for the rest (EO-776)", async () => {
+    mockIpc({
+      items: [
+        item({ openDependencyCount: 2, openDependencyGates: ["Waits for EO-12 to reach Watch merge request (now at Review)"] }),
+        item({ id: "t2", key: "EO-2", stepId: "review", openDependencyCount: 1 }),
+      ],
+    });
+    renderBoard();
+
+    const gated = within(await column("To Do")).getByText("blocked ×2");
+    expect(gated).toHaveAttribute("title", "Waits for EO-12 to reach Watch merge request (now at Review)\nBlocked by 1 unfinished dependency(ies)");
+    expect(within(await column("Review")).getByText("blocked ×1")).toHaveAttribute("title", "Blocked by 1 unfinished dependency(ies)");
   });
 
   it("names the agent that picked it up, or says nobody has", async () => {
