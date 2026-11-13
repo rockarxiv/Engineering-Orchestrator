@@ -46,6 +46,18 @@ import { AppServerConnection, type AppServerExit, AppServerExitedError, type App
 // `commandExecution` with its `aggregatedOutput`, `agentMessage`,
 // `RateLimitWindow`, `thread/tokenUsage/updated` — are unchanged.
 //
+// 0.167.1's set beside 0.166.0's (EO-774): one notification added,
+// `thread/section/changed`, broadcast after a client moves a thread into
+// or out of a sidebar section — EO moves none, and it is listed with the
+// ignored ones below. No server request was added or removed, and
+// `ServerRequest`, `ClientRequest`, `Turn`, `ThreadStartParams`,
+// `ThreadResumeParams` and `RateLimitWindow` are the same files byte for
+// byte. What moved is what EO does not send or read: a command approval
+// may be of a new kind, `humanCommand`, offered only to a client that
+// opts into `requiredHumanApproval` (EO does not, and refuses every
+// server request anyway); audio input may name an uploaded file; and
+// OpenTelemetry requirements gain `log_sse_deltas`.
+//
 // 0.166.0's set beside 0.165.0's (EO-644): again no notification or
 // server request added, removed or reshaped — `ServerNotification`,
 // `ServerRequest`, `ClientRequest`, `Turn`, `ThreadStartParams`,
@@ -1125,6 +1137,9 @@ const IGNORED_NOTIFICATIONS = new Set([
   // New at 0.163.0 (EO-453): a client's unread marker for a thread,
   // which is a sidebar's business and not a run's.
   "thread/readState/changed",
+  // New at 0.167.0 (EO-774): a thread moved into or out of a sidebar
+  // section, which only a client moving it causes.
+  "thread/section/changed",
   "project/changed",
   "skills/changed",
   "remoteControl/status/changed",

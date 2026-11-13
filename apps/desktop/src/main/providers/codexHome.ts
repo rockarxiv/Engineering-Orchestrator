@@ -272,6 +272,10 @@ export function prepareCodexHome(options: CodexHomeOptions): CodexHomePreparatio
  * pattern keeps both either way), and with EO's switches still neither
  * memory store.
  *
+ * Re-checked at 0.167.1 (EO-774) the same way, beside 0.166.0: the same
+ * names, fewer of SQLite's `-wal` and `-shm` files left after the turn,
+ * and with EO's switches still neither memory store.
+ *
  * `skills/` is *not* kept, though Codex makes it — it unpacks its own
  * bundled skills there on every start, and it is also exactly where an
  * agent would put one of its own.

@@ -13,9 +13,11 @@ import { CLAUDE_SDK, resolvePackageSet } from "../runtimes/packages.js";
  * Claude Code 2.1.317's account-email check, against EO's real options
  * (EO-644, `privacyPluginHeldOff` in `claudeCompatibility.ts`).
  *
- * The check is a built-in plugin that answers `ask` for a shell call whose
- * input holds the signed-in claude.ai account's email and a network word,
- * and an unattended agent has nobody to ask, so the call is refused. EO
+ * The check is a built-in plugin that refuses a shell call whose input
+ * holds the signed-in claude.ai account's email and names a User-Agent —
+ * as 2.1.321 narrowed it (EO-774); 2.1.317 asked, which unattended is the
+ * same refusal, for the email beside any network word. The command below
+ * is one both rules catch. EO
  * switches the plugin off, as the CLI before it had none. This drives the
  * real CLI and SDK through EO's provider against a local capture server
  * that scripts the one call, and reads back what the tool returned. **No
@@ -34,7 +36,7 @@ import { CLAUDE_SDK, resolvePackageSet } from "../runtimes/packages.js";
 const OPTED_IN = process.env["EO_LIVE_CLAUDE_WIRE"] === "1";
 
 const EMAIL = "probe@example.com";
-const COMMAND = `echo curl ${EMAIL}`;
+const COMMAND = `echo curl --user-agent ${EMAIL}`;
 
 let scratch: string | null = null;
 const restore: { key: string; value: string | undefined }[] = [];
@@ -143,7 +145,7 @@ async function bashResult(userSettings: Record<string, unknown> | null): Promise
 describe.skipIf(!OPTED_IN)("Claude Code's account-email check on an EO turn (EO-644)", () => {
   it("lets the call run, as the CLI before 2.1.317 did", { timeout: 240_000 }, async () => {
     // The command's own output: it ran.
-    expect(JSON.parse(await bashResult(null))).toContain(`curl ${EMAIL}`);
+    expect(JSON.parse(await bashResult(null))).toContain(`curl --user-agent ${EMAIL}`);
   });
 
   it("leaves it on where the person's own settings turn it on, and the call is refused", { timeout: 240_000 }, async () => {

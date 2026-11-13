@@ -573,7 +573,8 @@ export function codexErrorRefusal(info: unknown): QuotaEvent | null {
  * The app-server does not name its windows; it says how long each one
  * is. `primary` was 300 minutes and `secondary` 10080 on a Plus account
  * at 0.161.0, and still were at 0.163.0 (EO-453), 0.165.0 (EO-599) and
- * 0.166.0 (EO-644, `account/rateLimits/read`), so these read `5_hour`
+ * 0.166.0 (EO-644, `account/rateLimits/read`) and 0.167.1 (EO-774, the
+ * same), so these read `5_hour`
  * and `7_day` — Claude's `five_hour`
  * and `seven_day` in other words, and phrased the same way on the item
  * ("its 5-hour usage window"). A length nobody has seen still names
@@ -1442,9 +1443,12 @@ function codexSpawnEnvironment(
  * channel EO cannot see, attribute or retire — and on an agent using the
  * person's own setup, the person's own memories would reach it.
  *
- * Read from the pinned CLI (0.165.0, EO-599, and again at 0.166.0 for
- * EO-644), where `codex features list` reports `memories` as stable and
- * **off** by default, as 0.163.0 did.
+ * Read from the pinned CLI (0.165.0, EO-599, again at 0.166.0 for
+ * EO-644 and at 0.167.1 for EO-774), where `codex features list` reports
+ * `memories` as stable and **off** by default, as 0.163.0 did. At 0.167.1
+ * a real turn in an empty home, under the three switches below over a
+ * `config.toml` that turns memories on, again wrote neither store, and
+ * one with `-c features.memories=true` wrote the v2 store.
  * 0.165.0 "enabled memory v2 by default for fresh profiles": a home whose
  * memories are on now gets a second store (`memories_v2/`,
  * `memories_v2_1.sqlite`). Measured with one real turn in an empty home
@@ -1713,7 +1717,10 @@ function codexOptionsWith(
   //     `alwaysLoad` string, so the reading still stands.
   //
   //     And again at EO-644's: 0.166.0 answered every one of those keys
-  //     exactly as 0.165.0 did, beside it, and has neither string.
+  //     exactly as 0.165.0 did, beside it, and has neither string. And
+  //     at EO-774's: 0.167.1 accepted the stdio and HTTP keys EO writes
+  //     and refused `always_load`, `alwaysLoad` and `defer_loading` as
+  //     unknown, and has neither string either.
   //   - It does not defer them in the first place. Across 338 Codex runs
   //     in `run_events` there is not one `ToolSearch` call, and EO's own
   //     tools were called 130 times directly — `ticket_detail` 88,

@@ -130,8 +130,8 @@ describe("a Codex turn over a stubbed app-server", () => {
 
     // The field's shape is 0.161.0's `ThreadStartParams`, read from
     // `codex app-server generate-ts`: an optional string (EO-385), and
-    // 0.163.0's (EO-453), 0.165.0's (EO-599) and 0.166.0's (EO-644) are
-    // the same file byte for byte.
+    // 0.163.0's (EO-453), 0.165.0's (EO-599), 0.166.0's (EO-644) and
+    // 0.167.1's (EO-774) are the same file byte for byte.
     expect(fake.paramsOf("thread/start")).toEqual({ cwd, baseInstructions: "You are the implementer." });
     expect(fake.paramsOf("turn/start")).toEqual({ threadId: "thr-fake", input: [{ type: "text", text: "EO-1: do the thing", text_elements: [] }] });
   });
@@ -820,6 +820,13 @@ describe("the words of a Codex turn as they are generated", () => {
     // Raw reasoning is still not shown — the summary is — but it is the
     // backend at work, which the inactivity guard is told (`HeartbeatEvent`).
     expect(translator.translate({ method: "item/reasoning/textDelta", params: { threadId: "thr-1", turnId: "turn-1", delta: "raw" } } as never)).toEqual({ events: [{ type: "heartbeat" }], recognised: true });
+  });
+});
+
+describe("what a Codex turn is told and does nothing with", () => {
+  it("recognises 0.167.0's `thread/section/changed` without passing anything on (EO-774)", () => {
+    const translator = new TurnTranslator("thr-1", "turn-1");
+    expect(translator.translate({ method: "thread/section/changed", params: { threadId: "thr-1", sectionId: null } } as never)).toEqual({ events: [], recognised: true });
   });
 });
 

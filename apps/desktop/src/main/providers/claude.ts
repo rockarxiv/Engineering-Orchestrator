@@ -1309,7 +1309,8 @@ interface ClaudeAdapter {
 
 /**
  * The defaults claude@0.3.312 and claude@0.3.318 changed, held to what the
- * pin before each did (EO-599, EO-644, `claudeCompatibility.ts`):
+ * pin before each did (EO-599, EO-644, `claudeCompatibility.ts`), and
+ * still held at claude@0.3.322 (EO-774):
  * variables added to the spawn environment, and the flag settings
  * (`--settings`) that switch off a built-in plugin. Runs on the finished
  * environment, so a run's own variables count, and never sets a name the
@@ -1388,7 +1389,7 @@ function buildOptions(opts: ClaudeTurn, adapter: ClaudeAdapter): Options {
     // EO-120: the companion the SDK's own declaration asks for — "Must
     // be set to `true` when using `permissionMode: 'bypassPermissions'`.
     // This is a safety measure to ensure intentional bypassing of
-    // permissions" (sdk.d.ts:2080 at 0.3.318).
+    // permissions" (sdk.d.ts:2086 at 0.3.322).
     //
     // **It is not enforced.** Established against
     // @anthropic-ai/claude-agent-sdk 0.3.227 driving Claude Code CLI
@@ -1453,6 +1454,11 @@ function buildOptions(opts: ClaudeTurn, adapter: ClaudeAdapter): Options {
     // `--permission-mode bypassPermissions` against a capture server, still
     // reports `"permissionMode":"bypassPermissions"` on `init`.
     //
+    // EO-774 re-read it at 0.3.322: the sentence is unchanged (now at
+    // sdk.d.ts:2086) and the branches are still independent —
+    // `if(S)B.push(Ye("--permission-mode",S))` and
+    // `if(E)B.push("--allow-dangerously-skip-permissions")`.
+    //
     // So setting it is a judgement, not a fix, and the judgement is to
     // set it: EO was relying on a stated requirement going unapplied,
     // and a version bump is free to start applying it — on every
@@ -1499,7 +1505,8 @@ function buildOptions(opts: ClaudeTurn, adapter: ClaudeAdapter): Options {
     // Held to this process's own spend, not the session's, on a resumed
     // turn too (EO-490). Checked against the CLI EO pins (0.3.302, and
     // re-read at 0.3.312 for EO-599, where the two are `p0`/`kTe`, and at
-    // 0.3.318 for EO-644, where `BIe` is the second): a
+    // 0.3.318 for EO-644, where `BIe` is the second, and at 0.3.322 for
+    // EO-774, where it is `ODe`): a
     // resumed session restores its cost state from the transcript, and
     // `total_cost_usd` goes on from it — but the budget check compares
     // the cap with that total *less* the restored cost (`r0`/`iSe` in
@@ -1610,7 +1617,9 @@ function buildOptions(opts: ClaudeTurn, adapter: ClaudeAdapter): Options {
     // claude@0.3.312 (EO-599): the variable still takes the fork type
     // out of the `Agent` tool, and nothing else. At claude@0.3.318
     // (EO-644) the `Agent` tool is byte-identical to 0.3.312's both ways,
-    // with the variable unset and at `0`.
+    // with the variable unset and at `0`, and at claude@0.3.322 (EO-774,
+    // capture server) byte-identical to 0.3.318's unset, at `0` and at
+    // `1` — the fork type there unset and at `1`, gone at `0`.
     //
     // Only when the variable is unset: the CLI read a person's own
     // `CLAUDE_CODE_FORK_SUBAGENT=1` before this pin too, and the old
@@ -1625,8 +1634,9 @@ function buildOptions(opts: ClaudeTurn, adapter: ClaudeAdapter): Options {
     // channel EO cannot see, attribute or retire, and on a
     // person's own machine it would be mixed with theirs.
     //
-    // Read from the pinned CLI (2.1.302, again at 2.1.312 for EO-599 and
-    // at 2.1.318 for EO-644) rather than assumed: the switch
+    // Read from the pinned CLI (2.1.302, again at 2.1.312 for EO-599, at
+    // 2.1.318 for EO-644 and at 2.1.322 for EO-774) rather than assumed:
+    // the switch
     // is checked before any setting is, a truthy value ("1") answers
     // "off" whatever `autoMemoryEnabled` a settings file holds, and the
     // background consolidation ("auto-dream") is gated on auto-memory
@@ -1662,7 +1672,8 @@ function buildOptions(opts: ClaudeTurn, adapter: ClaudeAdapter): Options {
     ...injected,
   };
   // EO-599 and EO-644: the defaults claude@0.3.312 and claude@0.3.318
-  // changed, held to what the pin before each did
+  // changed, held to what the pin before each did, and still at
+  // claude@0.3.322 (EO-774)
   // (`claudeCompatibility.ts`). Decided on what the CLI will see — this
   // environment, a run's own variables (EO-487) included, with the env
   // blocks of the settings files the turn loads laid over it, which
