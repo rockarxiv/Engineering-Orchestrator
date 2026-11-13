@@ -1,5 +1,7 @@
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { type EntryRule, type ModuleManifest, type Uuid } from "@eo/core";
+import { uuidv7, type EntryRule, type ModuleManifest, type Uuid } from "@eo/core";
 import type { DbHandle } from "../db/client.js";
 import { createTestItem, messagesFrom, openMigratedTestDb } from "../db/testHelpers.js";
 import {
@@ -20,11 +22,14 @@ import {
   versionAuthorName,
   versionSnapshot,
   getModuleBySlug,
+  recordPipelineOrigin,
   getModule,
   listModuleTests,
   moduleTestFingerprint,
 } from "../db/repos/index.js";
 import { markTrialPipeline } from "../db/repos/trialsRepo.js";
+import { loadTemplateHistory, type TemplateVersion } from "../gallery/history.js";
+import { compareWithTemplate } from "../gallery/templateUpdates.js";
 import { approveModuleCommand } from "../ipc/moduleCommands.js";
 import { followApprovedModule, MODULE_UPDATE_HELD_SOURCE } from "./followApproved.js";
 
@@ -299,5 +304,63 @@ describe("approving a module version", () => {
     expect(answer.approved).toBe(true);
     expect(pinOf(pipelineId, "fm_notify")).toBe(4);
     expect(newest(pipelineId).releaseNotes).toBe("Notify v3 → v4");
+  });
+});
+
+/**
+ * A pipeline made from a template (§15.5): the version an approval files
+ * is the person's change in the next three-way comparison, and a pin it
+ * moved is no conflict where the template did not change that step's
+ * module.
+ */
+describe("a moved pin on a pipeline made from a template", () => {
+  const GALLERY_DIRECTORY = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "resources", "gallery");
+
+  it("compares cleanly against a template version that changed something else about the step", () => {
+    const id = module();
+    const v10 = loadTemplateHistory(GALLERY_DIRECTORY).get("software-feature-to-merge")!.find((each) => each.version === "1.0")!;
+    const first = v10.document.steps[0]!;
+    // The template with a Notify step, by slug, routing `sent` and `failed` to Done; `label` is what the next version changes.
+    const withNotify = (label: string): TemplateVersion["document"] => ({
+      ...v10.document,
+      steps: [...v10.document.steps, { ...first, id: "tpl_notify", name: "Notify", type: "module", entryAction: "notify", ownerRole: null, isTerminal: false, position: v10.document.steps.length }],
+      routes: [
+        ...v10.document.routes,
+        { ...v10.document.routes[0]!, fromStepId: "tpl_notify", resultKey: "sent", label, target: "ready_to_merge" },
+        { ...v10.document.routes[0]!, fromStepId: "tpl_notify", resultKey: "failed", label: "Failed", target: "ready_to_merge" },
+      ],
+    });
+    const base = withNotify("Sent");
+
+    // Installed under ids of its own, the Notify step pinning v3.
+    const copy = createPipeline(handle.db, { projectId: null, name: "From the template" });
+    const ids = new Map(base.steps.map((step) => [step.id, uuidv7() as string]));
+    const local = (stepId: string): string => ids.get(stepId) ?? stepId;
+    const installed = replacePipelineGraph(
+      handle.db,
+      copy.id,
+      base.steps.map((step) => ({
+        ...step,
+        id: local(step.id),
+        pipelineId: copy.id as Uuid,
+        ...(step.type === "module" ? { entryAction: id, moduleVersion: 3 } : {}),
+      })),
+      base.routes.map((route) => ({ ...route, pipelineId: copy.id as Uuid, fromStepId: local(route.fromStepId), target: local(route.target) })),
+      { entryStepId: local(v10.document.pipeline.entryStepId ?? "worktree") },
+    );
+    expect(installed.replaced).toBe(true);
+    recordPipelineOrigin(handle.db, { pipelineId: copy.id, document: base, stepIds: Object.fromEntries(ids) });
+
+    expect(approveV4(id)).toEqual([expect.objectContaining({ pipelineId: copy.id, outcome: "moved" })]);
+    expect(pinOf(copy.id, local("tpl_notify"))).toBe(4);
+
+    const compared = compareWithTemplate(handle.db, copy.id, { slug: "software-feature-to-merge", version: "1.0.1", notes: "", document: withNotify("Notified") });
+
+    expect(compared?.merge.ok).toBe(true);
+    expect(compared?.merge.comparison.conflicts).toEqual([]);
+    // The template's change is taken, and the pin stays the person's.
+    const merged = compared?.merge.ok === true ? compared.merge.merged : undefined;
+    expect(merged?.steps.find((step) => step.id === local("tpl_notify"))?.moduleVersion).toBe(4);
+    expect(merged?.routes.find((route) => route.fromStepId === local("tpl_notify") && route.resultKey === "sent")?.label).toBe("Notified");
   });
 });
