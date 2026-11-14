@@ -389,6 +389,22 @@ export function updateRun(db: Db, id: Uuid, patch: UpdateRunInput): Run {
 }
 
 /** Runs still in flight, across every item — what the scheduler (E-02) needs to respect concurrency caps. */
+/**
+ * The item's run in flight — queued or running — if it has one: what
+ * `listActiveRuns` would say about this item alone, read by its own
+ * WHERE rather than over every active run (EO-779), so the item page can
+ * ask it on every read.
+ */
+export function activeRunForItem(db: Db, itemId: Uuid): Run | undefined {
+  const row = db
+    .select()
+    .from(runs)
+    .where(and(eq(runs.itemId, itemId), inArray(runs.status, ["queued", "running"])))
+    .limit(1)
+    .get();
+  return row === undefined ? undefined : toDomain(row);
+}
+
 export function listActiveRuns(db: Db): Run[] {
   return db.select().from(runs).where(inArray(runs.status, ["queued", "running"])).all().map(toDomain);
 }

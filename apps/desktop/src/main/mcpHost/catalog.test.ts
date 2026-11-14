@@ -450,6 +450,7 @@ const NOT_CATALOGUED: Partial<Record<RecordChannel, string>> = {
   // only the parts named when it is.
   "items:get": "the screens' item read, its thread a page at a time; item_get answers the whole item through items:getSections, which can also read part of it",
   "items:earlierComments": "the item page reading back older comments a page at a time; item_get answers the whole thread, or the part asked for, through items:getSections",
+  "items:waitSteps": "the item page's picker for the step a dependency is waited for to reach (EO-779); an agent names the step to item_update, whose refusal lists every step it may name",
 
   // Claiming and assigning (EO-305). Who has a piece of work is a
   // person's word about their own hands: "I am taking this" is not

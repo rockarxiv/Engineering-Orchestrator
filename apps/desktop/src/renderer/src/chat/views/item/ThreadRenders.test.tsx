@@ -111,6 +111,7 @@ function page(comments: CommentView[]): ItemPage {
       origin: null,
       createdAt: 1,
       attachments: [],
+      contentRefusal: null,
     },
     comments,
     transitions: [],

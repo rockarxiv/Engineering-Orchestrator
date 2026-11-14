@@ -269,8 +269,11 @@ describe("the query path", () => {
     expect(reads(ownOnly, "ownFiles")).toHaveLength(1);
     expect(runHistories(ownOnly)).toEqual([]);
     expect(everyEdge(ownOnly)).toEqual([]);
-    expect(reads(ownOnly, "runs")).toHaveLength(1);
+    // Two, each by LIMIT: its latest run, and whether it has one in
+    // flight — which is what says its content may not change (EO-779).
+    expect(reads(ownOnly, "runs")).toHaveLength(2);
     expect(reads(ownOnly, "runs")[0]).toMatch(/where "runs"\."item_id" = \? order by coalesce\("runs"\."started_at", 0\) desc, "runs"\."id" desc limit \?/);
+    expect(reads(ownOnly, "runs")[1]).toMatch(/where \("runs"\."item_id" = \? and "runs"\."status" in \(\?, \?\)\) limit \?/);
     expect(reads(ownOnly, "dependsOn")).toHaveLength(1);
     expect(reads(ownOnly, "dependsOn")[0]).toMatch(/where "item_deps"\."item_id" = \?/);
     // When it entered its step is the one read of `transitions`: its
@@ -287,7 +290,8 @@ describe("the query path", () => {
 
     expect(runHistories(statements)).toEqual([]);
     // The latest run the ticket is named by, and the one the section asked for.
-    expect(reads(statements, "runs")).toHaveLength(2);
+    // And whether the item has a run in flight (EO-779).
+    expect(reads(statements, "runs")).toHaveLength(3);
   });
 
   it("gives the ticket the summary the board gives it", () => {

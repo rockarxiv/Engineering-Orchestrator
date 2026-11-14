@@ -993,6 +993,14 @@ export const recordContract = {
    */
   "items:resolveKey": channel(z.object({ key: z.string() }), z.object({ itemId: z.string().nullable(), problem: z.string().nullable() })),
   /**
+   * The steps another item may wait for this one to reach (EO-779): every
+   * step of its current pipeline but the terminal one, off-board steps
+   * included, in pipeline order. The item page's step picker for a
+   * `reached` dependency; `updateDependsOn` accepts exactly these. Empty
+   * for an item on no pipeline, or one that does not exist.
+   */
+  "items:waitSteps": channel(z.object({ itemId: z.string() }), z.object({ steps: z.array(z.object({ id: z.string(), name: z.string() })) })),
+  /**
    * Runs across items, with their timing, tokens, cost and verdicts
    * (EO-541) — `runs_list`'s channel. Newest first; a run not yet
    * started last. Side calls are among them, as `side_call:<purpose>`.

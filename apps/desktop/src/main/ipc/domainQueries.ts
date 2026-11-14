@@ -46,6 +46,8 @@ import {
 import type { Db } from "../db/client.js";
 import type { Project } from "../db/repos/projectsRepo.js";
 import { featureIsDone, featureProgress } from "../roles/featureLifecycle.js";
+import { refuseIfUntouchable } from "../roles/itemGuards.js";
+import { waitableSteps } from "../roles/itemDependencies.js";
 import { comments, commentMentions } from "../db/schema.js";
 import { runEvents } from "../db/schema.js";
 import {
@@ -316,6 +318,17 @@ export function resolveItemKey(db: Db, { key }: IpcPayload<"items:resolveKey">):
     return { itemId: null, problem: `"${key}" names no item: ${project === undefined ? "nothing" : `nothing on ${project.name}`} has that key. items_list lists the keys there are.` };
   }
   return { itemId: item.id, problem: null };
+}
+
+/**
+ * The steps another item may wait for this one to reach (EO-779): the
+ * list `judgeGate` judges a `reached` rule against, read off the item's
+ * current pipeline. Not `pipelineSteps:list`, which leaves out the steps
+ * the board draws no column for — a discussion step is one, and waiting
+ * for it is as valid as waiting for any other.
+ */
+export function listWaitSteps(db: Db, { itemId }: IpcPayload<"items:waitSteps">): IpcResponse<"items:waitSteps"> {
+  return { steps: waitableSteps(db, getItem(db, itemId as Uuid)?.pipelineId ?? null) };
 }
 
 /**
@@ -1605,6 +1618,10 @@ function ownFieldsSection(db: Db, { item, step }: ItemDetailContext) {
       // Its own reviewers, its feature's, or its repository's (EO-742),
       // read live for the Reference's reason.
       reviewers: itemReviewers(db, item),
+      // Whether its content may change right now, by the rule every
+      // door that changes it is held to (EO-779), so the page offers no
+      // editor that would only be refused.
+      contentRefusal: refuseIfUntouchable(db, item, "content"),
       // Which job made it (EO-304, ARCHITECTURE.md, "What a job records"). Resolved through the
       // occurrence that created it rather than read off a column,
       // because the occurrence is already the record of the firing.
