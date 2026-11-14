@@ -2,7 +2,7 @@ import { useCallback, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate } from "react-router-dom";
 import { Archive as ArchiveIcon, Check, ExternalLink, GitBranch, GitPullRequest, RefreshCw, Trash2, X } from "lucide-react";
-import { describeItemOriginKind, itemWatchLines, type CommentView, type IpcRequest, type IpcResponse } from "@eo/core";
+import { describeItemOriginKind, itemWatchLines, type CommentView, type DependencyWait, type IpcRequest, type IpcResponse } from "@eo/core";
 import { cn, Markdown } from "@eo/ui";
 import { useItemAuthority } from "../../../shared/admin/authority";
 import { buildTimeline, describeActor } from "../../../shared/item/timeline";
@@ -516,13 +516,16 @@ export function ItemView({ itemId }: { itemId: string }) {
 
                 {dependsOn.length > 0 ? (
                   <section aria-label="Dependencies" className="flex min-w-0 flex-col gap-2 border-t border-line/60 pt-3">
-                    <GroupLabel>Blocked by</GroupLabel>
+                    {/* Not "Blocked by": an edge that waits for nothing is listed here too (EO-778). */}
+                    <GroupLabel>Depends on</GroupLabel>
                     <ul className="flex flex-col gap-1.5">
                       {dependsOn.map((dependency) => (
                         <li key={dependency.id} className="flex min-w-0 items-center gap-2 text-[13px]">
                           {/* By id, so a dependency on another project still links. */}
                           <ItemRef itemKey={dependency.key} itemId={dependency.id} className="shrink-0 font-mono text-[12px] text-ink-subtle" />
                           <span className="min-w-0 flex-1 truncate text-ink">{dependency.title}</span>
+                          {/* What releases this item: the edge's rule, read-only here. */}
+                          <span className="shrink-0 text-[12px] text-ink-subtle">{gateLine(dependency.wait, dependency.waitStepName)}</span>
                           {/* Its own pipeline's step name, which travels with it. */}
                           <Chip>{dependency.stepName}</Chip>
                         </li>
@@ -818,6 +821,17 @@ export function ItemView({ itemId }: { itemId: string }) {
       </ReadOnlyFence>
     </div>
   );
+}
+
+/**
+ * What releases an item from one of its dependencies (EO-778), as its
+ * row says it. Read with a default: a detail from a build before rules
+ * carries none, and an edge without one waits for its dependency to finish.
+ */
+function gateLine(wait: DependencyWait | undefined, stepName: string | null | undefined): string {
+  if (wait === "none") return "Doesn't wait";
+  if (wait === "reached") return `Until it reaches ${stepName ?? "a step that no longer exists"}`;
+  return "Until it finishes";
 }
 
 const NO_PINS: ReadonlyMap<string, boolean> = new Map();
