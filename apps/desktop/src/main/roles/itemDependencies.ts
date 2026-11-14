@@ -363,18 +363,52 @@ export function applyDependencyChange(db: Db, plan: DependencyChangePlan, header
     const open = openDependencies(writer, item.id);
     const freed = (plan.remove.length > 0 || plan.update.length > 0) && before.length > 0 && open.length === 0;
     const lines = dependencyChangeLines(writer, item, plan, freed);
-    const warnings = [...plan.add, ...plan.update].flatMap((edge) =>
-      edge.gate.wait === "reached" ? (reachedGateWarning(writer, item, edge.item, edge.gate.stepId) ?? []) : [],
-    );
+    const warnings = gateWarnings(writer, item, [...plan.add, ...plan.update]);
     const comment = postComment(writer, {
       itemId: item.id,
       author: { type: "engine" },
       kind: "decision",
       parseBodyMentions: false,
-      body: [header, "", ...lines, ...(warnings.length === 0 ? [] : ["", ...warnings.map((warning) => `Warning: ${warning}`)])].join("\n"),
+      body: [header, "", ...lines, ...(warnings.length === 0 ? [] : ["", ...warnings.map(warningLine)])].join("\n"),
     });
 
     return { item: getItem(writer, item.id) ?? item, added: plan.add, removed: plan.remove, updated: plan.update, open, freed, warnings, comment };
+  });
+}
+
+/**
+ * What writing these edges from `item` is done despite (EO-780): each
+ * `reached` rule on a step its dependency can arrive at before anything
+ * is implemented, in a repository where that releases `item` onto an
+ * empty branch (`reachedGateWarning`, the developer pack's judgement).
+ * Never a refusal — the edges are written whatever this says.
+ *
+ * Asked by every door that writes an edge: a change here, a new item's
+ * `dependsOn` (`applyNewItem`, which a module's creation goes through)
+ * and a plan's stories (`applyApprovedProposal`).
+ */
+export function gateWarnings(db: Db, item: Item, edges: readonly GatedDependency[]): string[] {
+  return edges.flatMap((edge) => (edge.gate.wait === "reached" ? (reachedGateWarning(db, item, edge.item, edge.gate.stepId) ?? []) : []));
+}
+
+/** The sentence a warning is said in, on the item and in an answer. */
+export function warningLine(warning: string): string {
+  return `Warning: ${warning}`;
+}
+
+/**
+ * The engine comment a creation door posts on an item it wrote edges for
+ * despite `gateWarnings` (EO-780). A change says them in its own comment
+ * instead; a new item has no other comment to say them in.
+ */
+export function postGateWarnings(db: Db, item: Item, warnings: readonly string[]): void {
+  if (warnings.length === 0) return;
+  postComment(db, {
+    itemId: item.id,
+    author: { type: "engine" },
+    kind: "note",
+    parseBodyMentions: false,
+    body: [`${item.key} was filed waiting by a rule worth a second look.`, "", ...warnings.map(warningLine)].join("\n"),
   });
 }
 

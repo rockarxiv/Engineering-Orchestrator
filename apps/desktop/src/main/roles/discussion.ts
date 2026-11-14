@@ -62,7 +62,7 @@ import { ASSIST_ACTION } from "./conversationSteps.js";
 import { runOf, threadOf, type ConversationThread } from "./conversationThread.js";
 import { PROPOSAL_KIND } from "./proposal.js";
 import { refuseIfUntouchable } from "./itemGuards.js";
-import { changeItemDependencies, circularRefusal, judgeGate, type GatedDependency } from "./itemDependencies.js";
+import { changeItemDependencies, circularRefusal, gateWarnings, judgeGate, postGateWarnings, type GatedDependency } from "./itemDependencies.js";
 import {
   applyApprovedProposal,
   baseBranchLine,
@@ -133,7 +133,17 @@ export const SKIPPED_ANSWER = "_Skipped — no preference; decide it yourself an
 // ── Applying one ──────────────────────────────────────────────
 
 export type ApplyDiscussionResult =
-  | { ok: true; created: Item[]; changed: Item[] }
+  | {
+      ok: true;
+      created: Item[];
+      changed: Item[];
+      /**
+       * What the edges written were written despite (EO-780,
+       * `gateWarnings`), already said on the items they are about.
+       * Absent where there is nothing to warn of.
+       */
+      warnings?: string[];
+    }
   /**
    * Not a failure: the proposal is good, but nobody has said which
    * pipeline the work belongs on. The screen asks and re-approves with an
@@ -636,7 +646,7 @@ function createPlan(
 
   noteJiraPlan(db, feature, applied.stories);
 
-  return { ok: true, created: [feature, ...applied.stories], changed: [] };
+  return { ok: true, created: [feature, ...applied.stories], changed: [], ...(applied.warnings.length === 0 ? {} : { warnings: applied.warnings }) };
 }
 
 /** Builds one story's link without writing an `undefined` switch, which `exactOptionalPropertyTypes` forbids. */
@@ -1329,7 +1339,11 @@ export function applyNewItem(
     if (problem) return { ok: false, reason: problem };
   }
 
-  return { ok: true, created: [item], changed: [] };
+  // Said on the item and in the answer (EO-780); the edges stand.
+  const warnings = gateWarnings(db, item, dependsOn);
+  postGateWarnings(db, item, warnings);
+
+  return { ok: true, created: [item], changed: [], ...(warnings.length === 0 ? {} : { warnings }) };
 }
 
 /**
@@ -1425,7 +1439,8 @@ function applyReorder(db: Db, proposal: ReorderProposal): ApplyDiscussionResult 
   );
   if (!changed.ok) return { ok: false, reason: changed.reason };
 
-  return { ok: true, created: [], changed: [getItem(db, item.id)!] };
+  const warnings = changed.applied?.warnings ?? [];
+  return { ok: true, created: [], changed: [getItem(db, item.id)!], ...(warnings.length === 0 ? {} : { warnings }) };
 }
 
 /**

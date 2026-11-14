@@ -14,11 +14,15 @@ import type { Item } from "@eo/core";
  */
 
 /** What an approval says in the thread. Created items are named in the order they were created. */
-export function approvalNote(applied: { created: readonly Item[]; changed: readonly Item[] }): string {
+export function approvalNote(applied: { created: readonly Item[]; changed: readonly Item[]; warnings?: readonly string[] | undefined }): string {
   const parts: string[] = [];
   if (applied.created.length > 0) parts.push(`Created ${applied.created.map((item) => item.key).join(", ")}.`);
   if (applied.changed.length > 0) parts.push(`Updated ${applied.changed.map((item) => item.key).join(", ")}.`);
-  return parts.length > 0 ? `Approved. ${parts.join(" ")}` : "Approved.";
+  const note = parts.length > 0 ? `Approved. ${parts.join(" ")}` : "Approved.";
+  // What the edges were written despite (EO-780), after the sentence
+  // `createdKeysIn` reads, so the keys it finds are unchanged.
+  const warnings = applied.warnings ?? [];
+  return warnings.length === 0 ? note : [note, "", ...warnings.map((warning) => `Warning: ${warning}`)].join("\n");
 }
 
 /** The keys an approval's comment says it created, in the order it created them. Empty for any other sentence. */
