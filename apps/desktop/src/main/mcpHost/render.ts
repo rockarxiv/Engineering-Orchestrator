@@ -40,6 +40,12 @@ import {
   type ViewResult,
   type ViewItem,
   type ViewProposedItem,
+  describeJobTrigger,
+  webhookPath,
+  type JobOccurrenceRow,
+  type JobSummary,
+  type JobTrigger,
+  type WebhookTrigger,
 } from "@eo/core";
 import { describeActionUse } from "../ipc/roleActionCommands.js";
 import { isDeliverable } from "../agentAttachments/pluginDirectory.js";
@@ -2419,4 +2425,87 @@ export function renderUpdateConflict(data: IpcResponse<"pipeline:updateConflict"
     `The person's pipeline now: ${graph(conflict.current)}`,
     `Template ${conflict.toVersion}: ${graph(conflict.template)}`,
   ].join("\n");
+}
+
+/**
+ * A job's trigger as an agent is given it (EO-785): a webhook trigger
+ * without its signing secret.
+ *
+ * Built by naming what an agent may read rather than by deleting the one
+ * field it may not, so a field added to the webhook trigger later is
+ * left out until somebody decides it can be read. The secret is a
+ * symmetric key in plain text (`WebhookTriggerSchema.secret`); the person
+ * reads it on the Job page, and no tool answer carries it.
+ */
+export type AgentJobTrigger = Exclude<JobTrigger, WebhookTrigger> | Omit<WebhookTrigger, "secret">;
+
+/** A job as every job tool answers it: the summary, with `AgentJobTrigger`'s trigger. */
+export type AgentJob = Omit<JobSummary, "trigger"> & { trigger: AgentJobTrigger };
+
+export function agentJobTrigger(trigger: JobTrigger): AgentJobTrigger {
+  if (trigger.kind !== "webhook") return trigger;
+  return { kind: trigger.kind, path: trigger.path, mapping: trigger.mapping };
+}
+
+export function agentJob(job: JobSummary): AgentJob {
+  return { ...job, trigger: agentJobTrigger(job.trigger) };
+}
+
+function agentTriggerLine(trigger: AgentJobTrigger): string {
+  switch (trigger.kind) {
+    case "manual":
+      return "manual — fires when somebody presses Run now";
+    case "schedule":
+      return `schedule — ${describeJobTrigger(trigger)}, in ${trigger.timeZone}, run late within ${trigger.catchUpWithinMinutes} minute(s) of a missed time`;
+    case "watch":
+      return (
+        `watch — module ${trigger.moduleId} checked every ${trigger.everyMinutes} minute(s)` +
+        `${trigger.waitWhileOpen ? ", held while an item it filed is unfinished" : ""}, inputs ${JSON.stringify(trigger.inputs)}`
+      );
+    case "webhook":
+      return `webhook — events arrive at ${webhookPath(trigger.path)}; its signing secret is never in a tool's answer, and a person reads it on the Job page`;
+    case "from-discussion":
+      return "from a conversation";
+  }
+}
+
+function jobLines(job: AgentJob): string[] {
+  const status =
+    job.pausedAt === null ? "active" : `paused ${job.pausedReason === null ? "" : `(${job.pausedReason}) `}since ${stamp(job.pausedAt)}`;
+  const template = job.template === null ? "none" : `${job.template.type} titled "${job.template.title}"`;
+  return [
+    `- "${job.name}" (id: ${job.id}) — ${status}`,
+    `  - trigger: ${agentTriggerLine(job.trigger)}`,
+    `  - files on pipeline ${job.pipelineId ?? "none"}, template ${template}, runs on the ${job.runsOn === "server" ? "organisation server" : "desktop"}`,
+    `  - next run ${job.nextRunAt === null ? "none" : stamp(job.nextRunAt)}, last run ${job.lastRunAt === null ? "never" : stamp(job.lastRunAt)}` +
+      `${job.lastStatus === null ? "" : ` (${job.lastStatus})`}`,
+    `  - budget per occurrence ${job.budgetPerOccurrenceCents === null ? "none" : money(job.budgetPerOccurrenceCents)}, ` +
+      `at most ${job.maxItemsPerHour === null ? "any number of" : job.maxItemsPerHour} item(s) an hour`,
+  ];
+}
+
+export function renderJobs(data: { jobs: readonly AgentJob[] }): string {
+  if (data.jobs.length === 0) return "No jobs on this project.";
+  return data.jobs.flatMap(jobLines).join("\n");
+}
+
+function occurrenceLine(occurrence: JobOccurrenceRow): string {
+  const item = occurrence.itemKey === null ? "" : `, filed ${occurrence.itemKey}${occurrence.itemTitle === null ? "" : ` "${occurrence.itemTitle}"`}`;
+  const reason = occurrence.reason === null ? "" : ` — ${occurrence.reason}`;
+  return `- ${stamp(occurrence.dueAt)} ${occurrence.status}${item}, cost ${money(occurrence.costCents)}${reason}`;
+}
+
+export function renderJob(data: { job: AgentJob | null; occurrences: readonly JobOccurrenceRow[] }): string {
+  if (data.job === null) {
+    return "No job with that id is on the Jobs list: it has been deleted, it never existed, or it is a conversation's job, which jobs_list does not show either.";
+  }
+  const history = data.occurrences.length === 0 ? ["No occurrences yet."] : ["Occurrences, newest first:", ...data.occurrences.map(occurrenceLine)];
+  return [...jobLines(data.job), ...history].join("\n");
+}
+
+/** What a job save answers (EO-785): the job as it now stands, and what the save did not check. */
+export function renderJobSaved(verb: string, data: { job: AgentJob | null; notice?: string | null | undefined }): string {
+  if (data.job === null) return `Nothing was ${verb}.`;
+  const notice = data.notice === null || data.notice === undefined ? "" : `\nNot checked: ${data.notice}`;
+  return `${verb[0]!.toUpperCase()}${verb.slice(1)} "${data.job.name}".\n${jobLines(data.job).join("\n")}${notice}`;
 }

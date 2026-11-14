@@ -470,38 +470,27 @@ const NOT_CATALOGUED: Partial<Record<RecordChannel, string>> = {
   "items:takeOver": "taking an item from the person holding it, which a person confirms after a warning naming them",
   "items:authority": "which buttons a screen offers the person looking at it on a group's step; the refusal is what an agent hears",
 
-  // Jobs (EO-304). A job is a standing claim on the owner's machine,
-  // their logins and their budget: it fires while EO is open here
-  // (ARCHITECTURE.md, "Where a job runs"), fills the owner's inbox and spends against their
-  // ceiling. A
-  // client that could make one, run one or remove one would be choosing
-  // what this machine does when nobody is watching, which is the
-  // person's decision and stays on the Jobs page. The read is withheld
-  // with the writes rather than offered alone: the only thing a client
-  // could do with the list is act on an entry, and every act is here.
-  "jobs:list": "a job is the person's standing claim on this machine, not a list a client acts on",
-  "jobs:create": "committing this machine to recurring work is the owner's decision",
-  "jobs:get": "reading a job is reading the owner's standing claim on this machine — see jobs:list",
-  "jobs:update": "rewriting when this machine commits its own time and money is the owner's, not a client's",
-  "jobs:runNow": "spending the owner's budget on demand is a button they press, not a call a client makes",
-  "jobs:delete": "removing the owner's standing commitment is theirs to do",
-  "jobs:pause": "stopping the owner's standing commitment is theirs to do, and a client that could pause a job could switch its work off quietly",
+  // Jobs (EO-304, EO-785). Listing, reading, creating, editing and
+  // deleting a job are tools now: jobs are set up by agents (EO-784).
+  // What stays here is what a person presses on the Job page. A job is a
+  // standing claim on the owner's machine, their logins and their
+  // budget: it fires while EO is open here (ARCHITECTURE.md, "Where a
+  // job runs"), fills the owner's inbox and spends against their ceiling.
+  "jobs:runNow": "spending the owner's budget on demand is a button they press on the Job page, not a call a client makes",
+  "jobs:pause": "stopping the owner's standing commitment is a button they press on the Job page, and a client that could pause a job could switch its work off quietly",
   "jobs:resume": "starting one again commits the machine to spending, which is the owner's decision — see jobs:runNow",
   "jobs:cost": "what the owner has spent is their business, not a figure a client reads off the machine",
 
   // A webhook job's own three (EO-333, ARCHITECTURE.md, "The inbox, the archive and jobs").
-  // Withheld with the eight
-  // above, and two of them on a second ground of their own. Replacing
-  // the signing secret invalidates whatever the helpdesk at the other
-  // end is configured with, so a client that could call it could take a
-  // team's intake down without a person hearing about it; and sending a
-  // test event files an item on the owner's board and spends against
-  // the owner's budget, which is `jobs:runNow`'s argument with a
-  // different button on it. The read is withheld with the writes for
-  // `jobs:list`'s reason — and because those rows carry the payloads
-  // strangers sent, which is the last thing to hand a client that
-  // asked for a list.
-  "jobs:events": "a job's deliveries are the owner's record, payloads and all — see jobs:list",
+  // Replacing the signing secret invalidates whatever the helpdesk at the
+  // other end is configured with, so a client that could call it could
+  // take a team's intake down without a person hearing about it; and
+  // sending a test event files an item on the owner's board and spends
+  // against the owner's budget, which is `jobs:runNow`'s argument with a
+  // different button on it. Both are a card the person presses (EO-784).
+  // The deliveries are withheld because those rows carry the payloads
+  // strangers sent, which no tool hands a client.
+  "jobs:events": "a job's deliveries are the payloads strangers sent the owner's webhook, which no client is handed",
   "jobs:regenerateSecret": "invalidating the secret the other end is configured with takes a team's intake down; the owner presses this one",
   "jobs:testEvent": "filing an item and spending the owner's budget on demand is a button they press — see jobs:runNow",
 
@@ -594,20 +583,12 @@ const NOT_CATALOGUED_MACHINE: Partial<Record<MachineChannel, string>> = {
   "projects:keepLocal": "a person's answer about where their own work lives, which is not an assistant's to give",
   "projects:moveToRecord": "hands a project to an organisation with no way back; the person decides this at the sheet or in Settings",
 
-  // Where a job runs (EO-330, ARCHITECTURE.md, "Where a job runs"). The machine half of a decision
-  // whose other half is already withheld above: every `jobs:*` channel
-  // is out because a job is the owner's standing claim on their own
-  // machine, their logins and their budget, and a client that could
-  // read where one runs is a client one call away from the update that
-  // moves it. The read is withheld with the write, exactly as
-  // `jobs:list` is.
-  //
-  // And it would be answering about the wrong computer anyway. What it
-  // reports is how *this* desktop is signed in and what is on *this*
+  // Where a job runs (EO-330, ARCHITECTURE.md, "Where a job runs"). What
+  // it reports is how *this* desktop is signed in and what is on *this*
   // disk; an agent connected over MCP is somewhere else, and the honest
-  // thing for it to read about placement is the Job page a person is
-  // looking at.
-  "jobs:placement": "where a job runs is the owner's standing claim on their own machine — see jobs:list, and the update that moves it",
+  // thing for it to read about placement is the refusal job_create or
+  // job_update answers when a job cannot run where it asked.
+  "jobs:placement": "how this desktop is signed in and what is on its disk, which is the wrong computer for a client elsewhere; job_create and job_update refuse a placement with the reason",
 
   // What the run memory limit comes to on this desktop (EO-738). The
   // setting itself is guardrails_get's and guardrails_set's, which say
@@ -864,6 +845,21 @@ describe("the MCP tool catalog", () => {
     expect(Object.keys(NOT_CATALOGUED_MACHINE).filter((channel) => channel in recordContract)).toEqual([]);
   });
 
+  it("offers the five job channels agents set jobs up through, and withholds the rest without leaning on jobs:list (EO-785)", () => {
+    const offered = new Set(TOOLS.flatMap((tool) => tool.channels));
+    const tools = ["jobs:list", "jobs:get", "jobs:create", "jobs:update", "jobs:delete"] as const;
+    for (const channel of tools) {
+      expect(ALL_EXCLUSIONS, channel).not.toHaveProperty(channel);
+      expect(offered.has(channel), channel).toBe(true);
+    }
+    const withheld = (Object.keys(ipcContract) as IpcChannel[]).filter((channel) => channel.startsWith("jobs:") && !(tools as readonly string[]).includes(channel));
+    expect(withheld.length).toBeGreaterThan(0);
+    for (const channel of withheld) {
+      expect(ALL_EXCLUSIONS[channel], channel).toBeDefined();
+      expect(ALL_EXCLUSIONS[channel], channel).not.toContain("jobs:list");
+    }
+  });
+
   it("gives every exclusion a reason that is a decision", () => {
     // The rule that makes the sweep above worth anything. An exclusion
     // saying "pending" accounts for a channel the way an IOU accounts
@@ -1019,6 +1015,9 @@ describe("the MCP tool catalog", () => {
     "mcp_server_clear_secret",
     // A definition is removed outright, with no archive behind it (EO-425).
     "role_action_delete",
+    // A job is deleted for good (EO-785): the row stays as a tombstone so
+    // the items it filed still name it, and no channel brings it back.
+    "job_delete",
   ];
 
   it("warns a client before every tool that destroys something", () => {

@@ -64,14 +64,14 @@ describe("the destructive-operations gate", () => {
     const offered = toolsFor(false, "admin");
 
     expect(offered.filter((tool) => tool.kind === "dangerous")).toEqual([]);
-    expect(offered.length).toBe(TOOLS.filter((tool) => tool.kind !== "dangerous" && tool.personOnly !== true).length);
+    expect(offered.length).toBe(TOOLS.filter((tool) => tool.kind !== "dangerous" && tool.personOnly !== true && tool.externalOnly !== true).length);
   });
 
   it("offers everything once it is open", () => {
     // The admin listener's, because that is the audience the whole
     // catalogue is for. The external one is a tool short (EO-192), which
     // is the point of the case below.
-    expect(toolsFor(true, "admin").length).toBe(TOOLS.filter((tool) => tool.personOnly !== true).length);
+    expect(toolsFor(true, "admin").length).toBe(TOOLS.filter((tool) => tool.personOnly !== true && tool.externalOnly !== true).length);
     // Strictly more than when closed, which is the property Settings
     // reports to the person deciding whether to flip it.
     expect(toolsFor(true).length).toBeGreaterThan(toolsFor(false).length);
@@ -167,5 +167,33 @@ describe("the person-only surface", () => {
     const lock = TOOLS.find((tool) => tool.name === "skill_set_locked")!;
     expect(toolOffered(lock, "admin")).toBe(false);
     expect(toolOffered(lock, "external")).toBe(true);
+  });
+});
+
+/**
+ * Offered to outside clients and not to EO's own agents (EO-785): the job
+ * writes, which the system agent proposes as a card instead.
+ */
+describe("the external-only surface", () => {
+  const externalOnly = TOOLS.filter((tool) => tool.externalOnly === true).map((tool) => tool.name);
+
+  it("holds the job writes, so the checks below are not passing on an empty set", () => {
+    expect(externalOnly).toEqual(["job_create", "job_update", "job_delete"]);
+  });
+
+  it("withholds them from the admin listener, gate open or shut, and offers them to the external one", () => {
+    for (const dangerous of [false, true]) {
+      const admin = toolsFor(dangerous, "admin").map((tool) => tool.name);
+      for (const name of externalOnly) expect(admin, `${name} with dangerousOperations=${dangerous}`).not.toContain(name);
+    }
+    const external = toolsFor(true, "external").map((tool) => tool.name);
+    for (const name of externalOnly) expect(external).toContain(name);
+    expect(toolsFor(false, "external").map((tool) => tool.name)).not.toContain("job_delete");
+  });
+
+  it("answers per tool as well as per list", () => {
+    const create = TOOLS.find((tool) => tool.name === "job_create")!;
+    expect(toolOffered(create, "admin")).toBe(false);
+    expect(toolOffered(create, "external")).toBe(true);
   });
 });

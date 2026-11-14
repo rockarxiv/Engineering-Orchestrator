@@ -20,13 +20,24 @@ import {
   WEBHOOK_UNATTENDED_CARD_KIND,
   WEBHOOK_UNATTENDED_KEY,
   withActingAgent,
+  JobRunsOnSchema,
+  ManualTriggerSchema,
+  ScheduleTriggerSchema,
+  WatchTriggerSchema,
+  WebhookMappingSchema,
+  webhookPath,
   type AgentRemovalImpact,
+  type JobTrigger,
   type IpcChannel,
   type IpcRequest,
   type IpcResponse,
 } from "@eo/core";
 import { z } from "zod";
 import {
+  agentJob,
+  renderJob,
+  renderJobs,
+  renderJobSaved,
   renderAgentAttachmentSet,
   renderAgentAttachments,
   renderAgentSaved,
@@ -203,6 +214,15 @@ export interface ToolSpec {
    * `adminOnly` is.
    */
   personOnly?: boolean;
+  /**
+   * Withheld from the administrative listener, though an agent may call
+   * it from outside (EO-785) — unlike `personOnly`, which no agent may.
+   * The job writes: an outside client's tools save straight away, while
+   * EO's system agent proposes a job change as a card the person presses,
+   * so `eo_admin` offers it no tool that writes a job. Enforced on both
+   * paths, as `adminOnly` is.
+   */
+  externalOnly?: boolean;
   annotations: ToolAnnotations;
   /**
    * Every channel this tool may touch.
@@ -279,6 +299,8 @@ interface ChannelToolSpec<K extends IpcChannel> {
   adminOnly?: boolean;
   /** See `ToolSpec.personOnly`. */
   personOnly?: boolean;
+  /** See `ToolSpec.externalOnly`. */
+  externalOnly?: boolean;
   annotations: ToolAnnotations;
   /** See `ToolSpec.list`. */
   list?: string;
@@ -475,6 +497,7 @@ function spelledTool<K extends IpcChannel>(spec: ChannelToolSpec<K>, spelling: T
     kind: spec.kind,
     ...(spec.adminOnly === true ? { adminOnly: true } : {}),
     ...(spec.personOnly === true ? { personOnly: true } : {}),
+    ...(spec.externalOnly === true ? { externalOnly: true } : {}),
     annotations: spec.annotations,
     ...(spec.list !== undefined ? { list: spec.list } : {}),
     channels: [spec.channel],
@@ -1574,6 +1597,269 @@ const RUN_EVENTS_TOOL: ToolSpec = {
 };
 
 /**
+ * Jobs (EO-785). A job is set up by an agent: an outside client's tools
+ * save straight away, and EO's system agent proposes a change as a card
+ * the person presses. So the two reads are on every listener — the
+ * system agent names a job on its card — and the three writes are
+ * `externalOnly`. Every write goes through the command the Jobs screen
+ * used, so its refusals and its notice are the command's own.
+ *
+ * No answer carries a webhook trigger's signing secret (`agentJob`): the
+ * reads and the writes all answer through it. Pausing, resuming and
+ * running a job now stay on the Job page, and a webhook's secret and test
+ * event are a card the person presses (catalog.test.ts says why).
+ */
+
+/** A text an agent must fill, refused by its own name rather than as the channel's "Invalid request payload". */
+function filledText(why: string) {
+  return z.string().refine((value) => value.trim() !== "", { error: `must not be blank — ${why}` });
+}
+
+/** What a job files, with each blank field refused by name. */
+const AGENT_JOB_TEMPLATE = z.object({
+  type: filledText("it is the qualified item type every item this job files is, such as developer:story"),
+  title: filledText("it is the title every item this job files is given; {{date}} and {{job}} are filled in"),
+  body: z.string().nullable().optional(),
+});
+
+/** The kinds `job_create` makes: what the Jobs screen's form made. A webhook job is not made over MCP. */
+const AGENT_CREATED_TRIGGER = z.discriminatedUnion("kind", [ManualTriggerSchema, ScheduleTriggerSchema, WatchTriggerSchema], {
+  error: "must be manual, schedule or watch — a webhook job is not made over MCP",
+});
+
+/**
+ * A webhook trigger as `job_update` takes one: its mapping, and nothing
+ * else that may differ. Path and secret are accepted only to refuse a
+ * change to them, since the sender is configured with both.
+ */
+const WEBHOOK_TRIGGER_EDIT = z.object({
+  kind: z.literal("webhook"),
+  path: z.string().optional().describe("Leave out. Its address is not changed over MCP; a different one is refused."),
+  secret: z.string().optional().describe("Leave out. Its signing secret is not changed over MCP; a different one is refused."),
+  mapping: WebhookMappingSchema.optional(),
+});
+
+const JOB_CREATE_INPUT = z.object({
+  projectId: z.string().nullable().optional(),
+  name: filledText("it is what the Jobs list shows and what {{job}} expands to"),
+  trigger: AGENT_CREATED_TRIGGER,
+  pipelineId: z.string().nullable().optional(),
+  template: AGENT_JOB_TEMPLATE.nullable().optional(),
+  budgetPerOccurrenceCents: z.number().int().min(0).nullable().optional(),
+  maxItemsPerHour: z.number().int().min(1).nullable().optional(),
+  runsOn: JobRunsOnSchema.optional(),
+});
+
+const JOB_UPDATE_INPUT = z.object({
+  jobId: z.string().min(1),
+  name: filledText("it is what the Jobs list shows and what {{job}} expands to").optional(),
+  trigger: z.discriminatedUnion("kind", [ManualTriggerSchema, ScheduleTriggerSchema, WatchTriggerSchema, WEBHOOK_TRIGGER_EDIT]).optional(),
+  pipelineId: z.string().nullable().optional(),
+  template: AGENT_JOB_TEMPLATE.nullable().optional(),
+  budgetPerOccurrenceCents: z.number().int().min(0).nullable().optional(),
+  maxItemsPerHour: z.number().int().min(1).nullable().optional(),
+  runsOn: JobRunsOnSchema.optional(),
+});
+
+type JobUpdateArguments = z.infer<typeof JOB_UPDATE_INPUT>;
+
+/**
+ * A job write whose arguments are refused field by field.
+ *
+ * `channelTool` reports a bad argument by its message alone, which for a
+ * blank template title is "Too small" with nothing saying which string;
+ * the form's own refusal was "Invalid request payload". Parsed here
+ * first, so each issue names its field — `template.title: must not be
+ * blank …` — and what reaches the channel is unchanged. `guard` stands
+ * between the tool and its channel, for the refusals a job write needs
+ * that the command does not make; `reads` are the channels it reads.
+ */
+function jobWriteTool(tool: ToolSpec, schema: z.ZodType, nothing: string, guard?: { reads: readonly IpcChannel[]; dispatch: (dispatch: Dispatch) => Dispatch }): ToolSpec {
+  return {
+    ...tool,
+    channels: [...tool.channels, ...(guard?.reads ?? [])],
+    async run(dispatch, args) {
+      const parsed = schema.safeParse(args);
+      if (!parsed.success) {
+        return {
+          ok: false,
+          message: `Invalid arguments for "${tool.name}". ${nothing}`,
+          issues: parsed.error.issues.map((issue) => (issue.path.length === 0 ? issue.message : `${issue.path.join(".")}: ${issue.message}`)),
+        };
+      }
+      return tool.run(guard === undefined ? dispatch : guard.dispatch(dispatch), args);
+    },
+  };
+}
+
+/** The job as the Jobs list keeps it, or null — a deleted job, an unknown id, or a conversation's. */
+async function keptJob(dispatch: Dispatch, jobId: string): Promise<{ ok: true; job: IpcResponse<"jobs:get">["job"] } | { ok: false; failed: Awaited<ReturnType<Dispatch>> }> {
+  const read = await dispatch("jobs:get", { jobId });
+  if (!read.ok) return { ok: false, failed: read };
+  return { ok: true, job: (read.data as IpcResponse<"jobs:get">).job };
+}
+
+/**
+ * The trigger a `job_update` saves, or the sentence refusing it.
+ *
+ * A webhook job keeps its address and its signing secret: the sender at
+ * the other end is configured with both, so a different path or secret —
+ * or another kind of trigger, which drops both — would stop its events
+ * arriving with nobody told. The two are filled in from the job as it
+ * stands, which is the only place an agent's save meets the secret, and
+ * no answer repeats it. And no job becomes a webhook job here, for
+ * `job_create`'s reason.
+ */
+function editedJobTrigger(standing: JobTrigger, edit: NonNullable<JobUpdateArguments["trigger"]>): JobTrigger | string {
+  if (standing.kind === "webhook") {
+    if (edit.kind !== "webhook") {
+      return `This is a webhook job, and making it a ${edit.kind} job would take away the address and signing secret its sender is configured with, which no tool changes.`;
+    }
+    if (edit.path !== undefined && edit.path !== standing.path) {
+      return `A webhook's address is not changed over MCP: its sender is configured with ${webhookPath(standing.path)}, and moving it would stop its events arriving. Leave path out to keep it.`;
+    }
+    if (edit.secret !== undefined && edit.secret !== standing.secret) {
+      return "A webhook's signing secret is not changed over MCP: its sender signs every event with it, and replacing it is a person's to do. Leave secret out to keep it.";
+    }
+    return { kind: "webhook", path: standing.path, secret: standing.secret, mapping: edit.mapping ?? standing.mapping };
+  }
+  if (edit.kind === "webhook") return "A job is not made a webhook job over MCP, as job_create does not make one.";
+  return edit;
+}
+
+function guardedJobUpdate(dispatch: Dispatch): Dispatch {
+  return async (channel, payload) => {
+    if (channel !== "jobs:update") return dispatch(channel, payload);
+    const request = payload as JobUpdateArguments;
+    const standing = await keptJob(dispatch, request.jobId);
+    if (!standing.ok) return standing.failed;
+    // Not a job the list keeps: the command's own refusal says which —
+    // gone, or a conversation's — and an empty patch writes nothing.
+    if (standing.job === null) return dispatch("jobs:update", { jobId: request.jobId });
+    if (request.trigger === undefined) return dispatch(channel, payload);
+    const trigger = editedJobTrigger(standing.job.trigger, request.trigger);
+    if (typeof trigger === "string") return { ok: true, data: { job: null, problem: trigger } };
+    return dispatch(channel, { ...request, trigger });
+  };
+}
+
+const JOB_DELETE_REFUSAL =
+  "No job with that id is on the Jobs list. It has been deleted already, it never existed, or it is a conversation's job " +
+  "(a from-discussion job), which ends with its conversation rather than through this tool.";
+
+/** `jobs:delete` for a job the list keeps; a conversation's job is refused, since deleting it would archive the conversation. */
+function guardedJobDelete(dispatch: Dispatch): Dispatch {
+  return async (channel, payload) => {
+    if (channel !== "jobs:delete") return dispatch(channel, payload);
+    const standing = await keptJob(dispatch, (payload as { jobId: string }).jobId);
+    if (!standing.ok) return standing.failed;
+    if (standing.job === null) return { ok: true, data: { deleted: false, archivedItemCount: 0 } };
+    return dispatch(channel, payload);
+  };
+}
+
+const JOB_READ_TOOLS: readonly ToolSpec[] = [
+  channelTool({
+    name: "jobs_list",
+    channel: "jobs:list",
+    description:
+      "The jobs on a project: each one's id, name, trigger (manual, schedule, watch or webhook), the pipeline it files on and " +
+      "the template it files, where it runs, whether it is paused, its next and last run, and its budget. Pass projectId " +
+      "from projects_list; omit it for the project the app window is showing, or pass pipelineId for the jobs filing onto " +
+      "one pipeline. A webhook job's signing secret is never in the answer: a person reads it on the Job page.",
+    kind: "read",
+    list: "jobs",
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    render: (data) => renderJobs({ jobs: data.jobs.map(agentJob) }),
+    forAgent: (data) => ({ jobs: data.jobs.map(agentJob) }),
+  }),
+  channelTool({
+    name: "job_get",
+    channel: "jobs:get",
+    description:
+      "One job, as jobs_list describes it, with its occurrences newest first: when each was due, whether it fired, was " +
+      "skipped or failed and why, the item it filed and what that cost. Answers that there is no such job for one deleted, " +
+      "one never made, and a conversation's job. A webhook job's signing secret is never in the answer.",
+    kind: "read",
+    list: "occurrences",
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    render: (data) => renderJob({ job: data.job === null ? null : agentJob(data.job), occurrences: data.occurrences }),
+    forAgent: (data) => ({ job: data.job === null ? null : agentJob(data.job), occurrences: data.occurrences }),
+  }),
+];
+
+const JOB_WRITE_TOOLS: readonly ToolSpec[] = [
+  jobWriteTool(
+    channelTool({
+      name: "job_create",
+      channel: "jobs:create",
+      description:
+        "Make a job, saved at once: a manual job (fired by Run now on the Job page), a schedule job ({ kind: \"schedule\", " +
+        "schedule: daily, weekly or cron, timeZone: an IANA name }) or a watch job ({ kind: \"watch\", moduleId, inputs, " +
+        "everyMinutes }, its module approved and declaring watch: true). Every kind needs pipelineId and template " +
+        "{ type: a qualified item type such as developer:story, title, body }; {{date}} and {{job}} are filled in. A job " +
+        "that could not fire is refused with the reason and nothing is made. Webhook jobs are not made over MCP. " +
+        "EO's own agents are not offered this tool.",
+      kind: "write",
+      externalOnly: true,
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+      input: JOB_CREATE_INPUT,
+      render: (data) => renderJobSaved("created", { job: data.job === null ? null : agentJob(data.job), notice: data.notice }),
+      refusal: (data) => (data.job === null ? `Nothing was created: ${data.problem ?? "it refused."} Nothing has changed.` : null),
+      forAgent: (data) => ({ ...data, job: data.job === null ? null : agentJob(data.job) }),
+    }),
+    JOB_CREATE_INPUT,
+    "Nothing was created.",
+  ),
+  jobWriteTool(
+    channelTool({
+      name: "job_update",
+      channel: "jobs:update",
+      description:
+        "Change a job, saved at once. Send only what changes: its name, trigger, pipelineId, template, budget, " +
+        "maxItemsPerHour or where it runs; null clears a budget. Checked as job_create checks, and refused with the " +
+        "reason where the job could no longer fire. A webhook job keeps its address and signing secret — send its " +
+        "trigger as { kind: \"webhook\", mapping } to change what it files — and stays a webhook job. A conversation's " +
+        "job is not changed. EO's own agents are not offered this tool.",
+      kind: "write",
+      externalOnly: true,
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+      input: JOB_UPDATE_INPUT,
+      render: (data) => renderJobSaved("saved", { job: data.job === null ? null : agentJob(data.job), notice: data.notice }),
+      refusal: (data) => (data.job === null ? `Nothing has changed: ${data.problem ?? "it refused."}` : null),
+      forAgent: (data) => ({ ...data, job: data.job === null ? null : agentJob(data.job) }),
+    }),
+    JOB_UPDATE_INPUT,
+    "Nothing has changed.",
+    { reads: ["jobs:get"], dispatch: guardedJobUpdate },
+  ),
+];
+
+/**
+ * `job_delete` is dangerous, like `ticket_delete`: the job stops for good,
+ * and `archiveItems` puts away everything it ever filed.
+ */
+const JOB_DELETE_TOOL: ToolSpec = jobWriteTool(
+  channelTool({
+    name: "job_delete",
+    channel: "jobs:delete",
+    description:
+      "Delete a job: it fires nothing again, and items it filed keep naming it. archiveItems: true archives every item it " +
+      "filed as well; left out, they stay where they are. A conversation's job is not deleted here. EO's own agents are " +
+      "not offered this tool.",
+    kind: "dangerous",
+    externalOnly: true,
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
+    render: (data, request) =>
+      `Deleted the job.${request.archiveItems ? ` Archived ${data.archivedItemCount} item(s) it filed.` : " The items it filed are left where they are."}`,
+    refusal: (data) => (data.deleted ? null : `EO did not delete it: ${JOB_DELETE_REFUSAL} Nothing has changed.`),
+  }),
+  z.object({ jobId: z.string().min(1), archiveItems: z.boolean().optional() }),
+  "Nothing has changed.",
+  { reads: ["jobs:get"], dispatch: guardedJobDelete },
+);
+
+/**
  * The reads that were here first.
  *
  * Descriptions are written for a model deciding which tool to reach
@@ -1942,6 +2228,7 @@ const READ_TOOLS: readonly ToolSpec[] = [
   }),
   ...TRACKER_READ_TOOLS,
   ...CATALOGUE_READ_TOOLS,
+  ...JOB_READ_TOOLS,
 ];
 
 /**
@@ -3890,6 +4177,7 @@ const UNGATED_WRITE_TOOLS: readonly ToolSpec[] = [
   ...CATALOGUE_WRITE_TOOLS,
   ...MEMORY_WRITE_TOOLS,
   AGENT_ATTACHMENT_SET_TOOL,
+  ...JOB_WRITE_TOOLS,
 ];
 
 /**
@@ -4512,6 +4800,7 @@ const GATED_TOOLS: readonly ToolSpec[] = [
     render: (data) => (data.released ? "Worktree released. Its branch is untouched." : `Not released: ${data.reason ?? "it refused."}`),
     refusal: (data) => (data.released ? null : `Not released: ${data.reason ?? "it refused."} Nothing has changed.`),
   }),
+  JOB_DELETE_TOOL,
 ];
 
 /**

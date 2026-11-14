@@ -33,6 +33,8 @@ const MAIN_LIST: Record<string, string | null> = {
   items_list: "items",
   items_list_archived: "items",
   item_get: null,
+  jobs_list: "jobs",
+  job_get: "occurrences",
   inbox_list: "items",
   run_events: "events",
   runs_list: "runs",
