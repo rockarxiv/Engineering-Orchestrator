@@ -352,6 +352,23 @@ const CARDS = [
   { kind: "pipelineKeepMine", pipelineId: "release" },
   // The publish card after a draft's trials (EO-588): it names nothing.
   { kind: "trialPublish" },
+  // Jobs (EO-786). Every key written on both backends: null for what a
+  // create leaves to EO's default, and what a change leaves as it is.
+  {
+    kind: "jobCreate",
+    projectId: "payments",
+    name: "Monday report",
+    trigger: { kind: "schedule", schedule: { kind: "weekly", weekday: 1, hour: 8, minute: 0 }, timeZone: "Europe/Berlin", catchUpWithinMinutes: null },
+    pipelineId: "release",
+    template: { type: "developer:story", title: "Report for {{date}}", body: null },
+    budgetPerOccurrenceCents: 150,
+    maxItemsPerHour: null,
+    runsOn: null,
+  },
+  { kind: "jobUpdate", jobId: "monday-report", name: null, trigger: null, pipelineId: null, template: null, budgetPerOccurrenceCents: "none", maxItemsPerHour: 4, runsOn: null },
+  { kind: "jobDelete", jobId: "monday-report" },
+  { kind: "jobWebhook", jobId: "helpdesk", action: "regenerateSecret" },
+  { kind: "jobWebhook", jobId: "helpdesk", action: "testEvent" },
 ] as const;
 
 export const ASSIST_ANSWERS_WITH_CARDS = {

@@ -444,3 +444,124 @@ describe("a card for keeping my pipeline", () => {
     expect(screen.queryByRole("button", { name: "Keep my pipeline" })).toBeNull();
   });
 });
+
+/** Jobs (EO-786): made, changed and deleted on a card, and a webhook job's two buttons. */
+describe("a card for a job", () => {
+  const LINES = [
+    { label: "Name", value: "Monday report" },
+    { label: "Trigger", value: "Mondays at 08:00, Europe/Berlin — a missed time is still run within 180 minutes" },
+    { label: "Pipeline", value: "Delivery" },
+    { label: "Template type", value: "developer:story" },
+    { label: "Title", value: "Report for {{date}}" },
+    { label: "Budget per run", value: "$1.50" },
+    { label: "Runs on", value: "This machine" },
+  ];
+  const CREATE: AssistCardDetail = { kind: "jobCreate", projectName: "Shop", name: "Monday report", lines: LINES, created: null };
+
+  it("shows the job as it would be, and Create job goes through assist:applyCard alone", async () => {
+    const { calls, onDone } = draw(message({ kind: "jobCreate", outcome: null }), CREATE, {
+      "assist:applyCard": { applied: true, problem: null, said: "Created the job “Monday report” (job j-1).", conversation: {} },
+    });
+
+    const card = screen.getByRole("region", { name: "Create a job" });
+    expect(await within(card).findByText("A new job on Shop, as it would be.")).toBeInTheDocument();
+    const shown = within(card).getByLabelText("The job");
+    expect(shown).toHaveTextContent("TriggerMondays at 08:00, Europe/Berlin");
+    expect(shown).toHaveTextContent("Template typedeveloper:story");
+    expect(shown).toHaveTextContent("Budget per run$1.50");
+    expect(shown).toHaveTextContent("Runs onThis machine");
+
+    fireEvent.click(within(card).getByRole("button", { name: "Create job" }));
+
+    await waitFor(() => expect(onDone).toHaveBeenCalled());
+    expect(sent(calls, "assist:applyCard")).toEqual([{ conversationId: "conv-1", messageId: "card-1", choices: {} }]);
+    expect(sent(calls, "jobs:create")).toEqual([]);
+  });
+
+  it("links the job it made once pressed, with what was said, and offers no button", async () => {
+    const said = "Created the job “Monday report” (job j-1). Entry rules are checked when it fires.";
+    draw(message({ kind: "jobCreate", outcome: { done: true, said } }), { ...CREATE, created: { jobId: "j-1", name: "Monday report" } });
+
+    expect(await screen.findByRole("link", { name: "Open Monday report" })).toHaveAttribute("href", "/jobs/j-1");
+    expect(screen.getByText(said)).toBeInTheDocument();
+    expect(screen.getByText("Created")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Create job" })).toBeNull();
+  });
+
+  it("shows a refusal once pressed, and no link", async () => {
+    draw(message({ kind: "jobCreate", outcome: { done: false, said: "“Monday report” was not created: That pipeline no longer exists." } }), CREATE);
+
+    expect(await screen.findByText("“Monday report” was not created: That pipeline no longer exists.")).toBeInTheDocument();
+    expect(screen.getByText("Not created")).toBeInTheDocument();
+    expect(screen.queryByRole("link")).toBeNull();
+  });
+
+  it("lists each change as old → new, and Save job goes through assist:applyCard", async () => {
+    const { calls, onDone } = draw(
+      message({ kind: "jobUpdate", outcome: null }),
+      { kind: "jobUpdate", jobId: "j-1", jobName: "Nightly", changes: [{ label: "Budget per run", before: "$2.00", after: "None" }] },
+      { "assist:applyCard": { applied: true, problem: null, said: "Saved the job “Nightly”.", conversation: {} } },
+    );
+
+    const changes = await screen.findByLabelText("What changes");
+    expect(changes).toHaveTextContent("Budget per run$2.00→None");
+    expect(within(changes).getByText("$2.00")).toHaveClass("line-through");
+
+    fireEvent.click(screen.getByRole("button", { name: "Save job" }));
+
+    await waitFor(() => expect(onDone).toHaveBeenCalled());
+    expect(sent(calls, "assist:applyCard")).toEqual([{ conversationId: "conv-1", messageId: "card-1", choices: {} }]);
+  });
+
+  it("asks whether to keep or archive the job's items, and Delete job sends that choice", async () => {
+    const { calls, onDone } = draw(
+      message({ kind: "jobDelete", outcome: null }),
+      { kind: "jobDelete", jobId: "j-1", jobName: "Nightly", lines: LINES, itemCount: 3 },
+      { "assist:applyCard": { applied: true, problem: null, said: "Deleted the job “Nightly”.", conversation: {} } },
+    );
+
+    const choice = await screen.findByRole("radiogroup", { name: "What happens to the job's items" });
+    fireEvent.click(within(choice).getByRole("radio", { name: "Archive them" }));
+    fireEvent.click(screen.getByRole("button", { name: "Delete job" }));
+
+    await waitFor(() => expect(onDone).toHaveBeenCalled());
+    expect(sent(calls, "assist:applyCard")).toEqual([{ conversationId: "conv-1", messageId: "card-1", choices: {}, archiveItems: true }]);
+  });
+
+  it("keeps the items unless the person says otherwise", async () => {
+    const { calls, onDone } = draw(
+      message({ kind: "jobDelete", outcome: null }),
+      { kind: "jobDelete", jobId: "j-1", jobName: "Nightly", lines: LINES, itemCount: 3 },
+      { "assist:applyCard": { applied: true, problem: null, said: "Deleted the job “Nightly”.", conversation: {} } },
+    );
+
+    expect(await screen.findByRole("radiogroup", { name: "What happens to the job's items" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Delete job" }));
+
+    await waitFor(() => expect(onDone).toHaveBeenCalled());
+    expect(sent(calls, "assist:applyCard")).toEqual([{ conversationId: "conv-1", messageId: "card-1", choices: {}, archiveItems: false }]);
+  });
+
+  it("says a new secret stops the old one working the moment it is pressed", async () => {
+    draw(message({ kind: "jobWebhook", outcome: null }), { kind: "jobWebhook", jobId: "j-2", jobName: "Helpdesk", action: "regenerateSecret", address: "/webhooks/helpdesk", filed: null });
+
+    expect(await screen.findByText("The old secret stops working the moment the button is pressed")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Regenerate secret" })).toBeEnabled();
+  });
+
+  it("shows a test event's outcome and links the item it filed", async () => {
+    const said = "Sent a test event to “Helpdesk”: it was accepted and filed an item. It filed SUP-7 (item i-7).";
+    draw(message({ kind: "jobWebhook", outcome: { done: true, said } }), {
+      kind: "jobWebhook",
+      jobId: "j-2",
+      jobName: "Helpdesk",
+      action: "testEvent",
+      address: "/webhooks/helpdesk",
+      filed: { itemId: "i-7", itemKey: "SUP-7" },
+    });
+
+    expect(await screen.findByRole("link", { name: "SUP-7" })).toHaveAttribute("href", "/items/i-7");
+    expect(screen.getByText(said)).toBeInTheDocument();
+    expect(screen.getByText("Sent")).toBeInTheDocument();
+  });
+});

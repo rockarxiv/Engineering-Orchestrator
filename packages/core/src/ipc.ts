@@ -721,6 +721,15 @@ const EXISTING_ITEM_TYPE_CARD = {
 };
 
 /**
+ * One line of a job as a job card shows it (EO-786): what the Job page
+ * calls the field — "Trigger", "Runs on" — and its value in words. Words,
+ * worked out by EO, so the card and what the agent reads back say the
+ * same thing; and never a webhook's signing secret.
+ */
+export const JobCardLineSchema = z.object({ label: z.string(), value: z.string() });
+export type JobCardLine = z.infer<typeof JobCardLineSchema>;
+
+/**
  * What a card offering something only a person may do shows (EO-521),
  * read by EO when the card is drawn — `assist:card`.
  *
@@ -806,6 +815,43 @@ export const AssistCardDetailSchema = z.discriminatedUnion("kind", [
   }),
   /** The publish card after a draft's trials (EO-588): everything on it read from the trial. */
   TrialPublishCardSchema.extend({ kind: z.literal("trialPublish") }),
+  z.object({
+    /** Make a job (EO-786). */
+    kind: z.literal("jobCreate"),
+    projectName: z.string(),
+    name: z.string(),
+    /** The job as it would be, line by line. */
+    lines: z.array(JobCardLineSchema),
+    /** The job Create job made, once it has, for the card's link to it. Null before, and after a refusal. */
+    created: z.object({ jobId: z.string(), name: z.string() }).nullable(),
+  }),
+  z.object({
+    /** Change a job (EO-786): each field the card changes, as it is and as it would be. */
+    kind: z.literal("jobUpdate"),
+    jobId: z.string(),
+    jobName: z.string(),
+    changes: z.array(z.object({ label: z.string(), before: z.string(), after: z.string() })),
+  }),
+  z.object({
+    /** Delete a job (EO-786). */
+    kind: z.literal("jobDelete"),
+    jobId: z.string(),
+    jobName: z.string(),
+    lines: z.array(JobCardLineSchema),
+    /** The items it filed that are not archived — the ones "archive its items" would put away. */
+    itemCount: z.number().int().nonnegative(),
+  }),
+  z.object({
+    /** A webhook job's new secret or test event (EO-786). Never the secret itself. */
+    kind: z.literal("jobWebhook"),
+    jobId: z.string(),
+    jobName: z.string(),
+    action: z.enum(["regenerateSecret", "testEvent"]),
+    /** The address its sender posts to — `/webhooks/…`. */
+    address: z.string(),
+    /** What a test event filed, once one has, for the card's link to it. Null before, and for any outcome that filed nothing. */
+    filed: z.object({ itemId: z.string(), itemKey: z.string() }).nullable(),
+  }),
 ]);
 export type AssistCardDetail = z.infer<typeof AssistCardDetailSchema>;
 
@@ -2842,8 +2888,9 @@ export const recordContract = {
    * `pipelines:delete`, `pipelines:discardEdits`, and since EO-522
    * `pipelines:setWebhookUnattended`, `moduleSecrets:set`/`clear` and
    * `environmentVariables:set`/`clear` with the `value` the person typed,
-   * and since EO-523 `itemTypes:create`, `update` and `delete`.
-   * Held to the "newest card wins" rule, and what came of it — done or
+   * since EO-523 `itemTypes:create`, `update` and `delete`, and since
+   * EO-786 `jobs:create`, `update`, `delete`, `regenerateSecret` and
+   * `testEvent`. Held to the "newest card wins" rule, and what came of it — done or
    * refused — is filed under the card, which is what makes it spent. A
    * save dialog the person closed is neither, nor is a Set pressed with
    * nothing typed, and either leaves the card to press again.
@@ -2865,6 +2912,13 @@ export const recordContract = {
        * chat, and never in anything an agent is given.
        */
       value: z.string().optional(),
+      /**
+       * A job card's Delete (EO-786): whether the items the job filed are
+       * archived with it, as the Jobs screen's dialog asked. Absent on
+       * every other press, and false where it is absent, `jobs:delete`'s
+       * own default.
+       */
+      archiveItems: z.boolean().optional(),
     }),
     z.object({
       applied: z.boolean(),

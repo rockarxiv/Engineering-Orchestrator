@@ -226,3 +226,37 @@ describe("what the entry step needs (EO-610)", () => {
     expect(needs()).toContain("Nothing takes effect until the person publishes, as with any draft");
   });
 });
+
+describe("what the system agent's prompt says about jobs (EO-786)", () => {
+  const cards = () => section("### Cards for what only a person may do");
+
+  it("names them among what only a person may do", () => {
+    expect(section("## How you change anything")).toContain("So are creating, changing and deleting a job, and a webhook job's new secret and test event.");
+  });
+
+  it("says to read the jobs first, and that no tool writes one", () => {
+    expect(cards()).toContain("**Read the jobs with `jobs_list` or `job_get` first**");
+    expect(cards()).toContain("You have no tool that writes a job; the card is the only way.");
+  });
+
+  it("gives the four cards' shapes, with null for what a change leaves and \"none\" to clear a limit", () => {
+    expect(cards()).toContain('`{ "kind": "jobCreate", "projectId": "…", "name": "Monday report", "trigger": { "kind": "schedule"');
+    expect(cards()).toContain('`{ "kind": "jobUpdate", "jobId": "…", "name": null, "trigger": null');
+    expect(cards()).toContain("`\"none\"` removes a budget or a cap");
+    expect(cards()).toContain('`{ "kind": "jobDelete", "jobId": "…" }`');
+    expect(cards()).toContain('`{ "kind": "jobWebhook", "jobId": "…", "action": "regenerateSecret" }`');
+    expect(cards()).toContain("the old one stops working the moment the button is pressed");
+    expect(cards()).toContain("**A webhook job's signing secret is in no card, answer or chat message**");
+  });
+
+  it("no longer says it has no tool for jobs, or sends the person to the Jobs screen", () => {
+    expect(flat).not.toContain("you have no tool that creates jobs");
+    expect(flat).not.toContain("A watch intake is set up on the Jobs screen");
+    expect(flat).not.toContain("add a watch job there");
+    expect(section("### Modules, and when to reach for one instead of an agent")).toContain("offer a `jobCreate` card with a `watch` trigger");
+  });
+
+  it("is a newer version than the one before job cards", () => {
+    expect(Number(/prompt-version:\s*(\d+)/.exec(prompt)![1])).toBeGreaterThanOrEqual(56);
+  });
+});

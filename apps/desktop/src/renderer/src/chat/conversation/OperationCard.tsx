@@ -1,6 +1,7 @@
 import { useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Archive, Download, KeyRound, Shapes, ShieldCheck, Trash2, Upload, UnlockKeyhole, Variable, Webhook } from "lucide-react";
+import { Link } from "react-router-dom";
+import { Archive, CalendarClock, Download, KeyRound, Shapes, ShieldCheck, Trash2, Upload, UnlockKeyhole, Variable, Webhook } from "lucide-react";
 import {
   DIVERGED_ACTIONS,
   isPackShipped,
@@ -12,6 +13,7 @@ import {
   type AssistCardKind,
   type DiscussionMessage,
   type ItemTypeCardShape,
+  type JobCardLine,
 } from "@eo/core";
 import { Markdown } from "@eo/ui";
 import { useAliasesRetired } from "../../hooks/useAppVersion";
@@ -20,6 +22,7 @@ import {
   divergenceKey,
   environmentVariablesRootKey,
   itemsKey,
+  jobsRootKey,
   moduleSecretsRootKey,
   modulesKey,
   pipelineStepsKey,
@@ -65,6 +68,13 @@ import { useInvalidateOnPush } from "../../query/useInvalidateOnPush";
  * whether it holds other items, its fields — and, where
  * `itemTypes:create`, `update` or `delete` would refuse the press, that
  * refusal in place of the button.
+ *
+ * And four are jobs (EO-786): making one, changing one, deleting one, and
+ * a webhook job's new secret or test event. The card shows the job as it
+ * would be — or each changed field as old → new — in EO's words, and
+ * never a webhook's signing secret. Delete asks whether the job's items
+ * are kept or archived; once pressed, the card links the job it made or
+ * the item a test event filed.
  */
 export function OperationCard({ message, conversationId, onDone }: { message: DiscussionMessage; conversationId: string; onDone: () => void }) {
   const queryClient = useQueryClient();
@@ -97,10 +107,21 @@ export function OperationCard({ message, conversationId, onDone }: { message: Di
   const [value, setValue] = useState("");
   const typesValue = (detail?.kind === "stepSecret" || detail?.kind === "stepVariable") && detail.action === "set";
 
+  // A job card's Delete: keep the job's items, unless the person says to
+  // archive them — `jobs:delete`'s own default, and the dialog's.
+  const [archiveItems, setArchiveItems] = useState<"keep" | "archive">("keep");
+  const asksItems = detail?.kind === "jobDelete" && detail.itemCount > 0;
+
   const [problem, setProblem] = useState<string | null>(null);
   const press = useMutation({
     mutationFn: () =>
-      ipcQuery("assist:applyCard", { conversationId, messageId: message.id, choices: chosen, ...(typesValue ? { value } : {}) }),
+      ipcQuery("assist:applyCard", {
+        conversationId,
+        messageId: message.id,
+        choices: chosen,
+        ...(typesValue ? { value } : {}),
+        ...(kind === "jobDelete" ? { archiveItems: asksItems && archiveItems === "archive" } : {}),
+      }),
     onSuccess: (result) => {
       setValue("");
       // The card spent, as the answer says, before anything is re-read (EO-548).
@@ -112,7 +133,13 @@ export function OperationCard({ message, conversationId, onDone }: { message: Di
         if (detail?.kind === "pipelineWebhookUnattended") void queryClient.invalidateQueries({ queryKey: pipelineStepsKey(detail.pipelineId) });
         if (kind === "stepSecret") void queryClient.invalidateQueries({ queryKey: moduleSecretsRootKey });
         if (kind === "stepVariable") void queryClient.invalidateQueries({ queryKey: environmentVariablesRootKey });
-        if (kind !== "pipelineExport" && !kind.startsWith("itemType")) void queryClient.invalidateQueries({ queryKey: ["pipelines"] });
+        if (kind !== "pipelineExport" && !kind.startsWith("itemType") && !kind.startsWith("job")) void queryClient.invalidateQueries({ queryKey: ["pipelines"] });
+        // A job card: the Jobs list and page move, and the card re-reads what it made, for its link.
+        if (kind.startsWith("job")) {
+          void queryClient.invalidateQueries({ queryKey: jobsRootKey });
+          void queryClient.invalidateQueries({ queryKey: assistCardKey(message.id) });
+          if (kind === "jobDelete" || kind === "jobWebhook") void queryClient.invalidateQueries({ queryKey: itemsKey });
+        }
         if (kind === "pipelineDelete" || kind === "pipelineImport") void queryClient.invalidateQueries({ queryKey: itemsKey });
         if (kind === "pipelineImport") void queryClient.invalidateQueries({ queryKey: modulesKey });
         // A type change is when the registry moves, as the editor's Types section said.
@@ -184,10 +211,19 @@ export function OperationCard({ message, conversationId, onDone }: { message: Di
         />
       ) : null}
 
+      {open && asksItems && detail?.kind === "jobDelete" ? (
+        <div className="flex flex-wrap items-center gap-2 text-[12.5px] text-ink-muted">
+          <span>
+            Its {detail.itemCount === 1 ? "item" : `${detail.itemCount} items`}:
+          </span>
+          <Segmented size="sm" label="What happens to the job's items" value={archiveItems} options={ITEMS_CHOICES} onChange={setArchiveItems} />
+        </div>
+      ) : null}
+
       {open ? (
         <div className="flex items-center gap-2">
           <Button
-            variant={kind === "pipelineDelete" || kind === "itemTypeDelete" ? "danger" : "primary"}
+            variant={kind === "pipelineDelete" || kind === "itemTypeDelete" || kind === "jobDelete" ? "danger" : "primary"}
             size="sm"
             disabled={press.isPending || detail === null || refused || (typesValue && value === "")}
             onClick={() => press.mutate()}
@@ -204,6 +240,17 @@ export function OperationCard({ message, conversationId, onDone }: { message: Di
           <p role="status" className="text-[12.5px] leading-relaxed text-ink-muted">
             {outcome.said}
           </p>
+          {/* What a job card made, linked (EO-786): the job, or the item a test event filed. */}
+          {outcome.done && detail?.kind === "jobCreate" && detail.created !== null ? (
+            <Link to={`/jobs/${detail.created.jobId}`} className="text-[12.5px] text-accent underline-offset-2 hover:underline">
+              Open {detail.created.name}
+            </Link>
+          ) : null}
+          {outcome.done && detail?.kind === "jobWebhook" && detail.filed !== null ? (
+            <Link to={`/items/${detail.filed.itemId}`} className="font-mono text-[12.5px] text-accent underline-offset-2 hover:underline">
+              {detail.filed.itemKey}
+            </Link>
+          ) : null}
         </div>
       ) : (
         <p className="text-[12px] text-ink-subtle">A newer reply replaced this card — ask again to do it.</p>
@@ -223,6 +270,12 @@ const CHOICES = [
   { value: "import", label: "Import theirs" },
 ] as const satisfies readonly { value: "reuse" | "import"; label: string }[];
 
+/** A job card's Delete: what happens to the items the job filed. */
+const ITEMS_CHOICES = [
+  { value: "keep", label: "Keep them" },
+  { value: "archive", label: "Archive them" },
+] as const satisfies readonly { value: "keep" | "archive"; label: string }[];
+
 const TITLE: Record<AssistCardKind, string> = {
   pipelineExport: "Export a pipeline",
   pipelineImport: "Import a pipeline",
@@ -236,6 +289,10 @@ const TITLE: Record<AssistCardKind, string> = {
   itemTypeDelete: "Delete an item type",
   pipelineKeepMine: "Keep my pipeline",
   trialPublish: "Publish the tested pipeline",
+  jobCreate: "Create a job",
+  jobUpdate: "Change a job",
+  jobDelete: "Delete a job",
+  jobWebhook: "A webhook job",
 };
 
 const STATE: Record<AssistCardKind, string> = {
@@ -251,6 +308,10 @@ const STATE: Record<AssistCardKind, string> = {
   itemTypeDelete: "delete type",
   pipelineKeepMine: "keep mine",
   trialPublish: "publish",
+  jobCreate: "create job",
+  jobUpdate: "change job",
+  jobDelete: "delete job",
+  jobWebhook: "webhook",
 };
 
 const ICON: Record<AssistCardKind, ReactNode> = {
@@ -266,11 +327,15 @@ const ICON: Record<AssistCardKind, ReactNode> = {
   itemTypeDelete: <Trash2 aria-hidden size={14} />,
   pipelineKeepMine: <ShieldCheck aria-hidden size={14} />,
   trialPublish: <Upload aria-hidden size={14} />,
+  jobCreate: <CalendarClock aria-hidden size={14} />,
+  jobUpdate: <CalendarClock aria-hidden size={14} />,
+  jobDelete: <Trash2 aria-hidden size={14} />,
+  jobWebhook: <Webhook aria-hidden size={14} />,
 };
 
 type ButtonWords = { idle: string; pending: string; done: string; refused: string };
 
-const BUTTON: Record<Exclude<AssistCardKind, "pipelineWebhookUnattended" | "stepSecret" | "stepVariable">, ButtonWords> = {
+const BUTTON: Record<Exclude<AssistCardKind, "pipelineWebhookUnattended" | "stepSecret" | "stepVariable" | "jobWebhook">, ButtonWords> = {
   pipelineExport: { idle: "Export…", pending: "Exporting…", done: "Exported", refused: "Not exported" },
   pipelineImport: { idle: "Import", pending: "Importing…", done: "Imported", refused: "Not imported" },
   pipelineDelete: { idle: "Delete pipeline", pending: "Deleting…", done: "Deleted", refused: "Not deleted" },
@@ -281,6 +346,9 @@ const BUTTON: Record<Exclude<AssistCardKind, "pipelineWebhookUnattended" | "step
   pipelineKeepMine: { idle: "Keep my pipeline", pending: "Keeping…", done: "Kept", refused: "Not kept" },
   // Drawn by `TrialPublishCard`, never here (EO-588); the words are for completeness.
   trialPublish: { idle: "Approve and publish", pending: "Publishing…", done: "Published", refused: "Not published" },
+  jobCreate: { idle: "Create job", pending: "Creating…", done: "Created", refused: "Not created" },
+  jobUpdate: { idle: "Save job", pending: "Saving…", done: "Saved", refused: "Not saved" },
+  jobDelete: { idle: "Delete job", pending: "Deleting…", done: "Deleted", refused: "Not deleted" },
 };
 
 /**
@@ -305,6 +373,12 @@ function buttonFor(kind: AssistCardKind, detail: AssistCardDetail | null): Butto
       const action = detail?.kind === kind ? detail.action : null;
       if (action === "set") return { idle: `Set ${noun}`, pending: "Setting…", done: "Set", refused: "Not set" };
       if (action === "clear") return { idle: `Clear ${noun}`, pending: "Clearing…", done: "Cleared", refused: "Not cleared" };
+      return { idle: "Apply", pending: "Applying…", done: "Done", refused: "Not done" };
+    }
+    case "jobWebhook": {
+      const action = detail?.kind === "jobWebhook" ? detail.action : null;
+      if (action === "regenerateSecret") return { idle: "Regenerate secret", pending: "Regenerating…", done: "Regenerated", refused: "Not regenerated" };
+      if (action === "testEvent") return { idle: "Send test event", pending: "Sending…", done: "Sent", refused: "Not sent" };
       return { idle: "Apply", pending: "Applying…", done: "Done", refused: "Not done" };
     }
     default:
@@ -350,6 +424,12 @@ function subjectOf(detail: AssistCardDetail): string {
       return detail.type.label;
     case "itemTypeUpdate":
       return detail.before.label === detail.after.label ? detail.after.label : `${detail.before.label} → ${detail.after.label}`;
+    case "jobCreate":
+      return detail.name;
+    case "jobUpdate":
+    case "jobDelete":
+    case "jobWebhook":
+      return detail.jobName;
     default:
       return detail.pipelineName;
   }
@@ -490,7 +570,65 @@ function Body({ detail, itemsWord, itemWord, aliasesRetired }: { detail: AssistC
           problem={detail.problem}
         />
       );
+    case "jobCreate":
+      return (
+        <div className="flex flex-col gap-1.5">
+          <p className={text}>A new job on {detail.projectName}, as it would be.</p>
+          <JobLines lines={detail.lines} />
+        </div>
+      );
+    case "jobUpdate":
+      return (
+        <div className="flex flex-col gap-1.5">
+          <p className={text}>What changes on {detail.jobName}:</p>
+          <ul aria-label="What changes" className="flex flex-col gap-1 text-[12.5px]">
+            {detail.changes.map((change) => (
+              <li key={change.label} className="flex flex-wrap gap-1.5">
+                <span className="text-ink-subtle">{change.label}</span>
+                <span className="text-ink-subtle line-through">{change.before}</span>
+                <span aria-hidden>→</span>
+                <span className="text-ink">{change.after}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      );
+    case "jobDelete":
+      return (
+        <div className="flex flex-col gap-1.5">
+          <p className={text}>
+            {detail.jobName} fires nothing again. {detail.itemCount === 0 ? `It has filed no ${itemsWord} that are not archived.` : `Choose below whether the ${detail.itemCount === 1 ? itemWord : `${detail.itemCount} ${itemsWord}`} it filed stay where they are or go to the Archive.`}
+          </p>
+          <JobLines lines={detail.lines} />
+        </div>
+      );
+    case "jobWebhook":
+      return detail.action === "regenerateSecret" ? (
+        <p className={text}>
+          Makes a new signing secret for {detail.jobName}. <b className="font-semibold text-ink">The old secret stops working the moment the button is pressed</b>: every sender
+          still signing with it is refused until it is given the new one, which you read on the job&apos;s page.
+        </p>
+      ) : (
+        <p className={text}>
+          Sends one test event to {detail.jobName} through its webhook at <code className="font-mono text-ink">{detail.address}</code>, signed with its own secret. It may file a
+          new {itemWord} on its pipeline.
+        </p>
+      );
   }
+}
+
+/** A job as a job card shows it (EO-786): each field the Job page has, in words. */
+function JobLines({ lines }: { lines: readonly JobCardLine[] }) {
+  return (
+    <dl aria-label="The job" className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1 text-[12.5px]">
+      {lines.map((line) => (
+        <div key={line.label} className="contents">
+          <dt className="text-ink-subtle">{line.label}</dt>
+          <dd className="break-words text-ink">{line.value}</dd>
+        </div>
+      ))}
+    </dl>
+  );
 }
 
 /** What a field kind is called, as the editor's Types section called it. */
