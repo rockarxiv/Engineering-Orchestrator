@@ -1,6 +1,6 @@
 import { REVIEW_ACTION, type Item } from "@eo/core";
 import type { Db } from "../db/client.js";
-import { listActiveRuns, stepForItem } from "../db/repos/index.js";
+import { activeRunForItem, stepForItem } from "../db/repos/index.js";
 
 /**
  * The one rule about when an item's own content may change, wherever
@@ -83,7 +83,7 @@ export function refuseIfUntouchable(db: Db, item: Item, change: ItemChange): str
   if (state?.isTerminal) return `${item.key} is finished. Propose a follow-up ticket rather than changing what shipped.`;
   if (change === "priority") return null;
 
-  if (listActiveRuns(db).some((run) => run.itemId === item.id)) {
+  if (activeRunForItem(db, item.id) !== undefined) {
     return `${item.key} is being worked on right now, so its content cannot change under the agent holding it. Propose a follow-up, or try again once the run has finished.`;
   }
   // What the step *runs*, not what it is called and not who owns it.

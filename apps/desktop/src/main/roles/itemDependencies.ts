@@ -138,6 +138,21 @@ function sameGate(a: DependencyGate, b: DependencyGate): boolean {
 }
 
 /**
+ * The steps an edge may wait for a dependency on this pipeline to reach
+ * (EO-777, EO-779): every step of it but where it finishes, whether or
+ * not the board shows it as a column. `judgeGate` accepts these and
+ * lists them in its refusals, and the item page's step picker offers
+ * them, so the picker can offer nothing the save would refuse and leave
+ * out nothing it would take.
+ */
+export function waitableSteps(db: Db, pipelineId: string | null): { id: string; name: string }[] {
+  if (pipelineId === null) return [];
+  return listStepsForPipeline(db, pipelineId)
+    .filter((step) => !step.isTerminal)
+    .map((step) => ({ id: step.id, name: step.name }));
+}
+
+/**
  * The rule one edge asks for, with its step resolved against the
  * dependency's pipeline, or the sentence refusing it (EO-777).
  *
@@ -175,7 +190,7 @@ export function judgeGate(
   }
 
   const steps = dependency.pipelineId === null ? [] : listStepsForPipeline(db, dependency.pipelineId);
-  const usable = steps.filter((candidate) => !candidate.isTerminal);
+  const usable = waitableSteps(db, dependency.pipelineId);
   const listed = usable.length === 0 ? "it has none that are not where it finishes" : `its steps are ${usable.map((candidate) => `"${candidate.name}"`).join(", ")}`;
   if (dependency.pipelineId === null || steps.length === 0) {
     return { ok: false, reason: `${dependency.label} is on no pipeline, so there is no step for it to reach. Use wait: "finished" or wait: "none" for it.` };

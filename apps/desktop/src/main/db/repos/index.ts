@@ -230,6 +230,7 @@ export {
   costCentsByOwnerSince,
   createRun,
   getRun,
+  activeRunForItem,
   listActiveRuns,
   resumableRunCwds,
   listAwaitingInputItemIds,

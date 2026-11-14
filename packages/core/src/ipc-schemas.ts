@@ -578,6 +578,17 @@ export const ItemDetailSchema = z.object({
      * `git.reviewers`.
      */
     reviewers: ItemReviewersSchema.nullable().default(null),
+    /**
+     * Why this item's content — its title, body, criteria and
+     * dependency edges — may not change right now, in the words a change
+     * would be refused with (`refuseIfUntouchable`, EO-779); null when it
+     * may. Archived, finished, held by a running agent, or in review.
+     *
+     * So the item page offers no editor a change would only be refused
+     * through. Derived on every read, never stored (invariant 6): a run
+     * starting or ending is a push that reads the item again.
+     */
+    contentRefusal: z.string().nullable().default(null),
   }),
   /**
    * What a person may decide right now (EO-310, ARCHITECTURE.md, "The item").

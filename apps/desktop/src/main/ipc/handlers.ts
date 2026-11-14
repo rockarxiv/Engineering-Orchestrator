@@ -224,6 +224,7 @@ import {
   listRunEventsPage,
   listItemSummaries,
   resolveItemKey,
+  listWaitSteps,
 } from "./domainQueries.js";
 import type { JiraContext } from "../packs/developer/jira/connection.js";
 import { capabilitiesFor, fetchClaudeModels } from "../providers/capabilities.js";
@@ -582,6 +583,8 @@ export function registerAllHandlers(db: Db, engine: EngineHandle | undefined, re
   registerHandler("items:earlierComments", (payload) => getEarlierItemComments(db, payload), opts);
   registerHandler("items:getSections", (payload) => getItemSections(db, payload), opts);
   registerHandler("items:resolveKey", (payload) => resolveItemKey(db, payload), opts);
+  // What a dependency may be waited for to reach (EO-779). Read-only.
+  registerHandler("items:waitSteps", (payload) => listWaitSteps(db, payload), opts);
   // Runs across items, for timing and spend (EO-541). Read-only.
   registerHandler("runs:list", (payload) => listRuns(db, payload), opts);
   registerHandler("runs:summary", (payload) => summariseRuns(db, payload), opts);

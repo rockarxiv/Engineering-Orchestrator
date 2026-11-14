@@ -69,7 +69,7 @@ import { createItemLock } from "../supervisor/itemLock.js";
 import { setActiveProjectCommand } from "./projectCommands.js";
 import { bridgePushChannels } from "./push.js";
 import { webContentsTransport } from "../platform/webContentsTransport.js";
-import { getItemDetail, listAgentViews, listArchivedSummaries, listInbox, listRunEventsPage, listItemSummaries, listPipelineStepViews, listPipelineViews } from "./domainQueries.js";
+import { getItemDetail, listAgentViews, listArchivedSummaries, listInbox, listRunEventsPage, listItemSummaries, listPipelineStepViews, listPipelineViews, listWaitSteps } from "./domainQueries.js";
 import { buildTickInput } from "../supervisor/buildTickInput.js";
 
 let handle: DbHandle;
@@ -348,6 +348,21 @@ describe("off-project states stay off every screen that shows work", () => {
     expect(listPipelineStepViews(handle.db, { pipelineId: "default" }).steps.map((state) => state.id)).not.toContain("discussion");
   });
 
+  it("still offers an off-board step as one to wait for, and never the terminal one (EO-779)", () => {
+    // A step the board draws no column for is as valid a gate as any
+    // other: `judgeGate` takes it, so the item page's picker offers it.
+    const delivery = createPipeline(handle.db, { name: "Delivery" });
+    createStep(handle.db, { pipelineId: delivery.id, position: 0, name: "Talk it over", type: "user", offBoard: true });
+    const build = createStep(handle.db, { pipelineId: delivery.id, position: 1, name: "Build", type: "user" });
+    createStep(handle.db, { pipelineId: delivery.id, position: 2, name: "Shipped", type: "user", isTerminal: true });
+    const dependency = createTestItem(handle.db, { type: "story", title: "Elsewhere", stepId: build.id, pipelineId: delivery.id });
+
+    expect(listPipelineStepViews(handle.db, { pipelineId: delivery.id }).steps.map((step) => step.name)).toEqual(["Build", "Shipped"]);
+    expect(listWaitSteps(handle.db, { itemId: dependency.id }).steps.map((step) => step.name)).toEqual(["Talk it over", "Build"]);
+    // Nothing to offer for an item that is not there.
+    expect(listWaitSteps(handle.db, { itemId: uuidv7() }).steps).toEqual([]);
+  });
+
   it("does not let an open conversation answer 'is everything blocked?'", async () => {
     // A conversation is never terminal, so before this it counted as
     // live work forever — and one open chat meant the stall warning
@@ -414,6 +429,21 @@ describe("items:get", () => {
     // The step's name comes with the dependency: it can sit in another
     // pipeline, whose steps this item's detail never loaded.
     expect(detail.dependsOn).toEqual([{ id: dependency.id, key: dependency.key, title: "First", stepId: "todo", stepName: "To Do", wait: "finished", waitStepId: null, waitStepName: null }]);
+    // In review, so the page offers no editor its content would be refused through (EO-779).
+    expect(detail.item.contentRefusal).toMatch(/is in review/);
+  });
+
+  it("says why an item's content may not change, by the rule every change is held to (EO-779)", async () => {
+    const editable = createTestItem(handle.db, { type: "story", title: "Editable", stepId: "todo" });
+    expect(getItemDetail(handle.db, { itemId: editable.id })!.item.contentRefusal).toBeNull();
+
+    // Held by a running agent.
+    createRun(handle.db, { itemId: editable.id, agentId: implementer.id, action: "implement" });
+    expect(getItemDetail(handle.db, { itemId: editable.id })!.item.contentRefusal).toMatch(/being worked on right now/);
+
+    // Finished.
+    const finished = createTestItem(handle.db, { type: "story", title: "Shipped", stepId: "ready_to_merge" });
+    expect(getItemDetail(handle.db, { itemId: finished.id })!.item.contentRefusal).toMatch(/is finished/);
   });
 
   it("carries the Jira switch, which the rail is the only reader of", async () => {

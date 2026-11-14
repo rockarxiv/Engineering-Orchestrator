@@ -97,6 +97,7 @@ function detail(overrides: Partial<ItemDetailData> = {}): ItemDetailData {
       origin: null,
       createdAt: 1,
       attachments: [],
+      contentRefusal: null,
     },
     comments: [],
     transitions: [],
@@ -276,6 +277,159 @@ describe("the item view", () => {
     renderItem(detail({ item: { ...base.item, stepId: "merge_request", stepName: "Merge request", dispatchHold: "Waits for EO-12 to open its pull request" } }));
 
     expect(await screen.findByText("Waits for EO-12 to open its pull request")).toBeInTheDocument();
+  });
+
+  describe("a dependency's wait rule (EO-779)", () => {
+    // What `items:waitSteps` answers for the dependency: its own
+    // pipeline's steps, the off-board Discussion among them and the
+    // terminal one left out (main's `listWaitSteps` holds that).
+    const WAIT_STEPS = [
+      { id: "discussion", name: "Discussion" },
+      { id: "build", name: "Build" },
+      { id: "watch", name: "Watch merge request" },
+    ];
+    type Dependency = ItemDetailData["dependsOn"][number];
+    const dependency = (overrides: Partial<Dependency> = {}): Dependency => ({
+      id: "d1",
+      key: "EO-12",
+      title: "Do this first",
+      stepId: "build",
+      stepName: "Build",
+      wait: "finished",
+      waitStepId: null,
+      waitStepName: null,
+      ...overrides,
+    });
+    const waitSteps = (payload: unknown) => ({ steps: (payload as { itemId: string }).itemId === "d1" ? WAIT_STEPS : [] });
+
+    /** An item page whose dependency takes whatever rule `items:update` was last sent, as the main process would. */
+    function renderLive(start: Dependency, refuse: string | null = null) {
+      let current = detail({ dependsOn: [start] });
+      const { calls, onCall } = recorder();
+      renderItem(current, onCall, {
+        "items:get": () => current,
+        "items:waitSteps": waitSteps,
+        "items:update": (payload: unknown) => {
+          if (refuse !== null) return { updated: false, problem: refuse };
+          const [change] = (payload as { updateDependsOn: { wait: Dependency["wait"]; step?: string }[] }).updateDependsOn;
+          const step = WAIT_STEPS.find((each) => each.id === change!.step) ?? null;
+          current = { ...current, dependsOn: [{ ...start, wait: change!.wait, waitStepId: step?.id ?? null, waitStepName: step?.name ?? null }] };
+          return { updated: true, problem: null };
+        },
+      });
+      return calls;
+    }
+
+    const region = () => screen.findByRole("region", { name: "Dependencies" });
+
+    it("says each dependency's rule in words", async () => {
+      renderItem(
+        detail({
+          dependsOn: [
+            dependency(),
+            dependency({ id: "d2", key: "EO-13", wait: "reached", waitStepId: "watch", waitStepName: "Watch merge request" }),
+            dependency({ id: "d3", key: "EO-14", wait: "none" }),
+          ],
+        }),
+      );
+
+      const blocked = await region();
+      expect(within(blocked).getByText("Until it finishes")).toBeInTheDocument();
+      expect(within(blocked).getByText("Until it reaches Watch merge request")).toBeInTheDocument();
+      expect(within(blocked).getByText("Doesn't wait")).toBeInTheDocument();
+    });
+
+    it("changes a rule to reach a step of the dependency's own pipeline, as the save would judge it", async () => {
+      const calls = renderLive(dependency());
+
+      fireEvent.click(within(await region()).getByRole("button", { name: "Change how this waits for EO-12" }));
+      fireEvent.change(screen.getByRole("combobox", { name: "Wait for EO-12" }), { target: { value: "reached" } });
+      const picker = screen.getByRole("combobox", { name: "Step of EO-12 to wait for" });
+      await waitFor(() => expect(within(picker).getAllByRole("option").map((option) => option.textContent)).toEqual(["Choose a step…", "Discussion", "Build", "Watch merge request"]));
+      // Asked about the dependency, whose pipeline the save reads.
+      expect(payloadOf(calls, "items:waitSteps")).toEqual({ itemId: "d1" });
+      fireEvent.change(picker, { target: { value: "watch" } });
+      fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+      await waitFor(() => expect(payloadOf(calls, "items:update")).toEqual({ itemId: "t1", updateDependsOn: [{ item: "d1", wait: "reached", step: "watch" }] }));
+      expect(await within(await region()).findByText("Until it reaches Watch merge request")).toBeInTheDocument();
+      expect(screen.queryByRole("combobox", { name: "Wait for EO-12" })).not.toBeInTheDocument();
+    });
+
+    it("changes a rule to not waiting, and back to waiting until it finishes", async () => {
+      const calls = renderLive(dependency({ wait: "reached", waitStepId: "watch", waitStepName: "Watch merge request" }));
+
+      fireEvent.click(within(await region()).getByRole("button", { name: "Change how this waits for EO-12" }));
+      fireEvent.change(screen.getByRole("combobox", { name: "Wait for EO-12" }), { target: { value: "none" } });
+      fireEvent.click(screen.getByRole("button", { name: "Save" }));
+      await waitFor(() => expect(payloadOf(calls, "items:update")).toEqual({ itemId: "t1", updateDependsOn: [{ item: "d1", wait: "none" }] }));
+      expect(await within(await region()).findByText("Doesn't wait")).toBeInTheDocument();
+
+      fireEvent.click(within(await region()).getByRole("button", { name: "Change how this waits for EO-12" }));
+      fireEvent.change(screen.getByRole("combobox", { name: "Wait for EO-12" }), { target: { value: "finished" } });
+      fireEvent.click(screen.getByRole("button", { name: "Save" }));
+      await waitFor(() => expect(calls.filter((call) => call.channel === "items:update").at(-1)?.payload).toEqual({ itemId: "t1", updateDependsOn: [{ item: "d1", wait: "finished" }] }));
+      expect(await within(await region()).findByText("Until it finishes")).toBeInTheDocument();
+    });
+
+    it("says a refusal under the row and keeps the rule it had", async () => {
+      renderLive(dependency(), "EO-1 is being worked on right now, so its content cannot change under the agent holding it.");
+
+      fireEvent.click(within(await region()).getByRole("button", { name: "Change how this waits for EO-12" }));
+      fireEvent.change(screen.getByRole("combobox", { name: "Wait for EO-12" }), { target: { value: "none" } });
+      fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+      expect(await within(await region()).findByRole("alert")).toHaveTextContent("is being worked on right now");
+      expect(within(await region()).getByText("Until it finishes")).toBeInTheDocument();
+    });
+
+    it("waits for a step the board draws no column for", async () => {
+      const calls = renderLive(dependency());
+
+      fireEvent.click(within(await region()).getByRole("button", { name: "Change how this waits for EO-12" }));
+      fireEvent.change(screen.getByRole("combobox", { name: "Wait for EO-12" }), { target: { value: "reached" } });
+      const picker = screen.getByRole("combobox", { name: "Step of EO-12 to wait for" });
+      await within(picker).findByRole("option", { name: "Discussion" });
+      fireEvent.change(picker, { target: { value: "discussion" } });
+      fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+      await waitFor(() => expect(payloadOf(calls, "items:update")).toEqual({ itemId: "t1", updateDependsOn: [{ item: "d1", wait: "reached", step: "discussion" }] }));
+      expect(await within(await region()).findByText("Until it reaches Discussion")).toBeInTheDocument();
+    });
+
+    it("closes an open editor when the item stops being changeable", async () => {
+      let current = detail({ dependsOn: [dependency()] });
+      const client = createQueryClient();
+      renderItem(current, undefined, { "items:get": () => current, "items:waitSteps": waitSteps }, client);
+
+      fireEvent.click(within(await region()).getByRole("button", { name: "Change how this waits for EO-12" }));
+      expect(screen.getByRole("combobox", { name: "Wait for EO-12" })).toBeInTheDocument();
+
+      // A run starts while the editor is open, and the page reads the item again.
+      current = { ...current, item: { ...current.item, contentRefusal: "EO-1 is being worked on right now, so its content cannot change under the agent holding it." } };
+      await act(() => client.invalidateQueries());
+
+      await waitFor(() => expect(screen.queryByRole("combobox", { name: "Wait for EO-12" })).not.toBeInTheDocument());
+      expect(screen.queryByRole("button", { name: "Save" })).not.toBeInTheDocument();
+      expect(within(await region()).queryByRole("button", { name: /Change how this waits/ })).not.toBeInTheDocument();
+      expect(within(await region()).getByText("Until it finishes")).toBeInTheDocument();
+
+      // Changeable again: the row offers Change, not the editor it closed.
+      current = { ...current, item: { ...current.item, contentRefusal: null } };
+      await act(() => client.invalidateQueries());
+      expect(await within(await region()).findByRole("button", { name: "Change how this waits for EO-12" })).toBeInTheDocument();
+      expect(screen.queryByRole("combobox", { name: "Wait for EO-12" })).not.toBeInTheDocument();
+    });
+
+    it("offers no change where the item's content may not change", async () => {
+      const data = detail({ dependsOn: [dependency()] });
+      data.item.contentRefusal = "EO-1 is in review. Changing what it asks for now would invalidate the review.";
+      renderItem(data);
+
+      const blocked = await region();
+      expect(within(blocked).getByText("Until it finishes")).toBeInTheDocument();
+      expect(within(blocked).queryByRole("button", { name: /Change how this waits/ })).not.toBeInTheDocument();
+    });
   });
 
   it("says when a step that keeps checking last checked and checks next (EO-456)", async () => {
