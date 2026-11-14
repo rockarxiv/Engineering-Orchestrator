@@ -52,6 +52,15 @@ const nobody: CliRunner = async (_cli, args) => {
 
 const reachedReview: DependencyGate = { wait: "reached", stepId: "review" };
 
+/**
+ * A file's text with line endings normalised. git rewrites LF to CRLF on
+ * checkout where `core.autocrlf` is on, as it is by default on Windows;
+ * what is asserted is whose content it is, not which ending git chose.
+ */
+function textOf(path: string): string {
+  return readFileSync(path, "utf8").replace(/\r\n/g, "\n");
+}
+
 async function tipOf(ref: string, cwd = repoPath): Promise<string> {
   return run(["rev-parse", `${ref}^{commit}`], cwd);
 }
@@ -127,7 +136,7 @@ describe("which edges stack", () => {
     const { tip } = await dependencyAtWork();
     const { child, worktree } = await stackedChild();
 
-    expect(readFileSync(join(worktree, "dep.txt"), "utf8")).toBe("the dependency's work\n");
+    expect(textOf(join(worktree, "dep.txt"))).toBe("the dependency's work\n");
     expect(gitStateOf(getItem(handle.db, child.id)!).stackedOn).toEqual({ itemId: dependency.id, commit: tip });
     expect(await isAncestor(repoPath, tip, `eo/${child.key}`)).toBe(true);
   });
@@ -171,7 +180,7 @@ describe("restacking on the next dispatch", () => {
     expect(await isAncestor(repoPath, newTip, branch)).toBe(true);
     expect(await isAncestor(repoPath, oldTip, branch)).toBe(false);
     expect(await run(["log", "--format=%s", `${newTip}..${branch}`], repoPath)).toBe("child work");
-    expect(readFileSync(join(prepared.workspace.cwd, "dep.txt"), "utf8")).toBe("the dependency's work, rewritten\n");
+    expect(textOf(join(prepared.workspace.cwd, "dep.txt"))).toBe("the dependency's work, rewritten\n");
     const state = gitStateOf(getItem(handle.db, child.id)!);
     expect(state.stackedOn).toEqual({ itemId: dependency.id, commit: newTip });
     expect(state.restacked).toBe(true);
@@ -218,7 +227,7 @@ describe("restacking on the next dispatch", () => {
     expect(await status(worktree)).toBe("");
     const rebaseState = await git(["rev-parse", "--git-path", "rebase-merge"], worktree);
     expect(rebaseState.ok && existsSync(join(worktree, rebaseState.stdout))).toBe(false);
-    expect(readFileSync(join(worktree, "dep.txt"), "utf8")).toBe("the child's take on it\n");
+    expect(textOf(join(worktree, "dep.txt"))).toBe("the child's take on it\n");
     expect(gitStateOf(getItem(handle.db, child.id)!).stackedOn).toEqual({ itemId: dependency.id, commit: oldTip });
   });
 
