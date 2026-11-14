@@ -1,5 +1,5 @@
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
-import type { ModuleManifest } from "@eo/core";
+import type { ModuleManifest, Uuid } from "@eo/core";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { DbHandle } from "../db/client.js";
 import { getJob, listJobs, saveModule } from "../db/repos/index.js";
@@ -53,6 +53,10 @@ afterEach(() => {
 
 function call(name: string, args: Record<string, unknown>, audience: "admin" | "external" = "external", dangerous = false) {
   return answerToolCall({ name, arguments: args }, audience, dangerous);
+}
+
+function stored(jobId: string) {
+  return getJob(handle.db, jobId as Uuid);
 }
 
 function textOf(result: CallToolResult): string {
@@ -123,11 +127,11 @@ describe("who is offered which job tool", () => {
     const gated = await call("job_delete", { jobId: job.id });
     expect(gated.isError).toBe(true);
     expect(textOf(gated)).toContain("Allow destructive operations");
-    expect(getJob(handle.db, job.id)?.deletedAt).toBeNull();
+    expect(stored(job.id)?.deletedAt).toBeNull();
 
     const deleted = await call("job_delete", { jobId: job.id }, "external", true);
     expect(textOf(deleted)).toContain("Deleted the job.");
-    expect(getJob(handle.db, job.id)?.deletedAt).not.toBeNull();
+    expect(stored(job.id)?.deletedAt).not.toBeNull();
   });
 
   it("offers eo_admin none of the writes, listed or called", async () => {
@@ -239,7 +243,7 @@ describe("job_update", () => {
     const job = (await createJobCommand(handle.db, JOBS, { projectId: null, name: "Report", trigger: { kind: "manual" }, pipelineId: "default", template: TEMPLATE })).job!;
     const answer = await call("job_update", { jobId: job.id, name: "Monday report" });
     expect(textOf(answer)).toContain('Saved "Monday report".');
-    expect(getJob(handle.db, job.id)?.name).toBe("Monday report");
+    expect(stored(job.id)?.name).toBe("Monday report");
   });
 
   it("refuses a change to a webhook trigger's path or secret, and says why", async () => {
@@ -252,7 +256,7 @@ describe("job_update", () => {
     const unhooked = textOf(await call("job_update", { jobId: job.id, trigger: { kind: "manual" } }));
     expect(unhooked).toContain("Nothing has changed: This is a webhook job");
 
-    expect(getJob(handle.db, job.id)?.trigger).toEqual(job.trigger);
+    expect(stored(job.id)?.trigger).toEqual(job.trigger);
   });
 
   it("changes a webhook job's mapping, keeping its address and secret and answering neither secret", async () => {
@@ -263,14 +267,14 @@ describe("job_update", () => {
 
     expect(textOf(answer)).toContain('Saved "Deploys".');
     expect(JSON.stringify(answer)).not.toContain(SECRET);
-    expect(getJob(handle.db, job.id)?.trigger).toEqual({ kind: "webhook", path: "deploys", secret: SECRET, mapping });
+    expect(stored(job.id)?.trigger).toEqual({ kind: "webhook", path: "deploys", secret: SECRET, mapping });
   });
 
   it("does not make a job a webhook job", async () => {
     const job = (await createJobCommand(handle.db, JOBS, { projectId: null, name: "Report", trigger: { kind: "manual" }, pipelineId: "default", template: TEMPLATE })).job!;
     const answer = textOf(await call("job_update", { jobId: job.id, trigger: { kind: "webhook", path: "deploys", secret: SECRET } }));
     expect(answer).toContain("Nothing has changed: A job is not made a webhook job over MCP");
-    expect(getJob(handle.db, job.id)?.trigger).toEqual({ kind: "manual" });
+    expect(stored(job.id)?.trigger).toEqual({ kind: "manual" });
   });
 
   it("refuses a blank template title by its field", async () => {
@@ -286,7 +290,7 @@ describe("job_update", () => {
     expect(answer).toBe(
       "Nothing has changed: This job belongs to its conversation, so there is nothing here to change. Deleting it is what stops items being recorded as coming from that chat.",
     );
-    expect(getJob(handle.db, job.id)?.name).toBe(job.name);
+    expect(stored(job.id)?.name).toBe(job.name);
   });
 });
 
@@ -296,7 +300,7 @@ describe("job_delete", () => {
     const answer = textOf(await call("job_delete", { jobId: job.id }, "external", true));
     expect(answer).toContain("EO did not delete it:");
     expect(answer).toContain("a conversation's job (a from-discussion job), which ends with its conversation rather than through this tool");
-    expect(getJob(handle.db, job.id)?.deletedAt).toBeNull();
+    expect(stored(job.id)?.deletedAt).toBeNull();
   });
 
   it("archives what the job filed when asked to", async () => {
