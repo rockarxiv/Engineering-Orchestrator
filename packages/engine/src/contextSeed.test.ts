@@ -193,6 +193,12 @@ describe("assembleSeedContext", () => {
     expect(fullText).not.toContain("no recorded result yet");
   });
 
+  it("says a caller's note beside its dependency's key, and leaves the others as they were (EO-780)", () => {
+    const { fullText } = assembleSeedContext(baseInput({ dependencyKeys: ["EO-5", "EO-6"], dependencyNotes: { "EO-5": "not finished yet." } }));
+
+    expect(fullText).toContain("- EO-5 — not finished yet.\n- EO-6");
+  });
+
   it("renders what woke a mention reply, which no other rule would carry", () => {
     const { fullText } = assembleSeedContext(baseInput({
       action: "respond",

@@ -20,6 +20,7 @@ import {
 import { createCliRunner, type CliRunner } from "../forge/cli.js";
 import { branchPrefix } from "./branchPrefix.js";
 import { git } from "./git.js";
+import { restackOnDependency } from "./restack.js";
 import { baseRefFor, resolveItemStackTarget } from "./stackTarget.js";
 import {
   ensureWorktree,
@@ -87,6 +88,7 @@ async function resolveStartPoint(
   item: Item,
   run: CliRunner,
   options: PrepareWorkspaceOptions = {},
+  onStacked?: (cut: { itemId: Uuid; commit: string }) => void,
 ): Promise<WorktreeResult<string>> {
   const network = options.signal ? { signal: options.signal } : {};
 
@@ -115,7 +117,24 @@ async function resolveStartPoint(
   else if (decision.kind === "branch") options.onProgress?.(`Using "${decision.branch}", which you named when EO asked what to stack this on.`);
   else options.onProgress?.(`Nothing to stack on, so this comes off ${workspace.config.baseBranch}.`);
 
-  return baseRefFor(decision, workspace, undefined, network);
+  const ref = await baseRefFor(decision, workspace, undefined, network);
+  if (!ref.ok || decision.kind !== "stack") return ref;
+
+  // A stacked branch is cut from a commit rather than from the ref
+  // (EO-780): the commit is what is recorded as where the cut was made,
+  // and every restack after this starts from it, so it must be exactly
+  // the one the branch was cut from — not whatever the ref says a moment
+  // later, after another item's fetch has moved it.
+  const commit = await git(["rev-parse", "--verify", "--quiet", `${ref.value}^{commit}`], workspace.config.repoPath);
+  if (!commit.ok || commit.stdout === "") {
+    return {
+      ok: false,
+      reason: `Could not read which commit \`${ref.value}\` is on, to cut ${item.key}'s branch from ${decision.dependency.key}'s: ${commit.ok ? "git printed nothing" : commit.error}. Nothing was created; reply to retry.`,
+    };
+  }
+  options.onProgress?.(`${decision.dependency.key}'s branch is at ${commit.stdout.slice(0, 12)} (${ref.value}).`);
+  onStacked?.({ itemId: decision.dependency.id, commit: commit.stdout });
+  return { ok: true, value: commit.stdout };
 }
 
 /**
@@ -272,8 +291,32 @@ export function createWorktreeWorkspace(db: Db, worktreeRoot?: string, run: CliR
     // never resolves this, since a branch's start point was decided the
     // one time it was actually cut (EO-10 / KAN-42: "resolves it once,
     // at dispatch time").
-    const worktree = await ensureWorktree(config, item.key, () => resolveStartPoint(db, workspace, item, run, options), naming, options);
+    //
+    // A branch cut from a dependency's branch records where (EO-780), so
+    // that every dispatch after this one can tell whether that branch has
+    // moved since.
+    const cut: { stackedOn: { itemId: Uuid; commit: string } | null } = { stackedOn: null };
+    const worktree = await ensureWorktree(
+      config,
+      item.key,
+      () =>
+        resolveStartPoint(db, workspace, item, run, options, (stackedOn) => {
+          cut.stackedOn = stackedOn;
+        }),
+      naming,
+      options,
+    );
     if (!worktree.ok) return { ok: false, reason: worktree.reason, ...(worktree.options ? { options: worktree.options } : {}) };
+    if (cut.stackedOn !== null) {
+      updateItem(db, item.id, { git: { stackedOn: cut.stackedOn } });
+    } else if (!namedBranch) {
+      // Every dispatch of a branch already cut, before the agent works in
+      // it: carried onto its dependency's new tip, or onto the base branch
+      // once the dependency has merged (EO-780). A conflict refuses the
+      // dispatch, and the branch and worktree are as they were.
+      const restacked = await restackOnDependency(db, workspace, item, { ...options, worktreePath: worktree.value.path, run });
+      if (!restacked.ok) return { ok: false, reason: restacked.reason };
+    }
 
     // Where a named branch stood when EO first had it (EO-365), recorded
     // once here and never moved by Worktree: the implementer's commits

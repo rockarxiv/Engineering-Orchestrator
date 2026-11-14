@@ -307,6 +307,13 @@ export interface ContextDependencyInput {
   key: string;
   title: string;
   summary: string; // what shipped
+  /**
+   * What the caller has to say about where this dependency stands, if
+   * anything (EO-780) — that it has not finished, where it is, and what a
+   * pack makes of that. Rendered after the summary as written; the engine
+   * knows nothing about what it says.
+   */
+  note?: string;
 }
 
 /** A repository the project spans, as the product owner sees it (KAN-17). */
@@ -719,7 +726,7 @@ function renderScreenSection(action: string): string | null {
 
 function renderDependenciesSection(dependencies: ContextDependencyInput[]): string {
   if (dependencies.length === 0) return "## Dependencies\n\nNone.";
-  const lines = dependencies.map((dep) => `- **${dep.key}** — ${dep.title}: ${dep.summary}`);
+  const lines = dependencies.map((dep) => `- **${dep.key}** — ${dep.title}: ${dep.summary}${dep.note ? `\n  ${dep.note}` : ""}`);
   return ["## Dependencies", "", ...lines].join("\n");
 }
 
@@ -1551,6 +1558,13 @@ export interface AssembleSeedContextInput {
   /** Keys alone. `item_detail` answers the rest, including what one shipped. */
   dependencyKeys: string[];
   /**
+   * What the caller has to say about a dependency, by its key (EO-780):
+   * one it is told has not finished, where it stands, and what a pack
+   * makes of that. Rendered beside the key as written. A key with no note
+   * is rendered as it always was.
+   */
+  dependencyNotes?: Readonly<Record<string, string>>;
+  /**
    * Comments somebody marked as load-bearing, wherever they sit.
    *
    * The one selection rule that ignores recency and authorship both.
@@ -1671,14 +1685,14 @@ function renderParentKey(parentKey: string | null | undefined): string | null {
   return `## Parent\n\nThis is part of **${parentKey}**. Read it with \`${ITEM_DETAIL}\` for the intent behind it.`;
 }
 
-function renderDependencyKeys(keys: string[]): string {
+function renderDependencyKeys(keys: string[], notes: Readonly<Record<string, string>> = {}): string {
   if (keys.length === 0) return "## Dependencies\n\nNone.";
   return [
     "## Dependencies",
     "",
     `Work that shipped before yours. Read one with \`${ITEM_DETAIL}\` — it answers with the ticket and what that ticket produced.`,
     "",
-    ...keys.map((key) => `- ${key}`),
+    ...keys.map((key) => (notes[key] ? `- ${key} — ${notes[key]}` : `- ${key}`)),
   ].join("\n");
 }
 
@@ -1798,7 +1812,7 @@ export function assembleSeedContext(input: AssembleSeedContextInput): AssembledS
     renderUntrustedPayloadSection(input.untrustedPayload),
     renderSeedRepositories(input.repositories ?? [], input.repositoryName),
     renderParentKey(input.parentKey),
-    renderDependencyKeys(input.dependencyKeys),
+    renderDependencyKeys(input.dependencyKeys, input.dependencyNotes),
     renderPinned(input.pinnedComments ?? []),
     renderTriggerSection(input.triggerComment),
     renderHumanComments(input.humanComments),

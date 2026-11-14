@@ -171,9 +171,20 @@ export async function listTree(repoPath: string, ref: string, path: string): Pro
  * decision, and the only thing EO could do by forcing is destroy work it
  * did not write. Re-pushing an unchanged branch is a no-op that exits 0,
  * which is what makes a retry safe.
+ *
+ * `forceWithLease` is the one exception, and it is EO's own rewrite it
+ * replaces (EO-780): a restack carried the branch onto its dependency's
+ * new tip, so the remote holds the history from before, and nothing else.
+ * The lease is the remote-tracking ref — the remote as EO last saw it —
+ * so a commit somebody else pushed since is refused rather than lost.
  */
-export async function pushBranch(repoPath: string, remote: string, branch: string, options: NetworkGitOptions = {}): Promise<GitOutcome> {
-  return git(["push", "--set-upstream", remote, branch], repoPath, {
+export async function pushBranch(
+  repoPath: string,
+  remote: string,
+  branch: string,
+  options: NetworkGitOptions & { forceWithLease?: boolean } = {},
+): Promise<GitOutcome> {
+  return git(["push", ...(options.forceWithLease ? ["--force-with-lease"] : []), "--set-upstream", remote, branch], repoPath, {
     env: NON_INTERACTIVE_GIT_ENV,
     timeoutMs: options.timeoutMs ?? NETWORK_TIMEOUT_MS,
     ...(options.signal ? { signal: options.signal } : {}),
@@ -268,7 +279,23 @@ export interface RebaseOptions extends NetworkGitOptions {
    * and gets a refusal rather than a rebase.
    */
   worktreePath?: string;
+  /**
+   * Replay only the commits after this one (EO-780): `git rebase --onto
+   * <baseBranch> <from>`. What a restack passes — the commit the branch
+   * was cut from its dependency at — so the dependency's own commits,
+   * rewritten or squash-merged since, are left behind rather than
+   * replayed. Absent, every commit `baseBranch` lacks is replayed.
+   */
+  from?: string;
 }
+
+/**
+ * A rebase that did not happen, and the files it stopped on where it
+ * stopped on a conflict — read before the rebase was taken back, because
+ * afterwards nothing says which they were. Empty where it failed for any
+ * other reason.
+ */
+export type RebaseOutcome = { ok: true; stdout: string } | { ok: false; error: string; conflicts: string[] };
 
 /**
  * Rebases `branch` onto `baseBranch`, without ever checking `branch` out
@@ -305,12 +332,13 @@ export interface RebaseOptions extends NetworkGitOptions {
  * `repoPath` too — there is nothing to copy back, and `repoPath`'s own
  * checked-out branch, HEAD and working tree are never touched.
  */
-export async function rebaseOntoBase(repoPath: string, branch: string, baseBranch: string, options: RebaseOptions = {}): Promise<GitOutcome> {
+export async function rebaseOntoBase(repoPath: string, branch: string, baseBranch: string, options: RebaseOptions = {}): Promise<RebaseOutcome> {
   // The signal reaches the two commands that do the work. Cleanup does
   // not take it, deliberately: the abort is what leaves a throwaway
   // worktree behind, and a `worktree remove` that declines to run because
   // the run was cancelled would leave it there for good.
   const running = options.signal ? { signal: options.signal } : {};
+  const from = options.from;
 
   // A listing git could not produce establishes nothing, so it reads as
   // an empty one: every path out of here then ends at the `worktree add`
@@ -328,6 +356,7 @@ export async function rebaseOntoBase(repoPath: string, branch: string, baseBranc
   if (holder && samePath(holder.path, repoPath)) {
     return {
       ok: false,
+      conflicts: [],
       error:
         `\`${branch}\` is checked out in ${repoPath} itself, and EO will not rebase there — ` +
         `that is the shared checkout another ticket's send may still be using. ` +
@@ -338,6 +367,7 @@ export async function rebaseOntoBase(repoPath: string, branch: string, baseBranc
   if (holder && !(ours && samePath(holder.path, ours.path))) {
     return {
       ok: false,
+      conflicts: [],
       error:
         `\`${branch}\` is checked out at ${holder.path}, which is not EO's worktree for this ticket` +
         `${ownPath === undefined ? "" : ` (${ownPath})`}. ` +
@@ -353,7 +383,7 @@ export async function rebaseOntoBase(repoPath: string, branch: string, baseBranc
     // about what is wrong. Falling through to the add puts git's own
     // "already used by worktree at <path>" in the escalation instead,
     // which names the stale entry to be removed.
-    if (await isGitRepo(holder.path)) return rebaseIn(holder.path, branch, baseBranch, running);
+    if (await isGitRepo(holder.path)) return rebaseIn(holder.path, branch, baseBranch, from, running);
   } else if (ours && (await rebaseInProgress(ours.path))) {
     // Nothing reports the branch, yet EO's own worktree may still be
     // holding it: a rebase detaches HEAD, so a checkout stopped in the
@@ -361,18 +391,18 @@ export async function rebaseOntoBase(repoPath: string, branch: string, baseBranc
     // check that branch out anywhere else. Said plainly here, because
     // what git says about it names a temporary worktree that has
     // nothing to do with the problem.
-    return { ok: false, error: midRebaseRefusal(ours.path, branch, baseBranch) };
+    return { ok: false, conflicts: [], error: midRebaseRefusal(ours.path, branch, baseBranch) };
   }
 
   const directory = await mkdtemp(join(tmpdir(), "eo-rebase-"));
   try {
     const added = await git(["worktree", "add", directory, branch], repoPath, running);
     if (!added.ok) {
-      return { ok: false, error: `Could not create a temporary worktree to rebase \`${branch}\` onto \`${baseBranch}\`: ${added.error}` };
+      return { ok: false, conflicts: [], error: `Could not create a temporary worktree to rebase \`${branch}\` onto \`${baseBranch}\`: ${added.error}` };
     }
 
     try {
-      return await rebaseIn(directory, branch, baseBranch, running);
+      return await rebaseIn(directory, branch, baseBranch, from, running);
     } finally {
       // --force: a completed rebase leaves the worktree clean, but an
       // aborted one may not, and this worktree is throwaway either way.
@@ -405,22 +435,27 @@ function midRebaseRefusal(directory: string, branch: string, baseBranch: string)
  * found rather than parked in a state every later git command refuses
  * to run in (the same reason `verify.ts` aborts).
  */
-async function rebaseIn(directory: string, branch: string, baseBranch: string, running: NetworkGitOptions): Promise<GitOutcome> {
-  if (await rebaseInProgress(directory)) return { ok: false, error: midRebaseRefusal(directory, branch, baseBranch) };
+async function rebaseIn(directory: string, branch: string, baseBranch: string, from: string | undefined, running: NetworkGitOptions): Promise<RebaseOutcome> {
+  if (await rebaseInProgress(directory)) return { ok: false, conflicts: [], error: midRebaseRefusal(directory, branch, baseBranch) };
 
-  const rebased = await git(["rebase", baseBranch], directory, running);
+  const rebased = await git(["rebase", ...(from === undefined ? [baseBranch] : ["--onto", baseBranch, from])], directory, running);
   if (rebased.ok) return { ok: true, stdout: rebased.stdout };
 
   // A rebase can also fail without starting: an unstaged change, a ref
   // that does not resolve. There is nothing to take back then, and
   // `--abort` would only add its own confusing failure to the reason.
   if (!(await rebaseInProgress(directory))) {
-    return { ok: false, error: `Rebasing \`${branch}\` onto \`${baseBranch}\` failed: ${rebased.error}` };
+    return { ok: false, conflicts: [], error: `Rebasing \`${branch}\` onto \`${baseBranch}\` failed: ${rebased.error}` };
   }
+
+  // Which files it stopped on, while the stopped rebase still says.
+  const unmerged = await git(["diff", "--name-only", "--diff-filter=U"], directory);
+  const conflicts = unmerged.ok ? unmerged.stdout.split("\n").filter((line) => line !== "") : [];
 
   const aborted = await git(["rebase", "--abort"], directory);
   return {
     ok: false,
+    conflicts,
     error: aborted.ok
       ? `Rebasing \`${branch}\` onto \`${baseBranch}\` failed and was aborted: ${rebased.error}`
       : `Rebasing \`${branch}\` onto \`${baseBranch}\` failed, and aborting it afterwards failed too — ${directory} is still mid-rebase: ${rebased.error} (${aborted.error})`,

@@ -454,7 +454,7 @@ describe("a plan naming a base branch for a story", () => {
     const result = submitPlan(handle.db, undefined, plan({ projectId, stories: [story("On the release", { base_branch: " release/2.4 " }), story("On main")] }));
 
     expect(result.created).toBe(true);
-    expect(gitStateOf(getItemByKey(handle.db, result.storyKeys[0]!)!)).toEqual({ branch: null, pullRequest: null, baseBranch: "release/2.4", namedBranch: false, attachedAt: null, reference: null, reviewers: null });
+    expect(gitStateOf(getItemByKey(handle.db, result.storyKeys[0]!)!)).toEqual({ branch: null, pullRequest: null, baseBranch: "release/2.4", namedBranch: false, attachedAt: null, reference: null, reviewers: null, stackedOn: null, restacked: false });
     expect(gitStateOf(getItemByKey(handle.db, result.storyKeys[1]!)!).baseBranch).toBeNull();
     // The feature carries no code and no base.
     expect(gitStateOf(getItemByKey(handle.db, result.featureKey!)!).baseBranch).toBeNull();
@@ -497,7 +497,7 @@ describe("a plan naming an existing branch for a story", () => {
     const result = submitPlan(handle.db, undefined, plan({ projectId, stories: [story("On my branch", { existing_branch: "feature/limits" }), story("Fresh")] }));
 
     expect(result.created).toBe(true);
-    expect(gitStateOf(getItemByKey(handle.db, result.storyKeys[0]!)!)).toEqual({ branch: "feature/limits", pullRequest: null, baseBranch: null, namedBranch: true, attachedAt: null, reference: null, reviewers: null });
+    expect(gitStateOf(getItemByKey(handle.db, result.storyKeys[0]!)!)).toEqual({ branch: "feature/limits", pullRequest: null, baseBranch: null, namedBranch: true, attachedAt: null, reference: null, reviewers: null, stackedOn: null, restacked: false });
     expect(gitStateOf(getItemByKey(handle.db, result.storyKeys[1]!)!).branch).toBeNull();
   });
 

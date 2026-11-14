@@ -3,6 +3,7 @@ import { acceptanceCriteriaOf, actionOverridesFor, definedActionFor, renderActio
 import type { Db } from "../db/client.js";
 import { reviewAppendix } from "../packs/developer/forge/reviewAppendix.js";
 import { implementAppendix } from "../packs/developer/workspace/commitNaming.js";
+import { stackedDependencyNotes } from "../packs/developer/workspace/restack.js";
 import {
   asGitWorkspace,
   projectWorkspaceList,
@@ -325,9 +326,13 @@ export async function buildDispatchContext(
       }
     : null;
 
+  // Where the dependency this item's branch is built on stands (EO-780),
+  // beside its summary: not finished, on which step, and on which branch.
+  const notes = await stackedDependencyNotes(db, item);
   const dependencies = listDependencies(db, item.id).flatMap((edge) => {
     const dep = getItem(db, edge.dependsOnId);
-    return dep ? [{ key: dep.key, title: dep.title, summary: shippedSummary(db, dep.id) }] : [];
+    const note = dep ? notes[dep.key] : undefined;
+    return dep ? [{ key: dep.key, title: dep.title, summary: shippedSummary(db, dep.id), ...(note ? { note } : {}) }] : [];
   });
 
   // The repositories this project spans (KAN-17). `assembleContext`
@@ -679,6 +684,9 @@ export async function buildSeedContext(db: Db, item: Item, agent: Agent, action:
       const dependency = getItem(db, edge.dependsOnId);
       return dependency ? [dependency.key] : [];
     }),
+    // The dependency this item's branch is built on, said where it stands
+    // (EO-780): not finished, on which step, and on which branch.
+    dependencyNotes: await stackedDependencyNotes(db, item),
     triggerComment: trigger,
     stepComments,
     humanComments,

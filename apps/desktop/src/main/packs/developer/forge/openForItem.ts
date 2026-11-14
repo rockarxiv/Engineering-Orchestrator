@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 import { effectiveReviewers, gitStateOf, jiraStateOf, REVIEWERS_FROM_REPOSITORY, type Item, type ItemReviewers, type Uuid } from "@eo/core";
 import { dependencyClosure } from "@eo/engine";
-import type { StackDependency, StackTargetDecision } from "../workspace/stackDecision.js";
+import { stacksOn, type StackDependency, type StackTargetDecision } from "../workspace/stackDecision.js";
 import type { Db } from "../../../db/client.js";
 import {
   getGitWorkspace,
@@ -20,6 +20,7 @@ import {
   branchExists,
   commitsAhead,
   git,
+  isAncestor,
   NETWORK_TIMEOUT_MS,
   NON_INTERACTIVE_GIT_ENV,
   pushBranch,
@@ -379,13 +380,24 @@ async function openNew(
     // Which checkout of this branch EO is allowed to rebase in: its own
     // worktree for this item, whether or not it still exists. Anything
     // else holding the branch is refused rather than rewritten (EO-156).
+    //
+    // A branch that records the commit it was cut from its dependency at
+    // (EO-780) carries only its own commits across — the ones after that
+    // commit — so a squash-merged dependency's originals are left behind
+    // rather than replayed onto the squash. Only while that commit is
+    // still under the branch: otherwise somebody carried it already, and
+    // `--onto` from it would mean nothing.
+    const { stackedOn } = gitStateOf(getItem(db, item.id) ?? item);
+    const from = stackedOn !== null && (await isAncestor(workspace.config.repoPath, stackedOn.commit, branch)) ? stackedOn.commit : undefined;
     const rebased = await rebaseOntoBase(workspace.config.repoPath, branch, target.baseRef, {
       worktreePath: worktreePathFor(item.key, options.worktreeRoot),
+      ...(from === undefined ? {} : { from }),
       ...(signal ? { signal } : {}),
     });
     if (!rebased.ok) {
       return { kind: "failed", reason: `EO could not rebase this branch onto \`${target.baseRef}\` before opening its pull request.\n\n${rebased.error}` };
     }
+    if (stackedOn !== null) updateItem(db, item.id, { git: { stackedOn: null } });
   }
 
   const reviewers = pullRequestReviewers(db, item, workspace);
@@ -424,6 +436,8 @@ async function openNew(
   }
 
   onProgress?.(result.adopted ? `The forge already had one open: ${result.url}` : `Created ${result.url}`);
+  // Pushed as it stands, so no rewrite is waiting to be forced (EO-780).
+  if (gitStateOf(getItem(db, item.id) ?? item).restacked) updateItem(db, item.id, { git: { restacked: false } });
 
   const remarks = [result.adopted ? `${item.key} already had a pull request open: ${result.url}` : `Opened ${result.url}`];
   if (result.fallbackBody) {
@@ -610,9 +624,22 @@ async function pushAlreadyOpen(
     return alreadyOpen;
   }
 
-  onProgress?.(`The pull request is already open, so pushing "${branch}" to ${remote}.`);
-  const pushed = await pushBranch(repoPath, remote, branch, signal ? { signal } : {});
-  if (pushed.ok) return alreadyOpen;
+  // A restack since the last push rewrote the branch (EO-780): the remote
+  // holds the history it replaced, so this push replaces it in turn —
+  // with a lease, so anything pushed there since EO last looked is refused
+  // rather than lost. Read fresh, since the restack is a dispatch's doing
+  // and this item may predate it.
+  const { restacked } = gitStateOf(getItem(db, item.id) ?? item);
+  onProgress?.(
+    restacked
+      ? `The pull request is already open and "${branch}" was restacked since it was last pushed, so pushing it to ${remote} with --force-with-lease.`
+      : `The pull request is already open, so pushing "${branch}" to ${remote}.`,
+  );
+  const pushed = await pushBranch(repoPath, remote, branch, { ...(signal ? { signal } : {}), ...(restacked ? { forceWithLease: true } : {}) });
+  if (pushed.ok) {
+    if (restacked) updateItem(db, item.id, { git: { restacked: false } });
+    return alreadyOpen;
+  }
 
   const classified = classifyForgeError(pushed.error);
   if (classified.diverged && !gitStateOf(item).namedBranch) {
@@ -915,9 +942,9 @@ async function stackDecisionFor(
   item: Item,
   run: CliRunner,
   signal?: AbortSignal,
-): Promise<{ decision: StackTargetDecision; sameFeature: StackDependency[] }> {
+): Promise<{ decision: StackTargetDecision; stackable: StackDependency[] }> {
   const edges = listAllDependencies(db);
-  const sameFeature: StackDependency[] = [];
+  const stackable: StackDependency[] = [];
   // A base a person set on the ticket is the target whatever its
   // dependencies say (EO-364), so there is nothing to ask the forge about
   // them. The resolver below still decides — it is what knows the set
@@ -931,7 +958,11 @@ async function stackDecisionFor(
   const named = baseBranch !== null || namedBranch;
   for (const edge of named ? [] : listDependencies(db, item.id)) {
     const dependency = getItem(db, edge.dependsOnId);
-    if (!dependency || dependency.parentId === null || dependency.parentId !== item.parentId) continue;
+    // The edge's rule decides whether it stacks (EO-780): `reached` in
+    // the same repository whatever the feature, `none` never, `finished`
+    // within the feature — the rule the cut is made by, so the pull
+    // request opens against the branch the work was cut from.
+    if (!dependency || !stacksOn(item, dependency, edge.wait)) continue;
 
     const dependencyBranch = gitStateOf(dependency).branch;
     const mergeState = dependencyBranch
@@ -945,11 +976,17 @@ async function stackDecisionFor(
           ...(signal ? { signal } : {}),
         })
       : "open";
-    sameFeature.push({ item: dependency, branch: await itemBranchName(db, dependency), mergeState, dependsOn: [...dependencyClosure(edges, dependency.id)] });
+    stackable.push({
+      item: dependency,
+      branch: await itemBranchName(db, dependency),
+      mergeState,
+      dependsOn: [...dependencyClosure(edges, dependency.id)],
+      wait: edge.wait,
+    });
   }
 
-  const decision = await resolveStackTargetWithAnswer(db, item, sameFeature, workspace.config.repoPath);
-  return { decision, sameFeature };
+  const decision = await resolveStackTargetWithAnswer(db, item, stackable, workspace.config.repoPath);
+  return { decision, stackable };
 }
 
 /**
@@ -987,7 +1024,7 @@ export async function pullRequestTargetBranch(db: Db, item: Item, options: { run
  * unambiguously not merged.
  */
 async function resolveSendTarget(db: Db, workspace: GitWorkspace, item: Item, run: CliRunner, signal?: AbortSignal): Promise<SendTarget> {
-  const { decision, sameFeature } = await stackDecisionFor(db, workspace, item, run, signal);
+  const { decision, stackable } = await stackDecisionFor(db, workspace, item, run, signal);
   const { namedBranch } = gitStateOf(item);
 
   if (decision.kind === "escalate") {
@@ -1024,13 +1061,13 @@ async function resolveSendTarget(db: Db, workspace: GitWorkspace, item: Item, ru
   }
 
   // decision.kind === "base": stacking no longer applies. If there was
-  // ever a same-feature dependency in the picture, it can only have
+  // ever a dependency it could stack on in the picture, it can only have
   // gotten here by having merged — the branch may still hold its
   // pre-merge (possibly squash-rewritten) commits, so it is rebased onto
-  // the current base branch before the push. No same-feature dependency
-  // at all means nothing could have been stacked, so nothing to rebase —
+  // the current base branch before the push. No such dependency at all
+  // means nothing could have been stacked, so nothing to rebase —
   // exactly today's behaviour.
   //
   // Never a branch a person named (EO-365), whatever the list held.
-  return { kind: "open", baseBranch: workspace.config.baseBranch, baseRef: baseRef.value, rebase: sameFeature.length > 0 && !namedBranch };
+  return { kind: "open", baseBranch: workspace.config.baseBranch, baseRef: baseRef.value, rebase: stackable.length > 0 && !namedBranch };
 }

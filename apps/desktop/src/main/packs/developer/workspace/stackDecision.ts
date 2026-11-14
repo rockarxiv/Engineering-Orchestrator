@@ -1,4 +1,4 @@
-import { gitStateOf, jiraStateOf, type Item, type Uuid } from "@eo/core";
+import { gitStateOf, jiraStateOf, type DependencyWait, type Item, type Uuid } from "@eo/core";
 import { unwrapAnswer } from "@eo/engine";
 
 /**
@@ -14,9 +14,8 @@ export type MergeState = "merged" | "open" | "closed";
 
 export interface StackDependency {
   /**
-   * The dependency item. Its `parentId` decides whether it is in
-   * scope at all (same parent feature as the dependent, not merely the
-   * same repository).
+   * The dependency item. Its `parentId` and `workspaceId`, with the
+   * edge's `wait`, decide whether it is in scope at all (`stacksOn`).
    */
   item: Item;
   /**
@@ -39,6 +38,33 @@ export interface StackDependency {
    * conservative reading and exactly the behaviour before this existed.
    */
   dependsOn?: Uuid[];
+  /**
+   * The rule the edge to this dependency waits by (EO-780), which decides
+   * whether it can be stacked on at all — `stacksOn`. Absent is
+   * `finished`, as everywhere a rule can be left out.
+   */
+  wait?: DependencyWait;
+}
+
+/**
+ * Whether `item` may be stacked on `dependency`, by the rule of the edge
+ * between them (EO-780, the pinned decision "Which edges stack").
+ *
+ * - `reached` stacks whenever the two are in the same repository, across
+ *   features too: it is the rule that releases an item before its
+ *   dependency has finished, so the dependency's work is on a branch the
+ *   item has to build on.
+ * - `none` never stacks: it is a link kept for the board and the
+ *   dependency summary, not a statement about code.
+ * - `finished` keeps the same-feature rule stacking always had.
+ *
+ * The repository is checked here for `reached` because nothing else
+ * scopes it; for `finished` the gatherers check it, as they always have.
+ */
+export function stacksOn(item: Pick<Item, "parentId" | "workspaceId">, dependency: Pick<Item, "parentId" | "workspaceId">, wait: DependencyWait = "finished"): boolean {
+  if (wait === "none") return false;
+  if (wait === "reached") return dependency.workspaceId !== null && dependency.workspaceId === item.workspaceId;
+  return dependency.parentId !== null && dependency.parentId === item.parentId;
 }
 
 /**
@@ -100,9 +126,9 @@ export type StackTargetDecision =
  *
  * `dependencies` is the *unfiltered* set of direct dependency edges
  * (annotated with each one's merge state); this function does the
- * same-parent-feature filtering itself; a dependency whose item
- * doesn't share the dependent's non-null `parentId` is out of scope
- * entirely, not treated as merged.
+ * filtering itself (`stacksOn`): a dependency its edge's rule does not
+ * stack on — another feature under `finished`, any under `none` — is out
+ * of scope entirely, not treated as merged.
  *
  * `answer` is what a person replied to a previous escalation from here,
  * and is consulted only when the decision is the one EO asked about: two
@@ -119,12 +145,12 @@ export function resolveStackTarget(item: Item, dependencies: StackDependency[], 
   const { baseBranch } = gitStateOf(item);
   if (baseBranch !== null) return { kind: "named-base", branch: baseBranch };
 
-  const sameFeature = dependencies.filter((dep) => dep.item.parentId !== null && dep.item.parentId === item.parentId);
+  const stackable = dependencies.filter((dep) => stacksOn(item, dep.item, dep.wait));
 
   // A dependency closed without merging always escalates, regardless of
   // any other dependency's state — EO must not guess what the dependent
   // should target instead, and must not keep stacking on a dead branch.
-  const closed = sameFeature.filter((dep) => dep.mergeState === "closed");
+  const closed = stackable.filter((dep) => dep.mergeState === "closed");
   if (closed.length > 0) {
     const names = joinKeys(closed.map((dep) => dep.item));
     const verb = closed.length === 1 ? "was" : "were";
@@ -135,7 +161,7 @@ export function resolveStackTarget(item: Item, dependencies: StackDependency[], 
     };
   }
 
-  const open = sameFeature.filter((dep) => dep.mergeState === "open");
+  const open = stackable.filter((dep) => dep.mergeState === "open");
 
   if (open.length === 1) return { kind: "stack", dependency: open[0]!.item, branch: open[0]!.branch };
 

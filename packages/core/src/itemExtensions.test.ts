@@ -90,8 +90,8 @@ describe("the jira extension", () => {
  */
 describe("the git extension", () => {
   it("reads an item with no extensions as one no git workspace has touched", () => {
-    expect(gitStateOf({ extensions: NO_ITEM_EXTENSIONS })).toEqual({ branch: null, pullRequest: null, baseBranch: null, namedBranch: false, attachedAt: null, reference: null, reviewers: null });
-    expect(NO_GIT_STATE).toEqual({ branch: null, pullRequest: null, baseBranch: null, namedBranch: false, attachedAt: null, reference: null, reviewers: null });
+    expect(gitStateOf({ extensions: NO_ITEM_EXTENSIONS })).toEqual({ branch: null, pullRequest: null, baseBranch: null, namedBranch: false, attachedAt: null, reference: null, reviewers: null, stackedOn: null, restacked: false });
+    expect(NO_GIT_STATE).toEqual({ branch: null, pullRequest: null, baseBranch: null, namedBranch: false, attachedAt: null, reference: null, reviewers: null, stackedOn: null, restacked: false });
   });
 
   it("reads what a row holds", () => {
@@ -103,13 +103,15 @@ describe("the git extension", () => {
       attachedAt: null,
       reference: null,
       reviewers: null,
+      stackedOn: null,
+      restacked: false,
     });
   });
 
   it("fills in a field a row was written before", () => {
     // A branch cut before anything opened a pull request is the ordinary
     // state, and the row written then names only the branch.
-    expect(gitStateOf({ extensions: { git: { branch: "eo/EO-1" } } })).toEqual({ branch: "eo/EO-1", pullRequest: null, baseBranch: null, namedBranch: false, attachedAt: null, reference: null, reviewers: null });
+    expect(gitStateOf({ extensions: { git: { branch: "eo/EO-1" } } })).toEqual({ branch: "eo/EO-1", pullRequest: null, baseBranch: null, namedBranch: false, attachedAt: null, reference: null, reviewers: null, stackedOn: null, restacked: false });
     // And a row written before a base branch could be named (EO-364)
     // reads as one that named none.
     expect(gitStateOf({ extensions: { git: { branch: "eo/EO-1", pullRequest: null } } }).baseBranch).toBeNull();
@@ -138,7 +140,7 @@ describe("the git extension", () => {
   });
 
   it("builds the map back the same way it reads it", () => {
-    expect(gitStateOf({ extensions: gitExtension({ branch: "eo/EO-1" }) })).toEqual({ branch: "eo/EO-1", pullRequest: null, baseBranch: null, namedBranch: false, attachedAt: null, reference: null, reviewers: null });
+    expect(gitStateOf({ extensions: gitExtension({ branch: "eo/EO-1" }) })).toEqual({ branch: "eo/EO-1", pullRequest: null, baseBranch: null, namedBranch: false, attachedAt: null, reference: null, reviewers: null, stackedOn: null, restacked: false });
   });
 
   it("leaves the other extension's slot alone", () => {
@@ -147,7 +149,7 @@ describe("the git extension", () => {
     // either needing to know about the other.
     const extensions = { ...jiraExtension({ key: "KAN-7" }), ...gitExtension({ branch: "eo/EO-1" }) };
     expect(jiraStateOf({ extensions })).toEqual({ key: "KAN-7", id: null, sync: true, pullPending: false });
-    expect(gitStateOf({ extensions })).toEqual({ branch: "eo/EO-1", pullRequest: null, baseBranch: null, namedBranch: false, attachedAt: null, reference: null, reviewers: null });
+    expect(gitStateOf({ extensions })).toEqual({ branch: "eo/EO-1", pullRequest: null, baseBranch: null, namedBranch: false, attachedAt: null, reference: null, reviewers: null, stackedOn: null, restacked: false });
   });
 });
 
@@ -274,5 +276,18 @@ describe("effectiveReviewers (EO-742)", () => {
   it("is part of what makes git state worth a row", () => {
     expect(isDefaultGitState({ ...NO_GIT_STATE, reviewers: [] })).toBe(false);
     expect(isDefaultGitState({ ...NO_GIT_STATE, reviewers: null })).toBe(true);
+  });
+});
+
+describe("where a stacked branch was cut (EO-780)", () => {
+  it("reads the dependency and the commit back, and absent is not stacked", () => {
+    const stackedOn = { itemId: "dep-1", commit: "a1b2c3" };
+    expect(gitStateOf({ extensions: gitExtension({ branch: "eo/EO-2", stackedOn }) }).stackedOn).toEqual(stackedOn);
+    expect(gitStateOf({ extensions: { git: { branch: "eo/EO-2" } } })).toMatchObject({ stackedOn: null, restacked: false });
+  });
+
+  it("is part of what makes git state worth a row", () => {
+    expect(isDefaultGitState({ ...NO_GIT_STATE, stackedOn: { itemId: "dep-1", commit: "a1b2c3" } })).toBe(false);
+    expect(isDefaultGitState({ ...NO_GIT_STATE, restacked: true })).toBe(false);
   });
 });

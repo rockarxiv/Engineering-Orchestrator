@@ -228,6 +228,28 @@ export const GitItemStateSchema = z.object({
    * `normaliseReviewers` left as it is.
    */
   reviewers: z.array(z.string()).nullable().default(null),
+  /**
+   * The dependency this item's branch was cut from, and the exact commit
+   * of that dependency's branch it was cut at (EO-780). Null — the
+   * ordinary state — for a branch cut from the base branch, or from a
+   * branch a person named.
+   *
+   * What a restack starts from: when the dependency's branch has moved
+   * on — force-pushed, rebased, or simply grown — the item's own commits
+   * are the ones after `commit`, and `git rebase --onto <new tip>
+   * <commit>` carries exactly those across. Moved to the new tip by every
+   * restack, and cleared once the dependency has merged and the branch
+   * has been carried onto the base branch.
+   */
+  stackedOn: z.object({ itemId: z.string(), commit: z.string() }).nullable().default(null),
+  /**
+   * A restack rewrote this branch since it was last pushed (EO-780), so
+   * the next push to a pull request already open has to replace the
+   * remote's history: `--force-with-lease`. False — the ordinary state —
+   * for every branch whose history EO has not rewritten. Cleared by the
+   * push that follows.
+   */
+  restacked: z.boolean().default(false),
 });
 
 export type GitItemState = z.infer<typeof GitItemStateSchema>;
@@ -285,9 +307,17 @@ export function readGitState(data: unknown): GitItemState {
  * no row already says.
  */
 export function isDefaultGitState(state: GitItemState): boolean {
-  const { branch, pullRequest, baseBranch, namedBranch, attachedAt, reference, reviewers } = state;
+  const { branch, pullRequest, baseBranch, namedBranch, attachedAt, reference, reviewers, stackedOn, restacked } = state;
   return (
-    branch === null && pullRequest === null && baseBranch === null && !namedBranch && attachedAt === null && reference === null && reviewers === null
+    branch === null &&
+    pullRequest === null &&
+    baseBranch === null &&
+    !namedBranch &&
+    attachedAt === null &&
+    reference === null &&
+    reviewers === null &&
+    stackedOn === null &&
+    !restacked
   );
 }
 

@@ -85,7 +85,7 @@ describe("what an item filter matches", () => {
     // What you can see you can find: the key, the title, the branch, who
     // is on it, the feature, the repository and the Jira issue.
     expect(matchesItemFilter(item(), filter({ text: "RATE" }))).toBe(true);
-    expect(matchesItemFilter(item({ git: { branch: "rockarxiv/EO-42", pullRequest: null, baseBranch: null, namedBranch: false, attachedAt: null, reference: null, reviewers: null } }), filter({ text: "rockarxiv" }))).toBe(true);
+    expect(matchesItemFilter(item({ git: { branch: "rockarxiv/EO-42", pullRequest: null, baseBranch: null, namedBranch: false, attachedAt: null, reference: null, reviewers: null, stackedOn: null, restacked: false } }), filter({ text: "rockarxiv" }))).toBe(true);
     expect(matchesItemFilter(item({ assigneeName: "Orion" }), filter({ text: "orion" }))).toBe(true);
     expect(matchesItemFilter(item({ jiraKey: "KAN-7" }), filter({ text: "kan-7" }))).toBe(true);
     expect(matchesItemFilter(item(), filter({ text: "nothing like this" }))).toBe(false);

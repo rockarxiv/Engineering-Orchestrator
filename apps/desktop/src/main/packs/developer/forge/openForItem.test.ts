@@ -714,7 +714,7 @@ describe("when it cannot", () => {
     // sends it is the pipeline's business, not this function's.
     const saved = getItem(handle.db, item.id)!;
     expect(saved.stepId).toBe("review");
-    expect(gitStateOf(saved)).toEqual({ branch: "eo/API-4", pullRequest: null, baseBranch: null, namedBranch: false, attachedAt: null, reference: null, reviewers: null });
+    expect(gitStateOf(saved)).toEqual({ branch: "eo/API-4", pullRequest: null, baseBranch: null, namedBranch: false, attachedAt: null, reference: null, reviewers: null, stackedOn: null, restacked: false });
   });
 });
 
@@ -1353,6 +1353,23 @@ describe("before it opens or reuses one (EO-429)", () => {
       expect(note).toContain("Remote: `origin`");
       expect(note).toContain("Branch: `eo/API-4`");
       expect(note).toContain("`origin/main`");
+    });
+
+    it("pushes with --force-with-lease when a restack rewrote the branch since its last push (EO-780), and forgets that it did", async () => {
+      // What a restack leaves: the remote holds the branch as it was before
+      // it was carried onto its dependency's new tip.
+      const item = story({ git: { branch: "eo/API-4", pullRequest: PULL_REQUEST, restacked: true } });
+      const { remote } = diverge();
+      worktreeFor(item);
+      const progress: string[] = [];
+
+      const result = await mergeRequestStep(item, onlyFinds(found), (text) => progress.push(text));
+
+      expect(result).toMatchObject({ ok: true, result: "opened" });
+      expect(remoteTip()).toBe(localTip());
+      expect(remoteTip()).not.toBe(remote);
+      expect(progress.some((line) => line.includes("--force-with-lease"))).toBe(true);
+      expect(gitStateOf(getItem(handle.db, item.id)!).restacked).toBe(false);
     });
 
     it("says it once, not once per attempt", async () => {

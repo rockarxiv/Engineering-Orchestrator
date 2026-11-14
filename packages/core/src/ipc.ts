@@ -1660,6 +1660,8 @@ export const recordContract = {
           updated: z.array(z.string()).optional(),
           stillWaitsFor: z.array(z.string()),
           freed: z.boolean(),
+          /** What the change was written despite (EO-780); absent where there was nothing to warn of. */
+          warnings: z.array(z.string()).optional(),
         })
         .optional(),
     }),
@@ -6310,6 +6312,8 @@ export const recordContract = {
           updated: z.array(z.string()).optional(),
           stillWaitsFor: z.array(z.string()),
           freed: z.boolean(),
+          /** What the change was written despite (EO-780); absent where there was nothing to warn of. */
+          warnings: z.array(z.string()).optional(),
         })
         .nullable(),
     }),

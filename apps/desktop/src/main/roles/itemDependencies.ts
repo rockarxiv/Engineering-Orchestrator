@@ -28,6 +28,7 @@ import {
   updateItem,
   type DependencyGate,
 } from "../db/repos/index.js";
+import { reachedGateWarning } from "../packs/developer/workspace/stackGateWarning.js";
 import { refuseIfUntouchable } from "./itemGuards.js";
 
 /**
@@ -101,6 +102,13 @@ export interface DependencyChangeApplied {
    * waits for nothing open. The scheduler offers it on its next tick.
    */
   freed: boolean;
+  /**
+   * What the change was written despite (EO-780): a `reached` rule on a
+   * step its dependency can arrive at before anything is implemented, in
+   * a repository where that releases the item onto an empty branch. Said
+   * in the comment and in the answer; never a refusal.
+   */
+  warnings: string[];
   comment: Comment;
 }
 
@@ -355,15 +363,18 @@ export function applyDependencyChange(db: Db, plan: DependencyChangePlan, header
     const open = openDependencies(writer, item.id);
     const freed = (plan.remove.length > 0 || plan.update.length > 0) && before.length > 0 && open.length === 0;
     const lines = dependencyChangeLines(writer, item, plan, freed);
+    const warnings = [...plan.add, ...plan.update].flatMap((edge) =>
+      edge.gate.wait === "reached" ? (reachedGateWarning(writer, item, edge.item, edge.gate.stepId) ?? []) : [],
+    );
     const comment = postComment(writer, {
       itemId: item.id,
       author: { type: "engine" },
       kind: "decision",
       parseBodyMentions: false,
-      body: [header, "", ...lines].join("\n"),
+      body: [header, "", ...lines, ...(warnings.length === 0 ? [] : ["", ...warnings.map((warning) => `Warning: ${warning}`)])].join("\n"),
     });
 
-    return { item: getItem(writer, item.id) ?? item, added: plan.add, removed: plan.remove, updated: plan.update, open, freed, comment };
+    return { item: getItem(writer, item.id) ?? item, added: plan.add, removed: plan.remove, updated: plan.update, open, freed, warnings, comment };
   });
 }
 
@@ -456,6 +467,8 @@ export interface DependencyChangeSummary {
   updated?: string[];
   stillWaitsFor: string[];
   freed: boolean;
+  /** What the change was written despite (EO-780). Left out where there is nothing to warn of. */
+  warnings?: string[] | undefined;
 }
 
 export function summariseDependencyChange(applied: DependencyChangeApplied): DependencyChangeSummary {
@@ -465,6 +478,7 @@ export function summariseDependencyChange(applied: DependencyChangeApplied): Dep
     ...(applied.updated.length === 0 ? {} : { updated: applied.updated.map((edge) => edge.item.key) }),
     stillWaitsFor: applied.open.map((other) => other.key),
     freed: applied.freed,
+    ...(applied.warnings.length === 0 ? {} : { warnings: applied.warnings }),
   };
 }
 
