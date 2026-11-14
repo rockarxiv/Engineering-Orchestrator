@@ -15,7 +15,9 @@ import {
   listAgents,
   listCommentsForItem,
   listDependencies,
+  setDependencyGate,
   setItemAssignee,
+  updateItem,
   updateRun,
 } from "../db/repos/index.js";
 import { saveGroup } from "../db/repos/groupsRepo.js";
@@ -26,6 +28,7 @@ import { updateItemCommand } from "../ipc/itemAttachmentCommands.js";
 import { answerToolCall } from "../mcpHost/server.js";
 import { fakePlatform } from "../testing/platform.js";
 import { updateItemFields } from "../ipc/domainCommands.js";
+import { getItemDetail } from "../ipc/domainQueries.js";
 import { approveWorkProposalThroughRecord } from "../ipc/conversationTurns.js";
 import { openAssistConversation, postAssistReply } from "../roles/assist.js";
 import { ASSIST_ACTION } from "../roles/conversationSteps.js";
@@ -108,6 +111,8 @@ async function organisationItems(): Promise<{ release: Item; story: Item }> {
 }
 
 const dependsOn = (handle: DbHandle, item: Item): string[] => listDependencies(handle.db, item.id).map((edge) => edge.dependsOnId as string);
+const gatesOf = (handle: DbHandle, item: Item) =>
+  listDependencies(handle.db, item.id).map((edge) => ({ dependsOnId: edge.dependsOnId as string, wait: edge.wait, waitStepId: edge.waitStepId }));
 
 describe("a project the organisation holds", () => {
   it("has the change made by the record, filed under the person who asked, and copied into the desktop", async () => {
@@ -146,17 +151,67 @@ describe("a project the organisation holds", () => {
     expect(dependsOn(recordDb, release)).toEqual([]);
   });
 
-  it("refuses a rule other than finishing rather than writing it as one, and asks the record nothing (EO-777)", async () => {
+  it("sets a rule on a new edge on the record, resolving the step there, and the desktop shows the gate (EO-778)", async () => {
     const { release, story } = await organisationItems();
 
-    for (const request of [{ addDependsOn: [{ item: story.key, wait: "none" as const }] }, { updateDependsOn: [{ item: story.key, wait: "none" as const }] }]) {
-      const answer = await updateItemFields(anna.handle.db, anna.record, { itemId: release.id, ...request });
+    const answer = await updateItemFields(anna.handle.db, anna.record, { itemId: release.id, addDependsOn: [{ item: story.key, wait: "reached", step: "Review" }] });
 
-      expect(answer.updated).toBe(false);
-      expect(answer.problem).toContain("the record does not take a rule for what an item waits by yet");
-    }
+    expect(answer).toEqual({ updated: true, problem: null, dependencies: { added: [story.key], removed: [], stillWaitsFor: [story.key], freed: false } });
+    expect(gatesOf(recordDb, release)).toEqual([{ dependsOnId: story.id, wait: "reached", waitStepId: "review" }]);
+    expect(gatesOf(anna.handle, release)).toEqual([{ dependsOnId: story.id, wait: "reached", waitStepId: "review" }]);
+    // The item page on the desktop reads its replica.
+    expect(getItemDetail(anna.handle.db, { itemId: release.id })?.dependsOn).toEqual([
+      expect.objectContaining({ key: story.key, wait: "reached", waitStepId: "review", waitStepName: "Review" }),
+    ]);
+    const said = listCommentsForItem(recordDb.db, release.id).filter((comment) => comment.authorType === "engine");
+    expect(said).toHaveLength(1);
+    expect(said[0]?.body).toContain(`waits for ${story.key} (${story.title}) to reach Review`);
+  });
+
+  it("changes the rule of an edge the record has with updateDependsOn, and the desktop reflects it after the answer (EO-778)", async () => {
+    const { release, story } = await organisationItems();
+    addDependency(recordDb.db, release.id as Uuid, story.id as Uuid);
+    updateItem(recordDb.db, release.id as Uuid, {});
+    await anna.record.sync();
+    expect(gatesOf(anna.handle, release)).toEqual([{ dependsOnId: story.id, wait: "finished", waitStepId: null }]);
+
+    const answer = await updateItemFields(anna.handle.db, anna.record, { itemId: release.id, updateDependsOn: [{ item: story.key, wait: "none" }] });
+
+    expect(answer).toEqual({
+      updated: true,
+      problem: null,
+      dependencies: { added: [], removed: [], updated: [story.key], stillWaitsFor: [], freed: true },
+    });
+    expect(gatesOf(recordDb, release)).toEqual([{ dependsOnId: story.id, wait: "none", waitStepId: null }]);
+    expect(gatesOf(anna.handle, release)).toEqual([{ dependsOnId: story.id, wait: "none", waitStepId: null }]);
+    const said = listCommentsForItem(recordDb.db, release.id).filter((comment) => comment.authorType === "engine");
+    expect(said[0]?.body).toContain(`links to ${story.key} (${story.title}) without waiting for it`);
+    expect(listCommentsForItem(anna.handle.db, release.id).map((comment) => comment.id)).toContain(said[0]?.id);
+  });
+
+  it("is refused by the record for a step the dependency's pipeline does not have, naming the steps it has, and nothing is written", async () => {
+    const { release, story } = await organisationItems();
+
+    const answer = await updateItemFields(anna.handle.db, anna.record, { itemId: release.id, addDependsOn: [{ item: story.key, wait: "reached", step: "Nowhere" }] });
+
+    expect(answer.updated).toBe(false);
+    expect(answer.problem).toContain(`${story.key}'s pipeline has no step "Nowhere"`);
+    expect(answer.problem).toContain('"Review"');
     expect(dependsOn(recordDb, release)).toEqual([]);
     expect(dependsOn(anna.handle, release)).toEqual([]);
+  });
+
+  it("brings a rule set or changed on the record down with the next pull", async () => {
+    const { release, story } = await organisationItems();
+    addDependency(recordDb.db, release.id as Uuid, story.id as Uuid, { wait: "reached", stepId: "review" });
+    updateItem(recordDb.db, release.id as Uuid, {});
+    await anna.record.sync();
+    expect(gatesOf(anna.handle, release)).toEqual([{ dependsOnId: story.id, wait: "reached", waitStepId: "review" }]);
+
+    setDependencyGate(recordDb.db, release.id as Uuid, story.id as Uuid, { wait: "none" });
+    updateItem(recordDb.db, release.id as Uuid, {});
+    await anna.record.sync();
+    expect(gatesOf(anna.handle, release)).toEqual([{ dependsOnId: story.id, wait: "none", waitStepId: null }]);
   });
 
   it("changes nothing anywhere when the record cannot be reached, and says why", async () => {
@@ -169,6 +224,24 @@ describe("a project the organisation holds", () => {
     expect(answer.problem).toMatch(/belongs to your organisation's record, which could not be reached, so what it waits for was not changed/);
     expect(dependsOn(recordDb, release)).toEqual([]);
     expect(dependsOn(anna.handle, release)).toEqual([]);
+    expect(listCommentsForItem(recordDb.db, release.id).filter((comment) => comment.authorType === "engine")).toHaveLength(0);
+  });
+
+  it("changes no rule anywhere when the record cannot be reached, and says why", async () => {
+    const { release, story } = await organisationItems();
+    addDependency(recordDb.db, release.id as Uuid, story.id as Uuid);
+    updateItem(recordDb.db, release.id as Uuid, {});
+    await anna.record.sync();
+    anna.online = false;
+
+    for (const request of [{ addDependsOn: [{ item: release.key, wait: "none" as const }] }, { updateDependsOn: [{ item: story.key, wait: "reached" as const, step: "Review" }] }]) {
+      const answer = await updateItemFields(anna.handle.db, anna.record, { itemId: release.id, ...request });
+
+      expect(answer.updated).toBe(false);
+      expect(answer.problem).toMatch(/could not be reached, so what it waits for was not changed/);
+    }
+    expect(gatesOf(recordDb, release)).toEqual([{ dependsOnId: story.id, wait: "finished", waitStepId: null }]);
+    expect(gatesOf(anna.handle, release)).toEqual([{ dependsOnId: story.id, wait: "finished", waitStepId: null }]);
     expect(listCommentsForItem(recordDb.db, release.id).filter((comment) => comment.authorType === "engine")).toHaveLength(0);
   });
 
@@ -358,7 +431,7 @@ describe("an item on a step that waits on a group", () => {
     const pat = createPerson(recordDb.db, { name: "Pat", email: "pat@example.com" });
     const patsDevice = issueDevice(recordDb.db, { personId: pat.id, name: "pat-desk", tokenHash: "h2", secretsKeyHash: null }).id;
 
-    const answer = await serveChangeDependencies(serving, { deviceId: patsDevice, itemId: release.id, add: [story.key], remove: [], why: null });
+    const answer = await serveChangeDependencies(serving, { deviceId: patsDevice, itemId: release.id, add: [story.key], remove: [], update: [], why: null });
 
     expect(answer.changed).toBe(false);
     expect(answer.problem).toContain("Design");

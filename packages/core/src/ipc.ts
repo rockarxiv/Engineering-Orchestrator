@@ -6280,8 +6280,16 @@ export const recordContract = {
     z.object({
       deviceId: z.string().min(1),
       itemId: z.string().min(1),
-      add: z.array(z.string().min(1)).default([]),
+      /**
+       * Items to wait for, by key or id — a bare one waits for it to
+       * finish — or `{ item, wait, step? }` with the rule to wait by
+       * (EO-778). `step` is a step *name*, resolved by the record against
+       * the dependency's pipeline as it holds it.
+       */
+      add: z.array(DependencyOnItemSchema).default([]),
       remove: z.array(z.string().min(1)).default([]),
+      /** New rules for edges the item already has (EO-778): `items:update`'s `updateDependsOn`. */
+      update: z.array(DependencyGateOnItemSchema).default([]),
       /** Why, where this is a reorder card a person approved in a conversation; the comment says it. */
       why: z.string().nullable().default(null),
     }),
@@ -6298,6 +6306,8 @@ export const recordContract = {
         .object({
           added: z.array(z.string()),
           removed: z.array(z.string()),
+          /** The edges whose rule changed (EO-778); left out where none did. */
+          updated: z.array(z.string()).optional(),
           stillWaitsFor: z.array(z.string()),
           freed: z.boolean(),
         })

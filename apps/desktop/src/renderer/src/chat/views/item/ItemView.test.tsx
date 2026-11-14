@@ -244,6 +244,32 @@ describe("the item view", () => {
     expect(within(blocked).getByRole("link", { name: "WEB-7" })).toHaveAttribute("href", "/items/other-project-item");
   });
 
+  it("says what releases the item from each dependency, as a replica pulled from the record reads it (EO-778)", async () => {
+    // The `dependsOn` a replica's `items:get` answers once the record has
+    // sent a gated edge (main/record/dependencyGates.test.ts): the rule and
+    // the step by id and name, beside the step the dependency stands on now.
+    renderItem(
+      detail({
+        dependsOn: [
+          { id: "d1", key: "EO-12", title: "The parent", stepId: "worktree", stepName: "Worktree", wait: "reached", waitStepId: "review", waitStepName: "Review" },
+          { id: "d2", key: "EO-13", title: "Lands first", stepId: "todo", stepName: "To Do", wait: "finished", waitStepId: null, waitStepName: null },
+          { id: "d3", key: "WEB-7", title: "Another repository", stepId: "todo", stepName: "To Do", wait: "none", waitStepId: null, waitStepName: null },
+          { id: "d4", key: "EO-14", title: "Its step is gone", stepId: "todo", stepName: "To Do", wait: "reached", waitStepId: "retired", waitStepName: null },
+        ],
+      }),
+    );
+
+    const dependencies = await screen.findByRole("region", { name: "Dependencies" });
+    expect(within(dependencies).getByText("Depends on")).toBeInTheDocument();
+    expect(within(dependencies).queryByText("Blocked by")).toBeNull();
+    const row = (key: string) => within(dependencies).getByRole("link", { name: key }).closest("li") as HTMLElement;
+    expect(within(row("EO-12")).getByText("Until it reaches Review")).toBeInTheDocument();
+    expect(within(row("EO-12")).getByText("Worktree")).toBeInTheDocument();
+    expect(within(row("EO-13")).getByText("Until it finishes")).toBeInTheDocument();
+    expect(within(row("WEB-7")).getByText("Doesn't wait")).toBeInTheDocument();
+    expect(within(row("EO-14")).getByText("Until it reaches a step that no longer exists")).toBeInTheDocument();
+  });
+
   it("says when a step that keeps checking last checked and checks next (EO-456)", async () => {
     renderItem(detail({ watch: { stepId: "todo", startedAt: 1_000, lastCheckedAt: 2_000, nextCheckAt: 302_000, giveUpAt: 604_801_000, checks: 4, consecutiveFailures: 0, lastError: null } }));
 
