@@ -43,8 +43,11 @@ import { createAdminMcpHost, type AdminMcpHost } from "./admin.js";
  */
 const SOCKET_TIMEOUT_MS = 30_000;
 
-/** The whole catalogue but the tools only a person may call, which no agent is offered (EO-714). */
-const ADMIN_TOOLS = TOOLS.filter((tool) => tool.personOnly !== true);
+/**
+ * The whole catalogue but the tools only a person may call, which no agent is offered (EO-714), and the
+ * ones only an outside client is, the job writes (EO-785).
+ */
+const ADMIN_TOOLS = TOOLS.filter((tool) => tool.personOnly !== true && tool.externalOnly !== true);
 vi.setConfig({ testTimeout: SOCKET_TIMEOUT_MS, hookTimeout: SOCKET_TIMEOUT_MS });
 
 const opts = { exposeErrorDetails: true };
