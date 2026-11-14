@@ -84,6 +84,7 @@ function detail(overrides: Partial<ItemDetailData> = {}): ItemDetailData {
       atTerminalStep: false,
       openDependencyCount: 0,
       openDependencyGates: [],
+      dispatchHold: null,
       latestRunStatus: null,
       assigneeName: null,
       assigneePerson: null,
@@ -268,6 +269,13 @@ describe("the item view", () => {
     expect(within(row("EO-13")).getByText("Until it finishes")).toBeInTheDocument();
     expect(within(row("WEB-7")).getByText("Doesn't wait")).toBeInTheDocument();
     expect(within(row("EO-14")).getByText("Until it reaches a step that no longer exists")).toBeInTheDocument();
+  });
+
+  it("says why a pack holds the item on its step, beside the step (EO-781)", async () => {
+    const base = detail();
+    renderItem(detail({ item: { ...base.item, stepId: "merge_request", stepName: "Merge request", dispatchHold: "Waits for EO-12 to open its pull request" } }));
+
+    expect(await screen.findByText("Waits for EO-12 to open its pull request")).toBeInTheDocument();
   });
 
   it("says when a step that keeps checking last checked and checks next (EO-456)", async () => {

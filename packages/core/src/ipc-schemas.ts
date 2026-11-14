@@ -217,6 +217,14 @@ export const ItemSummarySchema = z.object({
    * Defaulted, for `pipelineVersion`'s reason.
    */
   openDependencyGates: z.array(z.string()).default([]),
+  /**
+   * Why the installed pack will not dispatch this item on the step it
+   * stands on, as one line (EO-781): "Waits for EO-12 to open its pull
+   * request". Null when nothing of a pack's holds it there.
+   *
+   * Defaulted, for `pipelineVersion`'s reason.
+   */
+  dispatchHold: z.string().nullable().default(null),
   /** The status of its most recent run, if it has ever run. */
   latestRunStatus: z.string().nullable(),
   /**

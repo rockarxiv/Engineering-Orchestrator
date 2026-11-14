@@ -159,6 +159,7 @@ const SCHEDULE: readonly Group[] = [
       "apps/desktop/src/main/supervisor/progressOutcome.test.ts",
       "apps/desktop/src/main/supervisor/rerunMention.test.ts",
       "apps/desktop/src/main/supervisor/reviewWithoutCriteria.test.ts",
+      "apps/desktop/src/main/supervisor/stackedPullRequestHold.test.ts",
       "apps/desktop/src/main/supervisor/streamFinalisation.test.ts",
     ],
   },

@@ -211,6 +211,13 @@ export function CardBody({
 
       <WorkspaceLine workspace={item.workspace} />
 
+      {/* Why a pack holds it on this step (EO-781), which nothing else on the card says. */}
+      {item.dispatchHold ? (
+        <p className="truncate text-[11px] text-ink-subtle" title={item.dispatchHold}>
+          {item.dispatchHold}
+        </p>
+      ) : null}
+
       <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 pt-0.5 text-[11px] text-ink-muted">
         {item.watch == null ? <RunStatusLine status={runStatusOf(item.latestRunStatus)} /> : <WatchStatusLine item={item} />}
         {queued ? (

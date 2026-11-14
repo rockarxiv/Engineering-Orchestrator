@@ -48,6 +48,7 @@ import { pullRequestTargetBranch } from "./packs/developer/forge/openForItem.js"
 import { guessForgeFromRemote } from "./packs/developer/forge/mergeState.js";
 import { createRunResultKey } from "./packs/developer/wiring.js";
 import { useRegistry } from "./registry.js";
+import { useDispatchGate } from "./installedGate.js";
 import { useWorkspaceKinds } from "./workspaceKinds.js";
 import { usePackConnectors } from "./connectors/declared.js";
 import { listAgents, resolveAgentAttachments } from "./db/repos/index.js";
@@ -292,6 +293,10 @@ export function createEngine(options: EngineOptions, packs: readonly CodePack[] 
   // saying "EO checks: commits, tests ran" is drawn by an IPC query that
   // has no supervisor in hand, and this is where it asks instead.
   useWorkspaceKinds(installed.kinds);
+  // And the gate they turn a step away with (EO-781): a card that sits
+  // still because a pack refuses its step says why, and the board is
+  // drawn by the same handler-without-an-engine.
+  useDispatchGate(db, installed.dispatchGate);
   // And the words the packs put around the servers EO hands an agent
   // (EO-315). Installed for the same reason and at the same moment: the
   // reach list on a step and the needs check both read it through an IPC

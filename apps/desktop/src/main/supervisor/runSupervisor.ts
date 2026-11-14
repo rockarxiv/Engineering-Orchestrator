@@ -201,6 +201,7 @@ import {
   listActiveRuns,
   listAwaitingInputItemIds,
   listCommentsForItem,
+  stepEntryTimes,
   activeMemoriesIn,
   listRunEvents,
   listRunsForItem,
@@ -266,7 +267,7 @@ import { awaitsTheStep, interpretationsOn, pendingInterpretation } from "../role
 import { ASSIST_ACTION, conversationTurnOptions, CONVERSATION_SETTINGS_KEY, SCENARIO_ACTION } from "../roles/conversationSteps.js";
 import { attachRunFiles } from "./runAttachments.js";
 import { blockedByActiveRunRefusal, createItemLock, type ItemHold, type ItemLock } from "./itemLock.js";
-import { archivedAgentRefusal, mentionDepthRefusal, outOfProjectDispatchRefusal, outOfProjectMentionRefusal, outOfProjectRecoveryNote, rerunRefusal, stoppedByHandNote, type GateRefusal, type ItemBlocker, type OutOfProject, type RerunBlocker } from "./dispatchBlockers.js";
+import { archivedAgentRefusal, mentionDepthRefusal, outOfProjectDispatchRefusal, outOfProjectMentionRefusal, outOfProjectRecoveryNote, pullRequestHoldNote, rerunRefusal, stoppedByHandNote, type GateRefusal, type ItemBlocker, type OutOfProject, type RerunBlocker } from "./dispatchBlockers.js";
 import { watchDependencyRegressions } from "./dependencyGates.js";
 import { declaresNoCriteria, isMissingCriteriaAsk, missingCriteriaRefusal } from "./reviewCriteria.js";
 import { recordStop, stopStands } from "./stoppedByHand.js";
@@ -9916,6 +9917,9 @@ export function createRunSupervisor(
       // takes the ask back down again, on the tick that sees the
       // criteria and before the review it releases.
       settleReviewCriteriaAsks(tickInput);
+      // And an item whose pull request waits for its stacked
+      // dependency's (EO-781) is told so, once for each stay on the step.
+      notePullRequestHolds(tickInput);
       // **The device asks; it does not decide** (EO-324, ARCHITECTURE.md, "The record"). What
       // comes back is work the record has already leased to this
       // machine. In one process that is the same sweep-pick-claim this
@@ -10033,6 +10037,39 @@ export function createRunSupervisor(
         initiationId,
         countAttempts(item.id, initiationId) + 1,
       );
+    }
+  }
+
+  /**
+   * Says once, in the thread, why an item stacked on another's branch is
+   * not opening its pull request (EO-781, invariant #8).
+   *
+   * Not `refuseDispatch`: that parks the item for a person with an
+   * `awaiting_input` run row, and this hold is nobody's to lift — it
+   * lifts by itself on the first tick after the dependency's pull request
+   * is recorded, or once the dependency finishes, and the scheduler then
+   * dispatches the step as it would any other. So a note and no run.
+   *
+   * Once for each stay on the step, the way `deferRerun` is once for each
+   * request: an engine note with these words posted since the item last
+   * entered the step is the item already told. Asked of the comments
+   * rather than stored, so a hold that comes back on a later visit to
+   * the step is said again, and a stacking that moved to another
+   * dependency says the new one's key.
+   */
+  function notePullRequestHolds(input: TickInput<GateRefusal>): void {
+    for (const { item, blocker } of dispatchBlockers(input)) {
+      if (blocker.kind !== "dependency_pull_request_pending") continue;
+      const step = stepForItem(db, item);
+      if (step === undefined) continue;
+      const body = pullRequestHoldNote(step.name, blocker);
+      const enteredAt = stepEntryTimes(db, [item.id]).get(item.id) ?? item.createdAt;
+      const alreadySaid = listCommentsForItem(db, item.id, { since: enteredAt }).some(
+        (comment) => comment.authorType === "engine" && comment.body === body,
+      );
+      if (alreadySaid) continue;
+      postComment(db, { itemId: item.id, author: { type: "engine" }, kind: "note", body });
+      onItemChanged(item.id);
     }
   }
 

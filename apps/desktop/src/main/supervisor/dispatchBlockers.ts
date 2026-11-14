@@ -14,7 +14,30 @@ import { blockedByActiveRunRefusal } from "./itemLock.js";
  * pack with a rule of its own widens this type and the switch in the
  * same commit, which is the point — the compiler asks for the sentence.
  */
-export type GateRefusal = { kind: "no_acceptance_criteria" };
+export type GateRefusal =
+  | { kind: "no_acceptance_criteria" }
+  /**
+   * The item's branch is stacked on `dependencyKey`'s (EO-780), which is
+   * not finished and has no pull request yet, so this item's pull request
+   * waits for that one (EO-781). Lifts by itself.
+   */
+  | { kind: "dependency_pull_request_pending"; dependencyKey: string };
+
+/**
+ * A gate's refusal as one line on the item's card and page (EO-781):
+ * "Waits for EO-12 to open its pull request". The board has no
+ * supervisor in hand, so it asks the installed gate itself
+ * (`installedGate.ts`) and words the answer here, with the same facts
+ * `blockerWords` says them from.
+ */
+export function gateRefusalLine(refusal: GateRefusal): string {
+  switch (refusal.kind) {
+    case "dependency_pull_request_pending":
+      return `Waits for ${refusal.dependencyKey} to open its pull request`;
+    case "no_acceptance_criteria":
+      return "Declares no acceptance criteria to review against";
+  }
+}
 
 /**
  * The item's project has been archived (EO-347).
@@ -283,6 +306,11 @@ export function blockerWords(blocker: Exclude<RerunBlocker, { kind: "run_active"
             : `no enabled agent holds the "${blocker.role}" role`,
         fix: "Enable one in Settings.",
       };
+    case "dependency_pull_request_pending":
+      return {
+        condition: `its branch is built on ${blocker.dependencyKey}'s, so it waits for ${blocker.dependencyKey} to open its pull request`,
+        fix: `Nothing to do: it opens its own once ${blocker.dependencyKey} has one, or once ${blocker.dependencyKey} finishes.`,
+      };
     case "no_acceptance_criteria":
       return {
         condition: "this ticket declares no acceptance criteria, so a review would have nothing to judge it against",
@@ -324,6 +352,17 @@ export function rerunRefusal(step: PipelineStep, blocker: RerunBlocker): string 
       ? ""
       : " Then ask again.";
   return `EO did not ${action}: ${condition}. ${fix}${tail} Nothing has changed.`;
+}
+
+/**
+ * The note EO posts once on an item whose pull request waits for the
+ * dependency its branch is built on (EO-781, invariant #8): which one,
+ * and that it lifts by itself. A note rather than a mention — nothing
+ * is asked of anybody, so it raises no `!`.
+ */
+export function pullRequestHoldNote(stepName: string, blocker: Extract<GateRefusal, { kind: "dependency_pull_request_pending" }>): string {
+  const { condition, fix } = blockerWords(blocker);
+  return `Holding "${stepName}": ${condition}. ${fix}`;
 }
 
 /**

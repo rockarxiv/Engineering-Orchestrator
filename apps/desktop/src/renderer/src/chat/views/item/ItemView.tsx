@@ -350,6 +350,8 @@ export function ItemView({ itemId }: { itemId: string }) {
                 {current?.name ?? item.stepName}
               </Chip>
               {item.needsAttention ? <Chip tone="paused">waiting on you</Chip> : null}
+              {/* Why a pack holds it on this step (EO-781), the card's line. */}
+              {item.dispatchHold ? <span className="text-ink-subtle">{item.dispatchHold}</span> : null}
             </span>
           }
           actions={
