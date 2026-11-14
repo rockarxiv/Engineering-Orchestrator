@@ -302,6 +302,7 @@ function item(overrides: Partial<ItemSummary> = {}): ItemSummary {
     atTerminalStep: false,
     openDependencyCount: 0,
     openDependencyGates: [],
+    dispatchHold: null,
     latestRunStatus: null,
     assigneeName: null,
     assigneePerson: null,

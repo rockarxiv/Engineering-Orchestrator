@@ -14,7 +14,30 @@ import { blockedByActiveRunRefusal } from "./itemLock.js";
  * pack with a rule of its own widens this type and the switch in the
  * same commit, which is the point — the compiler asks for the sentence.
  */
-export type GateRefusal = { kind: "no_acceptance_criteria" };
+export type GateRefusal =
+  | { kind: "no_acceptance_criteria" }
+  /**
+   * The item's branch is stacked on `dependencyKey`'s (EO-780), which is
+   * not finished and has no pull request yet, so this item's pull request
+   * waits for that one (EO-781). Lifts by itself.
+   */
+  | { kind: "dependency_pull_request_pending"; dependencyKey: string };
+
+/**
+ * A gate's refusal as one line on the item's card and page (EO-781):
+ * "Waits for EO-12 to open its pull request". The board has no
+ * supervisor in hand, so it asks the installed gate itself
+ * (`installedGate.ts`) and words the answer here, with the same facts
+ * `blockerWords` says them from.
+ */
+export function gateRefusalLine(refusal: GateRefusal): string {
+  switch (refusal.kind) {
+    case "dependency_pull_request_pending":
+      return `Waits for ${refusal.dependencyKey} to open its pull request`;
+    case "no_acceptance_criteria":
+      return "Declares no acceptance criteria to review against";
+  }
+}
 
 /**
  * The item's project has been archived (EO-347).
@@ -282,6 +305,11 @@ export function blockerWords(blocker: Exclude<RerunBlocker, { kind: "run_active"
             ? "this step names no role, so nobody can be staffed on it"
             : `no enabled agent holds the "${blocker.role}" role`,
         fix: "Enable one in Settings.",
+      };
+    case "dependency_pull_request_pending":
+      return {
+        condition: `its branch is built on ${blocker.dependencyKey}'s, so it waits for ${blocker.dependencyKey} to open its pull request`,
+        fix: `Nothing to do: it opens its own once ${blocker.dependencyKey} has one, or once ${blocker.dependencyKey} finishes.`,
       };
     case "no_acceptance_criteria":
       return {

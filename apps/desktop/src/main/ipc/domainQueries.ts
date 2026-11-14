@@ -129,7 +129,8 @@ import { activeProjectId } from "./repositoryCommands.js";
 import { workspaceView } from "./workspaceCommands.js";
 import { providerSteersLiveTurns } from "../providers/capabilities.js";
 import { currentWatch, currentWatchViews, itemWatchView } from "../supervisor/watches.js";
-import { gateWords } from "../supervisor/dispatchBlockers.js";
+import { gateRefusalLine, gateWords } from "../supervisor/dispatchBlockers.js";
+import { installedGateRefusal } from "../installedGate.js";
 import { watchIntervalMs } from "@eo/engine";
 import { runActionName } from "../modules/runName.js";
 import { registry, registryForProject } from "../registry.js";
@@ -783,6 +784,10 @@ function summarise(db: Db, rows: Item[], stories: Item[] = rows, reads: SummaryR
         });
         return words === null ? [] : [words];
       }),
+      // What the installed pack turns this step away with (EO-781), asked
+      // of the gate the scheduler is given, so the card and the tick
+      // cannot disagree about whether it is held.
+      dispatchHold: dispatchHoldOf(db, item, stepOf(item)),
       latestRunStatus: latest?.status ?? null,
       watch: watches.get(item.id) ?? null,
       // Who is actually on it (ARCHITECTURE.md, "Vocabulary"): the agent that ran most recently,
@@ -800,6 +805,13 @@ function summarise(db: Db, rows: Item[], stories: Item[] = rows, reads: SummaryR
   });
 
   return { items };
+}
+
+/** The installed gate's refusal of the step an item stands on, as its card says it; null on none, or on a terminal step. */
+function dispatchHoldOf(db: Db, item: Item, step: PipelineStep | undefined): string | null {
+  if (step === undefined || step.isTerminal) return null;
+  const refusal = installedGateRefusal(db, item, step);
+  return refusal === null ? null : gateRefusalLine(refusal);
 }
 
 /** Which comments still have an open mention waiting on the human — drives the `!` in a thread. */
@@ -1530,6 +1542,7 @@ function ownFieldsSection(db: Db, { item, step }: ItemDetailContext) {
         atTerminalStep: step?.isTerminal === true,
         openDependencyCount: 0,
         openDependencyGates: [],
+        dispatchHold: null,
         latestRunStatus: null,
         assigneeName: null,
         // The item's own mark (EO-313, ARCHITECTURE.md, "Preview"). Not a default of `false`

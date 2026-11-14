@@ -109,6 +109,7 @@ function item(overrides: Partial<ItemSummary> = {}): ItemSummary {
     atTerminalStep: false,
     openDependencyCount: 0,
     openDependencyGates: [],
+    dispatchHold: null,
     latestRunStatus: null,
     assigneeName: null,
     assigneePerson: null,
@@ -648,6 +649,19 @@ describe("a card", () => {
     const gated = within(await column("To Do")).getByText("blocked ×2");
     expect(gated).toHaveAttribute("title", "Waits for EO-12 to reach Watch merge request (now at Review)\nBlocked by 1 unfinished dependency(ies)");
     expect(within(await column("Review")).getByText("blocked ×1")).toHaveAttribute("title", "Blocked by 1 unfinished dependency(ies)");
+  });
+
+  it("says on the card why a pack holds it on its step, and nothing on a card nothing holds (EO-781)", async () => {
+    mockIpc({
+      items: [
+        item({ dispatchHold: "Waits for EO-12 to open its pull request" }),
+        item({ id: "t2", key: "EO-2", stepId: "review" }),
+      ],
+    });
+    renderBoard();
+
+    expect(within(await column("To Do")).getByText("Waits for EO-12 to open its pull request")).toBeInTheDocument();
+    expect(within(await column("Review")).queryByText(/to open its pull request/)).toBeNull();
   });
 
   it("names the agent that picked it up, or says nobody has", async () => {
