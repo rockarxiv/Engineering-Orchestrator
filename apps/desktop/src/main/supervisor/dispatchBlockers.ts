@@ -355,6 +355,17 @@ export function rerunRefusal(step: PipelineStep, blocker: RerunBlocker): string 
 }
 
 /**
+ * The note EO posts once on an item whose pull request waits for the
+ * dependency its branch is built on (EO-781, invariant #8): which one,
+ * and that it lifts by itself. A note rather than a mention — nothing
+ * is asked of anybody, so it raises no `!`.
+ */
+export function pullRequestHoldNote(stepName: string, blocker: Extract<GateRefusal, { kind: "dependency_pull_request_pending" }>): string {
+  const { condition, fix } = blockerWords(blocker);
+  return `Holding "${stepName}": ${condition}. ${fix}`;
+}
+
+/**
  * EO turning down work that would have started a retired agent (EO-186).
  *
  * `rerunRefusal`'s shape and, deliberately, `rerunRefusal`'s words: the
