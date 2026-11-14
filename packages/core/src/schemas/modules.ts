@@ -751,9 +751,16 @@ export const ModuleCreationSchema = z.object({
 });
 export type ModuleCreation = z.infer<typeof ModuleCreationSchema>;
 
-/** What a module is answered with. `existing` is true when this key had already made that item. */
+/**
+ * What a module is answered with. `existing` is true when this key had
+ * already made that item. `warnings`, present only when there is one,
+ * says what an edge the creation wrote is worth a second look for — a
+ * `reached` rule on a step its dependency can arrive at before anything
+ * is implemented (EO-780). The edge is written all the same, and EO says
+ * the same on the created item.
+ */
 export const ModuleCreationAnswerSchema = z.union([
-  z.object({ created: z.literal(true), key: z.string(), existing: z.boolean() }),
+  z.object({ created: z.literal(true), key: z.string(), existing: z.boolean(), warnings: z.array(z.string()).optional() }),
   z.object({ created: z.literal(false), reason: z.string() }),
 ]);
 export type ModuleCreationAnswer = z.infer<typeof ModuleCreationAnswerSchema>;

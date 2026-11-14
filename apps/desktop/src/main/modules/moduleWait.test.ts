@@ -23,11 +23,12 @@ import {
   listItemsIncludingArchived,
   listRunEvents,
   listRunsForItem,
+  projectForWorkspace,
   saveModule,
   transitionItem,
   updateRun,
 } from "../db/repos/index.js";
-import { createTestItem, openMigratedTestDb } from "../db/testHelpers.js";
+import { attachWorkspace, createTestItem, openMigratedTestDb } from "../db/testHelpers.js";
 import { getItemDetail, listItemSummaries } from "../ipc/domainQueries.js";
 import { buildEligibilityInput, buildTickInput } from "../supervisor/buildTickInput.js";
 import { createRunSupervisor } from "../supervisor/runSupervisor.js";
@@ -393,6 +394,65 @@ describe("dependsOn with a rule (EO-777)", () => {
 
     expect(refused(repeat.answer)).toContain(`wait: "created_waits" says the new item waits for ${item.key} to finish`);
     expect(waitsFor(made.id)).toEqual([]);
+  });
+});
+
+describe("a reached rule that can release the new item before anything is implemented (EO-780)", () => {
+  /**
+   * In a git repository on the seeded Delivery — Worktree, Index, then
+   * To Do, the step that implements — a rule on To Do can release the
+   * new item while its dependency's branch holds nothing. The edge is
+   * written; the module is told, and so is the new item's thread.
+   */
+  function inRepository() {
+    const workspace = attachWorkspace(handle.db, { name: "api", keyPrefix: "API", repoPath: "/nowhere/api", baseBranch: "main" });
+    const projectId = projectForWorkspace(handle.db, workspace.id)!.id;
+    const at = { type: "story", stepId: "todo", workspaceId: workspace.id, projectId } as const;
+    return { origin: createTestItem(handle.db, { ...at, title: "Ship 2.0" }), api: createTestItem(handle.db, { ...at, title: "The API" }) };
+  }
+  const toDo = () => getStep(handle.db, "todo")!.name;
+
+  it("answers the warning to the module, posts it on the new item, and writes the edge", async () => {
+    const { origin, api } = inRepository();
+
+    const result = await run(
+      `answer = await ctx.createItem({ idempotencyKey: "a", ${STORY}, dependsOn: [{ item: ${JSON.stringify(api.key)}, wait: "reached", step: ${JSON.stringify(toDo())} }] });`,
+      origin,
+    );
+
+    const made = created(result.answer);
+    const warnings = (result.answer as { warnings?: string[] }).warnings;
+    expect(warnings).toHaveLength(1);
+    expect(warnings![0]).toContain(`${api.key} can reach "${toDo()}" without passing a step that implements`);
+    expect(listDependencies(handle.db, made.id)).toEqual([expect.objectContaining({ dependsOnId: api.id, wait: "reached", waitStepId: "todo" })]);
+    expect(engineComments(made.id).some((body) => body.includes(`Warning: ${warnings![0]}`))).toBe(true);
+  });
+
+  it("answers no warnings for a rule on a step after the implementation", async () => {
+    const { origin, api } = inRepository();
+
+    const result = await run(
+      `answer = await ctx.createItem({ idempotencyKey: "a", ${STORY}, dependsOn: [{ item: ${JSON.stringify(api.key)}, wait: "reached", step: ${JSON.stringify(getStep(handle.db, "review")!.name)} }] });`,
+      origin,
+    );
+
+    created(result.answer);
+    expect(result.answer).not.toHaveProperty("warnings");
+  });
+
+  it("warns on a repeat that adds the edge, and not on one that finds it already there", async () => {
+    const { origin, api } = inRepository();
+    const made = created((await run(`answer = await ctx.createItem({ idempotencyKey: "a", ${STORY} });`, origin)).answer);
+    const repeat = `answer = await ctx.createItem({ idempotencyKey: "a", ${STORY}, dependsOn: [{ item: ${JSON.stringify(api.key)}, wait: "reached", step: ${JSON.stringify(toDo())} }] });`;
+
+    const adding = (await run(repeat, origin)).answer;
+    expect(adding).toMatchObject({ created: true, existing: true, key: made.key });
+    expect((adding as { warnings?: string[] }).warnings).toHaveLength(1);
+    expect(listDependencies(handle.db, made.id)).toEqual([expect.objectContaining({ dependsOnId: api.id, wait: "reached", waitStepId: "todo" })]);
+
+    const again = (await run(repeat, origin)).answer;
+    expect(again).toMatchObject({ created: true, existing: true, key: made.key });
+    expect(again).not.toHaveProperty("warnings");
   });
 });
 
