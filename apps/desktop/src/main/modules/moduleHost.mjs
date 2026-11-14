@@ -2620,10 +2620,12 @@ const CREATION_EXISTING_BRANCH_REFUSAL = "existingBranch is the name of a branch
  * answer comes back. On a real run that is fd 3 and fd 5; in a test it
  * is a recorder.
  *
- * It answers `{ created: true, key, existing }` or
+ * It answers `{ created: true, key, existing, warnings? }` or
  * `{ created: false, reason }` and never throws, so never rejects.
  * `existing` is true when this `idempotencyKey` had already made that
- * item, in this run or an earlier one on the same item.
+ * item, in this run or an earlier one on the same item. `warnings`,
+ * there only when the parent sent some, says what an edge it wrote is
+ * worth a second look for (EO-780) — the edge is written all the same.
  *
  * What is checked here is what can be known without a database: that
  * the manifest declares `needs.create`, and that the call has its three
@@ -2658,7 +2660,20 @@ const CREATION_EXISTING_BRANCH_REFUSAL = "existingBranch is the name of a branch
  */
 function makeCreations(request, ask) {
   const declared = request.needs?.create === true;
-  const { Promise: NativePromise, freeze } = PRIMORDIALS;
+  const { Promise: NativePromise, freeze, isArray } = PRIMORDIALS;
+  // Only a non-empty list of text is passed on, frozen like the answer
+  // it is on, and left out otherwise — as the parent leaves it out.
+  // Copied by index rather than by an array method, which the module
+  // could have replaced by now.
+  const creationWarnings = (warnings) => {
+    if (!isArray(warnings) || warnings.length === 0) return {};
+    const copy = [];
+    for (let index = 0; index < warnings.length; index += 1) {
+      if (typeof warnings[index] !== "string") return {};
+      copy[index] = warnings[index];
+    }
+    return { warnings: freeze(copy) };
+  };
 
   const answered = (answer) => new NativePromise((resolve) => resolve(freeze(answer)));
   const refuse = (reason) => {
@@ -2751,7 +2766,7 @@ function makeCreations(request, ask) {
           resolve(
             freeze(
               answer !== null && typeof answer === "object" && answer.created === true && typeof answer.key === "string"
-                ? { created: true, key: answer.key, existing: answer.existing === true }
+                ? { created: true, key: answer.key, existing: answer.existing === true, ...creationWarnings(answer.warnings) }
                 : { created: false, reason: String(answer?.reason ?? "EO did not say why.") },
             ),
           );

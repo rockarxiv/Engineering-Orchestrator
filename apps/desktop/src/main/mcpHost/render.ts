@@ -1903,6 +1903,7 @@ function dependencyChangeSentences(change: NonNullable<IpcResponse<"items:update
   if (change.freed) sentences.push("Nothing it waits for is still open, so it can be picked up on the next tick.");
   else if (change.stillWaitsFor.length > 0) sentences.push(`It still waits for ${change.stillWaitsFor.join(", ")}, until each finishes or reaches the step it is waited for at.`);
   sentences.push("A comment on it says what changed.");
+  for (const warning of change.warnings ?? []) sentences.push(`Warning: ${warning}`);
   return sentences.join(" ");
 }
 

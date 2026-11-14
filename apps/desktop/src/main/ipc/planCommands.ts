@@ -119,6 +119,7 @@ export function submitPlan(
     featureKey: feature?.key ?? null,
     storyKeys: stories.map((item) => item.key),
     problem: null,
+    ...(applied.warnings === undefined ? {} : { warnings: applied.warnings }),
   };
 }
 

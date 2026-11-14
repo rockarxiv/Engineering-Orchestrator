@@ -143,7 +143,7 @@ export function submitItem(
   // it within the minute regardless.
   if (hasJiraPullPending(db)) requestJiraPullDrain();
 
-  return { created: true, key: applied.created[0]?.key ?? null, problem: null };
+  return { created: true, key: applied.created[0]?.key ?? null, problem: null, ...(applied.warnings === undefined ? {} : { warnings: applied.warnings }) };
 }
 
 /**

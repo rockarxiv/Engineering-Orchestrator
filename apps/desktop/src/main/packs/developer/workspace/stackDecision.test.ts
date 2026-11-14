@@ -1,6 +1,6 @@
 import { gitExtension, jiraExtension, type Item, type Uuid } from "@eo/core";
 import { describe, expect, it } from "vitest";
-import { readStackAnswer, resolveStackTarget, type StackDependency } from "./stackDecision.js";
+import { readStackAnswer, resolveStackTarget, stacksOn, type StackDependency } from "./stackDecision.js";
 
 
 /** Any `item_types` row: these fixtures never read the type's row, only the word on it. */
@@ -328,5 +328,36 @@ describe("readStackAnswer", () => {
 
   it("says nothing at all about an empty reply", () => {
     expect(readStackAnswer("   ", choices)).toBeNull();
+  });
+});
+
+describe("which edges stack (EO-780)", () => {
+  const repository = "workspace-1" as Uuid;
+  const featureA = "feature-a" as Uuid;
+  const featureB = "feature-b" as Uuid;
+  const child = makeItem("20", { parentId: featureB, workspaceId: repository });
+
+  it("stacks a reached edge on an unmerged dependency in the same repository, in another feature", () => {
+    const dependency = makeItem("12", { parentId: featureA, workspaceId: repository });
+    expect(stacksOn(child, dependency, "reached")).toBe(true);
+    expect(resolveStackTarget(child, [{ ...dep(dependency, "open"), wait: "reached" }])).toEqual({ kind: "stack", dependency, branch: "eo/EO-12" });
+  });
+
+  it("stacks a reached edge with no feature on either side, and never across repositories", () => {
+    const orphan = makeItem("21", { workspaceId: repository });
+    expect(stacksOn(orphan, makeItem("12", { workspaceId: repository }), "reached")).toBe(true);
+    expect(stacksOn(child, makeItem("12", { parentId: featureB, workspaceId: "workspace-2" as Uuid }), "reached")).toBe(false);
+  });
+
+  it("never stacks a none edge, even on an unmerged dependency in the same feature", () => {
+    const dependency = makeItem("12", { parentId: featureB, workspaceId: repository });
+    expect(stacksOn(child, dependency, "none")).toBe(false);
+    expect(resolveStackTarget(child, [{ ...dep(dependency, "open"), wait: "none" }])).toEqual({ kind: "base" });
+  });
+
+  it("keeps the same-feature rule for finished, which is also what an absent rule means", () => {
+    expect(stacksOn(child, makeItem("12", { parentId: featureB, workspaceId: repository }), "finished")).toBe(true);
+    expect(stacksOn(child, makeItem("12", { parentId: featureA, workspaceId: repository }), "finished")).toBe(false);
+    expect(resolveStackTarget(child, [dep(makeItem("12", { parentId: featureA, workspaceId: repository }), "open")])).toEqual({ kind: "base" });
   });
 });

@@ -1081,7 +1081,7 @@ describe("a base branch named in a proposal", () => {
     expect(apply(proposalIds[0]!).ok).toBe(true);
 
     const created = listItems(handle.db).find((item) => item.title === "Backport the limiter")!;
-    expect(gitStateOf(created)).toEqual({ branch: null, pullRequest: null, baseBranch: "release/2.4", namedBranch: false, attachedAt: null, reference: null, reviewers: null });
+    expect(gitStateOf(created)).toEqual({ branch: null, pullRequest: null, baseBranch: "release/2.4", namedBranch: false, attachedAt: null, reference: null, reviewers: null, stackedOn: null, restacked: false });
   });
 
   it("shows it under the story it belongs to in a plan, and writes it onto that story alone", () => {
@@ -1181,7 +1181,7 @@ describe("an existing branch named in a proposal", () => {
     expect(apply(proposalIds[0]!).ok).toBe(true);
 
     const created = listItems(handle.db).find((item) => item.title === "Finish the limiter")!;
-    expect(gitStateOf(created)).toEqual({ branch: "feature/limits", pullRequest: null, baseBranch: null, namedBranch: true, attachedAt: null, reference: null, reviewers: null });
+    expect(gitStateOf(created)).toEqual({ branch: "feature/limits", pullRequest: null, baseBranch: null, namedBranch: true, attachedAt: null, reference: null, reviewers: null, stackedOn: null, restacked: false });
   });
 
   it("writes it onto the one story of a plan that names it", () => {

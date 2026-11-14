@@ -29,7 +29,9 @@
         "namedBranch": false,
         "attachedAt": null,
         "reference": null,
-        "reviewers": null
+        "reviewers": null,
+        "stackedOn": null,
+        "restacked": false
       },
       "workspace": {
         "kind": "git-worktree",
@@ -82,7 +84,9 @@
         "namedBranch": false,
         "attachedAt": null,
         "reference": null,
-        "reviewers": null
+        "reviewers": null,
+        "stackedOn": null,
+        "restacked": false
       },
       "workspace": {
         "kind": "git-worktree",
@@ -135,7 +139,9 @@
         "namedBranch": false,
         "attachedAt": null,
         "reference": null,
-        "reviewers": null
+        "reviewers": null,
+        "stackedOn": null,
+        "restacked": false
       },
       "workspace": {
         "kind": "git-worktree",

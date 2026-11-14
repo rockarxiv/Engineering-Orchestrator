@@ -195,7 +195,8 @@ describe("what the system agent's prompt says about a module attaching files", (
   it("describes ctx.createItem, its answer and its limits", () => {
     expect(flat).toContain("`await ctx.createItem(spec)`");
     expect(flat).toContain("`{ idempotencyKey, type, title, body, spec, pipeline, parent, repository, existingBranch, wait, dependsOn }`");
-    expect(flat).toContain("`{ created: true, key, existing }` or `{ created: false, reason }`");
+    expect(flat).toContain("`{ created: true, key, existing, warnings? }` or `{ created: false, reason }`");
+    expect(flat).toContain("the edge is written all the same");
     expect(flat).toContain("never a container");
     expect(flat).toContain("A run may create ten items");
     expect(flat).toContain("a run on a generation 3 ticket cannot create");

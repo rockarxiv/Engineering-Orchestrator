@@ -1,6 +1,6 @@
 import { gitStateOf, type Item } from "@eo/core";
 import { dependencyClosure } from "@eo/engine";
-import { resolveStackTarget, type StackDependency, type StackTargetDecision } from "./stackDecision.js";
+import { resolveStackTarget, stacksOn, type StackDependency, type StackTargetDecision } from "./stackDecision.js";
 import type { Db } from "../../../db/client.js";
 import { getItem, listAllDependencies, listDependencies, type GitWorkspace } from "../../../db/repos/index.js";
 import { createCliRunner, type CliRunner } from "../forge/cli.js";
@@ -19,7 +19,8 @@ import type { WorktreeResult } from "./worktrees.js";
  * should branch from / rebase onto the workspace's base branch, or a
  * still-unmerged same-feature dependency's branch instead.
  *
- * Out-of-scope dependencies (no parent feature, or a different one) are
+ * Out-of-scope dependencies — under `finished`, no parent feature or a
+ * different one; under `none`, every one (EO-780, `stacksOn`) — are
  * filtered out *before* any forge/git call — not merely by
  * `resolveStackTarget` itself — so an item with no same-feature
  * dependency costs nothing beyond the one `listDependencies` query: no
@@ -55,17 +56,20 @@ export async function resolveItemStackTarget(
   refExists?: RefChecker,
   options: NetworkGitOptions = {},
 ): Promise<StackTargetDecision> {
-  // Nothing to gather when nothing could change the answer: an item with
-  // no feature has no same-feature dependency, and one whose base a
-  // person set is cut from that base whatever its dependencies say
-  // (EO-364). The pure resolver still has the last word on both — it is
-  // what knows that a set base wins — but neither is worth a forge
+  // Nothing to gather when nothing could change the answer: an item
+  // whose base a person set is cut from that base whatever its dependencies say
+  // (EO-364). The pure resolver still has the last word on it — it is
+  // what knows that a set base wins — but it is not worth a forge
   // lookup per dependency to find out.
   //
   // Nor for a branch a person named (EO-365): it is never cut, so never
   // stacked, and it opens against the ticket's base or the repository's.
+  //
+  // An item with no feature is not out of it any more (EO-780): a
+  // `reached` edge stacks across features, so it is the edges that say
+  // whether there is anything to look up, and the gatherer reads them.
   const { baseBranch, namedBranch } = gitStateOf(item);
-  if (item.parentId === null || baseBranch !== null || namedBranch) return resolveStackTarget(item, []);
+  if (baseBranch !== null || namedBranch) return resolveStackTarget(item, []);
 
   const dependencies = await gatherStackDependencies(db, workspace, item, run, options);
   return resolveStackTargetWithAnswer(db, item, dependencies, workspace.config.repoPath, refExists);
@@ -92,7 +96,7 @@ async function gatherStackDependencies(
 
   for (const edge of listDependencies(db, item.id)) {
     const dep = getItem(db, edge.dependsOnId);
-    if (!dep || dep.parentId === null || dep.parentId !== item.parentId) continue;
+    if (!dep || !stacksOn(item, dep, edge.wait)) continue;
     if (dep.workspaceId !== item.workspaceId) continue;
 
     const branch = await itemBranchName(db, dep);
@@ -105,7 +109,7 @@ async function gatherStackDependencies(
       run,
       ...(options.signal ? { signal: options.signal } : {}),
     });
-    dependencies.push({ item: dep, branch, mergeState, dependsOn: [...dependencyClosure(edges, dep.id)] });
+    dependencies.push({ item: dep, branch, mergeState, dependsOn: [...dependencyClosure(edges, dep.id)], wait: edge.wait });
   }
 
   return dependencies;

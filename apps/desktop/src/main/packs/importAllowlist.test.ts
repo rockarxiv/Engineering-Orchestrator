@@ -95,6 +95,7 @@ const SCHEDULE: readonly Group[] = [
       "apps/desktop/src/main/ipc/worktreeCommands.test.ts",
       "apps/desktop/src/main/ipc/worktreeCommands.ts",
       "apps/desktop/src/main/providers/codexHooks.live.test.ts",
+      "apps/desktop/src/main/roles/itemDependencies.ts",
       "apps/desktop/src/main/roles/refine.test.ts",
       "apps/desktop/src/main/supervisor/buildDispatchContext.ts",
       "apps/desktop/src/main/testing/git.ts",

@@ -25,7 +25,7 @@ import {
   type DependencyGate,
 } from "../db/repos/index.js";
 import { addEdge, applyNewItem, circularRefusal, resolveDependsOn } from "../roles/discussion.js";
-import type { GatedDependency } from "../roles/itemDependencies.js";
+import { gateWarnings, postGateWarnings, type GatedDependency } from "../roles/itemDependencies.js";
 import type { ModuleCommentContext } from "./moduleComments.js";
 import { creationCapRefusal, creationWaitRefusal } from "./runModule.js";
 
@@ -113,8 +113,17 @@ function isWait(value: unknown): value is ModuleCreationWait {
  * an edge already there keeps the rule it was written with (EO-777).
  */
 function ensureEdge(db: Db, item: Item, dependsOn: Item, gate: DependencyGate = { wait: "finished" }): string | null {
-  if (listDependencies(db, item.id as Uuid).some((edge) => edge.dependsOnId === dependsOn.id)) return null;
+  if (hasEdge(db, item, dependsOn)) return null;
   return addEdge(db, item, dependsOn, gate);
+}
+
+function hasEdge(db: Db, item: Item, dependsOn: Item): boolean {
+  return listDependencies(db, item.id as Uuid).some((edge) => edge.dependsOnId === dependsOn.id);
+}
+
+/** `warnings` on an answer, left out where there are none — as every door that warns answers (EO-780). */
+function withWarnings(warnings: readonly string[]): { warnings?: string[] } {
+  return warnings.length === 0 ? {} : { warnings: [...warnings] };
 }
 
 /** A resolved dependency as the door takes it again: by key, with its rule, its step by id. */
@@ -214,8 +223,9 @@ export function postModuleCreation(db: Db, context: ModuleCommentContext, creati
   const dependsOnEntries = creation.dependsOn ?? [];
 
   let made: Item;
+  let warnings: string[];
   try {
-    const outcome = db.transaction((): ModuleCreationAnswer | { item: Item } => {
+    const outcome = db.transaction((): ModuleCreationAnswer | { item: Item; warnings: string[] } => {
       // Running twice. Before every other check, because a repeat is
       // answered with what the first call made whatever has changed
       // since — a type removed, a pipeline renamed — and creates nothing.
@@ -236,9 +246,15 @@ export function postModuleCreation(db: Db, context: ModuleCommentContext, creati
           const contradiction = contradictsWait(origin, wait, waitedFor.dependencies);
           if (contradiction !== null) return { created: false, reason: contradiction };
           const edgesBefore = listAllDependencies(db).length;
+          // The edges this repeat wrote, which earn a warning as the
+          // first call's would have (EO-780). One already there was
+          // warned about when it was written.
+          const added: GatedDependency[] = [];
           for (const other of waitedFor.dependencies) {
+            const already = hasEdge(db, existing, other.item);
             const problem = ensureEdge(db, existing, other.item, other.gate);
             if (problem) throw new CreationRefused(problem);
+            if (!already) added.push(other);
           }
           const problem = ensureWaitEdge(db, origin, existing, wait);
           if (problem) throw new CreationRefused(problem);
@@ -247,7 +263,9 @@ export function postModuleCreation(db: Db, context: ModuleCommentContext, creati
           // is sent because it is new; one that only gained an edge has
           // to be marked changed, or no desktop hears of it.
           if (listAllDependencies(db).length !== edgesBefore) updateItem(db, existing.id as Uuid, {});
-          return { created: true, key: existing.key, existing: true };
+          const warnings = gateWarnings(db, existing, added);
+          postGateWarnings(db, existing, warnings);
+          return { created: true, key: existing.key, existing: true, ...withWarnings(warnings) };
         }
       }
 
@@ -377,10 +395,13 @@ export function postModuleCreation(db: Db, context: ModuleCommentContext, creati
         runId: context.runId,
         parseBodyMentions: false,
       });
-      return { item };
+      // What the door warned of (EO-780), already said on the new item
+      // by `applyNewItem`, and said to the module too.
+      return { item, warnings: applied.warnings ?? [] };
     });
     if (!("item" in outcome)) return outcome;
     made = outcome.item;
+    warnings = outcome.warnings;
   } catch (error) {
     if (error instanceof CreationRefused) return { created: false, reason: error.message };
     return { created: false, reason: `the item could not be written: ${error instanceof Error ? error.message : String(error)}` };
@@ -391,5 +412,5 @@ export function postModuleCreation(db: Db, context: ModuleCommentContext, creati
   } catch {
     // A window that could not be told refetches on its next change.
   }
-  return { created: true, key: made.key, existing: false };
+  return { created: true, key: made.key, existing: false, ...withWarnings(warnings) };
 }

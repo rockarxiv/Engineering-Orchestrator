@@ -16,7 +16,7 @@ import {
 } from "@eo/core";
 import { deriveDepsFromTouches, detectCycle, formatCyclePath } from "@eo/engine";
 import { addDependency, projectWorkspaceList, createItem, creationRefusal, resolveItemType, workspaceLabel, type DependencyGate, type Workspace } from "../db/repos/index.js";
-import { judgeGate } from "./itemDependencies.js";
+import { gateWarnings, judgeGate, postGateWarnings } from "./itemDependencies.js";
 import type { Db } from "../db/client.js";
 import { worksOnABranch, type WorkspaceSubject } from "../supervisor/workspaceResolution.js";
 
@@ -33,7 +33,15 @@ export interface StoryPlacement {
   entryStepId: string;
 }
 
-export type ApplyRefineResult = { ok: true; stories: Item[]; derivedEdgeCount: number } | { ok: false; reason: string };
+export type ApplyRefineResult =
+  | {
+      ok: true;
+      stories: Item[];
+      derivedEdgeCount: number;
+      /** What the stories' edges were written despite, by `gateWarnings` (EO-780). Each is also on its story. */
+      warnings: string[];
+    }
+  | { ok: false; reason: string };
 
 /**
  * Which type one child of a decomposition is (KAN-147).
@@ -586,7 +594,19 @@ export function applyApprovedProposal(
       addDependency(db, stories[edge.from]!.id, stories[edge.to]!.id, gates[index]);
     });
 
-    return { ok: true as const, stories, derivedEdgeCount };
+    // Said on each story whose rule is worth a second look, and in the
+    // answer (EO-780): the edges stand either way.
+    const warnings = stories.flatMap((story, from) => {
+      const own = gateWarnings(
+        db,
+        story,
+        edges.flatMap((edge, index) => (edge.from === from ? [{ item: stories[edge.to]!, gate: gates[index] ?? { wait: "finished" as const } }] : [])),
+      );
+      postGateWarnings(db, story, own);
+      return own;
+    });
+
+    return { ok: true as const, stories, derivedEdgeCount, warnings };
   });
 }
 

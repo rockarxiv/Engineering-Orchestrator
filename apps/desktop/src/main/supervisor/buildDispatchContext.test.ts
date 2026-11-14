@@ -6,6 +6,7 @@ import { postComment } from "../db/repos/commentsRepo.js";
 import { addDependency } from "../db/repos/itemDepsRepo.js";
 import { createRunEventBuffer } from "../db/repos/runEventBuffer.js";
 import { createRun, updateRun } from "../db/repos/runsRepo.js";
+import { updateItem } from "../db/repos/itemsRepo.js";
 import { createProject } from "../db/repos/projectsRepo.js";
 import type { DbHandle } from "../db/client.js";
 import { attachWorkspace, createTestItem, openMigratedTestDb } from "../db/testHelpers.js";
@@ -146,6 +147,27 @@ describe("buildDispatchContext", () => {
 
     expect(context).toContain("Add the token bucket");
     expect(context).toContain("eo/EO-9");
+  });
+
+  it("tells a stacked item that the dependency it is built on has not finished, where it is and on which branch (EO-780)", async () => {
+    const dep = createTestItem(handle.db, { type: "story", title: "Add the token bucket", stepId: "review", git: { branch: "eo/EO-12" } });
+    addDependency(handle.db, item.id, dep.id, { wait: "reached", stepId: "review" });
+    updateItem(handle.db, item.id, { git: { branch: "eo/EO-20", stackedOn: { itemId: dep.id, commit: "a1b2c3d4" } } });
+
+    for (const context of [await buildDispatchContext(handle.db, item, "implement"), await buildSeedContext(handle.db, item, implementer, "implement")]) {
+      const section = context.slice(context.indexOf("## Dependencies")).split("\n## ")[0]!;
+      expect(section).toContain(dep.key);
+      expect(section).toContain("not finished");
+      expect(section).toContain('"Review"');
+      expect(section).toContain("`eo/EO-12`");
+    }
+  });
+
+  it("says nothing more about a dependency nothing is built on", async () => {
+    const dep = createTestItem(handle.db, { type: "story", title: "Add the token bucket", stepId: "review" });
+    addDependency(handle.db, item.id, dep.id);
+
+    expect(await buildSeedContext(handle.db, item, implementer, "implement")).toContain(`- ${dep.key}\n`);
   });
 
   it("is what the supervisor actually hands the provider on dispatch", async () => {

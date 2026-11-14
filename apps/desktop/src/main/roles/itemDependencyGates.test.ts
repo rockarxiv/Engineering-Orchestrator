@@ -13,7 +13,7 @@ import {
   listStepsForPipeline,
   transitionItem,
 } from "../db/repos/index.js";
-import { createTestItem, openMigratedTestDb } from "../db/testHelpers.js";
+import { attachWorkspace, createTestItem, openMigratedTestDb } from "../db/testHelpers.js";
 import { updateItemText } from "../ipc/domainCommands.js";
 import { getItemSections, moduleItemView } from "../ipc/domainQueries.js";
 import { submitPlan } from "../ipc/planCommands.js";
@@ -381,5 +381,48 @@ describe("a plan's stories", () => {
     const [first, second] = result.storyKeys.map((key) => getItemByKey(handle.db, key)!);
     expect(listDependencies(handle.db, second!.id)).toHaveLength(1);
     expect(rawEdge(second!.id, first!.id)).toMatchObject({ wait: "none" });
+  });
+});
+
+describe("a reached rule that can release an item onto an empty branch (EO-780)", () => {
+  let child: Item;
+  let parent: Item;
+
+  beforeEach(() => {
+    const repository = attachWorkspace(handle.db, { name: "api", keyPrefix: "API", repoPath: "/nowhere/api", baseBranch: "main" });
+    child = createTestItem(handle.db, { type: "story", title: "Child", stepId: "todo", workspaceId: repository.id });
+    parent = createTestItem(handle.db, { type: "story", title: "Parent", stepId: "worktree", workspaceId: repository.id });
+  });
+
+  it("warns in the answer and in the engine comment, and still writes the edge, for a step reachable without implementing", () => {
+    // The seeded Delivery runs Worktree, then Index, then To Do — the step
+    // that implements — so arriving at To Do is arriving before anything
+    // is written.
+    const toDo = getStep(handle.db, "todo")!.name;
+    const answer = updateItemText(handle.db, { itemId: child.id, addDependsOn: [{ item: parent.key, wait: "reached", step: toDo }] });
+
+    expect(answer).toMatchObject({ updated: true, problem: null, dependencies: { added: [parent.key] } });
+    const warnings = answer.dependencies?.warnings ?? [];
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain(parent.key);
+    expect(warnings[0]).toContain(`"${toDo}"`);
+    expect(rawEdge(child.id, parent.id)).toMatchObject({ wait: "reached", waitStepId: "todo" });
+    expect(engineComments(child).at(-1)).toContain(`Warning: ${warnings[0]}`);
+  });
+
+  it("warns for a rule changed to such a step too", () => {
+    addDependency(handle.db, child.id, parent.id);
+    const answer = updateItemText(handle.db, { itemId: child.id, updateDependsOn: [{ item: parent.key, wait: "reached", step: getStep(handle.db, "repository_index")!.name }] });
+
+    expect(answer.dependencies?.warnings).toHaveLength(1);
+  });
+
+  it("says nothing for a step after the implementation, or outside a git repository", () => {
+    const answer = updateItemText(handle.db, { itemId: child.id, addDependsOn: [{ item: parent.key, wait: "reached", step: reviewName() }] });
+    expect(answer.dependencies).not.toHaveProperty("warnings");
+    expect(engineComments(child).at(-1)).not.toContain("Warning:");
+
+    const elsewhere = updateItemText(handle.db, { itemId: release.id, addDependsOn: [{ item: story.key, wait: "reached", step: getStep(handle.db, "todo")!.name }] });
+    expect(elsewhere.dependencies).not.toHaveProperty("warnings");
   });
 });

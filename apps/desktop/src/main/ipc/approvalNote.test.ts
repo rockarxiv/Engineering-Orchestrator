@@ -17,6 +17,12 @@ describe("an approval's note", () => {
     expect(createdKeysIn("Not applied. Created EO-1.")).toEqual([]);
   });
 
+  it("says what the edges were written despite after the keys, which still read back (EO-780)", () => {
+    const note = approvalNote({ created: [item("EO-12"), item("EO-13")], changed: [], warnings: ["EO-12 can reach \"To Do\" without passing a step that implements."] });
+    expect(note).toBe('Approved. Created EO-12, EO-13.\n\nWarning: EO-12 can reach "To Do" without passing a step that implements.');
+    expect(createdKeysIn(note)).toEqual(["EO-12", "EO-13"]);
+  });
+
   it("keeps created apart from updated", () => {
     expect(createdKeysIn(approvalNote({ created: [item("EO-1")], changed: [item("EO-2")] }))).toEqual(["EO-1"]);
   });

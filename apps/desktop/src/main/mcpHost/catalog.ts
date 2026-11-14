@@ -407,6 +407,11 @@ export function channelTool<K extends IpcChannel>(spec: ChannelToolSpec<K>): Too
  * Every `ticket_*` name predates the rename by definition, and every
  * `item_*` twin is built by the branch above rather than by this one.
  */
+/** The warnings a creation answers with (EO-780), as sentences after what it created. */
+function warningSentences(warnings: readonly string[] | undefined): string {
+  return (warnings ?? []).map((warning) => ` Warning: ${warning}`).join("");
+}
+
 function ownSpelling(name: string): ToolSpelling {
   return /^items?_/.test(name) || bornInItemVocabulary(name) ? "item" : "ticket";
 }
@@ -3204,7 +3209,7 @@ const UNGATED_WRITE_TOOLS: readonly ToolSpec[] = [
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     render: (data) =>
       data.created
-        ? `Created ${data.featureKey} with ${data.storyKeys.length} storie(s): ${data.storyKeys.join(", ")}. They are on the pipeline now and will be picked up in dependency order.`
+        ? `Created ${data.featureKey} with ${data.storyKeys.length} storie(s): ${data.storyKeys.join(", ")}. They are on the pipeline now and will be picked up in dependency order.${warningSentences(data.warnings)}`
         : `Nothing was created: ${data.problem ?? "the plan was refused."}`,
     refusal: (data) => (data.created ? null : `Nothing was created: ${data.problem ?? "the plan was refused."} Nothing has changed — fix the plan and send it again.`),
   }),
@@ -3250,7 +3255,7 @@ const UNGATED_WRITE_TOOLS: readonly ToolSpec[] = [
       "Read the eo_submit_work guide, via eo_guide, before a first ticket.",
     kind: "write",
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
-    render: (data) => (data.created ? `Created ${data.key}. It is on the pipeline now.` : `Nothing was created: ${data.problem ?? "it was refused."}`),
+    render: (data) => (data.created ? `Created ${data.key}. It is on the pipeline now.${warningSentences(data.warnings)}` : `Nothing was created: ${data.problem ?? "it was refused."}`),
     refusal: (data) => (data.created ? null : `Nothing was created: ${data.problem ?? "it was refused."} Nothing has changed — fix it and send it again.`),
   }),
   channelTool({

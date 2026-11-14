@@ -1204,6 +1204,8 @@ export const recordContract = {
       storyKeys: z.array(z.string()),
       /** Why nothing was created. A plan that cannot be built is a refusal, not a fault. */
       problem: z.string().nullable(),
+      /** What the plan's dependencies were written despite (EO-780), each also on its story. Absent where there is nothing to warn of. */
+      warnings: z.array(z.string()).optional(),
     }),
   ),
 
@@ -1341,6 +1343,8 @@ export const recordContract = {
       created: z.boolean(),
       key: z.string().nullable(),
       problem: z.string().nullable(),
+      /** What the item's dependencies were written despite (EO-780), also on the item. Absent where there is nothing to warn of. */
+      warnings: z.array(z.string()).optional(),
     }),
   ),
 
@@ -1660,6 +1664,8 @@ export const recordContract = {
           updated: z.array(z.string()).optional(),
           stillWaitsFor: z.array(z.string()),
           freed: z.boolean(),
+          /** What the change was written despite (EO-780); absent where there was nothing to warn of. */
+          warnings: z.array(z.string()).optional(),
         })
         .optional(),
     }),
@@ -6310,6 +6316,8 @@ export const recordContract = {
           updated: z.array(z.string()).optional(),
           stillWaitsFor: z.array(z.string()),
           freed: z.boolean(),
+          /** What the change was written despite (EO-780); absent where there was nothing to warn of. */
+          warnings: z.array(z.string()).optional(),
         })
         .nullable(),
     }),
