@@ -1,9 +1,9 @@
 import { and, eq, or } from "drizzle-orm";
-import { DEPENDENCY_WAITS, type DependencyWait, type ItemDep, type RecordItemWaits, type Uuid } from "@eo/core";
+import { DEPENDENCY_WAITS, type DependencyWait, type ItemDep, type RecordItemGate, type RecordItemWaits, type Uuid } from "@eo/core";
 import { detectCycle, formatCyclePath, wouldCreateCycle } from "@eo/engine";
 import type { Db } from "../client.js";
 import { isReplica } from "../recordRole.js";
-import { itemDeps, items } from "../schema.js";
+import { itemDeps, items, pipelineSteps } from "../schema.js";
 
 /**
  * The column's text as a rule (EO-776). Anything this build has no word
@@ -89,11 +89,25 @@ export function removeDependency(db: Db, itemId: Uuid, dependsOnId: Uuid): void 
     .run();
 }
 
-/** An item's edges in both directions, as a record sends them with the item (EO-434). */
-export function waitsForWire(edges: readonly ItemDep[], itemId: string): RecordItemWaits {
+/**
+ * An item's edges in both directions, as a record sends them with the
+ * item (EO-434) — each with the rule it waits by, and a `reached` edge's
+ * step by id and by name (EO-778).
+ */
+export function waitsForWire(db: Db, edges: readonly ItemDep[], itemId: string): RecordItemWaits {
+  const mine = edges.filter((edge) => edge.itemId === itemId || edge.dependsOnId === itemId);
+  const stepNames = new Map<string, string | null>();
+  const stepOf = (edge: ItemDep): RecordItemGate["step"] => {
+    if (edge.wait !== "reached" || edge.waitStepId === null) return null;
+    if (!stepNames.has(edge.waitStepId)) {
+      stepNames.set(edge.waitStepId, db.select({ name: pipelineSteps.name }).from(pipelineSteps).where(eq(pipelineSteps.id, edge.waitStepId)).get()?.name ?? null);
+    }
+    return { id: edge.waitStepId, name: stepNames.get(edge.waitStepId) ?? null };
+  };
   return {
-    dependsOn: edges.filter((edge) => edge.itemId === itemId).map((edge) => edge.dependsOnId as string),
-    blocks: edges.filter((edge) => edge.dependsOnId === itemId).map((edge) => edge.itemId as string),
+    dependsOn: mine.filter((edge) => edge.itemId === itemId).map((edge) => edge.dependsOnId as string),
+    blocks: mine.filter((edge) => edge.dependsOnId === itemId).map((edge) => edge.itemId as string),
+    gates: mine.map((edge) => ({ itemId: edge.itemId as string, dependsOnId: edge.dependsOnId as string, wait: edge.wait, step: stepOf(edge) })),
   };
 }
 
@@ -113,14 +127,29 @@ export function waitsForWire(edges: readonly ItemDep[], itemId: string): RecordI
  *   another item this machine mirrors. One to work the person keeps
  *   local is theirs; the record never knew of it and its silence is not
  *   a statement about it.
+ * - Every edge the record sent takes the rule the record holds it at
+ *   (EO-778), an edge already here included: a rule changed on the
+ *   record arrives as the same edge with a different rule. An edge the
+ *   record sent no rule for waits for its dependency to finish, which
+ *   is all a record that predates rules could mean.
  */
 export function keepArrivedWaits(db: Db, itemId: string, waits: RecordItemWaits | null | undefined): void {
   if (waits === null || waits === undefined) return;
   const here = (id: string): boolean => db.select({ id: items.id }).from(items).where(eq(items.id, id)).get() !== undefined;
+  const rules = new Map(waits.gates.map((gate) => [`${gate.itemId}>${gate.dependsOnId}`, gate]));
+  const ruled = (edge: { itemId: string; dependsOnId: string }) => {
+    const gate = rules.get(`${edge.itemId}>${edge.dependsOnId}`);
+    // A `reached` edge with no step could never be met; the store reads
+    // one as `finished` (`toDomain`), and so it is written.
+    if (gate === undefined || (gate.wait === "reached" && gate.step === null)) return { ...edge, wait: "finished" as const, waitStepId: null };
+    return { ...edge, wait: gate.wait, waitStepId: gate.wait === "reached" ? gate.step!.id : null };
+  };
   const wanted = [
     ...waits.dependsOn.map((other) => ({ itemId, dependsOnId: other })),
     ...waits.blocks.map((other) => ({ itemId: other, dependsOnId: itemId })),
-  ].filter((edge) => edge.itemId !== edge.dependsOnId);
+  ]
+    .filter((edge) => edge.itemId !== edge.dependsOnId)
+    .map(ruled);
   const said = new Set(wanted.map((edge) => `${edge.itemId}>${edge.dependsOnId}`));
 
   const held = db
@@ -139,6 +168,9 @@ export function keepArrivedWaits(db: Db, itemId: string, waits: RecordItemWaits 
   for (const edge of wanted) {
     const other = edge.itemId === itemId ? edge.dependsOnId : edge.itemId;
     if (!here(other)) continue;
-    db.insert(itemDeps).values(edge).onConflictDoNothing().run();
+    db.insert(itemDeps)
+      .values(edge)
+      .onConflictDoUpdate({ target: [itemDeps.itemId, itemDeps.dependsOnId], set: { wait: edge.wait, waitStepId: edge.waitStepId } })
+      .run();
   }
 }

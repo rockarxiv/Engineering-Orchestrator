@@ -344,7 +344,7 @@ export function createLocalRecord(db: Db, options: LocalRecordOptions = {}): Loc
     // Here, because this database is the record for these rows
     // (EO-600) — and the same function a server runs when a device asks.
     async changeDependencies(request) {
-      const changed = changeDependenciesOf(db, request.itemId, { add: request.add, remove: request.remove }, request.by, request.why ?? null);
+      const changed = changeDependenciesOf(db, request.itemId, { add: request.add, remove: request.remove, update: request.update ?? [] }, request.by, request.why ?? null);
       if (!changed.ok) return { ok: false, problem: changed.reason };
       return { ok: true, dependencies: changed.applied === null ? null : summariseDependencyChange(changed.applied) };
     },

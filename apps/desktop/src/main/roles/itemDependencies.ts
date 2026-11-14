@@ -114,14 +114,6 @@ export function asksForDependencyChange(request: Partial<DependencyChangeRequest
   return (request.add?.length ?? 0) > 0 || (request.remove?.length ?? 0) > 0 || (request.update?.length ?? 0) > 0;
 }
 
-/**
- * Whether a request sets any rule but `finished` (EO-777) — what a door
- * that cannot carry a rule yet has to refuse rather than drop.
- */
-export function asksForGate(request: Partial<DependencyChangeRequest>): boolean {
-  return (request.update?.length ?? 0) > 0 || (request.add ?? []).some((entry) => typeof entry !== "string");
-}
-
 /** The step name a gate waits for, or null where it waits for none or its step is gone. */
 export function gateStepName(db: Db, gate: Pick<ItemDep, "wait" | "waitStepId">): string | null {
   return gate.wait === "reached" && gate.waitStepId !== null ? (getStep(db, gate.waitStepId)?.name ?? null) : null;

@@ -363,6 +363,7 @@ export function createRemoteRecord(options: RemoteRecordOptions): RemoteRecord {
         itemId: request.itemId,
         add: [...request.add],
         remove: [...request.remove],
+        update: [...(request.update ?? [])],
         why: request.why ?? null,
       });
       if (!answer.ok) {
@@ -382,7 +383,14 @@ export function createRemoteRecord(options: RemoteRecordOptions): RemoteRecord {
         if (item !== null) upsertReplicaItem(db, item);
         if (comment !== null && getComment(db, comment.commentId as Uuid) === undefined) mirrorRecordComment(db, local, comment);
       });
-      return { ok: true, dependencies: answer.data.dependencies };
+      const said = answer.data.dependencies;
+      // The rules it changed (EO-778) are left out where none did, as a
+      // change made here says it.
+      const dependencies =
+        said === null
+          ? null
+          : { added: said.added, removed: said.removed, ...(said.updated === undefined ? {} : { updated: said.updated }), stillWaitsFor: said.stillWaitsFor, freed: said.freed };
+      return { ok: true, dependencies };
     },
 
     /**

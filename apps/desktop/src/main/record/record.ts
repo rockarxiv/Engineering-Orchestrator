@@ -13,7 +13,7 @@ import type {
 } from "@eo/core";
 import type { DispatchLease } from "../db/repos/leasesRepo.js";
 import type { PostCommentInput } from "../db/repos/commentsRepo.js";
-import type { Comment, IpcPayload, IpcResponse, PipelineTemplateStatus } from "@eo/core";
+import type { Comment, DependencyGateOnItem, DependencyOnItem, IpcPayload, IpcResponse, PipelineTemplateStatus } from "@eo/core";
 import type { UpdateConflictChatAnswer, UpdateConflictChatRequest } from "../roles/updateConflictChat.js";
 import type { ResolveUpdateConflictAnswer, ResolveUpdateConflictRequest } from "../gallery/updateConflictDetail.js";
 import type { TemplateHistory } from "../gallery/history.js";
@@ -533,10 +533,15 @@ export type MemoryWriteRequest =
 /** A change to what an item waits for, as a caller asks it of a record (EO-600). */
 export interface DependencyChangeAsk {
   itemId: Uuid;
-  /** Items to wait for from now on, by key or id. */
-  add: readonly string[];
+  /**
+   * Items to wait for from now on, by key or id — a bare one waits for
+   * it to finish — or `{ item, wait, step? }` with the rule (EO-778).
+   */
+  add: readonly DependencyOnItem[];
   /** Items to stop waiting for, by key or id. */
   remove: readonly string[];
+  /** New rules for edges the item already has (EO-778). */
+  update?: readonly DependencyGateOnItem[];
   /**
    * Who asked, as this installation names them, for the comment. A record
    * elsewhere names the person the asking device belongs to instead.

@@ -8,6 +8,7 @@ import { SkillCopySchema } from "./schemas/skills.js";
 import { CommentOptionSchema, parseStoredCommentOptions } from "./schemas/commentOptions.js";
 import { SideCallFailureReasonSchema, SideCallPurposeSchema } from "./side-calls.js";
 import { TrialPlanSchema, TrialStepSourcesSchema } from "./trialPlan.js";
+import { DEPENDENCY_WAITS } from "./domain.js";
 
 /**
  * The longest `dataBase64` a file may arrive as.
@@ -896,9 +897,42 @@ export type RecordItemOrigin = z.infer<typeof RecordItemOriginSchema>;
  * an organisation holds, and the item page lists nothing it waits for:
  * both read the replica's `item_deps`, which nothing filled.
  */
+/**
+ * The rule one edge waits by, as the record holds it (EO-778, EO-775).
+ *
+ * `step` is the step a `reached` edge waits for, by id — what a replica
+ * writes into `item_deps.wait_step_id`, since the pipeline's steps carry
+ * the record's own ids — and by name, for a reader with no row for it.
+ * Null for the other two rules. Its name is null where the record has
+ * no step by that id any more: a retired step, which a finished
+ * dependency releases anyway.
+ *
+ * A rule this build has no word for reads as `finished`, the rule that
+ * holds longest, rather than refusing the whole page.
+ */
+export const RecordItemGateSchema = z.object({
+  itemId: z.string(),
+  dependsOnId: z.string(),
+  wait: z.enum(DEPENDENCY_WAITS).catch("finished"),
+  step: z.object({ id: z.string(), name: z.string().nullable() }).nullable().default(null),
+});
+export type RecordItemGate = z.infer<typeof RecordItemGateSchema>;
+
 export const RecordItemWaitsSchema = z.object({
   dependsOn: z.array(z.string()),
   blocks: z.array(z.string()),
+  /**
+   * Each edge in `dependsOn` and `blocks` with the rule it waits by
+   * (EO-778), so a replica's board and item page show the same gate the
+   * record's scheduler holds the item at.
+   *
+   * Beside the two lists rather than in them, so a desktop on a build
+   * that predates rules still reads every page the record sends, as two
+   * lists of ids. Defaulted, so a page from a record that predates them
+   * reads as every edge waiting for its dependency to finish — the only
+   * rule such a record had. An edge listed in neither list is ignored.
+   */
+  gates: z.array(RecordItemGateSchema).default([]),
 });
 export type RecordItemWaits = z.infer<typeof RecordItemWaitsSchema>;
 

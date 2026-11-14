@@ -425,7 +425,9 @@ export async function serveUpdateItemType(
  * against this record's: judged against the whole graph — which only
  * this record has — and written whole or not at all, with the one
  * comment that says what changed, filed under the person the asking
- * device belongs to. A device this record has no row for is nobody, and
+ * device belongs to. A rule an edge waits by (EO-778) is judged here
+ * too, its step name resolved against the dependency's pipeline as this
+ * record holds it. A device this record has no row for is nobody, and
  * is refused, as a claim by nobody is. So is an item whose project is
  * still arriving: its graph is not all here yet.
  *
@@ -468,7 +470,7 @@ export async function serveChangeDependencies(
     return refuse(line);
   }
 
-  const outcome = changeDependenciesOf(db, current.id, { add: payload.add, remove: payload.remove }, person.name, payload.why);
+  const outcome = changeDependenciesOf(db, current.id, { add: payload.add, remove: payload.remove, update: payload.update }, person.name, payload.why);
   if (!outcome.ok) return refuse(outcome.reason);
   if (outcome.applied === null) return { changed: false, problem: null, item: null, comment: null, dependencies: null };
 
@@ -482,7 +484,7 @@ export async function serveChangeDependencies(
     item: {
       ...asRecordItem(item, item.assigneeId === null ? null : (getPerson(db, item.assigneeId as Uuid)?.name ?? null)),
       origin: originForWire(db, item.id),
-      waits: waitsForWire(listAllDependencies(db), item.id),
+      waits: waitsForWire(db, listAllDependencies(db), item.id),
     },
     comment: asRecordComment(db, comment),
     dependencies: summariseDependencyChange(outcome.applied),
@@ -1865,7 +1867,7 @@ export function serveChanges(
     items: items.map((item) => ({
       ...asRecordItem(item, item.assigneeId === null ? null : (getPerson(db, item.assigneeId as Uuid)?.name ?? null)),
       origin: originForWire(db, item.id as Uuid),
-      waits: waitsForWire(edges, item.id),
+      waits: waitsForWire(db, edges, item.id),
     })),
     transitions: transitions.map((move) => ({
       id: move.id,

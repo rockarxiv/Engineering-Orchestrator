@@ -78,7 +78,6 @@ import type { ItemRecord, WorkOffer } from "../record/record.js";
 import { refuseIfUntouchable } from "../roles/itemGuards.js";
 import {
   applyDependencyChange,
-  asksForGate,
   asksForDependencyChange,
   dependencyChangeHeader,
   judgeDependencyChange,
@@ -2227,18 +2226,6 @@ export async function updateItemFields(
   const item = getItem(db, itemId);
   if (!item) return { updated: false, problem: "That ticket no longer exists." };
 
-  // A rule other than `finished` (EO-777) is not one the record takes
-  // yet: it is asked for keys, and a key alone would write `finished`
-  // where the caller asked for something else. Refused, saying so,
-  // rather than written as a rule nobody asked for.
-  if (asksForGate({ add, update })) {
-    return {
-      updated: false,
-      problem: `${item.key} is on a project your organisation's record holds, and the record does not take a rule for what an item waits by yet — only bare keys, which wait for each item to finish.`,
-    };
-  }
-  const addKeys = add.filter((entry): entry is string => typeof entry === "string");
-
   // `pathsFrom` is not an edit: it is the grant EO's MCP hosts stamp on
   // every call of this channel (EO-704), files or none. And an empty
   // list of files to add or remove asks for nothing.
@@ -2249,7 +2236,7 @@ export async function updateItemFields(
   if (others.length > 0) {
     return {
       updated: false,
-      problem: `${dependenciesOnTheRecordLine(item.key)} Send addDependsOn and removeDependsOn in a call of their own, and ${others.join(", ")} in another.`,
+      problem: `${dependenciesOnTheRecordLine(item.key)} Send addDependsOn, removeDependsOn and updateDependsOn in a call of their own, and ${others.join(", ")} in another.`,
     };
   }
 
@@ -2257,7 +2244,9 @@ export async function updateItemFields(
   const notTheirs = refusedOnGroupStep(db, item, input.actingDeviceId, "edit") ?? refusedEditOnReplica(db, item);
   if (notTheirs !== null) return { updated: false, problem: notTheirs };
 
-  const answer = await record.changeDependencies({ itemId, add: addKeys, remove, by: whoAsked(db, input.actingDeviceId) });
+  // Rules included (EO-778): the record judges a step name against the
+  // dependency's pipeline as it holds it, as `judgeGate` does here.
+  const answer = await record.changeDependencies({ itemId, add, remove, update, by: whoAsked(db, input.actingDeviceId) });
   if (!answer.ok) return { updated: false, problem: answer.problem };
   if (answer.dependencies === null) return { updated: false, problem: null };
   return announceItem(itemId, { updated: true, problem: null, dependencies: answer.dependencies });
