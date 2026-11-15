@@ -226,7 +226,6 @@ const {
   canvasBoundsPath,
   createElectronPlatform,
   debugBoundsPath,
-  FIRST_LOAD_PATIENCE_MS,
   fitOntoAvailableDisplay,
   MAIN_MIN_WIDTH,
   MAIN_RENDERER_RELOAD_DELAY_MS,
@@ -373,16 +372,20 @@ describe("the main window when its page does not load", () => {
     vi.restoreAllMocks();
   });
 
-  /** The main window, open, with its first load made. */
+  /**
+   * The main window, open, with its first load made. `loaded()` is
+   * whether `openUserInterface` has resolved — what releases the work
+   * that reads the keychain synchronously.
+   */
   function opened() {
     const platform = platformOnTemporaryMachine();
-    let settled = false;
+    let loaded = false;
     void platform.openUserInterface().then(() => {
-      settled = true;
+      loaded = true;
     });
     const main = windows()[0]!;
     expect(main.loads).toBe(1);
-    return { platform, main, settled: () => settled };
+    return { platform, main, loaded: () => loaded };
   }
 
   /** A failed main-frame load, as Chromium reports it. */
@@ -447,7 +450,7 @@ describe("the main window when its page does not load", () => {
   });
 
   it(`reloads at most ${MAIN_RENDERER_RELOADS} times, then tells the person and the log`, async () => {
-    const { main, settled } = opened();
+    const { main, loaded } = opened();
 
     for (let attempt = 1; attempt <= MAIN_RENDERER_RELOADS; attempt += 1) {
       failLoad(main);
@@ -455,7 +458,7 @@ describe("the main window when its page does not load", () => {
       expect(main.loads).toBe(attempt + 1);
     }
     expect(messageBoxes).toEqual([]);
-    expect(settled()).toBe(false);
+    expect(loaded()).toBe(false);
 
     main.emitContents("render-process-gone", { reason: "oom", exitCode: 1 });
     await waitOutTheReload();
@@ -468,12 +471,14 @@ describe("the main window when its page does not load", () => {
     expect(messageBoxes[0]!.options.detail).toContain("the renderer process oom (exit code 1)");
     expect(main.shown).toBe(true);
     expect(failed).toEqual([expect.stringContaining(`could not load after ${MAIN_RENDERER_RELOADS} reloads`)]);
-    // And what waited for the window starts: it is not coming.
-    expect(settled()).toBe(true);
+    // Giving up is not loading: what reads the keychain synchronously
+    // stays held back, however long the box stays up.
+    await vi.advanceTimersByTimeAsync(10 * 60_000);
+    expect(loaded()).toBe(false);
   });
 
-  it("starts over when the person asks to try again", async () => {
-    const { main } = opened();
+  it("starts over when the person asks to try again, and is loaded once that works", async () => {
+    const { main, loaded } = opened();
     messageBoxAnswer = 0;
 
     for (let attempt = 0; attempt <= MAIN_RENDERER_RELOADS; attempt += 1) {
@@ -488,6 +493,11 @@ describe("the main window when its page does not load", () => {
     await waitOutTheReload();
     expect(main.loads).toBe(MAIN_RENDERER_RELOADS + 3);
     expect(messageBoxes).toHaveLength(1);
+    expect(loaded()).toBe(false);
+
+    main.emitContents("did-finish-load");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(loaded()).toBe(true);
   });
 
   it("logs a load that rejected rather than dropping it", async () => {
@@ -503,23 +513,52 @@ describe("the main window when its page does not load", () => {
   });
 
   it("is loaded once its first page has finished loading", async () => {
-    const { main, settled } = opened();
+    const { main, loaded } = opened();
     await vi.advanceTimersByTimeAsync(0);
-    expect(settled()).toBe(false);
+    expect(loaded()).toBe(false);
 
     main.emitContents("did-finish-load");
     await vi.advanceTimersByTimeAsync(0);
 
-    expect(settled()).toBe(true);
+    expect(loaded()).toBe(true);
   });
 
-  it("stops waiting for a first load nobody ever hears about", async () => {
-    const { settled } = opened();
+  it("is not loaded by time passing with no page", async () => {
+    const { loaded } = opened();
 
-    await vi.advanceTimersByTimeAsync(FIRST_LOAD_PATIENCE_MS);
+    await vi.advanceTimersByTimeAsync(10 * 60_000);
 
-    expect(settled()).toBe(true);
-    expect(warned).toEqual([expect.stringContaining("has not finished loading")]);
+    expect(loaded()).toBe(false);
+  });
+
+  it("does not count the error page a failed load finishes on, only the reload that worked", async () => {
+    const { main, loaded } = opened();
+
+    failLoad(main);
+    // Chromium can finish the error page it drew for the failure.
+    main.emitContents("did-finish-load");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(loaded()).toBe(false);
+
+    await waitOutTheReload();
+    expect(main.loads).toBe(2);
+    main.emitContents("did-finish-load");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(loaded()).toBe(true);
+  });
+
+  it("is not loaded by the window closing, and is by the next main window's page", async () => {
+    const { platform, main, loaded } = opened();
+
+    main.close();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(loaded()).toBe(false);
+
+    platform.showWindow();
+    const reopened = windows()[1]!;
+    reopened.emitContents("did-finish-load");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(loaded()).toBe(true);
   });
 });
 

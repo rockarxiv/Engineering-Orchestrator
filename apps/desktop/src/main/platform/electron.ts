@@ -105,6 +105,21 @@ export function createElectronPlatform(options: { mainDir: string }): Platform {
   let canvasWindow: BrowserWindow | undefined;
   let debugWindow: BrowserWindow | undefined;
 
+  /**
+   * The first time any main window has really loaded EO's page (EO-793).
+   *
+   * What `openUserInterface` answers, and so what `startMain` waits on
+   * before anything reads the keychain synchronously. Any main window
+   * counts — one reopened after the first closed unloaded, or one whose
+   * page loaded at a person's "Try again" — and nothing else does: a
+   * window that never loads holds that work back for as long as it
+   * does not, because releasing it is what would stall the next try.
+   */
+  let pageLoaded: () => void = () => {};
+  const firstPageLoaded = new Promise<void>((resolve) => {
+    pageLoaded = resolve;
+  });
+
   /** Alive, as opposed to closed-but-still-referenced. */
   const alive = (window: BrowserWindow | undefined): window is BrowserWindow => window !== undefined && !window.isDestroyed();
 
@@ -151,20 +166,31 @@ export function createElectronPlatform(options: { mainDir: string }): Platform {
    * every time would otherwise reload forever. "Try again" is what
    * resets it, because a person asked.
    *
-   * `settled` is told when the first load is over, whichever way it
-   * went — loaded, given up on, or the window closed — which is what
-   * `openUserInterface` resolves on.
+   * `loaded` is told when a page has really loaded, and by nothing else:
+   * not by giving up, not by the window closing, not by time passing.
+   * It is what `openUserInterface` resolves on, and what releases the
+   * work that reads the keychain synchronously — which must never run
+   * while there is no page drawn, since that is the very stall that lost
+   * the first load. A `did-finish-load` after a failure this has heard
+   * of and not yet answered with a fresh load is an error page
+   * finishing, and is not counted.
    */
-  function recoverMainRenderer(window: BrowserWindow, settled: () => void): void {
+  function recoverMainRenderer(window: BrowserWindow, loaded: () => void): void {
     let reloads = 0;
     let pending: ReturnType<typeof setTimeout> | undefined;
     let lastProblem = "";
+    let failed = false;
+
+    /** A fresh load of EO's page, which is what a later `did-finish-load` is about. */
+    const loadAgain = (): void => {
+      failed = false;
+      loadRenderer(window);
+    };
 
     const giveUp = (): void => {
       console.error(
         `[eo] the main window still could not load after ${MAIN_RENDERER_RELOADS} reloads (last: ${lastProblem}); telling the person rather than leaving it blank`,
       );
-      settled();
       window.show();
       void dialog
         .showMessageBox(window, {
@@ -173,7 +199,8 @@ export function createElectronPlatform(options: { mainDir: string }): Platform {
           message: "EO's window could not be loaded",
           detail:
             `EO tried ${MAIN_RENDERER_RELOADS + 1} times and gave up. The last problem was: ${lastProblem}.\n\n` +
-            "EO itself is still running. Try again, or quit EO and start it again; EO's log has a line for each attempt.",
+            "Agents, syncing and anything else that needs your keychain wait until the window has loaded. " +
+            "Try again, or quit EO and start it again; EO's log has a line for each attempt.",
           buttons: ["Try again", "Close"],
           defaultId: 0,
           cancelId: 1,
@@ -183,12 +210,13 @@ export function createElectronPlatform(options: { mainDir: string }): Platform {
           if (response !== 0 || window.isDestroyed()) return;
           reloads = 0;
           console.log("[eo] reloading the main window, as the person asked");
-          loadRenderer(window);
+          loadAgain();
         });
     };
 
     const reload = (problem: string): void => {
       lastProblem = problem;
+      failed = true;
       // One failure can be reported twice — a renderer that died also
       // fails the load it was in — and is one reload, not two.
       if (window.isDestroyed() || pending !== undefined) return;
@@ -200,7 +228,7 @@ export function createElectronPlatform(options: { mainDir: string }): Platform {
       console.warn(`[eo] reloading the main window (${reloads} of ${MAIN_RENDERER_RELOADS})`);
       pending = setTimeout(() => {
         pending = undefined;
-        if (!window.isDestroyed()) loadRenderer(window);
+        if (!window.isDestroyed()) loadAgain();
       }, MAIN_RENDERER_RELOAD_DELAY_MS * reloads);
     };
 
@@ -219,8 +247,9 @@ export function createElectronPlatform(options: { mainDir: string }): Platform {
       if (details.reason === "clean-exit") return;
       reload(`the renderer process ${details.reason} (exit code ${details.exitCode})`);
     });
-    window.webContents.on("did-finish-load", settled);
-    window.on("closed", settled);
+    window.webContents.on("did-finish-load", () => {
+      if (!failed) loaded();
+    });
   }
 
   /**
@@ -247,7 +276,7 @@ export function createElectronPlatform(options: { mainDir: string }): Platform {
    * `showWindow` after a macOS close) goes through the same assignment
    * and none of them can forget it.
    */
-  function createWindow(firstLoadSettled: () => void = () => {}): BrowserWindow {
+  function createWindow(): BrowserWindow {
     const window = new BrowserWindow({
       width: 1100,
       height: 720,
@@ -322,7 +351,7 @@ export function createElectronPlatform(options: { mainDir: string }): Platform {
     });
 
     denyWindowOpen(window);
-    recoverMainRenderer(window, firstLoadSettled);
+    recoverMainRenderer(window, pageLoaded);
     loadRenderer(window);
 
     return window;
@@ -558,25 +587,7 @@ export function createElectronPlatform(options: { mainDir: string }): Platform {
     },
 
     openUserInterface() {
-      // Settled once, by whichever comes first: the first page loaded,
-      // its reloads run out, the window closed — or, should none of
-      // those ever be heard, a patience that stops the work held back
-      // for the window from waiting for ever (EO-793).
-      let settle: () => void = () => {};
-      const loaded = new Promise<void>((resolve) => {
-        let done = false;
-        const patience = setTimeout(() => {
-          console.warn(`[eo] the main window has not finished loading after ${FIRST_LOAD_PATIENCE_MS / 1000} s; starting the work that waits for it anyway`);
-          settle();
-        }, FIRST_LOAD_PATIENCE_MS);
-        settle = () => {
-          if (done) return;
-          done = true;
-          clearTimeout(patience);
-          resolve();
-        };
-      });
-      mainWindow = createWindow(() => settle());
+      mainWindow = createWindow();
       // Registered here rather than at construction, so an `activate`
       // arriving during startup cannot open a window onto handlers that
       // are not registered yet.
@@ -588,7 +599,7 @@ export function createElectronPlatform(options: { mainDir: string }): Platform {
       app.on("activate", () => {
         if (!alive(mainWindow)) mainWindow = createWindow();
       });
-      return loaded;
+      return firstPageLoaded;
     },
 
     openCanvas(path) {
@@ -706,12 +717,6 @@ export const MAIN_RENDERER_RELOADS = 3;
 
 /** The wait before the first reload; the second waits twice this, and so on. */
 export const MAIN_RENDERER_RELOAD_DELAY_MS = 1_000;
-
-/**
- * How long the work held back for the window waits for its first load
- * before starting anyway (EO-793). Long enough for every reload above.
- */
-export const FIRST_LOAD_PATIENCE_MS = 30_000;
 
 /** Chromium's ERR_ABORTED: a navigation another replaced, not one that failed. */
 const ERR_ABORTED = -3;
