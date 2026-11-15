@@ -56,11 +56,15 @@ class FakeBrowserWindow {
   readonly loaded: Loaded = {};
   readonly handlers = new Map<string, ((...args: unknown[]) => void)[]>();
   readonly sent: { channel: string; payload: unknown }[] = [];
+  readonly contentsHandlers = new Map<string, ((...args: unknown[]) => void)[]>();
   readonly webContents: {
     send: (channel: string, payload: unknown) => void;
     setWindowOpenHandler: (handler: (details: { url: string }) => { action: string }) => void;
     openDevTools: () => void;
+    on: (event: string, handler: (...args: unknown[]) => void) => void;
   };
+  /** How many times a page was loaded into it, first load included (EO-793). */
+  loads = 0;
 
   windowOpenHandler: ((details: { url: string }) => { action: string }) | undefined;
   destroyed = false;
@@ -80,6 +84,11 @@ class FakeBrowserWindow {
         this.windowOpenHandler = handler;
       },
       openDevTools: () => {},
+      on: (event, handler) => {
+        const existing = this.contentsHandlers.get(event) ?? [];
+        existing.push(handler);
+        this.contentsHandlers.set(event, existing);
+      },
     };
     FakeBrowserWindow.instances.push(this);
   }
@@ -101,6 +110,16 @@ class FakeBrowserWindow {
 
   emit(event: string, ...args: unknown[]): void {
     for (const handler of this.handlers.get(event) ?? []) handler(...args);
+  }
+
+  /** What Chromium does to the page inside: `did-fail-load`, `render-process-gone`, `did-finish-load`. */
+  emitContents(event: string, ...args: unknown[]): void {
+    for (const handler of this.contentsHandlers.get(event) ?? []) handler({}, ...args);
+  }
+
+  private load(): Promise<void> {
+    this.loads += 1;
+    return Promise.resolve();
   }
 
   /** What the OS does when the window is really closed: `close`, then `closed`. */
@@ -145,11 +164,11 @@ class FakeBrowserWindow {
     this.loaded.file = file;
     if (options?.hash !== undefined) this.loaded.hash = options.hash;
     if (options?.search !== undefined) this.loaded.search = options.search;
-    return Promise.resolve();
+    return this.load();
   }
   loadURL(url: string): Promise<void> {
     this.loaded.url = url;
-    return Promise.resolve();
+    return this.load();
   }
 }
 
@@ -161,6 +180,9 @@ let displays: { workArea: { x: number; y: number; width: number; height: number 
 let userDataPath = "";
 const appHandlers = new Map<string, (() => void)[]>();
 const openedExternally: string[] = [];
+/** Every message box shown, and the button the fake person presses on the next one. */
+const messageBoxes: { parent: unknown; options: { message: string; detail?: string; buttons: string[] } }[] = [];
+let messageBoxAnswer = 1;
 
 vi.mock("electron", () => ({
   app: {
@@ -189,15 +211,30 @@ vi.mock("electron", () => ({
     },
     openPath: () => Promise.resolve(""),
   },
-  dialog: {},
+  dialog: {
+    showMessageBox: (parent: unknown, options: { message: string; detail?: string; buttons: string[] }) => {
+      messageBoxes.push({ parent, options });
+      return Promise.resolve({ response: messageBoxAnswer, checkboxChecked: false });
+    },
+  },
   ipcMain: { handle: () => {} },
   Notification: class {},
   safeStorage: { isEncryptionAvailable: () => false },
 }));
 
-const { canvasBoundsPath, createElectronPlatform, debugBoundsPath, fitOntoAvailableDisplay, MAIN_MIN_WIDTH, mainWindowChrome, readSavedBounds, TITLE_BAR_HEIGHT } = await import(
-  "./electron.js"
-);
+const {
+  canvasBoundsPath,
+  createElectronPlatform,
+  debugBoundsPath,
+  FIRST_LOAD_PATIENCE_MS,
+  fitOntoAvailableDisplay,
+  MAIN_MIN_WIDTH,
+  MAIN_RENDERER_RELOAD_DELAY_MS,
+  MAIN_RENDERER_RELOADS,
+  mainWindowChrome,
+  readSavedBounds,
+  TITLE_BAR_HEIGHT,
+} = await import("./electron.js");
 const { askFromCanvas, canvasState, closeCanvas, openInCanvas, popOutCanvas, resetCanvasWindow } = await import("../ipc/canvasWindow.js");
 const { readCurrentView } = await import("../ipc/currentView.js");
 const { clearPublishedView, publishedPage, publishView } = await import("../ipc/currentView.js");
@@ -228,6 +265,8 @@ beforeEach(() => {
   FakeBrowserWindow.instances = [];
   appHandlers.clear();
   openedExternally.length = 0;
+  messageBoxes.length = 0;
+  messageBoxAnswer = 1;
   displays = [{ workArea: { x: 0, y: 0, width: 1920, height: 1080 } }];
   clearPublishedView();
   resetCanvasWindow();
@@ -244,7 +283,7 @@ afterEach(() => {
 describe("the main window", () => {
   it("loads the renderer with no hash at all", () => {
     const platform = platformOnTemporaryMachine();
-    platform.openUserInterface();
+    void platform.openUserInterface();
 
     expect(windows()).toHaveLength(1);
     // The index with no hash, which is what makes every other window a
@@ -257,7 +296,7 @@ describe("the main window", () => {
     process.env["ELECTRON_RENDERER_URL"] = "http://localhost:5173";
     try {
       const platform = platformOnTemporaryMachine();
-      platform.openUserInterface();
+      void platform.openUserInterface();
 
       expect(windows()[0]!.loaded.url).toBe("http://localhost:5173");
     } finally {
@@ -267,7 +306,7 @@ describe("the main window", () => {
 
   it("denies window.open and sends the URL to the OS browser", () => {
     const platform = platformOnTemporaryMachine();
-    platform.openUserInterface();
+    void platform.openUserInterface();
 
     expect(windows()[0]!.windowOpenHandler?.({ url: "https://example.invalid/whatever" })).toEqual({ action: "deny" });
     expect(openedExternally).toEqual(["https://example.invalid/whatever"]);
@@ -275,7 +314,7 @@ describe("the main window", () => {
 
   it("clears the published view when it closes, and takes the windows beside it along", () => {
     const platform = platformOnTemporaryMachine();
-    platform.openUserInterface();
+    void platform.openUserInterface();
     publishView(BOARD_VIEW);
     platform.openCanvas("/inbox");
     const [main, canvas] = windows();
@@ -310,6 +349,180 @@ describe("the main window", () => {
  * The main window's own title bar (EO-668): no native one, the system's
  * controls over EO's top row, and only on the main window.
  */
+/**
+ * EO-793: a main window whose page did not load is reloaded, a bounded
+ * number of times, and then the person is told — never left blank.
+ */
+describe("the main window when its page does not load", () => {
+  /** Chromium's numbers for the two failures that matter here. */
+  const ERR_ABORTED = -3;
+  const ERR_FAILED = -2;
+
+  let warned: string[];
+  let failed: string[];
+  beforeEach(() => {
+    vi.useFakeTimers();
+    warned = [];
+    failed = [];
+    vi.spyOn(console, "warn").mockImplementation((line: unknown) => void warned.push(String(line)));
+    vi.spyOn(console, "error").mockImplementation((line: unknown) => void failed.push(String(line)));
+    vi.spyOn(console, "log").mockImplementation(() => {});
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  /** The main window, open, with its first load made. */
+  function opened() {
+    const platform = platformOnTemporaryMachine();
+    let settled = false;
+    void platform.openUserInterface().then(() => {
+      settled = true;
+    });
+    const main = windows()[0]!;
+    expect(main.loads).toBe(1);
+    return { platform, main, settled: () => settled };
+  }
+
+  /** A failed main-frame load, as Chromium reports it. */
+  function failLoad(main: FakeBrowserWindow, code = ERR_FAILED, description = "ERR_FAILED", isMainFrame = true): void {
+    main.emitContents("did-fail-load", code, description, "file:///eo/renderer/index.html", isMainFrame);
+  }
+
+  /** Past the longest wait between reloads. */
+  async function waitOutTheReload(): Promise<void> {
+    await vi.advanceTimersByTimeAsync(MAIN_RENDERER_RELOAD_DELAY_MS * MAIN_RENDERER_RELOADS);
+  }
+
+  it("says which load failed and loads the page again", async () => {
+    const { main } = opened();
+
+    failLoad(main, ERR_FAILED, "ERR_FAILED");
+
+    expect(warned).toContain("[eo] the main window failed to load file:///eo/renderer/index.html: ERR_FAILED (error -2)");
+    await waitOutTheReload();
+    expect(main.loads).toBe(2);
+    expect(main.loaded.file).toMatch(/renderer[/\\]index\.html$/);
+  });
+
+  it("leaves alone a load another navigation replaced, and a frame inside the page", async () => {
+    const { main } = opened();
+
+    failLoad(main, ERR_ABORTED, "ERR_ABORTED");
+    failLoad(main, ERR_FAILED, "ERR_FAILED", false);
+
+    await waitOutTheReload();
+    expect(main.loads).toBe(1);
+    expect(warned).toEqual([]);
+  });
+
+  it("says why its renderer process went and loads the page again", async () => {
+    const { main } = opened();
+
+    main.emitContents("render-process-gone", { reason: "crashed", exitCode: 139 });
+
+    expect(warned).toContain("[eo] the main window's renderer process is gone: crashed (exit code 139)");
+    await waitOutTheReload();
+    expect(main.loads).toBe(2);
+  });
+
+  it("does not fight a renderer that was asked to end", async () => {
+    const { main } = opened();
+
+    main.emitContents("render-process-gone", { reason: "clean-exit", exitCode: 0 });
+
+    await waitOutTheReload();
+    expect(main.loads).toBe(1);
+  });
+
+  it("counts one failure reported twice as one reload", async () => {
+    const { main } = opened();
+
+    main.emitContents("render-process-gone", { reason: "crashed", exitCode: 139 });
+    failLoad(main);
+
+    await waitOutTheReload();
+    expect(main.loads).toBe(2);
+  });
+
+  it(`reloads at most ${MAIN_RENDERER_RELOADS} times, then tells the person and the log`, async () => {
+    const { main, settled } = opened();
+
+    for (let attempt = 1; attempt <= MAIN_RENDERER_RELOADS; attempt += 1) {
+      failLoad(main);
+      await waitOutTheReload();
+      expect(main.loads).toBe(attempt + 1);
+    }
+    expect(messageBoxes).toEqual([]);
+    expect(settled()).toBe(false);
+
+    main.emitContents("render-process-gone", { reason: "oom", exitCode: 1 });
+    await waitOutTheReload();
+
+    // No more loads: an explanation instead, over the window it is about.
+    expect(main.loads).toBe(MAIN_RENDERER_RELOADS + 1);
+    expect(messageBoxes).toHaveLength(1);
+    expect(messageBoxes[0]!.parent).toBe(main);
+    expect(messageBoxes[0]!.options.message).toBe("EO's window could not be loaded");
+    expect(messageBoxes[0]!.options.detail).toContain("the renderer process oom (exit code 1)");
+    expect(main.shown).toBe(true);
+    expect(failed).toEqual([expect.stringContaining(`could not load after ${MAIN_RENDERER_RELOADS} reloads`)]);
+    // And what waited for the window starts: it is not coming.
+    expect(settled()).toBe(true);
+  });
+
+  it("starts over when the person asks to try again", async () => {
+    const { main } = opened();
+    messageBoxAnswer = 0;
+
+    for (let attempt = 0; attempt <= MAIN_RENDERER_RELOADS; attempt += 1) {
+      failLoad(main);
+      await waitOutTheReload();
+    }
+
+    expect(messageBoxes).toHaveLength(1);
+    expect(main.loads).toBe(MAIN_RENDERER_RELOADS + 2);
+    // A fresh allowance: the next failure is reloaded, not refused.
+    failLoad(main);
+    await waitOutTheReload();
+    expect(main.loads).toBe(MAIN_RENDERER_RELOADS + 3);
+    expect(messageBoxes).toHaveLength(1);
+  });
+
+  it("logs a load that rejected rather than dropping it", async () => {
+    const platform = platformOnTemporaryMachine();
+    // Set on the class: the window is made inside openUserInterface.
+    const load = vi.spyOn(FakeBrowserWindow.prototype, "loadFile").mockRejectedValueOnce(new Error("ERR_FAILED (-2) loading 'file:///eo/renderer/index.html'"));
+
+    void platform.openUserInterface();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(load).toHaveBeenCalledTimes(1);
+    expect(warned).toContain("[eo] a window's page did not load: ERR_FAILED (-2) loading 'file:///eo/renderer/index.html'");
+  });
+
+  it("is loaded once its first page has finished loading", async () => {
+    const { main, settled } = opened();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(settled()).toBe(false);
+
+    main.emitContents("did-finish-load");
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(settled()).toBe(true);
+  });
+
+  it("stops waiting for a first load nobody ever hears about", async () => {
+    const { settled } = opened();
+
+    await vi.advanceTimersByTimeAsync(FIRST_LOAD_PATIENCE_MS);
+
+    expect(settled()).toBe(true);
+    expect(warned).toEqual([expect.stringContaining("has not finished loading")]);
+  });
+});
+
 describe("the main window's title bar", () => {
   const pushed = (window: FakeBrowserWindow, channel: string) => window.sent.filter((push) => push.channel === `push:${channel}`).map((push) => push.payload);
 
@@ -335,7 +548,7 @@ describe("the main window's title bar", () => {
     try {
       setDebugMode(db, true);
       const platform = platformOnTemporaryMachine();
-      platform.openUserInterface();
+      void platform.openUserInterface();
       platform.openCanvas("/inbox");
       openDebugWindow(db, platform);
       const [main, canvas, debug] = windows();
@@ -355,7 +568,7 @@ describe("the main window's title bar", () => {
     const platform = platformOnTemporaryMachine();
     expect(platform.setTitleBarColours({ color: "#262624", symbolColor: "#c3c1b8" })).toBe(false);
 
-    platform.openUserInterface();
+    void platform.openUserInterface();
     platform.openCanvas("/inbox");
     const [main, canvas] = windows();
     const applied = platform.setTitleBarColours({ color: "#262624", symbolColor: "#c3c1b8" });
@@ -374,7 +587,7 @@ describe("the main window's title bar", () => {
   it("says when the main window goes into full screen and comes out", () => {
     const platform = platformOnTemporaryMachine();
     expect(platform.isFullScreen()).toBe(false);
-    platform.openUserInterface();
+    void platform.openUserInterface();
     const [main] = windows();
 
     main!.setFullScreen(true);
@@ -390,7 +603,7 @@ describe("the main window's title bar", () => {
 describe("which window is the app's", () => {
   it("shows and focuses the main window, never the one beside it", () => {
     const platform = platformOnTemporaryMachine();
-    platform.openUserInterface();
+    void platform.openUserInterface();
     platform.openCanvas("/inbox");
     const [main, canvas] = windows();
     main!.minimized = true;
@@ -405,7 +618,7 @@ describe("which window is the app's", () => {
 
   it("brings the main window back when it is the one that is gone", () => {
     const platform = platformOnTemporaryMachine();
-    platform.openUserInterface();
+    void platform.openUserInterface();
     platform.openCanvas("/inbox");
     // The main window alone, as macOS leaves it — the cascade is on
     // `closed`, so this is the shape a future where they part company
@@ -439,7 +652,7 @@ describe("which window is the app's", () => {
 
   it("reopens the main window on activate even while another is up", () => {
     const platform = platformOnTemporaryMachine();
-    platform.openUserInterface();
+    void platform.openUserInterface();
     platform.openCanvas("/inbox");
     windows()[0]!.destroyed = true;
 
@@ -525,7 +738,7 @@ describe("the canvas in its own window", () => {
 
   function withTheBoardOpen() {
     const platform = platformOnTemporaryMachine();
-    platform.openUserInterface();
+    void platform.openUserInterface();
     return { platform, board: windows()[0]! };
   }
 
@@ -794,7 +1007,7 @@ describe("the canvas in its own window", () => {
 describe("the debug window", () => {
   function withTheBoardOpen() {
     const platform = platformOnTemporaryMachine();
-    platform.openUserInterface();
+    void platform.openUserInterface();
     const handle = openMigratedTestDb();
     return { platform, db: handle.db, board: windows()[0]!, close: () => handle.close() };
   }

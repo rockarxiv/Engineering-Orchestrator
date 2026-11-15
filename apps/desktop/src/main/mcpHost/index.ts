@@ -128,11 +128,17 @@ export function createMcpHost(options: McpHostOptions): McpHostHandle {
    * rather than `.then(run)` because a rejected predecessor must not
    * stop the queue — the next caller still has a configuration to apply.
    */
-  let queue: Promise<McpHostStatus> = Promise.resolve(status());
+  //
+  // The queue starts empty rather than with a `status()`: that reads the
+  // token, which is a synchronous keychain read, and building the host
+  // happens on the way to the window (EO-793). Nothing ever read the
+  // value it started with.
+  let queue: Promise<unknown> = Promise.resolve();
 
   function reconcile(): Promise<McpHostStatus> {
-    queue = queue.then(applyConfig, applyConfig);
-    return queue;
+    const next = queue.then(applyConfig, applyConfig);
+    queue = next;
+    return next;
   }
 
   async function applyConfig(): Promise<McpHostStatus> {
@@ -181,7 +187,7 @@ export function createMcpHost(options: McpHostOptions): McpHostHandle {
     restart: () => {
       // Queued like everything else, so a token change cannot interleave
       // with a settings change and leave a socket bound with no handle on it.
-      queue = queue.then(
+      const next = queue.then(
         async () => {
           await stopListening();
           return applyConfig();
@@ -191,7 +197,8 @@ export function createMcpHost(options: McpHostOptions): McpHostHandle {
           return applyConfig();
         },
       );
-      return queue;
+      queue = next;
+      return next;
     },
     stop: async () => {
       unsubscribe();

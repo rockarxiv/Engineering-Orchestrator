@@ -182,11 +182,19 @@ export function createDeviceRecord(options: DeviceRecordOptions): DeviceRecord {
    * be two names for one thing.
    */
   const local: LocalItemRecord = recordFor(db);
+  // Asked the first time a request needs it rather than here (EO-793):
+  // answering reads the device token out of the OS keychain, and this is
+  // built on the way to the window, where nothing may read it. Still
+  // asked once, as it was.
+  let deviceId: string | undefined;
   const remote: RemoteRecord = createRemoteRecord({
     db,
     local,
     transport: options.transport,
-    deviceId: options.deviceId(),
+    get deviceId() {
+      deviceId ??= options.deviceId();
+      return deviceId;
+    },
     ...(options.now === undefined ? {} : { now: options.now }),
     ...(options.onSyncChange === undefined ? {} : { onSyncChange: options.onSyncChange }),
   });
