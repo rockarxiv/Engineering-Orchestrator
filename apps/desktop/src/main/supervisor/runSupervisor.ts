@@ -250,7 +250,23 @@ import {
   skillsLoadedByRun,
   ownRunsToSettle,
   supersedeProblem,
+  getMessage,
+  openMessageAbout,
 } from "../db/repos/index.js";
+import type { RuntimeId } from "@eo/core";
+import { invalidateRuntimeAuth, type RuntimeAuthCheck } from "../runtimes/auth.js";
+import { resolveMessagesAbout, sendMessageHere } from "../messages/messages.js";
+import {
+  heldByBlockedRuntimes,
+  RUNTIME_BLOCK_RECHECK_MS,
+  RUNTIME_SIGN_IN_SOURCE,
+  runtimeHoldNote,
+  runtimeOf,
+  runtimeSignInMessage,
+  TRY_AGAIN_OPTION,
+  withoutBlockedRuntimes,
+  type HeldItem,
+} from "./runtimeBlocks.js";
 import { budgetRefusal, occurrenceOverBudget, pauseForBudget } from "../jobs/budget.js";
 import { readPolicy } from "../policy/policy.js";
 import { ownerOfItem, parkForPersonBudget } from "../policy/personBudget.js";
@@ -632,8 +648,20 @@ export interface RunSupervisorOptions {
    * as an engine comment on the item (invariant #8) instead of a
    * stack trace from inside a provider stream. Defaults to yes, which
    * is right for the fake and scripted providers.
+   *
+   * An answer carrying `signedOut` blocks that runtime on this device
+   * (EO-796, `runtimeBlocks.ts`) rather than refusing the item: one
+   * message to the person, a note on each item waiting, and nothing
+   * dispatched to an agent on it until it is signed in. Any other
+   * refusal is the item's, as it always was.
    */
-  checkAuth?: (agent: Agent) => Promise<{ ok: boolean; reason?: string }>;
+  checkAuth?: (agent: Agent) => Promise<RuntimeAuthCheck>;
+  /**
+   * Told each time EO completes a sign-in of a runtime (EO-795,
+   * `runtimes/signedIn.ts`), which lifts a block on it at once (EO-796).
+   * Heard from `start()` to `stop()`, as `onWake` is.
+   */
+  onRuntimeSignedIn?: (listener: (runtime: RuntimeId) => void) => () => void;
   /**
    * What EO is configured to do for this agent and deliberately will
    * not, as sentences to post on the item (EO-108).
@@ -1106,7 +1134,7 @@ export interface RunSupervisor {
    * scheduler — same guards, same caps, same pack contributions — and
    * not a second one assembled beside it.
    */
-  offerWork: (deviceId: string, capacity: number) => Promise<WorkOffer[]>;
+  offerWork: (deviceId: string, capacity: number, blockedRuntimes?: readonly RuntimeId[]) => Promise<WorkOffer[]>;
   /** Call after any item/run state change so the next tick isn't stuck waiting on the interval. */
   /**
    * Starts the backend for the turn a person is typing in a conversation
@@ -1965,6 +1993,7 @@ export function createRunSupervisor(
     now = Date.now,
     watchdogIntervalMs = DEFAULT_WATCHDOG_INTERVAL_MS,
     onWake,
+    onRuntimeSignedIn,
     isOnline = () => true,
     sleeps = true,
     tickIntervalMs = DEFAULT_TICK_INTERVAL_MS,
@@ -1986,7 +2015,7 @@ export function createRunSupervisor(
     runsWhere = DEFAULT_JOB_RUNS_ON,
     deviceId: deviceIdOption = LOCAL_DEVICE_ID,
     leaseTtlMs,
-    checkAuth = async () => ({ ok: true as const }),
+    checkAuth = async (): Promise<RuntimeAuthCheck> => ({ ok: true }),
     dispatchNotices = () => [],
     dispatchRefusal = () => null,
     isAgentAvailable = () => true,
@@ -2234,8 +2263,27 @@ export function createRunSupervisor(
       // Silent, because nothing was promised — the same silence this
       // check has always had at the top of `dispatchHeld`.
       if (!isAgentAvailable(agent)) return { kind: "stand-down" };
-      const auth = await checkAuth(runsOn(agent, item));
-      if (auth.ok) return { kind: "ready" };
+      const runningOn = runsOn(agent, item);
+      // A runtime already blocked here is not asked again per dispatch
+      // (EO-796): the block's own recheck does that. The item waits, and
+      // is told so once.
+      const blockedOn = runtimeOf(runningOn);
+      if (blockedOn !== null && runtimeBlocks.has(blockedOn)) {
+        noteRuntimeHold(item, blockedOn);
+        return { kind: "stand-down" };
+      }
+      const auth = await checkAuth(runningOn);
+      if (auth.signedOut !== undefined) {
+        blockRuntime(auth.signedOut, runningOn, item);
+        noteRuntimeHold(item, auth.signedOut.runtime);
+        return { kind: "stand-down" };
+      }
+      if (auth.ok) {
+        // Signed in after all, with no block standing: a message about
+        // this runtime left from before a restart is answered by this.
+        if (blockedOn !== null && !runtimeBlocks.has(blockedOn)) resolveMessagesAbout(db, RUNTIME_SIGN_IN_SOURCE, blockedOn);
+        return { kind: "ready" };
+      }
       return { kind: "refused", reason: auth.reason ?? `The "${agent.provider}" backend is not available.` };
     },
 
@@ -4142,6 +4190,7 @@ export function createRunSupervisor(
   let intervalTimer: ReturnType<typeof setInterval> | undefined;
   let watchdogTimer: ReturnType<typeof setInterval> | undefined;
   let stopHearingWakes: (() => void) | undefined;
+  let stopHearingSignIns: (() => void) | undefined;
   let stopWatchingRegressions: (() => void) | undefined;
   /**
    * What the inactivity guard knows of each run in flight: when its
@@ -10172,6 +10221,12 @@ export function createRunSupervisor(
     // its own placement there would offer a desktop the work a person
     // put on the server.
     runsOn: JobRunsOn = DEFAULT_JOB_RUNS_ON,
+    // The runtimes not signed in on the asking device (EO-796): its own
+    // blocks on its tick, and what a device sent with `record:work` on a
+    // server. Applied to the pick here, on whichever side picks, so a
+    // held item takes none of the device's capacity. Carried on to the
+    // record as well, so a record that is elsewhere applies them there.
+    blockedRuntimes: readonly RuntimeId[] = [],
   ): Promise<WorkOffer[]> {
     // No early return for a capacity of nought or null, deliberately.
     // Asking for no work is still asking, and the record's sweep happens
@@ -10180,8 +10235,10 @@ export function createRunSupervisor(
     // (invariant #8). A record that is somewhere else answers such an
     // ask without a round trip, because the sweep is its own business
     // and it is already doing it.
-    const tickInput = input ?? tickInputNow();
-    return record.offerWork({ deviceId: who, capacity, tickInput, runsOn });
+    const built = input ?? tickInputNow();
+    const blocked = new Set(blockedRuntimes);
+    const tickInput = blocked.size === 0 ? built : withoutBlockedRuntimes(built, blocked, heldByBlockedRuntimes(built, blocked));
+    return record.offerWork({ deviceId: who, capacity, tickInput, runsOn, blockedRuntimes: [...blocked] });
   }
 
   /**
@@ -10348,6 +10405,9 @@ export function createRunSupervisor(
           // asks for a tick when it ends, so one turned back at the door
           // would be offered again and again for as long as the hold lasted.
           if (heldBack(getAgent(db, pending.agentId), pending.itemId)) continue;
+          // Nor while its agent's runtime is not signed in here (EO-796):
+          // the reply is kept, and read once the block lifts.
+          if (waitsForRuntime(getAgent(db, pending.agentId), pending.itemId)) continue;
           const promise = executeInterpret(pending).finally(() => inFlight.delete(promise));
           inFlight.add(promise);
         }
@@ -10356,6 +10416,9 @@ export function createRunSupervisor(
           // Ahead of every refusal below: a mention a pause holds is not
           // answered yet, one way or the other, and it stays open.
           if (heldBack(getAgent(db, pending.agentId), pending.itemId)) continue;
+          // And one for an agent whose runtime is not signed in here
+          // (EO-796): kept open, and answered once the block lifts.
+          if (waitsForRuntime(getAgent(db, pending.agentId), pending.itemId)) continue;
 
           // The design's mention-depth cap, before the split below rather than
           // inside either branch (EO-212): a rerun request an agent
@@ -10407,7 +10470,13 @@ export function createRunSupervisor(
       // differently. A record that cannot be reached offers nothing,
       // which is "offline means finish the run you hold, never keep
       // scheduling locally" (the original design) with no branch to write.
-      for (const offer of await offerWork(deviceId(), capacityFor(tickInput), undefined, runsWhere)) {
+      // A runtime not signed in on this device (EO-796): asked again when
+      // it is due, its items told they are waiting, and left out of the
+      // pick, so they hold no slot and the other runtime's work goes on.
+      settleRuntimeBlocks();
+      const blocked = new Set(runtimeBlocks.keys());
+      if (blocked.size > 0) noteRuntimeHolds(heldByBlockedRuntimes(tickInput, blocked));
+      for (const offer of await offerWork(deviceId(), capacityFor(tickInput), undefined, runsWhere, [...blocked])) {
         const promise = executeDispatch(offer.dispatch, offer.lease).finally(() =>
           inFlight.delete(promise),
         );
@@ -10557,6 +10626,180 @@ export function createRunSupervisor(
   }
 
   /**
+   * The runtimes not signed in on this device, by runtime (EO-796).
+   *
+   * In memory, like the leases this device holds: a block is what this
+   * machine found when it asked, and a restart asks again at the first
+   * dispatch. What outlives a restart is the message, and a block that
+   * finds one still open adopts it rather than sending another — and
+   * dates its episode from it, so the items are not told twice.
+   */
+  interface RuntimeBlock {
+    runtime: RuntimeId;
+    /** The agent the probe was asked for, asked for again on a recheck. */
+    agent: Agent;
+    /** When this episode began: the open message's, or the block's own. */
+    since: number;
+    /** When the runtime was last asked; the next recheck is due `RUNTIME_BLOCK_RECHECK_MS` after. */
+    checkedAt: number;
+    messageId: string | null;
+    /** The message's Try again has been acted on, so it is not acted on twice. */
+    triedAgain: boolean;
+    /** A recheck is running. */
+    checking: boolean;
+  }
+  const runtimeBlocks = new Map<RuntimeId, RuntimeBlock>();
+
+  /**
+   * Blocks a runtime the preflight found signed out, and tells the
+   * person once (invariant 8: the problem belongs to no item, so it ends
+   * in a message). A block already standing is left as it is, and a
+   * message still open about this runtime is adopted, not repeated.
+   *
+   * Sent here rather than through the record: the block is this device's,
+   * so the person to tell is this device's (`sendMessageHere` with
+   * `isTheRecord` false). A server dispatches nothing and never gets here.
+   */
+  function blockRuntime(signedOut: NonNullable<RuntimeAuthCheck["signedOut"]>, agent: Agent, item: Item): void {
+    const { runtime } = signedOut;
+    if (runtimeBlocks.has(runtime)) return;
+    const open = openMessageAbout(db, RUNTIME_SIGN_IN_SOURCE, runtime);
+    // `since` is read against comments' and messages' own times, which are
+    // the wall clock's; `checkedAt` against the supervisor's.
+    const since = open?.createdAt ?? Date.now();
+    const block: RuntimeBlock = { runtime, agent, since, checkedAt: now(), messageId: open?.id ?? null, triedAgain: false, checking: false };
+    runtimeBlocks.set(runtime, block);
+    if (open) return;
+
+    const held = heldByBlockedRuntimes(tickInputNow(), new Set([runtime]));
+    const itemIds = new Set([item.id, ...held.map(({ item: waiting }) => waiting.id)]);
+    const agentNames = [...new Set([agent.name, ...held.flatMap(({ agents }) => agents.filter((candidate) => runtimeOf(candidate) === runtime).map((candidate) => candidate.name))])];
+    const [message] = sendMessageHere(
+      db,
+      {
+        source: RUNTIME_SIGN_IN_SOURCE,
+        subject: runtime,
+        ...runtimeSignInMessage({ runtime, executablePath: signedOut.executablePath, itemCount: itemIds.size, agentNames }),
+      },
+      false,
+      since,
+    );
+    block.messageId = message?.id ?? null;
+  }
+
+  /**
+   * The block is over: the message is resolved, and the items it held
+   * are offered again on the next tick, which is brought forward. Nobody
+   * replies on any of them.
+   */
+  function liftRuntimeBlock(runtime: RuntimeId): void {
+    runtimeBlocks.delete(runtime);
+    resolveMessagesAbout(db, RUNTIME_SIGN_IN_SOURCE, runtime);
+    notifyStateChange({ promptly: true });
+  }
+
+  /**
+   * A sign-in EO completed (EO-795): the dialog's own word is enough to
+   * lift the block without asking the CLI again. A message left open
+   * from before a restart, with no block standing, is resolved too.
+   */
+  function runtimeSignedIn(runtime: RuntimeId): void {
+    if (runtimeBlocks.has(runtime)) liftRuntimeBlock(runtime);
+    else resolveMessagesAbout(db, RUNTIME_SIGN_IN_SOURCE, runtime);
+  }
+
+  /**
+   * Asks each blocked runtime again when that is due: on the interval,
+   * for a sign-in made outside EO, and at once when the person answered
+   * Try again — which forgets the cached answer first, since a press is
+   * a person saying something changed. In the background, tracked as
+   * every other piece of a tick's work is, so a slow probe holds up no
+   * dispatch to the other runtime. A Try again that still finds it
+   * signed out leaves the block standing and sends nothing more.
+   */
+  function settleRuntimeBlocks(): void {
+    for (const block of runtimeBlocks.values()) {
+      if (block.checking) continue;
+      const message = block.messageId === null ? undefined : getMessage(db, block.messageId);
+      const tryAgain = !block.triedAgain && message?.handledHow === "answered" && message.answer === TRY_AGAIN_OPTION;
+      if (tryAgain) block.triedAgain = true;
+      else if (now() - block.checkedAt < RUNTIME_BLOCK_RECHECK_MS) continue;
+      const promise = recheckRuntime(block, tryAgain).finally(() => inFlight.delete(promise));
+      inFlight.add(promise);
+    }
+  }
+
+  async function recheckRuntime(block: RuntimeBlock, forget: boolean): Promise<void> {
+    block.checking = true;
+    block.checkedAt = now();
+    try {
+      if (forget) invalidateRuntimeAuth(block.runtime);
+      // The agent as it is now, while it still runs on this runtime: a
+      // changed executable path is the copy to ask.
+      const current = getAgent(db, block.agent.id);
+      const auth = await checkAuth(current && runtimeOf(current) === block.runtime ? current : block.agent);
+      // Anything but signed out lifts it: `unknown` passes a dispatch, so
+      // it passes a recheck, and a refusal of another kind is the item's
+      // to say at its own dispatch.
+      if (auth.signedOut === undefined && runtimeBlocks.get(block.runtime) === block) liftRuntimeBlock(block.runtime);
+    } catch (error) {
+      console.error(`[eo] asking whether ${block.runtime} is signed in again failed:`, error);
+    } finally {
+      block.checking = false;
+    }
+  }
+
+  /**
+   * Tells an item it is waiting for a runtime to be signed in — once per
+   * block, the way `notePullRequestHolds` is once per stay: an engine
+   * note with these words since the episode began is the item already
+   * told. A note, not an escalation: nobody needs to reply, and no
+   * `awaiting_input` run parks it (invariant 6).
+   */
+  function noteRuntimeHold(item: Item, runtime: RuntimeId): void {
+    const block = runtimeBlocks.get(runtime);
+    if (block === undefined || !getItem(db, item.id)) return;
+    const body = runtimeHoldNote(runtime);
+    const alreadySaid = listCommentsForItem(db, item.id, { since: block.since }).some(
+      (comment) => comment.authorType === "engine" && comment.body === body,
+    );
+    if (alreadySaid) return;
+    postComment(db, { itemId: item.id, author: { type: "engine" }, kind: "note", body });
+    onItemChanged(item.id);
+  }
+
+  /**
+   * The blocked runtime this agent would run this item on, or null. A
+   * preview runs on the fake backend, which no block holds.
+   */
+  function blockedRuntimeFor(agent: Agent | null | undefined, item: Item): RuntimeId | null {
+    if (!agent || runtimeBlocks.size === 0) return null;
+    const runtime = runtimeOf(runsOn(agent, item));
+    return runtime !== null && runtimeBlocks.has(runtime) ? runtime : null;
+  }
+
+  /**
+   * Whether a run of this agent on this item must wait for a blocked
+   * runtime (EO-796) — every door that starts an agent asks: a reply to
+   * a parked run, a mention, a reply being read. When it must, the item
+   * is told, once for the block, and the caller leaves what it was asked
+   * to do exactly as it found it, for after the block lifts.
+   */
+  function waitsForRuntime(agent: Agent | null | undefined, itemOrId: Item | Uuid): boolean {
+    if (!agent || runtimeBlocks.size === 0) return false;
+    const item = typeof itemOrId === "string" ? getItem(db, itemOrId) : itemOrId;
+    if (!item) return false;
+    const runtime = blockedRuntimeFor(agent, item);
+    if (runtime === null) return false;
+    noteRuntimeHold(item, runtime);
+    return true;
+  }
+
+  function noteRuntimeHolds(held: readonly HeldItem[]): void {
+    for (const { item, runtime } of held) noteRuntimeHold(item, runtime);
+  }
+
+  /**
    * The parked items with something the step that parked has not read.
    *
    * A person's reply, which is what this has always meant — and since
@@ -10623,6 +10866,8 @@ export function createRunSupervisor(
     watchdogTimer = setInterval(watchLiveRuns, watchdogIntervalMs);
     watchdogTimer.unref?.();
     stopHearingWakes = onWake?.(() => noteWake());
+    // A sign-in EO completed lifts a block on that runtime (EO-796).
+    stopHearingSignIns = onRuntimeSignedIn?.((runtime) => runtimeSignedIn(runtime));
     // A dependency going back after it released a `reached` edge is said
     // on the items it released (EO-776).
     stopWatchingRegressions = watchDependencyRegressions(db);
@@ -10636,6 +10881,8 @@ export function createRunSupervisor(
     if (debounceTimer) clearTimeout(debounceTimer);
     if (watchdogTimer) clearInterval(watchdogTimer);
     stopHearingWakes?.();
+    stopHearingSignIns?.();
+    stopHearingSignIns = undefined;
     stopWatchingRegressions?.();
     stopWatchingRegressions = undefined;
     memoryConsolidator.stop();
@@ -11544,6 +11791,13 @@ export function createRunSupervisor(
 
     if (!isAgentAvailable(agent)) return;
 
+    // Its runtime not signed in on this device (EO-796): the reply is
+    // kept and the park left as it is, the item is told once for the
+    // block, and `deferredReplyItemIds` offers the reply again on the
+    // first tick after the block lifts. Before anything is written or a
+    // slot is taken.
+    if (waitsForRuntime(agent, item)) return;
+
     // A backend switch — or a change to what is attached to this agent
     // (EO-107) — loses the thread but not the work: the fresh run below
     // is seeded from the thread, including the reply that got us here
@@ -11615,6 +11869,9 @@ export function createRunSupervisor(
     // the top of this function was made before the await, and resuming
     // a parked conversation writes a run row just below.
     if (heldBack(agent, itemId) || !getItem(db, itemId) || shelved(itemId) || !isAgentAvailable(agent)) return;
+    // And a runtime blocked while it loaded (EO-796), which keeps the
+    // reply exactly as the check before the await does.
+    if (waitsForRuntime(agent, itemId)) return;
 
     // And archived, which the check above this function's await cannot
     // answer for the time the build took (EO-186). This is the last
@@ -11870,7 +12127,7 @@ export function createRunSupervisor(
     stop,
     handleAgentWrite,
     device,
-    offerWork,
+    offerWork: (deviceId: string, capacity: number, blockedRuntimes?: readonly RuntimeId[]) => offerWork(deviceId, capacity, undefined, DEFAULT_JOB_RUNS_ON, blockedRuntimes),
     notifyStateChange,
     prewarmConversation,
     cancelRun,

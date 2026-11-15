@@ -374,6 +374,8 @@ describe("the dispatch preflight", () => {
     expect(result.reason).toContain("Agents → Runtimes");
     expect(result.reason).toContain("Implementer");
     expect(result.reason).toContain("/opt/eo/claude"); // which copy, since an agent can carry its own
+    // What the supervisor blocks the runtime on (EO-796), rather than refusing the item.
+    expect(result.signedOut).toEqual({ runtime: "claude", executablePath: "/opt/eo/claude" });
   });
 
   it("no longer tells anyone to run a CLI in a terminal", async () => {

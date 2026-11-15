@@ -12,7 +12,8 @@ import { createDemoProvider } from "./providers/demo.js";
 import { createClaudeProvider, type AttachedServerEnvironment, type ClaudeAgentConfig } from "./providers/claude.js";
 import { RUNTIMES } from "./runtimes/catalog.js";
 import { resolveRuntime } from "./runtimes/resolve.js";
-import { checkRuntimeAuth, runtimeAuth } from "./runtimes/auth.js";
+import { checkRuntimeAuth, runtimeAuth, type RuntimeAuthCheck } from "./runtimes/auth.js";
+import { onRuntimeSignedIn } from "./runtimes/signedIn.js";
 import { CLAUDE_SDK, resolvePackageSet } from "./runtimes/packages.js";
 import { hasApiKey, readApiKey, type ApiKeyStoreOptions } from "./runtimes/apiKey.js";
 import { attachmentEnvironment } from "./agentAttachments/serverEnvironment.js";
@@ -416,6 +417,8 @@ export function createEngine(options: EngineOptions, packs: readonly CodePack[] 
     // directly and therefore remain separate from this saved preference.
     initialPaused: isEnginePausePreferred(db),
     ...(options.onWake ? { onWake: options.onWake } : {}),
+    // A sign-in EO completed lifts a block on that runtime (EO-796).
+    onRuntimeSignedIn,
     ...(options.isOnline ? { isOnline: options.isOnline } : {}),
     ...(options.sleeps === undefined ? {} : { sleeps: options.sleeps }),
     ...(options.deviceId === undefined ? {} : { deviceId: options.deviceId }),
@@ -1198,7 +1201,7 @@ async function checkAgentAuth(
   db: Db,
   apiKeys?: ApiKeyStoreOptions,
   codexHomeRoots?: readonly string[],
-): Promise<{ ok: boolean; reason?: string }> {
+): Promise<RuntimeAuthCheck> {
   const executablePath = runtimePathFor(agent.provider, runtimeRoot, db, configuredExecutablePath(agent));
   const verdict = await checkRuntimeAuth({
     provider: agent.provider,

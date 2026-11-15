@@ -30,6 +30,7 @@ import {
   type SpecShape,
   type StepAct,
   type StepRefusal,
+  type RuntimeId,
   type Uuid,
 } from "@eo/core";
 import type { AttachmentStorage } from "../attachments/storage.js";
@@ -196,7 +197,7 @@ export interface EngineHandle {
    * the pick — same guards, same caps, same pack contributions — rather
    * than a second one assembled beside it.
    */
-  offerWork: (deviceId: string, capacity: number) => Promise<WorkOffer[]>;
+  offerWork: (deviceId: string, capacity: number, blockedRuntimes?: readonly RuntimeId[]) => Promise<WorkOffer[]>;
   /**
    * A person asking for a memory scope to be consolidated now, and whether
    * one is queued or running (EO-589): the consolidator is the

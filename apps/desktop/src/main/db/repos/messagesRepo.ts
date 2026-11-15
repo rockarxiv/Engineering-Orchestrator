@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray, isNotNull, isNull, lte, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNotNull, isNull, lte, sql } from "drizzle-orm";
 import {
   HANDLED_MESSAGE_RETENTION_MS,
   HANDLED_MESSAGES_KEPT_PER_PERSON,
@@ -112,6 +112,21 @@ export function markMessageHandled(
  */
 export function hasMessageAbout(db: Db, source: string, subject: string): boolean {
   return db.select({ id: messages.id }).from(messages).where(and(eq(messages.source, source), eq(messages.subject, subject))).get() !== undefined;
+}
+
+/**
+ * The open message of a source about one subject, if there is one
+ * (EO-796): what a sender asks so it says a thing once while it is still
+ * waiting on somebody, rather than once per occurrence.
+ */
+export function openMessageAbout(db: Db, source: string, subject: string): Message | undefined {
+  const row = db
+    .select()
+    .from(messages)
+    .where(and(eq(messages.source, source), eq(messages.subject, subject), isNull(messages.handledAt)))
+    .orderBy(asc(messages.createdAt), asc(messages.id))
+    .get();
+  return row ? toDomain(row) : undefined;
 }
 
 /**

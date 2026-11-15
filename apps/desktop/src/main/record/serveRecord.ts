@@ -25,6 +25,7 @@ import {
   type RecordItem,
   type Person,
   type StepRefusal,
+  type RuntimeId,
   type Uuid,
 } from "@eo/core";
 import type { Db } from "../db/client.js";
@@ -172,7 +173,7 @@ export interface ServeRecordContext {
    *
    * `runSupervisor.offerWork` is what the composition root passes.
    */
-  offerWork: (deviceId: string, capacity: number) => Promise<WorkOffer[]>;
+  offerWork: (deviceId: string, capacity: number, blockedRuntimes?: readonly RuntimeId[]) => Promise<WorkOffer[]>;
   /**
    * Where a file a device sends is kept, and read back from (EO-324,
    * `ARCHITECTURE.md`, "The record").
@@ -242,7 +243,9 @@ export async function serveWork(
   context: ServeRecordContext,
   payload: IpcPayload<"record:work">,
 ): Promise<IpcResponse<"record:work">> {
-  const offers = await context.offerWork(payload.deviceId, payload.capacity);
+  // Less what the asking device cannot run (EO-796): applied to the pick
+  // itself, so an item only a blocked runtime could take is not leased.
+  const offers = await context.offerWork(payload.deviceId, payload.capacity, payload.blockedRuntimes ?? []);
   return {
     offers: offers.map((offer) => ({
       itemId: offer.dispatch.item.id,
