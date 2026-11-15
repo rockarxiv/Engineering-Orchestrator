@@ -128,6 +128,12 @@ describe("the learning review's prompt on skills (EO-718)", () => {
     expect(prompt).toContain("EO refuses a change to what this review has not read");
   });
 
+  it("says to update a skill's description when a change widens what it covers, and to send several edits as one (EO-790)", () => {
+    expect(prompt).toContain("When a change widens or narrows what a skill covers, update its description");
+    expect(prompt).toContain("`mcp__eo__skill_patch`'s `description`");
+    expect(prompt).toContain("send them together as its `edits`, applied in order, so the change is one version");
+  });
+
   it("says not to create a skill for an item on no project, and that no skills are given where there are none", () => {
     const bare = learningReviewPrompt(SCOPES, { skills: [], canCreate: false });
     expect(bare).toContain("This run's agent is given no skills here yet.");

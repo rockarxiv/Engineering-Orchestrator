@@ -224,7 +224,9 @@ function skillsSection({ skills, canCreate }: LearningReviewSkills): string[] {
       ? `4. Only then create a new skill with \`${SKILL_CREATE}\`, named after the kind of task — never after a ticket, an error string or a date.`
       : "4. Do not create a skill: this run's item is on no project, and a new skill belongs to one.",
     "",
-    `Read a skill with \`${SKILL_VIEW}\` before you change it, and a file before you overwrite it with \`${SKILL_FILE_WRITE}\` or remove it with \`${SKILL_FILE_REMOVE}\`: EO refuses a change to what this review has not read. \`${SKILL_PATCH}\` replaces text the body holds exactly once.`,
+    `Read a skill with \`${SKILL_VIEW}\` before you change it, and a file before you overwrite it with \`${SKILL_FILE_WRITE}\` or remove it with \`${SKILL_FILE_REMOVE}\`: EO refuses a change to what this review has not read. \`${SKILL_PATCH}\` replaces text the body holds exactly once; to change several places, send them together as its \`edits\`, applied in order, so the change is one version.`,
+    "",
+    `A skill's description is all an agent reads when it chooses whether to load the skill. When a change widens or narrows what a skill covers, update its description to say so, with \`${SKILL_PATCH}\`'s \`description\`, in the same call as the change to the body.`,
     "",
     "State one lesson once: where a skill already says it, leave it. Where a skill says something wrong, fix that text in place rather than adding a correction beside it. Every change is kept as a version a person can see and restore, and a skill a person locked takes no change.",
   ];

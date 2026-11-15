@@ -1406,14 +1406,21 @@ describe("memory_note on the shared EO MCP service (EO-479)", () => {
         tool(5, SKILL_PATCH_TOOL_NAME, { slug: "csv-exports", old_text: "a", new_text: "b" }),
         tool(6, SKILL_FILE_WRITE_TOOL_NAME, { slug: "csv-exports", path: "references/a.md", content: "x" }),
         tool(7, SKILL_FILE_REMOVE_TOOL_NAME, { slug: "csv-exports", path: "references/a.md" }),
-        tool(8, SKILL_PATCH_TOOL_NAME, { slug: "csv-exports", old_text: "a" }),
+        tool(8, SKILL_PATCH_TOOL_NAME, { slug: "csv-exports", edits: [{ old_text: "a" }] }),
         tool(9, SKILL_VIEW_TOOL_NAME, { slug: "csv-exports", mentions: ["x"] }),
+        tool(10, SKILL_PATCH_TOOL_NAME, { slug: "csv-exports", edits: "a" }),
+        tool(11, SKILL_PATCH_TOOL_NAME, { slug: "csv-exports", edits: [{ old_text: "a", new_text: "b", extra: "c" }] }),
+        tool(12, SKILL_PATCH_TOOL_NAME, { slug: "csv-exports", description: 1 }),
+        // The description and several edits (EO-790): which combinations
+        // make a change is EO's to judge, so the shape alone reaches it.
+        tool(13, SKILL_PATCH_TOOL_NAME, { slug: "csv-exports", description: "When.", edits: [{ old_text: "a", new_text: "b" }, { old_text: "c", new_text: "" }] }),
       ];
       const served = await callServer(dbPath, [INITIALIZE, INITIALIZED, ...calls], false, environment([MEMORY_NOTE_TOOL_NAME, ...SKILL_WRITE_TOOLS]));
-      for (const id of [3, 4, 5, 6, 7]) expect(textOf(served, id), String(id)).toEqual({ isError: false, text: "done" });
-      for (const id of [8, 9]) expect(textOf(served, id), String(id)).toMatchObject({ isError: true, text: expect.stringContaining("INVALID_ARGUMENT") });
-      expect(asked.map((entry) => entry.request.tool)).toEqual([...SKILL_WRITE_TOOLS]);
+      for (const id of [3, 4, 5, 6, 7, 13]) expect(textOf(served, id), String(id)).toEqual({ isError: false, text: "done" });
+      for (const id of [8, 9, 10, 11, 12]) expect(textOf(served, id), String(id)).toMatchObject({ isError: true, text: expect.stringContaining("INVALID_ARGUMENT") });
+      expect(asked.map((entry) => entry.request.tool)).toEqual([...SKILL_WRITE_TOOLS, SKILL_PATCH_TOOL_NAME]);
       expect(asked[0]!.request.args).toEqual({ slug: "csv-exports", file: "references/a.md" });
+      expect(asked[5]!.request.args).toEqual({ slug: "csv-exports", description: "When.", edits: [{ old_text: "a", new_text: "b" }, { old_text: "c", new_text: "" }] });
 
       asked.length = 0;
       for (const writes of [undefined, [MEMORY_NOTE_TOOL_NAME] as Parameters<AgentWriteBridge["tokenFor"]>[1]]) {

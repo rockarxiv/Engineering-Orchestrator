@@ -615,16 +615,34 @@ const SKILL_TOOLS = [
     name: SKILL_PATCH_TOOL_NAME,
     annotations: REVISES_ANNOTATIONS,
     description:
-      "Change a skill's body: `old_text`, which the body holds exactly once, becomes `new_text`. Refused unless this review " +
-      "read the skill with skill_view first, and for a skill a person locked." + SKILL_TOOL_REFUSED,
+      "Change a skill's description, its body, or both, in one write. `description`, when given, becomes the skill's " +
+      "description: change it when a change widens or narrows what the skill covers, since it is what an agent reads to " +
+      "decide whether to load the skill. The body changes either by `old_text`, which the body holds exactly once, becoming " +
+      "`new_text`, or by `edits`, a list of such pairs applied in order, each matched against the body the edits before it " +
+      "left — not both. If any edit does not match exactly once, nothing is written. Refused unless this review read the " +
+      "skill with skill_view first, and for a skill a person locked." + SKILL_TOOL_REFUSED,
     inputSchema: {
       type: "object",
       properties: {
         slug: SKILL_SLUG_PROPERTY,
+        description: { type: "string", description: "What the skill's description becomes: when an agent should load it." },
         old_text: { type: "string", description: "Text the body holds exactly once, copied exactly." },
         new_text: { type: "string", description: "What it becomes. Empty removes it." },
+        edits: {
+          type: "array",
+          description: "Several changes to the body, applied in order, instead of `old_text` and `new_text`.",
+          items: {
+            type: "object",
+            properties: {
+              old_text: { type: "string", description: "Text the body, as the edits before this one left it, holds exactly once." },
+              new_text: { type: "string", description: "What it becomes. Empty removes it." },
+            },
+            required: ["old_text", "new_text"],
+            additionalProperties: false,
+          },
+        },
       },
-      required: ["slug", "old_text", "new_text"],
+      required: ["slug"],
       additionalProperties: false,
     },
   },
@@ -661,8 +679,37 @@ const SKILL_TOOLS = [
   },
 ];
 
-/** Each skill tool's arguments, by name: which it takes, and which of them it needs. */
-const SKILL_TOOL_ARGS = Object.fromEntries(SKILL_TOOLS.map((tool) => [tool.name, { keys: Object.keys(tool.inputSchema.properties), required: tool.inputSchema.required }]));
+/** Each skill tool's input schema, by name. */
+const SKILL_TOOL_SCHEMAS = Object.fromEntries(SKILL_TOOLS.map((tool) => [tool.name, tool.inputSchema]));
+
+/**
+ * Whether a value is the shape a skill tool's schema says: strings, arrays
+ * of them or of objects, and objects naming only their properties and
+ * every one they require.
+ */
+function fitsSchema(value, schema) {
+  switch (schema.type) {
+    case "string":
+      return typeof value === "string";
+    case "array":
+      return Array.isArray(value) && value.every((entry) => fitsSchema(entry, schema.items));
+    case "object":
+      return (
+        validObject(value) &&
+        hasOnlyKeys(value, Object.keys(schema.properties)) &&
+        Object.entries(schema.properties).every(([key, property]) => value[key] === undefined || fitsSchema(value[key], property)) &&
+        (schema.required ?? []).every((key) => value[key] !== undefined)
+      );
+    default:
+      return false;
+  }
+}
+
+/** How a refusal says what a skill tool takes. */
+const describeArgs = (schema) =>
+  Object.entries(schema.properties)
+    .map(([key, property]) => `\`${key}\`${property.type === "array" ? " (a list)" : ""}`)
+    .join(", ");
 
 /**
  * A skill tool: handed to EO, which answers it for the review this turn
@@ -671,13 +718,8 @@ const SKILL_TOOL_ARGS = Object.fromEntries(SKILL_TOOLS.map((tool) => [tool.name,
  * is the shape the tool advertises.
  */
 async function skillTool(name, args, writeBridge) {
-  const { keys, required } = SKILL_TOOL_ARGS[name];
-  const shaped =
-    validObject(args) &&
-    hasOnlyKeys(args, keys) &&
-    keys.every((key) => args[key] === undefined || typeof args[key] === "string") &&
-    required.every((key) => typeof args[key] === "string");
-  if (!shaped) return toolError("INVALID_ARGUMENT", `${name} takes ${keys.map((key) => `\`${key}\``).join(", ")} as strings, and nothing else.`);
+  const schema = SKILL_TOOL_SCHEMAS[name];
+  if (!fitsSchema(args, schema)) return toolError("INVALID_ARGUMENT", `${name} takes ${describeArgs(schema)}, as strings except where it says otherwise, and nothing else.`);
   return writeThroughEo(writeBridge, name, args);
 }
 

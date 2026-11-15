@@ -684,6 +684,157 @@ describe("the learning review after a run", () => {
       expect(reviewEvents()).toEqual([expect.objectContaining({ outcome: "nothing_to_save", skillIds: [] })]);
     });
 
+    /** A `skill_patch` call with whatever arguments it is given (EO-790). */
+    const patchWith = (args: Record<string, unknown>): AgentWriteRequest => ({ tool: SKILL_PATCH_TOOL_NAME, args: { slug: "csv-exports", ...args } });
+    /** The versions the reviewed run wrote of a skill. */
+    const runVersions = (skillId: string) => listSkillVersions(handle.db, skillId).filter((version) => version.author.kind === "run");
+
+    it("changes only a skill's description, in one version authored by the run (EO-790)", async () => {
+      const skill = personSkill();
+      const { provider, answers } = reviewing({ result: RESULT }, { writes: [view("csv-exports"), patchWith({ description: "Use when adding or changing a CSV export or import." })] });
+
+      await supervisorOver(provider).runOnce();
+
+      expect(answers[1]).toEqual(expect.objectContaining({ ok: true, text: expect.stringContaining("EO patched the skill `csv-exports`'s description.") }));
+      expect(getSkill(handle.db, skill.id)).toEqual(expect.objectContaining({ description: "Use when adding or changing a CSV export or import.", body: skill.body, files: skill.files }));
+      const versions = runVersions(skill.id);
+      expect(versions).toHaveLength(1);
+      expect(versions[0]).toEqual(expect.objectContaining({ author: { kind: "run", runId: onlyRun().id }, description: "Use when adding or changing a CSV export or import.", body: skill.body }));
+    });
+
+    it("applies several edits in order, each matched against the body the ones before it left, with the description, as one version (EO-790)", async () => {
+      const skill = personSkill();
+      const { provider, answers } = reviewing(
+        { result: RESULT },
+        {
+          writes: [
+            view("csv-exports"),
+            patchWith({
+              description: "Use when adding a CSV export or import.",
+              edits: [
+                { old_text: "Quote every field.", new_text: "1. Quote every field.\n2. Read the header row first." },
+                // Only in the body the first edit left.
+                { old_text: "2. Read the header row first.\nWrite a header row.", new_text: "2. Read the header row first.\n3. Write a header row." },
+              ],
+            }),
+          ],
+        },
+      );
+
+      await supervisorOver(provider).runOnce();
+
+      expect(answers[1]).toEqual(expect.objectContaining({ ok: true, text: expect.stringContaining("EO patched the skill `csv-exports`'s description and body.") }));
+      const now = getSkill(handle.db, skill.id)!;
+      expect(now.body).toBe("1. Quote every field.\n2. Read the header row first.\n3. Write a header row.");
+      expect(now.description).toBe("Use when adding a CSV export or import.");
+      const versions = runVersions(skill.id);
+      expect(versions).toHaveLength(1);
+      expect(versions[0]).toEqual(expect.objectContaining({ description: now.description, body: now.body }));
+    });
+
+    it("writes nothing when any edit does not match exactly once, naming the edit and whether it matched none or several (EO-790)", async () => {
+      const skill = personSkill();
+      const first = { old_text: "Quote every field.", new_text: "Quote every field. Write a header row." };
+      const { provider, answers } = reviewing(
+        { result: RESULT },
+        {
+          writes: [
+            view("csv-exports"),
+            patchWith({ description: "Changed.", edits: [first, { old_text: "Never there.", new_text: "x" }] }),
+            // The first edit leaves "Write a header row." twice.
+            patchWith({ description: "Changed.", edits: [first, { old_text: "Write a header row.", new_text: "x" }] }),
+            patchWith({ edits: [{ old_text: "Never there.", new_text: "x" }] }),
+          ],
+        },
+      );
+
+      await supervisorOver(provider).runOnce();
+
+      expect(answers.slice(1)).toEqual([
+        { ok: false, code: "PATCH_NOT_FOUND", problem: "The skill `csv-exports`'s body, as the edits before it left it, does not hold the `old_text` of `edits[1]`, so nothing was written. Copy it from the body exactly." },
+        { ok: false, code: "PATCH_NOT_FOUND", problem: "The skill `csv-exports`'s body, as the edits before it left it, holds the `old_text` of `edits[1]` 2 times, so nothing was written. Give enough of it to name one place." },
+        { ok: false, code: "PATCH_NOT_FOUND", problem: "The skill `csv-exports`'s body does not hold the `old_text` of `edits[0]`, so nothing was written. Copy it from the body exactly." },
+      ]);
+      expect(getSkill(handle.db, skill.id)).toEqual(expect.objectContaining({ description: skill.description, body: skill.body }));
+      expect(runVersions(skill.id)).toEqual([]);
+    });
+
+    it("takes the single old_text and new_text as it always has (EO-790)", async () => {
+      const skill = personSkill();
+      const { provider, answers } = reviewing(
+        { result: RESULT },
+        {
+          writes: [
+            view("csv-exports"),
+            patch("csv-exports", "Never there.", "x"),
+            patch("csv-exports", "e", "x"),
+            patch("csv-exports", "Write a header row.", "Write one header row."),
+          ],
+        },
+      );
+
+      await supervisorOver(provider).runOnce();
+
+      expect(answers.slice(1)).toEqual([
+        { ok: false, code: "PATCH_NOT_FOUND", problem: "The skill `csv-exports`'s body does not hold that `old_text`, so nothing was written. Copy it from the body exactly." },
+        { ok: false, code: "PATCH_NOT_FOUND", problem: expect.stringMatching(/^The skill `csv-exports`'s body holds that `old_text` \d+ times, so nothing was written\./) },
+        {
+          ok: true,
+          text: "EO patched the skill `csv-exports`'s body. A person can see the change in its history and restore what it said before.",
+          data: { skillId: skill.id, slug: "csv-exports" },
+        },
+      ]);
+      expect(getSkill(handle.db, skill.id)).toEqual(expect.objectContaining({ description: skill.description, body: "Quote every field.\nWrite one header row." }));
+      expect(runVersions(skill.id)).toHaveLength(1);
+    });
+
+    it("refuses a description change to a skill a person locked, and to one the review has not read (EO-790)", async () => {
+      const locked = personSkill();
+      setSkillLocked(handle.db, locked.id, true);
+      const unread = personSkill("tsv-exports");
+      const { provider, answers } = reviewing(
+        { result: RESULT },
+        {
+          writes: [
+            view("csv-exports"),
+            patchWith({ description: "Over it." }),
+            { tool: SKILL_PATCH_TOOL_NAME, args: { slug: "tsv-exports", description: "Unread." } },
+          ],
+        },
+      );
+
+      await supervisorOver(provider).runOnce();
+
+      expect(answers[1]).toEqual({ ok: false, code: "SKILL_LOCKED", problem: SKILL_LOCKED_PROBLEM });
+      expect(answers[2]).toEqual({ ok: false, code: "SKILL_NOT_READ", problem: expect.stringContaining("has not read the skill `tsv-exports`") });
+      expect(getSkill(handle.db, locked.id)!.description).toBe(locked.description);
+      expect(getSkill(handle.db, unread.id)!.description).toBe(unread.description);
+      expect(runVersions(locked.id)).toEqual([]);
+      expect(runVersions(unread.id)).toEqual([]);
+    });
+
+    it("refuses edits sent with old_text and new_text, a call naming no change, and a half pair, writing nothing (EO-790)", async () => {
+      const skill = personSkill();
+      const { provider, answers } = reviewing(
+        { result: RESULT },
+        {
+          writes: [
+            view("csv-exports"),
+            patchWith({ old_text: "Quote every field.", new_text: "x", edits: [{ old_text: "Write a header row.", new_text: "y" }] }),
+            patchWith({}),
+            patchWith({ old_text: "Quote every field." }),
+            patchWith({ edits: [] }),
+          ],
+        },
+      );
+
+      await supervisorOver(provider).runOnce();
+
+      for (const answer of answers.slice(1)) expect(answer).toEqual({ ok: false, code: "INVALID_ARGUMENT", problem: expect.stringContaining("nothing was written") });
+      expect(getSkill(handle.db, skill.id)).toEqual(expect.objectContaining({ description: skill.description, body: skill.body }));
+      expect(runVersions(skill.id)).toEqual([]);
+    });
+
     it("creates a skill as the agent's, scoped to the item's project and given to the reviewed run's agent, versioned as the run", async () => {
       const { provider, answers } = reviewing(
         { result: RESULT },

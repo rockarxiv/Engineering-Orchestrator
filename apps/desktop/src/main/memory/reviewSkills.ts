@@ -28,7 +28,7 @@ import { sectionLockFor } from "../managed/locks.js";
 
 /**
  * The learning review's skill tools (EO-718, after Nous Research's Hermes
- * Agent): read a skill, create one, patch its body, write or remove one
+ * Agent): read a skill, create one, patch its description and body, write or remove one
  * of its files. Answered here for the review the supervisor is running —
  * `reviewWrite` in `runSupervisor.ts` routes them — and served to no
  * other turn of any agent.
@@ -40,7 +40,7 @@ import { sectionLockFor } from "../managed/locks.js";
  * agent, or meant for another project, is not this run's to judge.
  *
  * **Read before write.** A patch, an overwrite of a file and a removal are
- * refused unless this same review read what they change — the body, or
+ * refused unless this same review read what they change — the skill, or
  * that file — with `skill_view`. A review that changes text it never saw
  * writes over a person's words on a guess. A new file needs no read: there
  * is nothing there to overwrite. What the review wrote itself it has seen.
@@ -191,24 +191,41 @@ function create(db: Db, state: ReviewSkillState, args: unknown, now: number): Ag
 
 function patch(db: Db, state: ReviewSkillState, args: unknown, now: number): AgentWriteAnswer {
   const parsed = SkillPatchArgsSchema.safeParse(args);
-  if (!parsed.success) return refused("INVALID_ARGUMENT", `${SKILL_PATCH_TOOL_NAME} takes \`slug\`, \`old_text\` (text the body holds exactly once) and \`new_text\`, and nothing else.`);
+  if (!parsed.success) {
+    return refused(
+      "INVALID_ARGUMENT",
+      `${SKILL_PATCH_TOOL_NAME} takes \`slug\` and at least one change: \`description\`, what the skill's description becomes; and, for the body, either \`old_text\` (text the body holds exactly once) with \`new_text\`, or \`edits\`, a list of \`{old_text, new_text}\` applied in order — not both. It takes nothing else, and nothing was written.`,
+    );
+  }
   const found = reviewable(db, state, parsed.data.slug);
   if (!found.ok) return found.answer;
   const { skill } = found;
   const blocked = writeRefusal(db, skill);
   if (blocked !== null) return blocked;
   if (!state.read.has(skill.id)) return notRead(skill.slug, null);
-  const { old_text: before, new_text: after } = parsed.data;
-  const count = skill.body.split(before).length - 1;
-  if (count !== 1) {
-    return refused(
-      "PATCH_NOT_FOUND",
-      count === 0
-        ? `The skill \`${skill.slug}\`'s body does not hold that \`old_text\`, so nothing was written. Copy it from the body exactly.`
-        : `The skill \`${skill.slug}\`'s body holds that \`old_text\` ${String(count)} times, so nothing was written. Give enough of it to name one place.`,
-    );
+  const { description, old_text, new_text, edits } = parsed.data;
+  const single = old_text !== undefined && new_text !== undefined;
+  const replacements = edits ?? (single ? [{ old_text, new_text }] : []);
+  // Each edit is matched against the body the edits before it left, and
+  // one that misses refuses them all: a half-applied list is a body nobody
+  // wrote.
+  let body = skill.body;
+  for (const [index, edit] of replacements.entries()) {
+    const count = body.split(edit.old_text).length - 1;
+    if (count !== 1) {
+      const which = edits === undefined ? "that `old_text`" : `the \`old_text\` of \`edits[${String(index)}]\``;
+      const after = edits === undefined || index === 0 ? "" : ", as the edits before it left it,";
+      return refused(
+        "PATCH_NOT_FOUND",
+        count === 0
+          ? `The skill \`${skill.slug}\`'s body${after} does not hold ${which}, so nothing was written. Copy it from the body exactly.`
+          : `The skill \`${skill.slug}\`'s body${after} holds ${which} ${String(count)} times, so nothing was written. Give enough of it to name one place.`,
+      );
+    }
+    body = body.replace(edit.old_text, () => edit.new_text);
   }
-  return save(db, state, skill, { body: skill.body.replace(before, () => after) }, now, `EO patched the skill \`${skill.slug}\`'s body.`);
+  const changed = [description === undefined ? null : "description", replacements.length === 0 ? null : "body"].filter((part) => part !== null).join(" and ");
+  return save(db, state, skill, { body, ...(description === undefined ? {} : { description }) }, now, `EO patched the skill \`${skill.slug}\`'s ${changed}.`);
 }
 
 function writeFile(db: Db, state: ReviewSkillState, args: unknown, now: number): AgentWriteAnswer {
@@ -242,11 +259,11 @@ function removeFile(db: Db, state: ReviewSkillState, args: unknown, now: number)
   return save(db, state, skill, { files: skill.files.filter((file) => file.path !== path) }, now, `EO removed \`${path}\` from the skill \`${skill.slug}\`.`);
 }
 
-/** One edit, through `saveSkill` with the run as author: everything it does not name stays as it is. */
-function save(db: Db, state: ReviewSkillState, skill: Skill, change: { body?: string; files?: SkillFile[] }, now: number, said: string): AgentWriteAnswer {
+/** One edit, through `saveSkill` with the run as author: one version, and everything it does not name stays as it is. */
+function save(db: Db, state: ReviewSkillState, skill: Skill, change: { description?: string; body?: string; files?: SkillFile[] }, now: number, said: string): AgentWriteAnswer {
   const saved = saveSkill(
     db,
-    { id: skill.id, slug: null, name: skill.name, description: skill.description, body: change.body ?? skill.body, files: change.files ?? skill.files },
+    { id: skill.id, slug: null, name: skill.name, description: change.description ?? skill.description, body: change.body ?? skill.body, files: change.files ?? skill.files },
     now,
     runAuthor(state),
   );
