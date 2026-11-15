@@ -1205,6 +1205,13 @@
       "when": 1798560000000,
       "tag": "0171_item_dep_wait",
       "breakpoints": true
+    },
+    {
+      "idx": 172,
+      "version": "6",
+      "when": 1798646400000,
+      "tag": "0172_learning_review_index",
+      "breakpoints": true
     }
   ]
 }

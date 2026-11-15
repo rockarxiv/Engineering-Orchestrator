@@ -87,6 +87,21 @@ export function listMemories(db: Db, scope: MemoryScope, options: { includeRetir
 }
 
 /**
+ * The notes quiet chats' reviews committed on this device and no entry
+ * here has yet (EO-788, `LearningReviewEventSchema.notes`), each with the
+ * run it reviewed, in the order committed: what is still to be written.
+ * Only this device's events, whose `device_id` is null — another device's
+ * review is that device's to write. The payload as stored, unparsed.
+ */
+export function unwrittenReviewNotes(db: Db): { runId: Uuid; note: unknown }[] {
+  return db
+    .all<{ runId: string; note: string }>(
+      sql`SELECT e.run_id AS runId, n.value AS note FROM run_events e, json_each(e.payload, '$.notes') n WHERE e.type = 'learning_review' AND e.device_id IS NULL AND json_extract(n.value, '$.id') NOT IN (SELECT id FROM memories) ORDER BY e.run_id, e.seq, n.key`,
+    )
+    .map((row) => ({ runId: row.runId as Uuid, note: JSON.parse(row.note) as unknown }));
+}
+
+/**
  * The active entries of several scopes at once, newest first — what a
  * dispatch's candidates are read from. Retired entries are never among
  * them.
@@ -221,6 +236,8 @@ export function addMemory(db: Db, input: AddMemoryInput): MemoryWriteResult {
   const body = input.body.trim();
   if (body === "") return { ok: false, problem: "A memory entry needs something to say." };
   if (!scopeExists(db, input.scope, input.projectId)) return { ok: false, problem: `No ${input.scope.kind} has the id "${input.scope.id}".` };
+  // An id the caller chose (EO-788) is never one an entry already has.
+  if (input.id !== undefined && getMemory(db, input.id) !== undefined) return { ok: false, problem: `A memory entry already has the id "${input.id}", so nothing was written.` };
   const at = input.now ?? Date.now();
   const row: Row = {
     id: input.id ?? (uuidv7() as Uuid),

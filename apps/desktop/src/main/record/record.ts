@@ -509,7 +509,8 @@ export interface MemoryCaps {
  *   superseded in the same transaction, each held to being an active
  *   entry an agent wrote in one of `scopes` — the scopes the run works in;
  *   none where absent, so a note naming an entry with no scopes given is
- *   refused.
+ *   refused. `id`, where given, is the id it is written under, and a note
+ *   whose id an entry already has is refused (EO-788).
  * - `add`, `edit`, `retire`, `restore` — a person's, as the `memory:*`
  *   channels take them.
  */
@@ -524,6 +525,8 @@ export type MemoryWriteRequest =
       replaces?: readonly string[];
       scopes?: readonly MemoryScope[];
       now?: number;
+      /** The id to write it under, where the caller chose one (EO-788): a quiet chat's review's, named in its `learning_review` event first. */
+      id?: string;
     }
   | { op: "add"; scope: MemoryScope; body: string }
   | { op: "edit"; id: string; body: string }

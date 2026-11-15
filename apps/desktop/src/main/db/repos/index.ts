@@ -146,6 +146,7 @@ export {
   listRunEvents,
   listRunEventsAfter,
   listRunEventsFrom,
+  runEventDevices,
   type RunActivityCount,
 } from "./runEventsRepo.js";
 export {
@@ -161,6 +162,7 @@ export {
 } from "./recordCommandsRepo.js";
 export {
   activeMemoriesIn,
+  unwrittenReviewNotes,
   addMemory,
   containerScopeProjectId,
   countActiveMemories,
@@ -237,6 +239,8 @@ export {
   listRunsFailedSince,
   listRunsForItem,
   latestRunForItem,
+  listNewestRunPerItem,
+  newestRunWithEvent,
   markRunSynced,
   personCostCentsSince,
   runsNeedingSync,

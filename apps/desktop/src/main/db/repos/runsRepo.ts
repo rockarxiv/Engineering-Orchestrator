@@ -405,6 +405,36 @@ export function activeRunForItem(db: Db, itemId: Uuid): Run | undefined {
   return row === undefined ? undefined : toDomain(row);
 }
 
+/**
+ * The newest run of an action on each item that has one (EO-788), as
+ * `{ itemId, runId }`: which assistant chats have said anything, and the
+ * last thing each said, without reading their runs.
+ */
+export function listNewestRunPerItem(db: Db, action: string): { itemId: Uuid; runId: Uuid }[] {
+  return db
+    .select({ itemId: runs.itemId, runId: sql<string>`max(${runs.id})` })
+    .from(runs)
+    .where(eq(runs.action, action))
+    .groupBy(runs.itemId)
+    .all()
+    .map((row) => ({ itemId: row.itemId as Uuid, runId: row.runId as Uuid }));
+}
+
+/**
+ * The newest of an item's runs carrying an event of this type (EO-788),
+ * by id, or null where none does. Ids are UUIDv7, so newest is creation
+ * order: for `learning_review` it is how far the item's runs have been
+ * reviewed.
+ */
+export function newestRunWithEvent(db: Db, itemId: Uuid, eventType: string): Uuid | null {
+  const row = db
+    .select({ runId: sql<string | null>`max(${runEvents.runId})` })
+    .from(runEvents)
+    .where(and(eq(runEvents.type, eventType), inArray(runEvents.runId, db.select({ id: runs.id }).from(runs).where(eq(runs.itemId, itemId)))))
+    .get();
+  return (row?.runId ?? null) as Uuid | null;
+}
+
 export function listActiveRuns(db: Db): Run[] {
   return db.select().from(runs).where(inArray(runs.status, ["queued", "running"])).all().map(toDomain);
 }

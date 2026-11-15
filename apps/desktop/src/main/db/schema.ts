@@ -2265,7 +2265,9 @@ export const runEvents = sqliteTable(
     // counted from; `idx_run_events_skills_settled` (EO-720, migration
     // 0162) the runs that have finished with what they were given. `idx_run_events_model` (EO-541,
     // migration 0133) is partial too: the `thread_started` and `usage`
-    // rows a run's model is read from.
+    // rows a run's model is read from. `idx_run_events_learning_review`
+    // (EO-788, migration 0172) is the `learning_review` rows by run: the
+    // notes a quiet chat's review committed are looked for there.
   ],
 );
 

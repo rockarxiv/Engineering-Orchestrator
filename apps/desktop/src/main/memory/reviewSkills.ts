@@ -1,6 +1,7 @@
 import {
   DEFAULT_SKILL_MAX_BODY_CHARS,
   eoToolName,
+  GLOBAL_SKILL_SCOPE,
   SKILL_CREATE_TOOL_NAME,
   SKILL_FILE_REMOVE_TOOL_NAME,
   SKILL_FILE_WRITE_TOOL_NAME,
@@ -13,6 +14,8 @@ import {
   SkillPatchArgsSchema,
   SkillViewArgsSchema,
   skillBodyOverLimit,
+  readSkillDraft,
+  uuidv7,
   type AgentWriteAnswer,
   type Skill,
   type SkillAuthor,
@@ -24,7 +27,7 @@ import {
 import { deliverableSkills } from "../agentAttachments/worktreeSkills.js";
 import type { Db } from "../db/client.js";
 import { resolveAgentAttachmentsForRun, setAgentAttachment } from "../db/repos/agentAttachmentsRepo.js";
-import { getSkillBySlug, saveSkill } from "../db/repos/skillsRepo.js";
+import { getSkill, getSkillBySlug, saveSkill } from "../db/repos/skillsRepo.js";
 import { emitPush } from "../ipc/push.js";
 import { sectionLockFor } from "../managed/locks.js";
 
@@ -61,7 +64,27 @@ import { sectionLockFor } from "../managed/locks.js";
  * Every write goes through `saveSkill` with the run as its author, so each
  * is one `skill_versions` row naming the run, and a skill the review
  * creates is `created_by = 'agent'`.
+ *
+ * **A review of a quiet chat holds its writes** (EO-788): what it creates
+ * or changes is kept in `held`, read back to it as written, and saved only
+ * when it ends (`commitHeldSkillWrites`) — so a person carrying on the chat
+ * meanwhile cancels it with nothing of it kept, and no skill the chat's
+ * agent is given changes while the chat is active.
  */
+
+/** What a review of a quiet chat has written and not yet saved (EO-788). */
+export interface HeldSkillWrites {
+  /** The skills it changed, by id, as it changed them. */
+  edited: Map<string, Skill>;
+  /**
+   * Each skill it changed as it stood when the review first changed it:
+   * what is saved over it only where it still stands so, so an edit a
+   * person made meanwhile is never written over.
+   */
+  bases: Map<string, Skill>;
+  /** The skills it created, in order, each under an id of its own until saved. */
+  created: Skill[];
+}
 
 /** One review's reach and what it has read. Held by the supervisor for the span of the review. */
 export interface ReviewSkillState {
@@ -73,17 +96,73 @@ export interface ReviewSkillState {
   scope: SkillRunScope;
   /** What this review has read: a skill's id for its body, `<id>/<path>` for a file. */
   read: Set<string>;
-  /** The skills it wrote, each once, in the order first written. */
+  /** The skills it wrote, each once, in the order first written. A review that holds its writes fills this when they are saved. */
   written: string[];
+  /** Its writes, where it holds them until it ends (EO-788); null where each is saved as it is made. */
+  held: HeldSkillWrites | null;
 }
 
-export function reviewSkillState(input: { runId: string; agentId: string; scope: SkillRunScope }): ReviewSkillState {
-  return { ...input, read: new Set(), written: [] };
+export function reviewSkillState(input: { runId: string; agentId: string; scope: SkillRunScope; hold?: boolean }): ReviewSkillState {
+  const { hold, ...rest } = input;
+  return { ...rest, read: new Set(), written: [], held: hold === true ? { edited: new Map(), bases: new Map(), created: [] } : null };
 }
 
-/** The skills this review may read and change, by slug. */
-export function reviewableSkills(db: Db, state: Pick<ReviewSkillState, "agentId" | "scope">): Skill[] {
-  return deliverableSkills(resolveAgentAttachmentsForRun(db, state.agentId, state.scope).skills);
+/** The skills this review may read and change, by slug: as it has changed them, where it holds its writes. */
+export function reviewableSkills(db: Db, state: Pick<ReviewSkillState, "agentId" | "scope"> & { held?: HeldSkillWrites | null }): Skill[] {
+  const skills = deliverableSkills(resolveAgentAttachmentsForRun(db, state.agentId, state.scope).skills);
+  const held = state.held;
+  if (held === undefined || held === null) return skills;
+  return [...skills.map((skill) => held.edited.get(skill.id) ?? skill), ...held.created];
+}
+
+/**
+ * Saves what a review held (EO-788), each skill once as the review left
+ * it, with the run as author: a skill it created, given to the run's
+ * agent, and each it changed. What can no longer be saved — a person
+ * locked it meanwhile, or took the slug, or a skill it changed was
+ * changed by anybody else after the review first changed it — is said in
+ * the problems and not saved: a review's edit is of the skill it read,
+ * and saving it over a newer one would undo that one. Fills `written` with what was.
+ */
+export function commitHeldSkillWrites(db: Db, state: ReviewSkillState, now: number = Date.now()): { written: string[]; problems: string[] } {
+  const held = state.held;
+  const problems: string[] = [];
+  if (held === null) return { written: [...state.written], problems };
+  for (const skill of held.created) {
+    const blocked = writeRefusal(db, null);
+    if (blocked !== null && !blocked.ok) {
+      problems.push(`\`${skill.slug}\` was not created: ${blocked.problem}`);
+      continue;
+    }
+    const draft: SkillDraft = { slug: skill.slug, name: skill.name, description: skill.description, body: skill.body, files: skill.files, scope: skill.scope };
+    const saved = saveSkill(db, draft, now, runAuthor(state));
+    if (!saved.ok) {
+      problems.push(`\`${skill.slug}\` was not created: ${saved.problems.join(" ")}`);
+      continue;
+    }
+    const attached = setAgentAttachment(db, { agentId: state.agentId, kind: "skill", id: saved.skill.id, attached: true }, now);
+    if (!attached.ok) problems.push(`\`${skill.slug}\` was created and not given to the run's agent: ${attached.problem}`);
+    if (!state.written.includes(saved.skill.id)) state.written.push(saved.skill.id);
+  }
+  for (const skill of held.edited.values()) {
+    const base = held.bases.get(skill.id);
+    const current = getSkill(db, skill.id);
+    if (base !== undefined && current !== undefined && !sameContent(base, current)) {
+      problems.push(`\`${skill.slug}\` was not changed: it was changed by somebody else after this review read it, and what this review wrote would have undone that.`);
+      continue;
+    }
+    const saved = saveSkill(db, { id: skill.id, slug: null, name: skill.name, description: skill.description, body: skill.body, files: skill.files }, now, runAuthor(state));
+    if (!saved.ok) {
+      problems.push(`\`${skill.slug}\` was not changed: ${saved.problems.join(" ")}`);
+      continue;
+    }
+    if (!state.written.includes(saved.skill.id)) state.written.push(saved.skill.id);
+  }
+  held.created = [];
+  held.edited.clear();
+  held.bases.clear();
+  if (state.written.length > 0) emitPush("config:changed", {});
+  return { written: [...state.written], problems };
 }
 
 const VIEW = eoToolName(SKILL_VIEW_TOOL_NAME);
@@ -195,7 +274,7 @@ function create(db: Db, state: ReviewSkillState, args: unknown, now: number, max
   // A slug already taken is never written over: a locked one says so, a
   // skill this review may read is to be patched, and anything else is
   // another skill's name.
-  const taken = getSkillBySlug(db, slug);
+  const taken = getSkillBySlug(db, slug) ?? state.held?.created.find((skill) => skill.slug === slug);
   if (taken !== undefined) {
     if (taken.locked) return refused("SKILL_LOCKED", SKILL_LOCKED_PROBLEM);
     const mine = reviewableSkills(db, state).some((skill) => skill.id === taken.id);
@@ -213,6 +292,7 @@ function create(db: Db, state: ReviewSkillState, args: unknown, now: number, max
   const long = tooLong(slug, body, null, maxBodyChars);
   if (long !== null) return long;
   const draft: SkillDraft = { slug, name: slug, description, body, files: [], scope: { kind: "project", projectId } };
+  if (state.held !== null) return holdCreated(state, draft, now);
   const saved = saveSkill(db, draft, now, runAuthor(state));
   if (!saved.ok) return refused("SKILL_REFUSED", `Nothing was created. ${saved.problems.join(" ")}`);
   const attached = setAgentAttachment(db, { agentId: state.agentId, kind: "skill", id: saved.skill.id, attached: true }, now);
@@ -300,8 +380,9 @@ function removeFile(db: Db, state: ReviewSkillState, args: unknown, now: number)
   return save(db, state, skill, { files: skill.files.filter((file) => file.path !== path) }, now, `EO removed \`${path}\` from the skill \`${skill.slug}\`.`);
 }
 
-/** One edit, through `saveSkill` with the run as author: one version, and everything it does not name stays as it is. */
+/** One edit, through `saveSkill` with the run as author: one version, and everything it does not name stays as it is. Held instead, where the review holds its writes. */
 function save(db: Db, state: ReviewSkillState, skill: Skill, change: { description?: string; body?: string; files?: SkillFile[] }, now: number, said: string): AgentWriteAnswer {
+  if (state.held !== null) return holdEdit(state, skill, change, now, said);
   const saved = saveSkill(
     db,
     { id: skill.id, slug: null, name: skill.name, description: change.description ?? skill.description, body: change.body ?? skill.body, files: change.files ?? skill.files },
@@ -311,6 +392,63 @@ function save(db: Db, state: ReviewSkillState, skill: Skill, change: { descripti
   if (!saved.ok) return refused("SKILL_REFUSED", `Nothing was written. ${saved.problems.join(" ")}`);
   wrote(state, saved.skill);
   return { ok: true, text: `${said} A person can see the change in its history and restore what it said before.`, data: { skillId: saved.skill.id, slug: saved.skill.slug } };
+}
+
+/** A skill a quiet chat's review created, held as it will be saved, once it is held to the rules a save would hold it to. */
+function holdCreated(state: ReviewSkillState, draft: SkillDraft, now: number): AgentWriteAnswer {
+  const held = state.held!;
+  const read = readSkillDraft(draft);
+  if (!read.ok) return refused("SKILL_REFUSED", `Nothing was created. ${read.problems.join(" ")}`);
+  const skill: Skill = {
+    id: uuidv7(),
+    slug: read.slug ?? read.name,
+    name: read.name,
+    description: read.description,
+    body: read.body,
+    files: read.files,
+    disableModelInvocation: false,
+    enabled: true,
+    scope: draft.scope ?? GLOBAL_SKILL_SCOPE,
+    createdAt: now,
+    updatedAt: now,
+    archivedAt: null,
+    createdBy: "agent",
+    locked: false,
+  };
+  held.created.push(skill);
+  state.read.add(skill.id);
+  return {
+    ok: true,
+    text: `EO will create the skill \`${skill.slug}\` for this project, and give it to this run's agent, when this review ends. Its later runs on this project are offered it from then on.`,
+    data: { skillId: skill.id, slug: skill.slug },
+  };
+}
+
+/** One edit of a quiet chat's review, held over what it held before (EO-788). */
+function holdEdit(state: ReviewSkillState, skill: Skill, change: { description?: string; body?: string; files?: SkillFile[] }, now: number, said: string): AgentWriteAnswer {
+  const held = state.held!;
+  const next: Skill = { ...skill, description: change.description ?? skill.description, body: change.body ?? skill.body, files: change.files ?? skill.files, updatedAt: now };
+  const read = readSkillDraft({ id: next.id, slug: null, name: next.name, description: next.description, body: next.body, files: next.files });
+  if (!read.ok) return refused("SKILL_REFUSED", `Nothing was written. ${read.problems.join(" ")}`);
+  const created = held.created.findIndex((candidate) => candidate.id === skill.id);
+  if (created >= 0) held.created[created] = next;
+  else {
+    if (!held.bases.has(skill.id)) held.bases.set(skill.id, skill);
+    held.edited.set(skill.id, next);
+  }
+  state.read.add(skill.id);
+  return { ok: true, text: `${said} It is saved when this review ends, and a person can then see the change in its history and restore what it said before.`, data: { skillId: next.id, slug: next.slug } };
+}
+
+/** Whether two versions of a skill say the same: what a save writes, and whether it is archived. */
+function sameContent(a: Skill, b: Skill): boolean {
+  return (
+    a.name === b.name &&
+    a.description === b.description &&
+    a.body === b.body &&
+    a.archivedAt === b.archivedAt &&
+    JSON.stringify(a.files) === JSON.stringify(b.files)
+  );
 }
 
 function runAuthor(state: ReviewSkillState): SkillAuthor {
