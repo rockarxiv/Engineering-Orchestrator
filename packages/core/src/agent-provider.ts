@@ -952,6 +952,21 @@ export type AgentEvent =
       fatal?: false;
       /** The turn was stopped because it reached the budget it was given (`budgetCents`), not because anything went wrong. */
       budget?: true;
+      /**
+       * The backend refused the turn because its sign-in is no good
+       * (EO-797): an expired or revoked token, a key the API refuses, no
+       * credential at all. Set by the adapter that knows its backend's
+       * own word for it — Claude's `authentication_failed`, Codex's
+       * `unauthorized` or a 401 — so the supervisor never reads English.
+       *
+       * What it changes is whose problem the stop is. Not the agent's,
+       * so not an attempt and not retried; not the item's, so the
+       * runtime is blocked on this device until somebody signs it in,
+       * as a pre-dispatch `signed_out` blocks it (EO-796). Only on a
+       * fatal error: a sign-in failure the backend is retrying past has
+       * not ended anything.
+       */
+      signIn?: true;
     };
 
 /**

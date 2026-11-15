@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { answersTurn, buildSideCallOptions, createClaudeProvider, mapSdkMessage, normaliseToolName, stripSchemaDialect, type SearchNudge } from "./claude.js";
 import { writeToolDirectory } from "../agentAttachments/pluginDirectory.js";
 import { capturingProvider } from "./sentCapture.js";
+import { CLAUDE_AUTH_ERRORS } from "../testing/authErrorFixtures.js";
 
 /** No settings files at all, so a test does not read the developer's own (EO-599). */
 const NO_SETTINGS = { readText: () => null, listDir: () => [] };
@@ -412,6 +413,12 @@ describe("mapSdkMessage", () => {
 
     expect(mapped[0]?.type).toBe("usage"); // the money was spent either way
     expect(mapped.at(-1)).toMatchObject({ type: "error", retryable: true });
+  });
+
+  it("maps an API error the CLI gave up on to an ordinary failure, not to an answer", () => {
+    const { mapped } = mapSdkMessage(result({ is_error: true, result: "API Error: 400 bad request" }));
+
+    expect(mapped.at(-1)).toEqual({ type: "error", message: "Claude run ended with an API error: API Error: 400 bad request", retryable: true });
   });
 
   it("ignores streaming partials rather than persisting a copy of every keystroke", () => {
@@ -2714,5 +2721,45 @@ describe("the learning review's fork (EO-732)", () => {
     const allowed = ["StructuredOutput", "mcp__eo__memory_read", "mcp__eo__memory_note", "mcp__eo__skill_view", "mcp__eo__skill_patch", "mcp__repo__codewiki_search"];
     expect(await Promise.all(refused.map(decided))).toEqual(refused.map(() => "deny"));
     expect(await Promise.all(allowed.map(decided))).toEqual(allowed.map(() => "allow"));
+  });
+});
+
+/**
+ * A run its sign-in stopped (EO-797), read off what the pinned CLI really
+ * said (`__fixtures__/claude-0.3.322-auth-errors.json`) and played through
+ * the provider as the SDK hands it over.
+ */
+describe("a sign-in failure mid-run", () => {
+  const turnOf = async (messages: SDKMessage[]) =>
+    collect(createClaudeProvider({ runQuery: fakeQuery([init(), ...messages]).runQuery, enableCommentTool: false }).start(startOpts));
+  const ending = (events: AgentEvent[]) => events.find((event) => event.type === "result" || (event.type === "error" && event.fatal !== false));
+
+  it.each(CLAUDE_AUTH_ERRORS.signIn.map((recorded) => [recorded.case, recorded.turn] as const))("is reported as one for %s", async (_name, messages) => {
+    const ended = ending(await turnOf(messages));
+
+    expect(ended).toMatchObject({ type: "error", signIn: true, retryable: false });
+    expect(ended?.type === "error" && ended.message.startsWith("Claude needs signing in again: ")).toBe(true);
+  });
+
+  it.each(CLAUDE_AUTH_ERRORS.notSignIn.map((recorded) => [recorded.case, recorded.turn] as const))("is not claimed for %s, which is an ordinary failure", async (_name, messages) => {
+    const ended = ending(await turnOf(messages));
+
+    expect(ended).toMatchObject({ type: "error", retryable: true });
+    expect(ended && "signIn" in ended).toBe(false);
+  });
+
+  it("records each kind the fixtures were made to show", () => {
+    // Every recorded sign-in turn carries the SDK's `authentication_failed`,
+    // and none of the others does: what the adapter reads, shown to be there.
+    const kinds = (messages: SDKMessage[]) => messages.flatMap((message) => ("error" in message && typeof message.error === "string" ? [message.error] : []));
+    for (const recorded of CLAUDE_AUTH_ERRORS.signIn) expect(kinds(recorded.turn), recorded.case).toContain("authentication_failed");
+    for (const recorded of CLAUDE_AUTH_ERRORS.notSignIn) expect(kinds(recorded.turn), recorded.case).not.toContain("authentication_failed");
+    expect(CLAUDE_AUTH_ERRORS.signIn.some((recorded) => recorded.turn.some((message) => message.type === "system" && "error_status" in message && message.error_status === 401))).toBe(true);
+  });
+
+  it("is not claimed for a turn whose auth retry got through", async () => {
+    const retried = CLAUDE_AUTH_ERRORS.signIn.flatMap((recorded) => recorded.turn).find((message) => message.type === "system" && "error_status" in message && message.error_status === 401)!;
+
+    expect(ending(await turnOf([retried, assistant([{ type: "text", text: "done" }]), result({ result: "done" })]))).toEqual({ type: "result", data: "done" });
   });
 });

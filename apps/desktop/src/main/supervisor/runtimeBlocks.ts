@@ -128,6 +128,47 @@ export function runtimeHoldNote(runtime: RuntimeId): string {
   );
 }
 
+/**
+ * What a run that hit a sign-in failure mid-run (EO-797) has in
+ * `runs.error`, always starting the same way: `isSignInStop` is how the
+ * attempt count and the retry backoff tell it from every other failure,
+ * as `isOutOfMemoryStop` does for its own. The backend's words follow.
+ */
+const SIGN_IN_STOP_PREFIX = "Stopped for a sign-in:";
+
+export function signInStopError(message: string): string {
+  return `${SIGN_IN_STOP_PREFIX} ${message}`;
+}
+
+/** Whether a run's `error` is a mid-run sign-in failure — a run that is not an attempt and is not retried. */
+export function isSignInStop(error: string | null | undefined): boolean {
+  return typeof error === "string" && error.startsWith(SIGN_IN_STOP_PREFIX);
+}
+
+/**
+ * The note on the item whose run a mid-run sign-in failure stopped
+ * (EO-797). It says what the hold note says as well, so it stands for
+ * it: the item is not told twice (`toldOfRuntimeHold`).
+ */
+export function runtimeSignInStopNote(runtime: RuntimeId, said: string): string {
+  const label = runtimeLabel(runtime);
+  return (
+    `${signInStopOpening(runtime)} Its sign-in stopped working while the run was going. ` +
+    `This was not counted as an attempt and is not retried as a failure. ` +
+    `EO is dispatching nothing to the agents that run on ${label} until it is signed in, and this carries on by itself once it is — nobody needs to reply here.\n\n` +
+    `What ${label} said: ${said}`
+  );
+}
+
+function signInStopOpening(runtime: RuntimeId): string {
+  return `This run stopped because ${runtimeLabel(runtime)} needs signing in again.`;
+}
+
+/** Whether an engine note already tells the item it is waiting for this runtime: the hold note, or the stop note that stands for it. */
+export function toldOfRuntimeHold(body: string, runtime: RuntimeId): boolean {
+  return body === runtimeHoldNote(runtime) || body.startsWith(signInStopOpening(runtime));
+}
+
 /** The message to the person, and what it offers. */
 export function runtimeSignInMessage(facts: {
   runtime: RuntimeId;

@@ -1,0 +1,683 @@
+{
+  "recordedWith": "Claude Code CLI 2.1.322 (EO's managed claude@0.3.322, the pinned @anthropic-ai/claude-agent-sdk), `claude -p \"say hi\" --output-format stream-json --verbose`, the `system/init` line dropped and each result's telemetry fields trimmed. Everything else is verbatim.",
+  "signIn": [
+    {
+      "case": "an API key the API refuses (ANTHROPIC_API_KEY=sk-ant-api03-invalid…)",
+      "messages": [
+        {
+          "type": "assistant",
+          "message": {
+            "diagnostics": null,
+            "id": "bcc2131c-62ba-4de0-8fac-50a463b15797",
+            "container": null,
+            "model": "<synthetic>",
+            "role": "assistant",
+            "stop_details": null,
+            "stop_reason": "stop_sequence",
+            "stop_sequence": "",
+            "type": "message",
+            "usage": {
+              "output_tokens_details": null,
+              "input_tokens": 0,
+              "output_tokens": 0,
+              "cache_creation_input_tokens": 0,
+              "cache_read_input_tokens": 0,
+              "server_tool_use": {
+                "web_search_requests": 0,
+                "web_fetch_requests": 0
+              },
+              "service_tier": null,
+              "cache_creation": {
+                "ephemeral_1h_input_tokens": 0,
+                "ephemeral_5m_input_tokens": 0
+              },
+              "inference_geo": null,
+              "iterations": null,
+              "speed": null,
+              "fallback_credit": null
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "Invalid API key · Fix external API key"
+              }
+            ],
+            "context_management": null
+          },
+          "parent_tool_use_id": null,
+          "session_id": "a7ac56f7-fc0b-4b86-bf66-2534d8c832c1",
+          "uuid": "a2ce2f8f-9704-47f4-a0a5-cf7d9fafa30a",
+          "timestamp": "2026-11-15T22:11:58.406Z",
+          "error": "authentication_failed",
+          "request_id": "req_011Ch5UrTAwqiG9vRaiVs33h",
+          "is_api_error_message": true,
+          "api_error_status": 401,
+          "api_error_origin": "first_party"
+        },
+        {
+          "duration_api_ms": 0,
+          "stop_reason": "stop_sequence",
+          "session_id": "a7ac56f7-fc0b-4b86-bf66-2534d8c832c1",
+          "total_cost_usd": 0,
+          "usage": {
+            "output_tokens_details": {
+              "thinking_tokens": 0
+            },
+            "input_tokens": 0,
+            "cache_creation_input_tokens": 0,
+            "cache_read_input_tokens": 0,
+            "output_tokens": 0,
+            "server_tool_use": {
+              "web_search_requests": 0,
+              "web_fetch_requests": 0
+            },
+            "service_tier": "standard",
+            "cache_creation": {
+              "ephemeral_1h_input_tokens": 0,
+              "ephemeral_5m_input_tokens": 0
+            },
+            "inference_geo": "",
+            "iterations": [],
+            "speed": "standard",
+            "fallback_credit": null
+          },
+          "modelUsage": {},
+          "permission_denials": [],
+          "terminal_reason": "api_error",
+          "is_error": true,
+          "num_turns": 1,
+          "subtype": "success",
+          "api_error_status": 401,
+          "api_error_origin": "first_party",
+          "result": "Invalid API key · Fix external API key",
+          "type": "result",
+          "duration_ms": 501,
+          "uuid": "50308bc7-49d0-47c6-bbce-f9606dfaadb4",
+          "queued_turn_count": 0
+        }
+      ]
+    },
+    {
+      "case": "an OAuth sign-in whose access token has expired and whose refresh token is dead (.credentials.json with expiresAt in the past)",
+      "messages": [
+        {
+          "type": "assistant",
+          "message": {
+            "diagnostics": null,
+            "id": "402b9e83-386b-4941-a828-54230a8bc21a",
+            "container": null,
+            "model": "<synthetic>",
+            "role": "assistant",
+            "stop_details": null,
+            "stop_reason": "stop_sequence",
+            "stop_sequence": "",
+            "type": "message",
+            "usage": {
+              "output_tokens_details": null,
+              "input_tokens": 0,
+              "output_tokens": 0,
+              "cache_creation_input_tokens": 0,
+              "cache_read_input_tokens": 0,
+              "server_tool_use": {
+                "web_search_requests": 0,
+                "web_fetch_requests": 0
+              },
+              "service_tier": null,
+              "cache_creation": {
+                "ephemeral_1h_input_tokens": 0,
+                "ephemeral_5m_input_tokens": 0
+              },
+              "inference_geo": null,
+              "iterations": null,
+              "speed": null,
+              "fallback_credit": null
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "Failed to authenticate: OAuth session expired and could not be refreshed"
+              }
+            ],
+            "context_management": null
+          },
+          "parent_tool_use_id": null,
+          "session_id": "91e42a6e-41c6-4e38-aada-d90aeaef1930",
+          "uuid": "63b4e4bb-4b7a-4444-9369-d23a001bbe39",
+          "timestamp": "2026-11-15T22:12:15.627Z",
+          "error": "authentication_failed",
+          "is_api_error_message": true
+        },
+        {
+          "duration_api_ms": 0,
+          "stop_reason": "stop_sequence",
+          "session_id": "91e42a6e-41c6-4e38-aada-d90aeaef1930",
+          "total_cost_usd": 0,
+          "usage": {
+            "output_tokens_details": {
+              "thinking_tokens": 0
+            },
+            "input_tokens": 0,
+            "cache_creation_input_tokens": 0,
+            "cache_read_input_tokens": 0,
+            "output_tokens": 0,
+            "server_tool_use": {
+              "web_search_requests": 0,
+              "web_fetch_requests": 0
+            },
+            "service_tier": "standard",
+            "cache_creation": {
+              "ephemeral_1h_input_tokens": 0,
+              "ephemeral_5m_input_tokens": 0
+            },
+            "inference_geo": "",
+            "iterations": [],
+            "speed": "standard",
+            "fallback_credit": null
+          },
+          "modelUsage": {},
+          "permission_denials": [],
+          "terminal_reason": "api_error",
+          "is_error": true,
+          "num_turns": 1,
+          "subtype": "success",
+          "api_error_status": null,
+          "result": "Failed to authenticate: OAuth session expired and could not be refreshed",
+          "type": "result",
+          "duration_ms": 141,
+          "uuid": "91d5f81e-2251-432e-b616-54f565e136b1",
+          "queued_turn_count": 0
+        }
+      ]
+    },
+    {
+      "case": "an OAuth sign-in whose unexpired access token is refused (revoked) and cannot be refreshed",
+      "messages": [
+        {
+          "type": "assistant",
+          "message": {
+            "diagnostics": null,
+            "id": "30090ecb-4c4f-4fec-b813-0c5a8ce9ebe1",
+            "container": null,
+            "model": "<synthetic>",
+            "role": "assistant",
+            "stop_details": null,
+            "stop_reason": "stop_sequence",
+            "stop_sequence": "",
+            "type": "message",
+            "usage": {
+              "output_tokens_details": null,
+              "input_tokens": 0,
+              "output_tokens": 0,
+              "cache_creation_input_tokens": 0,
+              "cache_read_input_tokens": 0,
+              "server_tool_use": {
+                "web_search_requests": 0,
+                "web_fetch_requests": 0
+              },
+              "service_tier": null,
+              "cache_creation": {
+                "ephemeral_1h_input_tokens": 0,
+                "ephemeral_5m_input_tokens": 0
+              },
+              "inference_geo": null,
+              "iterations": null,
+              "speed": null,
+              "fallback_credit": null
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "Failed to authenticate: OAuth session expired and could not be refreshed"
+              }
+            ],
+            "context_management": null
+          },
+          "parent_tool_use_id": null,
+          "session_id": "473b775b-2505-4d21-befa-8a937473a85b",
+          "uuid": "a5eb58b5-09b2-43cc-8e56-ea744ea69af6",
+          "timestamp": "2026-11-15T22:12:14.276Z",
+          "error": "authentication_failed",
+          "is_api_error_message": true
+        },
+        {
+          "duration_api_ms": 0,
+          "stop_reason": "stop_sequence",
+          "session_id": "473b775b-2505-4d21-befa-8a937473a85b",
+          "total_cost_usd": 0,
+          "usage": {
+            "output_tokens_details": {
+              "thinking_tokens": 0
+            },
+            "input_tokens": 0,
+            "cache_creation_input_tokens": 0,
+            "cache_read_input_tokens": 0,
+            "output_tokens": 0,
+            "server_tool_use": {
+              "web_search_requests": 0,
+              "web_fetch_requests": 0
+            },
+            "service_tier": "standard",
+            "cache_creation": {
+              "ephemeral_1h_input_tokens": 0,
+              "ephemeral_5m_input_tokens": 0
+            },
+            "inference_geo": "",
+            "iterations": [],
+            "speed": "standard",
+            "fallback_credit": null
+          },
+          "modelUsage": {},
+          "permission_denials": [],
+          "terminal_reason": "api_error",
+          "is_error": true,
+          "num_turns": 1,
+          "subtype": "success",
+          "api_error_status": null,
+          "result": "Failed to authenticate: OAuth session expired and could not be refreshed",
+          "type": "result",
+          "duration_ms": 646,
+          "uuid": "fae73e10-f440-4c82-a534-31ae4196de73",
+          "queued_turn_count": 0
+        }
+      ]
+    },
+    {
+      "case": "no credential at all (an empty HOME): the CLI says to run /login",
+      "messages": [
+        {
+          "type": "assistant",
+          "message": {
+            "diagnostics": null,
+            "id": "5860f7da-1849-476b-98ae-33aaf0ec2e45",
+            "container": null,
+            "model": "<synthetic>",
+            "role": "assistant",
+            "stop_details": null,
+            "stop_reason": "stop_sequence",
+            "stop_sequence": "",
+            "type": "message",
+            "usage": {
+              "output_tokens_details": null,
+              "input_tokens": 0,
+              "output_tokens": 0,
+              "cache_creation_input_tokens": 0,
+              "cache_read_input_tokens": 0,
+              "server_tool_use": {
+                "web_search_requests": 0,
+                "web_fetch_requests": 0
+              },
+              "service_tier": null,
+              "cache_creation": {
+                "ephemeral_1h_input_tokens": 0,
+                "ephemeral_5m_input_tokens": 0
+              },
+              "inference_geo": null,
+              "iterations": null,
+              "speed": null,
+              "fallback_credit": null
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "Not logged in · Please run /login"
+              }
+            ],
+            "context_management": null
+          },
+          "parent_tool_use_id": null,
+          "session_id": "d1d8b9b0-7a04-46fd-9980-64536c2b8a62",
+          "uuid": "5d806fc5-db7b-44e7-a4ae-259d99913fde",
+          "timestamp": "2026-11-15T22:12:26.687Z",
+          "error": "authentication_failed",
+          "is_api_error_message": true
+        },
+        {
+          "duration_api_ms": 0,
+          "stop_reason": "stop_sequence",
+          "session_id": "d1d8b9b0-7a04-46fd-9980-64536c2b8a62",
+          "total_cost_usd": 0,
+          "usage": {
+            "output_tokens_details": {
+              "thinking_tokens": 0
+            },
+            "input_tokens": 0,
+            "cache_creation_input_tokens": 0,
+            "cache_read_input_tokens": 0,
+            "output_tokens": 0,
+            "server_tool_use": {
+              "web_search_requests": 0,
+              "web_fetch_requests": 0
+            },
+            "service_tier": "standard",
+            "cache_creation": {
+              "ephemeral_1h_input_tokens": 0,
+              "ephemeral_5m_input_tokens": 0
+            },
+            "inference_geo": "",
+            "iterations": [],
+            "speed": "standard",
+            "fallback_credit": null
+          },
+          "modelUsage": {},
+          "permission_denials": [],
+          "terminal_reason": "api_error",
+          "is_error": true,
+          "num_turns": 1,
+          "subtype": "success",
+          "api_error_status": null,
+          "result": "Not logged in · Please run /login",
+          "type": "result",
+          "duration_ms": 159,
+          "uuid": "e2514281-9b2f-479a-8436-35d571d5a6b9",
+          "queued_turn_count": 0
+        }
+      ]
+    },
+    {
+      "case": "an API answering 401 authentication_error (ANTHROPIC_BASE_URL at a local server, CLAUDE_CODE_MAX_RETRIES=1): an api_retry with error_status 401 first",
+      "messages": [
+        {
+          "type": "system",
+          "subtype": "api_retry",
+          "attempt": 1,
+          "max_retries": 1,
+          "retry_delay_ms": 502,
+          "error_status": 401,
+          "error": "authentication_failed",
+          "session_id": "54b348d8-d1c6-4126-b2d4-5d97cd49219f",
+          "uuid": "df3fcc23-0630-4140-8591-181239679a16"
+        },
+        {
+          "type": "assistant",
+          "message": {
+            "diagnostics": null,
+            "id": "902a7a61-9f47-44d1-9168-4c66fad464de",
+            "container": null,
+            "model": "<synthetic>",
+            "role": "assistant",
+            "stop_details": null,
+            "stop_reason": "stop_sequence",
+            "stop_sequence": "",
+            "type": "message",
+            "usage": {
+              "output_tokens_details": null,
+              "input_tokens": 0,
+              "output_tokens": 0,
+              "cache_creation_input_tokens": 0,
+              "cache_read_input_tokens": 0,
+              "server_tool_use": {
+                "web_search_requests": 0,
+                "web_fetch_requests": 0
+              },
+              "service_tier": null,
+              "cache_creation": {
+                "ephemeral_1h_input_tokens": 0,
+                "ephemeral_5m_input_tokens": 0
+              },
+              "inference_geo": null,
+              "iterations": null,
+              "speed": null,
+              "fallback_credit": null
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "Failed to authenticate. API Error: 401 capture: authentication_error"
+              }
+            ],
+            "context_management": null
+          },
+          "parent_tool_use_id": null,
+          "session_id": "54b348d8-d1c6-4126-b2d4-5d97cd49219f",
+          "uuid": "39539eef-7bb3-411c-8650-335f1c43d389",
+          "timestamp": "2026-11-15T22:12:49.242Z",
+          "error": "authentication_failed",
+          "request_id": "req_capture",
+          "is_api_error_message": true,
+          "api_error_status": 401
+        },
+        {
+          "duration_api_ms": 0,
+          "stop_reason": "stop_sequence",
+          "session_id": "54b348d8-d1c6-4126-b2d4-5d97cd49219f",
+          "total_cost_usd": 0,
+          "usage": {
+            "output_tokens_details": {
+              "thinking_tokens": 0
+            },
+            "input_tokens": 0,
+            "cache_creation_input_tokens": 0,
+            "cache_read_input_tokens": 0,
+            "output_tokens": 0,
+            "server_tool_use": {
+              "web_search_requests": 0,
+              "web_fetch_requests": 0
+            },
+            "service_tier": "standard",
+            "cache_creation": {
+              "ephemeral_1h_input_tokens": 0,
+              "ephemeral_5m_input_tokens": 0
+            },
+            "inference_geo": "",
+            "iterations": [],
+            "speed": "standard",
+            "fallback_credit": null
+          },
+          "modelUsage": {},
+          "permission_denials": [],
+          "terminal_reason": "api_error",
+          "is_error": true,
+          "num_turns": 1,
+          "subtype": "success",
+          "api_error_status": 401,
+          "result": "Failed to authenticate. API Error: 401 capture: authentication_error",
+          "type": "result",
+          "duration_ms": 851,
+          "uuid": "4775fbb7-9192-4b0c-8fe0-8f90ec026b5f",
+          "queued_turn_count": 0
+        }
+      ]
+    }
+  ],
+  "notSignIn": [
+    {
+      "case": "an API answering 400 invalid_request_error (local server)",
+      "messages": [
+        {
+          "type": "assistant",
+          "message": {
+            "diagnostics": null,
+            "id": "46a8df31-cd24-4a56-b0bd-409171977826",
+            "container": null,
+            "model": "<synthetic>",
+            "role": "assistant",
+            "stop_details": null,
+            "stop_reason": "stop_sequence",
+            "stop_sequence": "",
+            "type": "message",
+            "usage": {
+              "output_tokens_details": null,
+              "input_tokens": 0,
+              "output_tokens": 0,
+              "cache_creation_input_tokens": 0,
+              "cache_read_input_tokens": 0,
+              "server_tool_use": {
+                "web_search_requests": 0,
+                "web_fetch_requests": 0
+              },
+              "service_tier": null,
+              "cache_creation": {
+                "ephemeral_1h_input_tokens": 0,
+                "ephemeral_5m_input_tokens": 0
+              },
+              "inference_geo": null,
+              "iterations": null,
+              "speed": null,
+              "fallback_credit": null
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "API Error: 400 capture: invalid_request_error"
+              }
+            ],
+            "context_management": null
+          },
+          "parent_tool_use_id": null,
+          "session_id": "ee2a7881-e4fc-4dbd-8fc0-240e67a158e2",
+          "uuid": "448905e2-847e-4d66-a049-fe2dffed0de1",
+          "timestamp": "2026-11-15T22:12:43.979Z",
+          "error": "unknown",
+          "request_id": "req_capture",
+          "is_api_error_message": true,
+          "api_error_status": 400
+        },
+        {
+          "duration_api_ms": 0,
+          "stop_reason": "stop_sequence",
+          "session_id": "ee2a7881-e4fc-4dbd-8fc0-240e67a158e2",
+          "total_cost_usd": 0,
+          "usage": {
+            "output_tokens_details": {
+              "thinking_tokens": 0
+            },
+            "input_tokens": 0,
+            "cache_creation_input_tokens": 0,
+            "cache_read_input_tokens": 0,
+            "output_tokens": 0,
+            "server_tool_use": {
+              "web_search_requests": 0,
+              "web_fetch_requests": 0
+            },
+            "service_tier": "standard",
+            "cache_creation": {
+              "ephemeral_1h_input_tokens": 0,
+              "ephemeral_5m_input_tokens": 0
+            },
+            "inference_geo": "",
+            "iterations": [],
+            "speed": "standard",
+            "fallback_credit": null
+          },
+          "modelUsage": {},
+          "permission_denials": [],
+          "terminal_reason": "api_error",
+          "is_error": true,
+          "num_turns": 1,
+          "subtype": "success",
+          "api_error_status": 400,
+          "result": "API Error: 400 capture: invalid_request_error",
+          "type": "result",
+          "duration_ms": 401,
+          "uuid": "31dfd432-661e-47a3-b1c9-d1c320b41e6e",
+          "queued_turn_count": 0
+        }
+      ]
+    },
+    {
+      "case": "an API answering 529 overloaded_error (local server, CLAUDE_CODE_MAX_RETRIES=1)",
+      "messages": [
+        {
+          "type": "system",
+          "subtype": "api_retry",
+          "attempt": 1,
+          "max_retries": 1,
+          "retry_delay_ms": 613,
+          "error_status": 529,
+          "error": "overloaded",
+          "session_id": "98872a6e-3a8b-481f-858e-197d8b81b5c9",
+          "uuid": "c7e3ffc5-e0cf-4dfe-97e2-14465ead36ee"
+        },
+        {
+          "type": "assistant",
+          "message": {
+            "diagnostics": null,
+            "id": "f5b69de1-c7ef-432d-bdb8-131dbf88c38f",
+            "container": null,
+            "model": "<synthetic>",
+            "role": "assistant",
+            "stop_details": null,
+            "stop_reason": "stop_sequence",
+            "stop_sequence": "",
+            "type": "message",
+            "usage": {
+              "output_tokens_details": null,
+              "input_tokens": 0,
+              "output_tokens": 0,
+              "cache_creation_input_tokens": 0,
+              "cache_read_input_tokens": 0,
+              "server_tool_use": {
+                "web_search_requests": 0,
+                "web_fetch_requests": 0
+              },
+              "service_tier": null,
+              "cache_creation": {
+                "ephemeral_1h_input_tokens": 0,
+                "ephemeral_5m_input_tokens": 0
+              },
+              "inference_geo": null,
+              "iterations": null,
+              "speed": null,
+              "fallback_credit": null
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "API Error: 529 capture: overloaded_error. This is a server-side issue, usually temporary — try again in a moment. If it persists, check your inference gateway (127.0.0.1:18403)."
+              }
+            ],
+            "context_management": null
+          },
+          "parent_tool_use_id": null,
+          "session_id": "98872a6e-3a8b-481f-858e-197d8b81b5c9",
+          "uuid": "eb03ea94-4789-4db0-af23-d5757cf70f7c",
+          "timestamp": "2026-11-15T22:12:54.646Z",
+          "error": "server_error",
+          "request_id": "req_capture",
+          "is_api_error_message": true,
+          "api_error_status": 529
+        },
+        {
+          "duration_api_ms": 0,
+          "stop_reason": "stop_sequence",
+          "session_id": "98872a6e-3a8b-481f-858e-197d8b81b5c9",
+          "total_cost_usd": 0,
+          "usage": {
+            "output_tokens_details": {
+              "thinking_tokens": 0
+            },
+            "input_tokens": 0,
+            "cache_creation_input_tokens": 0,
+            "cache_read_input_tokens": 0,
+            "output_tokens": 0,
+            "server_tool_use": {
+              "web_search_requests": 0,
+              "web_fetch_requests": 0
+            },
+            "service_tier": "standard",
+            "cache_creation": {
+              "ephemeral_1h_input_tokens": 0,
+              "ephemeral_5m_input_tokens": 0
+            },
+            "inference_geo": "",
+            "iterations": [],
+            "speed": "standard",
+            "fallback_credit": null
+          },
+          "modelUsage": {},
+          "permission_denials": [],
+          "terminal_reason": "api_error",
+          "is_error": true,
+          "num_turns": 1,
+          "subtype": "success",
+          "api_error_status": 529,
+          "result": "API Error: 529 capture: overloaded_error. This is a server-side issue, usually temporary — try again in a moment. If it persists, check your inference gateway (127.0.0.1:18403).",
+          "type": "result",
+          "duration_ms": 967,
+          "uuid": "fd29f7ee-0501-4fff-b075-f64d53153bff",
+          "queued_turn_count": 0
+        }
+      ]
+    }
+  ]
+}

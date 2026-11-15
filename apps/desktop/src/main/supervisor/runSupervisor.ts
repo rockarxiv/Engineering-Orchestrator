@@ -260,9 +260,13 @@ import {
   heldByBlockedRuntimes,
   RUNTIME_BLOCK_RECHECK_MS,
   RUNTIME_SIGN_IN_SOURCE,
+  isSignInStop,
   runtimeHoldNote,
   runtimeOf,
   runtimeSignInMessage,
+  runtimeSignInStopNote,
+  signInStopError,
+  toldOfRuntimeHold,
   TRY_AGAIN_OPTION,
   withoutBlockedRuntimes,
   type HeldItem,
@@ -1925,6 +1929,13 @@ type StreamOutcome =
    * quietly widening to cover a genuinely malformed result later.
    */
   | { kind: "limitReached"; quota: QuotaEvent }
+  /**
+   * The backend refused the turn because its sign-in is no good (EO-797,
+   * `AgentEvent`'s `signIn`). Its own outcome for the reason
+   * `limitReached` is: neither the agent's failure nor a guard EO chose
+   * to trip, so neither an attempt nor a park for a person on this item.
+   */
+  | { kind: "signedOut"; message: string }
   | { kind: "guardTripped"; reason: string };
 
 /**
@@ -4617,8 +4628,10 @@ export function createRunSupervisor(
     // Nor is a run that ran out of memory (EO-738): it parked for a
     // person rather than being retried, and what it hit was the machine's
     // limit, not the agent's work.
+    // Nor a run its backend's sign-in stopped (EO-797): the credential
+    // died, not the work.
     return listRunsForItem(db, itemId).filter(
-      (run) => run.initiationId === initiationId && !isGuardPlaceholder(run) && run.interruption === null && !isOutOfMemoryStop(run.error),
+      (run) => run.initiationId === initiationId && !isGuardPlaceholder(run) && run.interruption === null && !isOutOfMemoryStop(run.error) && !isSignInStop(run.error),
     ).length;
   }
 
@@ -5271,6 +5284,11 @@ export function createRunSupervisor(
         // rather than after it, and ended as that guard ends a run.
         if (event.type === "error" && event.budget) {
           return { kind: "guardTripped", reason: checkBudgetGuard(ctx.item.id) ?? budgetStopReason() };
+        }
+        // The backend's sign-in is no good (EO-797): read before the
+        // ordinary failure below, which would be retried.
+        if (event.type === "error" && event.signIn && event.fatal !== false) {
+          return { kind: "signedOut", message: event.message };
         }
         if (event.type === "error" && event.fatal !== false) {
           return { kind: "error", message: event.message, retryable: event.retryable };
@@ -6765,6 +6783,10 @@ export function createRunSupervisor(
         return;
       }
 
+      case "signedOut":
+        endSignedOut(run.id, item, agent, threadId, outcome.message);
+        return;
+
       case "guardTripped":
         updateRun(db, run.id, {
           status: "awaiting_input",
@@ -6775,6 +6797,38 @@ export function createRunSupervisor(
         postGuardEscalation(item.id, run.id, outcome.reason);
         announceRun(run.id, item.id, "awaiting_input");
     }
+  }
+
+  /**
+   * A run its backend's sign-in stopped mid-run (EO-797).
+   *
+   * `failed`, so the item is offered again — but with `isSignInStop`'s
+   * error, so it is no attempt and owes no retry backoff, and with no
+   * "Attempt N stopped" note: the agent did nothing wrong. Then the
+   * runtime is blocked on this device exactly as a pre-dispatch
+   * `signed_out` blocks it (EO-796), so the item, and every other one on
+   * that runtime, waits for a sign-in rather than being dispatched into
+   * the same dead credential. The cached probe answer is forgotten, since
+   * it is exactly what was wrong.
+   *
+   * The runtime is the agent's — the one the run was handed to. A run on
+   * no runtime EO knows (the fake backend, a preview) has nothing to sign
+   * in, and fails as any other run does.
+   */
+  function endSignedOut(runId: Uuid, item: Item, agent: Agent, threadId: string | null, message: string): void {
+    const runningOn = runsOn(agent, item);
+    const runtime = runtimeOf(runningOn) ?? runtimeOf(agent);
+    if (runtime === null) {
+      updateRun(db, runId, { status: "failed", error: message, endedAt: now(), threadId });
+      postRunFailure(item.id, runId, message);
+      announceRun(runId, item.id, "failed");
+      return;
+    }
+    updateRun(db, runId, { status: "failed", error: signInStopError(message), endedAt: now(), threadId });
+    invalidateRuntimeAuth(runtime);
+    blockRuntime({ runtime, executablePath: null }, runtimeOf(runningOn) === runtime ? runningOn : agent, item, "midRun");
+    postComment(db, { itemId: item.id, runId, author: { type: "engine" }, kind: "note", body: runtimeSignInStopNote(runtime, message) });
+    announceRun(runId, item.id, "failed");
   }
 
   /**
@@ -10647,6 +10701,15 @@ export function createRunSupervisor(
     triedAgain: boolean;
     /** A recheck is running. */
     checking: boolean;
+    /**
+     * Caused by a run the backend refused mid-run (EO-797), not by the
+     * probe saying `signed_out`. Such a block is not asked again on the
+     * interval and does not lift on a `signed_in` answer — `claude auth
+     * status` says signed in over a dead token, and lifting on it would
+     * dispatch into the same refusal again and again. It lifts on a
+     * sign-in EO completed, or on Try again.
+     */
+    midRun: boolean;
   }
   const runtimeBlocks = new Map<RuntimeId, RuntimeBlock>();
 
@@ -10660,14 +10723,20 @@ export function createRunSupervisor(
    * so the person to tell is this device's (`sendMessageHere` with
    * `isTheRecord` false). A server dispatches nothing and never gets here.
    */
-  function blockRuntime(signedOut: NonNullable<RuntimeAuthCheck["signedOut"]>, agent: Agent, item: Item): void {
+  function blockRuntime(signedOut: NonNullable<RuntimeAuthCheck["signedOut"]>, agent: Agent, item: Item, cause: "probe" | "midRun" = "probe"): void {
     const { runtime } = signedOut;
-    if (runtimeBlocks.has(runtime)) return;
+    const standing = runtimeBlocks.get(runtime);
+    if (standing) {
+      // A refusal mid-run outweighs a probe's word: the block standing is
+      // now one only a sign-in or Try again lifts (EO-797).
+      if (cause === "midRun") standing.midRun = true;
+      return;
+    }
     const open = openMessageAbout(db, RUNTIME_SIGN_IN_SOURCE, runtime);
     // `since` is read against comments' and messages' own times, which are
     // the wall clock's; `checkedAt` against the supervisor's.
     const since = open?.createdAt ?? Date.now();
-    const block: RuntimeBlock = { runtime, agent, since, checkedAt: now(), messageId: open?.id ?? null, triedAgain: false, checking: false };
+    const block: RuntimeBlock = { runtime, agent, since, checkedAt: now(), messageId: open?.id ?? null, triedAgain: false, checking: false, midRun: cause === "midRun" };
     runtimeBlocks.set(runtime, block);
     if (open) return;
 
@@ -10723,7 +10792,9 @@ export function createRunSupervisor(
       const message = block.messageId === null ? undefined : getMessage(db, block.messageId);
       const tryAgain = !block.triedAgain && message?.handledHow === "answered" && message.answer === TRY_AGAIN_OPTION;
       if (tryAgain) block.triedAgain = true;
-      else if (now() - block.checkedAt < RUNTIME_BLOCK_RECHECK_MS) continue;
+      // A block a mid-run refusal caused is not asked again on its own
+      // (EO-797): the probe's signed_in is no evidence against it.
+      else if (block.midRun || now() - block.checkedAt < RUNTIME_BLOCK_RECHECK_MS) continue;
       const promise = recheckRuntime(block, tryAgain).finally(() => inFlight.delete(promise));
       inFlight.add(promise);
     }
@@ -10740,8 +10811,13 @@ export function createRunSupervisor(
       const auth = await checkAuth(current && runtimeOf(current) === block.runtime ? current : block.agent);
       // Anything but signed out lifts it: `unknown` passes a dispatch, so
       // it passes a recheck, and a refusal of another kind is the item's
-      // to say at its own dispatch.
-      if (auth.signedOut === undefined && runtimeBlocks.get(block.runtime) === block) liftRuntimeBlock(block.runtime);
+      // to say at its own dispatch. A block a mid-run refusal caused lifts
+      // only when the person asked (`forget` is Try again); one the probe
+      // still says signed out is the probe's from then on, and lifts when
+      // it stops saying so (EO-797).
+      if (runtimeBlocks.get(block.runtime) !== block) return;
+      if (auth.signedOut !== undefined) block.midRun = false;
+      else if (forget || !block.midRun) liftRuntimeBlock(block.runtime);
     } catch (error) {
       console.error(`[eo] asking whether ${block.runtime} is signed in again failed:`, error);
     } finally {
@@ -10760,8 +10836,9 @@ export function createRunSupervisor(
     const block = runtimeBlocks.get(runtime);
     if (block === undefined || !getItem(db, item.id)) return;
     const body = runtimeHoldNote(runtime);
+    // The note on a run a mid-run refusal stopped says this too (EO-797).
     const alreadySaid = listCommentsForItem(db, item.id, { since: block.since }).some(
-      (comment) => comment.authorType === "engine" && comment.body === body,
+      (comment) => comment.authorType === "engine" && toldOfRuntimeHold(comment.body, runtime),
     );
     if (alreadySaid) return;
     postComment(db, { itemId: item.id, author: { type: "engine" }, kind: "note", body });

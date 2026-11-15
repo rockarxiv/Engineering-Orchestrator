@@ -15,6 +15,7 @@ import {
   mapThreadEvent,
   parseStructuredResult,
   codexUsageLimitRefusal,
+  codexSignInFailure,
   strictCodexOutputSchema,
   fromStrictCodexAnswer,
   EO_MCP_SERVER,
@@ -26,6 +27,7 @@ import { windowsWithDeveloperMode } from "../testing/unprivilegedWindowsFs.js";
 import { CodexClient, serializeConfigOverrides, type CodexClientOptions, type CodexThread, type CodexThreadOptions, type CodexTurnOptions } from "./codexClient.js";
 import { fakeAppServer, note, type FakeAppServerScenario } from "../testing/fakeCodexAppServer.js";
 import { filesUnder } from "../testing/tree.js";
+import { CODEX_AUTH_ERRORS } from "../testing/authErrorFixtures.js";
 import { answerActions, ASSIST_ANSWER_WITH_MAPS, ASSIST_ANSWERS_WITH_CARDS, openAiStrictViolations } from "../testing/answerSchemas.js";
 
 // The real client spawns `codex app-server` and talks to a paid API.
@@ -4034,5 +4036,52 @@ describe("the learning review's fork (EO-732)", () => {
     const failure = forked.ok ? await captureThrow(forked.events).catch((error: unknown) => error) : forked;
     expect(String((failure as { message?: unknown }).message ?? failure)).toContain("could not set up the hook that refuses");
     expect(codex.forkThread).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * A run its sign-in stopped (EO-797), read off what the pinned app-server
+ * really sent (`__fixtures__/codex-0.167.1-auth-errors.json`) and played
+ * through the real client and the provider.
+ */
+describe("a sign-in failure mid-run", () => {
+  const turnOf = async (notifications: { method: string; params: unknown }[]) => {
+    const { codex } = stubCodex([], { after: { "turn/start": [note.turnStarted(), ...notifications] } });
+    return collect(createCodexProvider({ createCodex: () => codex as never }).start(startOpts));
+  };
+  const ending = (events: AgentEvent[]) => events.find((event) => event.type === "result" || (event.type === "error" && event.fatal !== false));
+
+  it.each(CODEX_AUTH_ERRORS.signIn.map((recorded) => [recorded.case, recorded.turn] as const))("is reported as one for %s", async (_name, notifications) => {
+    const ended = ending(await turnOf(notifications));
+
+    expect(ended).toMatchObject({ type: "error", signIn: true, retryable: false });
+    expect(ended?.type === "error" && ended.message.startsWith("Codex needs signing in again: ")).toBe(true);
+  });
+
+  it.each(CODEX_AUTH_ERRORS.notSignIn.map((recorded) => [recorded.case, recorded.turn] as const))("is not claimed for %s, which is an ordinary failure", async (_name, notifications) => {
+    const ended = ending(await turnOf(notifications));
+
+    expect(ended).toMatchObject({ type: "error" });
+    expect(ended && "signIn" in ended).toBe(false);
+  });
+
+  it("is read off the failed turn as well as off the fatal error before it", () => {
+    for (const recorded of CODEX_AUTH_ERRORS.signIn) {
+      const completed = recorded.turn.find((notification) => notification.method === "turn/completed")!;
+      const error = (completed.params["turn"] as { error: { message: string; codexErrorInfo: unknown } }).error;
+      expect(mapThreadEvent({ type: "turn.failed", error: { message: error.message, codex_error_info: error.codexErrorInfo } }).mapped.at(-1), recorded.case).toMatchObject({ signIn: true });
+    }
+  });
+
+  it("reads the classification, never the words, and not a retry the server is still making", () => {
+    expect(codexSignInFailure("unauthorized")).toBe(true);
+    expect(codexSignInFailure({ httpConnectionFailed: { httpStatusCode: 401 } })).toBe(true);
+    expect(codexSignInFailure({ httpConnectionFailed: { httpStatusCode: 403 } })).toBe(false);
+    expect(codexSignInFailure({ responseStreamDisconnected: { httpStatusCode: null } })).toBe(false);
+    expect(codexSignInFailure("other")).toBe(false);
+    expect(codexSignInFailure(undefined)).toBe(false);
+    // The fixtures' retried 401s are passed on as retries, not as the end.
+    const retried = CODEX_AUTH_ERRORS.signIn.flatMap((recorded) => recorded.turn).filter((notification) => notification.params["willRetry"] === true);
+    expect(retried.length).toBeGreaterThan(0);
   });
 });
