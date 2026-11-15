@@ -1,4 +1,5 @@
 import {
+  DEFAULT_SKILL_MAX_BODY_CHARS,
   eoToolName,
   LEARNING_REVIEW_EVENT,
   MAX_MEMORY_NOTE_CHARS,
@@ -98,6 +99,8 @@ export interface LearningReviewSkill {
 export interface LearningReviewSkills {
   skills: readonly LearningReviewSkill[];
   canCreate: boolean;
+  /** The longest body a write may leave a skill with (EO-792), the guardrail as it stood when the review was asked. Absent is the default. */
+  maxBodyChars?: number;
 }
 
 /**
@@ -227,7 +230,7 @@ const NEVER_SAVE = [
 ];
 
 /** The prompt's skills part (EO-718): what a skill is for, the order to prefer, the rules, and the skills this review may change. */
-function skillsSection({ skills, canCreate }: LearningReviewSkills): string[] {
+function skillsSection({ skills, canCreate, maxBodyChars = DEFAULT_SKILL_MAX_BODY_CHARS }: LearningReviewSkills): string[] {
   const listed =
     skills.length === 0
       ? ["This run's agent is given no skills here yet."]
@@ -252,12 +255,23 @@ function skillsSection({ skills, canCreate }: LearningReviewSkills): string[] {
       ? `4. Only then create a new skill with \`${SKILL_CREATE}\`, named after the kind of task — never after a ticket, an error string or a date.`
       : "4. Do not create a skill: this run's item is on no project, and a new skill belongs to one.",
     "",
+    bodyLimit(maxBodyChars),
+    "",
     `Read a skill with \`${SKILL_VIEW}\` before you change it, and a file before you overwrite it with \`${SKILL_FILE_WRITE}\` or remove it with \`${SKILL_FILE_REMOVE}\`: EO refuses a change to what this review has not read. \`${SKILL_PATCH}\` replaces text the body holds exactly once; to change several places, send them together as its \`edits\`, applied in order, so the change is one version.`,
     "",
     `A skill's description is all an agent reads when it chooses whether to load the skill. When a change widens or narrows what a skill covers, update its description to say so, with \`${SKILL_PATCH}\`'s \`description\`, in the same call as the change to the body.`,
     "",
     "State one lesson once: where a skill already says it, leave it. Where a skill says something wrong, fix that text in place rather than adding a correction beside it. Every change is kept as a version a person can see and restore, and a skill a person locked takes no change.",
   ];
+}
+
+/**
+ * The body limit, as the skills part says it (EO-792): every run that
+ * loads a skill reads its whole body, so what only some runs need goes in
+ * a `references/` file the body points to.
+ */
+function bodyLimit(maxBodyChars: number): string {
+  return `A skill's body holds at most ${maxBodyChars.toLocaleString("en-US")} characters, and EO refuses a change that would leave it longer; one that makes a longer body shorter is taken. Every run that loads a skill reads all of its body, so keep there what every run doing that kind of task needs. Detail only some runs need — a variant of the task, a long list of cases, a reference table — belongs in a file under \`references/\`, written with \`${SKILL_FILE_WRITE}\`, with one sentence in the body naming the file and saying when to read it.`;
 }
 
 /**

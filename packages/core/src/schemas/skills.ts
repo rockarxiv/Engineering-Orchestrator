@@ -433,6 +433,25 @@ export const DEFAULT_SKILL_STALE_AFTER_RUNS = 20;
 export const DEFAULT_SKILL_ARCHIVE_AFTER_RUNS = 50;
 
 /**
+ * The longest body an agent may leave a skill with, in characters
+ * (EO-792): the guardrail `skillMaxBodyChars`'s default. Every run that
+ * loads a skill reads the whole body, so detail only some runs need goes
+ * in a file under `references/`. Held against the learning review's
+ * writes and consolidation's proposals, never a person's.
+ */
+export const DEFAULT_SKILL_MAX_BODY_CHARS = 8_000;
+
+/**
+ * Whether an agent's write would leave a skill's body over the limit
+ * (EO-792). `before` is the body as it stands, or null for a new skill:
+ * a write that makes an already oversized body shorter is not over it, so
+ * an oversized skill can be trimmed a step at a time.
+ */
+export function skillBodyOverLimit(body: string, before: string | null, maxChars: number): boolean {
+  return body.length > maxChars && (before === null || body.length >= before.length);
+}
+
+/**
  * Whether a skill ages at all (EO-720): an agent's, and not locked. A
  * person's skill and a locked one are only reported — their usage is
  * shown like any other's — and never marked stale or archived by EO.

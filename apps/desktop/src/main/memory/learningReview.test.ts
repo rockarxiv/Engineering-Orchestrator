@@ -134,6 +134,15 @@ describe("the learning review's prompt on skills (EO-718)", () => {
     expect(prompt).toContain("send them together as its `edits`, applied in order, so the change is one version");
   });
 
+  it("names the body limit, 8,000 by default, and says detail only some runs need goes in a references/ file the body names, with when to read it (EO-792)", () => {
+    expect(prompt).toContain(
+      "A skill's body holds at most 8,000 characters, and EO refuses a change that would leave it longer; one that makes a longer body shorter is taken. Every run that loads a skill reads all of its body, so keep there what every run doing that kind of task needs. Detail only some runs need — a variant of the task, a long list of cases, a reference table — belongs in a file under `references/`, written with `mcp__eo__skill_file_write`, with one sentence in the body naming the file and saying when to read it.",
+    );
+    const set = learningReviewPrompt(SCOPES, { skills, canCreate: true, maxBodyChars: 12_500 });
+    expect(set).toContain("A skill's body holds at most 12,500 characters");
+    expect(learningReviewSkillsPrompt({ skills, canCreate: true, maxBodyChars: 12_500 })).toContain("A skill's body holds at most 12,500 characters");
+  });
+
   it("says not to create a skill for an item on no project, and that no skills are given where there are none", () => {
     const bare = learningReviewPrompt(SCOPES, { skills: [], canCreate: false });
     expect(bare).toContain("This run's agent is given no skills here yet.");

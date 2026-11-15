@@ -1655,6 +1655,7 @@ export function renderGuards(data: IpcResponse<"guards:get">): string {
     `- memory given whole: up to ${data.memoryDeliveryChars} characters, past which a small model picks what bears on the task`,
     `- memory per scope: ${data.memoryScopeMaxEntries} entries or ${data.memoryScopeMaxChars} characters, whichever is reached first, before it is consolidated to about half`,
     `- an agent-written, unlocked skill nobody loads: stale after ${data.skillStaleAfterRuns} runs given it in a row without a load, archived by EO after ${data.skillArchiveAfterRuns}; a person's skill and a locked one are never archived automatically`,
+    `- a skill's body as an agent writes it: at most ${data.skillMaxBodyChars} characters, past which detail goes in a file under references/; a write that shortens a longer body is taken, and a person's write is never held to it`,
     `- trial items while their draft's conversation is open: ${data.trialsFirst ? "dispatched ahead of live work (the order only; concurrency is unchanged)" : "dispatched by priority and age like everything else"}`,
     `- rounds of a draft's test items before testing stops and asks the person: ${data.trialRoundsPerDraft}`,
     `- budget for testing one draft: ${data.trialBudgetCentsPerDraft === null ? "none (the daily budget still applies)" : `${data.trialBudgetCentsPerDraft}¢`}`,

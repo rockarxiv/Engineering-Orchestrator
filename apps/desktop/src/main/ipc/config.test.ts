@@ -257,6 +257,15 @@ describe("guardrails", () => {
     expect(readGuards(handle.db)).toMatchObject({ skillStaleAfterRuns: 5, skillArchiveAfterRuns: 8 });
   });
 
+  /** The longest skill body an agent writes (EO-792): 8,000 by default, filled in for an older config. */
+  it("holds an agent's skill body to 8,000 characters by default, and saves another limit", () => {
+    setSetting(handle.db, "engine.guards", { globalConcurrency: 2 });
+    expect(readGuards(handle.db)).toMatchObject({ skillMaxBodyChars: 8_000 });
+    expect(GuardConfigSchema.safeParse({ ...DEFAULT_GUARD_CONFIG, skillMaxBodyChars: 0 }).success).toBe(false);
+    expect(writeGuards(handle.db, { ...DEFAULT_GUARD_CONFIG, skillMaxBodyChars: 5_000 }).saved).toBe(true);
+    expect(readGuards(handle.db)).toMatchObject({ skillMaxBodyChars: 5_000 });
+  });
+
   it("says it saved, and what the limits now are", () => {
     const written = writeGuards(handle.db, { ...DEFAULT_GUARD_CONFIG, dailyBudgetCents: 500 });
 

@@ -117,6 +117,12 @@ export interface MemoryConsolidatorOptions {
   sideCall: SideCaller["sideCall"];
   /** The caps, read on every look so a settings change applies to the next one. */
   caps: () => MemoryCaps;
+  /**
+   * The longest body a skill proposal may write (EO-792), read when its
+   * proposals are applied so a settings change applies to the next. Absent
+   * is the default.
+   */
+  skillMaxBodyChars?: () => number;
   now?: () => number;
   /** Whether a consolidation may start now — false while the engine is paused or stopping. Absent is "yes". */
   canStart?: () => boolean;
@@ -1048,6 +1054,7 @@ export function createMemoryConsolidator(options: MemoryConsolidatorOptions): Me
         // Only those the call was shown: one past the cap, or made while it
         // ran, is not a target its draft was written for.
         shown: new Map(shown.slice(0, EXISTING_SKILLS_MAX).map((skill) => [skill.slug, skill.id])),
+        ...(options.skillMaxBodyChars ? { maxBodyChars: options.skillMaxBodyChars() } : {}),
         now: now(),
       });
       if (posted.notes.length > 0) say(posted.notes.join(" "));

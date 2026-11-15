@@ -69,7 +69,8 @@ const PARKS = { toolCall: { name: "comment", args: { body: "@user need input", m
 
 /** What a scripted review turn does on the fork: writes it asks EO for, then whether it hangs, then what it spent. */
 interface ReviewScript {
-  writes?: AgentWriteRequest[];
+  /** Sent in order; a function is called where it stands, between the writes around it. */
+  writes?: (AgentWriteRequest | (() => void))[];
   /** Waits for the turn's signal before going on, as a turn running past its limit would. */
   hang?: boolean;
   /** Waits for this before going on. */
@@ -152,7 +153,10 @@ describe("the learning review after a run", () => {
         const forkId = `fork-of-${threadId}`;
         async function* events(): AsyncIterable<AgentEvent> {
           yield { type: "thread_started", threadId: forkId, model: "the-agents-model", ...(review.fork ? { fork: review.fork } : {}) };
-          for (const write of review.writes ?? []) answers.push(await sendAgentWrite(opts!.writeBridge!, write));
+          for (const write of review.writes ?? []) {
+            if (typeof write === "function") write();
+            else answers.push(await sendAgentWrite(opts!.writeBridge!, write));
+          }
           if (review.until) await review.until;
           if (review.hang) await new Promise<void>((resolve) => opts!.signal!.addEventListener("abort", () => resolve(), { once: true }));
           yield { type: "usage", scope: "turn", tokensIn: 1_000, tokensOut: 50, costCents: 2 };
@@ -181,11 +185,12 @@ describe("the learning review after a run", () => {
     return { provider, asked };
   }
 
-  function supervisorOver(agent: AgentProvider, side: AgentProvider = extractor().provider) {
+  function supervisorOver(agent: AgentProvider, side: AgentProvider = extractor().provider, guards?: () => { skillMaxBodyChars: number }) {
     const supervisor = createRunSupervisor({
       db: handle.db,
       provider: agent,
       limits: LIMITS,
+      ...(guards ? { guards } : {}),
       agentWriteBridge: writes.agentWriteBridge,
       sideCalls: { provider: () => side, smallModel: async () => null },
     });
@@ -866,6 +871,101 @@ describe("the learning review after a run", () => {
         ["create", { kind: "run", runId: run.id }],
       ]);
       expect(reviewEvents()).toEqual([expect.objectContaining({ outcome: "written", skillIds: [created.id] })]);
+    });
+
+    describe("the body limit (EO-792)", () => {
+      /** The guardrail as a person might set it, read each time the supervisor asks. */
+      let limit = 40;
+      const guards = () => ({ skillMaxBodyChars: limit });
+      beforeEach(() => {
+        limit = 40;
+      });
+      const create = (slug: string, body: string): AgentWriteRequest => ({ tool: SKILL_CREATE_TOOL_NAME, args: { slug, description: "Use when adding a CSV export.", body } });
+
+      it("names the limit in the prompt and says detail only some runs need goes in a references/ file the body points to", async () => {
+        const { provider, forks } = reviewing({ result: RESULT });
+
+        await supervisorOver(provider, undefined, guards).runOnce();
+
+        expect(forks[0]!.message).toContain("A skill's body holds at most 40 characters, and EO refuses a change that would leave it longer");
+        expect(forks[0]!.message).toContain("Detail only some runs need — a variant of the task, a long list of cases, a reference table — belongs in a file under `references/`");
+        expect(forks[0]!.message).toContain("with one sentence in the body naming the file and saying when to read it");
+      });
+
+      it("refuses a create or a patch that would leave a body over the limit, giving its length and the limit, and writes nothing", async () => {
+        const skill = personSkill();
+        const { provider, answers } = reviewing(
+          { result: RESULT },
+          {
+            writes: [
+              create("csv-imports", "Read the header row first, then every line after it."),
+              view("csv-exports"),
+              patch("csv-exports", "Quote every field.", "Quote every field, and escape quotes by doubling them."),
+            ],
+          },
+        );
+
+        await supervisorOver(provider, undefined, guards).runOnce();
+
+        const sentence = (slug: string, length: number) =>
+          `This would leave the skill \`${slug}\`'s body at ${String(length)} characters, over the limit of 40, so nothing was written. Move detail only some runs need into a file under \`references/\` with mcp__eo__skill_file_write, and name that file in the body with one sentence saying when to read it.`;
+        expect(answers[0]).toEqual({ ok: false, code: "SKILL_TOO_LONG", problem: sentence("csv-imports", 52) });
+        expect(answers[2]).toEqual({ ok: false, code: "SKILL_TOO_LONG", problem: sentence("csv-exports", 74) });
+        expect(listSkills(handle.db).map((candidate) => candidate.slug)).toEqual(["csv-exports"]);
+        expect(getSkill(handle.db, skill.id)!.body).toBe(skill.body);
+        expect(runVersions(skill.id)).toEqual([]);
+        expect(reviewEvents()).toEqual([expect.objectContaining({ outcome: "nothing_to_save", skillIds: [] })]);
+      });
+
+      it("takes a write that makes a body already over the limit shorter, and a description alone, and refuses one that does not shorten it", async () => {
+        // A person's skill is never held to the limit, so this one is over it.
+        const skill = personSkill();
+        limit = 20;
+        const { provider, answers } = reviewing(
+          { result: RESULT },
+          {
+            writes: [
+              view("csv-exports"),
+              // 38 to 30: still over 20, but shorter.
+              patch("csv-exports", "Quote every field.\n", "Quote all.\n"),
+              patch("csv-exports", "Quote all.", "Quote all, always."),
+              patchWith({ description: "Use when adding or changing a CSV export." }),
+            ],
+          },
+        );
+
+        await supervisorOver(provider, undefined, guards).runOnce();
+
+        expect(answers[1]).toEqual(expect.objectContaining({ ok: true }));
+        expect(answers[2]).toEqual({ ok: false, code: "SKILL_TOO_LONG", problem: expect.stringContaining("body at 38 characters, over the limit of 20, so nothing was written. It is 30 now, so a change that makes it shorter is taken.") });
+        expect(answers[3]).toEqual(expect.objectContaining({ ok: true }));
+        expect(getSkill(handle.db, skill.id)).toEqual(expect.objectContaining({ body: "Quote all.\nWrite a header row.", description: "Use when adding or changing a CSV export." }));
+        expect(runVersions(skill.id)).toHaveLength(2);
+      });
+
+      it("reads the guardrail at each write: one raised during the review takes the write it refused", async () => {
+        const skill = personSkill();
+        const longer = "Quote every field, and escape quotes by doubling them.";
+        const { provider, answers } = reviewing(
+          { result: RESULT },
+          {
+            writes: [
+              view("csv-exports"),
+              patch("csv-exports", "Quote every field.", longer),
+              () => {
+                limit = 100;
+              },
+              patch("csv-exports", "Quote every field.", longer),
+            ],
+          },
+        );
+
+        await supervisorOver(provider, undefined, guards).runOnce();
+
+        expect(answers[1]).toEqual(expect.objectContaining({ ok: false, code: "SKILL_TOO_LONG" }));
+        expect(answers[2]).toEqual(expect.objectContaining({ ok: true }));
+        expect(getSkill(handle.db, skill.id)!.body).toBe(`${longer}\nWrite a header row.`);
+      });
     });
 
     it("serves the skill tools to no run's own turn: a call from one is refused and writes nothing", async () => {

@@ -229,6 +229,15 @@ export function GuardrailsSection() {
             </div>
           </NotedField>
 
+          {/* EO-792: every run that loads a skill reads its whole body. */}
+          <div className="max-w-[28rem]">
+            <NotedField note="The longest body an agent may leave a skill with. A longer write is refused, and the agent is told to move detail into a file beside the skill; one that shortens a longer body is taken. Your own edits are never held to it.">
+              <Field label="Characters in a skill's body an agent writes">
+                <DraftInput type="number" min={1} {...field(value.skillMaxBodyChars, (raw) => ({ skillMaxBodyChars: atLeastOne(raw) }))} />
+              </Field>
+            </NotedField>
+          </div>
+
           {/* EO-184: on by default, and the note says what turning it off costs. */}
           <NotedField note="Only when somebody answers in their own words instead of choosing one of the answers on offer. Off, the step simply runs again and asks again.">
             <Checkbox
