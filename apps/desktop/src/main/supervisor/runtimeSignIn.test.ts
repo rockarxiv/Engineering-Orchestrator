@@ -1,7 +1,7 @@
 import { isCommentAction, type Agent, type AgentProvider, type Item } from "@eo/core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DbHandle } from "../db/client.js";
-import { createStep, createRoute, listAgents, openMessageAbout, listCommentsForItem, listRunsForItem, needsAttention, updateAgent } from "../db/repos/index.js";
+import { createRun, createStep, createRoute, listAgents, openMessageAbout, postComment, updateRun, listCommentsForItem, listRunsForItem, needsAttention, updateAgent } from "../db/repos/index.js";
 import { createTestItem, messagesFrom, openMigratedTestDb, REVIEWABLE_SPEC } from "../db/testHelpers.js";
 import { answerMessageCommand } from "../messages/messages.js";
 import { createFakeProvider } from "../providers/fake.js";
@@ -53,15 +53,19 @@ const checkAuth = vi.fn(async (agent: Agent): Promise<RuntimeAuthCheck> => {
 /** A backend that finishes every turn, and remembers which agents it was started for. */
 function backend() {
   const started: string[] = [];
+  const resumed: string[] = [];
   const inner = createFakeProvider({ result: validImplementResult });
   const provider = (agent: Agent): AgentProvider => ({
     start: (opts) => {
       started.push(agent.name);
       return inner.start(opts);
     },
-    resume: inner.resume.bind(inner),
+    resume: (threadId, message, opts) => {
+      resumed.push(agent.name);
+      return inner.resume(threadId, message, opts);
+    },
   });
-  return { provider, started };
+  return { provider, started, resumed };
 }
 
 function supervising(options: Omit<RunSupervisorOptions, "db">): RunSupervisor {
@@ -250,6 +254,65 @@ describe("a runtime the probe says is signed out", () => {
 
     expect(engineNotes(item)).toHaveLength(2);
     expect(signInMessages().map((message) => message.handledHow)).toEqual(["resolved", null]);
+  });
+});
+
+describe("the other doors to an agent on a blocked runtime", () => {
+  /** An item parked on a Claude run that asked a question, with its thread. */
+  function parkedOnClaude(): Item {
+    const item = forImplementer("Parked");
+    const run = createRun(handle.db, { itemId: item.id, agentId: implementer.id, action: "implement", threadId: "thr-parked", stepId: "todo", initiationId: `first:${item.id}` });
+    updateRun(handle.db, run.id, { status: "awaiting_input", startedAt: 1, endedAt: 2 });
+    return item;
+  }
+
+  it("keeps a reply to a parked Claude run, starts nothing, tells the item once, and answers it once the block lifts", async () => {
+    const parked = parkedOnClaude();
+    forImplementer("Queued"); // what meets the probe and blocks Claude
+    const { provider, started, resumed } = backend();
+    const supervisor = supervising({ provider, guards: { interpretReplies: false } });
+    await supervisor.runOnce();
+    expect(signInMessages()).toHaveLength(1);
+
+    postComment(handle.db, { itemId: parked.id, author: { type: "human" }, body: "Yes, go ahead." });
+    await supervisor.resumeItem(parked.id); // what posting the reply does
+    await supervisor.runOnce(); // and the scheduler's recovery of it
+    await supervisor.runOnce();
+
+    expect(started).toEqual([]);
+    expect(resumed).toEqual([]);
+    expect(listRunsForItem(handle.db, parked.id)).toHaveLength(1); // the parked run alone: nothing started, nothing reserved
+    expect(engineNotes(parked)).toHaveLength(1);
+
+    claude = "signed_in";
+    clock += RUNTIME_BLOCK_RECHECK_MS;
+    await supervisor.runOnce();
+    await supervisor.runOnce();
+
+    // The reply is answered by itself: a new run on the item, as Implementer.
+    const runs = listRunsForItem(handle.db, parked.id);
+    expect(runs.length).toBeGreaterThan(1);
+    expect(runs.every((run) => run.agentId === implementer.id)).toBe(true);
+    expect([...started, ...resumed]).toContain(implementer.name);
+  });
+
+  it("keeps a mention of a Claude agent open while Claude is blocked, and answers it afterwards", async () => {
+    forImplementer("Queued");
+    const atRest = createTestItem(handle.db, { type: "story", title: "Waiting to merge", stepId: "ready_to_merge" });
+    const supervisor = supervising({ provider: backend().provider });
+    await supervisor.runOnce();
+
+    postComment(handle.db, { itemId: atRest.id, author: { type: "human" }, body: `@${implementer.name} a question`, mentions: [{ type: "agent", agentId: implementer.id }] });
+    await supervisor.runOnce();
+    await supervisor.runOnce();
+    expect(listRunsForItem(handle.db, atRest.id)).toEqual([]);
+    expect(engineNotes(atRest)).toHaveLength(1);
+
+    claude = "signed_in";
+    clock += RUNTIME_BLOCK_RECHECK_MS;
+    await supervisor.runOnce();
+    await supervisor.runOnce();
+    expect(listRunsForItem(handle.db, atRest.id).map((run) => run.agentId)).toEqual([implementer.id]);
   });
 });
 

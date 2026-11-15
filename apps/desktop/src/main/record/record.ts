@@ -19,7 +19,7 @@ import type { ResolveUpdateConflictAnswer, ResolveUpdateConflictRequest } from "
 import type { TemplateHistory } from "../gallery/history.js";
 import type { DependencyChangeSummary } from "../roles/itemDependencies.js";
 import type { MessageHandling, MessageHandlingAnswer, MessageSendAnswer } from "../messages/messages.js";
-import type { MessageSend } from "@eo/core";
+import type { MessageSend, RuntimeId } from "@eo/core";
 
 /**
  * The record: what owns item state and runs the only scheduler
@@ -429,6 +429,13 @@ export interface OfferWorkInput<R extends DispatchRefusal> {
    * laptop.
    */
   runsOn?: JobRunsOn;
+  /**
+   * The runtimes not signed in on the asking device (EO-796). A record in
+   * this process finds them already applied to `tickInput`; one that is
+   * elsewhere is sent them with `record:work` and applies them to its own
+   * pick. Absent is none.
+   */
+  blockedRuntimes?: readonly RuntimeId[];
   /** The record's clock, where a test holds it still. */
   at?: number;
 }

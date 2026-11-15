@@ -1134,7 +1134,7 @@ export interface RunSupervisor {
    * scheduler — same guards, same caps, same pack contributions — and
    * not a second one assembled beside it.
    */
-  offerWork: (deviceId: string, capacity: number) => Promise<WorkOffer[]>;
+  offerWork: (deviceId: string, capacity: number, blockedRuntimes?: readonly RuntimeId[]) => Promise<WorkOffer[]>;
   /** Call after any item/run state change so the next tick isn't stuck waiting on the interval. */
   /**
    * Starts the backend for the turn a person is typing in a conversation
@@ -10221,6 +10221,12 @@ export function createRunSupervisor(
     // its own placement there would offer a desktop the work a person
     // put on the server.
     runsOn: JobRunsOn = DEFAULT_JOB_RUNS_ON,
+    // The runtimes not signed in on the asking device (EO-796): its own
+    // blocks on its tick, and what a device sent with `record:work` on a
+    // server. Applied to the pick here, on whichever side picks, so a
+    // held item takes none of the device's capacity. Carried on to the
+    // record as well, so a record that is elsewhere applies them there.
+    blockedRuntimes: readonly RuntimeId[] = [],
   ): Promise<WorkOffer[]> {
     // No early return for a capacity of nought or null, deliberately.
     // Asking for no work is still asking, and the record's sweep happens
@@ -10229,8 +10235,10 @@ export function createRunSupervisor(
     // (invariant #8). A record that is somewhere else answers such an
     // ask without a round trip, because the sweep is its own business
     // and it is already doing it.
-    const tickInput = input ?? tickInputNow();
-    return record.offerWork({ deviceId: who, capacity, tickInput, runsOn });
+    const built = input ?? tickInputNow();
+    const blocked = new Set(blockedRuntimes);
+    const tickInput = blocked.size === 0 ? built : withoutBlockedRuntimes(built, blocked, heldByBlockedRuntimes(built, blocked));
+    return record.offerWork({ deviceId: who, capacity, tickInput, runsOn, blockedRuntimes: [...blocked] });
   }
 
   /**
@@ -10397,6 +10405,9 @@ export function createRunSupervisor(
           // asks for a tick when it ends, so one turned back at the door
           // would be offered again and again for as long as the hold lasted.
           if (heldBack(getAgent(db, pending.agentId), pending.itemId)) continue;
+          // Nor while its agent's runtime is not signed in here (EO-796):
+          // the reply is kept, and read once the block lifts.
+          if (waitsForRuntime(getAgent(db, pending.agentId), pending.itemId)) continue;
           const promise = executeInterpret(pending).finally(() => inFlight.delete(promise));
           inFlight.add(promise);
         }
@@ -10405,6 +10416,9 @@ export function createRunSupervisor(
           // Ahead of every refusal below: a mention a pause holds is not
           // answered yet, one way or the other, and it stays open.
           if (heldBack(getAgent(db, pending.agentId), pending.itemId)) continue;
+          // And one for an agent whose runtime is not signed in here
+          // (EO-796): kept open, and answered once the block lifts.
+          if (waitsForRuntime(getAgent(db, pending.agentId), pending.itemId)) continue;
 
           // The design's mention-depth cap, before the split below rather than
           // inside either branch (EO-212): a rerun request an agent
@@ -10461,17 +10475,8 @@ export function createRunSupervisor(
       // pick, so they hold no slot and the other runtime's work goes on.
       settleRuntimeBlocks();
       const blocked = new Set(runtimeBlocks.keys());
-      let offerInput: TickInput<GateRefusal> | undefined;
-      if (blocked.size > 0) {
-        // The input `offerWork` would have built for itself, less the
-        // blocked runtimes: the tick's own carries `reservedSlots`, which
-        // `capacityFor` has already taken off.
-        const pick = tickInputNow();
-        const held = heldByBlockedRuntimes(pick, blocked);
-        noteRuntimeHolds(held);
-        offerInput = withoutBlockedRuntimes(pick, blocked, held);
-      }
-      for (const offer of await offerWork(deviceId(), capacityFor(tickInput), offerInput, runsWhere)) {
+      if (blocked.size > 0) noteRuntimeHolds(heldByBlockedRuntimes(tickInput, blocked));
+      for (const offer of await offerWork(deviceId(), capacityFor(tickInput), undefined, runsWhere, [...blocked])) {
         const promise = executeDispatch(offer.dispatch, offer.lease).finally(() =>
           inFlight.delete(promise),
         );
@@ -10761,6 +10766,33 @@ export function createRunSupervisor(
     if (alreadySaid) return;
     postComment(db, { itemId: item.id, author: { type: "engine" }, kind: "note", body });
     onItemChanged(item.id);
+  }
+
+  /**
+   * The blocked runtime this agent would run this item on, or null. A
+   * preview runs on the fake backend, which no block holds.
+   */
+  function blockedRuntimeFor(agent: Agent | null | undefined, item: Item): RuntimeId | null {
+    if (!agent || runtimeBlocks.size === 0) return null;
+    const runtime = runtimeOf(runsOn(agent, item));
+    return runtime !== null && runtimeBlocks.has(runtime) ? runtime : null;
+  }
+
+  /**
+   * Whether a run of this agent on this item must wait for a blocked
+   * runtime (EO-796) — every door that starts an agent asks: a reply to
+   * a parked run, a mention, a reply being read. When it must, the item
+   * is told, once for the block, and the caller leaves what it was asked
+   * to do exactly as it found it, for after the block lifts.
+   */
+  function waitsForRuntime(agent: Agent | null | undefined, itemOrId: Item | Uuid): boolean {
+    if (!agent || runtimeBlocks.size === 0) return false;
+    const item = typeof itemOrId === "string" ? getItem(db, itemOrId) : itemOrId;
+    if (!item) return false;
+    const runtime = blockedRuntimeFor(agent, item);
+    if (runtime === null) return false;
+    noteRuntimeHold(item, runtime);
+    return true;
   }
 
   function noteRuntimeHolds(held: readonly HeldItem[]): void {
@@ -11759,6 +11791,13 @@ export function createRunSupervisor(
 
     if (!isAgentAvailable(agent)) return;
 
+    // Its runtime not signed in on this device (EO-796): the reply is
+    // kept and the park left as it is, the item is told once for the
+    // block, and `deferredReplyItemIds` offers the reply again on the
+    // first tick after the block lifts. Before anything is written or a
+    // slot is taken.
+    if (waitsForRuntime(agent, item)) return;
+
     // A backend switch — or a change to what is attached to this agent
     // (EO-107) — loses the thread but not the work: the fresh run below
     // is seeded from the thread, including the reply that got us here
@@ -11830,6 +11869,9 @@ export function createRunSupervisor(
     // the top of this function was made before the await, and resuming
     // a parked conversation writes a run row just below.
     if (heldBack(agent, itemId) || !getItem(db, itemId) || shelved(itemId) || !isAgentAvailable(agent)) return;
+    // And a runtime blocked while it loaded (EO-796), which keeps the
+    // reply exactly as the check before the await does.
+    if (waitsForRuntime(agent, itemId)) return;
 
     // And archived, which the check above this function's await cannot
     // answer for the time the build took (EO-186). This is the last
@@ -12085,7 +12127,7 @@ export function createRunSupervisor(
     stop,
     handleAgentWrite,
     device,
-    offerWork,
+    offerWork: (deviceId: string, capacity: number, blockedRuntimes?: readonly RuntimeId[]) => offerWork(deviceId, capacity, undefined, DEFAULT_JOB_RUNS_ON, blockedRuntimes),
     notifyStateChange,
     prewarmConversation,
     cancelRun,

@@ -1930,7 +1930,7 @@ export function registerAllHandlers(db: Db, engine: EngineHandle | undefined, re
     // scheduler. Without one — the v1 gate, a test — this process has
     // nothing to dispatch with and offers nothing, which is honest:
     // there is no engine here to have leased anything.
-    offerWork: (deviceId, capacity) => engine?.offerWork(deviceId, capacity) ?? Promise.resolve([]),
+    offerWork: (deviceId, capacity, blockedRuntimes) => engine?.offerWork(deviceId, capacity, blockedRuntimes) ?? Promise.resolve([]),
     // Where a file a device sends is kept, and read back from. The same
     // store every other attachment in this installation lives in, so
     // one that arrived from somebody's laptop is a file on the record

@@ -19,6 +19,7 @@ import { OrganisationPolicySchema, PersonBudgetSchema, PublishedMcpServerSchema,
 import { PublishedSectionNameSchema, PublishedSectionSchema, SectionLockSchema, sectionLockedMessage, type SectionLock } from "./sections.js";
 import { SuggestionViewSchema } from "./suggestions.js";
 import { DebugAgentSchema } from "./debug.js";
+import { RuntimeIdSchema } from "./schemas/commentOptions.js";
 import { MessageSchema, MessageSendSchema } from "./messages.js";
 import {
   RecordAdoptCountsSchema,
@@ -6042,6 +6043,14 @@ export const recordContract = {
       deviceId: z.string().min(1),
       /** How many dispatches this device could start right now. The record may offer fewer; it never offers more. */
       capacity: z.number().int().nonnegative().default(1),
+      /**
+       * The runtimes not signed in on this device (EO-796). The record
+       * offers it nothing for an agent on one of them, and leaves out of
+       * the pick an item only such agents could take, so a blocked item
+       * spends none of this device's capacity. Absent from an older
+       * device, which is none blocked.
+       */
+      blockedRuntimes: z.array(RuntimeIdSchema).optional(),
     }),
     z.object({ offers: z.array(RecordOfferSchema) }),
   ),

@@ -247,7 +247,10 @@ export function createRemoteRecord(options: RemoteRecordOptions): RemoteRecord {
       // capacity left does ask: the record may hold work no cap holds
       // back (EO-616).
       if (input.capacity === null) return [];
-      const answer = await ask("record:work", { deviceId: input.deviceId, capacity: input.capacity });
+      // And the runtimes this device cannot run (EO-796), so the record
+      // leaves their work out of the pick rather than spending this
+      // device's capacity on offers it would only stand down from.
+      const answer = await ask("record:work", { deviceId: input.deviceId, capacity: input.capacity, blockedRuntimes: [...(input.blockedRuntimes ?? [])] });
       if (!answer.ok) return [];
       const offers: WorkOffer[] = [];
       for (const offer of answer.data.offers) {
