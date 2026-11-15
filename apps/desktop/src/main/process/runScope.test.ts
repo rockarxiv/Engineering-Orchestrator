@@ -1,8 +1,7 @@
-import { execFileSync, spawn } from "node:child_process";
+import { spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { RUN_MEMORY_MAX_MB, RUN_MEMORY_MIN_MB, type RunProcessScope } from "@eo/core";
 import { afterEach, describe, expect, it } from "vitest";
-import { nodeScript } from "../testing/nodeScript.js";
 import { defaultRunMemoryMaxMb, effectiveRunMemoryMaxMb, launchTree, runMemoryFacts, setRunScopes, systemdRunScopes, type RunScopes } from "./runScope.js";
 
 /**
@@ -10,9 +9,10 @@ import { defaultRunMemoryMaxMb, effectiveRunMemoryMaxMb, launchTree, runMemoryFa
  *
  * The first half is what holds everywhere: the default, and that a run's
  * tree is planned through the run scopes and nothing else is. The second
- * half runs only where a systemd user manager is reachable, and runs the
- * real thing: a process that eats memory inside a scope with a small
- * `MemoryMax`, and what EO is told about it.
+ * half runs only where a systemd user manager is reachable: a real scope
+ * gets the run's `MemoryMax`, and a run that ends normally reports nothing.
+ * Nothing here runs a scope out of memory on purpose — that set off the
+ * desktop's "Memory Shortage Avoided" notifications on every test run.
  */
 
 const SCOPE: RunProcessScope = { runId: "019a0000-0000-7000-8000-000000000738", memoryMaxMb: 2_048 };
@@ -100,11 +100,8 @@ describe("a run's tree is planned through the run scopes (EO-738)", () => {
  */
 const live = process.platform === "linux" && systemdRunScopes().availability().applies;
 
-/** Swap off in the scope: a limit reached is then an OOM kill at once, not a crawl through swap. */
+/** Swap off in the scope, as EO's own runs would be. */
 const scopes = () => systemdRunScopes({ properties: ["MemorySwapMax=0"] });
-
-/** A Node program that allocates until something stops it. */
-const GREEDY = nodeScript('const kept = []; for (;;) kept.push(Buffer.alloc(4 * 1024 * 1024, 1));');
 
 /** Starts `plan` and resolves with how it ended. */
 function runToEnd(command: string, args: readonly string[]): Promise<{ code: number | null; signal: NodeJS.Signals | null; stdout: string }> {
@@ -134,88 +131,6 @@ describe.runIf(live)("a run's scope on this machine's systemd user manager (EO-7
     expect(ended.code).toBe(0);
   }, 30_000);
 
-  it("ends alone when the run runs out of memory, and says so: the limit and the process killed", async () => {
-    const before = ownCgroup();
-    const runScopes = scopes();
-    const scope = { ...SCOPE, runId: `oom-${process.pid}`, memoryMaxMb: 128 };
-    const plan = runScopes.plan(scope, `eo-tree-oom-${process.pid}`, process.execPath, [GREEDY], process.env, undefined);
-    expect(plan).not.toBeNull();
-    const child = spawn(plan!.command, plan!.args, { stdio: ["ignore", "ignore", "pipe"], windowsHide: true });
-    let said = "";
-    child.stderr.on("data", (chunk: Buffer) => (said += chunk.toString()));
-    plan!.adopt(child.pid);
-    const ended = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) => child.on("exit", (code, signal) => resolve({ code, signal })));
-    // Killed, not finished: the program never stops on its own.
-    expect(ended.code === 0, said).toBe(false);
-
-    const report = await runScopes.outOfMemory(scope.runId);
-    expect(report).toMatchObject({ runId: scope.runId, memoryMaxMb: 128 });
-    expect(report!.unit).toMatch(/^eo-run-oom-\d+\.scope$/);
-    // The kernel's own words where this user may read them; the likeliest
-    // process otherwise. Either way, a Node process.
-    expect(report!.killed).not.toBeNull();
-    expect(report!.killed!.name).toMatch(/node|MainThread/);
-    if (report!.killed!.how === "kernel") {
-      expect(report!.killed!.pid).toBe(child.pid);
-      expect(report!.limitReached).toBe(true);
-    }
-    // And this process — standing for EO — is where it was, untouched.
-    expect(ownCgroup()).toBe(before);
-    // EO resets the failed unit once it has gone; this process may be
-    // gone first.
-    try {
-      execFileSync("systemctl", ["--user", "reset-failed", report!.unit], { stdio: "ignore", windowsHide: true });
-    } catch {
-      // Already reset.
-    }
-  }, 60_000);
-
-  it("still names a process when the run runs out within its first second and the kernel log cannot be read", async () => {
-    // A limit node cannot even start inside, so the scope is gone before
-    // the regular look at it would ever have come; and no kernel log, as
-    // for a user it is closed to. What EO saw first, or what the run
-    // started as, is still a name.
-    const runScopes = systemdRunScopes({ properties: ["MemorySwapMax=0"], kernelLog: false });
-    const scope = { ...SCOPE, runId: `fast-${process.pid}`, memoryMaxMb: 32 };
-    const plan = runScopes.plan(scope, `eo-tree-fast-${process.pid}`, process.execPath, [GREEDY], process.env, undefined);
-    expect(plan).not.toBeNull();
-    const started = Date.now();
-    const child = spawn(plan!.command, plan!.args, { stdio: "ignore", windowsHide: true });
-    plan!.adopt(child.pid);
-    await new Promise((resolve) => child.on("exit", resolve));
-    expect(Date.now() - started).toBeLessThan(2_000);
-
-    const report = await runScopes.outOfMemory(scope.runId);
-    expect(report).toMatchObject({ runId: scope.runId, memoryMaxMb: 32 });
-    expect(report!.killed).not.toBeNull();
-    expect(report!.killed!.how).not.toBe("kernel");
-    expect(report!.killed!.name).toMatch(/node|MainThread/);
-    expect(report!.killed!.pid).toBeGreaterThan(0);
-    try {
-      execFileSync("systemctl", ["--user", "reset-failed", report!.unit], { stdio: "ignore", windowsHide: true });
-    } catch {
-      // Already reset.
-    }
-  }, 60_000);
-
-  it("is the adopting run's to hear of, once a warm process's scope is handed over", async () => {
-    const runScopes = scopes();
-    const warm = { ...SCOPE, runId: `warm:handover-${process.pid}`, memoryMaxMb: 128 };
-    const plan = runScopes.plan(warm, `eo-tree-handover-${process.pid}`, process.execPath, [GREEDY], process.env, undefined)!;
-    const child = spawn(plan.command, plan.args, { stdio: "ignore", windowsHide: true });
-    plan.adopt(child.pid);
-    runScopes.handOver(warm.runId, `run-${process.pid}`);
-    await new Promise((resolve) => child.on("exit", resolve));
-    expect(await runScopes.outOfMemory(warm.runId)).toBeNull();
-    const report = await runScopes.outOfMemory(`run-${process.pid}`);
-    expect(report).toMatchObject({ runId: `run-${process.pid}`, memoryMaxMb: 128 });
-    try {
-      execFileSync("systemctl", ["--user", "reset-failed", report!.unit], { stdio: "ignore", windowsHide: true });
-    } catch {
-      // Already reset.
-    }
-  }, 60_000);
-
   it("says nothing about a run that ended without running out", async () => {
     const runScopes = scopes();
     const scope = { ...SCOPE, runId: `fine-${process.pid}` };
@@ -225,37 +140,4 @@ describe.runIf(live)("a run's scope on this machine's systemd user manager (EO-7
     await new Promise((resolve) => child.on("exit", resolve));
     expect(await runScopes.outOfMemory(scope.runId)).toBeNull();
   }, 30_000);
-
-  it("leaves EO running under a launcher whose OOMPolicy is the default, stop", async () => {
-    // EO as the desktop launcher starts it: a scope of its own whose
-    // OOMPolicy is systemd's default, `stop` — the unit that took EO
-    // down on 2026-11-11. A shell stands in for EO; it starts a run the
-    // way EO does, waits for it to die, and says it is still here.
-    const runScopes = scopes();
-    const scope = { ...SCOPE, runId: `launcher-${process.pid}`, memoryMaxMb: 128 };
-    const plan = runScopes.plan(scope, `eo-tree-launcher-${process.pid}`, process.execPath, [GREEDY], process.env, undefined)!;
-    const launcher = `eo-launcher-test-${process.pid}.scope`;
-    const quoted = [plan.command, ...plan.args].map((word) => `'${word.replace(/'/g, `'\\''`)}'`).join(" ");
-    const ended = await runToEnd("systemd-run", [
-      "--user",
-      "--scope",
-      "--quiet",
-      "--collect",
-      `--unit=${launcher}`,
-      "-p",
-      "OOMPolicy=stop",
-      "--",
-      "/bin/sh",
-      "-c",
-      `${quoted}; echo "run ended $?"; sleep 1; echo "EO still running"`,
-    ]);
-    expect(ended.stdout).toContain("run ended");
-    expect(ended.stdout).toContain("EO still running");
-    expect(ended.code).toBe(0);
-    expect(ended.signal).toBeNull();
-    // The run's own unit is the one that ended out of memory.
-    const unit = plan.args.find((arg) => arg.startsWith("--unit="))!.slice("--unit=".length);
-    expect(execFileSync("systemctl", ["--user", "show", "--property=Result", "--value", unit], { encoding: "utf8", windowsHide: true }).trim()).toBe("oom-kill");
-    execFileSync("systemctl", ["--user", "reset-failed", unit], { windowsHide: true });
-  }, 60_000);
 });
