@@ -1,11 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { HANDLED_MESSAGE_RETENTION_MS, LOCAL_PERSON_ID, type Message, uuidv7 } from "@eo/core";
 import type { DbHandle } from "../db/client.js";
-import { createProject, deleteProject, getMessage, insertMessage, listOpenMessages, markMessageHandled, sweepHandledMessages } from "../db/repos/index.js";
+import { createProject, deleteProject, getMessage, insertMessage, listMessagesChangedSince, listOpenMessages, markMessageHandled, sweepHandledMessages } from "../db/repos/index.js";
 import { openMigratedTestDb } from "../db/testHelpers.js";
 import { listInbox } from "../ipc/domainQueries.js";
 import { onPush } from "../ipc/push.js";
-import { answerMessageCommand, dismissMessageCommand, messageRecipientsFor, resolveMessage, sendMessage } from "./messages.js";
+import { answerMessageCommand, dismissMessageCommand, messageRecipientsFor, resolveMessage, reviseMessage, sendMessage } from "./messages.js";
 
 let handle: DbHandle;
 
@@ -100,6 +100,30 @@ describe("sending and handling", () => {
     expect(resolveMessage(handle.db, message.id, 7_000)).toMatchObject({ handledAt: 7_000, handledHow: "resolved" });
     expect(resolveMessage(handle.db, message.id, 8_000)).toBeUndefined();
     expect(getMessage(handle.db, message.id)?.handledAt).toBe(7_000);
+  });
+
+  it("revises an open message in place, pages it again, and tells the windows (EO-798)", () => {
+    const message = send({}, 1_000);
+    const heard: unknown[] = [];
+    const off = onPush("messages:changed", (payload) => heard.push(payload));
+    try {
+      const revised = reviseMessage(handle.db, message.id, { body: "Keep, take or merge?", options: ["Keep", "Take", "Merge"] }, 9_000);
+      expect(revised).toMatchObject({ id: message.id, body: "Keep, take or merge?", options: ["Keep", "Take", "Merge"], createdAt: 9_000, handledAt: null });
+      expect(heard).toHaveLength(1);
+    } finally {
+      off();
+    }
+    // Still the one message, and `record:messages` pages it again from a
+    // cursor that had already passed it.
+    expect(listOpenMessages(handle.db, [LOCAL_PERSON_ID]).map((open) => open.id)).toEqual([message.id]);
+    expect(listMessagesChangedSince(handle.db, LOCAL_PERSON_ID, { ts: 1_000, id: message.id }, 10).map((changed) => changed.id)).toEqual([message.id]);
+  });
+
+  it("leaves a handled message as the person left it", () => {
+    const message = send({}, 1_000);
+    dismissMessageCommand(handle.db, { messageId: message.id }, 2_000);
+    expect(reviseMessage(handle.db, message.id, { body: "Something else" }, 3_000)).toBeUndefined();
+    expect(getMessage(handle.db, message.id)).toMatchObject({ body: "Keep or take?", createdAt: 1_000 });
   });
 
   it("refuses to handle a message twice", () => {

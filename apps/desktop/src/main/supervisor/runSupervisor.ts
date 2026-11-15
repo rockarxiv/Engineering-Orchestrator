@@ -257,7 +257,7 @@ import {
 } from "../db/repos/index.js";
 import type { RuntimeId } from "@eo/core";
 import { invalidateRuntimeAuth, type RuntimeAuthCheck } from "../runtimes/auth.js";
-import { resolveMessagesAbout, sendMessageHere } from "../messages/messages.js";
+import { resolveMessagesAbout, reviseMessage, sendMessageHere } from "../messages/messages.js";
 import {
   heldByBlockedRuntimes,
   RUNTIME_BLOCK_RECHECK_MS,
@@ -9010,6 +9010,9 @@ export function createRunSupervisor(
       // The asking comment is stable while a failed response retries,
       // and a new direct request has a different comment id.
       initiationId: pending.commentId,
+      // A turn a plan limit cut off answering this same request is
+      // carried on in its thread (EO-798) — a chat keeps its conversation.
+      ...limitContinuation(item, agent, pending.action, undefined, pending.commentId),
       transitionOnSuccess: false,
       // Asked again after each preflight await, as the rerun path does:
       // preflight is auth, a worktree and a context assembly long, and
@@ -9054,6 +9057,8 @@ export function createRunSupervisor(
       // interpretation — and so a retry after a failure is the same
       // initiation rather than a fresh allowance.
       initiationId: pending.commentId,
+      // Carried on in its thread if a plan limit cut its reading off (EO-798).
+      ...limitContinuation(item, agent, pending.action, undefined, pending.commentId),
       transitionOnSuccess: false,
       // Asked again after each preflight await, like the rerun path
       // (EO-175): preflight is long enough for the person to say
@@ -10842,6 +10847,10 @@ export function createRunSupervisor(
       if (standing.resetAt !== null && (resetAt === null || resetAt > standing.resetAt)) {
         standing.quota = quota;
         standing.resetAt = resetAt;
+        // The open message is rewritten rather than a second one sent:
+        // it must name the reset the block now lifts at, not the one it
+        // was sent with. One already handled is left as the person left it.
+        if (standing.messageId !== null) reviseMessage(db, standing.messageId, limitMessageFor(runtime, quota, agent, item));
       }
       return;
     }
@@ -10851,16 +10860,16 @@ export function createRunSupervisor(
     limitBlocks.set(runtime, block);
     if (open) return;
 
+    const [message] = sendMessageHere(db, { source: RUNTIME_LIMIT_SOURCE, subject: runtime, ...limitMessageFor(runtime, quota, agent, item) }, false, since);
+    block.messageId = message?.id ?? null;
+  }
+
+  /** What the plan-limit message says now: the refusal it names, and who is waiting. */
+  function limitMessageFor(runtime: RuntimeId, quota: QuotaEvent, agent: Agent, item: Item): ReturnType<typeof runtimeLimitMessage> {
     const held = heldByBlockedRuntimes(tickInputNow(), new Set([runtime]));
     const itemIds = new Set([item.id, ...held.map(({ item: waiting }) => waiting.id)]);
     const agentNames = [...new Set([agent.name, ...held.flatMap(({ agents }) => agents.filter((candidate) => runtimeOf(candidate) === runtime).map((candidate) => candidate.name))])];
-    const [message] = sendMessageHere(
-      db,
-      { source: RUNTIME_LIMIT_SOURCE, subject: runtime, ...runtimeLimitMessage({ runtime, quota, now: now(), itemCount: itemIds.size, agentNames }) },
-      false,
-      since,
-    );
-    block.messageId = message?.id ?? null;
+    return runtimeLimitMessage({ runtime, quota, now: now(), itemCount: itemIds.size, agentNames });
   }
 
   function liftLimitBlock(runtime: RuntimeId): void {
@@ -10872,18 +10881,19 @@ export function createRunSupervisor(
   /**
    * Lifts each plan-limit block that is over: its reset has passed, or
    * the person pressed Carry on now. With no reset EO could read, only
-   * the person ends it — and a message dismissed then is taken as the
-   * same word, since nothing else ever could lift it. A lifted block that
-   * was lifted too soon is found again by the next dispatch, and blocked
-   * again without an attempt spent.
+   * that answer ends it: dismissing the message is the person putting it
+   * away, not saying the window is back, and taking it as Carry on now
+   * would spend the allowance on a guess. Such a block holds until EO is
+   * next started, which forgets it. A block lifted too soon is found
+   * again by the next dispatch, and blocked again without an attempt
+   * spent.
    */
   function settleLimitBlocks(): void {
     for (const block of [...limitBlocks.values()]) {
       const message = block.messageId === null ? undefined : getMessage(db, block.messageId);
       const carryOn = message?.handledHow === "answered" && message.answer === CARRY_ON_NOW_OPTION;
-      const dismissedWithNoReset = block.resetAt === null && message?.handledHow === "dismissed";
       const reset = block.resetAt !== null && now() >= block.resetAt;
-      if (carryOn || dismissedWithNoReset || reset) liftLimitBlock(block.runtime);
+      if (carryOn || reset) liftLimitBlock(block.runtime);
     }
   }
 
@@ -10913,8 +10923,19 @@ export function createRunSupervisor(
    * its thread is one the agent can resume on the rules every other
    * continuation keeps; otherwise the dispatch is an ordinary one. In the
    * same initiation, so the attempt it carries on is the one it had.
+   *
+   * `initiationId`, where the caller dispatches on behalf of something —
+   * a mention, a chat message, a reply to read — is the one it carries:
+   * only a run started for that same request is carried on, so a later
+   * question is never answered inside the thread of an earlier one.
    */
-  function limitContinuation(item: Item, agent: Agent, action: string, stepId: string | null | undefined): Pick<DispatchOptions, "continueThread" | "initiationId"> {
+  function limitContinuation(
+    item: Item,
+    agent: Agent,
+    action: string,
+    stepId: string | null | undefined,
+    initiationId?: string,
+  ): Pick<DispatchOptions, "continueThread" | "initiationId"> {
     const latest = listRunsForItem(db, item.id)
       .filter((run) => !isGuardPlaceholder(run))
       .sort((left, right) => (left.startedAt ?? 0) - (right.startedAt ?? 0) || left.id.localeCompare(right.id))
@@ -10929,6 +10950,7 @@ export function createRunSupervisor(
       latest.threadId === null ||
       latest.threadLost ||
       latest.initiationId === null ||
+      (initiationId !== undefined && latest.initiationId !== initiationId) ||
       resumeBlockedReason(latest, agent) !== null ||
       (latest.itemFilesHash ?? EMPTY_ITEM_FILES_HASH) !== itemFilesHash(db, item.id)
     ) {

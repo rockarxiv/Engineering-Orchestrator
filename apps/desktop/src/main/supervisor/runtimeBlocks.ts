@@ -233,7 +233,7 @@ export function runtimeLimitMessage(facts: {
       `${describeQuotaReset(facts.quota.resetsAt, facts.now)} ${items} waiting${agents}. ` +
       (known
         ? `They carry on by themselves when the window refreshes; nobody needs to reply on them. Carry on now tries ${label} again before then.`
-        : `EO cannot tell when the window refreshes, so they wait until you press Carry on now; nobody needs to reply on them.`),
+        : `EO cannot tell when the window refreshes, so they wait until you press Carry on now — dismissing this message leaves them waiting until EO is next started. Nobody needs to reply on them.`),
     options: [CARRY_ON_NOW_OPTION],
   };
 }

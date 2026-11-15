@@ -10,14 +10,16 @@ import {
   listRunsForItem,
   needsAttention,
   openMessageAbout,
+  postComment,
   setSetting,
   updateAgent,
   updateRun,
 } from "../db/repos/index.js";
 import { createTestItem, messagesFrom, openMigratedTestDb, REVIEWABLE_SPEC } from "../db/testHelpers.js";
-import { answerMessageCommand } from "../messages/messages.js";
+import { answerMessageCommand, dismissMessageCommand } from "../messages/messages.js";
 import { validImplementResult } from "../providers/fixtures.js";
 import type { RuntimeAuthCheck } from "../runtimes/auth.js";
+import { openAssistConversation } from "../roles/assist.js";
 import { createRunSupervisor, type RunSupervisor, type RunSupervisorOptions } from "./runSupervisor.js";
 import { CARRY_ON_NOW_OPTION, LIMIT_RESUME_MESSAGE, RUNTIME_BLOCK_RECHECK_MS, RUNTIME_LIMIT_SOURCE, RUNTIME_SIGN_IN_SOURCE } from "./runtimeBlocks.js";
 
@@ -310,6 +312,12 @@ describe("a Claude run that hits its plan limit", () => {
     expect(resumed).toEqual([]);
     expect(limitMessages()).toHaveLength(1);
     expect(limitMessages()[0]?.handledAt).toBeNull();
+    // The one message names the reset the block now lifts at, not the
+    // one it was sent with.
+    const revised = limitMessages()[0]?.body ?? "";
+    expect(revised).toContain("2026-08-29 01:40 UTC");
+    expect(revised).not.toContain("23:40");
+    expect(revised).toContain("five-hour usage window is full");
 
     clock = START + 5 * HOUR + 1;
     await supervisor.runOnce();
@@ -376,5 +384,153 @@ describe("a Claude run that hits its plan limit", () => {
 
     expect(listRunsForItem(handle.db, review.id)).toHaveLength(1);
     expect(getSetting(handle.db, "engine.forced-restarts", [])).toHaveLength(1); // kept for after the hold
+  });
+});
+
+describe("dismissing the plan-limit message", () => {
+  it("does not lift a block with no reset: only Carry on now could, so it holds", async () => {
+    forImplementer("Hits the limit", 10);
+    const second = forImplementer("Queued behind it", 5);
+    const { provider, resumed, started } = backend([null]);
+    const supervisor = supervising({ provider });
+
+    await supervisor.runOnce();
+    const [message] = limitMessages();
+    expect(message?.body).toContain("dismissing this message leaves them waiting");
+    dismissMessageCommand(handle.db, { messageId: message!.id });
+    for (const days of [0, 1, 3]) {
+      clock = START + days * 24 * HOUR + 1;
+      await supervisor.runOnce();
+    }
+
+    expect(resumed).toEqual([]);
+    expect(started).toEqual([implementer.name]);
+    expect(listRunsForItem(handle.db, second.id)).toEqual([]);
+    expect(limitMessages()[0]?.handledHow).toBe("dismissed"); // not taken as an answer, nor sent again
+    expect(limitMessages()).toHaveLength(1);
+  });
+
+  it("does not lift a block with a reset early: it still lifts at the reset", async () => {
+    const first = forImplementer("Hits the limit", 10);
+    const { provider, resumed } = backend([3]);
+    const supervisor = supervising({ provider });
+
+    await supervisor.runOnce();
+    dismissMessageCommand(handle.db, { messageId: limitMessages()[0]!.id });
+    clock = START + HOUR;
+    await supervisor.runOnce();
+    await supervisor.runOnce();
+    expect(resumed).toEqual([]);
+
+    clock = START + 3 * HOUR + 1;
+    await supervisor.runOnce();
+    await supervisor.runOnce();
+    expect(resumed.filter((turn) => turn.agent === implementer.name).map((turn) => turn.threadId)).toEqual(["thread-1"]);
+    expect(listRunsForItem(handle.db, first.id).map((run) => run.status)).toContain("succeeded");
+  });
+});
+
+describe("a mention or chat turn cut off by the plan limit", () => {
+  /**
+   * A backend whose first start is refused mid-turn, and whose every other turn
+   * answers `{ message }` — what `respond` and `assist` both accept. Each
+   * start opens its own thread.
+   */
+  function talkingBackend() {
+    const started: string[] = [];
+    const resumed: { threadId: string; message: string }[] = [];
+    let refused = false;
+    let threads = 0;
+    const provider = (): AgentProvider => ({
+      async *start(): AsyncIterable<AgentEvent> {
+        threads += 1;
+        started.push(`thread-${threads}`);
+        yield { type: "thread_started", threadId: `thread-${threads}` };
+        if (!refused) {
+          refused = true;
+          // Cut off with no result at all: a schema-less reply validates
+          // whatever it is given, so only a turn that never finished is
+          // one the limit stopped.
+          yield refusal(1);
+          return;
+        }
+        yield { type: "result", data: { message: "A fresh answer." } };
+      },
+      async *resume(threadId: string, message: string): AsyncIterable<AgentEvent> {
+        resumed.push({ threadId, message });
+        yield { type: "result", data: { message: "Picking up where I was." } };
+      },
+    });
+    return { provider, started, resumed };
+  }
+
+  function mention(item: Item, agent: Agent, body: string) {
+    return postComment(handle.db, { itemId: item.id, author: { type: "human" }, body, mentions: [{ type: "agent", agentId: agent.id }] });
+  }
+
+  it("carries a mention reply on in its thread once the window refreshes", async () => {
+    const item = createTestItem(handle.db, { type: "story", title: "Waiting to merge", stepId: "ready_to_merge" });
+    const asked = mention(item, implementer, "@implementer why a token bucket?");
+    const { provider, started, resumed } = talkingBackend();
+    const supervisor = supervising({ provider });
+
+    await supervisor.runOnce();
+    const stopped = limitedRun(item);
+    expect(stopped?.action).toBe("respond");
+    expect(stopped?.initiationId).toBe(asked.id);
+    await supervisor.runOnce(); // held: the mention stays open, nothing starts
+    expect(started).toEqual(["thread-1"]);
+
+    clock = START + HOUR + 1;
+    await supervisor.runOnce();
+    await supervisor.runOnce();
+
+    expect(resumed).toEqual([{ threadId: "thread-1", message: LIMIT_RESUME_MESSAGE }]);
+    expect(started).toEqual(["thread-1"]); // a resume, not a fresh start
+    const carried = listRunsForItem(handle.db, item.id).find((run) => run.id !== stopped?.id);
+    expect(carried?.status).toBe("succeeded");
+    expect(carried?.threadId).toBe("thread-1");
+    expect(carried?.initiationId).toBe(asked.id);
+  });
+
+  it("carries an assistant chat turn on in its conversation", async () => {
+    const system = listAgents(handle.db).find((agent) => agent.role === "system")!;
+    updateAgent(handle.db, system.id, { provider: "claude" });
+    const chat = openAssistConversation(handle.db, null);
+    mention(chat, system, "What is the review step for?");
+    const { provider, started, resumed } = talkingBackend();
+    const supervisor = supervising({ provider });
+
+    await supervisor.runOnce();
+    expect(limitedRun(chat)).toBeDefined();
+    clock = START + HOUR + 1;
+    await supervisor.runOnce();
+    await supervisor.runOnce();
+
+    expect(resumed).toEqual([{ threadId: "thread-1", message: LIMIT_RESUME_MESSAGE }]);
+    expect(started).toEqual(["thread-1"]);
+  });
+
+  it("answers a later question as itself, not as the turn the limit cut off", async () => {
+    const item = createTestItem(handle.db, { type: "story", title: "Waiting to merge", stepId: "ready_to_merge" });
+    const first = mention(item, implementer, "@implementer first question");
+    const { provider, resumed } = talkingBackend();
+    const supervisor = supervising({ provider });
+
+    await supervisor.runOnce();
+    expect(limitedRun(item)?.initiationId).toBe(first.id);
+    // Another question, and Carry on now: the newest open mention is answered.
+    const second = mention(item, implementer, "@implementer never mind that, a different question");
+    answerMessageCommand(handle.db, { messageId: limitMessages()[0]!.id, answer: CARRY_ON_NOW_OPTION });
+    await supervisor.runOnce();
+    await supervisor.runOnce();
+
+    // Not told to carry on where the first question's turn stopped: it is
+    // its own request, with its own initiation. (The implementer may still
+    // keep one conversation per item; that is its role's rule, and what it
+    // is sent then is the new question.)
+    expect(resumed.map((turn) => turn.message)).not.toContain(LIMIT_RESUME_MESSAGE);
+    const answered = listRunsForItem(handle.db, item.id).find((run) => run.status === "succeeded");
+    expect(answered?.initiationId).toBe(second.id);
   });
 });
