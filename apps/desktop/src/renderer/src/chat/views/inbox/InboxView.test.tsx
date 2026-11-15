@@ -9,6 +9,7 @@ import { ItemReferenceProvider } from "../../conversation/ItemReferenceProvider"
 import { ViewPublisher } from "../../../shared/view/ViewPublisher";
 import { InboxView } from "./InboxView";
 import { RowsViewport } from "../../kit/testing";
+import { signedOut } from "../agents/testRuntimes";
 
 /**
  * The chat layout's inbox: the classic inbox's behaviour — its filters,
@@ -80,6 +81,7 @@ function renderInbox(
     if (channel === "items:listArchived") return { ok: true, data: { items: [] } };
     if (channel === "projects:list") return { ok: true, data: { projects: [], activeProjectId: null } };
     if (channel === "registry:get") return { ok: true, data: toRegistryView(developerRegistry()) };
+    if (channel === "runtime:status") return { ok: true, data: { runtime: signedOut("claude", "Claude Code") } };
     return { ok: true, data: {} };
   }) as never;
   window.eo.ipc.subscribe = vi.fn(() => () => {}) as never;
@@ -480,6 +482,25 @@ describe("messages from EO in the inbox (EO-725)", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Fix with assistant" }));
     await waitFor(() => expect(calls.find((call) => call.channel === "assist:openUpdateConflict")?.payload).toEqual({ conflictId: "conflict-1", commentId: "m1" }));
+  });
+
+  /** EO-795: a runtime's sign-in message opens the Runtimes tab's dialog from where it is read. */
+  it("draws a Sign in action as a button that opens the sign-in dialog for the runtime it names", async () => {
+    const calls: { channel: string; payload: unknown }[] = [];
+    renderInbox(
+      {
+        items: [],
+        messages: [message({ body: "Claude Code is not signed in on this computer.", options: [{ kind: "open", label: "Sign in", opens: { type: "runtimeSignIn", runtime: "claude" } }] })],
+        summary: summary({ blockingCount: 0 }),
+      },
+      (channel, payload) => calls.push({ channel, payload }),
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: "Sign in" }));
+
+    expect(await screen.findByRole("dialog", { name: "Sign in to Claude Code" })).toBeInTheDocument();
+    expect(calls.find((call) => call.channel === "runtime:status")?.payload).toMatchObject({ provider: "claude" });
+    expect(calls.some((call) => call.channel === "messages:answer" || call.channel === "comments:post")).toBe(false);
   });
 
   it("dismisses one", async () => {

@@ -30,6 +30,7 @@ import {
   startRuntimeSignIn,
   type RuntimeContext,
 } from "./runtimeCommands.js";
+import { onRuntimeSignedIn } from "../runtimes/signedIn.js";
 
 /**
  * The runtime commands (A-08).
@@ -992,6 +993,18 @@ describe("signing in with an API key", () => {
 
     const { runtime } = await runtimeStatusWithAuth({ ...ctx, authProbe }, { provider: "claude" }, machine);
     expect(runtime?.auth).toMatchObject({ state: "signed_in", kind: "api_key", storedKey: true });
+  });
+
+  it("tells main that Claude is signed in once the key is stored, and not when it could not be (EO-795)", async () => {
+    placeCurrentClaude();
+    const heard: string[] = [];
+    const stop = onRuntimeSignedIn((runtime) => heard.push(runtime));
+
+    await signInWithRuntimeApiKey(withKeychain(keychain(false)), { provider: "claude", apiKey: "sk-ant-secret" }, machine);
+    await signInWithRuntimeApiKey(withKeychain(), { provider: "claude", apiKey: "sk-ant-secret" }, machine);
+    stop();
+
+    expect(heard).toEqual(["claude"]);
   });
 
   it("says why when the machine has no keychain, rather than writing the key in the clear", async () => {

@@ -6,6 +6,7 @@ import { RUNTIMES, versionFor, type RuntimeId, type RuntimeSpec } from "../runti
 import { installRuntime, resolveRelease, type FetchLike } from "../runtimes/install.js";
 import { resolveRuntime } from "../runtimes/resolve.js";
 import { cachedRuntimeAuth, invalidateRuntimeAuth, runtimeAuth, type AuthProbeRunner } from "../runtimes/auth.js";
+import { runtimeSignedIn } from "../runtimes/signedIn.js";
 import { cancelSignIn, signInWithApiKey, startSignIn, submitSignInCode, type SignInSpawner } from "../runtimes/signIn.js";
 import { clearApiKey, hasApiKey, storeApiKey, type ApiKeyStoreOptions } from "../runtimes/apiKey.js";
 import { CLAUDE_SDK, installPackageSet, resolvePackageSet } from "../runtimes/packages.js";
@@ -497,8 +498,9 @@ export async function signInWithRuntimeApiKey(
 
   // The binary has not changed and nobody has run its login, but the
   // answer has: this runtime is now authenticated by something only EO
-  // knows about, and the cached probe result predates it.
-  invalidateRuntimeAuth("claude");
+  // knows about, and the cached probe result predates it. Dropping that
+  // answer is `runtimeSignedIn`'s first step, before it tells main (EO-795).
+  runtimeSignedIn("claude");
   return { ok: true, heldBy: "eo", transcript: "", problem: null };
 }
 

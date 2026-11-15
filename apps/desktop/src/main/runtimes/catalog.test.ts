@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
+import { RuntimeIdSchema } from "@eo/core";
 import { RUNTIMES, versionFor } from "./catalog.js";
 import { CLAUDE_SDK } from "./packages.js";
 
@@ -41,6 +42,12 @@ function workspaceCatalogPin(packageName: string): string {
   if (!match?.[1]) throw new Error(`${packageName} is not pinned in pnpm-workspace.yaml`);
   return match[1].replace(/^["']|["']$/g, "");
 }
+
+describe("the runtime ids", () => {
+  it("are core's, so a Sign in action names only a runtime this catalog has (EO-795)", () => {
+    expect(Object.keys(RUNTIMES).sort()).toEqual([...RuntimeIdSchema.options].sort());
+  });
+});
 
 describe("the pinned versions", () => {
   it("drives the Claude CLI with the library version it was published beside", () => {

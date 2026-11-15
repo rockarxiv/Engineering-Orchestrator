@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { uuidv7 } from "@eo/core";
 import { RUNTIMES } from "./catalog.js";
 import { invalidateRuntimeAuth, type AuthProvider } from "./auth.js";
+import { runtimeSignedIn } from "./signedIn.js";
 
 /**
  * Signing a runtime in without a terminal (EO-83).
@@ -567,7 +568,11 @@ export async function submitSignInCode(options: SubmitSignInOptions): Promise<Su
     return { ok: false, state: "failed", transcript, problem: `EO could not run ${label}: ${exit.error}` };
   }
 
-  if (exit.code === 0) return { ok: true, state: "signed_in", transcript, problem: null };
+  if (exit.code === 0) {
+    // The CLI says it worked, so main code waiting on this runtime hears it (EO-795).
+    runtimeSignedIn(session.provider);
+    return { ok: true, state: "signed_in", transcript, problem: null };
+  }
 
   const why = exit.signal !== null ? `was killed (${exit.signal})` : `exited with code ${exit.code ?? "unknown"}`;
   return { ok: false, state: "failed", transcript, problem: `${label} ${why} without signing in.${said(transcript)}` };
@@ -715,7 +720,10 @@ export async function signInWithApiKey(options: ApiKeySignInOptions): Promise<Ap
   }
 
   if (exit.error !== null) return { ok: false, transcript: said, problem: `EO could not run ${label}: ${exit.error}` };
-  if (exit.code === 0) return { ok: true, transcript: said, problem: null };
+  if (exit.code === 0) {
+    runtimeSignedIn(options.provider);
+    return { ok: true, transcript: said, problem: null };
+  }
 
   const why = exit.signal !== null ? `was killed (${exit.signal})` : `exited with code ${exit.code ?? "unknown"}`;
   return {
