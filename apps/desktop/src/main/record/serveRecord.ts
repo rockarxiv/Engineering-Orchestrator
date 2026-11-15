@@ -735,6 +735,7 @@ export async function serveMemory(context: ServeRecordContext, payload: IpcPaylo
         body: checked.body,
         extracted: write.extracted,
         ...(write.replaces.length === 0 ? {} : { replaces: write.replaces, scopes: replaceable }),
+        ...(write.id === undefined ? {} : { id: write.id }),
       };
       break;
     }

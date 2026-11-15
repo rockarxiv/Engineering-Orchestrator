@@ -57,7 +57,12 @@ import {
   type SkillsOfferedEvent,
   MEMORY_EXTRACTED_EVENT,
   LEARNING_REVIEW_EVENT,
+  LearningReviewNoteSchema,
+  type LearningReviewEvent,
+  type LearningReviewNote,
   LEARNING_REVIEW_TIMEOUT_MS,
+  MEMORY_NOTE_REPLACES,
+  CHAT_IDLE_BEFORE_REVIEW_MS,
   type AgentWriteTool,
   MEMORY_NOTE_TOOL_NAME,
   MEMORY_READ_TOOL_NAME,
@@ -200,6 +205,12 @@ import {
   getProject,
   getStep,
   listActiveRuns,
+  listNewestRunPerItem,
+  newestRunWithEvent,
+  activeRunForItem,
+  unwrittenReviewNotes,
+  getMemory,
+  runEventDevices,
   listAwaitingInputItemIds,
   listCommentsForItem,
   stepEntryTimes,
@@ -238,6 +249,7 @@ import {
   getSkill,
   skillsLoadedByRun,
   ownRunsToSettle,
+  supersedeProblem,
 } from "../db/repos/index.js";
 import { budgetRefusal, occurrenceOverBudget, pauseForBudget } from "../jobs/budget.js";
 import { readPolicy } from "../policy/policy.js";
@@ -283,14 +295,15 @@ import { deliverMemory, memoryReadScopes, memoryScopesFor, type DeliveredMemory 
 import type { MemoryScopeInfo } from "../memory/selection.js";
 import { renderMemoryWritingSection } from "../memory/writing.js";
 import { closestEntries } from "../memory/duplicates.js";
-import { closestEntriesAnswer, writeMemoryNote } from "../memory/memoryNote.js";
+import { checkMemoryNoteArgs, closestEntriesAnswer, writeMemoryNote } from "../memory/memoryNote.js";
+import { quietChatReview, type QuietThreadReview } from "../memory/quietChats.js";
 import { heldToDelivered } from "../memory/memoryUse.js";
 import type { AgentWriteBridge, AgentWriteHandler } from "../mcp/writeBridge.js";
 import { writeAgentComment } from "./agentComments.js";
 import { projectMovedToTheRecord } from "../db/repos/projectsRepo.js";
 import { extractionEvent, extractMemory, runProduce } from "../memory/extraction.js";
 import { learningReviewEvent, learningReviewFor, learningReviewPrompt, learningReviewSkillsPrompt, type LearningReviewOutcome } from "../memory/learningReview.js";
-import { answerReviewSkillTool, reviewableSkills, reviewSkillState, type ReviewSkillState } from "../memory/reviewSkills.js";
+import { answerReviewSkillTool, commitHeldSkillWrites, reviewableSkills, reviewSkillState, type ReviewSkillState } from "../memory/reviewSkills.js";
 import { runSubject } from "../modules/runName.js";
 import { createSideCallSlots } from "../sideCalls/slots.js";
 import { endAllProcessTrees } from "../process/processTree.js";
@@ -1521,6 +1534,49 @@ const STOP_GRACE_MS = 15_000;
  */
 const REVIEW_STOP_GRACE_MS = 2_000;
 
+/** A note a review of a quiet chat asked for, held until it ends (EO-788): the id its answer gave it, the call, and the entries it replaces that are not held notes. */
+interface HeldNote {
+  entryId: string;
+  /** The id of the scope it is noted in, as `memory_note` takes it. */
+  scope: string;
+  text: string;
+  replaces: string[];
+}
+
+/** A quiet chat's review's held notes, and every id it handed out, so a note naming one a later note has already replaced is refused, as naming a retired entry is. */
+interface HeldNotes {
+  notes: HeldNote[];
+  issued: Set<string>;
+}
+
+/** What a review of a quiet chat is handed (EO-788): what cancels it, where it says it kept nothing, and what commits what it kept. */
+interface QuietReviewHold {
+  signal: AbortSignal;
+  /** Asked again as the turn ends, just before it commits, so a message the tick has not seen yet still cancels it. */
+  stillQuiet: () => boolean;
+  discarded: boolean;
+  /**
+   * Appends the review's `learning_review` event, carrying the notes it
+   * commits: called in the synchronous step that last found the chat
+   * quiet and saved its skills. Sets `settled`, and says whether the event
+   * was appended — where it was not, none of the notes is written.
+   */
+  settle: (outcome: LearningReviewOutcome, notes: readonly LearningReviewNote[]) => boolean;
+  settled: boolean;
+}
+
+/** A quiet chat's review under way (EO-788): what cancels it, and the person's messages on the chat when it began. */
+interface QuietChatReview {
+  controller: AbortController;
+  spoken: ReadonlySet<string>;
+}
+
+/** How long EO waits to look for quiet assistant chats again after pipeline work kept it from starting a review (EO-788), and to try again a committed note it could not write. */
+const QUIET_CHAT_LOOK_MS = 60_000;
+
+/** How many times in one process EO tries to write a note a quiet chat's review committed (EO-788) before leaving it until it next starts. */
+const REVIEW_NOTE_ATTEMPTS = 5;
+
 /**
  * The stream, given up on once the run has been stopped and its backend
  * has not ended the turn within `STOP_GRACE_MS`.
@@ -1997,7 +2053,9 @@ export function createRunSupervisor(
    * the lease's.
    */
   function slotsOfFinishingRuns(): number {
-    let count = 0;
+    // And a quiet assistant chat's review (EO-788), which is a run's
+    // review held over until the chat went quiet.
+    let count = slotsOfQuietChatReviews();
     for (const [runId, itemId] of drivenRuns) {
       if (heldLeases.has(itemId)) continue;
       const status = getRun(db, runId)?.status;
@@ -2578,9 +2636,12 @@ export function createRunSupervisor(
    * The learning reviews under way, by the run each reviews (EO-717):
    * the item, the entries the review's `memory_note` calls wrote, in
    * order, for its `learning_review` event, and what its skill tools
-   * have read and written (EO-718).
+   * have read and written (EO-718). A review of a quiet chat (EO-788)
+   * holds its notes in `heldNotes` until it ends, each under an id of its
+   * own, as it holds its skill writes; null where each is written as it
+   * is made.
    */
-  const reviewTurns = new Map<Uuid, { itemId: Uuid; entryIds: string[]; skills: ReviewSkillState }>();
+  const reviewTurns = new Map<Uuid, { itemId: Uuid; entryIds: string[]; skills: ReviewSkillState; heldNotes: HeldNotes | null }>();
 
   /**
    * A write a learning review asked for (EO-717): `memory_note`, made as
@@ -2606,6 +2667,7 @@ export function createRunSupervisor(
       // The body limit as it stands at this write (EO-792), so a change
       // on the Guardrails screen applies to the next one.
       if (skillTool) return answerReviewSkillTool(db, review.skills, tool as SkillWriteTool, request.args, now(), readGuards().skillMaxBodyChars);
+      if (review.heldNotes !== null) return holdNote(item, review.heldNotes, request.args);
       const answer = await noteMemory(item, runId, request.args, true);
       const entryId = answer.ok ? answer.data["entryId"] : undefined;
       if (typeof entryId === "string") review.entryIds.push(entryId);
@@ -2654,10 +2716,10 @@ export function createRunSupervisor(
    * (EO-611), read here after the write: a record's answer has already
    * been copied into this database, and what the note replaced is gone.
    */
-  async function noteMemory(item: Item, runId: Uuid, args: unknown, extracted = false): Promise<AgentWriteAnswer> {
+  async function noteMemory(item: Item, runId: Uuid, args: unknown, extracted = false, id?: string): Promise<AgentWriteAnswer> {
     const scopes = turnMemoryScopes(item);
     const onRecord = memoryOnRecord(item);
-    const written = await writeMemoryNote({ record, args, scopes, runId, item, ...(extracted ? { extracted: true } : {}), now: now() });
+    const written = await writeMemoryNote({ record, args, scopes, runId, item, ...(extracted ? { extracted: true } : {}), now: now(), ...(id === undefined ? {} : { id }) });
     if (!written.ok) return { ok: false, code: "MEMORY_NOTE_REFUSED", problem: onRecord ? `The note was not saved. ${written.problem}` : written.problem };
     const scope = scopes.find((candidate) => candidate.scope.kind === written.entry.scope.kind && candidate.scope.id === written.entry.scope.id);
     const title = `${written.entry.scope.kind === "project" ? "Project" : "Workspace"}: ${scope?.name ?? written.entry.scope.id} (scope ${written.entry.scope.id})`;
@@ -2670,6 +2732,166 @@ export function createRunSupervisor(
       text: `EO noted this in the memory of ${title}${onRecord ? ", which your organisation's record keeps" : ""}. Later runs on other items are given it from now on. ${closestEntriesAnswer(written.entry.id, closest)}`,
       data: { entryId: written.entry.id, scope: { kind: written.entry.scope.kind, id: written.entry.scope.id } },
     };
+  }
+
+  /**
+   * A note a review of a quiet chat asked for, held to the note rules now
+   * and written when the review ends (EO-788), under an id of its own the
+   * review may name in a later note's `replaces`. A later note replacing a
+   * held one takes its place, so the first is never written at all, and
+   * retires what the first would have.
+   */
+  function holdNote(item: Item, held: HeldNotes, args: unknown): AgentWriteAnswer {
+    const scopes = turnMemoryScopes(item);
+    const checked = checkMemoryNoteArgs(args, scopes);
+    if (!checked.ok) return { ok: false, code: "MEMORY_NOTE_REFUSED", problem: checked.problem };
+    const replacing = held.notes.filter((note) => checked.replaces.includes(note.entryId));
+    // An id of this review's own that a later note already replaced is
+    // gone, as a retired entry is.
+    const gone = checked.replaces.find((id) => held.issued.has(id) && !replacing.some((note) => note.entryId === id));
+    if (gone !== undefined) {
+      return { ok: false, code: "MEMORY_NOTE_REFUSED", problem: `The memory entry "${gone}" was already replaced by a later note of this review, so there is nothing for the note to replace. The note was not written.` };
+    }
+    // The entries it replaces that are not held notes, held to the rules a
+    // note written now is (EO-594), and to none being retired already by
+    // another held note it leaves standing.
+    const external = checked.replaces.filter((id) => !held.issued.has(id));
+    const claimed = external.find((id) => held.notes.some((note) => !replacing.includes(note) && note.replaces.includes(id)));
+    if (claimed !== undefined) {
+      return { ok: false, code: "MEMORY_NOTE_REFUSED", problem: `The memory entry "${claimed}" is already replaced by an earlier note of this review, so there is nothing for the note to replace. The note was not written.` };
+    }
+    const problem = supersedeProblem(db, external, scopes.map((info) => info.scope));
+    if (problem !== null) return { ok: false, code: "MEMORY_NOTE_REFUSED", problem };
+    // A held note it replaces is never written, so what that one would
+    // have retired is retired by this one instead.
+    held.notes = held.notes.filter((note) => !replacing.includes(note));
+    const entryId = uuidv7();
+    held.issued.add(entryId);
+    held.notes.push({ entryId, scope: checked.scope.id, text: checked.body, replaces: [...new Set([...external, ...replacing.flatMap((note) => note.replaces)])] });
+    const scope = scopes.find((candidate) => candidate.scope.kind === checked.scope.kind && candidate.scope.id === checked.scope.id);
+    const title = `${checked.scope.kind === "project" ? "Project" : "Workspace"}: ${scope?.name ?? checked.scope.id} (scope ${checked.scope.id})`;
+    const closest = closestEntries(checked.body, activeMemoriesIn(db, [checked.scope]));
+    return {
+      ok: true,
+      text: `EO will note this in the memory of ${title} when this review ends. ${closestEntriesAnswer(entryId, closest)}`,
+      data: { entryId, scope: { kind: checked.scope.kind, id: checked.scope.id } },
+    };
+  }
+
+  /**
+   * Commits what a review of a quiet chat held (EO-788), and then writes
+   * its notes, as the reviewed run.
+   *
+   * **The decision comes first, and nothing is written before it.** While
+   * the turn ran, its notes and skill writes were only held. Here, in one
+   * synchronous step from the last ask of `cancelled` — nothing awaited,
+   * so no message can fall inside it — the skills are saved and `settle`
+   * appends the review's `learning_review` event, which carries every note
+   * it commits under the id it will be written with. Where `cancelled`
+   * says so instead, nothing at all is saved or written, on this desktop
+   * or any other, and there is nothing to take back.
+   *
+   * Only then are the notes written, each a round trip to the
+   * organisation's record where it keeps the project's memory. A note
+   * whose write fails, or that EO quits before writing, is written later
+   * from the event (`writeUnwrittenReviewNotes`); its id is its own, so a
+   * note the record took and whose answer was lost is refused the second
+   * time rather than kept twice. A message the person sends while they
+   * are being written comes after the review was over and does not undo
+   * it.
+   */
+  async function commitHeldWrites(
+    item: Item,
+    runId: Uuid,
+    heldNotes: readonly HeldNote[],
+    skills: ReviewSkillState,
+    cancelled: () => boolean,
+    settle: (entryIds: string[], notes: readonly LearningReviewNote[]) => boolean,
+  ): Promise<void> {
+    if (cancelled()) return;
+    // From the last ask to the event, nothing is awaited.
+    const saved = commitHeldSkillWrites(db, skills, now());
+    for (const problem of saved.problems) console.warn(`[eo] the review of run ${runId} could not save a skill: ${problem}`);
+    const notes = heldNotes.map((note): LearningReviewNote => ({ id: note.entryId, scope: note.scope, text: note.text, replaces: note.replaces }));
+    if (!settle(notes.map((note) => note.id), notes)) return;
+    for (const note of notes) await writeReviewNote(item, runId, note);
+  }
+
+  /** The ids of the notes being written now, so a look for unwritten ones does not write one twice at once. */
+  const writingReviewNotes = new Set<string>();
+  /** How many times each committed note has failed to be written in this process; past `REVIEW_NOTE_ATTEMPTS` it is left until EO starts again. */
+  const reviewNoteFailures = new Map<string, number>();
+  /** When the tick next looks for committed notes still to write: at once in a new process, then only after a write has failed. */
+  let unwrittenLookAt = 0;
+  let writingUnwritten: Promise<void> | null = null;
+
+  /**
+   * Writes one note a quiet chat's review committed (EO-788), under its own
+   * id, as the reviewed run. A failure is logged and counted, and the note
+   * left to the next look. Never throws.
+   */
+  async function writeReviewNote(item: Item, runId: Uuid, note: LearningReviewNote): Promise<void> {
+    if (writingReviewNotes.has(note.id)) return;
+    writingReviewNotes.add(note.id);
+    try {
+      const answer = await noteMemory(item, runId, { scope: note.scope, text: note.text, [MEMORY_NOTE_REPLACES]: note.replaces }, true, note.id);
+      if (answer.ok) return;
+      // Written already: the record took it and the answer was lost.
+      if (getMemory(db, note.id) !== undefined) return;
+      reviewNoteFailed(runId, note.id, answer.problem);
+    } catch (error) {
+      if (getMemory(db, note.id) !== undefined) return;
+      reviewNoteFailed(runId, note.id, error instanceof Error ? error.message : String(error));
+    } finally {
+      writingReviewNotes.delete(note.id);
+    }
+  }
+
+  function reviewNoteFailed(runId: Uuid, entryId: string, problem: string): void {
+    const failures = (reviewNoteFailures.get(entryId) ?? 0) + 1;
+    reviewNoteFailures.set(entryId, failures);
+    const later = failures < REVIEW_NOTE_ATTEMPTS ? "EO tries again later" : "EO tries again when it next starts";
+    console.warn(`[eo] the review of run ${runId} could not write the note ${entryId} it committed, and ${later}: ${problem}`);
+    if (failures < REVIEW_NOTE_ATTEMPTS) unwrittenLookAt = Math.min(unwrittenLookAt, now() + QUIET_CHAT_LOOK_MS);
+  }
+
+  /**
+   * Writes the notes quiet chats' reviews on this device committed and
+   * that are not written yet (EO-788, `unwrittenReviewNotes`): a write
+   * that failed, or EO quitting before the last of them. Worked out from
+   * the events, so it holds across a restart; on the first tick of a
+   * process, and after a write fails. In the background; never throws.
+   */
+  function writeUnwrittenReviewNotes(): void {
+    if (!dispatches || shuttingDown || writingUnwritten !== null) return;
+    const at = now();
+    if (at < unwrittenLookAt) return;
+    unwrittenLookAt = Number.POSITIVE_INFINITY;
+    let work: { item: Item; runId: Uuid; note: LearningReviewNote }[];
+    try {
+      work = unwrittenReviewNotes(db).flatMap(({ runId, note }) => {
+        const parsed = LearningReviewNoteSchema.safeParse(note);
+        if (!parsed.success || writingReviewNotes.has(parsed.data.id) || (reviewNoteFailures.get(parsed.data.id) ?? 0) >= REVIEW_NOTE_ATTEMPTS) return [];
+        const run = getRun(db, runId);
+        const item = run === undefined ? undefined : getItem(db, run.itemId);
+        return item === undefined ? [] : [{ item, runId, note: parsed.data }];
+      });
+    } catch (error) {
+      console.warn(`[eo] EO could not look for committed review notes to write: ${error instanceof Error ? error.message : String(error)}`);
+      return;
+    }
+    if (work.length === 0) return;
+    const promise = (async () => {
+      for (const { item, runId, note } of work) {
+        if (shuttingDown) return;
+        await writeReviewNote(item, runId, note);
+      }
+    })().finally(() => {
+      writingUnwritten = null;
+      inFlight.delete(promise);
+    });
+    writingUnwritten = promise;
+    inFlight.add(promise);
   }
 
   /**
@@ -2938,8 +3160,21 @@ export function createRunSupervisor(
    * refuses every other call as it is made. `runTurn` is the run as its
    * turns saw it: the item before it moved, the action and what the run
    * was lent.
+   *
+   * `hold` is a review of a quiet chat's (EO-788): it holds its writes
+   * until its turn ends and writes them then, and where `hold.signal` is
+   * aborted first — the person carried on the chat — or EO shuts down
+   * under it, writes none of them and sets `hold.discarded`.
    */
-  async function reviewOnFork(run: Run, item: Item, agent: Agent, scopes: readonly MemoryScopeInfo[], kind: LearningReviewKind, runTurn: { item: Item; action: string; toolDirectory: string | undefined; attachment: WorkspaceAttachment | undefined }): Promise<LearningReviewOutcome> {
+  async function reviewOnFork(
+    run: Run,
+    item: Item,
+    agent: Agent,
+    scopes: readonly MemoryScopeInfo[],
+    kind: LearningReviewKind,
+    runTurn: { item: Item; action: string; toolDirectory: string | undefined; attachment: WorkspaceAttachment | undefined },
+    hold?: QuietReviewHold,
+  ): Promise<LearningReviewOutcome> {
     const backend = runsOn(agent, item).provider;
     if (run.threadId === null) return { kind: "fell_back", reason: "The run has no thread to fork." };
     if (run.provider !== null && run.provider !== backend) {
@@ -2977,7 +3212,12 @@ export function createRunSupervisor(
     const controller = new AbortController();
     reviewControllers.add(controller);
     const skillScope = skillRunScope(db, item);
-    const review = { itemId: item.id, entryIds: [] as string[], skills: reviewSkillState({ runId: run.id, agentId: agent.id, scope: skillScope }) };
+    const review = {
+      itemId: item.id,
+      entryIds: [] as string[],
+      skills: reviewSkillState({ runId: run.id, agentId: agent.id, scope: skillScope, hold: hold !== undefined }),
+      heldNotes: hold === undefined ? null : { notes: [], issued: new Set<string>() },
+    };
     reviewTurns.set(run.id, review);
     const loaded = new Set(skillsLoadedByRun(db, run.id));
     const skills = reviewableSkills(db, review.skills).map((skill) => ({ slug: skill.slug, description: skill.description, loaded: loaded.has(skill.id), locked: skill.locked }));
@@ -3017,6 +3257,10 @@ export function createRunSupervisor(
       timedOut = true;
       controller.abort();
     }, LEARNING_REVIEW_TIMEOUT_MS);
+    // The person carrying on the chat stops it as its time limit would.
+    const cancel = (): void => controller.abort();
+    hold?.signal.addEventListener("abort", cancel, { once: true });
+    if (hold?.signal.aborted) controller.abort();
     try {
       const forked = await Promise.race([
         provider.fork!(run.threadId, kind === "full" ? learningReviewPrompt(scopes, offered) : learningReviewSkillsPrompt(offered), {
@@ -3043,7 +3287,7 @@ export function createRunSupervisor(
       ]);
       if (forked === "stopped") return failedReview(null);
       if (!forked.ok) {
-        if (timedOut) return failedReview(null);
+        if (timedOut || discarding()) return failedReview(null);
         return { kind: "fell_back", reason: `${forked.reason}: ${forked.message}` };
       }
       forkThreadId = forked.threadId;
@@ -3068,18 +3312,46 @@ export function createRunSupervisor(
       } catch (error) {
         if (failure === null) failure = error instanceof Error ? error.message : String(error);
       }
-      if (timedOut || shuttingDown || failure !== null) return failedReview(forkThreadId);
-      return review.entryIds.length > 0 || review.skills.written.length > 0
-        ? { kind: "written", entryIds: [...review.entryIds], skillIds: [...review.skills.written], forkThreadId, ...(forkCopy ? { fork: forkCopy } : {}) }
-        : { kind: "nothing_to_save", forkThreadId, ...(forkCopy ? { fork: forkCopy } : {}) };
+      const turnThreadId = forkThreadId;
+      const ended = (): LearningReviewOutcome => {
+        const forkThreadId = turnThreadId;
+        if (timedOut || shuttingDown || failure !== null) return failedReview(forkThreadId);
+        return review.entryIds.length > 0 || review.skills.written.length > 0
+          ? { kind: "written", entryIds: [...review.entryIds], skillIds: [...review.skills.written], forkThreadId, ...(forkCopy ? { fork: forkCopy } : {}) }
+          : { kind: "nothing_to_save", forkThreadId, ...(forkCopy ? { fork: forkCopy } : {}) };
+      };
+      // What a quiet chat's review held is committed now that its turn is
+      // over, however it ended — as a review after a run keeps what it
+      // wrote before it failed — with its event, only where the chat is
+      // still quiet, and its notes written after. Otherwise none of it is
+      // kept.
+      if (hold !== undefined && review.heldNotes !== null) {
+        const settled: { outcome: LearningReviewOutcome | null } = { outcome: null };
+        await commitHeldWrites(item, run.id, review.heldNotes.notes, review.skills, discarding, (entryIds, notes) => {
+          review.entryIds.push(...entryIds);
+          settled.outcome = ended();
+          return hold.settle(settled.outcome, notes);
+        });
+        return settled.outcome ?? failedReview(forkThreadId);
+      }
+      return ended();
     } finally {
       clearTimeout(timer);
+      hold?.signal.removeEventListener("abort", cancel);
       reviewControllers.delete(controller);
       reviewTurns.delete(run.id);
       recordReviewSpend();
     }
 
+    /** Whether a quiet chat's review is to keep nothing: the chat was carried on, or EO is quitting, before it committed what it held. Says so on `hold` once it is. */
+    function discarding(): boolean {
+      if (hold === undefined) return false;
+      if (hold.signal.aborted || shuttingDown || !hold.stillQuiet()) hold.discarded = true;
+      return hold.discarded;
+    }
+
     function failedReview(threadId: string | null): LearningReviewOutcome {
+      discarding();
       const reason = timedOut
         ? `The learning review ran past its ${String(LEARNING_REVIEW_TIMEOUT_MS / 60_000)}-minute limit and was stopped.`
         : shuttingDown
@@ -3116,6 +3388,192 @@ export function createRunSupervisor(
       } catch (error) {
         console.warn(`[eo] what the learning review of run ${run.id} spent could not be recorded: ${error instanceof Error ? error.message : String(error)}`);
       }
+    }
+  }
+
+  /**
+   * The reviews of quiet assistant chats under way (EO-788), by chat: what
+   * cancels each, and the person's messages on the chat when it started,
+   * so that one sent since is seen. One at a time, in the background, and
+   * holding a global slot while it runs (`slotsOfFinishingRuns`).
+   */
+  const quietChatReviews = new Map<Uuid, QuietChatReview>();
+  /**
+   * Chats found owing no review, by the newest `assist` run each had then,
+   * so they are not read again until they run again. Only a cache of what
+   * runs and `run_events` say: a new process works it out afresh.
+   */
+  const settledChats = new Map<Uuid, Uuid>();
+  /**
+   * When the tick next looks for a quiet chat: at once in a new process,
+   * then when the soonest chat found waiting falls due, or the idle time
+   * after an `assist` run ends (`noteChatTurnEnded`), whichever is sooner.
+   */
+  let quietChatLookAt = 0;
+
+  /** An `assist` run ended (EO-788): its chat is owed a review once it has been quiet for the idle time. */
+  function noteChatTurnEnded(): void {
+    quietChatLookAt = Math.min(quietChatLookAt, now() + CHAT_IDLE_BEFORE_REVIEW_MS);
+  }
+
+  /** The ids of the person's messages on an item. */
+  function spokenOn(itemId: Uuid): Set<string> {
+    return new Set(listCommentsForItem(db, itemId).filter((comment) => comment.authorType === "human").map((comment) => comment.id));
+  }
+
+  /** Whether a chat has been carried on since `spoken` was read: a message from the person, or a run of its own queued or going. */
+  function chatCarriedOn(itemId: Uuid, spoken: ReadonlySet<string>): boolean {
+    if (activeRunForItem(db, itemId) !== undefined) return true;
+    return listCommentsForItem(db, itemId).some((comment) => comment.authorType === "human" && !spoken.has(comment.id));
+  }
+
+  /**
+   * Cancels the review of a chat the person has carried on (EO-788), at the
+   * head of every tick and so before the tick decides what to dispatch:
+   * the slot it held is free for the chat's run at once, and nothing it
+   * would have written is kept (`reviewOnFork`'s `hold`).
+   */
+  function cancelCarriedOnChatReviews(): void {
+    for (const [itemId, review] of quietChatReviews) {
+      if (!review.controller.signal.aborted && chatCarriedOn(itemId, review.spoken)) review.controller.abort();
+    }
+  }
+
+  /** The global slots quiet chats' reviews hold: each under way and not cancelled. */
+  function slotsOfQuietChatReviews(): number {
+    let count = 0;
+    for (const review of quietChatReviews.values()) if (!review.controller.signal.aborted) count += 1;
+    return count;
+  }
+
+  /**
+   * Looks for an assistant chat that has gone quiet and is owed a review
+   * (EO-788, `memory/quietChats.ts`), and starts its review in the
+   * background. At the end of a tick, once `quietChatLookAt` has come; not
+   * while one is under way, while EO is paused or quitting, or while
+   * pipeline work holds or waits for a slot — what a memory consolidation
+   * waits for too, and asked again `QUIET_CHAT_LOOK_MS` later. Never
+   * throws.
+   *
+   * A run is reviewed here only where this device ran it: one whose
+   * transcript another device wrote is that device's to review.
+   */
+  function reviewQuietChats(): void {
+    if (!dispatches || shuttingDown || paused || quietChatReviews.size > 0) return;
+    const at = now();
+    if (at < quietChatLookAt) return;
+    quietChatLookAt = at + QUIET_CHAT_LOOK_MS;
+    try {
+      const limit = (typeof limits === "function" ? limits() : limits).globalConcurrency;
+      if (slotsOfRuns() + sideCallSlots.reserved() >= limit || hasDispatchableItem(eligibilityNow())) return;
+      let soonest = Number.POSITIVE_INFINITY;
+      for (const { itemId, runId: newest } of listNewestRunPerItem(db, ASSIST_ACTION)) {
+        if (settledChats.get(itemId) === newest) continue;
+        const item = getItem(db, itemId);
+        if (!item) continue;
+        const scopes = turnMemoryScopes(item);
+        const chat = quietChatReview({
+          runs: listRunsForItem(db, itemId).filter((run) => run.action === ASSIST_ACTION),
+          reviewedThrough: newestRunWithEvent(db, itemId, LEARNING_REVIEW_EVENT),
+          now: at,
+          idleMs: CHAT_IDLE_BEFORE_REVIEW_MS,
+          reviewFor: (run) => {
+            if (runEventDevices(db, run.id).size > 0) return null;
+            const asked = learningReviewFor(run, item, runProduce(db, run), scopes);
+            return "skip" in asked ? null : asked.review;
+          },
+        });
+        if (chat.kind === "settled") settledChats.set(itemId, newest);
+        if (chat.kind === "waiting" && chat.dueAt !== null) soonest = Math.min(soonest, chat.dueAt);
+        if (chat.kind !== "due") continue;
+        startQuietChatReview(item, chat.threads);
+        return;
+      }
+      // Nothing due: look again when the soonest waiting chat is, or when
+      // an `assist` run next ends — and at least once in an idle time, in
+      // case a run ended where nothing said so.
+      quietChatLookAt = Math.min(soonest, at + CHAT_IDLE_BEFORE_REVIEW_MS);
+    } catch (error) {
+      console.warn(`[eo] EO could not look for assistant chats to review: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  function startQuietChatReview(item: Item, threads: readonly QuietThreadReview[]): void {
+    const review: QuietChatReview = { controller: new AbortController(), spoken: spokenOn(item.id) };
+    quietChatReviews.set(item.id, review);
+    const promise = reviewQuietChat(item, threads, review).finally(() => {
+      quietChatReviews.delete(item.id);
+      // Another chat may be owed one too.
+      quietChatLookAt = now();
+      inFlight.delete(promise);
+      // Its slot is free: a side call or a dispatch may take it.
+      sideCallSlots.poke();
+      memoryConsolidator.poke();
+      notifyStateChange();
+    });
+    inFlight.add(promise);
+  }
+
+  /**
+   * A quiet chat's review (EO-788): one turn on a fork of each thread's
+   * newest run, oldest thread first, each holding its writes until it ends
+   * and recorded on that run as a `learning_review` event — which is what
+   * makes the chat owe nothing more, and commits what it held. Where the
+   * person carries on the chat meanwhile, or EO quits, before a thread's
+   * review commits, what it held is dropped — none of it was written — no
+   * event is written, and the threads still to go are left: the chat is
+   * owed a review again once it next goes quiet. A thread that cannot be forked has nothing
+   * run in its place — `memory_extract` writes at once, and could not be
+   * cancelled — and its event says so. Never throws.
+   */
+  async function reviewQuietChat(item: Item, threads: readonly QuietThreadReview[], review: QuietChatReview): Promise<void> {
+    for (const thread of threads) {
+      if (review.controller.signal.aborted || shuttingDown) return;
+      const hold: QuietReviewHold = {
+        signal: review.controller.signal,
+        stillQuiet: () => !chatCarriedOn(item.id, review.spoken),
+        discarded: false,
+        settled: false,
+        settle: (outcome, notes) => {
+          hold.settled = true;
+          return recordQuietReview(thread, outcome, notes);
+        },
+      };
+      await reviewQuietThread(item, thread, hold);
+    }
+  }
+
+  /** One thread's review of a quiet chat, and its event — unless what it held was dropped. */
+  async function reviewQuietThread(item: Item, thread: QuietThreadReview, hold: QuietReviewHold): Promise<void> {
+    let outcome: LearningReviewOutcome;
+    try {
+      const run = getRun(db, thread.runId);
+      if (!run) return;
+      const agent = run.agentId === null ? undefined : getAgent(db, run.agentId);
+      if (!agent) throw new Error("the agent that ran it is gone");
+      const current = getItem(db, item.id) ?? item;
+      // What a turn of the agent's would be given now: the run's own is
+      // not kept once it ends, and is not there after a restart.
+      const toolDirectory = prepareToolDirectory(current, agent);
+      outcome = await reviewOnFork(run, current, agent, turnMemoryScopes(current), thread.review, { item: current, action: ASSIST_ACTION, toolDirectory: toolDirectory?.path, attachment: undefined }, hold);
+    } catch (error) {
+      outcome = { kind: "failed", entryIds: [], skillIds: [], reason: `The learning review could not be run: ${error instanceof Error ? error.message : String(error)}`, forkThreadId: null };
+    }
+    if (hold.discarded || hold.settled) return;
+    recordQuietReview(thread, outcome);
+  }
+
+  /** How a thread's review of a quiet chat ended, as its `learning_review` event, carrying the notes it commits. Whether it was appended. */
+  function recordQuietReview(thread: QuietThreadReview, outcome: LearningReviewOutcome, notes: readonly LearningReviewNote[] = []): boolean {
+    if (outcome.kind === "fell_back") console.warn(`[eo] the review of the quiet chat's run ${thread.runId} could not be run, and nothing ran in its place: ${outcome.reason}`);
+    else if (outcome.kind === "failed") console.warn(`[eo] the review of the quiet chat's run ${thread.runId} failed: ${outcome.reason}`);
+    try {
+      const event: LearningReviewEvent = { ...learningReviewEvent(outcome, thread.review), ...(notes.length === 0 ? {} : { notes: [...notes] }) };
+      record.appendRunEvent(thread.runId, LEARNING_REVIEW_EVENT, event);
+      return true;
+    } catch (error) {
+      console.warn(`[eo] how the review of the quiet chat's run ${thread.runId} ended could not be recorded, so nothing it held was kept: ${error instanceof Error ? error.message : String(error)}`);
+      return false;
     }
   }
 
@@ -5436,13 +5894,18 @@ export function createRunSupervisor(
       // it falls back to (EO-717).
       // Handed what the run's turns were opened with, so the fork is
       // opened with it too (EO-732).
-      await reviewAfterRun(run.id, item, agent, args[3], args[7]);
+      // Not for an assistant chat's run (EO-788): a review that edits a
+      // skill would start the chat's next message on a new thread, and
+      // would hold the slot a quick reply waits for. The chat is reviewed
+      // once it has gone quiet (`reviewQuietChats`).
+      if (args[3] !== ASSIST_ACTION) await reviewAfterRun(run.id, item, agent, args[3], args[7]);
       // The run moved the counts of the skills it was given (EO-720).
       await archiveAfterRun(item);
     } finally {
       // Kept until the review is over, which is recorded when the run was (EO-734).
       capturedRuns.delete(run.id);
       drivenRuns.delete(run.id);
+      if (args[3] === ASSIST_ACTION) noteChatTurnEnded();
       // A run with no lease gives its slot back here, not in a release:
       // a waiting side call may take it, and the tick may dispatch.
       if (!heldLeases.has(item.id)) {
@@ -9779,6 +10242,10 @@ export function createRunSupervisor(
       // item until it ends, and this is where the end is noticed
       // (EO-132). Before anything below decides what to dispatch.
       releaseSettledAdoptions();
+      // A chat the person carried on stops its review before anything
+      // below decides what to dispatch (EO-788), so its slot is the
+      // chat's run's on this tick.
+      cancelCarriedOnChatReviews();
       // This device says its claims still stand, before anything else
       // (EO-322). It has to come first so that a run in flight is never
       // swept out from under itself; the sweep that releases whatever is
@@ -9946,6 +10413,11 @@ export function createRunSupervisor(
         );
         inFlight.add(promise);
       }
+      // After this tick's dispatches, so they count against the slot a
+      // quiet chat's review would take (EO-788).
+      reviewQuietChats();
+      // And writes what one committed and could not write.
+      writeUnwrittenReviewNotes();
     } finally {
       tickInFlight = null;
       // Released before the rerun is started, so a caller joining this

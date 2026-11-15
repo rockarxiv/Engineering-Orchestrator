@@ -2,6 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  CHAT_IDLE_BEFORE_REVIEW_MS,
   FOLDER_KIND,
   LEARNING_REVIEW_EVENT,
   LEARNING_REVIEW_TIMEOUT_MS,
@@ -185,12 +186,13 @@ describe("the learning review after a run", () => {
     return { provider, asked };
   }
 
-  function supervisorOver(agent: AgentProvider, side: AgentProvider = extractor().provider, guards?: () => { skillMaxBodyChars: number }) {
+  function supervisorOver(agent: AgentProvider, side: AgentProvider = extractor().provider, guards?: () => { skillMaxBodyChars: number }, now?: () => number) {
     const supervisor = createRunSupervisor({
       db: handle.db,
       provider: agent,
       limits: LIMITS,
       ...(guards ? { guards } : {}),
+      ...(now ? { now } : {}),
       agentWriteBridge: writes.agentWriteBridge,
       sideCalls: { provider: () => side, smallModel: async () => null },
     });
@@ -413,7 +415,7 @@ describe("the learning review after a run", () => {
     expect(listRunsForItem(handle.db, waiting.id).length).toBeGreaterThan(0);
   });
 
-  it("forks the system agent's run too, with its tools as the run had them, served memory_note and the skill tools alone", async () => {
+  it("forks the system agent's run in an assistant chat once the chat has gone quiet (EO-788), served memory_note and the skill tools alone", async () => {
     const conversation = openAssistConversation(handle.db, project.id as Uuid);
     deleteItem(handle.db, item.id);
     const systemAgent = listAgents(handle.db).find((agent) => agent.role === SYSTEM_ROLE)!;
@@ -423,8 +425,15 @@ describe("the learning review after a run", () => {
       { writes: [{ tool: "comment", args: { body: "From the system agent's review." } }, note("Billing is monthly, in arrears.")] },
     );
     const side = extractor();
+    let clock = Date.now();
+    const supervisor = supervisorOver(provider, side.provider, undefined, () => clock);
 
-    await supervisorOver(provider, side.provider).runOnce();
+    await supervisor.runOnce();
+    // An assistant chat's run is not reviewed as it ends…
+    expect(forks).toEqual([]);
+    // …but once the chat has been quiet for the idle time.
+    clock += CHAT_IDLE_BEFORE_REVIEW_MS;
+    await supervisor.runOnce();
 
     const [run] = listRunsForItem(handle.db, conversation.id);
     expect(run?.agentId).toBe(systemAgent.id);

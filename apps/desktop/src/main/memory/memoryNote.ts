@@ -43,6 +43,16 @@ function asNote(args: unknown): { scope: unknown; text: unknown; replaces: unkno
 }
 
 /**
+ * A `memory_note` call held to the note rules against these scopes, and
+ * not written (EO-788): what a review of a quiet chat checks a note
+ * against when it holds it, to write it with `writeMemoryNote` once the
+ * review ends.
+ */
+export function checkMemoryNoteArgs(args: unknown, scopes: readonly MemoryScopeInfo[]): ReturnType<typeof checkMemoryNote> {
+  return checkMemoryNote(asNote(args), noteScopes(scopes));
+}
+
+/**
  * Writes one note as an active entry, or says why it did not.
  *
  * Through whichever record holds the item's project (EO-482): this
@@ -67,6 +77,8 @@ export async function writeMemoryNote(input: {
   item: Item;
   extracted?: boolean;
   now?: number;
+  /** The id to write it under (EO-788): a quiet chat's review chooses its notes' ids before writing them. */
+  id?: string;
 }): Promise<{ ok: true; entry: MemoryEntryView } | { ok: false; problem: string }> {
   const checked = checkMemoryNote(asNote(input.args), noteScopes(input.scopes));
   if (!checked.ok) return checked;
@@ -79,5 +91,6 @@ export async function writeMemoryNote(input: {
     ...(input.extracted ? { extracted: true } : {}),
     ...(checked.replaces.length === 0 ? {} : { replaces: checked.replaces, scopes: input.scopes.map((info) => info.scope) }),
     ...(input.now === undefined ? {} : { now: input.now }),
+    ...(input.id === undefined ? {} : { id: input.id }),
   });
 }

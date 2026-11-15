@@ -1,4 +1,4 @@
-import type { MemorySource, MemoryWriteResult } from "@eo/core";
+import type { MemorySource, MemoryWriteResult, Uuid } from "@eo/core";
 import type { Db } from "../db/client.js";
 import { addMemory, editMemory, noteMemory, restoreMemory, retireMemory } from "../db/repos/index.js";
 import type { MemoryWriteRequest } from "../record/record.js";
@@ -30,6 +30,7 @@ export function applyMemoryWrite(db: Db, request: MemoryWriteRequest, person: Me
         ...(request.now === undefined ? {} : { now: request.now }),
         replaces: request.replaces ?? [],
         scopes: request.scopes ?? [],
+        ...(request.id === undefined ? {} : { id: request.id as Uuid }),
       });
     case "add":
       return addMemory(db, { scope: request.scope, body: request.body, source: person, ...(projectId === undefined ? {} : { projectId }) });

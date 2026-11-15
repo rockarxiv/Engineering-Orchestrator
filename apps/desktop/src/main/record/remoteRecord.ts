@@ -758,7 +758,15 @@ export function createRemoteRecord(options: RemoteRecordOptions): RemoteRecord {
 function asMemoryWrite(db: Db, request: MemoryWriteRequest): RecordMemoryWrite | null {
   switch (request.op) {
     case "note":
-      return { op: "note", itemId: request.item.id, scope: request.scope, body: request.body, extracted: request.extracted === true, replaces: [...(request.replaces ?? [])] };
+      return {
+        op: "note",
+        itemId: request.item.id,
+        scope: request.scope,
+        body: request.body,
+        extracted: request.extracted === true,
+        replaces: [...(request.replaces ?? [])],
+        ...(request.id === undefined ? {} : { id: request.id }),
+      };
     case "add": {
       const projectId = memoryScopeProjectId(db, request.scope);
       return projectId === null ? null : { op: "add", scope: request.scope, projectId, body: request.body };

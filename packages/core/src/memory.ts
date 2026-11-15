@@ -510,6 +510,19 @@ export type MemoryExtractedEvent = z.infer<typeof MemoryExtractedEventSchema>;
 export const LEARNING_REVIEW_TIMEOUT_MS = 5 * 60_000;
 
 /**
+ * How long an assistant chat goes quiet before it is reviewed (EO-788):
+ * from its last `assist` run ending, with no new message. An `assist` run
+ * is not reviewed when it ends, since a review that edits a skill changes
+ * what the chat's agent is given and its next message would start a new
+ * thread. Once the chat has been quiet this long, one learning review runs
+ * in the background on a fork of the newest run's thread, covering what
+ * was said since the last one, and a message sent meanwhile cancels it
+ * with nothing of it kept. Runs on pipeline steps are reviewed as each
+ * ends, as before.
+ */
+export const CHAT_IDLE_BEFORE_REVIEW_MS = 10 * 60_000;
+
+/**
  * The run event that records how a run's learning review ended (EO-717),
  * appended to the run's log once the review — or the extraction it fell
  * back to — has returned. Not written for a run the review was never
@@ -548,6 +561,20 @@ export const LEARNING_REVIEW_KINDS = ["full", "skills_only"] as const;
 export const LearningReviewKindSchema = z.enum(LEARNING_REVIEW_KINDS);
 export type LearningReviewKind = z.infer<typeof LearningReviewKindSchema>;
 
+/**
+ * A note a review of a quiet assistant chat committed (EO-788), as its
+ * `learning_review` event carries it: the id it is written under, and the
+ * `memory_note` call — its scope's id, its text and the entries it
+ * replaces — already held to the note rules.
+ */
+export const LearningReviewNoteSchema = z.object({
+  id: z.string().min(1),
+  scope: z.string().min(1),
+  text: z.string(),
+  replaces: z.array(z.string().min(1)),
+});
+export type LearningReviewNote = z.infer<typeof LearningReviewNoteSchema>;
+
 export const LearningReviewEventSchema = z.object({
   type: z.literal(LEARNING_REVIEW_EVENT),
   outcome: LearningReviewOutcomeSchema,
@@ -575,6 +602,17 @@ export const LearningReviewEventSchema = z.object({
   forkMode: z.enum(["prediction", "plain"]).optional(),
   /** Why Codex fell back to the plain fork, in its own words. Absent otherwise. */
   forkFallbackReason: z.string().optional(),
+  /**
+   * The notes a review of a quiet assistant chat commits (EO-788), one per
+   * id in `entryIds`. Such a review writes nothing while its turn runs: it
+   * holds its notes, and this event — appended only where the chat is
+   * still quiet when the turn ends — is what decides they are kept. They
+   * are written after it, as the reviewed run, so until they are,
+   * `entryIds` names entries that do not exist yet; one the record never
+   * takes stays named and absent. Absent on every other review, whose
+   * notes are written before its event.
+   */
+  notes: z.array(LearningReviewNoteSchema).optional(),
 });
 export type LearningReviewEvent = z.infer<typeof LearningReviewEventSchema>;
 
@@ -1238,6 +1276,13 @@ export const RecordMemoryWriteSchema = z.discriminatedUnion("op", [
     body: z.string().max(MAX_MEMORY_ENTRY_CHARS),
     extracted: z.boolean().default(false),
     replaces: z.array(z.string().min(1)).default([]),
+    /**
+     * The id to write it under, where the caller chose one: a quiet
+     * chat's review names its notes in its `learning_review` event before
+     * writing them (EO-788), so writing one twice is refused rather than
+     * kept twice. Refused where an entry has it.
+     */
+    id: z.string().min(1).optional(),
   }),
   z.object({ op: z.literal("add"), scope: MemoryScopeSchema, projectId: z.string().min(1), body: MemoryBodySchema }),
   z.object({ op: z.literal("edit"), id: z.string().min(1), body: MemoryBodySchema }),
