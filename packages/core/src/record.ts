@@ -343,7 +343,7 @@ export const RecordRunCommandSchema = z.object({
    * leaves interrupted runs out, and one that never heard why a run
    * stopped would count it.
    */
-  interruption: z.enum(["quit", "restart", "sleep"]).nullable().default(null),
+  interruption: z.enum(["quit", "restart", "sleep", "limit"]).nullable().default(null),
   /** Somebody ran this to watch it work rather than because an item reached a step (KAN-106). */
   dryRun: z.boolean().default(false),
   /**

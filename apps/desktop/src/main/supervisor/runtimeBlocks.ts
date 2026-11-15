@@ -1,4 +1,16 @@
-import { RuntimeIdSchema, staffingAgents, type Agent, type CommentOption, type Item, type PipelineStep, type RuntimeId } from "@eo/core";
+import {
+  describeQuotaReset,
+  quotaResetAt,
+  quotaWindowPhrase,
+  RuntimeIdSchema,
+  staffingAgents,
+  type Agent,
+  type CommentOption,
+  type Item,
+  type PipelineStep,
+  type QuotaEvent,
+  type RuntimeId,
+} from "@eo/core";
 import { dispatchBlockers, type DispatchRefusal, type TickInput } from "@eo/engine";
 import { RUNTIMES } from "../runtimes/catalog.js";
 
@@ -17,6 +29,9 @@ import { RUNTIMES } from "../runtimes/catalog.js";
  * - each of those items is told once per block, in a note — it needs no
  *   reply and gets no `!` (invariant 8, invariant 6);
  * - the person is sent one message, with a Sign in button and Try again.
+ *
+ * A runtime whose plan window is full is held the same way (EO-798),
+ * for its own reason and with its own message: see `RUNTIME_LIMIT_SOURCE`.
  *
  * Pure helpers here; the state, the probe and the writes are the
  * supervisor's.
@@ -193,4 +208,80 @@ export function runtimeSignInMessage(facts: {
 function listed(names: readonly string[]): string {
   if (names.length <= 1) return names.join("");
   return `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
+}
+
+/**
+ * A runtime whose plan window is full, held on this device until it
+ * refreshes (EO-798).
+ *
+ * The same hold as a sign-in, for the same reason: a spent allowance is
+ * a fact about the backend, not about the item whose run found it, so
+ * every agent on that runtime would hit it next. A separate reason all
+ * the same — a runtime blocked for both stays blocked until both have
+ * cleared, and each has its own message.
+ */
+export const RUNTIME_LIMIT_SOURCE = "runtime_limit";
+
+/** The answer on the plan-limit message that lifts the hold before the reset. */
+export const CARRY_ON_NOW_OPTION = "Carry on now";
+
+/** What a run stopped by a plan limit is told when it is carried on after the hold. */
+export const LIMIT_RESUME_MESSAGE =
+  "(Your last turn was stopped because the backend's usage window was full. It has refreshed — or a person asked EO to try again — so continue from where you left off.)";
+
+/**
+ * The first words of every plan-limit note: what a thread is asked to
+ * hold once per episode. The rest of the note names a reset time whose
+ * relative phrase changes as time passes, so it cannot be the key.
+ */
+export function runtimeLimitHoldPrefix(runtime: RuntimeId): string {
+  return `Waiting for ${runtimeLabel(runtime)}'s usage limit to reset on this device.`;
+}
+
+/**
+ * The note on each item held by a plan limit, once per block. Names the
+ * window and the reset in `quotaStopReason`'s words, so the item, the run
+ * that hit the limit and the message say the same thing.
+ */
+export function runtimeLimitHoldNote(runtime: RuntimeId, quota: QuotaEvent, now: number): string {
+  const label = runtimeLabel(runtime);
+  return (
+    `${runtimeLimitHoldPrefix(runtime)} ${label} refused a run: ${quotaWindowPhrase(quota.window)} is full, so EO is dispatching nothing to the agents that run on it. ` +
+    `${describeQuotaReset(quota.resetsAt, now)} ${liftsWhen(quota, now)} — nobody needs to reply here.`
+  );
+}
+
+/** The note on the item whose run hit the limit: the hold's first words, then the run's own reason. */
+export function runtimeLimitStopNote(runtime: RuntimeId, reason: string): string {
+  return `${runtimeLimitHoldPrefix(runtime)}\n\n${reason}`;
+}
+
+/** The message to the person about a runtime held by its plan limit, and what it offers. */
+export function runtimeLimitMessage(facts: {
+  runtime: RuntimeId;
+  quota: QuotaEvent;
+  now: number;
+  itemCount: number;
+  agentNames: readonly string[];
+}): { body: string; options: CommentOption[] } {
+  const label = runtimeLabel(facts.runtime);
+  const items = facts.itemCount === 1 ? "1 item is" : `${facts.itemCount} items are`;
+  const agents = facts.agentNames.length === 0 ? "" : ` for ${listed(facts.agentNames)}`;
+  const known = quotaResetAt(facts.quota.resetsAt, facts.now) !== null;
+  return {
+    body:
+      `${label} has hit its plan limit on this device: ${quotaWindowPhrase(facts.quota.window)} is full, so EO is dispatching nothing to the agents that run on it. ` +
+      `${describeQuotaReset(facts.quota.resetsAt, facts.now)} ${items} waiting${agents}. ` +
+      (known
+        ? `They carry on by themselves when the window refreshes; nobody needs to reply on them. Carry on now tries ${label} again before then.`
+        : `EO cannot tell when the window refreshes, so they wait until you press Carry on now — dismissing this message leaves them waiting until EO is next started. Nobody needs to reply on them.`),
+    options: [CARRY_ON_NOW_OPTION],
+  };
+}
+
+function liftsWhen(quota: QuotaEvent, now: number): string {
+  const at = quotaResetAt(quota.resetsAt, now);
+  if (at === null) return "This carries on by itself once a person says the window is back (Carry on now, on EO's message about the limit)";
+  if (at <= now) return "This carries on by itself";
+  return "This carries on by itself then";
 }

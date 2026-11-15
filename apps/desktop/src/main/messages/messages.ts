@@ -1,6 +1,6 @@
 import { answerOptions, LOCAL_PERSON_ID, type IpcPayload, type IpcResponse, type Message, type MessageSend, type Uuid } from "@eo/core";
 import type { Db } from "../db/client.js";
-import { getJob, getMessage, insertMessage, listOpenMessages, listPeople, markMessageHandled, markMessagesAboutResolved, sweepHandledMessages } from "../db/repos/index.js";
+import { getJob, getMessage, insertMessage, listOpenMessages, listPeople, markMessageHandled, markMessagesAboutResolved, reviseOpenMessage, sweepHandledMessages } from "../db/repos/index.js";
 import { actingCaller } from "../identity/acting.js";
 import { viewerIds } from "../identity/viewer.js";
 import { emitPush } from "../ipc/push.js";
@@ -123,6 +123,17 @@ export function resolveMessage(db: Db, messageId: string, now: number = Date.now
   const resolved = markMessageHandled(db, messageId, "resolved", null, now);
   if (resolved) emitPush("messages:changed", {});
   return resolved;
+}
+
+/**
+ * Rewrites an open message in place (EO-798), for a sender whose subject
+ * changed while the person had not yet acted on it. Undefined, and
+ * nothing pushed, when it was already handled or is gone.
+ */
+export function reviseMessage(db: Db, messageId: string, revision: Pick<MessageSend, "body" | "options">, now: number = Date.now()): Message | undefined {
+  const revised = reviseOpenMessage(db, messageId, revision, now);
+  if (revised) emitPush("messages:changed", {});
+  return revised;
 }
 
 /**

@@ -106,6 +106,35 @@ export function markMessageHandled(
 }
 
 /**
+ * Rewrites what an open message says (EO-798): the thing it is about
+ * changed while it was still waiting on somebody, and a second message
+ * would say the same thing twice. Only an open one, as handling is.
+ *
+ * Its sending time moves to `now`. While a message is open that is its
+ * change time (`messageChangedAt`), which is what `record:messages` pages
+ * on, so a copy anywhere hears of the revision the way it heard of the
+ * message, and the inbox shows it as what EO says now. Answers undefined
+ * when the message is gone or already handled.
+ */
+export function reviseOpenMessage(
+  db: Db,
+  id: string,
+  revision: Pick<MessageSend, "body" | "options">,
+  now: number = Date.now(),
+): Message | undefined {
+  const body = MessageSendSchema.shape.body.parse(revision.body);
+  // Options left out are options kept; null takes them away.
+  const options = revision.options === undefined ? {} : { options: MessageSendSchema.shape.options.parse(revision.options) ?? null };
+  const row = db
+    .update(messages)
+    .set({ body, ...options, createdAt: now })
+    .where(and(eq(messages.id, id), isNull(messages.handledAt)))
+    .returning()
+    .get();
+  return row ? toDomain(row) : undefined;
+}
+
+/**
  * Whether this database holds any message of a source about one subject,
  * handled or not (EO-735) — what a sender that runs on every launch asks
  * so a person is told once rather than at every start.

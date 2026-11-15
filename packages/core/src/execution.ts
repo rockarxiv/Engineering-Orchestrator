@@ -19,12 +19,16 @@ export type RunRuntimeSource = "managed" | "configured";
  * `sleep`: the computer slept while it worked, and its backend did not
  * pick up again once it woke.
  *
+ * `limit`: the backend's plan window was full (EO-798). The runtime is
+ * held on this device until the window refreshes, and the run is carried
+ * on in its own thread once it is.
+ *
  * Either way the run is continued on its own thread where it can be,
  * and it is not one of the attempts `perItemAttemptLimit` counts: the
  * agent did nothing wrong, and an item that lost its tries to two
  * restarts and a laptop lid would be parked for the machine's sake.
  */
-export type RunInterruption = "quit" | "restart" | "sleep";
+export type RunInterruption = "quit" | "restart" | "sleep" | "limit";
 
 /**
  * What `runs.result` holds once a run succeeds (A-02).
