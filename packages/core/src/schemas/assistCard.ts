@@ -1,6 +1,11 @@
 import { z } from "zod";
 import { WEBHOOK_UNATTENDED_CARD_KIND } from "../webhookUnattended.js";
 import { SpecFieldDraftSchema } from "../itemTypeAuthoring.js";
+import { JobRunsOnSchema } from "../placement.js";
+import { MIN_WATCH_INTERVAL_MINUTES } from "../watch.js";
+import { WebhookMappingSchema } from "../webhook.js";
+import { JobScheduleSchema } from "./jobs.js";
+import { StepInputsSchema } from "./modules.js";
 
 /**
  * Something only a person may do, offered by the assistant as a card
@@ -44,6 +49,11 @@ import { SpecFieldDraftSchema } from "../itemTypeAuthoring.js";
  * would refuse — a pack's type reshaped, a type with items filed under
  * it, a name already taken — is shown on the card as the refusal.
  *
+ * Four are jobs (EO-786): making one, changing one, deleting one, and a
+ * webhook job's two buttons — a new signing secret, a test event. The
+ * Jobs screen no longer edits a job; the system agent proposes the change
+ * and the person presses it, through the channel that screen called.
+ *
  * Every branch writes all of its keys, so it is the same document from
  * both backends: there is no optional field for a Codex agent to fill
  * with `null` (invariant #12). A change to a type says `null` for what it
@@ -61,6 +71,63 @@ export const KEEP_PIPELINE_CARD_KIND = "pipelineKeepMine";
  * runs. See `TrialPublishCardSchema`.
  */
 export const TRIAL_PUBLISH_CARD_KIND = "trialPublish";
+
+/**
+ * A job's trigger as a job card names it (EO-786): the three kinds the
+ * Jobs screen's form made, every key written. A schedule's
+ * `catchUpWithinMinutes` is null for the default grace, and a watch
+ * job's `inputs` are its module's declared inputs, as a module step's are.
+ */
+const JOB_CARD_TRIGGERS = [
+  z.object({ kind: z.literal("manual") }),
+  z.object({
+    kind: z.literal("schedule"),
+    schedule: JobScheduleSchema,
+    /** An IANA name — `Europe/Berlin`. */
+    timeZone: z.string().min(1),
+    /** How late a missed time is still run, in minutes; null for EO's default. */
+    catchUpWithinMinutes: z.number().int().min(0).nullable(),
+  }),
+  z.object({
+    kind: z.literal("watch"),
+    /** The module, by the id the configuration lists it under: approved, and declaring `watch: true`. */
+    moduleId: z.string().min(1),
+    inputs: StepInputsSchema,
+    everyMinutes: z.number().int().min(MIN_WATCH_INTERVAL_MINUTES),
+    /** Hold every check while an item this job filed is unfinished. */
+    waitWhileOpen: z.boolean(),
+  }),
+] as const;
+
+export const JobCardTriggerSchema = z.discriminatedUnion("kind", [...JOB_CARD_TRIGGERS]);
+export type JobCardTrigger = z.infer<typeof JobCardTriggerSchema>;
+
+/**
+ * A trigger as a change to a job names it: one of the three, or a
+ * webhook job's mapping. Never a webhook's address or secret — the
+ * sender is configured with both, and no card carries the secret.
+ */
+export const JobCardTriggerEditSchema = z.discriminatedUnion("kind", [
+  ...JOB_CARD_TRIGGERS,
+  z.object({ kind: z.literal("webhook"), mapping: WebhookMappingSchema }),
+]);
+export type JobCardTriggerEdit = z.infer<typeof JobCardTriggerEditSchema>;
+
+/** What a job files, as a job card names it: a qualified type, a title, and a body or null. */
+export const JobCardTemplateSchema = z.object({
+  /** Qualified — `developer:story`. */
+  type: z.string().min(1),
+  /** `{{date}}` and `{{job}}` are filled in. */
+  title: z.string().min(1),
+  body: z.string().nullable(),
+});
+
+/** What a change to a job writes for a limit it clears (EO-786): null already means "leave it". */
+export const JOB_CARD_CLEAR = "none";
+
+/** The two buttons that left a webhook job's page (EO-786). */
+export const JobWebhookCardActionSchema = z.enum(["regenerateSecret", "testEvent"]);
+export type JobWebhookCardAction = z.infer<typeof JobWebhookCardActionSchema>;
 
 export const AssistCardSchema = z.discriminatedUnion("kind", [
   z.object({
@@ -156,6 +223,54 @@ export const AssistCardSchema = z.discriminatedUnion("kind", [
     itemTypeId: z.string().min(1),
   }),
   z.object({
+    /** Make a job (EO-786) — `jobs:create`, as the Jobs screen's form did. */
+    kind: z.literal("jobCreate"),
+    /** The project, by the id `projects_list` gives. */
+    projectId: z.string().min(1),
+    name: z.string().min(1),
+    trigger: JobCardTriggerSchema,
+    /** The pipeline it files on, by the id `pipelines_list` gives. */
+    pipelineId: z.string().min(1),
+    template: JobCardTemplateSchema,
+    /** Null for no budget. */
+    budgetPerOccurrenceCents: z.number().int().min(0).nullable(),
+    /** Null for no cap. */
+    maxItemsPerHour: z.number().int().min(1).nullable(),
+    /** Null for this machine, where every job has always run. */
+    runsOn: JobRunsOnSchema.nullable(),
+  }),
+  z.object({
+    /**
+     * Change a job (EO-786) — `jobs:update`. Each field is what it would
+     * be, or null to leave it; a budget or a cap is cleared with `"none"`.
+     */
+    kind: z.literal("jobUpdate"),
+    /** The job, by the id `jobs_list` gives. */
+    jobId: z.string().min(1),
+    name: z.string().min(1).nullable(),
+    trigger: JobCardTriggerEditSchema.nullable(),
+    pipelineId: z.string().min(1).nullable(),
+    template: JobCardTemplateSchema.nullable(),
+    budgetPerOccurrenceCents: z.union([z.number().int().min(0), z.literal(JOB_CARD_CLEAR)]).nullable(),
+    maxItemsPerHour: z.union([z.number().int().min(1), z.literal(JOB_CARD_CLEAR)]).nullable(),
+    runsOn: JobRunsOnSchema.nullable(),
+  }),
+  z.object({
+    /** Delete a job (EO-786) — `jobs:delete`. Whether its items are archived is the person's choice on the card. */
+    kind: z.literal("jobDelete"),
+    jobId: z.string().min(1),
+  }),
+  z.object({
+    /**
+     * A webhook job's two buttons (EO-786): mint a new signing secret —
+     * `jobs:regenerateSecret` — or send one test event through its door —
+     * `jobs:testEvent`. Neither names nor shows the secret.
+     */
+    kind: z.literal("jobWebhook"),
+    jobId: z.string().min(1),
+    action: JobWebhookCardActionSchema,
+  }),
+  z.object({
     /**
      * Keep a pipeline as it is and skip its held template update (EO-534)
      * — `pipeline:keepOwnVersion`. The conflict is resolved and the
@@ -196,6 +311,10 @@ export const ASSIST_CARD_KINDS = [
   "itemTypeDelete",
   "pipelineKeepMine",
   "trialPublish",
+  "jobCreate",
+  "jobUpdate",
+  "jobDelete",
+  "jobWebhook",
 ] as const satisfies readonly AssistCardKind[];
 
 /**

@@ -470,7 +470,8 @@ const CAPABILITIES = [
     what:
       "an `assist` answer offering something only a person may do — export, import or delete a pipeline, discard this machine's edits to one, " +
       "let its webhook items through unread, set or clear a step's own secret or variable, add, change or remove an item type, " +
-      "keep a pipeline as it is and skip its held template update, or publish a draft as it was tested (EO-588) — " +
+      "keep a pipeline as it is and skip its held template update, publish a draft as it was tested (EO-588), " +
+      "or create, change or delete a job, or regenerate a webhook job's secret or send it a test event (EO-786) — " +
       "reads back as that card and nothing beside it",
     same: {
       read: [
@@ -494,6 +495,30 @@ const CAPABILITIES = [
         { valid: true, card: { kind: "pipelineKeepMine", pipelineId: "release" }, besideIt: [] },
         // The publish card after a draft's trials (EO-588).
         { valid: true, card: { kind: "trialPublish" }, besideIt: [] },
+        // Jobs (EO-786): a create with EO's defaults null, a change clearing a budget, a delete and both webhook buttons.
+        {
+          valid: true,
+          card: {
+            kind: "jobCreate",
+            projectId: "payments",
+            name: "Monday report",
+            trigger: { kind: "schedule", schedule: { kind: "weekly", weekday: 1, hour: 8, minute: 0 }, timeZone: "Europe/Berlin", catchUpWithinMinutes: null },
+            pipelineId: "release",
+            template: { type: "developer:story", title: "Report for {{date}}", body: null },
+            budgetPerOccurrenceCents: 150,
+            maxItemsPerHour: null,
+            runsOn: null,
+          },
+          besideIt: [],
+        },
+        {
+          valid: true,
+          card: { kind: "jobUpdate", jobId: "monday-report", name: null, trigger: null, pipelineId: null, template: null, budgetPerOccurrenceCents: "none", maxItemsPerHour: 4, runsOn: null },
+          besideIt: [],
+        },
+        { valid: true, card: { kind: "jobDelete", jobId: "monday-report" }, besideIt: [] },
+        { valid: true, card: { kind: "jobWebhook", jobId: "helpdesk", action: "regenerateSecret" }, besideIt: [] },
+        { valid: true, card: { kind: "jobWebhook", jobId: "helpdesk", action: "testEvent" }, besideIt: [] },
       ],
     },
   },

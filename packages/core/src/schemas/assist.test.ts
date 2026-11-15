@@ -427,6 +427,42 @@ describe("the cards for a project's item types (EO-523)", () => {
   });
 });
 
+describe("the cards for jobs (EO-786)", () => {
+  const create = {
+    kind: "jobCreate",
+    projectId: "p",
+    name: "Monday report",
+    trigger: { kind: "schedule", schedule: { kind: "daily", hour: 8, minute: 0 }, timeZone: "Europe/Berlin", catchUpWithinMinutes: null },
+    pipelineId: "default",
+    template: { type: "developer:story", title: "Report for {{date}}", body: null },
+    budgetPerOccurrenceCents: null,
+    maxItemsPerHour: null,
+    runsOn: null,
+  };
+
+  it("accepts creating, changing and deleting a job, and both webhook buttons", () => {
+    for (const offered of [
+      create,
+      { ...create, trigger: { kind: "manual" } },
+      { ...create, trigger: { kind: "watch", moduleId: "m", inputs: { repo: "acme/shop" }, everyMinutes: 15, waitWhileOpen: false } },
+      { kind: "jobUpdate", jobId: "j", name: "Other", trigger: null, pipelineId: null, template: null, budgetPerOccurrenceCents: "none", maxItemsPerHour: 3, runsOn: "server" },
+      { kind: "jobUpdate", jobId: "j", name: null, trigger: { kind: "webhook", mapping: { title: "/title", body: null, eventKey: null, spec: {} } }, pipelineId: null, template: null, budgetPerOccurrenceCents: null, maxItemsPerHour: null, runsOn: null },
+      { kind: "jobDelete", jobId: "j" },
+      { kind: "jobWebhook", jobId: "j", action: "regenerateSecret" },
+      { kind: "jobWebhook", jobId: "j", action: "testEvent" },
+    ]) {
+      expect(AssistOutputSchema.safeParse({ message: "The card does it.", card: offered }).success, JSON.stringify(offered)).toBe(true);
+    }
+  });
+
+  it("refuses a webhook job created on a card, a webhook action it does not know, and a change that leaves keys out", () => {
+    const webhook = { ...create, trigger: { kind: "webhook", path: "helpdesk", secret: "x".repeat(40), mapping: { title: null, body: null, eventKey: null, spec: {} } } };
+    expect(AssistOutputSchema.safeParse({ message: "x", card: webhook }).success).toBe(false);
+    expect(AssistOutputSchema.safeParse({ message: "x", card: { kind: "jobWebhook", jobId: "j", action: "showSecret" } }).success).toBe(false);
+    expect(AssistOutputSchema.safeParse({ message: "x", card: { kind: "jobUpdate", jobId: "j", name: "Other" } }).success).toBe(false);
+  });
+});
+
 describe("alternative drafts and keeping one's own pipeline (EO-534)", () => {
   const target = { pipelineId: "default" };
   const draft = (rationale: string) => ({ ...graph(), rationale, target });

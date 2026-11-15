@@ -316,7 +316,8 @@ const NOT_CATALOGUED: Partial<Record<RecordChannel, string>> = {
   "assist:applyCard":
     "a person pressing the button on a card in front of them — exporting, importing or deleting a pipeline, discarding this machine's edits to one, " +
     "letting its webhook items through unread, setting a step's own secret or variable to a value they typed, adding, changing or removing an item type, " +
-    "or keeping a pipeline as it is and skipping its held template update — " +
+    "keeping a pipeline as it is and skipping its held template update, " +
+    "or creating, changing or deleting a job, regenerating a webhook job's secret or sending it a test event — " +
     "none of which is ever an agent's to do",
   "scenario:open": "a person opening the chat on the module page in front of them",
   "scenario:send": "a person talking in the chat on the module page in front of them",

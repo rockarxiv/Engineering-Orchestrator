@@ -31,6 +31,7 @@ import { noUpdateConflict } from "../gallery/updateConflictDetail.js";
 import { heldByTheRecord } from "../gallery/templateUpdates.js";
 import { ASSIST_ACTION } from "./conversationSteps.js";
 import { isItemTypeCard, itemTypeCardBody, itemTypeCardRefusal } from "./itemTypeCards.js";
+import { isJobCard, jobCardBody, jobCardRefusal } from "./jobCards.js";
 import { outputOf, runOf, threadOf, type ConversationThread } from "./conversationThread.js";
 import { PROPOSAL_KIND } from "./proposal.js";
 import { readTrialPublish } from "../trials/publishCard.js";
@@ -43,7 +44,9 @@ import { readTrialPublish } from "../trials/publishCard.js";
  * webhook pipeline's items reach a sending step unread, and a step's own
  * secrets and environment variables, whose value the person types on the
  * card and nobody else ever sees — and a project's item types (EO-523):
- * adding one, changing one, removing one (see `itemTypeCards.ts`).
+ * adding one, changing one, removing one (see `itemTypeCards.ts`) — and
+ * jobs (EO-786): making, changing and deleting one, and a webhook job's
+ * new secret and test event (see `jobCards.ts`).
  *
  * The draft's arrangement, for things that are not a graph. The agent
  * names the thing (`AssistCardSchema`) and EO posts a card for it; the
@@ -128,6 +131,7 @@ export function assistCardRefusal(db: Db, conversation: Item, card: AssistCard):
   if (card.kind === TRIAL_PUBLISH_CARD_KIND) return trialPublishRefusal(db, conversation);
   if (card.kind === "stepSecret" || card.kind === "stepVariable") return stepCardRefusal(db, card);
   if (isItemTypeCard(card)) return itemTypeCardRefusal(db, card);
+  if (isJobCard(card)) return jobCardRefusal(db, card);
   if (card.kind === "pipelineImport") {
     const attachment = getAttachment(db, card.attachmentId as Uuid);
     // Only a file attached to this chat: an attachment id from another
@@ -235,6 +239,7 @@ export function assistCardBody(db: Db, card: AssistCard): string {
     );
   }
   if (isItemTypeCard(card)) return itemTypeCardBody(db, card);
+  if (isJobCard(card)) return jobCardBody(db, card);
   if (card.kind === "stepSecret" || card.kind === "stepVariable") {
     const found = liveStep(db, card.stepId);
     const where = found === null ? "the step" : `the ${found.step.name} step of ${found.pipeline.name}`;

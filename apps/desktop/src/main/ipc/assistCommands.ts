@@ -57,6 +57,7 @@ import type { ModuleTestRunner } from "../modules/moduleTestRunner.js";
 import { appliedChangeNote } from "../roles/moduleChange.js";
 import { assistCardOf, assistCardView, cardOutcome, fileCardOutcome, liveStep } from "../roles/assistCards.js";
 import { isItemTypeCard, itemTypeCardDetail, itemTypeUpdatePayload } from "../roles/itemTypeCards.js";
+import { createdJobSaid, filedItemSaid, isJobCard, jobCardDetail, jobUpdatePayload, keptJob, triggerOfCard, type JobCard } from "../roles/jobCards.js";
 import {
   applyAssistModuleChange,
   assistAgent,
@@ -2074,6 +2075,13 @@ export async function readAssistCardCommand(db: Db, doors: AssistCardDoors, inpu
     return "problem" in read ? nothing(read.problem) : { card: read.detail, problem: null };
   }
 
+  // A job (EO-786): the job as it is and as it would be, in words, and
+  // once pressed, what it made — the job, or a test event's item.
+  if (isJobCard(card)) {
+    const read = jobCardDetail(db, card, cardOutcome(db, conversation, comment!.id));
+    return "problem" in read ? nothing(read.problem) : { card: read.detail, problem: null };
+  }
+
   if (card.kind === "stepSecret" || card.kind === "stepVariable") {
     const found = liveStep(db, card.stepId);
     if (found === null) return nothing("The step this card was about is no longer on its pipeline.");
@@ -2257,7 +2265,7 @@ export async function applyAssistCardCommand(
   pressing.add(messageId);
   let outcome: { done: boolean; said: string } | null;
   try {
-    outcome = await carryOut(db, doors, conversation, card, { choices: input.choices, value: input.value });
+    outcome = await carryOut(db, doors, conversation, card, { choices: input.choices, value: input.value, archiveItems: input.archiveItems ?? false });
   } finally {
     pressing.delete(messageId);
   }
@@ -2282,12 +2290,13 @@ async function carryOut(
   doors: AssistCardDoors,
   conversation: Item,
   card: AssistCard,
-  { choices, value }: { choices: Record<string, "reuse" | "import">; value: string | undefined },
+  { choices, value, archiveItems }: { choices: Record<string, "reuse" | "import">; value: string | undefined; archiveItems: boolean },
 ): Promise<{ done: boolean; said: string } | null> {
   // Pressed through `assist:publishTrial`, never here (EO-588).
   if (card.kind === TRIAL_PUBLISH_CARD_KIND) return null;
   if (card.kind === "stepSecret" || card.kind === "stepVariable") return carryOutStepValue(db, doors, card, value);
   if (isItemTypeCard(card)) return carryOutItemType(db, doors, card);
+  if (isJobCard(card)) return carryOutJob(db, doors, card, archiveItems);
   if (card.kind === "pipelineImport") {
     const file = await attachedDocument(db, doors, conversation, card.attachmentId);
     if (!file.ok) return { done: false, said: `Nothing was imported: ${file.reason}` };
@@ -2445,6 +2454,90 @@ async function carryOutItemType(
   if (!updated.ok) return { done: false, said: `“${existing.label}” was not changed: ${updated.reason}` };
   if (updated.data.type === null) return { done: false, said: `“${existing.label}” was not changed: ${updated.data.problem ?? "EO refused it."}` };
   return { done: true, said: `Saved the item type “${updated.data.type.label}” (${updated.data.type.plural}).` };
+}
+
+/** What a test event came to, in a sentence (EO-786) — the Job page's Events tab's words for each outcome. */
+const TEST_EVENT_OUTCOME: Record<NonNullable<IpcResponse<"jobs:testEvent">["outcome"]>, string> = {
+  created: "it was accepted and filed an item",
+  deduplicated: "it was taken for an event the job had already seen, so nothing new was filed",
+  rejected_signature: "its signature did not match, so it was refused",
+  rejected_replay: "its timestamp was outside the window, so it was refused",
+  malformed: "it could not be read as an event",
+  over_cap: "the job's queue of held events is full, so it was refused",
+  held: "it is held — the job is at its items-per-hour or cannot file work this minute — and is filed when it can be",
+  refused: "the pipeline's entry rules refused the item it would have filed",
+};
+
+/**
+ * Makes, changes or deletes a job, or presses one of a webhook job's two
+ * buttons (EO-786), through the channel the Jobs screen called — so its
+ * refusals, and the EO-736 notice a save comes back with, are the ones
+ * filed under the card.
+ *
+ * Nothing filed here carries a webhook's signing secret: a new secret is
+ * said to exist and to be on the Job page, never what it is.
+ */
+async function carryOutJob(db: Db, doors: AssistCardDoors, card: JobCard, archiveItems: boolean): Promise<{ done: boolean; said: string }> {
+  if (card.kind === "jobCreate") {
+    const name = card.name.trim();
+    // Onto the project the card names, never whichever one is active.
+    const created = await dispatched(doors, "jobs:create", {
+      projectId: card.projectId,
+      name: card.name,
+      trigger: triggerOfCard(card.trigger),
+      pipelineId: card.pipelineId,
+      template: card.template,
+      budgetPerOccurrenceCents: card.budgetPerOccurrenceCents,
+      maxItemsPerHour: card.maxItemsPerHour,
+      ...(card.runsOn === null ? {} : { runsOn: card.runsOn }),
+    });
+    if (!created.ok) return { done: false, said: `“${name}” was not created: ${created.reason}` };
+    if (created.data.job === null) return { done: false, said: `“${name}” was not created: ${created.data.problem ?? "EO refused it."}` };
+    return { done: true, said: createdJobSaid(created.data.job, created.data.notice) };
+  }
+
+  const job = keptJob(db, card.jobId);
+  if (job === null) return { done: false, said: "Nothing was done: that job is not on the Jobs list any more." };
+  switch (card.kind) {
+    case "jobUpdate": {
+      const payload = jobUpdatePayload(job, card);
+      if (typeof payload === "string") return { done: false, said: `“${job.name}” was not changed: ${payload}` };
+      const updated = await dispatched(doors, "jobs:update", payload);
+      if (!updated.ok) return { done: false, said: `“${job.name}” was not changed: ${updated.reason}` };
+      if (updated.data.job === null) return { done: false, said: `“${job.name}” was not changed: ${updated.data.problem ?? "EO refused it."}` };
+      return { done: true, said: [`Saved the job “${updated.data.job.name}”.`, updated.data.notice ?? ""].filter(Boolean).join(" ") };
+    }
+    case "jobDelete": {
+      const deleted = await dispatched(doors, "jobs:delete", { jobId: job.id, archiveItems });
+      if (!deleted.ok) return { done: false, said: `“${job.name}” was not deleted: ${deleted.reason}` };
+      if (!deleted.data.deleted) return { done: false, said: `“${job.name}” was not deleted.` };
+      const count = deleted.data.archivedItemCount;
+      const items = archiveItems
+        ? count === 0
+          ? "It had filed no item that was not archived already."
+          : `${count === 1 ? "The item it filed was" : `The ${count} items it filed were`} archived with it.`
+        : "The items it filed are left where they are.";
+      return { done: true, said: `Deleted the job “${job.name}”. ${items}` };
+    }
+    case "jobWebhook": {
+      if (card.action === "regenerateSecret") {
+        const replaced = await dispatched(doors, "jobs:regenerateSecret", { jobId: job.id });
+        if (!replaced.ok) return { done: false, said: `The secret of “${job.name}” was not replaced: ${replaced.reason}` };
+        if (replaced.data.job === null) return { done: false, said: `The secret of “${job.name}” was not replaced: ${replaced.data.problem ?? "EO refused it."}` };
+        // Said to exist, never what it is: this sentence is what the chat shows and the agent reads.
+        return {
+          done: true,
+          said: `Replaced the signing secret of “${job.name}”. The old one stopped working when this was pressed; read the new one on the job's page and give it to every sender.`,
+        };
+      }
+      const tested = await dispatched(doors, "jobs:testEvent", { jobId: job.id });
+      if (!tested.ok) return { done: false, said: `No test event was sent to “${job.name}”: ${tested.reason}` };
+      if (tested.data.outcome === null) return { done: false, said: `No test event was sent to “${job.name}”: ${tested.data.problem ?? "EO refused it."}` };
+      const filed = tested.data.itemId !== null && tested.data.itemKey !== null ? filedItemSaid({ id: tested.data.itemId, key: tested.data.itemKey }) : "";
+      const reason = tested.data.problem === null || tested.data.outcome === "created" ? "" : tested.data.problem;
+      return { done: true, said: [`Sent a test event to “${job.name}”: ${TEST_EVENT_OUTCOME[tested.data.outcome]}.`, filed, reason].filter(Boolean).join(" ") };
+    }
+  }
 }
 
 /** What an import brought, in the words the editor's Import used. */

@@ -85,7 +85,7 @@ export function watchTriggerProblem(db: Db, trigger: WatchTrigger, place: { proj
 }
 
 /** Why this module cannot be a job's intake, or null. Asked when the job is saved and again before every check. */
-function unfitWatchModule(module: CustomModule | undefined, moduleId: string): string | null {
+export function unfitWatchModule(module: CustomModule | undefined, moduleId: string): string | null {
   if (module === undefined) return `No module "${moduleId}" is installed here, so there is nothing to watch with.`;
   if (module.archivedAt !== null) return `"${module.name}" has been archived, so it cannot run as a watch job's intake.`;
   if (module.approvedAt === null) return `"${module.name}" has not been approved. Approve it under Settings → Modules before a watch job runs it.`;
