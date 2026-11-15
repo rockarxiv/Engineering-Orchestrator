@@ -35,6 +35,7 @@ export {
   markMessageHandled,
   markMessagesAboutResolved,
   messageChangedAt,
+  openMessageAbout,
   sweepHandledMessages,
   upsertReplicaMessage,
 } from "./messagesRepo.js";

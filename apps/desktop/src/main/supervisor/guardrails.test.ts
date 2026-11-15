@@ -320,12 +320,16 @@ describe("guardrails", () => {
     expect(said[0]?.body).toContain("Guardrails");
   });
 
-  it("a signed-out backend escalates before any agent starts (A-06)", async () => {
+  it("an unusable backend escalates before any agent starts (A-06)", async () => {
     // The provider modules have shipped auth probes since A-04, but
     // nothing called them: a signed-out user got a stack trace from
     // inside the SDK stream instead of a comment. This is the wiring,
     // not the probe — `runtimes/auth.test.ts` covers what the probe
     // actually asks and what it makes of the answer (EO-82).
+    //
+    // A refusal without `signedOut`: since EO-796 a signed-out runtime
+    // blocks the runtime instead (`runtimeSignIn.test.ts`), and this is
+    // what every other refusal of the check still does.
     let started = false;
     const inner = createFakeProvider({ result: validImplementResult });
     const supervisor = createRunSupervisor({
@@ -338,9 +342,8 @@ describe("guardrails", () => {
         resume: inner.resume.bind(inner),
       },
       limits: LIMITS,
-      // The real refusal, verbatim from `checkRuntimeAuth`: it names
-      // where to fix it and no longer sends anyone to a terminal that a
-      // desktop-only machine does not have.
+      // Words that name where to fix it and send nobody to a terminal
+      // that a desktop-only machine does not have.
       checkAuth: async () => ({
         ok: false,
         reason:

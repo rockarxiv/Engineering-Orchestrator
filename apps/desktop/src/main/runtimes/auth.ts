@@ -440,7 +440,8 @@ export function invalidateRuntimeAuth(provider?: AuthProvider): void {
 /**
  * The dispatch preflight (invariant #8: every guard ends in a comment).
  *
- * Only `signed_out` refuses. `unknown` means the probe failed, and
+ * Only `signed_out` refuses, and since EO-796 it blocks the runtime on
+ * this device rather than the one dispatch (`signedOut`). `unknown` means the probe failed, and
  * refusing on that would park work on a machine that can do it — the
  * CLI itself will say so far more precisely if it really cannot run.
  *
@@ -454,13 +455,29 @@ export function invalidateRuntimeAuth(provider?: AuthProvider): void {
  * park every dispatch on a machine whose only credential is the one EO
  * is holding.
  */
+/**
+ * What the dispatch preflight answers (EO-796).
+ *
+ * `signedOut` is set exactly when the runtime's own probe said
+ * `signed_out`, and names the runtime and the copy that was asked. The
+ * supervisor blocks that runtime on this device rather than refusing the
+ * one item: every agent on it is equally unable to run. A refusal without
+ * it — a Codex home EO could not make — is about this agent and this
+ * dispatch, and stays a refusal on the item.
+ */
+export interface RuntimeAuthCheck {
+  ok: boolean;
+  reason?: string;
+  signedOut?: { runtime: RuntimeId; executablePath: string | null };
+}
+
 export async function checkRuntimeAuth(options: {
   provider: string;
   agentName: string;
   executablePath: string | null;
   storedKey?: boolean;
   run?: AuthProbeRunner;
-}): Promise<{ ok: boolean; reason?: string }> {
+}): Promise<RuntimeAuthCheck> {
   if (!(options.provider in RUNTIMES)) return { ok: true }; // `fake`, and anything else that runs in-process
   const provider = options.provider as AuthProvider;
 
@@ -478,6 +495,7 @@ export async function checkRuntimeAuth(options: {
     ok: false,
     reason:
       `${label} is not signed in, so ${options.agentName} has nothing to run with.${where} ` +
-      `Sign it in from Agents → Runtimes, then reply here to retry.`,
+      `Sign it in from Agents → Runtimes.`,
+    signedOut: { runtime: provider, executablePath: options.executablePath },
   };
 }
