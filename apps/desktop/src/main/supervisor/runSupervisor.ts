@@ -77,6 +77,7 @@ import {
   DEFAULT_MEMORY_SCOPE_MAX_CHARS,
   DEFAULT_MEMORY_SCOPE_MAX_ENTRIES,
   DEFAULT_SKILL_ARCHIVE_AFTER_RUNS,
+  DEFAULT_SKILL_MAX_BODY_CHARS,
   DEFAULT_SKILL_STALE_AFTER_RUNS,
   type MemoryReadScope,
   type LearningReviewKind,
@@ -926,6 +927,12 @@ export interface GuardConfig {
   skillStaleAfterRuns: number;
   skillArchiveAfterRuns: number;
   /**
+   * The longest body the learning review's skill writes, and
+   * consolidation's proposals, may leave a skill with (EO-792). Read at
+   * each write.
+   */
+  skillMaxBodyChars: number;
+  /**
    * Whether trial items whose conversation is still testing a draft are
    * offered a slot before live work (EO-582). The order only.
    */
@@ -965,6 +972,7 @@ export const DEFAULT_GUARDS: GuardConfig = {
   memoryScopeMaxChars: DEFAULT_MEMORY_SCOPE_MAX_CHARS,
   skillStaleAfterRuns: DEFAULT_SKILL_STALE_AFTER_RUNS,
   skillArchiveAfterRuns: DEFAULT_SKILL_ARCHIVE_AFTER_RUNS,
+  skillMaxBodyChars: DEFAULT_SKILL_MAX_BODY_CHARS,
   trialsFirst: true,
   runMemoryMaxMb: null,
 };
@@ -2065,6 +2073,7 @@ export function createRunSupervisor(
       const guards = readGuards();
       return { maxEntries: guards.memoryScopeMaxEntries, maxChars: guards.memoryScopeMaxChars };
     },
+    skillMaxBodyChars: () => readGuards().skillMaxBodyChars,
     now,
     canStart: () => !paused && !stopped && !shuttingDown,
     // The runs `slotsOfRuns` counts, as a standalone side call sees them,
@@ -2594,7 +2603,9 @@ export function createRunSupervisor(
     const item = getItem(db, itemId as Uuid);
     if (!item) return { ok: false, code: "NO_RUN", problem: "EO no longer has the item this run is on, so nothing was written." };
     try {
-      if (skillTool) return answerReviewSkillTool(db, review.skills, tool as SkillWriteTool, request.args, now());
+      // The body limit as it stands at this write (EO-792), so a change
+      // on the Guardrails screen applies to the next one.
+      if (skillTool) return answerReviewSkillTool(db, review.skills, tool as SkillWriteTool, request.args, now(), readGuards().skillMaxBodyChars);
       const answer = await noteMemory(item, runId, request.args, true);
       const entryId = answer.ok ? answer.data["entryId"] : undefined;
       if (typeof entryId === "string") review.entryIds.push(entryId);
@@ -2970,7 +2981,7 @@ export function createRunSupervisor(
     reviewTurns.set(run.id, review);
     const loaded = new Set(skillsLoadedByRun(db, run.id));
     const skills = reviewableSkills(db, review.skills).map((skill) => ({ slug: skill.slug, description: skill.description, loaded: loaded.has(skill.id), locked: skill.locked }));
-    const offered = { skills, canCreate: skillScope.projectId !== null };
+    const offered = { skills, canCreate: skillScope.projectId !== null, maxBodyChars: readGuards().skillMaxBodyChars };
     /** The writes this review is served: the skill tools, and `memory_note` unless the run wrote its own notes (EO-731). */
     const served: AgentWriteTool[] = kind === "full" ? [MEMORY_NOTE_TOOL_NAME, ...SKILL_WRITE_TOOLS] : [...SKILL_WRITE_TOOLS];
     // The fork's running total starts where the run left the thread, on

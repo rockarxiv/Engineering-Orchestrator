@@ -2,6 +2,7 @@ import { SkillDraftSchema, ipcContract, renderSkillMarkdown, type SkillDraft } f
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { DbHandle } from "../db/client.js";
 import { attachWorkspace, openMigratedTestDb } from "../db/testHelpers.js";
+import { DEFAULT_GUARD_CONFIG, writeGuards } from "./configCommands.js";
 import { archiveSkillCommand, listSkillsCommand, saveSkillCommand, setSkillEnabledCommand } from "./skillCommands.js";
 
 /**
@@ -122,6 +123,18 @@ describe("the catalogue over IPC", () => {
       archived: false,
       problem: "That skill no longer exists.",
     });
+  });
+});
+
+describe("a person's write and the body limit (EO-792)", () => {
+  it("never refuses a person's skill for the length of its body, whatever the guardrail says", () => {
+    expect(writeGuards(handle.db, { ...DEFAULT_GUARD_CONFIG, skillMaxBodyChars: 100 }).saved).toBe(true);
+    const long = "Read the whole diff, then read it again.\n".repeat(50);
+
+    const created = saveSkillCommand(handle.db, draft({ name: "PR review", body: long }));
+    expect(created).toEqual(expect.objectContaining({ saved: true, problem: null }));
+    const edited = saveSkillCommand(handle.db, draft({ id: created.skill!.id, name: "PR review", body: `${long}And once more.` }));
+    expect(edited.skill?.body).toBe(`${long}And once more.`);
   });
 });
 

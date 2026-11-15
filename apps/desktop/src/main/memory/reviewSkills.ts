@@ -1,4 +1,5 @@
 import {
+  DEFAULT_SKILL_MAX_BODY_CHARS,
   eoToolName,
   SKILL_CREATE_TOOL_NAME,
   SKILL_FILE_REMOVE_TOOL_NAME,
@@ -11,6 +12,7 @@ import {
   SkillFileWriteArgsSchema,
   SkillPatchArgsSchema,
   SkillViewArgsSchema,
+  skillBodyOverLimit,
   type AgentWriteAnswer,
   type Skill,
   type SkillAuthor,
@@ -50,6 +52,12 @@ import { sectionLockFor } from "../managed/locks.js";
  * An organisation's published skills are changed where they were
  * published, as consolidation's are.
  *
+ * **A body has a limit** (EO-792): a create or patch that would leave a
+ * body longer than the guardrail `skillMaxBodyChars` is refused as
+ * `SKILL_TOO_LONG`, unless it makes a body already over it shorter. The
+ * supervisor reads the guardrail at each write. A person's write is never
+ * held to it; nothing here serves one.
+ *
  * Every write goes through `saveSkill` with the run as its author, so each
  * is one `skill_versions` row naming the run, and a skill the review
  * creates is `created_by = 'agent'`.
@@ -84,15 +92,26 @@ const fileKey = (skillId: string, path: string): string => `${skillId}/${path}`;
 
 const refused = (code: string, problem: string): AgentWriteAnswer => ({ ok: false, code, problem });
 
-/** One skill tool call, answered for this review. Never throws for anything the agent sent. */
-export function answerReviewSkillTool(db: Db, state: ReviewSkillState, tool: SkillWriteTool, args: unknown, now: number = Date.now()): AgentWriteAnswer {
+/**
+ * One skill tool call, answered for this review. Never throws for anything
+ * the agent sent. `maxBodyChars` is the guardrail as it stands at this
+ * write (EO-792).
+ */
+export function answerReviewSkillTool(
+  db: Db,
+  state: ReviewSkillState,
+  tool: SkillWriteTool,
+  args: unknown,
+  now: number = Date.now(),
+  maxBodyChars: number = DEFAULT_SKILL_MAX_BODY_CHARS,
+): AgentWriteAnswer {
   switch (tool) {
     case SKILL_VIEW_TOOL_NAME:
       return view(db, state, args);
     case SKILL_CREATE_TOOL_NAME:
-      return create(db, state, args, now);
+      return create(db, state, args, now, maxBodyChars);
     case SKILL_PATCH_TOOL_NAME:
-      return patch(db, state, args, now);
+      return patch(db, state, args, now, maxBodyChars);
     case SKILL_FILE_WRITE_TOOL_NAME:
       return writeFile(db, state, args, now);
     case SKILL_FILE_REMOVE_TOOL_NAME:
@@ -117,6 +136,20 @@ function writeRefusal(db: Db, skill: Skill | null): AgentWriteAnswer | null {
     if (lock) return refused("SKILL_PUBLISHED", `Your organisation has published the ${lock.section} section, so skills are changed there. Nothing was written.`);
   }
   return null;
+}
+
+/**
+ * Why this body is too long for an agent to leave a skill with, or null
+ * (EO-792): over the limit, and not a shortening of a body already over it.
+ */
+function tooLong(slug: string, body: string, before: string | null, maxBodyChars: number): AgentWriteAnswer | null {
+  if (!skillBodyOverLimit(body, before, maxBodyChars)) return null;
+  const chars = (count: number): string => count.toLocaleString("en-US");
+  const shorter = before !== null && before.length > maxBodyChars ? ` It is ${chars(before.length)} now, so a change that makes it shorter is taken.` : "";
+  return refused(
+    "SKILL_TOO_LONG",
+    `This would leave the skill \`${slug}\`'s body at ${chars(body.length)} characters, over the limit of ${chars(maxBodyChars)}, so nothing was written.${shorter} Move detail only some runs need into a file under \`references/\` with ${eoToolName(SKILL_FILE_WRITE_TOOL_NAME)}, and name that file in the body with one sentence saying when to read it.`,
+  );
 }
 
 const notRead = (slug: string, path: string | null): AgentWriteAnswer =>
@@ -155,7 +188,7 @@ function view(db: Db, state: ReviewSkillState, args: unknown): AgentWriteAnswer 
   return { ok: true, text: `${head}${skill.body}`, data: { slug: skill.slug, locked: skill.locked, createdBy: skill.createdBy, files: skill.files.map((file) => file.path) } };
 }
 
-function create(db: Db, state: ReviewSkillState, args: unknown, now: number): AgentWriteAnswer {
+function create(db: Db, state: ReviewSkillState, args: unknown, now: number, maxBodyChars: number): AgentWriteAnswer {
   const parsed = SkillCreateArgsSchema.safeParse(args);
   if (!parsed.success) return refused("INVALID_ARGUMENT", `${SKILL_CREATE_TOOL_NAME} takes \`slug\`, \`description\` and \`body\`, and nothing else.`);
   const { slug, description, body } = parsed.data;
@@ -177,6 +210,8 @@ function create(db: Db, state: ReviewSkillState, args: unknown, now: number): Ag
   if (projectId === null) return refused("NO_PROJECT", "The reviewed run's item is on no project, and a skill the review creates belongs to one. Nothing was created.");
   const blocked = writeRefusal(db, null);
   if (blocked !== null) return blocked;
+  const long = tooLong(slug, body, null, maxBodyChars);
+  if (long !== null) return long;
   const draft: SkillDraft = { slug, name: slug, description, body, files: [], scope: { kind: "project", projectId } };
   const saved = saveSkill(db, draft, now, runAuthor(state));
   if (!saved.ok) return refused("SKILL_REFUSED", `Nothing was created. ${saved.problems.join(" ")}`);
@@ -189,7 +224,7 @@ function create(db: Db, state: ReviewSkillState, args: unknown, now: number): Ag
   };
 }
 
-function patch(db: Db, state: ReviewSkillState, args: unknown, now: number): AgentWriteAnswer {
+function patch(db: Db, state: ReviewSkillState, args: unknown, now: number, maxBodyChars: number): AgentWriteAnswer {
   const parsed = SkillPatchArgsSchema.safeParse(args);
   if (!parsed.success) {
     return refused(
@@ -223,6 +258,12 @@ function patch(db: Db, state: ReviewSkillState, args: unknown, now: number): Age
       );
     }
     body = body.replace(edit.old_text, () => edit.new_text);
+  }
+  // Only a change to the body is held to the limit: a description alone
+  // leaves an oversized body as it was, and is taken.
+  if (replacements.length > 0) {
+    const long = tooLong(skill.slug, body, skill.body, maxBodyChars);
+    if (long !== null) return long;
   }
   const changed = [description === undefined ? null : "description", replacements.length === 0 ? null : "body"].filter((part) => part !== null).join(" and ");
   return save(db, state, skill, { body, ...(description === undefined ? {} : { description }) }, now, `EO patched the skill \`${skill.slug}\`'s ${changed}.`);

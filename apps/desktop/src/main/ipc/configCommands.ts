@@ -1,4 +1,4 @@
-import { backendAllowed, bindingRefusal, DEFAULT_MEMORY_DELIVERY_CHARS, DEFAULT_MEMORY_SCOPE_MAX_CHARS, DEFAULT_MEMORY_SCOPE_MAX_ENTRIES, DEFAULT_SKILL_ARCHIVE_AFTER_RUNS, DEFAULT_SKILL_STALE_AFTER_RUNS, isBuiltinRole, isDispatchable, isPreviewAgent, rolesStaffedFor, settledWatch, staffingAgents, stepHoldsItemsMessage, stepWorkspaceChoice, timeLimitBoundProblem, withMemoryNoteGrant } from "@eo/core";
+import { backendAllowed, bindingRefusal, DEFAULT_MEMORY_DELIVERY_CHARS, DEFAULT_MEMORY_SCOPE_MAX_CHARS, DEFAULT_MEMORY_SCOPE_MAX_ENTRIES, DEFAULT_SKILL_ARCHIVE_AFTER_RUNS, DEFAULT_SKILL_MAX_BODY_CHARS, DEFAULT_SKILL_STALE_AFTER_RUNS, isBuiltinRole, isDispatchable, isPreviewAgent, rolesStaffedFor, settledWatch, staffingAgents, stepHoldsItemsMessage, stepWorkspaceChoice, timeLimitBoundProblem, withMemoryNoteGrant } from "@eo/core";
 import type { ActionDefinitionDraft, Agent, AgentRemovalImpact, EntryRule, GuardConfigView, IpcPayload, IpcResponse, ItemTypeEntry, Registry, Uuid, PipelineStep, StepRoute, StepWatch } from "@eo/core";
 import { hasBlockingProblem, outsideReachByStep, validatePipeline, type WorkflowProblem } from "@eo/engine";
 import type { Db } from "../db/client.js";
@@ -125,6 +125,9 @@ export const DEFAULT_GUARD_CONFIG: GuardConfigView = {
   // in a row without a load, archived after 50.
   skillStaleAfterRuns: DEFAULT_SKILL_STALE_AFTER_RUNS,
   skillArchiveAfterRuns: DEFAULT_SKILL_ARCHIVE_AFTER_RUNS,
+  // The longest body an agent's write may leave a skill with (EO-792);
+  // past it, detail goes in a file under references/.
+  skillMaxBodyChars: DEFAULT_SKILL_MAX_BODY_CHARS,
   // On (EO-582): a test-fix loop waits on one trial run at a time, and
   // behind a queue of live work it would stall for hours. The order of
   // dispatch only — concurrency is untouched.

@@ -75,8 +75,11 @@ describe("skills proposed by memory consolidation", () => {
   let reviewerId: Uuid;
   let implementerRun: Uuid;
   let reviewerRun: Uuid;
+  /** The consolidator's body-limit guardrail (EO-792); absent is the default. */
+  let skillMaxBodyChars: (() => number) | undefined;
 
   beforeEach(() => {
+    skillMaxBodyChars = undefined;
     handle = openMigratedTestDb();
     scratch = mkdtempSync(join(tmpdir(), "eo-skill-proposals-"));
     const w = attachWorkspace(handle.db, { keyPrefix: "P", name: "api", repoPath: scratch });
@@ -136,7 +139,7 @@ describe("skills proposed by memory consolidation", () => {
   /** A consolidator whose consolidation answers `operations` and whose skill proposal call answers `skills`. */
   async function run(operations: (request: AnyRequest) => unknown, skills: (request: AnyRequest) => SkillProposal[]) {
     const sideCall = vi.fn(async (request: AnyRequest): Promise<Answer> => answering(request, isProposing(request) ? { skills: skills(request) } : operations(request)));
-    const consolidator = createMemoryConsolidator({ db: handle.db, sideCall: sideCall as never, caps: () => CAPS });
+    const consolidator = createMemoryConsolidator({ db: handle.db, sideCall: sideCall as never, caps: () => CAPS, ...(skillMaxBodyChars ? { skillMaxBodyChars } : {}) });
     consolidator.start();
     await consolidator.idle();
     consolidator.stop();
@@ -294,6 +297,46 @@ describe("skills proposed by memory consolidation", () => {
       expect(consolidationNote()).toContain("was restored while it was being proposed");
       const active = listMemories(handle.db, workspace).map((entry) => entry.id);
       for (const entry of given.evidence) expect(active).toContain(entry.id);
+    });
+  });
+
+  describe("the body limit (EO-792)", () => {
+    it("does not apply a new skill whose body is over the limit, leaves its evidence in memory, and says why on the consolidation's note", async () => {
+      skillMaxBodyChars = () => E2E_BODY.length - 1;
+      const { evidence } = await consolidate((sent) => [proposal(sent.evidence)]);
+
+      expect(getSkillBySlug(handle.db, "run-e2e")).toBeUndefined();
+      expect(consolidationNote()).toContain(
+        `The skill proposal \`run-e2e\` was not applied: Its body is ${String(E2E_BODY.length)} characters, over the limit of ${String(E2E_BODY.length - 1)} for a skill an agent writes, so the entries it was drawn from stay in memory.`,
+      );
+      const active = listMemories(handle.db, workspace).map((entry) => entry.id);
+      for (const entry of evidence) expect(active).toContain(entry.id);
+      expect(listSkillProposalsOf(handle.db, listConsolidations(handle.db, workspace)[0]!.id)).toEqual([]);
+      expectNothingPosted();
+    });
+
+    it("does not apply an improvement whose body is over the limit, leaving its target and evidence as they were", async () => {
+      const target = existing();
+      skillMaxBodyChars = () => 100;
+      const { evidence } = await consolidate((sent) => [proposal(sent.evidence, improving("run-e2e"))]);
+
+      expect(getSkill(handle.db, target.id)!.body).toBe(target.body);
+      expect(listSkillVersions(handle.db, target.id).map((version) => version.action)).toEqual(["create"]);
+      expect(consolidationNote()).toContain("over the limit of 100 for a skill an agent writes");
+      const active = listMemories(handle.db, workspace).map((entry) => entry.id);
+      for (const entry of evidence) expect(active).toContain(entry.id);
+    });
+
+    it("applies a proposal at the limit, reading the guardrail as the proposals are applied", async () => {
+      let limit = 10;
+      skillMaxBodyChars = () => limit;
+      await consolidate((sent) => {
+        // Raised while the proposal call ran: the limit in force when it is applied is the one that holds.
+        limit = E2E_BODY.length;
+        return [proposal(sent.evidence)];
+      });
+
+      expect(getSkillBySlug(handle.db, "run-e2e")!.body).toBe(E2E_BODY);
     });
   });
 

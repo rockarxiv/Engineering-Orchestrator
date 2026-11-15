@@ -748,6 +748,7 @@ const STORED_GUARDS: GuardConfigView = {
   memoryScopeMaxChars: 30_000,
   skillStaleAfterRuns: 15,
   skillArchiveAfterRuns: 40,
+  skillMaxBodyChars: 6_000,
   trialsFirst: false,
   trialRoundsPerDraft: 6,
   trialBudgetCentsPerDraft: 900,

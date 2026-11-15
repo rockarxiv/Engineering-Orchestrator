@@ -1409,6 +1409,14 @@ export const GuardConfigSchema = z.object({
    */
   skillArchiveAfterRuns: z.number().int().positive().max(10_000),
   /**
+   * The longest body, in characters, an agent's write may leave a skill
+   * with (EO-792): the learning review's `skill_create` and `skill_patch`,
+   * and memory consolidation's proposals. A write that shortens a body
+   * already over it is taken. A person's write is never held to it. 8,000
+   * by default; read at each write, so a change applies to the next.
+   */
+  skillMaxBodyChars: z.number().int().positive().max(1_000_000),
+  /**
    * Whether trial items are offered a slot ahead of live work while the
    * conversation testing their draft is open (EO-582, ARCHITECTURE.md,
    * "Trial pipelines").

@@ -27,6 +27,7 @@ const GUARDS = {
   memoryScopeMaxChars: 40_000,
   skillStaleAfterRuns: 20,
   skillArchiveAfterRuns: 50,
+  skillMaxBodyChars: 8_000,
   trialsFirst: true,
   trialRoundsPerDraft: 8,
   trialBudgetCentsPerDraft: null,
@@ -224,6 +225,18 @@ describe("the guardrails section", () => {
     fireEvent.change(archive, { target: { value: "80" } });
     fireEvent.blur(archive);
     await waitFor(() => expect(written(calls, "guards:set").at(-1)).toMatchObject({ skillStaleAfterRuns: 20, skillArchiveAfterRuns: 80 }));
+  });
+
+  it("shows the longest skill body an agent may write, says a person's edits are not held to it, and saves a change (EO-792)", async () => {
+    const { calls } = renderWith(<GuardrailsSection />);
+    const guardrails = await screen.findByRole("region", { name: "Guardrails" });
+
+    const limit = await within(guardrails).findByLabelText("Characters in a skill's body an agent writes");
+    expect(limit).toHaveValue(8000);
+    expect(within(guardrails).getByText(/Your own edits are never held to it/)).toBeInTheDocument();
+    fireEvent.change(limit, { target: { value: "6000" } });
+    fireEvent.blur(limit);
+    await waitFor(() => expect(written(calls, "guards:set").at(-1)).toMatchObject({ skillMaxBodyChars: 6_000, skillStaleAfterRuns: 20 }));
   });
 
   it("says a default applies to the daily budget and what clearing it costs (EO-211)", async () => {

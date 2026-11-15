@@ -1,5 +1,7 @@
 import {
+  DEFAULT_SKILL_MAX_BODY_CHARS,
   renderSkillMarkdown,
+  skillBodyOverLimit,
   skillProposalFingerprint,
   type MemoryScope,
   type Skill,
@@ -83,6 +85,12 @@ export interface ApplySkillProposalsInput {
    * refused as renamed rather than followed to whatever holds the slug now.
    */
   shown?: ReadonlyMap<string, string>;
+  /**
+   * The longest body a proposal may write (EO-792), the guardrail
+   * `skillMaxBodyChars` as it stands now. A proposal over it is not
+   * applied, and its evidence stays in memory. Absent is the default.
+   */
+  maxBodyChars?: number;
   now: number;
 }
 
@@ -313,6 +321,11 @@ function whyNotApplied(db: Db, input: ApplySkillProposalsInput, proposal: SkillP
   for (const channel of ["skills:save", "agentAttachments:set"] as const) {
     const lock = sectionLockFor(db, channel);
     if (lock) return `Your organisation has published the ${lock.section} section${lock.publishedBy ? ` (${lock.publishedBy})` : ""}, so skills are changed there.`;
+  }
+  // Every run that loads a skill reads its whole body (EO-792).
+  const maxBodyChars = input.maxBodyChars ?? DEFAULT_SKILL_MAX_BODY_CHARS;
+  if (skillBodyOverLimit(proposal.body, null, maxBodyChars)) {
+    return `Its body is ${proposal.body.length.toLocaleString("en-US")} characters, over the limit of ${maxBodyChars.toLocaleString("en-US")} for a skill an agent writes, so the entries it was drawn from stay in memory.`;
   }
   const scope = input.scope;
   if (scope.kind === "project" ? !getProject(db, scope.id as Uuid) : !getWorkspace(db, scope.id as Uuid)) return `The ${scope.kind} it is for no longer exists.`;
