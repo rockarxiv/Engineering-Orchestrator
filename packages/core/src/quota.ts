@@ -215,7 +215,7 @@ export function describeQuotaReset(resetsAt: number | undefined, now: number): s
  * Whether the window this refusal names has already come back.
  *
  * Only ever true for the narrow past interval `quotaResetAt` accepts, but
- * that is exactly the case where "reply once it has" is an instruction to
+ * that is exactly the case where "until then" would be telling somebody to
  * wait for something that has happened.
  */
 function alreadyRefreshed(event: QuotaEvent, now: number): boolean {
@@ -223,8 +223,21 @@ function alreadyRefreshed(event: QuotaEvent, now: number): boolean {
   return at !== null && at <= now;
 }
 
-/** Which window filled up, in a form that survives a backend inventing a new one. */
-function windowPhrase(window: string): string {
+/** What ends the wait, as the start of a sentence. */
+function carryOnWhen(event: QuotaEvent, now: number): string {
+  if (alreadyRefreshed(event, now)) return "EO picks the work back up";
+  if (quotaResetAt(event.resetsAt, now) === null) {
+    return `EO holds the work on "${event.provider}" until somebody says the window is back (Carry on now, on EO's message about the limit)`;
+  }
+  return `EO holds the work on "${event.provider}" until then`;
+}
+
+/**
+ * Which window filled up, in a form that survives a backend inventing a
+ * new one — "its five-hour usage window". Exported so the runtime's own
+ * message (EO-798) names the window in the item's words.
+ */
+export function quotaWindowPhrase(window: string): string {
   const named = window.trim();
   // `unknown` is what the Claude adapter writes when the reading arrives
   // without a `rateLimitType`. Rendering it as "its unknown usage window"
@@ -261,19 +274,18 @@ export function quotaStopReason(input: {
   const { agentName, event, now } = input;
   const share = event.utilization === undefined ? "" : ` (${Math.round(event.utilization)}% used)`;
   return [
-    `The "${event.provider}" backend refused this run: ${windowPhrase(event.window)} is full${share}. ` +
+    `The "${event.provider}" backend refused this run: ${quotaWindowPhrase(event.window)} is full${share}. ` +
       `The run stopped there, and nothing has been retried.`,
     `Retrying could not help. A limit does not clear in the seconds between attempts, so asking again would spend ` +
       `an allowance that is already gone, fail the same way, and bury this reason one message deeper. If ${agentName} ` +
       `looks as though it produced something malformed just before this, that is the same turn being cut off ` +
       `mid-sentence — not a schema anybody needs to change.`,
-    // "Reply once it has" is only an instruction while there is still
-    // something to wait for. On the narrow already-refreshed path it
-    // would be telling somebody to wait for a moment that has passed.
-    `${describeQuotaReset(event.resetsAt, now)} ${
-      alreadyRefreshed(event, now)
-        ? `Reply to pick the work back up, and ${agentName} carries on`
-        : `Reply once it has, and ${agentName} carries on`
-    } in the same conversation from where this run stopped.`,
+    // Nobody is asked to reply (EO-798): the backend is held as a whole
+    // until the window refreshes, and the run is carried on by itself
+    // when it does. Which of three things ends the wait depends on what
+    // EO knows of the reset: a time it can watch for, one already past,
+    // or none — and then only a person can say the window is back.
+    `${describeQuotaReset(event.resetsAt, now)} ${carryOnWhen(event, now)}, and ${agentName} carries on by itself ` +
+      `in the same conversation from where this run stopped. Nobody needs to reply here.`,
   ].join("\n\n");
 }

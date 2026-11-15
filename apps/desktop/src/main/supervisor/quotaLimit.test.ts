@@ -3,7 +3,7 @@ import type { ThreadEvent } from "../providers/codexClient.js";
 import type { AgentEvent, AgentProvider, QuotaEvent, Item } from "@eo/core";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { needsAttention } from "../db/repos/commentsRepo.js";
-import { listCommentsForItem, postComment } from "../db/repos/index.js";
+import { listAgents, listCommentsForItem, updateAgent } from "../db/repos/index.js";
 import { listRunsForItem } from "../db/repos/runsRepo.js";
 import { getItem } from "../db/repos/itemsRepo.js";
 import type { DbHandle } from "../db/client.js";
@@ -62,10 +62,19 @@ function providerEmitting(events: AgentEvent[]): { provider: AgentProvider; resu
 describe("a run stopped by the provider's token limit (EO-172)", () => {
   let handle: DbHandle;
   let item: Item;
+  let clock: number;
+
+  /** The implementer on a real runtime, as the backend that refused would be (EO-798 holds that runtime). */
+  function implementerOn(provider: "claude" | "codex"): void {
+    const implementer = listAgents(handle.db).find((agent) => agent.role === "implementer")!;
+    updateAgent(handle.db, implementer.id, { provider });
+  }
 
   beforeEach(() => {
     handle = openMigratedTestDb();
     item = createTestItem(handle.db, { type: "story", title: "A story", stepId: "todo" });
+    clock = NOW;
+    implementerOn("claude");
   });
 
   afterEach(() => {
@@ -73,13 +82,21 @@ describe("a run stopped by the provider's token limit (EO-172)", () => {
   });
 
   function supervisorFor(provider: AgentProvider) {
-    return createRunSupervisor({ db: handle.db, provider, limits: LIMITS, now: () => NOW });
+    return createRunSupervisor({ db: handle.db, provider, limits: LIMITS, now: () => clock, checkAuth: async () => ({ ok: true }) });
   }
 
-  /** The engine's escalation on this item, which is the only thing a person reads. */
-  function escalationBody(): string {
+  /**
+   * What the item is told about the limit: an engine note since EO-798,
+   * which holds the runtime rather than parking the item.
+   */
+  function limitNoteBody(): string {
     const posted = handle.db.select().from(comments).all();
-    return posted.find((comment) => comment.authorType === "engine" && comment.kind === "escalation")?.body ?? "";
+    return posted.find((comment) => comment.authorType === "engine" && comment.kind === "note" && comment.body.includes("refused this run"))?.body ?? "";
+  }
+
+  /** Whether anything on the item asks a person for a reply. */
+  function anyEscalation(): boolean {
+    return handle.db.select().from(comments).all().some((comment) => comment.kind === "escalation");
   }
 
   it("does not re-prompt a half-written result when the window is what cut it short", async () => {
@@ -93,7 +110,8 @@ describe("a run stopped by the provider's token limit (EO-172)", () => {
 
     expect(resumes).toEqual([]); // not once, let alone twice
     const [run] = listRunsForItem(handle.db, item.id);
-    expect(run?.status).toBe("awaiting_input");
+    expect(run?.status).toBe("cancelled");
+    expect(run?.interruption).toBe("limit");
     expect(run?.error).toContain("refused this run");
     expect(getItem(handle.db, item.id)?.stepId).toBe("todo"); // nothing moved on a run that never happened
   });
@@ -103,7 +121,7 @@ describe("a run stopped by the provider's token limit (EO-172)", () => {
 
     await supervisorFor(provider).runOnce();
 
-    const body = escalationBody();
+    const body = limitNoteBody();
     expect(body).toContain('"claude" backend refused this run');
     expect(body).toContain("five-hour usage window");
     expect(body).toContain("(100% used)");
@@ -112,7 +130,11 @@ describe("a run stopped by the provider's token limit (EO-172)", () => {
     // The sentence that stops somebody debugging a schema that was never
     // the problem.
     expect(body).toContain("not a schema anybody needs to change");
-    expect(needsAttention(handle.db, item.id)).toBe(true); // invariant #8: a person is actually told
+    // Told, but not asked (EO-798): the runtime is held and the item
+    // carries on by itself, so nothing raises `!` and nobody replies.
+    expect(needsAttention(handle.db, item.id)).toBe(false);
+    expect(anyEscalation()).toBe(false);
+    expect(body).toContain("Nobody needs to reply here.");
   });
 
   it("says it does not know the reset time rather than inventing one", async () => {
@@ -123,7 +145,7 @@ describe("a run stopped by the provider's token limit (EO-172)", () => {
 
     await supervisorFor(provider).runOnce();
 
-    const body = escalationBody();
+    const body = limitNoteBody();
     expect(body).toContain("did not say when the window refreshes");
     expect(body).not.toMatch(/\d{4}-\d{2}-\d{2}/); // no timestamp anywhere to be believed
   });
@@ -134,7 +156,7 @@ describe("a run stopped by the provider's token limit (EO-172)", () => {
     await supervisorFor(provider).runOnce();
 
     const [run] = listRunsForItem(handle.db, item.id);
-    expect(run?.status).toBe("awaiting_input");
+    expect(run?.status).toBe("cancelled");
     expect(run?.error).toContain("refused this run");
     expect(run?.error).not.toContain("without a result");
   });
@@ -145,11 +167,11 @@ describe("a run stopped by the provider's token limit (EO-172)", () => {
     await supervisorFor(provider).runOnce();
 
     const [run] = listRunsForItem(handle.db, item.id);
-    expect(run?.status).toBe("awaiting_input"); // not `failed`, which the scheduler would pick straight back up
+    expect(run?.status).toBe("cancelled"); // not `failed`, which the scheduler would retry into the same wall
     expect(run?.error).toContain("refused this run");
   });
 
-  it("leaves the item parked, so waiting for a window does not spend the attempt budget", async () => {
+  it("holds the item, so waiting for a window does not spend the attempt budget", async () => {
     const { provider, resumes } = providerEmitting([refusal(), { type: "result", data: "half an answer" }]);
     const supervisor = supervisorFor(provider);
 
@@ -159,7 +181,8 @@ describe("a run stopped by the provider's token limit (EO-172)", () => {
 
     // One run, one attempt. A failed row would have been re-dispatched
     // on every tick until the per-item limit refused the item for a
-    // reason that had nothing to do with what stopped it.
+    // reason that had nothing to do with what stopped it; the runtime's
+    // hold (EO-798) is what keeps it from being offered again.
     expect(listRunsForItem(handle.db, item.id)).toHaveLength(1);
     expect(resumes).toEqual([]);
   });
@@ -187,7 +210,7 @@ describe("a run stopped by the provider's token limit (EO-172)", () => {
 
     await supervisorFor(provider).runOnce();
 
-    const body = escalationBody();
+    const body = limitNoteBody();
     expect(body).toContain("seven-day usage window");
     expect(body).toContain("in about 4 days");
     expect(body).not.toContain("five-hour");
@@ -200,7 +223,7 @@ describe("a run stopped by the provider's token limit (EO-172)", () => {
 
     await supervisorFor(provider).runOnce();
 
-    expect(escalationBody()).toContain("seven-day usage window");
+    expect(limitNoteBody()).toContain("seven-day usage window");
   });
 
   it("ignores a window that came back before the run ended", async () => {
@@ -212,7 +235,7 @@ describe("a run stopped by the provider's token limit (EO-172)", () => {
 
     await supervisorFor(provider).runOnce();
 
-    const body = escalationBody();
+    const body = limitNoteBody();
     expect(body).toContain("five-hour usage window");
     expect(body).toContain("in about 3 hours");
     expect(body).not.toContain("seven-day");
@@ -243,7 +266,7 @@ describe("a run stopped by the provider's token limit (EO-172)", () => {
     const [run] = listRunsForItem(handle.db, item.id);
     expect(run?.error).toContain("validation");
     expect(run?.error).not.toContain("refused this run");
-    expect(escalationBody()).not.toContain("refused this run");
+    expect(limitNoteBody()).not.toContain("refused this run");
   });
 
   it("carries on when every window that refused has come back", async () => {
@@ -277,7 +300,7 @@ describe("a run stopped by the provider's token limit (EO-172)", () => {
     const [run] = listRunsForItem(handle.db, item.id);
     expect(run?.status).toBe("awaiting_input");
     expect(run?.error).toContain("validation");
-    expect(escalationBody()).not.toContain("refused this run");
+    expect(limitNoteBody()).not.toContain("refused this run");
   });
 
   /**
@@ -292,6 +315,8 @@ describe("a run stopped by the provider's token limit (EO-172)", () => {
    * stops recognising the refusal fails these, not only its own file.
    */
   describe("and the same limit on a Codex run (EO-340)", () => {
+    beforeEach(() => implementerOn("codex"));
+
     const CODEX_THREAD = "0199e2ab-7f5c-7a31-9b64-6c2f1d0a55e1";
 
     /** The CLI's reset format, local-zone, as `providers/codex.ts` explains. */
@@ -336,14 +361,15 @@ describe("a run stopped by the provider's token limit (EO-172)", () => {
       };
     }
 
-    it("parks the run rather than failing it, and asks the backend nothing further", async () => {
+    it("stops the run rather than failing it, and asks the backend nothing further", async () => {
       const { provider, resumed } = codexProvider(REFUSED);
 
       await supervisorFor(provider).runOnce();
 
       expect(resumed).toEqual([]);
       const [run] = listRunsForItem(handle.db, item.id);
-      expect(run?.status).toBe("awaiting_input"); // not `failed`, which is what this used to be
+      expect(run?.status).toBe("cancelled"); // not `failed`, which is what this used to be
+      expect(run?.interruption).toBe("limit");
       expect(run?.error).toContain("refused this run");
       expect(run?.error).not.toContain("sandbox"); // nor the CLI's raw sentence
       expect(getItem(handle.db, item.id)?.stepId).toBe("todo");
@@ -354,14 +380,14 @@ describe("a run stopped by the provider's token limit (EO-172)", () => {
 
       await supervisorFor(provider).runOnce();
 
-      const body = escalationBody();
+      const body = limitNoteBody();
       expect(body).toContain('"codex" backend refused this run');
       expect(body).toContain("gpt-5-codex usage window");
       expect(body).toContain("in about 3 hours");
       expect(body).toContain("2026-08-28 23:40 UTC");
       // Codex reports no share of the window, so nothing claims one.
       expect(body).not.toContain("% used");
-      expect(needsAttention(handle.db, item.id)).toBe(true);
+      expect(needsAttention(handle.db, item.id)).toBe(false);
     });
 
     it("says it does not know the reset rather than inventing one, in the same words Claude gets", async () => {
@@ -369,34 +395,29 @@ describe("a run stopped by the provider's token limit (EO-172)", () => {
 
       await supervisorFor(provider).runOnce();
 
-      const body = escalationBody();
+      const body = limitNoteBody();
       expect(body).toContain("did not say when the window refreshes");
       expect(body).toContain("a usage window it did not name");
       expect(body).not.toMatch(/\d{4}-\d{2}-\d{2}/);
     });
 
-    it("offers the option to carry on, and carries on in the same Codex thread", async () => {
+    it("carries on in the same Codex thread once the window refreshes, with nobody replying", async () => {
       const { provider, resumed } = codexProvider(REFUSED);
       const supervisor = supervisorFor(provider);
 
       await supervisor.runOnce();
 
-      // The thread id is what makes the option worth pressing: without
-      // it a reply would start the work again from nothing.
-      const [parked] = listRunsForItem(handle.db, item.id);
-      expect(parked?.threadId).toBe(CODEX_THREAD);
-      const escalation = listCommentsForItem(handle.db, item.id).find((comment) => comment.kind === "escalation");
-      expect(escalation?.options).toEqual(["The window has refreshed — carry on"]);
+      // The thread id is what lets it carry on rather than start the
+      // work again from nothing.
+      const [stopped] = listRunsForItem(handle.db, item.id);
+      expect(stopped?.threadId).toBe(CODEX_THREAD);
+      expect(anyEscalation()).toBe(false);
 
-      // Pressing it posts an ordinary reply, and the reply resumes.
-      postComment(handle.db, {
-        itemId: item.id,
-        author: { type: "human" },
-        parentId: escalation!.id,
-        body: escalation!.options![0] as string,
-      });
-      await supervisor.resumeItem(item.id);
+      clock = NOW + 3 * HOUR + 1;
+      await supervisor.runOnce(); // the hold lifts at the reset, and the run is carried on
 
+      // This scripted backend refuses the resumed turn too, so one is all
+      // that should be asked of it in this pass.
       expect(resumed.map((turn) => turn.threadId)).toEqual([CODEX_THREAD]);
     });
 

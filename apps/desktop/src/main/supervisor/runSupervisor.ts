@@ -99,6 +99,8 @@ import {
   TurnNotEndedError,
   outputSchemaFor,
   parseIfFenced,
+  quotaResetAt,
+  RuntimeIdSchema,
   quotaStopReason,
   REFINE_ACTION,
   DEFAULT_JOB_RUNS_ON,
@@ -259,8 +261,15 @@ import { resolveMessagesAbout, sendMessageHere } from "../messages/messages.js";
 import {
   heldByBlockedRuntimes,
   RUNTIME_BLOCK_RECHECK_MS,
+  CARRY_ON_NOW_OPTION,
+  LIMIT_RESUME_MESSAGE,
+  RUNTIME_LIMIT_SOURCE,
   RUNTIME_SIGN_IN_SOURCE,
   runtimeHoldNote,
+  runtimeLimitHoldNote,
+  runtimeLimitHoldPrefix,
+  runtimeLimitMessage,
+  runtimeLimitStopNote,
   runtimeOf,
   runtimeSignInMessage,
   TRY_AGAIN_OPTION,
@@ -2268,7 +2277,7 @@ export function createRunSupervisor(
       // (EO-796): the block's own recheck does that. The item waits, and
       // is told so once.
       const blockedOn = runtimeOf(runningOn);
-      if (blockedOn !== null && runtimeBlocks.has(blockedOn)) {
+      if (blockedOn !== null && isRuntimeBlocked(blockedOn)) {
         noteRuntimeHold(item, blockedOn);
         return { kind: "stand-down" };
       }
@@ -2295,6 +2304,8 @@ export function createRunSupervisor(
         : dispatchRun(dispatch.item, dispatch.agent, dispatch.action, {
             stepId: dispatch.stepId,
             stillEligible: opts.stillEligible,
+            // A run a plan limit stopped is carried on in its thread (EO-798).
+            ...limitContinuation(dispatch.item, dispatch.agent, dispatch.action, dispatch.stepId),
           }),
 
     report: ({ item, agent, action }: DispatchSubject, refusal, { initiationId, attempt }: DispatchAttempt) => {
@@ -4625,7 +4636,10 @@ export function createRunSupervisor(
   /** How often this initiation has been cut short without failing — see `MAX_INTERRUPTIONS_PER_INITIATION`. */
   function countInterruptions(itemId: Uuid, initiationId: string | null): number {
     if (initiationId === null) return 0;
-    return listRunsForItem(db, itemId).filter((run) => run.initiationId === initiationId && run.interruption !== null).length;
+    // A plan limit is not counted (EO-798): it is held until the window
+    // refreshes rather than carried straight back into the same wall, so
+    // it is not the loop this ceiling stops.
+    return listRunsForItem(db, itemId).filter((run) => run.initiationId === initiationId && run.interruption !== null && run.interruption !== "limit").length;
   }
 
   function alreadyRefused(itemId: Uuid, initiationId: string): boolean {
@@ -6741,27 +6755,40 @@ export function createRunSupervisor(
         return;
 
       case "limitReached": {
-        // Parked, not failed (EO-172). Three things follow from
-        // `awaiting_input` and all three are wanted here: the scheduler
-        // stops offering the item, so the attempt budget that exists to
-        // catch genuine loops is not spent waiting for a window to
-        // refresh; the thread id is persisted, so a reply carries on the
-        // same conversation rather than starting the work again from
-        // nothing; and the item asks for a person, which is right
-        // because waiting is a decision only they can take.
+        // Not parked and not failed (EO-172, EO-798). The allowance is a
+        // fact about the backend, so the runtime is held on this device
+        // until the window refreshes, and this run is the first of the
+        // items waiting on it: cancelled with the `limit` interruption,
+        // so it is not an attempt (`countAttempts`) and not a failure to
+        // retry, its thread kept so the scheduler carries it on in the
+        // same conversation once the hold lifts (`limitContinuation`). A
+        // note, not an escalation: nobody needs to reply, and nothing
+        // parks the item (invariant 6).
         const reason = quotaStopReason({ agentName: agent.name, event: outcome.quota, now: now() });
+        const limitedOn = runtimeOf(runsOn(agent, item));
+        if (limitedOn === null) {
+          // A backend no runtime names — the fake one previews and tests
+          // run on — has no hold to wait in, and a cancelled run nothing
+          // holds would be offered straight back into the same refusal. An
+          // ordinary failure is bounded by the backoff and the attempt
+          // limit instead.
+          updateRun(db, run.id, { status: "failed", error: reason, endedAt: now(), threadId });
+          postComment(db, { itemId: item.id, runId: run.id, author: { type: "engine" }, kind: "note", body: reason });
+          onItemChanged(item.id);
+          announceRun(run.id, item.id, "failed");
+          return;
+        }
         updateRun(db, run.id, {
-          status: "awaiting_input",
+          status: "cancelled",
           error: reason,
+          interruption: "limit",
           endedAt: now(),
           threadId,
         });
-        // The same words in the thread as in `runs.error`, and an option
-        // to press: picking it posts an ordinary reply, which is exactly
-        // what resumes the run. A person who comes back after the window
-        // has refreshed should not have to work out what to type.
-        postGuardEscalation(item.id, run.id, reason, ["The window has refreshed — carry on"]);
-        announceRun(run.id, item.id, "awaiting_input");
+        blockRuntimeForLimit(limitedOn, outcome.quota, agent, item);
+        postComment(db, { itemId: item.id, runId: run.id, author: { type: "engine" }, kind: "note", body: runtimeLimitStopNote(limitedOn, reason) });
+        onItemChanged(item.id);
+        announceRun(run.id, item.id, "cancelled");
         return;
       }
 
@@ -10092,7 +10119,17 @@ export function createRunSupervisor(
    */
   function restartableIntents(): ForcedRestartIntent[] {
     const shelved = itemsOnArchivedProjects(db);
-    return forcedRestartIntents().filter((intent) => !shelved.has(intent.itemId) && !heldBack(getAgent(db, intent.agentId as Uuid), intent.itemId as Uuid));
+    // Nor one whose agent's runtime is held on this device (EO-796,
+    // EO-798): its preflight would stand down and keep the intent, and the
+    // tick, which runs nothing else while one is pending, would hold the
+    // other runtime's work back behind it until the hold lifted.
+    return forcedRestartIntents().filter((intent) => {
+      if (shelved.has(intent.itemId)) return false;
+      const agent = getAgent(db, intent.agentId as Uuid);
+      if (heldBack(agent, intent.itemId as Uuid)) return false;
+      const item = anyRuntimeBlocked() ? getItem(db, intent.itemId as Uuid) : undefined;
+      return item === undefined || blockedRuntimeFor(agent, item) === null;
+    });
   }
 
   async function restartForcedRuns(): Promise<void> {
@@ -10473,8 +10510,10 @@ export function createRunSupervisor(
       // A runtime not signed in on this device (EO-796): asked again when
       // it is due, its items told they are waiting, and left out of the
       // pick, so they hold no slot and the other runtime's work goes on.
+      // And one whose plan window is full (EO-798), lifted at its reset.
       settleRuntimeBlocks();
-      const blocked = new Set(runtimeBlocks.keys());
+      settleLimitBlocks();
+      const blocked = blockedRuntimeIds();
       if (blocked.size > 0) noteRuntimeHolds(heldByBlockedRuntimes(tickInput, blocked));
       for (const offer of await offerWork(deviceId(), capacityFor(tickInput), undefined, runsWhere, [...blocked])) {
         const promise = executeDispatch(offer.dispatch, offer.lease).finally(() =>
@@ -10749,6 +10788,155 @@ export function createRunSupervisor(
     }
   }
 
+
+  /**
+   * A runtime whose plan window is full, held on this device (EO-798).
+   *
+   * Beside the sign-in blocks rather than one of them: the two are
+   * separate reasons with separate messages, lifted by separate things,
+   * and a runtime is held while either stands. In memory for the sign-in
+   * block's reason — what this machine found when it last ran — and so
+   * forgotten at a restart, when the next dispatch either runs or finds
+   * the limit again and blocks it again. The run that found it is not
+   * parked, so nothing is stranded by the forgetting: it is a cancelled
+   * run carrying the `limit` interruption, which the scheduler offers
+   * again like any other item, continued in its thread
+   * (`limitContinuation`).
+   */
+  interface LimitBlock {
+    runtime: RuntimeId;
+    /** The refusal that holds the work longest: what the message and the notes name. */
+    quota: QuotaEvent;
+    /** When it lifts by itself, on the supervisor's clock; null when the backend did not say. */
+    resetAt: number | null;
+    /** When this episode began, on the wall clock comments are stamped with. */
+    since: number;
+    messageId: string | null;
+  }
+  const limitBlocks = new Map<RuntimeId, LimitBlock>();
+
+  function isRuntimeBlocked(runtime: RuntimeId): boolean {
+    return runtimeBlocks.has(runtime) || limitBlocks.has(runtime);
+  }
+
+  function anyRuntimeBlocked(): boolean {
+    return runtimeBlocks.size > 0 || limitBlocks.size > 0;
+  }
+
+  /** Every runtime held on this device, for whatever reason. */
+  function blockedRuntimeIds(): Set<RuntimeId> {
+    return new Set([...runtimeBlocks.keys(), ...limitBlocks.keys()]);
+  }
+
+  /**
+   * Holds a runtime a run found at its plan limit, and tells the person
+   * once. A block already standing sends nothing more; it only takes a
+   * later reset than the one it holds — the window that holds the work
+   * longest, as `createQuotaRefusals().blocking` chooses within a run —
+   * so it lifts when every window it has heard of is back.
+   */
+  function blockRuntimeForLimit(runtime: RuntimeId, quota: QuotaEvent, agent: Agent, item: Item): void {
+    const resetAt = quotaResetAt(quota.resetsAt, now());
+    const standing = limitBlocks.get(runtime);
+    if (standing) {
+      if (standing.resetAt !== null && (resetAt === null || resetAt > standing.resetAt)) {
+        standing.quota = quota;
+        standing.resetAt = resetAt;
+      }
+      return;
+    }
+    const open = openMessageAbout(db, RUNTIME_LIMIT_SOURCE, runtime);
+    const since = open?.createdAt ?? Date.now();
+    const block: LimitBlock = { runtime, quota, resetAt, since, messageId: open?.id ?? null };
+    limitBlocks.set(runtime, block);
+    if (open) return;
+
+    const held = heldByBlockedRuntimes(tickInputNow(), new Set([runtime]));
+    const itemIds = new Set([item.id, ...held.map(({ item: waiting }) => waiting.id)]);
+    const agentNames = [...new Set([agent.name, ...held.flatMap(({ agents }) => agents.filter((candidate) => runtimeOf(candidate) === runtime).map((candidate) => candidate.name))])];
+    const [message] = sendMessageHere(
+      db,
+      { source: RUNTIME_LIMIT_SOURCE, subject: runtime, ...runtimeLimitMessage({ runtime, quota, now: now(), itemCount: itemIds.size, agentNames }) },
+      false,
+      since,
+    );
+    block.messageId = message?.id ?? null;
+  }
+
+  function liftLimitBlock(runtime: RuntimeId): void {
+    limitBlocks.delete(runtime);
+    resolveMessagesAbout(db, RUNTIME_LIMIT_SOURCE, runtime);
+    notifyStateChange({ promptly: true });
+  }
+
+  /**
+   * Lifts each plan-limit block that is over: its reset has passed, or
+   * the person pressed Carry on now. With no reset EO could read, only
+   * the person ends it — and a message dismissed then is taken as the
+   * same word, since nothing else ever could lift it. A lifted block that
+   * was lifted too soon is found again by the next dispatch, and blocked
+   * again without an attempt spent.
+   */
+  function settleLimitBlocks(): void {
+    for (const block of [...limitBlocks.values()]) {
+      const message = block.messageId === null ? undefined : getMessage(db, block.messageId);
+      const carryOn = message?.handledHow === "answered" && message.answer === CARRY_ON_NOW_OPTION;
+      const dismissedWithNoReset = block.resetAt === null && message?.handledHow === "dismissed";
+      const reset = block.resetAt !== null && now() >= block.resetAt;
+      if (carryOn || dismissedWithNoReset || reset) liftLimitBlock(block.runtime);
+    }
+  }
+
+  /**
+   * Tells an item it is waiting for a runtime's plan window, once per
+   * block: an engine comment opening with the same first words since the
+   * episode began is the item already told — the note on the run that hit
+   * the limit among them. Keyed on the first words because the rest names
+   * a reset in words that change as it nears.
+   */
+  function noteLimitHold(item: Item, runtime: RuntimeId): void {
+    const block = limitBlocks.get(runtime);
+    if (block === undefined || !getItem(db, item.id)) return;
+    const prefix = runtimeLimitHoldPrefix(runtime);
+    const alreadySaid = listCommentsForItem(db, item.id, { since: block.since }).some(
+      (comment) => comment.authorType === "engine" && comment.body.startsWith(prefix),
+    );
+    if (alreadySaid) return;
+    postComment(db, { itemId: item.id, author: { type: "engine" }, kind: "note", body: runtimeLimitHoldNote(runtime, block.quota, now()) });
+    onItemChanged(item.id);
+  }
+
+  /**
+   * The run a plan limit stopped on this item, carried on in its own
+   * thread, when the scheduler dispatches the same work to the same agent
+   * again (EO-798). Only while that run is still the item's newest and
+   * its thread is one the agent can resume on the rules every other
+   * continuation keeps; otherwise the dispatch is an ordinary one. In the
+   * same initiation, so the attempt it carries on is the one it had.
+   */
+  function limitContinuation(item: Item, agent: Agent, action: string, stepId: string | null | undefined): Pick<DispatchOptions, "continueThread" | "initiationId"> {
+    const latest = listRunsForItem(db, item.id)
+      .filter((run) => !isGuardPlaceholder(run))
+      .sort((left, right) => (left.startedAt ?? 0) - (right.startedAt ?? 0) || left.id.localeCompare(right.id))
+      .at(-1);
+    if (
+      latest === undefined ||
+      latest.interruption !== "limit" ||
+      latest.status !== "cancelled" ||
+      latest.agentId !== agent.id ||
+      latest.action !== action ||
+      latest.stepId !== (stepId ?? item.stepId) ||
+      latest.threadId === null ||
+      latest.threadLost ||
+      latest.initiationId === null ||
+      resumeBlockedReason(latest, agent) !== null ||
+      (latest.itemFilesHash ?? EMPTY_ITEM_FILES_HASH) !== itemFilesHash(db, item.id)
+    ) {
+      return {};
+    }
+    return { continueThread: { from: latest, threadId: latest.threadId, message: LIMIT_RESUME_MESSAGE }, initiationId: latest.initiationId };
+  }
+
   /**
    * Tells an item it is waiting for a runtime to be signed in — once per
    * block, the way `notePullRequestHolds` is once per stay: an engine
@@ -10757,6 +10945,7 @@ export function createRunSupervisor(
    * `awaiting_input` run parks it (invariant 6).
    */
   function noteRuntimeHold(item: Item, runtime: RuntimeId): void {
+    noteLimitHold(item, runtime);
     const block = runtimeBlocks.get(runtime);
     if (block === undefined || !getItem(db, item.id)) return;
     const body = runtimeHoldNote(runtime);
@@ -10773,9 +10962,9 @@ export function createRunSupervisor(
    * preview runs on the fake backend, which no block holds.
    */
   function blockedRuntimeFor(agent: Agent | null | undefined, item: Item): RuntimeId | null {
-    if (!agent || runtimeBlocks.size === 0) return null;
+    if (!agent || !anyRuntimeBlocked()) return null;
     const runtime = runtimeOf(runsOn(agent, item));
-    return runtime !== null && runtimeBlocks.has(runtime) ? runtime : null;
+    return runtime !== null && isRuntimeBlocked(runtime) ? runtime : null;
   }
 
   /**
@@ -10786,7 +10975,7 @@ export function createRunSupervisor(
    * to do exactly as it found it, for after the block lifts.
    */
   function waitsForRuntime(agent: Agent | null | undefined, itemOrId: Item | Uuid): boolean {
-    if (!agent || runtimeBlocks.size === 0) return false;
+    if (!agent || !anyRuntimeBlocked()) return false;
     const item = typeof itemOrId === "string" ? getItem(db, itemOrId) : itemOrId;
     if (!item) return false;
     const runtime = blockedRuntimeFor(agent, item);
@@ -10868,6 +11057,10 @@ export function createRunSupervisor(
     stopHearingWakes = onWake?.(() => noteWake());
     // A sign-in EO completed lifts a block on that runtime (EO-796).
     stopHearingSignIns = onRuntimeSignedIn?.((runtime) => runtimeSignedIn(runtime));
+    // A plan-limit block is this process's (EO-798), so one left open by
+    // the last is over: the next dispatch to that runtime runs, or finds
+    // the limit again and says so afresh.
+    for (const runtime of RuntimeIdSchema.options) resolveMessagesAbout(db, RUNTIME_LIMIT_SOURCE, runtime);
     // A dependency going back after it released a `reached` edge is said
     // on the items it released (EO-776).
     stopWatchingRegressions = watchDependencyRegressions(db);

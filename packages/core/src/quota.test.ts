@@ -190,16 +190,25 @@ describe("quotaStopReason", () => {
     const said = quotaStopReason({ agentName: "Sam", event: reading({ resetsAt: (NOW - 60_000) / 1000 }), now: NOW });
 
     expect(said).toContain("refreshed about 1 minute ago");
-    expect(said).toContain("Reply to pick the work back up");
-    expect(said).not.toContain("Reply once it has"); // there is nothing left to wait for
+    expect(said).toContain("EO picks the work back up");
+    expect(said).not.toContain("until then"); // there is nothing left to wait for
   });
 
-  it("says how to pick the work back up", () => {
+  it("says how the work is picked back up", () => {
+    const said = quotaStopReason({ agentName: "Sam", event: reading({ resetsAt: (NOW + 3 * HOUR) / 1000 }), now: NOW });
+
+    // Resumed, not restarted, and by itself (EO-798): the backend is
+    // held until the window refreshes, and nobody is asked to reply.
+    expect(said).toContain('EO holds the work on "claude" until then');
+    expect(said).toContain("carries on by itself in the same conversation");
+    expect(said).toContain("Nobody needs to reply here.");
+    expect(said).not.toMatch(/\breply (once|to)\b/i);
+  });
+
+  it("says a person ends the wait when the reset time is unknown", () => {
     const said = quotaStopReason({ agentName: "Sam", event: reading(), now: NOW });
 
-    // Resumed, not restarted: the run parks with its thread, so a reply
-    // carries on rather than beginning the work again from nothing.
-    expect(said).toContain("Reply once it has");
-    expect(said).toContain("same conversation");
+    expect(said).toContain("Carry on now");
+    expect(said).not.toMatch(/\breply (once|to)\b/i);
   });
 });
