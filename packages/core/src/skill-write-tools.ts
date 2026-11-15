@@ -58,13 +58,35 @@ export const SkillCreateArgsSchema = z.strictObject({
 });
 export type SkillCreateArgs = z.infer<typeof SkillCreateArgsSchema>;
 
-export const SkillPatchArgsSchema = z.strictObject({
-  slug: z.string().trim().min(1),
-  /** Text the body holds exactly once. */
+/** One replacement in a skill's body: `old_text`, held exactly once by the body as the edits before it left it, becomes `new_text`. */
+export const SkillPatchEditSchema = z.strictObject({
   old_text: z.string().min(1),
   /** What it becomes; empty removes it. */
   new_text: z.string(),
 });
+export type SkillPatchEdit = z.infer<typeof SkillPatchEditSchema>;
+
+/**
+ * A change to a skill (EO-790): its description, its body, or both, in one
+ * call and so one version. The body is changed by a single `old_text` /
+ * `new_text` pair or by `edits`, applied in order — never both — and a call
+ * that names neither and no `description` changes nothing and is refused.
+ */
+export const SkillPatchArgsSchema = z
+  .strictObject({
+    slug: z.string().trim().min(1),
+    /** What the skill's description becomes. */
+    description: z.string().optional(),
+    /** Text the body holds exactly once. */
+    old_text: z.string().min(1).optional(),
+    /** What it becomes; empty removes it. */
+    new_text: z.string().optional(),
+    /** Several replacements, applied in order. */
+    edits: z.array(SkillPatchEditSchema).min(1).optional(),
+  })
+  .refine((args) => (args.old_text === undefined) === (args.new_text === undefined), { message: "`old_text` and `new_text` go together." })
+  .refine((args) => args.edits === undefined || args.old_text === undefined, { message: "`edits` is instead of `old_text` and `new_text`, not as well." })
+  .refine((args) => args.description !== undefined || args.edits !== undefined || args.old_text !== undefined, { message: "Nothing to change." });
 export type SkillPatchArgs = z.infer<typeof SkillPatchArgsSchema>;
 
 export const SkillFileWriteArgsSchema = z.strictObject({

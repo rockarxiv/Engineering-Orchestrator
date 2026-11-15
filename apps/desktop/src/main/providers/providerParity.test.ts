@@ -355,9 +355,14 @@ const CAPABILITIES = [
   },
   {
     name: "the learning review's skill tools",
-    what: "the `eo` server a run's own turn starts — its credential naming no writes — lists skill_view, skill_create, skill_patch, skill_file_write and skill_file_remove as its review's does, and refuses each when called with TOOL_NOT_SERVED, saying only a learning review may write skills, without handing it to EO; the review's credential names them (EO-718, EO-732); and a skill-only review's fork, its credential naming the skill tools and not memory_note, lists memory_read and memory_note as the run did and refuses memory_note when called, for an agent whose grant gives memory_note (EO-731, EO-732)",
+    what: "the `eo` server a run's own turn starts — its credential naming no writes — lists skill_view, skill_create, skill_patch, skill_file_write and skill_file_remove as its review's does, skill_patch taking a description and a list of edits beside its single old_text and new_text (EO-790), and refuses each when called with TOOL_NOT_SERVED, saying only a learning review may write skills, without handing it to EO; the review's credential names them (EO-718, EO-732); and a skill-only review's fork, its credential naming the skill tools and not memory_note, lists memory_read and memory_note as the run did and refuses memory_note when called, for an agent whose grant gives memory_note (EO-731, EO-732)",
     same: {
-      fork: { skillTools: [...SKILL_WRITE_TOOLS].sort(), credential: { writes: ["memory_note", ...SKILL_WRITE_TOOLS] } },
+      fork: {
+        skillTools: [...SKILL_WRITE_TOOLS].sort(),
+        credential: { writes: ["memory_note", ...SKILL_WRITE_TOOLS] },
+        // skill_patch's arguments (EO-790): a description, and several edits in one write.
+        patchArgs: { takes: ["description", "edits", "new_text", "old_text", "slug"], required: ["slug"], edit: ["new_text", "old_text"] },
+      },
       resume: { skillTools: [...SKILL_WRITE_TOOLS].sort(), bridged: true, refused: SKILL_WRITE_TOOLS.map(() => "TOOL_NOT_SERVED"), saysOnlyAReview: true },
       skillsOnly: { skillTools: [...SKILL_WRITE_TOOLS].sort(), credential: { writes: [...SKILL_WRITE_TOOLS] }, memory: ["memory_note", "memory_read"], memoryNote: "TOOL_NOT_SERVED" },
     },
@@ -1366,7 +1371,7 @@ async function skillToolsServed(env: Record<string, string> | undefined, withCre
   const bridge = env?.["EO_MCP_WRITE_BRIDGE"] === undefined ? null : (JSON.parse(env["EO_MCP_WRITE_BRIDGE"]) as { writes?: unknown });
   const started = (
     createEoMcpService as (options: Record<string, unknown>) => {
-      tools: { name: string }[];
+      tools: { name: string; inputSchema?: { properties?: Record<string, { items?: { properties?: Record<string, unknown> } }>; required?: string[] } }[];
       handle(request: unknown): Promise<{ result: { isError?: boolean; structuredContent?: { error?: { code?: string; message?: string } } } }>;
       close(): void;
     }
@@ -1383,7 +1388,15 @@ async function skillToolsServed(env: Record<string, string> | undefined, withCre
       const noted = await started.handle({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "memory_note", arguments: { scope: "project", text: "A fact." } } });
       return { skillTools, credential: { writes: bridge?.writes ?? null }, memory, memoryNote: noted.result.structuredContent?.error?.code ?? null };
     }
-    if (withCredential) return { skillTools, credential: { writes: bridge?.writes ?? null } };
+    if (withCredential) {
+      const patch = started.tools.find((tool) => tool.name === "skill_patch")?.inputSchema;
+      const patchArgs = {
+        takes: Object.keys(patch?.properties ?? {}).sort(),
+        required: patch?.required ?? null,
+        edit: Object.keys(patch?.properties?.["edits"]?.items?.properties ?? {}).sort(),
+      };
+      return { skillTools, credential: { writes: bridge?.writes ?? null }, patchArgs };
+    }
     const answers = await Promise.all(
       SKILL_WRITE_TOOLS.map((name, index) => started.handle({ jsonrpc: "2.0", id: index + 1, method: "tools/call", params: { name, arguments: { slug: "house-style" } } })),
     );
