@@ -19,10 +19,20 @@ import { z } from "zod";
  * that would do nothing.
  */
 
+/**
+ * The agent runtimes EO fetches and signs in (EO-795). The desktop's
+ * runtime catalog (`apps/desktop/src/main/runtimes/catalog.ts`) takes its
+ * `RuntimeId` from here, so a runtime added there is added here first.
+ */
+export const RuntimeIdSchema = z.enum(["claude", "codex"]);
+export type RuntimeId = z.infer<typeof RuntimeIdSchema>;
+
 /** What an action opens. */
 export const CommentOpenTargetSchema = z.discriminatedUnion("type", [
   /** The assistant chat about one held template update (`pipeline_update_conflicts.id`). */
   z.object({ type: z.literal("updateConflictChat"), conflictId: z.string().min(1) }),
+  /** The sign-in dialog for one agent runtime on this device (EO-795): the Sign in button on a runtime's sign-in message. */
+  z.object({ type: z.literal("runtimeSignIn"), runtime: RuntimeIdSchema }),
 ]);
 export type CommentOpenTarget = z.infer<typeof CommentOpenTargetSchema>;
 

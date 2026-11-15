@@ -1,3 +1,5 @@
+import type { RuntimeId as CoreRuntimeId } from "@eo/core";
+
 /**
  * Which agent runtimes EO knows how to fetch (A-08).
  *
@@ -12,7 +14,8 @@
  * installer as well.
  */
 
-export type RuntimeId = "claude" | "codex";
+/** Core's list (`RuntimeIdSchema`), so an action naming a runtime can be validated where the catalog cannot be reached. */
+export type RuntimeId = CoreRuntimeId;
 
 export interface RuntimeSpec {
   id: RuntimeId;
