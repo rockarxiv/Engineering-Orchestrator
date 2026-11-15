@@ -282,6 +282,9 @@ export function createServerPlatform(options: ServerPlatformOptions): ServerPlat
         // makes, and the reason the default bind is loopback.
         console.log(`[eo] server listening on http://${config.host}:${port}/?token=${encodeURIComponent(config.token)}`);
       });
+      // Nothing to load: a server has no page of its own that a keychain
+      // read could hold up (EO-793).
+      return Promise.resolve();
     },
 
     // Nothing replaces this binary from the inside. A server is updated

@@ -66,7 +66,9 @@ export function fakePlatform(overrides: Partial<Platform> = {}): Platform {
     version: "9.9.9",
     resources: sourceTreeResources(),
     serveIpc: () => {},
-    openUserInterface: () => {},
+    // Loaded at once: there is no window to wait for (EO-793). A test
+    // that cares about the order hands in a promise it settles itself.
+    openUserInterface: () => Promise.resolve(),
     // Nothing to load. `startDeferredAutoUpdate` never asks on an
     // unpackaged build, and a packaged fake gets the same answer a
     // platform that is updated by something other than itself gives.

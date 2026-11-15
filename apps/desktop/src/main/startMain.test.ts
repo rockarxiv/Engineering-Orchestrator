@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
@@ -7,7 +7,9 @@ import { openDb } from "./db/client.js";
 import { getItem } from "./db/repos/index.js";
 import { createTestItem, openMigratedTestDbAt } from "./db/testHelpers.js";
 import { clearHandlerRegistry, dispatchIpc } from "./ipc/registry.js";
+import { rememberSession } from "./managed/session.js";
 import { openAssistConversation } from "./roles/assist.js";
+import type { SecretStore } from "./secrets/store.js";
 import { fakePlatform, sourceTreeResources } from "./testing/platform.js";
 import { startMain, type RunningMain } from "./startMain.js";
 import { removeScratch } from "./testing/scratch.js";
@@ -150,7 +152,10 @@ describe("starting the main process with a fake platform", () => {
     const order: string[] = [];
     start({
       serveIpc: () => order.push("serveIpc"),
-      openUserInterface: () => order.push("openUserInterface"),
+      openUserInterface: () => {
+        order.push("openUserInterface");
+        return Promise.resolve();
+      },
     });
 
     // Not a stylistic preference. A renderer invokes IPC as it loads, so
@@ -197,7 +202,12 @@ describe("starting the main process with a fake platform", () => {
    */
   it("opens the window before it calls sweepUnusedCodexHomes", async () => {
     startupCalls.length = 0;
-    start({ openUserInterface: () => startupCalls.push("openUserInterface") });
+    start({
+      openUserInterface: () => {
+        startupCalls.push("openUserInterface");
+        return Promise.resolve();
+      },
+    });
 
     await vi.waitFor(() => expect(startupCalls).toContain("sweepUnusedCodexHomes"));
     expect(startupCalls).toEqual(["openUserInterface", "sweepUnusedCodexHomes"]);
@@ -238,5 +248,96 @@ describe("starting the main process with a fake platform", () => {
     } finally {
       after.close();
     }
+  });
+
+  /**
+   * EO-793: nothing on the way to the window reads the OS keychain.
+   *
+   * `safeStorage`'s reads are synchronous, and at login on KDE the first
+   * one held the main thread for eleven seconds while KWallet started —
+   * long enough for the window's first page load to be lost and the
+   * window to stay white. So every call into the keychain waits until
+   * the window has loaded, and this fails the moment one comes back
+   * ahead of it: in `startMain`'s own body, in something it builds, or
+   * in a loop whose launch tick it starts.
+   *
+   * The machine is set up so the readers EO has really would read: the
+   * MCP server's token on disk (read by building its host), and a
+   * signed-in organisation session (read by the push stream and the
+   * record). The second half of the test is what proves that: once the
+   * window says it has loaded, the reads arrive.
+   */
+  it("reads nothing from the keychain until the window has loaded", async () => {
+    let windowLoaded = false;
+    const calls: string[] = [];
+    const early: string[] = [];
+    const recorded = (call: string): void => {
+      calls.push(call);
+      // Where it came from, so a failure names the caller.
+      if (!windowLoaded) early.push(`${call}\n${new Error().stack?.split("\n").slice(2, 8).join("\n") ?? ""}`);
+    };
+    const keychain: SecretStore = {
+      isEncryptionAvailable: () => {
+        recorded("isEncryptionAvailable");
+        return true;
+      },
+      encryptString: (plainText) => {
+        recorded("encryptString");
+        return Buffer.from(plainText);
+      },
+      decryptString: (encrypted) => {
+        recorded("decryptString");
+        return encrypted.toString();
+      },
+    };
+    let loadWindow = (): void => {};
+    const loaded = new Promise<void>((resolve) => {
+      loadWindow = resolve;
+    });
+    const platform = fakePlatform({ isPackaged: false, version: "7.7.7", keychain, openUserInterface: () => loaded });
+
+    // Written with a keychain of its own, so the setup is not counted.
+    const seeding: SecretStore = {
+      isEncryptionAvailable: () => true,
+      encryptString: (plainText) => Buffer.from(plainText),
+      decryptString: (encrypted) => encrypted.toString(),
+    };
+    mkdirSync(join(platform.userDataPath, "mcp"), { recursive: true });
+    writeFileSync(join(platform.userDataPath, "mcp", "token.bin"), "an-mcp-token");
+    const before = openMigratedTestDbAt(join(platform.userDataPath, "eo.db"));
+    expect(
+      rememberSession(
+        { db: before.db, directory: join(platform.userDataPath, "managed"), store: seeding },
+        {
+          // Nothing listens there: the stream and the record fail to
+          // connect, after reading the token to try.
+          address: "http://127.0.0.1:9",
+          email: "person@example.com",
+          token: "a-device-token",
+          personId: "person",
+          personName: "Person",
+          isAdmin: false,
+          deviceId: "device",
+          deviceName: "Laptop",
+        },
+      ),
+    ).toEqual({ ok: true });
+    before.close();
+
+    const logged = vi.mocked(console.log);
+    const linesBefore = logged.mock.calls.length;
+    running = { main: startMain(platform), userDataPath: platform.userDataPath };
+
+    // Startup's own turns and launch ticks, given time to run.
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    expect(early).toEqual([]);
+    // The engine's first tick is one of the readers, so it waits too.
+    expect(logged.mock.calls.slice(linesBefore).flat()).not.toContain("[eo] engine started");
+
+    windowLoaded = true;
+    loadWindow();
+
+    await vi.waitFor(() => expect(calls).toContain("decryptString"));
+    expect(logged.mock.calls.slice(linesBefore).flat()).toContain("[eo] engine started");
   });
 });

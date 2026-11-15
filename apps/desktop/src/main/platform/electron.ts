@@ -105,6 +105,21 @@ export function createElectronPlatform(options: { mainDir: string }): Platform {
   let canvasWindow: BrowserWindow | undefined;
   let debugWindow: BrowserWindow | undefined;
 
+  /**
+   * The first time any main window has really loaded EO's page (EO-793).
+   *
+   * What `openUserInterface` answers, and so what `startMain` waits on
+   * before anything reads the keychain synchronously. Any main window
+   * counts — one reopened after the first closed unloaded, or one whose
+   * page loaded at a person's "Try again" — and nothing else does: a
+   * window that never loads holds that work back for as long as it
+   * does not, because releasing it is what would stall the next try.
+   */
+  let pageLoaded: () => void = () => {};
+  const firstPageLoaded = new Promise<void>((resolve) => {
+    pageLoaded = resolve;
+  });
+
   /** Alive, as opposed to closed-but-still-referenced. */
   const alive = (window: BrowserWindow | undefined): window is BrowserWindow => window !== undefined && !window.isDestroyed();
 
@@ -118,14 +133,123 @@ export function createElectronPlatform(options: { mainDir: string }): Platform {
    */
   function loadRenderer(window: BrowserWindow, hash?: string, search?: string): void {
     const rendererUrl = process.env["ELECTRON_RENDERER_URL"];
-    if (isDev && rendererUrl) {
-      const query = search === undefined ? "" : `?${search}`;
-      void window.loadURL(hash === undefined ? `${rendererUrl}${query}` : `${rendererUrl}${query}#${hash}`);
-      return;
-    }
     const indexHtml = join(mainDir, "../renderer/index.html");
-    if (hash === undefined) void window.loadFile(indexHtml);
-    else void window.loadFile(indexHtml, search === undefined ? { hash } : { hash, search });
+    const query = search === undefined ? "" : `?${search}`;
+    const loading =
+      isDev && rendererUrl
+        ? window.loadURL(hash === undefined ? `${rendererUrl}${query}` : `${rendererUrl}${query}#${hash}`)
+        : hash === undefined
+          ? window.loadFile(indexHtml)
+          : window.loadFile(indexHtml, search === undefined ? { hash } : { hash, search });
+    // Said rather than voided (EO-793). A first load that died used to
+    // leave a white window and nothing in the log; the main window's
+    // `did-fail-load` handler is what reloads it, and this is the line
+    // that says the load was lost at all.
+    loading.catch((error: unknown) => {
+      console.warn(`[eo] a window's page did not load: ${error instanceof Error ? error.message : String(error)}`);
+    });
+  }
+
+  /**
+   * The main window, kept from staying blank (EO-793).
+   *
+   * A first page load can die — at login on KDE it was lost as the
+   * network service restarted behind a main thread stalled on the
+   * keyring — and `ready-to-show` shows the window regardless, white and
+   * silent. So a failed main-frame load and a renderer process that has
+   * gone are each said in the log and answered with a fresh load, a
+   * little later each time, up to `MAIN_RENDERER_RELOADS` times in the
+   * window's life. Past that the person is told, with a way to try
+   * again, rather than left looking at nothing.
+   *
+   * Not reset by a load that worked: a renderer that loads and then dies
+   * every time would otherwise reload forever. "Try again" is what
+   * resets it, because a person asked.
+   *
+   * `loaded` is told when a page has really loaded, and by nothing else:
+   * not by giving up, not by the window closing, not by time passing.
+   * It is what `openUserInterface` resolves on, and what releases the
+   * work that reads the keychain synchronously — which must never run
+   * while there is no page drawn, since that is the very stall that lost
+   * the first load. A `did-finish-load` after a failure this has heard
+   * of and not yet answered with a fresh load is an error page
+   * finishing, and is not counted.
+   */
+  function recoverMainRenderer(window: BrowserWindow, loaded: () => void): void {
+    let reloads = 0;
+    let pending: ReturnType<typeof setTimeout> | undefined;
+    let lastProblem = "";
+    let failed = false;
+
+    /** A fresh load of EO's page, which is what a later `did-finish-load` is about. */
+    const loadAgain = (): void => {
+      failed = false;
+      loadRenderer(window);
+    };
+
+    const giveUp = (): void => {
+      console.error(
+        `[eo] the main window still could not load after ${MAIN_RENDERER_RELOADS} reloads (last: ${lastProblem}); telling the person rather than leaving it blank`,
+      );
+      window.show();
+      void dialog
+        .showMessageBox(window, {
+          type: "error",
+          title: "EO could not load its window",
+          message: "EO's window could not be loaded",
+          detail:
+            `EO tried ${MAIN_RENDERER_RELOADS + 1} times and gave up. The last problem was: ${lastProblem}.\n\n` +
+            "Agents, syncing and anything else that needs your keychain wait until the window has loaded. " +
+            "Try again, or quit EO and start it again; EO's log has a line for each attempt.",
+          buttons: ["Try again", "Close"],
+          defaultId: 0,
+          cancelId: 1,
+          noLink: true,
+        })
+        .then(({ response }) => {
+          if (response !== 0 || window.isDestroyed()) return;
+          reloads = 0;
+          console.log("[eo] reloading the main window, as the person asked");
+          loadAgain();
+        });
+    };
+
+    const reload = (problem: string): void => {
+      lastProblem = problem;
+      failed = true;
+      // One failure can be reported twice — a renderer that died also
+      // fails the load it was in — and is one reload, not two.
+      if (window.isDestroyed() || pending !== undefined) return;
+      if (reloads >= MAIN_RENDERER_RELOADS) {
+        giveUp();
+        return;
+      }
+      reloads += 1;
+      console.warn(`[eo] reloading the main window (${reloads} of ${MAIN_RENDERER_RELOADS})`);
+      pending = setTimeout(() => {
+        pending = undefined;
+        if (!window.isDestroyed()) loadAgain();
+      }, MAIN_RENDERER_RELOAD_DELAY_MS * reloads);
+    };
+
+    window.webContents.on("did-fail-load", (_event, errorCode, errorDescription, validatedURL, isMainFrame) => {
+      // A frame inside the page is the page's business, and ERR_ABORTED
+      // is a navigation another replaced — a reload, this one included —
+      // rather than one that failed.
+      if (!isMainFrame || errorCode === ERR_ABORTED) return;
+      console.warn(`[eo] the main window failed to load ${validatedURL}: ${errorDescription} (error ${errorCode})`);
+      reload(`${errorDescription} (error ${errorCode})`);
+    });
+    window.webContents.on("render-process-gone", (_event, details) => {
+      console.warn(`[eo] the main window's renderer process is gone: ${details.reason} (exit code ${details.exitCode})`);
+      // A clean exit is a renderer that was asked to end — the window
+      // closing, the app quitting — and reloading it would fight that.
+      if (details.reason === "clean-exit") return;
+      reload(`the renderer process ${details.reason} (exit code ${details.exitCode})`);
+    });
+    window.webContents.on("did-finish-load", () => {
+      if (!failed) loaded();
+    });
   }
 
   /**
@@ -227,6 +351,7 @@ export function createElectronPlatform(options: { mainDir: string }): Platform {
     });
 
     denyWindowOpen(window);
+    recoverMainRenderer(window, pageLoaded);
     loadRenderer(window);
 
     return window;
@@ -474,6 +599,7 @@ export function createElectronPlatform(options: { mainDir: string }): Platform {
       app.on("activate", () => {
         if (!alive(mainWindow)) mainWindow = createWindow();
       });
+      return firstPageLoaded;
     },
 
     openCanvas(path) {
@@ -582,6 +708,18 @@ export function createElectronPlatform(options: { mainDir: string }): Platform {
     },
   };
 }
+
+/**
+ * How many times the main window reloads a page that failed to load, or
+ * whose renderer died, before it tells the person instead (EO-793).
+ */
+export const MAIN_RENDERER_RELOADS = 3;
+
+/** The wait before the first reload; the second waits twice this, and so on. */
+export const MAIN_RENDERER_RELOAD_DELAY_MS = 1_000;
+
+/** Chromium's ERR_ABORTED: a navigation another replaced, not one that failed. */
+const ERR_ABORTED = -3;
 
 /** The window a dialog should be modal to: the focused one, else any. */
 /**

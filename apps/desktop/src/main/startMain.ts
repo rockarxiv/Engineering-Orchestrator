@@ -19,7 +19,7 @@ import { installTrialLoop } from "./trials/loop.js";
 import { createDeviceDirectory } from "./identity/callers.js";
 import { createManagedDirectory } from "./managed/directory.js";
 import { deviceIdentity, markRevoked, readSecretsKey, readToken, sessionStatus } from "./managed/session.js";
-import { createPushClient } from "./managed/pushClient.js";
+import { createPushClient, type PushClient } from "./managed/pushClient.js";
 import { createDeviceRecord } from "./record/deviceRecord.js";
 import { organisationSecretValues } from "./policy/organisationSecrets.js";
 import { configuredWatchCheck, startWatchIntake } from "./jobs/watch.js";
@@ -103,7 +103,9 @@ export interface RunningMain {
  * before `serveIpc` hangs a door on it; the door before
  * `openUserInterface`, because a renderer invokes IPC the moment it
  * loads. And after the window, the housekeeping no screen's first read
- * depends on (EO-566), so it does not delay the first paint.
+ * depends on (EO-566), so it does not delay the first paint — and, once
+ * the window has loaded, everything that reads the OS keychain (EO-793),
+ * so a keyring still starting at login cannot stall the first page.
  */
 export function startMain(platform: Platform): RunningMain {
   const resources = platform.resources;
@@ -170,18 +172,25 @@ export function startMain(platform: Platform): RunningMain {
   // project whose repositories used two Jira accounts would otherwise
   // have the first one's token moved onto the survivor's connection
   // and the correct one deleted behind it.
-  const credentials = { directory: join(userDataPath, "credentials"), store: platform.keychain };
-  const legacyOwners = legacyJiraTokenOwners(db);
-  const rekeyed = rekeyJiraTokens(credentials, legacyOwners);
-  if (rekeyed > 0) console.log(`[eo] moved ${rekeyed} Jira token(s) onto their connections`);
+  //
+  // Moving a token decrypts it, so this waits for the window like
+  // everything else that reads the keychain (EO-793): see
+  // `startWhatReadsTheKeychain`.
+  const settleLegacyJiraTokens = (): void => {
+    const credentials = { directory: join(userDataPath, "credentials"), store: platform.keychain };
+    const legacyOwners = legacyJiraTokenOwners(db);
+    if (legacyOwners.length === 0) return;
+    const rekeyed = rekeyJiraTokens(credentials, legacyOwners);
+    if (rekeyed > 0) console.log(`[eo] moved ${rekeyed} Jira token(s) onto their connections`);
 
-  // Forgotten only once none of them has a file left. A pass that
-  // could not store one — the keychain unavailable — keeps the record
-  // so the next launch can finish, since nothing else knows the
-  // pairing any more.
-  if (legacyOwners.length > 0 && legacyOwners.every((owner) => !hasToken(credentials, owner.repositoryId))) {
-    forgetLegacyJiraTokenOwners(db);
-  }
+    // Forgotten only once none of them has a file left. A pass that
+    // could not store one — the keychain unavailable — keeps the record
+    // so the next launch can finish, since nothing else knows the
+    // pairing any more.
+    if (legacyOwners.every((owner) => !hasToken(credentials, owner.repositoryId))) {
+      forgetLegacyJiraTokenOwners(db);
+    }
+  };
 
   const { migrationsApplied, latestMigrationAt } = getSchemaVersion(db);
   const latest = latestMigrationAt ? new Date(latestMigrationAt).toISOString() : "n/a";
@@ -203,8 +212,6 @@ export function startMain(platform: Platform): RunningMain {
   if (customised.length > 0)
     console.log(`[eo] kept your edited prompt for: ${customised.join(", ")} (a newer default ships with this build)`);
 
-  // The engine itself. start() reconciles anything a previous process
-  // left mid-run before it dispatches anything new (E-04).
   // U-04: the badge and notifications follow the inbox. Created before
   // the engine so it can be driven by engine changes rather than
   // polled — the engine already knows when a mention appeared.
@@ -585,8 +592,12 @@ export function startMain(platform: Platform): RunningMain {
    *
    * Inert on a solo desktop: `session()` answers null, and the loop
    * waits rather than ends — somebody may sign in without relaunching.
+   *
+   * Started with the engine, once the window has loaded (EO-793): its
+   * first `session()` reads the device token out of the keychain.
    */
-  const pushes = createPushClient({
+  let pushes: PushClient | null = null;
+  const startPushes = (): PushClient => createPushClient({
     session: () => {
       const status = sessionStatus(session);
       if (status.state !== "signed-in") return null;
@@ -619,9 +630,6 @@ export function startMain(platform: Platform): RunningMain {
     },
   });
 
-  engine.start();
-  console.log("[eo] engine started");
-
   // J-04: whatever the outbox is still holding, including anything a
   // previous process queued and never got to send.
   const jiraContext = { credentials: { directory: join(userDataPath, "credentials"), store: platform.keychain } };
@@ -634,7 +642,9 @@ export function startMain(platform: Platform): RunningMain {
   if (retired > 0) console.log(`[eo] retired ${retired} pull request(s) the old forge queue was still holding`);
 
   const drainInterval = Number.parseInt(process.env["EO_OUTBOX_INTERVAL_MS"] ?? "", 10);
-  const stopOutboxDrain = startOutboxDrain(
+  // Its launch tick reads the Jira token, so it waits for the window
+  // (EO-793), like the Jira pull and the watch jobs below.
+  const startOutbox = (): (() => void) => startOutboxDrain(
     db,
     { jira: createJiraSender(jiraContext, (itemId) => emitPush("items:changed", { itemId })) },
     Number.isFinite(drainInterval) && drainInterval > 0 ? drainInterval : undefined,
@@ -666,7 +676,7 @@ export function startMain(platform: Platform): RunningMain {
   // open, and what it finds filed on the job's pipeline. On a machine
   // only — a watch job runs on the person's, never the organisation
   // server — and outside the dispatcher, so it takes no item's slot.
-  const stopWatchIntake = platform.hasMachine
+  const startWatches = (): (() => void) => platform.hasMachine
     ? startWatchIntake(db, {
         check: configuredWatchCheck(db),
         onFiled: (itemId) => {
@@ -678,7 +688,7 @@ export function startMain(platform: Platform): RunningMain {
 
   // Jira, the other way round: comments and edits written there reach
   // the project without anyone asking. Reads only — status stays EO's.
-  const stopJiraPull = startJiraPull(db, jiraContext, {
+  const startJiraPullLoop = (): (() => void) => startJiraPull(db, jiraContext, {
     attachmentStorage,
     onPulled: (result) => {
       if (result.comments > 0 || result.edits > 0 || result.attachments > 0) emitPush("items:changed", {});
@@ -755,13 +765,20 @@ export function startMain(platform: Platform): RunningMain {
     onReplaced: () => emitPush("updates:changed", {}),
   });
 
+  /**
+   * Set once the process is on its way down, by whichever way out came
+   * first: nothing that has not started yet starts after it.
+   */
+  let stopping = false;
+  /** The loops `startWhatReadsTheKeychain` started, for stopping. */
+  const keychainLoops: (() => void)[] = [];
+
   const stopBackgroundServices = (): void => {
-    stopOutboxDrain();
+    stopping = true;
+    for (const stop of keychainLoops.splice(0)) stop();
     stopArchiveSweep();
     stopMessageSweep();
     stopJobScheduler();
-    stopWatchIntake();
-    stopJiraPull();
     stopTrialLoop();
     updates.current().stop();
     // An MCP client holding the notification stream open would
@@ -872,10 +889,14 @@ export function startMain(platform: Platform): RunningMain {
   // it on in does nothing at all. What decides whether a socket opens
   // is Settings → MCP server, which is where someone can also see why
   // it did not.
-  const mcpReconciled = mcpHost.reconcile().then((status) => {
-    if (status.listeningPort !== null) console.log(`[eo] MCP server listening on 127.0.0.1:${status.listeningPort}`);
-    else if (status.problem !== null) console.warn(`[eo] MCP server not listening: ${status.problem}`);
-  });
+  //
+  // Once the window has loaded (EO-793): reconciling reads its token.
+  let mcpReconciled: Promise<void> = Promise.resolve();
+  const reconcileMcpHost = (): Promise<void> =>
+    mcpHost.reconcile().then((status) => {
+      if (status.listeningPort !== null) console.log(`[eo] MCP server listening on 127.0.0.1:${status.listeningPort}`);
+      else if (status.problem !== null) console.warn(`[eo] MCP server not listening: ${status.problem}`);
+    });
 
   // And EO's own, for the same reason and at the same moment: it
   // dispatches through the registry `registerAllHandlers` just filled.
@@ -902,7 +923,45 @@ export function startMain(platform: Platform): RunningMain {
 
   // Last of what the first read needs: a renderer invokes IPC as soon as
   // it loads, and the door above is what answers it.
-  platform.openUserInterface();
+  const interfaceLoaded = platform.openUserInterface();
+
+  /**
+   * Everything startup does that reads the OS keychain, once the window
+   * has loaded (EO-793).
+   *
+   * `safeStorage`'s reads are synchronous, and the first one can hold the
+   * main thread for seconds while the keyring is still starting — on KDE
+   * at login, KWallet is being activated by that very read. A window
+   * whose first page load is stalled behind it can lose that load and
+   * stay white. So nothing above `openUserInterface` touches the
+   * keychain, and what would touch it in the first moments after — the
+   * engine's first tick (an agent's API key and secrets, the record's
+   * device token), the push stream's sign-in, the Jira outbox and pull,
+   * the watch jobs' module secrets, the MCP server's token and the old
+   * Jira tokens' move — starts here instead. A read after this point can
+   * still be slow, but it holds up a page that is already drawn.
+   *
+   * `startMain.test.ts` fails if a keychain call comes back ahead of the
+   * window. Reads a screen asks for go through IPC, so they arrive from
+   * a renderer that has loaded.
+   */
+  const startWhatReadsTheKeychain = (): void => {
+    if (stopping) return;
+    settleLegacyJiraTokens();
+    // The engine itself. start() reconciles anything a previous process
+    // left mid-run before it dispatches anything new (E-04). Nothing it
+    // is asked before now is lost: `notifyStateChange` on an engine that
+    // has not started is a no-op, and its first tick reads everything
+    // afresh.
+    engine.start();
+    console.log("[eo] engine started");
+    pushes = startPushes();
+    keychainLoops.push(startOutbox(), startJiraPullLoop(), startWatches());
+    mcpReconciled = reconcileMcpHost();
+  };
+  void interfaceLoaded.then(startWhatReadsTheKeychain).catch((error: unknown) => {
+    console.error("[eo] could not start the work that waits for the window:", error);
+  });
 
   /**
    * Startup housekeeping that no screen's first read depends on (EO-566).
@@ -918,7 +977,6 @@ export function startMain(platform: Platform): RunningMain {
    * has nobody to show a badge to, and a database a caller is about to
    * close is no place to start reading.
    */
-  let stopping = false;
   const housekeeping = new Promise<void>((resolve) => setImmediate(resolve)).then(async () => {
     if (stopping) return;
     try {
@@ -973,7 +1031,7 @@ export function startMain(platform: Platform): RunningMain {
       // keyed on the database, so a process that re-opened one without
       // this would queue every move twice.
       record.stop();
-      pushes.stop();
+      pushes?.stop();
       stopAssistDeltas();
       await Promise.allSettled([mcpHost.stop(), adminMcpHost.stop(), agentWriteBridge?.close() ?? Promise.resolve()]);
       await engine.shutdown();

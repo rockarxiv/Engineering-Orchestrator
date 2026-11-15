@@ -246,8 +246,18 @@ export interface Platform {
    *
    * Last, and for the reason `serveIpc` is second-to-last: a renderer
    * invokes IPC the moment it loads.
+   *
+   * Resolves once that surface has loaded (EO-793): under Electron, the
+   * first time a main window has finished loading EO's page — and only
+   * then, so it may never resolve if no page ever loads; elsewhere at
+   * once. Never rejects. `startMain` holds back everything that may read
+   * the OS keychain until then, because a synchronous `safeStorage` read
+   * can hold the main thread for seconds while a keyring starts at
+   * login, and a page load that stalls behind it can die and leave a
+   * blank window. Neither a timeout nor giving up on the reloads
+   * releases it: both are times when no page is drawn.
    */
-  openUserInterface(): void;
+  openUserInterface(): Promise<void>;
   /**
    * Whatever this platform uses to replace itself, when it has one.
    *
