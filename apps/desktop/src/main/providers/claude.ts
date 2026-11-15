@@ -509,6 +509,32 @@ interface ApiRetry {
   no_response?: unknown;
 }
 
+/**
+ * The SDK's own word for a request its sign-in could not make (EO-797).
+ *
+ * Read off the pinned CLI (2.1.322, `__fixtures__/claude-0.3.322-auth-errors.json`),
+ * not off its English: a refused API key, an expired or revoked OAuth
+ * sign-in that could not be refreshed, and no credential at all each end
+ * the turn with an assistant message whose `error` is
+ * `authentication_failed` — "Invalid API key", "OAuth session expired",
+ * "Please run /login" are only its text — and a 401 the CLI retries says
+ * so on its `api_retry` first. The result after it is a `success` with
+ * `is_error` set, which carries none of this. The other kinds of the SDK's
+ * `SDKAssistantMessageError` are left out on purpose: a billing error or
+ * a held account is not fixed by signing in, and `oauth_org_not_allowed`
+ * was not seen from the pinned CLI.
+ */
+const SIGN_IN_ERRORS: ReadonlySet<string> = new Set(["authentication_failed"]);
+
+/**
+ * What a turn has said so far about its sign-in (EO-797): an auth error
+ * on an assistant message or a retry, remembered until the result decides
+ * whether the turn ended on it. Per query, as `pendingCalls` is.
+ */
+export interface ClaudeTurnErrors {
+  signIn: boolean;
+}
+
 /** What the CLI's retry says, in words a person can read. */
 const RETRY_REASONS: Record<string, string> = {
   rate_limit: "rate limited",
@@ -555,13 +581,20 @@ export function mapSdkMessage(
   message: SDKMessage,
   pendingCalls: Map<string, string> = new Map(),
   blocks: Map<number, DeltaStream | null> = new Map(),
+  turnErrors: ClaudeTurnErrors = { signIn: false },
 ): { mapped: AgentEvent[]; recognised: boolean } {
   switch (message.type) {
     case "system": {
       // A request to the model failed and the CLI is trying again: shown,
       // because a turn waiting out a rate limit looks from outside just
       // like one that has hung (`RetryingEvent`).
-      if (message.subtype === "api_retry") return { mapped: [retryingOf(message as unknown as ApiRetry)], recognised: true };
+      if (message.subtype === "api_retry") {
+        const retry = message as unknown as ApiRetry;
+        // Remembered, not acted on: a retry that gets through ends the
+        // turn well, and only a turn that ends badly is a sign-in failure.
+        if (retry.error_status === 401 || (retry.error !== undefined && SIGN_IN_ERRORS.has(retry.error))) turnErrors.signIn = true;
+        return { mapped: [retryingOf(retry)], recognised: true };
+      }
       // The conversation was compacted (`CompactedEvent`).
       if (message.subtype === "compact_boundary") {
         const metadata = (message as { compact_metadata?: { trigger?: unknown; pre_tokens?: unknown } }).compact_metadata;
@@ -607,6 +640,9 @@ export function mapSdkMessage(
 
     case "assistant": {
       const mapped: AgentEvent[] = [];
+      // The CLI's own message for a request the API refused (EO-797): its
+      // text is still said, as it always was, and the result decides.
+      if (message.error !== undefined && SIGN_IN_ERRORS.has(message.error)) turnErrors.signIn = true;
       for (const block of message.message.content) {
         if (block.type === "text" && block.text.trim() !== "") {
           mapped.push({ type: "output", text: block.text });
@@ -643,7 +679,18 @@ export function mapSdkMessage(
       const mapped: AgentEvent[] = [];
       mapped.push(usageOf(message));
 
-      if (message.subtype === "success") {
+      // A turn its sign-in stopped (EO-797). Whichever way the result is
+      // spelled — the pinned CLI says `success` with `is_error` — it is
+      // not an answer, and not an attempt the agent spent.
+      const failed = message.subtype !== "success" || message.is_error;
+      if (failed && turnErrors.signIn) {
+        const said = message.subtype === "success" && message.result.trim() !== "" ? message.result : "Claude could not authenticate.";
+        mapped.push({ type: "error", message: `Claude needs signing in again: ${said}`, retryable: false, signIn: true });
+      } else if (message.subtype === "success" && message.is_error) {
+        // An API error the CLI gave up on (a 400, an overloaded API): the
+        // result's text is the CLI's report of it, not the agent's answer.
+        mapped.push({ type: "error", message: `Claude run ended with an API error: ${message.result}`, retryable: true });
+      } else if (message.subtype === "success") {
         mapped.push({ type: "result", data: message.structured_output ?? message.result });
       } else if (message.subtype === "error_max_budget_usd") {
         // The cap EO gave it (`budgetCents`): a budget stop, not a failure.
@@ -2316,6 +2363,8 @@ export function createClaudeProvider(options: ClaudeProviderOptions = {}): Agent
       // The open content blocks of the message being streamed, for
       // `deltaOf`. Per query, as `pendingCalls` is.
       const blocks = new Map<number, DeltaStream | null>();
+      // What the turn has said about its sign-in (EO-797). Per query too.
+      const turnErrors: ClaudeTurnErrors = { signIn: false };
       // At most one heartbeat every few seconds: a streamed turn says
       // something with every token, and the inactivity guard needs to
       // hear only that it is still going.
@@ -2343,7 +2392,7 @@ export function createClaudeProvider(options: ClaudeProviderOptions = {}): Agent
           // `tool_result` that answers it (EO-169) — the order it
           // happened in, since the agent was told before the tool ran.
           yield* intercepted.drain();
-          const { mapped, recognised } = mapSdkMessage(message, pendingCalls, blocks);
+          const { mapped, recognised } = mapSdkMessage(message, pendingCalls, blocks, turnErrors);
           if (!recognised) options.onUnmappedMessage?.(message);
           // Not this turn's result: the turn is not over, its input stays
           // open for the message the CLI has yet to read, and nothing
@@ -2740,6 +2789,7 @@ export function createClaudeProvider(options: ClaudeProviderOptions = {}): Agent
       const sdkOptions = buildSideCallOptions(opts, { executablePath: options.executablePath, apiKey: options.apiKey?.() ?? null, settingsReader: options.settingsReader });
       const pendingCalls = new Map<string, string>();
       const blocks = new Map<number, DeltaStream | null>();
+      const turnErrors: ClaudeTurnErrors = { signIn: false };
       // The question as a stream EO holds open and closes at the result,
       // rather than a string, so the turn can be interrupted (EO-577):
       // the SDK interrupts only a turn whose input is a stream. Wound
@@ -2758,7 +2808,7 @@ export function createClaudeProvider(options: ClaudeProviderOptions = {}): Agent
       else opts.windDown?.addEventListener("abort", windDown, { once: true });
       try {
         for await (const message of query) {
-          const { mapped, recognised } = mapSdkMessage(message, pendingCalls, blocks);
+          const { mapped, recognised } = mapSdkMessage(message, pendingCalls, blocks, turnErrors);
           if (!recognised) options.onUnmappedMessage?.(message);
           // One question, one answer: nothing more is said to the CLI.
           if (message.type === "result") input.close();

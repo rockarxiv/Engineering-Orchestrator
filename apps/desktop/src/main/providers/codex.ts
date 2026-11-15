@@ -568,6 +568,27 @@ export function codexErrorRefusal(info: unknown): QuotaEvent | null {
 }
 
 /**
+ * Whether a failed turn's classification says its sign-in is no good
+ * (EO-797).
+ *
+ * Read off the pinned app-server (0.167.1,
+ * `__fixtures__/codex-0.167.1-auth-errors.json`), which says it two ways:
+ * a ChatGPT sign-in whose tokens cannot be refreshed — while
+ * `codex login status` still says "Logged in using ChatGPT" — is
+ * `codexErrorInfo: "unauthorized"`; a stored API key the API refuses, and
+ * no credential at all, end on `{ httpConnectionFailed: { httpStatusCode:
+ * 401 } }`. A 401 on any of the variants that carry a status is read the
+ * same way, since what it says is the status and not how the request was
+ * sent. The English beside it ("Please log out and sign in again",
+ * "Incorrect API key provided") is not read.
+ */
+export function codexSignInFailure(info: unknown): boolean {
+  if (info === "unauthorized") return true;
+  if (typeof info !== "object" || info === null) return false;
+  return Object.values(info).some((detail) => typeof detail === "object" && detail !== null && (detail as { httpStatusCode?: unknown }).httpStatusCode === 401);
+}
+
+/**
  * A window's name, from its length (EO-373).
  *
  * The app-server does not name its windows; it says how long each one
@@ -654,6 +675,11 @@ export function codexRateLimitReadings(snapshot: RateLimitSnapshot): QuotaEvent[
  */
 export function codexServerStatus(servers: readonly McpServerStartup[]): ServerStatusEvent {
   return { type: "server_status", servers: servers.map((server) => ({ name: server.name, status: server.status === "ready" ? "connected" : server.status })) };
+}
+
+/** A turn its sign-in stopped (EO-797, `codexSignInFailure`), with the app-server's own words. */
+function signInError(message: string): AgentEvent {
+  return { type: "error", message: `Codex needs signing in again: ${message}`, retryable: false, signIn: true };
 }
 
 /**
@@ -795,16 +821,19 @@ export function mapThreadEvent(event: ThreadEvent): { mapped: AgentEvent[]; reco
         mapped: [
           ...(event.usage ? [usageEvent(event.usage, event.model)] : []),
           ...(refusal ? [refusal] : []),
-          { type: "error", message: event.error.message, retryable: true },
+          codexSignInFailure(event.error.codex_error_info) ? signInError(event.error.message) : { type: "error", message: event.error.message, retryable: true },
         ],
         recognised: true,
       };
     }
 
+    // The fatal `error` notification, which the app-server sends before
+    // the failed turn and which therefore ends the run: the one a sign-in
+    // failure has to be read from (EO-797), and is.
     case "error": {
       const refusal = codexUsageLimitRefusal(event.message) ?? codexErrorRefusal(event.codex_error_info);
       return {
-        mapped: [...(refusal ? [refusal] : []), { type: "error", message: event.message, retryable: false }],
+        mapped: [...(refusal ? [refusal] : []), codexSignInFailure(event.codex_error_info) ? signInError(event.message) : { type: "error", message: event.message, retryable: false }],
         recognised: true,
       };
     }

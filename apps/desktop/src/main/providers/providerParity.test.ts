@@ -59,6 +59,7 @@ import { adminToolOf } from "../roles/pipelineRead.js";
 import { answerActions, ASSIST_ANSWER_WITH_MAPS, ASSIST_ANSWER_WITH_TRIAL, ASSIST_ANSWERS_WITH_CARDS, claudeViolations, openAiStrictViolations } from "../testing/answerSchemas.js";
 import { allGone, descendantPids, DESCENDANTS_SNIPPET, owed, sweepUp } from "../testing/escapingDescendants.js";
 import { fakeAppServer, note, type FakeAppServerScenario } from "../testing/fakeCodexAppServer.js";
+import { CLAUDE_AUTH_ERRORS, CODEX_AUTH_ERRORS } from "../testing/authErrorFixtures.js";
 import { nodeScript } from "../testing/nodeScript.js";
 import { createClaudeProvider } from "./claude.js";
 import { claudeProcesses } from "./claudeProcess.js";
@@ -112,6 +113,27 @@ afterEach(() => dropWarmCodexThread());
  * adapters agreeing, which a stub can settle and a live run cannot keep
  * settled.
  */
+
+/**
+ * How each recorded turn ended (EO-797), each distinct ending once: one
+ * entry per list is every case ending the same way. Whether a failure
+ * that is not about signing in is retryable is each backend's own word
+ * and differs between them, so only the sign-in failures say.
+ */
+function signInsObserved(signIn: readonly AgentEvent[][], notSignIn: readonly AgentEvent[][]): unknown {
+  const ending = (events: readonly AgentEvent[]) => events.find((event) => event.type === "result" || (event.type === "error" && event.fatal !== false));
+  const distinct = (endings: unknown[]) => [...new Set(endings.map((value) => JSON.stringify(value)))].map((value) => JSON.parse(value) as unknown);
+  return {
+    signIn: distinct(signIn.map((events) => {
+      const ended = ending(events);
+      return ended?.type === "error" ? { kind: "error", signIn: ended.signIn === true, retryable: ended.retryable } : { kind: ended?.type ?? "none" };
+    })),
+    notSignIn: distinct(notSignIn.map((events) => {
+      const ended = ending(events);
+      return ended?.type === "error" ? { kind: "error", signIn: ended.signIn === true } : { kind: ended?.type ?? "none" };
+    })),
+  };
+}
 
 /** What the supervisor makes of a turn — the reading in `processStream` (`runSupervisor.ts`), restated. */
 type Outcome = { kind: "result"; data: unknown } | { kind: "error"; message: string } | { kind: "none" };
@@ -929,6 +951,11 @@ const CAPABILITIES = [
     name: "a warm process's scope handed to its run",
     what: "a backend started ahead of its turn in a scope filed under its conversation is adopted by a run's turn at the same memory limit, and its scope is handed over to that run — so the run, not the conversation, hears that it ran out of memory — while a turn whose limit has changed since the warm-up does not adopt it, starts afresh, and takes nothing over (EO-738)",
     same: { adopted: true, handedOver: [[WARM_SCOPE.runId, RUN_SCOPE.runId]], otherLimitStartsAgain: true },
+  },
+  {
+    name: "a sign-in failure reported",
+    what: "a turn its backend refused for a credential that is no good — every case recorded from the pinned CLI — ends on an error marked as a sign-in failure, not retryable, which the supervisor blocks the runtime on instead of spending an attempt; an error that is not about signing in is not marked (EO-797)",
+    same: { signIn: [{ kind: "error", signIn: true, retryable: false }], notSignIn: [{ kind: "error", signIn: false }] },
   },
 ] as const;
 
@@ -2232,6 +2259,12 @@ function recordingRunScopes(expectedCommand: (command: string, args: readonly st
 }
 
 const CLAUDE: Record<CapabilityName, Proof> = {
+  "a sign-in failure reported": async () =>
+    signInsObserved(
+      await Promise.all(CLAUDE_AUTH_ERRORS.signIn.map(({ turn }) => claudeTurn([sdk.init(), ...turn]))),
+      await Promise.all(CLAUDE_AUTH_ERRORS.notSignIn.map(({ turn }) => claudeTurn([sdk.init(), ...turn]))),
+    ),
+
   "a warm process's scope handed to its run": async () => {
     const recording = recordingRunScopes(() => true);
     const restore = setRunScopes(recording.scopes);
@@ -3584,6 +3617,12 @@ const shellCall = (id: string) =>
   note.item({ type: "commandExecution", id, command: SEARCH.command, cwd: "/", processId: null, source: "agent", commandActions: [], aggregatedOutput: "", exitCode: 0, status: "completed", durationMs: 1 });
 
 const CODEX: Record<CapabilityName, Proof> = {
+  "a sign-in failure reported": async () =>
+    signInsObserved(
+      await Promise.all(CODEX_AUTH_ERRORS.signIn.map(({ turn }) => codexTurn([note.turnStarted(), ...turn]))),
+      await Promise.all(CODEX_AUTH_ERRORS.notSignIn.map(({ turn }) => codexTurn([note.turnStarted(), ...turn]))),
+    ),
+
   "a warm process's scope handed to its run": async () => {
     const recording = recordingRunScopes((command, args) => command === STUB_EXECUTABLE && args[0] === "app-server");
     const restore = setRunScopes(recording.scopes);
@@ -4995,7 +5034,7 @@ describe.each(CAPABILITIES)("$name: $what", (capability) => {
 });
 
 describe("the shared list", () => {
-  it("is the twelve capabilities EO-380 names and the ones EO-385, EO-387, EO-392, EO-395, EO-412, EO-421, EO-444, EO-468, EO-470, EO-477, EO-478, EO-479, EO-487, EO-488, EO-490, EO-493, EO-494, EO-534, EO-543, EO-578, EO-587, EO-597, EO-633, EO-700, EO-703, EO-716, EO-717, EO-718, EO-732, EO-738 (two) and the streaming chat added, each once", () => {
+  it("is the twelve capabilities EO-380 names and the ones EO-385, EO-387, EO-392, EO-395, EO-412, EO-421, EO-444, EO-468, EO-470, EO-477, EO-478, EO-479, EO-487, EO-488, EO-490, EO-493, EO-494, EO-534, EO-543, EO-578, EO-587, EO-597, EO-633, EO-700, EO-703, EO-716, EO-717, EO-718, EO-732, EO-738 (two), EO-797 and the streaming chat added, each once", () => {
     // Pinned so that taking one off the list is a decision somebody
     // made in this file rather than a line that went missing.
     expect(CAPABILITIES.map((capability) => capability.name)).toEqual([
@@ -5060,6 +5099,7 @@ describe("the shared list", () => {
       "a turn's whole process tree is ended",
       "a run's processes in a scope of its own",
       "a warm process's scope handed to its run",
+      "a sign-in failure reported",
     ]);
   });
 

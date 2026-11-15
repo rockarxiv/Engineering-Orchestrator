@@ -23,6 +23,7 @@ import { archivedProjectOf, itemsMidAdoption, itemsOnArchivedProjects } from "..
 import { parkedForMissingCriteria } from "./reviewCriteria.js";
 import type { GateRefusal, ItemBlocker, ProjectArchived } from "./dispatchBlockers.js";
 import { watchesHeld, watchingUntil } from "./watches.js";
+import { isSignInStop } from "./runtimeBlocks.js";
 
 /**
  * What the installed packs contribute to a scheduling decision
@@ -190,6 +191,9 @@ function retryBackoffs(db: Db, items: Item[], now: number, attemptLimit: number)
     // escalation, on the next tick, not by a wait for a retry that will
     // never come.
     if (failed.attempt >= attemptLimit) continue;
+    // A run its backend's sign-in stopped (EO-797) is not retried: the
+    // runtime's block holds the item, and it goes as soon as that lifts.
+    if (isSignInStop(failed.error)) continue;
     // Only the step's own automatic run is retried in its initiation: a
     // failed reply, discussion or interpretation is no reason to hold
     // back the step's next dispatch, which is a different piece of work.
