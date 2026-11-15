@@ -1,5 +1,5 @@
 import { QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { describe, expect, it, vi } from "vitest";
 import { ThemeProvider } from "@eo/ui";
@@ -7,12 +7,12 @@ import type { JobEventRow, JobSummary, JobWatchState, ModuleView, WatchTrigger }
 import { createQueryClient } from "../../../query/client";
 import { ItemReferenceProvider } from "../../conversation/ItemReferenceProvider";
 import { JobView } from "./JobView";
-import { JobsView } from "./JobsView";
 
 /**
- * A watch job on the Jobs screen (EO-754): set up on the form, and how
- * its checks stand on the Job page — checking normally, failing, paused,
- * and waiting on an item it filed — with what it found on the Events tab.
+ * A watch job on its Job page (EO-754): what it was set up with, read-only
+ * since EO-787, and how its checks stand — checking normally, failing,
+ * paused, and waiting on an item it filed — with what it found on the
+ * Events tab.
  */
 
 const PIPELINES = [{ id: "deps", projectId: "p1", name: "Dependency update", icon: null, entryStepId: "todo", position: 0, archivedAt: null }];
@@ -121,12 +121,10 @@ function event(overrides: Partial<JobEventRow> = {}): JobEventRow {
 interface Options {
   job?: JobSummary;
   events?: JobEventRow[];
-  onCreate?: (payload: unknown) => unknown;
-  onUpdate?: (payload: unknown) => unknown;
 }
 
 function mockIpc(options: Options = {}) {
-  const invoke = vi.fn(async (channel: string, payload: unknown) => {
+  const invoke = vi.fn(async (channel: string, _payload?: unknown) => {
     switch (channel) {
       case "projects:list":
         return { ok: true, data: { projects: [{ id: "p1", name: "EO" }], activeProjectId: "p1" } };
@@ -146,10 +144,6 @@ function mockIpc(options: Options = {}) {
         return { ok: true, data: { jobId: "job-1", costCents: 0 } };
       case "jobs:events":
         return { ok: true, data: { events: options.events ?? [], heldCount: 0, lastPayload: null } };
-      case "jobs:create":
-        return { ok: true, data: options.onCreate?.(payload) ?? { job: job(), problem: null } };
-      case "jobs:update":
-        return { ok: true, data: options.onUpdate?.(payload) ?? { job: job(), problem: null } };
       default:
         return { ok: true, data: {} };
     }
@@ -166,7 +160,6 @@ function renderAt(path: string) {
         <MemoryRouter initialEntries={[path]}>
           <ItemReferenceProvider>
             <Routes>
-              <Route path="/jobs" element={<JobsView />} />
               <Route path="/jobs/:jobId" element={<JobView jobId="job-1" />} />
             </Routes>
           </ItemReferenceProvider>
@@ -176,96 +169,31 @@ function renderAt(path: string) {
   );
 }
 
-const sent = (invoke: ReturnType<typeof mockIpc>, channel: string) => invoke.mock.calls.find((call: unknown[]) => call[0] === channel)?.[1];
-
-async function newWatchJob() {
-  fireEvent.click(await screen.findByRole("button", { name: "New job" }));
-  fireEvent.change(screen.getByLabelText("Trigger"), { target: { value: "watch" } });
-  await screen.findByRole("option", { name: "Dependabot alerts" });
-}
-
-describe("setting up a watch job on the form", () => {
-  it("offers it beside the other triggers", async () => {
-    mockIpc();
-    renderAt("/jobs");
-    fireEvent.click(await screen.findByRole("button", { name: "New job" }));
-    const trigger = within(screen.getByLabelText("Trigger"));
-    expect(trigger.getByRole("option", { name: "When a module finds something" })).toBeInTheDocument();
-    expect(trigger.getByRole("option", { name: "On a schedule" })).toBeInTheDocument();
-    expect(trigger.getByRole("option", { name: "Only when you run it" })).toBeInTheDocument();
-  });
-
-  it("lists only approved modules that declare watch: true", async () => {
-    mockIpc();
-    renderAt("/jobs");
-    await newWatchJob();
-
-    const picker = within(screen.getByLabelText("Module"));
-    expect(picker.getByRole("option", { name: "Dependabot alerts" })).toBeInTheDocument();
-    expect(picker.queryByRole("option", { name: "Unapproved watcher" })).not.toBeInTheDocument();
-    expect(picker.queryByRole("option", { name: "Runs once" })).not.toBeInTheDocument();
-  });
-
-  it("shows a field per declared input with its default and description, the interval and the switch, and sends them", async () => {
-    const invoke = mockIpc();
-    renderAt("/jobs");
-    await newWatchJob();
-    fireEvent.change(screen.getByLabelText(/^Name/), { target: { value: "Dependabot" } });
-    fireEvent.change(screen.getByLabelText("Module"), { target: { value: "mod-alerts" } });
-
-    const repo = screen.getByLabelText("repo");
-    expect(repo).toHaveAttribute("placeholder", "rockarxiv/eo");
-    expect(screen.getByText("The repository to read. Default: rockarxiv/eo.")).toBeInTheDocument();
-    expect(screen.getByText("How many at most. No default.")).toBeInTheDocument();
-    expect(screen.getByRole("switch", { name: "drafts" })).toHaveAttribute("aria-checked", "false");
-    expect(screen.getByLabelText(/^Check every/)).toHaveValue(60);
-
-    fireEvent.change(repo, { target: { value: "rockarxiv/web" } });
-    fireEvent.change(screen.getByLabelText("limit"), { target: { value: "5" } });
-    fireEvent.change(screen.getByLabelText(/^Check every/), { target: { value: "15" } });
-    fireEvent.click(screen.getByRole("switch", { name: "Wait while an item it filed is still open" }));
-    fireEvent.change(screen.getByLabelText(/^Pipeline/), { target: { value: "deps" } });
-    fireEvent.click(screen.getByRole("button", { name: "Create job" }));
-
-    await waitFor(() => expect(sent(invoke, "jobs:create")).toBeDefined());
-    expect(sent(invoke, "jobs:create")).toMatchObject({
-      name: "Dependabot",
-      pipelineId: "deps",
-      trigger: { kind: "watch", moduleId: "mod-alerts", inputs: { repo: "rockarxiv/web", limit: 5 }, everyMinutes: 15, waitWhileOpen: true },
-    });
-  });
-
-  it("shows a refusal from saving in the refusal's own words", async () => {
-    const refusal = '"Dependabot alerts" has not been approved. Approve it under Settings → Modules before a watch job runs it.';
-    mockIpc({ onCreate: () => ({ job: null, problem: refusal }) });
-    renderAt("/jobs");
-    await newWatchJob();
-    fireEvent.change(screen.getByLabelText(/^Name/), { target: { value: "Dependabot" } });
-    fireEvent.change(screen.getByLabelText("Module"), { target: { value: "mod-alerts" } });
-    fireEvent.click(screen.getByRole("button", { name: "Create job" }));
-
-    expect(await screen.findByText(refusal)).toBeInTheDocument();
-  });
-
-  it("asks for a module before sending anything", async () => {
-    const invoke = mockIpc();
-    renderAt("/jobs");
-    await newWatchJob();
-    fireEvent.click(screen.getByRole("button", { name: "Create job" }));
-
-    expect(await screen.findByText("Pick the module it checks with.")).toBeInTheDocument();
-    expect(sent(invoke, "jobs:create")).toBeUndefined();
-  });
-
-  it("saves an existing watch job opened and saved unchanged with the same trigger", async () => {
+describe("what a watch job was set up with", () => {
+  it("states its module, the inputs it sets, its interval and Wait while open, with nothing to change", async () => {
     const invoke = mockIpc();
     renderAt("/jobs/job-1");
 
-    expect(await screen.findByLabelText("repo")).toHaveValue("rockarxiv/web");
-    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    const definition = within(await screen.findByLabelText("Definition"));
+    expect(definition.getByText("When its module finds something, checking every 30 minutes")).toBeInTheDocument();
+    expect(await definition.findByText("Dependabot alerts")).toBeInTheDocument();
+    expect(definition.getByText("rockarxiv/web")).toBeInTheDocument();
+    expect(definition.getByText(/^Yes: no check runs/)).toBeInTheDocument();
+    // An input the trigger leaves out is the module's default, and is not listed.
+    expect(definition.queryByText(/limit/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
+    expect(screen.queryByRole("combobox")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Save" })).not.toBeInTheDocument();
+    expect(invoke.mock.calls.some((call: unknown[]) => call[0] === "jobs:update")).toBe(false);
+  });
 
-    await waitFor(() => expect(sent(invoke, "jobs:update")).toBeDefined());
-    expect((sent(invoke, "jobs:update") as { trigger: unknown }).trigger).toEqual(TRIGGER);
+  it("names a module that is no longer installed by its id", async () => {
+    mockIpc({ job: job({ trigger: { ...TRIGGER, moduleId: "mod-gone", inputs: {}, waitWhileOpen: false } }) });
+    renderAt("/jobs/job-1");
+
+    const definition = within(await screen.findByLabelText("Definition"));
+    expect(await definition.findByText("mod-gone (not installed)")).toBeInTheDocument();
+    expect(definition.getByText("No")).toBeInTheDocument();
   });
 });
 

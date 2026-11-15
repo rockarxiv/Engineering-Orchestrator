@@ -1,116 +1,46 @@
+import type { ReactNode } from "react";
 import type { JobSummary, ModuleView, WatchTrigger } from "@eo/core";
-import { blankWatch, type JobDraft } from "../../../shared/jobs/draft";
 import { whenOf } from "../../../shared/jobs/format";
-import { useModules } from "../../../query/hooks";
-import { Field, Select, Switch, TextInput } from "../../kit";
 import { ItemKeyLink } from "../inbox/references";
 
 /**
- * A watch job's own surface (EO-754, ARCHITECTURE.md §9.1): the fields
- * that set one up on the Job form, and the lines on the Job page that
- * say how its checks are going. What it filed and what was refused is
- * the webhook's Events tab (`JobEvents`), not a list of its own.
- */
-
-/**
- * The modules a watch job may name: approved, and declaring `watch: true`
- * — the two of `watchTriggerProblem`'s refusals a picker can avoid
- * offering. Archived ones are not in `modules:list` at all.
- */
-export function watchModules(modules: ModuleView[]): ModuleView[] {
-  return modules.filter((module) => module.approvedAt !== null && module.manifest.watch === true);
-}
-
-/**
- * The module, one field per input it declares, the interval and the
- * switch. Part of the form: nothing changes until Save.
+ * A watch job's own surface (EO-754, ARCHITECTURE.md §9.1): what it was
+ * set up with, and the lines on the Job page that say how its checks are
+ * going. What it filed and what was refused is the webhook's Events tab
+ * (`JobEvents`), not a list of its own.
  *
- * An input a person has not touched is left out of the trigger rather
- * than written as its default, so the module's own default applies and a
- * job opened and saved unchanged writes back exactly what it was.
+ * Read-only (EO-787): a watch job is set up and changed by the
+ * assistant's cards or an outside agent's tools.
  */
-export function WatchFields({ draft, onChange }: { draft: JobDraft; onChange: (next: JobDraft) => void }) {
-  const modules = useModules();
-  const watch = draft.watch ?? blankWatch();
-  const offered = watchModules(modules.data?.modules ?? []);
-  const chosen = (modules.data?.modules ?? []).find((module) => module.id === watch.moduleId);
-  const setWatch = (next: WatchTrigger) => onChange({ ...draft, watch: next });
-  const setInput = (name: string, value: string | number | boolean | undefined) => {
-    const inputs = { ...watch.inputs };
-    if (value === undefined) delete inputs[name];
-    else inputs[name] = value;
-    setWatch({ ...watch, inputs });
-  };
 
-  return (
-    <>
-      <Field
-        label="Module"
-        hint={
-          offered.length === 0 && !modules.isLoading
-            ? "No approved module declares watch: true yet. Approve one under Settings → Modules."
-            : "Approved modules that declare watch: true. It runs on this machine while EO is open."
-        }
-      >
-        <Select value={watch.moduleId} onChange={(event) => setWatch({ ...watch, moduleId: event.target.value, inputs: {} })}>
-          <option value="">Pick one</option>
-          {offered.map((module) => (
-            <option key={module.id} value={module.id}>
-              {module.name}
-            </option>
-          ))}
-          {/* The job's own module, when it is no longer one the picker would offer: shown as it is rather than as a blank. */}
-          {watch.moduleId === "" || offered.some((module) => module.id === watch.moduleId) ? null : (
-            <option value={watch.moduleId}>{chosen === undefined ? `${watch.moduleId} (not installed)` : `${chosen.name} (cannot watch)`}</option>
-          )}
-        </Select>
-      </Field>
-
-      {chosen === undefined
-        ? null
-        : Object.entries(chosen.manifest.inputs).map(([name, declared]) => {
-            const value = watch.inputs[name];
-            const fallback = declared.default ?? null;
-            const hint = [declared.description, fallback === null ? "No default." : `Default: ${String(fallback)}.`].filter(Boolean).join(" ");
-            if (declared.type === "boolean") {
-              return (
-                <Switch
-                  key={name}
-                  label={name}
-                  description={hint}
-                  checked={typeof value === "boolean" ? value : fallback === true}
-                  onChange={(next) => setInput(name, next)}
-                />
-              );
-            }
-            return (
-              <Field key={name} label={name} hint={hint}>
-                <TextInput
-                  type={declared.type === "number" ? "number" : "text"}
-                  placeholder={fallback === null ? undefined : String(fallback)}
-                  value={value === undefined || value === null ? "" : String(value)}
-                  onChange={(event) => {
-                    const text = event.target.value;
-                    if (text === "") setInput(name, undefined);
-                    else setInput(name, declared.type === "number" ? Number(text) : text);
-                  }}
-                />
-              </Field>
-            );
-          })}
-
-      <Field label="Check every (minutes)" hint="Counted from the end of its last check.">
-        <TextInput type="number" min={1} value={watch.everyMinutes} onChange={(event) => setWatch({ ...watch, everyMinutes: Number(event.target.value) })} />
-      </Field>
-
-      <Switch
-        label="Wait while an item it filed is still open"
-        description="No check runs until the last item it filed has finished or been archived."
-        checked={watch.waitWhileOpen}
-        onChange={(next) => setWatch({ ...watch, waitWhileOpen: next })}
-      />
-    </>
-  );
+/**
+ * The module, each input the trigger sets, and Wait while open, as the
+ * Job page's definition lists them. An input the trigger leaves out is
+ * not listed: the module's own default applies.
+ */
+export function watchFacts(trigger: WatchTrigger, modules: readonly ModuleView[]): { term: string; value: ReactNode }[] {
+  const chosen = modules.find((module) => module.id === trigger.moduleId);
+  const inputs = Object.entries(trigger.inputs);
+  return [
+    { term: "Module", value: chosen === undefined ? `${trigger.moduleId} (not installed)` : chosen.name },
+    ...(inputs.length === 0
+      ? []
+      : [
+          {
+            term: "Inputs",
+            value: (
+              <span className="flex flex-col">
+                {inputs.map(([name, value]) => (
+                  <span key={name}>
+                    {name}: <code className="font-mono text-[12px]">{typeof value === "string" ? value : JSON.stringify(value)}</code>
+                  </span>
+                ))}
+              </span>
+            ),
+          },
+        ]),
+    { term: "Wait while open", value: trigger.waitWhileOpen ? "Yes: no check runs while an item it filed is still open." : "No" },
+  ];
 }
 
 /**

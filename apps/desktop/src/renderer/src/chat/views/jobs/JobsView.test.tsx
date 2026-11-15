@@ -1,10 +1,11 @@
 import { QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { describe, expect, it, vi } from "vitest";
 import { ThemeProvider } from "@eo/ui";
 import type { JobSummary } from "@eo/core";
 import { createQueryClient } from "../../../query/client";
+import { AskAssistantContext, type AskAssistant } from "../../askAssistant";
 import { JobsView } from "./JobsView";
 
 /** The Jobs list in the chat layout (`jobs/JobsList.test.tsx` is the model). */
@@ -39,8 +40,8 @@ function job(overrides: Partial<JobSummary> = {}): JobSummary {
   };
 }
 
-function mockIpc(options: { jobs?: JobSummary[]; onCreate?: (payload: unknown) => unknown } = {}) {
-  const invoke = vi.fn(async (channel: string, payload: unknown) => {
+function mockIpc(options: { jobs?: JobSummary[] } = {}) {
+  const invoke = vi.fn(async (channel: string, _payload?: unknown) => {
     switch (channel) {
       case "projects:list":
         return { ok: true, data: { projects: [{ id: "p1", name: "EO" }], activeProjectId: "p1" } };
@@ -50,8 +51,6 @@ function mockIpc(options: { jobs?: JobSummary[]; onCreate?: (payload: unknown) =
         return { ok: true, data: { roles: [], builtins: [], itemTypes: ITEM_TYPES } };
       case "jobs:list":
         return { ok: true, data: { jobs: [...(options.jobs ?? [])] } };
-      case "jobs:create":
-        return { ok: true, data: options.onCreate?.(payload) ?? { job: job(), problem: null } };
       default:
         return { ok: true, data: {} };
     }
@@ -61,16 +60,19 @@ function mockIpc(options: { jobs?: JobSummary[]; onCreate?: (payload: unknown) =
   return invoke;
 }
 
-function renderList() {
+function renderList(askAssistant: AskAssistant | null = null) {
   return render(
     <ThemeProvider>
       <QueryClientProvider client={createQueryClient()}>
-        <MemoryRouter initialEntries={["/jobs"]}>
-          <Routes>
-            <Route path="/jobs" element={<JobsView />} />
-            <Route path="/jobs/:jobId" element={<span data-testid="job-page" />} />
-          </Routes>
-        </MemoryRouter>
+        <AskAssistantContext.Provider value={askAssistant}>
+          <MemoryRouter initialEntries={["/jobs"]}>
+            <Routes>
+              <Route path="/jobs" element={<JobsView />} />
+              <Route path="/jobs/:jobId" element={<span data-testid="job-page" />} />
+              <Route path="/chat" element={<span data-testid="chat" />} />
+            </Routes>
+          </MemoryRouter>
+        </AskAssistantContext.Provider>
       </QueryClientProvider>
     </ThemeProvider>,
   );
@@ -111,52 +113,34 @@ describe("the Jobs list in the chat layout", () => {
     expect(await screen.findByTestId("job-page")).toBeInTheDocument();
   });
 
-  it("makes a job from the form and opens its view", async () => {
-    const invoke = mockIpc();
+  it("has no New job button and no form, and says who sets jobs up instead", async () => {
+    const invoke = mockIpc({ jobs: [job()] });
     renderList();
 
-    fireEvent.click(await screen.findByRole("button", { name: "New job" }));
-    await screen.findByRole("option", { name: "Delivery" });
-    await screen.findByRole("option", { name: "Story" });
-    fireEvent.change(screen.getByLabelText(/^Name/), { target: { value: "Monday report" } });
-    fireEvent.change(screen.getByLabelText(/^Pipeline/), { target: { value: "default" } });
-    fireEvent.change(screen.getByLabelText(/^Type/), { target: { value: "developer:story" } });
-    fireEvent.change(screen.getByLabelText(/^Title/), { target: { value: "{{job}} for {{date}}" } });
-    fireEvent.click(screen.getByRole("button", { name: "Create job" }));
-
-    await screen.findByTestId("job-page");
-    expect(invoke.mock.calls.find((call: unknown[]) => call[0] === "jobs:create")?.[1]).toMatchObject({
-      projectId: "p1",
-      name: "Monday report",
-      pipelineId: "default",
-      template: { type: "developer:story", title: "{{job}} for {{date}}", body: null },
-    });
+    expect(await screen.findByText("Jobs are set up by the assistant, or by an agent connected to EO.")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /New job/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Create job" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
+    expect(screen.queryByRole("combobox")).not.toBeInTheDocument();
+    expect(invoke.mock.calls.some((call: unknown[]) => call[0] === "jobs:create")).toBe(false);
   });
 
-  it("shows the refusal beside the form, and stays on the form", async () => {
-    mockIpc({ onCreate: () => ({ job: null, problem: "That pipeline no longer exists." }) });
-    renderList();
+  it("opens the assistant conversation from that line", async () => {
+    mockIpc();
+    const askAssistant = vi.fn();
+    renderList(askAssistant);
 
-    fireEvent.click(await screen.findByRole("button", { name: "New job" }));
-    fireEvent.change(screen.getByLabelText(/^Name/), { target: { value: "Monday report" } });
-    fireEvent.click(screen.getByRole("button", { name: "Create job" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Ask the assistant" }));
 
-    await waitFor(() => expect(screen.getByText("That pipeline no longer exists.")).toBeInTheDocument());
-    expect(screen.queryByTestId("job-page")).not.toBeInTheDocument();
+    expect(askAssistant).toHaveBeenCalledTimes(1);
   });
 
-  it("offers a weekday only for a weekly schedule, and an expression for cron", async () => {
+  it("goes to the chat when there is no conversation column to open", async () => {
     mockIpc();
     renderList();
 
-    fireEvent.click(await screen.findByRole("button", { name: "New job" }));
-    expect(screen.queryByLabelText("Day")).not.toBeInTheDocument();
-    fireEvent.change(screen.getByLabelText("Schedule"), { target: { value: "weekly" } });
-    expect(screen.getByLabelText("Day")).toBeInTheDocument();
-    fireEvent.change(screen.getByLabelText("Schedule"), { target: { value: "cron" } });
-    expect(screen.getByLabelText(/^Expression/)).toHaveValue("0 8 * * 1");
+    fireEvent.click(await screen.findByRole("button", { name: "Ask the assistant" }));
 
-    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
-    expect(screen.queryByRole("button", { name: "Create job" })).not.toBeInTheDocument();
+    expect(await screen.findByTestId("chat")).toBeInTheDocument();
   });
 });
