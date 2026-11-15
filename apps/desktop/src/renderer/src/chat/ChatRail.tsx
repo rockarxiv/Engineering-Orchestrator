@@ -204,7 +204,7 @@ export function ChatRail({ onNewPipeline }: { onNewPipeline: () => void }) {
       {/* Always here, whatever jobs the project has (EO-757): a project whose
           only jobs came from pressing Create in a conversation lists none on
           the Jobs screen, and a row drawn from that list never appeared. The
-          Jobs screen's own New job button is how a job is made. Not `end`, so
+          Jobs screen's button to the assistant is how a job is made (EO-787). Not `end`, so
           a job's page (`/jobs/:id`) marks it active too. */}
       <NavLink to="/jobs" className={({ isActive }) => cn(ROW, "shrink-0", rowTone(isActive))}>
         <Workflow size={14} className="shrink-0" />

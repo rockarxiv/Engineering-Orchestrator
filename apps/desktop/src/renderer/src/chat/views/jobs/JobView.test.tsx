@@ -9,9 +9,10 @@ import { ItemReferenceProvider } from "../../conversation/ItemReferenceProvider"
 import { JobView } from "./JobView";
 
 /**
- * One job, as a full editor, in the chat layout — `jobs/JobPage.test.tsx`
- * and `jobs/Webhook.test.tsx` are the models, and every claim they make
- * about the page is made here of the view.
+ * One job in the chat layout, read-only apart from Pause, Resume and Run
+ * now (EO-787): making, changing and deleting a job, and a webhook's new
+ * secret and test event, are the assistant's job cards and outside
+ * agents' tools.
  */
 
 const PIPELINES = [{ id: "default", projectId: "p1", name: "Delivery", icon: null, entryStepId: "todo", position: 0, archivedAt: null }];
@@ -27,9 +28,8 @@ const ITEM_TYPES = [
   },
 ];
 
-/** 08:00 Berlin on Monday 1 June 2026 is 06:00Z; 08:00 New York is 12:00Z. */
+/** 08:00 Berlin on Monday 1 June 2026 is 06:00Z. */
 const MONDAY_0800_BERLIN = Date.UTC(2026, 5, 1, 6, 0);
-const MONDAY_0800_NEW_YORK = Date.UTC(2026, 5, 1, 12, 0);
 
 function job(overrides: Partial<JobSummary> = {}): JobSummary {
   return {
@@ -103,11 +103,9 @@ function event(overrides: Partial<JobEventRow> = {}): JobEventRow {
 interface Options {
   jobs?: (JobSummary | null)[];
   occurrences?: JobOccurrenceRow[];
-  onUpdate?: (payload: unknown) => unknown;
   events?: JobEventRow[];
   heldCount?: number;
   lastPayload?: string | null;
-  onTest?: () => unknown;
   session?: unknown;
   placement?: unknown;
   machine?: unknown;
@@ -116,7 +114,7 @@ interface Options {
 function mockIpc(options: Options = {}) {
   // A queue, so a test can answer one thing before a save and another after.
   const answers = [...(options.jobs ?? [job()])];
-  const invoke = vi.fn(async (channel: string, payload: unknown) => {
+  const invoke = vi.fn(async (channel: string, _payload?: unknown) => {
     switch (channel) {
       case "projects:list":
         return { ok: true, data: { projects: [{ id: "p1", name: "EO" }], activeProjectId: "p1" } };
@@ -135,24 +133,16 @@ function mockIpc(options: Options = {}) {
         return { ok: true, data: { jobId: "job-1", costCents: 142 } };
       case "jobs:placement":
         return { ok: true, data: { placement: options.placement ?? { runsOn: "device", machineBound: [], serverBound: [] }, machine: options.machine ?? null } };
-      case "jobs:update":
-        return { ok: true, data: options.onUpdate?.(payload) ?? { job: job(), problem: null } };
       case "jobs:runNow":
         return { ok: true, data: { fired: true, occurrence: null, itemId: "t9", problem: null } };
       case "jobs:pause":
       case "jobs:resume":
         return { ok: true, data: { job: job() } };
-      case "jobs:delete":
-        return { ok: true, data: { deleted: true, archivedItemCount: 2 } };
       case "jobs:events":
         return {
           ok: true,
           data: { events: options.events ?? [], heldCount: options.heldCount ?? 0, lastPayload: options.lastPayload === undefined ? LAST_PAYLOAD : options.lastPayload },
         };
-      case "jobs:testEvent":
-        return { ok: true, data: options.onTest?.() ?? { outcome: "created", itemId: "item-9", itemKey: "EO-9", problem: null } };
-      case "jobs:regenerateSecret":
-        return { ok: true, data: { job: HELPDESK, problem: null } };
       default:
         return { ok: true, data: {} };
     }
@@ -237,42 +227,38 @@ describe("what the job view states", () => {
   });
 });
 
-describe("editing the schedule and the zone", () => {
-  it("sends the new schedule and shows the next run it produces", async () => {
-    const invoke = mockIpc({
-      jobs: [
-        job(),
-        job({
-          trigger: { kind: "schedule", schedule: { kind: "daily", hour: 8, minute: 0 }, timeZone: "America/New_York", catchUpWithinMinutes: 180 },
-          nextRunAt: MONDAY_0800_NEW_YORK,
-        }),
-      ],
-    });
+describe("what it was set up with", () => {
+  it("states the trigger, pipeline, template and budget as text", async () => {
+    mockIpc({ jobs: [job({ template: { type: "developer:story", title: "{{job}} for {{date}}", body: "What shipped this week." } })] });
     renderView();
 
-    const nextRun = () => screen.getByText(/^Next run /).textContent ?? "";
-    await screen.findByText(/^Next run .*08:00/);
-    const berlin = nextRun();
-
-    fireEvent.change(screen.getByLabelText(/^Time zone/), { target: { value: "America/New_York" } });
-    fireEvent.click(screen.getByRole("button", { name: "Save" }));
-
-    await waitFor(() => expect(nextRun()).not.toBe(berlin));
-    expect(nextRun()).toMatch(/08:00/);
-    expect(calls(invoke, "jobs:update")[0]?.[1]).toMatchObject({
-      jobId: "job-1",
-      trigger: { kind: "schedule", schedule: { kind: "daily", hour: 8, minute: 0 }, timeZone: "America/New_York" },
-    });
+    const definition = within(await screen.findByLabelText("Definition"));
+    expect(definition.getByText("Daily at 08:00")).toBeInTheDocument();
+    expect(definition.getByText("180 minutes")).toBeInTheDocument();
+    expect(await definition.findByText("Delivery")).toBeInTheDocument();
+    expect(await definition.findByText("Story")).toBeInTheDocument();
+    expect(definition.getByText("{{job}} for {{date}}")).toBeInTheDocument();
+    expect(definition.getByText("What shipped this week.")).toBeInTheDocument();
+    expect(definition.getByText("$5.00")).toBeInTheDocument();
   });
 
-  it("shows a refusal rather than pretending the edit landed", async () => {
-    mockIpc({ onUpdate: () => ({ job: null, problem: '"Europe/Berln" is not a time zone this machine knows.' }) });
+  it("offers no form, no Save and no Delete", async () => {
+    const invoke = mockIpc();
     renderView();
 
-    await screen.findByText("Runs while EO is open on this machine.");
-    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await screen.findByLabelText("Definition");
+    expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
+    expect(screen.queryByRole("combobox")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Save" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Delete" })).not.toBeInTheDocument();
+    expect([...calls(invoke, "jobs:update"), ...calls(invoke, "jobs:delete")]).toHaveLength(0);
+  });
 
-    expect(await screen.findByText('"Europe/Berln" is not a time zone this machine knows.')).toBeInTheDocument();
+  it("says when a job has no budget", async () => {
+    mockIpc({ jobs: [job({ budgetPerOccurrenceCents: null })] });
+    renderView();
+
+    expect(within(await screen.findByLabelText("Definition")).getByText("None")).toBeInTheDocument();
   });
 });
 
@@ -306,45 +292,12 @@ describe("the controls a person reaches for", () => {
     await waitFor(() => expect(calls(invoke, "jobs:resume")).toHaveLength(1));
   });
 
-  it("offers both answers about the work it filed, and sends the one pressed", async () => {
-    const invoke = mockIpc();
-    renderView();
-
-    fireEvent.click(await screen.findByRole("button", { name: "Delete" }));
-    const dialog = screen.getByRole("dialog", { name: 'Delete "Monday report"?' });
-    expect(within(dialog).getByRole("button", { name: "Keep them" })).toBeInTheDocument();
-    fireEvent.click(within(dialog).getByRole("button", { name: "Archive its items" }));
-
-    await waitFor(() => expect(screen.getByTestId("where")).toHaveTextContent("/jobs"));
-    expect(calls(invoke, "jobs:delete")[0]?.[1]).toEqual({ jobId: "job-1", archiveItems: true });
-  });
-
-  it("keeps the items when that is the answer", async () => {
-    const invoke = mockIpc();
-    renderView();
-
-    fireEvent.click(await screen.findByRole("button", { name: "Delete" }));
-    fireEvent.click(screen.getByRole("button", { name: "Keep them" }));
-
-    await waitFor(() => expect(calls(invoke, "jobs:delete")[0]?.[1]).toEqual({ jobId: "job-1", archiveItems: false }));
-  });
-
-  it("closes the delete question without deleting", async () => {
-    const invoke = mockIpc();
-    renderView();
-
-    fireEvent.click(await screen.findByRole("button", { name: "Delete" }));
-    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Cancel" }));
-
-    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
-    expect(calls(invoke, "jobs:delete")).toHaveLength(0);
-  });
 });
 
-describe("the Runs on control", () => {
+describe("Runs on", () => {
   const SIGNED_IN = { state: "signed-in", address: "https://eo.example", email: "anna@example.com", personId: "anna", personName: "Anna", isAdmin: false, deviceId: "d1", deviceName: "Anna's MacBook" };
 
-  it("is hidden in solo mode, and the placement is never asked", async () => {
+  it("is a sentence in solo mode, and the placement is never asked", async () => {
     const invoke = mockIpc();
     renderView();
 
@@ -352,24 +305,16 @@ describe("the Runs on control", () => {
     expect(calls(invoke, "jobs:placement")).toHaveLength(0);
   });
 
-  it("offers both places in managed mode, and names the machine a device job runs on", async () => {
+  it("states the place in managed mode, and names the machine a device job runs on", async () => {
     mockIpc({ session: SIGNED_IN, machine: { name: "Anna's MacBook", lastSeenAt: Date.now() - 3 * 60 * 60 * 1000 } });
     renderView();
 
-    expect(await screen.findByLabelText("Runs on")).toBeInTheDocument();
+    expect(await screen.findByText("Runs on this machine")).toBeInTheDocument();
+    expect(screen.queryByRole("combobox")).not.toBeInTheDocument();
     expect(screen.getByText(/Runs while EO is open on Anna's MacBook · last online 3h ago/)).toBeInTheDocument();
     expect(screen.queryByText("Runs while EO is open on this machine.")).not.toBeInTheDocument();
   });
 
-  it("moves the job the moment a place is picked, and draws a refusal beside the control", async () => {
-    const invoke = mockIpc({ session: SIGNED_IN, onUpdate: () => ({ job: null, problem: "This job cannot run on organisation server, so nothing was saved." }) });
-    renderView();
-
-    fireEvent.change(await screen.findByLabelText("Runs on"), { target: { value: "server" } });
-
-    expect(await screen.findByText(/cannot run on organisation server/)).toBeInTheDocument();
-    expect(calls(invoke, "jobs:update")[0]?.[1]).toEqual({ jobId: "job-1", runsOn: "server" });
-  });
 });
 
 describe("a webhook job", () => {
@@ -388,69 +333,43 @@ describe("a webhook job", () => {
     expect(written).toEqual(["http://localhost:3000/webhooks/helpdesk", SECRET]);
   });
 
-  it("asks before regenerating the secret", async () => {
+  it("offers no Regenerate secret or Send test event button", async () => {
     const invoke = mockIpc({ jobs: [HELPDESK] });
     renderView();
 
-    fireEvent.click(await screen.findByRole("button", { name: "Regenerate" }));
-    expect(screen.getByText(/Everything sending with the old secret starts being refused/)).toBeInTheDocument();
-    expect(calls(invoke, "jobs:regenerateSecret")).toHaveLength(0);
-
-    fireEvent.click(screen.getByRole("button", { name: "Regenerate anyway" }));
-
-    await waitFor(() => expect(calls(invoke, "jobs:regenerateSecret")).toHaveLength(1));
-    expect(await screen.findByText(/The old one stops working now/)).toBeInTheDocument();
+    await screen.findByText(SECRET);
+    expect(screen.queryByRole("button", { name: /Regenerate/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /test event/ })).not.toBeInTheDocument();
+    expect([...calls(invoke, "jobs:regenerateSecret"), ...calls(invoke, "jobs:testEvent")]).toHaveLength(0);
   });
 
-  it("sends a test event and links the item it filed", async () => {
+  it("draws a read-only mapping row per template field, the type's spec fields included", async () => {
     mockIpc({ jobs: [HELPDESK] });
     renderView();
 
-    fireEvent.click(await screen.findByRole("button", { name: "Send test event" }));
-
-    expect(await screen.findByText(/^Created\./)).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "EO-9" })).toHaveAttribute("href", "/items/item-9");
+    expect(within(await screen.findByLabelText("Title pointer")).getByText("/issue/fields/summary")).toBeInTheDocument();
+    expect(within(screen.getByLabelText("Body pointer")).getByText("—")).toBeInTheDocument();
+    expect(within(screen.getByLabelText("Severity pointer")).getByText("—")).toBeInTheDocument();
+    expect(within(screen.getByLabelText("Event key pointer")).getByText("/delivery_id")).toBeInTheDocument();
+    expect(within(screen.getByRole("region", { name: "Field mapping" })).queryByRole("textbox")).not.toBeInTheDocument();
   });
 
-  it("says what the door answered when a test event was not a creation", async () => {
-    mockIpc({ jobs: [HELPDESK], onTest: () => ({ outcome: "held", itemId: null, itemKey: null, problem: "This job files at most 10 items an hour, and it has filed 10 in the last hour." }) });
-    renderView();
-
-    fireEvent.click(await screen.findByRole("button", { name: "Send test event" }));
-
-    expect(await screen.findByText(/^Waiting\. This job files at most 10 items an hour/)).toBeInTheDocument();
-  });
-
-  it("draws a mapping row per template field, the type's spec fields included", async () => {
+  it("previews each pointer from the last payload", async () => {
     mockIpc({ jobs: [HELPDESK] });
     renderView();
 
-    expect(await screen.findByLabelText("Title pointer")).toHaveValue("/issue/fields/summary");
-    expect(screen.getByLabelText("Body pointer")).toHaveValue("");
-    expect(screen.getByLabelText("Severity pointer")).toHaveValue("");
-    expect(screen.getByLabelText("Event key pointer")).toHaveValue("/delivery_id");
-  });
-
-  it("previews from the last payload as a pointer is typed, and sends nothing", async () => {
-    const invoke = mockIpc({ jobs: [HELPDESK] });
-    renderView();
-
-    expect(await screen.findByText("Printer on fire")).toBeInTheDocument();
-    fireEvent.change(screen.getByLabelText("Severity pointer"), { target: { value: "/issue/fields/priority" } });
-
-    expect(await screen.findByText("P1")).toBeInTheDocument();
-    expect([...calls(invoke, "jobs:update"), ...calls(invoke, "jobs:testEvent")]).toHaveLength(0);
+    expect(within(await screen.findByLabelText("Title pointer")).getByText("Printer on fire")).toBeInTheDocument();
+    expect(within(screen.getByLabelText("Event key pointer")).getByText("evt-1")).toBeInTheDocument();
+    expect(within(screen.getByLabelText("Body pointer")).getByText("The template's own text")).toBeInTheDocument();
   });
 
   it("says which kind of nothing a pointer found", async () => {
-    mockIpc({ jobs: [HELPDESK] });
+    const mapping = { ...WEBHOOK.mapping, body: "/nowhere", spec: { severity: "nowhere" } };
+    mockIpc({ jobs: [{ ...HELPDESK, trigger: { ...WEBHOOK, mapping } }] });
     renderView();
 
-    fireEvent.change(await screen.findByLabelText("Body pointer"), { target: { value: "/nowhere" } });
-    expect(await screen.findByText("Nothing there")).toBeInTheDocument();
-
-    fireEvent.change(screen.getByLabelText("Body pointer"), { target: { value: "nowhere" } });
-    expect(await screen.findByText(/has to start with \//)).toBeInTheDocument();
+    expect(within(await screen.findByLabelText("Body pointer")).getByText("Nothing there")).toBeInTheDocument();
+    expect(within(screen.getByLabelText("Severity pointer")).getByText(/has to start with \//)).toBeInTheDocument();
   });
 
   it("previews nothing when nothing has arrived, rather than blaming the pointer", async () => {
@@ -460,31 +379,11 @@ describe("a webhook job", () => {
     expect(await screen.findAllByText("Nothing has arrived yet")).toHaveLength(2);
   });
 
-  it("saves the trigger it arrived with, with the pointers as they now stand", async () => {
-    const saved: unknown[] = [];
-    mockIpc({
-      jobs: [HELPDESK],
-      onUpdate: (payload) => {
-        saved.push(payload);
-        return { job: HELPDESK, problem: null };
-      },
-    });
-    renderView();
-
-    fireEvent.change(await screen.findByLabelText("Title pointer"), { target: { value: "/issue/fields/title" } });
-    fireEvent.click(screen.getByRole("button", { name: "Save" }));
-
-    await waitFor(() => expect(saved).toHaveLength(1));
-    expect(saved[0]).toMatchObject({
-      trigger: { kind: "webhook", path: "helpdesk", secret: SECRET, mapping: { title: "/issue/fields/title", eventKey: "/delivery_id" } },
-    });
-  });
-
-  it("offers no way to turn a webhook job into a scheduled one", async () => {
+  it("states its trigger and offers no way to turn it into a scheduled one", async () => {
     mockIpc({ jobs: [HELPDESK] });
     renderView();
 
-    // Twice: the status states it as the job's trigger, and the form where the picker would be.
+    // Twice: the status states it, and the definition lists it.
     await screen.findByLabelText("Title pointer");
     expect(screen.getAllByText("When an event arrives at its webhook")).toHaveLength(2);
     expect(screen.queryByRole("option", { name: "On a schedule" })).not.toBeInTheDocument();

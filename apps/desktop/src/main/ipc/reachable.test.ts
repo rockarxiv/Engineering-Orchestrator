@@ -197,7 +197,24 @@ const REACHED_BY_A_CARD: Partial<Record<keyof typeof ipcContract, string>> = {
   // EO-534. The pipeline editor never had a button for this: a held
   // template update is resolved only from its assistant chat.
   "pipeline:keepOwnVersion": "ipc/assistCommands.ts — Keep my pipeline on a pipelineKeepMine card",
+  // EO-786, EO-787. Jobs are made, changed and deleted by agents: the
+  // system agent proposes a job card a person presses, and outside agents
+  // save through the job tools (which also catalogue the first three).
+  // The Jobs list and Job page keep only Pause, Resume and Run now, so
+  // these five are the job cards' and no screen's — held below.
+  "jobs:create": "ipc/assistCommands.ts — Create job on a jobCreate card",
+  "jobs:update": "ipc/assistCommands.ts — Save job on a jobUpdate card",
+  "jobs:delete": "ipc/assistCommands.ts — Delete job on a jobDelete card",
+  "jobs:regenerateSecret": "ipc/assistCommands.ts — the button on a jobWebhook card whose action is regenerateSecret",
+  "jobs:testEvent": "ipc/assistCommands.ts — the button on a jobWebhook card whose action is testEvent",
 };
+
+/**
+ * The channels only a card may send from inside EO (EO-787): the renderer
+ * calls none of them, so a person reaches them by pressing the card the
+ * assistant proposed, never by a screen's own button.
+ */
+const ONLY_BY_A_CARD: readonly (keyof typeof ipcContract)[] = ["jobs:create", "jobs:update", "jobs:delete", "jobs:regenerateSecret", "jobs:testEvent"];
 
 describe("every IPC channel is reachable", () => {
   it("has a renderer that calls it, or a tool that offers it", () => {
@@ -228,6 +245,12 @@ describe("every IPC channel is reachable", () => {
     const unsent = Object.keys(REACHED_BY_A_CARD).filter((channel) => !main.includes(`dispatched(doors, "${channel}"`));
 
     expect(unsent).toEqual([]);
+  });
+
+  it("is sent by no screen, where only a card may send it", () => {
+    const fromScreens = ONLY_BY_A_CARD.filter((channel) => renderer.includes(`"${channel}"`));
+
+    expect(fromScreens).toEqual([]);
   });
 
   it("does not wait on a screen it already has", () => {

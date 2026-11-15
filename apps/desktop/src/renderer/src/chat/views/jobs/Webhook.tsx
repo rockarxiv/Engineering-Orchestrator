@@ -1,5 +1,4 @@
 import { useState } from "react";
-import { useMutation } from "@tanstack/react-query";
 import {
   describeJobEventOutcome,
   isJsonPointer,
@@ -11,59 +10,27 @@ import {
   type WebhookMapping,
   type WebhookTrigger,
 } from "@eo/core";
-import type { JobDraft } from "../../../shared/jobs/draft";
-import { whenOf } from "../../../shared/jobs/format";
+import { NOTHING, whenOf } from "../../../shared/jobs/format";
 import { webhookAddress } from "../../../shared/jobs/webhook";
-import { ipcQuery } from "../../../query/client";
-import { Button, CardSection, EmptyState, TextInput } from "../../kit";
+import { Button, CardSection, EmptyState } from "../../kit";
 import { ItemKeyLink } from "../inbox/references";
 
 /**
  * A webhook job's own surface (EO-333, `ARCHITECTURE.md`, "The inbox, the archive and jobs",
  * "Results and routes", "Webhooks"):
- * the address and the secret to paste into the other end, a test event
- * through the real door, the mapping with a preview from the last
- * delivery, and the events — including the ones that filed nothing.
- */
-
-/**
- * The address, the secret, and the two buttons that act at once.
+ * the address and the secret to paste into the other end, the mapping
+ * with a preview from the last delivery, and the events — including the
+ * ones that filed nothing.
  *
- * Its own card above the form because nothing here is a draft:
- * Regenerate invalidates the old secret as it answers, and Send test
- * event files an item. A Save over either would offer to undo something
- * that has already happened.
+ * Read-only (EO-787): a new secret and a test event are the assistant's
+ * `jobWebhook` card, and the mapping changes with a `jobUpdate` card or an
+ * outside agent's `job_update`. The secret is read here and nowhere else —
+ * no card, agent answer or chat message carries it.
  */
-export function WebhookAddress({ jobId, trigger, onChanged }: { jobId: string; trigger: WebhookTrigger; onChanged: () => void }) {
-  const [confirmingRegenerate, setConfirmingRegenerate] = useState(false);
-  const [said, setSaid] = useState<string | null>(null);
-  const [tested, setTested] = useState<{ key: string; id: string } | null>(null);
+
+/** The address and the secret, each with the button that copies it. */
+export function WebhookAddress({ trigger }: { trigger: WebhookTrigger }) {
   const { url, reachable } = webhookAddress(trigger.path);
-
-  const regenerate = useMutation({
-    mutationFn: () => ipcQuery("jobs:regenerateSecret", { jobId }),
-    onSuccess: (result) => {
-      setConfirmingRegenerate(false);
-      setTested(null);
-      setSaid(result.problem ?? "A new secret. The old one stops working now — paste this one into the other end.");
-      if (result.job !== null) onChanged();
-    },
-  });
-
-  const test = useMutation({
-    mutationFn: () => ipcQuery("jobs:testEvent", { jobId }),
-    onSuccess: (result) => {
-      setTested(result.itemKey === null || result.itemId === null ? null : { key: result.itemKey, id: result.itemId });
-      // The door's answer in EO's own words: a held or refused test is
-      // the job saying what it would have said to the other end.
-      setSaid(
-        result.outcome === null
-          ? (result.problem ?? "EO could not send it.")
-          : `${describeJobEventOutcome(result.outcome)}.${result.problem === null ? "" : ` ${result.problem}`}`,
-      );
-      onChanged();
-    },
-  });
 
   return (
     <CardSection title="Webhook" description="Where events arrive, and what signs them.">
@@ -75,35 +42,6 @@ export function WebhookAddress({ jobId, trigger, onChanged }: { jobId: string; t
       )}
       {/* In plain text, the trigger's own decision: a secret a person cannot read back is one they cannot configure the other end with. */}
       <Copyable label="Signing secret" value={trigger.secret} hint="HMAC-SHA256 over the timestamp, a full stop, and the body." />
-
-      <div className="flex flex-wrap items-center gap-2">
-        <Button onClick={() => test.mutate()} disabled={test.isPending}>
-          Send test event
-        </Button>
-        {confirmingRegenerate ? (
-          <>
-            <span className="text-[12.5px] text-ink-muted">Everything sending with the old secret starts being refused.</span>
-            <Button variant="danger" onClick={() => regenerate.mutate()} disabled={regenerate.isPending}>
-              Regenerate anyway
-            </Button>
-            <Button variant="ghost" onClick={() => setConfirmingRegenerate(false)}>
-              Cancel
-            </Button>
-          </>
-        ) : (
-          <Button variant="ghost" onClick={() => setConfirmingRegenerate(true)}>
-            Regenerate
-          </Button>
-        )}
-      </div>
-
-      {said === null ? null : (
-        <p className="text-[13px] text-ink-muted">
-          {said}{" "}
-          {/* The id with the key: an item made a moment ago must link before the catalogue has heard of it. */}
-          {tested === null ? null : <ItemKeyLink itemKey={tested.key} itemId={tested.id} className="text-[11.5px]" />}
-        </p>
-      )}
     </CardSection>
   );
 }
@@ -136,45 +74,29 @@ function Copyable({ label, value, hint }: { label: string; value: string; hint?:
 }
 
 /**
- * One row per template field, a pointer, and what the last payload has
- * there. Part of the form — nothing changes until Save — and the preview
- * reads the same `resolveJsonPointer` the door does, so changing a
- * pointer previews without sending anything.
+ * One row per template field, its pointer, and what the last payload has
+ * there. The preview reads the same `resolveJsonPointer` the door does,
+ * so what it shows is what the next delivery would file.
  */
 export function WebhookMappingTable({
-  draft,
+  mapping,
   itemType,
   lastPayload,
-  onChange,
 }: {
-  draft: JobDraft;
+  mapping: WebhookMapping;
   itemType: ItemTypeEntry | undefined;
   lastPayload: string | null;
-  onChange: (next: JobDraft) => void;
 }) {
-  const webhook = draft.webhook;
-  if (webhook === null) return null;
-  const mapping = webhook.mapping;
   const document = parsePayload(lastPayload);
-
-  const setMapping = (next: WebhookMapping) => onChange({ ...draft, webhook: { ...webhook, mapping: next } });
-  const rows: { key: string; label: string; pointer: string; set: (pointer: string) => void }[] = [
-    { key: "title", label: "Title", pointer: mapping.title ?? "", set: (pointer) => setMapping({ ...mapping, title: blankIsNothing(pointer) }) },
-    { key: "body", label: "Body", pointer: mapping.body ?? "", set: (pointer) => setMapping({ ...mapping, body: blankIsNothing(pointer) }) },
+  const rows: { key: string; label: string; pointer: string }[] = [
+    { key: "title", label: "Title", pointer: mapping.title ?? "" },
+    { key: "body", label: "Body", pointer: mapping.body ?? "" },
     ...(itemType === undefined ? [] : specFields(itemType.specShape)).map((field) => ({
       key: `spec.${field.name}`,
       label: field.label,
       pointer: mapping.spec[field.name] ?? "",
-      set: (pointer: string) => {
-        const spec = { ...mapping.spec };
-        // Removed rather than kept empty: an empty pointer would be read
-        // as "nothing there" on every delivery.
-        if (pointer.trim() === "") delete spec[field.name];
-        else spec[field.name] = pointer;
-        setMapping({ ...mapping, spec });
-      },
     })),
-    { key: "eventKey", label: "Event key", pointer: mapping.eventKey ?? "", set: (pointer) => setMapping({ ...mapping, eventKey: blankIsNothing(pointer) }) },
+    { key: "eventKey", label: "Event key", pointer: mapping.eventKey ?? "" },
   ];
 
   return (
@@ -182,15 +104,15 @@ export function WebhookMappingTable({
       <div className="flex flex-col gap-0.5">
         <span className="text-[12px] font-medium text-ink-muted">Field mapping</span>
         <span className="text-[11.5px] leading-snug text-ink-subtle">
-          JSON pointers into the payload — /issue/fields/summary. A field left empty keeps what the template says. The event key is the sender&apos;s
-          own id for an event, and is what stops a retry filing a second item.
+          JSON pointers into the payload. A field with none keeps what the template says. The event key is the sender&apos;s own id for an event, and
+          is what stops a retry filing a second item.
         </span>
       </div>
       <ul className="flex min-w-0 flex-col [&>li+li]:border-t [&>li+li]:border-line/60">
         {rows.map((row) => (
-          <li key={row.key} className="grid min-w-0 grid-cols-[minmax(5rem,8rem)_minmax(0,1fr)] items-center gap-x-3 gap-y-1 py-2">
+          <li key={row.key} aria-label={`${row.label} pointer`} className="grid min-w-0 grid-cols-[minmax(5rem,8rem)_minmax(0,1fr)] items-center gap-x-3 gap-y-1 py-2">
             <span className="truncate text-[12.5px] text-ink-muted">{row.label}</span>
-            <TextInput aria-label={`${row.label} pointer`} className="font-mono text-[12px]" value={row.pointer} onChange={(event) => row.set(event.target.value)} />
+            <code className="min-w-0 break-all font-mono text-[12px] text-ink">{row.pointer === "" ? NOTHING : row.pointer}</code>
             <span className="col-start-2 min-w-0 text-[12px]">
               <Preview document={document} pointer={row.pointer} hasPayload={lastPayload !== null} />
             </span>
@@ -209,10 +131,6 @@ function Preview({ document, pointer, hasPayload }: { document: unknown; pointer
   const found = webhookFieldText(resolveJsonPointer(document, pointer));
   if (found === null) return <span className="text-ink-subtle">Nothing there</span>;
   return <span className="break-all text-ink">{found}</span>;
-}
-
-function blankIsNothing(pointer: string): string | null {
-  return pointer.trim() === "" ? null : pointer;
 }
 
 function parsePayload(raw: string | null): unknown {

@@ -1,33 +1,33 @@
-import { useEffect, useState } from "react";
+import { useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Link, useLocation, useNavigate } from "react-router-dom";
+import { Link } from "react-router-dom";
 import { Play, Workflow } from "lucide-react";
-import { JOB_ID_FACET, describeJobTrigger, type JobMachine, type JobOccurrenceRow, type JobPlacement, type JobRunsOn, type JobSummary } from "@eo/core";
-import { budgetOf, draftOf, templateOf, triggerOf, watchDraftProblem, type JobDraft } from "../../../shared/jobs/draft";
+import { JOB_ID_FACET, describeJobTrigger, type JobMachine, type JobOccurrenceRow, type JobPlacement, type JobSummary, type ModuleView, type PipelineView, type RegistryFacts } from "@eo/core";
 import { NOTHING, costOf, durationOf, pauseChipOf, timeZoneNote, whenOf, zoneOf } from "../../../shared/jobs/format";
-import { archivedKey } from "../../../shared/pipeline/archive";
 import { ipcQuery } from "../../../query/client";
-import { itemsKey, jobKey, jobsRootKey, useRegistry, useSession } from "../../../query/hooks";
-import { Button, Card, CardSection, Chip, Dialog, EmptyState, ErrorLine, Loading, Switch, Tabs, ViewHeader } from "../../kit";
+import { itemsKey, jobKey, jobsRootKey, useModules, usePipelines, useRegistry, useSession } from "../../../query/hooks";
+import { Card, CardSection, Chip, EmptyState, Facts, Loading, Switch, Tabs, ViewHeader, Button } from "../../kit";
 import { ItemKeyLink } from "../inbox/references";
-import { JobFields } from "./JobFields";
 import { RunsOn } from "./RunsOn";
-import { WatchStatus } from "./Watch";
+import { WatchStatus, watchFacts } from "./Watch";
 import { JobEvents, WebhookAddress, WebhookMappingTable } from "./Webhook";
 
 /**
- * `/jobs/:jobId`: one job, as a full editor (EO-308,
- * `ARCHITECTURE.md`, "The inbox, the archive and jobs").
+ * `/jobs/:jobId`: one job, read-only apart from Pause, Resume and Run
+ * now (EO-308, EO-787, `ARCHITECTURE.md`, "The inbox, the archive and jobs").
  *
  * The trigger with its zone stated, where it runs, the paused switch,
- * Run now, the form, and the history including its skipped rows — a job
- * that has quietly done nothing for a fortnight is a fortnight of rows
- * here and a gap nowhere. There is deliberately no list of the items it
- * filed: those are the board and the archive narrowed to this job, and
- * the view links to them.
+ * Run now, what the job was set up with, and the history including its
+ * skipped rows — a job that has quietly done nothing for a fortnight is a
+ * fortnight of rows here and a gap nowhere. There is deliberately no list
+ * of the items it filed: those are the board and the archive narrowed to
+ * this job, and the view links to them.
+ *
+ * Making, changing and deleting a job are the agents' (EO-784): the
+ * assistant's job cards, which a person presses, and an outside agent's
+ * job tools. So the page has no form, no Save and no Delete.
  */
 export function JobView({ jobId }: { jobId: string }) {
-  const navigate = useNavigate();
   const queryClient = useQueryClient();
   const query = useQuery({ queryKey: jobKey(jobId), queryFn: () => ipcQuery("jobs:get", { jobId }) });
   const cost = useQuery({ queryKey: [...jobKey(jobId), "cost"], queryFn: () => ipcQuery("jobs:cost", { jobId }) });
@@ -55,46 +55,16 @@ export function JobView({ jobId }: { jobId: string }) {
   });
 
   const { registry } = useRegistry();
+  const { pipelines } = usePipelines(job?.projectId ?? null);
+  const modules = useModules();
 
   const [tab, setTab] = useState<"history" | "events">("history");
-  const [draft, setDraft] = useState<JobDraft | null>(null);
-  const [problem, setProblem] = useState<string | null>(null);
-  // What the save did not check (EO-736): a pipeline's entry check, which
-  // runs on each firing. Seeded from the page that created the job.
-  const location = useLocation();
-  const [notice, setNotice] = useState<string | null>(noticeFrom(location.state));
-  const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [ran, setRan] = useState<string | null>(null);
-  const [movedProblem, setMovedProblem] = useState<string | null>(null);
-
-  // Seeded once the job arrives, then left alone: re-seeding on every
-  // answer would throw away what somebody is typing when a push lands.
-  useEffect(() => {
-    setDraft((current) => (current === null && job !== null ? draftOf(job) : current));
-  }, [job]);
 
   const refresh = () => {
     void queryClient.invalidateQueries({ queryKey: jobsRootKey });
     void queryClient.invalidateQueries({ queryKey: itemsKey });
   };
-
-  const save = useMutation({
-    mutationFn: (next: JobDraft) =>
-      ipcQuery("jobs:update", {
-        jobId,
-        name: next.name,
-        trigger: triggerOf(next),
-        pipelineId: next.pipelineId === "" ? null : next.pipelineId,
-        template: templateOf(next),
-        budgetPerOccurrenceCents: budgetOf(next),
-      }),
-    onSuccess: (result) => {
-      setProblem(result.problem);
-      setNotice(result.notice ?? null);
-      if (result.job !== null) refresh();
-    },
-    onError: (error: unknown) => setProblem(error instanceof Error ? error.message : String(error)),
-  });
 
   const pause = useMutation({
     mutationFn: (paused: boolean) => ipcQuery(paused ? "jobs:pause" : "jobs:resume", { jobId }),
@@ -106,28 +76,6 @@ export function JobView({ jobId }: { jobId: string }) {
     onSuccess: (result) => {
       setRan(result.fired ? "Filed." : result.problem);
       refresh();
-    },
-  });
-
-  // Its own mutation rather than a field in the draft (EO-330): where a
-  // job runs takes effect the moment it is picked, and can be refused on
-  // its own terms.
-  const runsOn = useMutation({
-    mutationFn: (next: JobRunsOn) => ipcQuery("jobs:update", { jobId, runsOn: next }),
-    onSuccess: (result) => {
-      setMovedProblem(result.problem);
-      if (result.job !== null) refresh();
-      void queryClient.invalidateQueries({ queryKey: [...jobKey(jobId), "placement"] });
-    },
-  });
-
-  const remove = useMutation({
-    mutationFn: (archiveItems: boolean) => ipcQuery("jobs:delete", { jobId, archiveItems }),
-    onSuccess: () => {
-      setConfirmingDelete(false);
-      refresh();
-      void queryClient.invalidateQueries({ queryKey: archivedKey });
-      void navigate("/jobs");
     },
   });
 
@@ -154,17 +102,12 @@ export function JobView({ jobId }: { jobId: string }) {
         icon={<Workflow size={15} />}
         title={job.name}
         actions={
-          <>
-            {/* Refused for a watch job: the template alone is not a finding. */}
-            {watch ? null : (
-              <Button icon={<Play size={13} />} onClick={() => runNow.mutate()} disabled={runNow.isPending}>
-                Run now
-              </Button>
-            )}
-            <Button variant="ghost" onClick={() => setConfirmingDelete(true)}>
-              Delete
+          // Refused for a watch job: the template alone is not a finding.
+          watch ? null : (
+            <Button icon={<Play size={13} />} onClick={() => runNow.mutate()} disabled={runNow.isPending}>
+              Run now
             </Button>
-          </>
+          )
         }
       >
         <div className="flex flex-wrap items-center gap-3">
@@ -185,37 +128,20 @@ export function JobView({ jobId }: { jobId: string }) {
         managed={managed}
         placement={placement.data?.placement ?? null}
         machine={placement.data?.machine ?? null}
-        onRunsOnChange={(next) => runsOn.mutate(next)}
-        savingRunsOn={runsOn.isPending}
-        movedProblem={movedProblem}
       />
 
-      {webhook === null ? null : <WebhookAddress jobId={jobId} trigger={webhook} onChanged={refresh} />}
+      {webhook === null ? null : <WebhookAddress trigger={webhook} />}
 
-      {draft === null ? null : (
-        <CardSection title="Definition" description="Saved together: nothing here changes the job until Save.">
-          <JobFields draft={draft} projectId={job.projectId} onChange={setDraft} />
-          {draft.webhook === null ? null : (
-            <WebhookMappingTable draft={draft} itemType={registry.itemTypes.get(draft.type)} lastPayload={events.data?.lastPayload ?? null} onChange={setDraft} />
-          )}
-          {problem === null ? null : <ErrorLine>{problem}</ErrorLine>}
-          {problem === null && notice !== null ? <p className="text-[12px] text-ink-muted">{notice}</p> : null}
-          <div className="flex items-center justify-end gap-2">
-            {save.isSuccess && problem === null ? <span className="text-[12px] text-ink-subtle">Saved.</span> : null}
-            <Button
-              variant="primary"
-              disabled={save.isPending}
-              onClick={() => {
-                const unsent = watchDraftProblem(draft);
-                if (unsent === null) save.mutate(draft);
-                else setProblem(unsent);
-              }}
-            >
-              Save
-            </Button>
-          </div>
-        </CardSection>
-      )}
+      <CardSection title="Definition" description="Set up and changed by the assistant, or by an agent connected to EO.">
+        <Facts items={definitionFacts(job, pipelines, registry, modules.data?.modules ?? [])} />
+        {webhook === null ? null : (
+          <WebhookMappingTable
+            mapping={webhook.mapping}
+            itemType={job.template === null ? undefined : registry.itemTypes.get(job.template.type)}
+            lastPayload={events.data?.lastPayload ?? null}
+          />
+        )}
+      </CardSection>
 
       {/* Two records for a webhook job, answering different questions:
           what it filed, and what arrived — including what arrived and
@@ -249,32 +175,6 @@ export function JobView({ jobId }: { jobId: string }) {
         )}
       </Card>
 
-      <Dialog
-        open={confirmingDelete}
-        onClose={() => setConfirmingDelete(false)}
-        busy={remove.isPending}
-        title={`Delete "${job.name}"?`}
-        description="It stops firing either way. What should happen to the work it has already filed?"
-        footer={
-          <>
-            <Button variant="ghost" onClick={() => setConfirmingDelete(false)}>
-              Cancel
-            </Button>
-            {/* "Keep them" first: it is the one that loses nothing. */}
-            <Button onClick={() => remove.mutate(false)} disabled={remove.isPending} data-autofocus>
-              Keep them
-            </Button>
-            <Button variant="danger" onClick={() => remove.mutate(true)} disabled={remove.isPending}>
-              Archive its items
-            </Button>
-          </>
-        }
-      >
-        <p className="text-[13px] leading-relaxed text-ink-muted">
-          Kept items stay on the board and go on naming this job. Archived ones keep their threads, their runs and their cost, and can be restored from
-          the archive.
-        </p>
-      </Dialog>
     </div>
   );
 }
@@ -298,34 +198,26 @@ function JobStatus({
   managed,
   placement,
   machine,
-  onRunsOnChange,
-  savingRunsOn,
-  movedProblem,
 }: {
   job: JobSummary;
   costCents: number;
   managed: boolean;
   placement: JobPlacement | null;
   machine: JobMachine | null;
-  onRunsOnChange: (next: JobRunsOn) => void;
-  savingRunsOn: boolean;
-  movedProblem: string | null;
 }) {
   return (
     <Card label="Status">
       <p className="text-[13px] text-ink">{describeJobTrigger(job.trigger)}</p>
       {job.trigger.kind === "schedule" ? <p className="text-[12.5px] text-ink-subtle">{timeZoneNote(job.trigger)}</p> : null}
       {job.trigger.kind === "watch" ? <WatchStatus job={job} /> : null}
-      {/* The design's sentence, and in managed mode the control it became.
-          Solo mode keeps the sentence: a picker with one option is a
-          question with no answer to give. */}
+      {/* The design's sentence, and in managed mode where it runs and
+          why the other place is unavailable. Solo mode keeps the
+          sentence: a desktop with no organisation has one place. */}
       {managed && placement !== null ? (
-        <RunsOn job={job} placement={placement} machine={machine} onChange={onRunsOnChange} saving={savingRunsOn} />
+        <RunsOn job={job} placement={placement} machine={machine} />
       ) : (
         <p className="text-[12.5px] text-ink-subtle">Runs while EO is open on this machine.</p>
       )}
-      {/* Beside the control that asked, not under Save: nothing typed was rejected. */}
-      {movedProblem === null ? null : <ErrorLine>{movedProblem}</ErrorLine>}
       <div className="flex flex-wrap gap-x-4 gap-y-1 text-[12.5px] text-ink-muted">
         {/* A watch job has no calendar: when it checks is said above. */}
         {job.trigger.kind === "watch" ? null : (
@@ -378,8 +270,23 @@ function History({ rows, timeZone }: { rows: JobOccurrenceRow[]; timeZone: strin
   );
 }
 
-/** The notice a job's creation came back with, handed over in the navigation's state (EO-736). */
-function noticeFrom(state: unknown): string | null {
-  const notice = state !== null && typeof state === "object" ? (state as { notice?: unknown }).notice : undefined;
-  return typeof notice === "string" ? notice : null;
+/**
+ * What the job was set up with, in words: its pipeline, the item each
+ * occurrence files, and the budget — and for a schedule its catch-up,
+ * for a watch job its module, inputs and Wait while open. The trigger
+ * itself, its zone and Runs on are in the status card above.
+ */
+function definitionFacts(job: JobSummary, pipelines: readonly PipelineView[], registry: RegistryFacts, modules: readonly ModuleView[]): { term: string; value: ReactNode }[] {
+  const pipeline = job.pipelineId === null ? null : (pipelines.find((candidate) => candidate.id === job.pipelineId)?.name ?? job.pipelineId);
+  const template = job.template;
+  return [
+    { term: "Trigger", value: describeJobTrigger(job.trigger) },
+    ...(job.trigger.kind === "schedule" ? [{ term: "Catch up within", value: `${job.trigger.catchUpWithinMinutes} minutes` }] : []),
+    ...(job.trigger.kind === "watch" ? watchFacts(job.trigger, modules) : []),
+    { term: "Pipeline", value: pipeline ?? "The project's default" },
+    { term: "Type", value: template === null ? NOTHING : (registry.itemTypes.get(template.type)?.label ?? template.type) },
+    { term: "Title", value: template?.title ?? NOTHING },
+    { term: "Body", value: template?.body ? <span className="whitespace-pre-wrap">{template.body}</span> : NOTHING },
+    { term: "Budget per occurrence", value: job.budgetPerOccurrenceCents === null ? "None" : costOf(job.budgetPerOccurrenceCents) },
+  ];
 }

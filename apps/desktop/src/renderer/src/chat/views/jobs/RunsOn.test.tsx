@@ -5,19 +5,12 @@ import { placementReason, type JobPlacement, type JobSummary, type PlacementReas
 import { RunsOn } from "./RunsOn";
 
 /**
- * The chat layout's "Runs on" control — `jobs/RunsOn.test.tsx`, held to the
- * same claims, because what it draws is the same decision.
- *
- * "Runs on: this machine / organisation server" (EO-330,
- * the original design, invariant 12).
- *
- * What the control has to keep is the design's closing sentence — *the person
- * is never allowed to pick a place where the job would quietly fail* —
- * so the assertions here are about the option being **disabled** rather
- * than about a message appearing after somebody tried. The refusal
- * exists too (`jobs:update` makes it, and `ipc/jobCommands.test.ts`
- * holds it to account), because the screen is not the only door; what
- * the screen adds is that nobody has to meet it.
+ * The chat layout's "Runs on" line (EO-330, the original design,
+ * invariant 12), stated rather than picked since EO-787: a job is moved
+ * by the assistant's card or an outside agent's tool, and `jobs:update`
+ * refuses a place the job would quietly fail in (`ipc/jobCommands.test.ts`
+ * holds that to account). What the page keeps is every reason a place is
+ * unavailable, each with what would clear it.
  */
 
 const PERSONAL_LOGIN = placementReason({
@@ -57,86 +50,59 @@ function draw(options: {
   placement?: Partial<JobPlacement>;
   runsOn?: JobSummary["runsOn"];
   machine?: { name: string; lastSeenAt: number | null } | null;
-  onChange?: (next: JobSummary["runsOn"]) => void;
 } = {}) {
   const placement: JobPlacement = { runsOn: options.runsOn ?? "device", machineBound: [], serverBound: [], ...options.placement };
   render(
     <ThemeProvider>
-      <RunsOn
-        job={job({ runsOn: options.runsOn ?? "device" })}
-        placement={placement}
-        machine={options.machine ?? null}
-        onChange={options.onChange ?? vi.fn()}
-        saving={false}
-      />
+      <RunsOn job={job({ runsOn: options.runsOn ?? "device" })} placement={placement} machine={options.machine ?? null} />
     </ThemeProvider>,
   );
 }
 
-/** The two options as the picker draws them. */
-function option(label: string): HTMLOptionElement {
-  return screen.getByRole("option", { name: new RegExp(label) }) as HTMLOptionElement;
-}
-
-describe("the picker", () => {
-  it("offers both places to a job that needs nothing of either", () => {
+describe("where it runs, and why not elsewhere", () => {
+  it("states the place as text, with nothing to pick", () => {
     draw();
 
-    expect(option("this machine").disabled).toBe(false);
-    expect(option("organisation server").disabled).toBe(false);
-    expect((screen.getByLabelText("Runs on") as HTMLSelectElement).value).toBe("device");
+    expect(screen.getByText("Runs on this machine")).toBeTruthy();
+    expect(screen.queryByRole("combobox")).toBeNull();
+    expect(screen.queryByRole("option")).toBeNull();
   });
 
-  it("greys the organisation server for a job bound to this machine, and says why", () => {
-    // The story's first acceptance criterion, on the screen: a personal
-    // Codex login, named with the step that raised it.
+  it("says why the organisation server is unavailable for a job bound to this machine", () => {
+    // A personal Codex login, named with the step that raised it.
     draw({ placement: { machineBound: [PERSONAL_LOGIN] } });
 
-    expect(option("organisation server").disabled).toBe(true);
-    expect(option("organisation server").textContent).toContain("not available for this job");
+    expect(screen.getByText(/Why "organisation server" is not available for this job/)).toBeTruthy();
     expect(screen.getByText(/signed in to Codex with a personal login/)).toBeTruthy();
     // A reason is never only a fact: the fix is beside it, and this one
     // is the person's own.
     expect(screen.getByText(/backend your organisation allows an API key for/)).toBeTruthy();
   });
 
-  it("greys this machine for a job reading an organisation secret", () => {
-    // The second criterion, and the direction it is easy to get
-    // backwards.
+  it("says why this machine is unavailable for a job reading an organisation secret", () => {
     draw({ runsOn: "server", placement: { serverBound: [ORGANISATION_SECRET] } });
 
-    expect(option("this machine").disabled).toBe(true);
+    expect(screen.getByText(/Why "this machine" is not available for this job/)).toBeTruthy();
     expect(screen.getByText(/reads FLY_API_TOKEN, a secret your organisation set/)).toBeTruthy();
     expect(screen.getByText(/Ask your admin\./)).toBeTruthy();
   });
 
   it("does not explain a place nothing is standing in the way of", () => {
-    // A person is not shown why the thing they chose is allowed.
     draw({ placement: { machineBound: [PERSONAL_LOGIN] } });
 
     expect(screen.queryByText(/Why "this machine"/)).toBeNull();
   });
 
-  it("explains the job's own place when that is the one that went grey", () => {
+  it("explains the job's own place when that is the one that became unavailable, and points at the assistant", () => {
     // Placement is derived (invariant #6), so the ground moves under a
     // job standing still: an agent re-bound to a personal login this
-    // morning greys *organisation server* for a job that has been
-    // running there since March. Greying a job's own place and saying
-    // nothing about why is the one thing a greyed control must not do.
+    // morning rules out *organisation server* for a job that has been
+    // running there since March.
     draw({ runsOn: "server", placement: { machineBound: [PERSONAL_LOGIN] } });
 
-    expect(option("organisation server").disabled).toBe(true);
+    expect(screen.getByText("Runs on organisation server — not available for this job")).toBeTruthy();
     expect(screen.getByText(/Why "organisation server" is not available for this job/)).toBeTruthy();
-    expect(screen.getByText(/This job can no longer run where it is\. Move it to "this machine"\./)).toBeTruthy();
-  });
-
-  it("moves the job the moment a place is picked", () => {
-    const onChange = vi.fn();
-    draw({ onChange });
-
-    fireEvent.change(screen.getByLabelText("Runs on"), { target: { value: "server" } });
-
-    expect(onChange).toHaveBeenCalledWith("server");
+    expect(screen.getByText(/This job can no longer run where it is\. Ask the assistant to move it to "this machine"\./)).toBeTruthy();
   });
 });
 
@@ -178,15 +144,13 @@ describe("the copyable summary", () => {
 });
 
 describe("a job with nowhere to run", () => {
-  it("says so out loud rather than leaving it to be inferred from two greyed options", () => {
+  it("says so out loud rather than leaving it to be inferred from two lists of reasons", () => {
     // The state the design does not name and a managed installation reaches:
     // a personal login on one step and an organisation secret on
     // another. What the person has to do about it is not "pick the
     // other one".
     draw({ placement: { machineBound: [PERSONAL_LOGIN], serverBound: [ORGANISATION_SECRET] } });
 
-    expect(option("this machine").disabled).toBe(true);
-    expect(option("organisation server").disabled).toBe(true);
     expect(screen.getByText(/Neither place can run this job as it stands/)).toBeTruthy();
     // Both lists are drawn, each with its own copyable summary: an
     // admin can answer four reasons one at a time and cannot answer two

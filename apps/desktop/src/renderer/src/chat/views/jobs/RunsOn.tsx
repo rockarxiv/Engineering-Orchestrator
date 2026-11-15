@@ -12,38 +12,26 @@ import {
   type JobRunsOn,
   type JobSummary,
 } from "@eo/core";
-import { Button, Field, Select } from "../../kit";
+import { Button } from "../../kit";
 
-/** The two places, in the order the picker offers them. */
+/** The two places, in the order their reasons are listed. */
 const PLACES: readonly JobRunsOn[] = ["device", "server"];
 
 /**
  * "Runs on: this machine / organisation server" (EO-330,
- * the original design, invariant 12).
+ * the original design, invariant 12), stated rather than picked (EO-787):
+ * a job is moved by the assistant's card or an outside agent's tool, and
+ * `jobs:update` refuses a place the job would quietly fail in.
  *
- * One control, and beside it every reason each greyed option is greyed:
- * a person is never allowed to pick a place where the job would quietly
- * fail, so such a place is disabled rather than offered and refused. Each
- * reason says what is in the way *and* what would clear it, and each
- * greyed place has its own copyable summary for an admin.
+ * Beside it, every reason a place is unavailable: each says what is in
+ * the way *and* what would clear it, and each such place has its own
+ * copyable summary for an admin.
  *
- * Every greyed place is explained, the job's own included: placement is
- * derived (invariant #6), so the ground can move under a job standing
- * still, and a greyed control must never be silent about why.
+ * Every unavailable place is explained, the job's own included: placement
+ * is derived (invariant #6), so the ground can move under a job standing
+ * still, and the page must never be silent about why.
  */
-export function RunsOn({
-  job,
-  placement,
-  machine,
-  onChange,
-  saving,
-}: {
-  job: JobSummary;
-  placement: JobPlacement;
-  machine: JobMachine | null;
-  onChange: (next: JobRunsOn) => void;
-  saving: boolean;
-}) {
+export function RunsOn({ job, placement, machine }: { job: JobSummary; placement: JobPlacement; machine: JobMachine | null }) {
   const [copied, setCopied] = useState<JobRunsOn | null>(null);
   const greyed = PLACES.filter((where) => !placementAllows(placement, where));
   const here = !placementAllows(placement, job.runsOn);
@@ -55,18 +43,10 @@ export function RunsOn({
 
   return (
     <div className="flex min-w-0 flex-col gap-2">
-      <Field label="Runs on">
-        <Select value={job.runsOn} disabled={saving} onChange={(event) => onChange(event.target.value as JobRunsOn)}>
-          {PLACES.map((where) => (
-            // Disabled rather than absent, so the reasons below answer a
-            // question the control on screen is asking.
-            <option key={where} value={where} disabled={!placementAllows(placement, where)}>
-              {runsOnLabel(where)}
-              {placementAllows(placement, where) ? "" : ` — ${NOT_AVAILABLE_FOR_THIS_JOB}`}
-            </option>
-          ))}
-        </Select>
-      </Field>
+      <p className="text-[13px] text-ink">
+        Runs on {runsOnLabel(job.runsOn)}
+        {here ? ` — ${NOT_AVAILABLE_FOR_THIS_JOB}` : ""}
+      </p>
 
       {job.runsOn === "device" && machine !== null ? <p className="text-[12.5px] text-ink-subtle">{jobMachineLine(machine, Date.now())}</p> : null}
       {job.runsOn === "server" ? <p className="text-[12.5px] text-ink-subtle">Runs on the organisation server, whether or not any desktop is open.</p> : null}
@@ -75,7 +55,7 @@ export function RunsOn({
           rather than about a choice. */}
       {here && !placementStranded(placement) ? (
         <p className="text-[12.5px] text-danger">
-          This job can no longer run where it is. Move it to "{runsOnLabel(job.runsOn === "device" ? "server" : "device")}".
+          This job can no longer run where it is. Ask the assistant to move it to "{runsOnLabel(job.runsOn === "device" ? "server" : "device")}".
         </p>
       ) : null}
 
