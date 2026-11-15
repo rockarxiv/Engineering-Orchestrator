@@ -142,6 +142,43 @@ describe("the learning review's prompt on skills (EO-718)", () => {
   });
 });
 
+describe("what both reviews say a skill is for, and that saving nothing is an answer (EO-791)", () => {
+  const skills = { skills: [{ slug: "csv-exports", description: "Use when adding a CSV export.", loaded: true, locked: false }], canCreate: true };
+  const NOTHING = "Most runs teach nothing of that kind. Saving nothing is the expected answer, and it is a complete one, not a failure to do the job.";
+  const FOR = [
+    "Write to a skill only what will make the next agent working in this project do a kind of task faster or better. Two examples of faster: the command that answers a question in one step, or the file that holds what a change has to touch. Two of better: the check that catches a mistake before review does, or the case a change of this kind has to handle. Ask whether an agent starting a different item here tomorrow would work quicker, or need fewer corrections, for having read it. If it would not, it is not a skill.",
+    "A mistake is worth the most when someone else had to catch it. If a reviewer or a person pointed out something this run, or an earlier run on this item, got wrong, and the mistake could happen again on another item, write the rule that prevents it, as how to do that kind of task right. Do not write the story of the mistake. \"A new nullable field on an IPC response needs `: null` added to every renderer test that mocks that channel\" is a lesson. \"Forgot to handle null in `loadBoard`\" is a fix to one change, so leave it out.",
+    "A skill is not a record of this run. Leave out what this run changed, what went wrong for it that says nothing about the project, and what was true only of its change. That covers a test that failed once and passed when rerun, a count of the files one change touched, a date, and \"main once did…\".",
+  ];
+  const prompts = { full: learningReviewPrompt(SCOPES, skills), skills_only: learningReviewSkillsPrompt(skills) };
+
+  for (const [review, prompt] of Object.entries(prompts)) {
+    it(`${review}: says straight after what it asks, before any rule on writing, that saving nothing is the expected answer`, () => {
+      const asked = prompt.indexOf("You are asked one thing");
+      const at = prompt.indexOf(NOTHING);
+      expect(asked).toBeGreaterThanOrEqual(0);
+      expect(at).toBeGreaterThan(asked);
+      expect(prompt.slice(asked, at).split("\n").filter(Boolean)).toHaveLength(1);
+      for (const rule of ["Save only what this run can point to", "Never save any of these", "## Skills", "1. Patch a skill this run loaded."]) expect(prompt.indexOf(rule), rule).toBeGreaterThan(at);
+    });
+
+    it(`${review}: opens the skills part with what a skill is for, before the skills it may change`, () => {
+      const head = prompt.indexOf("## Skills");
+      const list = prompt.indexOf("The skills this run's agent is given here");
+      const at = FOR.map((paragraph) => prompt.indexOf(paragraph));
+      expect(at.every((index) => index > head && index < list)).toBe(true);
+      expect([...at].sort((a, b) => a - b)).toEqual(at);
+    });
+  }
+
+  it("words what it adds for every pack: agent and project, never a role or a repository", () => {
+    for (const text of [NOTHING, ...FOR]) {
+      expect(text).not.toMatch(/implementer|repo/i);
+      expect(text.replace("a reviewer or a person pointed out", "")).not.toMatch(/reviewer/i);
+    }
+  });
+});
+
 describe("the learning_review event (EO-717)", () => {
   it("records each outcome in the shape core parses", () => {
     const events = [

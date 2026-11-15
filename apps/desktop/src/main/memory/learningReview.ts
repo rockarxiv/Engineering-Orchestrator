@@ -123,6 +123,8 @@ export function learningReviewPrompt(scopes: readonly MemoryScopeInfo[], skills:
     ...REVIEW_HEAD,
     `You are asked one thing: whether this run learned something the next agent on this project should be told, and if it did, to write it down — a fact to memory with \`${MEMORY_NOTE}\`, a way of doing a kind of task to a skill (below). Use \`${MEMORY_READ}\` to see what memory already holds. ${DO_NOTHING_ELSE}`,
     "",
+    NOTHING_IS_AN_ANSWER,
+    "",
     MEMORY_NOTE_DEFINITION,
     "",
     `${SAVE_ONLY_EVIDENCE} A note is believed by agents that cannot ask you where it came from.`,
@@ -157,6 +159,8 @@ export function learningReviewSkillsPrompt(skills: LearningReviewSkills): string
     ...REVIEW_HEAD,
     `You are asked one thing: whether this run worked out a way of doing a kind of task that the next agent on this project should be told, and if it did, to write it to a skill (below). This run already wrote its own notes to memory, so memory is not asked for here and you cannot write to it; use \`${MEMORY_READ}\` to see what it holds. ${DO_NOTHING_ELSE}`,
     "",
+    NOTHING_IS_AN_ANSWER,
+    "",
     SAVE_ONLY_EVIDENCE,
     "",
     ...NEVER_SAVE,
@@ -187,6 +191,28 @@ const REVIEW_HEAD = [
   "",
 ];
 
+/**
+ * Said in either review straight after what it is asked, before any rule
+ * on how to write (EO-791): a review that reads as an order to produce
+ * something writes in most runs, and most runs teach nothing worth keeping.
+ */
+const NOTHING_IS_AN_ANSWER = "Most runs teach nothing of that kind. Saving nothing is the expected answer, and it is a complete one, not a failure to do the job.";
+
+/**
+ * What a skill is for (EO-791): what makes the next agent do a kind of
+ * task faster or with fewer corrections — including the rule that
+ * prevents a mistake someone else had to catch — and never a record of
+ * the run. "An earlier run on this item" because a reviewer's findings
+ * reach a rework run as comments in the thread, with the fix after them.
+ */
+const WHAT_A_SKILL_IS_FOR = [
+  "Write to a skill only what will make the next agent working in this project do a kind of task faster or better. Two examples of faster: the command that answers a question in one step, or the file that holds what a change has to touch. Two of better: the check that catches a mistake before review does, or the case a change of this kind has to handle. Ask whether an agent starting a different item here tomorrow would work quicker, or need fewer corrections, for having read it. If it would not, it is not a skill.",
+  "",
+  "A mistake is worth the most when someone else had to catch it. If a reviewer or a person pointed out something this run, or an earlier run on this item, got wrong, and the mistake could happen again on another item, write the rule that prevents it, as how to do that kind of task right. Do not write the story of the mistake. \"A new nullable field on an IPC response needs `: null` added to every renderer test that mocks that channel\" is a lesson. \"Forgot to handle null in `loadBoard`\" is a fix to one change, so leave it out.",
+  "",
+  "A skill is not a record of this run. Leave out what this run changed, what went wrong for it that says nothing about the project, and what was true only of its change. That covers a test that failed once and passed when rerun, a count of the files one change touched, a date, and \"main once did…\".",
+];
+
 const SAVE_ONLY_EVIDENCE =
   "Save only what this run can point to: a command it ran and what came of it, a file it read, an answer a person gave. Not what you suspect or expect, and not what the run assumed and never checked.";
 
@@ -212,7 +238,9 @@ function skillsSection({ skills, canCreate }: LearningReviewSkills): string[] {
   return [
     "## Skills",
     "",
-    "A skill is how to do a kind of task: a description saying when it applies, a body saying how, and files beside it. Memory holds facts; a skill holds a procedure. Where this run found out how a kind of task is done here — the steps, their order, the trap and the way round it — that belongs in a skill.",
+    "A skill is how to do a kind of task: a description saying when it applies, a body saying how, and files beside it. Memory holds facts; a skill holds a procedure.",
+    "",
+    ...WHAT_A_SKILL_IS_FOR,
     "",
     ...listed,
     "",
