@@ -7297,6 +7297,11 @@ export function createRunSupervisor(
     // Silent, exactly as the check at the top of this function is.
     if (preflight.kind === "stand-down") return;
     if (preflight.kind === "refused") {
+      // Once per initiation, as every refusal above (EO-802): an open
+      // mention is offered again on every tick until it is answered, and
+      // its initiation is the comment, so without this a device that
+      // keeps refusing posts the same escalation every few seconds.
+      if (alreadyRefused(item.id, initiationId)) return;
       device.report({ item, agent, action }, preflight, { initiationId, attempt: nextAttempt });
       return;
     }
@@ -12132,6 +12137,25 @@ export function createRunSupervisor(
       }).finally(() => inFlight.delete(bypassPromise));
       inFlight.add(bypassPromise);
       await bypassPromise;
+      return;
+    }
+
+    // The device's preflight, as a fresh dispatch has it (EO-802): a
+    // resumed turn needs the backend signed in and, for a locked-down
+    // Codex agent, a home of its own just as much as a new one does, and
+    // without asking here the first anyone heard of a home EO could not
+    // make was the provider throwing at spawn — a failed attempt rather
+    // than a refusal. Before anything is written. A stand-down keeps the
+    // reply as `waitsForRuntime` above does; a refusal parks the item
+    // once for this reply, and the placeholder it writes is what stops
+    // the scheduler's recovery pass offering the same reply again.
+    const preflight = await device.preflight({ item, agent, action: priorRun.action });
+    if (heldBack(agent, itemId) || !getItem(db, itemId) || shelved(itemId) || !isAgentAvailable(agent)) return;
+    if (preflight.kind === "stand-down") return;
+    if (preflight.kind === "refused") {
+      const refusedInitiationId = followUpComments(db, itemId, agent.id, priorRun).at(-1)?.id ?? `reauthorized:${priorRun.id}`;
+      if (alreadyRefused(itemId, refusedInitiationId)) return;
+      device.report({ item, agent, action: priorRun.action }, preflight, { initiationId: refusedInitiationId, attempt: 1 });
       return;
     }
 
