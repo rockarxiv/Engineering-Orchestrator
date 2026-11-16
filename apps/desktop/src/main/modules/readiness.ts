@@ -113,6 +113,9 @@ export interface LaunchableOptions {
  * which must be a regular file with its execute bit. A name with a
  * separator in it is not looked up but taken as written.
  *
+ * Both a relative name and a relative PATH entry are taken from `cwd`,
+ * the directory the module is spawned in, where one is given.
+ *
  * The PATH is the one the module host is given (`searchPath`), read at
  * the moment of asking, as the host reads it at the moment of launching.
  */
@@ -121,8 +124,12 @@ export function launchable(bin: string, options: LaunchableOptions): boolean {
   const path = platform === "win32" ? win32 : posix;
   const runnable = options.runnable ?? ((candidate: string) => runnableFile(candidate, platform));
   const named = platform === "win32" ? /[\\/]/.test(bin) : bin.includes("/");
+  // Relative to the directory the module runs in, as `spawn` with that
+  // `cwd` takes it — a relative PATH entry as much as a relative name —
+  // never to EO's own working directory.
+  const fromCwd = (target: string) => (options.cwd === undefined ? target : path.resolve(options.cwd, target));
   const searched = platform === "win32" && options.cwd !== undefined ? [options.cwd, ...options.directories] : options.directories;
-  const bases = named ? [options.cwd === undefined ? bin : path.resolve(options.cwd, bin)] : searched.map((directory) => path.join(directory, bin));
+  const bases = named ? [fromCwd(bin)] : searched.map((directory) => path.join(fromCwd(directory), bin));
   const forms = (base: string): string[] => {
     if (platform !== "win32") return [base];
     const extension = path.extname(bin).toLowerCase();

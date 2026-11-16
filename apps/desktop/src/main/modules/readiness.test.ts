@@ -192,6 +192,45 @@ describe("finding a binary as ctx.exec would", () => {
     expect(launchable("release", { directories: ["/usr/bin"], platform: "linux", cwd: "/work/repo", runnable: files("/work/repo/release") })).toBe(false);
   });
 
+  // `spawn` resolves a relative PATH entry against the cwd it is given,
+  // which is the module's — not against EO's own working directory.
+  it("takes a relative PATH entry from the directory the module runs in, not EO's", () => {
+    const workspace = join(scratch, "workspace");
+    const elsewhere = join(scratch, "elsewhere");
+    mkdirSync(join(workspace, "tools"), { recursive: true });
+    mkdirSync(join(elsewhere, "tools"), { recursive: true });
+    const name = "eo-816-relative";
+    const executable = (directory: string) => {
+      const file = join(directory, "tools", process.platform === "win32" ? `${name}.exe` : name);
+      writeFileSync(file, "");
+      chmodSync(file, 0o755);
+    };
+    const savedCwd = process.cwd();
+    process.chdir(elsewhere);
+    try {
+      // Only in the workspace: found, though EO's cwd has none.
+      executable(workspace);
+      expect(launchable(name, { directories: ["tools"], cwd: workspace })).toBe(true);
+      expect(moduleReadiness(needs([name], []), { secrets, cwd: workspace, binaries: { directories: ["tools"] } }).bin).toEqual([{ name, status: "found" }]);
+      // Only beside EO: missing, though EO's cwd has one.
+      rmSync(join(workspace, "tools"), { recursive: true, force: true });
+      executable(elsewhere);
+      expect(launchable(name, { directories: ["tools"], cwd: workspace })).toBe(false);
+      expect(moduleReadiness(needs([name], []), { secrets, cwd: workspace, binaries: { directories: ["tools"] } }).bin).toEqual([{ name, status: "missing" }]);
+      // With no cwd to run in, a relative entry is taken as written.
+      expect(launchable(name, { directories: ["tools"] })).toBe(true);
+    } finally {
+      process.chdir(savedCwd);
+    }
+  });
+
+  it("resolves a relative PATH entry against the module's directory on each OS", () => {
+    expect(launchable("deploy", { directories: ["tools"], platform: "linux", cwd: "/work/repo", runnable: files("/work/repo/tools/deploy") })).toBe(true);
+    expect(launchable("deploy", { directories: ["tools"], platform: "linux", cwd: "/work/repo", runnable: files("tools/deploy") })).toBe(false);
+    expect(launchable("deploy", { directories: ["tools"], platform: "win32", cwd: "C:\\work", runnable: files("C:\\work\\tools\\deploy.exe") })).toBe(true);
+    expect(launchable("deploy", { directories: ["tools"], platform: "win32", cwd: "C:\\work", runnable: files("tools\\deploy.exe") })).toBe(false);
+  });
+
   it.skipIf(process.platform === "win32")("does not count a file without its execute bit", () => {
     const file = join(bin, "not-executable");
     writeFileSync(file, "");
