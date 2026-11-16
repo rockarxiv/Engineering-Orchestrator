@@ -1,6 +1,6 @@
-import type { Job, JobOccurrenceRow, JobSummary, JobWatchState, Uuid } from "@eo/core";
+import { JobWatchCheckBriefSchema, type Job, type JobOccurrenceRow, type JobSummary, type JobWatchCheck, type JobWatchCheckBrief, type JobWatchCheckRow, type JobWatchState, type Uuid } from "@eo/core";
 import type { Db } from "../db/client.js";
-import { getItem, getJobWatchState, latestOccurrence, latestOccurrenceWithStatus, listOccurrences, listRunsForItem, sumCostCentsForItem } from "../db/repos/index.js";
+import { getItem, getJobWatchState, latestOccurrence, listWatchChecks, latestOccurrenceWithStatus, listOccurrences, listRunsForItem, sumCostCentsForItem } from "../db/repos/index.js";
 import { compileSchedule, nextOccurrenceAfter } from "../schedule/cron.js";
 
 /**
@@ -132,4 +132,24 @@ function runDurationMs(db: Db, itemId: Uuid): number | null {
     any = true;
   }
   return any ? total : null;
+}
+
+/** How many of a watch job's newest checks `jobs:get` carries (EO-800). */
+export const RECENT_WATCH_CHECKS = 20;
+
+/** A check with each item it filed named by key and title, null for one since deleted. */
+export function watchCheckRow(db: Db, check: JobWatchCheck): JobWatchCheckRow {
+  return {
+    ...check,
+    filedItems: check.filedItemIds.map((id) => {
+      const item = getItem(db, id as Uuid);
+      return { id, key: item?.key ?? null, title: item?.title ?? null };
+    }),
+  };
+}
+
+/** A watch job's newest checks without their output, for `jobs:get`. None for any other kind. */
+export function recentWatchChecks(db: Db, job: Job): JobWatchCheckBrief[] {
+  if (job.trigger.kind !== "watch") return [];
+  return listWatchChecks(db, job.id as Uuid, RECENT_WATCH_CHECKS).map((check) => JobWatchCheckBriefSchema.parse(watchCheckRow(db, check)));
 }

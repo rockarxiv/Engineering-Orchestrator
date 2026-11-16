@@ -2854,6 +2854,40 @@ export const jobWatchStates = sqliteTable("job_watch_states", {
   waitingForItemId: text("waiting_for_item_id"),
 });
 
+/**
+ * Every check a watch job ran (EO-800, migration 0173).
+ *
+ * History rather than state: one row per check, written when it ends,
+ * never updated or deleted — it goes only with its job. A check held by
+ * `waitWhileOpen` did not run and writes none. `job_watch_states` above
+ * stays where the checks stand.
+ */
+export const jobWatchChecks = sqliteTable(
+  "job_watch_checks",
+  {
+    id: text("id").primaryKey(), // uuidv7
+    jobId: text("job_id")
+      .notNull()
+      .references((): AnySQLiteColumn => jobs.id, { onDelete: "cascade" }),
+    startedAt: integer("started_at").notNull(),
+    endedAt: integer("ended_at").notNull(),
+    /** `waiting`, the declared result the check answered, or `failed`. */
+    answer: text("answer").notNull(),
+    /** The module's detail, or why the check failed. */
+    detail: text("detail").notNull().default(""),
+    /** How many findings the module reported. */
+    findingCount: integer("finding_count").notNull().default(0),
+    /** The items this check filed. Not foreign keys: a person may delete one. */
+    filedItemIds: text("filed_item_ids", { mode: "json" }).$type<string[]>().notNull().default([]),
+    /** The last 4,000 characters of the module's output, redacted as it arrived. */
+    output: text("output").notNull().default(""),
+  },
+  (table) => [
+    // The Checks tab, newest first, paged.
+    index("idx_job_watch_checks_job").on(table.jobId, table.startedAt),
+  ],
+);
+
 // ── The record and its devices ────────────────────────────────
 
 /**

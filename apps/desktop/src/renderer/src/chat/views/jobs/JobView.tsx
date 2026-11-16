@@ -1,5 +1,5 @@
 import { useState, type ReactNode } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import { Play, Workflow } from "lucide-react";
 import { JOB_ID_FACET, describeJobTrigger, type JobMachine, type JobOccurrenceRow, type JobPlacement, type JobSummary, type ModuleView, type PipelineView, type RegistryFacts } from "@eo/core";
@@ -9,7 +9,7 @@ import { itemsKey, jobKey, jobsRootKey, useModules, usePipelines, useRegistry, u
 import { Card, CardSection, Chip, EmptyState, Facts, Loading, Switch, Tabs, ViewHeader, Button } from "../../kit";
 import { ItemKeyLink } from "../inbox/references";
 import { RunsOn } from "./RunsOn";
-import { WatchStatus, watchFacts } from "./Watch";
+import { WatchChecks, WatchStatus, watchFacts } from "./Watch";
 import { JobEvents, WebhookAddress, WebhookMappingTable } from "./Webhook";
 
 /**
@@ -54,11 +54,21 @@ export function JobView({ jobId }: { jobId: string }) {
     enabled: webhook !== null || watch,
   });
 
+  // Every check a watch job ran (EO-800), a page at a time, newest first.
+  const checks = useInfiniteQuery({
+    queryKey: [...jobKey(jobId), "checks"],
+    enabled: watch,
+    initialPageParam: undefined as string | undefined,
+    queryFn: ({ pageParam }) => ipcQuery("jobs:checks", { jobId, ...(pageParam === undefined ? {} : { before: pageParam }) }),
+    getNextPageParam: (last) => last.nextBefore ?? undefined,
+  });
+  const checkRows = checks.data?.pages.flatMap((page) => page.checks) ?? [];
+
   const { registry } = useRegistry();
   const { pipelines } = usePipelines(job?.projectId ?? null);
   const modules = useModules();
 
-  const [tab, setTab] = useState<"history" | "events">("history");
+  const [tab, setTab] = useState<"history" | "events" | "checks">("history");
   const [ran, setRan] = useState<string | null>(null);
 
   const refresh = () => {
@@ -146,7 +156,8 @@ export function JobView({ jobId }: { jobId: string }) {
       {/* Two records for a webhook job, answering different questions:
           what it filed, and what arrived — including what arrived and
           filed nothing. A watch job's events are its findings, each
-          filed or refused, named by its key. */}
+          filed or refused, named by its key, and it has a third: every
+          check it ran, including the ones that found nothing. */}
       <Card label="Record">
         {webhook === null && !watch ? (
           <History rows={occurrences} timeZone={zone} />
@@ -159,10 +170,19 @@ export function JobView({ jobId }: { jobId: string }) {
               tabs={[
                 { value: "history", label: "History", count: occurrences.length },
                 { value: "events", label: "Events", count: events.data?.events.length ?? 0 },
+                ...(watch ? [{ value: "checks" as const, label: "Checks", count: checkRows.length }] : []),
               ]}
             />
             {tab === "history" ? (
               <History rows={occurrences} timeZone={zone} />
+            ) : tab === "checks" && watch ? (
+              <WatchChecks
+                checks={checkRows}
+                timeZone={zone}
+                hasOlder={checks.hasNextPage}
+                loadingOlder={checks.isFetchingNextPage}
+                onOlder={() => void checks.fetchNextPage()}
+              />
             ) : (
               <JobEvents
                 events={events.data?.events ?? []}

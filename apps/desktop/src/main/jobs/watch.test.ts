@@ -1,8 +1,9 @@
-import { existsSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { eq } from "drizzle-orm";
 import type { CustomModule, Job, ModuleManifest, Uuid, WatchFinding, WatchTrigger } from "@eo/core";
 import type { DbHandle } from "../db/client.js";
 import {
@@ -12,6 +13,7 @@ import {
   itemGeneration,
   listJobEvents,
   listOccurrences,
+  listWatchChecks,
   saveJobWatchState,
   saveModule,
   setItemArchived,
@@ -20,13 +22,15 @@ import { archiveModule } from "../db/repos/modulesRepo.js";
 import { markReplica } from "../db/recordRole.js";
 import { messagesAboutJob, openMigratedTestDb } from "../db/testHelpers.js";
 import { createJobCommand, getJobCommand, resumeJobCommand, runJobNowCommand } from "../ipc/jobCommands.js";
+import { jobs } from "../db/schema.js";
 import type { ModuleOutcome } from "../modules/runModule.js";
+import { storeSecret } from "../modules/secrets.js";
 import { pauseJob } from "./budget.js";
 import { jobEntryVerdicts } from "./fire.js";
 import { createJob, deleteJob, updateJob } from "./jobs.js";
 import { originOfItem } from "./origin.js";
 import { placementForJob } from "./placement.js";
-import { createWatchCheck, runWatchTick, startWatchIntake, type WatchCheck } from "./watch.js";
+import { checkWatchJob, createWatchCheck, runWatchTick, startWatchIntake, type WatchCheck } from "./watch.js";
 
 /**
  * A watch job (EO-753): its module run as an intake check, and what it
@@ -188,6 +192,8 @@ describe("waiting while an item it filed is open", () => {
 
     expect(held.held).toEqual([job.id]);
     expect(check.calls).toBe(1);
+    // A held check did not run, so it is not in the job's checks (EO-800).
+    expect(listWatchChecks(handle.db, job.id as Uuid, 10)).toHaveLength(1);
     expect(getJobWatchState(handle.db, job.id as Uuid)?.waitingForItemId).toBe(filed);
     expect(getJobCommand(handle.db, { jobId: job.id }).job?.watch?.waitingForItemKey).toBe(getItem(handle.db, filed as Uuid)?.key);
 
@@ -196,6 +202,107 @@ describe("waiting while an item it filed is open", () => {
 
     expect(check.calls).toBe(2);
     expect(getJobWatchState(handle.db, job.id as Uuid)?.waitingForItemId).toBeNull();
+    expect(listWatchChecks(handle.db, job.id as Uuid, 10)).toHaveLength(2);
+  });
+});
+
+describe("the history of a watch job's checks (EO-800)", () => {
+  const checksOf = (job: Job) => listWatchChecks(handle.db, job.id as Uuid, 100);
+
+  it("records a check that answers waiting with nothing found, with when it started and ended", async () => {
+    const job = watchJob();
+    let now = T0;
+    const check: WatchCheck = async () => {
+      now += 3_000;
+      return { ok: true, result: "waiting", detail: "Nothing open.", findings: [] };
+    };
+
+    await runWatchTick(handle.db, { check, now: () => now });
+
+    expect(checksOf(job)).toEqual([
+      { id: expect.any(String), jobId: job.id, startedAt: T0, endedAt: T0 + 3_000, answer: "waiting", detail: "Nothing open.", findingCount: 0, filedItemIds: [], output: "" },
+    ]);
+    // The state row is written as before.
+    expect(getJobWatchState(handle.db, job.id as Uuid)).toMatchObject({ lastCheckedAt: T0 + 3_000, lastAnswer: "waiting" });
+  });
+
+  it("records the findings counted and the items filed, and a later check that files nothing new, newest first", async () => {
+    const job = watchJob();
+    const check = scripted(waiting(FIRST, { key: "pr:7", title: "Fix the build", existingBranch: "fix/build" }));
+
+    const first = await runWatchTick(handle.db, { check, now: () => T0 });
+    await runWatchTick(handle.db, { check, now: () => T0 + 60 * MINUTE });
+
+    const [second, earlier] = checksOf(job);
+    expect(earlier).toMatchObject({ startedAt: T0, answer: "waiting", findingCount: 2, filedItemIds: first.filed });
+    expect(first.filed).toHaveLength(1);
+    expect(second).toMatchObject({ startedAt: T0 + 60 * MINUTE, answer: "waiting", findingCount: 2, filedItemIds: [] });
+  });
+
+  it("records a failed check with its reason, a crash, an undeclared answer and a declared result", async () => {
+    const job = watchJob();
+    const check = scripted({ ok: false, reason: "gh is not signed in." }, new Error("host died"), { ok: true, result: "done", detail: "" }, {
+      ok: true,
+      result: "broken",
+      detail: "The token was revoked.",
+    });
+    let now = T0;
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      await runWatchTick(handle.db, { check, now: () => now });
+      now = getJobWatchState(handle.db, job.id as Uuid)!.nextCheckAt ?? now;
+    }
+
+    const rows = checksOf(job).reverse();
+    expect(rows.map((row) => row.answer)).toEqual(["failed", "failed", "failed", "broken"]);
+    expect(rows[0]?.detail).toBe("gh is not signed in.");
+    expect(rows[1]?.detail).toContain("host died");
+    expect(rows[2]?.detail).toContain('answered "done"');
+    expect(rows[3]?.detail).toBe("The token was revoked.");
+    // The status lines read the state row exactly as before.
+    expect(getJobWatchState(handle.db, job.id as Uuid)).toMatchObject({ lastAnswer: "broken", consecutiveFailures: 0, nextCheckAt: null });
+  });
+
+  it("records a check whose module is no longer fit to run, as failed", async () => {
+    const watch = module();
+    const job = watchJob({}, watch.id);
+    archiveModule(handle.db, watch.id);
+    await checkWatchJob(handle.db, job, { check: scripted(waiting()), now: () => T0 });
+    expect(checksOf(job)).toMatchObject([{ answer: "failed", detail: expect.stringContaining("archived") }]);
+  });
+
+  it("records a check whose job was paused while it ran", async () => {
+    const job = watchJob();
+    const check: WatchCheck = async () => {
+      pauseJob(handle.db, job.id as Uuid);
+      return waiting(FIRST);
+    };
+    const result = await runWatchTick(handle.db, { check, now: () => T0 });
+    expect(result.filed).toEqual([]);
+    expect(checksOf(job)).toMatchObject([{ answer: "waiting", findingCount: 1, filedItemIds: [] }]);
+  });
+
+  it("keeps the last 4,000 characters of the module's output", async () => {
+    const job = watchJob();
+    const check: WatchCheck = async (_job, _module, _trigger, onOutput) => {
+      onOutput?.(`${"a".repeat(3_000)}\n`);
+      onOutput?.(`${"b".repeat(3_000)}\nlast line\n`);
+      return waiting();
+    };
+    await runWatchTick(handle.db, { check, now: () => T0 });
+    const output = checksOf(job)[0]!.output;
+    expect(output).toHaveLength(4_000);
+    expect(output.endsWith("b\nlast line\n")).toBe(true);
+    expect(output.startsWith("a")).toBe(true);
+  });
+
+  it("goes only with its job's row", async () => {
+    const job = watchJob();
+    await runWatchTick(handle.db, { check: scripted(waiting()), now: () => T0 });
+    // Deleting a job keeps its row, so its checks stay with it.
+    deleteJob(handle.db, job.id as Uuid);
+    expect(checksOf(job)).toHaveLength(1);
+    handle.db.delete(jobs).where(eq(jobs.id, job.id)).run();
+    expect(checksOf(job)).toEqual([]);
   });
 });
 
@@ -495,5 +602,38 @@ describe("the real intake check", () => {
     expect(finding?.body).toBe("PR intake eo/eo");
     expect(finding?.title.startsWith(join(tmpdir(), "eo-watch-"))).toBe(true);
     expect(existsSync(finding!.title)).toBe(false);
+  }, 30_000);
+
+  it("records the module's output in the check's row, with a stored secret's value redacted (EO-800)", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "eo-800-secrets-"));
+    try {
+      const secrets = {
+        directory,
+        store: {
+          isEncryptionAvailable: () => true,
+          encryptString: (text: string) => Buffer.from(`enc:${text}`),
+          decryptString: (buffer: Buffer) => buffer.toString().replace(/^enc:/, ""),
+        },
+      };
+      // Reversed in the source, so the literal value is nowhere a test could match by accident.
+      const value = "008-oe-eulav-terces-buhtig".split("").reverse().join("");
+      expect(storeSecret(secrets, "GITHUB_TOKEN", value)).toEqual({ ok: true });
+      const code = `export default async function run(ctx) {
+        ctx.log("calling gh with " + process.env.GITHUB_TOKEN);
+        return { ok: true, result: "waiting", detail: "looked", findings: [] };
+      }`;
+      const watch = module({ needs: { ...MANIFEST.needs, env: ["GITHUB_TOKEN"] } }, true, code);
+      const job = watchJob({}, watch.id);
+      const check = createWatchCheck(handle.db, { launcher: { execPath: process.execPath, hostPath, hostEnv: { ELECTRON_RUN_AS_NODE: "1" } }, secrets });
+
+      await runWatchTick(handle.db, { check, now: () => T0 });
+
+      const [row] = listWatchChecks(handle.db, job.id as Uuid, 10);
+      expect(row).toMatchObject({ answer: "waiting", detail: "looked" });
+      expect(row!.output).toContain("calling gh with «GITHUB_TOKEN»");
+      expect(row!.output).not.toContain(value);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
   }, 30_000);
 });

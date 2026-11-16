@@ -494,6 +494,10 @@ const NOT_CATALOGUED: Partial<Record<RecordChannel, string>> = {
   "jobs:events": "a job's deliveries are the payloads strangers sent the owner's webhook, which no client is handed",
   "jobs:regenerateSecret": "invalidating the secret the other end is configured with takes a team's intake down; the owner presses this one",
   "jobs:testEvent": "filing an item and spending the owner's budget on demand is a button they press — see jobs:runNow",
+  // A watch job's checks with their output (EO-800). job_get already
+  // answers the newest checks without it; the output is the module's
+  // transcript, and the page that pages through it is the Job page's.
+  "jobs:checks": "job_get answers a watch job's newest checks; the paged list with each check's module output is the Job page's Checks tab",
 
   // The gallery (EO-316). Two of these three write an installation into
   // existence — a project, a pipeline, item types and **agent rows** —
