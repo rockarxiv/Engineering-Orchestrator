@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { liveMessageOf } from "./live-output.js";
+import { answerWrittenPastMessage, liveMessageOf } from "./live-output.js";
 
 describe("what the chat shows while an agent is still writing", () => {
   it("reads the message out of a finished result, through the outcome wrapper", () => {
@@ -62,5 +62,27 @@ describe("what the chat shows while an agent is still writing", () => {
 
   it("says nothing when nothing has been said", () => {
     expect(liveMessageOf([])).toBe("");
+  });
+});
+
+describe("an answer still being written after its message (EO-803)", () => {
+  it("says how much has been written once the message is complete and the rest is still arriving", () => {
+    const chunks = ['{"outcome":{"message":"Here is the module.",', '"change":{"source":"export function'];
+
+    expect(answerWrittenPastMessage(chunks)).toBe(chunks.join("").length);
+    expect(answerWrittenPastMessage([...chunks, ' run(ctx) {}'])).toBe(chunks.join("").length + 12);
+  });
+
+  it("says nothing while the message itself is being written", () => {
+    expect(answerWrittenPastMessage(['{"outcome":{"message":"Here is the mod'])).toBeNull();
+    expect(answerWrittenPastMessage(['{"outcome":{"message":"An escaped \\"quote'])).toBeNull();
+    expect(answerWrittenPastMessage(['{"outcome":{"chan'])).toBeNull();
+  });
+
+  it("says nothing once the answer is complete, or when it is not a structured answer", () => {
+    expect(answerWrittenPastMessage(['{"outcome":{"message":"Done.","change":{}}}'])).toBeNull();
+    expect(answerWrittenPastMessage(['```json\n{"outcome":{"message":"Done.","change":{}}}\n```'])).toBeNull();
+    expect(answerWrittenPastMessage(['Looking at "message": "x", then more'])).toBeNull();
+    expect(answerWrittenPastMessage([])).toBeNull();
   });
 });

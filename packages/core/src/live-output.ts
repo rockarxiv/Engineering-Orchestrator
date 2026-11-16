@@ -55,8 +55,40 @@ function messageInside(raw: string): string | null {
 
 /** Reads the message field of a JSON object that is still being written. */
 function partialMessage(text: string): string {
+  return messageSpan(text)?.body ?? "";
+}
+
+/**
+ * How much of a structured answer has been written, while it is still
+ * being written past its message (EO-803); null at any other time.
+ *
+ * The chat shows only an answer's `message`. Once that has closed, the
+ * rest of the answer — a module-change card can be a module's whole source
+ * and its tests, tens of thousands of characters — keeps arriving with
+ * nothing changing on screen, and a turn that is writing for minutes reads
+ * as hung. So this answers the one question the indicator needs: is the
+ * message done while the answer is not, and how long is the answer so far.
+ *
+ * Null while the message is still being written (the words are on screen
+ * already), when the answer is complete (the turn is about to end), and
+ * for anything that is not a structured answer at all.
+ */
+export function answerWrittenPastMessage(chunks: string[]): number | null {
+  const raw = chunks.join("");
+  const text = raw.trim().replace(/^```(?:json)?\s*/i, "").replace(/```$/, "").trim();
+  if (!text.startsWith("{")) return null;
+  try {
+    JSON.parse(text);
+    return null; // complete: nothing more is being written
+  } catch {
+    return messageSpan(text)?.closed ? raw.length : null;
+  }
+}
+
+/** Where a still-written object's message is: its raw body, and whether its closing quote has arrived. */
+function messageSpan(text: string): { body: string; closed: boolean } | null {
   const key = /"message"\s*:\s*"/.exec(text);
-  if (!key) return ""; // still writing the wrapper; there is nothing to say yet
+  if (!key) return null; // still writing the wrapper; there is nothing to say yet
 
   const start = key.index + key[0].length;
   let end = start;
@@ -69,7 +101,7 @@ function partialMessage(text: string): string {
     end += 1;
   }
 
-  return decodeStringBody(text.slice(start, Math.min(end, text.length)));
+  return { body: decodeStringBody(text.slice(start, Math.min(end, text.length))), closed: end < text.length };
 }
 
 /**
