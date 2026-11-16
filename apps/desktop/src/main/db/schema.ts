@@ -3445,3 +3445,47 @@ export const queuedMessageReceipts = sqliteTable("queued_message_receipts", {
   messageId: text("message_id").primaryKey(),
   receivedAt: integer("received_at").notNull(),
 });
+
+/**
+ * A change to an existing module frozen by an assistant or scenario turn
+ * (EO-813, migration 0175): the whole proposal, so the turn's answer can
+ * name it by id instead of restating the module.
+ *
+ * **Append-only.** Never updated, never deleted — a posted card may
+ * still apply it — and `db/architecturalInvariants.test.ts` holds the tree
+ * to that. Rows go only with their conversation, run or module, by
+ * cascade. No column names a path: the staging files it was read from
+ * may be swept without the row losing anything.
+ */
+export const moduleChangeProposals = sqliteTable(
+  "module_change_proposals",
+  {
+    id: text("id").primaryKey(), // uuidv7, the opaque id the turn is given
+    /** The conversation the turn was on. */
+    itemId: text("item_id")
+      .notNull()
+      .references((): AnySQLiteColumn => items.id, { onDelete: "cascade" }),
+    /** The run that froze it. */
+    runId: text("run_id")
+      .notNull()
+      .references((): AnySQLiteColumn => runs.id, { onDelete: "cascade" }),
+    moduleId: text("module_id")
+      .notNull()
+      .references((): AnySQLiteColumn => modules.id, { onDelete: "cascade" }),
+    /** `assist` or `scenario`: which room's rules it was frozen under. */
+    room: text("room").notNull(),
+    summary: text("summary").notNull(),
+    /** The module's whole code as it would be. */
+    code: text("code").notNull(),
+    /** The module's whole manifest as it would be, or null to leave it as it is. */
+    manifest: text("manifest", { mode: "json" }),
+    /** Test cases to add or replace on Apply, matched by description. */
+    tests: text("tests", { mode: "json" }).$type<{ description: string; source: string }[]>().notNull().default([]),
+    /** Ids of test cases to delete on Apply. */
+    removeTests: text("remove_tests", { mode: "json" }).$type<string[]>().notNull().default([]),
+    /** What it was prepared against: `ChangeBase` from `roles/moduleChange.ts`. */
+    base: text("base", { mode: "json" }).notNull(),
+    createdAt: integer("created_at").notNull(),
+  },
+  (table) => [index("idx_module_change_proposals_item").on(table.itemId, table.createdAt)],
+);

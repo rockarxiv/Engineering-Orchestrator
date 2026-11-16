@@ -1,4 +1,4 @@
-import type { MemoryReadScope } from "@eo/core";
+import type { AgentWriteBridgeAddress, MemoryReadScope } from "@eo/core";
 
 /** Configuration shared by the Claude and Codex provider adapters. */
 export interface EoMcpServiceConfig {
@@ -50,7 +50,7 @@ export interface EoMcpServiceConfig {
    * adapters from the turn. Absent, those tools answer that nothing
    * could be written.
    */
-  writeBridge?: { url: string; token: string };
+  writeBridge?: AgentWriteBridgeAddress;
   /**
    * The skills this turn was given to load with `skill_read` (EO-721), by
    * slug. A turn's, like `attachFrom`, and filled in only by the Codex

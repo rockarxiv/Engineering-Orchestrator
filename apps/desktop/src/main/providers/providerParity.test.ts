@@ -213,7 +213,7 @@ const FILE_NOTE =
   "Attachments (metadata only; use attachment_read for content):\n- ID: attachment-1; name: screen.png; MIME type: image/png; size: 8 bytes; origin: eo; synchronization state: local";
 
 /**
- * The three tools that write (EO-543), each with a call an agent makes and
+ * The tools that write through EO (EO-543), each with a call an agent makes and
  * what EO answers it with — in words simple enough to read back out of a
  * JSON rendering, since that is what an agent on Claude is shown.
  */
@@ -224,6 +224,12 @@ const AGENT_WRITES: { tool: AgentWriteRequest["tool"]; args: Record<string, unkn
   { tool: "memory_note", args: { scope: "project", text: "Run pnpm install before the tests.", replaces: ["m-0"] }, answer: { ok: true, text: "EO noted this in the memory of Project: Payments. These active entries in that scope are close to it, closest first:\n- `m-9`: Run pnpm install before running the tests.", data: { entryId: "m-1" } } },
   // Through the same bridge, though what it makes is a checkout rather than a row (EO-633).
   { tool: "repository_checkout", args: { repository: "web", branch: "release/2.4" }, answer: { ok: true, text: "EO checked out `release/2.4` of web at /repos/web/.git/eo-references/EO-1/release%2F2.4, detached at 0a1b2c3.", data: { commit: "0a1b2c3" } } },
+  // Preparing a module change (EO-813), listed because the turn's address
+  // says it is a chat's: it reaches EO only if the adapter delivered the
+  // address whole, its listing hint included.
+  { tool: "module_change_prepare", args: { moduleId: "m-1" }, answer: { ok: true, text: "EO staged Deploy under staging id s-1.", data: { stagingId: "s-1" } } },
+  { tool: "module_change_edit", args: { stagingId: "s-1", file: "module.js", edits: [{ old_text: "a", new_text: "b" }] }, answer: { ok: true, text: "EO changed module.js in staging s-1.", data: { stagingId: "s-1" } } },
+  { tool: "module_change_freeze", args: { stagingId: "s-1", summary: "Names the stage." }, answer: { ok: true, text: "EO froze this change to Deploy as proposal p-1.", data: { proposalId: "p-1" } } },
 ];
 
 /** What every one of them comes to, in either mode, on either backend. */
@@ -253,7 +259,7 @@ async function agentWritesIn(
     return AGENT_WRITES.find((write) => write.tool === request.tool)!.answer;
   });
   try {
-    const env = (await launch({ attachFrom: ATTACH_FROM, memoryScopes: [...MEMORY_SCOPES], writeBridge: bridge.tokenFor("item-1") })) ?? {};
+    const env = (await launch({ attachFrom: ATTACH_FROM, memoryScopes: [...MEMORY_SCOPES], writeBridge: { ...bridge.tokenFor("item-1"), moduleChanges: true } })) ?? {};
     const eo = (createEoMcpService as (options: Record<string, unknown>) => { handle(request: unknown): Promise<{ result: EoToolResult }>; close(): void })({
       dbPath: undefined,
       enableCommentTool: env["EO_MCP_COMMENT_ENABLED"] === "1",
@@ -849,7 +855,7 @@ const CAPABILITIES = [
   },
   {
     name: "agent writes through EO",
-    what: "a comment, an attachment_add, a memory_note and a repository_checkout an agent makes reach EO over the agent write bridge from the `eo` server the backend is told to start — the arguments as the agent wrote them, under the turn's credential — and the agent is told what EO answered, whether the backend hands a tool's result back as its text (as Codex does) or as its structuredContent (as Claude Code does) (EO-543)",
+    what: "a comment, an attachment_add, a memory_note, a repository_checkout and the module-change tools (on a chat turn whose address lists them, EO-813) an agent makes reach EO over the agent write bridge from the `eo` server the backend is told to start — the arguments as the agent wrote them, under the turn's credential — and the agent is told what EO answered, whether the backend hands a tool's result back as its text (as Codex does) or as its structuredContent (as Claude Code does) (EO-543)",
     same: {
       text: AGENT_WRITES_HOLD,
       structured: AGENT_WRITES_HOLD,

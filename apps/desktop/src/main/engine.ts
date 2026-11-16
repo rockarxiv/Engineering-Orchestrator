@@ -54,6 +54,7 @@ import { useWorkspaceKinds } from "./workspaceKinds.js";
 import { usePackConnectors } from "./connectors/declared.js";
 import { listAgents, resolveAgentAttachments } from "./db/repos/index.js";
 import { isEnginePausePreferred } from "./engineActivity.js";
+import type { ModuleChangeStaging } from "./roles/moduleChangeProposals.js";
 
 export interface EngineOptions {
   db: Db;
@@ -191,6 +192,8 @@ export interface EngineOptions {
   adminMcp?: () => AdminMcpEndpoint | null;
   /** Where the `eo` server hands every write an agent asks for (EO-543). See `RunSupervisorOptions.agentWriteBridge`. */
   agentWriteBridge?: () => Pick<AgentWriteBridge, "tokenFor"> | null;
+  /** Where assistant and scenario turns stage module changes (EO-813). See `RunSupervisorOptions.moduleStaging`. */
+  moduleStaging?: ModuleChangeStaging;
   /** Overridable so the v1 gate can drive the whole engine with scripted agents. */
   provider?: AgentProvider;
   /**
@@ -425,6 +428,7 @@ export function createEngine(options: EngineOptions, packs: readonly CodePack[] 
     ...(options.dispatches === undefined ? {} : { dispatches: options.dispatches }),
     ...(options.runsWhere === undefined ? {} : { runsWhere: options.runsWhere }),
     ...(options.agentWriteBridge === undefined ? {} : { agentWriteBridge: options.agentWriteBridge }),
+    ...(options.moduleStaging === undefined ? {} : { moduleStaging: options.moduleStaging }),
     // Both read on every tick, so a change in settings takes effect on
     // the next dispatch rather than the next launch (U-06).
     limits: () => {

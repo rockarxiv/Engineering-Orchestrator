@@ -561,8 +561,124 @@ export const SKILL_WRITE_TOOLS = [SKILL_VIEW_TOOL_NAME, SKILL_CREATE_TOOL_NAME, 
 /** The refusal of a skill tool on a turn that is not a learning review (EO-732): `skillToolNotServed` in `@eo/core`, pinned to it by `eoServer.test.ts`. */
 export const SKILL_TOOL_NOT_SERVED = (name) => `Only a learning review may write skills, so EO serves ${name} to no other turn, and nothing was read or written.`;
 
+// ── Module changes (EO-813) ───────────────────────────────────
+
+/**
+ * `MODULE_CHANGE_TOOLS` and its names in `@eo/core`, duplicated for the
+ * reason `MEMORY_NOTE_TOOL_NAME` is and pinned to them by
+ * `eoServer.test.ts`.
+ *
+ * Listed on an assistant or scenario chat's turns — the address says so —
+ * and answered by EO, which decides from the run asking whether it may
+ * stage that module at all. None of them saves, approves or tests it.
+ */
+export const MODULE_CHANGE_PREPARE_TOOL_NAME = "module_change_prepare";
+export const MODULE_CHANGE_EDIT_TOOL_NAME = "module_change_edit";
+export const MODULE_CHANGE_FREEZE_TOOL_NAME = "module_change_freeze";
+export const MODULE_CHANGE_TOOLS = [MODULE_CHANGE_PREPARE_TOOL_NAME, MODULE_CHANGE_EDIT_TOOL_NAME, MODULE_CHANGE_FREEZE_TOOL_NAME];
+
+/** Writes files in a staging area EO owns, and nothing anybody else reads. */
+const STAGES_ANNOTATIONS = Object.freeze({ readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false });
+
+const MODULE_CHANGE_UNCHANGED = " Nothing about the installed module changes: it is changed only when the person presses Apply on the card.";
+
+const MODULE_CHANGE_TOOL_LIST = [
+  {
+    name: MODULE_CHANGE_PREPARE_TOOL_NAME,
+    annotations: STAGES_ANNOTATIONS,
+    description:
+      "Stage an existing module, as it is saved, for a change you will propose: EO writes its code (`module.js`), its manifest " +
+      "(`manifest.json`) and, in the assistant's chat, its test cases (`tests/<id>.js`) into a staging directory of this run's, " +
+      "and answers with a staging id, the directory and its files. Then change only what the change needs with " +
+      "module_change_edit, and freeze it with module_change_freeze — you never restate what you leave alone. `moduleId` is the " +
+      "module's id as modules_list gives it; a scenario chat may leave it out, and may stage only its own module." + MODULE_CHANGE_UNCHANGED,
+    inputSchema: {
+      type: "object",
+      properties: { moduleId: { type: "string", description: "The module's id, as modules_list gives it. Optional in a scenario chat." } },
+      required: [],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: MODULE_CHANGE_EDIT_TOOL_NAME,
+    annotations: STAGES_ANNOTATIONS,
+    description:
+      "Change one file staged by module_change_prepare: `file` is its path relative to the staging directory, and either " +
+      "`edits` — exact replacements applied in order, each `old_text` occurring exactly once in the text the edits before it " +
+      "left — or `content`, the file's whole new text (which also adds a new file beside the staged ones). If any edit does " +
+      "not match exactly once, nothing is changed." + MODULE_CHANGE_UNCHANGED,
+    inputSchema: {
+      type: "object",
+      properties: {
+        stagingId: { type: "string", description: "The staging id module_change_prepare gave." },
+        file: { type: "string", description: 'A path relative to the staging directory, like "module.js".' },
+        edits: {
+          type: "array",
+          description: "Exact replacements, applied in order.",
+          items: {
+            type: "object",
+            properties: { old_text: { type: "string", description: "Text the file holds exactly once." }, new_text: { type: "string", description: "What it becomes." } },
+            required: ["old_text", "new_text"],
+            additionalProperties: false,
+          },
+        },
+        content: { type: "string", description: "The file's whole new text, instead of `edits`." },
+      },
+      required: ["stagingId", "file"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: MODULE_CHANGE_FREEZE_TOOL_NAME,
+    annotations: APPENDS_ANNOTATIONS,
+    description:
+      "Freeze the staged module as a proposed change: EO reads the staged code and manifest, holds them to the rules a " +
+      "module-change card is held to, and keeps the whole result as an immutable proposal, answering with its proposal id " +
+      "— or refusing with what to fix, in which case nothing is kept. Later edits to the staging files do not change a " +
+      "frozen proposal. `summary` says what the change does and why. In the assistant's chat, `tests` are the cases to add " +
+      "or replace on Apply, matched by description, each with its `source` or a staged `file`, and `removeTests` the ids of " +
+      "cases to delete; a scenario chat gives neither." + MODULE_CHANGE_UNCHANGED,
+    inputSchema: {
+      type: "object",
+      properties: {
+        stagingId: { type: "string", description: "The staging id module_change_prepare gave." },
+        summary: { type: "string", description: "What the change does and why, in a sentence or two." },
+        tests: {
+          type: "array",
+          description: "Assistant's chat only: test cases to add or replace on Apply, matched by description.",
+          items: {
+            type: "object",
+            properties: {
+              description: { type: "string", description: "What the case checks." },
+              source: { type: "string", description: "The case's whole source. Give this or `file`." },
+              file: { type: "string", description: "A staged file holding the case's source, relative to the staging directory. Give this or `source`." },
+            },
+            required: ["description"],
+            additionalProperties: false,
+          },
+        },
+        removeTests: { type: "array", items: { type: "string" }, description: "Assistant's chat only: ids of the module's test cases to delete on Apply." },
+      },
+      required: ["stagingId", "summary"],
+      additionalProperties: false,
+    },
+  },
+];
+
+/**
+ * A module-change call: shape only, as every write here is checked — the
+ * rules, the run and the files are EO's.
+ */
+async function moduleChangeTool(name, args, writeBridge) {
+  if (!validObject(args)) return toolError("INVALID_ARGUMENT", `${name} takes an object of the arguments it lists.`);
+  const tool = MODULE_CHANGE_TOOL_LIST.find((each) => each.name === name);
+  const allowed = Object.keys(tool.inputSchema.properties);
+  if (!hasOnlyKeys(args, allowed)) return toolError("INVALID_ARGUMENT", `${name} takes ${allowed.map((key) => `\`${key}\``).join(", ")}, and nothing else.`);
+  return writeThroughEo(writeBridge, name, args);
+}
+
 /** Every tool whose call this service hands to EO to make (`AGENT_WRITE_TOOLS` in `@eo/core`). */
-const WRITES_THROUGH_EO = ["comment", "attachment_add", "memory_note", "repository_checkout", "skill_read", ...SKILL_WRITE_TOOLS];
+const WRITES_THROUGH_EO = ["comment", "attachment_add", "memory_note", "repository_checkout", "skill_read", ...SKILL_WRITE_TOOLS, ...MODULE_CHANGE_TOOLS];
 
 /**
  * A change to what a skill says: the text it replaces is gone from the
@@ -748,8 +864,10 @@ export function parseWriteBridge(raw) {
   // The only writes this turn is served, where the address names them
   // (EO-717): kept whole or not at all, since an unreadable list must not
   // turn into "whatever the agent's grant says".
-  if (parsed.writes === undefined) return { url: parsed.url, token: parsed.token };
-  return Array.isArray(parsed.writes) && parsed.writes.every((tool) => typeof tool === "string") ? { url: parsed.url, token: parsed.token, writes: [...parsed.writes] } : null;
+  // And whether it lists the module-change tools (EO-813): a hint only.
+  const listing = parsed.moduleChanges === true ? { moduleChanges: true } : {};
+  if (parsed.writes === undefined) return { url: parsed.url, token: parsed.token, ...listing };
+  return Array.isArray(parsed.writes) && parsed.writes.every((tool) => typeof tool === "string") ? { url: parsed.url, token: parsed.token, writes: [...parsed.writes], ...listing } : null;
 }
 
 /**
@@ -871,6 +989,7 @@ export function eoToolList({
   enableRepositoryCheckout = false,
   enableSkillRead = false,
   enableSkillTools = false,
+  enableModuleChanges = false,
 } = {}) {
   return [
     // EO's own name first, because a model reads a tool list in order
@@ -902,6 +1021,9 @@ export function eoToolList({
     // On every turn that could be reviewed (EO-732), served on the
     // learning review's alone (EO-718): the tools it writes skills with.
     ...(enableSkillTools ? SKILL_TOOLS : []),
+    // On an assistant or scenario chat's turn (EO-813), which the address
+    // says: staging and freezing a change to a module for a card.
+    ...(enableModuleChanges ? MODULE_CHANGE_TOOL_LIST : []),
     // The unbounded read. Gated for the same reason the seeded context
     // exists: an agent that can pull a whole thread in one call has
     // undone the seed, and the two decisions are made from one predicate
@@ -1751,6 +1873,7 @@ async function answerEoTool({
   skillTools = [],
   writeBridge = null,
   enableRepositoryCheckout = writeBridge !== null,
+  enableModuleChanges = false,
   served = null,
 }) {
   // The writes this turn is served, where its credential names them
@@ -1911,6 +2034,11 @@ async function answerEoTool({
     return skillTool(name, args, writeBridge);
   }
 
+  if (MODULE_CHANGE_TOOLS.includes(name)) {
+    if (!enableModuleChanges) return toolError("TOOL_DISABLED", `This turn is not served ${name}: only the assistant's chat and a module's scenario chat prepare module changes.`);
+    return moduleChangeTool(name, args, writeBridge);
+  }
+
   if (name === MEMORY_READ_TOOL_NAME) return memoryRead(args, db, memoryScopes);
 
   if (name === MEMORY_NOTE_TOOL_NAME) {
@@ -2022,6 +2150,7 @@ export function createEoMcpService({
     enableRepositoryCheckout: bridge !== null,
     enableSkillRead: Array.isArray(skillSlugs) && skillSlugs.length > 0,
     enableSkillTools: reviewable,
+    enableModuleChanges: bridge !== null && bridge.moduleChanges === true,
   };
 
   return {
@@ -2051,6 +2180,7 @@ export function createEoMcpService({
           // review's — is served none of them, whatever its agent's grant.
           skillTools: served === null ? [] : SKILL_WRITE_TOOLS.filter((tool) => served.includes(tool)),
           enableRepositoryCheckout: listed.enableRepositoryCheckout,
+          enableModuleChanges: listed.enableModuleChanges,
           writeBridge: bridge,
           served,
         });

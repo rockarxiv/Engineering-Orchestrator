@@ -68,6 +68,9 @@ import {
   MEMORY_NOTE_TOOL_NAME,
   MEMORY_READ_TOOL_NAME,
   REPOSITORY_CHECKOUT_TOOL_NAME,
+  MODULE_CHANGE_EDIT_TOOL_NAME,
+  MODULE_CHANGE_FREEZE_TOOL_NAME,
+  MODULE_CHANGE_PREPARE_TOOL_NAME,
   RepositoryCheckoutArgsSchema,
   SKILL_READ_TOOL_NAME,
   SkillReadArgsSchema,
@@ -311,7 +314,8 @@ import {
   conversationActionFor,
 } from "./manualDispatch.js";
 import { awaitsTheStep, interpretationsOn, pendingInterpretation } from "../roles/interpretation.js";
-import { ASSIST_ACTION, conversationTurnOptions, CONVERSATION_SETTINGS_KEY, SCENARIO_ACTION } from "../roles/conversationSteps.js";
+import { ASSIST_ACTION, ASSIST_STEP, conversationTurnOptions, CONVERSATION_SETTINGS_KEY, SCENARIO_ACTION, SCENARIO_STEP } from "../roles/conversationSteps.js";
+import { createModuleChangeStaging, type ModuleChangeStaging } from "../roles/moduleChangeProposals.js";
 import { attachRunFiles } from "./runAttachments.js";
 import { blockedByActiveRunRefusal, createItemLock, type ItemHold, type ItemLock } from "./itemLock.js";
 import { archivedAgentRefusal, mentionDepthRefusal, outOfProjectDispatchRefusal, outOfProjectMentionRefusal, outOfProjectRecoveryNote, pullRequestHoldNote, rerunRefusal, stoppedByHandNote, type GateRefusal, type ItemBlocker, type OutOfProject, type RerunBlocker } from "./dispatchBlockers.js";
@@ -448,6 +452,14 @@ export interface RunSupervisorOptions {
    * that nothing could be written, because nothing could write it.
    */
   agentWriteBridge?: () => Pick<AgentWriteBridge, "tokenFor"> | null;
+  /**
+   * Where an assistant or scenario turn stages and freezes a change to a
+   * module (EO-813): the service behind `module_change_prepare`,
+   * `module_change_edit` and `module_change_freeze`. A run's staging goes
+   * when the run ends. Absent, one is made over `~/.eo/module-staging`,
+   * as the `none` kind's directories default to `~/.eo/no-disk`.
+   */
+  moduleStaging?: ModuleChangeStaging;
   /** Runtime gate state at construction. Used to restore the saved preference before any start path can run. */
   initialPaused?: boolean;
   /**
@@ -2061,6 +2073,7 @@ export function createRunSupervisor(
     noDiskRoot,
     scratchRoot,
     artifactStore,
+    moduleStaging: providedModuleStaging,
     dispatchGate,
     sectionRenderers = [],
     // Wrapped rather than passed as the bare default, so the pack's own
@@ -2613,8 +2626,21 @@ export function createRunSupervisor(
    */
   function writeBridgeOption(item: Item): { writeBridge?: AgentWriteBridgeAddress } {
     const bridge = options.agentWriteBridge?.() ?? null;
-    return bridge === null ? {} : { writeBridge: bridge.tokenFor(item.id) };
+    if (bridge === null) return {};
+    return { writeBridge: { ...bridge.tokenFor(item.id), ...(listsModuleChanges(item) ? { moduleChanges: true } : {}) } };
   }
+
+  /**
+   * Whether a turn on this item lists the module-change tools (EO-813):
+   * the assistant's chat and a scenario chat. Only a listing hint — each
+   * call is decided from the run it comes from.
+   */
+  function listsModuleChanges(item: Item): boolean {
+    return item.stepId === ASSIST_STEP || item.stepId === SCENARIO_STEP;
+  }
+
+  /** Stages and freezes module changes for an assistant or scenario turn (EO-813). */
+  const moduleStaging = providedModuleStaging ?? createModuleChangeStaging({ db, now });
 
   /**
    * The turns being read right now, by run: what an agent's write over
@@ -2679,6 +2705,14 @@ export function createRunSupervisor(
           return await checkoutForAgent(item, request.args);
         case SKILL_READ_TOOL_NAME:
           return readSkillForAgent(runId, request.args);
+        // Answered for this run on this conversation (EO-813); the service
+        // refuses a run in any other room, and never touches the module.
+        case MODULE_CHANGE_PREPARE_TOOL_NAME:
+          return moduleStaging.prepare({ itemId: item.id, runId }, request.args);
+        case MODULE_CHANGE_EDIT_TOOL_NAME:
+          return moduleStaging.edit({ itemId: item.id, runId }, request.args);
+        case MODULE_CHANGE_FREEZE_TOOL_NAME:
+          return moduleStaging.freeze({ itemId: item.id, runId }, request.args);
         // The learning review's alone (EO-718), and a run's turn is never
         // one. The `eo` server lists them on a run's turn all the same
         // (EO-732), so that its review is sent the same tools, and refuses
@@ -3368,7 +3402,10 @@ export function createRunSupervisor(
           // served them. A skill-only review (EO-731) has the skill tools
           // alone: the run it reviews wrote its own notes, so
           // `memory_note`, listed as on the run, is refused when called.
-          writeBridge: bridge.tokenFor(item.id, served),
+          // Listing the module-change tools where the run's did (EO-813),
+          // so the fork's tools are the run's; the credential names none of
+          // them, so each is refused when called.
+          writeBridge: { ...bridge.tokenFor(item.id, served), ...(listsModuleChanges(item) ? { moduleChanges: true } : {}) },
           // And every other call refused as it is made (EO-732): an edit,
           // a command, an attached server, EO's administrative server —
           // which the system agent's every turn is given (invariant 11)
@@ -6083,6 +6120,8 @@ export function createRunSupervisor(
         runActivity.delete(run.id);
         settleSkillUsage(run.id);
         runSkills.delete(run.id);
+        // Its staging areas; what it froze stays (EO-813).
+        moduleStaging.releaseRun(run.id);
       }
       // After the run is terminal and its item has moved, and before the
       // caller gives the run's slot back (EO-479). Not on a throw: a run

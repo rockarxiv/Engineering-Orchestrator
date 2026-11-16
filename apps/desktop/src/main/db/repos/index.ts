@@ -599,6 +599,7 @@ export {
 } from "./jobEventsRepo.js";
 export { getJobWatchState, saveJobWatchState, type JobWatchStateRow } from "./jobWatchStatesRepo.js";
 export { listWatchChecks, recordWatchCheck, type RecordWatchCheckInput } from "./jobWatchChecksRepo.js";
+export { getModuleChangeProposal, insertModuleChangeProposal, type InsertModuleChangeProposal, type ModuleChangeProposalRow } from "./moduleChangeProposalsRepo.js";
 export {
   firedOccurrencesForItems,
   firedSince,
