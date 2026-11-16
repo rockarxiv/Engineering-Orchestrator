@@ -82,6 +82,8 @@ interface ReviewScript {
   failWith?: string;
   /** How the backend says it copied the thread (EO-732), as Codex does. */
   fork?: ForkCopy;
+  /** What the fork's usage says it read from and wrote to the prompt cache (EO-811); absent says nothing about it. */
+  cache?: { cacheReadTokens?: number; cacheWriteTokens?: number };
 }
 
 /**
@@ -160,7 +162,7 @@ describe("the learning review after a run", () => {
           }
           if (review.until) await review.until;
           if (review.hang) await new Promise<void>((resolve) => opts!.signal!.addEventListener("abort", () => resolve(), { once: true }));
-          yield { type: "usage", scope: "turn", tokensIn: 1_000, tokensOut: 50, costCents: 2 };
+          yield { type: "usage", scope: "turn", tokensIn: 1_000, tokensOut: 50, costCents: 2, ...review.cache };
           if (review.failWith) {
             yield { type: "error", message: review.failWith, retryable: false };
             return;
@@ -245,6 +247,8 @@ describe("the learning review after a run", () => {
     expect(listSideCalls(handle.db).filter((call) => call.purpose === "learning_review")).toEqual([
       expect.objectContaining({ runId: run.id, itemId: item.id, model: "the-agents-model", tokensIn: 1_000, tokensOut: 50, outcome: "succeeded" }),
     ]);
+    // A backend that said nothing about the cache or the fork leaves both unknown, not zero (EO-811).
+    expect(listSideCalls(handle.db).find((call) => call.purpose === "learning_review")).toMatchObject({ cacheReadTokens: null, cacheWriteTokens: null, forkMode: null, forkFallbackReason: null });
     // The run's thread is still its own.
     expect(getRun(handle.db, run.id)?.threadId).toBe(run.threadId);
   });
@@ -268,6 +272,27 @@ describe("the learning review after a run", () => {
 
     expect(reviewEvents()).toEqual([
       { type: LEARNING_REVIEW_EVENT, outcome: "nothing_to_save", review: "full", entryIds: [], skillIds: [], reason: null, forkThreadId: expect.any(String), forkMode: "plain", forkFallbackReason: fallbackReason },
+    ]);
+  });
+
+  it("stores the fork's cache figures and how it was made on its side call's row (EO-811)", async () => {
+    const { provider } = reviewing({ result: RESULT }, { fork: { mode: "prediction" }, cache: { cacheReadTokens: 920, cacheWriteTokens: 40 } });
+
+    await supervisorOver(provider).runOnce();
+
+    expect(listSideCalls(handle.db).filter((call) => call.purpose === "learning_review")).toEqual([
+      expect.objectContaining({ tokensIn: 1_000, cacheReadTokens: 920, cacheWriteTokens: 40, forkMode: "prediction", forkFallbackReason: null }),
+    ]);
+  });
+
+  it("stores a plain fork's fallback reason on its side call's row (EO-811)", async () => {
+    const fallbackReason = "thread/fork failed: `experimentalPredictionMode` requires a loaded parent (code -32600)";
+    const { provider } = reviewing({ result: RESULT }, { fork: { mode: "plain", fallbackReason }, cache: { cacheReadTokens: 0 } });
+
+    await supervisorOver(provider).runOnce();
+
+    expect(listSideCalls(handle.db).filter((call) => call.purpose === "learning_review")).toEqual([
+      expect.objectContaining({ cacheReadTokens: 0, cacheWriteTokens: null, forkMode: "plain", forkFallbackReason: fallbackReason }),
     ]);
   });
 

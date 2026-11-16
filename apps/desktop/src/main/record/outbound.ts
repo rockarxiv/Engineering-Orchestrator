@@ -279,6 +279,10 @@ function sideCallCommand(call: SideCallRow, itemId: Uuid): RecordCommand {
     durationMs: call.durationMs,
     outcome: call.outcome,
     reason: call.reason,
+    cacheReadTokens: call.cacheReadTokens,
+    cacheWriteTokens: call.cacheWriteTokens,
+    forkMode: call.forkMode,
+    forkFallbackReason: call.forkFallbackReason,
   };
 }
 

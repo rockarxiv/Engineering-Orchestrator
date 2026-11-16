@@ -3990,3 +3990,35 @@ describe("0171: a dependency edge's wait rule (EO-776)", () => {
     }
   });
 });
+
+describe("0174: a side call's cache figures and fork (EO-811)", () => {
+  it("adds the four columns, nullable, and leaves every existing row's at null", () => {
+    const handle = openDb(":memory:");
+    const tempDir = mkdtempSync(join(tmpdir(), "eo-side-call-cache-"));
+    try {
+      writeMigrationSetBefore(tempDir, "0174_side_call_cache_and_fork");
+      runMigrations(handle.db, tempDir);
+      handle.db.run(
+        sql`INSERT INTO side_calls (id, purpose, backend, tokens_in, tokens_out, cost_microcents, started_at, duration_ms, outcome) VALUES ('s-1', 'learning_review', 'codex', 81764, 30, 1000, 1, 400, 'succeeded')`,
+      );
+
+      runMigrations(handle.db, join(dirname(fileURLToPath(import.meta.url)), "migrations"));
+
+      const columns = handle.db.all<{ name: string; notnull: number; dflt_value: unknown }>(sql`pragma table_info(side_calls)`);
+      for (const name of ["cache_read_tokens", "cache_write_tokens", "fork_mode", "fork_fallback_reason"]) {
+        expect(columns.find((column) => column.name === name)).toMatchObject({ notnull: 0, dflt_value: null });
+      }
+      expect(handle.db.get(sql`SELECT tokens_in, cost_microcents, cache_read_tokens, cache_write_tokens, fork_mode, fork_fallback_reason FROM side_calls WHERE id = 's-1'`)).toEqual({
+        tokens_in: 81764,
+        cost_microcents: 1000,
+        cache_read_tokens: null,
+        cache_write_tokens: null,
+        fork_mode: null,
+        fork_fallback_reason: null,
+      });
+    } finally {
+      handle.close();
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+});

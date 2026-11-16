@@ -9,6 +9,7 @@ import {
   type SideCallSpendGroup,
   type SideCallSpendLine,
   type Uuid,
+  type ForkCopy,
 } from "@eo/core";
 import type { Db } from "../client.js";
 import { items, projects, sideCalls } from "../schema.js";
@@ -35,9 +36,39 @@ export interface SideCallRow {
   durationMs: number;
   outcome: "succeeded" | "failed";
   reason: SideCallFailureReason | null;
+  /**
+   * What of `tokensIn` the prompt cache served, and what was written to
+   * it, as the backend's usage reported them (EO-811). Null where it
+   * reported none — which is not zero.
+   */
+  cacheReadTokens: number | null;
+  cacheWriteTokens: number | null;
+  /** How a fork-based call copied its thread (`ForkCopy`); null on a call that is no fork, or whose backend did not say. */
+  forkMode: ForkCopy["mode"] | null;
+  /** Why a `plain` fork was not the prediction-mode one, as the adapter said; null otherwise. */
+  forkFallbackReason: string | null;
 }
 
-export type RecordSideCallInput = Omit<SideCallRow, "id"> & { id?: Uuid };
+/** The four EO-811 figures default to null: a writer that has none of them leaves them unknown. */
+export type RecordSideCallInput = Omit<SideCallRow, "id" | "cacheReadTokens" | "cacheWriteTokens" | "forkMode" | "forkFallbackReason"> &
+  Partial<Pick<SideCallRow, "cacheReadTokens" | "cacheWriteTokens" | "forkMode" | "forkFallbackReason">> & { id?: Uuid };
+
+/** A fork's `ForkCopy` as the row's two columns; both null where there was no fork or it went unsaid. */
+export function forkColumns(fork: ForkCopy | null | undefined): Pick<SideCallRow, "forkMode" | "forkFallbackReason"> {
+  if (!fork) return { forkMode: null, forkFallbackReason: null };
+  return { forkMode: fork.mode, forkFallbackReason: fork.mode === "plain" ? (fork.fallbackReason ?? null) : null };
+}
+
+function withDefaults(input: RecordSideCallInput): SideCallRow {
+  return {
+    ...input,
+    id: input.id ?? (uuidv7() as Uuid),
+    cacheReadTokens: input.cacheReadTokens ?? null,
+    cacheWriteTokens: input.cacheWriteTokens ?? null,
+    forkMode: input.forkMode ?? null,
+    forkFallbackReason: input.forkFallbackReason ?? null,
+  };
+}
 
 /**
  * Writes the one row a side call leaves, however it ended — and says so,
@@ -45,7 +76,7 @@ export type RecordSideCallInput = Omit<SideCallRow, "id"> & { id?: Uuid };
  * (`onSideCallRecorded`, EO-514).
  */
 export function recordSideCall(db: Db, input: RecordSideCallInput): SideCallRow {
-  const row: SideCallRow = { ...input, id: input.id ?? (uuidv7() as Uuid) };
+  const row = withDefaults(input);
   db.insert(sideCalls).values(row).run();
   notifySideCallRecorded(db, row);
   return row;
@@ -57,8 +88,8 @@ export function recordSideCall(db: Db, input: RecordSideCallInput): SideCallRow 
  * to nobody: it is the device's call, already on its way to nowhere
  * else. A report that arrives twice writes nothing the second time.
  */
-export function mirrorReportedSideCall(db: Db, input: SideCallRow): void {
-  db.insert(sideCalls).values(input).onConflictDoNothing({ target: sideCalls.id }).run();
+export function mirrorReportedSideCall(db: Db, input: RecordSideCallInput & { id: Uuid }): void {
+  db.insert(sideCalls).values(withDefaults(input)).onConflictDoNothing({ target: sideCalls.id }).run();
 }
 
 export function listSideCalls(db: Db): SideCallRow[] {
@@ -75,7 +106,13 @@ export function listSideCalls(db: Db): SideCallRow[] {
       runId: row.runId as Uuid | null,
       outcome: row.outcome as SideCallRow["outcome"],
       reason: row.reason as SideCallFailureReason | null,
+      forkMode: forkModeOf(row.forkMode),
     }));
+}
+
+/** A stored `fork_mode` read back; anything else is null rather than a claim the row never made. */
+export function forkModeOf(value: string | null): ForkCopy["mode"] | null {
+  return value === "prediction" || value === "plain" ? value : null;
 }
 
 /**

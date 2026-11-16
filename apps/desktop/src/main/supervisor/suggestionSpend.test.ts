@@ -63,6 +63,27 @@ describe("what a suggested next message spent (EO-808)", () => {
     ]);
   });
 
+  it("stores the fork's cache figures and how it was made, and null where the backend said nothing (EO-811)", async () => {
+    const fallbackReason = "the thread is not loaded in this app-server";
+    const supervisor = createRunSupervisor({
+      db: handle.db,
+      limits: LIMITS,
+      provider: suggestingProvider([
+        { usage: { ...usage, cacheReadTokens: 7_168, cacheWriteTokens: 12 }, fork: { mode: "prediction" }, startedAt: 1_000, durationMs: 250, completed: true },
+        { usage: { ...usage, cacheReadTokens: 0 }, fork: { mode: "plain", fallbackReason }, startedAt: 2_000, durationMs: 250, completed: true },
+        { usage: { type: "usage", scope: "turn", tokensIn: 400, tokensOut: 10, costCents: 0 }, startedAt: 3_000, durationMs: 250, completed: true },
+      ]),
+    });
+    await sendToAssist(handle.db, undefined, { page: pageDescriptorFor("/chat"), conversationId: null, body: "What is waiting?", attachmentIds: [], interrupt: false });
+    await supervisor.runOnce();
+
+    expect(listSideCalls(handle.db).filter((call) => call.purpose === "prompt_suggestion")).toEqual([
+      expect.objectContaining({ startedAt: 1_000, cacheReadTokens: 7_168, cacheWriteTokens: 12, forkMode: "prediction", forkFallbackReason: null }),
+      expect.objectContaining({ startedAt: 2_000, cacheReadTokens: 0, cacheWriteTokens: null, forkMode: "plain", forkFallbackReason: fallbackReason }),
+      expect.objectContaining({ startedAt: 3_000, cacheReadTokens: null, cacheWriteTokens: null, forkMode: null, forkFallbackReason: null }),
+    ]);
+  });
+
   it("records nothing for a turn whose backend reported none", async () => {
     const supervisor = createRunSupervisor({ db: handle.db, limits: LIMITS, provider: suggestingProvider([]) });
     await sendToAssist(handle.db, undefined, { page: pageDescriptorFor("/chat"), conversationId: null, body: "What is waiting?", attachmentIds: [], interrupt: false });

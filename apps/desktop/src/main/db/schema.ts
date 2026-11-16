@@ -3180,6 +3180,23 @@ export const sideCalls = sqliteTable(
     outcome: text("outcome").notNull(),
     /** `SideCallFailureReason` on a failed call; null on one that succeeded. */
     reason: text("reason"),
+    /**
+     * The part of `tokensIn` served from the prompt cache, and what was
+     * written into it, as the backend reported them (EO-811, migration
+     * 0174). Null where it reported none, and on every row from before:
+     * not saying is not a cold cache.
+     */
+    cacheReadTokens: integer("cache_read_tokens"),
+    cacheWriteTokens: integer("cache_write_tokens"),
+    /**
+     * How a fork-based call — `learning_review`, `prompt_suggestion` —
+     * copied its thread, as the adapter said (`ForkCopy`, EO-811):
+     * `prediction` or `plain`, and on `plain` why the prediction-mode
+     * fork was not used. Null on a call that is no fork, and on one whose
+     * backend did not say.
+     */
+    forkMode: text("fork_mode"),
+    forkFallbackReason: text("fork_fallback_reason"),
   },
   (table) => [
     index("idx_side_calls_started_at").on(table.startedAt),

@@ -323,8 +323,14 @@ export function createSideCaller(options: SideCallerOptions): SideCaller {
           model: reportedModel ?? model,
           tokensIn: totals.tokensIn,
           tokensOut: totals.tokensOut,
+          // As the backend's usage said, and null where it said nothing (EO-811).
+          cacheReadTokens: totals.cacheReadTokens,
+          cacheWriteTokens: totals.cacheWriteTokens,
           // Unrounded (EO-510): a side call costs a fraction of a cent.
           costMicrocents: usage.costMicrocents(),
+          // One question on no thread: never a fork.
+          forkMode: null,
+          forkFallbackReason: null,
           startedAt,
           durationMs: Math.max(0, now() - startedAt),
           outcome: result.ok ? "succeeded" : "failed",

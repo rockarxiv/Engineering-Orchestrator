@@ -1440,6 +1440,11 @@ async function applyOne(context: ServeRecordContext, deviceId: string, command: 
         durationMs: command.durationMs,
         outcome: command.outcome,
         reason: command.reason,
+        // Absent from a command an older desktop sent: null, as there.
+        cacheReadTokens: command.cacheReadTokens ?? null,
+        cacheWriteTokens: command.cacheWriteTokens ?? null,
+        forkMode: command.forkMode ?? null,
+        forkFallbackReason: command.forkFallbackReason ?? null,
       });
       return ok;
     }

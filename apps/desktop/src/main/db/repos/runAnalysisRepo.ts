@@ -2,6 +2,7 @@ import { and, eq, isNull, or, sql, type SQL } from "drizzle-orm";
 import { centsOfMicrocents, MEMORY_DELIVERED_EVENT, MEMORY_USED_EVENT, MICROCENTS_PER_CENT, type RunFilters, type RunRecord } from "@eo/core";
 import type { Db } from "../client.js";
 import { items, runEvents, runs, sideCalls } from "../schema.js";
+import { forkModeOf } from "./sideCallsRepo.js";
 
 /**
  * Runs across items, for timing and spend (EO-541).
@@ -147,6 +148,9 @@ function runRecords(db: Db, filters: RunFilters): RunRecord[] {
       verdict: typeof row.verdict === "string" ? row.verdict : null,
       memoryDelivered: Number(row.memoryDelivered ?? 0),
       memoryUsed: Number(row.memoryUsed ?? 0),
+      // A run's fork, where its learning review made one, is the side call's to report.
+      forkMode: null,
+      forkFallbackReason: null,
     }));
 }
 
@@ -168,6 +172,10 @@ function sideCallRecords(db: Db, filters: RunFilters): RunRecord[] {
       tokensIn: sideCalls.tokensIn,
       tokensOut: sideCalls.tokensOut,
       costMicrocents: sideCalls.costMicrocents,
+      cacheReadTokens: sideCalls.cacheReadTokens,
+      cacheWriteTokens: sideCalls.cacheWriteTokens,
+      forkMode: sideCalls.forkMode,
+      forkFallbackReason: sideCalls.forkFallbackReason,
     })
     .from(sideCalls)
     .leftJoin(items, eq(items.id, sideCalls.itemId))
@@ -188,12 +196,14 @@ function sideCallRecords(db: Db, filters: RunFilters): RunRecord[] {
       durationMs: row.durationMs,
       tokensIn: row.tokensIn,
       tokensOut: row.tokensOut,
-      // A side call records no cache figures, turns or thread: one
-      // question, one answer, on no conversation.
-      cacheReadTokens: null,
-      cacheWriteTokens: null,
+      // As the call stored them (EO-811): null where its backend said
+      // nothing, and on every call recorded before the columns.
+      cacheReadTokens: row.cacheReadTokens,
+      cacheWriteTokens: row.cacheWriteTokens,
       costCents: centsOfMicrocents(row.costMicrocents),
       costMicrocents: row.costMicrocents,
+      // A side call has no turns or thread: one question, one answer, on
+      // no conversation of its own.
       turns: null,
       turnsScope: null,
       attempt: null,
@@ -202,6 +212,8 @@ function sideCallRecords(db: Db, filters: RunFilters): RunRecord[] {
       verdict: null,
       memoryDelivered: null,
       memoryUsed: null,
+      forkMode: forkModeOf(row.forkMode),
+      forkFallbackReason: row.forkFallbackReason,
     }));
 }
 

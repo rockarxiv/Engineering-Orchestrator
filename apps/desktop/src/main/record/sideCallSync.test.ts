@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import type { IpcChannel, IpcPayload, IpcResponse, IpcResult, Item, Uuid } from "@eo/core";
+import { RecordCommandSchema, type IpcChannel, type IpcPayload, type IpcResponse, type IpcResult, type Item, type Uuid } from "@eo/core";
 import type { DbHandle } from "../db/client.js";
 import { createTestItem, openMigratedTestDb } from "../db/testHelpers.js";
 import { createProject, markProjectOnTheRecord } from "../db/repos/projectsRepo.js";
@@ -145,6 +145,51 @@ describe("a side call about an item on an organisation's record", () => {
     await serveApply(serving, { deviceId: "anna-laptop", commands: queued });
 
     expect(listSideCalls(recordDb.db)).toHaveLength(1);
+  });
+
+  it("keeps its cache figures and how its fork was made on the record (EO-811)", async () => {
+    const fork = sideCallOnDevice({
+      purpose: "prompt_suggestion",
+      backend: "codex",
+      tokensIn: 81_764,
+      cacheReadTokens: 7_168,
+      cacheWriteTokens: 0,
+      forkMode: "plain",
+      forkFallbackReason: "prediction mode is not available",
+    });
+    const plain = sideCallOnDevice();
+
+    await device.sync();
+
+    const arrived = new Map(listSideCalls(recordDb.db).map((call) => [call.id, call]));
+    expect(arrived.get(fork.id)).toMatchObject({
+      cacheReadTokens: 7_168,
+      cacheWriteTokens: 0,
+      forkMode: "plain",
+      forkFallbackReason: "prediction mode is not available",
+    });
+    expect(arrived.get(plain.id)).toMatchObject({ cacheReadTokens: null, cacheWriteTokens: null, forkMode: null, forkFallbackReason: null });
+  });
+
+  it("is still accepted from a desktop that sends no cache figures or fork, and stores them as null", async () => {
+    const call = sideCallOnDevice({ cacheReadTokens: 500, forkMode: "prediction" });
+    const queued = pendingCommands(deviceDb.db).map((entry) => entry.command);
+    // The command as a desktop older than EO-811 sends it.
+    const older = queued.map((command) => {
+      if (command.kind !== "sideCall") return command;
+      const rest: Record<string, unknown> = { ...command };
+      for (const field of ["cacheReadTokens", "cacheWriteTokens", "forkMode", "forkFallbackReason"]) delete rest[field];
+      return rest;
+    });
+
+    for (const command of older) expect(RecordCommandSchema.safeParse(command).success).toBe(true);
+
+    const answer = await serveApply(serving, { deviceId: "anna-laptop", commands: older as typeof queued });
+
+    expect(answer.results.every((result) => result.applied)).toBe(true);
+    expect(listSideCalls(recordDb.db)).toEqual([
+      expect.objectContaining({ id: call.id, cacheReadTokens: null, cacheWriteTokens: null, forkMode: null, forkFallbackReason: null }),
+    ]);
   });
 
   it("is not sent from a desktop for an item the organisation does not hold", async () => {
