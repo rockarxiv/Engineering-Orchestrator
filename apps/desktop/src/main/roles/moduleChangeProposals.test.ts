@@ -1,5 +1,5 @@
 import { ModuleManifestSchema, type AgentWriteAnswer, type CustomModule, type Item, type ModuleManifest } from "@eo/core";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync, existsSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, symlinkSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -335,6 +335,87 @@ describe("the staging area's boundary", () => {
     } finally {
       rmSync(outside, { recursive: true, force: true });
     }
+  });
+
+  /**
+   * The staging directory itself swapped after prepare (EO-813 review): the
+   * boundary is the directory EO made, not what its path leads to now.
+   */
+  describe("when the staging directory is replaced after it is prepared", () => {
+    let outside: string;
+    beforeEach(() => {
+      outside = mkdtempSync(join(tmpdir(), "eo-outside-"));
+    });
+    afterEach(() => {
+      rmSync(outside, { recursive: true, force: true });
+    });
+
+    /** A directory laid out as a staging area, holding content that must never be read or written. */
+    function decoy(at: string): void {
+      mkdirSync(join(at, "tests"), { recursive: true });
+      writeFileSync(join(at, STAGED_CODE_FILE), "outside code");
+      writeFileSync(join(at, STAGED_MANIFEST_FILE), JSON.stringify(MANIFEST));
+      writeFileSync(join(at, "tests", "case.js"), "outside case");
+    }
+
+    function expectRefusedAndUntouched(caller: ModuleChangeCaller, stagingId: unknown, at: string): void {
+      for (const file of [STAGED_CODE_FILE, "tests/case.js", "new.js"]) {
+        expect(refusal(staging.edit(caller, { stagingId, file, content: "overwritten" })), file).toMatchObject({ code: "FILE_REFUSED" });
+      }
+      expect(refusal(staging.edit(caller, { stagingId, file: STAGED_CODE_FILE, edits: [{ old_text: "outside", new_text: "overwritten" }] }))).toMatchObject({ code: "FILE_REFUSED" });
+      expect(refusal(staging.freeze(caller, { stagingId, summary: "Ingest what is outside." }))).toMatchObject({ code: "FILE_REFUSED" });
+      expect(refusal(staging.freeze(caller, { stagingId, summary: "x", tests: [{ description: "a", file: "tests/case.js" }] }))).toMatchObject({ code: "FILE_REFUSED" });
+      expect(readFileSync(join(at, STAGED_CODE_FILE), "utf8")).toBe("outside code");
+      expect(readFileSync(join(at, "tests", "case.js"), "utf8")).toBe("outside case");
+      expect(existsSync(join(at, "new.js"))).toBe(false);
+      expect(handle.db.select().from(moduleChangeProposals).all()).toHaveLength(0);
+    }
+
+    it("refuses edit and freeze when the directory is moved aside and a link to elsewhere put in its place", () => {
+      const deploy = saveDeploy();
+      const caller = assistTurn();
+      const { stagingId, directory } = ok(staging.prepare(caller, { moduleId: deploy.id }));
+      decoy(outside);
+      renameSync(directory as string, `${directory as string}-aside`);
+      symlinkSync(outside, directory as string);
+      expectRefusedAndUntouched(caller, stagingId, outside);
+      // Ending the run removes the link, not what it leads to.
+      staging.releaseRun(caller.runId);
+      expect(readFileSync(join(outside, STAGED_CODE_FILE), "utf8")).toBe("outside code");
+    });
+
+    it("refuses edit and freeze when the directory is replaced by another directory", () => {
+      const deploy = saveDeploy();
+      const caller = assistTurn();
+      const { stagingId, directory } = ok(staging.prepare(caller, { moduleId: deploy.id }));
+      renameSync(directory as string, `${directory as string}-aside`);
+      decoy(directory as string);
+      expectRefusedAndUntouched(caller, stagingId, directory as string);
+    });
+
+    it("refuses edit and freeze when a directory above it is replaced by a link", () => {
+      const deploy = saveDeploy();
+      const caller = assistTurn();
+      const { stagingId, directory } = ok(staging.prepare(caller, { moduleId: deploy.id }));
+      // The whole staging root moved aside, and a link to a look-alike outside in its place.
+      const id = readdirSync(root)[0]!;
+      decoy(join(outside, id));
+      renameSync(root, `${root}-aside`);
+      try {
+        symlinkSync(outside, root);
+        expectRefusedAndUntouched(caller, stagingId, join(outside, id));
+        // And a link back to the very same directory still is not the directory EO made.
+        rmSync(root);
+        symlinkSync(`${root}-aside`, root);
+        expect(refusal(staging.edit(caller, { stagingId, file: STAGED_CODE_FILE, content: "x" }))).toMatchObject({ code: "FILE_REFUSED" });
+        expect(refusal(staging.freeze(caller, { stagingId, summary: "x" }))).toMatchObject({ code: "FILE_REFUSED" });
+        expect(readFileSync(join(`${root}-aside`, id, STAGED_CODE_FILE), "utf8")).toBe(DEPLOY);
+        expect(directory as string).toBe(join(root, id));
+      } finally {
+        rmSync(root, { force: true });
+        rmSync(`${root}-aside`, { recursive: true, force: true });
+      }
+    });
   });
 
   it("reads a file the turn wrote itself inside the staging area", () => {

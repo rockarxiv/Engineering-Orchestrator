@@ -1,4 +1,4 @@
-import { closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, readSync, realpathSync, rmSync, writeSync } from "node:fs";
+import { closeSync, constants, fstatSync, ftruncateSync, lstatSync, mkdirSync, openSync, readSync, realpathSync, rmSync, writeSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join, normalize, resolve, sep } from "node:path";
 import {
@@ -101,7 +101,8 @@ interface Staging {
   room: ModuleChangeRoom;
   /** The hashes of the code and manifest staged: the source version. */
   base: ChangeBase;
-  directory: string;
+  /** The directory as the turn was told it, and what it was when EO made it. */
+  directory: StagingAnchor;
 }
 
 export interface ModuleChangeStaging {
@@ -174,16 +175,18 @@ export function createModuleChangeStaging(options: { db: Db; root?: string; now?
     const id = uuidv7();
     const directory = join(root, id);
     const tests = room.room === "assist" ? listModuleTests(db, module.id) : [];
+    let anchor: StagingAnchor;
     try {
       mkdirSync(join(directory, STAGED_TESTS_DIR), { recursive: true, mode: 0o700 });
-      writeStaged(directory, STAGED_CODE_FILE, module.code);
-      writeStaged(directory, STAGED_MANIFEST_FILE, `${canonical(module.manifest, 2)}\n`);
-      for (const test of tests) writeStaged(directory, testFile(test.id), test.source);
+      anchor = anchorOf(directory);
+      writeStaged(anchor.real, STAGED_CODE_FILE, module.code);
+      writeStaged(anchor.real, STAGED_MANIFEST_FILE, `${canonical(module.manifest, 2)}\n`);
+      for (const test of tests) writeStaged(anchor.real, testFile(test.id), test.source);
     } catch (error) {
       rmSync(directory, { recursive: true, force: true });
       return refused("STAGING_FAILED", `EO could not stage ${module.name}, so nothing was staged: ${error instanceof Error ? error.message : String(error)}`);
     }
-    stagings.set(id, { id, itemId: caller.itemId, runId: caller.runId, moduleId: module.id, room: room.room, base: changeBaseOf(module), directory });
+    stagings.set(id, { id, itemId: caller.itemId, runId: caller.runId, moduleId: module.id, room: room.room, base: changeBaseOf(module), directory: anchor });
 
     const files = [STAGED_CODE_FILE, STAGED_MANIFEST_FILE, ...tests.map((test) => testFile(test.id))];
     const testLines = tests.map((test) => `- \`${testFile(test.id)}\`: “${test.description}” (id ${test.id})`);
@@ -341,7 +344,8 @@ export function createModuleChangeStaging(options: { db: Db; root?: string; now?
     for (const staging of [...stagings.values()]) {
       if (staging.runId !== runId) continue;
       stagings.delete(staging.id);
-      rmSync(staging.directory, { recursive: true, force: true });
+      // rmSync removes a link put in the directory's place, not what it leads to.
+      rmSync(staging.directory.path, { recursive: true, force: true });
     }
   }
 
@@ -402,31 +406,92 @@ function testFile(testId: string): string {
 const NOFOLLOW = constants.O_NOFOLLOW ?? 0;
 
 /**
- * The absolute path of a file named relative to a staging directory, or
- * why it is not one: absolute, climbing out with `..`, or resolving
- * outside the directory once every link on the way is followed.
+ * A staging directory, held to what it was when EO made it (EO-813): the
+ * path the turn was told, the path with every link on the way resolved,
+ * and the directory's own device and inode.
+ *
+ * The boundary is this, and not whatever the path resolves to when a file
+ * is asked for — otherwise a turn could move the directory aside, put a
+ * link to anywhere in its place, and have that be the boundary.
  */
-export function stagedPath(directory: string, file: string): { ok: true; path: string } | { ok: false; problem: string } {
+export interface StagingAnchor {
+  path: string;
+  real: string;
+  dev: number;
+  ino: number;
+}
+
+/** Records a directory EO has just made. It must be a directory, not a link to one. */
+export function anchorOf(directory: string): StagingAnchor {
+  const stat = lstatSync(directory);
+  if (!stat.isDirectory()) throw new Error(`${directory} is not a directory`);
+  return { path: directory, real: realpathSync(directory), dev: stat.dev, ino: stat.ino };
+}
+
+/**
+ * Whether the staging directory is still the one EO made: not replaced by
+ * a link or another directory, and reached by the same real path — so
+ * neither it nor any directory above it has been swapped for a link.
+ */
+function anchorHolds(anchor: StagingAnchor): boolean {
+  try {
+    const at = lstatSync(anchor.path);
+    if (!at.isDirectory() || at.dev !== anchor.dev || at.ino !== anchor.ino) return false;
+    if (realpathSync(anchor.path) !== anchor.real) return false;
+    const real = lstatSync(anchor.real);
+    return real.isDirectory() && real.dev === anchor.dev && real.ino === anchor.ino;
+  } catch {
+    return false;
+  }
+}
+
+const MOVED = "The staging directory is no longer the one EO made — it was moved, replaced or reached through a link — so EO will not read or write in it. Call module_change_prepare again.";
+
+/**
+ * The absolute path of a file named relative to a staging directory, or
+ * why it is not one: absolute, climbing out with `..`, resolving outside
+ * the directory once every link on the way is followed, or the directory
+ * itself no longer the one EO made.
+ */
+export function stagedPath(anchor: StagingAnchor, file: string): { ok: true; path: string } | { ok: false; problem: string } {
   const outside = { ok: false as const, problem: `\`${file}\` is not a file in the staging directory: name it relative to that directory, as module_change_prepare does.` };
   if (file.includes("\0") || isAbsolute(file) || /^[a-zA-Z]:/.test(file)) return outside;
   const normalised = normalize(file);
   if (normalised === "." || normalised.split(/[\\/]/).includes("..")) return outside;
-  const path = resolve(directory, normalised);
-  if (!path.startsWith(directory + sep)) return outside;
+  if (!anchorHolds(anchor)) return { ok: false, problem: MOVED };
+  // Taken from the real path EO recorded, never from what the path resolves to now.
+  const path = resolve(anchor.real, normalised);
+  if (!path.startsWith(anchor.real + sep)) return outside;
   // Every directory on the way resolved, so a linked directory cannot carry the path out.
   try {
-    const real = realpathSync(directory);
     const parent = realpathSync(resolve(path, ".."));
-    if (parent !== real && !parent.startsWith(real + sep)) return outside;
+    if (parent !== anchor.real && !parent.startsWith(anchor.real + sep)) return outside;
   } catch {
     return { ok: false, problem: `\`${file}\` is not in the staging directory.` };
   }
   return { ok: true, path };
 }
 
+/**
+ * After a file is opened: the boundary still holds, and the file opened is
+ * the one at the checked path — so a link swapped in between the check and
+ * the open is caught before anything is read or written through it.
+ */
+function openedInside(anchor: StagingAnchor, file: string, path: string, fd: number): boolean {
+  const again = stagedPath(anchor, file);
+  if (!again.ok || again.path !== path) return false;
+  try {
+    const opened = fstatSync(fd);
+    const there = lstatSync(path);
+    return opened.isFile() && there.isFile() && opened.dev === there.dev && opened.ino === there.ino;
+  } catch {
+    return false;
+  }
+}
+
 /** A staged file's text, read through the boundary and the size limit. */
-function readStaged(directory: string, file: string): { ok: true; text: string } | { ok: false; problem: string } {
-  const at = stagedPath(directory, file);
+function readStaged(anchor: StagingAnchor, file: string): { ok: true; text: string } | { ok: false; problem: string } {
+  const at = stagedPath(anchor, file);
   if (!at.ok) return at;
   let stat;
   try {
@@ -443,6 +508,7 @@ function readStaged(directory: string, file: string): { ok: true; text: string }
     return { ok: false, problem: `\`${file}\` could not be opened as a plain file in the staging directory.` };
   }
   try {
+    if (!openedInside(anchor, file, at.path, fd)) return { ok: false, problem: MOVED };
     const size = fstatSync(fd).size;
     if (size > MAX_STAGED_FILE_BYTES) return { ok: false, problem: `\`${file}\` is ${size} bytes, over the ${MAX_STAGED_FILE_BYTES}-byte limit for a staged file.` };
     const buffer = Buffer.alloc(size);
@@ -458,7 +524,7 @@ function readStaged(directory: string, file: string): { ok: true; text: string }
   }
 }
 
-/** Writes a staged file EO itself lays out. */
+/** Writes a staged file EO itself lays out, in the directory it has just made. */
 function writeStaged(directory: string, file: string, text: string): void {
   const fd = openSync(join(directory, file), constants.O_WRONLY | constants.O_CREAT | constants.O_TRUNC | NOFOLLOW, 0o600);
   try {
@@ -469,17 +535,25 @@ function writeStaged(directory: string, file: string, text: string): void {
 }
 
 /** Writes a file a turn named, through the boundary and the size limit. */
-function writeStagedChecked(directory: string, file: string, text: string): { ok: true } | { ok: false; problem: string } {
+function writeStagedChecked(anchor: StagingAnchor, file: string, text: string): { ok: true } | { ok: false; problem: string } {
   if (Buffer.byteLength(text, "utf8") > MAX_STAGED_FILE_BYTES) return { ok: false, problem: `That would make \`${file}\` larger than the ${MAX_STAGED_FILE_BYTES}-byte limit for a staged file, so nothing was changed.` };
   // No directory is made for it: one made through a linked directory
   // would be made outside. A new file goes beside the staged ones.
-  const at = stagedPath(directory, file);
+  const at = stagedPath(anchor, file);
   if (!at.ok) return at;
   try {
     const stat = lstatSync(at.path, { throwIfNoEntry: false });
     if (stat?.isSymbolicLink()) return { ok: false, problem: `\`${file}\` is a symbolic link, and EO writes only plain files in the staging directory.` };
     if (stat !== undefined && !stat.isFile()) return { ok: false, problem: `\`${file}\` is not a file.` };
-    writeStaged(directory, normalize(file), text);
+    // Not truncated as it is opened: only once the file opened is known to be inside.
+    const fd = openSync(at.path, constants.O_WRONLY | constants.O_CREAT | NOFOLLOW, 0o600);
+    try {
+      if (!openedInside(anchor, file, at.path, fd)) return { ok: false, problem: MOVED };
+      ftruncateSync(fd, 0);
+      writeSync(fd, text);
+    } finally {
+      closeSync(fd);
+    }
   } catch (error) {
     return { ok: false, problem: `\`${file}\` could not be written: ${error instanceof Error ? error.message : String(error)}` };
   }
