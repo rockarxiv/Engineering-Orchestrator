@@ -2468,8 +2468,9 @@ export const recordContract = {
    */
   "assist:stop": channel(z.object({ conversationId: z.string() }), z.object({ stopped: z.boolean(), conversation: DiscussionSchema })),
   /**
-   * Changes the model, the reasoning effort or whether reasoning is shown
-   * for the turns that follow in one assistant chat.
+   * Changes the model, the reasoning effort, whether reasoning is shown or
+   * whether replies are suggested (EO-809) for the turns that follow in
+   * one assistant chat.
    */
   "assist:settings": channel(
     z.object({
@@ -2477,6 +2478,7 @@ export const recordContract = {
       model: z.string().nullable().optional(),
       reasoningEffort: z.string().nullable().optional(),
       showReasoning: z.boolean().optional(),
+      suggestReplies: z.boolean().optional(),
     }),
     z.object({ settings: DiscussionSettingsSchema, conversation: DiscussionSchema }),
   ),
@@ -8250,6 +8252,20 @@ export const ipcPushContract = {
     earlier: z.number().int().nonnegative(),
     resync: z.boolean(),
   }),
+
+  /**
+   * The message the person is predicted to send next in an assistant chat
+   * (EO-809), after the turn `runId` ran: drawn grey in the empty box,
+   * and taken with Tab or Right arrow.
+   *
+   * Carries the text, against the rule at the top of this contract, for
+   * the reason `runs:delta` does: nothing stores it. It is not a comment,
+   * a message or a run event, so there is nothing to ask again — a window
+   * that misses it shows none, which is what a suggestion that never came
+   * looks like too. A window draws it only while that run's reply is
+   * still the newest thing said in the chat and nothing has been sent.
+   */
+  "assist:suggestion": z.object({ conversationId: z.string(), runId: z.string(), text: z.string() }),
 
   /**
    * Agents or the pipeline changed (U-06). Any open view derives its

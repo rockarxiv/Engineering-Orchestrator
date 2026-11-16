@@ -36,6 +36,7 @@ import {
 import { threadOf, type ConversationThread } from "../roles/conversationThread.js";
 import { capabilitiesFor } from "../providers/capabilities.js";
 import { liveDrafts } from "../supervisor/liveDrafts.js";
+import { ASSIST_SETTINGS_KEY } from "../roles/conversationSteps.js";
 
 /**
  * Rendering a conversation, whatever it is a conversation about.
@@ -190,6 +191,10 @@ export function settingsFor(db: Db, conversation: Item, kind: ConversationKind):
     defaultReasoningEffort: typeof agent.config[effortKey] === "string" ? (agent.config[effortKey] as string) : null,
     reasoningEfforts: [...capabilitiesFor(agent.provider).reasoningEfforts],
     showReasoning: settings["showReasoning"] !== false,
+    // The assistant's chat alone asks for suggested replies (EO-809), so
+    // no other room offers the switch. Read as `conversationTurnOptions`
+    // reads it: on unless turned off.
+    ...(kind.settingsKey === ASSIST_SETTINGS_KEY ? { suggestReplies: settings["suggestReplies"] !== false } : {}),
     configurable: capabilitiesFor(agent.provider).modelsAreLive || capabilitiesFor(agent.provider).reasoningEfforts.length > 0,
   };
 }

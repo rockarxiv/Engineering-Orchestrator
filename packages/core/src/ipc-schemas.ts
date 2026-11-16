@@ -2250,6 +2250,13 @@ export const DiscussionSettingsSchema = z.object({
    */
   showReasoning: z.boolean().optional(),
   /**
+   * Whether the assistant's chat asks for a suggested reply after each
+   * turn (EO-809): the next message the person would most likely send,
+   * drawn grey in the empty box. On unless somebody turned it off. Only
+   * the assistant's chat says it; a room that offers none leaves it out.
+   */
+  suggestReplies: z.boolean().optional(),
+  /**
    * Whether this agent's backend offers anything to choose — a model list
    * or efforts — so a surface offers the picker only where it would do
    * something (ARCHITECTURE.md, "The parity rule"), without naming

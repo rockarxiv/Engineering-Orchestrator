@@ -560,6 +560,9 @@ export function createEngine(options: EngineOptions, packs: readonly CodePack[] 
     // A memory scope's consolidation queued, started or finished (EO-589):
     // the Memory section's history and its Consolidate now button.
     onMemoryConsolidationChanged: (scope) => emitPush("memory:changed", { scope }),
+    // A suggested reply for an assistant chat (EO-809), to whichever window
+    // has it open. Shown and never stored, so the push carries the text.
+    onSuggestedReply: (reply) => emitPush("assist:suggestion", reply),
     // The installed packs, last: the workspace kinds a run can happen
     // in (EO-295), the two scheduling hooks, the functions a `builtin`
     // step runs, and the wiring that says what a result means
@@ -580,6 +583,13 @@ export function createEngine(options: EngineOptions, packs: readonly CodePack[] 
   // the Jira import, the outbox, the archive sweep, and whatever writes
   // a comment next.
   onCommentPosted(db, (comment) => announceItem(comment.itemId));
+  // A person saying anything in an assistant chat is past the reply a
+  // suggestion was for (EO-809): one still being made is stopped, and one
+  // that comes later is not shown. Every writer, as above — the chat's own
+  // send, an offered answer, a question card.
+  onCommentPosted(db, (comment) => {
+    if (comment.authorType === "human") supervisor.dropSuggestedReply(comment.itemId);
+  });
   // And when one is removed: `!` derives from mentions a deleted
   // comment may have carried or answered, so the project and the badge
   // are as stale as they are after a new one.

@@ -53,6 +53,24 @@ describe("a chat's model and reasoning", () => {
     expect(onChange).toHaveBeenLastCalledWith({ showReasoning: false });
   });
 
+  it.each(["claude", "codex"])("offers \"Suggested replies\" for the assistant's chat on %s, and writes what is chosen (EO-809)", async (provider) => {
+    window.eo.ipc.invoke = ipcStub({ "providers:capabilities": { ...models, capabilities: { ...models.capabilities, provider } } }).invoke as never;
+    const onChange = vi.fn();
+    renderSection(<ChatSettings settings={settings({ provider, suggestReplies: true })} onChange={onChange} />);
+    fireEvent.click(screen.getByRole("button", { name: /Model and reasoning/ }));
+    const toggle = screen.getByRole("switch", { name: /Suggested replies/ });
+    expect(toggle).toHaveAttribute("aria-checked", "true");
+    fireEvent.click(toggle);
+    expect(onChange).toHaveBeenLastCalledWith({ suggestReplies: false });
+  });
+
+  it("offers no \"Suggested replies\" switch to a room that does not say it", () => {
+    window.eo.ipc.invoke = ipcStub({ "providers:capabilities": models }).invoke as never;
+    renderSection(<ChatSettings settings={settings()} onChange={() => undefined} />);
+    fireEvent.click(screen.getByRole("button", { name: /Model and reasoning/ }));
+    expect(screen.queryByRole("switch", { name: /Suggested replies/ })).toBeNull();
+  });
+
   it("closes on Escape", async () => {
     window.eo.ipc.invoke = ipcStub({ "providers:capabilities": models }).invoke as never;
     renderSection(<ChatSettings settings={settings()} onChange={() => undefined} />);

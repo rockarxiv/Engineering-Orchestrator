@@ -64,6 +64,8 @@ export function Composer({
   onTyping,
   typingScope,
   clearOnSend = false,
+  suggestion = null,
+  onDismissSuggestion,
 }: ComposerProps & {
   /**
    * A turn is running in the conversation this box sends to. With
@@ -108,6 +110,16 @@ export function Composer({
    * failed send gives the text and the staged files back.
    */
   clearOnSend?: boolean;
+  /**
+   * The message the person is predicted to send next (EO-809), drawn grey
+   * in the empty box where the placeholder would be. Tab or Right arrow
+   * puts it in the box as text to edit and send; Enter before that sends
+   * nothing. Not drawn while the completion list is open, whose Tab it
+   * leaves alone, nor once anything is in the box.
+   */
+  suggestion?: string | null;
+  /** The suggestion was typed over, or taken into the box: it is spent either way. */
+  onDismissSuggestion?: () => void;
 }) {
   const [body, setBody] = useState("");
   const [caret, setCaret] = useState(0);
@@ -171,6 +183,10 @@ export function Composer({
   }, [prefill, textarea]);
 
   const completion = activeCompletion(body, caret);
+  /** Typed over or taken: told once, as the first character lands. */
+  const spendSuggestion = (): void => {
+    if (suggestion) onDismissSuggestion?.();
+  };
   const suggestions = useMemo(() => {
     if (completion === null || dismissedOn === body) return [];
     const mentionSuggestions: ComposerCompletion[] = completion.trigger === "@" ? mentionables.map((name) => ({ trigger: "@", value: name })) : [];
@@ -178,6 +194,10 @@ export function Composer({
       .filter((item) => item.trigger === completion.trigger && item.value.toLowerCase().includes(completion.query.toLowerCase()))
       .slice(0, 8);
   }, [completion, completions, mentionables, dismissedOn, body]);
+
+  // Only into a box with nothing in it, nothing staged and nothing open
+  // over it — and one the person can type into.
+  const shownSuggestion = suggestion && body === "" && attachmentState.attachments.length === 0 && suggestions.length === 0 && !busy && !readOnly ? suggestion : null;
 
   function accept(item: ComposerCompletion) {
     if (!completion) return;
@@ -195,6 +215,7 @@ export function Composer({
     // disabled attribute, and a message sent while a batch is still
     // staging would leave without those files (EO-194).
     if ((!trimmed && attachments.length === 0) || busy || readOnly || attachmentState.busy || sending.current) return;
+    spendSuggestion();
 
     sending.current = true;
     setProblem(null);
@@ -299,6 +320,18 @@ export function Composer({
         return;
       }
     }
+    // The suggested reply into the box, as text to edit — and not sent:
+    // Enter is still the only thing that sends. A modified key is the
+    // person's own (Shift+Tab moves focus, Ctrl+Right a word).
+    if (shownSuggestion && (event.key === "Tab" || event.key === "ArrowRight") && !event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey) {
+      event.preventDefault();
+      const text = shownSuggestion;
+      setBody(text);
+      setCaret(text.length);
+      spendSuggestion();
+      requestAnimationFrame(() => textarea.current?.setSelectionRange(text.length, text.length));
+      return;
+    }
     // Escape stops a running turn, as it does in Claude Desktop.
     if (event.key === "Escape" && running && onStop && !stopping) {
       event.preventDefault();
@@ -361,8 +394,10 @@ export function Composer({
           aria-label={ariaLabel}
           value={body}
           rows={chat ? 1 : 3}
-          placeholder={placeholder ?? (chat ? "Ask anything…" : "Comment… @user or @agent to notify. Enter to post; Ctrl/Shift+Enter for a newline.")}
+          placeholder={shownSuggestion ?? placeholder ?? (chat ? "Ask anything…" : "Comment… @user or @agent to notify. Enter to post; Ctrl/Shift+Enter for a newline.")}
+          aria-description={shownSuggestion ? "Suggested reply: Tab or Right arrow to use it" : undefined}
           onChange={(event) => {
+            if (event.target.value !== "") spendSuggestion();
             setBody(event.target.value);
             setCaret(event.target.selectionStart);
             typing(event.target.value);

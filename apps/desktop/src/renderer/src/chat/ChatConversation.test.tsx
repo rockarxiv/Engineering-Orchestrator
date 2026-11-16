@@ -1,11 +1,12 @@
 import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 import { QueryClientProvider } from "@tanstack/react-query";
-import { act, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Markdown, MarkdownProps } from "@eo/ui";
 import { createQueryClient } from "../query/client";
 import { resetLiveDeltas } from "../shared/assist/liveDeltas";
+import { resetSuggestedReplies } from "../shared/assist/suggestedReply";
 import { ChatConversation } from "./ChatConversation";
 
 /**
@@ -116,6 +117,7 @@ beforeEach(() => {
 
 afterEach(() => {
   resetLiveDeltas();
+  resetSuggestedReplies();
 });
 
 describe("a streamed turn in the conversation (EO-551)", () => {
@@ -186,5 +188,92 @@ describe("an answer still being written after its message (EO-803)", () => {
     push("runs:progress", { runId: "run-1", itemId: CHAT });
     await waitFor(() => expect(screen.queryByRole("article", { name: "Live agent response" })).toBeNull());
     expect(screen.queryByText(/Still writing the answer/)).toBeNull();
+  });
+});
+
+/**
+ * The suggested reply (EO-809): drawn in the empty box under the reply of
+ * the run it follows, and gone as soon as the chat moves past that reply.
+ */
+describe("a suggested reply in the conversation", () => {
+  /** The chat once the turn has answered: nothing running, the reply the last word. */
+  function answered(extra: Record<string, unknown>[] = []) {
+    return {
+      ...running(),
+      thinking: false,
+      thinkingSince: null,
+      liveTurn: null,
+      messages: [message({ id: "h1", authorType: "human", authorName: "You", body: ASKED, createdAt: 1 }), message({ id: "a1", body: ANSWERED, runId: "run-0", createdAt: 2 }), ...extra],
+    } as unknown as ReturnType<typeof running>;
+  }
+
+  const box = () => screen.getByLabelText("Message the assistant");
+
+  it("is drawn grey in the empty box when it follows the latest reply", async () => {
+    conversation = answered();
+    open();
+    await screen.findByText("Contoso renewal", { exact: false });
+    push("assist:suggestion", { conversationId: CHAT, runId: "run-0", text: "approve the renewal" });
+    expect(box()).toHaveAttribute("placeholder", "approve the renewal");
+  });
+
+  it("is never drawn for an older turn's reply, nor another chat's", async () => {
+    conversation = answered();
+    open();
+    await screen.findByText("Contoso renewal", { exact: false });
+    push("assist:suggestion", { conversationId: CHAT, runId: "run-older", text: "approve the renewal" });
+    push("assist:suggestion", { conversationId: "another-chat", runId: "run-0", text: "file it on Delivery" });
+    expect(box()).not.toHaveAttribute("placeholder", "approve the renewal");
+    expect(box()).not.toHaveAttribute("placeholder", "file it on Delivery");
+  });
+
+  it("goes when a newer turn starts in the chat", async () => {
+    conversation = answered();
+    open();
+    await screen.findByText("Contoso renewal", { exact: false });
+    push("assist:suggestion", { conversationId: CHAT, runId: "run-0", text: "approve the renewal" });
+    push("runs:changed", { runId: "run-1", itemId: CHAT, status: "running" });
+    expect(box()).not.toHaveAttribute("placeholder", "approve the renewal");
+  });
+
+  it("goes when the person sends anything, and a late one for the reply before is not drawn", async () => {
+    conversation = answered();
+    open();
+    await screen.findByText("Contoso renewal", { exact: false });
+    const fallback = window.eo.ipc.invoke as (channel: string, payload?: unknown) => Promise<unknown>;
+    const sent = answered([message({ id: "h2", authorType: "human", authorName: "You", body: FOLLOW_UP, createdAt: 3, status: "queued" })]);
+    window.eo.ipc.invoke = vi.fn(async (channel: string, payload?: unknown) => {
+      if (channel === "assist:send") return { ok: true, data: { conversation: sent, delivery: null } };
+      if (channel === "assist:open") return { ok: true, data: { conversation: sent } };
+      return fallback(channel, payload);
+    }) as never;
+    push("assist:suggestion", { conversationId: CHAT, runId: "run-0", text: "approve the renewal" });
+
+    act(() => {
+      fireEvent.change(box(), { target: { value: FOLLOW_UP } });
+    });
+    act(() => {
+      fireEvent.keyDown(box(), { key: "Enter" });
+    });
+    await screen.findAllByText(FOLLOW_UP);
+    push("assist:suggestion", { conversationId: CHAT, runId: "run-0", text: "approve the renewal" });
+    await waitFor(() => expect(box()).toHaveValue(""));
+    expect(box()).not.toHaveAttribute("placeholder", "approve the renewal");
+  });
+
+  it("is not drawn over answers the reply offers as buttons", async () => {
+    conversation = answered([message({ id: "e1", authorType: "engine", authorName: "EO", body: "Keep going?", runId: "run-0", createdAt: 3, canAnswer: true, options: ["Keep going", "Discard"] })]);
+    open();
+    await screen.findByText("Keep going?");
+    push("assist:suggestion", { conversationId: CHAT, runId: "run-0", text: "keep going" });
+    expect(box()).not.toHaveAttribute("placeholder", "keep going");
+  });
+
+  it("is not drawn over a question card waiting to be answered", async () => {
+    conversation = answered([message({ id: "q1", body: "Which board?", kind: "question", runId: "run-0", createdAt: 3, canAnswer: true, options: [] })]);
+    open();
+    await screen.findByText("Which board?", { exact: false });
+    push("assist:suggestion", { conversationId: CHAT, runId: "run-0", text: "the Delivery board" });
+    expect(box()).not.toHaveAttribute("placeholder", "the Delivery board");
   });
 });

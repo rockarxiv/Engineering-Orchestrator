@@ -99,6 +99,13 @@ export interface ConversationTurnOptions {
   streamDeltas?: boolean;
   /** And the answer with them, which in a conversation is the reply being read (`AgentTurnOverrides.streamAnswer`). */
   streamAnswer?: boolean;
+  /**
+   * Whether the turn asks for a suggested next message (EO-809,
+   * `AgentTurnOverrides.suggestNextMessage`). The assistant's chat only,
+   * and on unless somebody turned "Suggested replies" off. A scenario
+   * chat never asks: it is not the assistant's chat.
+   */
+  suggestNextMessage?: boolean;
 }
 
 /**
@@ -133,5 +140,6 @@ export function conversationTurnOptions(item: { stepId: string | null; spec?: Re
     showReasoning: value["showReasoning"] !== false,
     streamDeltas: true,
     streamAnswer: true,
+    ...(item.stepId === ASSIST_STEP && value["suggestReplies"] !== false ? { suggestNextMessage: true } : {}),
   };
 }
