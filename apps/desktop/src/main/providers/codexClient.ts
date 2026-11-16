@@ -162,8 +162,13 @@ export type ThreadEvent =
    * answered with, or the one `model/rerouted` moved the turn to. It is
    * what the turn is priced at (`codexPricing.ts`), so it is the model
    * that answered rather than the one EO asked for.
+   *
+   * `lastRequest` is EO's addition too (EO-808): what the turn's last
+   * model response used on its own (the reading's `last`), when a reading
+   * said. Whether that request was mostly uncached is what decides that a
+   * suggested next message is not worth a fork.
    */
-  | { type: "turn.completed"; usage: Usage; model?: string }
+  | { type: "turn.completed"; usage: Usage; model?: string; lastRequest?: Usage }
   /**
    * `usage` is EO's addition (EO-373): what the turn spent before it
    * ended badly — interrupted, most of all — when the app-server reported
@@ -235,6 +240,19 @@ export interface CodexThreadOptions {
    * adopted by a fork of it.
    */
   fork?: boolean;
+  /**
+   * A fork made only of a thread holding at least this many completed
+   * turns (EO-808): a suggested next message's, which is not made after a
+   * thread's first answer. Counted with `thread/turns/list` on the
+   * original once `thread/resume` has loaded it — the app-server lists
+   * nothing of a thread it has not loaded (measured at 0.167.1) — so a
+   * turn that failed or was interrupted is not counted, and a thread from
+   * before EO last started is. A thread holding fewer, or one that cannot
+   * be loaded or counted, is not forked: the turn fails with
+   * `TOO_FEW_COMPLETED_TURNS`, and never falls back to a plain fork.
+   * Never sent to the app-server.
+   */
+  forkAfterCompletedTurns?: number;
   /**
    * The run this thread's process belongs to and its memory limit
    * (EO-738), for the app-server's spawn (`launchTree`). Never sent to
@@ -326,6 +344,9 @@ export interface CodexClientOptions {
  * gone anyway — so a missing path is a run that cannot start, said in
  * the words `codexModels.ts` uses for the same absence.
  */
+/** How a fork refused for a thread with too few completed turns begins (`CodexThreadOptions.forkAfterCompletedTurns`, EO-808). */
+export const TOO_FEW_COMPLETED_TURNS = "Not forked: the thread holds too few completed turns";
+
 export const CODEX_NOT_INSTALLED = "The Codex CLI is not installed. Install it from the Agents screen, or set the agent's executable path.";
 
 /**
@@ -611,7 +632,7 @@ export class CodexClient {
       ...(threadOptions.baseInstructions ? { baseInstructions: threadOptions.baseInstructions } : {}),
       ...(threadOptions.ephemeral ? { ephemeral: true } : {}),
     };
-    if (forking) return this.openFork(opened, resumeId, threadParams, ask);
+    if (forking) return this.openFork(opened, resumeId, threadParams, ask, threadOptions.forkAfterCompletedTurns);
     const answer = (resumeId === null
       ? await ask("thread/start", threadParams, opened.connection)
       : // `excludeTurns`: EO needs the thread, not its history replayed
@@ -662,10 +683,16 @@ export class CodexClient {
     resumeId: string,
     threadParams: Record<string, unknown>,
     ask: (method: string, params: unknown, connection: AppServerConnection) => Promise<unknown>,
+    afterCompletedTurns?: number,
   ): Promise<WarmThread> {
     let fallbackReason: string;
+    let counted = afterCompletedTurns === undefined;
     try {
       await ask("thread/resume", { threadId: resumeId, ...threadParams, excludeTurns: true }, opened.connection);
+      if (afterCompletedTurns !== undefined) {
+        await this.holdsCompletedTurns(opened, resumeId, afterCompletedTurns, ask);
+        counted = true;
+      }
       const answer = (await ask("thread/fork", { threadId: resumeId, experimentalPredictionMode: true, ephemeral: true, excludeTurns: true }, opened.connection)) as
         | { thread?: { id?: unknown }; model?: unknown }
         | undefined;
@@ -677,8 +704,12 @@ export class CodexClient {
       // A process that has gone, or a turn cancelled under it, is not a
       // refusal: there is no app-server left to ask for the plain fork.
       if (opened.exit !== null || (error instanceof Error && error.name === "AbortError")) throw error;
+      // Nor a thread too short to fork, which is as short plain.
+      if (error instanceof Error && error.message.startsWith(TOO_FEW_COMPLETED_TURNS)) throw error;
       fallbackReason = error instanceof Error ? error.message : String(error);
     }
+    // An original that could not be loaded could not be counted either.
+    if (!counted) throw new Error(`${TOO_FEW_COMPLETED_TURNS}: thread ${resumeId} could not be loaded to count them (${fallbackReason}).`);
     const answer = (await ask("thread/fork", { threadId: resumeId, ...threadParams, excludeTurns: true }, opened.connection)) as { thread?: { id?: unknown }; model?: unknown } | undefined;
     // Never the thread asked for: a copy that named no id of its own
     // would otherwise be reported as the original, and the turn on it
@@ -687,6 +718,37 @@ export class CodexClient {
     if (!threadId) throw new Error("thread/fork returned no thread id");
     const model = typeof answer?.model === "string" && answer.model ? answer.model : null;
     return { pipe: opened, threadId, model, fork: { mode: "plain", fallbackReason } };
+  }
+
+  /**
+   * Whether the loaded thread holds at least `wanted` completed turns
+   * (`CodexThreadOptions.forkAfterCompletedTurns`); throws
+   * `TOO_FEW_COMPLETED_TURNS` when it does not, or cannot say. Newest
+   * first, a page at a time, without the turns' items, and no further
+   * than it takes to find them.
+   */
+  private async holdsCompletedTurns(
+    opened: Pipe,
+    threadId: string,
+    wanted: number,
+    ask: (method: string, params: unknown, connection: AppServerConnection) => Promise<unknown>,
+  ): Promise<void> {
+    let found = 0;
+    let cursor: string | null = null;
+    let listing: unknown;
+    do {
+      try {
+        listing = await ask("thread/turns/list", { threadId, limit: 20, sortDirection: "desc", itemsView: "notLoaded", ...(cursor === null ? {} : { cursor }) }, opened.connection);
+      } catch (error) {
+        if (opened.exit !== null || (error instanceof Error && error.name === "AbortError")) throw error;
+        throw new Error(`${TOO_FEW_COMPLETED_TURNS}: thread ${threadId}'s turns could not be listed (${error instanceof Error ? error.message : String(error)}).`, { cause: error });
+      }
+      const page = listing as { data?: unknown; nextCursor?: unknown } | undefined;
+      const turns = Array.isArray(page?.data) ? (page.data as unknown[]) : [];
+      found += turns.filter((turn) => (turn as { status?: unknown } | null)?.status === "completed").length;
+      cursor = typeof page?.nextCursor === "string" && turns.length > 0 ? page.nextCursor : null;
+    } while (found < wanted && cursor !== null);
+    if (found < wanted) throw new Error(`${TOO_FEW_COMPLETED_TURNS}: thread ${threadId} holds ${found}, fewer than ${wanted}.`);
   }
 
   private connect(threadOptions: CodexThreadOptions): AppServerConnection {
@@ -1234,6 +1296,8 @@ export class TurnTranslator {
    */
   private baseline: Usage | null = null;
   private total: Usage | null = null;
+  /** What the turn's latest model response used on its own (a reading's `last`), once a reading has said (EO-808). */
+  private lastRequest: Usage | null = null;
   private plan: { step: string; status: string }[] | null = null;
   private warnings = 0;
   /** When this turn last said it was at work (`WORKING_NOTIFICATIONS`). */
@@ -1365,6 +1429,7 @@ export class TurnTranslator {
         // thread stood as it was: nought, unless something stated it.
         this.baseline ??= reading?.last === undefined ? zeroUsage() : less(total, usageOf(reading.last));
         this.total = total;
+        if (reading?.last !== undefined) this.lastRequest = usageOf(reading.last);
         return { events: [{ type: "turn.usage", usage: this.turnUsage(), ...this.modelNamed() }], recognised: true };
       }
 
@@ -1475,7 +1540,7 @@ export class TurnTranslator {
       });
     }
     if (turn.status === "completed") {
-      events.push({ type: "turn.completed", usage: this.turnUsage(), ...this.modelNamed() });
+      events.push({ type: "turn.completed", usage: this.turnUsage(), ...this.modelNamed(), ...(this.lastRequest ? { lastRequest: this.lastRequest } : {}) });
     } else {
       const message = typeof turn.error?.message === "string" && turn.error.message ? turn.error.message : `Codex turn ${String(turn.status ?? "ended")}`;
       const info = errorInfo((turn.error as { codexErrorInfo?: unknown } | null | undefined)?.codexErrorInfo);

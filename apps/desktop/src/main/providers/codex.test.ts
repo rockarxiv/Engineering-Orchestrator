@@ -3,6 +3,8 @@ import { tmpdir } from "node:os";
 import { join, relative, sep } from "node:path";
 import { ADMIN_MCP_SERVER_NAME, ModuleManifestSchema, developerRegistry, isThreadNotFound, jsonSchemaOutputSchema, outputSchemaFor, validateActionResult, type AgentEvent, type McpServer, type Skill, type ThreadNotFoundError } from "@eo/core";
 import type { ThreadEvent } from "./codexClient.js";
+import type { SuggestionSpend } from "@eo/core";
+import { PROMPT_SUGGESTION_PROMPT } from "./promptSuggestion.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   buildCodexOptions,
@@ -4083,5 +4085,304 @@ describe("a sign-in failure mid-run", () => {
     // The fixtures' retried 401s are passed on as retries, not as the end.
     const retried = CODEX_AUTH_ERRORS.signIn.flatMap((recorded) => recorded.turn).filter((notification) => notification.params["willRetry"] === true);
     expect(retried.length).toBeGreaterThan(0);
+  });
+});
+
+/**
+ * A suggested next message, made on a fork of the thread (EO-808). The
+ * real client over the fake app-server: the chat's turn in one process,
+ * and the suggestion's fork in another that says what `afterFork` lists.
+ */
+describe("a suggested next message on a prediction-mode fork (EO-808)", () => {
+  let worktree: string;
+
+  beforeEach(() => {
+    worktree = mkdtempSync(join(tmpdir(), "eo codex suggestion "));
+  });
+
+  afterEach(() => {
+    rmSync(worktree, { recursive: true, force: true });
+  });
+
+  type Notes = NonNullable<FakeAppServerScenario["after"]>[string];
+
+  /** The chat's turn: an answer, its reading — mostly cached — and its end. */
+  const chatTurn = (extra: Notes = [], ending: Notes = [note.turnCompleted("completed", null, "turn-1", "$THREAD")]): Notes => [
+    note.turnStarted("turn-1", "$THREAD"),
+    note.agentMessage("Drafted EO-12. File it on Delivery?", "m", "turn-1", "$THREAD"),
+    note.tokenUsage({ input: 12_000, cached: 11_000, output: 50 }, "turn-1", "$THREAD"),
+    ...extra,
+    ...ending,
+  ];
+
+  /** The fork's turn: the suggestion, and what its own request spent. */
+  const forkTurn = (answer: string, before: Notes = []): Notes => [
+    note.turnStarted("turn-1", "$THREAD"),
+    ...before,
+    note.agentMessage(answer, "s", "turn-1", "$THREAD"),
+    note.tokenUsage({ input: 12_400, cached: 11_300, output: 60 }, "turn-1", "$THREAD", { input: 400, cached: 300, output: 10 }),
+    note.turnCompleted("completed", null, "turn-1", "$THREAD"),
+  ];
+
+  function suggesting(scenario: FakeAppServerScenario, suggestionTimeoutMs?: number) {
+    const fake = fakeAppServer({ forkId: "thr-suggest", ...scenario });
+    const options = { executablePath: STUB_EXECUTABLE, ...(suggestionTimeoutMs === undefined ? {} : { suggestionTimeoutMs }), searchHookCommandPath: "/opt/eo/hook.mjs", searchHookTrust: async () => ({ key: "/<session-flags>/config.toml:pre_tool_use:0:0", hash: "sha256:abc123" }) };
+    const provider = createCodexProvider({
+      ...options,
+      createCodex: (...args: Parameters<typeof codexClientOptions> extends [unknown, ...infer Rest] ? Rest : never) =>
+        new CodexClient({ ...codexClientOptions(options, ...args), spawn: fake.spawn, shutdownGraceMs: 100, killGraceMs: 100 }),
+    });
+    /** The `turn/start`s EO sent, by the thread each ran on, with what it said. */
+    const turns = () =>
+      fake.sent.filter((message) => message.method === "turn/start").map((message) => {
+        const params = message.params as { threadId: string; input: { text: string }[] };
+        return { threadId: params.threadId, text: params.input[0]?.text ?? "" };
+      });
+    const forks = () => fake.sent.filter((message) => message.method === "thread/fork").map((message) => message.params as Record<string, unknown>);
+    return { fake, provider, turns, forks };
+  }
+
+  const suggestions = (events: AgentEvent[]) => events.filter((event) => event.type === "prompt_suggestion");
+
+  it("opens no fork with the option off", async () => {
+    const { provider, forks } = suggesting({ after: { "turn/start": chatTurn() }, afterFork: { "turn/start": forkTurn("file it on Delivery") } });
+    const events = await collect(provider.resume("thr-chat", "draft it", { cwd: worktree }));
+    expect(events.some((event) => event.type === "result")).toBe(true);
+    expect(suggestions(events)).toEqual([]);
+    expect(forks()).toEqual([]);
+  });
+
+  it("forks the thread in prediction mode, ephemeral, sends EO's prompt there, and passes the answer on after the result", async () => {
+    const spent: SuggestionSpend[] = [];
+    const { provider, forks, turns } = suggesting({ after: { "turn/start": chatTurn([note.rateLimits({ usedPercent: 50 })]) }, afterFork: { "turn/start": forkTurn("file it on Delivery") } });
+    const events = await collect(provider.resume("thr-chat", "draft it", { cwd: worktree, suggestNextMessage: true, onSuggestionSpend: (spend) => spent.push(spend) }));
+
+    expect(forks()).toEqual([expect.objectContaining({ threadId: "thr-chat", experimentalPredictionMode: true, ephemeral: true })]);
+    // The chat's message on the thread; EO's prompt on the fork, and only there.
+    expect(turns()).toEqual([
+      { threadId: "thr-chat", text: "draft it" },
+      { threadId: "thr-suggest", text: PROMPT_SUGGESTION_PROMPT },
+    ]);
+    const result = events.findIndex((event) => event.type === "result");
+    expect(result).toBeGreaterThanOrEqual(0);
+    expect(events.slice(result + 1)).toEqual([{ type: "prompt_suggestion", text: "file it on Delivery", threadId: "thr-chat" }]);
+    expect(events.filter((event) => event.type === "error")).toEqual([]);
+    // Nothing of the fork in the turn's own events: not its answer, not its spend.
+    expect(events.filter((event) => event.type === "usage")).toHaveLength(1);
+    // What the fork spent, reported apart: its own request, not the thread's.
+    expect(spent).toEqual([expect.objectContaining({ completed: true, usage: expect.objectContaining({ type: "usage", tokensIn: 400, tokensOut: 10, cacheReadTokens: 300 }) })]);
+  });
+
+  it("falls back to the plain fork where prediction mode is refused", async () => {
+    const { provider, forks } = suggesting({
+      refusePredictionFork: "experimental API not enabled",
+      after: { "turn/start": chatTurn() },
+      afterFork: { "turn/start": forkTurn("yes") },
+    });
+    const events = await collect(provider.resume("thr-chat", "draft it", { cwd: worktree, suggestNextMessage: true }));
+    expect(forks()).toHaveLength(2);
+    expect(forks()[0]).toMatchObject({ experimentalPredictionMode: true });
+    expect(forks()[1]).not.toHaveProperty("experimentalPredictionMode");
+    expect(suggestions(events)).toEqual([{ type: "prompt_suggestion", text: "yes", threadId: "thr-chat" }]);
+  });
+
+  it("refuses every call the fork makes, EO's own and the shell alike", async () => {
+    const answers = join(worktree, "hook-answers.jsonl");
+    const call = (tool: string, id: string) => ({ fireHook: { hook_event_name: "PreToolUse", tool_name: tool, tool_input: {}, tool_use_id: id } });
+    const { provider, fake } = suggesting({
+      hookAnswers: answers,
+      after: { "turn/start": chatTurn() },
+      afterFork: { "turn/start": forkTurn("run the tests", [call("Bash", "c1"), call("mcp__eo__memory_note", "c2"), call("mcp__eo__comment", "c3"), call("apply_patch", "c4")]) },
+    });
+    const events = await collect(provider.resume("thr-chat", "draft it", { cwd: worktree, suggestNextMessage: true }));
+    const said = readFileSync(answers, "utf8").trim().split("\n").map((line) => JSON.parse(JSON.parse(line).body as string) as { hookSpecificOutput?: { permissionDecision?: string; permissionDecisionReason?: string } });
+    expect(said).toHaveLength(4);
+    for (const answer of said) {
+      expect(answer.hookSpecificOutput?.permissionDecision).toBe("deny");
+      expect(answer.hookSpecificOutput?.permissionDecisionReason).toContain("this turn may make no calls");
+    }
+    // The fork was launched with EO's refusing hook; the chat's turn without one.
+    expect(fake.launches[0]?.options.env?.["EO_SEARCH_HOOK_REFUSES"]).toBeUndefined();
+    expect(fake.launches[1]?.options.env?.["EO_SEARCH_HOOK_REFUSES"]).toBe("1");
+    expect(suggestions(events)).toEqual([{ type: "prompt_suggestion", text: "run the tests", threadId: "thr-chat" }]);
+  });
+
+  it.each([
+    ["a thread's first turn, its only completed answer", "start", chatTurn()],
+    ["a turn that errored", "resume", chatTurn([], [note.error("the model stream failed", false, "turn-1", "$THREAD"), note.turnCompleted("failed", "the model stream failed", "turn-1", "$THREAD")])],
+    ["a turn that was cancelled", "resume", chatTurn([], [note.turnCompleted("interrupted", null, "turn-1", "$THREAD")])],
+    ["an account near its usage limit", "resume", chatTurn([note.rateLimits({ usedPercent: 95 })])],
+    ["an account at its usage limit", "resume", chatTurn([note.rateLimits({ usedPercent: 20 }, { usedPercent: 100 })])],
+    [
+      "a last request more than 10,000 tokens uncached",
+      "resume",
+      [note.turnStarted("turn-1", "$THREAD"), note.agentMessage("Drafted EO-12.", "m", "turn-1", "$THREAD"), note.tokenUsage({ input: 12_000, cached: 1_000, output: 100 }, "turn-1", "$THREAD"), note.turnCompleted("completed", null, "turn-1", "$THREAD")],
+    ],
+  ] as const)("is not attempted after %s", async (_case, kind, notes) => {
+    const { provider, forks } = suggesting({ threadId: "thr-chat", after: { "turn/start": [...notes] }, afterFork: { "turn/start": forkTurn("yes") } });
+    const stream = kind === "start" ? provider.start({ ...startOpts, cwd: worktree, suggestNextMessage: true }) : provider.resume("thr-chat", "draft it", { cwd: worktree, suggestNextMessage: true });
+    const events = await collect(stream);
+    expect(suggestions(events)).toEqual([]);
+    expect(forks()).toEqual([]);
+  });
+
+  /** A `thread/turns/list` page, newest first, holding turns of these statuses. */
+  const turnsListed = (statuses: string[], nextCursor: string | null = null) => ({
+    result: { data: statuses.map((status, index) => ({ id: `turn-${statuses.length - index}`, items: [], itemsView: "notLoaded", status, error: null })), nextCursor, backwardsCursor: null },
+  });
+  const turnLists = (fake: { sent: { method?: string; params?: unknown }[] }) => fake.sent.filter((message) => message.method === "thread/turns/list").map((message) => message.params as Record<string, unknown>);
+
+  it("is not attempted on a resumed thread whose first turn failed, so this turn is its only completed answer", async () => {
+    const { provider, forks, fake } = suggesting({ replies: { "thread/turns/list": turnsListed(["completed", "failed"]) }, after: { "turn/start": chatTurn() }, afterFork: { "turn/start": forkTurn("yes") } });
+    const events = await collect(provider.resume("thr-chat", "draft it", { cwd: worktree, suggestNextMessage: true }));
+    // Counted on the original, loaded in the fork's process, before any copy is made.
+    expect(turnLists(fake)).toEqual([expect.objectContaining({ threadId: "thr-chat", itemsView: "notLoaded" })]);
+    expect(forks()).toEqual([]);
+    expect(suggestions(events)).toEqual([]);
+    expect(events.filter((event) => event.type === "error")).toEqual([]);
+    expect(events.at(-1)).toMatchObject({ type: "result" });
+  });
+
+  it("is not attempted where the thread's turns cannot be listed", async () => {
+    const { provider, forks } = suggesting({ replies: { "thread/turns/list": { error: { code: -32601, message: "method not found" } } }, after: { "turn/start": chatTurn() }, afterFork: { "turn/start": forkTurn("yes") } });
+    const events = await collect(provider.resume("thr-chat", "draft it", { cwd: worktree, suggestNextMessage: true }));
+    expect(forks()).toEqual([]);
+    expect(suggestions(events)).toEqual([]);
+    expect(events.filter((event) => event.type === "error")).toEqual([]);
+  });
+
+  it("reads the thread's turns a page further where the first holds too few completed", async () => {
+    const { provider, forks, fake } = suggesting({ replies: { "thread/turns/list": turnsListed(["completed", "interrupted"], "page-2") }, after: { "turn/start": chatTurn() }, afterFork: { "turn/start": forkTurn("yes") } });
+    const events = await collect(provider.resume("thr-chat", "draft it", { cwd: worktree, suggestNextMessage: true }));
+    expect(turnLists(fake)).toEqual([expect.not.objectContaining({ cursor: expect.anything() }), expect.objectContaining({ cursor: "page-2" })]);
+    expect(forks()).toHaveLength(1);
+    expect(suggestions(events)).toHaveLength(1);
+  });
+
+  it("is made after a last request at most 10,000 tokens uncached", async () => {
+    const { provider, forks } = suggesting({
+      after: { "turn/start": [note.turnStarted("turn-1", "$THREAD"), note.agentMessage("Drafted.", "m", "turn-1", "$THREAD"), note.tokenUsage({ input: 10_000, cached: 500, output: 500 }, "turn-1", "$THREAD"), note.turnCompleted("completed", null, "turn-1", "$THREAD")] },
+      afterFork: { "turn/start": forkTurn("yes") },
+    });
+    const events = await collect(provider.resume("thr-chat", "draft it", { cwd: worktree, suggestNextMessage: true }));
+    expect(forks()).toHaveLength(1);
+    expect(suggestions(events)).toHaveLength(1);
+  });
+
+  it("emits nothing, and fails nothing, for an answer the filters drop", async () => {
+    const spent: SuggestionSpend[] = [];
+    const { provider } = suggesting({ after: { "turn/start": chatTurn() }, afterFork: { "turn/start": forkTurn("Thanks, that looks great!") } });
+    const events = await collect(provider.resume("thr-chat", "draft it", { cwd: worktree, suggestNextMessage: true, onSuggestionSpend: (spend) => spent.push(spend) }));
+    expect(suggestions(events)).toEqual([]);
+    expect(events.filter((event) => event.type === "error")).toEqual([]);
+    expect(events.at(-1)?.type).toBe("result");
+    // Spent all the same, and reported.
+    expect(spent).toHaveLength(1);
+  });
+
+  it("emits nothing, and fails nothing, when the fork cannot be opened", async () => {
+    const { provider, forks } = suggesting({ replies: { "thread/fork": { error: { code: -32603, message: "database is locked" } } }, after: { "turn/start": chatTurn() } });
+    const events = await collect(provider.resume("thr-chat", "draft it", { cwd: worktree, suggestNextMessage: true }));
+    expect(forks().length).toBeGreaterThan(0);
+    expect(suggestions(events)).toEqual([]);
+    expect(events.filter((event) => event.type === "error")).toEqual([]);
+    expect(events.at(-1)).toMatchObject({ type: "result" });
+  });
+
+  it("starts no fork for a caller that stops reading at the result", async () => {
+    const { provider, forks } = suggesting({ after: { "turn/start": chatTurn() }, afterFork: { "turn/start": forkTurn("yes") } });
+    for await (const event of provider.resume("thr-chat", "draft it", { cwd: worktree, suggestNextMessage: true })) if (event.type === "result") break;
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(forks()).toEqual([]);
+  });
+
+  /** Reads a chat turn to its result, then asks for what follows it without waiting, once the suggestion's fork is under way. */
+  async function pastTheResult(stream: AsyncIterable<AgentEvent>, forked: () => boolean) {
+    const iterator = stream[Symbol.asyncIterator]();
+    for (;;) {
+      const next = await iterator.next();
+      if (next.done) throw new Error("the turn ended before its result");
+      if (next.value.type === "result") break;
+    }
+    const after: AgentEvent[] = [];
+    const rest = (async () => {
+      for (;;) {
+        const next = await iterator.next();
+        if (next.done) return after;
+        after.push(next.value);
+      }
+    })();
+    await vi.waitFor(() => expect(forked()).toBe(true), { timeout: 5_000 });
+    // Wrapped, so awaiting this does not wait for the rest as well.
+    return { rest };
+  }
+
+  const slowFork = () => forkTurn("file it on Delivery", [{ wait: 4_000 }]);
+
+  it("is aborted by a new turn on the thread, and its answer never emitted", async () => {
+    const { provider, turns } = suggesting({ after: { "turn/start": chatTurn() }, afterFork: { "turn/start": slowFork() } });
+    const { rest } = await pastTheResult(provider.resume("thr-chat", "draft it", { cwd: worktree, suggestNextMessage: true }), () => turns().some((turn) => turn.threadId === "thr-suggest"));
+    const next = await collect(provider.resume("thr-chat", "file it on Delivery", { cwd: worktree }));
+    expect(next.some((event) => event.type === "result")).toBe(true);
+    expect(await rest).toEqual([]);
+  });
+
+  it("is never made by a turn whose stream is read on only after a newer turn has opened on the thread", async () => {
+    const { provider, forks } = suggesting({ after: { "turn/start": chatTurn() }, afterFork: { "turn/start": forkTurn("file it on Delivery") } });
+    const older = provider.resume("thr-chat", "draft it", { cwd: worktree, suggestNextMessage: true })[Symbol.asyncIterator]();
+    for (;;) {
+      const next = await older.next();
+      if (next.done) throw new Error("the turn ended before its result");
+      if (next.value.type === "result") break;
+    }
+    // The next turn opens between the older one's result and anyone asking it for more.
+    const newer = provider.resume("thr-chat", "file it on Delivery", { cwd: worktree });
+    const rest: AgentEvent[] = [];
+    for (let next = await older.next(); !next.done; next = await older.next()) rest.push(next.value);
+    await collect(newer);
+    expect(rest).toEqual([]);
+    expect(forks()).toEqual([]);
+  });
+
+  it("is aborted by cancelling the turn, and its answer never emitted", async () => {
+    const { provider, turns } = suggesting({ after: { "turn/start": chatTurn() }, afterFork: { "turn/start": slowFork() } });
+    const stream = provider.resume("thr-chat", "draft it", { cwd: worktree, suggestNextMessage: true });
+    const { rest } = await pastTheResult(stream, () => turns().some((turn) => turn.threadId === "thr-suggest"));
+    await stream.interrupt?.();
+    expect(await rest).toEqual([]);
+  });
+
+  it("is aborted by the run's own signal", async () => {
+    const controller = new AbortController();
+    const { provider, turns } = suggesting({ after: { "turn/start": chatTurn() }, afterFork: { "turn/start": slowFork() } });
+    const { rest } = await pastTheResult(provider.resume("thr-chat", "draft it", { cwd: worktree, suggestNextMessage: true, signal: controller.signal }), () => turns().some((turn) => turn.threadId === "thr-suggest"));
+    controller.abort();
+    expect(await rest).toEqual([]);
+  });
+
+  it("is given up at its time limit, so a caller reading on after the result waits no longer", async () => {
+    // A fork that would answer after 30 seconds, held to half of one.
+    // Timed from the result, not the turn's start, and bounded well
+    // short of the fork's own answer: spawning and ending the processes
+    // takes seconds on a loaded Windows runner (it was 3.9 there).
+    const { provider } = suggesting({ after: { "turn/start": chatTurn() }, afterFork: { "turn/start": forkTurn("file it on Delivery", [{ wait: 30_000 }]) } }, 500);
+    const events: AgentEvent[] = [];
+    let resulted = 0;
+    for await (const event of provider.resume("thr-chat", "draft it", { cwd: worktree, suggestNextMessage: true })) {
+      if (event.type === "result") resulted = Date.now();
+      events.push(event);
+    }
+    expect(resulted).toBeGreaterThan(0);
+    expect(suggestions(events)).toEqual([]);
+    expect(events.filter((event) => event.type === "error")).toEqual([]);
+    expect(Date.now() - resulted).toBeLessThan(15_000);
+  });
+
+  it("leaves the original thread as the chat left it: nothing is started on it but the person's own messages", async () => {
+    const { provider, turns } = suggesting({ after: { "turn/start": chatTurn() }, afterFork: { "turn/start": forkTurn("file it on Delivery") } });
+    await collect(provider.resume("thr-chat", "draft it", { cwd: worktree, suggestNextMessage: true }));
+    await collect(provider.resume("thr-chat", "file it on Delivery", { cwd: worktree }));
+    expect(turns().filter((turn) => turn.threadId === "thr-chat").map((turn) => turn.text)).toEqual(["draft it", "file it on Delivery"]);
+    expect(turns().filter((turn) => turn.text === PROMPT_SUGGESTION_PROMPT).map((turn) => turn.threadId)).toEqual(["thr-suggest"]);
   });
 });

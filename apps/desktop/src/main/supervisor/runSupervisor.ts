@@ -136,6 +136,8 @@ import {
   type JobRunsOn,
   type UsageEvent,
   type Uuid,
+  type SuggestionSpend,
+  MICROCENTS_PER_CENT,
   type PipelineStep,
   type WorkspaceKindSlug,
   skillToolNotServed,
@@ -190,7 +192,7 @@ import { handOffModuleRefusal, handOffRefusal, reportedResultKey, routeResult } 
 import { stepScopeFor, trialStepMode } from "../trials/stepModes.js";
 import { attemptLimitStop } from "./attemptLimit.js";
 import { isOutOfMemoryStop, outOfMemoryStop } from "./outOfMemory.js";
-import { scopedProvider } from "./scopedProvider.js";
+import { scopedProvider, suggestionSpendReported } from "./scopedProvider.js";
 import { effectiveRunMemoryMaxMb, machineMemoryMb, runScopes, type RunOutOfMemory } from "../process/runScope.js";
 import { createUsageTally, sessionTotalBefore, type ThreadUsage } from "./usageTally.js";
 import {
@@ -3905,7 +3907,13 @@ export function createRunSupervisor(
     // own systemd scope where the machine has one, with the run's memory
     // limit (EO-738). Said once here, the one door every run's turn goes
     // through, rather than at each of the places a turn is opened.
-    const inner = scopedProvider(providerFor(agent, item), processScopeOf(run.id));
+    //
+    // And what a suggested next message cost, where its backend made one
+    // with a turn of its own (EO-808, Codex's fork of an assistant chat's
+    // thread): a side call's row, as the learning review's fork is, so
+    // the budgets that count side calls count it and nothing is spent
+    // unseen. Said here for the same reason.
+    const inner = suggestionSpendReported(scopedProvider(providerFor(agent, item), processScopeOf(run.id)), (spend) => recordSuggestionSpend(run.id, agent, item, spend));
     const capturing = debugMode() && (send.purpose !== "correction" || capturedRuns.has(run.id));
     // And every turn of a run on an item is a newer turn on it, which
     // stops a suggested reply still being made after the last one, and
@@ -3928,6 +3936,30 @@ export function createRunSupervisor(
       },
       (sent) => recordSent(run.id, sent),
     ), item.id, run.id);
+  }
+
+  /** What making a run's suggested next message spent (EO-808), as a `prompt_suggestion` side call's row. Never throws. */
+  function recordSuggestionSpend(runId: Uuid, agent: Agent, item: Item, spend: SuggestionSpend): void {
+    try {
+      const { usage } = spend;
+      recordSideCall(db, {
+        purpose: "prompt_suggestion",
+        projectId: (item.projectId as Uuid | null) ?? null,
+        itemId: item.id,
+        runId,
+        backend: runsOn(agent, item).provider,
+        model: usage.model ?? null,
+        tokensIn: usage.tokensIn,
+        tokensOut: usage.tokensOut,
+        costMicrocents: usage.costMicrocents ?? Math.round((usage.costCents ?? 0) * MICROCENTS_PER_CENT),
+        startedAt: spend.startedAt,
+        durationMs: spend.durationMs,
+        outcome: spend.completed ? "succeeded" : "failed",
+        reason: spend.completed ? null : "error",
+      });
+    } catch (error) {
+      console.warn(`[eo] what the suggested reply after run ${runId} spent could not be recorded: ${error instanceof Error ? error.message : String(error)}`);
+    }
   }
 
   /** What a run's processes are started under (EO-738): the run, and its memory limit as the guardrails say now. */

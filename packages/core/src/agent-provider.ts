@@ -148,6 +148,29 @@ export interface AgentTurnOverrides {
    * `promptSuggestions`, and Codex opens no fork to make one.
    */
   suggestNextMessage?: boolean;
+  /**
+   * Told what making the suggested next message spent, where the adapter
+   * made it with a turn of its own that reported it (EO-808): Codex's
+   * fork of the thread, called once when the fork ends, however it ended.
+   * Never the turn's own spend, which its `usage` events carry as always,
+   * so the caller records it apart — as a side call's row, the way the
+   * learning review's fork is recorded.
+   *
+   * Claude's backend makes its suggestion inside its own CLI and reports
+   * nothing of what it spent, so on Claude this is never called.
+   */
+  onSuggestionSpend?: (spend: SuggestionSpend) => void;
+}
+
+/** What making a suggested next message spent (`AgentTurnOverrides.onSuggestionSpend`, EO-808). */
+export interface SuggestionSpend {
+  /** The suggestion turn's own usage, as its backend reported it. */
+  usage: UsageEvent;
+  /** When the adapter set about making it, in epoch milliseconds, and how long that took. */
+  startedAt: number;
+  durationMs: number;
+  /** Whether its turn ran to an answer — kept or filtered out — rather than failing or being aborted. */
+  completed: boolean;
 }
 
 /** What a run's processes are started under (EO-738): whose they are, and how much memory they may use. */
@@ -1257,8 +1280,8 @@ export interface AgentSideCallOptions {
 }
 
 export type AgentPrewarmTurn =
-  | ({ kind: "start"; instructions: string } & Omit<AgentProviderStartOptions, "instructions" | "context" | "signal" | "attachments" | "onSkillsSection">)
-  | ({ kind: "resume"; threadId: string } & Omit<AgentProviderResumeOptions, "signal" | "attachments" | "onSkillsSection">);
+  | ({ kind: "start"; instructions: string } & Omit<AgentProviderStartOptions, "instructions" | "context" | "signal" | "attachments" | "onSkillsSection" | "onSuggestionSpend">)
+  | ({ kind: "resume"; threadId: string } & Omit<AgentProviderResumeOptions, "signal" | "attachments" | "onSkillsSection" | "onSuggestionSpend">);
 
 export interface AgentProvider {
   start: (opts: AgentProviderStartOptions) => InterruptibleStream<AgentEvent>;

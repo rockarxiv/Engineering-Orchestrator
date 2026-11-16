@@ -53,6 +53,7 @@ import type { AdminMcpDispatch } from "../agentAttachments/adminDelivery.js";
 import { deliverableSkills, writeWorktreeSkills, worktreeSkillsPromptSection, type WorktreeSkillDelivery } from "../agentAttachments/worktreeSkills.js";
 import { codexSkillLoaded, skillsOffered, withoutEvents } from "./skillUsage.js";
 import { openedFork } from "./threadFork.js";
+import { cleanSuggestion, PROMPT_SUGGESTION_PROMPT, SUGGESTION_MAX_UNCACHED_TOKENS, SUGGESTION_MIN_COMPLETED_TURNS, SUGGESTION_NEAR_LIMIT_PERCENT, SUGGESTION_TIMEOUT_MS } from "./promptSuggestion.js";
 import { agentMcpStdioConfig, eoMcpStdioConfig, type EoMcpServiceConfig } from "../mcp/serviceConfig.js";
 import { codexModelPrice, codexTurnCostCents, codexTurnCostMicrocents } from "./codexPricing.js";
 import { personCodexHome } from "./codexHome.js";
@@ -339,6 +340,8 @@ export interface CodexProviderOptions {
    * that is neither translated nor deliberately ignored (`codexClient.ts`).
    */
   onUnmappedEvent?: (event: ThreadEvent | AppServerNotification) => void;
+  /** How long a suggested next message may take (`SUGGESTION_TIMEOUT_MS`, EO-808). A seam for tests. */
+  suggestionTimeoutMs?: number;
   /*
    * No `pricing` (EO-374). It was a price the caller could supply, and
    * no caller ever did, so every Codex run cost nothing and no budget
@@ -2311,7 +2314,10 @@ export function createCodexProvider(options: CodexProviderOptions = {}): AgentPr
         server: repositoryMcp,
         cwd,
         commandPath: options.searchHookCommandPath,
-        ...(refusing ? { refuse: (tool: string) => refusedCall(tool, { eoTools: refuseCallsExcept, repositoryServer: repositoryMcp?.name ?? null }) } : {}),
+        // A turn allowed no calls is allowed none of the repository
+        // server's either (EO-808): its tools are still offered, so the
+        // request starts as the run's did, and refused when called.
+        ...(refusing ? { refuse: (tool: string) => refusedCall(tool, { eoTools: refuseCallsExcept, repositoryServer: refuseCallsExcept.length === 0 ? null : (repositoryMcp?.name ?? null) }) } : {}),
       });
       if (hook === null) {
         if (refusing) throw new Error("EO has no hook command to run on this machine");
@@ -2391,6 +2397,8 @@ export function createCodexProvider(options: CodexProviderOptions = {}): AgentPr
     warmKey?: string,
     /** What the turn may spend, in cents (`AgentTurnOverrides.budgetCents`). */
     budgetCents?: number,
+    /** Where what the turn says of itself is kept for after it (EO-808). */
+    facts?: TurnFacts,
   ) {
     const interceptions = (): SearchInterceptionEvent[] => searchHook?.drain() ?? [];
     const turn = await thread.runStreamed(input, {
@@ -2438,6 +2446,7 @@ export function createCodexProvider(options: CodexProviderOptions = {}): AgentPr
             return;
           }
         }
+        if (event.type === "turn.completed" && facts && event.lastRequest) facts.lastRequest = event.lastRequest;
         const { mapped: all, recognised } = mapThreadEvent(event);
         if (!recognised) options.onUnmappedEvent?.(event);
         const mapped = streamDeltas ? all : all.filter((agentEvent) => agentEvent.type !== "output_delta");
@@ -2534,6 +2543,9 @@ export function createCodexProvider(options: CodexProviderOptions = {}): AgentPr
     reach: (turn: CodexTurn) => void,
     fork: boolean,
     skills: { slugs: string[]; section: string },
+    facts?: TurnFacts,
+    /** A fork opened only on a thread holding at least this many completed turns (`CodexThreadOptions.forkAfterCompletedTurns`, EO-808). */
+    forkAfterCompletedTurns?: number,
   ): AsyncIterable<AgentEvent> {
     const skillSlugs = skills.slugs;
     // Given them again, as a fresh turn is (EO-715).
@@ -2583,9 +2595,8 @@ export function createCodexProvider(options: CodexProviderOptions = {}): AgentPr
       // original, which is the one thing a fork must never write to.
       const openThread = fork ? client.forkThread?.bind(client) : client.resumeThread.bind(client);
       if (!openThread) throw new Error("This Codex client cannot fork a thread.");
-      const thread = openThread(
-        threadId,
-        threadOptionsFrom(
+      const thread = openThread(threadId, {
+        ...threadOptionsFrom(
           {
             ...(resumeOpts?.cwd ? { cwd: resumeOpts.cwd } : {}),
             ...(resumeOpts?.model ? { model: resumeOpts.model } : {}),
@@ -2595,9 +2606,10 @@ export function createCodexProvider(options: CodexProviderOptions = {}): AgentPr
           },
           options.config,
         ),
-      );
+        ...(forkAfterCompletedTurns === undefined ? {} : { forkAfterCompletedTurns }),
+      });
       const prompt = withAttachmentNote(withSkillsSection(message, skills.section), resumeOpts?.attachments);
-      for await (const event of streamTurn(thread, prompt, resumeOpts?.outputSchema, resumeOpts?.signal, reach, hook, resumeOpts?.streamDeltas === true, resumeOpts?.warmKey, resumeOpts?.budgetCents)) {
+      for await (const event of streamTurn(thread, prompt, resumeOpts?.outputSchema, resumeOpts?.signal, reach, hook, resumeOpts?.streamDeltas === true, resumeOpts?.warmKey, resumeOpts?.budgetCents, facts)) {
         // A turn that fails before it starts is reported as an event
         // rather than by exiting, and `mapThreadEvent` has already turned
         // it into an ordinary `error`. Re-thrown with the backend's own
@@ -2633,6 +2645,12 @@ export function createCodexProvider(options: CodexProviderOptions = {}): AgentPr
    * and `providerSteersLiveTurns` in `capabilities.ts` says yes for Codex
    * — checked against this stream in `capabilities.test.ts`.
    */
+  /**
+   * The suggested next messages being made (EO-808), by the thread they
+   * follow: what stops each when a new turn opens on that thread.
+   */
+  const suggesting = new Map<string, AbortController>();
+
   return {
     start(opts: AgentProviderStartOptions): InterruptibleStream<AgentEvent> {
       // The skills this agent has attached, written into the worktree and
@@ -2664,38 +2682,39 @@ export function createCodexProvider(options: CodexProviderOptions = {}): AgentPr
     },
 
     resume(threadId: string, message: string, resumeOpts?: AgentProviderResumeOptions): InterruptibleStream<AgentEvent> {
+      // A new turn on the thread: a suggestion after its last one is for a
+      // message nobody is now going to send (EO-808) — whether it is being
+      // made, or that turn's stream has not yet been read far enough to
+      // start it. So the turn's own stop is the thread's from here, not
+      // from when its suggestion starts: an older stream read on after
+      // this has opened finds its stop already aborted, and makes none.
+      suggesting.get(threadId)?.abort();
+      const stop = new AbortController();
+      if (resumeOpts?.suggestNextMessage === true) suggesting.set(threadId, stop);
+      else suggesting.delete(threadId);
       const skills = resumedSkills(resumeOpts);
       resumeOpts?.onSkillsSection?.(skills.section);
-      return refusingCalls(resumeOpts, reachableTurn((reach) => lostThreadTranslated(threadId, message, resumeOpts, reach, false, skills)));
+      const facts: TurnFacts = {};
+      const stream = refusingCalls(
+        resumeOpts,
+        reachableTurn((reach) => suggestingAfter(lostThreadTranslated(threadId, message, resumeOpts, reach, false, skills, facts), threadId, resumeOpts, facts, stop)),
+      );
+      // Cancelling the turn cancels the suggestion after it too, which by
+      // then has no turn of the thread's own left to interrupt (EO-808).
+      return {
+        ...stream,
+        async interrupt() {
+          stop.abort();
+          await stream.interrupt?.();
+        },
+      };
     },
 
-    fork(threadId: string, message: string, forkOpts?: AgentProviderResumeOptions): Promise<AgentForkResult> {
-      // The app-server's own fork: `thread/fork` copies the thread and
-      // answers with the copy's id, and the turn is started on the copy
-      // (EO-716). A missing thread is refused in the words a resume's is,
-      // "no rollout found for thread id" — measured on 0.166.0 — so it is
-      // translated the same way and answered as `thread_not_found`.
-      //
-      // The skills are given back as on a resume (EO-721), Skills section
-      // included: a fork copies a thread that may predate `skill_read` and
-      // still say to read a `SKILL.md` that is no longer written.
-      //
-      // Except on a turn that refuses calls (EO-732), whose section would
-      // tell it to load skills with `skill_read`, which it is refused: the
-      // learning review reads them with `skill_view`. The skills are still
-      // written and `skill_read` still listed, as on the run, so what the
-      // fork is sent starts as the run's did; only the message it adds
-      // goes without the section, which is no part of that start.
-      const resumed = resumedSkills(forkOpts);
-      const skills = forkOpts?.refuseCallsExcept && !forkOpts.refuseCallsExcept.includes(SKILL_READ_TOOL_NAME) ? { ...resumed, section: "" } : resumed;
-      forkOpts?.onSkillsSection?.(skills.section);
-      return openedFork(threadId, refusingCalls(forkOpts, reachableTurn((reach) => lostThreadTranslated(threadId, message, forkOpts, reach, true, skills))));
-    },
+    fork: (threadId, message, forkOpts) => forkTurn(threadId, message, forkOpts),
 
     dropWarm(): void {
       dropWarmCodexThread();
     },
-
     prewarm(turn: AgentPrewarmTurn): void {
       // Not for a turn with a repository index: its broad-search hook is
       // opened per turn, so a process started without it would never be
@@ -2812,6 +2831,136 @@ export function createCodexProvider(options: CodexProviderOptions = {}): AgentPr
     },
   };
 
+  /** A fork's turn (`AgentProvider.fork`): the learning review's (EO-716), and a suggested next message's (EO-808). */
+  function forkTurn(
+    threadId: string,
+    message: string,
+    forkOpts?: AgentProviderResumeOptions,
+    /** Opened only on a thread holding at least this many completed turns: a suggestion's (EO-808). */
+    forkAfterCompletedTurns?: number,
+  ): Promise<AgentForkResult> {
+    // The app-server's own fork: `thread/fork` copies the thread and
+    // answers with the copy's id, and the turn is started on the copy
+    // (EO-716). A missing thread is refused in the words a resume's is,
+    // "no rollout found for thread id" — measured on 0.166.0 — so it is
+    // translated the same way and answered as `thread_not_found`.
+    //
+    // The skills are given back as on a resume (EO-721), Skills section
+    // included: a fork copies a thread that may predate `skill_read` and
+    // still say to read a `SKILL.md` that is no longer written.
+    //
+    // Except on a turn that refuses calls (EO-732), whose section would
+    // tell it to load skills with `skill_read`, which it is refused: the
+    // learning review reads them with `skill_view`. The skills are still
+    // written and `skill_read` still listed, as on the run, so what the
+    // fork is sent starts as the run's did; only the message it adds
+    // goes without the section, which is no part of that start.
+    const resumed = resumedSkills(forkOpts);
+    const skills = forkOpts?.refuseCallsExcept && !forkOpts.refuseCallsExcept.includes(SKILL_READ_TOOL_NAME) ? { ...resumed, section: "" } : resumed;
+    forkOpts?.onSkillsSection?.(skills.section);
+    return openedFork(threadId, refusingCalls(forkOpts, reachableTurn((reach) => lostThreadTranslated(threadId, message, forkOpts, reach, true, skills, undefined, forkAfterCompletedTurns))));
+  }
+
+  /**
+   * The turn, and after it a suggested next message where one was asked
+   * for and is worth making (EO-808).
+   *
+   * Codex makes none of its own, so this makes it the way the learning
+   * review reads a run (EO-716, EO-732): on a fork of the thread just
+   * finished, in prediction mode where the app-server allows it, so the
+   * fork's request reads the thread from the prompt cache. The fork is
+   * sent EO's prompt with every call refused, and its answer is cleaned
+   * up and filtered (`promptSuggestion.ts`) before it is passed on as a
+   * `prompt_suggestion` event — the one Claude's adapter passes on.
+   *
+   * After the turn's `result`, never before: the turn is over there, and
+   * its process ended, whether or not the caller reads on. One that stops
+   * reading at the result never starts a fork at all. Nothing here fails
+   * the turn: a fork that cannot be opened, fails or answers something
+   * the filters drop says nothing. The original thread is not written to.
+   *
+   * Not made after a turn that failed or was cancelled, on a thread with
+   * only one completed answer, with the account at or near its limit, or
+   * after a last request that was mostly uncached. How many completed
+   * turns the thread holds is asked of the thread itself, by the fork as
+   * it opens (`SUGGESTION_MIN_COMPLETED_TURNS`): a resume does not prove
+   * an earlier answer, since the thread's first turn may have failed.
+   *
+   * `stop` is the thread's in `suggesting` from the moment `resume`
+   * opened, so a newer turn on the thread aborts it even before this
+   * turn's stream has been read to its end.
+   */
+  async function* suggestingAfter(
+    turn: AsyncIterable<AgentEvent>,
+    threadId: string,
+    resumeOpts: AgentProviderResumeOptions | undefined,
+    facts: TurnFacts,
+    stop: AbortController,
+  ): AsyncIterable<AgentEvent> {
+    try {
+      let answered = false;
+      let failed = false;
+      let nearLimit = false;
+      for await (const event of turn) {
+        if (event.type === "result") answered = true;
+        else if (event.type === "error" && event.fatal !== false) failed = true;
+        else if (event.type === "quota" && atOrNearLimit(event)) nearLimit = true;
+        yield event;
+      }
+      if (resumeOpts?.suggestNextMessage !== true || resumeOpts.refuseCallsExcept !== undefined) return;
+      if (!answered || failed || nearLimit || stop.signal.aborted || resumeOpts.signal?.aborted) return;
+      if (facts.lastRequest && uncachedTokens(facts.lastRequest) > SUGGESTION_MAX_UNCACHED_TOKENS) return;
+
+      // Stopped by the run's own cancel too, by the next turn on the
+      // thread (`resume`, which aborts `stop`), and at its time limit,
+      // whichever comes first.
+      const cancel = () => stop.abort();
+      resumeOpts.signal?.addEventListener("abort", cancel, { once: true });
+      const limit = setTimeout(cancel, options.suggestionTimeoutMs ?? SUGGESTION_TIMEOUT_MS);
+      try {
+        const text = await suggestionOn(threadId, resumeOpts, stop.signal);
+        if (text !== null && !stop.signal.aborted) yield { type: "prompt_suggestion", text, threadId } satisfies AgentEvent;
+      } finally {
+        clearTimeout(limit);
+        resumeOpts.signal?.removeEventListener("abort", cancel);
+      }
+    } finally {
+      if (suggesting.get(threadId) === stop) suggesting.delete(threadId);
+    }
+  }
+
+  /**
+   * The suggestion one fork of the thread answers, cleaned up, or null —
+   * never a throw. What the fork spent is reported (`onSuggestionSpend`)
+   * however it ended, where its turn said.
+   */
+  async function suggestionOn(threadId: string, resumeOpts: AgentProviderResumeOptions, signal: AbortSignal): Promise<string | null> {
+    const startedAt = Date.now();
+    let spent: UsageEvent | undefined;
+    let answer: string | null = null;
+    let failed = false;
+    try {
+      const forked = await forkTurn(threadId, PROMPT_SUGGESTION_PROMPT, suggestionForkOptions(resumeOpts, signal), SUGGESTION_MIN_COMPLETED_TURNS);
+      if (!forked.ok) return null;
+      for await (const event of forked.events) {
+        if (event.type === "usage") spent = event;
+        else if (event.type === "result") answer = typeof event.data === "string" ? event.data : null;
+        else if (event.type === "error" && event.fatal !== false) failed = true;
+      }
+    } catch {
+      failed = true;
+    } finally {
+      if (spent) {
+        try {
+          resumeOpts.onSuggestionSpend?.({ usage: spent, startedAt, durationMs: Math.max(0, Date.now() - startedAt), completed: !failed && !signal.aborted && answer !== null });
+        } catch (error) {
+          console.warn(`[codex] what a suggested reply spent could not be reported: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      }
+    }
+    return failed || signal.aborted || answer === null ? null : cleanSuggestion(answer);
+  }
+
   async function* startedTurn(opts: AgentProviderStartOptions, skillsSection: string, reach: (turn: CodexTurn) => void, skillSlugs: readonly string[]): AsyncIterable<AgentEvent> {
     if (opts.tools && opts.tools.length > 0 && !options.eoMcp) {
       // Deliberately loud: silently dropping the comment tool would
@@ -2885,6 +3034,8 @@ export function createCodexProvider(options: CodexProviderOptions = {}): AgentPr
     reach: (turn: CodexTurn) => void,
     fork: boolean,
     skills: { slugs: string[]; section: string },
+    facts?: TurnFacts,
+    forkAfterCompletedTurns?: number,
   ): AsyncIterable<AgentEvent> {
     // "This thread is gone" told apart from every other way a resume
     // can fail (EO-93). Only the recognised sentence is translated;
@@ -2897,7 +3048,7 @@ export function createCodexProvider(options: CodexProviderOptions = {}): AgentPr
     // which `resumedTurn` re-throws with the backend's own words so
     // that both arrive here.
     try {
-      yield* resumedTurn(threadId, message, resumeOpts, reach, fork, skills);
+      yield* resumedTurn(threadId, message, resumeOpts, reach, fork, skills, facts, forkAfterCompletedTurns);
     } catch (error) {
       if (!isMissingCodexSession(error)) throw error;
       throw new ThreadNotFoundError({ threadId, provider: PROVIDER, cause: error });
@@ -2950,6 +3101,53 @@ function withInterceptions(mapped: AgentEvent[], pending: SearchInterceptionEven
  * `interrupt` does nothing and `steer` answers false, which is the
  * contract's "the turn had already ended".
  */
+/** What a turn says of itself that is read after it (EO-808): its last model response's own usage. */
+interface TurnFacts {
+  lastRequest?: Usage;
+}
+
+/** Tokens a request spent outside the prompt cache: its uncached input, and its output. */
+function uncachedTokens(usage: Usage): number {
+  return Math.max(0, usage.input_tokens - usage.cached_input_tokens) + usage.output_tokens;
+}
+
+/** Whether a plan reading puts the account at or near its limit (EO-808): refused, warned, or past `SUGGESTION_NEAR_LIMIT_PERCENT`. */
+function atOrNearLimit(reading: QuotaEvent): boolean {
+  return reading.status !== "allowed" || (reading.utilization ?? 0) >= SUGGESTION_NEAR_LIMIT_PERCENT;
+}
+
+/**
+ * What a suggestion's fork is opened with (EO-808): what the turn was,
+ * so it is launched as the turn was and its request reads the thread
+ * from the prompt cache — less what belongs to the turn alone, and with
+ * every call refused.
+ *
+ * Without the answer schema, which would put the suggestion in the
+ * answer's shape; the person's attachments, said in the turn's own
+ * message; the warm process waiting for the thread's next turn, which is
+ * not this; the turn's budget and streaming, and the callbacks that
+ * report on the turn (`TURN_ALONE`).
+ */
+function suggestionForkOptions(turn: AgentProviderResumeOptions, signal: AbortSignal): AgentProviderResumeOptions {
+  const launched: AgentProviderResumeOptions = { ...turn };
+  for (const own of TURN_ALONE) delete launched[own];
+  return { ...launched, refuseCallsExcept: [], signal };
+}
+
+/** What a turn's options say of that turn alone, and a suggestion's fork is not given (EO-808). */
+const TURN_ALONE = [
+  "outputSchema",
+  "attachments",
+  "warmKey",
+  "budgetCents",
+  "streamDeltas",
+  "streamAnswer",
+  "onSkillsSection",
+  "onSuggestionSpend",
+  "suggestNextMessage",
+  "signal",
+] as const satisfies readonly (keyof AgentProviderResumeOptions)[];
+
 /** `events`, then everything `turn` says. */
 async function* saidFirst(events: readonly AgentEvent[], turn: AsyncIterable<AgentEvent>): AsyncIterable<AgentEvent> {
   yield* events;

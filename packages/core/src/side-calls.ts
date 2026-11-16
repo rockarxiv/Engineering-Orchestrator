@@ -18,9 +18,12 @@ import { z } from "zod";
  * call asks: it is the review turn on a fork of a run's own thread, run
  * on that run's agent, and it is written here only so that what it
  * spent is counted wherever side calls are (`SIDE_CALL_MODELS` says
- * `agent`, which `sideCall` refuses).
+ * `agent`, which `sideCall` refuses). `prompt_suggestion` (EO-808) is
+ * another: the turn a Codex adapter runs on a fork of an assistant
+ * chat's thread to make a suggested next message, recorded here for the
+ * same reason.
  */
-export const SIDE_CALL_PURPOSES = ["memory_select", "memory_extract", "memory_consolidate", "learning_review"] as const;
+export const SIDE_CALL_PURPOSES = ["memory_select", "memory_extract", "memory_consolidate", "learning_review", "prompt_suggestion"] as const;
 export const SideCallPurposeSchema = z.enum(SIDE_CALL_PURPOSES);
 export type SideCallPurpose = z.infer<typeof SideCallPurposeSchema>;
 
@@ -47,6 +50,7 @@ export const SIDE_CALL_MODELS = {
   memory_extract: "small",
   memory_consolidate: "system_agent",
   learning_review: "agent",
+  prompt_suggestion: "agent",
 } as const satisfies Record<SideCallPurpose, "small" | "system_agent" | "agent">;
 
 /** What a `system_agent` side call runs on: a model and a reasoning effort, either null for the backend's default. */
@@ -124,6 +128,7 @@ export type SideCallResult<T> = { ok: true; value: T } | { ok: false; reason: Si
  */
 export const SIDE_CALL_SPEND_GROUPS = {
   memory_upkeep: { label: "Memory upkeep", purposes: ["memory_select", "memory_extract", "memory_consolidate", "learning_review"] },
+  suggested_replies: { label: "Suggested replies", purposes: ["prompt_suggestion"] },
 } as const satisfies Record<string, { label: string; purposes: readonly SideCallPurpose[] }>;
 
 export type SideCallSpendGroup = keyof typeof SIDE_CALL_SPEND_GROUPS;
