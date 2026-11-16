@@ -8,14 +8,14 @@ import {
   type Uuid,
 } from "@eo/core";
 import type { Db } from "../db/client.js";
-import { getJob, listAllJobs, listDevices, listJobs } from "../db/repos/index.js";
+import { getJob, listAllJobs, listDevices, listJobs, listWatchChecks } from "../db/repos/index.js";
 import { placementForJob, runsOnOf, type PlacementFacts } from "../jobs/placement.js";
 import { sessionStatus, type SessionStoreOptions } from "../managed/session.js";
 import { jobCostCents, pauseJob, resumeJob } from "../jobs/budget.js";
 import { fireJob, jobEntryVerdicts, type FireOptions } from "../jobs/fire.js";
 import { moduleRulesNotice, createJob, deleteJob, updateJob } from "../jobs/jobs.js";
 import { resumeWatch } from "../jobs/watch.js";
-import { jobSummary, occurrenceRows } from "../jobs/summary.js";
+import { jobSummary, occurrenceRows, recentWatchChecks, watchCheckRow } from "../jobs/summary.js";
 import { activeProjectId } from "./repositoryCommands.js";
 import type { EngineHandle } from "./domainCommands.js";
 import { emitPush } from "./push.js";
@@ -218,8 +218,22 @@ export function listJobsCommand(db: Db, input: IpcPayload<"jobs:list">): IpcResp
  */
 export function getJobCommand(db: Db, input: IpcPayload<"jobs:get">): IpcResponse<"jobs:get"> {
   const job = getJob(db, input.jobId as Uuid);
-  if (!job || job.deletedAt !== null || !keptByAPerson(job)) return { job: null, occurrences: [] };
-  return { job: jobSummary(db, job), occurrences: occurrenceRows(db, job.id as Uuid) };
+  if (!job || job.deletedAt !== null || !keptByAPerson(job)) return { job: null, occurrences: [], checks: [] };
+  return { job: jobSummary(db, job), occurrences: occurrenceRows(db, job.id as Uuid), checks: recentWatchChecks(db, job) };
+}
+
+/**
+ * A watch job's checks, newest first, a page at a time, for the Job
+ * page's Checks tab (EO-800). A deleted job, a conversation's, and one
+ * that is not a watch job answer none, as `jobs:get` answers no job.
+ */
+export function jobChecksCommand(db: Db, input: IpcPayload<"jobs:checks">): IpcResponse<"jobs:checks"> {
+  const job = getJob(db, input.jobId as Uuid);
+  if (!job || job.deletedAt !== null || !keptByAPerson(job) || job.trigger.kind !== "watch") return { checks: [], nextBefore: null };
+  // One more than the page, to know whether there is a page after it.
+  const rows = listWatchChecks(db, job.id as Uuid, input.limit + 1, input.before);
+  const page = rows.slice(0, input.limit);
+  return { checks: page.map((check) => watchCheckRow(db, check)), nextBefore: rows.length > input.limit ? (page.at(-1)?.id ?? null) : null };
 }
 
 /**

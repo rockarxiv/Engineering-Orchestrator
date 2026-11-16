@@ -1779,12 +1779,14 @@ const JOB_READ_TOOLS: readonly ToolSpec[] = [
     description:
       "One job, as jobs_list describes it, with its occurrences newest first: when each was due, whether it fired, was " +
       "skipped or failed and why, the item it filed and what that cost. Answers that there is no such job for one deleted, " +
-      "one never made, and a conversation's job. A webhook job's signing secret is never in the answer.",
+      "one never made, and a conversation's job. A webhook job's signing secret is never in the answer. A watch job also " +
+      "answers its newest checks, newest first: when each ran and ended, what it answered (waiting, a declared result or " +
+      "failed), the module's detail or why it failed, how many findings it reported and the items it filed.",
     kind: "read",
     list: "occurrences",
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-    render: (data) => renderJob({ job: data.job === null ? null : agentJob(data.job), occurrences: data.occurrences }),
-    forAgent: (data) => ({ job: data.job === null ? null : agentJob(data.job), occurrences: data.occurrences }),
+    render: (data) => renderJob({ job: data.job === null ? null : agentJob(data.job), occurrences: data.occurrences, checks: data.checks }),
+    forAgent: (data) => ({ job: data.job === null ? null : agentJob(data.job), occurrences: data.occurrences, checks: data.checks }),
   }),
 ];
 

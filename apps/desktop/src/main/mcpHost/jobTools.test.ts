@@ -2,7 +2,7 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import type { ModuleManifest, Uuid } from "@eo/core";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { DbHandle } from "../db/client.js";
-import { getJob, listJobs, saveModule } from "../db/repos/index.js";
+import { getJob, listJobs, recordWatchCheck, saveModule } from "../db/repos/index.js";
 import { createTestItem, openMigratedTestDb } from "../db/testHelpers.js";
 import { createJobCommand, deleteJobCommand, getJobCommand, listJobsCommand, updateJobCommand } from "../ipc/jobCommands.js";
 import { clearHandlerRegistry, registerHandler } from "../ipc/registry.js";
@@ -172,6 +172,39 @@ describe("the reads", () => {
         path: "deploys",
         mapping: { title: null, body: null, eventKey: null, spec: {} },
       });
+    }
+  });
+
+  it("answers a watch job's newest checks, newest first, without their output, on either listener (EO-800)", async () => {
+    const created = createJob(handle.db, {
+      projectId: null,
+      name: "PR intake",
+      trigger: { kind: "watch", moduleId: module(true).id, inputs: { repo: "eo/eo" }, everyMinutes: 60, waitWhileOpen: false },
+      pipelineId: "default",
+      template: TEMPLATE,
+    });
+    if (!created.ok) throw new Error(created.problem);
+    const job = created.job;
+    const item = createTestItem(handle.db, { type: "story", title: "Bump zod", stepId: "todo", projectId: null });
+    const T0 = Date.UTC(2026, 10, 12, 9, 0);
+    const base = { jobId: job.id, detail: "", findingCount: 0, filedItemIds: [], output: "$ gh pr list --repo eo/eo" };
+    recordWatchCheck(handle.db, { ...base, startedAt: T0, endedAt: T0 + 2_000, answer: "failed", detail: "gh is not signed in." });
+    recordWatchCheck(handle.db, { ...base, startedAt: T0 + 60_000, endedAt: T0 + 64_000, answer: "waiting", findingCount: 1, filedItemIds: [item.id] });
+
+    for (const audience of ["admin", "external"] as const) {
+      const answer = await call("job_get", { jobId: job.id }, audience);
+      expect(answer.isError, audience).toBe(false);
+      const checks = (answer.structuredContent as { checks: Record<string, unknown>[] }).checks;
+      expect(checks.map((check) => [check["answer"], check["startedAt"]])).toEqual([
+        ["waiting", T0 + 60_000],
+        ["failed", T0],
+      ]);
+      expect(checks[0]).toMatchObject({ endedAt: T0 + 64_000, findingCount: 1, filedItems: [{ id: item.id, key: item.key, title: "Bump zod" }] });
+      expect(checks[1]).toMatchObject({ detail: "gh is not signed in." });
+      expect(JSON.stringify(answer)).not.toContain("gh pr list");
+      expect(textOf(answer)).toContain("Newest checks, newest first:");
+      expect(textOf(answer)).toContain(`answered waiting after 4s, 1 finding(s), filed ${item.key}`);
+      expect(textOf(answer)).toContain("answered failed after 2s, 0 finding(s) — gh is not signed in.");
     }
   });
 

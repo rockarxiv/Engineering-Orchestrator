@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { WAITING_RESULT, moduleInputProblems, type CustomModule, type Item, type Job, type JobRunsOn, type Uuid, type WatchFinding, type WatchTrigger } from "@eo/core";
+import { WAITING_RESULT, WATCH_CHECK_OUTPUT_LIMIT, moduleInputProblems, type CustomModule, type Item, type Job, type JobRunsOn, type Uuid, type WatchFinding, type WatchTrigger } from "@eo/core";
 import { WATCH_FAILURE_LIMIT, watchFailuresExhausted, watchRetryDelayMs } from "@eo/engine";
 import type { Db } from "../db/client.js";
 import {
@@ -14,6 +14,7 @@ import {
   latestRefusalFor,
   listAllJobs,
   recordJobEvent,
+  recordWatchCheck,
   saveJobWatchState,
   stepForItem,
   type JobWatchStateRow,
@@ -52,6 +53,12 @@ import { JOB_MESSAGE_SOURCE, messageJobOwner } from "./ownerMessage.js";
  *
  * Checks run one at a time, outside the dispatcher, so they take no item
  * dispatch slot. There is no give-up time.
+ *
+ * Every check that runs is recorded in `job_watch_checks` once it ends
+ * (EO-800): what it answered, its detail or failure, its findings, what
+ * it filed and the tail of the module's output. `job_watch_states` is
+ * where the checks stand; that is their history. A check held by
+ * `waitWhileOpen` did not run and is not recorded.
  */
 
 const MINUTE_MS = 60_000;
@@ -94,11 +101,12 @@ export function unfitWatchModule(module: CustomModule | undefined, moduleId: str
 }
 
 /**
- * Runs one intake check of this job's module and answers what it said.
+ * Runs one intake check of this job's module and answers what it said,
+ * handing `onOutput` the module's transcript, redacted, as it arrives.
  * A seam, so the whole of the watch is testable with a scripted module
  * host; `createWatchCheck` is the real one.
  */
-export type WatchCheck = (job: Job, module: CustomModule, trigger: WatchTrigger) => Promise<ModuleOutcome>;
+export type WatchCheck = (job: Job, module: CustomModule, trigger: WatchTrigger, onOutput?: (text: string) => void) => Promise<ModuleOutcome>;
 
 export interface WatchCheckOptions {
   launcher: ModuleHostLauncher;
@@ -113,7 +121,7 @@ export interface WatchCheckOptions {
  * under the module time limit.
  */
 export function createWatchCheck(db: Db, options: WatchCheckOptions): WatchCheck {
-  return async (job, module, trigger) => {
+  return async (job, module, trigger, onOutput) => {
     const organisation = options.organisationSecrets;
     const { env, unreadable, dangling, variables } = environmentFor(
       options.secrets,
@@ -143,6 +151,7 @@ export function createWatchCheck(db: Db, options: WatchCheckOptions): WatchCheck
         env,
         variables,
         context,
+        ...(onOutput === undefined ? {} : { onOutput }),
       });
     } finally {
       rmSync(cwd, { recursive: true, force: true });
@@ -164,8 +173,10 @@ export function configureWatchChecks(options: WatchCheckOptions | null): void {
 
 /** The real check, run with whatever `configureWatchChecks` was last given. */
 export function configuredWatchCheck(db: Db): WatchCheck {
-  return async (job, module, trigger) =>
-    configured === null ? { ok: false, reason: `"${module.name}" cannot run: EO here has no module host to run it on.` } : createWatchCheck(db, configured)(job, module, trigger);
+  return async (job, module, trigger, onOutput) =>
+    configured === null
+      ? { ok: false, reason: `"${module.name}" cannot run: EO here has no module host to run it on.` }
+      : createWatchCheck(db, configured)(job, module, trigger, onOutput);
 }
 
 export interface WatchIntakeDeps {
@@ -273,32 +284,62 @@ function openItemFiledBy(db: Db, job: Job): Item | null {
 /**
  * Runs the job's check now and acts on its answer, whatever its next
  * check time says. Answers the ids of the items it filed.
+ *
+ * Records the check in `job_watch_checks` once it ends, however it ends,
+ * as long as the job's row is still there to hang it on.
  */
 export async function checkWatchJob(db: Db, job: Job, deps: WatchIntakeDeps): Promise<string[]> {
   const now = deps.now ?? Date.now;
   const trigger = job.trigger as WatchTrigger;
   const module = getModule(db, trigger.moduleId);
   const unfit = unfitWatchModule(module, trigger.moduleId);
+  const startedAt = now();
+  let output = "";
+  const onOutput = (text: string): void => {
+    output = (output + text).slice(-WATCH_CHECK_OUTPUT_LIMIT);
+  };
   let outcome: ModuleOutcome;
   try {
-    outcome = unfit !== null ? { ok: false, reason: unfit } : await deps.check(job, module!, trigger);
+    outcome = unfit !== null ? { ok: false, reason: unfit } : await deps.check(job, module!, trigger, onOutput);
   } catch (error) {
     outcome = { ok: false, reason: `The check crashed: ${error instanceof Error ? error.message : String(error)}` };
   }
 
-  // Read again: a person may have paused, deleted or moved it while the module ran.
   const id = job.id as Uuid;
+  const said = answerOf(outcome, module);
+  const record = (filed: readonly string[], endedAt: number = now()): void => {
+    if (getJob(db, id) === undefined) return;
+    recordWatchCheck(db, {
+      jobId: id,
+      startedAt,
+      endedAt,
+      answer: said.answer,
+      detail: said.detail,
+      findingCount: outcome.ok ? (outcome.findings?.length ?? 0) : 0,
+      filedItemIds: [...filed],
+      output,
+    });
+  };
+
+  // Read again: a person may have paused, deleted or moved it while the module ran.
   const stored = getJob(db, id);
-  if (stored === undefined || stored.deletedAt !== null) return [];
+  if (stored === undefined || stored.deletedAt !== null) {
+    record([]);
+    return [];
+  }
   const before = getJobWatchState(db, id);
   const current = liveWatchJob(db, id);
   if (current === null) {
-    saveJobWatchState(db, id, { lastCheckedAt: now() });
+    const ended = now();
+    saveJobWatchState(db, id, { lastCheckedAt: ended });
+    record([], ended);
     return [];
   }
 
   if (!outcome.ok) {
-    failed(db, current, before, outcome.reason, now());
+    const ended = now();
+    failed(db, current, before, outcome.reason, ended);
+    record([], ended);
     return [];
   }
 
@@ -310,7 +351,9 @@ export async function checkWatchJob(db: Db, job: Job, deps: WatchIntakeDeps): Pr
         // Paused, deleted or moved while an entry rule ran: what is left
         // of this check is not filed, and the job's state says only that
         // it looked.
-        if (getJob(db, id) !== undefined) saveJobWatchState(db, id, { lastCheckedAt: now() });
+        const ended = now();
+        if (getJob(db, id) !== undefined) saveJobWatchState(db, id, { lastCheckedAt: ended });
+        record(filed, ended);
         return filed;
       }
       if (answer !== null) {
@@ -326,10 +369,12 @@ export async function checkWatchJob(db: Db, job: Job, deps: WatchIntakeDeps): Pr
       lastError: null,
       nextCheckAt: ended + trigger.everyMinutes * MINUTE_MS,
     });
+    record(filed, ended);
     return filed;
   }
 
   const ended = now();
+  record([], ended);
   if (module!.manifest.results.includes(outcome.result)) {
     // The module is telling a person something is wrong: stop at once.
     saveJobWatchState(db, id, { lastCheckedAt: ended, lastAnswer: outcome.result, consecutiveFailures: 0, lastError: null, nextCheckAt: null });
@@ -344,8 +389,24 @@ export async function checkWatchJob(db: Db, job: Job, deps: WatchIntakeDeps): Pr
     return [];
   }
 
-  failed(db, current, before, `"${module!.name}" answered "${outcome.result}", which is neither ${WAITING_RESULT} nor one of the results it declares.`, ended);
+  failed(db, current, before, said.detail, ended);
   return [];
+}
+
+/**
+ * What a check answered, as its row in `job_watch_checks` says it:
+ * `waiting` or the declared result with the module's detail, or `failed`
+ * with why — an answer that is neither waiting nor declared among them.
+ */
+function answerOf(outcome: ModuleOutcome, module: CustomModule | undefined): { answer: string; detail: string } {
+  if (!outcome.ok) return { answer: WATCH_FAILED_ANSWER, detail: outcome.reason };
+  if (outcome.result === WAITING_RESULT || module?.manifest.results.includes(outcome.result) === true) {
+    return { answer: outcome.result, detail: outcome.detail };
+  }
+  return {
+    answer: WATCH_FAILED_ANSWER,
+    detail: `"${module?.name ?? "The module"}" answered "${outcome.result}", which is neither ${WAITING_RESULT} nor one of the results it declares.`,
+  };
 }
 
 /**

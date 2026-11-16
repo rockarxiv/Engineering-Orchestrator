@@ -1,11 +1,11 @@
 import type { IpcPayload, Uuid } from "@eo/core";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { DbHandle } from "../db/client.js";
-import { archivePipeline, listItemsForProject, listJobs, listOccurrences } from "../db/repos/index.js";
+import { archivePipeline, listItemsForProject, listJobs, listOccurrences, recordWatchCheck, saveModule } from "../db/repos/index.js";
 import { createTestItem, openMigratedTestDb } from "../db/testHelpers.js";
 import { openAssistConversation } from "../roles/assist.js";
 import { recordItemsFromConversation } from "../jobs/fromDiscussion.js";
-import { createJobCommand, deleteJobCommand, getJobCommand, jobPlacementCommand, listJobsCommand, runJobNowCommand, updateJobCommand } from "./jobCommands.js";
+import { createJobCommand, deleteJobCommand, getJobCommand, jobChecksCommand, jobPlacementCommand, listJobsCommand, runJobNowCommand, updateJobCommand } from "./jobCommands.js";
 import { getItemDetail, listInbox, listItemSummaries } from "./domainQueries.js";
 
 let handle: DbHandle;
@@ -221,6 +221,70 @@ describe("jobs:get", () => {
     deleteJobCommand(handle.db, { jobId: job.id, archiveItems: false });
 
     expect(getJobCommand(handle.db, { jobId: job.id }).job).toBeNull();
+  });
+});
+
+describe("jobs:checks", () => {
+  async function watchJob() {
+    const saved = saveModule(handle.db, {
+      slug: "pr-watch",
+      name: "PR watch",
+      description: "Finds pull requests.",
+      code: 'export default async function run() { return { ok: true, result: "waiting" }; }',
+      manifest: {
+        name: "PR watch",
+        description: "Finds pull requests.",
+        inputs: {},
+        needs: { bin: [], env: [], network: false, item: false, comment: false, attach: false, create: false },
+        results: [],
+        watch: true,
+      },
+      approve: true,
+    });
+    if (!saved.ok) throw new Error(saved.reason);
+    const result = await create({ trigger: { kind: "watch", moduleId: saved.module.id, inputs: {}, everyMinutes: 60, waitWhileOpen: false } });
+    return result.job!;
+  }
+
+  it("pages through a watch job's checks newest first, with their output and the items they filed", async () => {
+    const job = await watchJob();
+    const item = createTestItem(handle.db, { type: "story", title: "Bump zod", stepId: "todo", projectId: null });
+    for (let n = 0; n < 5; n += 1) {
+      recordWatchCheck(handle.db, {
+        jobId: job.id,
+        startedAt: 1_000 * n,
+        endedAt: 1_000 * n + 10,
+        answer: "waiting",
+        detail: `check ${n}`,
+        findingCount: n === 4 ? 1 : 0,
+        filedItemIds: n === 4 ? [item.id] : [],
+        output: `output ${n}`,
+      });
+    }
+
+    const first = jobChecksCommand(handle.db, { jobId: job.id, limit: 2 });
+    expect(first.checks.map((check) => check.detail)).toEqual(["check 4", "check 3"]);
+    expect(first.checks[0]).toMatchObject({ output: "output 4", filedItems: [{ id: item.id, key: item.key, title: "Bump zod" }] });
+    const second = jobChecksCommand(handle.db, { jobId: job.id, limit: 2, before: first.nextBefore! });
+    expect(second.checks.map((check) => check.detail)).toEqual(["check 2", "check 1"]);
+    const last = jobChecksCommand(handle.db, { jobId: job.id, limit: 2, before: second.nextBefore! });
+    expect(last.checks.map((check) => check.detail)).toEqual(["check 0"]);
+    expect(last.nextBefore).toBeNull();
+
+    // jobs:get carries the newest of them, without their output.
+    const checks = getJobCommand(handle.db, { jobId: job.id }).checks;
+    expect(checks.map((check) => check.detail)).toEqual(["check 4", "check 3", "check 2", "check 1", "check 0"]);
+    expect(checks[0]).not.toHaveProperty("output");
+  });
+
+  it("answers no checks for a job that is not a watch job, or has been deleted", async () => {
+    const manual = (await create()).job!;
+    expect(jobChecksCommand(handle.db, { jobId: manual.id, limit: 50 })).toEqual({ checks: [], nextBefore: null });
+    expect(getJobCommand(handle.db, { jobId: manual.id }).checks).toEqual([]);
+    const watch = await watchJob();
+    recordWatchCheck(handle.db, { jobId: watch.id, startedAt: 1, endedAt: 2, answer: "waiting", detail: "", findingCount: 0, filedItemIds: [], output: "" });
+    deleteJobCommand(handle.db, { jobId: watch.id, archiveItems: false });
+    expect(jobChecksCommand(handle.db, { jobId: watch.id, limit: 50 }).checks).toEqual([]);
   });
 });
 

@@ -43,6 +43,7 @@ import {
   describeJobTrigger,
   webhookPath,
   type JobOccurrenceRow,
+  type JobWatchCheckBrief,
   type JobSummary,
   type JobTrigger,
   type WebhookTrigger,
@@ -2496,12 +2497,20 @@ function occurrenceLine(occurrence: JobOccurrenceRow): string {
   return `- ${stamp(occurrence.dueAt)} ${occurrence.status}${item}, cost ${money(occurrence.costCents)}${reason}`;
 }
 
-export function renderJob(data: { job: AgentJob | null; occurrences: readonly JobOccurrenceRow[] }): string {
+function watchCheckLine(check: JobWatchCheckBrief): string {
+  const seconds = Math.max(0, Math.round((check.endedAt - check.startedAt) / 1000));
+  const filed = check.filedItems.length === 0 ? "" : `, filed ${check.filedItems.map((item) => item.key ?? `${item.id} (deleted)`).join(", ")}`;
+  const detail = check.detail.trim() === "" ? "" : ` — ${check.detail.trim()}`;
+  return `- ${stamp(check.startedAt)} answered ${check.answer} after ${seconds}s, ${check.findingCount} finding(s)${filed}${detail}`;
+}
+
+export function renderJob(data: { job: AgentJob | null; occurrences: readonly JobOccurrenceRow[]; checks?: readonly JobWatchCheckBrief[] }): string {
   if (data.job === null) {
     return "No job with that id is on the Jobs list: it has been deleted, it never existed, or it is a conversation's job, which jobs_list does not show either.";
   }
   const history = data.occurrences.length === 0 ? ["No occurrences yet."] : ["Occurrences, newest first:", ...data.occurrences.map(occurrenceLine)];
-  return [...jobLines(data.job), ...history].join("\n");
+  const checks = data.job.trigger.kind !== "watch" ? [] : (data.checks ?? []).length === 0 ? ["No checks yet."] : ["Newest checks, newest first:", ...data.checks!.map(watchCheckLine)];
+  return [...jobLines(data.job), ...history, ...checks].join("\n");
 }
 
 /** What a job save answers (EO-785): the job as it now stands, and what the save did not check. */

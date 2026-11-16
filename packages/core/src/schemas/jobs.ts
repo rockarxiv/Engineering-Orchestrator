@@ -373,6 +373,43 @@ export const JobWatchStateSchema = z.object({
 });
 export type JobWatchState = z.infer<typeof JobWatchStateSchema>;
 
+/** How much of a check's output `job_watch_checks` keeps: the last this many characters. */
+export const WATCH_CHECK_OUTPUT_LIMIT = 4_000;
+
+/**
+ * One check a watch job ran (EO-800, ARCHITECTURE.md §9.1), kept in
+ * `job_watch_checks`: one row per check, written when it ends and never
+ * changed. A check held by `waitWhileOpen` did not run and has none.
+ *
+ * `answer` is `waiting`, the declared result, or `failed`. `detail` is
+ * the module's detail, or why the check failed. `output` is the last
+ * `WATCH_CHECK_OUTPUT_LIMIT` characters of the module's transcript,
+ * redacted as it arrived.
+ */
+export const JobWatchCheckSchema = z.object({
+  id: z.string(),
+  jobId: z.string(),
+  startedAt: z.number(),
+  endedAt: z.number(),
+  answer: z.string(),
+  detail: z.string(),
+  findingCount: z.number().int(),
+  filedItemIds: z.array(z.string()),
+  output: z.string(),
+});
+export type JobWatchCheck = z.infer<typeof JobWatchCheckSchema>;
+
+/** An item a check filed, with what a screen names it by. Null key and title when it has since been deleted. */
+export const JobWatchCheckItemSchema = z.object({ id: z.string(), key: z.string().nullable(), title: z.string().nullable() });
+
+/** A check as the Job page lists it: the row, with each filed item's key resolved. */
+export const JobWatchCheckRowSchema = JobWatchCheckSchema.extend({ filedItems: z.array(JobWatchCheckItemSchema) });
+export type JobWatchCheckRow = z.infer<typeof JobWatchCheckRowSchema>;
+
+/** A check as `jobs:get` carries it: without its output, which only the Checks tab's own channel returns. */
+export const JobWatchCheckBriefSchema = JobWatchCheckRowSchema.omit({ output: true });
+export type JobWatchCheckBrief = z.infer<typeof JobWatchCheckBriefSchema>;
+
 
 /**
  * A job as the Jobs list draws it: the row, and the four things a

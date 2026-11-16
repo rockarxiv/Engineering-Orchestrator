@@ -116,6 +116,10 @@ describe("architectural invariant: items.stepId has exactly one writer", () => {
  * was made. Restoring one files a new version; no file is exempt, and
  * the only way a row goes is its skill being deleted outright, which the
  * schema's cascade does.
+ *
+ * `job_watch_checks` is the sixth (EO-800): every check a watch job ran,
+ * one row each. No file is exempt; a row goes only with its job, by the
+ * schema's cascade.
  */
 const APPEND_ONLY: Readonly<Record<string, readonly string[]>> = {
   runEvents: [join("db", "repos", "itemsRepo.ts")],
@@ -123,6 +127,7 @@ const APPEND_ONLY: Readonly<Record<string, readonly string[]>> = {
   jobOccurrences: [],
   jobEvents: [],
   skillVersions: [],
+  jobWatchChecks: [],
 };
 
 /**
@@ -206,7 +211,7 @@ describe("architectural invariant: a record is never rewritten", () => {
     ]);
   });
 
-  it("nothing updates run_events, transitions, job_occurrences, job_events or skill_versions, and only deleting an item removes a row", () => {
+  it("nothing updates run_events, transitions, job_occurrences, job_events, skill_versions or job_watch_checks, and only deleting an item removes a row", () => {
     expect(findRecordRewriters(mainSrcRoot, APPEND_ONLY)).toEqual([]);
   });
 

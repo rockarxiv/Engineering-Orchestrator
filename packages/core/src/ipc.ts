@@ -112,7 +112,15 @@ import {
   ItemSummarySchema,
 } from "./ipc-schemas.js";
 import { SpecFieldDraftSchema } from "./itemTypeAuthoring.js";
-import { JobOccurrenceRowSchema, JobOccurrenceViewSchema, JobSummarySchema, JobTemplateSchema, JobTriggerSchema } from "./schemas/jobs.js";
+import {
+  JobOccurrenceRowSchema,
+  JobOccurrenceViewSchema,
+  JobSummarySchema,
+  JobTemplateSchema,
+  JobTriggerSchema,
+  JobWatchCheckBriefSchema,
+  JobWatchCheckRowSchema,
+} from "./schemas/jobs.js";
 import { JobEventOutcomeSchema, JobEventRowSchema } from "./webhook.js";
 import { EntryRulesSchema } from "./entryRules.js";
 import { JobMachineSchema, JobPlacementSchema, JobRunsOnSchema } from "./placement.js";
@@ -5038,7 +5046,17 @@ export const recordContract = {
    */
   "jobs:get": channel(
     z.object({ jobId: z.string() }),
-    z.object({ job: JobSummarySchema.nullable(), occurrences: z.array(JobOccurrenceRowSchema) }),
+    z.object({
+      job: JobSummarySchema.nullable(),
+      occurrences: z.array(JobOccurrenceRowSchema),
+      /**
+       * A watch job's newest checks, newest first, without their output
+       * (EO-800), so `job_get` can say what the job has been doing. Empty
+       * for every other kind. The Checks tab pages through all of them,
+       * output and all, with `jobs:checks`.
+       */
+      checks: z.array(JobWatchCheckBriefSchema).default([]),
+    }),
   ),
   /**
    * Edits a job (EO-308, ARCHITECTURE.md, "The inbox, the archive and jobs").
@@ -5221,6 +5239,19 @@ export const recordContract = {
   "jobs:events": channel(
     z.object({ jobId: z.string(), limit: z.number().int().min(1).max(500).default(100) }),
     z.object({ events: z.array(JobEventRowSchema), heldCount: z.number(), lastPayload: z.string().nullable() }),
+  ),
+  /**
+   * A watch job's checks, newest first, a page at a time (EO-800,
+   * ARCHITECTURE.md §9.1): the Job page's Checks tab, each with its
+   * output and the items it filed.
+   *
+   * `before` is the `nextBefore` of the page above, and absent for the
+   * first page. `nextBefore` is null on the last page. A job that is
+   * deleted, or not a watch job, answers no checks.
+   */
+  "jobs:checks": channel(
+    z.object({ jobId: z.string(), limit: z.number().int().min(1).max(200).default(50), before: z.string().optional() }),
+    z.object({ checks: z.array(JobWatchCheckRowSchema), nextBefore: z.string().nullable() }),
   ),
   /**
    * A new signing secret, and the old one stops working (ARCHITECTURE.md, "The inbox, the archive

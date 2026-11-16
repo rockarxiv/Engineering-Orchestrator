@@ -3,8 +3,9 @@ import { fireEvent, render, screen, waitFor, within } from "@testing-library/rea
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { describe, expect, it, vi } from "vitest";
 import { ThemeProvider } from "@eo/ui";
-import type { JobEventRow, JobOccurrenceRow, JobSummary, WebhookTrigger } from "@eo/core";
+import type { JobEventRow, JobOccurrenceRow, JobSummary, JobWatchCheckRow, WebhookTrigger } from "@eo/core";
 import { createQueryClient } from "../../../query/client";
+import { whenOf } from "../../../shared/jobs/format";
 import { ItemReferenceProvider } from "../../conversation/ItemReferenceProvider";
 import { JobView } from "./JobView";
 
@@ -109,6 +110,7 @@ interface Options {
   session?: unknown;
   placement?: unknown;
   machine?: unknown;
+  checks?: JobWatchCheckRow[];
 }
 
 function mockIpc(options: Options = {}) {
@@ -138,6 +140,8 @@ function mockIpc(options: Options = {}) {
       case "jobs:pause":
       case "jobs:resume":
         return { ok: true, data: { job: job() } };
+      case "jobs:checks":
+        return { ok: true, data: { checks: options.checks ?? [], nextBefore: null } };
       case "jobs:events":
         return {
           ok: true,
@@ -418,5 +422,105 @@ describe("a webhook job", () => {
 
     expect(screen.getByText("Nothing has been delivered here yet.")).toBeInTheDocument();
     expect(screen.queryByText(/waiting\./)).not.toBeInTheDocument();
+  });
+});
+
+describe("a watch job's checks (EO-800)", () => {
+  const WATCH = job({
+    name: "PR intake",
+    trigger: { kind: "watch", moduleId: "pr-watch", inputs: {}, everyMinutes: 60, waitWhileOpen: false },
+    nextRunAt: null,
+  });
+
+  function check(overrides: Partial<JobWatchCheckRow>): JobWatchCheckRow {
+    return {
+      id: "check-1",
+      jobId: "job-1",
+      startedAt: MONDAY_0800_BERLIN,
+      endedAt: MONDAY_0800_BERLIN + 4_000,
+      answer: "waiting",
+      detail: "",
+      findingCount: 0,
+      filedItemIds: [],
+      filedItems: [],
+      output: "",
+      ...overrides,
+    };
+  }
+
+  it("lists each check newest first with its time, duration, answer, detail, findings and filed items, and opens its output", async () => {
+    const invoke = mockIpc({
+      jobs: [WATCH],
+      checks: [
+        check({
+          id: "filed",
+          startedAt: MONDAY_0800_BERLIN + 2 * 3_600_000,
+          endedAt: MONDAY_0800_BERLIN + 2 * 3_600_000 + 65_000,
+          detail: "2 open pull requests.",
+          findingCount: 2,
+          filedItemIds: ["item-9"],
+          filedItems: [{ id: "item-9", key: "EO-9", title: "Bump zod" }],
+          output: "$ gh pr list --repo eo/eo --json number,title",
+        }),
+        check({ id: "failed", startedAt: MONDAY_0800_BERLIN + 3_600_000, endedAt: MONDAY_0800_BERLIN + 3_600_000 + 2_000, answer: "failed", detail: "gh is not signed in." }),
+        check({ id: "waiting", detail: "Nothing open." }),
+      ],
+    });
+    renderView();
+
+    fireEvent.click(await screen.findByRole("tab", { name: /Checks/ }));
+
+    const list = within(await screen.findByRole("region", { name: "Check history" }));
+    const rows = list.getAllByRole("listitem");
+    expect(rows).toHaveLength(3);
+
+    const [filed, failed, waiting] = rows.map((row) => within(row));
+    expect(filed!.getByText("Waiting")).toBeInTheDocument();
+    expect(filed!.getByText("2 open pull requests.")).toBeInTheDocument();
+    expect(filed!.getByText("2 findings")).toBeInTheDocument();
+    expect(filed!.getByText("1m 5s")).toBeInTheDocument();
+    // A watch job has no zone of its own, so its times are the machine's.
+    expect(filed!.getByText(whenOf(MONDAY_0800_BERLIN + 2 * 3_600_000))).toBeInTheDocument();
+    expect(filed!.getByRole("link", { name: "EO-9" })).toHaveAttribute("href", "/items/item-9");
+
+    expect(failed!.getByText("Failed")).toBeInTheDocument();
+    expect(failed!.getByText("gh is not signed in.")).toBeInTheDocument();
+    expect(failed!.getByText("0 findings")).toBeInTheDocument();
+    expect(failed!.getByText("2s")).toBeInTheDocument();
+    expect(failed!.queryByRole("link")).not.toBeInTheDocument();
+
+    expect(waiting!.getByText("Waiting")).toBeInTheDocument();
+    expect(waiting!.getByText("Nothing open.")).toBeInTheDocument();
+    expect(waiting!.getByText("4s")).toBeInTheDocument();
+    expect(waiting!.getByText(whenOf(MONDAY_0800_BERLIN))).toBeInTheDocument();
+
+    // The output is hidden until the row is opened.
+    expect(screen.queryByText(/gh pr list/)).not.toBeInTheDocument();
+    const toggle = filed!.getByRole("button", { name: "Output" });
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    fireEvent.click(toggle);
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
+    expect(filed!.getByLabelText("Output")).toHaveTextContent("$ gh pr list --repo eo/eo --json number,title");
+
+    expect(calls(invoke, "jobs:checks")[0]?.[1]).toEqual({ jobId: "job-1" });
+  });
+
+  it("says so when it has not checked yet", async () => {
+    mockIpc({ jobs: [WATCH] });
+    renderView();
+
+    fireEvent.click(await screen.findByRole("tab", { name: /Checks/ }));
+    expect(within(await screen.findByRole("region", { name: "Check history" })).getByText("It has not checked yet.")).toBeInTheDocument();
+  });
+
+  it("is not offered for a manual, schedule or webhook job", async () => {
+    for (const other of [job({ trigger: { kind: "manual" }, nextRunAt: null }), job(), HELPDESK]) {
+      const invoke = mockIpc({ jobs: [other] });
+      const view = renderView();
+      await screen.findByRole("region", { name: "Record" });
+      expect(screen.queryByRole("tab", { name: /Checks/ })).not.toBeInTheDocument();
+      expect(calls(invoke, "jobs:checks")).toHaveLength(0);
+      view.unmount();
+    }
   });
 });

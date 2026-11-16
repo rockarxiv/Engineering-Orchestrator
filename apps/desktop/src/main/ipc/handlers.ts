@@ -189,6 +189,7 @@ import {
   createJobCommand,
   deleteJobCommand,
   getJobCommand,
+  jobChecksCommand,
   jobCostCommand,
   jobPlacementCommand,
   listJobsCommand,
@@ -994,6 +995,7 @@ export function registerAllHandlers(db: Db, engine: EngineHandle | undefined, re
   // `AWAITING_ITS_SCREEN` until it lands.
   registerHandler("jobs:list", (payload) => listJobsCommand(db, payload), opts);
   registerHandler("jobs:get", (payload) => getJobCommand(db, payload), opts);
+  registerHandler("jobs:checks", (payload) => jobChecksCommand(db, payload), opts);
   // Where a job runs, and the two saves that may move it (EO-330,
   // ARCHITECTURE.md, "Where a job runs"). The facts are a function rather than a value because
   // finding

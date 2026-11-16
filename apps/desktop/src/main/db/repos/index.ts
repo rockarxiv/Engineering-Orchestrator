@@ -597,6 +597,7 @@ export {
   type RecordJobEventInput,
 } from "./jobEventsRepo.js";
 export { getJobWatchState, saveJobWatchState, type JobWatchStateRow } from "./jobWatchStatesRepo.js";
+export { listWatchChecks, recordWatchCheck, type RecordWatchCheckInput } from "./jobWatchChecksRepo.js";
 export {
   firedOccurrencesForItems,
   firedSince,
