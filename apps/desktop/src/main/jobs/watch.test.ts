@@ -1,6 +1,6 @@
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { delimiter, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
@@ -602,6 +602,58 @@ describe("the real intake check", () => {
     expect(finding?.body).toBe("PR intake eo/eo");
     expect(finding?.title.startsWith(join(tmpdir(), "eo-watch-"))).toBe(true);
     expect(existsSync(finding!.title)).toBe(false);
+  }, 30_000);
+
+  // EO-816: the check is refused before the module is launched, naming
+  // everything missing at once, and the watch's own retry runs it once
+  // the machine is put right.
+  it("refuses a check whose CLIs and variables are missing, launching nothing, and runs on the retry after setup", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "eo-816-watch-"));
+    const tools = join(directory, "tools");
+    mkdirSync(tools);
+    const savedPath = process.env["PATH"];
+    process.env["PATH"] = `${tools}${delimiter}${savedPath ?? ""}`;
+    try {
+      const secrets = {
+        directory: join(directory, "secrets"),
+        store: {
+          isEncryptionAvailable: () => true,
+          encryptString: (text: string) => Buffer.from(`enc:${text}`),
+          decryptString: (buffer: Buffer) => buffer.toString().replace(/^enc:/, ""),
+        },
+      };
+      const value = "816-tset-terces".split("").reverse().join("");
+      storeSecret(secrets, "GITHUB_TOKEN", value);
+      const marker = join(directory, "the module ran");
+      const code = `import { writeFileSync } from "node:fs";
+        export default async function run() { writeFileSync(${JSON.stringify(marker)}, ""); return { ok: true, result: "waiting", findings: [] }; }`;
+      const watch = module({ needs: { ...MANIFEST.needs, bin: ["eo-816-gh", "eo-816-jq"], env: ["GITHUB_TOKEN", "SLACK_WEBHOOK", "LINEAR_KEY"] } }, true, code);
+      const job = watchJob({}, watch.id);
+      const check = createWatchCheck(handle.db, { launcher: { execPath: process.execPath, hostPath, hostEnv: { ELECTRON_RUN_AS_NODE: "1" } }, secrets });
+
+      await runWatchTick(handle.db, { check, now: () => T0 });
+
+      const state = getJobWatchState(handle.db, job.id as Uuid)!;
+      expect(state).toMatchObject({ consecutiveFailures: 1, lastAnswer: "failed" });
+      for (const name of ["eo-816-gh", "eo-816-jq", "SLACK_WEBHOOK", "LINEAR_KEY"]) expect(state.lastError).toContain(name);
+      expect(state.lastError).not.toContain(value);
+      expect(existsSync(marker)).toBe(false);
+
+      for (const name of ["eo-816-gh", "eo-816-jq"]) {
+        const file = join(tools, process.platform === "win32" ? `${name}.exe` : name);
+        writeFileSync(file, "");
+        chmodSync(file, 0o755);
+      }
+      storeSecret(secrets, "SLACK_WEBHOOK", "hook");
+      storeSecret(secrets, "LINEAR_KEY", "key");
+      await runWatchTick(handle.db, { check, now: () => state.nextCheckAt! });
+
+      expect(getJobWatchState(handle.db, job.id as Uuid)).toMatchObject({ consecutiveFailures: 0, lastAnswer: "waiting" });
+      expect(existsSync(marker)).toBe(true);
+    } finally {
+      process.env["PATH"] = savedPath;
+      rmSync(directory, { recursive: true, force: true });
+    }
   }, 30_000);
 
   it("records the module's output in the check's row, with a stored secret's value redacted (EO-800)", async () => {
