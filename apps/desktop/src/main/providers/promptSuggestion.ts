@@ -38,6 +38,14 @@ Reply with the message alone: no quotes, no label, no explanation. To give nothi
 export const SUGGESTION_MAX_UNCACHED_TOKENS = 10_000;
 
 /**
+ * How long a suggestion may take before it is given up (EO-808): the
+ * 30 seconds Claude's CLI gives an in-flight suggestion once its turn is
+ * over. A caller reading past the turn's result waits no longer than
+ * this for one, however the fork is getting on.
+ */
+export const SUGGESTION_TIMEOUT_MS = 30_000;
+
+/**
  * The share of a usage window, 0–100, at which the account counts as near
  * its limit and no suggestion is made. Codex reports how much of each
  * window is used and never warns, so "near" is EO's line, drawn here; a

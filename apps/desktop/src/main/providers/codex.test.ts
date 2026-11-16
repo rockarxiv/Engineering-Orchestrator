@@ -4124,9 +4124,9 @@ describe("a suggested next message on a prediction-mode fork (EO-808)", () => {
     note.turnCompleted("completed", null, "turn-1", "$THREAD"),
   ];
 
-  function suggesting(scenario: FakeAppServerScenario) {
+  function suggesting(scenario: FakeAppServerScenario, suggestionTimeoutMs?: number) {
     const fake = fakeAppServer({ forkId: "thr-suggest", ...scenario });
-    const options = { executablePath: STUB_EXECUTABLE, searchHookCommandPath: "/opt/eo/hook.mjs", searchHookTrust: async () => ({ key: "/<session-flags>/config.toml:pre_tool_use:0:0", hash: "sha256:abc123" }) };
+    const options = { executablePath: STUB_EXECUTABLE, ...(suggestionTimeoutMs === undefined ? {} : { suggestionTimeoutMs }), searchHookCommandPath: "/opt/eo/hook.mjs", searchHookTrust: async () => ({ key: "/<session-flags>/config.toml:pre_tool_use:0:0", hash: "sha256:abc123" }) };
     const provider = createCodexProvider({
       ...options,
       createCodex: (...args: Parameters<typeof codexClientOptions> extends [unknown, ...infer Rest] ? Rest : never) =>
@@ -4308,6 +4308,15 @@ describe("a suggested next message on a prediction-mode fork (EO-808)", () => {
     const { rest } = await pastTheResult(provider.resume("thr-chat", "draft it", { cwd: worktree, suggestNextMessage: true, signal: controller.signal }), () => turns().some((turn) => turn.threadId === "thr-suggest"));
     controller.abort();
     expect(await rest).toEqual([]);
+  });
+
+  it("is given up at its time limit, so a caller reading on after the result waits no longer", async () => {
+    const { provider } = suggesting({ after: { "turn/start": chatTurn() }, afterFork: { "turn/start": slowFork() } }, 500);
+    const began = Date.now();
+    const events = await collect(provider.resume("thr-chat", "draft it", { cwd: worktree, suggestNextMessage: true }));
+    expect(suggestions(events)).toEqual([]);
+    expect(events.filter((event) => event.type === "error")).toEqual([]);
+    expect(Date.now() - began).toBeLessThan(3_500);
   });
 
   it("leaves the original thread as the chat left it: nothing is started on it but the person's own messages", async () => {

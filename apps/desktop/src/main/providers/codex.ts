@@ -53,7 +53,7 @@ import type { AdminMcpDispatch } from "../agentAttachments/adminDelivery.js";
 import { deliverableSkills, writeWorktreeSkills, worktreeSkillsPromptSection, type WorktreeSkillDelivery } from "../agentAttachments/worktreeSkills.js";
 import { codexSkillLoaded, skillsOffered, withoutEvents } from "./skillUsage.js";
 import { openedFork } from "./threadFork.js";
-import { cleanSuggestion, PROMPT_SUGGESTION_PROMPT, SUGGESTION_MAX_UNCACHED_TOKENS, SUGGESTION_NEAR_LIMIT_PERCENT } from "./promptSuggestion.js";
+import { cleanSuggestion, PROMPT_SUGGESTION_PROMPT, SUGGESTION_MAX_UNCACHED_TOKENS, SUGGESTION_NEAR_LIMIT_PERCENT, SUGGESTION_TIMEOUT_MS } from "./promptSuggestion.js";
 import { agentMcpStdioConfig, eoMcpStdioConfig, type EoMcpServiceConfig } from "../mcp/serviceConfig.js";
 import { codexModelPrice, codexTurnCostCents, codexTurnCostMicrocents } from "./codexPricing.js";
 import { personCodexHome } from "./codexHome.js";
@@ -340,6 +340,8 @@ export interface CodexProviderOptions {
    * that is neither translated nor deliberately ignored (`codexClient.ts`).
    */
   onUnmappedEvent?: (event: ThreadEvent | AppServerNotification) => void;
+  /** How long a suggested next message may take (`SUGGESTION_TIMEOUT_MS`, EO-808). A seam for tests. */
+  suggestionTimeoutMs?: number;
   /*
    * No `pricing` (EO-374). It was a price the caller could supply, and
    * no caller ever did, so every Codex run cost nothing and no budget
@@ -2889,16 +2891,18 @@ export function createCodexProvider(options: CodexProviderOptions = {}): AgentPr
     if (!answered || failed || nearLimit || stop.signal.aborted || resumeOpts.signal?.aborted) return;
     if (facts.lastRequest && uncachedTokens(facts.lastRequest) > SUGGESTION_MAX_UNCACHED_TOKENS) return;
 
-    // Stopped by the run's own cancel too, and by the next turn on the
-    // thread (`resume`), whichever comes first.
+    // Stopped by the run's own cancel too, by the next turn on the
+    // thread (`resume`), and at its time limit, whichever comes first.
     const cancel = () => stop.abort();
     resumeOpts.signal?.addEventListener("abort", cancel, { once: true });
+    const limit = setTimeout(cancel, options.suggestionTimeoutMs ?? SUGGESTION_TIMEOUT_MS);
     suggesting.get(threadId)?.abort();
     suggesting.set(threadId, stop);
     try {
       const text = await suggestionOn(threadId, resumeOpts, stop.signal);
       if (text !== null && !stop.signal.aborted) yield { type: "prompt_suggestion", text, threadId } satisfies AgentEvent;
     } finally {
+      clearTimeout(limit);
       resumeOpts.signal?.removeEventListener("abort", cancel);
       if (suggesting.get(threadId) === stop) suggesting.delete(threadId);
     }
