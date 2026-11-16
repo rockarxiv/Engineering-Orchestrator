@@ -107,6 +107,23 @@ describe("sideCall", () => {
     expect(sumCostCentsSince(handle.db, Date.now() - 60_000)).toBe(100);
   });
 
+  it("stores the cache figures the usage reported, null where it reported none, and no fork (EO-811)", async () => {
+    const reporting = (cache: { cacheReadTokens?: number; cacheWriteTokens?: number }): AgentProvider => ({
+      ...fake({}),
+      async *sideCall() {
+        yield { type: "usage", scope: "turn", tokensIn: 3_000, tokensOut: 40, costCents: 0, costMicrocents: 100, ...cache } satisfies AgentEvent;
+        yield { type: "result", data: { picked: [] } } satisfies AgentEvent;
+      },
+    });
+    expect(await caller(reporting({ cacheReadTokens: 2_048, cacheWriteTokens: 512 })).sideCall(request())).toMatchObject({ ok: true });
+    expect(await caller(reporting({})).sideCall(request())).toMatchObject({ ok: true });
+
+    expect(listSideCalls(handle.db)).toEqual([
+      expect.objectContaining({ cacheReadTokens: 2_048, cacheWriteTokens: 512, forkMode: null, forkFallbackReason: null }),
+      expect.objectContaining({ cacheReadTokens: null, cacheWriteTokens: null, forkMode: null, forkFallbackReason: null }),
+    ]);
+  });
+
   it("hands the backend the question, the schema as JSON Schema, its small model and an empty directory it removes afterwards", async () => {
     const seen: AgentSideCallOptions[] = [];
     const provider: AgentProvider = {

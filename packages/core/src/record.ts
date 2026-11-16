@@ -637,6 +637,17 @@ export const RecordSideCallCommandSchema = z.object({
   durationMs: z.number().nonnegative(),
   outcome: z.enum(["succeeded", "failed"]),
   reason: SideCallFailureReasonSchema.nullable(),
+  /**
+   * What the prompt cache served and was written, as the backend's usage
+   * reported them, and how a fork-based call copied its thread (EO-811).
+   * Optional, so a command from a desktop older than these fields is
+   * still accepted: each one it leaves out is stored as null, which is
+   * what such a call said about them.
+   */
+  cacheReadTokens: z.number().int().nonnegative().nullable().optional(),
+  cacheWriteTokens: z.number().int().nonnegative().nullable().optional(),
+  forkMode: z.enum(["prediction", "plain"]).nullable().optional(),
+  forkFallbackReason: z.string().nullable().optional(),
 });
 export type RecordSideCallCommand = z.infer<typeof RecordSideCallCommandSchema>;
 

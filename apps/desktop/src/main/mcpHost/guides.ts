@@ -137,7 +137,10 @@ own query by \`itemId\` (a key works), \`projectId\`, \`action\`, \`backend\`,
 \`status\`, \`threadId\`, \`startedSince\` and \`startedUntil\` (epoch
 milliseconds), and \`where\` narrows the list or the groups further. EO's
 own short model calls, such as memory upkeep, are there too, as the action
-\`side_call:<purpose>\`, so what they cost adds up with the runs. Sum a list's
+\`side_call:<purpose>\`, so what they cost adds up with the runs; a side call
+made by forking a thread (a learning review, a suggested reply) also says
+how the fork was made, \`forkMode\` \`prediction\` or \`plain\`, and for a plain one
+\`forkFallbackReason\`. Sum a list's
 \`costMicrocents\`, not its \`costCents\`: a side call costs a fraction of a
 cent. This is the way to ask how long review took or what a week cost —
 there is no need to read EO's database.

@@ -225,6 +225,7 @@ export {
   listSideCalls,
   mirrorReportedSideCall,
   recordSideCall,
+  forkColumns,
   sideCallLinesBetween,
   sideCallLinesForItem,
   type RecordSideCallInput,

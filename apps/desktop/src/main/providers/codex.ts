@@ -47,6 +47,7 @@ import {
   type Skill,
   type SuggestionOutcome,
   type UsageEvent,
+  type ForkCopy,
   skillsForRun,
   withoutReservedEnvironmentVariables,
   SKILL_READ_TOOL_NAME,
@@ -2986,6 +2987,8 @@ export function createCodexProvider(options: CodexProviderOptions = {}): AgentPr
   async function suggestionOn(threadId: string, resumeOpts: AgentProviderResumeOptions, signal: AbortSignal): Promise<SuggestionOutcome> {
     const startedAt = Date.now();
     let spent: UsageEvent | undefined;
+    /** How the thread was copied (EO-811): kept, so a plain fork's fallback and its reason are recorded with what it spent. */
+    let fork: ForkCopy | undefined;
     let answer: string | null = null;
     let failure: string | null = null;
     try {
@@ -2995,7 +2998,9 @@ export function createCodexProvider(options: CodexProviderOptions = {}): AgentPr
         return signal.aborted ? { kind: "stopped", by: "stopped" } : { kind: "fork_not_opened", message: forked.message };
       }
       for await (const event of forked.events) {
-        if (event.type === "usage") spent = event;
+        if (event.type === "thread_started") {
+          if (event.fork) fork = event.fork;
+        } else if (event.type === "usage") spent = event;
         else if (event.type === "result") answer = typeof event.data === "string" ? event.data : JSON.stringify(event.data);
         else if (event.type === "error" && event.fatal !== false) failure ??= event.message;
       }
@@ -3004,7 +3009,13 @@ export function createCodexProvider(options: CodexProviderOptions = {}): AgentPr
     } finally {
       if (spent) {
         try {
-          resumeOpts.onSuggestionSpend?.({ usage: spent, startedAt, durationMs: Math.max(0, Date.now() - startedAt), completed: failure === null && !signal.aborted && answer !== null });
+          resumeOpts.onSuggestionSpend?.({
+            usage: spent,
+            ...(fork ? { fork } : {}),
+            startedAt,
+            durationMs: Math.max(0, Date.now() - startedAt),
+            completed: failure === null && !signal.aborted && answer !== null,
+          });
         } catch (error) {
           console.warn(`[codex] what a suggested reply spent could not be reported: ${error instanceof Error ? error.message : String(error)}`);
         }

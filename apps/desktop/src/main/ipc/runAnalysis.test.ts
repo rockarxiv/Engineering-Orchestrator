@@ -270,6 +270,8 @@ describe("runs:list", () => {
       verdict: null,
       memoryDelivered: 0,
       memoryUsed: 0,
+      forkMode: null,
+      forkFallbackReason: null,
     });
     // The model a reroute moved the turn to, over the one the thread opened on.
     expect(runs.find((record) => record.id === ids["r2"])).toMatchObject({ verdict: "reject", backend: "codex", model: "gpt-5-mini" });
@@ -308,8 +310,40 @@ describe("runs:list", () => {
       verdict: null,
       memoryDelivered: null,
       memoryUsed: null,
+      forkMode: null,
+      forkFallbackReason: null,
     });
     expect(listRuns(handle.db, {}).runs.find((record) => record.id === ids["s2"])).toMatchObject({ itemId: null, itemKey: null, action: "side_call:memory_consolidate" });
+  });
+
+  it("reports a side call's stored cache figures and how its fork was made (EO-811)", () => {
+    const fallbackReason = "experimental API not enabled";
+    const call = (purpose: "learning_review" | "prompt_suggestion", fork: { forkMode: "prediction" | "plain"; forkFallbackReason: string | null }, cache: { cacheReadTokens: number; cacheWriteTokens: number | null }) =>
+      recordSideCall(handle.db, {
+        purpose,
+        projectId: appProject,
+        itemId: appItem.id as Uuid,
+        runId: ids["r1"] as Uuid,
+        backend: "codex",
+        model: "gpt-5",
+        tokensIn: 81_764,
+        tokensOut: 30,
+        ...cache,
+        ...fork,
+        costMicrocents: 1_000,
+        startedAt: T0 + 22 * MINUTE,
+        durationMs: 1000,
+        outcome: "succeeded",
+        reason: null,
+      }).id;
+    const review = call("learning_review", { forkMode: "prediction", forkFallbackReason: null }, { cacheReadTokens: 78_000, cacheWriteTokens: 0 });
+    const suggestion = call("prompt_suggestion", { forkMode: "plain", forkFallbackReason: fallbackReason }, { cacheReadTokens: 7_168, cacheWriteTokens: null });
+
+    const runs = listRuns(handle.db, {}).runs;
+    expect(runs.find((record) => record.id === review)).toMatchObject({ cacheReadTokens: 78_000, cacheWriteTokens: 0, forkMode: "prediction", forkFallbackReason: null });
+    expect(runs.find((record) => record.id === suggestion)).toMatchObject({ cacheReadTokens: 7_168, cacheWriteTokens: null, forkMode: "plain", forkFallbackReason: fallbackReason });
+    // A run carries no fork of its own: its learning review's is the side call's.
+    expect(runs.find((record) => record.id === ids["r1"])).toMatchObject({ forkMode: null, forkFallbackReason: null });
   });
 
   it("lists a run not yet started after every run that has", () => {

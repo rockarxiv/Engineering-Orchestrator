@@ -240,8 +240,18 @@ export type SuggestionOutcome =
 
 /** What making a suggested next message spent (`AgentTurnOverrides.onSuggestionSpend`, EO-808). */
 export interface SuggestionSpend {
-  /** The suggestion turn's own usage, as its backend reported it. */
+  /**
+   * The suggestion turn's own usage, as its backend reported it —
+   * `cacheReadTokens` and `cacheWriteTokens` included where it reported
+   * them (EO-811), absent where it did not.
+   */
   usage: UsageEvent;
+  /**
+   * How the backend copied the thread for it (EO-811), from the fork's
+   * `thread_started`: the cache-keeping prediction-mode fork, or the
+   * plain one and why. Absent where the backend did not say.
+   */
+  fork?: ForkCopy;
   /** When the adapter set about making it, in epoch milliseconds, and how long that took. */
   startedAt: number;
   durationMs: number;

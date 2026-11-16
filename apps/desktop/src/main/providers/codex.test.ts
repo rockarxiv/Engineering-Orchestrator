@@ -4174,19 +4174,24 @@ describe("a suggested next message on a prediction-mode fork (EO-808)", () => {
     expect(events.filter((event) => event.type === "usage")).toHaveLength(1);
     // What the fork spent, reported apart: its own request, not the thread's.
     expect(spent).toEqual([expect.objectContaining({ completed: true, usage: expect.objectContaining({ type: "usage", tokensIn: 400, tokensOut: 10, cacheReadTokens: 300 }) })]);
+    // And how the thread was copied, off the fork's `thread_started` (EO-811).
+    expect(spent[0]?.fork).toEqual({ mode: "prediction" });
   });
 
   it("falls back to the plain fork where prediction mode is refused", async () => {
+    const spent: SuggestionSpend[] = [];
     const { provider, forks } = suggesting({
       refusePredictionFork: "experimental API not enabled",
       after: { "turn/start": chatTurn() },
       afterFork: { "turn/start": forkTurn("yes") },
     });
-    const events = await collect(provider.resume("thr-chat", "draft it", { cwd: worktree, suggestNextMessage: true }));
+    const events = await collect(provider.resume("thr-chat", "draft it", { cwd: worktree, suggestNextMessage: true, onSuggestionSpend: (spend) => spent.push(spend) }));
     expect(forks()).toHaveLength(2);
     expect(forks()[0]).toMatchObject({ experimentalPredictionMode: true });
     expect(forks()[1]).not.toHaveProperty("experimentalPredictionMode");
     expect(suggestions(events)).toEqual([{ type: "prompt_suggestion", text: "yes", threadId: "thr-chat" }]);
+    // The fallback is reported with what it spent, and why (EO-811).
+    expect(spent).toEqual([expect.objectContaining({ fork: { mode: "plain", fallbackReason: expect.stringContaining("experimental API not enabled") } })]);
   });
 
   it("refuses every call the fork makes, EO's own and the shell alike", async () => {
