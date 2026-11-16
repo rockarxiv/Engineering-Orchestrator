@@ -247,9 +247,10 @@ export interface CodexThreadOptions {
    * original once `thread/resume` has loaded it — the app-server lists
    * nothing of a thread it has not loaded (measured at 0.167.1) — so a
    * turn that failed or was interrupted is not counted, and a thread from
-   * before EO last started is. A thread holding fewer, or one that cannot
-   * be loaded or counted, is not forked: the turn fails with
-   * `TOO_FEW_COMPLETED_TURNS`, and never falls back to a plain fork.
+   * before EO last started is. A thread holding fewer is not forked: the
+   * turn fails with `TOO_FEW_COMPLETED_TURNS`. One that cannot be loaded
+   * or counted is not forked either, and fails with `TURNS_NOT_COUNTED`
+   * and the backend's words (EO-810). Neither falls back to a plain fork.
    * Never sent to the app-server.
    */
   forkAfterCompletedTurns?: number;
@@ -346,6 +347,14 @@ export interface CodexClientOptions {
  */
 /** How a fork refused for a thread with too few completed turns begins (`CodexThreadOptions.forkAfterCompletedTurns`, EO-808). */
 export const TOO_FEW_COMPLETED_TURNS = "Not forked: the thread holds too few completed turns";
+/**
+ * How a fork refused for a thread whose completed turns could not be
+ * counted begins (`CodexThreadOptions.forkAfterCompletedTurns`, EO-810):
+ * it could not be loaded, or its turns could not be listed. Not
+ * `TOO_FEW_COMPLETED_TURNS`, so the backend's failure is not read as a
+ * thread too short to fork.
+ */
+export const TURNS_NOT_COUNTED = "Not forked: the thread's completed turns could not be counted";
 
 export const CODEX_NOT_INSTALLED = "The Codex CLI is not installed. Install it from the Agents screen, or set the agent's executable path.";
 
@@ -704,12 +713,13 @@ export class CodexClient {
       // A process that has gone, or a turn cancelled under it, is not a
       // refusal: there is no app-server left to ask for the plain fork.
       if (opened.exit !== null || (error instanceof Error && error.name === "AbortError")) throw error;
-      // Nor a thread too short to fork, which is as short plain.
-      if (error instanceof Error && error.message.startsWith(TOO_FEW_COMPLETED_TURNS)) throw error;
+      // Nor a thread too short to fork, which is as short plain, or one
+      // whose turns could not be counted.
+      if (error instanceof Error && (error.message.startsWith(TOO_FEW_COMPLETED_TURNS) || error.message.startsWith(TURNS_NOT_COUNTED))) throw error;
       fallbackReason = error instanceof Error ? error.message : String(error);
     }
     // An original that could not be loaded could not be counted either.
-    if (!counted) throw new Error(`${TOO_FEW_COMPLETED_TURNS}: thread ${resumeId} could not be loaded to count them (${fallbackReason}).`);
+    if (!counted) throw new Error(`${TURNS_NOT_COUNTED}: thread ${resumeId} could not be loaded to count them (${fallbackReason}).`);
     const answer = (await ask("thread/fork", { threadId: resumeId, ...threadParams, excludeTurns: true }, opened.connection)) as { thread?: { id?: unknown }; model?: unknown } | undefined;
     // Never the thread asked for: a copy that named no id of its own
     // would otherwise be reported as the original, and the turn on it
@@ -723,7 +733,8 @@ export class CodexClient {
   /**
    * Whether the loaded thread holds at least `wanted` completed turns
    * (`CodexThreadOptions.forkAfterCompletedTurns`); throws
-   * `TOO_FEW_COMPLETED_TURNS` when it does not, or cannot say. Newest
+   * `TOO_FEW_COMPLETED_TURNS` when it does not, `TURNS_NOT_COUNTED` when
+   * it cannot say. Newest
    * first, a page at a time, without the turns' items, and no further
    * than it takes to find them.
    */
@@ -741,7 +752,7 @@ export class CodexClient {
         listing = await ask("thread/turns/list", { threadId, limit: 20, sortDirection: "desc", itemsView: "notLoaded", ...(cursor === null ? {} : { cursor }) }, opened.connection);
       } catch (error) {
         if (opened.exit !== null || (error instanceof Error && error.name === "AbortError")) throw error;
-        throw new Error(`${TOO_FEW_COMPLETED_TURNS}: thread ${threadId}'s turns could not be listed (${error instanceof Error ? error.message : String(error)}).`, { cause: error });
+        throw new Error(`${TURNS_NOT_COUNTED}: thread ${threadId}'s turns could not be listed (${error instanceof Error ? error.message : String(error)}).`, { cause: error });
       }
       const page = listing as { data?: unknown; nextCursor?: unknown } | undefined;
       const turns = Array.isArray(page?.data) ? (page.data as unknown[]) : [];

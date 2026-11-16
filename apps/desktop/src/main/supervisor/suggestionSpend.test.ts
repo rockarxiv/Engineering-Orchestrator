@@ -1,5 +1,7 @@
 import { pageDescriptorFor, SUGGESTED_REPLY_EVENT, type AgentProvider, type SuggestionOutcome, type SuggestionSpend, type Uuid } from "@eo/core";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { ThreadEvent } from "../providers/codexClient.js";
+import { createCodexProvider } from "../providers/codex.js";
 import type { DbHandle } from "../db/client.js";
 import { listRunEvents, listRunsForItem, listSideCalls } from "../db/repos/index.js";
 import { openMigratedTestDb } from "../db/testHelpers.js";
@@ -104,5 +106,43 @@ describe("what became of a suggested next message (EO-810)", () => {
     // Numbered with the rest of the run's log, never over one of its rows.
     const seqs = listRunEvents(handle.db, run!.id as Uuid).map((event) => event.seq);
     expect(new Set(seqs).size).toBe(seqs.length);
+  });
+});
+
+/** The real Codex adapter over a scripted turn, as `codexWarning.test.ts` plays one: what is under test is the adapter and the supervisor's reading of it together. */
+function codexPlaying(events: ThreadEvent[]): AgentProvider {
+  const thread = {
+    runStreamed: async () => ({
+      events: (async function* () {
+        yield* events;
+      })(),
+    }),
+    run: async () => undefined,
+  };
+  return createCodexProvider({ createCodex: () => ({ startThread: () => thread, resumeThread: () => thread }) as never });
+}
+
+describe("what became of a suggested next message after a Codex turn the run stopped reading at (EO-810)", () => {
+  // The run stops reading a turn at its first fatal error, before the
+  // adapter has seen the turn end: the outcome is still recorded.
+  it.each([
+    ["failed", "the model stream failed", { kind: "skipped", rule: "failed" }],
+    ["was cancelled", "Codex turn interrupted", { kind: "skipped", rule: "cancelled" }],
+  ] as const)("is recorded for a chat turn that %s", async (_case, message, outcome) => {
+    const supervisor = createRunSupervisor({
+      db: handle.db,
+      limits: LIMITS,
+      provider: codexPlaying([
+        { type: "thread.started", thread_id: "thr-1" },
+        { type: "turn.started" },
+        { type: "turn.failed", error: { message } },
+        { type: "item.completed", item: { id: "after", type: "agent_message", text: "never read" } },
+      ]),
+    });
+    const chat = (await sendToAssist(handle.db, undefined, { page: pageDescriptorFor("/chat"), conversationId: null, body: "What is waiting?", attachmentIds: [], interrupt: false })).conversation;
+    await supervisor.runOnce();
+    const [run] = listRunsForItem(handle.db, chat.id as Uuid);
+    expect(run?.status).not.toBe("succeeded");
+    await vi.waitFor(() => expect(listRunEvents(handle.db, run!.id as Uuid).filter((event) => event.type === SUGGESTED_REPLY_EVENT).map((event) => event.payload)).toEqual([outcome]));
   });
 });

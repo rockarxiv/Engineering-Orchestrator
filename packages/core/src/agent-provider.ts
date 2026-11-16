@@ -179,9 +179,12 @@ export interface AgentTurnOverrides {
  * Why a turn that asked for a suggested next message made no attempt
  * (EO-810): the turn made no calls of its own to answer
  * (`refused_calls`), ended without a result, failed, was cancelled, was
- * stopped before the fork opened (`aborted`), the account was at or near
- * its limit, the last request was mostly uncached, or the thread held
- * too few completed turns.
+ * stopped before the fork opened (`aborted`: the run's cancel, a newer
+ * turn, or a caller letting go of the stream at its result), the account
+ * was at or near its limit, the last request was mostly uncached, or the
+ * thread held too few completed turns. A thread whose turns could not be
+ * counted is not among them: that is the fork not opened, in the
+ * backend's words.
  */
 export const SUGGESTION_SKIP_RULES = ["refused_calls", "no_result", "failed", "cancelled", "aborted", "near_limit", "uncached", "too_few_turns"] as const;
 export type SuggestionSkipRule = (typeof SUGGESTION_SKIP_RULES)[number];
@@ -205,6 +208,14 @@ export const SUGGESTION_FILTER_RULES = [
 export type SuggestionFilterRule = (typeof SUGGESTION_FILTER_RULES)[number];
 
 /**
+ * The run event that records what became of the suggested next message
+ * after a run's turn (EO-810): the `SuggestionOutcome`, appended to the
+ * run the suggestion follows, and read like any of its events
+ * (`run_events`). Diagnostic: the composer never reads it.
+ */
+export const SUGGESTED_REPLY_EVENT = "suggested_reply";
+
+/**
  * What became of one turn's suggested next message
  * (`AgentTurnOverrides.onSuggestionOutcome`, EO-810).
  *
@@ -219,14 +230,6 @@ export type SuggestionFilterRule = (typeof SUGGESTION_FILTER_RULES)[number];
  * - `emitted` — passed on as a `PromptSuggestionEvent`: the text, and the
  *   raw answer it was cleaned up from.
  */
-/**
- * The run event that records what became of the suggested next message
- * after a run's turn (EO-810): the `SuggestionOutcome`, appended to the
- * run the suggestion follows, and read like any of its events
- * (`run_events`). Diagnostic: the composer never reads it.
- */
-export const SUGGESTED_REPLY_EVENT = "suggested_reply";
-
 export type SuggestionOutcome =
   | { kind: "skipped"; rule: SuggestionSkipRule; uncachedTokens?: number; cachedTokens?: number }
   | { kind: "fork_not_opened"; message: string }

@@ -2879,7 +2879,8 @@ export function createCodexProvider(options: CodexProviderOptions = {}): AgentPr
    *
    * After the turn's `result`, never before: the turn is over there, and
    * its process ended, whether or not the caller reads on. One that stops
-   * reading at the result never starts a fork at all. Nothing here fails
+   * reading at the result never starts a fork at all, and the outcome
+   * says so (`aborted`, EO-810). Nothing here fails
    * the turn: a fork that cannot be opened, fails or answers something
    * the filters drop says nothing. The original thread is not written to.
    *
@@ -2902,11 +2903,27 @@ export function createCodexProvider(options: CodexProviderOptions = {}): AgentPr
     facts: TurnFacts,
     stop: AbortController,
   ): AsyncIterable<AgentEvent> {
+    const asked = resumeOpts?.suggestNextMessage === true;
+    let answered = false;
+    let failed = false;
+    let nearLimit = false;
+    let cancelled = false;
+    // Every turn that asked says what became of it, once (EO-810), a
+    // skip included: it opens no fork and spends nothing, and without
+    // its own record a skip reads exactly as a suggestion lost.
+    let reported = false;
+    const told = (outcome: SuggestionOutcome) => {
+      if (reported) return;
+      reported = true;
+      try {
+        resumeOpts?.onSuggestionOutcome?.(outcome);
+      } catch (error) {
+        console.warn(`[codex] what became of a suggested reply could not be reported: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    };
+    const skipped = (letGo: boolean): SuggestionOutcome | null =>
+      suggestionSkipped(resumeOpts ?? {}, { answered, failed, cancelled, nearLimit, stopped: letGo || stop.signal.aborted || resumeOpts?.signal?.aborted === true }, facts);
     try {
-      let answered = false;
-      let failed = false;
-      let nearLimit = false;
-      let cancelled = false;
       for await (const event of turn) {
         if (event.type === "result") answered = true;
         else if (event.type === "error" && event.fatal !== false) {
@@ -2915,18 +2932,8 @@ export function createCodexProvider(options: CodexProviderOptions = {}): AgentPr
         } else if (event.type === "quota" && atOrNearLimit(event)) nearLimit = true;
         yield event;
       }
-      if (resumeOpts?.suggestNextMessage !== true) return;
-      // Every turn that asked says what became of it, once (EO-810), a
-      // skip included: it opens no fork and spends nothing, and without
-      // its own record a skip reads exactly as a suggestion lost.
-      const told = (outcome: SuggestionOutcome) => {
-        try {
-          resumeOpts.onSuggestionOutcome?.(outcome);
-        } catch (error) {
-          console.warn(`[codex] what became of a suggested reply could not be reported: ${error instanceof Error ? error.message : String(error)}`);
-        }
-      };
-      const skip = suggestionSkipped(resumeOpts, { answered, failed, cancelled, nearLimit, stopped: stop.signal.aborted || resumeOpts.signal?.aborted === true }, facts);
+      if (!asked || !resumeOpts) return;
+      const skip = skipped(false);
       if (skip) {
         told(skip);
         return;
@@ -2960,6 +2967,12 @@ export function createCodexProvider(options: CodexProviderOptions = {}): AgentPr
         resumeOpts.signal?.removeEventListener("abort", cancel);
       }
     } finally {
+      // A caller that let go of the stream before it ended — as a run
+      // does at a fatal error, or a cancelled turn's — or a turn that
+      // threw, still says what became of the suggestion it asked for:
+      // what ended the turn where it did, or, where nothing did, that it
+      // was let go of before a fork could be opened (`aborted`).
+      if (asked && !reported) told(skipped(true) ?? { kind: "skipped", rule: "aborted" });
       if (threadId !== null && suggesting.get(threadId) === stop) suggesting.delete(threadId);
     }
   }

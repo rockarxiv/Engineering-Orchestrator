@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join, relative, sep } from "node:path";
 import { ADMIN_MCP_SERVER_NAME, ModuleManifestSchema, developerRegistry, isThreadNotFound, jsonSchemaOutputSchema, outputSchemaFor, validateActionResult, type AgentEvent, type McpServer, type Skill, type ThreadNotFoundError } from "@eo/core";
 import type { ThreadEvent } from "./codexClient.js";
-import type { SuggestionOutcome, SuggestionSpend } from "@eo/core";
+import type { InterruptibleStream, SuggestionOutcome, SuggestionSpend } from "@eo/core";
 import { createSuggestedReplies, type SuggestedReply } from "../supervisor/suggestedReplies.js";
 import { PROMPT_SUGGESTION_PROMPT } from "./promptSuggestion.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -4249,6 +4249,55 @@ describe("a suggested next message on a prediction-mode fork (EO-808)", () => {
     result: { data: statuses.map((status, index) => ({ id: `turn-${statuses.length - index}`, items: [], itemsView: "notLoaded", status, error: null })), nextCursor, backwardsCursor: null },
   });
   const turnLists = (fake: { sent: { method?: string; params?: unknown }[] }) => fake.sent.filter((message) => message.method === "thread/turns/list").map((message) => message.params as Record<string, unknown>);
+
+  it("says the fork was not opened, in the backend's words, when the thread's turns could not be counted", async () => {
+    const told: SuggestionOutcome[] = [];
+    const { provider, forks } = suggesting({ replies: { "thread/turns/list": { error: { code: -32603, message: "database is locked" } } }, after: { "turn/start": chatTurn() }, afterFork: { "turn/start": forkTurn("yes") } });
+    const events = await collect(provider.resume("thr-chat", "draft it", { cwd: worktree, suggestNextMessage: true, onSuggestionOutcome: (said) => told.push(said) }));
+    // Not a thread too short to fork (EO-810), and no plain fork in its place.
+    expect(told).toEqual([{ kind: "fork_not_opened", message: expect.stringContaining("database is locked") }]);
+    expect(told[0]).not.toMatchObject({ message: expect.stringContaining("too few") });
+    expect(forks()).toEqual([]);
+    expect(suggestions(events)).toEqual([]);
+    expect(events.at(-1)?.type).toBe("result");
+  });
+
+  /**
+   * As `processStream` reads a chat's turn (EO-810): handed on for the
+   * suggestion at its result, and let go of at its first fatal error,
+   * before the adapter has seen the turn end.
+   */
+  async function readAsARunDoes(stream: InterruptibleStream<AgentEvent>): Promise<void> {
+    const reading = createSuggestedReplies({ onSuggestion: () => undefined }).reading(stream);
+    for await (const event of reading.stream) {
+      if (event.type === "result") {
+        reading.afterResult();
+        return;
+      }
+      if (event.type === "error" && event.fatal !== false) return;
+    }
+  }
+
+  it.each([
+    ["failed", [note.error("the model stream failed", false, "turn-1", "$THREAD"), note.turnCompleted("failed", "the model stream failed", "turn-1", "$THREAD")], { kind: "skipped", rule: "failed" }],
+    ["was cancelled", [note.turnCompleted("interrupted", null, "turn-1", "$THREAD")], { kind: "skipped", rule: "cancelled" }],
+  ] as const)("says why none was attempted after a turn that %s, though the run let go of it at its error", async (_case, ending, outcome) => {
+    const told: SuggestionOutcome[] = [];
+    const { provider, forks } = suggesting({ threadId: "thr-chat", after: { "turn/start": chatTurn([], [...ending]) }, afterFork: { "turn/start": forkTurn("yes") } });
+    await readAsARunDoes(provider.resume("thr-chat", "draft it", { cwd: worktree, suggestNextMessage: true, onSuggestionOutcome: (said) => told.push(said) }));
+    await vi.waitFor(() => expect(told).toEqual([outcome]));
+    expect(forks()).toEqual([]);
+  });
+
+  it("says a caller that let go of the stream at its result kept the suggestion from being attempted", async () => {
+    const told: SuggestionOutcome[] = [];
+    const { provider, forks } = suggesting({ after: { "turn/start": chatTurn() }, afterFork: { "turn/start": forkTurn("yes") } });
+    for await (const event of provider.resume("thr-chat", "draft it", { cwd: worktree, suggestNextMessage: true, onSuggestionOutcome: (said) => told.push(said) })) {
+      if (event.type === "result") break;
+    }
+    await vi.waitFor(() => expect(told).toEqual([{ kind: "skipped", rule: "aborted" }]));
+    expect(forks()).toEqual([]);
+  });
 
   it("is not attempted on a resumed thread whose first turn failed, so this turn is its only completed answer", async () => {
     const told: SuggestionOutcome[] = [];
