@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Bot } from "lucide-react";
 import {
@@ -301,6 +301,7 @@ export function AgentEditor({
   busy,
   error,
   revealActions = false,
+  revealInstructions = false,
   projects = [],
   activeProject = null,
   onSave,
@@ -321,11 +322,17 @@ export function AgentEditor({
   error?: string | undefined;
   /** Whether the address asked for this role's Actions section (EO-428). */
   revealActions?: boolean;
+  /** Whether the address asked for this role's agent's instructions (EO-805): brought into sight once. */
+  revealInstructions?: boolean;
   onSave: (input: IpcRequest<"agents:save">) => void;
   onCancel: () => void;
 }) {
   const [draft, setDraft] = useState(agent);
   const isNew = agent.id === "";
+  const instructionsRef = useRef<HTMLElement>(null);
+  useEffect(() => {
+    if (revealInstructions) instructionsRef.current?.scrollIntoView?.({ block: "start", behavior: "smooth" });
+  }, [revealInstructions]);
   const { policy } = usePolicy();
   const word = useChromeVocabulary().item.toLowerCase();
 
@@ -572,7 +579,7 @@ export function AgentEditor({
       ) : null}
 
       <ReadOnlyFence readOnly={locked}>
-        <CardSection title="Instructions" description="Applies to the next dispatch, not to runs already in flight.">
+        <CardSection ref={instructionsRef} title="Instructions" description="Applies to the next dispatch, not to runs already in flight.">
           <TextArea
             aria-label="Instructions"
             className="min-h-48 font-mono text-[12px]"

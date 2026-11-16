@@ -7,6 +7,7 @@ import type { ProviderCapabilities, ProviderModel, RuntimeStatusView } from "@eo
 import { createQueryClient } from "../../../query/client";
 import { setBridge } from "../../../ipc/bridge";
 import { ViewPublisher } from "../../../shared/view/ViewPublisher";
+import { instructionsAddress } from "./address";
 import { AgentsView } from "./AgentsView";
 
 /**
@@ -976,6 +977,71 @@ describe("the agents view opened on a role's actions", () => {
     await screen.findByRole("region", { name: "Actions" });
     fireEvent.click(within(screen.getByRole("list", { name: "Agents" })).getAllByRole("button", { name: /Implementer/ })[0]!);
     await waitFor(() => expect(within(screen.getByRole("region", { name: "Actions" })).getByText("implementer")).toBeInTheDocument());
+  });
+});
+
+/**
+ * A board column's owner line sends somebody to the agent on its role
+ * with the instructions in view (EO-805), resolved as `?actions=` is.
+ */
+describe("the agents view opened on a role's instructions", () => {
+  afterEach(() => cleanup());
+  const two = [agent(), agent({ id: "a2", name: "Tester", role: "qa" })];
+  /** The agent the list marks as the open one. */
+  const current = () => within(screen.getByRole("list", { name: "Agents" })).getAllByRole("button").filter((row) => row.getAttribute("aria-current") === "true").map((row) => row.textContent ?? "");
+
+  it("is the Agents screen with the role named", () => {
+    expect(instructionsAddress("qa lead")).toBe("/agents?instructions=qa%20lead");
+  });
+
+  it("opens an agent on the role the address names, and brings its Instructions into sight", async () => {
+    const scrolled: Element[] = [];
+    const original = Element.prototype.scrollIntoView;
+    Element.prototype.scrollIntoView = function (this: Element) {
+      scrolled.push(this);
+    };
+    try {
+      renderAgents({ agents: two }, instructionsAddress("qa"));
+      await screen.findByRole("region", { name: "Actions" });
+      expect(within(screen.getByRole("region", { name: "Actions" })).getByText("qa")).toBeInTheDocument();
+      expect(current()).toEqual([expect.stringContaining("Tester")]);
+      const instructions = screen.getByRole("region", { name: "Instructions" });
+      expect(within(instructions).getByRole("textbox", { name: "Instructions" })).toBeInTheDocument();
+      await waitFor(() => expect(scrolled).toContain(instructions));
+      // The instructions, not the actions, are what it was sent for.
+      expect(scrolled.some((element) => element.getAttribute("aria-label") === "Actions")).toBe(false);
+    } finally {
+      Element.prototype.scrollIntoView = original;
+    }
+  });
+
+  it("opens a retired agent on the role when nobody live holds it, and a live one in preference, never another role's", async () => {
+    const retired = [agent(), agent({ id: "a2", name: "Tester", role: "qa", archivedAt: 1_700_000_000_000 })];
+    renderAgents({ agents: retired }, instructionsAddress("qa"));
+    expect(within(await screen.findByRole("region", { name: "Actions" })).getByText("qa")).toBeInTheDocument();
+    expect(current()).toEqual([expect.stringContaining("Tester")]);
+    cleanup();
+
+    renderAgents({ agents: [...retired, agent({ id: "a3", name: "Checker", role: "qa" })] }, instructionsAddress("qa"));
+    expect(within(await screen.findByRole("region", { name: "Actions" })).getByText("qa")).toBeInTheDocument();
+    expect(current()).toEqual([expect.stringContaining("Checker")]);
+    expect(within(screen.getByRole("list", { name: "Agents" })).queryByRole("button", { name: /Tester/ })).toBeNull();
+    expect(within(screen.getByRole("list", { name: "Agents" })).getAllByRole("button", { name: /Checker/ }).length).toBeGreaterThan(0);
+  });
+
+  it("opens no agent when nobody holds the role, live or retired, says so, and keeps the list to pick from", async () => {
+    for (const address of [instructionsAddress("qa"), "/agents?actions=qa"]) {
+      renderAgents({ agents: [agent(), agent({ id: "a2", name: "Writer", role: "docs" })] }, address);
+      expect(await screen.findByText("No agent holds the qa role.")).toBeInTheDocument();
+      expect(screen.queryByRole("region", { name: "Edit agent" })).toBeNull();
+      expect(screen.queryByRole("region", { name: "Instructions" })).toBeNull();
+      expect(current()).toEqual([]);
+
+      fireEvent.click(within(screen.getByRole("list", { name: "Agents" })).getAllByRole("button", { name: /Writer/ })[0]!);
+      expect(within(await screen.findByRole("region", { name: "Actions" })).getByText("docs")).toBeInTheDocument();
+      expect(screen.queryByText("No agent holds the qa role.")).toBeNull();
+      cleanup();
+    }
   });
 });
 

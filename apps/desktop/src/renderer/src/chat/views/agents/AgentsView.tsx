@@ -17,7 +17,7 @@ import { useViewParameters } from "../../../shared/view/ViewPublisher";
 import { groupAgentsByScope, groupHeading, useScopeProjects } from "../../../shared/agents/agentScope";
 import { ManagedLockLine } from "../../managed/ManagedSection";
 import { Button, EmptyState, ErrorLine, Loading, Menu, SearchInput, Select, StatusDot, Tabs, ViewHeader, type MenuEntry } from "../../kit";
-import { ACTIONS_FACET } from "./address";
+import { ACTIONS_FACET, INSTRUCTIONS_FACET } from "./address";
 import { AgentEditor } from "./AgentEditor";
 import { ConfirmRemove } from "./ConfirmRemove";
 import { RuntimesPanel } from "./RuntimesPanel";
@@ -141,6 +141,9 @@ export function AgentsView() {
   // `?actions=<role>` (EO-428): the role whose Actions section somebody was sent here for.
   const [searchParams] = useSearchParams();
   const actionsRole = searchParams.get(ACTIONS_FACET);
+  // `?instructions=<role>` (EO-805): the role whose agent's instructions somebody was sent here for.
+  const instructionsRole = searchParams.get(INSTRUCTIONS_FACET);
+  const addressedRole = actionsRole ?? instructionsRole;
 
   const save = useMutation({
     mutationFn: (input: IpcRequest<"agents:save">) => ipcQuery("agents:save", input),
@@ -225,14 +228,15 @@ export function AgentsView() {
   // Retired agents are listed and hidden, not dropped (EO-186).
   const live = all.filter((agent) => agent.archivedAt === null);
   const archived = all.filter((agent) => agent.archivedAt !== null);
-  // `?actions=<role>` names a role, not an agent (EO-428), and is asked
+  // `?actions=<role>` names a role, not an agent (EO-428) — as does
+  // `?instructions=<role>` (EO-805), resolved the same way — and is asked
   // of every agent rather than of what the filters leave: a live one
   // first, since that is who a pipeline step dispatches, and otherwise a
   // retired one — a step can still name a role nobody live holds, and
   // its actions are still that role's. Falling through to the first
   // agent in the list would open another role's actions under an
   // address that named this one.
-  const addressed = actionsRole === null ? undefined : (live.find((agent) => agent.role === actionsRole) ?? archived.find((agent) => agent.role === actionsRole));
+  const addressed = addressedRole === null ? undefined : (live.find((agent) => agent.role === addressedRole) ?? archived.find((agent) => agent.role === addressedRole));
   // A retired agent the address opened is listed while it is what is
   // open, so the editor is never of a row the list does not have.
   const addressedOnly = addressed !== undefined && addressed.archivedAt !== null && selectedId === null && !showArchived ? [addressed] : [];
@@ -247,8 +251,12 @@ export function AgentsView() {
   // Grouped by scope (EO-475): the global agents, then each project's own.
   const groups = groupAgentsByScope(visible, projects);
   // Never a blank editor while there is anything to edit. Until somebody
-  // picks one, an address that names a role opens the agent it resolved to.
-  const selected = creating ?? visible.find((agent) => agent.id === selectedId) ?? addressed ?? groups[0]?.agents[0] ?? null;
+  // picks one, an address that names a role opens the agent it resolved to
+  // — and an address naming a role no agent holds, live or retired, opens
+  // none (EO-805): the first agent would be another role's, opened under
+  // an address that named this one.
+  const unheldRole = addressedRole !== null && addressed === undefined ? addressedRole : null;
+  const selected = creating ?? visible.find((agent) => agent.id === selectedId) ?? addressed ?? (unheldRole === null ? groups[0]?.agents[0] : undefined) ?? null;
 
   // What this view has picked out (EO-192): the effective selection, none while New agent is open, and none on Runtimes.
   const onAgents = tab === "agents";
@@ -395,7 +403,7 @@ export function AgentsView() {
 
           {agents.isLoading ? (
             <Loading />
-          ) : selected === null ? (
+          ) : selected === null && (unheldRole === null || all.length === 0) ? (
             <EmptyState
               title={all.length === 0 ? "No agents configured yet." : "No agent matches this filter."}
               {...(all.length === 0 && !locked
@@ -416,6 +424,12 @@ export function AgentsView() {
                 {visible.length === 0 ? <p className="px-2.5 py-2 text-[12px] text-ink-subtle">No agent matches this filter.</p> : null}
               </nav>
               <div className="flex min-w-0 flex-1 flex-col">
+                {selected === null ? (
+                  // The list stays beside it, so another agent is one press away.
+                  <EmptyState title={`No agent holds the ${unheldRole ?? ""} role.`}>
+                    {locked ? "Pick an agent from the list." : "Pick an agent from the list, or make one for the role with New agent."}
+                  </EmptyState>
+                ) : (
                 <AgentEditor
                   key={selected.id || "new"}
                   agent={selected}
@@ -425,6 +439,7 @@ export function AgentsView() {
                   activeProject={activeProject}
                   onCustomise={(agentId, projectId) => customise.mutate({ agentId, projectId })}
                   revealActions={actionsRole !== null && selected.role === actionsRole}
+                  revealInstructions={actionsRole === null && instructionsRole !== null && selected.role === instructionsRole}
                   busy={save.isPending || bind.isPending || customise.isPending}
                   error={
                     save.error?.message ??
@@ -439,6 +454,7 @@ export function AgentsView() {
                     locked && draft.id !== undefined ? bind.mutate({ agentId: draft.id, provider: draft.provider, model: draft.model ?? null }) : save.mutate(draft)
                   }
                 />
+                )}
               </div>
             </div>
           )}
