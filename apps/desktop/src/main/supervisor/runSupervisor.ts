@@ -57,6 +57,7 @@ import {
   type SkillsOfferedEvent,
   MEMORY_EXTRACTED_EVENT,
   LEARNING_REVIEW_EVENT,
+  SUGGESTED_REPLY_EVENT,
   LearningReviewNoteSchema,
   type LearningReviewEvent,
   type LearningReviewNote,
@@ -136,6 +137,7 @@ import {
   type JobRunsOn,
   type UsageEvent,
   type Uuid,
+  type SuggestionOutcome,
   type SuggestionSpend,
   MICROCENTS_PER_CENT,
   type PipelineStep,
@@ -3913,7 +3915,11 @@ export function createRunSupervisor(
     // thread): a side call's row, as the learning review's fork is, so
     // the budgets that count side calls count it and nothing is spent
     // unseen. Said here for the same reason.
-    const inner = suggestionSpendReported(scopedProvider(providerFor(agent, item), processScopeOf(run.id)), (spend) => recordSuggestionSpend(run.id, agent, item, spend));
+    const inner = suggestionSpendReported(
+      scopedProvider(providerFor(agent, item), processScopeOf(run.id)),
+      (spend) => recordSuggestionSpend(run.id, agent, item, spend),
+      (outcome) => recordSuggestionOutcome(run.id, outcome),
+    );
     const capturing = debugMode() && (send.purpose !== "correction" || capturedRuns.has(run.id));
     // And every turn of a run on an item is a newer turn on it, which
     // stops a suggested reply still being made after the last one, and
@@ -3959,6 +3965,24 @@ export function createRunSupervisor(
       });
     } catch (error) {
       console.warn(`[eo] what the suggested reply after run ${runId} spent could not be recorded: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  /**
+   * What became of the suggested next message after a run's turn
+   * (EO-810), as a `suggested_reply` event on that run — skipped and why,
+   * the fork not opened or failed, stopped, dropped by the filters with
+   * the answer and the rule, or emitted — so a suggestion that never
+   * reached the composer can be explained from EO's own records. Through
+   * the run's buffer while it has one, for `recordSent`'s reason: a skip
+   * is decided the moment the turn's events end, which can be before the
+   * run has let go of its log. Never throws.
+   */
+  function recordSuggestionOutcome(runId: Uuid, outcome: SuggestionOutcome): void {
+    try {
+      appendDebugRow(runId, SUGGESTED_REPLY_EVENT, outcome);
+    } catch (error) {
+      console.warn(`[eo] what became of the suggested reply after run ${runId} could not be recorded: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
 

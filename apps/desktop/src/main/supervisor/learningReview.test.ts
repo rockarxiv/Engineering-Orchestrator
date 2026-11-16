@@ -91,7 +91,7 @@ interface ReviewScript {
  * as it opens, and the warm-up key a fork never adopts — has to be on the
  * fork with the same value.
  */
-const A_TURNS_OWN = new Set(["context", "instructions", "signal", "writeBridge", "warmKey", "attachments", "tools", "budgetCents", "environmentVariables", "withheldEnvironmentVariables", "onSkillsSection", "onSuggestionSpend"]);
+const A_TURNS_OWN = new Set(["context", "instructions", "signal", "writeBridge", "warmKey", "attachments", "tools", "budgetCents", "environmentVariables", "withheldEnvironmentVariables", "onSkillsSection", "onSuggestionSpend", "onSuggestionOutcome"]);
 function sameAsTheRun(run: AgentProviderStartOptions, fork: AgentProviderResumeOptions): { differ: string[]; missing: string[] } {
   const forked = fork as Record<string, unknown>;
   const fields = Object.entries(run).filter(([key]) => !A_TURNS_OWN.has(key));

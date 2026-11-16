@@ -16,6 +16,7 @@ import { dropWarmCodexThread,
   type ThreadEvent,
   type ThreadItem,
   type Usage,
+  TOO_FEW_COMPLETED_TURNS,
 } from "./codexClient.js";
 import {
   ADMIN_MCP_SERVER_NAME,
@@ -44,6 +45,7 @@ import {
   type SearchInterceptionEvent,
   type ServerStatusEvent,
   type Skill,
+  type SuggestionOutcome,
   type UsageEvent,
   skillsForRun,
   withoutReservedEnvironmentVariables,
@@ -53,7 +55,7 @@ import type { AdminMcpDispatch } from "../agentAttachments/adminDelivery.js";
 import { deliverableSkills, writeWorktreeSkills, worktreeSkillsPromptSection, type WorktreeSkillDelivery } from "../agentAttachments/worktreeSkills.js";
 import { codexSkillLoaded, skillsOffered, withoutEvents } from "./skillUsage.js";
 import { openedFork } from "./threadFork.js";
-import { cleanSuggestion, PROMPT_SUGGESTION_PROMPT, SUGGESTION_MAX_UNCACHED_TOKENS, SUGGESTION_MIN_COMPLETED_TURNS, SUGGESTION_NEAR_LIMIT_PERCENT, SUGGESTION_TIMEOUT_MS } from "./promptSuggestion.js";
+import { judgeSuggestion, lastRequestMostlyUncached, PROMPT_SUGGESTION_PROMPT, SUGGESTION_MIN_COMPLETED_TURNS, SUGGESTION_NEAR_LIMIT_PERCENT, SUGGESTION_TIMEOUT_MS } from "./promptSuggestion.js";
 import { agentMcpStdioConfig, eoMcpStdioConfig, type EoMcpServiceConfig } from "../mcp/serviceConfig.js";
 import { codexModelPrice, codexTurnCostCents, codexTurnCostMicrocents } from "./codexPricing.js";
 import { personCodexHome } from "./codexHome.js";
@@ -2678,7 +2680,9 @@ export function createCodexProvider(options: CodexProviderOptions = {}): AgentPr
       // written, not what was attached.
       const offered = skillsOffered(skills.delivered.map((skill) => skill.slug));
       const slugs = skills.delivered.map((skill) => skill.slug);
-      return reachableTurn((reach) => saidFirst(offered, startedTurn(opts, skillsSection, reach, slugs)));
+      // A new thread's first answer is its only one, so no suggestion
+      // follows it; a turn that asked for one still says so (EO-810).
+      return reachableTurn((reach) => suggestingAfter(saidFirst(offered, startedTurn(opts, skillsSection, reach, slugs)), null, opts, {}, new AbortController()));
     },
 
     resume(threadId: string, message: string, resumeOpts?: AgentProviderResumeOptions): InterruptibleStream<AgentEvent> {
@@ -2875,7 +2879,8 @@ export function createCodexProvider(options: CodexProviderOptions = {}): AgentPr
    *
    * After the turn's `result`, never before: the turn is over there, and
    * its process ended, whether or not the caller reads on. One that stops
-   * reading at the result never starts a fork at all. Nothing here fails
+   * reading at the result never starts a fork at all, and the outcome
+   * says so (`aborted`, EO-810). Nothing here fails
    * the turn: a fork that cannot be opened, fails or answers something
    * the filters drop says nothing. The original thread is not written to.
    *
@@ -2892,73 +2897,124 @@ export function createCodexProvider(options: CodexProviderOptions = {}): AgentPr
    */
   async function* suggestingAfter(
     turn: AsyncIterable<AgentEvent>,
-    threadId: string,
+    /** The thread resumed; null for a new one (`start`), whose first answer is its only completed turn. */
+    threadId: string | null,
     resumeOpts: AgentProviderResumeOptions | undefined,
     facts: TurnFacts,
     stop: AbortController,
   ): AsyncIterable<AgentEvent> {
+    const asked = resumeOpts?.suggestNextMessage === true;
+    let answered = false;
+    let failed = false;
+    let nearLimit = false;
+    let cancelled = false;
+    // Every turn that asked says what became of it, once (EO-810), a
+    // skip included: it opens no fork and spends nothing, and without
+    // its own record a skip reads exactly as a suggestion lost.
+    let reported = false;
+    const told = (outcome: SuggestionOutcome) => {
+      if (reported) return;
+      reported = true;
+      try {
+        resumeOpts?.onSuggestionOutcome?.(outcome);
+      } catch (error) {
+        console.warn(`[codex] what became of a suggested reply could not be reported: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    };
+    const skipped = (letGo: boolean): SuggestionOutcome | null =>
+      suggestionSkipped(resumeOpts ?? {}, { answered, failed, cancelled, nearLimit, stopped: letGo || stop.signal.aborted || resumeOpts?.signal?.aborted === true }, facts);
     try {
-      let answered = false;
-      let failed = false;
-      let nearLimit = false;
       for await (const event of turn) {
         if (event.type === "result") answered = true;
-        else if (event.type === "error" && event.fatal !== false) failed = true;
-        else if (event.type === "quota" && atOrNearLimit(event)) nearLimit = true;
+        else if (event.type === "error" && event.fatal !== false) {
+          failed = true;
+          if (/\binterrupted\b|\bcancell?ed\b/i.test(event.message)) cancelled = true;
+        } else if (event.type === "quota" && atOrNearLimit(event)) nearLimit = true;
         yield event;
       }
-      if (resumeOpts?.suggestNextMessage !== true || resumeOpts.refuseCallsExcept !== undefined) return;
-      if (!answered || failed || nearLimit || stop.signal.aborted || resumeOpts.signal?.aborted) return;
-      if (facts.lastRequest && uncachedTokens(facts.lastRequest) > SUGGESTION_MAX_UNCACHED_TOKENS) return;
+      if (!asked || !resumeOpts) return;
+      const skip = skipped(false);
+      if (skip) {
+        told(skip);
+        return;
+      }
+      if (threadId === null) {
+        told({ kind: "skipped", rule: "too_few_turns" });
+        return;
+      }
 
       // Stopped by the run's own cancel too, by the next turn on the
       // thread (`resume`, which aborts `stop`), and at its time limit,
       // whichever comes first.
       const cancel = () => stop.abort();
       resumeOpts.signal?.addEventListener("abort", cancel, { once: true });
-      const limit = setTimeout(cancel, options.suggestionTimeoutMs ?? SUGGESTION_TIMEOUT_MS);
+      let timedOut = false;
+      const limit = setTimeout(() => {
+        timedOut = true;
+        stop.abort();
+      }, options.suggestionTimeoutMs ?? SUGGESTION_TIMEOUT_MS);
       try {
-        const text = await suggestionOn(threadId, resumeOpts, stop.signal);
-        if (text !== null && !stop.signal.aborted) yield { type: "prompt_suggestion", text, threadId } satisfies AgentEvent;
+        const outcome = await suggestionOn(threadId, resumeOpts, stop.signal);
+        // An answer that came once the suggestion was stopped is too late to show.
+        if (outcome.kind === "stopped" || (outcome.kind === "emitted" && stop.signal.aborted)) {
+          told({ kind: "stopped", by: timedOut ? "time_limit" : "stopped" });
+        } else {
+          told(outcome);
+          if (outcome.kind === "emitted") yield { type: "prompt_suggestion", text: outcome.text, threadId } satisfies AgentEvent;
+        }
       } finally {
         clearTimeout(limit);
         resumeOpts.signal?.removeEventListener("abort", cancel);
       }
     } finally {
-      if (suggesting.get(threadId) === stop) suggesting.delete(threadId);
+      // A caller that let go of the stream before it ended — as a run
+      // does at a fatal error, or a cancelled turn's — or a turn that
+      // threw, still says what became of the suggestion it asked for:
+      // what ended the turn where it did, or, where nothing did, that it
+      // was let go of before a fork could be opened (`aborted`).
+      if (asked && !reported) told(skipped(true) ?? { kind: "skipped", rule: "aborted" });
+      if (threadId !== null && suggesting.get(threadId) === stop) suggesting.delete(threadId);
     }
   }
 
   /**
-   * The suggestion one fork of the thread answers, cleaned up, or null —
-   * never a throw. What the fork spent is reported (`onSuggestionSpend`)
-   * however it ended, where its turn said.
+   * What one fork of the thread made of the suggestion (EO-810): not
+   * opened, failed, stopped, or answered — and then dropped by the
+   * filters or kept. Never a throw. What the fork spent is reported
+   * (`onSuggestionSpend`) however it ended, where its turn said.
    */
-  async function suggestionOn(threadId: string, resumeOpts: AgentProviderResumeOptions, signal: AbortSignal): Promise<string | null> {
+  async function suggestionOn(threadId: string, resumeOpts: AgentProviderResumeOptions, signal: AbortSignal): Promise<SuggestionOutcome> {
     const startedAt = Date.now();
     let spent: UsageEvent | undefined;
     let answer: string | null = null;
-    let failed = false;
+    let failure: string | null = null;
     try {
       const forked = await forkTurn(threadId, PROMPT_SUGGESTION_PROMPT, suggestionForkOptions(resumeOpts, signal), SUGGESTION_MIN_COMPLETED_TURNS);
-      if (!forked.ok) return null;
+      if (!forked.ok) {
+        if (forked.message.includes(TOO_FEW_COMPLETED_TURNS)) return { kind: "skipped", rule: "too_few_turns" };
+        return signal.aborted ? { kind: "stopped", by: "stopped" } : { kind: "fork_not_opened", message: forked.message };
+      }
       for await (const event of forked.events) {
         if (event.type === "usage") spent = event;
-        else if (event.type === "result") answer = typeof event.data === "string" ? event.data : null;
-        else if (event.type === "error" && event.fatal !== false) failed = true;
+        else if (event.type === "result") answer = typeof event.data === "string" ? event.data : JSON.stringify(event.data);
+        else if (event.type === "error" && event.fatal !== false) failure ??= event.message;
       }
-    } catch {
-      failed = true;
+    } catch (error) {
+      failure = error instanceof Error ? error.message : String(error);
     } finally {
       if (spent) {
         try {
-          resumeOpts.onSuggestionSpend?.({ usage: spent, startedAt, durationMs: Math.max(0, Date.now() - startedAt), completed: !failed && !signal.aborted && answer !== null });
+          resumeOpts.onSuggestionSpend?.({ usage: spent, startedAt, durationMs: Math.max(0, Date.now() - startedAt), completed: failure === null && !signal.aborted && answer !== null });
         } catch (error) {
           console.warn(`[codex] what a suggested reply spent could not be reported: ${error instanceof Error ? error.message : String(error)}`);
         }
       }
     }
-    return failed || signal.aborted || answer === null ? null : cleanSuggestion(answer);
+    if (signal.aborted) return { kind: "stopped", by: "stopped" };
+    if (failure !== null) return { kind: "fork_failed", message: failure };
+    if (answer === null) return { kind: "fork_failed", message: "The fork's turn ended without an answer." };
+    const verdict = judgeSuggestion(answer);
+    return verdict.kept ? { kind: "emitted", text: verdict.text, answer } : { kind: "dropped", answer, rule: verdict.rule };
   }
 
   async function* startedTurn(opts: AgentProviderStartOptions, skillsSection: string, reach: (turn: CodexTurn) => void, skillSlugs: readonly string[]): AsyncIterable<AgentEvent> {
@@ -3117,6 +3173,30 @@ function atOrNearLimit(reading: QuotaEvent): boolean {
 }
 
 /**
+ * The rule that keeps a turn from asking for a suggestion (EO-808), or
+ * null where one is to be made: said as the outcome it records (EO-810).
+ * In the order the rules are checked, so a turn two rules stop is put
+ * down to the first.
+ */
+function suggestionSkipped(
+  turn: AgentProviderResumeOptions,
+  ended: { answered: boolean; failed: boolean; cancelled: boolean; nearLimit: boolean; stopped: boolean },
+  facts: TurnFacts,
+): SuggestionOutcome | null {
+  if (turn.refuseCallsExcept !== undefined) return { kind: "skipped", rule: "refused_calls" };
+  if (ended.cancelled) return { kind: "skipped", rule: "cancelled" };
+  if (ended.failed) return { kind: "skipped", rule: "failed" };
+  if (!ended.answered) return { kind: "skipped", rule: "no_result" };
+  if (ended.stopped) return { kind: "skipped", rule: "aborted" };
+  if (ended.nearLimit) return { kind: "skipped", rule: "near_limit" };
+  if (facts.lastRequest) {
+    const request = { uncachedTokens: uncachedTokens(facts.lastRequest), cachedTokens: facts.lastRequest.cached_input_tokens };
+    if (lastRequestMostlyUncached(request)) return { kind: "skipped", rule: "uncached", ...request };
+  }
+  return null;
+}
+
+/**
  * What a suggestion's fork is opened with (EO-808): what the turn was,
  * so it is launched as the turn was and its request reads the thread
  * from the prompt cache — less what belongs to the turn alone, and with
@@ -3144,6 +3224,7 @@ const TURN_ALONE = [
   "streamAnswer",
   "onSkillsSection",
   "onSuggestionSpend",
+  "onSuggestionOutcome",
   "suggestNextMessage",
   "signal",
 ] as const satisfies readonly (keyof AgentProviderResumeOptions)[];
