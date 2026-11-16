@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { copyFileSync, linkSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, linkSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -51,6 +51,7 @@ import { configureEntryChecks, launchable, moduleEntryRefusal } from "./entryChe
 import { moduleItemReader } from "./moduleItemRead.js";
 import type { ModuleHostLauncher } from "./runModule.js";
 import { runModuleTests } from "./runModuleTests.js";
+import { storeVariable } from "./secrets.js";
 
 /**
  * A pipeline's `module` entry rules (EO-736, ARCHITECTURE.md, "Entry
@@ -552,7 +553,39 @@ describe("fail closed", () => {
     );
     configure();
     rmSync(forgeBinary());
-    expect((await submitItemCommand(handle.db, undefined, submission(false))).problem).toContain("which cannot run here: forge-default-branch is not installed where this door is");
+    expect((await submitItemCommand(handle.db, undefined, submission(false))).problem).toContain("which cannot run here: forge-default-branch is not installed here, or not on any PATH EO searches");
+  });
+
+  // EO-816: everything the check declared, checked at the door before it
+  // is launched, every missing thing named at once — and the same door
+  // lets the item in once the machine is put right.
+  it("on a module missing CLIs and variables, naming all of them, launching nothing, and passes once they are there", async () => {
+    const marker = join(bin, "the check ran");
+    const secretsDirectory = mkdtempSync(join(tmpdir(), "eo-entry-secrets-"));
+    const secrets = { directory: secretsDirectory, store: nothingStored };
+    configureEntryChecks({ launcher: launcher(), secrets, targetBranch });
+    const code = `import { writeFileSync } from "node:fs";
+      export default async function () { writeFileSync(${JSON.stringify(marker)}, ""); return { ok: true, result: "pass" }; }`;
+    setRules("default", [{ kind: "module", module: module(code, { needs: { ...CHECK_MANIFEST.needs, bin: ["eo-816-lint", "eo-816-scan"], env: ["REVIEW_REGION", "REVIEW_QUEUE"] } }) }]);
+
+    const refused = await submitItemCommand(handle.db, undefined, submission(false));
+
+    expect(refused.created).toBe(false);
+    for (const name of ["eo-816-lint", "eo-816-scan", "REVIEW_REGION", "REVIEW_QUEUE"]) expect(refused.problem).toContain(name);
+    expect(existsSync(marker)).toBe(false);
+    expect(rows()).toEqual([]);
+
+    for (const name of ["eo-816-lint", "eo-816-scan"]) {
+      const file = join(bin, process.platform === "win32" ? `${name}.exe` : name);
+      writeFileSync(file, "");
+      chmodSync(file, 0o755);
+    }
+    storeVariable(secrets, "REVIEW_REGION", "eu");
+    storeVariable(secrets, "REVIEW_QUEUE", "main");
+
+    expect(await submitItemCommand(handle.db, undefined, submission(false))).toMatchObject({ created: true, problem: null });
+    expect(existsSync(marker)).toBe(true);
+    rmSync(secretsDirectory, { recursive: true, force: true });
   });
 
   it("on a door that never asks", () => {

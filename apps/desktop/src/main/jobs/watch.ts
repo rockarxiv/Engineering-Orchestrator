@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { WAITING_RESULT, WATCH_CHECK_OUTPUT_LIMIT, moduleInputProblems, type CustomModule, type Item, type Job, type JobRunsOn, type Uuid, type WatchFinding, type WatchTrigger } from "@eo/core";
+import { WAITING_RESULT, WATCH_CHECK_OUTPUT_LIMIT, moduleInputProblems, moduleReadinessRefusal, type CustomModule, type Item, type Job, type JobRunsOn, type Uuid, type WatchFinding, type WatchTrigger } from "@eo/core";
 import { WATCH_FAILURE_LIMIT, watchFailuresExhausted, watchRetryDelayMs } from "@eo/engine";
 import type { Db } from "../db/client.js";
 import {
@@ -25,7 +25,8 @@ import { isProjectReplica } from "../db/recordRole.js";
 import { intakeRunContext } from "../ipc/domainQueries.js";
 import { readOrganisationSecretEntry, type OrganisationSecretsOptions } from "../policy/organisationSecrets.js";
 import { runModule, type ModuleHostLauncher, type ModuleOutcome } from "../modules/runModule.js";
-import { environmentFor, type ModuleSecretsOptions } from "../modules/secrets.js";
+import { resolveModuleRun } from "../modules/readiness.js";
+import type { ModuleSecretsOptions } from "../modules/secrets.js";
 import { startInterval } from "../schedule/interval.js";
 import { pauseJob } from "./budget.js";
 import { fireJob, jobEntryVerdicts, type FireOptions } from "./fire.js";
@@ -123,24 +124,20 @@ export interface WatchCheckOptions {
 export function createWatchCheck(db: Db, options: WatchCheckOptions): WatchCheck {
   return async (job, module, trigger, onOutput) => {
     const organisation = options.organisationSecrets;
-    const { env, unreadable, dangling, variables } = environmentFor(
-      options.secrets,
-      module.manifest.needs.env,
-      null,
-      organisation === undefined ? undefined : (name: string) => readOrganisationSecretEntry(organisation, name),
-    );
-    if (unreadable.length > 0) {
-      return { ok: false, reason: `"${module.name}" cannot read ${unreadable.join(", ")}: stored by another machine or before this one's keychain was reset. Set ${unreadable.length === 1 ? "it" : "them"} again under Settings → Modules.` };
-    }
-    if (dangling.length > 0) {
-      return { ok: false, reason: `"${module.name}" was not run: ${dangling.map(({ name, variable }) => `${name} is read from ${variable}, which is missing or empty where EO was launched`).join("; ")}.` };
-    }
-    const missing = module.manifest.needs.env.filter((name) => !(name in env));
-    if (missing.length > 0) {
-      return { ok: false, reason: `"${module.name}" needs ${missing.join(", ")}, which ${missing.length === 1 ? "is" : "are"} not set. Add ${missing.length === 1 ? "it" : "them"} under Settings → Modules.` };
-    }
     const cwd = mkdtempSync(join(tmpdir(), "eo-watch-"));
     try {
+      // Everything the module needs, checked afresh before every check
+      // launches it (EO-816), every missing thing named at once. A refusal
+      // is a failed check, so the watch's own backoff is the retry: the
+      // first check after the setup is put right runs.
+      const { readiness, env, variables } = resolveModuleRun(module.manifest, {
+        secrets: options.secrets,
+        step: null,
+        organisation: organisation === undefined ? undefined : (name: string) => readOrganisationSecretEntry(organisation, name),
+        cwd,
+      });
+      const notReady = moduleReadinessRefusal(module.name, readiness);
+      if (notReady !== null) return { ok: false, reason: notReady };
       const context = intakeRunContext(db, { job, intervalMs: trigger.everyMinutes * MINUTE_MS, now: Date.now() });
       return await runModule(options.launcher, {
         module,

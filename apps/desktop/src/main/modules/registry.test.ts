@@ -1,6 +1,6 @@
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { delimiter, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { DEFAULT_MODULE_TIMEOUT_MS } from "@eo/core";
@@ -24,6 +24,7 @@ import {
   saveModule,
   updateStep,
 } from "../db/repos/index.js";
+import { getModule } from "../db/repos/modulesRepo.js";
 import { createTestItem, openMigratedTestDb } from "../db/testHelpers.js";
 import { followApprovedModule } from "./followApproved.js";
 import { createModuleRunnerLookup } from "./registry.js";
@@ -1057,5 +1058,98 @@ describe("the module version a step pins", () => {
     const outcome = await dispatch(module.id, on);
     expect(outcome).toMatchObject({ ok: false });
     expect(!outcome.ok && outcome.reason).toContain('"Probe" v9 is not kept any more');
+  });
+});
+
+/**
+ * Prerequisites checked at dispatch (EO-816), through a real host: the
+ * whole point is that module code is never launched when something it
+ * declared is missing, which only a marker the module would write can
+ * show — and that the same runner goes, unchanged and unapproved by
+ * nobody, once the machine is put right.
+ */
+describe("a step whose module is not ready on this machine", () => {
+  let tools: string;
+  let savedPath: string | undefined;
+
+  beforeEach(() => {
+    tools = join(scratch, "tools");
+    mkdirSync(tools);
+    savedPath = process.env["PATH"];
+    process.env["PATH"] = `${tools}${delimiter}${savedPath ?? ""}`;
+  });
+
+  afterEach(() => {
+    process.env["PATH"] = savedPath;
+  });
+
+  /** A file `ctx.exec` would start, in a directory EO searches. */
+  function install(name: string): void {
+    const file = join(tools, process.platform === "win32" ? `${name}.exe` : name);
+    writeFileSync(file, "");
+    chmodSync(file, 0o755);
+  }
+
+  const marking = (marker: string) =>
+    `import { writeFileSync } from "node:fs";
+     export default async function run() { writeFileSync(${JSON.stringify(marker)}, ""); return { ok: true, result: "ok", detail: "" }; }`;
+
+  const NEEDS = { bin: ["eo-816-deploy-cli", "eo-816-notify-cli"], env: ["FLY_API_TOKEN", "SLACK_WEBHOOK", "JAVA_HOME"], network: false, item: false, comment: false, attach: false, create: false };
+
+  it("refuses with every missing CLI and variable at once, launches nothing, and runs after setup on the same retry", async () => {
+    const marker = join(scratch, "the module ran");
+    const value = "hook-816".split("").reverse().join("");
+    storeSecret(secrets, "SLACK_WEBHOOK", value);
+    storeReference(secrets, "JAVA_HOME", "JDK21_HOME");
+    const module = register(marking(marker), { needs: NEEDS });
+    const runner = createModuleRunnerLookup({ db: handle.db, launcher, secrets: { ...secrets, environment: {} } })(module.id)!;
+    const first = createRun(handle.db, { itemId: item.id, agentId: null, action: module.id, status: "running", provider: "module" });
+
+    const refused = await runner(context(first.id));
+
+    expect(refused.ok).toBe(false);
+    if (refused.ok) return;
+    for (const name of ["eo-816-deploy-cli", "eo-816-notify-cli", "FLY_API_TOKEN", "JAVA_HOME", "JDK21_HOME"]) expect(refused.reason).toContain(name);
+    // Set, so not named as missing; and its value nowhere.
+    expect(refused.reason).not.toContain("SLACK_WEBHOOK");
+    expect(refused.reason).not.toContain(value);
+    expect(existsSync(marker)).toBe(false);
+    expect(listRunEvents(handle.db, first.id)).toEqual([]);
+    // Not ready is not unapproved.
+    expect(getModule(handle.db, module.id)?.approvedAt).not.toBeNull();
+
+    install("eo-816-deploy-cli");
+    install("eo-816-notify-cli");
+    storeSecret(secrets, "FLY_API_TOKEN", "fly-816");
+    const retried = createModuleRunnerLookup({ db: handle.db, launcher, secrets: { ...secrets, environment: { JDK21_HOME: "/opt/jdk21" } } })(module.id)!;
+    const second = createRun(handle.db, { itemId: item.id, agentId: null, action: module.id, status: "running", provider: "module" });
+
+    expect(await retried(context(second.id))).toMatchObject({ ok: true, result: "ok" });
+    expect(existsSync(marker)).toBe(true);
+  });
+
+  it("checks the version the step pins, not the module's newest", async () => {
+    const marker = join(scratch, "the module ran");
+    const module = register(marking(marker));
+    // v2 needs a CLI this machine lacks; the step pins v1, which needs nothing.
+    const saved = saveModule(handle.db, { id: module.id, slug: "probe", name: "Probe", description: "Says something and stops.", code: marking(marker), manifest: { ...manifest, needs: NEEDS }, approve: true });
+    if (!saved.ok) throw new Error(saved.reason);
+    createStep(handle.db, { id: "pinned", pipelineId: "default" as Uuid, position: 60, name: "pinned", type: "module", entryAction: module.id, moduleVersion: 1 });
+    const on = createTestItem(handle.db, { type: "story", title: "Pinned to v1", stepId: "pinned" });
+    const run = createRun(handle.db, { itemId: on.id, agentId: null, action: module.id, status: "running", provider: "module" });
+
+    expect(await lookup()(module.id)!(context(run.id, on))).toMatchObject({ ok: true });
+    expect(existsSync(marker)).toBe(true);
+  });
+
+  it("reads the step the item is on, not another step's values", async () => {
+    const module = register(`export default async function run() { return { ok: true, result: "ok", detail: "" }; }`, { needs: { ...NEEDS, bin: [], env: ["FLY_API_TOKEN"] } });
+    storeSecret(secrets, "FLY_API_TOKEN", "for-review-only", "review");
+    const run = createRun(handle.db, { itemId: item.id, agentId: null, action: module.id, status: "running", provider: "module" });
+
+    const outcome = await lookup()(module.id)!(context(run.id));
+
+    expect(outcome.ok).toBe(false);
+    expect(!outcome.ok && outcome.reason).toContain("FLY_API_TOKEN is not set");
   });
 });

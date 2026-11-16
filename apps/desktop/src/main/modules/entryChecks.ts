@@ -1,12 +1,12 @@
-import { accessSync, constants, existsSync, statSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { posix, win32 } from "node:path";
 import {
   ENTRY_CHECK_PASS,
   ENTRY_CHECK_REFUSE,
   MODULE_ENTRY_RULE_KIND,
   describeDuration,
   entryRefusalSentence,
+  moduleReadinessProblems,
   qualifiedItemType,
   type CustomModule,
   type EntryDoor,
@@ -24,9 +24,11 @@ import { entryRulesForArrival } from "../db/repos/pipelineVersionsRepo.js";
 import { asGitWorkspace, getWorkspace } from "../db/repos/workspacesRepo.js";
 import { moduleItemView } from "../ipc/domainQueries.js";
 import { readOrganisationSecretEntry, type OrganisationSecretsOptions } from "../policy/organisationSecrets.js";
-import { searchDirectories } from "../process/searchPath.js";
 import { runModule, type ModuleEntryContext, type ModuleHostLauncher } from "./runModule.js";
-import { environmentFor, type ModuleSecretsOptions } from "./secrets.js";
+import { binariesNotFound, resolveModuleRun } from "./readiness.js";
+import type { ModuleSecretsOptions } from "./secrets.js";
+
+export { launchable, type LaunchableOptions } from "./readiness.js";
 
 /**
  * Running a pipeline's `module` entry rules (EO-736, ARCHITECTURE.md,
@@ -158,27 +160,26 @@ async function judge(db: Db, check: ModuleEntryCheck, module: CustomModule | und
   const options = configured;
   if (options === null) return `cannot run here: ${NO_HOST}`;
 
-  const missingBins = binariesNotFound(module.manifest.needs.bin);
-  if (missingBins.length > 0) return `cannot run here: ${missingBins.join(", ")} ${missingBins.length === 1 ? "is" : "are"} not installed where this door is`;
-
-  // Shared values only: the item stands on no step of this pipeline yet,
-  // so no step's own override is its to read.
-  const organisation = options.organisationSecrets;
-  const { env, unreadable, dangling, variables } = environmentFor(
-    options.secrets,
-    module.manifest.needs.env,
-    null,
-    organisation === undefined ? undefined : (name: string) => readOrganisationSecretEntry(organisation, name),
-  );
-  const missing = [...unreadable, ...dangling.map(({ name }) => name), ...module.manifest.needs.env.filter((name) => !(name in env) && !unreadable.includes(name) && !dangling.some((each) => each.name === name))];
-  if (missing.length > 0) return `cannot run here: ${missing.join(", ")} ${missing.length === 1 ? "is" : "are"} not set — set ${missing.length === 1 ? "it" : "them"} under Settings → Modules`;
-
   const { item } = arrival;
   const workspaceRow = item.workspaceId === null ? undefined : getWorkspace(db, item.workspaceId);
   const git = asGitWorkspace(workspaceRow);
   // The repository's own checkout where there is one: an entry check only
   // reads, and the item has no worktree before it is let in.
   const cwd = git !== undefined && existsSync(git.config.repoPath) ? git.config.repoPath : tmpdir();
+
+  // Everything the module needs, checked afresh at this door before it is
+  // launched (EO-816), and every missing thing named at once. Shared
+  // values only: the item stands on no step of this pipeline yet, so no
+  // step's own override is its to read.
+  const organisation = options.organisationSecrets;
+  const { readiness, env, variables } = resolveModuleRun(module.manifest, {
+    secrets: options.secrets,
+    step: null,
+    organisation: organisation === undefined ? undefined : (name: string) => readOrganisationSecretEntry(organisation, name),
+    cwd,
+  });
+  const problems = moduleReadinessProblems(readiness);
+  if (problems.length > 0) return `cannot run here: ${problems.join("; ")}`;
 
   let targetBranch: string | null;
   try {
@@ -229,63 +230,6 @@ async function judge(db: Db, check: ModuleEntryCheck, module: CustomModule | und
     return reason === "" ? "refused it, without saying why" : `refused it: ${reason}`;
   }
   return `answered "${outcome.result}", which is neither ${ENTRY_CHECK_PASS} nor ${ENTRY_CHECK_REFUSE}`;
-}
-
-/** The binaries a manifest declares that `ctx.exec` could not start from any directory EO searches. */
-function binariesNotFound(bins: readonly string[]): string[] {
-  const directories = searchDirectories();
-  return bins.filter((bin) => !launchable(bin, { directories }));
-}
-
-/**
- * Scripts Node will not start without a shell (CVE-2024-27980), which
- * `ctx.exec` never uses.
- */
-const WINDOWS_SHELL_SCRIPTS = new Set([".bat", ".cmd"]);
-
-export interface LaunchableOptions {
-  directories: readonly string[];
-  platform?: NodeJS.Platform;
-  /** Whether the file at this path is one the platform would execute. */
-  runnable?: (path: string) => boolean;
-}
-
-/**
- * Whether `ctx.exec(bin)` could start `bin` (EO-736): what the module
- * host's `spawn`, which has no shell, finds on its PATH and can run —
- * not merely a file of that name, which is what let a `.cmd` on Windows,
- * or a file without its execute bit, pass the record's check at save and
- * fail at the first door.
- *
- * Node's lookup, as libuv does it. On Windows a bare name is tried with
- * `.com` and `.exe`, and a name with its own extension as given too,
- * unless that extension is `.bat` or `.cmd`. Elsewhere the name itself,
- * which must be a regular file with its execute bit. A name with a
- * separator in it is not looked up but taken as written.
- */
-export function launchable(bin: string, options: LaunchableOptions): boolean {
-  const platform = options.platform ?? process.platform;
-  const path = platform === "win32" ? win32 : posix;
-  const runnable = options.runnable ?? ((candidate: string) => runnableFile(candidate, platform));
-  const named = platform === "win32" ? /[\\/]/.test(bin) : bin.includes("/");
-  const bases = named ? [bin] : options.directories.map((directory) => path.join(directory, bin));
-  const forms = (base: string): string[] => {
-    if (platform !== "win32") return [base];
-    const extension = path.extname(bin).toLowerCase();
-    const asGiven = extension !== "" && !WINDOWS_SHELL_SCRIPTS.has(extension) ? [base] : [];
-    return [...asGiven, `${base}.com`, `${base}.exe`];
-  };
-  return bases.some((base) => forms(base).some(runnable));
-}
-
-function runnableFile(candidate: string, platform: NodeJS.Platform): boolean {
-  try {
-    if (!statSync(candidate).isFile()) return false;
-    if (platform !== "win32") accessSync(candidate, constants.X_OK);
-    return true;
-  } catch {
-    return false;
-  }
 }
 
 /**

@@ -1,4 +1,4 @@
-import type { CustomModule, Item, Uuid } from "@eo/core";
+import { moduleReadinessRefusal, type CustomModule, type Item, type Uuid } from "@eo/core";
 import type { Db } from "../db/client.js";
 import { activeTrialGrants, getModule, latestTrialGrant, listModuleVersions, listTrialGrantsForModule, moduleAtVersion, needsBeyondGrant, stepForItem } from "../db/repos/index.js";
 import { answerToLastAsk } from "../roles/answers.js";
@@ -9,7 +9,8 @@ import type { ItemRecord } from "../record/record.js";
 import type { RunFileStore } from "../supervisor/runAttachments.js";
 import { wouldHaveSentLine } from "../preview.js";
 import { resolveInputs, runModule, type ModuleHostLauncher } from "./runModule.js";
-import { environmentFor, type ModuleSecretsOptions, type SecretRead } from "./secrets.js";
+import type { ModuleSecretsOptions, SecretRead } from "./secrets.js";
+import { resolveModuleRun } from "./readiness.js";
 import { readOrganisationSecretEntry, type OrganisationSecretsOptions } from "../policy/organisationSecrets.js";
 import { stepScopeFor } from "../trials/stepModes.js";
 
@@ -215,73 +216,35 @@ export function createModuleRunnerLookup(options: ModuleRegistryOptions): (actio
       const prepared = await context.prepareWorkspace(context.item, `"${module.name}"`);
       if (!prepared.ok) return { ok: false, reason: prepared.reason, ...(prepared.options ? { options: prepared.options } : {}) };
 
-      // Read at dispatch, not at registration: a secret set while EO is
-      // running should be usable without a restart.
+      // Everything the module declared it needs, checked here, at dispatch,
+      // before its code is launched (EO-816) — never trusted from an
+      // earlier check on a screen, so a CLI installed or a value set since
+      // the last refusal is what the retry finds. Every missing thing is
+      // named in one refusal, so nothing is found one retry at a time, and
+      // an absent CLI is found before the module's first command has
+      // changed anything. Approval is not touched: a module that is not
+      // ready here is still the code somebody approved.
+      //
+      // The environment is read at dispatch, not at registration: a secret
+      // set while EO is running should be usable without a restart.
       //
       // Scoped to the step the item is on, so the same module deploying
       // to staging and to production reads a different token at each —
       // falling back, name by name, to the shared value. A step a trial
       // plan redirects reads its trial-only values in place of its own,
-      // on a trial item and nowhere else (EO-584).
-      const { env, unreadable, dangling, variables, notRedirected } = environmentFor(
-        options.secrets,
-        module.manifest.needs.env,
-        stepScopeFor(options.db, context.item, context.item.stepId),
-        // Read at dispatch like everything else through this seam, so a
-        // secret the last sync withdrew is gone from the next run rather
-        // than from the next launch.
-        organisationReader(options.organisationSecrets),
-      );
-
-      // Named apart from the unset ones, because the fix is different:
-      // this value is on disk and the keychain that wrote it is gone, so
-      // "set it" means set it again rather than set it at last.
-      if (unreadable.length > 0) {
-        return {
-          ok: false,
-          reason: `"${module.name}" cannot read ${unreadable.join(", ")} — ${unreadable.length === 1 ? "it was" : "they were"} stored by another machine or before this one's keychain was reset. Set ${unreadable.length === 1 ? "it" : "them"} again.`,
-        };
-      }
-
-      // A reference that found nothing (EO-416), and a third sentence
-      // because it is a third fix. The name *is* configured — saying "not
-      // set" would send the person to a field that is already filled in —
-      // and nothing about the module is wrong. What is missing is on the
-      // machine: the variable, in the environment EO was launched with.
-      // That EO reads it once, at start, is the half nobody guesses:
-      // exporting it in a terminal afterwards changes nothing here.
-      if (dangling.length > 0) {
-        const each = dangling.map(({ name, variable }) => `${name} from its environment variable ${variable}`);
-        const variables = [...new Set(dangling.map(({ variable }) => variable))];
-        return {
-          ok: false,
-          reason:
-            `"${module.name}" was not run: EO is set to read ${each.join(", and ")}, and ${variables.join(", ")} ${variables.length === 1 ? "is" : "are"} missing or empty there. ` +
-            `EO reads its environment when it starts, so set ${variables.length === 1 ? "it" : "them"} where EO is launched from and restart EO — ` +
-            `or store ${dangling.length === 1 ? "a value" : "values"} instead under Settings → Modules.`,
-        };
-      }
-
-      // A redirected step whose own values name something its trial-only
-      // ones do not (EO-584). Its own would point the real code at the
-      // live target, and so would the shared value they were set up to
-      // replace, so neither is given — and the fix is the trial's.
-      if (notRedirected !== undefined) {
-        return {
-          ok: false,
-          reason:
-            `"${module.name}" was not run: this step is redirected on this trial, and ${notRedirected.join(", ")} ${notRedirected.length === 1 ? "is" : "are"} set on the step ` +
-            `but not for its trial. A redirected step is never given the step's own values or the shared ones they replace — set ${notRedirected.length === 1 ? "a trial-only value" : "trial-only values"} for ${notRedirected.length === 1 ? "it" : "them"}, or run the step for real.`,
-        };
-      }
-
-      const missing = module.manifest.needs.env.filter((name) => !(name in env));
-      if (missing.length > 0) {
-        return {
-          ok: false,
-          reason: `"${module.name}" needs ${missing.join(", ")}, which ${missing.length === 1 ? "is" : "are"} not set. Add ${missing.length === 1 ? "it" : "them"} under Settings → Modules, or ask the assistant to set ${missing.length === 1 ? "a value" : "values"} on this step.`,
-        };
-      }
+      // on a trial item and nowhere else (EO-584), and a name only its own
+      // values set is withheld rather than resolved. Read at dispatch like
+      // everything else through this seam, so a secret the last sync
+      // withdrew is gone from the next run rather than from the next
+      // launch.
+      const { readiness, env, variables } = resolveModuleRun(module.manifest, {
+        secrets: options.secrets,
+        step: stepScopeFor(options.db, context.item, context.item.stepId),
+        organisation: organisationReader(options.organisationSecrets),
+        cwd: prepared.workspace.cwd,
+      });
+      const notReady = moduleReadinessRefusal(module.name, readiness);
+      if (notReady !== null) return { ok: false, reason: notReady };
 
       // What this step sets for the inputs the module declares (EO-78).
       //

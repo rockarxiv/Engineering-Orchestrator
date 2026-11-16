@@ -1,5 +1,3 @@
-import { accessSync, constants } from "node:fs";
-import { delimiter, join } from "node:path";
 import type {
   Agent,
   CustomModule,
@@ -97,7 +95,7 @@ import { entryRuleProblems } from "@eo/engine";
 import { registry } from "../registry.js";
 import { adoptCarriedSchemas, adoptExportedActions, carriedSchemaRefusal, exportedActionRefusal, malformedActionRefusal } from "../actionDefinitionAdoption.js";
 import { loadRolePrompt } from "../roles/prompts.js";
-import { searchPath } from "../process/searchPath.js";
+import { binariesNotFound } from "./readiness.js";
 import { listAvailableNames, type ModuleSecretsOptions } from "./secrets.js";
 
 /**
@@ -889,31 +887,6 @@ export interface PreflightOptions {
   projectId?: Uuid | null;
 }
 
-/** Whether any directory on PATH provides an executable of this name. */
-function onPath(name: string, path = searchPath()): boolean {
-  // An absolute or relative path is checked as given; a bare name is
-  // looked up, which is what `ctx.exec` will do with it.
-  const candidates = name.includes("/") || name.includes("\\") ? [name] : path.split(delimiter).filter(Boolean).map((dir) => join(dir, name));
-  for (const candidate of candidates) {
-    try {
-      accessSync(candidate, constants.X_OK);
-      return true;
-      // eslint-disable-next-line no-empty
-    } catch {}
-    // Windows keeps the extension out of the declared name.
-    if (process.platform === "win32") {
-      for (const extension of [".exe", ".cmd", ".bat"]) {
-        try {
-          accessSync(`${candidate}${extension}`, constants.X_OK);
-          return true;
-          // eslint-disable-next-line no-empty
-        } catch {}
-      }
-    }
-  }
-  return false;
-}
-
 export function parseExport(text: string): { ok: true; document: PipelineExport } | { ok: false; reason: string } {
   let raw: unknown;
   try {
@@ -982,8 +955,9 @@ export function preflightImport(db: Db, secrets: ModuleSecretsOptions, document:
   const collisions: ImportPreflight["collisions"] = [];
 
   for (const module of document.modules) {
-    for (const bin of module.manifest.needs.bin) {
-      if (onPath(bin)) continue;
+    // Looked up as `ctx.exec` looks it up (EO-816), the one lookup every
+    // door that launches a module asks.
+    for (const bin of binariesNotFound(module.manifest.needs.bin)) {
       binaries.set(bin, [...(binaries.get(bin) ?? []), module.name]);
     }
     for (const name of module.manifest.needs.env) {
