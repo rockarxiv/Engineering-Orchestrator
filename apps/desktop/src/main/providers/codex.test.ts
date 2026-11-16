@@ -4361,12 +4361,21 @@ describe("a suggested next message on a prediction-mode fork (EO-808)", () => {
   });
 
   it("is given up at its time limit, so a caller reading on after the result waits no longer", async () => {
-    const { provider } = suggesting({ after: { "turn/start": chatTurn() }, afterFork: { "turn/start": slowFork() } }, 500);
-    const began = Date.now();
-    const events = await collect(provider.resume("thr-chat", "draft it", { cwd: worktree, suggestNextMessage: true }));
+    // A fork that would answer after 30 seconds, held to half of one.
+    // Timed from the result, not the turn's start, and bounded well
+    // short of the fork's own answer: spawning and ending the processes
+    // takes seconds on a loaded Windows runner (it was 3.9 there).
+    const { provider } = suggesting({ after: { "turn/start": chatTurn() }, afterFork: { "turn/start": forkTurn("file it on Delivery", [{ wait: 30_000 }]) } }, 500);
+    const events: AgentEvent[] = [];
+    let resulted = 0;
+    for await (const event of provider.resume("thr-chat", "draft it", { cwd: worktree, suggestNextMessage: true })) {
+      if (event.type === "result") resulted = Date.now();
+      events.push(event);
+    }
+    expect(resulted).toBeGreaterThan(0);
     expect(suggestions(events)).toEqual([]);
     expect(events.filter((event) => event.type === "error")).toEqual([]);
-    expect(Date.now() - began).toBeLessThan(3_500);
+    expect(Date.now() - resulted).toBeLessThan(15_000);
   });
 
   it("leaves the original thread as the chat left it: nothing is started on it but the person's own messages", async () => {
