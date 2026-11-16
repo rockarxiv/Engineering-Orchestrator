@@ -38,6 +38,15 @@ Reply with the message alone: no quotes, no label, no explanation. To give nothi
 export const SUGGESTION_MAX_UNCACHED_TOKENS = 10_000;
 
 /**
+ * How many completed turns the thread must hold, the one just finished
+ * included, for a suggestion to be made after it: none after the first
+ * answer, as Claude Code makes none. Counted from the thread itself
+ * (`thread/turns/list`), so a turn that failed or was interrupted is not
+ * one, and a thread opened before EO last started counts all the same.
+ */
+export const SUGGESTION_MIN_COMPLETED_TURNS = 2;
+
+/**
  * How long a suggestion may take before it is given up (EO-808): the
  * 30 seconds Claude's CLI gives an in-flight suggestion once its turn is
  * over. A caller reading past the turn's result waits no longer than

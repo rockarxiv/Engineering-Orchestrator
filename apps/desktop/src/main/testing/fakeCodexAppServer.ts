@@ -93,6 +93,8 @@ const defaults = (message) => {
     case "thread/resume": return { thread: { id: message.params.threadId }, model: message.params.model || scenario.model || "gpt-6.1-sol", modelProvider: "openai" };
     case "thread/fork": return { thread: { id: scenario.forkId || "thr-fork" }, model: message.params.model || scenario.model || "gpt-6.1-sol", modelProvider: "openai" };
     case "turn/start": return { turn: { id: scenario.turnId || "turn-1", items: [], status: "inProgress", error: null } };
+    // Two completed turns, newest first: a thread a suggestion may follow (EO-808).
+    case "thread/turns/list": return { data: [{ id: "turn-2", items: [], itemsView: "notLoaded", status: "completed", error: null }, { id: "turn-1", items: [], itemsView: "notLoaded", status: "completed", error: null }], nextCursor: null, backwardsCursor: null };
     default: return {};
   }
 };

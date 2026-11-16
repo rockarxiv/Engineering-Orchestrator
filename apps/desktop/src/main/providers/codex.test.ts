@@ -4226,6 +4226,39 @@ describe("a suggested next message on a prediction-mode fork (EO-808)", () => {
     expect(forks()).toEqual([]);
   });
 
+  /** A `thread/turns/list` page, newest first, holding turns of these statuses. */
+  const turnsListed = (statuses: string[], nextCursor: string | null = null) => ({
+    result: { data: statuses.map((status, index) => ({ id: `turn-${statuses.length - index}`, items: [], itemsView: "notLoaded", status, error: null })), nextCursor, backwardsCursor: null },
+  });
+  const turnLists = (fake: { sent: { method?: string; params?: unknown }[] }) => fake.sent.filter((message) => message.method === "thread/turns/list").map((message) => message.params as Record<string, unknown>);
+
+  it("is not attempted on a resumed thread whose first turn failed, so this turn is its only completed answer", async () => {
+    const { provider, forks, fake } = suggesting({ replies: { "thread/turns/list": turnsListed(["completed", "failed"]) }, after: { "turn/start": chatTurn() }, afterFork: { "turn/start": forkTurn("yes") } });
+    const events = await collect(provider.resume("thr-chat", "draft it", { cwd: worktree, suggestNextMessage: true }));
+    // Counted on the original, loaded in the fork's process, before any copy is made.
+    expect(turnLists(fake)).toEqual([expect.objectContaining({ threadId: "thr-chat", itemsView: "notLoaded" })]);
+    expect(forks()).toEqual([]);
+    expect(suggestions(events)).toEqual([]);
+    expect(events.filter((event) => event.type === "error")).toEqual([]);
+    expect(events.at(-1)).toMatchObject({ type: "result" });
+  });
+
+  it("is not attempted where the thread's turns cannot be listed", async () => {
+    const { provider, forks } = suggesting({ replies: { "thread/turns/list": { error: { code: -32601, message: "method not found" } } }, after: { "turn/start": chatTurn() }, afterFork: { "turn/start": forkTurn("yes") } });
+    const events = await collect(provider.resume("thr-chat", "draft it", { cwd: worktree, suggestNextMessage: true }));
+    expect(forks()).toEqual([]);
+    expect(suggestions(events)).toEqual([]);
+    expect(events.filter((event) => event.type === "error")).toEqual([]);
+  });
+
+  it("reads the thread's turns a page further where the first holds too few completed", async () => {
+    const { provider, forks, fake } = suggesting({ replies: { "thread/turns/list": turnsListed(["completed", "interrupted"], "page-2") }, after: { "turn/start": chatTurn() }, afterFork: { "turn/start": forkTurn("yes") } });
+    const events = await collect(provider.resume("thr-chat", "draft it", { cwd: worktree, suggestNextMessage: true }));
+    expect(turnLists(fake)).toEqual([expect.not.objectContaining({ cursor: expect.anything() }), expect.objectContaining({ cursor: "page-2" })]);
+    expect(forks()).toHaveLength(1);
+    expect(suggestions(events)).toHaveLength(1);
+  });
+
   it("is made after a last request at most 10,000 tokens uncached", async () => {
     const { provider, forks } = suggesting({
       after: { "turn/start": [note.turnStarted("turn-1", "$THREAD"), note.agentMessage("Drafted.", "m", "turn-1", "$THREAD"), note.tokenUsage({ input: 10_000, cached: 500, output: 500 }, "turn-1", "$THREAD"), note.turnCompleted("completed", null, "turn-1", "$THREAD")] },
@@ -4292,6 +4325,23 @@ describe("a suggested next message on a prediction-mode fork (EO-808)", () => {
     const next = await collect(provider.resume("thr-chat", "file it on Delivery", { cwd: worktree }));
     expect(next.some((event) => event.type === "result")).toBe(true);
     expect(await rest).toEqual([]);
+  });
+
+  it("is never made by a turn whose stream is read on only after a newer turn has opened on the thread", async () => {
+    const { provider, forks } = suggesting({ after: { "turn/start": chatTurn() }, afterFork: { "turn/start": forkTurn("file it on Delivery") } });
+    const older = provider.resume("thr-chat", "draft it", { cwd: worktree, suggestNextMessage: true })[Symbol.asyncIterator]();
+    for (;;) {
+      const next = await older.next();
+      if (next.done) throw new Error("the turn ended before its result");
+      if (next.value.type === "result") break;
+    }
+    // The next turn opens between the older one's result and anyone asking it for more.
+    const newer = provider.resume("thr-chat", "file it on Delivery", { cwd: worktree });
+    const rest: AgentEvent[] = [];
+    for (let next = await older.next(); !next.done; next = await older.next()) rest.push(next.value);
+    await collect(newer);
+    expect(rest).toEqual([]);
+    expect(forks()).toEqual([]);
   });
 
   it("is aborted by cancelling the turn, and its answer never emitted", async () => {
