@@ -1,11 +1,14 @@
 import { useState } from "react";
 import { useDroppable } from "@dnd-kit/core";
+import { Link } from "react-router-dom";
 import { watchLine, type ChromeVocabulary, type ItemSummary, type ModuleView, type PipelineStepView } from "@eo/core";
 import { cn } from "@eo/ui";
 import { Button, Select, StepKindChip, stepLane } from "../../kit";
 import { ownerOf } from "../../parts";
 import { NotFullyTested } from "../../modules/NotFullyTested";
 import { BoardCard } from "./BoardCard";
+import { instructionsAddress } from "../agents/address";
+import { moduleAddress } from "../settings/org/moduleAddress";
 import { descriptionFor } from "../../../shared/pipeline/dashboard";
 import { WORK_STATE_FILL, WORK_STATE_WORDS, workLoad, workStateOf, type WorkStep } from "../../../shared/items/workState";
 
@@ -24,6 +27,42 @@ import { WORK_STATE_FILL, WORK_STATE_WORDS, workLoad, workStateOf, type WorkStep
  * it is going (EO-687): failed, waiting, in review, running, idle — the
  * same states its cards are tinted by. Owner on structure, state on work.
  */
+
+/**
+ * The owner line under a column's name (EO-805): what runs there, and
+ * where to read it. A module step says its module's name and opens it in
+ * Settings → Modules; an agent step opens its role's agent on the Agents
+ * screen. A module that is not found keeps its id, and a step with no
+ * role, a person's step and EO's own say what they always said — none of
+ * them a link, since there is nothing to open.
+ */
+function ownerLineOf(step: PipelineStepView, module: ModuleView | undefined): { label: string; to: string | null } {
+  if (step.type === "module" && module !== undefined) return { label: module.name, to: moduleAddress(module.id) };
+  if (step.type === "agent" && step.ownerRole !== null) return { label: step.ownerRole, to: instructionsAddress(step.ownerRole) };
+  return { label: ownerOf(step).label, to: null };
+}
+
+/** What runs here: the role, the module, the action, or "you" — a link where there is something to open. */
+function OwnerLine({ step, module, ink }: { step: PipelineStepView; module: ModuleView | undefined; ink: string }) {
+  const { label, to } = ownerLineOf(step, module);
+  const className = cn("min-w-0 truncate font-mono text-[11.5px]", ink);
+  if (to !== null)
+    return (
+      <Link
+        to={to}
+        title={step.type === "module" ? `Open ${label} in Settings → Modules` : `Open the ${label} agent's instructions`}
+        className={cn(className, "self-start underline-offset-2 hover:underline")}
+      >
+        {label}
+      </Link>
+    );
+  // A step nobody owns is where the engine hands off to you (ARCHITECTURE.md, "A step").
+  return (
+    <span className={className} {...(step.type === "user" ? { title: "Human-owned — the engine won't act here" } : {})}>
+      {label}
+    </span>
+  );
+}
 
 /** Who a human step waits on, as the picker's own vocabulary (EO-323): a person and a group are different promises. */
 export type StepOwner = { kind: "person" | "group"; id: string };
@@ -199,14 +238,7 @@ export function StepColumn({
         {step.isTerminal ? (
           <span className="text-[11px] text-ink-subtle">end</span>
         ) : (
-          // What runs here, as the machine names it: the role, the action, or "you".
-          // A step nobody owns is where the engine hands off to you (ARCHITECTURE.md, "A step").
-          <span
-            className={cn("min-w-0 truncate font-mono text-[11.5px]", lane.ownerInk)}
-            {...(step.type === "user" ? { title: "Human-owned — the engine won't act here" } : {})}
-          >
-            {ownerOf(step).label}
-          </span>
+          <OwnerLine step={step} module={module} ink={lane.ownerInk} />
         )}
         <NotFullyTested module={module} />
         {summary ? <p className="truncate text-[11.5px] text-ink-subtle">{summary}</p> : null}

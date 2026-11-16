@@ -1,5 +1,6 @@
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useSearchParams } from "react-router-dom";
 import { ChevronRight, Plus } from "lucide-react";
 import {
   aliasNotice,
@@ -27,6 +28,7 @@ import { ENVIRONMENT_VARIABLES_COPY } from "../../../../shared/modules/environme
 import { ModuleTests } from "../../../modules/ModuleTests";
 import { useModuleApproval } from "../../../modules/useModuleApproval";
 import { draftWatchFlag, watchFlagDescription, withDraftWatchFlag } from "../../../../shared/modules/manifestWatch";
+import { MODULE_FACET } from "./moduleAddress";
 
 /**
  * The module catalogue (KAN-103), in the chat layout's terms.
@@ -317,6 +319,7 @@ function ModuleEditor({
 function ModuleCard({
   module,
   expanded,
+  reveal,
   onToggle,
   onEdit,
   onDelete,
@@ -324,6 +327,8 @@ function ModuleCard({
 }: {
   module: ModuleView;
   expanded: boolean;
+  /** Arrived at by address (EO-805): brought into sight once. */
+  reveal: boolean;
   onToggle: () => void;
   onEdit: () => void;
   onDelete: () => void;
@@ -331,8 +336,12 @@ function ModuleCard({
 }) {
   const detailsId = useId();
   const aliasesRetired = useAliasesRetired();
+  const card = useRef<HTMLLIElement>(null);
+  useEffect(() => {
+    if (reveal) card.current?.scrollIntoView?.({ block: "start", behavior: "smooth" });
+  }, [reveal]);
   return (
-    <li className="flex min-w-0 flex-col gap-2 py-3">
+    <li ref={card} className="flex min-w-0 flex-col gap-2 py-3">
       <div className="flex min-w-0 items-start gap-2">
         {/* Its own control rather than the whole header, so Edit and Delete never open the card. */}
         <button
@@ -389,8 +398,15 @@ export function ModulesCatalog() {
   const [draft, setDraft] = useState<ModuleDraft | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
   const [archiveProblem, setArchiveProblem] = useState<string | null>(null);
-  // One card open at a time (EO-357), local and unpersisted.
-  const [expandedId, setExpandedId] = useState<string | null>(null);
+  // One card open at a time (EO-357), local and unpersisted. Undefined
+  // until somebody opens or closes one, so the card the address names
+  // (`?module=<id>`, EO-805) is the open one until then.
+  const [expandedId, setExpandedId] = useState<string | null | undefined>(undefined);
+  const [searchParams] = useSearchParams();
+  const addressedId = searchParams.get(MODULE_FACET);
+  // A new address is a new arrival: what was opened by hand under the
+  // last one gives way to the card this one names.
+  useEffect(() => setExpandedId(undefined), [addressedId]);
 
   // Subscribed to `config:changed` (EO-354): a background test run ends with it.
   const modules = useModules();
@@ -461,6 +477,9 @@ export function ModulesCatalog() {
   });
 
   const rows = modules.data?.modules ?? [];
+  // An id that matches nothing opens the catalog as it always opens: every card closed.
+  const addressed = addressedId === null ? undefined : rows.find((module) => module.id === addressedId);
+  const openId = expandedId === undefined ? (addressed?.id ?? null) : expandedId;
 
   return (
     <>
@@ -490,8 +509,9 @@ export function ModulesCatalog() {
               <ModuleCard
                 key={module.id}
                 module={module}
-                expanded={expandedId === module.id}
-                onToggle={() => setExpandedId(expandedId === module.id ? null : module.id)}
+                expanded={openId === module.id}
+                reveal={expandedId === undefined && addressed?.id === module.id}
+                onToggle={() => setExpandedId(openId === module.id ? null : module.id)}
                 onEdit={() => {
                   setProblem(null);
                   setDraft(draftOf(module));

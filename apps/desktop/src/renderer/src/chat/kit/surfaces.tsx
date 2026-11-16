@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import type { ReactNode, Ref } from "react";
 import { Link } from "react-router-dom";
 import { ChevronRight } from "lucide-react";
 import { cn } from "@eo/ui";
@@ -80,8 +80,11 @@ export function CardSection({
   actions,
   children,
   className,
+  ref,
 }: {
   title: string;
+  /** The section itself, for a view that brings it into sight (EO-805). */
+  ref?: Ref<HTMLElement>;
   /** Drawn on the heading's line, right after it — a step's kind chip (EO-681). */
   titleAside?: ReactNode;
   description?: ReactNode;
@@ -90,7 +93,7 @@ export function CardSection({
   className?: string;
 }) {
   return (
-    <section aria-label={title} className={cn("flex min-w-0 flex-col gap-3 rounded-[14px] bg-canvas px-[18px] py-4", className)}>
+    <section ref={ref} aria-label={title} className={cn("flex min-w-0 flex-col gap-3 rounded-[14px] bg-canvas px-[18px] py-4", className)}>
       <div className="flex min-w-0 items-start gap-3">
         <div className="flex min-w-0 flex-1 flex-col gap-0.5">
           {titleAside === undefined ? (

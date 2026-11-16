@@ -42,12 +42,12 @@ export function sent(calls: Call[], channel: string): unknown[] {
   return calls.filter((call) => call.channel === channel).map((call) => call.payload);
 }
 
-/** A section as the chat layout's settings view hosts it: a query client and a router. */
-export function renderSection(node: ReactNode) {
+/** A section as the chat layout's settings view hosts it: a query client and a router, at `at` where given. */
+export function renderSection(node: ReactNode, at?: string) {
   return render(
     <ThemeProvider>
       <QueryClientProvider client={createQueryClient()}>
-        <MemoryRouter>{node}</MemoryRouter>
+        <MemoryRouter {...(at === undefined ? {} : { initialEntries: [at] })}>{node}</MemoryRouter>
       </QueryClientProvider>
     </ThemeProvider>,
   );

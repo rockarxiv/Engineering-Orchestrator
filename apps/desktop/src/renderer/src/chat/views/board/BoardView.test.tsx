@@ -17,6 +17,8 @@ import { createQueryClient } from "../../../query/client";
 import { ItemReferenceProvider } from "../../conversation/ItemReferenceProvider";
 import { ViewPublisher } from "../../../shared/view/ViewPublisher";
 import { AskAssistantContext, type AskAssistant } from "../../askAssistant";
+import { instructionsAddress } from "../agents/address";
+import { moduleAddress } from "../settings/org/moduleAddress";
 import { BoardView } from "./BoardView";
 
 /**
@@ -474,6 +476,77 @@ describe("the board's columns", () => {
     const merge = await column("Merge");
     expect(await within(merge).findByRole("note", { name: "Not fully tested: no tests" })).toBeInTheDocument();
     expect(screen.getAllByRole("note", { name: /Not fully tested/ })).toHaveLength(1);
+  });
+});
+
+/**
+ * The owner line under a column's name (EO-805): a module step says its
+ * module's name and opens it in Settings → Modules, an agent step opens
+ * its role's agent with the instructions in view, and the rest say what
+ * they always said with nothing to press.
+ */
+describe("a column's owner line", () => {
+  const MERGE = { id: "merge", pipelineId: "default", position: 3, name: "Merge", type: "module", ownerRole: null, entryAction: "mod-merge", instructionsSummary: null, isTerminal: false };
+  const MODULE = { id: "mod-merge", slug: "merge-pr", name: "Merge pull request", testRun: null, testsStale: false, testCount: 0 };
+
+  it("names a module step's module rather than its id, and opens that module in Settings → Modules", async () => {
+    mockIpc({ states: [...STATES, MERGE], modules: [MODULE] });
+    renderBoard();
+
+    const merge = await column("Merge");
+    const link = await within(merge).findByRole("link", { name: "Merge pull request" });
+    expect(within(merge).queryByText("mod-merge")).toBeNull();
+    expect(link).toHaveAttribute("href", moduleAddress("mod-merge"));
+    expect(link.className).toContain("font-mono");
+    fireEvent.click(link);
+    expect(where()).toBe("/settings?section=modules&module=mod-merge");
+  });
+
+  it("keeps a module step's id, as plain text, when its module is not found", async () => {
+    mockIpc({ states: [...STATES, MERGE], modules: [] });
+    renderBoard();
+
+    const merge = await column("Merge");
+    const line = await within(merge).findByText("mod-merge");
+    expect(line.tagName).toBe("SPAN");
+    expect(within(merge).queryByRole("link")).toBeNull();
+  });
+
+  it("opens an agent step's role on the Agents screen with its instructions in view", async () => {
+    mockIpc();
+    renderBoard();
+
+    const todo = await column("To Do");
+    const link = within(todo).getByRole("link", { name: "implementer" });
+    expect(link).toHaveAttribute("href", instructionsAddress("implementer"));
+    fireEvent.click(link);
+    expect(where()).toBe("/agents?instructions=implementer");
+  });
+
+  it("leaves an agent step with no role, a person's step, EO's own step and an end as they were, with nothing to press", async () => {
+    mockIpc({
+      states: [
+        { id: "worktree", pipelineId: "default", position: -1, name: "Worktree", type: "builtin", ownerRole: null, entryAction: "create_worktree", instructionsSummary: null, isTerminal: false },
+        { id: "unowned", pipelineId: "default", position: 0, name: "Unowned", type: "agent", ownerRole: null, entryAction: null, instructionsSummary: null, isTerminal: false },
+        { id: "approve", pipelineId: "default", position: 1, name: "Approve", type: "user", ownerRole: null, entryAction: null, instructionsSummary: null, isTerminal: false },
+        { id: "done", pipelineId: "default", position: 2, name: "Done", type: "user", ownerRole: null, entryAction: null, instructionsSummary: null, isTerminal: true },
+      ],
+      items: [],
+    });
+    renderBoard();
+
+    for (const [name, text] of [
+      ["Worktree", "create_worktree"],
+      ["Unowned", "agent"],
+      ["Approve", "you"],
+      ["Done", "end"],
+    ] as const) {
+      const region = await column(name);
+      expect(within(region).queryByRole("link"), name).toBeNull();
+      const line = within(region).getAllByText(text).find((node) => node.tagName === "SPAN" && node.closest("header") !== null && node.closest("[data-step-kind]") === null);
+      expect(line, name).toBeDefined();
+    }
+    expect(within(await column("Approve")).getByText("you")).toHaveAttribute("title", "Human-owned — the engine won't act here");
   });
 });
 

@@ -2,6 +2,7 @@ import { act, fireEvent, screen, waitFor, within } from "@testing-library/react"
 import { describe, expect, it, vi } from "vitest";
 import { ALIAS_RETIREMENT_VERSION, SECTION_LOCK_TEXT } from "@eo/core";
 import { ModulesSection } from "../sections/ModulesSection";
+import { moduleAddress } from "./moduleAddress";
 import { renderSection, sent, ipcStub, type Call, type Answers } from "./testing";
 
 /** The shared stub, installed where only a test may put it. */
@@ -610,6 +611,45 @@ describe("collapsed module cards", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Details of Tidy", expanded: true }));
     expect(tests("Tidy")).not.toBeInTheDocument();
+  });
+
+  describe("opened from an address that names a module (EO-805)", () => {
+    it("expands that module's card, brings it into view, and leaves the others closed", async () => {
+      const scrolled = vi.fn();
+      const original = Element.prototype.scrollIntoView;
+      Element.prototype.scrollIntoView = scrolled;
+      try {
+        mockIpc([OPEN_ONE, TIDY]);
+        renderSection(<ModulesSection />, moduleAddress(TIDY.id));
+
+        expect(await screen.findByRole("button", { name: "Details of Tidy" })).toHaveAttribute("aria-expanded", "true");
+        expect(await screen.findByRole("region", { name: "Tests of Tidy" })).toBeInTheDocument();
+        expect(screen.getByRole("button", { name: "Details of Release notes" })).toHaveAttribute("aria-expanded", "false");
+        expect(scrolled).toHaveBeenCalled();
+        expect(scrolled.mock.contexts.some((node) => node instanceof HTMLLIElement && within(node).queryByText("Tidy") !== null)).toBe(true);
+
+        // Still one card at a time, and a press closes it.
+        await expand("Release notes");
+        expect(screen.getByRole("button", { name: "Details of Tidy" })).toHaveAttribute("aria-expanded", "false");
+        fireEvent.click(screen.getByRole("button", { name: "Details of Release notes", expanded: true }));
+        expect(screen.getByRole("button", { name: "Details of Tidy" })).toHaveAttribute("aria-expanded", "false");
+      } finally {
+        Element.prototype.scrollIntoView = original;
+      }
+    });
+
+    it("opens with every card collapsed when the id matches no module", async () => {
+      mockIpc([OPEN_ONE, TIDY]);
+      renderSection(<ModulesSection />, moduleAddress("no-such-module"));
+
+      expect(await screen.findByRole("button", { name: "Details of Release notes" })).toHaveAttribute("aria-expanded", "false");
+      expect(screen.getByRole("button", { name: "Details of Tidy" })).toHaveAttribute("aria-expanded", "false");
+      expect(tests("Tidy")).not.toBeInTheDocument();
+    });
+
+    it("is Settings → Modules with that module named", () => {
+      expect(moduleAddress("019f/a b")).toBe("/settings?section=modules&module=019f%2Fa%20b");
+    });
   });
 
   it("edits and deletes a collapsed card without expanding it", async () => {
