@@ -957,7 +957,36 @@ const CAPABILITIES = [
     what: "a turn its backend refused for a credential that is no good — every case recorded from the pinned CLI — ends on an error marked as a sign-in failure, not retryable, which the supervisor blocks the runtime on instead of spending an attempt; an error that is not about signing in is not marked (EO-797)",
     same: { signIn: [{ kind: "error", signIn: true, retryable: false }], notSignIn: [{ kind: "error", signIn: false }] },
   },
+  {
+    name: "a suggested next message",
+    what: "a turn that asks for a suggested next message (`suggestNextMessage`) has its backend asked to make one, and one that does not ask has nothing asked; a suggestion made is passed on as a `prompt_suggestion` event with its text and thread, after the turn's result and without holding it back; a turn whose backend made none ends on its result with no suggestion and no error (EO-807)",
+    same: {
+      asked: { off: false, on: true },
+      off: { outcome: { kind: "result", data: "done" }, suggested: [] },
+      on: { outcome: { kind: "result", data: "done" }, suggested: [{ text: "run the tests", threadId: "sess-1", afterTheResult: true }] },
+      none: { outcome: { kind: "result", data: "done" }, suggested: [], errors: 0 },
+    },
+  },
 ] as const;
+
+/**
+ * Capabilities on the list that a backend is still to be given, by the
+ * story that gives it. Each is held as failing on that backend
+ * (`it.fails`) rather than skipped: the day the proof is written and
+ * passes, its test fails until the entry here is taken away, so a
+ * pending entry cannot outlive the gap it records. The backend's proofs
+ * are typed without the capability, so writing one while it is still
+ * pending is a compile error too.
+ */
+const PENDING = {
+  codex: { "a suggested next message": "EO-808" },
+} as const;
+
+/** What a turn's suggested next messages were (EO-807): each one's text and thread, and whether it came after the turn's result. */
+function suggestionsSeen(events: readonly AgentEvent[]): { text: string; threadId: string; afterTheResult: boolean }[] {
+  const result = events.findIndex((event) => event.type === "result");
+  return events.flatMap((event, at) => (event.type === "prompt_suggestion" ? [{ text: event.text, threadId: event.threadId, afterTheResult: result >= 0 && at > result }] : []));
+}
 
 type CapabilityName = (typeof CAPABILITIES)[number]["name"];
 type Backend = "claude" | "codex";
@@ -2259,6 +2288,22 @@ function recordingRunScopes(expectedCommand: (command: string, args: readonly st
 }
 
 const CLAUDE: Record<CapabilityName, Proof> = {
+  "a suggested next message": async () => {
+    const suggested = { type: "prompt_suggestion", suggestion: "run the tests", uuid: "u-p", session_id: "sess-1" } as unknown as SDKMessage;
+    const off = scripted([sdk.init(), sdk.says("done"), sdk.result(), suggested]);
+    const offEvents = await collect(createClaudeProvider({ runQuery: off.runQuery, enableCommentTool: false }).start(startOpts));
+    const on = scripted([sdk.init(), sdk.says("done"), sdk.result(), suggested]);
+    const onEvents = await collect(createClaudeProvider({ runQuery: on.runQuery, enableCommentTool: false }).start({ ...startOpts, suggestNextMessage: true }));
+    const none = await claudeTurn([sdk.init(), sdk.says("done"), sdk.result()], { suggestNextMessage: true });
+    return {
+      // Claude's backend makes it itself, when the SDK is passed `promptSuggestions`.
+      asked: { off: off.calls[0]?.options["promptSuggestions"] === true, on: on.calls[0]?.options["promptSuggestions"] === true },
+      off: { outcome: outcomeOf(offEvents), suggested: suggestionsSeen(offEvents) },
+      on: { outcome: outcomeOf(onEvents), suggested: suggestionsSeen(onEvents) },
+      none: { outcome: outcomeOf(none), suggested: suggestionsSeen(none), errors: none.filter((event) => event.type === "error").length },
+    };
+  },
+
   "a sign-in failure reported": async () =>
     signInsObserved(
       await Promise.all(CLAUDE_AUTH_ERRORS.signIn.map(({ turn }) => claudeTurn([sdk.init(), ...turn]))),
@@ -3616,7 +3661,7 @@ function catalogueServer(name: string, envNames: string[] = []): McpServer {
 const shellCall = (id: string) =>
   note.item({ type: "commandExecution", id, command: SEARCH.command, cwd: "/", processId: null, source: "agent", commandActions: [], aggregatedOutput: "", exitCode: 0, status: "completed", durationMs: 1 });
 
-const CODEX: Record<CapabilityName, Proof> = {
+const CODEX: Record<Exclude<CapabilityName, keyof (typeof PENDING)["codex"]>, Proof> = {
   "a sign-in failure reported": async () =>
     signInsObserved(
       await Promise.all(CODEX_AUTH_ERRORS.signIn.map(({ turn }) => codexTurn([note.turnStarted(), ...turn]))),
@@ -4979,7 +5024,7 @@ const CODEX: Record<CapabilityName, Proof> = {
 
 // ───────────────────────────── the suite ──────────────────────────
 
-const PROOFS: Record<Backend, Record<CapabilityName, Proof>> = { claude: CLAUDE, codex: CODEX };
+const PROOFS: Record<Backend, Partial<Record<CapabilityName, Proof>>> = { claude: CLAUDE, codex: CODEX };
 const BACKENDS = Object.keys(PROOFS) as Backend[];
 
 /**
@@ -5023,18 +5068,30 @@ const WINDOWS_TIMEOUT_MS: Partial<Record<string, number>> = {
   "assistant cards": ASSIST_ANSWERS_WITH_CARDS.codex.length * SLOWEST_WINDOWS_PROOF_MS,
 };
 
+/** The story a backend is waiting on for a capability (`PENDING`), if it is. */
+const pendingOn = (backend: Backend, name: string): string | undefined => (PENDING as Partial<Record<Backend, Partial<Record<string, string>>>>)[backend]?.[name];
+
 describe.each(CAPABILITIES)("$name: $what", (capability) => {
-  it.each(BACKENDS)(
-    "holds on %s",
-    async (backend) => {
-      await hold(capability, backend, PROOFS);
-    },
-    process.platform === "win32" ? WINDOWS_TIMEOUT_MS[capability.name] : undefined,
-  );
+  for (const backend of BACKENDS) {
+    const story = pendingOn(backend, capability.name);
+    if (story !== undefined) {
+      it.fails(`is still to come on ${backend}, in ${story}`, async () => {
+        await hold(capability, backend, PROOFS);
+      });
+      continue;
+    }
+    it(
+      `holds on ${backend}`,
+      async () => {
+        await hold(capability, backend, PROOFS);
+      },
+      process.platform === "win32" ? WINDOWS_TIMEOUT_MS[capability.name] : undefined,
+    );
+  }
 });
 
 describe("the shared list", () => {
-  it("is the twelve capabilities EO-380 names and the ones EO-385, EO-387, EO-392, EO-395, EO-412, EO-421, EO-444, EO-468, EO-470, EO-477, EO-478, EO-479, EO-487, EO-488, EO-490, EO-493, EO-494, EO-534, EO-543, EO-578, EO-587, EO-597, EO-633, EO-700, EO-703, EO-716, EO-717, EO-718, EO-732, EO-738 (two), EO-797 and the streaming chat added, each once", () => {
+  it("is the twelve capabilities EO-380 names and the ones EO-385, EO-387, EO-392, EO-395, EO-412, EO-421, EO-444, EO-468, EO-470, EO-477, EO-478, EO-479, EO-487, EO-488, EO-490, EO-493, EO-494, EO-534, EO-543, EO-578, EO-587, EO-597, EO-633, EO-700, EO-703, EO-716, EO-717, EO-718, EO-732, EO-738 (two), EO-797, EO-807 and the streaming chat added, each once", () => {
     // Pinned so that taking one off the list is a decision somebody
     // made in this file rather than a line that went missing.
     expect(CAPABILITIES.map((capability) => capability.name)).toEqual([
@@ -5100,6 +5157,7 @@ describe("the shared list", () => {
       "a run's processes in a scope of its own",
       "a warm process's scope handed to its run",
       "a sign-in failure reported",
+      "a suggested next message",
     ]);
   });
 
@@ -5108,7 +5166,9 @@ describe("the shared list", () => {
     const listed = CAPABILITIES.map((capability) => capability.name as string).sort();
     // A proof for a capability no longer on the list is a test that
     // stopped running without anybody deleting it.
-    for (const backend of BACKENDS) expect(Object.keys(PROOFS[backend]).sort(), backend).toEqual(listed);
+    // A capability still to come on a backend (`PENDING`) is on the list
+    // all the same, and named there instead of among its proofs.
+    for (const backend of BACKENDS) expect([...Object.keys(PROOFS[backend]), ...Object.keys((PENDING as Partial<Record<Backend, object>>)[backend] ?? {})].sort(), backend).toEqual(listed);
   });
 });
 

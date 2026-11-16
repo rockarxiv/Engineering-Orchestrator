@@ -138,6 +138,16 @@ export interface AgentTurnOverrides {
    * call carry none.
    */
   processScope?: RunProcessScope;
+  /**
+   * Whether the backend is asked for a suggested next message after the
+   * turn (EO-807): what the person would most likely type next, emitted
+   * as a `PromptSuggestionEvent` after the turn's `result`.
+   *
+   * Off unless set. Asked for only by an assistant chat, never by an
+   * item's run, and off costs nothing: Claude is not passed the SDK's
+   * `promptSuggestions`, and Codex opens no fork to make one.
+   */
+  suggestNextMessage?: boolean;
 }
 
 /** What a run's processes are started under (EO-738): whose they are, and how much memory they may use. */
@@ -858,6 +868,33 @@ export interface ReasoningEvent {
 }
 
 /**
+ * The message the person is predicted to send next, asked for with
+ * `AgentTurnOverrides.suggestNextMessage` (EO-807).
+ *
+ * Arrives on the turn's own stream, after its `result`, and at most once.
+ * The turn is over at its `result` whether or not one follows: a
+ * consumer that stops reading there loses nothing else, and does not
+ * wait for one. One that reads on gets it, or the end of the stream if
+ * the backend made none — which is not an error.
+ *
+ * Display-only. It is not the agent's answer, not a comment and not a
+ * run event, and it never changes an item.
+ */
+export interface PromptSuggestionEvent {
+  type: "prompt_suggestion";
+  /** The suggested message, as the backend gave it. */
+  text: string;
+  /** The thread whose turn it follows. */
+  threadId: string;
+  /**
+   * The backend's own id for the turn it follows, where it has one —
+   * Claude's id of the turn's `result` message, Codex's turn id. Opaque:
+   * only for telling one turn's suggestion from another's.
+   */
+  turnId?: string;
+}
+
+/**
  * How Codex copied a thread for a fork's turn (EO-732). `prediction` is
  * the app-server's experimental fork that starts from the loaded parent's
  * own config, tools and prompt-cache key, so the fork's first request
@@ -923,6 +960,7 @@ export type AgentEvent =
     }
   | OutputDeltaEvent
   | ReasoningEvent
+  | PromptSuggestionEvent
   | HeartbeatEvent
   | RetryingEvent
   | CompactedEvent
