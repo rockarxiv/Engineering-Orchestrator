@@ -1,7 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import { ChevronRight, Workflow } from "lucide-react";
-import { describeJobTrigger } from "@eo/core";
+import { describeJobTrigger, type JobSummary } from "@eo/core";
 import { pauseChipOf, whenOf, zoneOf } from "../../../shared/jobs/format";
 import { ipcQuery } from "../../../query/client";
 import { jobsKey } from "../../../query/hooks";
@@ -67,8 +67,18 @@ export function JobsView() {
                       {/* In the job's own zone, with the zone named (ARCHITECTURE.md, "The inbox, the archive and jobs"):
                           a list of jobs is a list of different calendars. */}
                       <span className="flex flex-wrap gap-x-4 gap-y-0.5 text-[11.5px] text-ink-subtle">
-                        <span>Next run {whenOf(job.nextRunAt, zoneOf(job))}</span>
-                        <span>Last run {whenOf(job.lastRunAt, zoneOf(job))}</span>
+                        {job.trigger.kind === "watch" ? (
+                          // A watch job has no calendar (EO-799): when it checks, as the Job page's `WatchStatus` says it.
+                          <>
+                            <span>{nextCheckOf(job)}</span>
+                            <span>{lastCheckOf(job)}</span>
+                          </>
+                        ) : (
+                          <>
+                            <span>Next run {whenOf(job.nextRunAt, zoneOf(job))}</span>
+                            <span>Last run {whenOf(job.lastRunAt, zoneOf(job))}</span>
+                          </>
+                        )}
                       </span>
                     </span>
                     <ChevronRight aria-hidden size={14} className="shrink-0 text-ink-subtle" />
@@ -81,4 +91,23 @@ export function JobsView() {
       ) : null}
     </div>
   );
+}
+
+/** When a watch job last checked, on its row. */
+function lastCheckOf(job: JobSummary): string {
+  const at = job.watch?.lastCheckedAt ?? null;
+  return at === null ? "Not checked yet" : `Last checked ${whenOf(at)}`;
+}
+
+/**
+ * When a watch job checks next, on its row: the same order as the Job
+ * page's `WatchStatus`. The item it waits for is named by key and not
+ * linked, since the whole row is already a link to the job.
+ */
+function nextCheckOf(job: JobSummary): string {
+  const state = job.watch;
+  if (job.pausedAt !== null) return "Paused";
+  if (state?.waitingForItemId) return `Next check once ${state.waitingForItemKey ?? "the item it filed"} is finished`;
+  if (state === null || state.nextCheckAt === null) return "Next check as soon as EO gets to it";
+  return `Next check ${whenOf(state.nextCheckAt)}`;
 }
