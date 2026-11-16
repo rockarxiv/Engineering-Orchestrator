@@ -3,7 +3,8 @@ import { fireEvent, render, screen } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { describe, expect, it, vi } from "vitest";
 import { ThemeProvider } from "@eo/ui";
-import type { JobSummary } from "@eo/core";
+import type { JobSummary, JobWatchState, WatchTrigger } from "@eo/core";
+import { whenOf } from "../../../shared/jobs/format";
 import { createQueryClient } from "../../../query/client";
 import { AskAssistantContext, type AskAssistant } from "../../askAssistant";
 import { JobsView } from "./JobsView";
@@ -14,6 +15,17 @@ const PIPELINES = [{ id: "default", projectId: "p1", name: "Delivery", icon: nul
 const ITEM_TYPES = [
   { packSlug: "developer", slug: "story", label: "Story", plural: "Stories", container: false, specShape: { type: "object", properties: {} }, actionOverrides: {} },
 ];
+
+const WATCH: WatchTrigger = { kind: "watch", moduleId: "mod-alerts", inputs: {}, everyMinutes: 30, waitWhileOpen: true };
+const WATCH_STATE: JobWatchState = {
+  lastCheckedAt: null,
+  lastAnswer: null,
+  nextCheckAt: null,
+  consecutiveFailures: 0,
+  lastError: null,
+  waitingForItemId: null,
+  waitingForItemKey: null,
+};
 
 function job(overrides: Partial<JobSummary> = {}): JobSummary {
   return {
@@ -94,6 +106,41 @@ describe("the Jobs list in the chat layout", () => {
     expect(screen.getByText("Mondays at 08:00")).toBeInTheDocument();
     expect(screen.getByText(/^Next run .*08:00/)).toBeInTheDocument();
     expect(screen.getByText(/Last run —/)).toBeInTheDocument();
+  });
+
+  it("says when a watch job last checked and checks next, rather than its calendar's dashes", async () => {
+    const at = Date.UTC(2026, 10, 12, 9, 0);
+    mockIpc({
+      jobs: [
+        job({
+          name: "Dependabot",
+          trigger: WATCH,
+          nextRunAt: null,
+          watch: { ...WATCH_STATE, lastCheckedAt: at, nextCheckAt: at + 30 * 60_000 },
+        }),
+      ],
+    });
+    renderList();
+
+    expect(await screen.findByText(`Last checked ${whenOf(at)}`)).toBeInTheDocument();
+    expect(screen.getByText(`Next check ${whenOf(at + 30 * 60_000)}`)).toBeInTheDocument();
+    expect(screen.queryByText(/Next run/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Last run/)).not.toBeInTheDocument();
+  });
+
+  it("says a paused watch job is paused, and one that never checked has not", async () => {
+    mockIpc({ jobs: [job({ name: "Dependabot", trigger: WATCH, nextRunAt: null, pausedAt: 5, pausedReason: "by hand", watch: WATCH_STATE })] });
+    renderList();
+
+    expect(await screen.findByText("Paused")).toBeInTheDocument();
+    expect(screen.getByText("Not checked yet")).toBeInTheDocument();
+  });
+
+  it("names the item a watch job waits for before it checks again", async () => {
+    mockIpc({ jobs: [job({ name: "Dependabot", trigger: WATCH, nextRunAt: null, watch: { ...WATCH_STATE, waitingForItemId: "item-7", waitingForItemKey: "DEP-7" } })] });
+    renderList();
+
+    expect(await screen.findByText("Next check once DEP-7 is finished")).toBeInTheDocument();
   });
 
   it("wears the chip a paused job has, and says which kind of pause it is", async () => {
