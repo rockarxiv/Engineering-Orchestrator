@@ -1,7 +1,7 @@
-import { pageDescriptorFor, type AgentProvider, type SuggestionSpend, type Uuid } from "@eo/core";
+import { pageDescriptorFor, SUGGESTED_REPLY_EVENT, type AgentProvider, type SuggestionOutcome, type SuggestionSpend, type Uuid } from "@eo/core";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { DbHandle } from "../db/client.js";
-import { listRunsForItem, listSideCalls } from "../db/repos/index.js";
+import { listRunEvents, listRunsForItem, listSideCalls } from "../db/repos/index.js";
 import { openMigratedTestDb } from "../db/testHelpers.js";
 import { sendToAssist } from "../ipc/assistCommands.js";
 import { createRunSupervisor } from "./runSupervisor.js";
@@ -66,5 +66,43 @@ describe("what a suggested next message spent (EO-808)", () => {
     await sendToAssist(handle.db, undefined, { page: pageDescriptorFor("/chat"), conversationId: null, body: "What is waiting?", attachmentIds: [], interrupt: false });
     await supervisor.runOnce();
     expect(listSideCalls(handle.db).filter((call) => call.purpose === "prompt_suggestion")).toEqual([]);
+  });
+});
+
+/** A backend that answers the chat's turn and says what became of its suggestion: during the turn, and once its stream has been let go of. */
+function outcomeProvider(during: SuggestionOutcome, after: SuggestionOutcome, told: { later?: () => void }): AgentProvider {
+  return {
+    start(opts) {
+      return (async function* () {
+        yield { type: "thread_started" as const, threadId: "thr-1" };
+        opts.onSuggestionOutcome?.(during);
+        told.later = () => opts.onSuggestionOutcome?.(after);
+        yield { type: "result" as const, data: { outcome: { message: "Hi.", questions: [], proposals: [] } } };
+      })();
+    },
+    resume() {
+      return (async function* () {})();
+    },
+  };
+}
+
+describe("what became of a suggested next message (EO-810)", () => {
+  it("is recorded as a suggested_reply event on the chat's run, whether the run's log is still open or it has ended", async () => {
+    const told: { later?: () => void } = {};
+    const skipped: SuggestionOutcome = { kind: "skipped", rule: "uncached", uncachedTokens: 10_786, cachedTokens: 103_040 };
+    const dropped: SuggestionOutcome = { kind: "dropped", answer: "Thanks, looks great!", rule: "praise" };
+    const supervisor = createRunSupervisor({ db: handle.db, limits: LIMITS, provider: outcomeProvider(skipped, dropped, told) });
+    const chat = (await sendToAssist(handle.db, undefined, { page: pageDescriptorFor("/chat"), conversationId: null, body: "What is waiting?", attachmentIds: [], interrupt: false })).conversation;
+    await supervisor.runOnce();
+    const [run] = listRunsForItem(handle.db, chat.id as Uuid);
+    expect(run?.status).toBe("succeeded");
+    // After the run has let go of its log, as a fork's answer arrives.
+    told.later?.();
+
+    const recorded = listRunEvents(handle.db, run!.id as Uuid).filter((event) => event.type === SUGGESTED_REPLY_EVENT);
+    expect(recorded.map((event) => event.payload)).toEqual([skipped, dropped]);
+    // Numbered with the rest of the run's log, never over one of its rows.
+    const seqs = listRunEvents(handle.db, run!.id as Uuid).map((event) => event.seq);
+    expect(new Set(seqs).size).toBe(seqs.length);
   });
 });

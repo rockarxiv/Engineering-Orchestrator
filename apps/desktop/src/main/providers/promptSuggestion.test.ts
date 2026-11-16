@@ -1,5 +1,6 @@
+import { SUGGESTION_FILTER_RULES, type SuggestionFilterRule } from "@eo/core";
 import { describe, expect, it } from "vitest";
-import { cleanSuggestion, PROMPT_SUGGESTION_PROMPT } from "./promptSuggestion.js";
+import { cleanSuggestion, judgeSuggestion, lastRequestMostlyUncached, PROMPT_SUGGESTION_PROMPT } from "./promptSuggestion.js";
 
 describe("a suggested next message's clean-up and filters (EO-808)", () => {
   it.each([
@@ -62,6 +63,56 @@ describe("a suggested next message's clean-up and filters (EO-808)", () => {
     ["the agent's voice: sure,", "sure, I can do that"],
   ])("drops %s", (_case, answer) => {
     expect(cleanSuggestion(answer)).toBeNull();
+  });
+});
+
+describe("which filter dropped an answer (EO-810)", () => {
+  const dropped: [SuggestionFilterRule, string][] = [
+    ["empty", "   "],
+    ["empty", "<suggestion></suggestion>"],
+    ["done", "Done."],
+    ["meta_reply", "nothing to suggest"],
+    ["meta_reply", "silence"],
+    ["bracketed", "(file it on Delivery)"],
+    ["bracketed", '{"outcome":{"message":"yes"}}'],
+    ["api_error", "API error: overloaded"],
+    ["label", "Plan: file it"],
+    ["formatting", "file it\non Delivery"],
+    ["formatting", "file it on **Delivery**"],
+    ["too_long", "file it " + "x".repeat(100)],
+    ["too_few_words", "Delivery"],
+    ["too_many_words", "please file it on the Delivery board today and then publish the draft too"],
+    ["multiple_sentences", "File it. Then publish."],
+    ["praise", "perfect, file it"],
+    ["agent_voice", "let me file it"],
+    ["agent_voice", "sure, file it"],
+  ];
+
+  it.each(dropped)("names %s for %j", (rule, answer) => {
+    expect(judgeSuggestion(answer)).toEqual({ kept: false, rule });
+    expect(cleanSuggestion(answer)).toBeNull();
+  });
+
+  it("has a case for every rule it can name", () => {
+    expect(new Set(dropped.map(([rule]) => rule))).toEqual(new Set(SUGGESTION_FILTER_RULES));
+  });
+
+  it("keeps an answer the filters pass, cleaned up", () => {
+    expect(judgeSuggestion("<suggestion>Suggestion: publish the draft</suggestion>")).toEqual({ kept: true, text: "publish the draft" });
+  });
+});
+
+describe("a last request mostly uncached (EO-810)", () => {
+  it("is one past 10,000 tokens uncached that read less from the cache than it did not", () => {
+    expect(lastRequestMostlyUncached({ uncachedTokens: 11_100, cachedTokens: 1_000 })).toBe(true);
+  });
+
+  it("is not ASK-78's: 10,786 tokens of new tool output beside 103,040 read from the cache", () => {
+    expect(lastRequestMostlyUncached({ uncachedTokens: 113_511 - 103_040 + 315, cachedTokens: 103_040 })).toBe(false);
+  });
+
+  it("is not one at or under 10,000 tokens uncached, however little was cached", () => {
+    expect(lastRequestMostlyUncached({ uncachedTokens: 10_000, cachedTokens: 0 })).toBe(false);
   });
 });
 

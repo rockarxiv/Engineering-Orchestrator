@@ -160,7 +160,80 @@ export interface AgentTurnOverrides {
    * nothing of what it spent, so on Claude this is never called.
    */
   onSuggestionSpend?: (spend: SuggestionSpend) => void;
+  /**
+   * Told what became of the suggested next message a turn asked for
+   * (EO-810), once, after the turn: skipped and by which rule, the fork
+   * not opened or failed, stopped, dropped by the filters, or emitted.
+   * Called on a turn that asked (`suggestNextMessage`) and on no other,
+   * whether or not anything was spent, so a suggestion that never
+   * reached the composer can be explained from EO's own records.
+   *
+   * Where the adapter makes the suggestion itself: Codex. Claude's CLI
+   * makes its own and says nothing of one it decided against, so on
+   * Claude this is never called.
+   */
+  onSuggestionOutcome?: (outcome: SuggestionOutcome) => void;
 }
+
+/**
+ * Why a turn that asked for a suggested next message made no attempt
+ * (EO-810): the turn made no calls of its own to answer
+ * (`refused_calls`), ended without a result, failed, was cancelled, was
+ * stopped before the fork opened (`aborted`), the account was at or near
+ * its limit, the last request was mostly uncached, or the thread held
+ * too few completed turns.
+ */
+export const SUGGESTION_SKIP_RULES = ["refused_calls", "no_result", "failed", "cancelled", "aborted", "near_limit", "uncached", "too_few_turns"] as const;
+export type SuggestionSkipRule = (typeof SUGGESTION_SKIP_RULES)[number];
+
+/** The rule of the suggestion filters that dropped an answer (EO-810), the decisions' list in order. */
+export const SUGGESTION_FILTER_RULES = [
+  "empty",
+  "done",
+  "meta_reply",
+  "bracketed",
+  "api_error",
+  "label",
+  "formatting",
+  "too_long",
+  "too_few_words",
+  "too_many_words",
+  "multiple_sentences",
+  "praise",
+  "agent_voice",
+] as const;
+export type SuggestionFilterRule = (typeof SUGGESTION_FILTER_RULES)[number];
+
+/**
+ * What became of one turn's suggested next message
+ * (`AgentTurnOverrides.onSuggestionOutcome`, EO-810).
+ *
+ * - `skipped` — no fork was opened, by `rule`; where the rule was the
+ *   last request's cache, what it spent outside the cache and read from it.
+ * - `fork_not_opened` / `fork_failed` — the backend's words.
+ * - `stopped` — the fork was under way when a newer turn, a cancel or
+ *   the run's own stop (`stopped`), or its time limit (`time_limit`),
+ *   ended it.
+ * - `dropped` — the fork answered and the filters dropped it: the raw
+ *   answer and the rule.
+ * - `emitted` — passed on as a `PromptSuggestionEvent`: the text, and the
+ *   raw answer it was cleaned up from.
+ */
+/**
+ * The run event that records what became of the suggested next message
+ * after a run's turn (EO-810): the `SuggestionOutcome`, appended to the
+ * run the suggestion follows, and read like any of its events
+ * (`run_events`). Diagnostic: the composer never reads it.
+ */
+export const SUGGESTED_REPLY_EVENT = "suggested_reply";
+
+export type SuggestionOutcome =
+  | { kind: "skipped"; rule: SuggestionSkipRule; uncachedTokens?: number; cachedTokens?: number }
+  | { kind: "fork_not_opened"; message: string }
+  | { kind: "fork_failed"; message: string }
+  | { kind: "stopped"; by: "stopped" | "time_limit" }
+  | { kind: "dropped"; answer: string; rule: SuggestionFilterRule }
+  | { kind: "emitted"; text: string; answer: string };
 
 /** What making a suggested next message spent (`AgentTurnOverrides.onSuggestionSpend`, EO-808). */
 export interface SuggestionSpend {
@@ -1280,8 +1353,8 @@ export interface AgentSideCallOptions {
 }
 
 export type AgentPrewarmTurn =
-  | ({ kind: "start"; instructions: string } & Omit<AgentProviderStartOptions, "instructions" | "context" | "signal" | "attachments" | "onSkillsSection" | "onSuggestionSpend">)
-  | ({ kind: "resume"; threadId: string } & Omit<AgentProviderResumeOptions, "signal" | "attachments" | "onSkillsSection" | "onSuggestionSpend">);
+  | ({ kind: "start"; instructions: string } & Omit<AgentProviderStartOptions, "instructions" | "context" | "signal" | "attachments" | "onSkillsSection" | "onSuggestionSpend" | "onSuggestionOutcome">)
+  | ({ kind: "resume"; threadId: string } & Omit<AgentProviderResumeOptions, "signal" | "attachments" | "onSkillsSection" | "onSuggestionSpend" | "onSuggestionOutcome">);
 
 export interface AgentProvider {
   start: (opts: AgentProviderStartOptions) => InterruptibleStream<AgentEvent>;

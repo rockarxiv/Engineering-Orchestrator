@@ -1,3 +1,5 @@
+import type { SuggestionFilterRule } from "@eo/core";
+
 /**
  * A suggested next message, made by EO itself where the backend makes
  * none (EO-808): the prompt sent on a fork of the turn just finished, and
@@ -32,10 +34,27 @@ Reply with the message alone: no quotes, no label, no explanation. To give nothi
 /**
  * How many tokens the turn's last request may have spent uncached, input
  * and output together, for a suggestion to be made after it: Claude
- * Code's threshold. Past it the thread is not in the prompt cache, and
- * the fork would pay for all of it again.
+ * Code's threshold. Past it, and with less of the request read from the
+ * cache than not, the thread is not in the prompt cache and the fork
+ * would pay for all of it again (`lastRequestMostlyUncached`).
  */
 export const SUGGESTION_MAX_UNCACHED_TOKENS = 10_000;
+
+/**
+ * Whether the turn's last request was mostly uncached (EO-808, EO-810):
+ * more than `SUGGESTION_MAX_UNCACHED_TOKENS` spent outside the cache,
+ * and more than it read from the cache.
+ *
+ * Both, not the count alone. A turn whose tools answer at length sends
+ * the answers on its next request, uncached because nothing has sent
+ * them before, however warm the thread is: ASK-78's "give me your
+ * recommendation" turn read two skills over `eo_admin`, and its last
+ * request was 10,786 tokens uncached beside 103,040 read from the cache.
+ * A count alone took that for a cold cache and made no suggestion.
+ */
+export function lastRequestMostlyUncached(request: { uncachedTokens: number; cachedTokens: number }): boolean {
+  return request.uncachedTokens > SUGGESTION_MAX_UNCACHED_TOKENS && request.uncachedTokens > request.cachedTokens;
+}
 
 /**
  * How many completed turns the thread must hold, the one just finished
@@ -90,29 +109,43 @@ const LEADING_LABEL = /^(suggested (reply|message|next message)|suggestion|next 
  * dropped where it is any of what the feature's decisions list.
  */
 export function cleanSuggestion(answer: string): string | null {
+  const verdict = judgeSuggestion(answer);
+  return verdict.kept ? verdict.text : null;
+}
+
+/**
+ * What the filters made of a fork's answer (EO-810): the cleaned-up
+ * suggestion, kept, or the rule that dropped it — so a suggestion that
+ * never reached the composer can be told apart from one never made.
+ */
+export type SuggestionVerdict = { kept: true; text: string } | { kept: false; rule: SuggestionFilterRule };
+
+/** `cleanSuggestion`, saying which rule dropped an answer rather than only that one did. */
+export function judgeSuggestion(answer: string): SuggestionVerdict {
   let text = answer.trim();
   const tagged = WRAPPING_TAG.exec(text);
   if (tagged) text = (tagged[2] ?? "").trim();
   text = text.replace(LEADING_LABEL, "").trim();
-  return rejected(text) ? null : text;
+  const rule = droppedBy(text);
+  return rule === null ? { kept: true, text } : { kept: false, rule };
 }
 
-/** Whether a cleaned-up answer is one the decisions say to drop. */
-function rejected(text: string): boolean {
-  if (text === "") return true;
+/** The rule of the decisions' that drops a cleaned-up answer, the first that does, or null for none. */
+function droppedBy(text: string): SuggestionFilterRule | null {
+  if (text === "") return "empty";
   const bare = text.toLowerCase().replace(/[.!]+$/, "");
-  if (bare === "done") return true;
-  if (META_REPLIES.some((reply) => reply.test(text))) return true;
-  if (/^[([{][\s\S]*[)\]}]$/.test(text)) return true;
-  if (API_ERROR.test(text)) return true;
-  if (/^\w+: /.test(text)) return true;
-  if (/[\n\r*]/.test(text)) return true;
-  if (text.length >= 100) return true;
+  if (bare === "done") return "done";
+  if (META_REPLIES.some((reply) => reply.test(text))) return "meta_reply";
+  if (/^[([{][\s\S]*[)\]}]$/.test(text)) return "bracketed";
+  if (API_ERROR.test(text)) return "api_error";
+  if (/^\w+: /.test(text)) return "label";
+  if (/[\n\r*]/.test(text)) return "formatting";
+  if (text.length >= 100) return "too_long";
   const words = text.split(/\s+/).filter(Boolean);
-  if (words.length < 2 && !text.startsWith("/") && !ONE_WORD_ANSWERS.has(bare)) return true;
-  if (words.length > 12) return true;
-  if (/[.!?]\s+\S/.test(text)) return true;
-  if (PRAISE.test(text)) return true;
-  if (AGENT_VOICE.test(text)) return true;
-  return false;
+  if (words.length < 2 && !text.startsWith("/") && !ONE_WORD_ANSWERS.has(bare)) return "too_few_words";
+  if (words.length > 12) return "too_many_words";
+  if (/[.!?]\s+\S/.test(text)) return "multiple_sentences";
+  if (PRAISE.test(text)) return "praise";
+  if (AGENT_VOICE.test(text)) return "agent_voice";
+  return null;
 }

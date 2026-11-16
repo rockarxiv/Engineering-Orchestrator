@@ -1,4 +1,4 @@
-import type { AgentProvider, AgentProviderResumeOptions, RunProcessScope, SuggestionSpend } from "@eo/core";
+import type { AgentProvider, AgentProviderResumeOptions, RunProcessScope, SuggestionOutcome, SuggestionSpend } from "@eo/core";
 
 /**
  * A provider whose every turn carries the run's process scope (EO-738):
@@ -21,14 +21,17 @@ export function scopedProvider(provider: AgentProvider, scope: RunProcessScope):
 /**
  * A provider whose every turn reports what making a suggested next
  * message spent to `onSpend` (EO-808, `AgentTurnOverrides.onSuggestionSpend`),
- * where its backend made one with a turn of its own. Asked of every run's
- * turn, at the one door they go through: only a turn that asked for a
- * suggestion ever spends anything on one.
+ * where its backend made one with a turn of its own — and what became of
+ * the suggestion to `onOutcome` (EO-810, `AgentTurnOverrides.onSuggestionOutcome`),
+ * where the adapter makes it. Asked of every run's turn, at the one door
+ * they go through: only a turn that asked for a suggestion ever spends
+ * anything on one, or says what became of it.
  */
-export function suggestionSpendReported(provider: AgentProvider, onSpend: (spend: SuggestionSpend) => void): AgentProvider {
+export function suggestionSpendReported(provider: AgentProvider, onSpend: (spend: SuggestionSpend) => void, onOutcome?: (outcome: SuggestionOutcome) => void): AgentProvider {
+  const reported = onOutcome ? { onSuggestionSpend: onSpend, onSuggestionOutcome: onOutcome } : { onSuggestionSpend: onSpend };
   return {
     ...provider,
-    start: (opts) => provider.start({ ...opts, onSuggestionSpend: onSpend }),
-    resume: (threadId, message, opts) => provider.resume(threadId, message, { ...opts, onSuggestionSpend: onSpend }),
+    start: (opts) => provider.start({ ...opts, ...reported }),
+    resume: (threadId, message, opts) => provider.resume(threadId, message, { ...opts, ...reported }),
   };
 }
