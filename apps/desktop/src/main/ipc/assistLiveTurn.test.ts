@@ -175,14 +175,32 @@ describe("a chat's own settings", () => {
     const { settings } = updateAssistSettings(handle.db, { conversationId: chat.id, model: " claude-sonnet-5 ", reasoningEffort: effort, showReasoning: false });
 
     expect(settings).toMatchObject({ model: "claude-sonnet-5", reasoningEffort: effort, showReasoning: false });
-    expect(conversationTurnOptions(rowOf(chat.id))).toEqual({ model: "claude-sonnet-5", reasoningEffort: effort, showReasoning: false, streamDeltas: true, streamAnswer: true });
+    expect(conversationTurnOptions(rowOf(chat.id))).toEqual({ model: "claude-sonnet-5", reasoningEffort: effort, showReasoning: false, streamDeltas: true, streamAnswer: true, suggestNextMessage: true });
 
     // One field at a time leaves the others.
     updateAssistSettings(handle.db, { conversationId: chat.id, showReasoning: true });
-    expect(conversationTurnOptions(rowOf(chat.id))).toEqual({ model: "claude-sonnet-5", reasoningEffort: effort, showReasoning: true, streamDeltas: true, streamAnswer: true });
+    expect(conversationTurnOptions(rowOf(chat.id))).toEqual({ model: "claude-sonnet-5", reasoningEffort: effort, showReasoning: true, streamDeltas: true, streamAnswer: true, suggestNextMessage: true });
     // And clearing the model goes back to the agent's.
     updateAssistSettings(handle.db, { conversationId: chat.id, model: null });
     expect(conversationTurnOptions(rowOf(chat.id)).model).toBeUndefined();
+  });
+
+  it("offer \"Suggested replies\", on until it is turned off, and off stops the turns asking for one (EO-809)", async () => {
+    const chat = (await send("hello")).conversation;
+    expect(chat.settings.suggestReplies).toBe(true);
+    expect(conversationTurnOptions(rowOf(chat.id)).suggestNextMessage).toBe(true);
+
+    const { settings } = updateAssistSettings(handle.db, { conversationId: chat.id, suggestReplies: false });
+    expect(settings.suggestReplies).toBe(false);
+    expect(conversationTurnOptions(rowOf(chat.id))).not.toHaveProperty("suggestNextMessage");
+    expect(openAssist(handle.db).conversation.settings.suggestReplies).toBe(false);
+
+    // Another setting changed after it leaves it as it was.
+    updateAssistSettings(handle.db, { conversationId: chat.id, showReasoning: false });
+    expect(conversationTurnOptions(rowOf(chat.id))).not.toHaveProperty("suggestNextMessage");
+
+    updateAssistSettings(handle.db, { conversationId: chat.id, suggestReplies: true });
+    expect(conversationTurnOptions(rowOf(chat.id)).suggestNextMessage).toBe(true);
   });
 
   it("refuses an effort the backend does not offer", async () => {

@@ -319,6 +319,7 @@ import { capturingProvider, type SendContext } from "../providers/sentCapture.js
 import { scenarioResultProblem } from "../roles/scenario.js";
 import { proposedPipelineProblem } from "../roles/discussion.js";
 import { liveDrafts } from "./liveDrafts.js";
+import { createSuggestedReplies, type SuggestedReply } from "./suggestedReplies.js";
 import { createSideCaller, type SideCaller, type SideCallerOptions } from "../sideCalls/sideCall.js";
 import { deliverMemory, memoryReadScopes, memoryScopesFor, type DeliveredMemory } from "../memory/dispatchMemory.js";
 import type { MemoryScopeInfo } from "../memory/selection.js";
@@ -899,6 +900,12 @@ export interface RunSupervisorOptions {
   onRunChanged?: (runId: Uuid, itemId: Uuid, status: RunStatus) => void;
   /** A memory scope's consolidation was queued, started or finished (EO-589). Ids only, by the rule above. */
   onMemoryConsolidationChanged?: (scope: MemoryScope) => void;
+  /**
+   * A suggested reply for an assistant chat arrived after its turn
+   * (EO-809, `suggestedReplies.ts`). Carries the text, against the rule
+   * above, because nothing stores it to be asked for again.
+   */
+  onSuggestedReply?: (reply: SuggestedReply) => void;
   pushThrottleMs?: number;
   /**
    * "pid alive and ours" from the design's reconciliation algorithm. No provider
@@ -1155,6 +1162,11 @@ export interface RunSupervisor {
    * is recorded either way.
    */
   prewarmConversation: (itemId: Uuid, agentId: Uuid) => Promise<boolean>;
+  /**
+   * Stops making a suggested reply for an assistant chat, and drops one
+   * that comes later (EO-809): a person said something in it.
+   */
+  dropSuggestedReply: (conversationId: Uuid) => void;
   /** Asks for a tick soon — at once with `promptly`, for a person's own send. */
   notifyStateChange: (options?: { promptly?: boolean }) => void;
   /**
@@ -2612,6 +2624,8 @@ export function createRunSupervisor(
    * else the agent says on its way out.
    */
   const liveTurns = new Map<Uuid, LiveTurn>();
+  /** What an assistant chat's turns are still being read for after their result: the suggested reply (EO-809). */
+  const suggestedReplies = createSuggestedReplies({ onSuggestion: (reply) => options.onSuggestedReply?.(reply) });
 
   /**
    * A write an agent asked for, handed over the bridge for an item
@@ -3208,8 +3222,15 @@ export function createRunSupervisor(
       ...(runTurn.attachment?.mcpServers[0] ? { repositoryMcp: runTurn.attachment.mcpServers[0] } : {}),
       ...attachOption(item, run),
       ...memoryOption(item),
-      ...discussionTurnOptions(item, agent),
+      ...withoutSuggestion(discussionTurnOptions(item, agent)),
     };
+  }
+
+  /** A turn's options less the suggested reply (EO-809), which only a chat's own turn asks for — never a fork reviewing it. */
+  function withoutSuggestion<T extends { suggestNextMessage?: boolean }>(turn: T): Omit<T, "suggestNextMessage"> {
+    const rest: T = { ...turn };
+    delete rest.suggestNextMessage;
+    return rest;
   }
 
   /**
@@ -3886,9 +3907,14 @@ export function createRunSupervisor(
     // through, rather than at each of the places a turn is opened.
     const inner = scopedProvider(providerFor(agent, item), processScopeOf(run.id));
     const capturing = debugMode() && (send.purpose !== "correction" || capturedRuns.has(run.id));
-    if (!capturing) return inner;
+    // And every turn of a run on an item is a newer turn on it, which
+    // stops a suggested reply still being made after the last one, and
+    // one that asks for a suggestion is opened so that it can be stopped
+    // after its result (EO-809). Outermost, so the stream it knows a turn
+    // by is the one `processStream` is handed.
+    if (!capturing) return suggestedReplies.wrap(inner, item.id, run.id);
     capturedRuns.add(run.id);
-    return capturingProvider(
+    return suggestedReplies.wrap(capturingProvider(
       inner,
       {
         backend: runsOn(agent, item).provider,
@@ -3901,7 +3927,7 @@ export function createRunSupervisor(
         outputSchemaName: actionSchemaName(registryFor(item), action, typeOf(item), definingRole(item, agent)),
       },
       (sent) => recordSent(run.id, sent),
-    );
+    ), item.id, run.id);
   }
 
   /** What a run's processes are started under (EO-738): the run, and its memory limit as the guardrails say now. */
@@ -4065,14 +4091,29 @@ export function createRunSupervisor(
     agent: Agent,
   ): Pick<
     AgentProviderResumeOptions,
-    "model" | "reasoningEffort" | "showReasoning" | "streamDeltas" | "streamAnswer" | "budgetCents" | "skillScope" | "environmentVariables" | "withheldEnvironmentVariables"
+    | "model"
+    | "reasoningEffort"
+    | "showReasoning"
+    | "streamDeltas"
+    | "streamAnswer"
+    | "suggestNextMessage"
+    | "budgetCents"
+    | "skillScope"
+    | "environmentVariables"
+    | "withheldEnvironmentVariables"
   > => {
     // Every turn's, not only a conversation's, despite the name — every
     // turn path spreads it. `skillScope` is where the run works, for the
     // adapter that narrows the skills it writes itself (EO-470).
+    //
+    // A suggested reply is the system agent's chat's alone (EO-809): an
+    // item's run, a pipeline step's or anybody else's in that room never
+    // asks for one.
+    const { suggestNextMessage, ...conversation } = conversationTurnOptions(item);
     return {
       streamDeltas: true,
-      ...conversationTurnOptions(item),
+      ...conversation,
+      ...(suggestNextMessage === true && isSystemAgent(agent) ? { suggestNextMessage: true } : {}),
       ...turnBudget(item, agent),
       skillScope: skillRunScope(db, item),
       ...turnEnvironment(item),
@@ -5081,8 +5122,12 @@ export function createRunSupervisor(
     };
     liveTurns.set(ctx.runId, live);
 
+    // A turn that asked for a suggested reply (EO-809) is read on past its
+    // `result` beside the run's ending rather than ended there: the run
+    // lets go of `reading.stream` and the rest is read for the suggestion.
+    const reading = suggestedReplies.reading(stream);
     try {
-      for await (const step of untilTurnEnded(untilStopped(stream, ctx.signal), turnEnded)) {
+      for await (const step of untilTurnEnded(untilStopped(reading.stream, ctx.signal), turnEnded)) {
         // The agent posted a blocking comment over the bridge (EO-543):
         // its run ends here, awaiting the people it mentioned
         // (invariant 9). The turn is over — but walking away now costs
@@ -5128,6 +5173,11 @@ export function createRunSupervisor(
           recordSkillUsage(ctx.runId, ctx.buffer, ctx.item, ctx.agent, event);
           continue;
         }
+        // A suggested reply is never part of the run (EO-809): not a run
+        // event, not a comment. It comes after the `result`, which hands
+        // the stream on before it can arrive here; one that somehow did is
+        // dropped rather than recorded.
+        if (event.type === "prompt_suggestion") continue;
         const seq = ctx.buffer.append(ctx.runId, escalated && event.type === "error" ? WIND_DOWN_EVENT : event.type, event);
         // A finished block ends the draft that was showing it, which the
         // view goes on drawing until this row is in the database.
@@ -5288,6 +5338,7 @@ export function createRunSupervisor(
         }
 
         if (event.type === "result") {
+          reading.afterResult();
           return { kind: "result", data: event.data };
         }
         // A warning the backend raised without ending its turn (EO-369)
@@ -12446,6 +12497,7 @@ export function createRunSupervisor(
     offerWork: (deviceId: string, capacity: number, blockedRuntimes?: readonly RuntimeId[]) => offerWork(deviceId, capacity, undefined, DEFAULT_JOB_RUNS_ON, blockedRuntimes),
     notifyStateChange,
     prewarmConversation,
+    dropSuggestedReply: (conversationId: Uuid) => suggestedReplies.drop(conversationId),
     cancelRun,
     steerRun,
     shutdown,

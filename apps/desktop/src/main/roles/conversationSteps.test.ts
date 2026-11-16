@@ -24,13 +24,13 @@ describe("the model and effort a conversation turn runs with", () => {
   it("applies the assistant's own settings", () => {
     expect(
       conversationTurnOptions({ stepId: ASSIST_STEP, spec: { assist: { model: "claude-opus-5", reasoningEffort: "high" } } }),
-    ).toEqual({ model: "claude-opus-5", reasoningEffort: "high", showReasoning: true, streamDeltas: true, streamAnswer: true });
+    ).toEqual({ model: "claude-opus-5", reasoningEffort: "high", showReasoning: true, streamDeltas: true, streamAnswer: true, suggestNextMessage: true });
   });
 
   it("does not read one room's settings for the other", () => {
     // The key is the room's, not "whichever one is present".
     expect(conversationTurnOptions({ stepId: SCENARIO_STEP, spec: { assist: { model: "claude-opus-5" } } })).toEqual({ showReasoning: true, streamDeltas: true, streamAnswer: true });
-    expect(conversationTurnOptions({ stepId: ASSIST_STEP, spec: { scenario: { model: "claude-opus-5" } } })).toEqual({ showReasoning: true, streamDeltas: true, streamAnswer: true });
+    expect(conversationTurnOptions({ stepId: ASSIST_STEP, spec: { scenario: { model: "claude-opus-5" } } })).toEqual({ showReasoning: true, streamDeltas: true, streamAnswer: true, suggestNextMessage: true });
   });
 
   it("is no conversation at all on the steps Discussions and the Architecture panel used (EO-526)", () => {
@@ -49,28 +49,39 @@ describe("the model and effort a conversation turn runs with", () => {
     // `typeof null === "object"` and an array is one too, so both reach
     // the property reads and would hand the provider `undefined`.
     for (const settings of [null, "opus", 7, [], undefined]) {
-      expect(conversationTurnOptions({ stepId: ASSIST_STEP, spec: { assist: settings } })).toEqual({ showReasoning: true, streamDeltas: true, streamAnswer: true });
+      expect(conversationTurnOptions({ stepId: ASSIST_STEP, spec: { assist: settings } })).toEqual({ showReasoning: true, streamDeltas: true, streamAnswer: true, suggestNextMessage: true });
     }
-    expect(conversationTurnOptions({ stepId: ASSIST_STEP, spec: null })).toEqual({ showReasoning: true, streamDeltas: true, streamAnswer: true });
-    expect(conversationTurnOptions({ stepId: ASSIST_STEP })).toEqual({ showReasoning: true, streamDeltas: true, streamAnswer: true });
+    expect(conversationTurnOptions({ stepId: ASSIST_STEP, spec: null })).toEqual({ showReasoning: true, streamDeltas: true, streamAnswer: true, suggestNextMessage: true });
+    expect(conversationTurnOptions({ stepId: ASSIST_STEP })).toEqual({ showReasoning: true, streamDeltas: true, streamAnswer: true, suggestNextMessage: true });
   });
 
   it("treats an empty model name as no choice, not as a model called \"\"", () => {
-    expect(conversationTurnOptions({ stepId: ASSIST_STEP, spec: { assist: { model: "", reasoningEffort: "" } } })).toEqual({ showReasoning: true, streamDeltas: true, streamAnswer: true });
+    expect(conversationTurnOptions({ stepId: ASSIST_STEP, spec: { assist: { model: "", reasoningEffort: "" } } })).toEqual({ showReasoning: true, streamDeltas: true, streamAnswer: true, suggestNextMessage: true });
   });
 
   it("keeps one field when only one was chosen", () => {
-    expect(conversationTurnOptions({ stepId: ASSIST_STEP, spec: { assist: { reasoningEffort: "low" } } })).toEqual({ reasoningEffort: "low", showReasoning: true, streamDeltas: true, streamAnswer: true });
+    expect(conversationTurnOptions({ stepId: ASSIST_STEP, spec: { assist: { reasoningEffort: "low" } } })).toEqual({ reasoningEffort: "low", showReasoning: true, streamDeltas: true, streamAnswer: true, suggestNextMessage: true });
   });
 
   it("streams every conversation's turns and shows their reasoning unless it was turned off, and says nothing off a conversation", () => {
-    expect(conversationTurnOptions({ stepId: ASSIST_STEP, spec: { assist: { showReasoning: false } } })).toEqual({ showReasoning: false, streamDeltas: true, streamAnswer: true });
-    expect(conversationTurnOptions({ stepId: ASSIST_STEP, spec: { assist: { showReasoning: true } } })).toEqual({ showReasoning: true, streamDeltas: true, streamAnswer: true });
+    expect(conversationTurnOptions({ stepId: ASSIST_STEP, spec: { assist: { showReasoning: false } } })).toEqual({ showReasoning: false, streamDeltas: true, streamAnswer: true, suggestNextMessage: true });
+    expect(conversationTurnOptions({ stepId: ASSIST_STEP, spec: { assist: { showReasoning: true } } })).toEqual({ showReasoning: true, streamDeltas: true, streamAnswer: true, suggestNextMessage: true });
     // Every room is drawn the same way, so every room streams and shows it too.
     expect(conversationTurnOptions({ stepId: SCENARIO_STEP, spec: { scenario: {} } })).toEqual({ showReasoning: true, streamDeltas: true, streamAnswer: true });
     expect(conversationTurnOptions({ stepId: SCENARIO_STEP, spec: { scenario: { showReasoning: false } } })).toEqual({ showReasoning: false, streamDeltas: true, streamAnswer: true });
-    expect(conversationTurnOptions({ stepId: ASSIST_STEP, spec: { assist: { showReasoning: "no" } } })).toEqual({ showReasoning: true, streamDeltas: true, streamAnswer: true });
+    expect(conversationTurnOptions({ stepId: ASSIST_STEP, spec: { assist: { showReasoning: "no" } } })).toEqual({ showReasoning: true, streamDeltas: true, streamAnswer: true, suggestNextMessage: true });
     expect(conversationTurnOptions({ stepId: "todo", spec: { assist: { showReasoning: false } } })).toEqual({});
+  });
+
+  it("asks the assistant's chat for a suggested reply unless \"Suggested replies\" is off, and no other room or item ever (EO-809)", () => {
+    expect(conversationTurnOptions({ stepId: ASSIST_STEP, spec: { assist: {} } }).suggestNextMessage).toBe(true);
+    expect(conversationTurnOptions({ stepId: ASSIST_STEP, spec: { assist: { suggestReplies: true } } }).suggestNextMessage).toBe(true);
+    // Only `false` turns it off: anything else written there is no choice.
+    expect(conversationTurnOptions({ stepId: ASSIST_STEP, spec: { assist: { suggestReplies: "no" } } }).suggestNextMessage).toBe(true);
+    expect(conversationTurnOptions({ stepId: ASSIST_STEP, spec: { assist: { suggestReplies: false } } })).not.toHaveProperty("suggestNextMessage");
+    expect(conversationTurnOptions({ stepId: SCENARIO_STEP, spec: { scenario: {}, assist: {} } })).not.toHaveProperty("suggestNextMessage");
+    expect(conversationTurnOptions({ stepId: "todo", spec: { assist: {} } })).not.toHaveProperty("suggestNextMessage");
+    expect(conversationTurnOptions({ stepId: null })).not.toHaveProperty("suggestNextMessage");
   });
 
   it("applies the assist room's, which shares one spec object with its page key", () => {
@@ -79,7 +90,7 @@ describe("the model and effort a conversation turn runs with", () => {
     // the two on every write.
     expect(
       conversationTurnOptions({ stepId: ASSIST_STEP, spec: { assist: { pageKey: "settings", reasoningEffort: "low" } } }),
-    ).toEqual({ reasoningEffort: "low", showReasoning: true, streamDeltas: true, streamAnswer: true });
+    ).toEqual({ reasoningEffort: "low", showReasoning: true, streamDeltas: true, streamAnswer: true, suggestNextMessage: true });
   });
 
   it("is the same key the conversation panels write", () => {

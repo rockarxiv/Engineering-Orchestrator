@@ -857,7 +857,8 @@ export function stopAssistTurn(db: Db, engine: EngineHandle | undefined, input: 
 
 /**
  * Chooses what the next turns in one assistant chat run with: a model,
- * a reasoning effort, and whether their reasoning is shown.
+ * a reasoning effort, whether their reasoning is shown, and whether they
+ * ask for a suggested reply (EO-809).
  *
  * `discussions:settings` for this room, with the reasoning switch beside
  * it. Written to the chat's own settings, which `conversationTurnOptions`
@@ -879,6 +880,9 @@ export function updateAssistSettings(db: Db, input: IpcPayload<"assist:settings"
     ...(input.model !== undefined ? { model: input.model?.trim() || null } : {}),
     ...(input.reasoningEffort !== undefined ? { reasoningEffort: input.reasoningEffort } : {}),
     ...(input.showReasoning !== undefined ? { showReasoning: input.showReasoning } : {}),
+    // Read back by `conversationTurnOptions` as whether a turn asks for a
+    // suggested reply at all (EO-809), so off costs nothing.
+    ...(input.suggestReplies !== undefined ? { suggestReplies: input.suggestReplies } : {}),
   };
   const updated = updateItem(db, conversation.id, { spec: { ...(conversation.spec ?? {}), [ASSIST_SETTINGS_KEY]: next } });
   return { settings: settingsFor(db, updated, ASSIST), conversation: toView(db, updated) };

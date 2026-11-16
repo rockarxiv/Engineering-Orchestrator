@@ -8,8 +8,8 @@ import { Switch } from "../kit";
 
 /**
  * What the next turns in this chat run with — Claude Desktop's model
- * picker, in the box's own row: the model, how hard it reasons, and
- * whether its reasoning is shown.
+ * picker, in the box's own row: the model, how hard it reasons, whether
+ * its reasoning is shown, and whether it suggests your next message.
  *
  * Only what the agent's backend offers (ARCHITECTURE.md, "The parity
  * rule": no control that would do nothing). The models are the backend's
@@ -162,6 +162,17 @@ export function ChatSettings({ settings, onChange, disabled = false }: { setting
           <div className="px-2 py-1">
             <Switch checked={showReasoning} onChange={(checked) => onChange({ showReasoning: checked })} label="Show thinking" description="Its reasoning, folded under each turn" />
           </div>
+          {/* The assistant's chat alone offers it (EO-809); the same on either backend. */}
+          {settings.suggestReplies !== undefined ? (
+            <div className="px-2 py-1">
+              <Switch
+                checked={settings.suggestReplies}
+                onChange={(checked) => onChange({ suggestReplies: checked })}
+                label="Suggested replies"
+                description="Your likely next message, grey in the box: Tab to use it"
+              />
+            </div>
+          ) : null}
           <p className="px-2 pb-0.5 text-[11px] text-ink-subtle">Applies from the next message.</p>
         </div>
       ) : null}

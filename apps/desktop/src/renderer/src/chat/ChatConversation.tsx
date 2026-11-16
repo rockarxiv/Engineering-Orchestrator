@@ -2,13 +2,14 @@ import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type React
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate } from "react-router-dom";
 import { ArrowDown, Check, Copy, GitBranch, GitFork, LoaderCircle, PanelLeftClose, PanelRight, Pencil, RotateCcw, Sparkles } from "lucide-react";
-import { MODULE_COVERAGE_BAR, pipelineMachineSpecificWarnings, TURN_STOPPED_NOTE, type AssistWaitingModule, type DiscussionMessage, type HandOffTargets, type LiveTurn, type PipelineView } from "@eo/core";
+import { answerOptions, MODULE_COVERAGE_BAR, pipelineMachineSpecificWarnings, TURN_STOPPED_NOTE, type AssistWaitingModule, type DiscussionMessage, type HandOffTargets, type LiveTurn, type PipelineView } from "@eo/core";
 import { Markdown, cn } from "@eo/ui";
 import { AttachmentCard } from "./conversation/AttachmentCard";
 import { DesignPlan } from "./conversation/DesignPlan";
 import { WorkingLine } from "./conversation/WorkingLine";
 import { approveAndPublishAssistDraft, approveAssistDesign, publishAssistDraft, type ApprovedAndPublishedDraft, type PublishedDraft } from "../shared/assist/draft";
 import { useLiveDrafts } from "../shared/assist/liveDeltas";
+import { useSuggestedReply } from "../shared/assist/suggestedReply";
 import { assistDraftKey, drawAssistReply, mergedMessages, pendingToDraw, SENT_INTO_THE_TURN, useAssistRoom, type PendingSend } from "../shared/assist/useAssistRoom";
 import { OfferedAnswers } from "./conversation/OfferedAnswers";
 import { OperationCard } from "./conversation/OperationCard";
@@ -159,6 +160,38 @@ export function ChatConversation({
     !thinking &&
     !starting;
   const retry = retryable ? () => void room.send(lastMine.body) : null;
+
+  // The suggested reply (EO-809): only under the reply of the run it
+  // follows, while that reply is still the last word — nothing sent since,
+  // nothing starting or running — and never over answers the reply
+  // offers as buttons or a question card waiting to be answered.
+  //
+  // Anything the person said counts as moving past it, an answer picked
+  // from the reply's buttons too: that is a reply under the message
+  // (`parentId`), which `lastMine` leaves out.
+  const suggested = useSuggestedReply(view?.id);
+  const lastHeard = useMemo(() => [...messages].reverse().find((message) => message.authorType === "human") ?? null, [messages]);
+  const answersInTheWay = lastSaid !== null && (offersAnswers(lastSaid) || rows.some((row) => row.kind === "questions" && row.live));
+  const offered = suggested.suggestion;
+  const forLastSaid = offered !== null && lastSaid !== null && lastSaid.runId === offered.runId;
+  const suggestion =
+    offered !== null &&
+    lastSaid !== null &&
+    forLastSaid &&
+    (lastHeard === null || lastHeard.createdAt <= lastSaid.createdAt) &&
+    !pending &&
+    !thinking &&
+    !starting &&
+    !answersInTheWay
+      ? offered.text
+      : null;
+  // A suggestion under a reply that asks with buttons or a question card
+  // is never shown, and once those are answered the person has said
+  // something: it is let go of here rather than kept to surface later.
+  const { clear: clearSuggestion } = suggested;
+  useEffect(() => {
+    if (forLastSaid && answersInTheWay) clearSuggestion();
+  }, [forLastSaid, answersInTheWay, clearSuggestion]);
 
   const commands = useChatCommands(room, lastSaid?.id ?? null, queryClient);
 
@@ -319,7 +352,11 @@ export function ChatConversation({
               controls={view ? <ChatSettings settings={view.settings} onChange={room.updateSettings} /> : null}
               placeholder={thinking ? "Add to the running turn…" : narrow ? "Ask about it, or change it…" : "Ask, plan work, or change a pipeline…"}
               statusText={thinking ? `Esc to stop · ${SENT_INTO_THE_TURN}` : (active?.name ?? "Attach, paste or drop files")}
+              suggestion={suggestion}
+              onDismissSuggestion={suggested.clear}
               onSubmit={async (body, _mentions, attachmentIds) => {
+                // Sending anything is past the reply a suggestion was for.
+                suggested.clear();
                 // Sending is wanting to see the answer: back to the end.
                 jumpToLatest();
                 await room.send(body, attachmentIds);
@@ -330,6 +367,11 @@ export function ChatConversation({
       ) : null}
     </div>
   );
+}
+
+/** Whether a message draws answers to pick as buttons (`OfferedAnswers`): the suggested reply stays out of their way. */
+function offersAnswers(message: DiscussionMessage): boolean {
+  return message.authorType === "engine" && message.canAnswer && answerOptions(message.options).length > 0;
 }
 
 /** What a transcript row can ask of the conversation (EO-551): one stable object, read when pressed. */

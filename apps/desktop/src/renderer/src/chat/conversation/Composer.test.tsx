@@ -1,5 +1,6 @@
 import { QueryClientProvider } from "@tanstack/react-query";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { useState } from "react";
 import { describe, expect, it, vi } from "vitest";
 import { MemoryRouter, useLocation } from "react-router-dom";
 import { createQueryClient } from "../../query/client";
@@ -756,5 +757,80 @@ describe("saying somebody is typing", () => {
     await waitFor(() => expect(box).toHaveValue(""));
     fireEvent.change(box, { target: { value: "S", selectionStart: 1 } });
     expect(onTyping).toHaveBeenCalledTimes(2);
+  });
+});
+
+/**
+ * The suggested reply (EO-809): grey in the empty box, taken with Tab or
+ * Right arrow as text to edit, never sent by an Enter before that, and
+ * gone once anything is typed.
+ */
+describe("a suggested reply in the box", () => {
+  /** The box as the chat holds it: the suggestion spent when the box says so. */
+  function Suggesting({ onSubmit, completions = [] }: { onSubmit: (body: string) => void; completions?: { trigger: "/"; value: string }[] }) {
+    const [suggestion, setSuggestion] = useState<string | null>("publish it");
+    return <Composer appearance="chat" mentionables={[]} completions={completions} onSubmit={onSubmit} suggestion={suggestion} onDismissSuggestion={() => setSuggestion(null)} />;
+  }
+
+  it("is drawn grey where the placeholder is, in an empty box", () => {
+    render(<Suggesting onSubmit={vi.fn()} />);
+    const box = screen.getByLabelText("Write a comment");
+    expect(box).toHaveAttribute("placeholder", "publish it");
+    expect(box).toHaveValue("");
+  });
+
+  it.each(["Tab", "ArrowRight"])("goes into the box as text on %s, and is sent by the Enter after it as an ordinary message", (key) => {
+    const onSubmit = vi.fn();
+    render(<Suggesting onSubmit={onSubmit} />);
+    const box = screen.getByLabelText("Write a comment");
+
+    fireEvent.keyDown(box, { key });
+    expect(box).toHaveValue("publish it");
+    expect(onSubmit).not.toHaveBeenCalled();
+
+    // Editable like anything typed.
+    fireEvent.change(box, { target: { value: "publish it now" } });
+    fireEvent.keyDown(box, { key: "Enter" });
+    expect(onSubmit).toHaveBeenCalledWith("publish it now", [], []);
+  });
+
+  it("is not sent by Enter before it was taken", () => {
+    const onSubmit = vi.fn();
+    render(<Suggesting onSubmit={onSubmit} />);
+    const box = screen.getByLabelText("Write a comment");
+    fireEvent.keyDown(box, { key: "Enter" });
+    expect(onSubmit).not.toHaveBeenCalled();
+    expect(box).toHaveValue("");
+  });
+
+  it("goes once anything is typed, and does not come back when the box is emptied", () => {
+    render(<Suggesting onSubmit={vi.fn()} />);
+    const box = screen.getByLabelText("Write a comment");
+    fireEvent.change(box, { target: { value: "n" } });
+    expect(box).not.toHaveAttribute("placeholder", "publish it");
+    fireEvent.change(box, { target: { value: "" } });
+    expect(box).not.toHaveAttribute("placeholder", "publish it");
+    // And Tab is Tab again.
+    fireEvent.keyDown(box, { key: "Tab" });
+    expect(box).toHaveValue("");
+  });
+
+  it("stays out of the completion list's way, whose Tab still takes the highlighted completion", () => {
+    render(<Suggesting onSubmit={vi.fn()} completions={[{ trigger: "/", value: "clear" }]} />);
+    const box = screen.getByLabelText("Write a comment");
+    fireEvent.change(box, { target: { value: "/cl" } });
+    expect(screen.getByRole("listbox", { name: "Composer suggestions" })).toBeInTheDocument();
+    expect(box).not.toHaveAttribute("placeholder", "publish it");
+    fireEvent.keyDown(box, { key: "Tab" });
+    expect(box).toHaveValue("/clear ");
+  });
+
+  it("leaves a modified Right arrow and Shift+Tab to the person", () => {
+    render(<Suggesting onSubmit={vi.fn()} />);
+    const box = screen.getByLabelText("Write a comment");
+    fireEvent.keyDown(box, { key: "ArrowRight", ctrlKey: true });
+    fireEvent.keyDown(box, { key: "Tab", shiftKey: true });
+    expect(box).toHaveValue("");
+    expect(box).toHaveAttribute("placeholder", "publish it");
   });
 });
