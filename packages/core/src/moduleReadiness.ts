@@ -96,3 +96,54 @@ export function moduleReadinessRefusal(moduleName: string, readiness: ModuleRead
   if (problems.length === 0) return null;
   return `"${moduleName}" was not run, because it is not ready on this machine: ${problems.join("; ")}.`;
 }
+
+/**
+ * A step a module could be checked in the scope of (EO-817): a published
+ * step that runs it, named as a person finds it — the pipeline, then the
+ * step.
+ */
+export const ModuleReadinessStepSchema = z.object({
+  stepId: z.string(),
+  name: z.string(),
+  pipelineName: z.string(),
+});
+export type ModuleReadinessStep = z.infer<typeof ModuleReadinessStepSchema>;
+
+/**
+ * What a card is told about whether a module could run on this device
+ * (EO-817): the readiness the doors check before they launch, and the
+ * facts a person needs to read it — which device answered, in which
+ * scope, what an unapplied change adds, and where EO looks for CLIs.
+ *
+ * Names and statuses only, as `ModuleReadiness` is: never a value.
+ *
+ * - `device` — what this machine calls itself (its hostname), so the
+ *   answer says whose disk and keychain it is about.
+ * - `scope` — the shared values every step falls back to, or one
+ *   published step's own over them.
+ * - `unknownBins` — a declared CLI given as a relative path, which `spawn`
+ *   resolves against the run's working directory, and there is no run to
+ *   take one from. Not in `readiness.bin`, and neither found nor missing.
+ * - `introduced` — what the change being proposed declares that the
+ *   saved module does not. Empty when no change is being looked at.
+ * - `searched` — the directories a bare CLI name is looked for in, in
+ *   order, as `ctx.exec` would look.
+ * - `steps` — every published step that runs the module, which are the
+ *   other scopes it can be checked in.
+ */
+export const ModuleReadinessCheckSchema = z.object({
+  device: z.string(),
+  platform: z.string(),
+  scope: z.discriminatedUnion("kind", [z.object({ kind: z.literal("shared") }), z.object({ kind: z.literal("step"), step: ModuleReadinessStepSchema })]),
+  readiness: ModuleReadinessSchema,
+  unknownBins: z.array(z.string()),
+  introduced: z.object({ bin: z.array(z.string()), env: z.array(z.string()) }),
+  searched: z.array(z.string()),
+  steps: z.array(ModuleReadinessStepSchema),
+});
+export type ModuleReadinessCheck = z.infer<typeof ModuleReadinessCheckSchema>;
+
+/** The declared names `needs.env` lists that a run here would not be given, whatever the reason. */
+export function unsetModuleEnvironment(readiness: ModuleReadiness): string[] {
+  return readiness.env.filter((entry) => entry.status !== "set").map((entry) => entry.name);
+}

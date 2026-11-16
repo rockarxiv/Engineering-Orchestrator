@@ -3,6 +3,7 @@ import { Markdown } from "@eo/ui";
 import { moduleChangeNote, useModuleChangeCard } from "../../shared/modules/useModuleChangeCard";
 import { Button, Chip } from "../kit";
 import { MachineSpecificValues } from "./MachineSpecificValues";
+import { ModuleReadiness } from "./ModuleReadiness";
 import { useModuleApproval } from "./useModuleApproval";
 
 /**
@@ -60,6 +61,11 @@ export function ModuleChangeCard({ message, conversationId, onDone }: { message:
           change is what is saved — before Apply the catalog still holds
           the old code. Advice; Approve does not wait on it. */}
       {(offer === "approve" || offer === "approved") && module ? <MachineSpecificValues warnings={module.machineSpecific} /> : null}
+      {/* Whether it could run on this device (EO-817): before Apply, the
+          version the change would save, with what it adds marked; after,
+          what is saved. Beside approval, never part of it. */}
+      {offer === "apply" && module ? <ModuleReadiness module={module} change={{ conversationId, messageId: message.id }} /> : null}
+      {(offer === "approve" || offer === "approved") && module ? <ModuleReadiness module={module} /> : null}
 
       {card.problem ? (
         <p role="alert" className="text-[12px] text-danger">

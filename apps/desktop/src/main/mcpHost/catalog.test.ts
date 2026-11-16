@@ -577,6 +577,7 @@ const NOT_CATALOGUED_MACHINE: Partial<Record<MachineChannel, string>> = {
   // never goes — the writes are offered precisely because nothing hands a
   // value back. `module_secrets_list` and `mcp_servers_list` stay names only.
   "moduleSecrets:reveal": "returns a secret's value, which is for the person at the desktop and never for a transcript",
+  "modules:readiness": "whether a module's CLIs and values are on this desktop, for the person setting it up at a proposal card; a module door checks it again itself before it runs, and refuses with every missing name in the thread",
   "mcpServers:revealSecret": "returns a secret's value, which is for the person at the desktop and never for a transcript",
 
   // EO-325, the machine half. "Which of your projects are still

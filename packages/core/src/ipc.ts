@@ -19,6 +19,7 @@ import { OrganisationPolicySchema, PersonBudgetSchema, PublishedMcpServerSchema,
 import { PublishedSectionNameSchema, PublishedSectionSchema, SectionLockSchema, sectionLockedMessage, type SectionLock } from "./sections.js";
 import { SuggestionViewSchema } from "./suggestions.js";
 import { DebugAgentSchema } from "./debug.js";
+import { ModuleReadinessCheckSchema } from "./moduleReadiness.js";
 import { RuntimeIdSchema } from "./schemas/commentOptions.js";
 import { MessageSchema, MessageSendSchema } from "./messages.js";
 import {
@@ -7577,6 +7578,35 @@ export const machineContract = {
       stepId: z.string().nullable().optional(),
     }),
     RevealedSecretSchema,
+  ),
+  /**
+   * Whether a module could run on this device (EO-817): every CLI and
+   * environment variable it declares, by name with what EO found — for
+   * the cards a module is proposed, changed and drafted on.
+   *
+   * Machine half, because the answer is a fact about one disk and one
+   * keychain: which CLIs are on this PATH and which values this machine
+   * would hand a run. A browser served by an organisation server gets the
+   * typed `machine-only` refusal and says it cannot tell, rather than a
+   * server describing its own disk as the device that will do the work.
+   *
+   * Read-only, and the same check every door runs before it launches
+   * module code (EO-816): nothing is installed and nothing of the module
+   * is run. Names and statuses only — never a value.
+   *
+   * `stepId` checks in one published step's scope instead of the shared
+   * values. `change` checks the manifest an unapplied module change on
+   * that message proposes, so what an update adds is read before Apply;
+   * once applied, the card asks without it and reads what is saved.
+   * `problem` says why there is no `check`.
+   */
+  "modules:readiness": channel(
+    z.object({
+      moduleId: z.string(),
+      stepId: z.string().nullable().optional(),
+      change: z.object({ conversationId: z.string(), messageId: z.string() }).nullable().optional(),
+    }),
+    z.object({ check: ModuleReadinessCheckSchema.nullable(), problem: z.string().nullable() }),
   ),
   /** The stored value of one of a catalogued MCP server's variables, from this machine's keychain. */
   "mcpServers:revealSecret": channel(

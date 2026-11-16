@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { MODULE_ENV_NAME_MESSAGE, MODULE_ENV_NAME_PATTERN, ORGANISATION_SECRET_LINE } from "@eo/core";
 import { cn } from "@eo/ui";
 import { ipcQuery } from "../../query/client";
-import { environmentVariablesKey, environmentVariablesRootKey, moduleSecretsKey, moduleSecretsRootKey } from "../../query/hooks";
+import { environmentVariablesKey, environmentVariablesRootKey, moduleReadinessRootKey, moduleSecretsKey, moduleSecretsRootKey } from "../../query/hooks";
 import { unreadableSecretIn, unreadableSecretLine, variableLineForSecret } from "../../shared/modules/environmentVariableStatus";
 import { byName, revealLine, useSecretReveal } from "../../hooks/useSecretReveal";
 import { Button, Segmented, TextInput } from "../kit";
@@ -116,6 +116,8 @@ export function ModuleSecrets({ stepId = null, declared = null, unavailable = nu
       queryClient.invalidateQueries({ queryKey: moduleSecretsRootKey }),
       // The Environment variables list says which names are secrets.
       queryClient.invalidateQueries({ queryKey: environmentVariablesRootKey }),
+      // A card's readiness checklist reads the same values (EO-817).
+      queryClient.invalidateQueries({ queryKey: moduleReadinessRootKey }),
     ]);
 
   const set = useMutation({

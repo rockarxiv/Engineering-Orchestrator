@@ -10,12 +10,13 @@ import { useWithdrawnApproval } from "../../shared/modules/useWithdrawnApproval"
 import { useLiveDrafts } from "../../shared/assist/liveDeltas";
 import { LiveTurnBody, TurnFold } from "../conversation/TurnView";
 import { ipcQuery } from "../../query/client";
-import { modulesKey } from "../../query/hooks";
+import { modulesKey, useModulesWithDeleted } from "../../query/hooks";
 import { AttachmentCard } from "../conversation/AttachmentCard";
 import { Composer } from "../conversation/Composer";
 import { QuestionCard, transcriptRows } from "../conversation/QuestionCard";
 import { WorkingLine } from "../conversation/WorkingLine";
 import { Button, Chip, IconButton } from "../kit";
+import { ModuleReadiness } from "./ModuleReadiness";
 import { useModuleApproval } from "./useModuleApproval";
 
 /**
@@ -84,6 +85,7 @@ function Turn({ name, live = false, danger = false, children }: { name: string; 
 function ChangeCard({ message, moduleId, conversationId, onDone }: { message: DiscussionMessage; moduleId: string; conversationId: string; onDone: () => void }) {
   const queryClient = useQueryClient();
   const [problem, setProblem] = useState<string | null>(null);
+  const module = useModulesWithDeleted().data?.modules?.find((candidate) => candidate.id === moduleId && candidate.archivedAt === null);
 
   const apply = useMutation({
     mutationFn: () => ipcQuery("scenario:apply", { conversationId, messageId: message.id }),
@@ -107,6 +109,8 @@ function ChangeCard({ message, moduleId, conversationId, onDone }: { message: Di
           </Button>
           <span className="text-[11.5px] text-ink-subtle">or say what should change</span>
         </div>
+        {/* What the changed version would need on this device (EO-817), before Apply. */}
+        {module ? <ModuleReadiness module={module} change={{ conversationId, messageId: message.id }} /> : null}
         {problem ? <p className="text-[12px] text-danger">{problem}</p> : null}
       </section>
     </Turn>

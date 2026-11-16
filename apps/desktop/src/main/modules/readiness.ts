@@ -82,6 +82,17 @@ export function binariesNotFound(bins: readonly string[], options: Partial<Launc
 }
 
 /**
+ * Whether where `bin` is found depends on the directory a run is spawned
+ * in: a name with a separator that is not absolute, which `spawn` takes
+ * relative to its `cwd` (EO-817). Asked outside a run, where there is no
+ * such directory, the honest answer about one is "unknown".
+ */
+export function dependsOnRunDirectory(bin: string, platform: NodeJS.Platform = process.platform): boolean {
+  const named = platform === "win32" ? /[\\/]/.test(bin) : bin.includes("/");
+  return named && !(platform === "win32" ? win32 : posix).isAbsolute(bin);
+}
+
+/**
  * Scripts Node will not start without a shell (CVE-2024-27980), which
  * `ctx.exec` never uses.
  */

@@ -863,6 +863,19 @@ export type AppliedScenarioChange = AppliedModuleChange;
  * be applied at all — newest wins, not yet applied — is the caller's,
  * through `approvableIds`, which every room shares.
  */
+/**
+ * The change a scenario card proposes, by the card's message id, or null
+ * for a message that is not one (EO-817) — what the card checks the
+ * readiness of before Apply. Read only; nothing is applied.
+ */
+export function scenarioChangeFor(db: Db, conversation: Item, commentId: string): ScenarioModuleChange | null {
+  const comment = listCommentsForItem(db, conversation.id).find((entry) => entry.id === commentId);
+  if (!comment || !isScenarioChangeCard(db, comment)) return null;
+  const run = comment.runId ? getRun(db, comment.runId) : undefined;
+  const parsed = ScenarioOutputSchema.safeParse(parsedResultOf(run?.result ?? null));
+  return parsed.success ? (parsed.data.change ?? null) : null;
+}
+
 export function applyScenarioChange(db: Db, conversation: Item, commentId: Uuid): AppliedScenarioChange {
   const comment = listCommentsForItem(db, conversation.id).find((entry) => entry.id === commentId);
   if (!comment || !isScenarioChangeCard(db, comment)) return { ok: false, reason: "That card is not a change to the module." };

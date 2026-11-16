@@ -8,6 +8,7 @@ import { moduleTestsKey, useChromeVocabulary, useModulesWithDeleted } from "../.
 import { Button, Chip, ErrorLine, Facts, Loading } from "../kit";
 import { CoverageBadge } from "./CoverageBadge";
 import { MachineSpecificValues } from "./MachineSpecificValues";
+import { ModuleReadiness } from "./ModuleReadiness";
 import { ModuleSource, Names } from "./ModuleProposal";
 import { ModuleTestList } from "./ModuleTestList";
 
@@ -75,6 +76,8 @@ export function DraftModuleRow({ slug, refusal = null }: { slug: string; refusal
       <ModuleTestResults module={module} />
       {/* Values that only hold on this machine (EO-449): advice, and nothing about the button waits on it. */}
       <MachineSpecificValues warnings={module.machineSpecific} />
+      {/* Whether it could run on this device (EO-817). A draft's steps are not published, so only the shared values can be checked. */}
+      <ModuleReadiness module={module} unpublished />
       {/* One line per failing case, so kept as written. */}
       {refusal !== null && !approved ? (
         <p role="alert" className="whitespace-pre-line text-[12.5px] text-danger">
