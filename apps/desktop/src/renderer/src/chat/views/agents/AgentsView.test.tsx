@@ -1028,6 +1028,21 @@ describe("the agents view opened on a role's instructions", () => {
     expect(within(screen.getByRole("list", { name: "Agents" })).queryByRole("button", { name: /Tester/ })).toBeNull();
     expect(within(screen.getByRole("list", { name: "Agents" })).getAllByRole("button", { name: /Checker/ }).length).toBeGreaterThan(0);
   });
+
+  it("opens no agent when nobody holds the role, live or retired, says so, and keeps the list to pick from", async () => {
+    for (const address of [instructionsAddress("qa"), "/agents?actions=qa"]) {
+      renderAgents({ agents: [agent(), agent({ id: "a2", name: "Writer", role: "docs" })] }, address);
+      expect(await screen.findByText("No agent holds the qa role.")).toBeInTheDocument();
+      expect(screen.queryByRole("region", { name: "Edit agent" })).toBeNull();
+      expect(screen.queryByRole("region", { name: "Instructions" })).toBeNull();
+      expect(current()).toEqual([]);
+
+      fireEvent.click(within(screen.getByRole("list", { name: "Agents" })).getAllByRole("button", { name: /Writer/ })[0]!);
+      expect(within(await screen.findByRole("region", { name: "Actions" })).getByText("docs")).toBeInTheDocument();
+      expect(screen.queryByText("No agent holds the qa role.")).toBeNull();
+      cleanup();
+    }
+  });
 });
 
 describe("a project's own agents (EO-475)", () => {

@@ -251,8 +251,12 @@ export function AgentsView() {
   // Grouped by scope (EO-475): the global agents, then each project's own.
   const groups = groupAgentsByScope(visible, projects);
   // Never a blank editor while there is anything to edit. Until somebody
-  // picks one, an address that names a role opens the agent it resolved to.
-  const selected = creating ?? visible.find((agent) => agent.id === selectedId) ?? addressed ?? groups[0]?.agents[0] ?? null;
+  // picks one, an address that names a role opens the agent it resolved to
+  // — and an address naming a role no agent holds, live or retired, opens
+  // none (EO-805): the first agent would be another role's, opened under
+  // an address that named this one.
+  const unheldRole = addressedRole !== null && addressed === undefined ? addressedRole : null;
+  const selected = creating ?? visible.find((agent) => agent.id === selectedId) ?? addressed ?? (unheldRole === null ? groups[0]?.agents[0] : undefined) ?? null;
 
   // What this view has picked out (EO-192): the effective selection, none while New agent is open, and none on Runtimes.
   const onAgents = tab === "agents";
@@ -399,7 +403,7 @@ export function AgentsView() {
 
           {agents.isLoading ? (
             <Loading />
-          ) : selected === null ? (
+          ) : selected === null && (unheldRole === null || all.length === 0) ? (
             <EmptyState
               title={all.length === 0 ? "No agents configured yet." : "No agent matches this filter."}
               {...(all.length === 0 && !locked
@@ -420,6 +424,12 @@ export function AgentsView() {
                 {visible.length === 0 ? <p className="px-2.5 py-2 text-[12px] text-ink-subtle">No agent matches this filter.</p> : null}
               </nav>
               <div className="flex min-w-0 flex-1 flex-col">
+                {selected === null ? (
+                  // The list stays beside it, so another agent is one press away.
+                  <EmptyState title={`No agent holds the ${unheldRole ?? ""} role.`}>
+                    {locked ? "Pick an agent from the list." : "Pick an agent from the list, or make one for the role with New agent."}
+                  </EmptyState>
+                ) : (
                 <AgentEditor
                   key={selected.id || "new"}
                   agent={selected}
@@ -444,6 +454,7 @@ export function AgentsView() {
                     locked && draft.id !== undefined ? bind.mutate({ agentId: draft.id, provider: draft.provider, model: draft.model ?? null }) : save.mutate(draft)
                   }
                 />
+                )}
               </div>
             </div>
           )}
