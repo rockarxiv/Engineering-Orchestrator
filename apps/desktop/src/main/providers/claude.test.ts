@@ -2763,3 +2763,84 @@ describe("a sign-in failure mid-run", () => {
     expect(ending(await turnOf([retried, assistant([{ type: "text", text: "done" }]), result({ result: "done" })]))).toEqual({ type: "result", data: "done" });
   });
 });
+
+// EO-807. The SDK makes a suggested next message after a turn when asked
+// (`promptSuggestions`), and sends it after the turn's `result`.
+describe("a suggested next message", () => {
+  function suggestion(text: string, sessionId = "sess_1"): SDKMessage {
+    return { type: "prompt_suggestion", suggestion: text, uuid: "sug-1", session_id: sessionId } as unknown as SDKMessage;
+  }
+
+  it("is not asked for unless the turn asks, and one that comes anyway is not passed on", async () => {
+    const started = fakeQuery([init(), result({ uuid: "res-1" }), suggestion("run the tests")]);
+    const startedEvents = await collect(createClaudeProvider({ runQuery: started.runQuery, enableCommentTool: false }).start(startOpts));
+    const resumed = fakeQuery([result({ uuid: "res-2" }), suggestion("run the tests")]);
+    const resumedEvents = await collect(
+      createClaudeProvider({ runQuery: resumed.runQuery, enableCommentTool: false }).resume("sess_1", "and then?", { cwd: "/tmp/wt", suggestNextMessage: false }),
+    );
+
+    expect("promptSuggestions" in (started.calls[0]?.options ?? {})).toBe(false);
+    expect("promptSuggestions" in (resumed.calls[0]?.options ?? {})).toBe(false);
+    expect([...startedEvents, ...resumedEvents].some((event) => event.type === "prompt_suggestion")).toBe(false);
+  });
+
+  it("is asked for when the turn asks, and the one that follows the result is passed on with its text and turn", async () => {
+    const started = fakeQuery([init(), result({ uuid: "res-1" }), suggestion("run the tests")]);
+    const events = await collect(createClaudeProvider({ runQuery: started.runQuery, enableCommentTool: false }).start({ ...startOpts, suggestNextMessage: true }));
+    const resumed = fakeQuery([result({ uuid: "res-2" }), suggestion("yes")]);
+    const resumedEvents = await collect(
+      createClaudeProvider({ runQuery: resumed.runQuery, enableCommentTool: false }).resume("sess_1", "and then?", { cwd: "/tmp/wt", suggestNextMessage: true }),
+    );
+
+    expect(started.calls[0]?.options["promptSuggestions"]).toBe(true);
+    expect(resumed.calls[0]?.options["promptSuggestions"]).toBe(true);
+    expect(events.slice(-2)).toEqual([
+      { type: "result", data: "done" },
+      { type: "prompt_suggestion", text: "run the tests", threadId: "sess_1", turnId: "res-1" },
+    ]);
+    expect(resumedEvents.at(-1)).toEqual({ type: "prompt_suggestion", text: "yes", threadId: "sess_1", turnId: "res-2" });
+  });
+
+  it("is nothing, and no error, when the stream ends without one", async () => {
+    const { runQuery } = fakeQuery([init(), result({ uuid: "res-1" })]);
+
+    const events = await collect(createClaudeProvider({ runQuery, enableCommentTool: false }).start({ ...startOpts, suggestNextMessage: true }));
+
+    expect(events.at(-1)).toEqual({ type: "result", data: "done" });
+    expect(events.some((event) => event.type === "prompt_suggestion" || event.type === "error")).toBe(false);
+  });
+
+  it("is not passed on before the turn's own result", async () => {
+    // One the CLI made for the turn before, read ahead of this turn's result.
+    const { runQuery } = fakeQuery([init(), suggestion("an old one"), result({ uuid: "res-1" })]);
+
+    const events = await collect(createClaudeProvider({ runQuery, enableCommentTool: false }).start({ ...startOpts, suggestNextMessage: true }));
+
+    expect(events.some((event) => event.type === "prompt_suggestion")).toBe(false);
+  });
+
+  it("does not hold back the result, and a consumer that stops there ends the turn without waiting for it", async () => {
+    // The suggestion is made after the result, and here it never comes
+    // until the test says so.
+    let release: () => void = () => undefined;
+    const made = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const runQuery = (() =>
+      (async function* () {
+        yield init();
+        yield result({ uuid: "res-1" });
+        await made;
+        yield suggestion("run the tests");
+      })()) as never;
+    const turn = createClaudeProvider({ runQuery, enableCommentTool: false }).start({ ...startOpts, suggestNextMessage: true })[Symbol.asyncIterator]();
+
+    let next = await turn.next();
+    while (!next.done && next.value.type !== "result") next = await turn.next();
+    expect(next.value).toEqual({ type: "result", data: "done" });
+    // Walking away at the result, as the supervisor does, settles while
+    // the suggestion is still being made.
+    await expect(turn.return?.(undefined)).resolves.toEqual({ done: true, value: undefined });
+    release();
+  });
+});

@@ -819,9 +819,16 @@ export function mapSdkMessage(
     // which is what the inactivity guard needs to know (`HeartbeatEvent`).
     case "tool_progress":
       return { mapped: [{ type: "heartbeat" }], recognised: true };
+    // The next message the person is predicted to send (EO-807), made by
+    // the CLI after the turn's `result` when `promptSuggestions` asked for
+    // it. Which turn it follows is `stream`'s to say: it read the result.
+    // An empty one is none.
+    case "prompt_suggestion": {
+      const text: unknown = message.suggestion;
+      return { mapped: typeof text === "string" && text.trim() !== "" ? [{ type: "prompt_suggestion", text, threadId: message.session_id }] : [], recognised: true };
+    }
     case "tool_use_summary":
     case "auth_status":
-    case "prompt_suggestion":
     case "conversation_reset":
       return { mapped: [], recognised: true };
 
@@ -1291,6 +1298,8 @@ interface ClaudeTurn {
   streamAnswer?: boolean | undefined;
   /** What the turn may spend, in cents (`AgentTurnOverrides.budgetCents`). */
   budgetCents?: number | undefined;
+  /** Whether a suggested next message is asked for after the turn (`AgentTurnOverrides.suggestNextMessage`, EO-807). */
+  suggestNextMessage?: boolean | undefined;
   /** The generated directory this turn's servers and skills come out of (EO-107). */
   toolDirectory?: string | undefined;
   /**
@@ -1569,6 +1578,11 @@ function buildOptions(opts: ClaudeTurn, adapter: ClaudeAdapter): Options {
     // thinking to hide it would turn thinking on for a model, or for a
     // person's `alwaysThinkingEnabled: false`, that had it off.
     ...(opts.showReasoning === true ? { thinking: { type: "adaptive" as const, display: "summarized" as const } } : {}),
+    // A suggested next message after the turn (EO-807), and only when
+    // asked for: the CLI makes it with a request of its own, and a turn
+    // that did not ask is spared it. It arrives after the `result`, which
+    // `stream` reads on past for it.
+    ...(opts.suggestNextMessage === true ? { promptSuggestions: true } : {}),
   };
 
   // Both of EO's own servers, and only EO's own: an attached server
@@ -2382,6 +2396,9 @@ export function createClaudeProvider(options: ClaudeProviderOptions = {}): Agent
       // that answered nothing still reaches the supervisor's result
       // validation exactly as it did before.
       let notOurs: AgentEvent[] | null = null;
+      // The id of this turn's own result, once read: the turn a suggested
+      // next message follows (EO-807).
+      let resultId: string | undefined;
       try {
         for await (const message of query) {
           // Before the message, not after: a hook fires while this
@@ -2409,11 +2426,21 @@ export function createClaudeProvider(options: ClaudeProviderOptions = {}): Agent
           // to already be winding itself up by then.
           if (message.type === "result") {
             turnOver = true;
+            resultId = message.uuid;
             input.close();
           }
           for (const event of mapped) {
             if (event.type === "output_delta" && !showWords) {
               if (beating()) yield { type: "heartbeat" };
+              continue;
+            }
+            // A suggested next message (EO-807) is passed on only when it
+            // was asked for and follows this turn's own result. The turn
+            // was over at that result, which was yielded as it was read:
+            // reading on for this is the consumer's choice, and one that
+            // stopped there ended the CLI without waiting for it.
+            if (event.type === "prompt_suggestion") {
+              if (sdkOptions.promptSuggestions === true && turnOver) yield resultId === undefined ? event : { ...event, turnId: resultId };
               continue;
             }
             yield event;
@@ -2521,6 +2548,7 @@ export function createClaudeProvider(options: ClaudeProviderOptions = {}): Agent
     ...(opts.streamDeltas ? { streamDeltas: true } : {}),
     ...(opts.streamAnswer ? { streamAnswer: true } : {}),
     ...(opts.budgetCents !== undefined ? { budgetCents: opts.budgetCents } : {}),
+    ...(opts.suggestNextMessage ? { suggestNextMessage: true } : {}),
     ...(opts.toolDirectory ? { toolDirectory: opts.toolDirectory } : {}),
     ...(opts.repositoryMcp ? { repositoryMcp: opts.repositoryMcp } : {}),
     ...(opts.attachFrom ? { attachFrom: opts.attachFrom } : {}),
@@ -2547,6 +2575,7 @@ export function createClaudeProvider(options: ClaudeProviderOptions = {}): Agent
     ...(opts?.streamDeltas ? { streamDeltas: true } : {}),
     ...(opts?.streamAnswer ? { streamAnswer: true } : {}),
     ...(opts?.budgetCents !== undefined ? { budgetCents: opts.budgetCents } : {}),
+    ...(opts?.suggestNextMessage ? { suggestNextMessage: true } : {}),
     ...(opts?.toolDirectory ? { toolDirectory: opts.toolDirectory } : {}),
     ...(opts?.repositoryMcp ? { repositoryMcp: opts.repositoryMcp } : {}),
     ...(opts?.attachFrom ? { attachFrom: opts.attachFrom } : {}),
