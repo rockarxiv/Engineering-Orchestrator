@@ -382,6 +382,8 @@ describe("the staging area's boundary", () => {
       // Ending the run removes the link, not what it leads to.
       staging.releaseRun(caller.runId);
       expect(readFileSync(join(outside, STAGED_CODE_FILE), "utf8")).toBe("outside code");
+      expect(readFileSync(join(outside, "tests", "case.js"), "utf8")).toBe("outside case");
+      expect(existsSync(directory as string)).toBe(false);
     });
 
     it("refuses edit and freeze when the directory is replaced by another directory", () => {
@@ -415,6 +417,46 @@ describe("the staging area's boundary", () => {
         rmSync(root, { force: true });
         rmSync(`${root}-aside`, { recursive: true, force: true });
       }
+    });
+
+    it("leaves everything outside untouched when the run ends after a directory above it is replaced by a link", () => {
+      const deploy = saveDeploy();
+      const caller = assistTurn();
+      const { stagingId, directory } = ok(staging.prepare(caller, { moduleId: deploy.id }));
+      const id = readdirSync(root)[0]!;
+      decoy(join(outside, id));
+      writeFileSync(join(outside, id, "valuable.txt"), "keep me");
+      renameSync(root, `${root}-aside`);
+      try {
+        symlinkSync(outside, root);
+        expect(refusal(staging.edit(caller, { stagingId, file: STAGED_CODE_FILE, content: "x" }))).toMatchObject({ code: "FILE_REFUSED" });
+        staging.releaseRun(caller.runId);
+        expect(readFileSync(join(outside, id, "valuable.txt"), "utf8")).toBe("keep me");
+        expect(readFileSync(join(outside, id, STAGED_CODE_FILE), "utf8")).toBe("outside code");
+        expect(readFileSync(join(outside, id, "tests", "case.js"), "utf8")).toBe("outside case");
+        // The staging id is gone with the run, whatever was left on disk.
+        expect(refusal(staging.freeze(caller, { stagingId, summary: "x" }))).toMatchObject({ code: "STAGING_NOT_FOUND" });
+        // The directory EO made is left where it was moved, for the sweep at the next start.
+        expect(readFileSync(join(`${root}-aside`, id, STAGED_CODE_FILE), "utf8")).toBe(DEPLOY);
+        expect(directory as string).toBe(join(root, id));
+        // And that sweep removes the link in the root's place, not what it leads to.
+        staging.sweep();
+        expect(existsSync(root)).toBe(false);
+        expect(readFileSync(join(outside, id, "valuable.txt"), "utf8")).toBe("keep me");
+      } finally {
+        rmSync(root, { force: true });
+        rmSync(`${root}-aside`, { recursive: true, force: true });
+      }
+    });
+
+    it("leaves the directory put in its place when the run ends after the staging directory is replaced", () => {
+      const deploy = saveDeploy();
+      const caller = assistTurn();
+      const { directory } = ok(staging.prepare(caller, { moduleId: deploy.id }));
+      renameSync(directory as string, `${directory as string}-aside`);
+      decoy(directory as string);
+      staging.releaseRun(caller.runId);
+      expect(readFileSync(join(directory as string, STAGED_CODE_FILE), "utf8")).toBe("outside code");
     });
   });
 

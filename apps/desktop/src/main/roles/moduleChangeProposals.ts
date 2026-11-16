@@ -1,6 +1,6 @@
-import { closeSync, constants, fstatSync, ftruncateSync, lstatSync, mkdirSync, openSync, readSync, realpathSync, rmSync, writeSync } from "node:fs";
+import { closeSync, constants, fstatSync, ftruncateSync, lstatSync, mkdirSync, openSync, readSync, realpathSync, rmSync, unlinkSync, writeSync } from "node:fs";
 import { homedir } from "node:os";
-import { isAbsolute, join, normalize, resolve, sep } from "node:path";
+import { dirname, isAbsolute, join, normalize, resolve, sep } from "node:path";
 import {
   AssistModuleChangeSchema,
   ModuleChangeEditArgsSchema,
@@ -344,11 +344,17 @@ export function createModuleChangeStaging(options: { db: Db; root?: string; now?
     for (const staging of [...stagings.values()]) {
       if (staging.runId !== runId) continue;
       stagings.delete(staging.id);
-      // rmSync removes a link put in the directory's place, not what it leads to.
-      rmSync(staging.directory.path, { recursive: true, force: true });
+      removeStaging(staging.directory);
     }
   }
 
+  /**
+   * Called at start, when no run holds staging. `root` is the profile's own
+   * `module-staging`, and it is removed by that path: a link put in its
+   * place is removed, not followed. What sits above it is the profile
+   * directory, which a person may have placed behind a link, so it is not
+   * refused — and a turn that could swap it would have moved the database too.
+   */
   function sweep(): void {
     stagings.clear();
     rmSync(root, { recursive: true, force: true });
@@ -521,6 +527,30 @@ function readStaged(anchor: StagingAnchor, file: string): { ok: true; text: stri
     return { ok: true, text: buffer.subarray(0, read).toString("utf8") };
   } finally {
     closeSync(fd);
+  }
+}
+
+/**
+ * Removes a staging directory when its run ends — only the directory EO
+ * made, never what its path leads to now (EO-813 review). While the
+ * boundary holds, the directory is removed by its recorded real path. Once
+ * it does not — the directory moved, replaced, or a directory above it
+ * swapped for a link — removing by path could empty a directory outside,
+ * so all that is removed is a link put in the directory's own place, and
+ * only while the directory holding it is still the one it was made in.
+ * Anything else left behind is inside the staging root, which the sweep
+ * at the next start removes.
+ */
+export function removeStaging(anchor: StagingAnchor): void {
+  if (anchorHolds(anchor)) {
+    rmSync(anchor.real, { recursive: true, force: true });
+    return;
+  }
+  try {
+    if (realpathSync(dirname(anchor.path)) !== dirname(anchor.real)) return;
+    if (lstatSync(anchor.path).isSymbolicLink()) unlinkSync(anchor.path);
+  } catch {
+    // Gone already, or unreadable: nothing of EO's to remove there.
   }
 }
 
