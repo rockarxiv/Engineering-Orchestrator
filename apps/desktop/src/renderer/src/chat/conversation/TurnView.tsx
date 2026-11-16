@@ -1,7 +1,7 @@
 import { useMemo, useRef, useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { AlertTriangle, Check, ChevronRight, CornerDownRight, FileDiff, LoaderCircle, X } from "lucide-react";
-import { liveMessageOf, type DiscussionMessage, type LiveDraft, type LiveTurn, type TurnStep } from "@eo/core";
+import { answerWrittenPastMessage, liveMessageOf, type DiscussionMessage, type LiveDraft, type LiveTurn, type TurnStep } from "@eo/core";
 import { Markdown, cn } from "@eo/ui";
 import { ipcQuery } from "../../query/client";
 import { useRevealed } from "./useRevealed";
@@ -228,7 +228,9 @@ export function LiveTurnBody({ turn, drafts }: { turn: LiveTurn; drafts: readonl
   // any that begin after are paced from their first word.
   const firstDrawn = useRef<Set<number> | null>(null);
   if (firstDrawn.current === null) firstDrawn.current = new Set(drafts.map((draft) => draft.id));
-  const writing = drafts.filter((draft) => draft.stream === "text").map((draft) => ({ id: draft.id, text: liveMessageOf([draft.text]) }));
+  const writing = drafts
+    .filter((draft) => draft.stream === "text")
+    .map((draft) => ({ id: draft.id, text: liveMessageOf([draft.text]), pastMessage: answerWrittenPastMessage([draft.text]) }));
   const thinking = drafts.filter((draft) => draft.stream === "reasoning");
   const answerShown = writing.some((draft) => draft.text !== "" && turn.answer.startsWith(draft.text.slice(0, 40)));
   return (
@@ -238,6 +240,7 @@ export function LiveTurnBody({ turn, drafts }: { turn: LiveTurn; drafts: readonl
         <Thought key={`r${draft.id}`} text={draft.text} live />
       ))}
       {writing.map((draft) => (draft.text === "" ? null : <Writing key={`t${draft.id}`} text={draft.text} fromStart={!firstDrawn.current!.has(draft.id)} />))}
+      {writing.map((draft) => (draft.pastMessage === null ? null : <StillWriting key={`w${draft.id}`} written={draft.pastMessage} />))}
       {turn.answer !== "" && !answerShown ? (
         <div className="text-ink">
           <Markdown>{turn.answer}</Markdown>
@@ -245,6 +248,27 @@ export function LiveTurnBody({ turn, drafts }: { turn: LiveTurn; drafts: readonl
       ) : null}
     </div>
   );
+}
+
+/**
+ * The answer's message is on screen but the answer is not finished (EO-803):
+ * the model is still writing its other fields — a card can carry a module's
+ * whole source — and without this the turn looks done while it runs on for
+ * minutes. The size grows with each delta, so it reads as progress, not a hang.
+ */
+function StillWriting({ written }: { written: number }) {
+  return (
+    <p role="status" className="inline-flex items-center gap-1.5 self-start text-[12.5px] text-ink-subtle">
+      <LoaderCircle aria-hidden size={12} className="animate-spin text-running" />
+      <span>Still writing the answer · {writtenSize(written)} so far</span>
+    </p>
+  );
+}
+
+/** A count of characters as a person reads a size: "812 characters", "83.3 KB". */
+export function writtenSize(characters: number): string {
+  if (characters < 1024) return `${characters} ${characters === 1 ? "character" : "characters"}`;
+  return `${(characters / 1024).toFixed(1)} KB`;
 }
 
 /** A block being written, revealed at a steady pace (`useRevealed`). */

@@ -2,7 +2,7 @@ import { fireEvent, screen, waitFor } from "@testing-library/react";
 import type { LiveTurn, TurnStep } from "@eo/core";
 import { describe, expect, it } from "vitest";
 import { ipcStub, renderSection, sent } from "../views/settings/org/testing";
-import { LiveTurnBody, TurnFold, TurnSteps, doingSummary, groupSteps, turnSummaryLine, workedFor } from "./TurnView";
+import { LiveTurnBody, TurnFold, TurnSteps, doingSummary, groupSteps, turnSummaryLine, workedFor, writtenSize } from "./TurnView";
 
 const tool = (seq: number, label: string, ok: boolean | null, output: string | null = "ok"): TurnStep => ({ kind: "tool", seq, callId: `c${seq}`, name: "Bash", label, input: '{\n  "command": "ls"\n}', ok, output });
 
@@ -78,6 +78,32 @@ describe("the running turn", () => {
     unmount();
     renderSection(<LiveTurnBody turn={live({ answer: "Three steps." })} drafts={[{ id: 1, stream: "text", text: '{"outcome":{"message":"Three steps."}}' }]} />);
     expect(screen.getAllByText("Three steps.")).toHaveLength(1);
+  });
+
+  describe("an answer still being written after its message (EO-803)", () => {
+    const card = '{"outcome":{"message":"Here is the module.","change":{"source":"' + "x".repeat(4000);
+
+    it("shows that it is still writing, and how much it has written", () => {
+      renderSection(<LiveTurnBody turn={live()} drafts={[{ id: 1, stream: "text", text: card }]} />);
+      expect(screen.getByText("Here is the module.")).toBeInTheDocument();
+      expect(screen.getByRole("status")).toHaveTextContent(`Still writing the answer · ${writtenSize(card.length)} so far`);
+    });
+
+    it("does not show it while the message itself is being written", () => {
+      renderSection(<LiveTurnBody turn={live()} drafts={[{ id: 1, stream: "text", text: '{"outcome":{"message":"Here is the mod' }]} />);
+      expect(screen.queryByRole("status")).toBeNull();
+    });
+
+    it("does not show it once the answer is complete", () => {
+      renderSection(<LiveTurnBody turn={live({ answer: "Here is the module." })} drafts={[{ id: 1, stream: "text", text: `${card}"}}}` }]} />);
+      expect(screen.queryByRole("status")).toBeNull();
+    });
+
+    it("reads a size as a person does", () => {
+      expect(writtenSize(1)).toBe("1 character");
+      expect(writtenSize(812)).toBe("812 characters");
+      expect(writtenSize(85_301)).toBe("83.3 KB");
+    });
   });
 });
 

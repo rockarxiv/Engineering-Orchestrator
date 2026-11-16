@@ -160,3 +160,31 @@ describe("a streamed turn in the conversation (EO-551)", () => {
     expect({ asked: timesDrawn(ASKED), followUp: timesDrawn(FOLLOW_UP) }).toEqual({ asked: before.asked, followUp: before.followUp });
   });
 });
+
+describe("an answer still being written after its message (EO-803)", () => {
+  it("says so with a size that grows as deltas arrive, and stops saying so when the turn ends", async () => {
+    const opening = '{"outcome":{"message":"Here is the module.","change":{"source":"';
+    conversation = { ...running(), liveTurn: { ...running().liveTurn, drafts: [{ id: 1, stream: "text", text: '{"outcome":{"message":"Here is' }] } };
+    open();
+    const live = await screen.findByRole("article", { name: "Live agent response" });
+    await within(live).findByText("Here is", { exact: false });
+    expect(within(live).queryByRole("status")).toBeNull();
+
+    let written = '{"outcome":{"message":"Here is';
+    const send = (piece: string) => {
+      push("runs:delta", { runId: "run-1", itemId: CHAT, draft: { id: 1, stream: "text" }, offset: written.length, text: piece });
+      written += piece;
+    };
+    send(opening.slice(written.length));
+    send("x".repeat(3000));
+    await waitFor(() => expect(within(live).getByRole("status")).toHaveTextContent("Still writing the answer · 3.0 KB so far"));
+    send("y".repeat(3000));
+    await waitFor(() => expect(within(live).getByRole("status")).toHaveTextContent("Still writing the answer · 5.9 KB so far"));
+
+    // The turn ends: the conversation is read again with its answer posted and nothing running.
+    conversation = { ...running(), thinking: false, liveTurn: null as never };
+    push("runs:progress", { runId: "run-1", itemId: CHAT });
+    await waitFor(() => expect(screen.queryByRole("article", { name: "Live agent response" })).toBeNull());
+    expect(screen.queryByText(/Still writing the answer/)).toBeNull();
+  });
+});
