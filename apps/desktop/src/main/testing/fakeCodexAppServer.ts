@@ -52,6 +52,12 @@ export interface FakeAppServerScenario {
    * file, one JSON line per payload: `{ status, body }` (EO-732).
    */
   after?: Record<string, ({ method: string; params: unknown } | { exit: number; stderr?: string } | { request: string } | { wait: number } | { fireHook: Record<string, unknown> })[]>;
+  /**
+   * What to send after answering a method in a process that has forked a
+   * thread, in place of `after`'s — so the turn on a fork can say
+   * something other than the turn it was forked from (EO-808).
+   */
+  afterFork?: FakeAppServerScenario["after"];
   /** Where each `{ fireHook }`'s answer is appended, one JSON line per payload (EO-732). */
   hookAnswers?: string;
   /** Stay alive when stdin closes, as a wedged server would. */
@@ -91,6 +97,7 @@ const defaults = (message) => {
   }
 };
 let thread = scenario.threadId || "thr-fake";
+let forked = false;
 const lines = readline.createInterface({ input: process.stdin });
 lines.on("line", async (line) => {
   const message = JSON.parse(line);
@@ -100,11 +107,15 @@ lines.on("line", async (line) => {
     send({ id: message.id, error: { code: -32600, message: scenario.refusePredictionFork } });
     return;
   }
-  if (message.method === "thread/fork") thread = scenario.forkId || "thr-fork";
   const reply = (scenario.replies || {})[message.method];
+  if (message.method === "thread/fork" && !(reply && reply.error)) {
+    thread = scenario.forkId || "thr-fork";
+    forked = true;
+  }
   if (reply && reply.error) send({ id: message.id, error: reply.error });
   else send({ id: message.id, result: reply ? reply.result : defaults(message) });
-  for (const next of (scenario.after || {})[message.method] || []) {
+  const plan = (forked && scenario.afterFork && scenario.afterFork[message.method]) || (scenario.after || {})[message.method] || [];
+  for (const next of plan) {
     if (next.wait !== undefined) {
       await new Promise((resolve) => setTimeout(resolve, next.wait));
       continue;

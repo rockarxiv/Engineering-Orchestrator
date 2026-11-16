@@ -162,8 +162,13 @@ export type ThreadEvent =
    * answered with, or the one `model/rerouted` moved the turn to. It is
    * what the turn is priced at (`codexPricing.ts`), so it is the model
    * that answered rather than the one EO asked for.
+   *
+   * `lastRequest` is EO's addition too (EO-808): what the turn's last
+   * model response used on its own (the reading's `last`), when a reading
+   * said. Whether that request was mostly uncached is what decides that a
+   * suggested next message is not worth a fork.
    */
-  | { type: "turn.completed"; usage: Usage; model?: string }
+  | { type: "turn.completed"; usage: Usage; model?: string; lastRequest?: Usage }
   /**
    * `usage` is EO's addition (EO-373): what the turn spent before it
    * ended badly — interrupted, most of all — when the app-server reported
@@ -1234,6 +1239,8 @@ export class TurnTranslator {
    */
   private baseline: Usage | null = null;
   private total: Usage | null = null;
+  /** What the turn's latest model response used on its own (a reading's `last`), once a reading has said (EO-808). */
+  private lastRequest: Usage | null = null;
   private plan: { step: string; status: string }[] | null = null;
   private warnings = 0;
   /** When this turn last said it was at work (`WORKING_NOTIFICATIONS`). */
@@ -1365,6 +1372,7 @@ export class TurnTranslator {
         // thread stood as it was: nought, unless something stated it.
         this.baseline ??= reading?.last === undefined ? zeroUsage() : less(total, usageOf(reading.last));
         this.total = total;
+        if (reading?.last !== undefined) this.lastRequest = usageOf(reading.last);
         return { events: [{ type: "turn.usage", usage: this.turnUsage(), ...this.modelNamed() }], recognised: true };
       }
 
@@ -1475,7 +1483,7 @@ export class TurnTranslator {
       });
     }
     if (turn.status === "completed") {
-      events.push({ type: "turn.completed", usage: this.turnUsage(), ...this.modelNamed() });
+      events.push({ type: "turn.completed", usage: this.turnUsage(), ...this.modelNamed(), ...(this.lastRequest ? { lastRequest: this.lastRequest } : {}) });
     } else {
       const message = typeof turn.error?.message === "string" && turn.error.message ? turn.error.message : `Codex turn ${String(turn.status ?? "ended")}`;
       const info = errorInfo((turn.error as { codexErrorInfo?: unknown } | null | undefined)?.codexErrorInfo);

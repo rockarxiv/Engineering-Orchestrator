@@ -64,10 +64,12 @@ describe("warming the backend for the turn being typed", () => {
     expect(starts).toHaveLength(1);
     const { kind, instructions, ...warmed } = prewarms[0] as Extract<AgentPrewarmTurn, { kind: "start" }>;
     expect(kind).toBe("start");
-    const { context, signal, instructions: started, attachments, processScope: runScope, ...dispatched } = starts[0]!;
+    // What a suggestion spent is told to the turn, not part of its launch (EO-808).
+    const { context, signal, instructions: started, attachments, processScope: runScope, onSuggestionSpend, ...dispatched } = starts[0]!;
     void context;
     void signal;
     void attachments;
+    expect(onSuggestionSpend).toEqual(expect.any(Function));
     expect(instructions).toBe(started);
     // Both in a scope with the same memory limit (EO-738): the warm-up's
     // filed under the conversation, since no run exists yet, and the

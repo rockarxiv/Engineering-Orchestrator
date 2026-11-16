@@ -46,6 +46,9 @@ export function refusedCall(tool: string, rule: CallRule): string | null {
   const own = `mcp__${RESERVED_MCP_SERVER_NAME}__`;
   if (tool.startsWith(own) && rule.eoTools.includes(tool.slice(own.length))) return null;
   if (rule.repositoryServer !== null && tool.startsWith(`mcp__${rule.repositoryServer}__`)) return null;
+  // A turn allowed nothing at all (a suggested next message's, EO-808) is
+  // told so, rather than that it is a learning review.
+  if (rule.eoTools.length === 0 && rule.repositoryServer === null) return `EO refused this call: this turn may make no calls. \`${tool}\` was not run, and nothing it would have done happened.`;
   return `EO refused this call: this turn is a learning review, which may read and write memory and skills and read the repository index, and nothing else. \`${tool}\` was not run, and nothing it would have done happened.`;
 }
 

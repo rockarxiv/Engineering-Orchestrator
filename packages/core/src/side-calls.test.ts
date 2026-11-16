@@ -15,8 +15,9 @@ describe("side calls (EO-477)", () => {
       const groups = Object.values(SIDE_CALL_SPEND_GROUPS).filter((group) => (group.purposes as readonly string[]).includes(purpose));
       expect(groups, purpose).toHaveLength(1);
     }
-    expect(SIDE_CALL_PURPOSES.map(spendGroupOf)).toEqual(["memory_upkeep", "memory_upkeep", "memory_upkeep", "memory_upkeep"]);
+    expect(SIDE_CALL_PURPOSES.map(spendGroupOf)).toEqual(["memory_upkeep", "memory_upkeep", "memory_upkeep", "memory_upkeep", "suggested_replies"]);
     expect(SIDE_CALL_SPEND_GROUPS.memory_upkeep.label).toBe("Memory upkeep");
+    expect(SIDE_CALL_SPEND_GROUPS.suggested_replies.label).toBe("Suggested replies");
   });
 
   it("fails in the seven ways EO-477 and EO-509 name, and no other", () => {
@@ -25,7 +26,7 @@ describe("side calls (EO-477)", () => {
 
   it("runs selection and extraction on the small model and consolidation on the system agent's (EO-578)", () => {
     expect(Object.keys(SIDE_CALL_MODELS).sort()).toEqual([...SIDE_CALL_PURPOSES].sort());
-    expect(SIDE_CALL_MODELS).toEqual({ memory_select: "small", memory_extract: "small", memory_consolidate: "system_agent", learning_review: "agent" });
+    expect(SIDE_CALL_MODELS).toEqual({ memory_select: "small", memory_extract: "small", memory_consolidate: "system_agent", learning_review: "agent", prompt_suggestion: "agent" });
   });
 });
 

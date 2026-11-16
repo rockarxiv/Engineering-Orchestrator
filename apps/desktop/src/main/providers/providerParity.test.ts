@@ -974,13 +974,12 @@ const CAPABILITIES = [
  * story that gives it. Each is held as failing on that backend
  * (`it.fails`) rather than skipped: the day the proof is written and
  * passes, its test fails until the entry here is taken away, so a
- * pending entry cannot outlive the gap it records. The backend's proofs
- * are typed without the capability, so writing one while it is still
- * pending is a compile error too.
+ * pending entry cannot outlive the gap it records; and "the shared
+ * list" fails on a capability both pending and proved.
+ *
+ * Empty since EO-808 gave Codex the last one, a suggested next message.
  */
-const PENDING = {
-  codex: { "a suggested next message": "EO-808" },
-} as const;
+const PENDING: { readonly [B in Backend]?: { readonly [name: string]: string } } = {};
 
 /** What a turn's suggested next messages were (EO-807): each one's text and thread, and whether it came after the turn's result. */
 function suggestionsSeen(events: readonly AgentEvent[]): { text: string; threadId: string; afterTheResult: boolean }[] {
@@ -3661,7 +3660,32 @@ function catalogueServer(name: string, envNames: string[] = []): McpServer {
 const shellCall = (id: string) =>
   note.item({ type: "commandExecution", id, command: SEARCH.command, cwd: "/", processId: null, source: "agent", commandActions: [], aggregatedOutput: "", exitCode: 0, status: "completed", durationMs: 1 });
 
-const CODEX: Record<Exclude<CapabilityName, keyof (typeof PENDING)["codex"]>, Proof> = {
+const CODEX: Record<CapabilityName, Proof> = {
+  "a suggested next message": async () => {
+    // Codex's backend makes none, so the adapter makes it (EO-808): a
+    // fork of the thread just finished, sent EO's prompt, its answer
+    // filtered. Asked for is a fork opened at all.
+    const cwd = scratchDirectory();
+    const chat = [note.turnStarted("turn-1", "$THREAD"), note.agentMessage("done", "m", "turn-1", "$THREAD"), note.turnCompleted("completed", null, "turn-1", "$THREAD")];
+    const forkAnswers = (answer: string) => [note.turnStarted("turn-1", "$THREAD"), note.agentMessage(answer, "s", "turn-1", "$THREAD"), note.turnCompleted("completed", null, "turn-1", "$THREAD")];
+    const options = { searchHookCommandPath: "/opt/eo/hook.mjs", searchHookTrust: HOOK_TRUST };
+    const turn = async (suggestNextMessage: boolean, answer: string) => {
+      const { fake, provider } = codexOver({ forkId: "thr-suggest", after: { "turn/start": chat }, afterFork: { "turn/start": forkAnswers(answer) } }, options);
+      const events = await collect(provider.resume("sess-1", "carry on", { cwd, ...(suggestNextMessage ? { suggestNextMessage } : {}) }));
+      return { events, forked: fake.sent.some((message) => message.method === "thread/fork") };
+    };
+    const off = await turn(false, "run the tests");
+    const on = await turn(true, "run the tests");
+    // A fork whose answer the filters drop is a backend that made none.
+    const none = await turn(true, "nothing to suggest");
+    return {
+      asked: { off: off.forked, on: on.forked },
+      off: { outcome: outcomeOf(off.events), suggested: suggestionsSeen(off.events) },
+      on: { outcome: outcomeOf(on.events), suggested: suggestionsSeen(on.events) },
+      none: { outcome: outcomeOf(none.events), suggested: suggestionsSeen(none.events), errors: none.events.filter((event) => event.type === "error").length },
+    };
+  },
+
   "a sign-in failure reported": async () =>
     signInsObserved(
       await Promise.all(CODEX_AUTH_ERRORS.signIn.map(({ turn }) => codexTurn([note.turnStarted(), ...turn]))),

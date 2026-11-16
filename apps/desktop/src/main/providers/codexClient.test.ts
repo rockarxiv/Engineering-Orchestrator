@@ -149,7 +149,12 @@ describe("a Codex turn over a stubbed app-server", () => {
       { type: "turn.usage", usage: { input_tokens: 120, cached_input_tokens: 20, cache_write_input_tokens: 0, output_tokens: 7, reasoning_output_tokens: 0 }, model: "gpt-6.1-sol" },
       // With the model the thread was opened on, which is what the turn
       // is priced at (EO-374) — the stub's default, since none was asked for.
-      { type: "turn.completed", usage: { input_tokens: 120, cached_input_tokens: 20, cache_write_input_tokens: 0, output_tokens: 7, reasoning_output_tokens: 0 }, model: "gpt-6.1-sol" },
+      {
+        type: "turn.completed",
+        usage: { input_tokens: 120, cached_input_tokens: 20, cache_write_input_tokens: 0, output_tokens: 7, reasoning_output_tokens: 0 },
+        model: "gpt-6.1-sol",
+        lastRequest: { input_tokens: 120, cached_input_tokens: 20, cache_write_input_tokens: 0, output_tokens: 7, reasoning_output_tokens: 0 },
+      },
     ]);
   });
 
@@ -205,6 +210,8 @@ describe("a Codex turn over a stubbed app-server", () => {
       type: "turn.completed",
       usage: { input_tokens: 300, cached_input_tokens: 200, cache_write_input_tokens: 0, output_tokens: 20, reasoning_output_tokens: 0 },
       model: "gpt-6.1-sol",
+      // The reading's own response, said whole (EO-808): `last` is the total here.
+      lastRequest: { input_tokens: 1_300, cached_input_tokens: 600, cache_write_input_tokens: 0, output_tokens: 70, reasoning_output_tokens: 0 },
     });
   });
 
@@ -231,6 +238,8 @@ describe("a Codex turn over a stubbed app-server", () => {
       type: "turn.completed",
       usage: { input_tokens: 500, cached_input_tokens: 300, cache_write_input_tokens: 0, output_tokens: 30, reasoning_output_tokens: 0 },
       model: "gpt-6.1-sol",
+      // The last response's own, not the turn's two (EO-808).
+      lastRequest: { input_tokens: 300, cached_input_tokens: 200, cache_write_input_tokens: 0, output_tokens: 20, reasoning_output_tokens: 0 },
     });
   });
 
