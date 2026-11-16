@@ -34,6 +34,25 @@ describe("a chat's suggested reply in the window", () => {
     expect(result.current.suggestion).toBeNull();
   });
 
+  it("arriving late for a chat that was left, is not there on coming back to it", () => {
+    const push = listen();
+    const { result, rerender } = renderHook(({ id }) => useSuggestedReply(id), { initialProps: { id: "chat-1" } });
+    rerender({ id: "chat-2" });
+    // chat-1's suggestion was still being made when the person left it.
+    push("assist:suggestion", { conversationId: "chat-1", runId: "run-1", text: "yes" });
+    rerender({ id: "chat-1" });
+    expect(result.current.suggestion).toBeNull();
+  });
+
+  it("is kept for a chat two surfaces draw while one of them lets go of it", () => {
+    const push = listen();
+    const first = renderHook(() => useSuggestedReply("chat-1"));
+    const second = renderHook(() => useSuggestedReply("chat-1"));
+    first.unmount();
+    push("assist:suggestion", { conversationId: "chat-1", runId: "run-1", text: "yes" });
+    expect(second.result.current.suggestion?.text).toBe("yes");
+  });
+
   it("goes when a run starts in the chat, and when it is let go of", () => {
     const push = listen();
     const { result } = renderHook(() => useSuggestedReply("chat-1"));

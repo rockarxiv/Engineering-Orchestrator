@@ -165,19 +165,33 @@ export function ChatConversation({
   // follows, while that reply is still the last word — nothing sent since,
   // nothing starting or running — and never over answers the reply
   // offers as buttons or a question card waiting to be answered.
+  //
+  // Anything the person said counts as moving past it, an answer picked
+  // from the reply's buttons too: that is a reply under the message
+  // (`parentId`), which `lastMine` leaves out.
   const suggested = useSuggestedReply(view?.id);
+  const lastHeard = useMemo(() => [...messages].reverse().find((message) => message.authorType === "human") ?? null, [messages]);
+  const answersInTheWay = lastSaid !== null && (offersAnswers(lastSaid) || rows.some((row) => row.kind === "questions" && row.live));
+  const offered = suggested.suggestion;
+  const forLastSaid = offered !== null && lastSaid !== null && lastSaid.runId === offered.runId;
   const suggestion =
-    suggested.suggestion !== null &&
+    offered !== null &&
     lastSaid !== null &&
-    lastSaid.runId === suggested.suggestion.runId &&
-    (lastMine === null || lastMine.createdAt <= lastSaid.createdAt) &&
+    forLastSaid &&
+    (lastHeard === null || lastHeard.createdAt <= lastSaid.createdAt) &&
     !pending &&
     !thinking &&
     !starting &&
-    !offersAnswers(lastSaid) &&
-    !rows.some((row) => row.kind === "questions" && row.live)
-      ? suggested.suggestion.text
+    !answersInTheWay
+      ? offered.text
       : null;
+  // A suggestion under a reply that asks with buttons or a question card
+  // is never shown, and once those are answered the person has said
+  // something: it is let go of here rather than kept to surface later.
+  const { clear: clearSuggestion } = suggested;
+  useEffect(() => {
+    if (forLastSaid && answersInTheWay) clearSuggestion();
+  }, [forLastSaid, answersInTheWay, clearSuggestion]);
 
   const commands = useChatCommands(room, lastSaid?.id ?? null, queryClient);
 

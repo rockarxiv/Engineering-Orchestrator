@@ -262,10 +262,36 @@ describe("a suggested reply in the conversation", () => {
   });
 
   it("is not drawn over answers the reply offers as buttons", async () => {
-    conversation = answered([message({ id: "e1", authorType: "engine", authorName: "EO", body: "Keep going?", runId: "run-0", createdAt: 3, canAnswer: true, options: ["Keep going", "Discard"] })]);
+    conversation = answered([message({ id: "e1", authorType: "engine", authorName: "EO", body: "Testing stopped.\n\nKeep going?", runId: "run-0", createdAt: 3, canAnswer: true, options: ["Keep going", "Discard"] })]);
     open();
     await screen.findByText("Keep going?");
     push("assist:suggestion", { conversationId: CHAT, runId: "run-0", text: "keep going" });
+    expect(box()).not.toHaveAttribute("placeholder", "keep going");
+  });
+
+  it("does not come back once the person answers the reply's buttons", async () => {
+    conversation = answered([message({ id: "e1", authorType: "engine", authorName: "EO", body: "Testing stopped.\n\nKeep going?", runId: "run-0", createdAt: 3, canAnswer: true, options: ["Keep going", "Discard"] })]);
+    open();
+    await screen.findByText("Keep going?");
+    push("assist:suggestion", { conversationId: CHAT, runId: "run-0", text: "keep going" });
+
+    // The pick is a reply under the buttons' message, and the refetch
+    // after it no longer offers them: nothing newer by the person at the
+    // top level, and no buttons in the way.
+    const fallback = window.eo.ipc.invoke as (channel: string, payload?: unknown) => Promise<unknown>;
+    window.eo.ipc.invoke = vi.fn(async (channel: string, payload?: unknown) => {
+      if (channel === "comments:post") {
+        conversation = answered([
+          message({ id: "e1", authorType: "engine", authorName: "EO", body: "Testing stopped.\n\nKeep going?", runId: "run-0", createdAt: 3, canAnswer: false, options: ["Keep going", "Discard"] }),
+          message({ id: "h3", authorType: "human", authorName: "You", body: "Keep going", parentId: "e1", createdAt: 4 }),
+        ]);
+        return { ok: true, data: {} };
+      }
+      return fallback(channel, payload);
+    }) as never;
+    fireEvent.click(screen.getByRole("button", { name: "Keep going" }));
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Discard" })).toBeNull());
+
     expect(box()).not.toHaveAttribute("placeholder", "keep going");
   });
 
