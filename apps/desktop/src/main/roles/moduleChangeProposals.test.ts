@@ -528,6 +528,10 @@ describe("a frozen proposal's life", () => {
       expect(resolveModuleChangeProposal(handle.db, proposalId, { itemId: caller.itemId, runId: caller.runId })).toEqual(before);
       expect(refusal(restarted.freeze(caller, { stagingId, summary: "x" }))).toMatchObject({ code: "STAGING_NOT_FOUND" });
     } finally {
+      // Windows will not remove a database file that is still open, so the
+      // file-backed handle is closed here and `afterEach` given one of its own.
+      handle.close();
+      handle = openMigratedTestDb();
       rmSync(directory, { recursive: true, force: true });
     }
   });
