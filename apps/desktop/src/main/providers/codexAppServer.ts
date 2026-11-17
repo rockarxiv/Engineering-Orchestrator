@@ -4,6 +4,7 @@ import { TurnNotEndedError, type RunProcessScope } from "@eo/core";
 import { END_PROCESS_GRACE_MS } from "../process/endProcess.js";
 import { ProcessTree, TREE_MARKER_VARIABLE } from "../process/processTree.js";
 import { launchTree } from "../process/runScope.js";
+import { holdCodexHome } from "./codexHome.js";
 
 /**
  * EO's one client for `codex app-server --stdio` (EO-372).
@@ -156,6 +157,11 @@ export class AppServerConnection {
     this.pid = this.child.pid;
     launch.onSpawn?.(this.child);
     this.tree = new ProcessTree(this.child, marker, { containment: contained.adopt(this.child.pid) });
+    // The Codex home it runs in, held from its spawn until it has exited
+    // (EO-829): preparing a home never scrubs one a process EO started is
+    // running in, and the sweep never removes one.
+    const home = launch.env?.["CODEX_HOME"];
+    if (home) void this.exited().then(holdCodexHome(home));
 
     this.child.stderr.setEncoding("utf8");
     this.child.stderr.on("data", (chunk: string) => {

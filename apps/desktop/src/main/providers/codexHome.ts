@@ -1,7 +1,7 @@
 import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync, symlinkSync, unlinkSync } from "node:fs";
 import { lstat, readdir, readFile, rm, unlink } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { join, resolve, sep } from "node:path";
 import { uuidv7 } from "@eo/core";
 
 /**
@@ -112,10 +112,81 @@ const SAFE_SEGMENT = /^[A-Za-z0-9_-]+$/;
  */
 export const SIDE_CALL_CODEX_HOME = "side-calls";
 
-/** Where one agent's own Codex home is, under `root`. */
-export function agentCodexHomePath(root: string, agentId: string): string {
+/**
+ * The home inside an agent's directory that its turns on no ticket run
+ * in (EO-829) — an assistant conversation, say. Not a UUID, so no item's
+ * id can ever name it.
+ */
+export const AGENT_CODEX_HOME = "agent";
+
+/**
+ * Where one agent's Codex home for one item is, under `root` (EO-829):
+ * `root/<agentId>/<itemId>`, or `root/<agentId>/agent` for a turn on no
+ * ticket.
+ *
+ * **A home per agent and ticket.** Until EO-829 an agent had one home,
+ * `root/<agentId>`, and every turn on every ticket ran in it; with more
+ * than one of its tickets running at once, one turn's scrub cleared the
+ * home another's app-server was running in — deleting files from under it
+ * on Linux and macOS, and refused with EPERM on Windows, which escalated
+ * the ticket. Keyed on the agent rather than the role, because two agents
+ * in one role carry different servers and instructions. The two links are
+ * the same in every home, so a thread started in one resumes in any
+ * other, and a refreshed sign-in lands in the person's own file whichever
+ * home refreshed it.
+ *
+ * The side calls' home is `root/side-calls`, as it always was.
+ */
+export function agentCodexHomePath(root: string, agentId: string, itemId: string | null = null): string {
   if (!SAFE_SEGMENT.test(agentId)) throw new Error(`Not an agent id EO would name a directory after: ${JSON.stringify(agentId)}`);
-  return join(root, agentId);
+  if (agentId === SIDE_CALL_CODEX_HOME) return join(root, agentId);
+  if (itemId !== null && (!SAFE_SEGMENT.test(itemId) || itemId === AGENT_CODEX_HOME)) {
+    throw new Error(`Not an item id EO would name a directory after: ${JSON.stringify(itemId)}`);
+  }
+  return join(root, agentId, itemId ?? AGENT_CODEX_HOME);
+}
+
+/**
+ * The homes a Codex process EO started is running in right now (EO-829),
+ * by path, with how many processes each.
+ *
+ * A home is scrubbed before a process is started in it, and never while
+ * one is running there: a scrub deletes from under a running app-server
+ * on Linux and macOS, and is refused with EPERM on Windows. That covers a
+ * ticket's own warm process (`prewarm`), which the turn that adopts it
+ * and the dispatch preflight before that turn would otherwise scrub. The
+ * app-server connection holds the home from its spawn to its exit
+ * (`AppServerConnection`); the sweep leaves a held home alone too.
+ */
+const homesInUse = new Map<string, number>();
+
+function homeKey(path: string): string {
+  return resolve(path);
+}
+
+/**
+ * Marks `path` as a home a Codex process EO started is running in, until
+ * the returned function is called. Calling it twice is calling it once.
+ */
+export function holdCodexHome(path: string): () => void {
+  const key = homeKey(path);
+  homesInUse.set(key, (homesInUse.get(key) ?? 0) + 1);
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    const left = (homesInUse.get(key) ?? 1) - 1;
+    if (left > 0) homesInUse.set(key, left);
+    else homesInUse.delete(key);
+  };
+}
+
+/** Whether a Codex process EO started is running in `path`, or in a home anywhere under it. */
+export function codexHomeInUse(path: string): boolean {
+  const key = homeKey(path);
+  const under = key.endsWith(sep) ? key : key + sep;
+  for (const held of homesInUse.keys()) if (held === key || held.startsWith(under)) return true;
+  return false;
 }
 
 /**
@@ -152,6 +223,8 @@ export interface CodexHomeFs {
   rmSync: typeof rmSync;
   symlinkSync: typeof symlinkSync;
   unlinkSync: typeof unlinkSync;
+  /** Optional, for the seams written before EO-829; `node:fs`'s where absent. */
+  renameSync?: (from: string, to: string) => void;
 }
 
 const NODE_FS: CodexHomeFs = {
@@ -163,12 +236,19 @@ const NODE_FS: CodexHomeFs = {
   rmSync,
   symlinkSync,
   unlinkSync,
+  renameSync: (from, to) => renameSync(from, to),
 };
 
 export interface CodexHomeOptions {
   /** `userData/codex-homes` in production. */
   root: string;
   agentId: string;
+  /**
+   * The ticket the turn works on (EO-829): its home is the agent's for
+   * that ticket. Absent or null for a turn on no ticket, which runs in the
+   * agent's own (`AGENT_CODEX_HOME`).
+   */
+  itemId?: string | null;
   /** The person's own home. Defaults to `personCodexHome()`. */
   personHome?: string;
   /** Defaults to `process.platform`. Only `win32` changes anything. */
@@ -186,19 +266,41 @@ export interface CodexHomeOptions {
  */
 export type CodexHomePreparation =
   | { ok: true; path: string; credential: "carried" | "absent"; credentialPath: string }
-  | { ok: false; path: string; problem: string; developerMode?: true };
+  | {
+      ok: false;
+      path: string;
+      problem: string;
+      developerMode?: true;
+      /**
+       * The home was made, and what failed was clearing something out of
+       * it (EO-829): an entry the scrub could not remove, or an old hard
+       * link. Another root would not help — on Windows the usual reason
+       * is a process holding the entry open — so `chooseCodexHome` does
+       * not move the home over to it.
+       */
+      clearing?: true;
+    };
 
 /**
- * Makes sure `root/<agentId>` exists and carries the person's sign-in and
- * saved conversations, and nothing else of theirs. Idempotent: a link
- * that is already right is left alone.
+ * Makes sure the agent's home for the ticket (`agentCodexHomePath`)
+ * exists and carries the person's sign-in and saved conversations, and
+ * nothing else of theirs. Idempotent: a link that is already right is
+ * left alone.
  */
 export function prepareCodexHome(options: CodexHomeOptions): CodexHomePreparation {
   const fs = options.fs ?? NODE_FS;
   const windows = (options.platform ?? process.platform) === "win32";
   const person = options.personHome ?? personCodexHome();
-  const path = agentCodexHomePath(options.root, options.agentId);
+  const path = agentCodexHomePath(options.root, options.agentId, options.itemId ?? null);
   const credentialPath = join(person, CODEX_CREDENTIAL_FILE);
+
+  // The agent's directory the home is in (EO-829), on the terms the home
+  // itself is held to below, and the home an agent had before EO-829 —
+  // which was this directory — moved out of its way.
+  if (options.agentId !== SIDE_CALL_CODEX_HOME) {
+    const container = prepareAgentDirectory(fs, options.root, options.agentId);
+    if (container !== null) return { ok: false, path, problem: container };
+  }
 
   // The home path itself, before anything reads through it. The agent
   // that runs here has full access and can replace its home with a link
@@ -218,9 +320,16 @@ export function prepareCodexHome(options: CodexHomeOptions): CodexHomePreparatio
   }
 
   // Before anything is linked, and before every turn: whatever an earlier
-  // turn left in this home that Codex would read as configuration.
-  const scrubbed = scrubCodexHome(fs, path);
-  if (scrubbed !== null) return { ok: false, path, problem: scrubbed };
+  // turn left in this home that Codex would read as configuration — but
+  // only before a Codex process is started here, never while one EO
+  // started is running in it (EO-829). That one was started after a scrub
+  // like this, and is the turn's own warm process or another turn in the
+  // same home: clearing the home under it deletes its files on Linux and
+  // macOS and is refused on Windows.
+  if (!codexHomeInUse(path)) {
+    const scrubbed = scrubCodexHome(fs, path);
+    if (scrubbed !== null) return { ok: false, path, problem: scrubbed, clearing: true };
+  }
 
   // A step of its own (EO-774): an `auth.json` here that is not a symlink
   // — the hard link EO made on Windows before EO-774 — goes before
@@ -229,7 +338,7 @@ export function prepareCodexHome(options: CodexHomeOptions): CodexHomePreparatio
   // 0.167.0 and later will not save a refreshed sign-in into it, in this
   // home or in theirs.
   const dropped = dropCredentialThatIsNotALinkSync(fs, join(path, CODEX_CREDENTIAL_FILE));
-  if (dropped !== null) return { ok: false, path, problem: dropped };
+  if (dropped !== null) return { ok: false, path, problem: dropped, clearing: true };
 
   const sessions = linkSessions(fs, windows, join(person, CODEX_SESSIONS_DIRECTORY), join(path, CODEX_SESSIONS_DIRECTORY));
   if (sessions !== null) return { ok: false, path, problem: sessions };
@@ -237,6 +346,51 @@ export function prepareCodexHome(options: CodexHomeOptions): CodexHomePreparatio
   const credential = symlinkCredential(fs, windows, credentialPath, join(path, CODEX_CREDENTIAL_FILE));
   if (typeof credential === "object") return { ok: false, path, ...credential };
   return { ok: true, path, credential, credentialPath };
+}
+
+/**
+ * Makes `root/<agentId>` a real directory to keep the agent's homes in
+ * (EO-829). Null when it is one.
+ *
+ * Held to what the home itself is: a link or a stray file where it should
+ * be is unlinked by name — an agent runs with full access, and a link
+ * here would have every home under it made, and scrubbed, in whatever it
+ * points at.
+ *
+ * **The home an agent had before EO-829 was this directory**, with the
+ * links and Codex's state at the top of it, and is moved aside — renamed
+ * to a `RETIRING_CODEX_HOME_PREFIX` name beside it, in one synchronous
+ * step, for the sweep to remove (`sweepCodexHomes`). Told apart by the
+ * links: no home of the new kind holds a `sessions` or an `auth.json` at
+ * this level. Unless a Codex process EO started is running in a home
+ * under it — an agent can write a `sessions` here — which is left alone:
+ * the homes under it are what Codex reads.
+ */
+function prepareAgentDirectory(fs: CodexHomeFs, root: string, agentId: string): string | null {
+  const container = join(root, agentId);
+  try {
+    const existing = lstatOrNull(fs, container);
+    if (existing !== null && (existing.isSymbolicLink() || !existing.isDirectory())) fs.unlinkSync(container);
+    else if (existing !== null && isHomeOfItsOwn(fs, container) && !codexHomeInUse(container)) {
+      // Not one whose `sessions` is real: its rollouts exist nowhere
+      // else, and are refused where they stand, as removal refuses them.
+      const sessionsPath = join(container, CODEX_SESSIONS_DIRECTORY);
+      const sessions = lstatOrNull(fs, sessionsPath);
+      if (sessions !== null && !sessions.isSymbolicLink()) return realSessionsProblem(sessionsPath, sessions, container);
+      (fs.renameSync ?? renameSync)(container, join(root, `${RETIRING_CODEX_HOME_PREFIX}${agentId}-${uuidv7()}`));
+    }
+    fs.mkdirSync(container, { recursive: true });
+    const made = lstatOrNull(fs, container);
+    if (made === null || made.isSymbolicLink() || !made.isDirectory()) throw new Error("it is not a real directory");
+    return null;
+  } catch (error) {
+    return `EO could not create ${container}: ${messageOf(error)}`;
+  }
+}
+
+/** Whether a directory is a Codex home itself — it holds one of the two links — rather than a directory of homes. */
+function isHomeOfItsOwn(fs: Pick<CodexHomeFs, "lstatSync">, path: string): boolean {
+  return lstatOrNull(fs, join(path, CODEX_SESSIONS_DIRECTORY)) !== null || lstatOrNull(fs, join(path, CODEX_CREDENTIAL_FILE)) !== null;
 }
 
 /**
@@ -286,6 +440,20 @@ export function prepareCodexHome(options: CodexHomeOptions): CodexHomePreparatio
  * names, fewer of SQLite's `-wal` and `-shm` files left after the turn,
  * and with EO's switches still neither memory store.
  *
+ * Re-checked for `.sqlite-maintenance.lock` (EO-829), which a Codex on
+ * Windows wrote into a home and this list did not keep, so the scrub of a
+ * home whose app-server held it open failed with EPERM. The version there
+ * was not recorded. 0.167.1, EO's pin, carries the name in its binary
+ * inside its own SQLite state code (`codex_state::sqlite`, between
+ * `PRAGMA freelist_count` and `PRAGMA wal_checkpoint(PASSIVE)`, beside the
+ * database names above): it is the lock Codex takes while it maintains
+ * its own databases, so it is Codex's state and is kept. 0.167.1 on Linux
+ * did not write it into a fresh home in the twenty seconds after an
+ * app-server start, so it is written by maintenance that runs later, or
+ * only on some platforms. Since EO-829 no home is scrubbed while a
+ * process EO started runs in it, so a lock held open is no longer in the
+ * scrub's way either.
+ *
  * `skills/` is *not* kept, though Codex makes it — it unpacks its own
  * bundled skills there on every start, and it is also exactly where an
  * agent would put one of its own.
@@ -298,6 +466,7 @@ const KEPT_IN_HOME: readonly RegExp[] = [
   /^history\.jsonl$/,
   /^session_index\.jsonl$/,
   /^\.sandbox_migration$/,
+  /^\.sqlite-maintenance\.lock$/,
   /^(?:cache|log|tmp|\.tmp|shell_snapshots|thread-writer-locks)$/,
 ];
 
@@ -572,9 +741,21 @@ function realSessionsProblem(sessionsPath: string, sessions: LinkStat, home: str
 }
 
 /**
- * Removes every home under `root` that no agent uses (EO-378): an agent
- * deleted, moved to another backend, or ticked over to the person's own
- * setup. Answers what it removed.
+ * Which homes a sweep keeps (EO-829): `itemId` null asks about the agent
+ * itself — its directory of homes and the home of its turns on no ticket
+ * — and an id asks about its home for that ticket. Asked synchronously,
+ * immediately before a home is claimed, so it must answer from what is
+ * true now.
+ */
+export type CodexHomeKeep = (agentId: string, itemId: string | null) => boolean;
+
+/**
+ * Removes every home under `root` that is no longer used (EO-378,
+ * EO-829): an agent's whole directory of homes once the agent is deleted,
+ * moved to another backend, or ticked over to the person's own setup; a
+ * ticket's home once the ticket is archived or deleted; and the single
+ * home an agent had before EO-829, at `root/<agentId>` itself. Answers
+ * what it removed, by its path under `root`.
  *
  * **A home is claimed before anything in it is removed** (EO-566). The
  * walk awaits, and while it does an agent can be switched back to a
@@ -586,6 +767,10 @@ function realSessionsProblem(sessionsPath: string, sessions: LinkStat, home: str
  * home's path is free. A preparation that runs while the removal awaits
  * builds a new home there, and the removal only ever touches the renamed
  * one. That rename is a single synchronous call.
+ *
+ * **Nothing a Codex process EO started is running in is claimed**
+ * (EO-829, `codexHomeInUse`): a ticket archived mid-turn keeps its home
+ * until the turn is over and a later sweep finds it idle.
  *
  * A home whose `sessions` is a real directory is refused where it stands,
  * looked at before it is claimed so its rollouts are never moved.
@@ -603,58 +788,159 @@ function realSessionsProblem(sessionsPath: string, sessions: LinkStat, home: str
  * one synchronous step, so the symlink a dispatch makes while the sweep
  * awaits is never the file it removes.
  */
-export async function sweepCodexHomes(root: string, keep: () => ReadonlySet<string>, fs: CodexHomeSweepFs = NODE_SWEEP_FS): Promise<string[]> {
-  let names: string[];
-  try {
-    names = await fs.readdir(root);
-  } catch (error) {
-    if (isMissing(error)) return [];
-    throw error;
-  }
+export async function sweepCodexHomes(root: string, keep: CodexHomeKeep, fs: CodexHomeSweepFs = NODE_SWEEP_FS): Promise<string[]> {
+  const names = await readdirOrNone(fs, root);
   const removed: string[] = [];
   for (const name of names) {
-    // EO's own side calls' home is nobody's agent and always kept: it is
-    // made ready again before every call, and a sweep that removed it
-    // mid-call would sign the call out (EO-477).
     const path = join(root, name);
     if (retiringNow.has(path)) continue;
     try {
-      let retiring = path;
-      if (!name.startsWith(RETIRING_CODEX_HOME_PREFIX)) {
-        if (name === SIDE_CALL_CODEX_HOME || keep().has(name)) {
-          const home = await lstatOrNullAsync(fs, path);
-          if (home !== null && home.isDirectory() && !home.isSymbolicLink()) await dropCredentialThatIsNotALink(fs, path);
-          continue;
-        }
-        // Looked at in place: nothing is removed by this, and a refusal
-        // leaves the home exactly where it is.
-        const sessionsPath = join(path, CODEX_SESSIONS_DIRECTORY);
-        const home = await lstatOrNullAsync(fs, path);
-        const sessions = home !== null && home.isDirectory() && !home.isSymbolicLink() ? await lstatOrNullAsync(fs, sessionsPath) : null;
-        if (sessions !== null && !sessions.isSymbolicLink()) throw new Error(realSessionsProblem(sessionsPath, sessions, path));
-        // The claim: asked again and renamed in one synchronous step.
-        if (keep().has(name)) continue;
-        retiring = join(root, `${RETIRING_CODEX_HOME_PREFIX}${name}-${uuidv7()}`);
+      // One a crash left behind, or a home before EO-829 that preparing
+      // the agent's directory moved aside.
+      if (name.startsWith(RETIRING_CODEX_HOME_PREFIX)) {
+        if (await removeRetired(fs, path, removeCodexTreeAsync)) removed.push(name);
+        continue;
+      }
+      // EO's own side calls' home is nobody's agent and always kept: it is
+      // made ready again before every call, and a sweep that removed it
+      // mid-call would sign the call out (EO-477).
+      if (name === SIDE_CALL_CODEX_HOME) {
+        await keepHome(fs, path);
+        continue;
+      }
+      const directory = await lstatOrNullAsync(fs, path);
+      if (directory === null) continue;
+      const real = directory.isDirectory() && !directory.isSymbolicLink();
+      // The agent's directory, whole: an agent that keeps no home, or a
+      // link or a file where its directory should be. Its homes are looked
+      // at in place first, so a real `sessions` in one stops the claim.
+      if (!real || !keep(name, null)) {
+        if (real) await refuseRealSessions(fs, path, true);
+        if (await claimAndRemove(fs, root, name, () => real && keep(name, null), removeCodexTreeAsync)) removed.push(name);
+        continue;
+      }
+      // The home the agent had before EO-829, which was this directory.
+      if (await isHomeOfItsOwnAsync(fs, path)) {
+        await refuseRealSessions(fs, path, false);
+        if (await claimAndRemove(fs, root, name, () => !isHomeOfItsOwn(fs, path), removeCodexHomeAsync)) removed.push(name);
+        continue;
+      }
+      for (const home of await readdirOrNone(fs, path)) {
+        const homePath = join(path, home);
+        if (retiringNow.has(homePath)) continue;
         try {
-          fs.renameSync(path, retiring);
+          if (home.startsWith(RETIRING_CODEX_HOME_PREFIX)) {
+            if (await removeRetired(fs, homePath, removeCodexHomeAsync)) removed.push(join(name, home));
+            continue;
+          }
+          const kept = (): boolean => keep(name, home === AGENT_CODEX_HOME ? null : home);
+          if (kept() || codexHomeInUse(homePath)) {
+            await keepHome(fs, homePath);
+            continue;
+          }
+          await refuseRealSessions(fs, homePath, false);
+          if (await claimAndRemove(fs, path, home, kept, removeCodexHomeAsync)) removed.push(join(name, home));
         } catch (error) {
-          // Another sweep claimed it first.
-          if (isMissing(error)) continue;
-          throw error;
+          console.warn(`[eo] could not remove the unused Codex home ${homePath}: ${messageOf(error)}`);
         }
       }
-      retiringNow.add(retiring);
-      try {
-        await removeCodexHomeAsync(retiring, fs);
-      } finally {
-        retiringNow.delete(retiring);
-      }
-      removed.push(name);
     } catch (error) {
       console.warn(`[eo] could not remove the unused Codex home ${path}: ${messageOf(error)}`);
     }
   }
   return removed;
+}
+
+/** A directory's entries; none where it is not there. */
+async function readdirOrNone(fs: CodexHomeSweepFs, path: string): Promise<string[]> {
+  try {
+    return await fs.readdir(path);
+  } catch (error) {
+    if (isMissing(error)) return [];
+    throw error;
+  }
+}
+
+/** A kept home loses an `auth.json` that is not a symlink (EO-774), and nothing else. */
+async function keepHome(fs: CodexHomeSweepFs, path: string): Promise<void> {
+  const home = await lstatOrNullAsync(fs, path);
+  if (home !== null && home.isDirectory() && !home.isSymbolicLink()) await dropCredentialThatIsNotALink(fs, path);
+}
+
+/**
+ * Throws, before anything is claimed, where a home — or, for an agent's
+ * directory, a home in it — has a real `sessions`: rollouts that exist
+ * nowhere else.
+ */
+async function refuseRealSessions(fs: CodexHomeSweepFs, path: string, directoryOfHomes: boolean): Promise<void> {
+  // An agent's directory is looked at as a home too: the one it had
+  // before EO-829 was the directory itself.
+  const homes = directoryOfHomes ? [path, ...(await readdirOrNone(fs, path)).map((name) => join(path, name))] : [path];
+  for (const home of homes) {
+    const stat = await lstatOrNullAsync(fs, home);
+    if (stat === null || !stat.isDirectory() || stat.isSymbolicLink()) continue;
+    const sessionsPath = join(home, CODEX_SESSIONS_DIRECTORY);
+    const sessions = await lstatOrNullAsync(fs, sessionsPath);
+    if (sessions !== null && !sessions.isSymbolicLink()) throw new Error(realSessionsProblem(sessionsPath, sessions, home));
+  }
+}
+
+/**
+ * The claim (EO-566): `stillKept` asked again, with whether a Codex process
+ * runs there, and the entry renamed out of use, in one synchronous step.
+ * Then the renamed entry is removed. False where it was kept after all.
+ */
+async function claimAndRemove(
+  fs: CodexHomeSweepFs,
+  parent: string,
+  name: string,
+  stillKept: () => boolean,
+  remove: (path: string, fs: CodexHomeSweepFs) => Promise<void>,
+): Promise<boolean> {
+  const path = join(parent, name);
+  if (stillKept() || codexHomeInUse(path)) return false;
+  const retiring = join(parent, `${RETIRING_CODEX_HOME_PREFIX}${name}-${uuidv7()}`);
+  try {
+    fs.renameSync(path, retiring);
+  } catch (error) {
+    // Another sweep claimed it first.
+    if (isMissing(error)) return false;
+    throw error;
+  }
+  return removeRetired(fs, retiring, remove);
+}
+
+/** Removes an entry already renamed out of use, leaving it to a sweep that is already removing it. */
+async function removeRetired(fs: CodexHomeSweepFs, retiring: string, remove: (path: string, fs: CodexHomeSweepFs) => Promise<void>): Promise<boolean> {
+  if (retiringNow.has(retiring)) return false;
+  retiringNow.add(retiring);
+  try {
+    await remove(retiring, fs);
+  } finally {
+    retiringNow.delete(retiring);
+  }
+  return true;
+}
+
+async function isHomeOfItsOwnAsync(fs: CodexHomeSweepFs, path: string): Promise<boolean> {
+  return (await lstatOrNullAsync(fs, join(path, CODEX_SESSIONS_DIRECTORY))) !== null || (await lstatOrNullAsync(fs, join(path, CODEX_CREDENTIAL_FILE))) !== null;
+}
+
+/**
+ * Removes an agent's directory of homes (EO-829), or a home of the kind
+ * before it, without reaching through a link: each home in a directory is
+ * removed as `removeCodexHomeAsync` removes one — its two links unlinked
+ * by name first, and a real `sessions` refused — and the directory after.
+ */
+export async function removeCodexTreeAsync(path: string, fs: CodexHomeSweepFs = NODE_SWEEP_FS): Promise<void> {
+  const stat = await lstatOrNullAsync(fs, path);
+  if (stat === null) return;
+  if (stat.isSymbolicLink() || !stat.isDirectory() || (await isHomeOfItsOwnAsync(fs, path))) {
+    await removeCodexHomeAsync(path, fs);
+    return;
+  }
+  for (const home of await readdirOrNone(fs, path)) await removeCodexHomeAsync(join(path, home), fs);
+  await fs.rm(path, { recursive: true, force: true });
 }
 
 /**
@@ -742,8 +1028,12 @@ export type CodexHomeChoice =
  * `userData/codex-homes`, then EO's folder in the person's profile. A
  * symlink and a junction both cross drives, so the second is for a first
  * that cannot be made at all; before EO-774 it was also where a Windows
- * hard link to a sign-in on another drive went. An agent has one home:
- * once a root works, a home it had under another is removed.
+ * hard link to a sign-in on another drive went. An agent has one home
+ * per ticket (EO-829): once a root works, the home it had for the same
+ * ticket under another is removed, unless a Codex process is running in
+ * it. The next root is tried only where the home could not be made or
+ * linked under this one — not where it was made and could not be cleared
+ * (`clearing`), which another root would not mend.
  *
  * Where no root works the answer is `unavailable`, and nothing runs. On
  * Windows without Developer Mode no root can hold the symlink, so the
@@ -761,12 +1051,18 @@ export function chooseCodexHome(options: Omit<CodexHomeOptions, "root"> & { root
     const prepared = prepareCodexHome({ ...options, root, personHome });
     if (!prepared.ok) {
       if (prepared.developerMode) return { kind: "unavailable", problem: prepared.problem };
+      // A home made under this root that could not be cleared stays here
+      // (EO-829): the next root would only be a second home for the same
+      // agent and ticket, and the first not removable for the same reason.
+      if (prepared.clearing) return { kind: "unavailable", problem: [...problems, prepared.problem].join(" ") };
       problems.push(prepared.problem);
       continue;
     }
     for (const other of options.roots) {
       if (other === root) continue;
-      const stale = agentCodexHomePath(other, options.agentId);
+      const stale = agentCodexHomePath(other, options.agentId, options.itemId ?? null);
+      // Never one a Codex process EO started is still running in (EO-829).
+      if (codexHomeInUse(stale)) continue;
       try {
         if (fs.existsSync(stale)) removeCodexHome(stale, fs);
       } catch (error) {

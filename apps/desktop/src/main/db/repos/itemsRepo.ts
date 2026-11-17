@@ -701,6 +701,16 @@ export function getItem(db: Db, id: Uuid): Item | undefined {
 }
 
 /**
+ * Whether an item exists and is not archived — what keeps a Codex agent's
+ * home for it (EO-829). One column, because the sweep asks it of every
+ * home on every dispatch.
+ */
+export function isItemLive(db: Db, id: string): boolean {
+  const row = db.select({ archivedAt: items.archivedAt }).from(items).where(eq(items.id, id)).get();
+  return row !== undefined && row.archivedAt === null;
+}
+
+/**
  * One item by its human key — "EO-42".
  *
  * Keys are what a person types and what an agent is shown, so anything

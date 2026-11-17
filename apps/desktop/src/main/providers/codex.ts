@@ -245,8 +245,13 @@ export interface CodexProviderOptions {
    * Not called at all when `config.inheritAmbientConfig` is ticked, and
    * absent — every test that is not about this, and an engine with no
    * root to put homes under — leaves `CODEX_HOME` as inherited.
+   *
+   * Handed the turn's ticket (`AgentTurnOverrides.itemId`, EO-829), whose
+   * home it answers: one per agent and ticket, so two of an agent's
+   * tickets running at once never share one. Called with none on a turn
+   * on no ticket, and on a side call.
    */
-  codexHome?: () => string | null;
+  codexHome?: (itemId?: string) => string | null;
   /**
    * What to say about a broad search of the checkout, when there is
    * something to say (EO-165, KAN-126, EO-379).
@@ -314,6 +319,8 @@ export interface CodexProviderOptions {
     adminDirectory?: string,
     /** The skills the turn was given, by slug, for `skill_read` (EO-721). Handed only on a turn given some. */
     skillSlugs?: readonly string[],
+    /** The ticket the turn works on, whose Codex home it runs in (EO-829). Handed only on a turn on one. */
+    itemId?: string,
   ) => Pick<CodexClient, "startThread" | "resumeThread"> & Partial<Pick<CodexClient, "prewarm" | "forkThread">>;
   /**
    * Seam for tests — the client a side call runs on (EO-477), built from
@@ -1595,13 +1602,15 @@ export function buildCodexOptions(
   withheldEnvironmentVariables?: readonly string[],
   adminDirectory?: string,
   skillSlugs?: readonly string[],
+  /** The ticket the turn works on, whose Codex home it runs in (EO-829). */
+  itemId?: string,
 ): Pick<CodexClientOptions, "executablePath" | "config" | "env" | "afterTurn" | "perTurnEnv"> {
   // Asked once per client, and let go of again if the options cannot be
   // built (EO-444): no process will be spawned to let it go after. For
   // the directory the turn runs in (EO-700).
   const admin = options.admin?.(adminDirectory) ?? null;
   try {
-    return codexOptionsWith(options, admin, repositoryMcp, searchHook, attachFrom, memoryScopes, environmentVariables, writeBridge, withheldEnvironmentVariables, skillSlugs);
+    return codexOptionsWith(options, admin, repositoryMcp, searchHook, attachFrom, memoryScopes, environmentVariables, writeBridge, withheldEnvironmentVariables, skillSlugs, itemId);
   } catch (error) {
     admin?.release();
     throw error;
@@ -1619,6 +1628,7 @@ function codexOptionsWith(
   writeBridge?: AgentWriteBridgeAddress,
   withheldEnvironmentVariables?: readonly string[],
   skillSlugs?: readonly string[],
+  itemId?: string,
 ): Pick<CodexClientOptions, "executablePath" | "config" | "env" | "afterTurn" | "perTurnEnv"> {
   const attached = deliveredServers(options.attachedServers ?? []);
   const mcpServers: Record<string, unknown> = {};
@@ -1772,7 +1782,9 @@ function codexOptionsWith(
   // The agent's own Codex home, unless it was ticked over to the person's
   // own setup (EO-378). Asked here, per client, for the reason the
   // administrative server is: a link in it can go stale between turns.
-  const home = options.config?.inheritAmbientConfig === true ? undefined : (options.codexHome?.() ?? undefined);
+  // The ticket's own (EO-829), on a turn on one.
+  const home =
+    options.config?.inheritAmbientConfig === true ? undefined : ((itemId === undefined ? options.codexHome?.() : options.codexHome?.(itemId)) ?? undefined);
   const env = codexSpawnEnvironment(inherited, declared, headers.values, admin?.environment ?? {}, home, searchHook?.env, variables);
 
   // EO's own `PreToolUse` hook, on a turn that has one (EO-379). Inline,
@@ -1840,9 +1852,10 @@ export function codexClientOptions(
   withheldEnvironmentVariables?: readonly string[],
   adminDirectory?: string,
   skillSlugs?: readonly string[],
+  itemId?: string,
 ): CodexClientOptions {
   return {
-    ...buildCodexOptions(options, repositoryMcp, searchHook, attachFrom, memoryScopes, environmentVariables, writeBridge, withheldEnvironmentVariables, adminDirectory, skillSlugs),
+    ...buildCodexOptions(options, repositoryMcp, searchHook, attachFrom, memoryScopes, environmentVariables, writeBridge, withheldEnvironmentVariables, adminDirectory, skillSlugs, itemId),
     ...(options.onUnmappedEvent ? { onUnmappedNotification: options.onUnmappedEvent } : {}),
   };
 }
@@ -2261,7 +2274,8 @@ export function createCodexProvider(options: CodexProviderOptions = {}): AgentPr
       withheldEnvironmentVariables?: readonly string[],
       adminDirectory?: string,
       skillSlugs?: readonly string[],
-    ) => new CodexClient(codexClientOptions(options, repositoryMcp, searchHook, attachFrom, memoryScopes, environmentVariables, writeBridge, withheldEnvironmentVariables, adminDirectory, skillSlugs)));
+      itemId?: string,
+    ) => new CodexClient(codexClientOptions(options, repositoryMcp, searchHook, attachFrom, memoryScopes, environmentVariables, writeBridge, withheldEnvironmentVariables, adminDirectory, skillSlugs, itemId)));
 
   /**
    * What marks EO's hook as trusted, learned once per command line.
@@ -2355,8 +2369,26 @@ export function createCodexProvider(options: CodexProviderOptions = {}): AgentPr
     withheldEnvironmentVariables?: readonly string[],
     adminDirectory?: string,
     skillSlugs?: readonly string[],
+    itemId?: string,
   ) {
     const hook = searchHook ? { command: searchHook.command, env: searchHook.env, matcher: searchHook.matcher, trust: searchHook.trust } : undefined;
+    // And the ticket only on a turn on one (EO-829), whose Codex home the
+    // turn runs in — every argument before it with it, each as the rules
+    // below would hand it.
+    if (itemId !== undefined) {
+      return createCodex(
+        repositoryMcp,
+        hook,
+        attachFrom,
+        memoryScopes,
+        environmentVariables,
+        writeBridge,
+        withheldEnvironmentVariables,
+        options.admin ? adminDirectory : undefined,
+        skillSlugs && skillSlugs.length > 0 ? skillSlugs : undefined,
+        itemId,
+      );
+    }
     // And the skills `skill_read` serves only on a turn given some
     // (EO-721) — every argument before them with it, as they are.
     if (skillSlugs && skillSlugs.length > 0) {
@@ -2592,6 +2624,7 @@ export function createCodexProvider(options: CodexProviderOptions = {}): AgentPr
         resumeOpts?.withheldEnvironmentVariables,
         resumeOpts?.cwd,
         skillSlugs,
+        resumeOpts?.itemId,
       );
       // A fork opens with `thread/fork` instead, and the turn runs on the
       // copy it answers with (EO-716). A client built without it (a test's
@@ -2746,7 +2779,7 @@ export function createCodexProvider(options: CodexProviderOptions = {}): AgentPr
         // attachments, as the turn writes them; one the checkout refuses
         // then costs the warm start and nothing else.
         const skillSlugs = turn.cwd === undefined ? [] : deliverableSkills(skillsForRun(options.attachedSkills ?? [], turn.skillScope)).map((skill) => skill.slug);
-        clientFor(undefined, null, turn.attachFrom, turn.memoryScopes, turn.environmentVariables, turn.writeBridge, turn.withheldEnvironmentVariables, turn.cwd, skillSlugs).prewarm?.(
+        clientFor(undefined, null, turn.attachFrom, turn.memoryScopes, turn.environmentVariables, turn.writeBridge, turn.withheldEnvironmentVariables, turn.cwd, skillSlugs, turn.itemId).prewarm?.(
           turn.kind === "start" ? null : turn.threadId,
           thread,
           turn.warmKey,
@@ -3082,7 +3115,7 @@ export function createCodexProvider(options: CodexProviderOptions = {}): AgentPr
       //   back on the originals. EO never uses that. An agent whose
       //   instructions were edited gets a fresh thread
       //   (`findReusableThread`), which is the only way the edit sticks.
-      const thread = clientFor(opts.repositoryMcp, hook, opts.attachFrom, opts.memoryScopes, opts.environmentVariables, opts.writeBridge, opts.withheldEnvironmentVariables, opts.cwd, skillSlugs).startThread({
+      const thread = clientFor(opts.repositoryMcp, hook, opts.attachFrom, opts.memoryScopes, opts.environmentVariables, opts.writeBridge, opts.withheldEnvironmentVariables, opts.cwd, skillSlugs, opts.itemId).startThread({
         ...threadOptionsFrom(opts, options.config),
         ...(opts.instructions ? { baseInstructions: opts.instructions } : {}),
       });

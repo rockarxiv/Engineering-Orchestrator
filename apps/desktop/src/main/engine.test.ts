@@ -5,12 +5,13 @@ import { DEFAULT_REPOSITORY_INTELLIGENCE_PROVIDER, McpServerDraftSchema, SkillDr
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DbHandle } from "./db/client.js";
 import { openMigratedTestDb } from "./db/testHelpers.js";
-import { archiveMcpServer, deleteAgent, listAgents, listMcpServers, saveMcpServer, saveSkill, setAgentAttachment, setMcpServerEnabled, updateAgent } from "./db/repos/index.js";
+import { archiveMcpServer, createItem, deleteAgent, deleteItem, listAgents, listMcpServers, saveMcpServer, saveSkill, setAgentAttachment, setItemArchived, setMcpServerEnabled, updateAgent } from "./db/repos/index.js";
 import type { SecretStore } from "./secrets/store.js";
 import { storeMcpServerSecret, type McpServerSecretsOptions } from "./mcp/serverSecrets.js";
 import { codexHomePreflight, codexOwnSetupNotices, codexServerSecretReader, providerCacheKey, providerForAgent, type ProviderIdentity } from "./engine.js";
 import { storeOrganisationSecret, type OrganisationSecretsOptions } from "./policy/organisationSecrets.js";
 import { buildCodexOptions, SECRET_WITHHELD } from "./providers/codex.js";
+import { AGENT_CODEX_HOME } from "./providers/codexHome.js";
 import { agentRunVariables, clearVariable, storeVariable, type ModuleSecretsOptions } from "./modules/secrets.js";
 import { windowsWithDeveloperMode, windowsWithoutPrivileges } from "./testing/unprivilegedWindowsFs.js";
 import { readRepositoryIntelligenceConfig, writeRepositoryIntelligenceConfig } from "./packs/developer/repositoryIntelligence/index.js";
@@ -576,7 +577,30 @@ describe("codexHomePreflight", () => {
     const verdict = await codexHomePreflight(currentAgent(), handle.db, [root], async () => "signed_in");
 
     expect(verdict).toEqual({ ok: true });
-    expect(readdirSync(join(root, implementer.id)).sort()).toEqual(["auth.json", "sessions"]);
+    expect(readdirSync(join(root, implementer.id, AGENT_CODEX_HOME)).sort()).toEqual(["auth.json", "sessions"]);
+  });
+
+  /** EO-829: a home per agent and ticket. */
+  it("makes the home of the ticket being dispatched, and the sweep removes it once the ticket is archived or deleted", async () => {
+    writeFileSync(join(person, "auth.json"), "{}");
+    const ticket = (title: string) => {
+      const made = createItem(handle.db, { type: "story", title, stepId: "todo" });
+      if (!made.ok) throw new Error(made.problem);
+      return made.item.id;
+    };
+    const [archived, deleted, open] = [ticket("Archived"), ticket("Deleted"), ticket("Open")];
+
+    for (const itemId of [archived, deleted, open]) {
+      expect(await codexHomePreflight(currentAgent(), handle.db, [root], async () => "signed_in", { itemId })).toEqual({ ok: true });
+      expect(readdirSync(join(root, implementer.id, itemId)).sort()).toEqual(["auth.json", "sessions"]);
+    }
+    setItemArchived(handle.db, archived, Date.now());
+    deleteItem(handle.db, deleted);
+
+    await codexHomePreflight(currentAgent(), handle.db, [root], async () => "signed_in");
+
+    expect(readdirSync(join(root, implementer.id)).sort()).toEqual([AGENT_CODEX_HOME, open].sort());
+    expect(existsSync(join(person, "auth.json"))).toBe(true);
   });
 
   it("refuses, saying why, when the card says signed in and there was no credential file to carry", async () => {
@@ -622,14 +646,14 @@ describe("codexHomePreflight", () => {
     });
 
     it("says so on the item for a locked-down Codex agent, and for no other", () => {
-      const [notice] = codexOwnSetupNotices(currentAgent(), [root]);
+      const [notice] = codexOwnSetupNotices(currentAgent());
       expect(notice).toContain(`${currentAgent().name} runs with your own Codex setup in ${person}`);
       expect(notice).toContain("keyring");
 
       updateAgent(handle.db, implementer.id, { config: { inheritAmbientConfig: true } });
-      expect(codexOwnSetupNotices(currentAgent(), [root])).toEqual([]);
+      expect(codexOwnSetupNotices(currentAgent())).toEqual([]);
       updateAgent(handle.db, implementer.id, { provider: "claude", config: {} });
-      expect(codexOwnSetupNotices(currentAgent(), [root])).toEqual([]);
+      expect(codexOwnSetupNotices(currentAgent())).toEqual([]);
     });
   });
 
@@ -648,7 +672,7 @@ describe("codexHomePreflight", () => {
     expect(verdict).toEqual({ ok: true });
     // No home was made that would point the agent at the stale file.
     expect(readdirSync(root)).toEqual([]);
-    expect(codexOwnSetupNotices(currentAgent(), [root])[0]).toContain("keyring");
+    expect(codexOwnSetupNotices(currentAgent())[0]).toContain("keyring");
   });
 
   /**
@@ -664,8 +688,8 @@ describe("codexHomePreflight", () => {
       const verdict = await codexHomePreflight(currentAgent(), handle.db, [root], async () => "signed_in", seams);
 
       expect(verdict).toEqual({ ok: true });
-      expect(readdirSync(join(root, implementer.id)).sort()).toEqual(["auth.json", "sessions"]);
-      expect(lstatSync(join(root, implementer.id, "auth.json")).isSymbolicLink()).toBe(true);
+      expect(readdirSync(join(root, implementer.id, AGENT_CODEX_HOME)).sort()).toEqual(["auth.json", "sessions"]);
+      expect(lstatSync(join(root, implementer.id, AGENT_CODEX_HOME, "auth.json")).isSymbolicLink()).toBe(true);
     });
 
     it("refuses the dispatch without Developer Mode, saying to turn it on or tick the agent over, and never runs it in the person's own home", async () => {
@@ -677,12 +701,12 @@ describe("codexHomePreflight", () => {
       expect(verdict.reason).toContain("Developer Mode");
       expect(verdict.reason).toContain("Let this agent use your own Codex setup");
       // Not a notice about running unlocked: nothing runs.
-      expect(codexOwnSetupNotices(currentAgent(), [root], seams)).toEqual([]);
+      expect(codexOwnSetupNotices(currentAgent())).toEqual([]);
     });
   });
 
   it("has nothing to say on the item when the sign-in is in a file", () => {
     writeFileSync(join(person, "auth.json"), "{}");
-    expect(codexOwnSetupNotices(currentAgent(), [root])).toEqual([]);
+    expect(codexOwnSetupNotices(currentAgent())).toEqual([]);
   });
 });
