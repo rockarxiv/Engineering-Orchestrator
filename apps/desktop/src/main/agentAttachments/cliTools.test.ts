@@ -1,8 +1,8 @@
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, delimiter, dirname, join } from "node:path";
+import { basename, delimiter, dirname, join, relative } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { describeFromHelp, detectCliTool, draftCliToolDescription, resolveCliToolPath } from "./cliTools.js";
+import { agentSpawnSearchDirectories, describeFromHelp, detectCliTool, draftCliToolDescription, resolveCliToolPath } from "./cliTools.js";
 
 /**
  * Whether a CLI is installed, and a description drafted from it (EO-819).
@@ -21,9 +21,10 @@ afterEach(() => {
   rmSync(scratch, { recursive: true, force: true });
 });
 
-/** A POSIX script on the scratch PATH, named `name`. */
+/** A POSIX script on the scratch PATH, named `name` (or at `name` under scratch, where it has a directory). */
 function script(name: string, body: string): void {
   const path = join(scratch, name);
+  mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, `#!/bin/sh\n${body}\n`);
   chmodSync(path, 0o755);
 }
@@ -69,6 +70,42 @@ describe("detectCliTool", () => {
   it.skipIf(process.platform === "win32")("skips a file of that name that is not executable", async () => {
     writeFileSync(join(scratch, "plain"), "#!/bin/sh\necho hi\n");
     expect(await detectCliTool("plain", onScratch)).toEqual({ found: false });
+  });
+});
+
+describe.skipIf(process.platform === "win32")("the directory a command is looked up from and run in", () => {
+  const versioned = 'if [ "$1" = "--version" ]; then echo "tool 1.0"; exit 0; fi; exit 1';
+
+  it("resolves a relative PATH entry against the run's directory, and answers with an absolute path the probe can start", async () => {
+    script("bin/tool", versioned);
+    expect(await detectCliTool("tool", { env: { PATH: "bin" }, cwd: scratch })).toEqual({ found: true, path: join(scratch, "bin", "tool"), version: "tool 1.0" });
+  });
+
+  it("outside a run, resolves a relative PATH entry against the directory the probe runs in, not EO's own", async () => {
+    // EO's process.cwd() is the repository; the probe runs in tmpdir().
+    script("bin/tool", versioned);
+    const fromTmp = relative(tmpdir(), join(scratch, "bin"));
+    expect(await detectCliTool("tool", { env: { PATH: fromTmp } })).toEqual({ found: true, path: join(scratch, "bin", "tool"), version: "tool 1.0" });
+  });
+
+  it("takes an empty PATH entry for the run's directory, as spawn does", async () => {
+    script("tool", versioned);
+    for (const PATH of [`${join(scratch, "nowhere")}:`, `:${join(scratch, "nowhere")}`, `${join(scratch, "nowhere")}::/nowhere`, ""]) {
+      expect(await detectCliTool("tool", { env: { PATH }, cwd: scratch })).toEqual({ found: true, path: join(scratch, "tool"), version: "tool 1.0" });
+    }
+    expect(await detectCliTool("tool", { env: { PATH: join(scratch, "nowhere") }, cwd: scratch })).toEqual({ found: false });
+  });
+});
+
+describe("agentSpawnSearchDirectories", () => {
+  it("keeps an empty POSIX entry as the spawn directory, and an unset PATH as the default", () => {
+    expect(agentSpawnSearchDirectories({ PATH: "/a::/b:" }, "linux")).toEqual(["/a", ".", "/b", "."]);
+    expect(agentSpawnSearchDirectories({ PATH: "" }, "darwin")).toEqual(["."]);
+    expect(agentSpawnSearchDirectories({}, "linux")).toEqual(["/usr/bin", "/bin"]);
+  });
+
+  it("reads Windows' PATH whatever its case", () => {
+    expect(agentSpawnSearchDirectories({ Path: "C:\\a;;C:\\b" }, "win32")).toEqual(["C:\\a", "C:\\b"]);
   });
 });
 
@@ -125,6 +162,36 @@ describe.skipIf(process.platform === "win32")("draftCliToolDescription", () => {
     expect(Date.now() - started).toBeLessThan(5_000);
     expect(draft.description.length).toBeLessThanOrEqual(240);
     expect(draft.description.startsWith("this line repeats for ever and ever")).toBe(true);
+  });
+
+  /** Whether the process `pid` is gone, waiting a little for a kill to land. */
+  async function gone(pid: number): Promise<boolean> {
+    const deadline = Date.now() + 3_000;
+    while (Date.now() < deadline) {
+      try {
+        process.kill(pid, 0);
+      } catch {
+        return true;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    return false;
+  }
+
+  it("at the cap, stops a wrapper's printing descendant too, not only the wrapper", async () => {
+    // The wrapper does not exec: `yes` is its child, holding the same pipe.
+    const pidFile = join(scratch, "descendant.pid");
+    script("wrapper", `[ "$1" = "--version" ] && exit 1; yes "a descendant that prints for ever" & echo $! > "${pidFile}"; wait`);
+    const draft = await draftCliToolDescription("wrapper", { ...onScratch, timeoutMs: 10_000, maxOutputBytes: 4_096 });
+    expect(draft.description.startsWith("a descendant that prints for ever")).toBe(true);
+    expect(await gone(Number(readFileSync(pidFile, "utf8")))).toBe(true);
+  });
+
+  it("at the timeout, stops a wrapper's silent descendant too", async () => {
+    const pidFile = join(scratch, "descendant.pid");
+    script("waits", `sleep 30 & echo $! > "${pidFile}"; wait`);
+    expect(await draftCliToolDescription("waits", { ...onScratch, timeoutMs: 300 })).toEqual({ version: null, description: "" });
+    expect(await gone(Number(readFileSync(pidFile, "utf8")))).toBe(true);
   });
 });
 

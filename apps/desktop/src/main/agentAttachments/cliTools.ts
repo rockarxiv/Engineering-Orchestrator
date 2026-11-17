@@ -1,7 +1,9 @@
 import { spawn } from "node:child_process";
 import { tmpdir } from "node:os";
+import { resolve as resolvePath } from "node:path";
 import { cliToolCommandProblem, type CliToolDescriptionDraft, type CliToolDetection } from "@eo/core";
 import { launchablePath } from "../modules/readiness.js";
+import { killTree } from "../process/killTree.js";
 
 /**
  * Whether a command-line tool is installed here, and what it says about
@@ -29,7 +31,12 @@ export interface CliToolProbeOptions {
   /** The environment the agent is spawned with. Defaults to EO's own, which both backends inherit. */
   env?: NodeJS.ProcessEnv;
   platform?: NodeJS.Platform;
-  /** The directory a run is spawned in, for a relative PATH entry; absent outside a run. */
+  /**
+   * The directory a run is spawned in. Outside a run, `os.tmpdir()`.
+   * One directory for both the lookup and the probe: a relative PATH
+   * entry, and an empty one, which means the directory itself, resolve
+   * against it, so what is found is what the probe starts.
+   */
   cwd?: string;
   /** Per invocation. */
   timeoutMs?: number;
@@ -42,12 +49,29 @@ export const CLI_TOOL_PROBE_MAX_OUTPUT_BYTES = 64 * 1024;
 const VERSION_MAX = 120;
 const DESCRIPTION_MAX = 240;
 
-/** The directories on the agent spawn environment's PATH, in order. */
+/**
+ * The directories on the agent spawn environment's PATH, in order, as
+ * `spawn` searches them. On POSIX an empty entry — `PATH=/usr/bin:`, or
+ * an empty PATH — is the directory the child is spawned in, returned as
+ * "."; an unset PATH is the C library's default, as libuv takes it.
+ */
 export function agentSpawnSearchDirectories(env: NodeJS.ProcessEnv = process.env, platform: NodeJS.Platform = process.platform): string[] {
-  // Windows spells it `Path` as often as `PATH`; Node's env lookup is
-  // case-insensitive there and a plain object's is not.
-  const value = platform === "win32" ? (Object.entries(env).find(([name]) => name.toUpperCase() === "PATH")?.[1] ?? "") : (env["PATH"] ?? "");
-  return value.split(platform === "win32" ? ";" : ":").filter(Boolean);
+  if (platform === "win32") {
+    // Windows spells it `Path` as often as `PATH`; Node's env lookup is
+    // case-insensitive there and a plain object's is not.
+    const value = Object.entries(env).find(([name]) => name.toUpperCase() === "PATH")?.[1] ?? "";
+    return value.split(";").filter(Boolean);
+  }
+  const value = env["PATH"];
+  if (value === undefined) return ["/usr/bin", "/bin"];
+  return value.split(":").map((entry) => (entry === "" ? "." : entry));
+}
+
+/** The one directory a probe both looks up from and runs in: absolute. */
+function probeDirectory(options: CliToolProbeOptions): string {
+  // Not EO's working directory: a program that writes beside itself on
+  // `--help` should not write into wherever EO started.
+  return resolvePath(options.cwd ?? tmpdir());
 }
 
 /** Where `command` resolves on the agent's PATH, or null. Synchronous: a few stats. */
@@ -58,7 +82,7 @@ export function resolveCliToolPath(command: string, options: CliToolProbeOptions
   return launchablePath(trimmed, {
     directories: agentSpawnSearchDirectories(options.env, platform),
     platform,
-    ...(options.cwd === undefined ? {} : { cwd: options.cwd }),
+    cwd: probeDirectory(options),
   });
 }
 
@@ -99,8 +123,12 @@ interface BoundedRun {
 /**
  * Runs one program with one argument list: no shell, stdin closed,
  * stdout and stderr read together up to a cap, killed at the timeout.
- * Resolves at the timeout rather than waiting for the streams to close,
- * so a grandchild holding the pipe open cannot hold this.
+ *
+ * In a process group of its own, so that what stops it — the timeout or
+ * the cap — kills everything it started too (`killTree`), and closes both
+ * pipes: a wrapper's printing descendant neither outlives the probe nor
+ * keeps feeding a reader nobody is listening to. Resolves there rather
+ * than waiting for the streams to close.
  */
 function runBounded(path: string, args: string[], options: CliToolProbeOptions): Promise<BoundedRun> {
   const timeoutMs = options.timeoutMs ?? CLI_TOOL_PROBE_TIMEOUT_MS;
@@ -121,21 +149,23 @@ function runBounded(path: string, args: string[], options: CliToolProbeOptions):
         shell: false,
         stdio: ["ignore", "pipe", "pipe"],
         env: { ...(options.env ?? process.env), NO_COLOR: "1" },
-        // Not EO's working directory: a program that writes beside
-        // itself on `--help` should not write into wherever EO started.
-        cwd: options.cwd ?? tmpdir(),
+        cwd: probeDirectory(options),
+        // Its own process group, for `killTree`'s negative pid.
+        detached: process.platform !== "win32",
         windowsHide: true,
       });
     } catch {
       resolve({ code: null, output: "", capped: false });
       return;
     }
-    const timer = setTimeout(() => {
-      child.kill("SIGKILL");
+    const stop = (capped: boolean) => {
+      if (settled) return;
+      if (child.pid !== undefined) killTree(child.pid);
       child.stdout?.destroy();
       child.stderr?.destroy();
-      finish(null, false);
-    }, timeoutMs);
+      finish(null, capped);
+    };
+    const timer = setTimeout(() => stop(false), timeoutMs);
     const take = (chunk: Buffer) => {
       if (size >= maxBytes) return;
       const kept = chunk.subarray(0, maxBytes - size);
@@ -143,10 +173,7 @@ function runBounded(path: string, args: string[], options: CliToolProbeOptions):
       size += kept.length;
       // Enough read: the rest is not wanted, and a program that would go
       // on printing for ever is stopped here rather than at the timeout.
-      if (size >= maxBytes) {
-        child.kill("SIGKILL");
-        finish(null, true);
-      }
+      if (size >= maxBytes) stop(true);
     };
     child.stdout?.on("data", take);
     child.stderr?.on("data", take);
