@@ -41,12 +41,12 @@ import * as eoServer from "../mcp/eoServer.mjs";
 import { eoMcpStdioConfig } from "../mcp/serviceConfig.js";
 import type { ModuleTestRunner } from "../modules/moduleTestRunner.js";
 import { fromStrictCodexAnswer, strictCodexOutputSchema } from "../providers/codex.js";
-import { postAssistReply } from "../roles/assist.js";
+import { assistModuleChangeFor, postAssistReply } from "../roles/assist.js";
 import { drawModuleChange } from "../roles/moduleChange.js";
 import { createModuleChangeStaging, type ModuleChangeStaging } from "../roles/moduleChangeProposals.js";
 import { PROPOSAL_KIND } from "../roles/proposal.js";
 import { createRoleWiring } from "../packs/developer/wiring.js";
-import { postScenarioReply } from "../roles/scenario.js";
+import { postScenarioReply, scenarioChangeFor } from "../roles/scenario.js";
 import { startTestWriteBridge, type TestWriteBridge } from "../testing/agentWrites.js";
 import { createRunSupervisor } from "./runSupervisor.js";
 
@@ -297,6 +297,11 @@ describe.each(BOTH)("a %s turn on %s naming a frozen proposal", (room, backend) 
     expect(rows(deploy.id)).toEqual(before);
     // The answer carried no source.
     expect(JSON.stringify(seen.answers_[0])).not.toContain("done.tail");
+    // What the card's readiness check reads (EO-817) is the frozen change too.
+    const current = getItem(handle.db, conversation.id)!;
+    const read = room === "assist" ? assistModuleChangeFor(handle.db, current, cards[0]!.id) : scenarioChangeFor(handle.db, current, cards[0]!.id);
+    expect(read?.code).toBe(FIXED);
+    expect(read?.manifest?.needs.env).toEqual(["DEPLOY_TOKEN"]);
 
     const applied = apply(room, conversation, cards[0]!.id);
     expect(applied.problem).toBeNull();

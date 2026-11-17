@@ -8,6 +8,7 @@ import {
   type Comment,
   type CustomModule,
   type Item,
+  type ModuleChange,
   type ModuleTestCaseResult,
   type Run,
   type RunEvent,
@@ -858,6 +859,50 @@ function postChangeCard(
 export type AppliedScenarioChange = AppliedModuleChange;
 
 /**
+ * The change a scenario card proposes and what it was drawn against, or
+ * why there is none to read — the one place both Apply and the card's
+ * readiness check read it from.
+ *
+ * A card drawn from a frozen proposal (EO-814) is that row, read for this
+ * conversation, the run that posted the card and this conversation's
+ * module — never the staging files and never what the run said beyond the
+ * id. Any other card, including every one posted before EO-814, is its
+ * run's `change`, as it always was.
+ */
+function scenarioCardChange(db: Db, conversation: Item, commentId: string): { ok: true; change: ModuleChange; base: unknown } | { ok: false; reason: string } {
+  const comment = listCommentsForItem(db, conversation.id).find((entry) => entry.id === commentId);
+  if (!comment || !isScenarioChangeCard(db, comment)) return { ok: false, reason: "That card is not a change to the module." };
+
+  const recorded = scopeOf(conversation)[CHANGES_FIELD];
+  const base = recorded && typeof recorded === "object" && !Array.isArray(recorded) ? (recorded as Record<string, unknown>)[commentId] : undefined;
+  const run = comment.runId ? getRun(db, comment.runId) : undefined;
+  const parsed = ScenarioOutputSchema.safeParse(parsedResultOf(run?.result ?? null));
+
+  const proposalId = base !== null && typeof base === "object" && !Array.isArray(base) ? (base as Record<string, unknown>)["proposalId"] : undefined;
+  if (typeof proposalId === "string" && proposalId !== "") {
+    const moduleId = scenarioModuleIdOf(conversation);
+    if (!parsed.success || parsed.data.changeProposalId !== proposalId || !run || moduleId === null) {
+      return { ok: false, reason: "The run behind this card no longer names the proposal it was drawn from." };
+    }
+    const resolved = resolveModuleChangeProposal(db, proposalId, { itemId: conversation.id, runId: run.id, moduleId });
+    return resolved.ok ? { ok: true, change: resolved.proposal.change, base } : { ok: false, reason: resolved.reason };
+  }
+
+  if (!parsed.success || !parsed.data.change) return { ok: false, reason: "The run behind this card no longer has a readable change." };
+  return { ok: true, change: parsed.data.change, base };
+}
+
+/**
+ * The change a scenario card proposes, by the card's message id, or null
+ * for a message that is not one (EO-817) — what the card checks the
+ * readiness of before Apply. Read only; nothing is applied.
+ */
+export function scenarioChangeFor(db: Db, conversation: Item, commentId: string): ModuleChange | null {
+  const found = scenarioCardChange(db, conversation, commentId);
+  return found.ok ? found.change : null;
+}
+
+/**
  * Saves what a change card proposed — the person having pressed Apply.
  *
  * Re-read from the run rather than from anything a panel kept, so what is
@@ -874,19 +919,6 @@ export type AppliedScenarioChange = AppliedModuleChange;
  * be applied at all — newest wins, not yet applied — is the caller's,
  * through `approvableIds`, which every room shares.
  */
-/**
- * The change a scenario card proposes, by the card's message id, or null
- * for a message that is not one (EO-817) — what the card checks the
- * readiness of before Apply. Read only; nothing is applied.
- */
-export function scenarioChangeFor(db: Db, conversation: Item, commentId: string): ScenarioModuleChange | null {
-  const comment = listCommentsForItem(db, conversation.id).find((entry) => entry.id === commentId);
-  if (!comment || !isScenarioChangeCard(db, comment)) return null;
-  const run = comment.runId ? getRun(db, comment.runId) : undefined;
-  const parsed = ScenarioOutputSchema.safeParse(parsedResultOf(run?.result ?? null));
-  return parsed.success ? (parsed.data.change ?? null) : null;
-}
-
 export function applyScenarioChange(db: Db, conversation: Item, commentId: Uuid): AppliedScenarioChange {
   const comment = listCommentsForItem(db, conversation.id).find((entry) => entry.id === commentId);
   if (!comment || !isScenarioChangeCard(db, comment)) return { ok: false, reason: "That card is not a change to the module." };
@@ -895,22 +927,7 @@ export function applyScenarioChange(db: Db, conversation: Item, commentId: Uuid)
   const found = moduleId === null ? null : scenarioModule(db, moduleId);
   if (found === null || !found.ok) return { ok: false, reason: found?.reason ?? "This conversation is not about a module." };
 
-  const recorded = scopeOf(conversation)[CHANGES_FIELD];
-  const base = recorded && typeof recorded === "object" && !Array.isArray(recorded) ? (recorded as Record<string, unknown>)[commentId] : undefined;
-  const run = comment.runId ? getRun(db, comment.runId) : undefined;
-  const parsed = ScenarioOutputSchema.safeParse(parsedResultOf(run?.result ?? null));
-
-  // Drawn from a frozen proposal (EO-814): what is applied is that row,
-  // read for this conversation, the run that posted the card and this
-  // module — never the staging files and never what the run said.
-  const proposalId = base !== null && typeof base === "object" && !Array.isArray(base) ? (base as Record<string, unknown>)["proposalId"] : undefined;
-  if (typeof proposalId === "string" && proposalId !== "") {
-    if (!parsed.success || parsed.data.changeProposalId !== proposalId || !run) return { ok: false, reason: "The run behind this card no longer names the proposal it was drawn from." };
-    const resolved = resolveModuleChangeProposal(db, proposalId, { itemId: conversation.id, runId: run.id, moduleId: found.module.id });
-    if (!resolved.ok) return { ok: false, reason: resolved.reason };
-    return applyModuleChange(db, found.module, resolved.proposal.change, base);
-  }
-
-  if (!parsed.success || !parsed.data.change) return { ok: false, reason: "The run behind this card no longer has a readable change." };
-  return applyModuleChange(db, found.module, parsed.data.change, base);
+  const card = scenarioCardChange(db, conversation, commentId);
+  if (!card.ok) return card;
+  return applyModuleChange(db, found.module, card.change, card.base);
 }
