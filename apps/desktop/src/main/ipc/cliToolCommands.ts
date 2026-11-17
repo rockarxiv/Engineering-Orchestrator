@@ -10,9 +10,12 @@ import { detectCliTool, draftCliToolDescription, type CliToolProbeOptions } from
  * never a throw, because everything that can go wrong here is something
  * a person typed or a race with another window.
  *
- * These are a person's channels. No MCP tool is built on them in this
- * story, and EO's system agent has none: what goes in this catalogue is
- * a person's decision (EO-818).
+ * These are a person's channels: what goes in this catalogue is a
+ * person's decision (EO-818). An outside client of EO's MCP server reaches
+ * them as cli_tools_list, cli_tool_save, cli_tool_archive and the CLI
+ * kind on agent_attachments_* (EO-822). EO's system agent reads the
+ * catalogue and proposes the rest as a card a person presses
+ * (roles/cliToolCards.ts).
  */
 
 export function listCliToolsCommand(db: Db, input: IpcPayload<"cliTools:list">): IpcResponse<"cliTools:list"> {

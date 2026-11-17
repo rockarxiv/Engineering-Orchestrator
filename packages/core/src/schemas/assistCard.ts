@@ -54,6 +54,11 @@ import { StepInputsSchema } from "./modules.js";
  * Jobs screen no longer edits a job; the system agent proposes the change
  * and the person presses it, through the channel that screen called.
  *
+ * Two are command-line tools (EO-822): adding one to the catalogue, and
+ * giving one to an agent or taking it away. Only a person decides which
+ * programs agents are told to reach for, so the system agent proposes
+ * either as a card, through the channel the Agent tools screen calls.
+ *
  * Every branch writes all of its keys, so it is the same document from
  * both backends: there is no optional field for a Codex agent to fill
  * with `null` (invariant #12). A change to a type says `null` for what it
@@ -272,6 +277,35 @@ export const AssistCardSchema = z.discriminatedUnion("kind", [
   }),
   z.object({
     /**
+     * Add a command-line tool to the catalogue (EO-822) — `cliTools:save`,
+     * as the Agent tools screen's editor does. Which programs agents are
+     * told to reach for is a person's decision (EO-818), so EO's system
+     * agent has no tool that saves one: it names the row, and the person
+     * presses the card.
+     */
+    kind: z.literal("cliToolAdd"),
+    /** What a person reads in the catalogue — "GitHub CLI". */
+    name: z.string().min(1),
+    /** What an agent types — `gh`: one program name, or an absolute path to one. */
+    command: z.string().min(1),
+    /** What it is and when to use it here, in a sentence or two. */
+    description: z.string(),
+  }),
+  z.object({
+    /**
+     * Give one agent a catalogued command-line tool, or take one away
+     * (EO-822) — `agentCliTools:set`, the Agent tools screen's tick.
+     */
+    kind: z.literal("cliToolAttach"),
+    /** The agent, by the id `agents_list` gives. */
+    agentId: z.string().min(1),
+    /** The CLI, by the id `cli_tools_list` gives. */
+    cliToolId: z.string().min(1),
+    /** True to give it to the agent, false to take it away. */
+    attached: z.boolean(),
+  }),
+  z.object({
+    /**
      * Keep a pipeline as it is and skip its held template update (EO-534)
      * — `pipeline:keepOwnVersion`. The conflict is resolved and the
      * pipeline's base moves to the held template version; its graph is
@@ -315,6 +349,8 @@ export const ASSIST_CARD_KINDS = [
   "jobUpdate",
   "jobDelete",
   "jobWebhook",
+  "cliToolAdd",
+  "cliToolAttach",
 ] as const satisfies readonly AssistCardKind[];
 
 /**

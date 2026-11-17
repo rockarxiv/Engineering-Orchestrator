@@ -528,7 +528,8 @@ const CAPABILITIES = [
       "an `assist` answer offering something only a person may do — export, import or delete a pipeline, discard this machine's edits to one, " +
       "let its webhook items through unread, set or clear a step's own secret or variable, add, change or remove an item type, " +
       "keep a pipeline as it is and skip its held template update, publish a draft as it was tested (EO-588), " +
-      "or create, change or delete a job, or regenerate a webhook job's secret or send it a test event (EO-786) — " +
+      "or create, change or delete a job, or regenerate a webhook job's secret or send it a test event (EO-786), " +
+      "or add a command-line tool or give one to an agent (EO-822) — " +
       "reads back as that card and nothing beside it",
     same: {
       read: [
@@ -576,6 +577,9 @@ const CAPABILITIES = [
         { valid: true, card: { kind: "jobDelete", jobId: "monday-report" }, besideIt: [] },
         { valid: true, card: { kind: "jobWebhook", jobId: "helpdesk", action: "regenerateSecret" }, besideIt: [] },
         { valid: true, card: { kind: "jobWebhook", jobId: "helpdesk", action: "testEvent" }, besideIt: [] },
+        // Command-line tools (EO-822).
+        { valid: true, card: { kind: "cliToolAdd", name: "GitHub CLI", command: "gh", description: "Pull requests and issues on GitHub." }, besideIt: [] },
+        { valid: true, card: { kind: "cliToolAttach", agentId: "implementer", cliToolId: "github-cli", attached: true }, besideIt: [] },
       ],
     },
   },

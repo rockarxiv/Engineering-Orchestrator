@@ -371,6 +371,9 @@ const CARDS = [
   { kind: "jobDelete", jobId: "monday-report" },
   { kind: "jobWebhook", jobId: "helpdesk", action: "regenerateSecret" },
   { kind: "jobWebhook", jobId: "helpdesk", action: "testEvent" },
+  // Command-line tools (EO-822): adding one, and giving one to an agent.
+  { kind: "cliToolAdd", name: "GitHub CLI", command: "gh", description: "Pull requests and issues on GitHub." },
+  { kind: "cliToolAttach", agentId: "implementer", cliToolId: "github-cli", attached: true },
 ] as const;
 
 export const ASSIST_ANSWERS_WITH_CARDS = {

@@ -32,6 +32,7 @@ import {
   type ModuleTestRun,
   type RepositoryView,
   type SideCallSpendLine,
+  type CliTool,
   type Skill,
   type SkillVersionReport,
   type ViewListKind,
@@ -1444,16 +1445,75 @@ export function renderSkillLocked(data: IpcResponse<"skills:setLocked">): string
  * list is what makes them usable: three ids and no way to learn whose
  * they are is an answer a reader has to guess at.
  */
-export function renderAgentAttachments(data: IpcResponse<"agentAttachments:list">): string {
+export function renderAgentAttachments(data: AgentAttachmentsWithCliTools): string {
   const lines = data.attachments.map((attachment) => {
     const parts: string[] = [];
     if (attachment.mcpServerIds.length > 0) parts.push(`MCP servers: ${attachment.mcpServerIds.join(", ")}`);
     if (attachment.skillIds.length > 0) parts.push(`skills: ${attachment.skillIds.join(", ")}`);
+    if (attachment.cliToolIds.length > 0) parts.push(`command-line tools: ${attachment.cliToolIds.join(", ")}`);
     return `- agent ${attachment.agentId} — ${parts.length === 0 ? "nothing attached" : parts.join("; ")}`;
   });
 
   if (lines.length === 0) return "No agent has anything attached.";
-  return [...lines, "", "agents_list says which agent each id is; mcp_servers_list and skills_list say what is attached."].join("\n");
+  return [...lines, "", "agents_list says which agent each id is; mcp_servers_list, skills_list and cli_tools_list say what is attached."].join("\n");
+}
+
+/**
+ * What `agent_attachments_list` answers (EO-822): `agentAttachments:list`
+ * with each agent's command-line tools beside its servers and skills,
+ * read from `agentCliTools:list` — the two joins kept apart in the
+ * contract because only a person ticks a CLI, and put together here
+ * because "what is this agent given?" is one question.
+ */
+export interface AgentAttachmentsWithCliTools {
+  attachments: (IpcResponse<"agentAttachments:list">["attachments"][number] & { cliToolIds: string[] })[];
+}
+
+/**
+ * One catalogued command-line tool (EO-822): its name, the command an
+ * agent types, its id, whether it is archived, and the description an
+ * agent is told. Whether it is installed is not here: that is checked on
+ * the machine an agent is dispatched on, when it is dispatched.
+ */
+function cliToolLine(tool: CliTool): string {
+  const archived = tool.archivedAt === null ? "" : " — archived: no agent is told about it until it is restored";
+  return `${tool.name} (command: \`${tool.command}\`, id: ${tool.id})${archived}\n  ${tool.description === "" ? "No description yet." : tool.description}`;
+}
+
+export function renderCliTools(data: IpcResponse<"cliTools:list">): string {
+  return list(
+    data.cliTools.map((tool) => `- ${cliToolLine(tool)}`),
+    "No command-line tools are catalogued.",
+  );
+}
+
+/** A CLI saved, or the sentences saying why it was not (EO-822). */
+export function renderCliToolSaved(data: IpcResponse<"cliTools:save">): string {
+  if (!data.saved || data.cliTool === null) return `Nothing was saved: ${data.problem ?? "it refused."}`;
+  return `Saved ${cliToolLine(data.cliTool)}\nIt is catalogued and nothing more — no agent is told about it until it is attached to one with agent_attachments_set.`;
+}
+
+/**
+ * One CLI ticked on or off for an agent (EO-822), answered with every
+ * CLI the agent now has — told about and merely attached apart, the way
+ * `renderAgentAttachmentSet` keeps delivered and withheld apart: an
+ * archived CLI stays attached and is told to no agent. `tools` is null
+ * when the catalogue could not be read back, and the claim is dropped.
+ */
+export function renderAgentCliToolSet(data: IpcResponse<"agentCliTools:set">, tools: CliTool[] | null): string {
+  if (data.attachments === null) return `Nothing changed: ${data.problem ?? "it refused."}`;
+  const { agentId, cliToolIds } = data.attachments;
+  const timing =
+    "A CLI grants nothing: the agent is told the program exists and what it is for, and runs it through the shell it already has. EO checks it is installed when the agent is dispatched, and leaves out one it cannot find. A tick takes effect on the next dispatch, not on a run already in flight.";
+  if (cliToolIds.length === 0) return [`Agent ${agentId} is told about no command-line tools.`, "", timing].join("\n");
+  if (tools === null) return [`Agent ${agentId} has these command-line tools attached:`, ...cliToolIds.map((id) => `- ${id}`), "", timing].join("\n");
+
+  const rows = cliToolIds.map((id) => tools.find((tool) => tool.id === id) ?? null);
+  const told = rows.filter((row): row is CliTool => row !== null && row.archivedAt === null);
+  const archived = rows.filter((row): row is CliTool => row !== null && row.archivedAt !== null);
+  const lines = told.length > 0 ? [`Agent ${agentId} will be told about:`, ...told.map((tool) => `- ${tool.name} (\`${tool.command}\`, id: ${tool.id})`)] : [`Agent ${agentId} will be told about no command-line tools.`];
+  if (archived.length > 0) lines.push("", "Attached, and archived, so not told:", ...archived.map((tool) => `- ${tool.name} (\`${tool.command}\`, id: ${tool.id})`));
+  return [...lines, "", timing].join("\n");
 }
 
 /**

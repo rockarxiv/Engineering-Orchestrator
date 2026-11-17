@@ -1,7 +1,7 @@
 import { useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
-import { Archive, CalendarClock, Download, KeyRound, Shapes, ShieldCheck, Trash2, Upload, UnlockKeyhole, Variable, Webhook } from "lucide-react";
+import { Archive, CalendarClock, Download, KeyRound, Shapes, ShieldCheck, Terminal, Trash2, Upload, UnlockKeyhole, Variable, Webhook } from "lucide-react";
 import {
   DIVERGED_ACTIONS,
   isPackShipped,
@@ -133,7 +133,7 @@ export function OperationCard({ message, conversationId, onDone }: { message: Di
         if (detail?.kind === "pipelineWebhookUnattended") void queryClient.invalidateQueries({ queryKey: pipelineStepsKey(detail.pipelineId) });
         if (kind === "stepSecret") void queryClient.invalidateQueries({ queryKey: moduleSecretsRootKey });
         if (kind === "stepVariable") void queryClient.invalidateQueries({ queryKey: environmentVariablesRootKey });
-        if (kind !== "pipelineExport" && !kind.startsWith("itemType") && !kind.startsWith("job")) void queryClient.invalidateQueries({ queryKey: ["pipelines"] });
+        if (kind !== "pipelineExport" && !kind.startsWith("itemType") && !kind.startsWith("job") && !kind.startsWith("cliTool")) void queryClient.invalidateQueries({ queryKey: ["pipelines"] });
         // A job card: the Jobs list and page move, and the card re-reads what it made, for its link.
         if (kind.startsWith("job")) {
           void queryClient.invalidateQueries({ queryKey: jobsRootKey });
@@ -293,6 +293,8 @@ const TITLE: Record<AssistCardKind, string> = {
   jobUpdate: "Change a job",
   jobDelete: "Delete a job",
   jobWebhook: "A webhook job",
+  cliToolAdd: "Add a command-line tool",
+  cliToolAttach: "An agent's command-line tool",
 };
 
 const STATE: Record<AssistCardKind, string> = {
@@ -312,6 +314,8 @@ const STATE: Record<AssistCardKind, string> = {
   jobUpdate: "change job",
   jobDelete: "delete job",
   jobWebhook: "webhook",
+  cliToolAdd: "add CLI",
+  cliToolAttach: "agent CLI",
 };
 
 const ICON: Record<AssistCardKind, ReactNode> = {
@@ -331,11 +335,13 @@ const ICON: Record<AssistCardKind, ReactNode> = {
   jobUpdate: <CalendarClock aria-hidden size={14} />,
   jobDelete: <Trash2 aria-hidden size={14} />,
   jobWebhook: <Webhook aria-hidden size={14} />,
+  cliToolAdd: <Terminal aria-hidden size={14} />,
+  cliToolAttach: <Terminal aria-hidden size={14} />,
 };
 
 type ButtonWords = { idle: string; pending: string; done: string; refused: string };
 
-const BUTTON: Record<Exclude<AssistCardKind, "pipelineWebhookUnattended" | "stepSecret" | "stepVariable" | "jobWebhook">, ButtonWords> = {
+const BUTTON: Record<Exclude<AssistCardKind, "pipelineWebhookUnattended" | "stepSecret" | "stepVariable" | "jobWebhook" | "cliToolAttach">, ButtonWords> = {
   pipelineExport: { idle: "Export…", pending: "Exporting…", done: "Exported", refused: "Not exported" },
   pipelineImport: { idle: "Import", pending: "Importing…", done: "Imported", refused: "Not imported" },
   pipelineDelete: { idle: "Delete pipeline", pending: "Deleting…", done: "Deleted", refused: "Not deleted" },
@@ -349,6 +355,7 @@ const BUTTON: Record<Exclude<AssistCardKind, "pipelineWebhookUnattended" | "step
   jobCreate: { idle: "Create job", pending: "Creating…", done: "Created", refused: "Not created" },
   jobUpdate: { idle: "Save job", pending: "Saving…", done: "Saved", refused: "Not saved" },
   jobDelete: { idle: "Delete job", pending: "Deleting…", done: "Deleted", refused: "Not deleted" },
+  cliToolAdd: { idle: "Add CLI", pending: "Adding…", done: "Added", refused: "Not added" },
 };
 
 /**
@@ -381,6 +388,12 @@ function buttonFor(kind: AssistCardKind, detail: AssistCardDetail | null): Butto
       if (action === "testEvent") return { idle: "Send test event", pending: "Sending…", done: "Sent", refused: "Not sent" };
       return { idle: "Apply", pending: "Applying…", done: "Done", refused: "Not done" };
     }
+    case "cliToolAttach": {
+      const attached = detail?.kind === "cliToolAttach" ? detail.attached : null;
+      if (attached === true) return { idle: "Give CLI", pending: "Giving…", done: "Given", refused: "Not given" };
+      if (attached === false) return { idle: "Take CLI away", pending: "Taking away…", done: "Taken away", refused: "Not taken away" };
+      return { idle: "Apply", pending: "Applying…", done: "Done", refused: "Not done" };
+    }
     default:
       return BUTTON[kind];
   }
@@ -407,6 +420,12 @@ function cannotPress(detail: AssistCardDetail): boolean {
     case "pipelineKeepMine":
       // Nothing held any more: resolved since the card was offered.
       return detail.held === null;
+    case "cliToolAdd":
+      // What `cliTools:save` would refuse the press with — said on the card instead.
+      return detail.problem !== null;
+    case "cliToolAttach":
+      // Already as asked, or a CLI no agent is told about while it is archived.
+      return detail.current === detail.attached || (detail.attached && detail.archived);
     default:
       return false;
   }
@@ -430,6 +449,10 @@ function subjectOf(detail: AssistCardDetail): string {
     case "jobDelete":
     case "jobWebhook":
       return detail.jobName;
+    case "cliToolAdd":
+      return detail.name;
+    case "cliToolAttach":
+      return `${detail.cliToolName} · ${detail.agentName}`;
     default:
       return detail.pipelineName;
   }
@@ -602,6 +625,26 @@ function Body({ detail, itemsWord, itemWord, aliasesRetired }: { detail: AssistC
           <JobLines lines={detail.lines} />
         </div>
       );
+    case "cliToolAdd":
+      return <CliToolAddBody detail={detail} />;
+    case "cliToolAttach":
+      return (
+        <div className="flex flex-col gap-1">
+          <p className={text}>
+            {detail.attached
+              ? `Gives ${detail.agentName} ${detail.cliToolName}: from its next dispatch it is told the program exists and what it is for, where EO finds it installed.`
+              : `Takes ${detail.cliToolName} away from ${detail.agentName}: from its next dispatch it is no longer told about it.`}{" "}
+            The command is <code className="font-mono text-ink">{detail.command}</code>.
+          </p>
+          {detail.current === detail.attached ? (
+            <p className="text-[12.5px] text-ink-subtle">
+              {detail.agentName} {detail.current ? "already has it" : "does not have it"}, so there is nothing to change.
+            </p>
+          ) : detail.attached && detail.archived ? (
+            <p className="text-[12.5px] text-ink-subtle">{detail.cliToolName} is archived. Restore it on the Agent tools screen first.</p>
+          ) : null}
+        </div>
+      );
     case "jobWebhook":
       return detail.action === "regenerateSecret" ? (
         <p className={text}>
@@ -615,6 +658,51 @@ function Body({ detail, itemsWord, itemWord, aliasesRetired }: { detail: AssistC
         </p>
       );
   }
+}
+
+/**
+ * A command-line tool as an add card shows it (EO-822): the command, the
+ * description an agent will read, and whether this machine has it — read
+ * when the card is drawn, never the assistant's word.
+ */
+function CliToolAddBody({ detail }: { detail: Extract<AssistCardDetail, { kind: "cliToolAdd" }> }) {
+  const found = detail.detection;
+  return (
+    <div className="flex flex-col gap-1.5">
+      <p className="text-[13px] leading-relaxed text-ink-muted">
+        A new command-line tool in the catalogue. No agent is told about it until one is given it, and it grants nothing: an agent runs it through the shell it already has.
+      </p>
+      <dl aria-label="The command-line tool" className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1 text-[12.5px]">
+        <dt className="text-ink-subtle">Command</dt>
+        <dd>
+          <code className="font-mono text-ink">{detail.command}</code>
+        </dd>
+        <dt className="text-ink-subtle">Description</dt>
+        <dd className="break-words text-ink">{detail.description === "" ? <span className="text-ink-subtle">None</span> : detail.description}</dd>
+        <dt className="text-ink-subtle">On this machine</dt>
+        <dd className="break-words text-ink">
+          {found === null ? (
+            <span className="text-ink-subtle">Could not be checked</span>
+          ) : found.found ? (
+            <>
+              Found at <code className="font-mono">{found.path}</code>
+              {found.version === null ? "" : ` · ${found.version}`}
+            </>
+          ) : (
+            "Not found"
+          )}
+        </dd>
+      </dl>
+      {found !== null && !found.found ? (
+        <p className="text-[12.5px] text-ink-subtle">An agent given it is told about it only on a machine where EO finds it installed.</p>
+      ) : null}
+      {detail.problem !== null ? (
+        <p role="note" aria-label="Refused" className="text-[12.5px] text-danger">
+          {detail.problem}
+        </p>
+      ) : null}
+    </div>
+  );
 }
 
 /** A job as a job card shows it (EO-786): each field the Job page has, in words. */

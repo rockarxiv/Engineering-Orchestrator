@@ -40,18 +40,10 @@ import { SERVER_INSTRUCTIONS } from "./server.js";
  * nothing in the contract is unconsidered from MCP.
  */
 const NOT_CATALOGUED: Partial<Record<RecordChannel, string>> = {
-  // The command-line tool catalogue and its ticks (EO-819). Which CLIs
-  // an agent is told to reach for is a person's decision (EO-818): no
-  // step agent may touch them, and EO's system agent proposes one as a
-  // card a person approves rather than writing the row. The tools an
-  // outside client may call are a decision of their own, made with that
-  // card, and until one is made these are the screen's alone.
-  "cliTools:list": "the catalogue a person keeps on the Agent tools screen; an agent is told about the CLIs it was given, in its prompt",
-  "cliTools:save": "which programs agents are told to use is a person's decision, and the system agent proposes one as a card instead",
-  "cliTools:archive": "which programs agents are told to use is a person's decision, and the system agent proposes one as a card instead",
-  "cliTools:restore": "which programs agents are told to use is a person's decision, and the system agent proposes one as a card instead",
-  "agentCliTools:list": "which agent was given which CLI is the Agent tools screen's view; an agent learns its own from its prompt",
-  "agentCliTools:set": "giving an agent a CLI is a person's decision, and the system agent proposes one as a card instead",
+  // The command-line tool catalogue (EO-819, EO-822). List, save and
+  // archive are tools, and the ticks ride on agent_attachments_list and
+  // agent_attachments_set; bringing an archived CLI back is not.
+  "cliTools:restore": "bringing an archived CLI back is Restore on the Agent tools screen; over MCP a catalogue is listed, saved and archived, as the MCP servers' is, which has no restore at all",
   // What the organisation published, and the two writes that publish it
   // (EO-329). Publishing is an act on the record, performed by an admin
   // in a browser the server serves; the system agent runs on a desktop,
@@ -1021,6 +1013,8 @@ describe("the MCP tool catalog", () => {
     // again. Saving and switching are the reversible half and stay
     // unwarned.
     "mcp_server_archive",
+    // A CLI comes back only through Restore on the Agent tools screen, which no tool offers (EO-822).
+    "cli_tool_archive",
     "skill_archive",
     // Retiring an agent, which is the same act one level up (EO-186):
     // the row is kept so its runs and its comments still resolve, no

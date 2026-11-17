@@ -24,6 +24,8 @@ import type { AttachmentStorage } from "../attachments/storage.js";
 import type { Db } from "../db/client.js";
 import {
   approveModule,
+  getAgent,
+  getCliTool,
   createPipeline,
   dismissOpenMentionsForComment,
   getAttachment,
@@ -57,6 +59,7 @@ import type { ModuleTestRunner } from "../modules/moduleTestRunner.js";
 import { appliedChangeNote } from "../roles/moduleChange.js";
 import { assistCardOf, assistCardView, cardOutcome, fileCardOutcome, liveStep } from "../roles/assistCards.js";
 import { isItemTypeCard, itemTypeCardDetail, itemTypeUpdatePayload } from "../roles/itemTypeCards.js";
+import { cliToolCardDetail, isCliToolCard, type CliToolCard } from "../roles/cliToolCards.js";
 import { createdJobSaid, filedItemSaid, isJobCard, jobCardDetail, jobUpdatePayload, keptJob, triggerOfCard, type JobCard } from "../roles/jobCards.js";
 import {
   applyAssistModuleChange,
@@ -2086,6 +2089,15 @@ export async function readAssistCardCommand(db: Db, doors: AssistCardDoors, inpu
     return "problem" in read ? nothing(read.problem) : { card: read.detail, problem: null };
   }
 
+  // A command-line tool (EO-822): an add card's command looked up on
+  // this machine now, through the channel the Agent tools screen asks.
+  if (isCliToolCard(card)) {
+    const detected = card.kind === "cliToolAdd" ? await dispatched(doors, "cliTools:detect", { command: card.command.trim() }) : null;
+    const detection = detected?.ok === true ? detected.data.detection : null;
+    const read = cliToolCardDetail(db, card, detection);
+    return "problem" in read ? nothing(read.problem) : { card: read.detail, problem: null };
+  }
+
   if (card.kind === "stepSecret" || card.kind === "stepVariable") {
     const found = liveStep(db, card.stepId);
     if (found === null) return nothing("The step this card was about is no longer on its pipeline.");
@@ -2301,6 +2313,7 @@ async function carryOut(
   if (card.kind === "stepSecret" || card.kind === "stepVariable") return carryOutStepValue(db, doors, card, value);
   if (isItemTypeCard(card)) return carryOutItemType(db, doors, card);
   if (isJobCard(card)) return carryOutJob(db, doors, card, archiveItems);
+  if (isCliToolCard(card)) return carryOutCliTool(db, doors, card);
   if (card.kind === "pipelineImport") {
     const file = await attachedDocument(db, doors, conversation, card.attachmentId);
     if (!file.ok) return { done: false, said: `Nothing was imported: ${file.reason}` };
@@ -2542,6 +2555,42 @@ async function carryOutJob(db: Db, doors: AssistCardDoors, card: JobCard, archiv
       return { done: true, said: [`Sent a test event to “${job.name}”: ${TEST_EVENT_OUTCOME[tested.data.outcome]}.`, filed, reason].filter(Boolean).join(" ") };
     }
   }
+}
+
+/**
+ * Adds a command-line tool to the catalogue, or gives one to an agent or
+ * takes it away (EO-822), through the channel the Agent tools screen
+ * calls — so its refusals are the ones filed under the card. The sentence
+ * names the new row's id, which a later turn needs to offer giving it to
+ * an agent.
+ */
+async function carryOutCliTool(db: Db, doors: AssistCardDoors, card: CliToolCard): Promise<{ done: boolean; said: string }> {
+  if (card.kind === "cliToolAdd") {
+    const name = card.name.trim();
+    const saved = await dispatched(doors, "cliTools:save", { name: card.name, command: card.command, description: card.description });
+    if (!saved.ok) return { done: false, said: `“${name}” was not added: ${saved.reason}` };
+    if (!saved.data.saved || saved.data.cliTool === null) return { done: false, said: `“${name}” was not added: ${saved.data.problem ?? "EO refused it."}` };
+    const tool = saved.data.cliTool;
+    return {
+      done: true,
+      said: `Added the command-line tool “${tool.name}” (\`${tool.command}\`, id: ${tool.id}) to the catalogue. No agent is told about it until one is given it.`,
+    };
+  }
+
+  const agent = getAgent(db, card.agentId as Uuid);
+  const tool = getCliTool(db, card.cliToolId);
+  const agentName = agent?.name ?? "The agent";
+  const toolName = tool === undefined ? "the command-line tool" : `“${tool.name}”`;
+  const ticked = await dispatched(doors, "agentCliTools:set", { agentId: card.agentId, cliToolId: card.cliToolId, attached: card.attached });
+  const verb = card.attached ? "given" : "taken away";
+  if (!ticked.ok) return { done: false, said: `${toolName} was not ${verb}: ${ticked.reason}` };
+  if (ticked.data.attachments === null) return { done: false, said: `${toolName} was not ${verb}: ${ticked.data.problem ?? "EO refused it."}` };
+  return {
+    done: true,
+    said: card.attached
+      ? `Gave ${agentName} ${toolName}. It is told about it from its next dispatch, when EO finds the program installed on the machine it runs on.`
+      : `${agentName} is no longer told about ${toolName}, from its next dispatch.`,
+  };
 }
 
 /** What an import brought, in the words the editor's Import used. */

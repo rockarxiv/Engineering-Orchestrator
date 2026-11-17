@@ -260,3 +260,28 @@ describe("what the system agent's prompt says about jobs (EO-786)", () => {
     expect(Number(/prompt-version:\s*(\d+)/.exec(prompt)![1])).toBeGreaterThanOrEqual(56);
   });
 });
+
+describe("what the system agent's prompt says about command-line tools (EO-822)", () => {
+  const cards = () => section("### Cards for what only a person may do");
+
+  it("names them among what only a person may do", () => {
+    expect(section("## How you change anything")).toContain(
+      "So are adding a command-line tool to the catalogue and giving one to an agent or taking it away.",
+    );
+  });
+
+  it("says to read the catalogue first, and that no tool of its own writes or attaches a CLI", () => {
+    expect(cards()).toContain("**Read the catalogue with `cli_tools_list` first**");
+    expect(cards()).toContain("you have no tool that adds, changes, archives or attaches a CLI — `agent_attachments_set` refuses one from you — and the card is the only way.");
+  });
+
+  it("gives the two cards' shapes, and says a CLI grants nothing", () => {
+    expect(cards()).toContain('`{ "kind": "cliToolAdd", "name": "GitHub CLI", "command": "gh", "description": "Pull requests, issues and checks on GitHub." }`');
+    expect(cards()).toContain('`{ "kind": "cliToolAttach", "agentId": "…", "cliToolId": "…", "attached": true }`');
+    expect(cards()).toContain("A CLI grants nothing: an agent runs it through the shell it already has");
+  });
+
+  it("is a newer version than the one before CLI cards", () => {
+    expect(Number(/prompt-version:\s*(\d+)/.exec(prompt)![1])).toBeGreaterThanOrEqual(58);
+  });
+});

@@ -853,6 +853,33 @@ export const AssistCardDetailSchema = z.discriminatedUnion("kind", [
     itemCount: z.number().int().nonnegative(),
   }),
   z.object({
+    /** Add a command-line tool to the catalogue (EO-822). */
+    kind: z.literal("cliToolAdd"),
+    /** As the card names them, trimmed the way `cliTools:save` trims them. */
+    name: z.string(),
+    command: z.string(),
+    description: z.string(),
+    /** Whether the command is installed on this machine, read now; null where it could not be checked. */
+    detection: CliToolDetectionSchema.nullable(),
+    /** What `cliTools:save` would refuse it with now — a command another row runs, a name too long — or null. */
+    problem: z.string().nullable(),
+  }),
+  z.object({
+    /** Give one agent a command-line tool, or take it away (EO-822). */
+    kind: z.literal("cliToolAttach"),
+    agentId: z.string(),
+    agentName: z.string(),
+    cliToolId: z.string(),
+    cliToolName: z.string(),
+    command: z.string(),
+    /** What pressing the card would make it: true gives the agent the CLI. */
+    attached: z.boolean(),
+    /** Whether the agent has it now. */
+    current: z.boolean(),
+    /** Whether the CLI is archived, so an agent given it is told nothing about it until it is restored. */
+    archived: z.boolean(),
+  }),
+  z.object({
     /** A webhook job's new secret or test event (EO-786). Never the secret itself. */
     kind: z.literal("jobWebhook"),
     jobId: z.string(),

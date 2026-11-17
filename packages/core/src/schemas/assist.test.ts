@@ -463,6 +463,24 @@ describe("the cards for jobs (EO-786)", () => {
   });
 });
 
+describe("the cards for command-line tools (EO-822)", () => {
+  it("accepts adding a CLI, and giving one to an agent or taking it away", () => {
+    for (const offered of [
+      { kind: "cliToolAdd", name: "GitHub CLI", command: "gh", description: "Pull requests and issues on GitHub." },
+      { kind: "cliToolAdd", name: "psql", command: "/usr/bin/psql", description: "" },
+      { kind: "cliToolAttach", agentId: "a", cliToolId: "c", attached: true },
+      { kind: "cliToolAttach", agentId: "a", cliToolId: "c", attached: false },
+    ]) {
+      expect(AssistOutputSchema.safeParse({ message: "The card does it.", card: offered }).success, JSON.stringify(offered)).toBe(true);
+    }
+  });
+
+  it("refuses a CLI with no command, and a tick that does not say which way", () => {
+    expect(AssistOutputSchema.safeParse({ message: "x", card: { kind: "cliToolAdd", name: "GitHub CLI", command: "", description: "" } }).success).toBe(false);
+    expect(AssistOutputSchema.safeParse({ message: "x", card: { kind: "cliToolAttach", agentId: "a", cliToolId: "c" } }).success).toBe(false);
+  });
+});
+
 describe("alternative drafts and keeping one's own pipeline (EO-534)", () => {
   const target = { pipelineId: "default" };
   const draft = (rationale: string) => ({ ...graph(), rationale, target });
