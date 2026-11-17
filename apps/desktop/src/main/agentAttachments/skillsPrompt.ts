@@ -26,7 +26,7 @@ export interface OfferedSkill {
  * the model decides on, and cutting it short is cutting the thing that
  * makes the choice possible.
  */
-function oneLine(text: string): string {
+export function oneLine(text: string): string {
   return text.replace(/\s+/g, " ").trim();
 }
 

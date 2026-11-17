@@ -39,7 +39,7 @@ import {
 import { agentMcpStdioConfig, eoMcpStdioConfig, type EoMcpServiceConfig } from "../mcp/serviceConfig.js";
 import { toolResultEvent, toolResultText } from "./toolResult.js";
 import { withAttachmentNote } from "./attachmentNote.js";
-import { withSkillsSection } from "../agentAttachments/skillsPrompt.js";
+import { openingPrompt } from "../agentAttachments/cliToolsPrompt.js";
 import { readToolDirectoryServers, TOOL_PLUGIN_NAME, toolDirectoryMcpConfigPath, toolDirectoryServerToolPrefixes, toolDirectorySkillNames, toolDirectorySkillsPromptSection } from "../agentAttachments/pluginDirectory.js";
 import { claudeSkillLoaded, leadingWith, skillsOffered, withoutEvents } from "./skillUsage.js";
 import { REFUSED_CALL_EVENTS, refusalHookOutput, refusedCall, type CallRule } from "./callRefusal.js";
@@ -2729,7 +2729,7 @@ export function createClaudeProvider(options: ClaudeProviderOptions = {}): Agent
         // longer repeats them at the foot of the context, which is what
         // made every fresh dispatch carry the role prompt twice.
         sdkOptions.systemPrompt = opts.instructions;
-        const prompt = withAttachmentNote(withSkillsSection(opts.context, skillsSection), opts.attachments);
+        const prompt = withAttachmentNote(openingPrompt(opts.context, skillsSection, opts.cliTools), opts.attachments);
         return open(sdk, prompt, sdkOptions, interceptions, admin, opts.warmKey, opts.signal, opts.streamDeltas === true, opts.processScope);
       }));
     },

@@ -155,6 +155,9 @@ import { agentAttachmentsHash, EMPTY_ATTACHMENTS_HASH } from "../agentAttachment
 import { qualifiedServerName } from "../agentAttachments/pluginDirectory.js";
 import { deliverableSkills, skillReadAnswer } from "../agentAttachments/worktreeSkills.js";
 import { resolveAgentAttachmentsForRun } from "../db/repos/agentAttachmentsRepo.js";
+import { detectCliTool as detectCliToolOnPath } from "../agentAttachments/cliTools.js";
+import { missingCliToolNotice } from "../agentAttachments/cliToolsPrompt.js";
+import { resolveAgentCliTools } from "../db/repos/cliToolsRepo.js";
 import type { Db } from "../db/client.js";
 import { startOfDay } from "../dateUtils.js";
 import { packMeaningInForce, proposedActionsProblem, registry, registryForProject } from "../registry.js";
@@ -263,7 +266,7 @@ import {
   getMessage,
   openMessageAbout,
 } from "../db/repos/index.js";
-import type { RuntimeId } from "@eo/core";
+import type { AgentCliTool, CliTool, CliToolDetection, RuntimeId } from "@eo/core";
 import { invalidateRuntimeAuth, type RuntimeAuthCheck } from "../runtimes/auth.js";
 import { resolveMessagesAbout, reviseMessage, sendMessageHere } from "../messages/messages.js";
 import {
@@ -761,6 +764,17 @@ export interface RunSupervisorOptions {
    * resuming spawns the backend's process afresh.
    */
   prepareToolDirectory?: (item: Item, agent: Agent) => PreparedToolDirectory | null;
+  /**
+   * Whether one of an agent's command-line tools is installed (EO-820):
+   * found on the PATH the agent is spawned with, looked up from the
+   * directory its run is spawned in, with the version it reports. Asked
+   * at dispatch for every CLI the agent has attached, because a
+   * catalogue row's word that a program exists is not checked by being
+   * believed (invariant 5). Never throws by contract; one that does is
+   * taken as not found. Defaults to the real check
+   * (`agentAttachments/cliTools.ts`), which tests replace.
+   */
+  detectCliTool?: (command: string, cwd: string) => Promise<CliToolDetection>;
   /**
    * The item is finished with, and so are the directories its agents
    * were reading their servers and skills out of (EO-107).
@@ -2069,6 +2083,7 @@ export function createRunSupervisor(
     dispatchRefusal = () => null,
     isAgentAvailable = () => true,
     prepareToolDirectory = () => null,
+    detectCliTool = (command: string, cwd: string) => detectCliToolOnPath(command, { cwd }),
     releaseToolDirectories = () => {},
     noDiskRoot,
     scratchRoot,
@@ -7563,7 +7578,13 @@ export function createRunSupervisor(
     // also what makes a server that failed between two dispatches simply
     // stop being passed, with no cached object anybody has to
     // invalidate.
-    const attachment = await attachWorkspace(item, agent, workspace);
+    //
+    // Alongside it, the agent's command-line tools are looked for on this
+    // machine (EO-820): each one's version is a program run under a
+    // timeout, so it is waited for here and not below. Not for a
+    // continuation, which carries on a thread opened with them already.
+    const cliDetecting = continuation ? null : detectCliTools(resolveAgentCliTools(db, agent.id), workspace.cwd);
+    const [attachment, cliDetections] = await Promise.all([attachWorkspace(item, agent, workspace), cliDetecting ?? new Map<string, CliToolDetection>()]);
     // This is the provider boundary. Everything above is preflight and
     // may yield to the event loop; everything below is synchronous until
     // start() has returned its stream. Rechecking here closes the race
@@ -7608,6 +7629,13 @@ export function createRunSupervisor(
       staleReuse = staleAttachmentsRefusal(agent);
       resuming = null;
     }
+    // The agent's CLIs as the fingerprint above just read them (EO-820),
+    // so the prompt names what the row records. One whose command was
+    // attached or changed while they were being looked for was never
+    // looked for, so the dispatch turns back having written nothing, as
+    // for the item's files, and the next tick looks again.
+    const cliTools = continuation ? [] : resolveAgentCliTools(db, agent.id);
+    if (cliTools.some((tool) => !cliDetections.has(tool.command))) return;
     // What this agent has been given out of the two catalogues, written
     // where the backend can read it. Regenerated on every dispatch,
     // resumed threads included, because the CLI is spawned again each
@@ -7707,6 +7735,29 @@ export function createRunSupervisor(
         body: staleReuse ?? (reuse?.kind === "refused" ? reuse.reason : ""),
       });
     }
+    // The thread this run opens is told about the agent's CLIs that are
+    // installed here and about no other (EO-820); only `start()` below is
+    // handed them, so a resumed thread is told nothing again. One that is
+    // not installed is left out and the run goes ahead, which is why the
+    // item is told so — once per missing CLI, on every run that went
+    // without it, a resumed one included (invariant 8): the program
+    // having gone since the thread was opened is exactly what the thread
+    // cannot know.
+    const foundCliTools: AgentCliTool[] = [];
+    for (const tool of cliTools) {
+      const detection = cliDetections.get(tool.command);
+      if (detection?.found) {
+        foundCliTools.push({ command: tool.command, description: tool.description, path: detection.path, version: detection.version });
+        continue;
+      }
+      postComment(db, {
+        itemId: item.id,
+        runId: run.id,
+        author: { type: "engine" },
+        kind: "note",
+        body: missingCliToolNotice(tool, agent.name),
+      });
+    }
     // What the workspace could not lend, in its own words (EO-151,
     // invariant 8). Nothing is blocked and the run proceeds exactly as
     // it would have — which is precisely why it has to be said out loud,
@@ -7778,6 +7829,9 @@ export function createRunSupervisor(
           }).start({
             instructions: agent.instructions,
             context: turnContext, // ARCHITECTURE.md, "What an agent is given": seeded from the thread, or the whole of it for a conversational role — and the memory chosen for it
+            // The CLIs found installed, named in the prompt that opens the
+            // thread (EO-820). Not in `turnOptions`: no other turn says them.
+            ...(foundCliTools.length > 0 ? { cliTools: foundCliTools } : {}),
             ...turnOptions,
           }),
     );
@@ -7802,6 +7856,18 @@ export function createRunSupervisor(
         attachment,
       },
     );
+  }
+
+  /**
+   * Each of these CLIs looked for on this machine (EO-820), all at once,
+   * by command. A check that throws is a CLI not found: a missing CLI
+   * never holds a dispatch.
+   */
+  async function detectCliTools(tools: readonly CliTool[], cwd: string): Promise<Map<string, CliToolDetection>> {
+    const detected = await Promise.all(
+      tools.map(async (tool) => [tool.command, await detectCliTool(tool.command, cwd).catch((): CliToolDetection => ({ found: false }))] as const),
+    );
+    return new Map(detected);
   }
 
   async function executeDispatch(dispatch: Dispatch, lease: DispatchLease): Promise<void> {

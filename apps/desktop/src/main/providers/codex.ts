@@ -70,6 +70,7 @@ import type { SearchNudge } from "./searchNudge.js";
 import { toolResultEvent, toolResultText } from "./toolResult.js";
 import { withAttachmentNote } from "./attachmentNote.js";
 import { withSkillsSection } from "../agentAttachments/skillsPrompt.js";
+import { openingPrompt } from "../agentAttachments/cliToolsPrompt.js";
 
 /**
  * What a Codex-backed agent's `agents.config` may carry. Everything is
@@ -3089,7 +3090,7 @@ export function createCodexProvider(options: CodexProviderOptions = {}): AgentPr
       // out above as the thread's `baseInstructions` (EO-385), and
       // `assembleContext` deliberately does not append them to the
       // context either, so they are said exactly once.
-      const prompt = withAttachmentNote(withSkillsSection(opts.context, skillsSection), opts.attachments);
+      const prompt = withAttachmentNote(openingPrompt(opts.context, skillsSection, opts.cliTools), opts.attachments);
       yield* streamTurn(thread, prompt, opts.outputSchema, opts.signal, reach, hook, opts.streamDeltas === true, opts.warmKey, opts.budgetCents);
     }
   }

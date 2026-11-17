@@ -1,5 +1,6 @@
 import type { AgentProvider, AgentProviderResumeOptions, AgentProviderStartOptions, AgentSessionQuery, DebugSent, DebugSession } from "@eo/core";
 import { withSkillsSection } from "../agentAttachments/skillsPrompt.js";
+import { openingPrompt } from "../agentAttachments/cliToolsPrompt.js";
 
 /**
  * Debug mode's capture: what a provider was handed, written down as it
@@ -86,7 +87,7 @@ export function sentOnStart(provider: AgentProvider, context: SendContext, opts:
     thread: { mode: "new", threadId: null, refusal: context.refusal },
     instructions: { sent: true, text: opts.instructions },
     // Joined by the function the adapter joins it with.
-    prompt: withSkillsSection(opts.context, skillsSection),
+    prompt: openingPrompt(opts.context, skillsSection, opts.cliTools),
     session: sessionOf(provider, context, opts),
   };
 }
