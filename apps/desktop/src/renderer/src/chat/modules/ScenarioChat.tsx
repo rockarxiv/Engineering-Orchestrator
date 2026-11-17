@@ -10,7 +10,7 @@ import { useWithdrawnApproval } from "../../shared/modules/useWithdrawnApproval"
 import { useLiveDrafts } from "../../shared/assist/liveDeltas";
 import { LiveTurnBody, TurnFold } from "../conversation/TurnView";
 import { ipcQuery } from "../../query/client";
-import { modulesKey, useModulesWithDeleted } from "../../query/hooks";
+import { moduleReadinessRootKey, modulesKey, useModulesWithDeleted } from "../../query/hooks";
 import { AttachmentCard } from "../conversation/AttachmentCard";
 import { Composer } from "../conversation/Composer";
 import { QuestionCard, transcriptRows } from "../conversation/QuestionCard";
@@ -93,7 +93,10 @@ function ChangeCard({ message, moduleId, conversationId, onDone }: { message: Di
       setProblem(result.problem);
       // The card as applying left it, before `onDone` re-reads the thread (EO-548).
       drawScenarioReply(queryClient, moduleId, result.conversation);
-      if (result.applied) void queryClient.invalidateQueries({ queryKey: modulesKey });
+      if (result.applied) {
+        void queryClient.invalidateQueries({ queryKey: modulesKey });
+        void queryClient.invalidateQueries({ queryKey: moduleReadinessRootKey });
+      }
       onDone();
     },
     onError: (error: unknown) => setProblem(error instanceof Error ? error.message : String(error)),
@@ -112,6 +115,26 @@ function ChangeCard({ message, moduleId, conversationId, onDone }: { message: Di
         {/* What the changed version would need on this device (EO-817), before Apply. */}
         {module ? <ModuleReadiness module={module} change={{ conversationId, messageId: message.id }} /> : null}
         {problem ? <p className="text-[12px] text-danger">{problem}</p> : null}
+      </section>
+    </Turn>
+  );
+}
+
+/**
+ * A change that has been applied (EO-817): the diff stays readable, and
+ * beneath it whether the module as it is now saved could run on this
+ * device — what the change added included — with the same setup and
+ * Recheck the card offered before Apply. Only the newest applied change
+ * carries it, since every one of them would answer for the same saved
+ * version.
+ */
+function AppliedChange({ message, moduleId }: { message: DiscussionMessage; moduleId: string }) {
+  const module = useModulesWithDeleted().data?.modules?.find((candidate) => candidate.id === moduleId && candidate.archivedAt === null);
+  return (
+    <Turn name={message.authorName}>
+      <section aria-label="Applied change" className="flex flex-col gap-2.5 rounded-[12px] bg-canvas-subtle px-3.5 py-3">
+        <Markdown className="text-[13px] leading-relaxed">{message.body}</Markdown>
+        {module ? <ModuleReadiness module={module} /> : null}
       </section>
     </Turn>
   );
@@ -189,6 +212,12 @@ export function ScenarioPanel({ module, onClose, guardCaseWrites }: ScenarioPane
   const drafts = useLiveDrafts(view?.liveTurn, view?.id, useCallback(() => refresh(), [refresh]));
   const rows = useMemo(() => transcriptRows(messages), [messages]);
   const thinking = view?.thinking ?? false;
+  // The newest change applied here: the one a person pressed Apply on files an `approval` under it.
+  const appliedChangeId = useMemo(() => {
+    const applied = new Set(messages.filter((entry) => entry.kind === "approval" && entry.parentId !== null).map((entry) => entry.parentId));
+    for (let index = messages.length - 1; index >= 0; index--) if (applied.has(messages[index]!.id)) return messages[index]!.id;
+    return null;
+  }, [messages]);
 
   const answer = useMutation({
     mutationFn: async (answers: { questionId: string; answer: string | null }[]) => {
@@ -265,6 +294,7 @@ export function ScenarioPanel({ module, onClose, guardCaseWrites }: ScenarioPane
           if (message.canApprove && view !== null) {
             return <ChangeCard key={message.id} message={message} moduleId={module.id} conversationId={view.id} onDone={room.refresh} />;
           }
+          if (message.id === appliedChangeId) return <AppliedChange key={message.id} message={message} moduleId={module.id} />;
           if (message.approvalWithdrawn) return <WithdrawnApproval key={message.id} message={message} />;
           if (message.authorType === "human") return <Mine key={message.id} message={message} />;
           return (
