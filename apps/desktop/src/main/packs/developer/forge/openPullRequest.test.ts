@@ -246,6 +246,8 @@ describe("refusing, once, with a reason", () => {
     expect(result.ok).toBe(false);
     expect(result.error).toContain("could not count");
     expect(result.error).not.toContain("no commits that");
+    // git's own words, which can quote the checkout's path, as a code span (EO-830).
+    expect(result.error).toMatch(/vouch for: `[^`]*no-such-base[^`]*`$/);
     // Retryable: an unresolvable ref is usually a fetch that has not
     // happened yet, and the next attempt fixes it.
     expect(result.final).toBe(false);

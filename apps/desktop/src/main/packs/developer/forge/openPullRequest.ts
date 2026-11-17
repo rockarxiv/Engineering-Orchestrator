@@ -145,7 +145,7 @@ export async function openPullRequest(input: OpenPullRequestInput): Promise<Open
   const ahead = await commitsAhead(repoPath, baseRef, branch);
   if (!ahead.ok) {
     return fail(
-      `EO could not count what \`${branch}\` has beyond \`${baseRef}\`, so it did not open a pull request it cannot vouch for: ${ahead.error}`,
+      `EO could not count what \`${branch}\` has beyond \`${baseRef}\`, so it did not open a pull request it cannot vouch for: ${codeSpan(ahead.error)}`,
       // Not final: an unresolvable ref is usually a fetch that has not
       // happened yet or a remote that was briefly unreachable, and both
       // fix themselves on the next attempt.

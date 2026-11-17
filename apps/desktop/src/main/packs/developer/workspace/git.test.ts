@@ -453,6 +453,23 @@ describe("rebaseOntoBase", () => {
     const slashes = (text: string) => text.replaceAll("\\", "/");
     expect(slashes(error)).toContain(slashes(canonicalPath(worktreePath)));
     expect(error).not.toContain("ENOENT");
+    // git's refusal quotes that path, so it stands as a code span: in a
+    // comment a Windows path keeps its backslashes before \`.eo\` (EO-830).
+    expect(error).toMatch(/^Could not create a temporary worktree to rebase `eo\/TICKET-7` onto `main`: `[^`]+`$/);
+  });
+
+  it("writes git's refusal of a rebase that never started as a code span (EO-830)", async () => {
+    await run(["checkout", "-b", "eo/TICKET-7b"], repoPath);
+    await commit(repoPath, "ticket.txt", "work\n");
+    await run(["checkout", "main"], repoPath);
+
+    // A \`from\` that does not resolve: git refuses before it starts, so
+    // there is nothing to abort and its own words are the reason.
+    const result = await rebaseOntoBase(repoPath, "eo/TICKET-7b", "main", { from: "no-such-ref" });
+
+    expect(result.ok).toBe(false);
+    const error = result.ok ? "" : result.error;
+    expect(error).toMatch(/^Rebasing `eo\/TICKET-7b` onto `main` failed: `[^`]*no-such-ref[^`]*`$/);
   });
 
   it("refuses to rebase in a worktree EO did not create, and leaves it alone", async () => {

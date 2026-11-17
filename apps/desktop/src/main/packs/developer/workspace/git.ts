@@ -399,7 +399,7 @@ export async function rebaseOntoBase(repoPath: string, branch: string, baseBranc
   try {
     const added = await git(["worktree", "add", directory, branch], repoPath, running);
     if (!added.ok) {
-      return { ok: false, conflicts: [], error: `Could not create a temporary worktree to rebase \`${branch}\` onto \`${baseBranch}\`: ${added.error}` };
+      return { ok: false, conflicts: [], error: `Could not create a temporary worktree to rebase \`${branch}\` onto \`${baseBranch}\`: ${codeSpan(added.error)}` };
     }
 
     try {
@@ -446,7 +446,7 @@ async function rebaseIn(directory: string, branch: string, baseBranch: string, f
   // that does not resolve. There is nothing to take back then, and
   // `--abort` would only add its own confusing failure to the reason.
   if (!(await rebaseInProgress(directory))) {
-    return { ok: false, conflicts: [], error: `Rebasing \`${branch}\` onto \`${baseBranch}\` failed: ${rebased.error}` };
+    return { ok: false, conflicts: [], error: `Rebasing \`${branch}\` onto \`${baseBranch}\` failed: ${codeSpan(rebased.error)}` };
   }
 
   // Which files it stopped on, while the stopped rebase still says.

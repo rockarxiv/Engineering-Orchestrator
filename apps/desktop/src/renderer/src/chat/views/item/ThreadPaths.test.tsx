@@ -3,6 +3,7 @@ import { render } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { describe, expect, it, vi } from "vitest";
 import type { CommentView } from "@eo/core";
+import { codeSpan, cutKeepingCodeSpans } from "../../../../../main/codeSpan";
 import { codexHomeRefusal, prepareCodexHome, type CodexHomeFs, type LinkStat } from "../../../../../main/providers/codexHome";
 import { createQueryClient } from "../../../query/client";
 import { CommentThread } from "./Thread";
@@ -185,6 +186,35 @@ describe("paths in the comments EO writes itself (EO-830)", () => {
     expect(text).not.toContain(LOCK);
     expect(text).toContain(`C:\\Users\\name.eo\\codex-homes\\`);
     expect(text).toContain(`${ITEM}.sqlite-maintenance.lock`);
+  });
+
+  it("draws every backslash of a path in git's own refusal, which EO quotes whole", () => {
+    // The shape \`rebaseOntoBase\` writes when git refuses before a rebase
+    // starts; the refusal names the repository the way git does.
+    const refusal = "fatal: detected dubious ownership in repository at 'C:\\Users\\name\\.eo\\repo'";
+    const body = `Rebasing \`eo/FORT-83\` onto \`main\` failed: ${codeSpan(refusal)}`;
+    const text = drawn(comment({ body, kind: "note" })).textContent ?? "";
+
+    expect(text).toContain("'C:\\Users\\name\\.eo\\repo'");
+  });
+
+  it("keeps the backslashes of a long reason cut short, the path it cuts in among them", () => {
+    // Two hooks under a deep checkout, in the words \`describeHookEscape\`
+    // uses, cut to 500 characters the way \`sayable\` cuts a reason.
+    const deep = `C:\\Users\\name\\.eo\\worktrees\\${"d".repeat(180)}\\my-repo\\.git\\hooks\\`;
+    const hooks = [`${deep}post-commit`, `${deep}post-merge`];
+    const reason = `CodeWiki installed git hooks into this repository at ${hooks.map(codeSpan).join(", ")} and EO could not remove them.`;
+    const cut = (line: string) => `${cutKeepingCodeSpans(line, 500)}…`;
+    expect(reason.length).toBeGreaterThan(500);
+
+    const text = drawn(comment({ body: cut(reason), kind: "note" })).textContent ?? "";
+
+    expect(text).toContain(hooks[0]);
+    expect(text).toContain(`${hooks[0]}, C:\\Users\\name\\.eo\\worktrees\\ddd`);
+    expect(text).not.toContain("`");
+    // A plain cut leaves the second span open, and markdown takes its backslashes.
+    const plain = drawn(comment({ body: `${reason.slice(0, 500)}…`, kind: "note" })).textContent ?? "";
+    expect(plain).not.toContain(`, C:\\Users\\name\\.eo\\worktrees\\`);
   });
 
   it("leaves what a person writes as markdown: their \\* is a literal asterisk", () => {
