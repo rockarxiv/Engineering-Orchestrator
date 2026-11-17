@@ -21,6 +21,7 @@ function step(id: string, name: string, position: number, overrides: Partial<Pip
     watch: null,
     results: [],
     moduleVersion: null,
+    brief: null,
     ...overrides,
   };
 }

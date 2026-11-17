@@ -64,6 +64,7 @@ import { activeProjectId } from "../ipc/repositoryCommands.js";
 import { chatPipelineProjectId } from "../ipc/pipelineHome.js";
 import { registry } from "../registry.js";
 import {
+  draftStepBrief,
   draftStepResults,
   holdingPhrase,
   publishedStepInputs,
@@ -2693,6 +2694,8 @@ export function assistDraftForPublish(db: Db, conversation: Item, commentId: Uui
         // A draft names a module and no version (EO-770): the save pins the
         // module's newest approved version.
         moduleVersion: null,
+        // What the decision's details show (EO-827): the draft's, or the step's own where it says nothing.
+        brief: draftStepBrief(draftStep, existing),
       };
     }),
     // "Needs a reason" is the result's, carried above, not the route's.

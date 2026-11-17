@@ -19,7 +19,7 @@ import type {
   Uuid,
 } from "@eo/core";
 import type { Run } from "@eo/core";
-import { EntryRulesSchema, parseStoredCommentOptions, TrialPlanSchema, TrialStepSourcesSchema, type TrialPlan, type TrialStepSources } from "@eo/core";
+import { EntryRulesSchema, parseStoredCommentOptions, storedBrief, TrialPlanSchema, TrialStepSourcesSchema, type TrialPlan, type TrialStepSources } from "@eo/core";
 import { keepArrivedOrigin, originForWire } from "./itemOriginsRepo.js";
 import type { Db } from "../client.js";
 import { getRun } from "./runsRepo.js";
@@ -245,6 +245,8 @@ function toRecordPipeline(db: Db, row: typeof pipelines.$inferSelect): RecordPip
         results: step.results as RecordPipeline["steps"][number]["results"],
         // The module version it runs (EO-770), so a replica runs what the record pins.
         moduleVersion: step.moduleVersion,
+        // What its decision's details show (EO-827), so a replica shows what the record does.
+        brief: storedBrief(step.brief),
       })),
     routes: db
       .select()
@@ -738,6 +740,7 @@ export function upsertReplicaPipeline(db: Db, pipeline: RecordPipeline): "writte
           // The module version it runs (EO-772): the record's number, which
           // is this replica's too once the section's modules have applied.
           moduleVersion: step.moduleVersion,
+          brief: step.brief ?? null,
         })
         .onConflictDoUpdate({
           target: pipelineSteps.id,
@@ -761,6 +764,7 @@ export function upsertReplicaPipeline(db: Db, pipeline: RecordPipeline): "writte
                 ownerGroupId: step.ownerGroupId,
                 results: step.results,
                 moduleVersion: step.moduleVersion,
+                brief: step.brief ?? null,
                 // `workspaceId` is absent on purpose — see this
                 // function's header. It is the one thing on a step that
                 // belongs to the machine rather than to the graph.
@@ -1711,6 +1715,7 @@ export function writeAdoptedPage(db: Db, project: RecordProject, page: RecordAdo
             results: step.results,
             // The module version it runs (EO-772), as the sender pins it.
             moduleVersion: step.moduleVersion,
+            brief: step.brief ?? null,
           })
           // Wholesale, because a step carries no timestamp of its own
           // and travels with the pipeline that does. What the sender
@@ -1735,6 +1740,7 @@ export function writeAdoptedPage(db: Db, project: RecordProject, page: RecordAdo
               ownerGroupId: step.ownerGroupId,
               results: step.results,
               moduleVersion: step.moduleVersion,
+              brief: step.brief ?? null,
             },
           })
           .run();

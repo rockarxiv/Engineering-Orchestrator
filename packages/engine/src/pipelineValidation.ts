@@ -15,6 +15,7 @@ import {
   WAITING_RESULT,
 } from "@eo/core";
 import { entryRuleProblems } from "./entryRules.js";
+import { briefProblems } from "./stepBrief.js";
 import { moduleAtPin, type ModuleVersionFacts } from "./modulePins.js";
 
 /** The module a step runs, as its pin makes it (EO-770), or undefined for one it does not run or this installation does not have. */
@@ -252,6 +253,11 @@ export function validatePipeline(input: ValidatePipelineInput): WorkflowProblem[
 
   for (const message of entryRuleProblems(entryRules, itemTypes, registry.entryRuleKinds, modules, moduleVersions)) {
     problems.push({ severity: "error", stateId: null, message });
+  }
+  // What each person step's decision shows behind "Show details" (EO-827):
+  // a step, field or comment kind it names has to exist here.
+  for (const { stepId, message } of briefProblems(steps, itemTypes)) {
+    problems.push({ severity: "error", stateId: stepId, message });
   }
 
   const byId = new Map(steps.map((step) => [step.id, step]));

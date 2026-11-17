@@ -27,6 +27,7 @@ function step(overrides: Partial<PipelineStep> = {}): PipelineStep {
     ownerPersonId: null,
     ownerGroupId: null,
     moduleVersion: null,
+    brief: null,
     results: [result(), result({ key: "send_back", label: "Send back", tone: "warning", requiresComment: true })],
     ...overrides,
   };

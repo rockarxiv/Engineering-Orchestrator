@@ -62,7 +62,7 @@ describe("pipeline version history", () => {
       timeoutMs: step.timeoutMs,
       watch: step.watch,
       results: step.results,
-      moduleVersion: null,
+      moduleVersion: null, brief: null,
     }));
 
   const save = (steps: PipelineStep[] = [intake, decide, done]) =>

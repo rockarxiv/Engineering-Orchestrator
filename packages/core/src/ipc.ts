@@ -124,6 +124,7 @@ import {
 } from "./schemas/jobs.js";
 import { JobEventOutcomeSchema, JobEventRowSchema } from "./webhook.js";
 import { EntryRulesSchema } from "./entryRules.js";
+import { ItemBriefSchema } from "./stepBrief.js";
 import { JobMachineSchema, JobPlacementSchema, JobRunsOnSchema } from "./placement.js";
 import { ActionRouteUseSchema, ActionUseSchema, RegistryViewSchema } from "./registry/index.js";
 import { ActionDefinitionDraftSchema, ActionDefinitionSchema } from "./schemas/actionDefinition.js";
@@ -1063,6 +1064,15 @@ export const recordContract = {
    * absent would be a type each of them had to second-guess.
    */
   "items:getSections": channel(ItemSectionsRequestSchema, ItemSectionsSchema.nullable()),
+  /**
+   * What the decision on an item is about (EO-827): the brief behind
+   * "Show details" on the item page's decision bar, resolved in the main
+   * process from the thread, the runs and the moves. The step's declared
+   * parts in order, or the default — its instructions summary, the current
+   * output and the newest verdict from the step before. Null for an item
+   * that no longer exists.
+   */
+  "items:brief": channel(z.object({ itemId: z.string() }), ItemBriefSchema.nullable()),
   /**
    * The item a key names — `EO-486` — through the project whose key
    * prefix it carries (EO-539).

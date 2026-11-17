@@ -16,8 +16,8 @@ import { DEEP, DecisionButtons } from "../../parts";
  * decides exactly as the box did, with the same holder rules on a step
  * that waits on a group (EO-368).
  *
- * `details` is where the next story's "Show details" brief goes; nothing
- * passes it yet.
+ * `details` is the "Show details" brief (`DecisionBrief`, EO-827): what
+ * the decision is about, opened on demand so the bar stays one line.
  */
 export function DecisionBar({
   ref,

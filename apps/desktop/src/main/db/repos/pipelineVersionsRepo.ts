@@ -448,6 +448,9 @@ function diffableGraph(snapshot: PipelineGraphSnapshot): DiffableGraph {
       watch: step.watch,
       // The module version it runs (EO-770), so a pin moving is a change.
       moduleVersion: step.moduleVersion,
+      // What the decision's "Show details" shows (EO-827), so declaring,
+      // changing or clearing a brief is a change the diff reports.
+      brief: step.brief,
       // What a person may decide here (EO-310), carried so the diff can
       // report a save that renamed, retoned or withdrew a button. A
       // human step's results are executable — an item finishing on an

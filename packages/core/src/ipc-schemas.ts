@@ -6,6 +6,7 @@ import { CommentOptionSchema } from "./schemas/commentOptions.js";
 import { ModuleChangeCardSchema } from "./schemas/moduleChange.js";
 import { StepInputsSchema } from "./schemas/modules.js";
 import { StepResultSchema } from "./schemas/pipelines.js";
+import { StepBriefSchema } from "./stepBrief.js";
 import { ProposalSummarySchema } from "./schemas/proposalSummary.js";
 import { WaitingOnSchema } from "./people.js";
 import { SpecShapeSchema } from "./schemas/specShape.js";
@@ -1050,6 +1051,13 @@ export const PipelineStepViewSchema = z.object({
    * caller that names only a module gets the code a person approved.
    */
   moduleVersion: z.number().int().positive().nullable().default(null),
+  /**
+   * What the decision bar's "Show details" shows on a `user` step
+   * (EO-827): the declared parts in order, or null for the default.
+   * Defaulted on this view for `watch`'s reason; a save reads absent as
+   * "keep" (`PipelineStepSaveSchema`).
+   */
+  brief: StepBriefSchema.nullable().default(null),
 });
 
 /**
@@ -1075,6 +1083,17 @@ export const PipelineStepSaveSchema = PipelineStepViewSchema.extend({
       "Keep checking: { everyMinutes, giveUpAfterHours } runs this builtin or module step's check every N minutes until it reports a result, " +
         "giving up after H hours (a week when left out); neverGivesUp: true keeps checking until it has a result, however long that takes. " +
         "null makes the step run once. Leave the field out to keep the step's current setting.",
+    ),
+  /**
+   * The brief, on `watch`'s terms (EO-827): absent keeps the step's own,
+   * `null` clears it back to the default.
+   */
+  brief: StepBriefSchema.nullable()
+    .optional()
+    .describe(
+      "What a person step's decision bar shows behind \"Show details\", in order: { show: \"output\", step: <step id> } for that step's newest output, " +
+        "{ show: \"comment\", kind?: <comment kind>, role?: <author role> } for the newest such comment, { show: \"field\", field: <item field> } for a field. " +
+        "null shows the default (instructions summary, current output, the previous step's verdict). Leave the field out to keep the step's current brief.",
     ),
 });
 

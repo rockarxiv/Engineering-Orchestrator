@@ -335,6 +335,8 @@ function draftOfVersion(db: Db, rows: readonly { id: string; number: number }[],
       results: step.results,
       // The module version it ran (EO-770): a restore runs that code again.
       moduleVersion: step.moduleVersion,
+      // Its brief (EO-827): a restore shows the decision as that version did.
+      brief: step.brief,
     })),
     routes: snapshot.routes.map((route) => ({
       id: route.id,

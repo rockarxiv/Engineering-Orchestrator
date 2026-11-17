@@ -190,7 +190,8 @@ export const ASSIST_ANSWER_WITH_MAPS = {
             workspaceId: "none",
             workspaceMode: "read",
           },
-          { ...DONE_STEP, timeoutMs: "default" },
+          // A person step's brief (EO-827): the newest approval, then the merge's output.
+          { ...DONE_STEP, timeoutMs: "default", brief: [{ show: "comment", kind: "approval" }, { show: "output", step: "merge" }] },
         ],
         routes: [{ ...DRAFT_ROUTE, requiresComment: true }],
         icon: "workflow",
@@ -252,8 +253,21 @@ export const ASSIST_ANSWER_WITH_MAPS = {
             watch: "off",
             workspaceId: "none",
             workspaceMode: "read",
+            // Left out, which is "keep the brief it has" (EO-827).
+            brief: null,
           },
-          { ...DONE_STEP, timeoutMs: "default", inputs: null, watch: null, workspaceId: null, workspaceMode: null },
+          {
+            ...DONE_STEP,
+            timeoutMs: "default",
+            inputs: null,
+            watch: null,
+            workspaceId: null,
+            workspaceMode: null,
+            brief: [
+              { show: "comment", kind: "approval", role: null },
+              { show: "output", step: "merge" },
+            ],
+          },
         ],
         routes: [{ ...DRAFT_ROUTE, requiresComment: true }],
         icon: "workflow",

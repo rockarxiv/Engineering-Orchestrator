@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { namesAdminServer } from "../agent-capabilities.js";
 import { EntryRulesSchema } from "../entryRules.js";
+import { StepBriefSchema } from "../stepBrief.js";
 import { ConnectorSetupSchema, connectorSetupProblems } from "./connectors.js";
 import { PipelineStepViewSchema, StepRouteViewSchema } from "../ipc-schemas.js";
 import { ActionOverridesSchema } from "../registry/index.js";
@@ -230,8 +231,19 @@ import { SpecShapeSchema } from "./specShape.js";
  * and its modules name no version, so an import pins each module it
  * creates to the version that import filed, which holds the code the
  * document carried.
+ *
+ * **15 (EO-827).** A person step may carry a **brief** (`brief`): what its
+ * decision bar shows behind "Show details", naming steps by the ids the
+ * document carries.
+ *
+ * Bumped for version 4's reason: a version-14 build strips the key and
+ * imports the step showing the default brief, which is not what the
+ * author published, and nothing says so. The key is one a version-14
+ * build drops rather than refuses, so it parses the document and reaches
+ * its format check. Reading an older document is unchanged: no step in it
+ * declares a brief, so every step shows the default.
  */
-export const PIPELINE_EXPORT_VERSION = 14;
+export const PIPELINE_EXPORT_VERSION = 15;
 
 /**
  * An action a role defines, as the document carries it (EO-424).
@@ -705,6 +717,9 @@ export const ExportedStepSchema = PipelineStepViewSchema.omit({ pipelineId: true
   // version and absent everywhere else, so a document with no module step
   // reads exactly as it did at format 13.
   moduleVersion: z.number().int().positive().nullable().optional(),
+  // The brief a person step declares (EO-827), optional for the same
+  // reason: written where one is declared and absent everywhere else.
+  brief: StepBriefSchema.optional(),
 });
 /** A route as the document carries it. Its target is a step of any board in the document, or a sentinel. */
 export const ExportedRouteSchema = StepRouteViewSchema.omit({ id: true, pipelineId: true });

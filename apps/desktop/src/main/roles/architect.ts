@@ -15,6 +15,7 @@ import {
   resultsFromRoutes,
   RUNS_ONCE,
   type PipelineStep,
+  type StepBrief,
   type ProposedModule,
   type StepInputs,
   type StepResult,
@@ -25,6 +26,7 @@ import {
   ITEM_WORKSPACE,
   type Uuid,
   watchLine,
+  briefWords,
   settledWatch,
   type WorkspaceMode,
   entryRuleWords,
@@ -196,7 +198,9 @@ export function validateDraft(
     // run timeout it would be refused here for a limit Publish accepts.
     runTimeoutMs: readGuards(db).wallClockTimeoutMs,
     // The rules it would publish (EO-610), held to what a save holds them to.
-    ...(draft.entryRules === undefined ? {} : { entryRules: draft.entryRules, itemTypes: itemTypesJudged(db, pipelineId) }),
+    ...(draft.entryRules === undefined ? {} : { entryRules: draft.entryRules }),
+    // The types those rules, and a step's brief (EO-827), are held to.
+    itemTypes: itemTypesJudged(db, pipelineId),
   })];
 }
 
@@ -412,8 +416,21 @@ export function toDomainSteps(pipelineId: string, draft: DraftWithLimits, existi
       // fail validation for routing a result it does not declare, and the
       // card could never be applied.
       results: draftStepResults(step, draft.routes, existing?.results ?? []),
+      // What the decision's details show (EO-827), as entry rules are set:
+      // what the draft says, `[]` clearing it, or else the step's own.
+      brief: draftStepBrief(draftStep, existing),
     };
   });
+}
+
+/**
+ * A draft step's brief once what it left out is the step's own (EO-827):
+ * a draft that does not mention it keeps it, `[]` puts back the default,
+ * and a list declares it.
+ */
+export function draftStepBrief(step: { brief?: StepBrief | undefined }, existing: Pick<PipelineStep, "brief"> | undefined): StepBrief | null {
+  if (step.brief === undefined) return existing?.brief ?? null;
+  return step.brief.length === 0 ? null : step.brief;
 }
 
 /**
@@ -528,6 +545,8 @@ export function renderDraft(
 
   const before = listStepsForPipeline(db, pipelineId).filter((step) => !step.offBoard);
   const beforeById = new Map(before.map((step) => [step.id, step]));
+  // Every step by name, as a brief that names one is said (EO-827).
+  const stepNames = new Map<string, string>([...before, ...draft.steps].map((step) => [step.id, step.name]));
   const afterIds = new Set(draft.steps.map((step) => step.id));
   const beforeRoutes = listRoutesForPipeline(db, pipelineId);
 
@@ -548,7 +567,7 @@ export function renderDraft(
     // The inputs Publish would save, not the ones before the module's
     // declaration is applied: an input it drops is shown going.
     const inputs = publishedStepInputs(step, settled.inputs, catalog, output.modules);
-    return settingChanges(was, { ...settled, inputs, results: draftStepResults(step, draft.routes, was.results) }, draft.routes, workspaceName);
+    return settingChanges(was, { ...settled, inputs, results: draftStepResults(step, draft.routes, was.results), brief: draftStepBrief(step, was) }, draft.routes, workspaceName, stepNames);
   };
   const changed = draft.steps.filter((step) => {
     const was = beforeById.get(step.id);
@@ -569,7 +588,7 @@ export function renderDraft(
   if (refusal !== null) return { ok: false, reason: refusal };
 
   if (added.length > 0) {
-    lines.push("**Added**", "", ...added.map((step) => `- ${step.name} — ${describeStep(step)}${limitsOf(step, draft.routes, workspaceName)}`), "");
+    lines.push("**Added**", "", ...added.map((step) => `- ${step.name} — ${describeStep(step)}${limitsOf(step, draft.routes, workspaceName, stepNames)}`), "");
   }
   if (changed.length > 0) {
     lines.push("**Changed**", "");
@@ -825,9 +844,10 @@ function changesOf(
  * (EO-520), as much as to the step.
  */
 function limitsOf(
-  step: { id: string } & DraftStepSettings,
+  step: { id: string; brief?: StepBrief | undefined } & DraftStepSettings,
   routes: DraftWithLimits["routes"],
   workspaceName: (id: string | null) => string,
+  stepNames: ReadonlyMap<string, string>,
 ): string {
   const parts: string[] = [];
   if (step.timeoutMs !== undefined && step.timeoutMs !== DEFAULT_TIME_LIMIT) {
@@ -843,6 +863,8 @@ function limitsOf(
   for (const route of routes) {
     if (route.fromStepId === step.id && route.requiresComment === true) parts.push(`**${route.label}** needs a reason`);
   }
+  // What its decision's details show, where the draft declares it (EO-827).
+  if (step.brief !== undefined && step.brief.length > 0) parts.push(`details show ${briefWords(step.brief, stepNames)}`);
   return parts.length === 0 ? "" : ` · ${parts.join(" · ")}`;
 }
 
@@ -857,9 +879,10 @@ function limitsOf(
  */
 function settingChanges(
   was: PipelineStep,
-  now: SettledStepSettings & { results: readonly StepResult[] },
+  now: SettledStepSettings & { results: readonly StepResult[]; brief: StepBrief | null },
   routes: DraftWithLimits["routes"],
   workspaceName: (id: string | null) => string,
+  stepNames: ReadonlyMap<string, string>,
 ): string[] {
   const changes: string[] = [];
   const limit = (ms: number | null) => (ms === null ? "EO's default" : describeDuration(ms));
@@ -876,6 +899,8 @@ function settingChanges(
   if (JSON.stringify(was.watch) !== JSON.stringify(now.watch)) changes.push(`Keep checking: ${checking(was.watch)} → ${checking(now.watch)}`);
   if (was.workspaceId !== now.workspaceId) changes.push(`Works on: ${workspaceName(was.workspaceId)} → ${workspaceName(now.workspaceId)}`);
   if (was.workspaceMode !== now.workspaceMode) changes.push(`Repository: ${modeWords(was.workspaceMode)} → ${modeWords(now.workspaceMode)}`);
+  // What the decision's details show (EO-827).
+  if (JSON.stringify(was.brief) !== JSON.stringify(now.brief)) changes.push(`Details show: ${briefWords(was.brief, stepNames)} → ${briefWords(now.brief, stepNames)}`);
 
   // "Needs a reason" on a result the step already offered, or on a new
   // one where the draft said it.

@@ -452,7 +452,7 @@ describe("a module step's time limit", () => {
       timeoutMs,
       watch: null,
       results: [],
-      moduleVersion: null,
+      moduleVersion: null, brief: null,
     };
   }
 
@@ -1252,7 +1252,7 @@ describe("workflow saving", () => {
     saveAgent(handle.db, { name: "Tester", role: "tester", provider: "fake", model: null, instructions: "", enabled: true, config: {} });
 
     const next = withStepBefore(
-      { id: "qa", pipelineId: "default", position: 0, name: "qa", type: "agent", ownerRole: "tester", entryAction: "test", instructionsSummary: null, isTerminal: false, planMode: false, workspaceMode: "isolated", workspaceId: null, inputs: {}, timeoutMs: null, watch: null, results: [], moduleVersion: null },
+      { id: "qa", pipelineId: "default", position: 0, name: "qa", type: "agent", ownerRole: "tester", entryAction: "test", instructionsSummary: null, isTerminal: false, planMode: false, workspaceMode: "isolated", workspaceId: null, inputs: {}, timeoutMs: null, watch: null, results: [], moduleVersion: null, brief: null },
       "merge_request",
     );
 
@@ -1309,7 +1309,7 @@ describe("workflow saving", () => {
       timeoutMs: null,
       watch: null,
       results: [],
-      moduleVersion: null,
+      moduleVersion: null, brief: null,
     });
 
     it("survives a publish and the reload after it", () => {
@@ -1346,7 +1346,7 @@ describe("workflow saving", () => {
 
   it("creates a working human gate when owner_role is none", () => {
     const next = withStepBefore(
-      { id: "sign_off", pipelineId: "default", position: 0, name: "sign_off", type: "user", ownerRole: null, entryAction: null, instructionsSummary: null, isTerminal: false, planMode: false, workspaceMode: "isolated", workspaceId: null, inputs: {}, timeoutMs: null, watch: null, results: [], moduleVersion: null },
+      { id: "sign_off", pipelineId: "default", position: 0, name: "sign_off", type: "user", ownerRole: null, entryAction: null, instructionsSummary: null, isTerminal: false, planMode: false, workspaceMode: "isolated", workspaceId: null, inputs: {}, timeoutMs: null, watch: null, results: [], moduleVersion: null, brief: null },
       "todo",
     );
 
@@ -1853,7 +1853,7 @@ describe("handing work to another pipeline (EO-58, EO-69)", () => {
             timeoutMs: null,
             watch: null,
             results: [{ key: "ready", label: "Ready", tone: "success", requiresComment: false }],
-            moduleVersion: null,
+            moduleVersion: null, brief: null,
           },
         ],
       };
@@ -2500,7 +2500,7 @@ describe("a pipeline a webhook can enter", () => {
       timeoutMs: null,
       watch: null,
       results: [],
-      moduleVersion: null,
+      moduleVersion: null, brief: null,
     });
     const steps = ordered.map((step, index) => ({ ...step, position: index }));
     const routes = [

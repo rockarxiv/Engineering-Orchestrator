@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { EntryRulesSchema } from "../entryRules.js";
 import { PipelineStepViewSchema, StepRouteViewSchema } from "../ipc-schemas.js";
+import { StepBriefSchema } from "../stepBrief.js";
 import { ProposedActionsSchema } from "./actionDefinition.js";
 import { DiscussionQuestionSchema } from "./discussion.js";
 import { ModuleManifestSchema, ModuleTestCaseInputSchema } from "./modules.js";
@@ -106,6 +107,23 @@ export const DraftStepSchema = PipelineStepViewSchema.omit({
   // Not the architect's to choose (EO-770): a draft names a module, and a
   // save pins it to that module's newest approved version.
   moduleVersion: true,
+  brief: true,
+}).extend({
+  /**
+   * What a person step's decision bar shows behind "Show details"
+   * (EO-827), as entry rules are set: left out keeps the step's brief,
+   * `[]` clears it back to the default, a list declares it.
+   *
+   * Not nullable, for Codex's sake: its strict mode writes `null` for every
+   * field an answer leaves out, and `fromStrictCodexAnswer` takes a null
+   * back out only where the field could not be null already — so a null
+   * meaning "clear" would clear the brief of every step a Codex draft did
+   * not mention.
+   */
+  brief: StepBriefSchema.optional().describe(
+    "Only on a user step: what its decision shows behind \"Show details\", in order. Leave out to keep the step's brief; [] for the default " +
+      "(instructions summary, current output, the previous step's verdict).",
+  ),
 });
 
 /**

@@ -27,6 +27,7 @@ import { ConfirmDeleteComment } from "./ConfirmDeleteComment";
 import { ConfirmDeleteItem } from "./ConfirmDeleteItem";
 import { DependencyRow } from "./DependencyRow";
 import { DecisionBar, WaitingOnYouBanner } from "./DecisionBar";
+import { DecisionBrief } from "./DecisionBrief";
 import { CriteriaSection, SpecSection } from "./Fields";
 import { ItemFiles } from "./ItemFiles";
 import { ItemHeader } from "./ItemHeader";
@@ -808,6 +809,7 @@ export function ItemView({ itemId }: { itemId: string }) {
             waitsOnGroup={waitsOnGroup}
             decision={decision}
             onDecided={invalidate}
+            details={<DecisionBrief itemId={itemId} />}
           />
         ) : null}
 

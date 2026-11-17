@@ -4,6 +4,7 @@ import type { ItemExtensions } from "./itemExtensions.js";
 import type { StepInputs } from "./schemas/modules.js";
 import type { PreviewItem } from "./schemas/pipelineExport.js";
 import type { StepResult } from "./schemas/pipelines.js";
+import type { StepBrief } from "./stepBrief.js";
 import type { WorkspaceMode } from "./schemas/workspaces.js";
 import type { StepWatch } from "./watch.js";
 import { criteriaField, type SpecShape } from "./schemas/specShape.js";
@@ -592,6 +593,15 @@ export interface PipelineStep {
    * stands, which is what every step did before pins.
    */
   moduleVersion: number | null;
+  /**
+   * What the decision bar's "Show details" shows on this step (EO-827,
+   * ARCHITECTURE.md, "The decision's brief"): the parts a `user` step
+   * declares, in order. Null shows the default — the step's instructions
+   * summary, the item's current output and the newest verdict from the
+   * step before — which is every step until somebody declares one.
+   * `validatePipeline` refuses one on any other kind of step.
+   */
+  brief: StepBrief | null;
 }
 
 /**

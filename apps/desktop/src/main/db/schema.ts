@@ -618,6 +618,15 @@ export const pipelineSteps = sqliteTable(
      * not by its row id, and `pruneModuleVersions` keeps every pinned one.
      */
     moduleVersion: integer("module_version"),
+    /**
+     * What this step's decision bar shows behind "Show details" (EO-827,
+     * ARCHITECTURE.md, "The decision's brief"): a JSON list of parts
+     * (`StepBriefSchema`), in the order shown. NULL is the default brief —
+     * the instructions summary, the current output and the previous step's
+     * verdict — and is every step until somebody declares one. Only a
+     * `user` step may declare one; `validatePipeline` refuses it elsewhere.
+     */
+    brief: text("brief", { mode: "json" }),
   },
   (table) => [index("idx_pipeline_steps_pipeline").on(table.pipelineId, table.position)],
 );

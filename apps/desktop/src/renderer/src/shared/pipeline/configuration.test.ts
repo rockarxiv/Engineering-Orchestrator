@@ -155,6 +155,7 @@ describe("an agent step's declared results", () => {
     watch: null,
     results: [],
     moduleVersion: null,
+    brief: null,
   });
   const route = (resultKey: string, position: number, fromStepId = "s"): StepRouteView => ({ id: `${fromStepId}:${resultKey}`, pipelineId: "default", fromStepId, resultKey, label: "Mine", tone: "danger", target: "elsewhere", position });
 

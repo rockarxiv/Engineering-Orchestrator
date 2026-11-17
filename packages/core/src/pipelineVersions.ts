@@ -3,6 +3,7 @@ import { EntryRulesSchema, MODULE_ENTRY_RULE_KIND, entryRuleWords, type EntryRul
 import { describeDuration } from "./limits.js";
 import { PipelineStepViewSchema, StepRouteViewSchema } from "./ipc-schemas.js";
 import { StepWatchSchema, watchLine } from "./watch.js";
+import { StepBriefSchema, briefWords } from "./stepBrief.js";
 
 /**
  * A published shape of one pipeline (EO-327, the original design).
@@ -250,6 +251,13 @@ export const VersionStepSchema = z.object({
    * so a document written before pins parses as pinning nothing.
    */
   moduleVersion: z.number().int().positive().nullable().default(null),
+  /**
+   * What a person step's decision bar shows behind "Show details"
+   * (EO-827), or null for the default. Carried because two versions that
+   * brief a decision differently show a person different things; defaulted
+   * so a version written before briefs parses as showing the default.
+   */
+  brief: StepBriefSchema.nullable().default(null),
 });
 export type VersionStep = z.infer<typeof VersionStepSchema>;
 
@@ -347,7 +355,7 @@ export type VersionDiff = z.infer<typeof VersionDiffSchema>;
  * deliberately, and `results` because the buttons a human step offers
  * are what a person on an older version is actually given.
  */
-const DIFFED_FIELDS = ["name", "type", "ownerRole", "entryAction", "instructionsSummary", "isTerminal", "planMode", "offBoard", "position", "results", "watch"] as const;
+const DIFFED_FIELDS = ["name", "type", "ownerRole", "entryAction", "instructionsSummary", "isTerminal", "planMode", "offBoard", "position", "results", "watch", "brief"] as const;
 
 /**
  * And of a route, in the order it lists them.
@@ -429,8 +437,10 @@ function moduleVersionChange(was: VersionStep, step: VersionStep, moduleNames: R
 }
 
 /** One field of a step, as the diff prints it. */
-function shownStepField(field: (typeof DIFFED_FIELDS)[number], step: VersionStep): string | null {
+function shownStepField(field: (typeof DIFFED_FIELDS)[number], step: VersionStep, names: ReadonlyMap<string, string>): string | null {
   if (field === "results") return shownResults(step.results);
+  // "the default" rather than nothing, for `watch`'s reason below (EO-827).
+  if (field === "brief") return briefWords(step.brief, names);
   // "runs once" rather than nothing, so turning the mode off reads as a
   // change to something rather than the field disappearing.
   if (field === "watch") return watchLine(step) ?? "runs once";
@@ -471,9 +481,9 @@ export function diffVersions(
       continue;
     }
     const fields: VersionDiff["steps"][number]["fields"] = DIFFED_FIELDS.flatMap((field) =>
-      shownStepField(field, was) === shownStepField(field, step)
+      shownStepField(field, was, names) === shownStepField(field, step, names)
         ? []
-        : [{ field, before: shownStepField(field, was), after: shownStepField(field, step) }],
+        : [{ field, before: shownStepField(field, was, names), after: shownStepField(field, step, names) }],
     );
     const pin = moduleVersionChange(was, step, moduleNames);
     if (pin !== null) fields.push(pin);

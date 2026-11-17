@@ -16,6 +16,7 @@ export * from "./routing.js";
 export * from "./replies.js";
 export * from "./pipelineValidation.js";
 export * from "./entryRules.js";
+export * from "./stepBrief.js";
 export * from "./watch.js";
 export * from "./templateMerge.js";
 export * from "./modulePins.js";
