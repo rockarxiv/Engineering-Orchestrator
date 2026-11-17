@@ -1,6 +1,7 @@
 import { lstat, readdir, rm } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join } from "node:path";
+import { codeSpan } from "../../../codeSpan.js";
 import { WORKTREE_AGENT_DIRECTORY, unmanagedAgentEntries } from "../../../agentAttachments/worktreeSkills.js";
 import { REPOSITORY_INDEX_DIRECTORIES, discardRepositoryIndexes, withoutRepositoryIndex } from "../repositoryIntelligence/index.js";
 import { DEFAULT_BRANCH_PREFIX } from "./branchPrefix.js";
@@ -300,7 +301,7 @@ export async function createWorktree(
   if (options.signal?.aborted) return cancelled(`Cutting a worktree for ${itemKey}`);
 
   if (!(await isGitRepo(repoPath))) {
-    return { ok: false, reason: `The configured repo path is not a git repository: ${repoPath}` };
+    return { ok: false, reason: `The configured repo path is not a git repository: ${codeSpan(repoPath)}` };
   }
 
   const branch = resolveBranch(itemKey, naming);
@@ -314,7 +315,7 @@ export async function createWorktree(
   const path = worktreePathFor(itemKey, config.worktreeRoot ?? defaultWorktreeRoot());
   const added = await git(["worktree", "add", path, "-b", branch, startPoint], repoPath, options.signal ? { signal: options.signal } : {});
   if (!added.ok) {
-    return { ok: false, reason: `Could not create a worktree for ${itemKey} at ${path}: ${added.error}` };
+    return { ok: false, reason: `Could not create a worktree for ${itemKey} at ${codeSpan(path)}: ${codeSpan(added.error)}` };
   }
 
   // The line worth having a week later: which ref this branch actually
@@ -387,7 +388,7 @@ export async function ensureWorktree(
       return {
         ok: false,
         reason:
-          `The branch "${branch}" named for ${itemKey} is already checked out in another working copy, at ${elsewhere.path}, and git will not ` +
+          `The branch "${branch}" named for ${itemKey} is already checked out in another working copy, at ${codeSpan(elsewhere.path)}, and git will not ` +
           `check out one branch in two places. EO left that checkout exactly as it is and created nothing. Switch it to another branch ` +
           `(or remove that worktree), then reply to retry.`,
       };
@@ -396,7 +397,7 @@ export async function ensureWorktree(
       return {
         ok: false,
         reason:
-          `The branch "${branch}" is already checked out at ${elsewhere.path}, which is not where EO expects it (${path}). ` +
+          `The branch "${branch}" is already checked out at ${codeSpan(elsewhere.path)}, which is not where EO expects it (${codeSpan(path)}). ` +
           `Remove that worktree or move it back, then reply to retry.`,
       };
     }
@@ -426,7 +427,7 @@ export async function ensureWorktree(
       return {
         ok: false,
         reason:
-          `${itemKey}'s worktree goes at ${path}, and that path already holds a checkout of "${occupancy.branch}" rather than "${branch}". ` +
+          `${itemKey}'s worktree goes at ${codeSpan(path)}, and that path already holds a checkout of "${occupancy.branch}" rather than "${branch}". ` +
           `Move or remove that checkout, then reply to retry.`,
       };
 
@@ -434,7 +435,7 @@ export async function ensureWorktree(
       return {
         ok: false,
         reason:
-          `${itemKey}'s worktree goes at ${path}, and that path already holds ${occupancy.found}. ` +
+          `${itemKey}'s worktree goes at ${codeSpan(path)}, and that path already holds ${occupancy.found}. ` +
           `Nothing was created or re-attached there — clear the path or move what is in it, then reply to retry.`,
       };
 
@@ -445,7 +446,7 @@ export async function ensureWorktree(
       return {
         ok: false,
         reason:
-          `Could not read what is at ${path}, where ${itemKey}'s worktree goes, so nothing was created or re-attached there: ${occupancy.error}. ` +
+          `Could not read what is at ${codeSpan(path)}, where ${itemKey}'s worktree goes, so nothing was created or re-attached there: ${occupancy.error}. ` +
           `Deal with the path, then reply to retry.`,
       };
 
@@ -500,7 +501,7 @@ async function reattachWorktree(
   if (!added.ok) {
     return {
       ok: false,
-      reason: `Could not re-attach the worktree for ${itemKey} at ${path} on its existing branch "${branch}": ${added.error}`,
+      reason: `Could not re-attach the worktree for ${itemKey} at ${codeSpan(path)} on its existing branch "${branch}": ${codeSpan(added.error)}`,
     };
   }
   options.onProgress?.(`Checked "${branch}" back out at ${path}, keeping every commit already on it.`);
@@ -567,7 +568,7 @@ async function attachRemoteBranch(
   const args = ["worktree", "add", "--no-track", "-b", branch, path, resolved.ref];
   const added = await git(args, config.repoPath, options.signal ? { signal: options.signal } : {});
   if (!added.ok) {
-    return { ok: false, reason: `Could not check out "${branch}" from ${remote} for ${itemKey} at ${path}: ${added.error}` };
+    return { ok: false, reason: `Could not check out "${branch}" from ${remote} for ${itemKey} at ${codeSpan(path)}: ${codeSpan(added.error)}` };
   }
   await git(["branch", `--set-upstream-to=${resolved.ref}`, branch], config.repoPath);
   options.onProgress?.(`Checked out "${branch}" from ${remote} at ${path}, keeping every commit already on it.`);
@@ -637,12 +638,12 @@ async function inspectWorktreePath(repoPath: string, path: string, branch: strin
   const theirs = await commonGitDir(path);
   const ours = await commonGitDir(repoPath);
   if (theirs === null || ours === null) {
-    return { state: "unknown", error: `could not work out which repository the checkout at ${path} belongs to` };
+    return { state: "unknown", error: `could not work out which repository the checkout at ${codeSpan(path)} belongs to` };
   }
-  if (!samePath(theirs, ours)) return { state: "occupied", found: `a checkout of a different repository (${theirs})` };
+  if (!samePath(theirs, ours)) return { state: "occupied", found: `a checkout of a different repository (${codeSpan(theirs)})` };
 
   const head = await currentBranch(path);
-  if (!head.ok) return { state: "unknown", error: head.error };
+  if (!head.ok) return { state: "unknown", error: codeSpan(head.error) };
   if (head.stdout === "HEAD") {
     const commit = await git(["rev-parse", "--short", "HEAD"], path);
     return { state: "occupied", found: `a checkout with a detached HEAD${commit.ok ? ` at ${commit.stdout}` : ""}, not on any branch` };
@@ -766,8 +767,8 @@ export function removalFailureReason(input: {
   platform: NodeJS.Platform;
 }): string {
   return (
-    `Could not remove the worktree for ${input.itemKey} at ${input.path}. ` +
-    `git worktree remove failed: ${input.gitError} — and clearing it directly did not finish either: ${input.fsError}` +
+    `Could not remove the worktree for ${input.itemKey} at ${codeSpan(input.path)}. ` +
+    `git worktree remove failed: ${codeSpan(input.gitError)} — and clearing it directly did not finish either: ${input.fsError}` +
     windowsLongPathRemediation(`${input.gitError}\n${input.fsError}`, input.platform)
   );
 }
@@ -813,7 +814,7 @@ function errorCode(failure: unknown): string | undefined {
 }
 
 function describeError(failure: unknown): string {
-  return failure instanceof Error ? failure.message : String(failure);
+  return codeSpan(failure instanceof Error ? failure.message : String(failure));
 }
 
 /**
@@ -850,7 +851,7 @@ type RegistrationCheck = { state: "gone" } | { state: "present" } | { state: "un
 
 async function checkRegistration(repoPath: string, path: string): Promise<RegistrationCheck> {
   const listed = await listWorktrees(repoPath);
-  if (!listed.ok) return { state: "unknown", error: listed.error };
+  if (!listed.ok) return { state: "unknown", error: codeSpan(listed.error) };
   return listed.worktrees.some((entry) => isDeletedPath(entry.path, path)) ? { state: "present" } : { state: "gone" };
 }
 
@@ -873,8 +874,8 @@ type UnverifiedPath = Exclude<PathCheck, { state: "gone" }>;
 function unverifiedRemovalReason(input: { itemKey: string; path: string; checked: UnverifiedPath; platform: NodeJS.Platform }): string {
   const detail =
     input.checked.state === "unknown"
-      ? `whether ${input.path} is gone could not be established: ${input.checked.error}`
-      : `${input.path} is still on disk`;
+      ? `whether ${codeSpan(input.path)} is gone could not be established: ${input.checked.error}`
+      : `${codeSpan(input.path)} is still on disk`;
   return (
     `Could not remove the worktree for ${input.itemKey}: git worktree remove reported success, but ${detail}.` +
     windowsLongPathRemediation(input.checked.state === "unknown" ? input.checked.error : "", input.platform)
@@ -928,9 +929,9 @@ async function clearWorktreeDirectory(repoPath: string, path: string): Promise<{
   // listing below is the ground truth for both.
   const pruned = await git(["worktree", "prune"], repoPath);
 
-  if (checked.state === "present") return { ok: false, error: error === "" ? `${path} is still on disk.` : error };
+  if (checked.state === "present") return { ok: false, error: error === "" ? `${codeSpan(path)} is still on disk.` : error };
   if (checked.state === "unknown") {
-    return { ok: false, error: withDeleteError(error, `whether ${path} is gone could not be established: ${checked.error}`) };
+    return { ok: false, error: withDeleteError(error, `whether ${codeSpan(path)} is gone could not be established: ${checked.error}`) };
   }
 
   // The directory went. Whether git agrees it did is the other half, and
@@ -939,13 +940,13 @@ async function clearWorktreeDirectory(repoPath: string, path: string): Promise<{
   // prune that failed is the likeliest reason there is still something
   // to find.
   const registered = await checkRegistration(repoPath, path);
-  const prune = pruned.ok ? "" : ` The prune before it failed: ${pruned.error}`;
+  const prune = pruned.ok ? "" : ` The prune before it failed: ${codeSpan(pruned.error)}`;
   if (registered.state === "present") {
     return {
       ok: false,
       error: withDeleteError(
         error,
-        `the directory is gone, but git still lists it as a worktree of ${repoPath}, ` +
+        `the directory is gone, but git still lists it as a worktree of ${codeSpan(repoPath)}, ` +
           `which would make the next dispatch for this ticket reuse a checkout that is not there.${prune}`,
       ),
     };
@@ -955,7 +956,7 @@ async function clearWorktreeDirectory(repoPath: string, path: string): Promise<{
       ok: false,
       error: withDeleteError(
         error,
-        `the directory is gone, but whether git still lists it as a worktree of ${repoPath} could not be established: ` +
+        `the directory is gone, but whether git still lists it as a worktree of ${codeSpan(repoPath)} could not be established: ` +
           `${registered.error}.${prune}`,
       ),
     };
@@ -1146,8 +1147,8 @@ export async function removeWorktree(
       // a tree EO just cleared its own index out of, so a disposal that
       // did not manage it says so here rather than leaving the reader to
       // guess. Nothing else changes: the tree is untouched either way.
-      const blocked = stubborn.map((index) => ` EO could not delete the index it generated at ${index.path}: ${index.error}`).join("");
-      return { ok: false, refusal: "removal-failed", reason: `Could not remove the worktree for ${itemKey} at ${path}: ${removed.error}${blocked}` };
+      const blocked = stubborn.map((index) => ` EO could not delete the index it generated at ${codeSpan(index.path)}: ${codeSpan(index.error)}`).join("");
+      return { ok: false, refusal: "removal-failed", reason: `Could not remove the worktree for ${itemKey} at ${codeSpan(path)}: ${codeSpan(removed.error)}${blocked}` };
     }
 
     const cleared = await clearWorktreeDirectory(config.repoPath, path);
@@ -1168,7 +1169,7 @@ export async function removeWorktree(
     // decided the work is finished with.
     const deleted = await git(["branch", "-D", branch], config.repoPath);
     if (!deleted.ok) {
-      return { ok: false, refusal: "removal-failed", reason: `Removed the worktree for ${itemKey}, but could not delete branch "${branch}": ${deleted.error}` };
+      return { ok: false, refusal: "removal-failed", reason: `Removed the worktree for ${itemKey}, but could not delete branch "${branch}": ${codeSpan(deleted.error)}` };
     }
   }
 
@@ -1223,7 +1224,7 @@ export async function listStaleWorktrees(
   prefix: string = DEFAULT_BRANCH_PREFIX,
 ): Promise<WorktreeResult<StaleWorktree[]>> {
   const listed = await listWorktrees(config.repoPath);
-  if (!listed.ok) return { ok: false, reason: `Could not list worktrees in ${config.repoPath}: ${listed.error}` };
+  if (!listed.ok) return { ok: false, reason: `Could not list worktrees in ${codeSpan(config.repoPath)}: ${codeSpan(listed.error)}` };
 
   const root = config.worktreeRoot ?? defaultWorktreeRoot();
   const stale: StaleWorktree[] = [];
@@ -1260,7 +1261,7 @@ export interface HeldWorktree extends StaleWorktree {
  */
 export async function listHeldWorktrees(config: WorktreeConfig, prefix: string = DEFAULT_BRANCH_PREFIX): Promise<WorktreeResult<HeldWorktree[]>> {
   const listed = await listWorktrees(config.repoPath);
-  if (!listed.ok) return { ok: false, reason: `Could not list worktrees in ${config.repoPath}: ${listed.error}` };
+  if (!listed.ok) return { ok: false, reason: `Could not list worktrees in ${codeSpan(config.repoPath)}: ${codeSpan(listed.error)}` };
 
   const root = config.worktreeRoot ?? defaultWorktreeRoot();
   const held: HeldWorktree[] = [];
@@ -1310,9 +1311,9 @@ async function directorySize(path: string): Promise<number> {
 /** Is the configured repo ready for a run to start? Used for the boot check and before dispatch. */
 export async function checkRepoReady(config: WorktreeConfig): Promise<WorktreeResult<{ branch: string }>> {
   if (!(await isGitRepo(config.repoPath))) {
-    return { ok: false, reason: `The configured repo path is not a git repository: ${config.repoPath}` };
+    return { ok: false, reason: `The configured repo path is not a git repository: ${codeSpan(config.repoPath)}` };
   }
   const branch = await currentBranch(config.repoPath);
-  if (!branch.ok) return { ok: false, reason: `Could not determine the current branch in ${config.repoPath}: ${branch.error}` };
+  if (!branch.ok) return { ok: false, reason: `Could not determine the current branch in ${codeSpan(config.repoPath)}: ${codeSpan(branch.error)}` };
   return { ok: true, value: { branch: branch.stdout } };
 }
