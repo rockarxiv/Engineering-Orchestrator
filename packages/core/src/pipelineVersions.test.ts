@@ -302,6 +302,31 @@ describe("the difference between two versions", () => {
     expect(diffVersions({ number: 6, steps: [notify], routes: [] }, { number: 7, steps: [{ ...notify, moduleVersion: null }], routes: [] }).steps).toEqual([]);
   });
 
+  /** What a person step's decision shows (EO-827): declaring, changing or clearing it is a change, said in words. */
+  it("lists a person step's brief declared, changed and cleared, naming steps by name", () => {
+    const steps = (brief: VersionStep["brief"]) => [step({ id: "draft", position: 0, name: "Draft" }), step({ brief })];
+    const declared = diffVersions({ number: 1, steps: steps(null), routes: [] }, { number: 2, steps: steps([{ show: "output", step: "draft" }, { show: "comment", kind: "approval" }]), routes: [] });
+    expect(declared.steps).toEqual([
+      expect.objectContaining({ name: "Review", change: "changed", fields: [{ field: "brief", before: "the default", after: "the newest output of Draft, then the newest approval" }] }),
+    ]);
+
+    const changed = diffVersions({ number: 2, steps: steps([{ show: "comment", role: "reviewer" }]), routes: [] }, { number: 3, steps: steps([{ show: "field", field: "customer" }]), routes: [] });
+    expect(changed.steps[0]?.fields).toEqual([{ field: "brief", before: "the newest comment by reviewer", after: 'the field "customer"' }]);
+
+    const cleared = diffVersions({ number: 3, steps: steps([{ show: "field", field: "customer" }]), routes: [] }, { number: 4, steps: steps(null), routes: [] });
+    expect(cleared.steps[0]?.fields).toEqual([{ field: "brief", before: 'the field "customer"', after: "the default" }]);
+
+    expect(diffVersions({ number: 4, steps: steps(null), routes: [] }, { number: 5, steps: steps(null), routes: [] }).steps).toEqual([]);
+  });
+
+  it("reads a version written before briefs as showing the default", () => {
+    const parsed = PipelineGraphSnapshotSchema.parse({
+      steps: [{ id: "review", pipelineId: "p", position: 1, name: "Review", type: "user", ownerRole: null, entryAction: null, instructionsSummary: null, isTerminal: false, planMode: false }],
+      routes: [],
+    });
+    expect(parsed.steps[0]?.brief).toBeNull();
+  });
+
   it("names the version a module entry rule pins, so moving it is a change", () => {
     const rule = (moduleVersion: number): EntryRule => ({ kind: "module", module: "mod-gate", moduleVersion });
     const diff = diffVersions({ number: 1, steps: [], routes: [], entryRules: [rule(2)] }, { number: 2, steps: [], routes: [], entryRules: [rule(3)] }, new Map([["mod-gate", "Gate"]]));

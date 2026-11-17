@@ -1698,7 +1698,8 @@ describe("deciding on a step that waits on a group (EO-368)", () => {
     renderWithAuthority(() => pending);
 
     const decide = await screen.findByRole("region", { name: "Decide" });
-    expect(within(decide).queryByRole("button")).toBeNull();
+    // Nothing to press but the brief (EO-827), which reads and decides nothing.
+    expect(within(decide).queryAllByRole("button").map((button) => button.textContent)).toEqual(["Show details"]);
     expect(screen.queryByRole("button", { name: "Approve → Send" })).toBeNull();
 
     await act(async () => answer({ authority: { group: DESIGN, holder: ANNA, you: "outsider" } }));
@@ -2780,5 +2781,99 @@ describe("the item's own files (EO-702)", () => {
     Object.defineProperty(huge, "size", { value: 20 * 1024 * 1024 + 1 });
     fireEvent.drop(section, { dataTransfer: { files: [huge] } });
     expect(await within(section).findByText("huge.bin is larger than the 20 MB attachment limit.")).toBeInTheDocument();
+  });
+});
+
+/**
+ * What the decision is about, behind "Show details" on the decision bar
+ * (EO-827). The main process resolves the brief (`items:brief`); the bar
+ * reads it only once somebody opens it, and draws each part under its
+ * heading, a long body clipped as the Output section's is (EO-825).
+ */
+describe("the decision's brief (EO-827)", () => {
+  const DECISION = [{ key: "approved", label: "Approve", tone: "success" as const, requiresComment: false, targetName: "Send" }];
+  let heights: { mockRestore: () => void } | null = null;
+
+  afterEach(() => {
+    heights?.mockRestore();
+    heights = null;
+  });
+
+  /** jsdom lays nothing out: a body holding LONG measures over the clip, everything else under it. */
+  function fakeHeights() {
+    heights = vi.spyOn(HTMLElement.prototype, "scrollHeight", "get").mockImplementation(function (this: HTMLElement) {
+      return this.textContent?.includes("LONG") ? 400 : 100;
+    });
+  }
+
+  const headings = (region: HTMLElement) => within(region).getAllByRole("heading", { level: 3 }).map((heading) => heading.textContent ?? "");
+
+  it("opens on Show details with the step's instructions, the current output clipped and the previous step's verdict", async () => {
+    fakeHeights();
+    const { calls, onCall } = recorder();
+    renderItem(detail({ decision: DECISION }), onCall, {
+      "items:brief": {
+        declared: false,
+        parts: [
+          { show: "summary", heading: "What this step asks", body: "Check the Q3 numbers before it is sent.", author: null, createdAt: null },
+          { show: "output", heading: "Current output", body: "LONG output.\n\nEvery line of the diff.", author: "Implementer", createdAt: 1 },
+          { show: "comment", heading: "Verdict from Review", body: "Approved. The numbers add up.", author: "Reviewer", createdAt: 2 },
+        ],
+      },
+    });
+
+    const bar = await screen.findByRole("region", { name: "Decide" });
+    const open = within(bar).getByRole("button", { name: "Show details" });
+    expect(open).toHaveAttribute("aria-expanded", "false");
+    // Not read until somebody asks: the bar is one line until then.
+    expect(calls.some((call) => call.channel === "items:brief")).toBe(false);
+
+    fireEvent.click(open);
+    const details = await within(bar).findByRole("region", { name: "Details" });
+    expect(await within(details).findByText("Approved. The numbers add up.")).toBeInTheDocument();
+    expect(payloadOf(calls, "items:brief")).toEqual({ itemId: "t1" });
+
+    const shown = headings(details);
+    expect(shown).toHaveLength(3);
+    expect(shown[0]).toBe("What this step asks");
+    expect(shown[1]).toMatch(/^Current output · Implementer, /);
+    expect(shown[2]).toMatch(/^Verdict from Review · Reviewer, /);
+    expect(within(details).getByText("Check the Q3 numbers before it is sent.")).toBeInTheDocument();
+
+    // The output clipped, as the Output section clips it; the verdict short enough to show whole.
+    const output = within(details).getByRole("region", { name: "Current output" });
+    expect(within(output).getByRole("button", { name: "Show more" })).toHaveAttribute("aria-expanded", "false");
+    expect(within(within(details).getByRole("region", { name: "Verdict from Review" })).queryByRole("button", { name: "Show more" })).toBeNull();
+
+    fireEvent.click(within(bar).getByRole("button", { name: "Hide details" }));
+    expect(within(bar).queryByRole("region", { name: "Details" })).toBeNull();
+  });
+
+  it("shows exactly a declared brief's parts, in the order declared, saying where one has nothing yet", async () => {
+    renderItem(detail({ decision: DECISION }), undefined, {
+      "items:brief": {
+        declared: true,
+        parts: [
+          { show: "field", heading: "Customer", body: "Acme Corp", author: null, createdAt: null },
+          { show: "comment", heading: "Newest approval by reviewer", body: "Ship it.", author: "Reviewer", createdAt: 2 },
+          { show: "output", heading: "Output of Draft", body: null, author: null, createdAt: null },
+        ],
+      },
+    });
+
+    const bar = await screen.findByRole("region", { name: "Decide" });
+    fireEvent.click(within(bar).getByRole("button", { name: "Show details" }));
+    const details = await within(bar).findByRole("region", { name: "Details" });
+    await within(details).findByText("Acme Corp");
+
+    const shown = headings(details);
+    expect(shown).toHaveLength(3);
+    expect(shown[0]).toBe("Customer");
+    expect(shown[1]).toMatch(/^Newest approval by reviewer · Reviewer, /);
+    expect(shown[2]).toBe("Output of Draft");
+    expect(within(within(details).getByRole("region", { name: "Output of Draft" })).getByText("No output yet.")).toBeInTheDocument();
+    // Nothing of the default.
+    expect(within(details).queryByText("What this step asks")).toBeNull();
+    expect(within(details).queryByText("Current output")).toBeNull();
   });
 });

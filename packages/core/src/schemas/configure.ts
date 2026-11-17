@@ -112,14 +112,18 @@ export const DraftStepSchema = PipelineStepViewSchema.omit({
   /**
    * What a person step's decision bar shows behind "Show details"
    * (EO-827), as entry rules are set: left out keeps the step's brief,
-   * `null` clears it back to the default, a list declares it.
+   * `[]` clears it back to the default, a list declares it.
+   *
+   * Not nullable, for Codex's sake: its strict mode writes `null` for every
+   * field an answer leaves out, and `fromStrictCodexAnswer` takes a null
+   * back out only where the field could not be null already — so a null
+   * meaning "clear" would clear the brief of every step a Codex draft did
+   * not mention.
    */
-  brief: StepBriefSchema.nullable()
-    .optional()
-    .describe(
-      "Only on a user step: what its decision shows behind \"Show details\", in order. Leave out to keep the step's brief; null for the default " +
-        "(instructions summary, current output, the previous step's verdict).",
-    ),
+  brief: StepBriefSchema.optional().describe(
+    "Only on a user step: what its decision shows behind \"Show details\", in order. Leave out to keep the step's brief; [] for the default " +
+      "(instructions summary, current output, the previous step's verdict).",
+  ),
 });
 
 /**

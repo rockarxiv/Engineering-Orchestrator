@@ -205,3 +205,33 @@ describe("a pinned module version, in a document", () => {
     expect(parsed.modules[0]?.version).toBeNull();
   });
 });
+
+/**
+ * Format 15 (EO-827): a person step may carry the brief its decision shows
+ * behind "Show details". A version-14 build drops the key rather than
+ * refusing it, so it parses the document and refuses it at its format
+ * check instead of importing the step with the default brief.
+ */
+describe("a person step's brief, in a document", () => {
+  const brief = [
+    { show: "output", step: "triage" },
+    { show: "comment", kind: "approval", role: "reviewer" },
+    { show: "field", field: "acceptance_criteria" },
+  ];
+  const approve = { id: "approve", position: 1, name: "Approve", type: "user", ownerRole: null, entryAction: null, instructionsSummary: null, isTerminal: true, planMode: false, brief };
+
+  it("parses under the step schema a version-14 build reads, so that build reaches its format check", () => {
+    expect(PIPELINE_EXPORT_VERSION).toBe(15);
+    expect(ExportedStepSchema.omit({ brief: true }).safeParse(approve).success).toBe(true);
+  });
+
+  it("reads the brief back unchanged, and a step without one as declaring none", () => {
+    const parsed = PipelineExportSchema.parse(JSON.parse(JSON.stringify(document({ steps: [document().steps[0], approve] }))));
+    expect(parsed.steps[1]?.brief).toEqual(brief);
+    expect(parsed.steps[0]).not.toHaveProperty("brief");
+  });
+
+  it("refuses a part it cannot read", () => {
+    expect(PipelineExportSchema.safeParse(document({ steps: [{ ...approve, brief: [{ show: "mood" }] }] })).success).toBe(false);
+  });
+});

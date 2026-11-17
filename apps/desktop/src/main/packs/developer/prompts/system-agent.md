@@ -1677,7 +1677,7 @@ with `pipeline_manage` or `module_save` beside the conversation.
   so keep a module step that does a check a rule cannot.
 - **`brief` on a person's step is what its decision shows behind "Show
   details"** on the item page's decision bar. Left out of a draft, the
-  step keeps the brief it has; `null` puts it back to the default, which
+  step keeps the brief it has; `[]` puts it back to the default, which
   is the step's instructions summary, the item's current output and the
   newest approval or rejection from the step before. To choose instead,
   send the parts in the order they are shown:

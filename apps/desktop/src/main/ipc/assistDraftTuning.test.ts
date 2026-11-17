@@ -686,3 +686,52 @@ describe("restoring a version", () => {
     expect(refused.rejections.join(" ")).toContain("restores v9, which this pipeline has never had");
   });
 });
+
+describe("a person step's brief (EO-827)", () => {
+  /** The Release draft with the approval step's brief as given; `undefined` leaves the key out. */
+  const withBrief = (pipelineId: string, moduleId: string, brief: unknown) => {
+    const draft = releaseDraft({ pipelineId }, moduleId);
+    return { ...draft, steps: draft.steps.map((each) => (each.id === "release_approve" && brief !== undefined ? { ...each, brief } : each)) };
+  };
+
+  it("sets, changes and clears it, says so on the card, and keeps it when the draft leaves it out", async () => {
+    const { conversation, pipelineId, moduleId } = await releasePipeline();
+    expect(stepOf(pipelineId, "release_approve").brief).toBeNull();
+
+    // Set.
+    const set = turn(conversation, { message: "Show the merge's output.", draft: withBrief(pipelineId, moduleId, [{ show: "output", step: "release_merge" }]) }, pipelineId);
+    expect(set.rejections).toEqual([]);
+    expect(set.body).toContain("Details show: the default → the newest output of Merge");
+    expect(publish(conversation, set.cardIds[0]!).saved.saved).toBe(true);
+    expect(stepOf(pipelineId, "release_approve").brief).toEqual([{ show: "output", step: "release_merge" }]);
+
+    // Left out of a draft that changes something else: kept, and nothing on the card about it.
+    const kept = turn(conversation, { message: "Rename the step.", draft: { ...withBrief(pipelineId, moduleId, undefined), steps: withBrief(pipelineId, moduleId, undefined).steps.map((each) => (each.id === "release_approve" ? { ...each, name: "Sign off" } : each)) } }, pipelineId);
+    expect(kept.rejections).toEqual([]);
+    expect(kept.body).not.toContain("Details show");
+    expect(publish(conversation, kept.cardIds[0]!).saved.saved).toBe(true);
+    expect(stepOf(pipelineId, "release_approve").name).toBe("Sign off");
+    expect(stepOf(pipelineId, "release_approve").brief).toEqual([{ show: "output", step: "release_merge" }]);
+
+    // Changed.
+    const changed = turn(conversation, { message: "The approval and the description.", draft: withBrief(pipelineId, moduleId, [{ show: "comment", kind: "approval" }, { show: "output", step: "release_merge" }]) }, pipelineId);
+    expect(changed.rejections).toEqual([]);
+    expect(changed.body).toContain("Details show: the newest output of Merge → the newest approval, then the newest output of Merge");
+    expect(publish(conversation, changed.cardIds[0]!).saved.saved).toBe(true);
+    expect(stepOf(pipelineId, "release_approve").brief).toEqual([{ show: "comment", kind: "approval" }, { show: "output", step: "release_merge" }]);
+
+    // Cleared back to the default.
+    const cleared = turn(conversation, { message: "Back to the default.", draft: withBrief(pipelineId, moduleId, []) }, pipelineId);
+    expect(cleared.body).toContain("→ the default");
+    expect(publish(conversation, cleared.cardIds[0]!).saved.saved).toBe(true);
+    expect(stepOf(pipelineId, "release_approve").brief).toBeNull();
+  });
+
+  it("is refused before it is a card when it names a step the pipeline lacks, naming it", async () => {
+    const { conversation, pipelineId, moduleId } = await releasePipeline();
+    const { cardIds, rejections } = turn(conversation, { message: "Show QA's output.", draft: withBrief(pipelineId, moduleId, [{ show: "output", step: "qa" }]) }, pipelineId);
+    expect(cardIds).toEqual([]);
+    expect(rejections.join()).toContain('The brief on "Approve" shows the output of "qa", a step this pipeline does not have.');
+    expect(stepOf(pipelineId, "release_approve").brief).toBeNull();
+  });
+});

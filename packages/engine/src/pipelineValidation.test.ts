@@ -1603,3 +1603,66 @@ describe("outsideReachByStep (EO-584)", () => {
     expect(Object.keys(reach).sort()).toEqual(["file", "open_pr", "reply", "send"]);
   });
 });
+
+describe("validatePipeline: a person step's brief (EO-827)", () => {
+  /** The good pipeline with `merge`, its person step, declaring `brief`; `on` puts it on another step instead. */
+  const withBrief = (brief: PipelineStep["brief"], on = "merge"): ValidatePipelineInput => {
+    const input = goodPipeline();
+    return { ...input, steps: input.steps.map((each) => (each.id === on ? { ...each, brief } : each)) };
+  };
+  const briefMessages = (input: ValidatePipelineInput) =>
+    validatePipeline(input)
+      .filter((problem) => problem.message.startsWith("The brief"))
+      .map((problem) => ({ severity: problem.severity, stateId: problem.stateId, message: problem.message }));
+
+  it("accepts a brief naming this pipeline's steps, a field its item types declare and a kind of comment", () => {
+    expect(
+      briefMessages(
+        withBrief([
+          { show: "output", step: "implement" },
+          { show: "comment", kind: "approval" },
+          { show: "comment", role: "reviewer" },
+          { show: "field", field: "acceptance_criteria" },
+        ]),
+      ),
+    ).toEqual([]);
+  });
+
+  it("refuses a step, a field and a kind it lacks, each in a sentence naming it, on the step that declares it", () => {
+    expect(
+      briefMessages(
+        withBrief([
+          { show: "output", step: "qa" },
+          { show: "field", field: "customer" },
+          { show: "comment", kind: "praise" },
+          { show: "comment" },
+        ]),
+      ),
+    ).toEqual([
+      { severity: "error", stateId: "merge", message: 'The brief on "merge" shows the output of "qa", a step this pipeline does not have.' },
+      { severity: "error", stateId: "merge", message: 'The brief on "merge" shows the field "customer", which no item type on this project declares.' },
+      {
+        severity: "error",
+        stateId: "merge",
+        message: 'The brief on "merge" shows the newest "praise" comment, which is not a kind of comment: use one of note, question, decision, approval, rejection, escalation, output.',
+      },
+      { severity: "error", stateId: "merge", message: 'The brief on "merge" shows a comment without saying which kind or whose.' },
+    ]);
+  });
+
+  it("judges a field against the item types it is given, not the registry's", () => {
+    const input = withBrief([{ show: "field", field: "customer" }]);
+    const itemTypes = new Map([["shop:order", { specShape: { type: "object" as const, properties: { customer: { type: "string" as const } }, required: [] } }]]);
+    expect(briefMessages({ ...input, itemTypes })).toEqual([]);
+  });
+
+  it("refuses a brief on a step nobody decides on", () => {
+    expect(briefMessages(withBrief([{ show: "comment", kind: "note" }], "review"))).toEqual([
+      { severity: "error", stateId: "review", message: 'The brief on "review" cannot be shown: only a step a person decides on has a decision to brief.' },
+    ]);
+  });
+
+  it("says nothing about a pipeline that declares none", () => {
+    expect(briefMessages(goodPipeline())).toEqual([]);
+  });
+});

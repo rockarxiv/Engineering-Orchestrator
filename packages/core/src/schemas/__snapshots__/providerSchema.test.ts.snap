@@ -169,73 +169,66 @@ exports[`the JSON Schema each provider receives > is unchanged for assist (undef
                         "type": "boolean"
                       },
                       "brief": {
-                        "description": "Only on a user step: what its decision shows behind \\"Show details\\", in order. Leave out to keep the step's brief; null for the default (instructions summary, current output, the previous step's verdict).",
-                        "anyOf": [
-                          {
-                            "type": "array",
-                            "items": {
-                              "oneOf": [
-                                {
-                                  "type": "object",
-                                  "properties": {
-                                    "show": {
-                                      "type": "string",
-                                      "const": "output"
-                                    },
-                                    "step": {
-                                      "type": "string",
-                                      "minLength": 1
-                                    }
-                                  },
-                                  "required": [
-                                    "show",
-                                    "step"
-                                  ]
+                        "description": "Only on a user step: what its decision shows behind \\"Show details\\", in order. Leave out to keep the step's brief; [] for the default (instructions summary, current output, the previous step's verdict).",
+                        "type": "array",
+                        "items": {
+                          "oneOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "show": {
+                                  "type": "string",
+                                  "const": "output"
                                 },
-                                {
-                                  "type": "object",
-                                  "properties": {
-                                    "show": {
-                                      "type": "string",
-                                      "const": "comment"
-                                    },
-                                    "kind": {
-                                      "type": "string",
-                                      "minLength": 1
-                                    },
-                                    "role": {
-                                      "type": "string",
-                                      "minLength": 1
-                                    }
-                                  },
-                                  "required": [
-                                    "show"
-                                  ]
-                                },
-                                {
-                                  "type": "object",
-                                  "properties": {
-                                    "show": {
-                                      "type": "string",
-                                      "const": "field"
-                                    },
-                                    "field": {
-                                      "type": "string",
-                                      "minLength": 1
-                                    }
-                                  },
-                                  "required": [
-                                    "show",
-                                    "field"
-                                  ]
+                                "step": {
+                                  "type": "string",
+                                  "minLength": 1
                                 }
+                              },
+                              "required": [
+                                "show",
+                                "step"
+                              ]
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "show": {
+                                  "type": "string",
+                                  "const": "comment"
+                                },
+                                "kind": {
+                                  "type": "string",
+                                  "minLength": 1
+                                },
+                                "role": {
+                                  "type": "string",
+                                  "minLength": 1
+                                }
+                              },
+                              "required": [
+                                "show"
+                              ]
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "show": {
+                                  "type": "string",
+                                  "const": "field"
+                                },
+                                "field": {
+                                  "type": "string",
+                                  "minLength": 1
+                                }
+                              },
+                              "required": [
+                                "show",
+                                "field"
                               ]
                             }
-                          },
-                          {
-                            "type": "null"
-                          }
-                        ]
+                          ]
+                        }
                       },
                       "timeoutMs": {
                         "anyOf": [
@@ -540,73 +533,66 @@ exports[`the JSON Schema each provider receives > is unchanged for assist (undef
                           "type": "boolean"
                         },
                         "brief": {
-                          "description": "Only on a user step: what its decision shows behind \\"Show details\\", in order. Leave out to keep the step's brief; null for the default (instructions summary, current output, the previous step's verdict).",
-                          "anyOf": [
-                            {
-                              "type": "array",
-                              "items": {
-                                "oneOf": [
-                                  {
-                                    "type": "object",
-                                    "properties": {
-                                      "show": {
-                                        "type": "string",
-                                        "const": "output"
-                                      },
-                                      "step": {
-                                        "type": "string",
-                                        "minLength": 1
-                                      }
-                                    },
-                                    "required": [
-                                      "show",
-                                      "step"
-                                    ]
+                          "description": "Only on a user step: what its decision shows behind \\"Show details\\", in order. Leave out to keep the step's brief; [] for the default (instructions summary, current output, the previous step's verdict).",
+                          "type": "array",
+                          "items": {
+                            "oneOf": [
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "show": {
+                                    "type": "string",
+                                    "const": "output"
                                   },
-                                  {
-                                    "type": "object",
-                                    "properties": {
-                                      "show": {
-                                        "type": "string",
-                                        "const": "comment"
-                                      },
-                                      "kind": {
-                                        "type": "string",
-                                        "minLength": 1
-                                      },
-                                      "role": {
-                                        "type": "string",
-                                        "minLength": 1
-                                      }
-                                    },
-                                    "required": [
-                                      "show"
-                                    ]
-                                  },
-                                  {
-                                    "type": "object",
-                                    "properties": {
-                                      "show": {
-                                        "type": "string",
-                                        "const": "field"
-                                      },
-                                      "field": {
-                                        "type": "string",
-                                        "minLength": 1
-                                      }
-                                    },
-                                    "required": [
-                                      "show",
-                                      "field"
-                                    ]
+                                  "step": {
+                                    "type": "string",
+                                    "minLength": 1
                                   }
+                                },
+                                "required": [
+                                  "show",
+                                  "step"
+                                ]
+                              },
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "show": {
+                                    "type": "string",
+                                    "const": "comment"
+                                  },
+                                  "kind": {
+                                    "type": "string",
+                                    "minLength": 1
+                                  },
+                                  "role": {
+                                    "type": "string",
+                                    "minLength": 1
+                                  }
+                                },
+                                "required": [
+                                  "show"
+                                ]
+                              },
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "show": {
+                                    "type": "string",
+                                    "const": "field"
+                                  },
+                                  "field": {
+                                    "type": "string",
+                                    "minLength": 1
+                                  }
+                                },
+                                "required": [
+                                  "show",
+                                  "field"
                                 ]
                               }
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
+                            ]
+                          }
                         },
                         "timeoutMs": {
                           "anyOf": [
