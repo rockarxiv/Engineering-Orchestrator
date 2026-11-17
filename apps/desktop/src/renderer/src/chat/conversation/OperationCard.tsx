@@ -19,6 +19,8 @@ import { Markdown } from "@eo/ui";
 import { useAliasesRetired } from "../../hooks/useAppVersion";
 import { ipcQuery } from "../../query/client";
 import {
+  agentCliToolsKey,
+  cliToolsKey,
   divergenceKey,
   environmentVariablesRootKey,
   itemsKey,
@@ -140,6 +142,9 @@ export function OperationCard({ message, conversationId, onDone }: { message: Di
           void queryClient.invalidateQueries({ queryKey: assistCardKey(message.id) });
           if (kind === "jobDelete" || kind === "jobWebhook") void queryClient.invalidateQueries({ queryKey: itemsKey });
         }
+        // A CLI card: the Agent tools screen's catalogue and ticks move (EO-821's keys).
+        if (kind === "cliToolAdd") void queryClient.invalidateQueries({ queryKey: cliToolsKey });
+        if (kind === "cliToolAttach") void queryClient.invalidateQueries({ queryKey: agentCliToolsKey });
         if (kind === "pipelineDelete" || kind === "pipelineImport") void queryClient.invalidateQueries({ queryKey: itemsKey });
         if (kind === "pipelineImport") void queryClient.invalidateQueries({ queryKey: modulesKey });
         // A type change is when the registry moves, as the editor's Types section said.

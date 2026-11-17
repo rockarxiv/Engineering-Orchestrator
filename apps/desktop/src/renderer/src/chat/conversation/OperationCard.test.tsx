@@ -1,4 +1,5 @@
-import { fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { QueryClient } from "@tanstack/react-query";
 import { describe, expect, it, vi } from "vitest";
 import { WEBHOOK_UNATTENDED_LABEL, WEBHOOK_UNATTENDED_MANAGED, WEBHOOK_UNATTENDED_RISK, type AssistCardDetail, type AssistCardView, type DiscussionMessage, type ImportPreflightView, type ItemTypeCardShape } from "@eo/core";
 import { ipcStub, renderSection, sent, type Answers } from "../views/settings/org/testing";
@@ -603,6 +604,26 @@ describe("a card for a command-line tool (EO-822)", () => {
     await waitFor(() => expect(onDone).toHaveBeenCalled());
     expect(sent(calls, "assist:applyCard")).toEqual([{ conversationId: "conv-1", messageId: "card-1", choices: {} }]);
     expect(sent(calls, "cliTools:save")).toEqual([]);
+  });
+
+  it("re-reads the Agent tools screen's catalogue after Add CLI, and its ticks after Give CLI", async () => {
+    const invalidate = vi.spyOn(QueryClient.prototype, "invalidateQueries");
+    try {
+      const added = draw(message({ kind: "cliToolAdd", outcome: null }), ADD, { "assist:applyCard": { applied: true, problem: null, said: "Added.", conversation: {} } });
+      await screen.findByLabelText("The command-line tool");
+      fireEvent.click(screen.getByRole("button", { name: "Add CLI" }));
+      await waitFor(() => expect(added.onDone).toHaveBeenCalled());
+      expect(invalidate).toHaveBeenCalledWith({ queryKey: ["cliTools"] });
+      cleanup();
+
+      const given = draw(message({ kind: "cliToolAttach", outcome: null }), ATTACH, { "assist:applyCard": { applied: true, problem: null, said: "Gave.", conversation: {} } });
+      await screen.findByText("GitHub CLI · Implementer");
+      fireEvent.click(screen.getByRole("button", { name: "Give CLI" }));
+      await waitFor(() => expect(given.onDone).toHaveBeenCalled());
+      expect(invalidate).toHaveBeenCalledWith({ queryKey: ["agentCliTools"] });
+    } finally {
+      invalidate.mockRestore();
+    }
   });
 
   it("says a command not found here, and shows a refusal the save would meet with the button off", async () => {
