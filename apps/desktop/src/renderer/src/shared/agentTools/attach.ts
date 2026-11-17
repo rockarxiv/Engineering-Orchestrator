@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { AttachableKind } from "@eo/core";
 import { ipcQuery } from "../../query/client";
-import { agentAttachmentsKey } from "../../query/hooks";
+import { agentAttachmentsKey, agentCliToolsKey } from "../../query/hooks";
 
 /** Every agent's attachments, in one cache entry — see `agentAttachmentsKey`. */
 export function useAgentAttachments() {
@@ -44,6 +44,40 @@ export function useTick(onProblem: (problem: string | null) => void) {
       // this tick is why the refusal exists, so the list that offered it
       // is refetched too.
       await queryClient.invalidateQueries({ queryKey: agentAttachmentsKey });
+    },
+    onError: (error: Error) => onProblem(error.message),
+  });
+}
+
+/** Every agent's command-line tools, in one cache entry — see `agentCliToolsKey`. */
+export function useAgentCliTools() {
+  const query = useQuery({ queryKey: agentCliToolsKey, queryFn: () => ipcQuery("agentCliTools:list", {}) });
+  const byAgent = new Map((query.data?.attachments ?? []).map((row) => [row.agentId, row.cliToolIds]));
+  return {
+    /** The ids of the CLIs this agent has. Absent from the answer is none, not an error. */
+    of: (agentId: string): readonly string[] => byAgent.get(agentId) ?? [],
+    isLoading: query.isLoading,
+  };
+}
+
+/**
+ * One CLI ticked on or off an agent (EO-821), with its refusal handed
+ * back as `useTick` hands back its own. A separate channel from
+ * `agentAttachments:set` on purpose: that one is reachable by EO's
+ * system agent, and only a person decides which CLIs an agent is told
+ * about.
+ */
+export function useCliTick(onProblem: (problem: string | null) => void) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (tick: { agentId: string; cliToolId: string; attached: boolean }) => ipcQuery("agentCliTools:set", tick),
+    onSuccess: async (result) => {
+      if (result.problem !== null) {
+        onProblem(result.problem);
+        return;
+      }
+      onProblem(null);
+      await queryClient.invalidateQueries({ queryKey: agentCliToolsKey });
     },
     onError: (error: Error) => onProblem(error.message),
   });

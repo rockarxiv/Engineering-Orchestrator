@@ -196,7 +196,7 @@ const SCREENS: Readonly<Record<string, Screen>> = {
   },
   "agent-tools": {
     name: "Agent tools",
-    describes: "the MCP servers and skills agents are given. Not Settings → MCP server, which points the other way and lets another program drive EO.",
+    describes: "the MCP servers, skills and command-line tools agents are given. Not Settings → MCP server, which points the other way and lets another program drive EO.",
   },
   gallery: {
     name: "Templates",

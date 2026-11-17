@@ -218,6 +218,24 @@ export const skillsKey = ["skills"] as const;
  */
 export const agentAttachmentsKey = ["agentAttachments"] as const;
 /**
+ * The command-line tools in the catalogue, and which agent has which
+ * (EO-821). Their own keys rather than entries beside `mcpServersKey`
+ * and `agentAttachmentsKey`, because they travel on their own channels
+ * (`cliTools:*`, `agentCliTools:*`): only a person gives an agent a CLI,
+ * so attaching one is not a kind on `agentAttachments:set`. The list is
+ * fetched with `includeArchived: true` everywhere, for the reason the
+ * other two catalogues are; the attachments are every agent's in one
+ * entry, for the reason theirs are.
+ */
+export const cliToolsKey = ["cliTools"] as const;
+export const agentCliToolsKey = ["agentCliTools"] as const;
+/**
+ * Whether one command is installed on this machine (`cliTools:detect`).
+ * Keyed by the command, not the row, so an edit that changes it asks
+ * afresh and two rows naming one program share the answer.
+ */
+export const cliToolDetectionKey = (command: string) => ["cliToolDetection", command] as const;
+/**
  * The connectors this installation has, and whether each is connected
  * (EO-315).
  *
