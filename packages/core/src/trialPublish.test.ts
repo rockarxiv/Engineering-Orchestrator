@@ -24,6 +24,7 @@ const step = (id: string, position: number, name: string, extra: Partial<Resolve
   watch: null,
   results: [],
   moduleVersion: null,
+  brief: null,
   ...extra,
 });
 

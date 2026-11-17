@@ -137,7 +137,7 @@ describe("a watch that never gives up, in a document", () => {
   });
 
   it("parses under the watch a version-9 build reads, so that build reaches its format check and refuses it there", () => {
-    expect(neverGivesUp.eoPipelineExport).toBe(14);
+    expect(neverGivesUp.eoPipelineExport).toBe(15);
     // `StepWatchSchema` as format 9 had it.
     const version9Watch = z.object({ everyMinutes: z.number().finite(), giveUpAfterHours: z.number().finite().default(168) });
     const watch = (JSON.parse(JSON.stringify(neverGivesUp)) as { steps: { watch: unknown }[] }).steps[0]!.watch;
@@ -181,7 +181,7 @@ describe("a pinned module version, in a document", () => {
   });
 
   it("parses under the step and module schemas a version-13 build reads, so that build reaches its format check and refuses it there", () => {
-    expect(pinned.eoPipelineExport).toBe(14);
+    expect(pinned.eoPipelineExport).toBe(15);
     const version13Step = ExportedStepSchema.omit({ moduleVersion: true });
     const version13Module = ExportedModuleSchema.omit({ version: true });
     expect(version13Step.safeParse(step).success).toBe(true);

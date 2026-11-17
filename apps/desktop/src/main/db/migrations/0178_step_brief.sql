@@ -1,0 +1,13 @@
+-- What a person step's decision bar shows behind "Show details" (EO-827,
+-- ARCHITECTURE.md, "The decision's brief").
+--
+-- JSON for `results`' reason: a short ordered list belonging to one step,
+-- published with the graph document in the same click, never queried
+-- across steps. NULL rather than '[]' on every row, because no brief
+-- declared is not a brief that shows nothing: it is the default, the
+-- step's instructions summary, the item's current output and the newest
+-- verdict from the step before.
+--
+-- Not on `pipeline_versions`: a version freezes its steps whole in its
+-- `steps` document, which carries the brief as it carries `results`.
+ALTER TABLE `pipeline_steps` ADD `brief` text;

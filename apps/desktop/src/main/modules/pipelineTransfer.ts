@@ -91,7 +91,7 @@ import {
   setAgentAttachment,
   itemTypesFor,
 } from "../db/repos/index.js";
-import { entryRuleProblems } from "@eo/engine";
+import { briefProblems, entryRuleProblems } from "@eo/engine";
 import { registry } from "../registry.js";
 import { adoptCarriedSchemas, adoptExportedActions, carriedSchemaRefusal, exportedActionRefusal, malformedActionRefusal } from "../actionDefinitionAdoption.js";
 import { loadRolePrompt } from "../roles/prompts.js";
@@ -404,6 +404,10 @@ function exportedBoard(db: Db, board: BoardToExport, exported: ReadonlySet<strin
       // waits on something outside EO is what the step does, and a
       // template that watches has to arrive watching.
       watch: step.watch,
+      // What the decision's details show (EO-827): the graph's own shape,
+      // naming steps by the ids this document carries. Written only where
+      // a step declares one, so a document without briefs reads as before.
+      ...(step.brief === null ? {} : { brief: step.brief }),
     })),
     // Only routes both of whose ends the document carries — on this
     // board or on another it carries (EO-762). Exporting one that
@@ -1450,6 +1454,12 @@ function entryRulesProblem(db: Db, document: PipelineExport, projectId: Uuid | n
   for (const board of documentBoards(document)) {
     const problem = entryRuleProblems(board.pipeline.entryRules, types, registry.entryRuleKinds)[0];
     if (problem !== undefined) return problem;
+    // And each step's brief (EO-827), against the board's own steps and the same types.
+    const brief = briefProblems(
+      board.steps.map((step) => ({ ...step, brief: step.brief ?? null })),
+      types,
+    )[0];
+    if (brief !== undefined) return brief.message;
   }
   return null;
 }
@@ -1676,6 +1686,9 @@ function writeImport(
         // the graph, and absent from a document written before it existed,
         // which reads as a step that runs once.
         watch: step.watch,
+        // The brief arrives as the document says (EO-827), a step it names
+        // moved to the id that step has here.
+        brief: step.brief === undefined ? null : step.brief.map((part) => (part.show === "output" ? { ...part, step: mapped(part.step) } : part)),
       })),
       board.routes.map((route) => ({
         ...route,

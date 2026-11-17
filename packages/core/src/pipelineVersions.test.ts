@@ -27,6 +27,7 @@ function step(overrides: Partial<VersionStep> = {}): VersionStep {
     results: [],
     watch: null,
     moduleVersion: null,
+    brief: null,
     ...overrides,
   };
 }

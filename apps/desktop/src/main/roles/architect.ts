@@ -15,6 +15,7 @@ import {
   resultsFromRoutes,
   RUNS_ONCE,
   type PipelineStep,
+  type StepBrief,
   type ProposedModule,
   type StepInputs,
   type StepResult,
@@ -196,7 +197,9 @@ export function validateDraft(
     // run timeout it would be refused here for a limit Publish accepts.
     runTimeoutMs: readGuards(db).wallClockTimeoutMs,
     // The rules it would publish (EO-610), held to what a save holds them to.
-    ...(draft.entryRules === undefined ? {} : { entryRules: draft.entryRules, itemTypes: itemTypesJudged(db, pipelineId) }),
+    ...(draft.entryRules === undefined ? {} : { entryRules: draft.entryRules }),
+    // The types those rules, and a step's brief (EO-827), are held to.
+    itemTypes: itemTypesJudged(db, pipelineId),
   })];
 }
 
@@ -412,8 +415,17 @@ export function toDomainSteps(pipelineId: string, draft: DraftWithLimits, existi
       // fail validation for routing a result it does not declare, and the
       // card could never be applied.
       results: draftStepResults(step, draft.routes, existing?.results ?? []),
+      // What the decision's details show (EO-827), as entry rules are set:
+      // what the draft says, `null` clearing it, or else the step's own.
+      brief: draftStepBrief(draftStep, existing),
     };
   });
+}
+
+/** A draft step's brief once what it left out is the step's own (EO-827): a draft that does not mention it keeps it. */
+export function draftStepBrief(step: { brief?: StepBrief | null | undefined }, existing: Pick<PipelineStep, "brief"> | undefined): StepBrief | null {
+  if (step.brief === undefined) return existing?.brief ?? null;
+  return step.brief === null || step.brief.length === 0 ? null : step.brief;
 }
 
 /**

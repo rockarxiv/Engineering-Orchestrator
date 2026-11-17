@@ -163,7 +163,7 @@ function jiraUrlFor(db: Db, item: Item): string | null {
  * be told whose words they are — "you" on Anna's comment would be the
  * screen claiming the reader had said it.
  */
-function authorName(comment: Comment, agentsById: Map<string, Agent>, people?: Map<string, Person>, viewerId: string = LOCAL_PERSON_ID): string {
+export function authorName(comment: Comment, agentsById: Map<string, Agent>, people?: Map<string, Person>, viewerId: string = LOCAL_PERSON_ID): string {
   if (comment.authorType === "human") {
     if (comment.authorId === null || comment.authorId === viewerId) return "you";
     return people?.get(comment.authorId)?.name ?? "somebody else";
@@ -2274,6 +2274,8 @@ function toStepView(step: PipelineStep): PipelineStepView {
     // The module version a module step runs (EO-770): what the step's
     // head shows, and what a save sends back to keep the pin.
     moduleVersion: step.moduleVersion,
+    // What the decision's details show on a person step (EO-827).
+    brief: step.brief,
   };
 }
 

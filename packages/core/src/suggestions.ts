@@ -189,6 +189,8 @@ export function documentGraph(document: PipelineExport): { steps: VersionStep[];
       watch: step.watch,
       // A document carries no module pin yet (EO-770), so it says nothing about one.
       moduleVersion: null,
+      // What the decision's details show (EO-827), which a document carries.
+      brief: step.brief ?? null,
       results: step.results.map((result) => ({
         key: result.key,
         label: result.label,

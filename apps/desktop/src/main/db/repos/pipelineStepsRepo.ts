@@ -1,6 +1,6 @@
 import { and, asc, count, eq, inArray, isNotNull, isNull, ne } from "drizzle-orm";
-import { DEFAULT_WORKSPACE_MODE, EntryRulesSchema, SUGGESTIONS_PIPELINE_NAME, PreviewItemSchema, StepInputsSchema, StepResultsSchema, WorkspaceModeSchema, uuidv7 } from "@eo/core";
-import type { EntryRule, IncomingHandOff, Pipeline, PipelineStep, PipelineStepType, PreviewItem, StepHoldingItems, StepInputs, StepResult, StepRoute, StepWatch, Uuid, WorkspaceMode } from "@eo/core";
+import { DEFAULT_WORKSPACE_MODE, EntryRulesSchema, SUGGESTIONS_PIPELINE_NAME, PreviewItemSchema, StepInputsSchema, StepResultsSchema, WorkspaceModeSchema, storedBrief, uuidv7 } from "@eo/core";
+import type { EntryRule, IncomingHandOff, Pipeline, PipelineStep, PipelineStepType, PreviewItem, StepHoldingItems, StepInputs, StepBrief, StepResult, StepRoute, StepWatch, Uuid, WorkspaceMode } from "@eo/core";
 import type { Db } from "../client.js";
 import { pipelines, pipelineSteps, projects, stepRoutes, items } from "../schema.js";
 // A cycle with `pipelineVersionsRepo`, and a deliberate one: the graph
@@ -75,6 +75,9 @@ function toStep(row: typeof pipelineSteps.$inferSelect): PipelineStep {
     results: StepResultsSchema.safeParse(row.results).data ?? [],
     // The module version a module step runs (EO-770).
     moduleVersion: row.moduleVersion,
+    // Parsed for `results`' reason (EO-827): a blob that is not a brief is
+    // read as none, which shows the default rather than nothing.
+    brief: storedBrief(row.brief),
   };
 }
 
@@ -414,6 +417,13 @@ export interface CreateStepInput {
    * module without a version means. Cleared on every other kind of step.
    */
   moduleVersion?: number | null;
+  /**
+   * What a user step's decision bar shows behind "Show details" (EO-827),
+   * with `watch`'s three-way reading in `replacePipelineGraph`: absent
+   * leaves the row alone, `null` clears it back to the default, a list
+   * declares it.
+   */
+  brief?: StepBrief | null | undefined;
 }
 
 export function createStep(db: Db, input: CreateStepInput): PipelineStep {
@@ -438,6 +448,7 @@ export function createStep(db: Db, input: CreateStepInput): PipelineStep {
       ...watchColumns(input.watch ?? null),
       ownerPersonId: input.ownerPersonId ?? null,
       results: input.results ?? [],
+      brief: input.brief ?? null,
       moduleVersion: stepModuleVersion(db, { type: input.type ?? "agent", entryAction: input.entryAction, moduleVersion: input.moduleVersion }),
     })
     .returning()
@@ -1005,8 +1016,11 @@ export function replacePipelineGraph(
       // graph document, so a caller that sends it publishes it and one
       // with nothing to say about it leaves the row alone.
       const watching = step.watch === undefined ? {} : watchColumns(step.watch);
+      // And the brief (EO-827), on the same terms: a draft that says
+      // nothing about it leaves the step's brief where it was.
+      const briefing = step.brief === undefined ? {} : { brief: step.brief };
       if (existing.has(id))
-        tx.update(pipelineSteps).set({ ...values, ...configured, ...limit, ...mode, ...disk, ...owner, ...group, ...decisions, ...watching }).where(eq(pipelineSteps.id, id)).run();
+        tx.update(pipelineSteps).set({ ...values, ...configured, ...limit, ...mode, ...disk, ...owner, ...group, ...decisions, ...watching, ...briefing }).where(eq(pipelineSteps.id, id)).run();
       else
         tx
           .insert(pipelineSteps)
@@ -1021,6 +1035,7 @@ export function replacePipelineGraph(
             ownerPersonId: step.ownerPersonId ?? null,
             ownerGroupId: step.ownerGroupId ?? null,
             results: step.results ?? [],
+            brief: step.brief ?? null,
           })
           .run();
     }

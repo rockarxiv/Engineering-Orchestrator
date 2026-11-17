@@ -1122,6 +1122,8 @@ function graphOfDocument(db: Db, pipelineId: string, document: PipelineExport, l
       // A document's pin is the writing machine's number (EO-772), which
       // names nothing here; the save chooses one.
       moduleVersion: null,
+      // A step's brief (EO-827), naming steps by the document's ids moved to this pipeline's.
+      brief: step.brief === undefined ? null : step.brief.map((part) => (part.show === "output" ? { ...part, step: local(part.step) } : part)),
     }));
   const routes: StepRoute[] = document.routes.map((route) => ({
     ...route,

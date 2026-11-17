@@ -1,5 +1,5 @@
 import { backendAllowed, bindingRefusal, DEFAULT_MEMORY_DELIVERY_CHARS, DEFAULT_MEMORY_SCOPE_MAX_CHARS, DEFAULT_MEMORY_SCOPE_MAX_ENTRIES, DEFAULT_SKILL_ARCHIVE_AFTER_RUNS, DEFAULT_SKILL_MAX_BODY_CHARS, DEFAULT_SKILL_STALE_AFTER_RUNS, isBuiltinRole, isDispatchable, isPreviewAgent, rolesStaffedFor, settledWatch, staffingAgents, stepHoldsItemsMessage, stepWorkspaceChoice, timeLimitBoundProblem, withMemoryNoteGrant } from "@eo/core";
-import type { ActionDefinitionDraft, Agent, AgentRemovalImpact, EntryRule, GuardConfigView, IpcPayload, IpcResponse, ItemTypeEntry, Registry, Uuid, PipelineStep, StepRoute, StepWatch } from "@eo/core";
+import type { ActionDefinitionDraft, Agent, AgentRemovalImpact, EntryRule, GuardConfigView, IpcPayload, IpcResponse, ItemTypeEntry, Registry, Uuid, PipelineStep, StepBrief, StepRoute, StepWatch } from "@eo/core";
 import { hasBlockingProblem, outsideReachByStep, validatePipeline, type WorkflowProblem } from "@eo/engine";
 import type { Db } from "../db/client.js";
 import { registry, registryForProject, withProposedActions } from "../registry.js";
@@ -734,6 +734,18 @@ function watchFor(db: Db, pipelineId: string, step: IpcPayload<"pipeline:save">[
 }
 
 /**
+ * The brief a step of this save ends up with (EO-827), on `watchFor`'s
+ * terms: what the caller sent, `null` included, or where it left the
+ * field out, the step's own row — so a caller that never mentioned the
+ * brief keeps it, and the validator judges the brief that will be written.
+ */
+function briefFor(db: Db, pipelineId: string, step: IpcPayload<"pipeline:save">["steps"][number]): StepBrief | null {
+  if (step.brief !== undefined) return step.brief === null || step.brief.length === 0 ? null : step.brief;
+  const stored = getStep(db, step.id);
+  return stored !== undefined && stored.pipelineId === pipelineId ? stored.brief : null;
+}
+
+/**
  * The live steps this save stops keeping checking (EO-506), for the
  * answer to say so: each kept checking before the save and runs once
  * after it. A step the save removes is not one of them — it is not a
@@ -763,6 +775,8 @@ function toDomainSteps(db: Db, pipelineId: string, steps: IpcPayload<"pipeline:s
     timeoutMs: step.timeoutMs,
     // Absent keeps the row's (EO-506) — see `watchFor`.
     watch: watchFor(db, pipelineId, step),
+    // Absent keeps the row's (EO-827) — see `briefFor`.
+    brief: briefFor(db, pipelineId, step),
     // Never on the wire, by design: an off-dashboard step is not a column,
     // so the configuration screen has nothing to show for it and nothing
     // to submit. `savePipeline` skips those rows rather than reading this.
@@ -1103,7 +1117,9 @@ function validationInput(
     // file for (EO-610): the pipeline's own project where one adopted it,
     // as `foreignWorkspaceProblems` reads it. Absent judges nothing.
     // Each module rule pinned (EO-770), as a write would pin it.
-    ...(entryRules === undefined ? {} : { entryRules: pinEntryRules(db, entryRules), itemTypes: itemTypesJudged(db, pipelineId, judgedFor) }),
+    ...(entryRules === undefined ? {} : { entryRules: pinEntryRules(db, entryRules) }),
+    // The types those rules, and a step's brief (EO-827), are held to.
+    itemTypes: itemTypesJudged(db, pipelineId, judgedFor),
   };
 }
 

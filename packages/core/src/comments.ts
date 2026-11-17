@@ -41,7 +41,8 @@ export type CommentAuthorType = "human" | "agent" | "engine" | "module";
  * stays in the thread — `run_events` is not the only place EO refuses to
  * rewrite what happened.
  */
-export type CommentKind = "note" | "question" | "decision" | "approval" | "rejection" | "escalation" | "output";
+export const COMMENT_KINDS = ["note", "question", "decision", "approval", "rejection", "escalation", "output"] as const;
+export type CommentKind = (typeof COMMENT_KINDS)[number];
 export type MentionTargetType = "human" | "agent";
 export type MentionStatus = "open" | "addressed" | "dismissed";
 
