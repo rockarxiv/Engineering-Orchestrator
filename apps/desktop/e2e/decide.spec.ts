@@ -36,7 +36,7 @@ function seedDecisionStep(home: string): void {
     ]);
     db.prepare(
       `INSERT INTO pipeline_steps (id, pipeline_id, position, name, type, owner_role, entry_action, instructions_summary, is_terminal, plan_mode, off_board, results)
-       VALUES ('approval', ?, 20, 'Approval', 'user', NULL, NULL, NULL, 0, 0, 0, ?)`,
+       VALUES ('approval', ?, 20, 'Approval', 'user', NULL, NULL, 'Check the Q3 numbers before it is sent.', 0, 0, 0, ?)`,
     ).run(pipeline.id, results);
     db.prepare(
       `INSERT INTO step_routes (id, pipeline_id, from_step_id, result_key, label, tone, target, position)
@@ -90,7 +90,13 @@ test("a person approves on a human step and the card moves", async () => {
     // Parked on the step a person decides on, which is where an item
     // arrives once the draft before it is done. Nothing dispatches it —
     // a `user` step is never dispatched — so it waits for the button.
-    seedItem(home, { title: "Q3 report", stepId: "approval", comment: "The draft is attached." });
+    // Criteria enough that the page is taller than the window, so the bar has something to stay pinned over.
+    seedItem(home, {
+      title: "Q3 report",
+      stepId: "approval",
+      comment: "The draft is attached.",
+      acceptanceCriteria: Array.from({ length: 60 }, (_, index) => `Figure ${index + 1} matches the ledger`),
+    });
     await window.reload();
     await window.waitForLoadState("domcontentloaded");
 
@@ -101,8 +107,23 @@ test("a person approves on a human step and the card moves", async () => {
 
     // The button says where it leads, which is the half of the design a person
     // reads before deciding anything.
-    const approve = view.getByRole("region", { name: "Decide" }).getByRole("button", { name: "Approve → Done" });
+    const bar = view.getByRole("region", { name: "Decide" });
+    const approve = bar.getByRole("button", { name: "Approve → Done" });
     await expect(approve).toBeVisible({ timeout: 10_000 });
+    await expect(bar).toContainText("Check the Q3 numbers before it is sent.");
+
+    // Pinned (EO-826): with the page scrolled to its top, the bar is still on screen.
+    await expect.poll(() => view.evaluate((element) => element.scrollHeight > element.clientHeight + 200)).toBe(true);
+    await view.evaluate((element) => element.scrollTo(0, 0));
+    await expect.poll(() => view.evaluate((element) => element.scrollTop)).toBe(0);
+    await expect(bar).toBeInViewport();
+    await expect(approve).toBeInViewport();
+    const [panel, pinned] = await Promise.all([view.boundingBox(), bar.boundingBox()]);
+    expect(pinned!.y + pinned!.height).toBeLessThanOrEqual(panel!.y + panel!.height + 1);
+
+    // The banner under the header leads to it.
+    await view.getByRole("button", { name: "Waiting on you: Approval" }).click();
+    await expect(bar).toBeFocused();
     await approve.click();
 
     // The route decided where it went — nothing here named a column.

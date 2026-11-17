@@ -1443,10 +1443,11 @@ describe("the canvas", () => {
     expect(within(card).queryByText("Must cover")).not.toBeInTheDocument();
     expect(within(card).getByRole("list", { name: "Acceptance criteria" })).toHaveTextContent("What slipped and why");
 
-    // A result that needs a reason asks for it before deciding.
-    fireEvent.click(within(card).getByRole("button", { name: "Send back → Draft" }));
-    fireEvent.change(within(card).getByRole("textbox", { name: "Why Send back" }), { target: { value: "The Q3 number is wrong" } });
-    fireEvent.click(within(card).getAllByRole("button", { name: "Send back → Draft" })[1]!);
+    // A result that needs a reason asks for it before deciding, in the bar pinned under the item (EO-826).
+    const decide = screen.getByRole("region", { name: "Decide" });
+    fireEvent.click(within(decide).getByRole("button", { name: "Send back → Draft" }));
+    fireEvent.change(within(decide).getByRole("textbox", { name: "Why Send back" }), { target: { value: "The Q3 number is wrong" } });
+    fireEvent.click(within(decide).getAllByRole("button", { name: "Send back → Draft" })[1]!);
     await waitFor(() =>
       expect(
         invoke.mock.calls.some(([channel, input]) => channel === "items:decide" && (input as { comment: string }).comment === "The Q3 number is wrong"),
@@ -1465,7 +1466,8 @@ describe("the canvas", () => {
     // can be drawn under the last tab and drawn again once its tab exists,
     // and a box opened on the first drawing is gone with it.
     await waitFor(() => expect(screen.getByRole("tab", { name: /RPT-7/ })).toHaveAttribute("aria-selected", "true"));
-    const first = await screen.findByRole("article", { name: "Week of 29 September" });
+    await screen.findByRole("article", { name: "Week of 29 September" });
+    const first = screen.getByRole("region", { name: "Decide" });
     fireEvent.click(within(first).getByRole("button", { name: "Send back → Draft" }));
     fireEvent.change(within(first).getByRole("textbox", { name: "Why Send back" }), { target: { value: "Meant for RPT-7 only" } });
 

@@ -19,7 +19,6 @@ import { ActAsAdmin } from "../../admin/ActAsAdmin";
 import { ReadOnlyFence } from "../../admin/ReadOnlyFence";
 import { useMayEdit } from "../../HolderGate";
 import { Button, Card, Chip, ErrorLine, Facts, Field, GroupLabel, Loading, Select } from "../../kit";
-import { DecisionButtons } from "../../parts";
 import { ItemRef, RefText } from "../items/ItemReference";
 import { PreviewBanner } from "../items/PreviewBanner";
 import { useFollowItemProject, usePipelineName } from "../shared";
@@ -27,6 +26,7 @@ import { AssigneePicker } from "./AssigneePicker";
 import { ConfirmDeleteComment } from "./ConfirmDeleteComment";
 import { ConfirmDeleteItem } from "./ConfirmDeleteItem";
 import { DependencyRow } from "./DependencyRow";
+import { DecisionBar, WaitingOnYouBanner } from "./DecisionBar";
 import { CriteriaSection, SpecSection } from "./Fields";
 import { ItemFiles } from "./ItemFiles";
 import { ItemHeader } from "./ItemHeader";
@@ -50,8 +50,9 @@ import { excerpt, spoken, StatusLine, when } from "./parts";
  * Everything the classic page does is here, in the order a person works
  * through it: what the item is and where it stands; its fields, criteria
  * and dependencies; a suggested pipeline change where it is one; what it
- * produced; the decision its step asks for; then the thread and the box
- * to add to it. The facts the classic page kept in a right-hand rail are
+ * produced; then the thread and the box to add to it. The decision its
+ * step asks for is a bar pinned to the bottom of the page (EO-826), so it
+ * stays in view whatever is being read. The facts the classic page kept in a right-hand rail are
  * a card of their own, beside the reading column where the canvas is wide
  * and under the item where it is not.
  *
@@ -259,6 +260,8 @@ export function ItemView({ itemId }: { itemId: string }) {
   // Who decides here, where a group's step says only the holder does (EO-368).
   const stepAuthority = useStepAuthority(itemId);
   const authority = stepAuthority.known ? stepAuthority.authority : null;
+  // The pinned decision bar, which the "Waiting on you" banner brings into view and focuses (EO-826).
+  const decisionBar = useRef<HTMLElement>(null);
   // Not before the answer is known: an editor offered while it is still
   // being asked would be offered to whoever happens to be looking.
   const mayEdit = useMayEdit(itemId);
@@ -321,6 +324,11 @@ export function ItemView({ itemId }: { itemId: string }) {
   const costCents = cost.data?.costCents ?? 0;
   const knownPriority = PRIORITY_LEVELS.some((level) => level.value === item.priority);
   const attachmentSync = detail.data.attachmentSync;
+  const currentStepName = current?.name ?? item.stepName;
+  // Whose the decision is, as the box said it (EO-368): a group's while the viewer does not hold it.
+  const waitsOnGroup = authority !== null && authority.you !== "holder" ? authority.group.name : null;
+  // The banner says "you" only once that is known, and never to somebody reading another team's work.
+  const waitingOnYou = decision.length > 0 && stepAuthority.known && waitsOnGroup === null && !readOnly;
 
   return (
     <div className="flex min-w-0 flex-col gap-3">
@@ -399,6 +407,16 @@ export function ItemView({ itemId }: { itemId: string }) {
             </>
           }
         />
+
+        {waitingOnYou ? (
+          <WaitingOnYouBanner
+            stepName={currentStepName}
+            onActivate={() => {
+              decisionBar.current?.scrollIntoView?.({ block: "nearest" });
+              decisionBar.current?.focus();
+            }}
+          />
+        ) : null}
 
         {syncReport ? (
           <StatusLine>
@@ -569,16 +587,6 @@ export function ItemView({ itemId }: { itemId: string }) {
               />
               </ReadOnlyFence>
 
-              {/* The step's results, with where each sends the item (EO-310). Nothing where nobody decides. */}
-              {decision.length > 0 ? (
-                <section aria-label="Decide" className="flex min-w-0 flex-col gap-2 rounded-[14px] bg-paused/12 px-[18px] py-3.5">
-                  <span className="text-[12px] text-paused">
-                    {authority !== null && authority.you !== "holder" ? `This step waits on ${authority.group.name}` : "This step is yours"} ·{" "}
-                    {current?.name ?? item.stepName}
-                  </span>
-                  <DecisionButtons itemId={itemId} decision={decision} adminControl={false} onDecided={invalidate} />
-                </section>
-              ) : null}
             </article>
 
             <aside aria-label="About" className="flex min-w-0 flex-col gap-3 @4xl:col-start-2 @4xl:row-span-2 @4xl:row-start-1 @4xl:self-start">
@@ -787,6 +795,21 @@ export function ItemView({ itemId }: { itemId: string }) {
             </div>
           </div>
         </div>
+
+        {/* The step's results, with where each sends the item (EO-310), pinned
+            to the bottom of the page while it scrolls (EO-826). Last, so it
+            sits under everything it is about. Nothing where nobody decides. */}
+        {decision.length > 0 ? (
+          <DecisionBar
+            ref={decisionBar}
+            itemId={itemId}
+            stepName={currentStepName}
+            summary={current?.instructionsSummary ?? null}
+            waitsOnGroup={waitsOnGroup}
+            decision={decision}
+            onDecided={invalidate}
+          />
+        ) : null}
 
         {confirmingDelete ? (
           <ConfirmDeleteItem
