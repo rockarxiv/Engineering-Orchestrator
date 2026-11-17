@@ -3,7 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import type { AttachableKind } from "@eo/core";
 import { ipcQuery } from "../../../query/client";
 import { agentsKey, mcpServersKey, skillsKey, useChromeVocabulary } from "../../../query/hooks";
-import { useAgentAttachments, useTick } from "../../../shared/agentTools/attach";
+import { useAgentAttachments, useAgentCliTools, useCliTick, useTick } from "../../../shared/agentTools/attach";
 import { withArticleCapital } from "../../parts";
 import { Chip, ErrorLine } from "../../kit";
 import { TickChip, TickOption } from "./ticks";
@@ -37,9 +37,61 @@ export function useNextDispatchNote(): string {
  */
 export function AttachedAgents({ kind, entryId, entryName }: { kind: AttachableKind; entryId: string; entryName: string }) {
   const [problem, setProblem] = useState<string | null>(null);
-  const agents = useQuery({ queryKey: agentsKey, queryFn: () => ipcQuery("agents:list", undefined) });
   const attachments = useAgentAttachments();
   const tick = useTick(setProblem);
+
+  const held = (agentId: string) => {
+    const attached = attachments.of(agentId);
+    return kind === "mcpServer" ? attached.mcpServerIds.includes(entryId) : attached.skillIds.includes(entryId);
+  };
+
+  return (
+    <AgentTicks
+      entryName={entryName}
+      held={held}
+      pending={tick.isPending}
+      problem={problem}
+      onTick={(agentId, attached) => tick.mutate({ agentId, kind, id: entryId, attached })}
+    />
+  );
+}
+
+/**
+ * Which agents are told about this command-line tool (EO-821) — the same
+ * row of ticks, written through `agentCliTools:set` rather than
+ * `agentAttachments:set`, because only a person attaches a CLI.
+ */
+export function AttachedCliAgents({ cliToolId, entryName }: { cliToolId: string; entryName: string }) {
+  const [problem, setProblem] = useState<string | null>(null);
+  const attachments = useAgentCliTools();
+  const tick = useCliTick(setProblem);
+
+  return (
+    <AgentTicks
+      entryName={entryName}
+      held={(agentId) => attachments.of(agentId).includes(cliToolId)}
+      pending={tick.isPending}
+      problem={problem}
+      onTick={(agentId, attached) => tick.mutate({ agentId, cliToolId, attached })}
+    />
+  );
+}
+
+/** The drawing both ends of the catalogue share: one tick per live agent, and the refusal under them. */
+function AgentTicks({
+  entryName,
+  held,
+  pending,
+  problem,
+  onTick,
+}: {
+  entryName: string;
+  held: (agentId: string) => boolean;
+  pending: boolean;
+  problem: string | null;
+  onTick: (agentId: string, attached: boolean) => void;
+}) {
+  const agents = useQuery({ queryKey: agentsKey, queryFn: () => ipcQuery("agents:list", undefined) });
 
   // Live agents only (EO-186): an archived one is not coming back, so a
   // tick against it would file a row nothing will ever deliver. A
@@ -47,11 +99,6 @@ export function AttachedAgents({ kind, entryId, entryName }: { kind: AttachableK
   // ordinary.
   const rows = (agents.data?.agents ?? []).filter((agent) => agent.archivedAt === null);
   if (rows.length === 0) return <p className="text-[12px] text-ink-subtle">No agents to give this to yet.</p>;
-
-  const held = (agentId: string) => {
-    const attached = attachments.of(agentId);
-    return kind === "mcpServer" ? attached.mcpServerIds.includes(entryId) : attached.skillIds.includes(entryId);
-  };
 
   return (
     <div className="flex flex-col gap-1.5">
@@ -62,8 +109,8 @@ export function AttachedAgents({ kind, entryId, entryName }: { kind: AttachableK
             key={agent.id}
             label={`${agent.name} gets ${entryName}`}
             checked={held(agent.id)}
-            disabled={tick.isPending}
-            onChange={(attached) => tick.mutate({ agentId: agent.id, kind, id: entryId, attached })}
+            disabled={pending}
+            onChange={(attached) => onTick(agent.id, attached)}
           >
             <span className="truncate">{agent.name}</span>
             {/* Tickable, but the row should not imply it is about to run. */}

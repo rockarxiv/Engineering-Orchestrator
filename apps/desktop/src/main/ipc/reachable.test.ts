@@ -98,17 +98,9 @@ const AWAITING_ITS_SCREEN: Partial<Record<keyof typeof ipcContract, string>> = {
   // `memory/memoryPanel.ts`, drawn in the project and workspace
   // settings.
   //
-  // The command-line tool catalogue (EO-819) lands before its screen,
-  // the CLIs panel on the Agent tools screen (EO-821), as the MCP server
-  // catalogue landed before its own. Each leaves when the panel calls it.
-  "cliTools:list": "EO-821 — the CLIs panel on the Agent tools screen lists the catalogue",
-  "cliTools:save": "EO-821 — the CLI editor on that panel adds and edits one",
-  "cliTools:archive": "EO-821 — Archive on a CLI in that panel",
-  "cliTools:restore": "EO-821 — Restore on an archived CLI in that panel",
-  "agentCliTools:list": "EO-821 — which agents have each CLI, on that panel",
-  "agentCliTools:set": "EO-821 — the tick that gives an agent a CLI, on that panel",
-  "cliTools:detect": "EO-821 — found or not found on this machine, beside each CLI",
-  "cliTools:draft": "EO-821 — the description the editor pre-fills when a command is entered",
+  // The command-line tool catalogue's eight channels (EO-819) landed
+  // before their screen, as the MCP server catalogue landed before its
+  // own, and left with it: EO-821's CLIs panel on the Agent tools screen.
 };
 
 /**

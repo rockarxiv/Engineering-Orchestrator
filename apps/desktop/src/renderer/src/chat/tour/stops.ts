@@ -72,7 +72,7 @@ export const TOUR_STOPS: readonly TourStop[] = [
     anchor: "view-agentTools",
     at: "/agent-tools",
     title: "Agent tools",
-    text: () => "The MCP servers and skills agents can use, and which agents are given each one.",
+    text: () => "The MCP servers, skills and command-line tools agents can use, and which agents are given each one.",
   },
   {
     id: "settings",

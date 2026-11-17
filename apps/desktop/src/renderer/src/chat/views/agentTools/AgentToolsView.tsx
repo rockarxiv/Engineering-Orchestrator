@@ -4,16 +4,19 @@ import { Plug } from "lucide-react";
 import { Link } from "react-router-dom";
 import { machineAvailable } from "../../../ipc/bridge";
 import { ipcQuery } from "../../../query/client";
-import { mcpServersKey, skillsKey } from "../../../query/hooks";
+import { cliToolsKey, mcpServersKey, skillsKey } from "../../../query/hooks";
 import { useViewParameters } from "../../../shared/view/ViewPublisher";
 import { ManagedSection } from "../../managed/ManagedSection";
 import { Notice, Tabs, ViewHeader } from "../../kit";
+import { CliToolsPanel } from "./CliToolsPanel";
 import { ServersPanel } from "./ServersPanel";
 import { SkillsPanel } from "./SkillsPanel";
 
 /**
  * Agent tools (`/agent-tools`) — the two catalogues an agent's tool
- * surface is drawn from (EO-109), drawn in the chat layout's own terms.
+ * surface is drawn from (EO-109), drawn in the chat layout's own terms,
+ * and the command-line tools an agent is told about beside them (EO-821),
+ * which grant nothing and widen no tool surface.
  *
  * Not Settings → MCP server, which points the other way (EO serving its
  * tools to another program); the view says so where somebody who took a
@@ -23,7 +26,7 @@ import { SkillsPanel } from "./SkillsPanel";
  * catalogue its own Show archived beside it, merged by `ViewPublisher`.
  */
 
-type Tab = "servers" | "skills";
+type Tab = "servers" | "skills" | "clis";
 
 export function AgentToolsView() {
   const [tab, setTab] = useState<Tab>("servers");
@@ -36,13 +39,15 @@ export function AgentToolsView() {
   const skills = useQuery({ queryKey: skillsKey, queryFn: () => ipcQuery("skills:list", { includeArchived: true }) });
   const liveServers = (servers.data?.servers ?? []).filter((server) => server.archivedAt === null).length;
   const liveSkills = (skills.data?.skills ?? []).filter((skill) => skill.archivedAt === null).length;
+  const clis = useQuery({ queryKey: cliToolsKey, queryFn: () => ipcQuery("cliTools:list", { includeArchived: true }) });
+  const liveClis = (clis.data?.cliTools ?? []).filter((tool) => tool.archivedAt === null).length;
 
   return (
     <div className="@container flex min-w-0 flex-col">
       <ViewHeader
         icon={<Plug size={15} />}
         title="Agent tools"
-        meta="MCP servers and skills your agents are given. Define one here, then tick which agents get it — an agent has nothing from this screen until you do."
+        meta="MCP servers, skills and command-line tools your agents are given. Define one here, then tick which agents get it — an agent has nothing from this screen until you do."
       >
         <Notice>
           <p>
@@ -65,6 +70,7 @@ export function AgentToolsView() {
           tabs={[
             { value: "servers", label: "MCP servers", count: liveServers },
             { value: "skills", label: "Skills", count: liveSkills },
+            { value: "clis", label: "CLIs", count: liveClis },
           ]}
         />
       </ViewHeader>
@@ -79,6 +85,9 @@ export function AgentToolsView() {
       */}
       {tab === "servers" ? (
         <ServersPanel />
+      ) : tab === "clis" ? (
+        // Not fenced either: a CLI arrives with no pack and is published by no policy — it is the person's.
+        <CliToolsPanel />
       ) : (
         <ManagedSection section="packs">
           <SkillsPanel />
