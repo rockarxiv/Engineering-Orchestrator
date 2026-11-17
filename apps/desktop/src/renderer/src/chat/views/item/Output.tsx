@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useMutation } from "@tanstack/react-query";
 import { Copy, Download, Pencil } from "lucide-react";
-import { Markdown } from "@eo/ui";
+import { CollapsibleMarkdown } from "@eo/ui";
 import type { ItemDetail } from "@eo/core";
 import { machineAvailable } from "../../../ipc/bridge";
 import { ipcQuery } from "../../../query/client";
@@ -27,6 +27,9 @@ import { EditorActions, StatusLine, when } from "./parts";
  * `items:exportOutput`, a single file through `attachments:save` — and
  * not offered where there is no machine (EO-319) or no single thing it
  * could mean.
+ *
+ * A long body starts clipped with Show more / Show less, as a comment in
+ * the thread does (EO-825); the actions above act on the whole of it.
  */
 export function OutputSection({
   output,
@@ -170,9 +173,13 @@ export function OutputSection({
           </EditorActions>
         </div>
       ) : (
-        <div className="min-w-0 text-ink">
-          <Markdown>{output.body}</Markdown>
-        </div>
+        // Clipped like a thread comment (EO-825): an implementer's diff can
+        // run for thousands of lines above everything else on the page.
+        // Only what is drawn is clipped — Copy, Export and Edit read
+        // `output.body` whole, whatever the toggle says.
+        <CollapsibleMarkdown className="min-w-0 text-ink" toggleClassName="rounded-[7px] text-[12px] focus-visible:outline-focus">
+          {output.body}
+        </CollapsibleMarkdown>
       )}
 
       {output.attachments.length > 0 ? (
