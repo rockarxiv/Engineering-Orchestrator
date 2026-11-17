@@ -1416,6 +1416,73 @@ describe("deciding on a human step", () => {
     renderItem(detail());
     await screen.findByRole("heading", { name: "Rate limit the API" });
     expect(screen.queryByRole("region", { name: "Decide" })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^Waiting on you/ })).toBeNull();
+  });
+
+  // A person's step, with what it asks written as its instructions (EO-826).
+  const APPROVAL_STEPS = [
+    ...PIPELINE_STEPS,
+    {
+      id: "approval",
+      pipelineId: "default",
+      position: 3,
+      name: "Approval",
+      type: "user",
+      ownerRole: null,
+      entryAction: null,
+      instructionsSummary: "Check the Q3 numbers before it is sent.\nThen approve.",
+      isTerminal: false,
+    },
+  ];
+  const onApproval = (overrides: Partial<ItemDetailData> = {}) => {
+    const base = detail({ decision: DECISION, ...overrides });
+    return { ...base, item: { ...base.item, stepId: "approval", stepName: "Approval" } };
+  };
+
+  it("pins the decision to the bottom of the page, after everything it is about (EO-826)", async () => {
+    renderItem(detail({ decision: DECISION }));
+
+    const bar = await screen.findByRole("region", { name: "Decide" });
+    // Sticky to the bottom of the canvas's scroll container: in view at any scroll, the top included.
+    expect(bar.parentElement).toHaveClass("sticky", "-bottom-4");
+    // …and drawn after the thread and its box, so nothing below it scrolls out from under it.
+    const thread = screen.getByRole("button", { name: "Comment" });
+    expect(thread.compareDocumentPosition(bar) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("names the step and what it decides, from the step's instructions, with one button per result saying where it leads (EO-826)", async () => {
+    renderItem(onApproval(), undefined, { "pipelineSteps:list": { steps: APPROVAL_STEPS, routes: [] } });
+
+    const bar = await screen.findByRole("region", { name: "Decide" });
+    await waitFor(() => expect(bar).toHaveTextContent("This step is yours · Approval"));
+    expect(within(bar).getByText("Check the Q3 numbers before it is sent.")).toBeInTheDocument();
+    expect(within(bar).getByRole("button", { name: "Approve → Send" })).toBeInTheDocument();
+    expect(within(bar).getByRole("button", { name: "Send back → Draft" })).toBeInTheDocument();
+    // The page's only set: the in-flow box is gone.
+    expect(screen.getAllByRole("region", { name: "Decide" })).toHaveLength(1);
+    expect(screen.getAllByRole("button", { name: "Approve → Send" })).toHaveLength(1);
+    expect(screen.getAllByRole("button", { name: "Send back → Draft" })).toHaveLength(1);
+  });
+
+  it("says the step waits on you where it has no instructions (EO-826)", async () => {
+    renderItem(detail({ decision: DECISION }));
+
+    const bar = await screen.findByRole("region", { name: "Decide" });
+    expect(await within(bar).findByText("To Do waits on you")).toBeInTheDocument();
+  });
+
+  it("shows a banner under the header that moves focus to the bar (EO-826)", async () => {
+    renderItem(onApproval(), undefined, { "pipelineSteps:list": { steps: APPROVAL_STEPS, routes: [] } });
+
+    const banner = await screen.findByRole("button", { name: "Waiting on you: Approval" });
+    const bar = screen.getByRole("region", { name: "Decide" });
+    // Under the item's header, above everything else on the page.
+    const heading = screen.getByRole("heading", { name: "Rate limit the API" });
+    expect(heading.compareDocumentPosition(banner) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(banner.compareDocumentPosition(screen.getByRole("article")) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+
+    fireEvent.click(banner);
+    expect(bar).toHaveFocus();
   });
 
   it("decides on the click, and asks why before sending anything back", async () => {
@@ -1503,6 +1570,7 @@ describe("deciding on a step that waits on a group (EO-368)", () => {
     const decide = await screen.findByRole("region", { name: "Decide" });
     expect(await within(decide).findByRole("button", { name: "Approve → Send" })).toBeInTheDocument();
     expect(within(decide).queryByRole("button", { name: "Take over" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Waiting on you: To Do" })).toBeInTheDocument();
   });
 
   it("shows a member who does not hold it who does, and Take over instead of the decision", async () => {
@@ -1510,6 +1578,9 @@ describe("deciding on a step that waits on a group (EO-368)", () => {
 
     const gate = await screen.findByRole("region", { name: "Who decides" });
     expect(gate).toHaveTextContent("Anna holds this");
+    // The bar says whose it is, as the box did, and no banner says it is yours (EO-826).
+    expect(screen.getByRole("region", { name: "Decide" })).toHaveTextContent("This step waits on Design · To Do");
+    expect(screen.queryByRole("button", { name: /^Waiting on you/ })).toBeNull();
     expect(within(gate).getByRole("button", { name: "Take over" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Approve → Send" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Send back → Draft" })).toBeNull();
@@ -1563,6 +1634,7 @@ describe("deciding on a step that waits on a group (EO-368)", () => {
     expect(gate).toHaveTextContent("This step waits on Design and Anna holds it");
     expect(within(gate).queryByRole("button")).toBeNull();
     expect(screen.queryByRole("button", { name: "Claim" })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^Waiting on you/ })).toBeNull();
     expect(screen.queryByRole("button", { name: "Take over" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Approve → Send" })).toBeNull();
   });
