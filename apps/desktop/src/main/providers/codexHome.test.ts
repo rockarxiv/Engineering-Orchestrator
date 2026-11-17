@@ -41,10 +41,10 @@ import { sideCallSignInUnreachable } from "./sideCallProviders.js";
 
 const AGENT = "019fb8c6-0000-7000-8000-0000000000a1";
 const OTHER = "019fb8c6-0000-7000-8000-0000000000b2";
-const TICKET = "019fb8c6-0000-7000-8000-0000000000c3";
-const SECOND_TICKET = "019fb8c6-0000-7000-8000-0000000000d4";
+const ITEM = "019fb8c6-0000-7000-8000-0000000000c3";
+const SECOND_ITEM = "019fb8c6-0000-7000-8000-0000000000d4";
 
-/** The home an agent's turns on `itemId` run in under `root`, or its turns on no ticket (EO-829). */
+/** The home an agent's turns on `itemId` run in under `root`, or its turns on no item (EO-829). */
 function homeOf(root: string, agentId: string = AGENT, itemId: string | null = null): string {
   return agentCodexHomePath(root, agentId, itemId);
 }
@@ -323,7 +323,7 @@ describe("the hard links earlier versions left in homes that are kept", () => {
   it("are removed from every kept home and the side calls' by a sweep, and the homes kept", async () => {
     const person = personHome();
     const root = directory();
-    const homes = [homeOf(root), homeOf(root, AGENT, TICKET), homeOf(root, SIDE_CALL_CODEX_HOME)];
+    const homes = [homeOf(root), homeOf(root, AGENT, ITEM), homeOf(root, SIDE_CALL_CODEX_HOME)];
     for (const home of homes) {
       mkdirSync(home, { recursive: true });
       linkSync(join(person, "auth.json"), join(home, "auth.json"));
@@ -709,17 +709,17 @@ describe("a home whose sessions is a real directory", () => {
     expect(readdirSync(root)).toEqual([OTHER]);
   });
 
-  it("is left whole by a sweep in a ticket's home, with the agent's directory around it", async () => {
+  it("is left whole by a sweep in an item's home, with the agent's directory around it", async () => {
     const root = directory();
-    const home = homeWithRealSessions(root, OTHER, homeOf(root, OTHER, TICKET));
+    const home = homeWithRealSessions(root, OTHER, homeOf(root, OTHER, ITEM));
 
     // The agent gone: its directory is not claimed with a home in it that holds rollouts.
     expect(await sweepCodexHomes(root, () => false)).toEqual([]);
-    // The ticket gone: nor is the ticket's home.
+    // The item gone: nor is the item's home.
     expect(await sweepCodexHomes(root, (_agentId, itemId) => itemId === null)).toEqual([]);
 
     expect(existsSync(join(home, "sessions", "2026", "10", "08", "rollout-only-copy.jsonl"))).toBe(true);
-    expect(readdirSync(join(root, OTHER))).toEqual([TICKET]);
+    expect(readdirSync(join(root, OTHER))).toEqual([ITEM]);
   });
 
   it("is not moved aside when the agent's first home after EO-829 is made, which is refused saying why", () => {
@@ -727,7 +727,7 @@ describe("a home whose sessions is a real directory", () => {
     const root = directory();
     const home = homeWithRealSessions(root, AGENT);
 
-    const prepared = prepareCodexHome({ root, agentId: AGENT, itemId: TICKET, personHome: person, platform: "linux" });
+    const prepared = prepareCodexHome({ root, agentId: AGENT, itemId: ITEM, personHome: person, platform: "linux" });
 
     expect(prepared.ok).toBe(false);
     expect(!prepared.ok && prepared.problem).toMatch(/real directory/);
@@ -886,17 +886,17 @@ describe("the home a side call runs in", () => {
 });
 
 /**
- * A home per agent and ticket (EO-829). With one home per agent, one
- * ticket's turn scrubbed the home another ticket's Codex was running in:
+ * A home per agent and item (EO-829). With one home per agent, one
+ * item's turn scrubbed the home another item's Codex was running in:
  * files deleted from under it on Linux and macOS, and EPERM on Windows,
- * which escalated the ticket and moved the agent's home to the other root.
+ * which escalated the item and moved the agent's home to the other root.
  */
 describe("an agent's homes for its tickets", () => {
-  it("are one per agent and ticket, and the agent's own for a turn on no ticket", () => {
+  it("are one per agent and item, and the agent's own for a turn on no item", () => {
     const root = join(directory(), "codex-homes");
 
-    expect(homeOf(root, AGENT, TICKET)).toBe(join(root, AGENT, TICKET));
-    expect(new Set([homeOf(root, AGENT, TICKET), homeOf(root, AGENT, SECOND_TICKET), homeOf(root, OTHER, TICKET), homeOf(root)]).size).toBe(4);
+    expect(homeOf(root, AGENT, ITEM)).toBe(join(root, AGENT, ITEM));
+    expect(new Set([homeOf(root, AGENT, ITEM), homeOf(root, AGENT, SECOND_ITEM), homeOf(root, OTHER, ITEM), homeOf(root)]).size).toBe(4);
     expect(homeOf(root)).toBe(join(root, AGENT, AGENT_CODEX_HOME));
     expect(agentCodexHomePath(root, SIDE_CALL_CODEX_HOME)).toBe(join(root, SIDE_CALL_CODEX_HOME));
     expect(() => homeOf(root, AGENT, "../escape")).toThrow();
@@ -941,11 +941,11 @@ describe("an agent's homes for its tickets", () => {
     };
 
     try {
-      const first = startTurn(TICKET);
-      const second = startTurn(SECOND_TICKET);
+      const first = startTurn(ITEM);
+      const second = startTurn(SECOND_ITEM);
 
-      expect(first).toBe(homeOf(roots[0]!, AGENT, TICKET));
-      expect(second).toBe(homeOf(roots[0]!, AGENT, SECOND_TICKET));
+      expect(first).toBe(homeOf(roots[0]!, AGENT, ITEM));
+      expect(second).toBe(homeOf(roots[0]!, AGENT, SECOND_ITEM));
       for (const home of [first, second]) {
         expect(existsSync(join(home, "skills", ".system"))).toBe(true);
         expect(lstatSync(join(home, "auth.json")).isSymbolicLink()).toBe(true);
@@ -953,9 +953,9 @@ describe("an agent's homes for its tickets", () => {
       // Nothing moved to the other root.
       expect(readdirSync(roots[1]!)).toEqual([]);
 
-      // The turn that adopts the first ticket's warm process, and its
+      // The turn that adopts the first item's warm process, and its
       // dispatch preflight before it: neither scrubs the home it runs in.
-      expect(turnOn(TICKET)).toMatchObject({ kind: "own", path: first });
+      expect(turnOn(ITEM)).toMatchObject({ kind: "own", path: first });
       expect(existsSync(join(first, "skills", ".system"))).toBe(true);
     } finally {
       for (const release of releases) release();
@@ -964,15 +964,15 @@ describe("an agent's homes for its tickets", () => {
 
     // Once its Codex has gone, the next turn's scrub clears the home down
     // to Codex's own state — the lock file among it.
-    const next = turnOn(TICKET);
+    const next = turnOn(ITEM);
     expect(next.kind).toBe("own");
-    expect(readdirSync(homeOf(roots[0]!, AGENT, TICKET)).sort()).toEqual([".sqlite-maintenance.lock", "auth.json", "sessions"]);
+    expect(readdirSync(homeOf(roots[0]!, AGENT, ITEM)).sort()).toEqual([".sqlite-maintenance.lock", "auth.json", "sessions"]);
   });
 
   it("keep a home whose scrub failed on an entry in use under its root, rather than making a second under the other", () => {
     const person = personHome();
     const roots = [directory(), directory()];
-    const first = ready(prepareCodexHome({ root: roots[0]!, agentId: AGENT, itemId: TICKET, personHome: person, platform: "win32", fs: windowsWithDeveloperMode() }));
+    const first = ready(prepareCodexHome({ root: roots[0]!, agentId: AGENT, itemId: ITEM, personHome: person, platform: "win32", fs: windowsWithDeveloperMode() }));
     writeFileSync(join(first.path, "config.toml"), "");
     const fs = windowsWithDeveloperMode([], {
       unlinkSync: (path) => {
@@ -981,27 +981,27 @@ describe("an agent's homes for its tickets", () => {
       },
     });
 
-    const choice = chooseCodexHome({ roots, agentId: AGENT, itemId: TICKET, personHome: person, platform: "win32", fs });
+    const choice = chooseCodexHome({ roots, agentId: AGENT, itemId: ITEM, personHome: person, platform: "win32", fs });
 
     expect(choice.kind).toBe("unavailable");
     expect(choice.kind === "unavailable" && choice.problem).toMatch(/EPERM/);
     expect(readdirSync(roots[1]!)).toEqual([]);
   });
 
-  it("are removed by a sweep once their ticket is gone, but not while a Codex EO started runs in one", async () => {
+  it("are removed by a sweep once their item is gone, but not while a Codex EO started runs in one", async () => {
     const person = personHome();
     const root = directory();
-    for (const itemId of [TICKET, SECOND_TICKET, null]) ready(prepareCodexHome({ root, agentId: AGENT, itemId, personHome: person, platform: "linux" }));
-    const ticketsGone = (_agentId: string, itemId: string | null): boolean => itemId === null;
+    for (const itemId of [ITEM, SECOND_ITEM, null]) ready(prepareCodexHome({ root, agentId: AGENT, itemId, personHome: person, platform: "linux" }));
+    const itemsGone = (_agentId: string, itemId: string | null): boolean => itemId === null;
 
-    const release = holdCodexHome(homeOf(root, AGENT, SECOND_TICKET));
+    const release = holdCodexHome(homeOf(root, AGENT, SECOND_ITEM));
     try {
-      expect(await sweepCodexHomes(root, ticketsGone)).toEqual([join(AGENT, TICKET)]);
-      expect(readdirSync(join(root, AGENT)).sort()).toEqual([AGENT_CODEX_HOME, SECOND_TICKET].sort());
+      expect(await sweepCodexHomes(root, itemsGone)).toEqual([join(AGENT, ITEM)]);
+      expect(readdirSync(join(root, AGENT)).sort()).toEqual([AGENT_CODEX_HOME, SECOND_ITEM].sort());
     } finally {
       release();
     }
-    expect(await sweepCodexHomes(root, ticketsGone)).toEqual([join(AGENT, SECOND_TICKET)]);
+    expect(await sweepCodexHomes(root, itemsGone)).toEqual([join(AGENT, SECOND_ITEM)]);
 
     expect(readdirSync(join(root, AGENT))).toEqual([AGENT_CODEX_HOME]);
     expect(readFileSync(join(person, "auth.json"), "utf8")).toContain("first");
@@ -1011,9 +1011,9 @@ describe("an agent's homes for its tickets", () => {
   it("go with their agent's whole directory once it keeps no home, but not while a Codex EO started runs in one", async () => {
     const person = personHome();
     const root = directory();
-    for (const itemId of [TICKET, null]) ready(prepareCodexHome({ root, agentId: AGENT, itemId, personHome: person, platform: "linux" }));
+    for (const itemId of [ITEM, null]) ready(prepareCodexHome({ root, agentId: AGENT, itemId, personHome: person, platform: "linux" }));
 
-    const release = holdCodexHome(homeOf(root, AGENT, TICKET));
+    const release = holdCodexHome(homeOf(root, AGENT, ITEM));
     try {
       expect(await sweepCodexHomes(root, () => false)).toEqual([]);
     } finally {
@@ -1041,10 +1041,10 @@ describe("an agent's homes for its tickets", () => {
     const root = directory();
     homeBeforeEo829(root, person, AGENT);
 
-    const prepared = ready(prepareCodexHome({ root, agentId: AGENT, itemId: TICKET, personHome: person, platform: "linux" }));
+    const prepared = ready(prepareCodexHome({ root, agentId: AGENT, itemId: ITEM, personHome: person, platform: "linux" }));
 
-    expect(prepared.path).toBe(homeOf(root, AGENT, TICKET));
-    expect(readdirSync(join(root, AGENT))).toEqual([TICKET]);
+    expect(prepared.path).toBe(homeOf(root, AGENT, ITEM));
+    expect(readdirSync(join(root, AGENT))).toEqual([ITEM]);
     const retired = readdirSync(root).filter((name) => name.startsWith(RETIRING_CODEX_HOME_PREFIX));
     expect(retired).toHaveLength(1);
 

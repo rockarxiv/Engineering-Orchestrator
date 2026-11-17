@@ -113,7 +113,7 @@ const SAFE_SEGMENT = /^[A-Za-z0-9_-]+$/;
 export const SIDE_CALL_CODEX_HOME = "side-calls";
 
 /**
- * The home inside an agent's directory that its turns on no ticket run
+ * The home inside an agent's directory that its turns on no item run
  * in (EO-829) — an assistant conversation, say. Not a UUID, so no item's
  * id can ever name it.
  */
@@ -122,14 +122,14 @@ export const AGENT_CODEX_HOME = "agent";
 /**
  * Where one agent's Codex home for one item is, under `root` (EO-829):
  * `root/<agentId>/<itemId>`, or `root/<agentId>/agent` for a turn on no
- * ticket.
+ * item.
  *
- * **A home per agent and ticket.** Until EO-829 an agent had one home,
- * `root/<agentId>`, and every turn on every ticket ran in it; with more
+ * **A home per agent and item.** Until EO-829 an agent had one home,
+ * `root/<agentId>`, and every turn on every item ran in it; with more
  * than one of its tickets running at once, one turn's scrub cleared the
  * home another's app-server was running in — deleting files from under it
  * on Linux and macOS, and refused with EPERM on Windows, which escalated
- * the ticket. Keyed on the agent rather than the role, because two agents
+ * the item. Keyed on the agent rather than the role, because two agents
  * in one role carry different servers and instructions. The two links are
  * the same in every home, so a thread started in one resumes in any
  * other, and a refreshed sign-in lands in the person's own file whichever
@@ -153,7 +153,7 @@ export function agentCodexHomePath(root: string, agentId: string, itemId: string
  * A home is scrubbed before a process is started in it, and never while
  * one is running there: a scrub deletes from under a running app-server
  * on Linux and macOS, and is refused with EPERM on Windows. That covers a
- * ticket's own warm process (`prewarm`), which the turn that adopts it
+ * item's own warm process (`prewarm`), which the turn that adopts it
  * and the dispatch preflight before that turn would otherwise scrub. The
  * app-server connection holds the home from its spawn to its exit
  * (`AppServerConnection`); the sweep leaves a held home alone too.
@@ -244,8 +244,8 @@ export interface CodexHomeOptions {
   root: string;
   agentId: string;
   /**
-   * The ticket the turn works on (EO-829): its home is the agent's for
-   * that ticket. Absent or null for a turn on no ticket, which runs in the
+   * The item the turn works on (EO-829): its home is the agent's for
+   * that item. Absent or null for a turn on no item, which runs in the
    * agent's own (`AGENT_CODEX_HOME`).
    */
   itemId?: string | null;
@@ -282,7 +282,7 @@ export type CodexHomePreparation =
     };
 
 /**
- * Makes sure the agent's home for the ticket (`agentCodexHomePath`)
+ * Makes sure the agent's home for the item (`agentCodexHomePath`)
  * exists and carries the person's sign-in and saved conversations, and
  * nothing else of theirs. Idempotent: a link that is already right is
  * left alone.
@@ -742,8 +742,8 @@ function realSessionsProblem(sessionsPath: string, sessions: LinkStat, home: str
 
 /**
  * Which homes a sweep keeps (EO-829): `itemId` null asks about the agent
- * itself — its directory of homes and the home of its turns on no ticket
- * — and an id asks about its home for that ticket. Asked synchronously,
+ * itself — its directory of homes and the home of its turns on no item
+ * — and an id asks about its home for that item. Asked synchronously,
  * immediately before a home is claimed, so it must answer from what is
  * true now.
  */
@@ -753,7 +753,7 @@ export type CodexHomeKeep = (agentId: string, itemId: string | null) => boolean;
  * Removes every home under `root` that is no longer used (EO-378,
  * EO-829): an agent's whole directory of homes once the agent is deleted,
  * moved to another backend, or ticked over to the person's own setup; a
- * ticket's home once the ticket is archived or deleted; and the single
+ * item's home once the item is archived or deleted; and the single
  * home an agent had before EO-829, at `root/<agentId>` itself. Answers
  * what it removed, by its path under `root`.
  *
@@ -769,7 +769,7 @@ export type CodexHomeKeep = (agentId: string, itemId: string | null) => boolean;
  * one. That rename is a single synchronous call.
  *
  * **Nothing a Codex process EO started is running in is claimed**
- * (EO-829, `codexHomeInUse`): a ticket archived mid-turn keeps its home
+ * (EO-829, `codexHomeInUse`): an item archived mid-turn keeps its home
  * until the turn is over and a later sweep finds it idle.
  *
  * A home whose `sessions` is a real directory is refused where it stands,
@@ -1029,8 +1029,8 @@ export type CodexHomeChoice =
  * symlink and a junction both cross drives, so the second is for a first
  * that cannot be made at all; before EO-774 it was also where a Windows
  * hard link to a sign-in on another drive went. An agent has one home
- * per ticket (EO-829): once a root works, the home it had for the same
- * ticket under another is removed, unless a Codex process is running in
+ * per item (EO-829): once a root works, the home it had for the same
+ * item under another is removed, unless a Codex process is running in
  * it. The next root is tried only where the home could not be made or
  * linked under this one — not where it was made and could not be cleared
  * (`clearing`), which another root would not mend.
@@ -1053,7 +1053,7 @@ export function chooseCodexHome(options: Omit<CodexHomeOptions, "root"> & { root
       if (prepared.developerMode) return { kind: "unavailable", problem: prepared.problem };
       // A home made under this root that could not be cleared stays here
       // (EO-829): the next root would only be a second home for the same
-      // agent and ticket, and the first not removable for the same reason.
+      // agent and item, and the first not removable for the same reason.
       if (prepared.clearing) return { kind: "unavailable", problem: [...problems, prepared.problem].join(" ") };
       problems.push(prepared.problem);
       continue;

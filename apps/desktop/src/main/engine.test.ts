@@ -580,15 +580,15 @@ describe("codexHomePreflight", () => {
     expect(readdirSync(join(root, implementer.id, AGENT_CODEX_HOME)).sort()).toEqual(["auth.json", "sessions"]);
   });
 
-  /** EO-829: a home per agent and ticket. */
-  it("makes the home of the ticket being dispatched, and the sweep removes it once the ticket is archived or deleted", async () => {
+  /** EO-829: a home per agent and item. */
+  it("makes the home of the item being dispatched, and the sweep removes it once the item is archived or deleted", async () => {
     writeFileSync(join(person, "auth.json"), "{}");
-    const ticket = (title: string) => {
+    const makeItem = (title: string) => {
       const made = createItem(handle.db, { type: "story", title, stepId: "todo" });
       if (!made.ok) throw new Error(made.problem);
       return made.item.id;
     };
-    const [archived, deleted, open] = [ticket("Archived"), ticket("Deleted"), ticket("Open")];
+    const [archived, deleted, open] = [makeItem("Archived"), makeItem("Deleted"), makeItem("Open")];
 
     for (const itemId of [archived, deleted, open]) {
       expect(await codexHomePreflight(currentAgent(), handle.db, [root], async () => "signed_in", { itemId })).toEqual({ ok: true });

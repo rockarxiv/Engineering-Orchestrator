@@ -2021,7 +2021,7 @@ describe("createCodexProvider over a stubbed app-server", () => {
       executablePath: "/opt/eo/runtimes/codex/bin/codex",
       ...options,
       // The provider's own construction, with only the spawn swapped.
-      // The ticket too, which is the last argument (EO-829): the home is its.
+      // The item too, which is the last argument (EO-829): the home is its.
       createCodex: (repositoryMcp, ...rest) =>
         new CodexClient({ ...codexClientOptions({ executablePath: "/opt/eo/runtimes/codex/bin/codex", ...options }, repositoryMcp, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, rest[8]), spawn: fake.spawn, shutdownGraceMs: 200 }),
     });
@@ -2126,17 +2126,17 @@ describe("createCodexProvider over a stubbed app-server", () => {
     const root = worktree();
     vi.stubEnv("PATH", "/probe/bin:/usr/bin");
 
-    // On a ticket, whose home it is (EO-829): one per agent and ticket.
-    const ticket = "019fb8c6-0000-7000-8000-0000000829a1";
+    // On an item, whose home it is (EO-829): one per agent and item.
+    const turnItem = "019fb8c6-0000-7000-8000-0000000829a1";
     const codexHome = vi.fn((itemId?: string) => readyHome(prepareCodexHome({ root, agentId: "019fb8c6-0000-7000-8000-00000000c0de", itemId: itemId ?? null, personHome: person })));
     const { fake, provider } = providerOver(
       { after: { "turn/start": [note.turnStarted(), note.agentMessage("ok"), note.turnCompleted()] } },
       { codexHome },
     );
-    await collect(provider.start({ ...startOpts, cwd: worktree(), itemId: ticket }));
+    await collect(provider.start({ ...startOpts, cwd: worktree(), itemId: turnItem }));
 
-    const home = join(root, "019fb8c6-0000-7000-8000-00000000c0de", ticket);
-    expect(codexHome).toHaveBeenLastCalledWith(ticket);
+    const home = join(root, "019fb8c6-0000-7000-8000-00000000c0de", turnItem);
+    expect(codexHome).toHaveBeenLastCalledWith(turnItem);
     expect(fake.launches[0]?.options.env).toMatchObject({ CODEX_HOME: home, PATH: "/probe/bin:/usr/bin" });
     // The home, whole: two links and nothing else EO put there.
     expect(readdirSync(home).sort()).toEqual(["auth.json", "sessions"]);
@@ -2150,10 +2150,10 @@ describe("createCodexProvider over a stubbed app-server", () => {
     // And none of their servers is named on the command line either.
     expect(fake.launches[0]?.args.join("\n")).not.toContain("theirs");
 
-    // A resume on the same ticket runs in the same home; a turn on no
-    // ticket asks for none, and runs in the agent's own.
-    await collect(provider.resume("thr_1", "carry on", { cwd: worktree(), itemId: ticket }));
-    expect(codexHome).toHaveBeenLastCalledWith(ticket);
+    // A resume on the same item runs in the same home; a turn on no
+    // item asks for none, and runs in the agent's own.
+    await collect(provider.resume("thr_1", "carry on", { cwd: worktree(), itemId: turnItem }));
+    expect(codexHome).toHaveBeenLastCalledWith(turnItem);
     expect(fake.launches.at(-1)?.options.env).toMatchObject({ CODEX_HOME: home });
     await collect(provider.start({ ...startOpts, cwd: worktree() }));
     expect(codexHome).toHaveBeenLastCalledWith();

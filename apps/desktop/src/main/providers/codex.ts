@@ -246,10 +246,10 @@ export interface CodexProviderOptions {
    * absent — every test that is not about this, and an engine with no
    * root to put homes under — leaves `CODEX_HOME` as inherited.
    *
-   * Handed the turn's ticket (`AgentTurnOverrides.itemId`, EO-829), whose
-   * home it answers: one per agent and ticket, so two of an agent's
+   * Handed the turn's item (`AgentTurnOverrides.itemId`, EO-829), whose
+   * home it answers: one per agent and item, so two of an agent's
    * tickets running at once never share one. Called with none on a turn
-   * on no ticket, and on a side call.
+   * on no item, and on a side call.
    */
   codexHome?: (itemId?: string) => string | null;
   /**
@@ -319,7 +319,7 @@ export interface CodexProviderOptions {
     adminDirectory?: string,
     /** The skills the turn was given, by slug, for `skill_read` (EO-721). Handed only on a turn given some. */
     skillSlugs?: readonly string[],
-    /** The ticket the turn works on, whose Codex home it runs in (EO-829). Handed only on a turn on one. */
+    /** The item the turn works on, whose Codex home it runs in (EO-829). Handed only on a turn on one. */
     itemId?: string,
   ) => Pick<CodexClient, "startThread" | "resumeThread"> & Partial<Pick<CodexClient, "prewarm" | "forkThread">>;
   /**
@@ -1602,7 +1602,7 @@ export function buildCodexOptions(
   withheldEnvironmentVariables?: readonly string[],
   adminDirectory?: string,
   skillSlugs?: readonly string[],
-  /** The ticket the turn works on, whose Codex home it runs in (EO-829). */
+  /** The item the turn works on, whose Codex home it runs in (EO-829). */
   itemId?: string,
 ): Pick<CodexClientOptions, "executablePath" | "config" | "env" | "afterTurn" | "perTurnEnv"> {
   // Asked once per client, and let go of again if the options cannot be
@@ -1782,7 +1782,7 @@ function codexOptionsWith(
   // The agent's own Codex home, unless it was ticked over to the person's
   // own setup (EO-378). Asked here, per client, for the reason the
   // administrative server is: a link in it can go stale between turns.
-  // The ticket's own (EO-829), on a turn on one.
+  // The item's own (EO-829), on a turn on one.
   const home =
     options.config?.inheritAmbientConfig === true ? undefined : ((itemId === undefined ? options.codexHome?.() : options.codexHome?.(itemId)) ?? undefined);
   const env = codexSpawnEnvironment(inherited, declared, headers.values, admin?.environment ?? {}, home, searchHook?.env, variables);
@@ -2372,7 +2372,7 @@ export function createCodexProvider(options: CodexProviderOptions = {}): AgentPr
     itemId?: string,
   ) {
     const hook = searchHook ? { command: searchHook.command, env: searchHook.env, matcher: searchHook.matcher, trust: searchHook.trust } : undefined;
-    // And the ticket only on a turn on one (EO-829), whose Codex home the
+    // And the item only on a turn on one (EO-829), whose Codex home the
     // turn runs in — every argument before it with it, each as the rules
     // below would hand it.
     if (itemId !== undefined) {

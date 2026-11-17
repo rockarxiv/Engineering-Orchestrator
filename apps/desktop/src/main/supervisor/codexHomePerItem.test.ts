@@ -10,8 +10,8 @@ import { createRunSupervisor } from "./runSupervisor.js";
 import { kindsPreparing } from "./testWorkspaceKinds.js";
 
 /**
- * A locked-down Codex agent runs every turn on a ticket in a Codex home
- * for that agent and that ticket (EO-829), so the ticket has to reach
+ * A locked-down Codex agent runs every turn on an item in a Codex home
+ * for that agent and that item (EO-829), so the item has to reach
  * both places a home is made ready: the dispatch preflight (`checkAuth`)
  * and the turn (`AgentTurnOverrides.itemId`). A conversation — the
  * assistant's chat — names none, and runs in the agent's own home.
@@ -48,8 +48,8 @@ function recording(): { provider: AgentProvider; starts: AgentProviderStartOptio
   };
 }
 
-describe("the ticket a turn works on", () => {
-  it("reaches the dispatch preflight and the turn on a ticket", async () => {
+describe("the item a turn works on", () => {
+  it("reaches the dispatch preflight and the turn on an item", async () => {
     const { provider, starts } = recording();
     const checkAuth = vi.fn(async (_agent: Agent, _itemId?: string) => ({ ok: true as const }));
     const supervisor = createRunSupervisor({ db: handle.db, provider, limits: LIMITS, kinds: kindsPreparing("/tmp/eo/worktrees/EO-829"), checkAuth });

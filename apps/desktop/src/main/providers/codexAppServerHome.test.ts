@@ -21,7 +21,7 @@ describe.runIf(process.platform !== "win32")("the Codex home an app-server runs 
   it("is in use from the spawn until the process has exited, and only that home", async () => {
     const directory = mkdtempSync(join(tmpdir(), "eo-codex-held-"));
     directories.push(directory);
-    const home = join(directory, "codex-homes", "agent", "ticket");
+    const home = join(directory, "codex-homes", "agent", "item");
     const executable = join(directory, "codex");
     writeFileSync(executable, "#!/bin/sh\nexec cat >/dev/null\n");
     chmodSync(executable, 0o755);
@@ -31,7 +31,7 @@ describe.runIf(process.platform !== "win32")("the Codex home an app-server runs 
     expect(codexHomeInUse(home)).toBe(true);
     // The agent's directory holds a home in use, so it is in use too.
     expect(codexHomeInUse(join(directory, "codex-homes", "agent"))).toBe(true);
-    expect(codexHomeInUse(join(directory, "codex-homes", "agent", "other-ticket"))).toBe(false);
+    expect(codexHomeInUse(join(directory, "codex-homes", "agent", "other-item"))).toBe(false);
 
     await connection.terminate(200);
     await connection.exited();

@@ -2337,10 +2337,10 @@ export function createRunSupervisor(
         noteRuntimeHold(item, blockedOn);
         return { kind: "stand-down" };
       }
-      // With the ticket the turn will work on, whose Codex home is the one
+      // With the item the turn will work on, whose Codex home is the one
       // to make ready (EO-829).
-      const ticket = ticketOf(item);
-      const auth = await (ticket === undefined ? checkAuth(runningOn) : checkAuth(runningOn, ticket));
+      const turnItem = turnItemOf(item);
+      const auth = await (turnItem === undefined ? checkAuth(runningOn) : checkAuth(runningOn, turnItem));
       if (auth.signedOut !== undefined) {
         blockRuntime(auth.signedOut, runningOn, item);
         noteRuntimeHold(item, auth.signedOut.runtime);
@@ -2649,11 +2649,11 @@ export function createRunSupervisor(
   }
 
   /**
-   * The ticket a turn on this item works on (EO-829), or none for a
+   * The id a turn on this item gives its backend (EO-829), or none for a
    * conversation — the assistant's chat or a scenario chat — whose turns
    * run in the agent's own Codex home rather than one per item.
    */
-  function ticketOf(item: Item): string | undefined {
+  function turnItemOf(item: Item): string | undefined {
     return item.stepId === ASSIST_STEP || item.stepId === SCENARIO_STEP ? undefined : item.id;
   }
 
@@ -4247,15 +4247,15 @@ export function createRunSupervisor(
       ...turnBudget(item, agent),
       skillScope: skillRunScope(db, item),
       ...turnEnvironment(item),
-      // The ticket, for the backend that keeps a home per ticket (EO-829).
-      ...ticketOption(item),
+      // The item, for the backend that keeps a home per item (EO-829).
+      ...turnItemOption(item),
     };
   };
 
-  /** `AgentTurnOverrides.itemId` for a turn on this item: the ticket, and nothing on a conversation. */
-  function ticketOption(item: Item): { itemId?: string } {
-    const ticket = ticketOf(item);
-    return ticket === undefined ? {} : { itemId: ticket };
+  /** `AgentTurnOverrides.itemId` for a turn on this item: its id, and nothing on a conversation. */
+  function turnItemOption(item: Item): { itemId?: string } {
+    const turnItem = turnItemOf(item);
+    return turnItem === undefined ? {} : { itemId: turnItem };
   }
 
   /**
