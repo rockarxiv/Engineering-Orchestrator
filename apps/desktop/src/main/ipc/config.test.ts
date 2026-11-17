@@ -694,11 +694,11 @@ describe("agents", () => {
    *
    * `agent_attachments_*` is about what an agent is *given*, not about
    * the agent, and `set` there replaces a list rather than removing a
-   * row.
+   * row. `agentCliTools:*` (EO-819) is the same, for command-line tools.
    */
   it("lists every channel and tool that touches an agent", () => {
     const aboutAnAgent = /agent/i;
-    const attachments = /^agent_?[aA]ttachments/;
+    const attachments = /^agent_?([aA]ttachments|CliTools)/;
 
     const channels = Object.keys(ipcContract).filter((name) => !attachments.test(name));
     const tools = TOOLS.map((tool) => tool.name).filter((name) => !attachments.test(name));

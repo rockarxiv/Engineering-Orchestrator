@@ -13,6 +13,7 @@ export * from "./assistCard.js";
 export * from "./assistTrial.js";
 export * from "./clarification.js";
 export * from "./clarify.js";
+export * from "./cliTools.js";
 export * from "./commentOptions.js";
 export * from "./configure.js";
 export * from "./connectorBindings.js";

@@ -2,7 +2,7 @@ import { McpServerDraftSchema, SkillDraftSchema, type Agent, UNSCOPED_RUN } from
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { DbHandle } from "../db/client.js";
 import { openMigratedTestDb } from "../db/testHelpers.js";
-import { listAgents, saveMcpServer, saveSkill, setAgentAttachment, setMcpServerEnabled } from "../db/repos/index.js";
+import { archiveCliTool, listAgents, saveCliTool, saveMcpServer, saveSkill, setAgentAttachment, setAgentCliTool, setMcpServerEnabled } from "../db/repos/index.js";
 import { archiveMcpServer } from "../db/repos/mcpServersRepo.js";
 import { agentAttachmentsHash, agentSurfaceKey, canonicalAttachments, EMPTY_ATTACHMENTS_HASH } from "./fingerprint.js";
 
@@ -146,6 +146,7 @@ describe("canonicalAttachments", () => {
     const canonical = canonicalAttachments({
       servers: [],
       skills: [],
+      cliTools: [],
     });
     expect(canonical).toBe(JSON.stringify({ servers: [], skills: [] }));
 
@@ -153,6 +154,7 @@ describe("canonicalAttachments", () => {
       canonicalAttachments({
         servers: [github],
         skills: [playbook],
+        cliTools: [],
       }),
     ) as { servers: Record<string, unknown>[]; skills: Record<string, unknown>[] };
 
@@ -181,8 +183,8 @@ describe("canonicalAttachments", () => {
     // timestamps: this describes what an agent is given, not which rows
     // it was given from, and `createdAt`/`updatedAt` move without the
     // surface moving.
-    expect(canonicalAttachments({ servers: [github], skills: [playbook] })).not.toContain(github.id);
-    expect(canonicalAttachments({ servers: [github], skills: [playbook] })).not.toContain(String(github.updatedAt));
+    expect(canonicalAttachments({ servers: [github], skills: [playbook], cliTools: [] })).not.toContain(github.id);
+    expect(canonicalAttachments({ servers: [github], skills: [playbook], cliTools: [] })).not.toContain(String(github.updatedAt));
   });
 });
 
@@ -224,7 +226,7 @@ describe("agentAttachmentsHash, per run scope (EO-470)", () => {
     attach("skill", skill({ name: "Build in W", scope: { kind: "workspace", workspaceId: "workspace-w" } }).id);
 
     expect(agentAttachmentsHash(handle.db, implementer.id, onQ)).toBe(before);
-    expect(canonicalAttachments({ servers: [], skills: [global] })).not.toContain("scope");
+    expect(canonicalAttachments({ servers: [], skills: [global], cliTools: [] })).not.toContain("scope");
   });
 
   it("keys the provider cache on every attached skill's scope, so moving one discards a cached provider", () => {
@@ -235,5 +237,71 @@ describe("agentAttachmentsHash, per run scope (EO-470)", () => {
     saveSkill(handle.db, SkillDraftSchema.parse({ id: e2e.id, name: "E2E", description: "A house playbook.", body: "Read the diff.", scope: { kind: "project", projectId: "project-q" } }));
 
     expect(agentSurfaceKey(handle.db, implementer.id)).not.toBe(before);
+  });
+});
+
+/**
+ * Command-line tools in the fingerprint (EO-819). What the prompt tells
+ * an agent about a CLI is its command and its description, so a change
+ * to either is a different surface and a thread opened under the old one
+ * is not resumed.
+ */
+describe("agentAttachmentsHash, with command-line tools (EO-819)", () => {
+  function cli(command: string, description = "GitHub from the shell.") {
+    const saved = saveCliTool(handle.db, { name: `${command} CLI`, command, description });
+    if (!saved.ok) throw new Error(saved.problems.join("\n"));
+    setAgentCliTool(handle.db, { agentId: implementer.id, cliToolId: saved.cliTool.id, attached: true });
+    return saved.cliTool;
+  }
+  const hash = () => agentAttachmentsHash(handle.db, implementer.id, UNSCOPED_RUN);
+
+  it("moves when a CLI is attached, and moves back when it is detached", () => {
+    const gh = cli("gh");
+    expect(hash()).not.toBe(EMPTY_ATTACHMENTS_HASH);
+    setAgentCliTool(handle.db, { agentId: implementer.id, cliToolId: gh.id, attached: false });
+    expect(hash()).toBe(EMPTY_ATTACHMENTS_HASH);
+  });
+
+  it("moves when an attached CLI's command changes", () => {
+    const gh = cli("gh");
+    const before = hash();
+    expect(saveCliTool(handle.db, { id: gh.id, name: gh.name, command: "/usr/local/bin/gh", description: gh.description }).ok).toBe(true);
+    expect(hash()).not.toBe(before);
+  });
+
+  it("moves when an attached CLI's description changes", () => {
+    const gh = cli("gh");
+    const before = hash();
+    expect(saveCliTool(handle.db, { id: gh.id, name: gh.name, command: gh.command, description: "Pull requests and issues." }).ok).toBe(true);
+    expect(hash()).not.toBe(before);
+  });
+
+  it("does not move when only updatedAt does, or only the display name", () => {
+    const gh = cli("gh");
+    const before = hash();
+    expect(saveCliTool(handle.db, { id: gh.id, name: gh.name, command: gh.command, description: gh.description }, gh.updatedAt + 60_000).ok).toBe(true);
+    expect(hash()).toBe(before);
+    expect(saveCliTool(handle.db, { id: gh.id, name: "GitHub", command: gh.command, description: gh.description }).ok).toBe(true);
+    expect(hash()).toBe(before);
+    expect(canonicalAttachments({ servers: [], skills: [], cliTools: [gh] })).not.toContain(String(gh.updatedAt));
+  });
+
+  it("moves when an attached CLI is archived, since an archived one is no longer given", () => {
+    const gh = cli("gh");
+    cli("kubectl", "Kubernetes clusters.");
+    const before = hash();
+    archiveCliTool(handle.db, gh.id);
+    expect(hash()).not.toBe(before);
+  });
+
+  it("is the same whatever order the CLIs were attached in", () => {
+    const tools = [cli("gh"), cli("kubectl", "Kubernetes clusters.")];
+    expect(canonicalAttachments({ servers: [], skills: [], cliTools: tools })).toBe(
+      canonicalAttachments({ servers: [], skills: [], cliTools: [...tools].reverse() }),
+    );
+  });
+
+  it("leaves the canonical form of an agent with no CLIs as it was before CLIs existed", () => {
+    expect(canonicalAttachments({ servers: [], skills: [], cliTools: [] })).toBe(JSON.stringify({ servers: [], skills: [] }));
   });
 });

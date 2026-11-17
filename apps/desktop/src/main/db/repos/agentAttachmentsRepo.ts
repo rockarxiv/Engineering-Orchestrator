@@ -1,8 +1,9 @@
 import { and, eq, sql } from "drizzle-orm";
-import { skillsForRun, type AgentAttachments, type AttachableKind, type McpServer, type Skill, type SkillRunScope, type Uuid } from "@eo/core";
+import { skillsForRun, type AgentAttachments, type AttachableKind, type CliTool, type McpServer, type Skill, type SkillRunScope, type Uuid } from "@eo/core";
 import type { Db } from "../client.js";
 import { agentMcpServers, agents, agentSkills } from "../schema.js";
 import { getAgent } from "./agentsRepo.js";
+import { resolveAgentCliTools } from "./cliToolsRepo.js";
 import { getMcpServer, listMcpServers } from "./mcpServersRepo.js";
 import { getSkill, listSkills } from "./skillsRepo.js";
 
@@ -96,6 +97,14 @@ export function listAgentAttachments(db: Db): AgentAttachments[] {
 export interface ResolvedAgentAttachments {
   servers: McpServer[];
   skills: Skill[];
+  /**
+   * The command-line tools the agent has been given (EO-819): attached
+   * and not archived, unlike the two above — an archived CLI has no
+   * enabled switch to keep in the fingerprint, and archiving one is
+   * exactly the act of no longer telling agents about it. Whether each
+   * is installed is checked at dispatch, not here.
+   */
+  cliTools: CliTool[];
 }
 
 export function resolveAgentAttachments(db: Db, agentId: string): ResolvedAgentAttachments {
@@ -113,6 +122,7 @@ export function resolveAgentAttachments(db: Db, agentId: string): ResolvedAgentA
       const skill = getSkill(db, id);
       return skill ? [skill] : [];
     }),
+    cliTools: resolveAgentCliTools(db, agentId),
   };
 }
 
@@ -129,8 +139,10 @@ export function resolveAgentAttachments(db: Db, agentId: string): ResolvedAgentA
  * into or out of a run's scope is a different surface for that run and
  * cannot be resumed under.
  */
-export function attachmentsForRun(resolved: ResolvedAgentAttachments, scope: SkillRunScope): ResolvedAgentAttachments {
-  return { servers: resolved.servers, skills: skillsForRun(resolved.skills, scope) };
+export function attachmentsForRun<T extends Pick<ResolvedAgentAttachments, "skills">>(resolved: T, scope: SkillRunScope): T {
+  // Servers and CLIs as they are: neither has a scope (EO-818: a CLI is
+  // per agent only).
+  return { ...resolved, skills: skillsForRun(resolved.skills, scope) };
 }
 
 /** `resolveAgentAttachments`, narrowed to one run's scope. */

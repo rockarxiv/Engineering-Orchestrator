@@ -154,6 +154,7 @@ import {
   RecordMemoryWriteSchema,
 } from "./memory.js";
 import { AgentAttachmentsSchema, AttachableKindSchema } from "./schemas/agentAttachments.js";
+import { AgentCliToolsSchema, CliToolDescriptionDraftSchema, CliToolDetectionSchema, CliToolDraftSchema, CliToolSchema } from "./schemas/cliTools.js";
 import { AssistWaitingModuleSchema } from "./schemas/assist.js";
 import { AssistTrialCardSchema } from "./schemas/assistTrial.js";
 import { TrialPublishCardSchema } from "./trialPublish.js";
@@ -4484,6 +4485,36 @@ export const recordContract = {
     z.object({ attachments: AgentAttachmentsSchema.nullable(), problem: z.string().nullable() }),
   ),
 
+  // ── Command-line tools (EO-819) ─────────────────────────────────
+  //
+  // The third catalogue beside MCP servers and skills: a program
+  // installed on the machine, what an agent types to run it, and what it
+  // is for here. Its own channels rather than a third `kind` on
+  // `agentAttachments:set`, because the two are answerable to different
+  // people: EO's system agent reaches `agentAttachments:set` over
+  // `eo_admin`, and only a person decides which CLIs an agent is told
+  // about (EO-818). A row grants nothing — the agent runs the program
+  // through the shell it already has — so none of this touches
+  // `allowedTools` (invariant 11).
+  //
+  // Archived rows are kept, as the other catalogues keep theirs, so an
+  // attachment still points at something a person can read; unlike
+  // them, an archived CLI can be brought back.
+  "cliTools:list": channel(z.object({ includeArchived: z.boolean().optional() }), z.object({ cliTools: z.array(CliToolSchema) })),
+  "cliTools:save": channel(
+    CliToolDraftSchema,
+    z.object({ saved: z.boolean(), cliTool: CliToolSchema.nullable(), problem: z.string().nullable() }),
+  ),
+  "cliTools:archive": channel(z.object({ id: z.string() }), z.object({ archived: z.boolean(), problem: z.string().nullable() })),
+  "cliTools:restore": channel(z.object({ id: z.string() }), z.object({ restored: z.boolean(), problem: z.string().nullable() })),
+  // Which CLIs each agent has, and one tick on or off — the shape and
+  // the idempotence of `agentAttachments:list` and `:set`.
+  "agentCliTools:list": channel(z.object({ agentId: z.string().optional() }), z.object({ attachments: z.array(AgentCliToolsSchema) })),
+  "agentCliTools:set": channel(
+    z.object({ agentId: z.string(), cliToolId: z.string(), attached: z.boolean() }),
+    z.object({ attachments: AgentCliToolsSchema.nullable(), problem: z.string().nullable() }),
+  ),
+
   // U-11: what a backend can be configured with. Static options are
   // free; `refreshModels` asks the provider runtime, which spawns its CLI, so the
   // editor requests it deliberately rather than on every render.
@@ -7613,6 +7644,19 @@ export const machineContract = {
     z.object({ serverId: z.string(), name: z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/, "Use an environment-variable name.") }),
     RevealedSecretSchema,
   ),
+  /**
+   * Whether a CLI's command is installed on this machine (EO-819):
+   * looked up on the PATH an agent is spawned with, and its version read.
+   * The machine half because the answer is this desktop's disk.
+   */
+  "cliTools:detect": channel(z.object({ command: z.string() }), z.object({ detection: CliToolDetectionSchema })),
+  /**
+   * A suggested description for a command, drafted from its own
+   * `--version` and `--help`, run here without a shell, under a timeout
+   * and with its output capped. Empty when the program is missing, hangs
+   * or says nothing usable. Never saved without a person.
+   */
+  "cliTools:draft": channel(z.object({ command: z.string() }), z.object({ draft: CliToolDescriptionDraftSchema })),
 } as const;
 
 /**
