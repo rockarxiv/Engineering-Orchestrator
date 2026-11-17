@@ -1656,6 +1656,13 @@ describe("validatePipeline: a person step's brief (EO-827)", () => {
     expect(briefMessages({ ...input, itemTypes })).toEqual([]);
   });
 
+  it("refuses a field only an object inherits, which no item type declares", () => {
+    expect(briefMessages(withBrief([{ show: "field", field: "constructor" }, { show: "field", field: "toString" }]))).toEqual([
+      { severity: "error", stateId: "merge", message: 'The brief on "merge" shows the field "constructor", which no item type on this project declares.' },
+      { severity: "error", stateId: "merge", message: 'The brief on "merge" shows the field "toString", which no item type on this project declares.' },
+    ]);
+  });
+
   it("refuses a brief on a step nobody decides on", () => {
     expect(briefMessages(withBrief([{ show: "comment", kind: "note" }], "review"))).toEqual([
       { severity: "error", stateId: "review", message: 'The brief on "review" cannot be shown: only a step a person decides on has a decision to brief.' },

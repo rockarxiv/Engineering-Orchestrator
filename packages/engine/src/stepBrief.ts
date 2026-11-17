@@ -44,7 +44,8 @@ export function briefProblems(
           problems.push({ stepId: step.id, message: `${on} shows the newest "${part.kind}" comment, which is not a kind of comment: use one of ${COMMENT_KINDS.join(", ")}.` });
         }
       }
-      if (part.show === "field" && ![...itemTypes.values()].some((type) => part.field in type.specShape.properties)) {
+      // An own property only: `in` would also find `constructor` or `toString` on every object.
+      if (part.show === "field" && ![...itemTypes.values()].some((type) => Object.hasOwn(type.specShape.properties, part.field))) {
         problems.push({ stepId: step.id, message: `${on} shows the field "${part.field}", which no item type on this project declares.` });
       }
     }
