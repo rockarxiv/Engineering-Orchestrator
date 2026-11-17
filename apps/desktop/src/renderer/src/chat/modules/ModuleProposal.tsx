@@ -7,6 +7,7 @@ import { moduleTestsKey, modulesKey, useChromeVocabulary, useModulesWithDeleted 
 import { Button, Chip, Dialog, ErrorLine, Facts, Loading } from "../kit";
 import { CoverageBadge } from "./CoverageBadge";
 import { MachineSpecificValues } from "./MachineSpecificValues";
+import { ModuleReadiness } from "./ModuleReadiness";
 import { ModuleTestList } from "./ModuleTestList";
 import { useModuleApproval } from "./useModuleApproval";
 
@@ -116,6 +117,8 @@ export function ModuleProposal({
       {/* Values that only hold on this machine (EO-449): advice before
           Approve, and nothing about Approve waits on it. */}
       <MachineSpecificValues warnings={module.machineSpecific} />
+      {/* Whether it could run on this device (EO-817): beside approval, never part of it. */}
+      <ModuleReadiness module={module} />
       <div className="flex flex-wrap items-center gap-2">
         {approved ? null : (
           <Button variant="primary" size="sm" disabled={approval.approving} onClick={() => approval.approve(module)}>

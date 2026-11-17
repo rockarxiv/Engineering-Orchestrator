@@ -1332,6 +1332,16 @@ function assistChangeOf(db: Db, conversation: Item, comment: Comment, thread?: C
   return { change, base: recorded.base };
 }
 
+/**
+ * The change an assist card proposes, by the card's message id, or null
+ * for a message that is not one (EO-817) — what the card checks the
+ * readiness of before Apply. Read only; nothing is applied.
+ */
+export function assistModuleChangeFor(db: Db, conversation: Item, commentId: string): AssistModuleChange | null {
+  const comment = listCommentsForItem(db, conversation.id).find((entry) => entry.id === commentId);
+  return comment ? (assistChangeOf(db, conversation, comment)?.change ?? null) : null;
+}
+
 /** Is this comment the card for a change to an existing module? */
 export function isAssistModuleChangeCard(db: Db, conversation: Item, comment: Comment, thread?: ConversationThread): boolean {
   return assistChangeOf(db, conversation, comment, thread) !== null;

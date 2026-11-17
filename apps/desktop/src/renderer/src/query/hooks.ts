@@ -182,6 +182,14 @@ export const moduleSecretsKey = (stepId: string | null = null) => [...moduleSecr
 export const environmentVariablesRootKey = ["environmentVariables"] as const;
 export const environmentVariablesKey = (stepId: string | null = null) => [...environmentVariablesRootKey, stepId] as const;
 /**
+ * Whether a module could run on this device (EO-817), by module, scope
+ * and — before Apply — the change it is asked about. Under one root, so a
+ * value saved in either list above makes every card ask again.
+ */
+export const moduleReadinessRootKey = ["moduleReadiness"] as const;
+export const moduleReadinessKey = (moduleId: string, stepId: string | null, changeMessageId: string | null) =>
+  [...moduleReadinessRootKey, moduleId, stepId, changeMessageId] as const;
+/**
  * The two catalogues an agent's tool surface is drawn from (EO-104,
  * EO-105).
  *

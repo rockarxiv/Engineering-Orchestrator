@@ -148,6 +148,10 @@ describe("the two halves of the contract", () => {
         // and a browser served by one draws no Reveal button.
         "mcpServers:revealSecret",
         "moduleSecrets:reveal",
+        // Whether a module could run here (EO-817): the CLIs on this
+        // PATH and the values this machine's keychain would hand a run.
+        // A server answering would be describing its own disk.
+        "modules:readiness",
         // The keep-or-move decision (EO-325). Machine-half because
         // what it decides is whether *this installation's* existing
         // work is handed to an organisation, which is a question about

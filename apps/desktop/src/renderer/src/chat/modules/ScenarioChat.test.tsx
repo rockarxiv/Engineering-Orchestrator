@@ -1,6 +1,6 @@
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
-import { renderSection } from "../views/settings/org/testing";
+import { ipcStub, renderSection, sent } from "../views/settings/org/testing";
 import { AddScenario } from "./ScenarioChat";
 
 /**
@@ -310,6 +310,114 @@ describe("Add scenario, in the chat layout", () => {
       await waitFor(() => expect(within(dialog).queryByRole("button", { name: /Apply change|Applying…/ })).not.toBeInTheDocument());
       expect(within(dialog).getByText("Proposed change to Merge pull request")).toBeInTheDocument();
       await waitFor(() => expect(opens()).toBeGreaterThan(1));
+    });
+  });
+
+  // EO-817: whether the module could run on this device, before Apply and after it.
+  describe("readiness on this device, across Apply", () => {
+    function catalogModule(needs: { bin: string[]; env: string[] }) {
+      return {
+        id: MODULE.id,
+        slug: "merge-pr",
+        name: MODULE.name,
+        description: "Merges the pull request.",
+        code: "export default async () => ({ ok: true, result: 'merged' });",
+        manifest: { name: MODULE.name, description: "Merges the pull request.", inputs: {}, needs: { ...needs, network: true, item: false, comment: false, attach: false, create: false }, results: ["merged"] },
+        originalScript: null,
+        source: "user",
+        approvedAt: 3,
+        createdAt: 1,
+        updatedAt: 1,
+        archivedAt: null,
+        usedByStepCount: 1,
+        portability: [],
+        machineSpecific: [],
+        testRun: null,
+        testsStale: false,
+        testCount: 1,
+      };
+    }
+
+    function check(bin: { name: string; status: "found" | "missing" }[], env: { name: string; status: "set" | "unset" }[], introduced = { bin: [] as string[], env: [] as string[] }) {
+      return {
+        check: { device: "anna-laptop", platform: "linux", scope: { kind: "shared" }, readiness: { ready: false, bin, env }, unknownBins: [], introduced, searched: ["/usr/bin"], steps: [] },
+        problem: null,
+      };
+    }
+
+    it("shows what the change adds before Apply, and keeps a checklist of the saved version once it is applied", async () => {
+      const card = message({ id: "c1", kind: "decision", body: "**Proposed change to Merge pull request**", canApprove: true, approves: "changes" });
+      const record = message({ id: "a1", authorType: "human", authorName: "You", kind: "approval", parentId: "c1", runId: null, createdAt: 2, body: "Applied." });
+      const applied = conversation([{ ...card, canApprove: false, approves: null }, record]);
+      const state = { applied: false };
+      const stub = ipcStub({
+        "agents:list": { agents: [SYSTEM_AGENT] },
+        "scenario:open": () => ({ conversation: state.applied ? applied : conversation([card]) }),
+        "modules:list": () => ({ modules: [catalogModule(state.applied ? { bin: ["gh", "jq"], env: ["GH_TOKEN", "SLACK_WEBHOOK"] } : { bin: ["gh"], env: ["GH_TOKEN"] })] }),
+        "scenario:apply": () => {
+          state.applied = true;
+          return { applied: true, problem: null, conversation: applied };
+        },
+        "modules:readiness": (payload: unknown) => {
+          const { change } = payload as { change: unknown };
+          // Before Apply the change's own version, with what it adds marked; after, what is saved.
+          return change !== null
+            ? check([{ name: "gh", status: "found" }, { name: "jq", status: "missing" }], [{ name: "GH_TOKEN", status: "set" }, { name: "SLACK_WEBHOOK", status: "unset" }], { bin: ["jq"], env: ["SLACK_WEBHOOK"] })
+            : check([{ name: "gh", status: "found" }, { name: "jq", status: "missing" }], [{ name: "GH_TOKEN", status: "set" }, { name: "SLACK_WEBHOOK", status: "unset" }]);
+        },
+      });
+      window.eo.ipc.invoke = stub.invoke as never;
+      renderSection(<AddScenario module={MODULE} />);
+      fireEvent.click(screen.getByRole("button", { name: "Add scenario" }));
+      const dialog = await screen.findByRole("dialog");
+
+      const proposed = await within(dialog).findByRole("region", { name: "Proposed change" });
+      const before = await within(proposed).findByRole("list", { name: "What Merge pull request needs on this device" });
+      expect(within(proposed).getByText("On this device, if applied")).toBeInTheDocument();
+      expect(within(before).getAllByRole("listitem").find((row) => row.textContent?.includes("SLACK_WEBHOOK"))).toHaveTextContent(/New in this change.*Not set/);
+      expect(sent(stub.calls, "modules:readiness")).toEqual([{ moduleId: MODULE.id, stepId: null, change: { conversationId: conversation().id, messageId: "c1" } }]);
+
+      fireEvent.click(within(proposed).getByRole("button", { name: "Apply change" }));
+
+      const after = await within(dialog).findByRole("region", { name: "Applied change" });
+      expect(within(dialog).queryByRole("button", { name: "Apply change" })).not.toBeInTheDocument();
+      const list = await within(after).findByRole("list", { name: "What Merge pull request needs on this device" });
+      expect(within(after).getByText("On this device")).toBeInTheDocument();
+      expect(within(after).getByText("Not ready on this device")).toBeInTheDocument();
+      const rows = within(list).getAllByRole("listitem").map((row) => row.textContent);
+      expect(rows).toEqual([
+        expect.stringMatching(/CLI\s*gh.*Installed/),
+        expect.stringMatching(/CLI\s*jq.*Not installed/),
+        expect.stringMatching(/Variable\s*GH_TOKEN.*Set/),
+        expect.stringMatching(/Variable\s*SLACK_WEBHOOK.*Not set/),
+      ]);
+      // The saved version, with nothing marked new, and the setup and Recheck the card offered.
+      expect(within(list).queryByText("New in this change")).not.toBeInTheDocument();
+      expect(within(after).getByRole("button", { name: "Recheck" })).toBeInTheDocument();
+      expect(within(after).getByRole("button", { name: "Set up the missing value" })).toBeInTheDocument();
+      expect(within(after).getByLabelText("How to install the missing CLIs")).toHaveTextContent("jq");
+      await waitFor(() => expect(sent(stub.calls, "modules:readiness")).toContainEqual({ moduleId: MODULE.id, stepId: null, change: null }));
+    });
+
+    it("keeps the checklist on an applied change when the thread is opened again", async () => {
+      const card = message({ id: "c1", kind: "decision", body: "**Proposed change to Merge pull request**", canApprove: false });
+      const record = message({ id: "a1", authorType: "human", authorName: "You", kind: "approval", parentId: "c1", runId: null, createdAt: 2, body: "Applied." });
+      const later = message({ id: "n1", body: "Anything else?", createdAt: 3 });
+      const stub = ipcStub({
+        "agents:list": { agents: [SYSTEM_AGENT] },
+        "scenario:open": { conversation: conversation([card, record, later]) },
+        "modules:list": { modules: [catalogModule({ bin: ["jq"], env: [] })] },
+        "modules:readiness": check([{ name: "jq", status: "found" }], []),
+      });
+      window.eo.ipc.invoke = stub.invoke as never;
+      renderSection(<AddScenario module={MODULE} />);
+      fireEvent.click(screen.getByRole("button", { name: "Add scenario" }));
+      const dialog = await screen.findByRole("dialog");
+
+      const after = await within(dialog).findByRole("region", { name: "Applied change" });
+      await within(after).findByRole("list", { name: "What Merge pull request needs on this device" });
+      expect(within(dialog).getAllByRole("region", { name: "Readiness of Merge pull request" })).toHaveLength(1);
+      expect(sent(stub.calls, "modules:readiness")).toEqual([{ moduleId: MODULE.id, stepId: null, change: null }]);
     });
   });
 });

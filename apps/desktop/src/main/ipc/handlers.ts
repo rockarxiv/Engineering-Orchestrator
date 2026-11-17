@@ -28,6 +28,8 @@ import {
 import { deleteModuleTestCommand, listModuleTestsCommand, runModuleTestsCommand, saveModuleTestCommand } from "./moduleTestCommands.js";
 import { createModuleTestRunner } from "../modules/moduleTestRunner.js";
 import { clearModuleSecret, listModuleSecrets, revealModuleSecret, setModuleSecret } from "./moduleSecretCommands.js";
+import { moduleReadinessCommand } from "./moduleReadinessCommands.js";
+import { thisMachineName } from "../managed/serverClient.js";
 import { clearEnvironmentVariable, listEnvironmentVariables, setEnvironmentVariable } from "./environmentVariableCommands.js";
 import {
   archiveMcpServerCommand,
@@ -942,6 +944,8 @@ export function registerAllHandlers(db: Db, engine: EngineHandle | undefined, re
   registerHandler("moduleSecrets:clear", (payload) => clearModuleSecret(db, moduleSecrets, payload), opts);
   // Machine half (EO-489): the personal value of one scope, on request at this desktop.
   registerHandler("moduleSecrets:reveal", (payload) => revealModuleSecret(db, moduleSecrets, payload), opts);
+  // Machine half (EO-817): whether a module could run on this device, for the cards it is proposed and changed on.
+  registerHandler("modules:readiness", (payload) => moduleReadinessCommand(db, { secrets: moduleSecrets, organisation: organisationSecrets, device: thisMachineName }, payload), opts);
   // Environment variables (EO-485): values that are not secret, in the
   // same scope directories as the module secrets' references, so a
   // step's removal below takes its variables with it.

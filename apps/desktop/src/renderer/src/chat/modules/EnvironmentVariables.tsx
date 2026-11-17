@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { MODULE_ENV_NAME_MESSAGE, MODULE_ENV_NAME_PATTERN } from "@eo/core";
 import { cn } from "@eo/ui";
 import { ipcQuery } from "../../query/client";
-import { environmentVariablesKey, environmentVariablesRootKey, mcpServersKey, moduleSecretsKey, moduleSecretsRootKey } from "../../query/hooks";
+import { environmentVariablesKey, environmentVariablesRootKey, mcpServersKey, moduleReadinessRootKey, moduleSecretsKey, moduleSecretsRootKey } from "../../query/hooks";
 import { variableStatus, type StatusLine } from "../../shared/modules/environmentVariableStatus";
 import { Button, TextInput } from "../kit";
 
@@ -91,6 +91,8 @@ export function EnvironmentVariables({ stepId = null, declared = null, unavailab
       queryClient.invalidateQueries({ queryKey: environmentVariablesRootKey }),
       queryClient.invalidateQueries({ queryKey: moduleSecretsRootKey }),
       queryClient.invalidateQueries({ queryKey: mcpServersKey }),
+      // A card's readiness checklist reads the same values (EO-817).
+      queryClient.invalidateQueries({ queryKey: moduleReadinessRootKey }),
     ]);
 
   const set = useMutation({
