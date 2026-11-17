@@ -660,8 +660,14 @@ export type ItemDetail = z.infer<typeof ItemDetailSchema>;
 /**
  * How many of an item's newest comments the item page is sent (EO-559);
  * older ones are read a page of this size at a time, on demand.
+ *
+ * Five (EO-823, a hundred before it): what a person opens an item for is
+ * nearly always its last few steps, and a board is about eight. Only the
+ * item page's thread reads this — `items:get` and `items:earlierComments`'s
+ * default `limit`. `item_get` and an agent's context read the thread
+ * whole, and are not windowed by it.
  */
-export const ITEM_COMMENTS_PAGE = 100;
+export const ITEM_COMMENTS_PAGE = 5;
 
 /**
  * One item as the screens read it (`items:get`, EO-559): the detail with

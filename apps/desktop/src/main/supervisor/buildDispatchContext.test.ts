@@ -86,8 +86,9 @@ describe("buildDispatchContext", () => {
 
   it("includes every comment of a thread longer than the item page's window (EO-559)", async () => {
     // The item page reads the newest ITEM_COMMENTS_PAGE comments through
-    // `items:get`; an agent's context reads the thread itself, whole.
-    const total = ITEM_COMMENTS_PAGE + 20;
+    // `items:get`; an agent's context reads the thread itself, whole —
+    // as long a thread as when that window was a hundred (EO-823).
+    const total = Math.max(ITEM_COMMENTS_PAGE + 20, 120);
     for (let n = 0; n < total; n++) postComment(handle.db, { itemId: item.id, author: { type: "human" }, body: `Thread note ${n}.`, createdAt: 1_760_000_000_000 + n * 1_000 });
 
     const context = await buildDispatchContext(handle.db, item, "implement", [], 10_000_000);
