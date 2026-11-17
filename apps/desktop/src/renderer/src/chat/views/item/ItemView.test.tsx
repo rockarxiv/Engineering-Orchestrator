@@ -1894,17 +1894,78 @@ describe("collapsing long comments (EO-419)", () => {
     expect(screen.getByText("Short note.").closest("[data-collapsed]")).toBeNull();
   });
 
-  it("draws the item's body and its output in full however long they are", async () => {
+  it("draws the item's body in full however long it is", async () => {
     fakeHeights();
-    const data = detail({
-      currentOutput: { commentId: "o1", body: "LONG output.", format: "text", authorName: "Implementer", authorType: "agent", createdAt: 1, attachments: [], supersedesCommentId: null },
-    });
+    const data = detail();
     data.item.body = "LONG item body.";
     renderItem(data);
 
     await screen.findByText("LONG item body.");
-    await screen.findAllByText("LONG output.");
     expect(screen.queryByRole("button", { name: "Show more" })).toBeNull();
+  });
+
+  describe("the output (EO-825)", () => {
+    const BODY = "LONG output.\n\nEvery line of the diff.";
+    const OUTPUT = { commentId: "o1", body: BODY, format: "text" as const, authorName: "Implementer", authorType: "agent" as const, createdAt: 1, attachments: [], supersedesCommentId: "o0" };
+
+    it("clips a long output, expands it on Show more and clips it again on Show less", async () => {
+      fakeHeights();
+      renderItem(detail({ currentOutput: OUTPUT }));
+
+      const panel = await screen.findByRole("region", { name: "Output" });
+      const toggle = within(panel).getByRole("button", { name: "Show more" });
+      expect(toggle).toHaveAttribute("aria-expanded", "false");
+      expect(bodyOf(toggle)).toHaveStyle({ maxHeight: `${COLLAPSED_HEIGHT_PX}px` });
+      expect(bodyOf(toggle)).toHaveTextContent("LONG output.");
+
+      fireEvent.click(toggle);
+      expect(within(panel).getByRole("button", { name: "Show less" })).toHaveAttribute("aria-expanded", "true");
+      expect(bodyOf(toggle).style.maxHeight).toBe("");
+
+      fireEvent.click(within(panel).getByRole("button", { name: "Show less" }));
+      expect(within(panel).getByRole("button", { name: "Show more" })).toHaveAttribute("aria-expanded", "false");
+      expect(bodyOf(toggle)).toHaveStyle({ maxHeight: `${COLLAPSED_HEIGHT_PX}px` });
+    });
+
+    it("draws a short output whole, with no toggle", async () => {
+      fakeHeights();
+      renderItem(detail({ currentOutput: { ...OUTPUT, body: "Short output." } }));
+
+      const panel = await screen.findByRole("region", { name: "Output" });
+      expect(within(panel).getByText("Short output.").closest("[data-collapsed]")).toBeNull();
+      expect(within(panel).queryByRole("button", { name: /^Show (more|less)$/ })).toBeNull();
+    });
+
+    it("copies and exports the whole output while it is clipped", async () => {
+      fakeHeights();
+      const writeText = vi.fn(() => Promise.resolve());
+      Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+      const { calls, onCall } = recorder();
+      renderItem(detail({ currentOutput: OUTPUT }), onCall, { "items:exportOutput": { saved: true, path: "/home/anna/out.md", problem: null } });
+
+      const panel = await screen.findByRole("region", { name: "Output" });
+      expect(within(panel).getByRole("button", { name: "Show more" })).toHaveAttribute("aria-expanded", "false");
+
+      fireEvent.click(within(panel).getByRole("button", { name: "Copy" }));
+      await waitFor(() => expect(writeText).toHaveBeenCalledWith(BODY));
+      fireEvent.click(within(panel).getByRole("button", { name: "Export" }));
+      // Export is the main process writing the current output, by item:
+      // nothing the renderer clipped can reach it.
+      await waitFor(() => expect(payloadOf(calls, "items:exportOutput")).toEqual({ itemId: "t1" }));
+      expect(within(panel).getByRole("button", { name: "Show more" })).toHaveAttribute("aria-expanded", "false");
+    });
+
+    it("edits the whole text from the clipped view, and still says what it replaced", async () => {
+      fakeHeights();
+      renderItem(detail({ currentOutput: OUTPUT }));
+
+      const panel = await screen.findByRole("region", { name: "Output" });
+      expect(within(panel).getByText(/still in the thread below/)).toBeInTheDocument();
+      expect(within(panel).getByRole("button", { name: "Show more" })).toBeInTheDocument();
+
+      fireEvent.click(within(panel).getByRole("button", { name: "Edit" }));
+      expect(within(panel).getByRole("textbox", { name: "Output" })).toHaveValue(BODY);
+    });
   });
 
   it("expands on Show more and clips again on Show less", async () => {
