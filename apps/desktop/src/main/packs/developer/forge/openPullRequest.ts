@@ -8,6 +8,7 @@ import { classifyForgeError, missingCli } from "./errors.js";
 import { normaliseForgeState } from "./mergeState.js";
 import { guessForge, parseRemoteUrl, type ForgeKind } from "./remote.js";
 import { findTemplate, type TreeReader } from "./template.js";
+import { codeSpan } from "../../../codeSpan.js";
 
 /**
  * Opening one pull request (F-06).
@@ -128,7 +129,7 @@ export async function openPullRequest(input: OpenPullRequestInput): Promise<Open
 
   // 1. The branch is the deliverable. Without it there is nothing to open.
   if (!(await branchExists(repoPath, branch))) {
-    return fail(`The branch \`${branch}\` no longer exists in ${repoPath}, so there is nothing to open a pull request for.`, true);
+    return fail(`The branch \`${branch}\` no longer exists in ${codeSpan(repoPath)}, so there is nothing to open a pull request for.`, true);
   }
 
   // 2. An empty branch would open an empty pull request, which is worse
@@ -158,7 +159,7 @@ export async function openPullRequest(input: OpenPullRequestInput): Promise<Open
   // 3. Where it goes, and which forge that is.
   const url = await remoteUrl(repoPath, remote);
   if (!url.ok) {
-    return fail(`No remote named \`${remote}\` in ${repoPath}. The work is committed locally — add a remote, or turn this off in Settings.`, true);
+    return fail(`No remote named \`${remote}\` in ${codeSpan(repoPath)}. The work is committed locally — add a remote, or turn this off in Settings.`, true);
   }
 
   // The remote url is only needed to *guess* the forge. A repository that

@@ -3,6 +3,7 @@ import { readStackAnswer, resolveStackTarget, type StackAnswer, type StackDepend
 import type { Db } from "../../../db/client.js";
 import { answersInThread, answersSinceLastAsk } from "../../../roles/answers.js";
 import { refExists } from "./git.js";
+import { codeSpan } from "../../../codeSpan.js";
 
 /** Injectable so a test does not need a repository on disk to name a branch. */
 export type RefChecker = (repoPath: string, ref: string) => Promise<boolean>;
@@ -121,7 +122,7 @@ export async function recordedStackAnswer(input: StackAnswerInput): Promise<Stac
       rejected ??= {
         kind: "unusable",
         answer: answer.branch,
-        problem: `there is no branch or ref named "${answer.branch}" in ${repoPath}.`,
+        problem: `there is no branch or ref named "${answer.branch}" in ${codeSpan(repoPath)}.`,
       };
       continue;
     }

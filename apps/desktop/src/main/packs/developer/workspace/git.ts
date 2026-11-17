@@ -8,6 +8,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, normalize, resolve } from "node:path";
 import { promisify } from "node:util";
+import { codeSpan } from "../../../codeSpan.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -358,7 +359,7 @@ export async function rebaseOntoBase(repoPath: string, branch: string, baseBranc
       ok: false,
       conflicts: [],
       error:
-        `\`${branch}\` is checked out in ${repoPath} itself, and EO will not rebase there — ` +
+        `\`${branch}\` is checked out in ${codeSpan(repoPath)} itself, and EO will not rebase there — ` +
         `that is the shared checkout another ticket's send may still be using. ` +
         `Check something else out there, then reply to retry.`,
     };
@@ -369,8 +370,8 @@ export async function rebaseOntoBase(repoPath: string, branch: string, baseBranc
       ok: false,
       conflicts: [],
       error:
-        `\`${branch}\` is checked out at ${holder.path}, which is not EO's worktree for this ticket` +
-        `${ownPath === undefined ? "" : ` (${ownPath})`}. ` +
+        `\`${branch}\` is checked out at ${codeSpan(holder.path)}, which is not EO's worktree for this ticket` +
+        `${ownPath === undefined ? "" : ` (${codeSpan(ownPath)})`}. ` +
         `EO will not rebase in a checkout it did not create — that would move somebody else's HEAD and rewrite their working tree. ` +
         `Remove that worktree, or move it back where EO expects it, then reply to retry.`,
     };
@@ -416,7 +417,7 @@ export async function rebaseOntoBase(repoPath: string, branch: string, baseBranc
 /** Why a worktree with work stopped part-way through is left exactly as it is. */
 function midRebaseRefusal(directory: string, branch: string, baseBranch: string): string {
   return (
-    `The worktree at ${directory} has a rebase stopped part-way through — or a \`git am\`, which parks its work in the same place — ` +
+    `The worktree at ${codeSpan(directory)} has a rebase stopped part-way through — or a \`git am\`, which parks its work in the same place — ` +
     `so EO did not rebase \`${branch}\` onto \`${baseBranch}\` over the top of it. ` +
     `That state is somebody's half-finished work, conflicts resolved and commits picked, and EO will not discard it to make room for its own. ` +
     `Finish it (\`--continue\`) or drop it (\`--abort\`), then reply to retry.`
@@ -457,8 +458,8 @@ async function rebaseIn(directory: string, branch: string, baseBranch: string, f
     ok: false,
     conflicts,
     error: aborted.ok
-      ? `Rebasing \`${branch}\` onto \`${baseBranch}\` failed and was aborted: ${rebased.error}`
-      : `Rebasing \`${branch}\` onto \`${baseBranch}\` failed, and aborting it afterwards failed too — ${directory} is still mid-rebase: ${rebased.error} (${aborted.error})`,
+      ? `Rebasing \`${branch}\` onto \`${baseBranch}\` failed and was aborted: ${codeSpan(rebased.error)}`
+      : `Rebasing \`${branch}\` onto \`${baseBranch}\` failed, and aborting it afterwards failed too — ${codeSpan(directory)} is still mid-rebase: ${codeSpan(rebased.error)} (${codeSpan(aborted.error)})`,
   };
 }
 

@@ -5,6 +5,7 @@ import type { Db } from "../db/client.js";
 import { getItem, listItemAttachments, listRunsForItem } from "../db/repos/index.js";
 import { promptHash } from "../roles/prompts.js";
 import { skillRunScope } from "./workspaceResolution.js";
+import { codeSpan } from "../codeSpan.js";
 
 /**
  * What this dispatch is about to do, as far as thread reuse cares.
@@ -302,9 +303,9 @@ function refusalFor(run: Run, agent: Agent, cwd: string, wantedHash: string, wan
   // every action on an item the same directory in practice: a Claude
   // session resumes only from the cwd it started in.
   if (run.cwd !== cwd) {
-    const before = run.cwd === null ? "a directory EO did not record" : `"${run.cwd}"`;
+    const before = run.cwd === null ? "a directory EO did not record" : codeSpan(run.cwd);
     return (
-      `${agent.name}'s last run on this ticket worked in ${before}, and this one works in "${cwd}". ` +
+      `${agent.name}'s last run on this ticket worked in ${before}, and this one works in ${codeSpan(cwd)}. ` +
       `A provider session only resumes in the directory it started in, so the conversation couldn't be carried ` +
       `over — starting a fresh run instead.`
     );

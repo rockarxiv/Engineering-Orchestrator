@@ -8,6 +8,7 @@ import { resolveRemoteRef, type RemoteRefResolver } from "./remoteRef.js";
 import { baseRefFor } from "./stackTarget.js";
 import { itemBranchName } from "./workName.js";
 import type { WorktreeResult, WorktreeRunOptions } from "./worktrees.js";
+import { codeSpan } from "../../../codeSpan.js";
 
 /**
  * Keeping a stacked item's branch on its dependency's (EO-780, the
@@ -130,7 +131,7 @@ export async function restackOnDependency(db: Db, workspace: GitWorkspace, item:
         `${item.key} is built on ${dependency.key}, and ${why}. EO tried to carry ${item.key}'s own commits across with ` +
         `\`git rebase --onto ${target} ${stackedOn.commit}\` and could not.${files} ` +
         `The rebase was taken back, so "${branch}" and its worktree are as they were.\n\n${rebased.error}\n\n` +
-        `Resolve it by hand in ${options.worktreePath} — that same rebase, then \`git rebase --continue\` — or change ${dependency.key}'s branch, then reply to retry.`,
+        `Resolve it by hand in ${codeSpan(options.worktreePath)} — that same rebase, then \`git rebase --continue\` — or change ${dependency.key}'s branch, then reply to retry.`,
     };
   }
 

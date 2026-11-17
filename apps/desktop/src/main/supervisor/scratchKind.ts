@@ -7,6 +7,7 @@ import { getItemByKey, resumableRunCwds } from "../db/repos/index.js";
 import { workspaceFor } from "./workspaceResolution.js";
 import { fileArtifacts, filesUnder } from "./workspaceFiles.js";
 import { NOTHING_ATTACHED, type Artifact, type PrepareWorkspaceOutcome, type ReleaseRequest, type VerifiableRun, type WorkspaceKind } from "./workspaceKind.js";
+import { codeSpan } from "../codeSpan.js";
 
 /** Where the per-run directories live. `~/.eo/scratch`, beside the worktrees and the empty directories, for the same reason they are not in the repository. */
 export function defaultScratchRoot(): string {
@@ -101,7 +102,7 @@ export function scratchWorkspaceKind(options: ScratchWorkspaceKindOptions): Work
         // though nothing on it is read.
         return { ok: true, workspace: { cwd, kind: SCRATCH_KIND, workspaceId: workspaceFor(db, item)?.id ?? null } };
       } catch (error) {
-        return { ok: false, reason: `EO could not make a scratch directory for ${item.key} in ${root}: ${error instanceof Error ? error.message : String(error)}` };
+        return { ok: false, reason: `EO could not make a scratch directory for ${item.key} in ${codeSpan(root)}: ${codeSpan(error instanceof Error ? error.message : String(error))}` };
       }
     },
 
