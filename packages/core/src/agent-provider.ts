@@ -423,6 +423,18 @@ export interface RepositoryIndexAnswers {
   files: string;
 }
 
+/** A command-line tool found installed at dispatch (EO-820), as the prompt names it. */
+export interface AgentCliTool {
+  /** What the agent types — `gh`. */
+  command: string;
+  /** What it is for here, in a person's words. May be empty, and may hold newlines. */
+  description: string;
+  /** The absolute path the command resolved to on the agent's PATH. */
+  path: string;
+  /** The first line `--version` printed, or null where it printed nothing usable. */
+  version: string | null;
+}
+
 export interface AgentProviderStartOptions extends AgentTurnOverrides {
   instructions: string;
   context: string;
@@ -436,6 +448,19 @@ export interface AgentProviderStartOptions extends AgentTurnOverrides {
    * way the record of what was sent can hold it.
    */
   onSkillsSection?: (section: string) => void;
+  /**
+   * The command-line tools the agent has been given that EO found
+   * installed for this run (EO-820), each with the path its command
+   * resolved to and the version it reported. Named in a "## Command-line
+   * tools" section of the prompt that opens the thread, worded by one
+   * function for both backends (`agentAttachments/cliToolsPrompt.ts`).
+   *
+   * Information, not a grant: an adapter adds nothing to `allowedTools`,
+   * a sandbox or a permission for it (invariant 11). Absent or empty
+   * means no section. Only a start reads it; a resumed thread already
+   * has what it was opened with.
+   */
+  cliTools?: AgentCliTool[];
   outputSchema?: JsonSchema;
   tools?: ToolDef[];
   /**
@@ -1366,7 +1391,7 @@ export interface AgentSideCallOptions {
 }
 
 export type AgentPrewarmTurn =
-  | ({ kind: "start"; instructions: string } & Omit<AgentProviderStartOptions, "instructions" | "context" | "signal" | "attachments" | "onSkillsSection" | "onSuggestionSpend" | "onSuggestionOutcome">)
+  | ({ kind: "start"; instructions: string } & Omit<AgentProviderStartOptions, "instructions" | "context" | "cliTools" | "signal" | "attachments" | "onSkillsSection" | "onSuggestionSpend" | "onSuggestionOutcome">)
   | ({ kind: "resume"; threadId: string } & Omit<AgentProviderResumeOptions, "signal" | "attachments" | "onSkillsSection" | "onSuggestionSpend" | "onSuggestionOutcome">);
 
 export interface AgentProvider {

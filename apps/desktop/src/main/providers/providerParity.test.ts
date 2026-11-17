@@ -344,6 +344,30 @@ const memoryUsedDeclared = (schema: unknown): number => JSON.stringify(schema ??
 const textOfResult = (result: EoToolResult): string => result.content.map((block) => block.text ?? "").join("\n");
 const structuredOfResult = (result: EoToolResult): string => JSON.stringify(result.structuredContent ?? {});
 
+/**
+ * Two command-line tools EO found installed at dispatch (EO-820), one
+ * whose description a person wrote over three lines and one with no
+ * version, and the section both backends must open the thread with.
+ */
+const FOUND_CLI_TOOLS = [
+  { command: "gh", description: "GitHub's own CLI.\nUse it for pull requests,\n\n  issues and CI runs.", path: "/usr/bin/gh", version: "gh version 2.62.0 (2024-11-14)" },
+  { command: "psql", description: "Talks to the staging database.", path: "/opt/pg/bin/psql", version: null },
+];
+const CLI_TOOLS_SECTION = [
+  "## Command-line tools",
+  "",
+  "These command-line tools are installed on this machine.",
+  "You may run them through your shell when they fit what you are doing:",
+  "",
+  "- `gh` — GitHub's own CLI. Use it for pull requests, issues and CI runs. (`/usr/bin/gh`, gh version 2.62.0 (2024-11-14))",
+  "- `psql` — Talks to the staging database. (`/opt/pg/bin/psql`)",
+].join("\n");
+/** The Command-line tools section of a prompt, to its end, or null when it has none. */
+const cliToolsSectionOf = (prompt: string): string | null => {
+  const at = prompt.indexOf("## Command-line tools");
+  return at === -1 ? null : prompt.slice(at);
+};
+
 const CAPABILITIES = [
   {
     name: "start",
@@ -770,6 +794,11 @@ const CAPABILITIES = [
       resumed: [{ type: "skills_delivered", slugs: ["build-in-w", "e2e-for-p", "house-style"] }],
       withoutSkills: [],
     },
+  },
+  {
+    name: "command-line tools in the opening prompt",
+    what: "a turn that opens a thread with command-line tools EO found installed (EO-820) ends its prompt with one \"## Command-line tools\" section naming each — the command, its description on one line, its absolute path and its version — worded by the one shared function; a turn given none has no such heading; and giving them changes nothing else the backend is handed — no allowedTools entry, no sandbox or permission setting, no launch argument (invariant 11)",
+    same: { section: CLI_TOOLS_SECTION, followsTheContext: true, headingWithoutTools: false, nothingElseChanged: true },
   },
   {
     name: "a side call returns structured output",
@@ -3397,6 +3426,27 @@ const CLAUDE: Record<CapabilityName, Proof> = {
     return { started: skillUsageOf(startedEvents), resumed: skillUsageOf(resumedEvents), withoutSkills: skillUsageOf(bareEvents) };
   },
 
+  "command-line tools in the opening prompt": async () => {
+    // Read off the first user message and the options the SDK is handed,
+    // from a provider with an allowlist of its own, so an entry added for
+    // a CLI would show. Everything the options say is compared, the
+    // allowlist, the permission mode and any sandbox setting among it.
+    const turn = (cliTools?: typeof FOUND_CLI_TOOLS) => {
+      const query = scripted([sdk.init(), sdk.result()]);
+      const provider = createClaudeProvider({ runQuery: query.runQuery, enableCommentTool: false, config: { allowedTools: ["Read", "Bash"] } });
+      return collect(provider.start({ ...startOpts, ...(cliTools ? { cliTools } : {}) })).then(async () => ({ said: (await firstSaid(query.calls[0])) ?? "", options: query.calls[0]?.options ?? {} }));
+    };
+    const given = await turn(FOUND_CLI_TOOLS);
+    const bare = await turn();
+    const none = await turn([]);
+    return {
+      section: cliToolsSectionOf(given.said),
+      followsTheContext: given.said.startsWith(`${startOpts.context}\n\n## Command-line tools`),
+      headingWithoutTools: bare.said.includes("Command-line tools") || none.said.includes("Command-line tools"),
+      nothingElseChanged: JSON.stringify(given.options) === JSON.stringify(bare.options) && JSON.stringify(none.options) === JSON.stringify(bare.options),
+    };
+  },
+
   "a side call returns structured output": async () => {
     // Read off the options the SDK is handed, from a provider handed
     // everything an agent could be: EO's server, an allowlist, the
@@ -4882,6 +4932,30 @@ const CODEX: Record<CapabilityName, Proof> = {
     return { started: skillUsageOf(startedEvents), resumed: skillUsageOf(resumedEvents), withoutSkills: skillUsageOf(bareEvents) };
   },
 
+  "command-line tools in the opening prompt": async () => {
+    // Read off the turn's input, and compared whole: the launch's
+    // arguments (where a sandbox or an approval setting would be passed
+    // as `-c`), the thread's options and the turn's own besides its input.
+    const turn = async (cliTools?: typeof FOUND_CLI_TOOLS) => {
+      const { fake, provider } = codexOver({ after: { "turn/start": [note.turnStarted(), note.agentMessage("ok"), note.turnCompleted()] } });
+      await collect(provider.start({ ...startOpts, ...(cliTools ? { cliTools } : {}) }));
+      const { input, ...turnParams } = fake.paramsOf("turn/start") ?? {};
+      return {
+        said: (input as { text: string }[] | undefined)?.[0]?.text ?? "",
+        handed: JSON.stringify({ args: fake.launches[0]?.args, thread: fake.paramsOf("thread/start"), turn: turnParams }),
+      };
+    };
+    const given = await turn(FOUND_CLI_TOOLS);
+    const bare = await turn();
+    const none = await turn([]);
+    return {
+      section: cliToolsSectionOf(given.said),
+      followsTheContext: given.said.startsWith(`${startOpts.context}\n\n## Command-line tools`),
+      headingWithoutTools: bare.said.includes("Command-line tools") || none.said.includes("Command-line tools"),
+      nothingElseChanged: given.handed === bare.handed && none.handed === bare.handed,
+    };
+  },
+
   "a side call returns structured output": async () => {
     // Read off the launch, the thread it opens and the model catalogue it
     // is handed, from a provider handed everything an agent could be:
@@ -5121,7 +5195,7 @@ describe.each(CAPABILITIES)("$name: $what", (capability) => {
 });
 
 describe("the shared list", () => {
-  it("is the twelve capabilities EO-380 names and the ones EO-385, EO-387, EO-392, EO-395, EO-412, EO-421, EO-444, EO-468, EO-470, EO-477, EO-478, EO-479, EO-487, EO-488, EO-490, EO-493, EO-494, EO-534, EO-543, EO-578, EO-587, EO-597, EO-633, EO-700, EO-703, EO-716, EO-717, EO-718, EO-732, EO-738 (two), EO-797, EO-807 and the streaming chat added, each once", () => {
+  it("is the twelve capabilities EO-380 names and the ones EO-385, EO-387, EO-392, EO-395, EO-412, EO-421, EO-444, EO-468, EO-470, EO-477, EO-478, EO-479, EO-487, EO-488, EO-490, EO-493, EO-494, EO-534, EO-543, EO-578, EO-587, EO-597, EO-633, EO-700, EO-703, EO-716, EO-717, EO-718, EO-732, EO-738 (two), EO-797, EO-807, EO-820 and the streaming chat added, each once", () => {
     // Pinned so that taking one off the list is a decision somebody
     // made in this file rather than a line that went missing.
     expect(CAPABILITIES.map((capability) => capability.name)).toEqual([
@@ -5167,6 +5241,7 @@ describe("the shared list", () => {
       "backend memory off",
       "scoped skills",
       "skill load detection",
+      "command-line tools in the opening prompt",
       "a side call returns structured output",
       "a side call streams its answer's words",
       "a side call wound down reports what it spent",
