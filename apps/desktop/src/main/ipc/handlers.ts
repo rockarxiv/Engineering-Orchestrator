@@ -107,6 +107,16 @@ import type { ManagedDirectory } from "../managed/directory.js";
 import { deviceIdentity, type SessionStoreOptions } from "../managed/session.js";
 import { LOCAL_DEVICE_ID } from "../record/device.js";
 import { listAgentAttachmentsCommand, setAgentAttachmentCommand } from "./agentAttachmentCommands.js";
+import {
+  archiveCliToolCommand,
+  detectCliToolCommand,
+  draftCliToolCommand,
+  listAgentCliToolsCommand,
+  listCliToolsCommand,
+  restoreCliToolCommand,
+  saveCliToolCommand,
+  setAgentCliToolCommand,
+} from "./cliToolCommands.js";
 import { clearStepSecrets } from "../modules/secrets.js";
 import { createItemLock } from "../supervisor/itemLock.js";
 import { registryForProject } from "../registry.js";
@@ -938,6 +948,21 @@ export function registerAllHandlers(db: Db, engine: EngineHandle | undefined, re
   // catalogues emit it — an open Agents screen is showing this.
   registerHandler("agentAttachments:list", (payload) => listAgentAttachmentsCommand(db, payload), opts);
   registerHandler("agentAttachments:set", (payload) => announcePipeline(setAgentAttachmentCommand(db, payload)), opts);
+
+  // Command-line tools (EO-819): the third catalogue and its ticks. A
+  // person's channels only — no MCP tool, and nothing EO's system agent
+  // is served. Writes announce for the reason the other catalogues'
+  // do: an open Agent tools screen is showing them. `detect` and `draft`
+  // are the machine half: they look at this desktop's PATH, and `draft`
+  // runs the program (no shell, bounded) to read its own --help.
+  registerHandler("cliTools:list", (payload) => listCliToolsCommand(db, payload), opts);
+  registerHandler("cliTools:save", (payload) => announcePipeline(saveCliToolCommand(db, payload)), opts);
+  registerHandler("cliTools:archive", (payload) => announcePipeline(archiveCliToolCommand(db, payload)), opts);
+  registerHandler("cliTools:restore", (payload) => announcePipeline(restoreCliToolCommand(db, payload)), opts);
+  registerHandler("agentCliTools:list", (payload) => listAgentCliToolsCommand(db, payload), opts);
+  registerHandler("agentCliTools:set", (payload) => announcePipeline(setAgentCliToolCommand(db, payload)), opts);
+  registerHandler("cliTools:detect", (payload) => detectCliToolCommand(payload), opts);
+  registerHandler("cliTools:draft", (payload) => draftCliToolCommand(payload), opts);
 
   registerHandler("moduleSecrets:list", (payload) => listModuleSecrets(db, moduleSecrets, payload, organisationSecrets), opts);
   registerHandler("moduleSecrets:set", (payload) => setModuleSecret(db, moduleSecrets, payload), opts);

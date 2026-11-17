@@ -115,6 +115,10 @@ describe("the two halves of the contract", () => {
         "canvas:open",
         "canvas:state",
         "canvas:window",
+        // Whether a CLI is installed here, and a description drafted by
+        // running it (EO-819): this desktop's PATH and the program on it.
+        "cliTools:detect",
+        "cliTools:draft",
         // A connector's OAuth (EO-315): a browser window on this
         // machine and a person to press the consent screen in it —
         // `runtime:startSignIn`'s shape exactly. The other three

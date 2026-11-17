@@ -125,8 +125,17 @@ export function isDeliverable(row: { enabled: boolean; archivedAt: number | null
   return row.enabled && row.archivedAt === null;
 }
 
-export function deliverableAttachments(resolved: ResolvedAgentAttachments): ResolvedAgentAttachments {
-  return { servers: resolved.servers.filter(isDeliverableMcpServer), skills: resolved.skills.filter(isDeliverable) };
+/**
+ * What the Claude tool directory is written from: the servers and the
+ * skills. CLIs are not delivered as files (EO-818) — they are named in
+ * the prompt — so the directory's writers do not ask for them.
+ */
+export type ToolDirectoryAttachments = Pick<ResolvedAgentAttachments, "servers" | "skills">;
+
+export function deliverableAttachments<T extends ToolDirectoryAttachments>(resolved: T): T {
+  // Anything else carried along — the CLIs, already narrowed to the
+  // unarchived ones — passes through as it is.
+  return { ...resolved, servers: resolved.servers.filter(isDeliverableMcpServer), skills: resolved.skills.filter(isDeliverable) };
 }
 
 /** One generated file: a path relative to the directory's root, and its whole content. */
@@ -289,7 +298,7 @@ export function skillFiles(skill: Skill): PluginFile[] {
  * pinning and what keeps a rewritten directory from looking like a
  * change.
  */
-export function toolDirectoryFiles(resolved: ResolvedAgentAttachments, admin?: AdminMcpDelivery | null): PluginFile[] {
+export function toolDirectoryFiles(resolved: ToolDirectoryAttachments, admin?: AdminMcpDelivery | null): PluginFile[] {
   const { servers, skills } = deliverableAttachments(resolved);
   // The administrative server counts as something to deliver. An agent
   // that holds it and has attached nothing at all is the ordinary case —
@@ -551,7 +560,7 @@ function alreadyWritten(path: string, files: PluginFile[]): boolean {
  */
 export function writeToolDirectory(
   path: string,
-  resolved: ResolvedAgentAttachments,
+  resolved: ToolDirectoryAttachments,
   admin?: AdminMcpDelivery | null,
 ): WrittenToolDirectory | null {
   const files = toolDirectoryFiles(resolved, admin);

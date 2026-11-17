@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { McpServer, Skill, SkillRunScope, SkillScope } from "@eo/core";
+import type { CliTool, McpServer, Skill, SkillRunScope, SkillScope } from "@eo/core";
 import type { Db } from "../db/client.js";
 import { resolveAgentAttachments, resolveAgentAttachmentsForRun, type ResolvedAgentAttachments } from "../db/repos/agentAttachmentsRepo.js";
 
@@ -111,6 +111,18 @@ function skillContent(skill: Skill, withScope: boolean): unknown {
 }
 
 /**
+ * A CLI's content (EO-819): what the prompt tells an agent about it.
+ *
+ * The command and the description, and not the display name, which the
+ * prompt section does not show — renaming "GitHub CLI" to "GitHub" must
+ * not cost an in-flight item its thread. Archived CLIs never reach here
+ * (`resolveAgentAttachments` leaves them out), so there is no flag.
+ */
+function cliToolContent(tool: CliTool): unknown {
+  return { command: tool.command, description: tool.description };
+}
+
+/**
  * The canonical form the hash is taken over.
  *
  * Exported so a test can read what actually went in — a digest that is
@@ -125,6 +137,11 @@ export function canonicalAttachments(resolved: ResolvedAgentAttachments, options
     // order and does not depend on how the join table happens to read.
     servers: [...resolved.servers].sort((a, b) => a.name.localeCompare(b.name)).map(serverContent),
     skills: [...resolved.skills].sort((a, b) => a.slug.localeCompare(b.slug)).map((skill) => skillContent(skill, withScope)),
+    // Only when there are any (EO-819), so an agent with no CLIs hashes
+    // exactly as it did before CLIs existed and no thread opened before
+    // this build is refused a resume for a change that did not happen.
+    // Sorted by command, which is unique in the catalogue.
+    ...(resolved.cliTools.length > 0 ? { cliTools: [...resolved.cliTools].sort((a, b) => a.command.localeCompare(b.command)).map(cliToolContent) } : {}),
   });
 }
 
@@ -174,4 +191,4 @@ export function agentSurfaceKey(db: Db, agentId: string): string {
  * column existed as what it truthfully was: a thread born when nothing
  * could be attached to anything.
  */
-export const EMPTY_ATTACHMENTS_HASH = fingerprintAttachments({ servers: [], skills: [] });
+export const EMPTY_ATTACHMENTS_HASH = fingerprintAttachments({ servers: [], skills: [], cliTools: [] });

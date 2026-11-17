@@ -1,7 +1,7 @@
 import { eq, isNotNull, sql } from "drizzle-orm";
 import { UNBOUND_BACKEND, uuidv7, type Agent, type PublishedAgent, type Uuid } from "@eo/core";
 import type { Db } from "../client.js";
-import { agentMcpServers, agents, agentSkills } from "../schema.js";
+import { agentCliTools, agentMcpServers, agents, agentSkills } from "../schema.js";
 
 function toDomain(row: typeof agents.$inferSelect): Agent {
   return {
@@ -224,7 +224,7 @@ export function archiveAgent(db: Db, id: Uuid, at: number = Date.now()): boolean
  * foreign key) and because `comments.author_id` and mention targets name
  * it without one — a missing row would turn every one of those into
  * "unknown agent". Everything else goes: the instructions and config are
- * cleared, the backend is unbound, and the MCP server and skill
+ * cleared, the backend is unbound, and the MCP server, skill and CLI
  * attachments are removed, as the cascade would have removed them.
  *
  * Archived and disabled too, so everything that already asks
@@ -240,6 +240,7 @@ export function deleteAgent(db: Db, id: Uuid, at: number = Date.now()): boolean 
   db.transaction((tx) => {
     tx.delete(agentMcpServers).where(eq(agentMcpServers.agentId, id)).run();
     tx.delete(agentSkills).where(eq(agentSkills.agentId, id)).run();
+    tx.delete(agentCliTools).where(eq(agentCliTools.agentId, id)).run();
     tx.update(agents)
       .set({
         instructions: "",

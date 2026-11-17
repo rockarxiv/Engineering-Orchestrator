@@ -94,6 +94,20 @@ export {
   type SetAgentAttachmentResult,
 } from "./agentAttachmentsRepo.js";
 export {
+  archiveCliTool,
+  getAgentCliTools,
+  getCliTool,
+  getCliToolByCommand,
+  listAgentCliTools,
+  listCliTools,
+  resolveAgentCliTools,
+  restoreCliTool,
+  saveCliTool,
+  setAgentCliTool,
+  type SaveCliToolResult,
+  type SetAgentCliToolResult,
+} from "./cliToolsRepo.js";
+export {
   askAgentAbout,
   commentWithReplies,
   currentOutputOf,

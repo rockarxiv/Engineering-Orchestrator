@@ -131,6 +131,15 @@ export interface LaunchableOptions {
  * the moment of asking, as the host reads it at the moment of launching.
  */
 export function launchable(bin: string, options: LaunchableOptions): boolean {
+  return launchablePath(bin, options) !== null;
+}
+
+/**
+ * The file `launchable` would find for `bin`, or null: the first
+ * candidate in libuv's order that the platform would execute. Absolute
+ * whenever the directories searched (and `cwd`, where one is given) are.
+ */
+export function launchablePath(bin: string, options: LaunchableOptions): string | null {
   const platform = options.platform ?? process.platform;
   const path = platform === "win32" ? win32 : posix;
   const runnable = options.runnable ?? ((candidate: string) => runnableFile(candidate, platform));
@@ -147,7 +156,8 @@ export function launchable(bin: string, options: LaunchableOptions): boolean {
     const asGiven = extension !== "" && !WINDOWS_SHELL_SCRIPTS.has(extension) ? [base] : [];
     return [...asGiven, `${base}.com`, `${base}.exe`];
   };
-  return bases.some((base) => forms(base).some(runnable));
+  for (const base of bases) for (const candidate of forms(base)) if (runnable(candidate)) return candidate;
+  return null;
 }
 
 function runnableFile(candidate: string, platform: NodeJS.Platform): boolean {

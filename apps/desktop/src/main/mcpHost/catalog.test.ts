@@ -40,6 +40,18 @@ import { SERVER_INSTRUCTIONS } from "./server.js";
  * nothing in the contract is unconsidered from MCP.
  */
 const NOT_CATALOGUED: Partial<Record<RecordChannel, string>> = {
+  // The command-line tool catalogue and its ticks (EO-819). Which CLIs
+  // an agent is told to reach for is a person's decision (EO-818): no
+  // step agent may touch them, and EO's system agent proposes one as a
+  // card a person approves rather than writing the row. The tools an
+  // outside client may call are a decision of their own, made with that
+  // card, and until one is made these are the screen's alone.
+  "cliTools:list": "the catalogue a person keeps on the Agent tools screen; an agent is told about the CLIs it was given, in its prompt",
+  "cliTools:save": "which programs agents are told to use is a person's decision, and the system agent proposes one as a card instead",
+  "cliTools:archive": "which programs agents are told to use is a person's decision, and the system agent proposes one as a card instead",
+  "cliTools:restore": "which programs agents are told to use is a person's decision, and the system agent proposes one as a card instead",
+  "agentCliTools:list": "which agent was given which CLI is the Agent tools screen's view; an agent learns its own from its prompt",
+  "agentCliTools:set": "giving an agent a CLI is a person's decision, and the system agent proposes one as a card instead",
   // What the organisation published, and the two writes that publish it
   // (EO-329). Publishing is an act on the record, performed by an admin
   // in a browser the server serves; the system agent runs on a desktop,
@@ -560,6 +572,12 @@ const NOT_CATALOGUED: Partial<Record<RecordChannel, string>> = {
  * both halves to the same rule.
  */
 const NOT_CATALOGUED_MACHINE: Partial<Record<MachineChannel, string>> = {
+  // Whether a CLI is installed on this desktop, and a description drafted
+  // by running it (EO-819). Both answer about this machine's PATH, and the
+  // draft starts the program; a client elsewhere would be asking about
+  // the wrong computer, and an agent has the shell to look for itself.
+  "cliTools:detect": "whether a program is on this desktop's PATH, which is the wrong computer for a client elsewhere; an agent has its own shell",
+  "cliTools:draft": "starts a program on this desktop to read its --help for a person filling in the editor, and saves nothing",
   // How this machine is getting on with its organisation's record
   // (EO-324, ARCHITECTURE.md, "The record"). A fact about a link and a
   // queue on one laptop, which is what the machine half *is*: an agent

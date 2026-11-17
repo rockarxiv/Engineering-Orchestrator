@@ -2017,6 +2017,43 @@ export const agentSkills = sqliteTable(
   (table) => [primaryKey({ columns: [table.agentId, table.skillId] })],
 );
 
+/**
+ * Command-line tools installed on the machine (EO-819, migration 0177):
+ * the third catalogue beside `mcp_servers` and `skills`.
+ *
+ * A row tells an agent a program exists and what it is for; it grants
+ * nothing (invariant 11). Whether the program is really there is checked
+ * on the machine whenever it matters, never stored here (invariant 5).
+ * Only a person writes this table.
+ */
+export const cliTools = sqliteTable("cli_tools", {
+  id: text("id").primaryKey(), // uuidv7
+  /** What a person reads — "GitHub CLI". */
+  name: text("name").notNull(),
+  /** What an agent types — `gh`. A bare name or an absolute path, held to `cliToolCommandProblem`. */
+  command: text("command").notNull().unique(),
+  description: text("description").notNull().default(""),
+  /** Archived rather than deleted, so an attachment still points at something a person can read. */
+  archivedAt: integer("archived_at"),
+  createdAt: integer("created_at").notNull(),
+  updatedAt: integer("updated_at").notNull(),
+});
+
+/** Which CLIs an agent has been given (EO-819). The sibling of `agentMcpServers` and `agentSkills`. */
+export const agentCliTools = sqliteTable(
+  "agent_cli_tools",
+  {
+    agentId: text("agent_id")
+      .notNull()
+      .references(() => agents.id, { onDelete: "cascade" }),
+    cliToolId: text("cli_tool_id")
+      .notNull()
+      .references(() => cliTools.id, { onDelete: "cascade" }),
+    createdAt: integer("created_at").notNull(),
+  },
+  (table) => [primaryKey({ columns: [table.agentId, table.cliToolId] })],
+);
+
 // ── Execution ─────────────────────────────────────────────────
 
 export const runs = sqliteTable("runs", {
