@@ -68,6 +68,7 @@ import {
   testJira,
 } from "../ipc/jiraCommands.js";
 import { listAgentAttachmentsCommand, setAgentAttachmentCommand } from "../ipc/agentAttachmentCommands.js";
+import { listAgentCliToolsCommand } from "../ipc/cliToolCommands.js";
 import {
   archiveMcpServerCommand,
   clearMcpServerSecretCommand,
@@ -2677,6 +2678,8 @@ describe("reading the catalogues EO gives its agents", () => {
     registerHandler("mcpServers:list", (payload) => listMcpServerViews(handle.db, secrets, payload), opts);
     registerHandler("skills:list", (payload) => listSkillsCommand(handle.db, payload), opts);
     registerHandler("agentAttachments:list", (payload) => listAgentAttachmentsCommand(handle.db, payload), opts);
+    // `agent_attachments_list` puts each agent's command-line tools beside the rest (EO-822).
+    registerHandler("agentCliTools:list", (payload) => listAgentCliToolsCommand(handle.db, payload), opts);
   });
 
   afterEach(() => {

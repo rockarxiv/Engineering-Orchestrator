@@ -177,8 +177,8 @@ describe("the person-only surface", () => {
 describe("the external-only surface", () => {
   const externalOnly = TOOLS.filter((tool) => tool.externalOnly === true).map((tool) => tool.name);
 
-  it("holds the job writes, so the checks below are not passing on an empty set", () => {
-    expect(externalOnly).toEqual(["job_create", "job_update", "job_delete"]);
+  it("holds the CLI catalogue writes (EO-822) and the job writes, so the checks below are not passing on an empty set", () => {
+    expect(externalOnly).toEqual(["cli_tool_save", "cli_tool_archive", "job_create", "job_update", "job_delete"]);
   });
 
   it("withholds them from the admin listener, gate open or shut, and offers them to the external one", () => {

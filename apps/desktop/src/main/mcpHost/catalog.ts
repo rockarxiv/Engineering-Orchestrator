@@ -40,6 +40,10 @@ import {
   renderJobSaved,
   renderAgentAttachmentSet,
   renderAgentAttachments,
+  renderAgentCliToolSet,
+  renderCliTools,
+  renderCliToolSaved,
+  type AgentAttachmentsWithCliTools,
   renderAgentSaved,
   renderAgents,
   renderArchived,
@@ -119,6 +123,7 @@ import {
   type SpendReport,
 } from "./render.js";
 import { GUIDES, guideNamed } from "./guides.js";
+import type { McpAudience } from "./gate.js";
 import { RUNTIMES } from "../runtimes/catalog.js";
 import { ACTING_DEVICE_KEY, inputSchemaFor, isVoidChannel, withoutCallerIdentity, type JsonSchemaObject } from "./toolSchema.js";
 import { boundaryArguments, LEGACY_BOUNDARY_NAMES, type ToolSpelling } from "./legacyNames.js";
@@ -181,6 +186,12 @@ export type Dispatch = (channel: IpcChannel, payload: unknown) => Promise<{ ok: 
 export type ToolOutcome =
   | { ok: true; text: string; data: unknown; refused: boolean }
   | { ok: false; message: string; issues?: string[] };
+
+/** What a tool is told about the call it is answering, beyond its arguments (EO-822). */
+export interface ToolCallContext {
+  /** Which listener the call arrived on — see `McpAudience`. */
+  audience: McpAudience;
+}
 
 export interface ToolSpec {
   /** Bare, like eoServer.mjs's. Clients namespace by server already. */
@@ -261,7 +272,14 @@ export interface ToolSpec {
    * spellings — a tool takes either. A tool never declares this itself.
    */
   itemKeys?: readonly string[];
-  run: (dispatch: Dispatch, args: unknown) => Promise<ToolOutcome>;
+  /**
+   * Runs one call. `call` says which of EO's listeners it arrived on
+   * (EO-822), for the one tool whose answer depends on it: absent — a
+   * test calling `run` directly — is treated as the administrative
+   * listener, the stricter of the two, as `McpAudience`'s default is the
+   * smaller list.
+   */
+  run: (dispatch: Dispatch, args: unknown, call?: ToolCallContext) => Promise<ToolOutcome>;
   /**
    * The answer to narrow, for a tool whose channel pages its own list.
    *
@@ -1460,6 +1478,50 @@ const TRACKER_WRITE_TOOLS: readonly ToolSpec[] = [
  * authority delegated, rather than an implementer reaching sideways
  * mid-run.
  */
+/**
+ * Which catalogue entries each agent is given (EO-114, EO-822).
+ *
+ * Hand-built rather than a `channelTool`, because since EO-822 the answer
+ * is two joins: `agentAttachments:list` for MCP servers and skills, and
+ * `agentCliTools:list` for command-line tools. The contract keeps them
+ * apart — a CLI is ticked only by a person, and `agentAttachments:set` is
+ * reached by the system agent — but "what is this agent given?" is one
+ * question, so the answer puts each agent's CLIs beside its servers and
+ * skills, in the order the first join lists agents, with any agent that
+ * has CLIs alone after them.
+ */
+const AGENT_ATTACHMENTS_LIST_TOOL: ToolSpec = {
+  name: "agent_attachments_list",
+  description:
+    "Which catalogued MCP servers, skills and command-line tools each agent is dispatched with — the whole of what EO adds to an " +
+    "agent's surface beyond its own instructions and the `eo` server every agent already has. Answers in ids: " +
+    "agents_list says which agent each id is, and mcp_servers_list, skills_list and cli_tools_list say what the attached ids are. " +
+    "Pass agentId for one agent, or omit it for every agent that has anything.",
+  kind: "read",
+  list: "attachments",
+  annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  channels: ["agentAttachments:list", "agentCliTools:list"],
+  inputSchema: inputSchemaFor(ipcContract["agentAttachments:list"].request),
+  async run(dispatch, args) {
+    const attachments = await ask(dispatch, "agentAttachments:list", args);
+    if (!attachments.ok) return attachments;
+    const cliTools = await ask(dispatch, "agentCliTools:list", args);
+    if (!cliTools.ok) return cliTools;
+
+    const cliByAgent = new Map(cliTools.data.attachments.map((row) => [row.agentId, row.cliToolIds]));
+    const listed = new Set(attachments.data.attachments.map((row) => row.agentId));
+    const data: AgentAttachmentsWithCliTools = {
+      attachments: [
+        ...attachments.data.attachments.map((row) => ({ ...row, cliToolIds: cliByAgent.get(row.agentId) ?? [] })),
+        ...cliTools.data.attachments
+          .filter((row) => !listed.has(row.agentId) && row.cliToolIds.length > 0)
+          .map((row) => ({ agentId: row.agentId, mcpServerIds: [], skillIds: [], cliToolIds: row.cliToolIds })),
+      ],
+    };
+    return { ok: true, refused: false, data, text: renderAgentAttachments(data) };
+  },
+};
+
 const CATALOGUE_READ_TOOLS: readonly ToolSpec[] = [
   channelTool({
     name: "mcp_servers_list",
@@ -1510,18 +1572,21 @@ const CATALOGUE_READ_TOOLS: readonly ToolSpec[] = [
     refusal: (data) => data.problem,
   }),
   channelTool({
-    name: "agent_attachments_list",
-    channel: "agentAttachments:list",
+    name: "cli_tools_list",
+    channel: "cliTools:list",
     description:
-      "Which catalogued MCP servers and skills each agent is dispatched with — the whole of what EO adds to an " +
-      "agent's surface beyond its own instructions and the `eo` server every agent already has. Answers in ids: " +
-      "agents_list says which agent each id is, and mcp_servers_list and skills_list say what the attached ids are. " +
-      "Pass agentId for one agent, or omit it for every agent that has anything.",
+      "The command-line tools a person has catalogued for EO's agents (EO-818): programs installed on the machine, " +
+      "each with a name, the command an agent types and what it is for here. A CLI grants nothing — an agent given " +
+      "one is told the program exists and runs it through the shell it already has — and only a person decides " +
+      "which are in the catalogue. Whether a command is actually installed is not in this answer: EO checks that on " +
+      "the machine an agent is dispatched on, when it is dispatched. This is the catalogue: agent_attachments_list " +
+      "is what says which agents are told about which. Pass includeArchived to see archived ones.",
     kind: "read",
-    list: "attachments",
+    list: "cliTools",
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-    render: renderAgentAttachments,
+    render: renderCliTools,
   }),
+  AGENT_ATTACHMENTS_LIST_TOOL,
 ];
 
 const RunEventsArgsSchema = z.object({
@@ -3366,12 +3431,80 @@ const CATALOGUE_WRITE_TOOLS: readonly ToolSpec[] = [
  * catalogue state inside it would be the second copy that gets to go
  * stale.
  */
+/**
+ * The command-line tool catalogue's writes (EO-822): add or change one,
+ * and archive one — `mcp_server_save` and `mcp_server_archive`'s shape,
+ * through the channels the Agent tools screen calls.
+ *
+ * `externalOnly`, as the job writes are (EO-785), and for the same
+ * reason: an outside client is a person's request relayed, and saves
+ * straight away; EO's system agent proposes a CLI as a card the person
+ * presses, so `eo_admin` offers it no tool that saves or archives one.
+ * Which programs agents are told to reach for is a person's decision
+ * (EO-818), and a step agent's `eo` server offers none of these at all.
+ *
+ * Restoring an archived CLI is not here: it is Restore on the Agent tools
+ * screen, as the other catalogues have no restore over MCP either.
+ */
+const CLI_TOOL_WRITE_TOOLS: readonly ToolSpec[] = [
+  channelTool({
+    name: "cli_tool_save",
+    channel: "cliTools:save",
+    externalOnly: true,
+    description:
+      "Add a command-line tool to EO's catalogue, or change one that is there. `name` is what a person reads " +
+      "(\"GitHub CLI\"), `command` is what an agent types — one program name looked up on the agent's PATH, like " +
+      "`gh`, or an absolute path to one, never arguments — and `description` says what it is and when to use it here, " +
+      "in a sentence or two an agent will read. Omit `id` to add one; pass one from cli_tools_list to edit it in place. " +
+      "A command another entry already runs is refused, archived entries included. A refusal comes back as a sentence " +
+      "with nothing saved. What you save is catalogued and nothing more — no agent is told about it until it is " +
+      "attached to one with agent_attachments_set — and it grants nothing: an agent runs the program through the " +
+      "shell it already has.",
+    kind: "write",
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+    render: renderCliToolSaved,
+    refusal: (data) => (data.saved ? null : `Nothing was saved: ${data.problem ?? "it refused."} Nothing has changed.`),
+  }),
+  channelTool({
+    name: "cli_tool_archive",
+    channel: "cliTools:archive",
+    externalOnly: true,
+    description:
+      "Archive a catalogued command-line tool. No agent is told about it again, whatever is attached to them, and " +
+      "cli_tools_list stops showing it unless you pass includeArchived. The row and its attachments are kept; " +
+      "bringing it back is Restore on the Agent tools screen, which no tool here does. Ask before calling this on a " +
+      "CLI you did not just add.",
+    kind: "write",
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
+    render: () => "Command-line tool archived. No agent is told about it now; the row is kept, so cli_tools_list with includeArchived still shows it.",
+    refusal: (data) => (data.archived ? null : `Nothing was archived: ${data.problem ?? "it refused."} Nothing has changed.`),
+  }),
+];
+
+/**
+ * What `agent_attachments_set` takes: `agentAttachments:set`'s request,
+ * with a third kind, `cliTool`, which goes to `agentCliTools:set`
+ * instead (EO-822).
+ */
+const AgentAttachmentSetArgsSchema = z.object({
+  agentId: z.string(),
+  kind: z.enum(["mcpServer", "skill", "cliTool"]),
+  id: z.string(),
+  attached: z.boolean(),
+});
+
+/** What EO's system agent is told when it asks to tick a CLI itself (EO-822). */
+export const CLI_TOOL_ATTACH_ADMIN_REFUSAL =
+  "Nothing was attached or detached: which command-line tools an agent is told about is a person's decision. " +
+  "Offer a `cliToolAttach` card instead, and the person presses it. Nothing has changed.";
+
 const AGENT_ATTACHMENT_SET_TOOL: ToolSpec = {
   name: "agent_attachments_set",
   description:
-    "Give one agent a catalogued MCP server or skill, or take one away — the tick that decides what EO actually " +
-    "dispatches that agent with. `agentId` comes from agents_list, `kind` is `mcpServer` or `skill`, and `id` is a " +
-    "row from mcp_servers_list or skills_list. One entry per call, and `attached` says which way: true attaches, " +
+    "Give one agent a catalogued MCP server, skill or command-line tool, or take one away — the tick that decides what EO actually " +
+    "dispatches that agent with. `agentId` comes from agents_list, `kind` is `mcpServer`, `skill` or `cliTool`, and `id` is a " +
+    "row from mcp_servers_list, skills_list or cli_tools_list. A `cliTool` is ticked only from a client of EO's MCP server: " +
+    "EO's own system agent is refused one and offers a card instead. One entry per call, and `attached` says which way: true attaches, " +
     "false detaches. The reply is the agent's whole attachment set afterwards, not just the row you sent, and it " +
     "separates what will actually be delivered from what is merely attached — a disabled or archived entry stays " +
     "attached and reaches no agent, so attaching one is accepted and reported as not delivered rather than " +
@@ -3388,9 +3521,34 @@ const AGENT_ATTACHMENT_SET_TOOL: ToolSpec = {
   // renamed or retired row cannot be stale inside it. Resolving them is
   // the only way to tell an attachment that will be delivered from one
   // that will not.
-  channels: ["agentAttachments:set", "mcpServers:list", "skills:list"],
-  inputSchema: inputSchemaFor(ipcContract["agentAttachments:set"].request),
-  async run(dispatch, args) {
+  channels: ["agentAttachments:set", "mcpServers:list", "skills:list", "agentCliTools:set", "cliTools:list"],
+  inputSchema: inputSchemaFor(AgentAttachmentSetArgsSchema),
+  async run(dispatch, args, call) {
+    const parsed = AgentAttachmentSetArgsSchema.safeParse(args);
+    if (parsed.success && parsed.data.kind === "cliTool") {
+      // Only a person ticks a CLI (EO-818). The administrative listener is
+      // EO's own system agent; a call that does not say where it came from
+      // is treated as that one, the stricter answer.
+      if (call?.audience !== "external") {
+        return { ok: true, refused: true, data: { attachments: null, problem: CLI_TOOL_ATTACH_ADMIN_REFUSAL }, text: CLI_TOOL_ATTACH_ADMIN_REFUSAL };
+      }
+      const { agentId, id, attached } = parsed.data;
+      const ticked = await ask(dispatch, "agentCliTools:set", { agentId, cliToolId: id, attached });
+      if (!ticked.ok) return ticked;
+      if (ticked.data.attachments === null) {
+        return {
+          ok: true,
+          refused: true,
+          data: ticked.data,
+          text: `Nothing was attached or detached: ${ticked.data.problem ?? "it refused."} Nothing has changed.`,
+        };
+      }
+      // Archived rows included: an attachment may point at one, and the
+      // answer says which attached CLIs an agent will actually be told.
+      const tools = await ask(dispatch, "cliTools:list", { includeArchived: true });
+      return { ok: true, refused: false, data: ticked.data, text: renderAgentCliToolSet(ticked.data, tools.ok ? tools.data.cliTools : null) };
+    }
+
     const set = await ask(dispatch, "agentAttachments:set", args);
     if (!set.ok) return set;
 
@@ -4177,6 +4335,7 @@ const UNGATED_WRITE_TOOLS: readonly ToolSpec[] = [
   PROJECT_SET_ACTIVE_TOOL,
   ...TRACKER_WRITE_TOOLS,
   ...CATALOGUE_WRITE_TOOLS,
+  ...CLI_TOOL_WRITE_TOOLS,
   ...MEMORY_WRITE_TOOLS,
   AGENT_ATTACHMENT_SET_TOOL,
   ...JOB_WRITE_TOOLS,

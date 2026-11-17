@@ -331,7 +331,7 @@ export async function answerToolCall(
   // round through an alias of it (KAN-162).
   const refused = refuseCall?.(canonicalToolName(tool.name), call.arguments ?? {}) ?? null;
   if (refused !== null) return { isError: true, content: [{ type: "text", text: refused }] };
-  return callTool(tool, call.arguments ?? {}, dangerousOperations, observeCall, dispatchAs(actingAgentId, pathsFrom));
+  return callTool(tool, call.arguments ?? {}, dangerousOperations, observeCall, dispatchAs(actingAgentId, pathsFrom), audience);
 }
 
 /** What one tool call answers with, in MCP's shape. */
@@ -341,6 +341,7 @@ async function callTool(
   dangerousOperations: boolean,
   observeCall: ((tool: string, args: unknown, data: unknown) => void) | undefined,
   dispatch: Dispatch,
+  audience: McpAudience,
 ): Promise<CallToolResult> {
   // Re-checked here and not only in tools/list, because a client can call
   // a tool it was never shown — a stale list, or one that simply guessed.
@@ -374,7 +375,7 @@ async function callTool(
   // Narrowed over the whole list where a tool's channel pages its own
   // (`ToolSpec.runWhole`); otherwise the tool answers as it always has.
   const run = split.narrowing !== null && tool.runWhole !== undefined ? tool.runWhole : tool.run;
-  const outcome = await run(dispatch, resolved.args);
+  const outcome = await run(dispatch, resolved.args, { audience });
   if (!outcome.ok) {
     const detail = outcome.issues && outcome.issues.length > 0 ? `\n${outcome.issues.map((issue) => `- ${issue}`).join("\n")}` : "";
     return { isError: true, content: [{ type: "text", text: `${outcome.message}${detail}` }] };

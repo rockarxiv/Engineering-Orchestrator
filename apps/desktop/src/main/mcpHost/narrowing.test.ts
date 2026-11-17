@@ -72,6 +72,7 @@ const MAIN_LIST: Record<string, string | null> = {
   skills_list: "skills",
   skill_versions_list: "versions",
   agent_attachments_list: "attachments",
+  cli_tools_list: "cliTools",
   pipeline_validate: "problems",
   pipeline_versions: "versions",
   // One held template update (EO-534): three graphs, its changed keys and
@@ -112,7 +113,7 @@ describe("the narrowing parameters, across the whole catalogue", () => {
   it("offers where, sort, limit and offset on every list-shaped read tool, and names them in its description", () => {
     for (const read of reads.filter((candidate) => candidate.list !== undefined)) {
       for (const key of NARROWING_KEYS) expect(properties(read), `${read.name}.${key}`).toHaveProperty(key);
-      expect(read.description, read.name).toMatch(/Narrow the answer with fields, where, sort, limit and offset on its `[a-z.]+` list; the eo_orient guide says how\.$/);
+      expect(read.description, read.name).toMatch(/Narrow the answer with fields, where, sort, limit and offset on its `[A-Za-z.]+` list; the eo_orient guide says how\.$/);
     }
   });
 
@@ -127,7 +128,9 @@ describe("the narrowing parameters, across the whole catalogue", () => {
     // Hand-built tools answer in a shape of their own rather than their
     // channel's, so only the tools that pass a channel's answer through
     // can be checked against its schema.
-    const handBuilt = new Set(["runtime_status"]);
+    // `agent_attachments_list` puts two joins together since EO-822, and
+    // its list is checked against both below.
+    const handBuilt = new Set(["runtime_status", "agent_attachments_list"]);
     for (const read of reads.filter((candidate) => candidate.list !== undefined && !handBuilt.has(candidate.name))) {
       // Its own channel, beside the one an item key is resolved through
       // where it takes an item (EO-539) — `runs_list`'s `itemId`.
@@ -137,6 +140,15 @@ describe("the narrowing parameters, across the whole catalogue", () => {
         properties?: Record<string, { type?: unknown }>;
       };
       expect(json.properties?.[read.list!]?.type, read.name).toBe("array");
+    }
+  });
+
+  it("declares agent_attachments_list's list where both of its joins answer an array", () => {
+    const attachments = reads.find((read) => read.name === "agent_attachments_list")!;
+    expect(attachments.channels).toEqual(["agentAttachments:list", "agentCliTools:list"]);
+    for (const channel of attachments.channels) {
+      const json = z.toJSONSchema(ipcContract[channel].response, { io: "output", unrepresentable: "any" }) as { properties?: Record<string, { type?: unknown }> };
+      expect(json.properties?.[attachments.list!]?.type, channel).toBe("array");
     }
   });
 

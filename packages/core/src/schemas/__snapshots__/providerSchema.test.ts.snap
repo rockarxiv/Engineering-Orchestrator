@@ -2596,6 +2596,58 @@ exports[`the JSON Schema each provider receives > is unchanged for assist (undef
                       "properties": {
                         "kind": {
                           "type": "string",
+                          "const": "cliToolAdd"
+                        },
+                        "name": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "command": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "description": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "name",
+                        "command",
+                        "description"
+                      ]
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "kind": {
+                          "type": "string",
+                          "const": "cliToolAttach"
+                        },
+                        "agentId": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "cliToolId": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "attached": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "agentId",
+                        "cliToolId",
+                        "attached"
+                      ]
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "kind": {
+                          "type": "string",
                           "const": "pipelineKeepMine"
                         },
                         "pipelineId": {

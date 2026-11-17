@@ -1,4 +1,5 @@
-import { fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { QueryClient } from "@tanstack/react-query";
 import { describe, expect, it, vi } from "vitest";
 import { WEBHOOK_UNATTENDED_LABEL, WEBHOOK_UNATTENDED_MANAGED, WEBHOOK_UNATTENDED_RISK, type AssistCardDetail, type AssistCardView, type DiscussionMessage, type ImportPreflightView, type ItemTypeCardShape } from "@eo/core";
 import { ipcStub, renderSection, sent, type Answers } from "../views/settings/org/testing";
@@ -563,5 +564,93 @@ describe("a card for a job", () => {
     expect(await screen.findByRole("link", { name: "SUP-7" })).toHaveAttribute("href", "/items/i-7");
     expect(screen.getByText(said)).toBeInTheDocument();
     expect(screen.getByText("Sent")).toBeInTheDocument();
+  });
+});
+
+describe("a card for a command-line tool (EO-822)", () => {
+  const ADD: AssistCardDetail = {
+    kind: "cliToolAdd",
+    name: "GitHub CLI",
+    command: "gh",
+    description: "Pull requests and issues on GitHub.",
+    detection: { found: true, path: "/usr/bin/gh", version: "gh version 2.63.0" },
+    problem: null,
+  };
+  const ATTACH: AssistCardDetail = {
+    kind: "cliToolAttach",
+    agentId: "a-1",
+    agentName: "Implementer",
+    cliToolId: "c-1",
+    cliToolName: "GitHub CLI",
+    command: "gh",
+    attached: true,
+    current: false,
+    archived: false,
+  };
+
+  it("shows the CLI and whether this machine has it, and Add CLI goes through assist:applyCard alone", async () => {
+    const { calls, onDone } = draw(message({ kind: "cliToolAdd", outcome: null }), ADD, {
+      "assist:applyCard": { applied: true, problem: null, said: "Added the command-line tool “GitHub CLI” (`gh`, id: c-1) to the catalogue.", conversation: {} },
+    });
+
+    const card = screen.getByRole("region", { name: "Add a command-line tool" });
+    const shown = await within(card).findByLabelText("The command-line tool");
+    expect(shown).toHaveTextContent("Commandgh");
+    expect(shown).toHaveTextContent("DescriptionPull requests and issues on GitHub.");
+    expect(shown).toHaveTextContent("On this machineFound at /usr/bin/gh · gh version 2.63.0");
+
+    fireEvent.click(within(card).getByRole("button", { name: "Add CLI" }));
+
+    await waitFor(() => expect(onDone).toHaveBeenCalled());
+    expect(sent(calls, "assist:applyCard")).toEqual([{ conversationId: "conv-1", messageId: "card-1", choices: {} }]);
+    expect(sent(calls, "cliTools:save")).toEqual([]);
+  });
+
+  it("re-reads the Agent tools screen's catalogue after Add CLI, and its ticks after Give CLI", async () => {
+    const invalidate = vi.spyOn(QueryClient.prototype, "invalidateQueries");
+    try {
+      const added = draw(message({ kind: "cliToolAdd", outcome: null }), ADD, { "assist:applyCard": { applied: true, problem: null, said: "Added.", conversation: {} } });
+      await screen.findByLabelText("The command-line tool");
+      fireEvent.click(screen.getByRole("button", { name: "Add CLI" }));
+      await waitFor(() => expect(added.onDone).toHaveBeenCalled());
+      expect(invalidate).toHaveBeenCalledWith({ queryKey: ["cliTools"] });
+      cleanup();
+
+      const given = draw(message({ kind: "cliToolAttach", outcome: null }), ATTACH, { "assist:applyCard": { applied: true, problem: null, said: "Gave.", conversation: {} } });
+      await screen.findByText("GitHub CLI · Implementer");
+      fireEvent.click(screen.getByRole("button", { name: "Give CLI" }));
+      await waitFor(() => expect(given.onDone).toHaveBeenCalled());
+      expect(invalidate).toHaveBeenCalledWith({ queryKey: ["agentCliTools"] });
+    } finally {
+      invalidate.mockRestore();
+    }
+  });
+
+  it("says a command not found here, and shows a refusal the save would meet with the button off", async () => {
+    draw(message({ kind: "cliToolAdd", outcome: null }), { ...ADD, detection: { found: false }, problem: '"GitHub CLI" already runs `gh` (id: c-1).' });
+
+    expect(await screen.findByText("Not found")).toBeInTheDocument();
+    expect(screen.getByRole("note", { name: "Refused" })).toHaveTextContent('"GitHub CLI" already runs `gh`');
+    expect(screen.getByRole("button", { name: "Add CLI" })).toBeDisabled();
+  });
+
+  it("gives an agent a CLI through assist:applyCard, never agentCliTools:set", async () => {
+    const { calls, onDone } = draw(message({ kind: "cliToolAttach", outcome: null }), ATTACH, {
+      "assist:applyCard": { applied: true, problem: null, said: "Gave Implementer “GitHub CLI”.", conversation: {} },
+    });
+
+    expect(await screen.findByText("GitHub CLI · Implementer")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Give CLI" }));
+
+    await waitFor(() => expect(onDone).toHaveBeenCalled());
+    expect(sent(calls, "assist:applyCard")).toEqual([{ conversationId: "conv-1", messageId: "card-1", choices: {} }]);
+    expect(sent(calls, "agentCliTools:set")).toEqual([]);
+  });
+
+  it("turns the button off when the agent already is as the card asks", async () => {
+    draw(message({ kind: "cliToolAttach", outcome: null }), { ...ATTACH, attached: false, current: false });
+
+    expect(await screen.findByText("Implementer does not have it, so there is nothing to change.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Take CLI away" })).toBeDisabled();
   });
 });
