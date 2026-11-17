@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { FOLDER_KIND, gitStateOf, SCRATCH_KIND, type Item, type Uuid } from "@eo/core";
+import { codeSpan } from "../codeSpan.js";
 import type { DbHandle } from "../db/client.js";
 import { createRoute, createRun, createStep, createWorkspace, getItem, listAttachmentsForItem, listCommentsForItem, listRunsForItem, updateRun, type Workspace } from "../db/repos/index.js";
 import { AttachmentStorage } from "../attachments/storage.js";
@@ -213,6 +214,16 @@ describe("the folder kind checks what the step says it produces", () => {
 
     expect(checks.map((check) => check.passed)).toEqual([true, false]);
     expect(checks[1]?.describes).toContain("figures/q3.png");
+  });
+
+  it("writes the declared output as a code span, so a Windows name keeps its backslash before a dot (EO-830)", async () => {
+    // The step's configured name, as a person on Windows types it. Plain
+    // in a comment it would draw as `artifacts.draft.md`, another file.
+    const declared = "artifacts\\.draft.md";
+    const checks = await verifyAfter(() => {}, { declared });
+
+    expect(checks[0]?.passed).toBe(false);
+    expect(checks[0]?.describes).toContain(`This step says it produces ${codeSpan(declared)},`);
   });
 
   it("refuses a declared path that points outside the folder rather than going and looking", async () => {

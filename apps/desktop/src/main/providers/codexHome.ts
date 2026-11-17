@@ -738,7 +738,7 @@ export async function removeCodexHomeAsync(path: string, fs: CodexHomeSweepFs = 
 }
 
 function realSessionsProblem(sessionsPath: string, sessions: LinkStat, home: string): string {
-  return `${sessionsPath} is a real ${sessions.isDirectory() ? "directory" : "file"} rather than a link, so EO left ${home} alone rather than delete what is in it`;
+  return `${codeSpan(sessionsPath)} is a real ${sessions.isDirectory() ? "directory" : "file"} rather than a link, so EO left ${codeSpan(home)} alone rather than delete what is in it`;
 }
 
 /**

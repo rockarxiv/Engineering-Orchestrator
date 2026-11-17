@@ -16,6 +16,10 @@ describe("codeSpan (EO-830)", () => {
     expect(codeSpan(" spaced ")).toBe("`  spaced  `");
   });
 
+  it("writes line endings as the spaces a code span renders them as, so a blank line cannot end it", () => {
+    expect(codeSpan("fatal: one\n\nC:\\repo\\.git\r\nend")).toBe("`fatal: one  C:\\repo\\.git end`");
+  });
+
   it("writes nothing for nothing: two backticks alone are not a code span", () => {
     expect(codeSpan("")).toBe("");
   });

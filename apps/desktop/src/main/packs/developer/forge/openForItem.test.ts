@@ -1240,6 +1240,9 @@ describe("before it opens or reuses one (EO-429)", () => {
       expect(reason).toContain("could not read the status");
       expect(reason).toContain(worktree);
       expect(reason).toContain("Nothing was pushed");
+      // Git's own error, which quotes the checkout's path, as a code span
+      // standing on its own between the two paragraphs (EO-830).
+      expect(reason).toMatch(/opened or updated\.\n\n`[^`\n]+`\n\nRun/);
       expect(reason).toContain("Run `git status` in that directory");
       expect(remoteTip()).toBeNull();
       expect(gitStateOf(getItem(handle.db, item.id)!).pullRequest).toBeNull();

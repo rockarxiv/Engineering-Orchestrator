@@ -7,6 +7,7 @@ import { extractTar, isSafeEntryPath, TarError } from "../../../../runtimes/tar.
 import type { FetchLike } from "../../../../runtimes/install.js";
 import { assetUrl, checksumUrl, unsupportedReason, CODEWIKI, type CodeWikiSpec } from "./catalog.js";
 import { expandArchive, ZipError, type ZipExtractor } from "./zip.js";
+import { codeSpan } from "../../../../codeSpan.js";
 
 /**
  * Fetching the CodeWiki binary (A-08).
@@ -255,7 +256,7 @@ export async function installCodeWiki(options: InstallOptions): Promise<InstallR
       for (const entry of extractTar(gunzipSync(bytes))) {
         if (!isSafeEntryPath(entry.path)) {
           rmSync(partial, { recursive: true, force: true });
-          return { ok: false, binaryPath: null, problem: `The ${spec.label} archive contained an unsafe path (${entry.path}); nothing was installed.` };
+          return { ok: false, binaryPath: null, problem: `The ${spec.label} archive contained an unsafe path (${codeSpan(entry.path)}); nothing was installed.` };
         }
 
         const destination = join(partial, entry.path);
@@ -294,10 +295,10 @@ export async function installCodeWiki(options: InstallOptions): Promise<InstallR
     rmSync(staged, { force: true });
     const reason =
       error instanceof TarError || error instanceof ZipError
-        ? `the archive could not be unpacked: ${error.message}`
+        ? `the archive could not be unpacked: ${codeSpan(error.message)}`
         : error instanceof Error
-          ? error.message
-          : String(error);
+          ? codeSpan(error.message)
+          : codeSpan(String(error));
     return { ok: false, binaryPath: null, problem: `Installing ${spec.label} failed — ${reason}` };
   }
 }

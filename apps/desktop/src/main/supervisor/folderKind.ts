@@ -162,7 +162,7 @@ export function folderWorkspaceKind(options: FolderWorkspaceKindOptions): Worksp
               key,
               passed: false,
               blocks: true,
-              describes: `This step says it produces ${declared}, which is outside ${codeSpan(cwd)}. An output is something the run wrote where it worked, so EO will not go looking for it elsewhere.`,
+              describes: `This step says it produces ${codeSpan(declared)}, which is outside ${codeSpan(cwd)}. An output is something the run wrote where it worked, so EO will not go looking for it elsewhere.`,
             };
           }
 
@@ -170,7 +170,7 @@ export function folderWorkspaceKind(options: FolderWorkspaceKindOptions): Worksp
           try {
             modifiedAt = statSync(target).mtimeMs;
           } catch {
-            return { key, passed: false, blocks: true, describes: `This step says it produces ${declared}, and there is no such file in ${codeSpan(cwd)}.` };
+            return { key, passed: false, blocks: true, describes: `This step says it produces ${codeSpan(declared)}, and there is no such file in ${codeSpan(cwd)}.` };
           }
 
           // The grace is the two clocks, not slack in the check: see
@@ -180,11 +180,11 @@ export function folderWorkspaceKind(options: FolderWorkspaceKindOptions): Worksp
               key,
               passed: false,
               blocks: true,
-              describes: `${declared} is in ${codeSpan(cwd)}, but it has not changed since this run started — so what is there is whatever was there before, not what this run produced.`,
+              describes: `${codeSpan(declared)} is in ${codeSpan(cwd)}, but it has not changed since this run started — so what is there is whatever was there before, not what this run produced.`,
             };
           }
 
-          return { key, passed: true, blocks: true, describes: `${declared} is in ${codeSpan(cwd)} and was written while this run was working.` };
+          return { key, passed: true, blocks: true, describes: `${codeSpan(declared)} is in ${codeSpan(cwd)} and was written while this run was working.` };
         });
         },
       ),

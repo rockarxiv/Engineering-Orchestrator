@@ -2,6 +2,7 @@ import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync
 import { tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { git } from "../../workspace/git.js";
+import { codeSpan } from "../../../../codeSpan.js";
 
 /**
  * Keeping `codewiki init` out of a repository EO does not own (EO-141).
@@ -228,10 +229,10 @@ export async function containHooks(workspacePath: string): Promise<HookContainme
  */
 export function describeHookEscape(outcome: HookContainmentOutcome): string | null {
   if (outcome.leaked.length > 0) {
-    return `CodeWiki installed git hooks into this repository at ${outcome.leaked.join(", ")} and EO could not remove them. Remove the block marked "${CODEWIKI_HOOK_MARKER}" from those files.`;
+    return `CodeWiki installed git hooks into this repository at ${outcome.leaked.map(codeSpan).join(", ")} and EO could not remove them. Remove the block marked "${CODEWIKI_HOOK_MARKER}" from those files.`;
   }
   if (outcome.restored.length > 0) {
-    return `CodeWiki installed git hooks into this repository at ${outcome.restored.join(", ")} despite being pointed elsewhere. EO put those files back as they were and stopped, rather than indexing a repository it had just written to.`;
+    return `CodeWiki installed git hooks into this repository at ${outcome.restored.map(codeSpan).join(", ")} despite being pointed elsewhere. EO put those files back as they were and stopped, rather than indexing a repository it had just written to.`;
   }
   return null;
 }

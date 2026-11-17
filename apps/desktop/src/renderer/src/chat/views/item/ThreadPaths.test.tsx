@@ -93,6 +93,28 @@ function fort83Escalation(): string {
   return refusal;
 }
 
+/**
+ * The dispatch refused because the home an agent had before EO-829 —
+ * `root\<agent>` itself — holds a real `sessions` directory, whose
+ * rollouts exist nowhere else.
+ */
+function realSessionsEscalation(root: string): string {
+  const directories = new Set<string>([`${root}\\${AGENT}`, `${root}\\${AGENT}\\sessions`]);
+  const fs: CodexHomeFs = {
+    ...heldOpen(`${root}\\${AGENT}\\${ITEM}`, "unused", new Error("not expected here")),
+    existsSync: (path) => directories.has(String(path)),
+    lstatSync: (path) => {
+      if (directories.has(path)) return DIRECTORY;
+      throw errno("ENOENT", `no such file or directory, lstat '${path}'`);
+    },
+  };
+  const prepared = prepareCodexHome({ root, agentId: AGENT, itemId: ITEM, personHome: PERSON_HOME, platform: "win32", fs });
+  if (prepared.ok) throw new Error("the old home was expected to be refused");
+  const refusal = codexHomeRefusal({ kind: "unavailable", problem: prepared.problem }, "signed_in", "Implementer");
+  if (refusal === null) throw new Error("the dispatch was expected to be refused");
+  return refusal;
+}
+
 function comment(overrides: Partial<CommentView>): CommentView {
   return {
     id: "c1",
@@ -149,6 +171,12 @@ describe("paths in the comments EO writes itself (EO-830)", () => {
     // The text above is the whole sentence still: only how the paths are written changed.
     expect(text).toContain("Implementer runs with a Codex home of its own");
     expect(text).toContain("Then reply here to retry.");
+  });
+
+  it("draws every backslash of an old home's real sessions directory, which EO left alone", () => {
+    const text = drawn(comment({ body: realSessionsEscalation(PROFILE_ROOT) })).textContent ?? "";
+
+    expect(text).toContain(`${PROFILE_ROOT}\\${AGENT}\\sessions is a real directory rather than a link, so EO left ${PROFILE_ROOT}\\${AGENT} alone`);
   });
 
   it("would lose those backslashes written as plain text, which is what the code spans are for", () => {

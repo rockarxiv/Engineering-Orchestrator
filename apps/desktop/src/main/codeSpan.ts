@@ -15,11 +15,18 @@
  * nothing inside can close it, and a text that starts or ends with a
  * backtick or a space is padded with one space each side, which the
  * renderer strips again (CommonMark, "Code spans").
+ *
+ * Line endings are written as the spaces a code span renders them as
+ * anyway. A blank line in an error git printed would otherwise end the
+ * paragraph and the code span with it, leaving the rest as markdown —
+ * and a reason that is cut to its first line before it reaches a
+ * comment (`sayable`) would be cut inside the span.
  */
 export function codeSpan(text: string): string {
   if (text === "") return "";
-  const longest = Math.max(0, ...[...text.matchAll(/`+/g)].map((match) => match[0].length));
+  const line = text.replace(/\r\n|\r|\n/g, " ");
+  const longest = Math.max(0, ...[...line.matchAll(/`+/g)].map((match) => match[0].length));
   const ticks = "`".repeat(longest + 1);
-  const padded = /^[` ]|[` ]$/.test(text) ? ` ${text} ` : text;
+  const padded = /^[` ]|[` ]$/.test(line) ? ` ${line} ` : line;
   return `${ticks}${padded}${ticks}`;
 }

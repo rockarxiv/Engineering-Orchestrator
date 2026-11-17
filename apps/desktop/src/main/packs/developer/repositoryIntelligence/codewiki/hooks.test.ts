@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { git, samePath } from "../../workspace/git.js";
 import { CODEWIKI_HOOK_MARKER, containHooks, describeHookEscape, hookRedirectEnv } from "./hooks.js";
 import { run, initRepo } from "../../../../testing/git.js";
+import { codeSpan } from "../../../../codeSpan.js";
 
 /**
  * Keeping CodeWiki's git hooks out of somebody's repository (EO-146).
@@ -221,6 +222,14 @@ describe("what the guard does with hooks that appear while it is watching", () =
     expect(outcome.leaked).toEqual([hookFile(repoPath, "post-commit")]);
     expect(describeHookEscape(outcome)).toContain("could not remove them");
     expect(describeHookEscape(outcome)).toContain(hookFile(repoPath, "post-commit"));
+  });
+
+  it("names each hook file as a code span, so a Windows path keeps its backslash before .git in a comment (EO-830)", () => {
+    const leaked = "C:\\Users\\name\\src\\my-repo\\.git\\hooks\\post-commit";
+    const restored = "C:\\Users\\name\\src\\my-repo\\.git\\hooks\\pre-push";
+
+    expect(describeHookEscape({ hooksPath: null, restored: [], leaked: [leaked] })).toContain(`at ${codeSpan(leaked)} and EO could not remove them`);
+    expect(describeHookEscape({ hooksPath: null, restored: [restored], leaked: [] })).toContain(`at ${codeSpan(restored)} despite`);
   });
 
   it("says what happened in words that name files and never quote them", async () => {

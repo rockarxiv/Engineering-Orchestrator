@@ -36,6 +36,7 @@ import { createCliRunner, type CliRunner } from "./cli.js";
 import { classifyForgeError } from "./errors.js";
 import { forgePullRequestState, resolveMergeState } from "./mergeState.js";
 import { openPullRequest, type ReviewerRequest } from "./openPullRequest.js";
+import { codeSpan } from "../../../codeSpan.js";
 
 /**
  * Opening one item's pull request, inline, as the `open_pull_request`
@@ -298,7 +299,7 @@ async function attemptOnce(db: Db, item: Item, run: CliRunner, options: OpenForI
       kind: "failed",
       reason:
         `EO could not read the status of this ticket's worktree at \`${worktreePath}\`, so it cannot tell whether anything there is uncommitted. ` +
-        `Nothing was pushed and no pull request was opened or updated.\n\n${checked.error}\n\n` +
+        `Nothing was pushed and no pull request was opened or updated.\n\n${codeSpan(checked.error)}\n\n` +
         `Run \`git status\` in that directory and repair what it reports — or, if nothing in it is worth keeping, remove the directory — and this step can run again.`,
     };
   }
@@ -801,7 +802,7 @@ async function recordedPullRequestEnded(
       kind: "settled",
       outcome: {
         kind: "retryable",
-        reason: `${pullRequest} is ${forge.state}, and EO could not count what \`${branch}\` has beyond \`${target.baseRef}\`, so it did not open another: ${ahead.error}`,
+        reason: `${pullRequest} is ${forge.state}, and EO could not count what \`${branch}\` has beyond \`${target.baseRef}\`, so it did not open another: ${codeSpan(ahead.error)}`,
       },
     };
   }

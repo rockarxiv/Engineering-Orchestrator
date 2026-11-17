@@ -4,6 +4,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, describe, expect, it } from "vitest";
 import { runCodeWiki } from "./run.js";
+import { codeSpan } from "../../../../codeSpan.js";
 
 /**
  * Running CodeWiki as a subprocess (EO-143).
@@ -249,8 +250,11 @@ describe("what a failed invocation reports", () => {
   });
 
   it("reports an absent binary rather than throwing", async () => {
-    const missing = await runCodeWiki({ binary: configured(join(scripts, "no such directory", "codewiki")), args: ["index"], cwd: scripts });
+    const absent = join(scripts, "no such directory", "codewiki");
+    const missing = await runCodeWiki({ binary: configured(absent), args: ["index"], cwd: scripts });
     expect(missing.status).toBe("unavailable");
+    // The path as a code span: the reason reaches a comment (EO-830).
+    expect(missing.problem).toContain(`the CodeWiki binary at ${codeSpan(absent)}:`);
     expect(missing.ok).toBe(false);
     expect(missing.exitCode).toBeNull();
     expect(missing.problem).toContain("no such file");
