@@ -204,6 +204,19 @@ export function pipelinesWithoutOrigin(db: Db): string[] {
 }
 
 /** The stored step map, keeping only string-to-string entries. */
+/**
+ * The id the template a pipeline was made from gave one of its steps, or
+ * null where the pipeline has no origin or the step is not the template's
+ * (EO-828). The reverse of the origin's step map, read without the stored
+ * snapshot: what a pack recognises a step by after an install re-minted
+ * its id.
+ */
+export function templateStepIdOf(db: Db, pipelineId: string, stepId: string): string | null {
+  const row = db.select({ stepIds: pipelines.templateStepIds }).from(pipelines).where(eq(pipelines.id, pipelineId)).get();
+  if (row === undefined) return null;
+  return Object.entries(stepIdsOf(row.stepIds)).find(([, own]) => own === stepId)?.[0] ?? null;
+}
+
 function stepIdsOf(value: unknown): Record<string, string> {
   if (value === null || typeof value !== "object" || Array.isArray(value)) return {};
   const map: Record<string, string> = {};

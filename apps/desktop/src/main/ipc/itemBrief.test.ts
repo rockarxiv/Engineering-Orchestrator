@@ -1,9 +1,11 @@
-import type { StepBrief, Uuid } from "@eo/core";
+import type { ItemBriefPart, StepBrief, Uuid } from "@eo/core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DbHandle } from "../db/client.js";
 import { createAgent, createRoute, createRun, createStep, postComment, transitionItem } from "../db/repos/index.js";
 import { createTestItem, openMigratedTestDb } from "../db/testHelpers.js";
+import { foldPacks } from "../packs/pack.js";
 import { getItemBrief } from "./itemBrief.js";
+import { packBriefs, usePackBriefs, type DecisionBriefContext, type DecisionBriefRenderer } from "./packBriefs.js";
 
 /**
  * What a person's decision is about (EO-827): the brief `items:brief`
@@ -83,11 +85,11 @@ function decidedUpTo() {
 }
 
 describe("items:brief (EO-827)", () => {
-  it("with no brief declared, is the step's instructions summary, the current output and the previous step's newest verdict", () => {
+  it("with no brief declared, is the step's instructions summary, the current output and the previous step's newest verdict", async () => {
     pipeline();
     const item = decidedUpTo();
 
-    expect(getItemBrief(handle.db, { itemId: item.id })).toEqual({
+    expect(await getItemBrief(handle.db, { itemId: item.id })).toEqual({
       declared: false,
       parts: [
         { show: "summary", heading: "What this step asks", body: "Approve the release notes before they go out.", author: null, createdAt: null },
@@ -97,7 +99,7 @@ describe("items:brief (EO-827)", () => {
     });
   });
 
-  it("finds a person's verdict on the step before, posted with no run just before the move", () => {
+  it("finds a person's verdict on the step before, posted with no run just before the move", async () => {
     pipeline();
     const item = createTestItem(handle.db, { type: "story", title: "Release notes", stepId: "note_review", spec: { acceptance_criteria: ["Lists every change"] } });
     later();
@@ -105,22 +107,22 @@ describe("items:brief (EO-827)", () => {
     // The decision and the move it causes in the same millisecond, as `items:decide` writes them.
     transitionItem(handle.db, { itemId: item.id, toStepId: "note_approval", actor: "human" });
 
-    expect(getItemBrief(handle.db, { itemId: item.id })?.parts[2]).toMatchObject({ heading: "Verdict from Review", body: "Not yet: the date is wrong.", author: "you" });
+    expect((await getItemBrief(handle.db, { itemId: item.id }))?.parts[2]).toMatchObject({ heading: "Verdict from Review", body: "Not yet: the date is wrong.", author: "you" });
   });
 
-  it("says there is no verdict yet where the step before said none, and no output where there is none", () => {
+  it("says there is no verdict yet where the step before said none, and no output where there is none", async () => {
     pipeline();
     const item = createTestItem(handle.db, { type: "story", title: "Release notes", stepId: "note_review", spec: { acceptance_criteria: ["Lists every change"] } });
     later();
     transitionItem(handle.db, { itemId: item.id, toStepId: "note_approval", actor: "human" });
 
-    expect(getItemBrief(handle.db, { itemId: item.id })?.parts.slice(1)).toEqual([
+    expect((await getItemBrief(handle.db, { itemId: item.id }))?.parts.slice(1)).toEqual([
       { show: "output", heading: "Current output", body: null, author: null, createdAt: null },
       { show: "comment", heading: "Verdict from Review", body: null, author: null, createdAt: null },
     ]);
   });
 
-  it("with a brief declared, is exactly its parts in the order declared", () => {
+  it("with a brief declared, is exactly its parts in the order declared", async () => {
     pipeline([
       { show: "field", field: "acceptance_criteria" },
       { show: "comment", role: "reviewer" },
@@ -130,7 +132,7 @@ describe("items:brief (EO-827)", () => {
     ]);
     const item = decidedUpTo();
 
-    expect(getItemBrief(handle.db, { itemId: item.id })).toEqual({
+    expect(await getItemBrief(handle.db, { itemId: item.id })).toEqual({
       declared: true,
       parts: [
         { show: "field", heading: "Acceptance criteria", body: "- Lists every change\n- Names the release", author: null, createdAt: null },
@@ -143,7 +145,83 @@ describe("items:brief (EO-827)", () => {
     });
   });
 
-  it("is null for an item that no longer exists", () => {
-    expect(getItemBrief(handle.db, { itemId: "nothing" })).toBeNull();
+  it("is null for an item that no longer exists", async () => {
+    expect(await getItemBrief(handle.db, { itemId: "nothing" })).toBeNull();
+  });
+});
+
+/**
+ * The third layer (EO-828): a brief a pack computes for a step it
+ * recognises, shown in place of the default and never in place of one the
+ * step declares — and with no pack installed, nothing computed at all.
+ */
+describe("items:brief with pack briefs (EO-828)", () => {
+  const computed: ItemBriefPart = { show: "computed", heading: "What the pack worked out", body: "Two comments, two replies.", author: null, createdAt: null };
+  /** A renderer recognising the Approval step by the action of the step that put the item there. */
+  const approvals = (seen: DecisionBriefContext[] = []): DecisionBriefRenderer => ({
+    id: "test:approval",
+    render: (context) => {
+      seen.push(context);
+      return context.cameFrom?.action === "review" ? [computed] : null;
+    },
+  });
+
+  afterEach(() => usePackBriefs([]));
+
+  it("with no pack installed, nothing computes a brief, and a step that declares none gets the default", async () => {
+    // What the composition root installs from a fold over no pack at all.
+    usePackBriefs(foldPacks([]).briefRenderers);
+    expect(packBriefs()).toEqual([]);
+    pipeline();
+    const item = decidedUpTo();
+
+    const brief = await getItemBrief(handle.db, { itemId: item.id });
+    expect(brief?.declared).toBe(false);
+    expect(brief?.parts.map((each) => each.show)).toEqual(["summary", "output", "comment"]);
+  });
+
+  it("shows what a pack computes in place of the default, told the step and the step the item came from", async () => {
+    pipeline();
+    const item = decidedUpTo();
+    const seen: DecisionBriefContext[] = [];
+    usePackBriefs([approvals(seen)]);
+
+    expect(await getItemBrief(handle.db, { itemId: item.id })).toEqual({ declared: false, parts: [computed] });
+    expect(seen[0]).toMatchObject({ step: { id: "note_approval" }, templateStepId: null, cameFrom: { stepId: "note_review", type: "agent", action: "review", templateStepId: null } });
+  });
+
+  it("asks each renderer in turn, and falls back to the default when none answers for the step", async () => {
+    pipeline();
+    const item = decidedUpTo();
+    const asked: string[] = [];
+    const other: DecisionBriefRenderer = { id: "test:other", render: () => (asked.push("other"), null) };
+    usePackBriefs([other, { id: "test:empty", render: async () => (asked.push("empty"), []) }]);
+
+    const brief = await getItemBrief(handle.db, { itemId: item.id });
+    expect(asked).toEqual(["other", "empty"]);
+    expect(brief?.parts.map((each) => each.show)).toEqual(["summary", "output", "comment"]);
+  });
+
+  it("shows the step's declared brief, not the pack's, and never asks the pack", async () => {
+    pipeline([{ show: "output", step: "note_draft" }]);
+    const item = decidedUpTo();
+    const seen: DecisionBriefContext[] = [];
+    usePackBriefs([approvals(seen)]);
+
+    expect(await getItemBrief(handle.db, { itemId: item.id })).toEqual({
+      declared: true,
+      parts: [{ show: "output", heading: "Output of Draft", body: "The notes, drafted.", author: "Ivy", createdAt: expect.any(Number) }],
+    });
+    expect(seen).toEqual([]);
+  });
+
+  it("says so above the default when a pack's brief fails, rather than dropping it", async () => {
+    pipeline();
+    const item = decidedUpTo();
+    usePackBriefs([{ id: "test:broken", render: () => { throw new Error("the forge is down"); } }]);
+
+    const brief = await getItemBrief(handle.db, { itemId: item.id });
+    expect(brief?.parts[0]).toEqual({ show: "computed", heading: "This step's own brief could not be worked out", body: "test:broken: the forge is down", author: null, createdAt: null });
+    expect(brief?.parts.slice(1).map((each) => each.show)).toEqual(["summary", "output", "comment"]);
   });
 });

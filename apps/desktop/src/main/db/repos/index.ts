@@ -66,6 +66,7 @@ export {
   recordPipelineOrigin,
   storeTemplateSnapshot,
   templateBoardHolders,
+  templateStepIdOf,
   type AppliedTemplateUpdate,
   type PipelineOrigin,
   type RecordPipelineOriginInput,

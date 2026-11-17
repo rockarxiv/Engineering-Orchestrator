@@ -1,7 +1,8 @@
 import { VERDICT_COMMENT_KINDS, fieldLabel, specFields, type Agent, type Comment, type IpcPayload, type IpcResponse, type Item, type ItemBriefPart, type PipelineStep, type Run, type StepBriefPart, type Transition, type Uuid } from "@eo/core";
 import type { Db } from "../db/client.js";
 import { authorName } from "./domainQueries.js";
-import { currentOutputOf, getItem, getItemType, getStep, graphForItem, listAgents, listCommentsForItem, listRunsForItem, listTransitionsForItem, stepForItem } from "../db/repos/index.js";
+import { currentOutputOf, getItem, getItemType, getStep, graphForItem, listAgents, listCommentsForItem, listRunsForItem, listTransitionsForItem, stepForItem, templateStepIdOf } from "../db/repos/index.js";
+import { packBriefs, type DecisionBriefContext, type DecisionBriefRenderer } from "./packBriefs.js";
 
 /**
  * What a person's decision on an item is about: the brief behind "Show
@@ -12,33 +13,56 @@ import { currentOutputOf, getItem, getItemType, getStep, graphForItem, listAgent
  * (invariant 2), and rather than in the renderer, which holds a page of
  * the thread and not the runs that say which step wrote what.
  *
- * The step the item stands on decides what is shown. One that declares no
- * brief shows the default: its instructions summary, the item's current
- * output, and the newest verdict the step before it gave. One that declares
- * a brief shows exactly its parts, in order. Read by the item's own version
- * of the step, so an item finishing on an older version is briefed as that
- * version says.
+ * The step the item stands on decides what is shown. One that declares a
+ * brief shows exactly its parts, in order. One that declares none shows
+ * what an installed pack computes for it, where one recognises the step
+ * (EO-828, `packBriefs`); and otherwise the default: its instructions
+ * summary, the item's current output, and the newest verdict the step
+ * before it gave. Read by the item's own version of the step, so an item
+ * finishing on an older version is briefed as that version says.
+ *
+ * `renderers` is what the installed packs contribute; a test passes its own.
  */
-export function getItemBrief(db: Db, { itemId }: IpcPayload<"items:brief">): IpcResponse<"items:brief"> {
+export async function getItemBrief(
+  db: Db,
+  { itemId }: IpcPayload<"items:brief">,
+  renderers: readonly DecisionBriefRenderer[] = packBriefs(),
+): Promise<IpcResponse<"items:brief">> {
   const item = getItem(db, itemId as Uuid);
   if (item === undefined) return null;
   const step = stepForItem(db, item);
   if (step === undefined) return { declared: false, parts: [] };
 
   const thread = new Thread(db, item);
-  if (step.brief === null) {
-    return {
-      declared: false,
-      parts: [
-        ...(step.instructionsSummary === null || step.instructionsSummary.trim() === ""
-          ? []
-          : [part("summary", "What this step asks", step.instructionsSummary)]),
-        thread.currentOutput(),
-        thread.verdictBefore(step),
-      ],
-    };
+  if (step.brief !== null) return { declared: true, parts: step.brief.map((declared) => thread.declared(declared)) };
+
+  // What a pack computes for a step it recognises (EO-828), in place of
+  // the default; the first to answer is shown. Never on a step that
+  // declares its own, which returned above.
+  const problems: ItemBriefPart[] = [];
+  if (renderers.length > 0) {
+    const context = thread.briefContext(step);
+    for (const renderer of renderers) {
+      try {
+        const parts = await renderer.render(context);
+        if (parts !== null && parts.length > 0) return { declared: false, parts: [...parts] };
+      } catch (error) {
+        // Said on the brief rather than swallowed (invariant 8): the person
+        // gets the default, and why it is not what this step usually shows.
+        problems.push(part("computed", "This step's own brief could not be worked out", `${renderer.id}: ${error instanceof Error ? error.message : String(error)}`));
+      }
+    }
   }
-  return { declared: true, parts: step.brief.map((declared) => thread.declared(declared)) };
+
+  return {
+    declared: false,
+    parts: [
+      ...problems,
+      ...(step.instructionsSummary === null || step.instructionsSummary.trim() === "" ? [] : [part("summary", "What this step asks", step.instructionsSummary)]),
+      thread.currentOutput(),
+      thread.verdictBefore(step),
+    ],
+  };
 }
 
 function part(show: ItemBriefPart["show"], heading: string, body: string | null, comment?: { author: string; createdAt: number }): ItemBriefPart {
@@ -62,6 +86,27 @@ class Thread {
     this.runs = new Map(listRunsForItem(db, item.id).map((run) => [run.id as string, run]));
     this.moves = [...listTransitionsForItem(db, item.id)].sort((a, b) => a.ts - b.ts || a.id.localeCompare(b.id));
     this.agents = new Map(listAgents(db).map((agent) => [agent.id as string, agent]));
+  }
+
+  /** What a pack is told about the decision (EO-828): the step, and the step whose result put the item on it. */
+  briefContext(step: PipelineStep): DecisionBriefContext {
+    const arrival = [...this.moves].reverse().find((move) => move.toStepId === step.id);
+    const from = arrival?.fromStepId ?? null;
+    const fromStep = from === null ? undefined : (graphForItem(this.db, this.item).steps.find((each) => each.id === from) ?? getStep(this.db, from));
+    return {
+      item: this.item,
+      step,
+      templateStepId: templateStepIdOf(this.db, step.pipelineId, step.id),
+      cameFrom:
+        from === null
+          ? null
+          : {
+              stepId: from,
+              templateStepId: fromStep === undefined ? null : templateStepIdOf(this.db, fromStep.pipelineId, from),
+              type: fromStep?.type ?? null,
+              action: fromStep?.entryAction ?? null,
+            },
+    };
   }
 
   currentOutput(): ItemBriefPart {
