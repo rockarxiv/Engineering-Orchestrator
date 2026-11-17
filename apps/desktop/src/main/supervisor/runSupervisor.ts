@@ -7736,26 +7736,27 @@ export function createRunSupervisor(
       });
     }
     // The thread this run opens is told about the agent's CLIs that are
-    // installed here and about no other (EO-820). One that is not is left
-    // out and the run goes ahead, which is why the item is told so —
-    // once per missing CLI, on the run that went without it (invariant
-    // 8). A resumed thread is told nothing again, so nothing is said.
+    // installed here and about no other (EO-820); only `start()` below is
+    // handed them, so a resumed thread is told nothing again. One that is
+    // not installed is left out and the run goes ahead, which is why the
+    // item is told so — once per missing CLI, on every run that went
+    // without it, a resumed one included (invariant 8): the program
+    // having gone since the thread was opened is exactly what the thread
+    // cannot know.
     const foundCliTools: AgentCliTool[] = [];
-    if (resuming === null) {
-      for (const tool of cliTools) {
-        const detection = cliDetections.get(tool.command);
-        if (detection?.found) {
-          foundCliTools.push({ command: tool.command, description: tool.description, path: detection.path, version: detection.version });
-          continue;
-        }
-        postComment(db, {
-          itemId: item.id,
-          runId: run.id,
-          author: { type: "engine" },
-          kind: "note",
-          body: missingCliToolNotice(tool, agent.name),
-        });
+    for (const tool of cliTools) {
+      const detection = cliDetections.get(tool.command);
+      if (detection?.found) {
+        foundCliTools.push({ command: tool.command, description: tool.description, path: detection.path, version: detection.version });
+        continue;
       }
+      postComment(db, {
+        itemId: item.id,
+        runId: run.id,
+        author: { type: "engine" },
+        kind: "note",
+        body: missingCliToolNotice(tool, agent.name),
+      });
     }
     // What the workspace could not lend, in its own words (EO-151,
     // invariant 8). Nothing is blocked and the run proceeds exactly as

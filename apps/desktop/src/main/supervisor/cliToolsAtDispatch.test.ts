@@ -1,15 +1,19 @@
-import type { Agent, AgentProvider, AgentProviderStartOptions, CliToolDetection, Item } from "@eo/core";
+import { UNSCOPED_RUN, type Agent, type AgentProvider, type AgentProviderStartOptions, type CliToolDetection, type Item } from "@eo/core";
+import { agentAttachmentsHash } from "../agentAttachments/fingerprint.js";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { missingCliToolNotice } from "../agentAttachments/cliToolsPrompt.js";
 import { listAgents } from "../db/repos/agentsRepo.js";
 import { saveCliTool, setAgentCliTool } from "../db/repos/cliToolsRepo.js";
 import { listCommentsForItem } from "../db/repos/commentsRepo.js";
-import { listRunsForItem } from "../db/repos/runsRepo.js";
+import { createRun, listRunsForItem, updateRun } from "../db/repos/runsRepo.js";
+import { postComment } from "../db/repos/commentsRepo.js";
 import type { DbHandle } from "../db/client.js";
 import { createTestItem, openMigratedTestDb, REVIEWABLE_SPEC } from "../db/testHelpers.js";
 import { createFakeProvider } from "../providers/fake.js";
 import { validImplementResult } from "../providers/fixtures.js";
+import { promptHash } from "../roles/prompts.js";
 import { createRunSupervisor } from "./runSupervisor.js";
+import { kindsPreparing } from "./testWorkspaceKinds.js";
 
 /**
  * The agent's command-line tools at dispatch (EO-820): each looked for on
@@ -148,5 +152,55 @@ describe("command-line tools at dispatch (EO-820)", () => {
     await supervisor.runOnce();
     expect(starts).toHaveLength(1);
     expect(starts[0]?.cliTools?.map((tool) => tool.command).sort()).toEqual(["gh", "psql"]);
+  });
+
+  it("says a missing CLI on a dispatch that resumes the agent's thread too, once, and sends the thread no section", async () => {
+    attach("GitHub CLI", "gh", "GitHub from the command line.");
+    const missing = attach("Terraform", "terraform", "Plans infrastructure.");
+    const cwd = "/tmp/eo/worktrees/EO-820";
+    // The run that opened the thread, born with the CLIs attached now.
+    const prior = createRun(handle.db, {
+      itemId: item.id,
+      agentId: implementer.id,
+      action: "implement",
+      status: "succeeded",
+      threadId: "session-1",
+      provider: implementer.provider,
+      instructionsHash: promptHash(implementer.instructions),
+      cwd,
+      agentAttachmentsHash: agentAttachmentsHash(handle.db, implementer.id, UNSCOPED_RUN),
+    });
+    updateRun(handle.db, prior.id, { startedAt: 1_000, endedAt: 1_000 });
+    postComment(handle.db, { itemId: item.id, author: { type: "human" }, body: "Carry on, please." });
+
+    const { provider, starts } = recording();
+    const resumed: string[] = [];
+    const supervisor = createRunSupervisor({
+      db: handle.db,
+      provider: {
+        ...provider,
+        resume(threadId, message, opts) {
+          resumed.push(threadId);
+          return provider.resume(threadId, message, opts);
+        },
+      },
+      kinds: kindsPreparing(cwd),
+      limits: LIMITS,
+      detectCliTool: async (command): Promise<CliToolDetection> =>
+        command === "gh" ? { found: true, path: "/usr/bin/gh", version: "gh version 2.62.0" } : { found: false },
+    });
+
+    await supervisor.runOnce();
+
+    // The thread was carried on, not reopened, so nothing names the CLIs again.
+    expect(resumed).toEqual(["session-1"]);
+    expect(starts).toEqual([]);
+    // And the run went without terraform, which the item is told once, on it.
+    const run = listRunsForItem(handle.db, item.id).find((candidate) => candidate.id !== prior.id);
+    expect(run?.status).toBe("succeeded");
+    const said = listCommentsForItem(handle.db, item.id).filter((comment) => comment.body.includes("`terraform`"));
+    expect(said.map((comment) => comment.body)).toEqual([missingCliToolNotice(missing, implementer.name)]);
+    expect(said[0]?.runId).toBe(run?.id);
+    expect(engineNotes().some((body) => body.includes("`gh`"))).toBe(false);
   });
 });
