@@ -453,9 +453,18 @@ describe("rebaseOntoBase", () => {
     const slashes = (text: string) => text.replaceAll("\\", "/");
     expect(slashes(error)).toContain(slashes(canonicalPath(worktreePath)));
     expect(error).not.toContain("ENOENT");
-    // git's refusal quotes that path, so it stands as a code span: in a
-    // comment a Windows path keeps its backslashes before \`.eo\` (EO-830).
-    expect(error).toMatch(/^Could not create a temporary worktree to rebase `eo\/TICKET-7` onto `main`: `[^`]+`$/);
+  });
+
+  it("writes git's refusal to create the temporary worktree as a code span (EO-830)", async () => {
+    // A branch that does not exist: nothing holds it, so the rebase goes
+    // to a temporary worktree, and git refuses to add one. Its refusal
+    // can quote a path, which in a comment keeps its backslashes only
+    // inside a code span.
+    const result = await rebaseOntoBase(repoPath, "eo/NO-SUCH-BRANCH", "main");
+
+    expect(result.ok).toBe(false);
+    const error = result.ok ? "" : result.error;
+    expect(error).toMatch(/^Could not create a temporary worktree to rebase `eo\/NO-SUCH-BRANCH` onto `main`: `[^`]+`$/);
   });
 
   it("writes git's refusal of a rebase that never started as a code span (EO-830)", async () => {
