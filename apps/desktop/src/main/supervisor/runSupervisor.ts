@@ -315,7 +315,7 @@ import {
 } from "./manualDispatch.js";
 import { awaitsTheStep, interpretationsOn, pendingInterpretation } from "../roles/interpretation.js";
 import { ASSIST_ACTION, ASSIST_STEP, conversationTurnOptions, CONVERSATION_SETTINGS_KEY, SCENARIO_ACTION, SCENARIO_STEP } from "../roles/conversationSteps.js";
-import { createModuleChangeStaging, type ModuleChangeStaging } from "../roles/moduleChangeProposals.js";
+import { changeReferenceProblem, createModuleChangeStaging, type ModuleChangeStaging } from "../roles/moduleChangeProposals.js";
 import { attachRunFiles } from "./runAttachments.js";
 import { blockedByActiveRunRefusal, createItemLock, type ItemHold, type ItemLock } from "./itemLock.js";
 import { archivedAgentRefusal, mentionDepthRefusal, outOfProjectDispatchRefusal, outOfProjectMentionRefusal, outOfProjectRecoveryNote, pullRequestHoldNote, rerunRefusal, stoppedByHandNote, type GateRefusal, type ItemBlocker, type OutOfProject, type RerunBlocker } from "./dispatchBlockers.js";
@@ -4826,6 +4826,7 @@ export function createRunSupervisor(
     action: string,
     raw: unknown,
     role: string | null,
+    runId: Uuid,
   ): { ok: true; clarification: ClarificationRequired } | { ok: true; value: unknown } | { ok: false; error: string } {
     // Checked first, and against the raw result (KAN-29). An agent
     // saying it is blocked is deliberately nothing like the shape the
@@ -4863,6 +4864,16 @@ export function createRunSupervisor(
     // what is missing, as one that fails its schema is.
     if (action === SCENARIO_ACTION) {
       const problem = scenarioResultProblem(db, item, parsed.value);
+      if (problem !== null) return { ok: false, error: problem };
+    }
+
+    // A change named by reference (EO-814) is resolved here, while the
+    // turn is open, exactly as posting will resolve it — the turn's own
+    // conversation, run and module, and not stale — so an unknown,
+    // foreign or stale proposal is sent back with what to do rather than
+    // posted as a rejection after the run has ended.
+    if (action === ASSIST_ACTION || action === SCENARIO_ACTION) {
+      const problem = changeReferenceProblem(db, item, runId, action === ASSIST_ACTION ? "assist" : "scenario", parsed.value);
       if (problem !== null) return { ok: false, error: problem };
     }
 
@@ -5169,7 +5180,7 @@ export function createRunSupervisor(
       // Only worth a word if it would actually have ended the run. An
       // agent narrating in JSON for its own reasons is not making this
       // mistake, and telling it off for one it did not make is noise.
-      if (!validateResult(ctx.item, ctx.action, dropped, definingRole(ctx.item, ctx.agent)).ok) return;
+      if (!validateResult(ctx.item, ctx.action, dropped, definingRole(ctx.item, ctx.agent), ctx.runId).ok) return;
       progressReported = true;
       droppedOutcome = dropped;
     };
@@ -6404,7 +6415,7 @@ export function createRunSupervisor(
         // finished its answer and *then* ran the window dry has done the
         // work, and reporting it as stopped by a limit would throw away a
         // result EO already holds (EO-172).
-        if (outcome.kind === "ended" && outcome.finalText !== null && validateResult(item, action, outcome.finalText, definingRole(item, agent)).ok) {
+        if (outcome.kind === "ended" && outcome.finalText !== null && validateResult(item, action, outcome.finalText, definingRole(item, agent), run.id).ok) {
           // The raw text, not the parsed value: `persisted.raw` is what
           // the agent actually said, and the validation below is what
           // turns it into what the engine acts on — exactly as it would
@@ -6442,7 +6453,7 @@ export function createRunSupervisor(
         // discarding the run — format errors are the solvable half of
         // the design, and the agent can usually fix them given the message.
         if (outcome.kind === "result") {
-          const validation = validateResult(item, action, outcome.data, definingRole(item, agent));
+          const validation = validateResult(item, action, outcome.data, definingRole(item, agent), run.id);
           if (validation.ok) {
             if ("clarification" in validation) askedFor = validation.clarification;
             else validatedResult = validation.value;

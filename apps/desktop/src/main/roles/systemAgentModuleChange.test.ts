@@ -118,6 +118,20 @@ describe("what the system agent's prompt says about changing a module that exist
     }
   });
 
+  it("explains preparing a change and naming it by reference in both chats, with no catalog write (EO-814)", () => {
+    for (const text of [changing(), section("### Fixing what was decided")]) {
+      for (const tool of ["`module_change_prepare`", "`module_change_edit`", "`module_change_freeze`", "`changeProposalId`"]) expect(text).toContain(tool);
+      expect(text).toContain("with `change` `null`");
+      expect(text).toContain("EO draws the same card from the frozen proposal");
+      expect(text).not.toContain("module_save` it");
+    }
+    expect(changing()).toContain("Give the change one way — `change` or `changeProposalId`, never both — and never beside `questions`");
+    expect(changing()).toContain("the person's Apply is still the only way a change reaches the module");
+    expect(section("### Fixing what was decided")).toContain("only the person's Apply does");
+    expect(section("## How you change anything")).toContain("return the proposal id as `changeProposalId` instead of restating the module");
+    expect(Number(/prompt-version:\s*(\d+)/.exec(prompt)![1])).toBeGreaterThanOrEqual(57);
+  });
+
   it("is a newer version than the prompt that knew no change route", () => {
     expect(Number(/prompt-version:\s*(\d+)/.exec(prompt)![1])).toBeGreaterThanOrEqual(16);
   });

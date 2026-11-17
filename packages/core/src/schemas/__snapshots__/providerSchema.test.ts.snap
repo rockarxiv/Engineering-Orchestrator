@@ -1577,6 +1577,18 @@ exports[`the JSON Schema each provider receives > is unchanged for assist (undef
                 }
               ]
             },
+            "changeProposalId": {
+              "default": null,
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
             "card": {
               "default": null,
               "anyOf": [
