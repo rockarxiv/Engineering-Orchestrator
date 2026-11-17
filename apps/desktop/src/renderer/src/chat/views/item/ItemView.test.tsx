@@ -2,7 +2,7 @@ import { QueryClientProvider } from "@tanstack/react-query";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { NO_GIT_STATE, developerRegistry, toRegistryView, type CommentView, type ItemPage as ItemDetailData, type RunView, type TransitionView } from "@eo/core";
+import { ITEM_COMMENTS_PAGE, NO_GIT_STATE, developerRegistry, toRegistryView, type CommentView, type ItemPage as ItemDetailData, type RunView, type TransitionView } from "@eo/core";
 import { COLLAPSED_HEIGHT_PX, ThemeProvider } from "@eo/ui";
 import { AdminAuthorityProvider } from "../../../shared/admin/authority";
 import { setBridge } from "../../../ipc/bridge";
@@ -2245,6 +2245,169 @@ describe("a thread longer than one page", () => {
     // The newest page again — "Third word." and "Newest word." — and its count.
     expect(await screen.findByRole("button", { name: "Show earlier comments (2)" })).toBeInTheDocument();
     expect(bodies()).toEqual(["Third word.", "Newest word."]);
+  });
+});
+
+/**
+ * The item page opens on its newest five comments and reads back five at
+ * a time (EO-823), against a fake of the main process paging by the very
+ * constant `items:get` and `items:earlierComments` page by.
+ */
+describe("the thread's window of five", () => {
+  /** A thread of `count` comments, "Note 0." the oldest, one pinned partway along, and `parents` naming which answers which. */
+  function fakeThread(count: number, parents: Record<number, number> = {}) {
+    const ordered = Array.from({ length: count }, (_, n) =>
+      comment({ id: `n${n}`, body: `Note ${n}.`, createdAt: 1_000 + n * 10, pinned: n === count - 3, parentId: n in parents ? `n${parents[n]}` : null }),
+    );
+    const base = detail({ comments: [] });
+    const replies = {
+      "items:get": (payload: unknown) => {
+        const { from } = payload as { from?: string };
+        const at = from === undefined ? -1 : ordered.findIndex((entry) => entry.id === from);
+        const shown = at >= 0 ? ordered.slice(at) : ordered.slice(-ITEM_COMMENTS_PAGE);
+        return { ...base, item: { ...base.item }, comments: shown, earlierComments: ordered.length - shown.length };
+      },
+      "items:earlierComments": (payload: unknown) => {
+        const { before, limit = ITEM_COMMENTS_PAGE } = payload as { before: string; limit?: number };
+        const at = ordered.findIndex((entry) => entry.id === before);
+        if (at < 0) return { comments: [], earlier: 0 };
+        const start = Math.max(0, at - limit);
+        return { comments: ordered.slice(start, at), earlier: start };
+      },
+    };
+    return { replies, base };
+  }
+
+  const notes = () => screen.getAllByText(/^Note \d+\.$/).map((element) => element.textContent);
+  const range = (from: number, to: number) => Array.from({ length: to - from }, (_, n) => `Note ${from + n}.`);
+
+  it("pages by five", () => {
+    expect(ITEM_COMMENTS_PAGE).toBe(5);
+  });
+
+  it("opens on the newest five, oldest first, the rest counted above them, and adds five above at each press until none remain", async () => {
+    const { replies, base } = fakeThread(13);
+    renderItem(base, undefined, replies);
+
+    // The pinned comment ("Note 10.") is drawn where it falls, not apart.
+    expect(await screen.findByRole("button", { name: "Show earlier comments (8)" })).toBeInTheDocument();
+    expect(notes()).toEqual(range(8, 13));
+    expect(screen.getByRole("button", { name: "Show earlier comments (8)" }).compareDocumentPosition(screen.getByText("Note 8."))).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+
+    fireEvent.click(screen.getByRole("button", { name: "Show earlier comments (8)" }));
+    expect(await screen.findByRole("button", { name: "Show earlier comments (3)" })).toBeInTheDocument();
+    expect(notes()).toEqual(range(3, 13));
+
+    fireEvent.click(screen.getByRole("button", { name: "Show earlier comments (3)" }));
+    await screen.findByText("Note 0.");
+    expect(notes()).toEqual(range(0, 13));
+    expect(screen.queryByRole("button", { name: /Show earlier comments/ })).toBeNull();
+    // The composer is still below the newest comment.
+    expect(screen.getByText("Note 12.").compareDocumentPosition(screen.getByRole("button", { name: "Comment" }))).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+  });
+
+  it("shows a thread of five or fewer whole, with no control", async () => {
+    const { replies, base } = fakeThread(5);
+    renderItem(base, undefined, replies);
+
+    await screen.findByText("Note 4.");
+    expect(notes()).toEqual(range(0, 5));
+    expect(screen.queryByRole("button", { name: /Show earlier comments/ })).toBeNull();
+  });
+
+  /**
+   * The item page in a scroller jsdom can lay out: it lays nothing out
+   * itself, so this does. Every element is ten pixels below the one
+   * before it in the document, and those inside the scroller move up by
+   * its `scrollTop` — what is inserted above an element pushes it down,
+   * and what moves elsewhere in the document moves on screen, as a
+   * browser would draw it.
+   */
+  function renderScrolled(count: number, parents: Record<number, number> = {}) {
+    const { replies, base } = fakeThread(count, parents);
+    mockIpc(base, undefined, replies);
+    render(
+      <ThemeProvider>
+        <QueryClientProvider client={createQueryClient()}>
+          <MemoryRouter initialEntries={["/items/t1"]}>
+            <ItemReferenceProvider>
+              <div data-testid="scroller" style={{ overflowY: "auto" }}>
+                <ItemView itemId="t1" />
+              </div>
+            </ItemReferenceProvider>
+          </MemoryRouter>
+        </QueryClientProvider>
+      </ThemeProvider>,
+    );
+    const scroller = screen.getByTestId("scroller");
+    const view = { scrollTop: 0 };
+    Object.defineProperty(scroller, "scrollTop", { configurable: true, get: () => view.scrollTop, set: (value: number) => (view.scrollTop = value) });
+    const layout = vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (this: Element) {
+      const scrolled = this !== scroller && scroller.contains(this) ? view.scrollTop : 0;
+      const top = [...document.body.querySelectorAll("*")].indexOf(this) * 10 - scrolled;
+      return { top, bottom: top + 10, left: 0, right: 0, width: 0, height: 10, x: 0, y: top, toJSON: () => ({}) } as DOMRect;
+    });
+    const top = (element: Element) => element.getBoundingClientRect().top;
+    const viewportTop = () => top(scroller);
+    return {
+      view,
+      layout,
+      top,
+      viewportTop,
+      /** The comment a note is drawn in. */
+      article: (note: string) => screen.getByText(note).closest("article")!,
+      /** Scrolls the scroller so that `element` is at the top of its viewport. */
+      scrollTo: (element: Element) => (view.scrollTop += top(element) - viewportTop()),
+    };
+  }
+
+  it("keeps the comment at the top of the viewport where it was when earlier ones are inserted above it", async () => {
+    const { view, layout, top, viewportTop, article, scrollTo } = renderScrolled(13);
+    try {
+      const more = await screen.findByRole("button", { name: "Show earlier comments (8)" });
+      scrollTo(article("Note 10."));
+      const before = view.scrollTop;
+
+      fireEvent.click(more);
+      await screen.findByText("Note 3.");
+      expect(top(article("Note 10."))).toBe(viewportTop());
+      // Held by scrolling past what was inserted, not by luck.
+      expect(view.scrollTop).toBeGreaterThan(before);
+
+      // And again from wherever the person has scrolled to since, partway into a comment.
+      scrollTo(article("Note 6."));
+      view.scrollTop += 5;
+      const held = top(article("Note 6."));
+      fireEvent.click(screen.getByRole("button", { name: "Show earlier comments (3)" }));
+      await screen.findByText("Note 0.");
+      expect(top(article("Note 6."))).toBe(held);
+    } finally {
+      layout.mockRestore();
+    }
+  });
+
+  it("keeps a reply at the top of the viewport where it was when its parent is read back and it is drawn under it", async () => {
+    // "Note 8." answers "Note 7." and "Note 10." answers "Note 5.", both
+    // parents outside the first window: drawn at the top level until the
+    // parents are read back, then under them — new elements, elsewhere.
+    const { layout, top, viewportTop, article, scrollTo } = renderScrolled(13, { 8: 7, 10: 5 });
+    try {
+      const more = await screen.findByRole("button", { name: "Show earlier comments (8)" });
+      scrollTo(article("Note 8."));
+      const before = article("Note 8.");
+
+      fireEvent.click(more);
+      await screen.findByText("Note 3.");
+      const after = article("Note 8.");
+      expect(after).not.toBe(before);
+      expect(before.isConnected).toBe(false);
+      // Drawn under what it answers now, and still where the person was reading.
+      expect(article("Note 7.").parentElement!.contains(after)).toBe(true);
+      expect(article("Note 5.").parentElement!.contains(article("Note 10."))).toBe(true);
+      expect(top(after)).toBe(viewportTop());
+    } finally {
+      layout.mockRestore();
+    }
   });
 });
 

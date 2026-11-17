@@ -68,6 +68,17 @@ describe("items:get", () => {
     expect(detail.earlierComments).toBe(25);
   });
 
+  it("opens on the newest five, and reads back five at a time (EO-823)", () => {
+    thread(13);
+
+    const detail = getItemDetail(handle.db, { itemId: item.id })!;
+    expect(detail.comments.map((comment) => comment.body)).toEqual(["comment 8", "comment 9", "comment 10", "comment 11", "comment 12"]);
+    expect(detail.earlierComments).toBe(8);
+    const page = getEarlierItemComments(handle.db, ipcContract["items:earlierComments"].request.parse({ itemId: item.id, before: detail.comments[0]!.id }));
+    expect(page.comments.map((comment) => comment.body)).toEqual(["comment 3", "comment 4", "comment 5", "comment 6", "comment 7"]);
+    expect(page.earlier).toBe(3);
+  });
+
   it("asks the database for a page of the thread, not all of it", () => {
     thread(ITEM_COMMENTS_PAGE + 5);
 
@@ -113,7 +124,9 @@ describe("items:get held at a start (from)", () => {
     expect(held.earlierComments).toBe(25);
 
     const unheld = getItemDetail(handle.db, { itemId: item.id })!;
-    expect(unheld.comments[0]?.body).toBe("comment 55");
+    const whole = getItemSections(handle.db, { itemId: item.id })!.comments!;
+    expect(unheld.comments[0]?.id).toBe(whole.at(-ITEM_COMMENTS_PAGE)!.id);
+    expect(unheld.comments[0]?.id).not.toBe(anchor.id);
   });
 
   it("holds by the thread's order where comments share a millisecond", () => {
@@ -143,7 +156,9 @@ describe("items:get held at a start (from)", () => {
 
 describe("items:earlierComments", () => {
   it("reads back the whole thread a page at a time, with no comment missed or repeated", () => {
-    const total = ITEM_COMMENTS_PAGE * 2 + 30;
+    // Two whole pages and a short one, the oldest.
+    const short = ITEM_COMMENTS_PAGE - 2;
+    const total = ITEM_COMMENTS_PAGE * 2 + short;
     thread(total);
 
     const first = getItemDetail(handle.db, { itemId: item.id })!;
@@ -160,15 +175,15 @@ describe("items:earlierComments", () => {
       counts.push(earlier);
     }
 
-    expect(pages.map((page) => page.length)).toEqual([30, ITEM_COMMENTS_PAGE, ITEM_COMMENTS_PAGE]);
-    expect(counts).toEqual([ITEM_COMMENTS_PAGE + 30, 30, 0]);
+    expect(pages.map((page) => page.length)).toEqual([short, ITEM_COMMENTS_PAGE, ITEM_COMMENTS_PAGE]);
+    expect(counts).toEqual([ITEM_COMMENTS_PAGE + short, short, 0]);
     expect(pages.flat().map((comment) => comment.body)).toEqual(Array.from({ length: total }, (_, n) => `comment ${n}`));
     // Drawn exactly as the whole read draws them.
     expect(pages.flat()).toEqual(getItemSections(handle.db, { itemId: item.id })!.comments);
   });
 
   it("pages by the thread's own order where comments share a millisecond", () => {
-    thread(ITEM_COMMENTS_PAGE + 7, item, true);
+    thread(ITEM_COMMENTS_PAGE + 3, item, true);
 
     const first = getItemDetail(handle.db, { itemId: item.id })!;
     const page = getEarlierItemComments(handle.db, { itemId: item.id, before: first.comments[0]!.id, limit: ITEM_COMMENTS_PAGE });

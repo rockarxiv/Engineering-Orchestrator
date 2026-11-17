@@ -73,8 +73,10 @@ describe("item_get with none of the new parameters", () => {
 describe("item_get on a thread longer than the screens' page (EO-559)", () => {
   it("still answers the whole thread under both names, though items:get answers its newest page", async () => {
     // Four comments are there already; this makes the thread outgrow
-    // the item page's window by a good margin.
-    const extra = ITEM_COMMENTS_PAGE + 20;
+    // the item page's window by a good margin — a hundred and twenty, as
+    // many as when the window was a hundred, so the window shrinking to
+    // five (EO-823) is seen to change nothing item_get answers.
+    const extra = 120;
     for (let n = 0; n < extra; n++) {
       postComment(handle.db, { itemId: item.id, author: { type: "human" }, body: `later ${n}`, createdAt: T0 + 3_600_000 + n * 1_000 });
     }

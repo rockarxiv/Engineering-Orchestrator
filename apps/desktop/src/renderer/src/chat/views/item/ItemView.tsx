@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate } from "react-router-dom";
 import { Archive as ArchiveIcon, Check, ExternalLink, GitBranch, GitPullRequest, RefreshCw, Trash2, X } from "lucide-react";
@@ -39,6 +39,7 @@ import { StepStateDot, Stepper } from "./Stepper";
 import { SuggestionReview } from "./SuggestionReview";
 import { CommentThread } from "./Thread";
 import { transitionsShown, useItemThread } from "./useEarlierComments";
+import { useKeepInPlace } from "./useKeepInPlace";
 import { useOutstandingPosts } from "./useOutstandingPosts";
 import { excerpt, spoken, StatusLine, when } from "./parts";
 
@@ -277,6 +278,15 @@ export function ItemView({ itemId }: { itemId: string }) {
     () => buildTimeline({ comments: earlier.comments, transitions: transitionsShown(transitions ?? [], earlier.comments, earlier.remaining) }),
     [earlier.comments, transitions, earlier.remaining],
   );
+  // Reading back keeps the comment at the top of the viewport where it
+  // was on screen (EO-823).
+  const thread = useRef<HTMLDivElement>(null);
+  const keepInPlace = useKeepInPlace({ thread, loading: earlier.loading, firstId: earlier.comments[0]?.id });
+  const readEarlier = () => {
+    if (earlier.loading) return;
+    keepInPlace();
+    earlier.load();
+  };
   // Each post held by where it goes until it settles: a thread is busy
   // while its own reply is on its way, however many others are, and a
   // second press on it sends nothing (`useOutstandingPosts`).
@@ -686,7 +696,7 @@ export function ItemView({ itemId }: { itemId: string }) {
               <Card label="Timeline">
                 <GroupLabel>Thread</GroupLabel>
                 {timeline.length === 0 ? <p className="text-[12.5px] text-ink-subtle">Nothing has been said here yet.</p> : null}
-                <div className="flex min-w-0 flex-col gap-2.5">
+                <div ref={thread} className="flex min-w-0 flex-col gap-2.5">
                   {earlier.remaining > 0 ? (
                     // Not a `<button>`, for CollapsibleMarkdown's reason:
                     // reading back is reading, and the page's read-only
@@ -696,12 +706,12 @@ export function ItemView({ itemId }: { itemId: string }) {
                       tabIndex={0}
                       aria-disabled={earlier.loading}
                       aria-busy={earlier.loading}
-                      onClick={earlier.load}
+                      onClick={readEarlier}
                       onKeyDown={(event) => {
                         if (event.key !== "Enter" && event.key !== " ") return;
                         // Space would otherwise scroll the page.
                         event.preventDefault();
-                        earlier.load();
+                        readEarlier();
                       }}
                       className={cn(
                         "cursor-pointer select-none self-center rounded-[10px] px-3 py-1.5 text-[12px] text-ink-subtle hover:bg-canvas-raised hover:text-ink focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent",

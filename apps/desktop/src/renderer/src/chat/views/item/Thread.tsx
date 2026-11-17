@@ -191,6 +191,8 @@ function CommentRow({
   const pinned = pinning ?? comment.pinned;
   return (
     <article
+      // Found again by id when reading back moves it (EO-823, `COMMENT_ID_ATTRIBUTE` in useKeepInPlace).
+      data-comment-id={comment.id}
       aria-label={`${comment.authorName}, ${when(comment.createdAt)}`}
       className={cn(
         "group/comment flex min-w-0 flex-col gap-1.5 rounded-[12px] px-3 py-2.5",
