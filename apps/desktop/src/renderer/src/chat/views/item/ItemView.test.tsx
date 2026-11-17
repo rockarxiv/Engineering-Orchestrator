@@ -2254,9 +2254,11 @@ describe("a thread longer than one page", () => {
  * constant `items:get` and `items:earlierComments` page by.
  */
 describe("the thread's window of five", () => {
-  /** A thread of `count` comments, "Note 0." the oldest, one pinned partway along. */
-  function fakeThread(count: number) {
-    const ordered = Array.from({ length: count }, (_, n) => comment({ id: `n${n}`, body: `Note ${n}.`, createdAt: 1_000 + n * 10, pinned: n === count - 3 }));
+  /** A thread of `count` comments, "Note 0." the oldest, one pinned partway along, and `parents` naming which answers which. */
+  function fakeThread(count: number, parents: Record<number, number> = {}) {
+    const ordered = Array.from({ length: count }, (_, n) =>
+      comment({ id: `n${n}`, body: `Note ${n}.`, createdAt: 1_000 + n * 10, pinned: n === count - 3, parentId: n in parents ? `n${parents[n]}` : null }),
+    );
     const base = detail({ comments: [] });
     const replies = {
       "items:get": (payload: unknown) => {
@@ -2313,8 +2315,16 @@ describe("the thread's window of five", () => {
     expect(screen.queryByRole("button", { name: /Show earlier comments/ })).toBeNull();
   });
 
-  it("keeps the comment at the top of the viewport where it was when earlier ones are inserted above it", async () => {
-    const { replies, base } = fakeThread(13);
+  /**
+   * The item page in a scroller jsdom can lay out: it lays nothing out
+   * itself, so this does. Every element is ten pixels below the one
+   * before it in the document, and those inside the scroller move up by
+   * its `scrollTop` — what is inserted above an element pushes it down,
+   * and what moves elsewhere in the document moves on screen, as a
+   * browser would draw it.
+   */
+  function renderScrolled(count: number, parents: Record<number, number> = {}) {
+    const { replies, base } = fakeThread(count, parents);
     mockIpc(base, undefined, replies);
     render(
       <ThemeProvider>
@@ -2329,36 +2339,72 @@ describe("the thread's window of five", () => {
         </QueryClientProvider>
       </ThemeProvider>,
     );
-    // jsdom lays nothing out, so this does: every element is ten pixels
-    // below the one before it in the document, scrolled by the scroller —
-    // what is inserted above an element pushes it down, as a browser would.
     const scroller = screen.getByTestId("scroller");
-    let scrollTop = 0;
-    Object.defineProperty(scroller, "scrollTop", { configurable: true, get: () => scrollTop, set: (value: number) => (scrollTop = value) });
+    const view = { scrollTop: 0 };
+    Object.defineProperty(scroller, "scrollTop", { configurable: true, get: () => view.scrollTop, set: (value: number) => (view.scrollTop = value) });
     const layout = vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (this: Element) {
-      const top = [...document.body.querySelectorAll("*")].indexOf(this) * 10 - scrollTop;
+      const scrolled = this !== scroller && scroller.contains(this) ? view.scrollTop : 0;
+      const top = [...document.body.querySelectorAll("*")].indexOf(this) * 10 - scrolled;
       return { top, bottom: top + 10, left: 0, right: 0, width: 0, height: 10, x: 0, y: top, toJSON: () => ({}) } as DOMRect;
     });
+    const top = (element: Element) => element.getBoundingClientRect().top;
+    const viewportTop = () => top(scroller);
+    return {
+      view,
+      layout,
+      top,
+      viewportTop,
+      /** The comment a note is drawn in. */
+      article: (note: string) => screen.getByText(note).closest("article")!,
+      /** Scrolls the scroller so that `element` is at the top of its viewport. */
+      scrollTo: (element: Element) => (view.scrollTop += top(element) - viewportTop()),
+    };
+  }
+
+  it("keeps the comment at the top of the viewport where it was when earlier ones are inserted above it", async () => {
+    const { view, layout, top, viewportTop, article, scrollTo } = renderScrolled(13);
     try {
       const more = await screen.findByRole("button", { name: "Show earlier comments (8)" });
-      // Scrolled so that "Note 10." is at the top of the viewport.
-      const reading = () => screen.getByText("Note 10.");
-      scrollTop = reading().getBoundingClientRect().top;
-      expect(reading().getBoundingClientRect().top).toBe(0);
-      const before = scrollTop;
+      scrollTo(article("Note 10."));
+      const before = view.scrollTop;
 
       fireEvent.click(more);
       await screen.findByText("Note 3.");
-      expect(reading().getBoundingClientRect().top).toBe(0);
+      expect(top(article("Note 10."))).toBe(viewportTop());
       // Held by scrolling past what was inserted, not by luck.
-      expect(scrollTop).toBeGreaterThan(before);
+      expect(view.scrollTop).toBeGreaterThan(before);
 
-      // And again from wherever the person has scrolled to since.
-      scrollTop -= 35;
-      const held = reading().getBoundingClientRect().top;
+      // And again from wherever the person has scrolled to since, partway into a comment.
+      scrollTo(article("Note 6."));
+      view.scrollTop += 5;
+      const held = top(article("Note 6."));
       fireEvent.click(screen.getByRole("button", { name: "Show earlier comments (3)" }));
       await screen.findByText("Note 0.");
-      expect(reading().getBoundingClientRect().top).toBe(held);
+      expect(top(article("Note 6."))).toBe(held);
+    } finally {
+      layout.mockRestore();
+    }
+  });
+
+  it("keeps a reply at the top of the viewport where it was when its parent is read back and it is drawn under it", async () => {
+    // "Note 8." answers "Note 7." and "Note 10." answers "Note 5.", both
+    // parents outside the first window: drawn at the top level until the
+    // parents are read back, then under them — new elements, elsewhere.
+    const { layout, top, viewportTop, article, scrollTo } = renderScrolled(13, { 8: 7, 10: 5 });
+    try {
+      const more = await screen.findByRole("button", { name: "Show earlier comments (8)" });
+      scrollTo(article("Note 8."));
+      const before = article("Note 8.");
+
+      fireEvent.click(more);
+      await screen.findByText("Note 3.");
+      const after = article("Note 8.");
+      expect(after).not.toBe(before);
+      expect(before.isConnected).toBe(false);
+      // Drawn under what it answers now, and still where the person was reading.
+      expect(article("Note 7.").parentElement!.contains(after)).toBe(true);
+      expect(article("Note 5.").parentElement!.contains(article("Note 10."))).toBe(true);
+      expect(top(after)).toBe(viewportTop());
     } finally {
       layout.mockRestore();
     }

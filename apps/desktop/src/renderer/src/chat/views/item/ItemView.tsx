@@ -278,13 +278,13 @@ export function ItemView({ itemId }: { itemId: string }) {
     () => buildTimeline({ comments: earlier.comments, transitions: transitionsShown(transitions ?? [], earlier.comments, earlier.remaining) }),
     [earlier.comments, transitions, earlier.remaining],
   );
-  // Reading back keeps the oldest entry drawn — and so everything under
-  // it — where it was on screen (EO-823).
-  const entries = useRef<HTMLDivElement>(null);
-  const keepInPlace = useKeepInPlace({ loading: earlier.loading, firstId: earlier.comments[0]?.id });
+  // Reading back keeps the comment at the top of the viewport where it
+  // was on screen (EO-823).
+  const thread = useRef<HTMLDivElement>(null);
+  const keepInPlace = useKeepInPlace({ thread, loading: earlier.loading, firstId: earlier.comments[0]?.id });
   const readEarlier = () => {
     if (earlier.loading) return;
-    keepInPlace(entries.current?.firstElementChild);
+    keepInPlace();
     earlier.load();
   };
   // Each post held by where it goes until it settles: a thread is busy
@@ -696,7 +696,7 @@ export function ItemView({ itemId }: { itemId: string }) {
               <Card label="Timeline">
                 <GroupLabel>Thread</GroupLabel>
                 {timeline.length === 0 ? <p className="text-[12.5px] text-ink-subtle">Nothing has been said here yet.</p> : null}
-                <div className="flex min-w-0 flex-col gap-2.5">
+                <div ref={thread} className="flex min-w-0 flex-col gap-2.5">
                   {earlier.remaining > 0 ? (
                     // Not a `<button>`, for CollapsibleMarkdown's reason:
                     // reading back is reading, and the page's read-only
@@ -726,41 +726,38 @@ export function ItemView({ itemId }: { itemId: string }) {
                       <RefText>{earlier.problem}</RefText>
                     </ErrorLine>
                   ) : null}
-                  {/* The entries alone, so the oldest drawn is the first child: what reading back holds in place. */}
-                  <div ref={entries} className="flex min-w-0 flex-col gap-2.5">
-                    {timeline.map((entry) =>
-                      entry.kind === "transition" ? (
-                        // Not a comment: a state change is not something anybody said.
-                        <div key={`t-${entry.transition.id}`} className="flex min-w-0 items-baseline gap-2 px-1 text-[11.5px] text-ink-subtle">
-                          <span aria-hidden className="h-[7px] w-[7px] shrink-0 translate-y-[-1px] rounded-full border border-line-strong" />
-                          <span className="min-w-0 flex-1">
-                            {entry.transition.fromStepId ? `${stepName(entry.transition.fromStepId)} → ` : ""}
-                            <span className="text-ink-muted">{stepName(entry.transition.toStepId)}</span> by {describeActor(entry.transition.actor, agentNames)}
-                            {entry.transition.reason ? (
-                              <>
-                                {" — "}
-                                <RefText>{entry.transition.reason}</RefText>
-                              </>
-                            ) : null}
-                          </span>
-                          <span className="shrink-0">{when(entry.at)}</span>
-                        </div>
-                      ) : (
-                        <CommentThread
-                          key={entry.comment.id}
-                          comment={entry.comment}
-                          replies={entry.replies}
-                          mentionables={mentionables}
-                          busy={posts.pending.has(entry.comment.id)}
-                          readOnly={readOnly}
-                          pinning={pinsIn(pins.pending, entry.comment, entry.replies)}
-                          onTogglePin={togglePin}
-                          onDelete={askToDelete}
-                          onReply={reply}
-                        />
-                      ),
-                    )}
-                  </div>
+                  {timeline.map((entry) =>
+                    entry.kind === "transition" ? (
+                      // Not a comment: a state change is not something anybody said.
+                      <div key={`t-${entry.transition.id}`} className="flex min-w-0 items-baseline gap-2 px-1 text-[11.5px] text-ink-subtle">
+                        <span aria-hidden className="h-[7px] w-[7px] shrink-0 translate-y-[-1px] rounded-full border border-line-strong" />
+                        <span className="min-w-0 flex-1">
+                          {entry.transition.fromStepId ? `${stepName(entry.transition.fromStepId)} → ` : ""}
+                          <span className="text-ink-muted">{stepName(entry.transition.toStepId)}</span> by {describeActor(entry.transition.actor, agentNames)}
+                          {entry.transition.reason ? (
+                            <>
+                              {" — "}
+                              <RefText>{entry.transition.reason}</RefText>
+                            </>
+                          ) : null}
+                        </span>
+                        <span className="shrink-0">{when(entry.at)}</span>
+                      </div>
+                    ) : (
+                      <CommentThread
+                        key={entry.comment.id}
+                        comment={entry.comment}
+                        replies={entry.replies}
+                        mentionables={mentionables}
+                        busy={posts.pending.has(entry.comment.id)}
+                        readOnly={readOnly}
+                        pinning={pinsIn(pins.pending, entry.comment, entry.replies)}
+                        onTogglePin={togglePin}
+                        onDelete={askToDelete}
+                        onReply={reply}
+                      />
+                    ),
+                  )}
                 </div>
               </Card>
 
