@@ -303,6 +303,8 @@ export const ASSIST_ANSWER_WITH_MAPS = {
       // No change to a module that exists (EO-418): nullable in the shared
       // schema, so a Codex agent writes the null a Claude agent leaves out.
       change: null,
+      // Nor a change named by a frozen proposal (EO-814), for the same reason.
+      changeProposalId: null,
       // Nor a card (EO-521), for the same reason.
       card: null,
       // Nor other drafts beside this one (EO-534): optional in the shared
@@ -382,6 +384,7 @@ export const ASSIST_ANSWERS_WITH_CARDS = {
       actions: null,
       proposals: null,
       change: null,
+      changeProposalId: null,
       card,
       alternatives: null,
       trial: null,
@@ -445,6 +448,7 @@ export const ASSIST_ANSWER_WITH_TRIAL = {
       actions: null,
       proposals: null,
       change: null,
+      changeProposalId: null,
       card: null,
       alternatives: null,
       trial: {

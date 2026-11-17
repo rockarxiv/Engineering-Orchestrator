@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { DiscussionQuestionSchema } from "./discussion.js";
-import { ModuleChangeSchema } from "./moduleChange.js";
+import { CHANGE_TWICE, ModuleChangeProposalIdSchema, ModuleChangeSchema } from "./moduleChange.js";
 
 /**
  * What the system agent returns from `scenario` — a turn of the chat a
@@ -86,12 +86,24 @@ export const ScenarioOutputSchema = z
     diagnosis: ScenarioDiagnosisSchema.nullable().default(null),
     /** A fix to the module, only when the person asked for one. Shown, never saved. */
     change: ScenarioModuleChangeSchema.nullable().default(null),
+    /**
+     * The same fix, prepared with `module_change_prepare` and frozen with
+     * `module_change_freeze` in this turn, named by the proposal id the
+     * freeze answered with (EO-814) — instead of `change`, never beside
+     * it. EO draws the card from the frozen proposal, so the answer
+     * carries no code. Nullable with a default, for `change`'s reason.
+     */
+    changeProposalId: ModuleChangeProposalIdSchema.nullable().default(null),
   })
   .refine((output) => output.diagnosis === null || output.testId !== null, {
     message: "a diagnosis is about a test case, so name it in `testId`",
     path: ["testId"],
   })
-  .refine((output) => output.questions.length === 0 || output.change === null, {
+  .refine((output) => output.change === null || output.changeProposalId === null, {
+    message: CHANGE_TWICE,
+    path: ["changeProposalId"],
+  })
+  .refine((output) => output.questions.length === 0 || (output.change === null && output.changeProposalId === null), {
     message: "a turn either asks or proposes a change — a change built on unanswered questions is a guess with a button on it",
   });
 

@@ -14,7 +14,7 @@ const diagnosis = { scripted: ["gh pr checks 12"], made: ["gh pr view 12"], line
 describe("ScenarioOutputSchema", () => {
   it("accepts a turn that only talks, and reads every absent field as none", () => {
     const parsed = ScenarioOutputSchema.safeParse({ message: "Which exit code does gh give when CI is pending?" });
-    expect(parsed.success && parsed.data).toEqual({ message: "Which exit code does gh give when CI is pending?", questions: [], testId: null, diagnosis: null, change: null });
+    expect(parsed.success && parsed.data).toEqual({ message: "Which exit code does gh give when CI is pending?", questions: [], testId: null, diagnosis: null, change: null, changeProposalId: null });
   });
 
   it("accepts null for every optional part, which is how a strict backend says none", () => {

@@ -81,6 +81,20 @@ export const AssistModuleChangeSchema = ModuleChangeSchema.extend({
   removeTests: z.array(z.string().min(1)).default([]),
 });
 
+/**
+ * A change named by reference rather than carried whole (EO-814): the id
+ * `module_change_freeze` answered with, for a proposal the same turn froze.
+ * Both chats take it as `changeProposalId`, beside `change` and never with
+ * it; EO resolves it for the turn's own conversation, run and module and
+ * draws the card from the frozen content.
+ */
+export const ModuleChangeProposalIdSchema = z.string().trim().min(1);
+
+/** Why an answer carrying a change both ways is refused: which of the two is the card would be a guess. */
+export const CHANGE_TWICE =
+  "give the change either inline as `change` or by reference as `changeProposalId`, not both — set the other to null. " +
+  "A change prepared with module_change_freeze is named by its proposal id alone";
+
 export type ModuleChange = z.infer<typeof ModuleChangeSchema>;
 export type AssistModuleChange = z.infer<typeof AssistModuleChangeSchema>;
 

@@ -152,6 +152,8 @@ const SCHEDULE: readonly Group[] = [
       "apps/desktop/src/main/supervisor/interceptionEvents.test.ts",
       "apps/desktop/src/main/supervisor/interpretReply.test.ts",
       "apps/desktop/src/main/supervisor/livePush.test.ts",
+      // EO-814: a chat's reply naming a frozen module change is posted by the pack's wiring, as every chat's reply is.
+      "apps/desktop/src/main/supervisor/moduleChangeReferences.test.ts",
       "apps/desktop/src/main/supervisor/moduleQuestion.test.ts",
       "apps/desktop/src/main/supervisor/moduleSteps.test.ts",
       "apps/desktop/src/main/supervisor/moduleTimeLimit.test.ts",

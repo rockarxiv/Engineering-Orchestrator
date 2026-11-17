@@ -4,7 +4,7 @@ import { AssistCardSchema, KEEP_PIPELINE_CARD_KIND } from "./assistCard.js";
 import { AssistTrialPlanSchema, trialPlanProblems } from "./assistTrial.js";
 import { DraftRouteSchema, DraftStepSchema, PipelineDraftSchema, ProposedModuleSchema } from "./configure.js";
 import { DiscussionProposalSchema, DiscussionQuestionSchema } from "./discussion.js";
-import { AssistModuleChangeSchema } from "./moduleChange.js";
+import { AssistModuleChangeSchema, CHANGE_TWICE, ModuleChangeProposalIdSchema } from "./moduleChange.js";
 import { StepInputsSchema } from "./modules.js";
 import { PipelineIconSchema } from "./pipelines.js";
 import { WorkspaceModeSchema } from "./workspaces.js";
@@ -298,6 +298,16 @@ export const AssistOutputSchema = z
      */
     change: AssistModuleChangeSchema.nullable().default(null),
     /**
+     * The same change, prepared with `module_change_prepare` and frozen
+     * with `module_change_freeze` in this turn, named by the proposal id
+     * the freeze answered with (EO-814) — instead of `change`, never
+     * beside it, and held to every rule `change` is held to here. EO
+     * draws the card from the frozen proposal, so the answer carries no
+     * code and no test source. Nullable with a default, for `change`'s
+     * reason.
+     */
+    changeProposalId: ModuleChangeProposalIdSchema.nullable().default(null),
+    /**
      * Something only a person may do, as a card whose button does it
      * (EO-521) — exporting a pipeline to a file, importing an attached
      * one, deleting one, or discarding this machine's edits to one the
@@ -343,6 +353,7 @@ export const AssistOutputSchema = z
         (output.modules ?? []).length === 0 &&
         (output.actions ?? []).length === 0 &&
         output.change === null &&
+        output.changeProposalId === null &&
         output.card === null),
     {
       message: "a turn either asks or proposes — a proposal built on unanswered questions is a guess with a button on it",
@@ -354,7 +365,11 @@ export const AssistOutputSchema = z
       "Return the draft beside them, or save a definition on its own through the `eo_admin` server",
     path: ["actions"],
   })
-  .refine((output) => output.change === null || (output.draft === undefined && (output.modules ?? []).length === 0), {
+  .refine((output) => output.change === null || output.changeProposalId === null, {
+    message: CHANGE_TWICE,
+    path: ["changeProposalId"],
+  })
+  .refine((output) => (output.change === null && output.changeProposalId === null) || (output.draft === undefined && (output.modules ?? []).length === 0), {
     message:
       "a `change` to a module that exists comes on its own: no `draft` and no `modules` in the same reply. Return the change, and propose the draft or the new module once the person has applied it",
     path: ["change"],
@@ -362,10 +377,18 @@ export const AssistOutputSchema = z
   .refine(
     (output) =>
       output.card === null ||
-      (output.draft === undefined && (output.modules ?? []).length === 0 && output.change === null && output.proposals.length === 0) ||
+      (output.draft === undefined &&
+        (output.modules ?? []).length === 0 &&
+        output.change === null &&
+        output.changeProposalId === null &&
+        output.proposals.length === 0) ||
       // Keeping one's own pipeline is the alternative to the drafts that
       // resolve a held template update (EO-534), offered beside them.
-      (output.card.kind === KEEP_PIPELINE_CARD_KIND && (output.modules ?? []).length === 0 && output.change === null && output.proposals.length === 0),
+      (output.card.kind === KEEP_PIPELINE_CARD_KIND &&
+        (output.modules ?? []).length === 0 &&
+        output.change === null &&
+        output.changeProposalId === null &&
+        output.proposals.length === 0),
     {
       message:
         "a `card` comes on its own: no `draft`, `modules`, `change` or `proposals` in the same reply. Return the card, and propose the rest once the person has pressed it. " +

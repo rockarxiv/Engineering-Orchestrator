@@ -138,7 +138,7 @@ describe("the `assist` action", () => {
     const ok = validateActionResult(registry, "assist", { message: "That is on Review." });
     expect(ok.ok).toBe(true);
     // `change` is null rather than absent on a turn that carries none (EO-418), and so are `card` (EO-521) and `trial` (EO-587).
-    expect(ok.ok && ok.value).toEqual({ message: "That is on Review.", questions: [], proposals: [], change: null, card: null, trial: null });
+    expect(ok.ok && ok.value).toEqual({ message: "That is on Review.", questions: [], proposals: [], change: null, changeProposalId: null, card: null, trial: null });
 
     const bad = validateActionResult(registry, "assist", { message: "Here.", questions: [{ ...question, options: [] }] });
     expect(bad.ok).toBe(false);

@@ -125,3 +125,39 @@ describe("a change in the help chat's output", () => {
     expect(AssistOutputSchema.safeParse({ message: "Here.", change, modules: [] }).success).toBe(true);
   });
 });
+
+describe("a change named by its frozen proposal (EO-814)", () => {
+  const card = { kind: "pipelineDelete" as const, pipelineId: "default" };
+
+  it("is `changeProposalId` in both chats: null when left out or written as null, and an id when given", () => {
+    expect(AssistOutputSchema.parse({ message: "Hello." }).changeProposalId).toBeNull();
+    expect(AssistOutputSchema.parse({ message: "Hello.", change: null, changeProposalId: null }).changeProposalId).toBeNull();
+    expect(AssistOutputSchema.parse({ message: "Here.", changeProposalId: " prop-1 " }).changeProposalId).toBe("prop-1");
+    expect(ScenarioOutputSchema.parse({ message: "Hello." }).changeProposalId).toBeNull();
+    expect(ScenarioOutputSchema.parse({ message: "Here.", changeProposalId: "prop-1" }).changeProposalId).toBe("prop-1");
+    expect(AssistOutputSchema.safeParse({ message: "Here.", changeProposalId: "" }).success).toBe(false);
+  });
+
+  it("is refused beside an inline change, in both chats, saying to set the other to null", () => {
+    const assist = AssistOutputSchema.safeParse({ message: "Here.", change: { moduleId: "mod-1", summary: "Fixes it.", code }, changeProposalId: "prop-1" });
+    expect(assist.success).toBe(false);
+    expect(!assist.success && assist.error.issues.map((issue) => issue.message).join(" ")).toContain("not both");
+    const scenario = ScenarioOutputSchema.safeParse({ message: "Here.", change: { summary: "Fixes it.", code }, changeProposalId: "prop-1" });
+    expect(scenario.success).toBe(false);
+    expect(!scenario.success && scenario.error.issues.map((issue) => issue.message).join(" ")).toContain("not both");
+  });
+
+  it("is refused beside questions, in both chats", () => {
+    expect(AssistOutputSchema.safeParse({ message: "Here.", questions: [question], changeProposalId: "prop-1" }).success).toBe(false);
+    expect(ScenarioOutputSchema.safeParse({ message: "Here.", questions: [question], changeProposalId: "prop-1" }).success).toBe(false);
+  });
+
+  it("comes on its own in the help chat, as an inline change does: no draft, modules or card beside it", () => {
+    const module = { name: "Tag", slug: "tag", description: "Tags.", code, manifest, why: "A script.", tests: [{ description: "tags", source: "export default async function () {}" }] };
+    const beside = AssistOutputSchema.safeParse({ message: "Here.", changeProposalId: "prop-1", modules: [module] });
+    expect(beside.success).toBe(false);
+    expect(!beside.success && beside.error.issues[0]?.message).toContain("comes on its own");
+    expect(AssistOutputSchema.safeParse({ message: "Here.", changeProposalId: "prop-1", card }).success).toBe(false);
+    expect(AssistOutputSchema.safeParse({ message: "Here.", changeProposalId: "prop-1", modules: [] }).success).toBe(true);
+  });
+});

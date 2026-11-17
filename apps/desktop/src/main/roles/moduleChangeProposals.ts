@@ -10,6 +10,7 @@ import {
   uuidv7,
   type AgentWriteAnswer,
   type AssistModuleChange,
+  type CustomModule,
   type Item,
 } from "@eo/core";
 import type { Db } from "../db/client.js";
@@ -400,6 +401,76 @@ export function resolveModuleChangeProposal(
     return { ok: false, reason: `Proposal \`${proposalId}\` could not be read back whole, so there is nothing to show or apply.` };
   }
   return { ok: true, proposal: { id: row.id, itemId: row.itemId, runId: row.runId, room: row.room, change: change.data, base: base as ChangeBase, createdAt: row.createdAt } };
+}
+
+export type DrawnReferencedChange =
+  | { ok: true; proposal: ModuleChangeProposal; module: CustomModule; body: string; base: ChangeBase }
+  | { ok: false; reason: string };
+
+/**
+ * The card an answer naming a frozen proposal becomes (EO-814), or why
+ * there is none to offer — the one place both chats turn a reference into
+ * a card, and the one the supervisor asks while the turn is still open, so
+ * a reference refused there is refused here for the same reason.
+ *
+ * Resolved for the answering turn's own conversation and run, and, in a
+ * scenario chat, its own module; held to the room the proposal was frozen
+ * in. Then **refused as stale** when the module's code, manifest, or a case
+ * the proposal removes is no longer what it was frozen against: the card
+ * would be a diff against a module the change was never written for. And
+ * then drawn by `drawModuleChange` from the frozen content, exactly as an
+ * inline change is — the same body, the same base, the same refusals.
+ *
+ * Writes nothing. The staging files are not read: the row is the change.
+ */
+export function drawReferencedModuleChange(
+  db: Db,
+  proposalId: string,
+  expected: { itemId: string; runId: string; room: ModuleChangeRoom; moduleId?: string },
+): DrawnReferencedChange {
+  const resolved = resolveModuleChangeProposal(db, proposalId, expected);
+  if (!resolved.ok) return { ok: false, reason: `${resolved.reason} Freeze the change with module_change_freeze in this turn and name the id it answers with.` };
+  const { proposal } = resolved;
+  if (proposal.room !== expected.room) {
+    return { ok: false, reason: `Proposal \`${proposalId}\` was frozen in another chat, so this one cannot name it. Nothing was saved.` };
+  }
+
+  const module = getModule(db, proposal.change.moduleId);
+  if (!module || module.archivedAt !== null) {
+    return { ok: false, reason: "The module proposal `" + proposalId + "` changes is no longer in the catalog, so there is nothing to apply it to. Nothing was saved." };
+  }
+  const stale = `${module.name} has been saved, or its test cases changed, since proposal \`${proposalId}\` was prepared, so it would be a diff against a module it was not written for. Nothing was saved. Call module_change_prepare again and make the change against the module as it is now.`;
+  const now = changeBaseOf(module);
+  if (now.code !== proposal.base.code || now.manifest !== proposal.base.manifest) return { ok: false, reason: stale };
+
+  const drawn = drawModuleChange(
+    db,
+    module,
+    proposal.change,
+    proposal.room === "assist" ? { tests: proposal.change.tests, removeTests: proposal.change.removeTests, requireCases: true } : {},
+  );
+  if (!drawn.ok) return drawn;
+  // A case the proposal removes, edited or deleted since it was frozen.
+  if (canonical(drawn.base.removes ?? {}) !== canonical(proposal.base.removes ?? {})) return { ok: false, reason: stale };
+  return { ok: true, proposal, module, body: drawn.body, base: drawn.base };
+}
+
+/**
+ * Why an `assist` or `scenario` answer's `changeProposalId` is not one EO
+ * can draw a card from, or null when it is — or when the answer names
+ * none (EO-814). The supervisor re-prompts with it, as it does a result
+ * that fails its schema, so the turn that froze the proposal can freeze it
+ * again; `drawReferencedModuleChange` is asked again when the card is
+ * posted, and a refusal there is a rejection in the thread (invariant #8).
+ */
+export function changeReferenceProblem(db: Db, item: Item, runId: string, room: ModuleChangeRoom, value: unknown): string | null {
+  if (value === null || typeof value !== "object") return null;
+  const proposalId = (value as Record<string, unknown>)["changeProposalId"];
+  if (typeof proposalId !== "string" || proposalId === "") return null;
+  const moduleId = room === "scenario" ? scenarioModuleIdOf(item) : null;
+  if (room === "scenario" && moduleId === null) return "`changeProposalId` names a change, but this conversation is not about a module, so there is nothing to apply one to. Set it to null.";
+  const drawn = drawReferencedModuleChange(db, proposalId, { itemId: item.id, runId, room, ...(moduleId === null ? {} : { moduleId }) });
+  return drawn.ok ? null : `\`changeProposalId\` is "${proposalId}", which EO cannot offer as a card: ${drawn.reason}`;
 }
 
 // ── The staging area's files ──────────────────────────────────

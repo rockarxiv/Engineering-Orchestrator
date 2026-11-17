@@ -12,7 +12,6 @@ import {
   type Run,
   type RunEvent,
   type ScenarioDiagnosis,
-  type ScenarioModuleChange,
   type Uuid,
 } from "@eo/core";
 import type { Db } from "../db/client.js";
@@ -35,7 +34,8 @@ import {
 } from "../db/repos/index.js";
 import { SCENARIO_ACTION, SCENARIO_SETTINGS_KEY, SCENARIO_STEP } from "./conversationSteps.js";
 import { postDiscussionQuestions } from "./discussion.js";
-import { applyModuleChange, drawModuleChange, type AppliedModuleChange } from "./moduleChange.js";
+import { applyModuleChange, drawModuleChange, type AppliedModuleChange, type ChangeBase } from "./moduleChange.js";
+import { drawReferencedModuleChange, resolveModuleChangeProposal } from "./moduleChangeProposals.js";
 import { PROPOSAL_KIND } from "./proposal.js";
 
 /**
@@ -367,7 +367,9 @@ export function scenarioModuleWriteRefusal(db: Db, tool: string, args: unknown):
   return (
     `EO refused ${tool}: a scenario chat about this module is running, and a scenario chat never changes the module itself. ` +
     "Nothing has been written. To fix the module, return the whole fixed code as `change`, with its whole manifest when the fix " +
-    "needs one — the person sees it as a diff and applies it themselves — and only when they asked for a fix."
+    "needs one — the person sees it as a diff and applies it themselves — and only when they asked for a fix. " +
+    "Or prepare the fix with module_change_prepare, edit only what it changes with module_change_edit, freeze it with " +
+    "module_change_freeze and name the proposal id it answers with as `changeProposalId`, with `change` null."
   );
 }
 
@@ -424,9 +426,9 @@ export function scenarioResultProblem(db: Db, conversation: Item, result: unknow
       "`diagnosis`: the `ctx.exec` calls the case scripted (`scripted`) and the ones the module made (`made`), each as a command line, and the module's lines involved (`lines`, by the numbers in your task line)",
     );
   }
-  if (output.questions.length === 0 && output.change === null) {
+  if (output.questions.length === 0 && output.change === null && output.changeProposalId === null) {
     missing.push(
-      "a question asking the person how to resolve it — for example “The test is wrong — fix the case”, “The module is wrong — propose a fix”, “Leave it failing for now” — or, if they already asked for the module to be fixed, the fix as `change`",
+      "a question asking the person how to resolve it — for example “The test is wrong — fix the case”, “The module is wrong — propose a fix”, “Leave it failing for now” — or, if they already asked for the module to be fixed, the fix as `change` (or as `changeProposalId`, once you have frozen it with module_change_freeze)",
     );
   }
   if (missing.length === 0) return null;
@@ -629,7 +631,17 @@ export function postScenarioReply(db: Db, conversation: Item, agentId: Uuid, run
 
   postDiscussionQuestions(db, conversation, agentId, runId, output.questions);
 
-  if (output.change) postChangeCard(db, conversation, module, agentId, runId, initiationId, output.change);
+  if (output.change) {
+    postChangeCard(db, conversation, agentId, runId, initiationId, drawModuleChange(db, module, output.change), {});
+  } else if (output.changeProposalId !== null) {
+    // The same card, from a proposal this turn froze (EO-814), recorded
+    // with its id so Apply reads that row rather than the run's answer.
+    const drawn =
+      moduleId === null
+        ? { ok: false as const, reason: "This conversation is not about a module, so there is nothing to apply a change to." }
+        : drawReferencedModuleChange(db, output.changeProposalId, { itemId: conversation.id, runId, room: "scenario", moduleId });
+    postChangeCard(db, conversation, agentId, runId, initiationId, drawn, drawn.ok ? { proposalId: drawn.proposal.id } : {});
+  }
 }
 
 /**
@@ -803,13 +815,12 @@ export { renderCodeDiff } from "./moduleChange.js";
 function postChangeCard(
   db: Db,
   conversation: Item,
-  module: CustomModule | undefined,
   agentId: Uuid,
   runId: Uuid,
   initiationId: Uuid | null,
-  change: ScenarioModuleChange,
+  drawn: { ok: true; body: string; base: ChangeBase } | { ok: false; reason: string },
+  record: { proposalId?: string },
 ): void {
-  const drawn = drawModuleChange(db, module, change);
   if (!drawn.ok) {
     postComment(db, {
       itemId: conversation.id,
@@ -829,7 +840,7 @@ function postChangeCard(
   const recorded = scope[CHANGES_FIELD];
   const changes = recorded && typeof recorded === "object" && !Array.isArray(recorded) ? (recorded as Record<string, unknown>) : {};
   updateItem(db, current.id, {
-    spec: { ...(current.spec ?? {}), [SPEC_KEY]: { ...scope, [CHANGES_FIELD]: { ...changes, [id]: drawn.base } } },
+    spec: { ...(current.spec ?? {}), [SPEC_KEY]: { ...scope, [CHANGES_FIELD]: { ...changes, [id]: { ...record, ...drawn.base } } } },
   });
 
   postComment(db, {
@@ -880,15 +891,26 @@ export function applyScenarioChange(db: Db, conversation: Item, commentId: Uuid)
   const comment = listCommentsForItem(db, conversation.id).find((entry) => entry.id === commentId);
   if (!comment || !isScenarioChangeCard(db, comment)) return { ok: false, reason: "That card is not a change to the module." };
 
-  const run = comment.runId ? getRun(db, comment.runId) : undefined;
-  const parsed = ScenarioOutputSchema.safeParse(parsedResultOf(run?.result ?? null));
-  if (!parsed.success || !parsed.data.change) return { ok: false, reason: "The run behind this card no longer has a readable change." };
-
   const moduleId = scenarioModuleIdOf(conversation);
   const found = moduleId === null ? null : scenarioModule(db, moduleId);
   if (found === null || !found.ok) return { ok: false, reason: found?.reason ?? "This conversation is not about a module." };
 
   const recorded = scopeOf(conversation)[CHANGES_FIELD];
   const base = recorded && typeof recorded === "object" && !Array.isArray(recorded) ? (recorded as Record<string, unknown>)[commentId] : undefined;
+  const run = comment.runId ? getRun(db, comment.runId) : undefined;
+  const parsed = ScenarioOutputSchema.safeParse(parsedResultOf(run?.result ?? null));
+
+  // Drawn from a frozen proposal (EO-814): what is applied is that row,
+  // read for this conversation, the run that posted the card and this
+  // module — never the staging files and never what the run said.
+  const proposalId = base !== null && typeof base === "object" && !Array.isArray(base) ? (base as Record<string, unknown>)["proposalId"] : undefined;
+  if (typeof proposalId === "string" && proposalId !== "") {
+    if (!parsed.success || parsed.data.changeProposalId !== proposalId || !run) return { ok: false, reason: "The run behind this card no longer names the proposal it was drawn from." };
+    const resolved = resolveModuleChangeProposal(db, proposalId, { itemId: conversation.id, runId: run.id, moduleId: found.module.id });
+    if (!resolved.ok) return { ok: false, reason: resolved.reason };
+    return applyModuleChange(db, found.module, resolved.proposal.change, base);
+  }
+
+  if (!parsed.success || !parsed.data.change) return { ok: false, reason: "The run behind this card no longer has a readable change." };
   return applyModuleChange(db, found.module, parsed.data.change, base);
 }

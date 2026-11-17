@@ -77,7 +77,8 @@ import { postAssistCard } from "./assistCards.js";
 import { outputOf, runOf, threadOf, type ConversationThread } from "./conversationThread.js";
 import { ASSIST_ACTION, ASSIST_SETTINGS_KEY, ASSIST_STEP } from "./conversationSteps.js";
 import { postDiscussionQuestions, renderProposal } from "./discussion.js";
-import { applyModuleChange, canonical, drawModuleChange, sameManifest, type AppliedModuleChange } from "./moduleChange.js";
+import { applyModuleChange, canonical, drawModuleChange, sameManifest, type AppliedModuleChange, type ChangeBase } from "./moduleChange.js";
+import { drawReferencedModuleChange, resolveModuleChangeProposal } from "./moduleChangeProposals.js";
 import { PIPELINE_GRAPH_TOOL, PIPELINE_READ_SERVER, SCREEN_TOOL, pipelineReadVerdict, type PipelineNotRead } from "./pipelineRead.js";
 import { PROPOSAL_KIND } from "./proposal.js";
 import { scenarioTurnOn } from "./scenario.js";
@@ -1084,7 +1085,23 @@ export function postAssistReply(db: Db, conversation: Item, agentId: Uuid, runId
   // change with a `draft` or with `modules` — so the work proposals above
   // keep their places in the order `proposalOfComment` reads them by.
   if (parsed.data.change) {
-    postModuleChange(db, conversation, agentId, runId, initiationId, parsed.data.change);
+    const change = parsed.data.change;
+    const drawn = drawModuleChange(db, getModule(db, change.moduleId), change, { tests: change.tests, removeTests: change.removeTests, requireCases: true });
+    postModuleChange(db, conversation, agentId, runId, initiationId, drawn.ok ? { ...drawn, record: { moduleId: change.moduleId } } : drawn);
+    return { modulesSaved: false };
+  }
+  // The same card, from a proposal this turn froze (EO-814): drawn from
+  // the frozen row, and recorded with its id so Apply reads that row.
+  if (parsed.data.changeProposalId !== null) {
+    const drawn = drawReferencedModuleChange(db, parsed.data.changeProposalId, { itemId: conversation.id, runId, room: "assist" });
+    postModuleChange(
+      db,
+      conversation,
+      agentId,
+      runId,
+      initiationId,
+      drawn.ok ? { ok: true, body: drawn.body, base: drawn.base, record: { moduleId: drawn.module.id, proposalId: drawn.proposal.id } } : drawn,
+    );
     return { modulesSaved: false };
   }
 
@@ -1203,12 +1220,17 @@ function moduleChangesOf(conversation: Item): Record<string, unknown> {
   return recorded && typeof recorded === "object" && !Array.isArray(recorded) ? (recorded as Record<string, unknown>) : {};
 }
 
-/** Which module a recorded change card is for, or null when nothing usable is recorded under that id. */
-function recordedChange(conversation: Item, commentId: string): { moduleId: string; base: unknown } | null {
+/**
+ * Which module a recorded change card is for, and the frozen proposal it
+ * was drawn from when it was drawn from one (EO-814), or null when nothing
+ * usable is recorded under that id.
+ */
+function recordedChange(conversation: Item, commentId: string): { moduleId: string; proposalId: string | null; base: unknown } | null {
   const entry = moduleChangesOf(conversation)[commentId];
   if (entry === null || typeof entry !== "object" || Array.isArray(entry)) return null;
-  const moduleId = (entry as Record<string, unknown>)["moduleId"];
-  return typeof moduleId === "string" && moduleId !== "" ? { moduleId, base: entry } : null;
+  const { moduleId, proposalId } = entry as Record<string, unknown>;
+  if (typeof moduleId !== "string" || moduleId === "") return null;
+  return { moduleId, proposalId: typeof proposalId === "string" && proposalId !== "" ? proposalId : null, base: entry };
 }
 
 /**
@@ -1232,8 +1254,14 @@ function recordedChange(conversation: Item, commentId: string): { moduleId: stri
  * would leave it with none, or it is the module as it already is — is
  * one rejection carrying the reason, with no Apply (invariant #8).
  */
-function postModuleChange(db: Db, conversation: Item, agentId: Uuid, runId: Uuid, initiationId: Uuid | null, change: AssistModuleChange): void {
-  const drawn = drawModuleChange(db, getModule(db, change.moduleId), change, { tests: change.tests, removeTests: change.removeTests, requireCases: true });
+function postModuleChange(
+  db: Db,
+  conversation: Item,
+  agentId: Uuid,
+  runId: Uuid,
+  initiationId: Uuid | null,
+  drawn: { ok: true; body: string; base: ChangeBase; record: { moduleId: string; proposalId?: string } } | { ok: false; reason: string },
+): void {
   if (!drawn.ok) {
     postComment(db, {
       itemId: conversation.id,
@@ -1252,7 +1280,7 @@ function postModuleChange(db: Db, conversation: Item, agentId: Uuid, runId: Uuid
   updateItem(db, current.id, {
     spec: {
       ...(current.spec ?? {}),
-      [SPEC_KEY]: { ...scopeOf(current), [MODULE_CHANGES_FIELD]: { ...moduleChangesOf(current), [id]: { moduleId: change.moduleId, ...drawn.base } } },
+      [SPEC_KEY]: { ...scopeOf(current), [MODULE_CHANGES_FIELD]: { ...moduleChangesOf(current), [id]: { ...drawn.record, ...drawn.base } } },
     },
   });
 
@@ -1314,7 +1342,9 @@ export function approvedModuleTestWriteRefusal(db: Db, tool: string, args: unkno
     "so in this chat it is made on a card the person applies, not written directly. Nothing has been written. " +
     `Return the change as \`change\` instead — \`moduleId\` "${module.id}", its code exactly as it is saved, the cases to add or replace in ` +
     "`tests` and the ids of the cases to remove in `removeTests` — and say in your message that applying it withdraws the module's approval " +
-    "and that the card is where it is applied and approved again."
+    "and that the card is where it is applied and approved again. " +
+    "Or prepare it with module_change_prepare, change only what it needs with module_change_edit, freeze it with module_change_freeze " +
+    "(the cases in its `tests` and `removeTests`) and name the proposal id it answers with as `changeProposalId`, with `change` null."
   );
 }
 
@@ -1324,7 +1354,16 @@ function assistChangeOf(db: Db, conversation: Item, comment: Comment, thread?: C
   const recorded = recordedChange(conversation, comment.id);
   if (recorded === null) return null;
 
-  const change = outputOf(db, comment.runId, AssistOutputSchema, thread)?.change ?? null;
+  const output = outputOf(db, comment.runId, AssistOutputSchema, thread);
+  // Drawn from a frozen proposal (EO-814): the change is that row, read
+  // for this conversation, the run that posted the card and its module —
+  // never the staging files, and never the catalog as it is now.
+  if (recorded.proposalId !== null) {
+    if (output?.changeProposalId !== recorded.proposalId || comment.runId === null) return null;
+    const resolved = resolveModuleChangeProposal(db, recorded.proposalId, { itemId: conversation.id, runId: comment.runId, moduleId: recorded.moduleId });
+    return resolved.ok ? { change: resolved.proposal.change, base: recorded.base } : null;
+  }
+  const change = output?.change ?? null;
   // The card's own module, asked rather than assumed: the record and the
   // run were written together, and a card whose two halves disagree is
   // not one to put a button on.
