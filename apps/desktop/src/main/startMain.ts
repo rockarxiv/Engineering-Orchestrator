@@ -38,6 +38,7 @@ import { receiveWebhook, webhookAnswerWord } from "./jobs/webhook.js";
 import { createAdminMcpHost } from "./mcpHost/admin.js";
 import { approvedModuleTestWriteRefusal } from "./roles/assist.js";
 import { recordScenarioApprovalWithdrawal, scenarioModuleWriteRefusal } from "./roles/scenario.js";
+import { createModuleChangeStaging } from "./roles/moduleChangeProposals.js";
 import { createMcpHost } from "./mcpHost/index.js";
 import { createInboxNotifier, notificationFor, notificationForMessage } from "./notifications.js";
 import { startOutboxDrain } from "./outbox/drainLoop.js";
@@ -257,6 +258,12 @@ export function startMain(platform: Platform): RunningMain {
     onChanged: () => emitPush("config:changed", {}),
   });
 
+  // Staging areas for module changes (EO-813), in this profile. Every one
+  // left on disk is a previous process's, abandoned, so they go at start;
+  // the proposals frozen from them are in the database and stay.
+  const moduleStaging = createModuleChangeStaging({ db, root: join(userDataPath, "module-staging") });
+  moduleStaging.sweep();
+
   // EO-182: EO's own administrative MCP server — the whole mcpHost
   // catalogue, ungated, on a loopback port, for the system agent.
   //
@@ -466,6 +473,9 @@ export function startMain(platform: Platform): RunningMain {
     // so the tool answers with what EO actually wrote. Null until the
     // socket below is bound.
     agentWriteBridge: () => agentWriteBridge,
+    // EO-813: where assistant and scenario turns stage a module change
+    // before freezing it. Swept below: nothing staged outlives a process.
+    moduleStaging,
     // A-08: fetched agent CLIs live beside the app's other state, not
     // inside the bundle, which on macOS is signed and read-only.
     runtimeRoot: managedRuntimeRoot,

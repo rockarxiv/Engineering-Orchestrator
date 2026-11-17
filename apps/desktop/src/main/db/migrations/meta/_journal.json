@@ -1226,6 +1226,20 @@
       "when": 1798819200000,
       "tag": "0174_side_call_cache_and_fork",
       "breakpoints": true
+    },
+    {
+      "idx": 175,
+      "version": "6",
+      "when": 1798905600000,
+      "tag": "0175_module_change_proposals",
+      "breakpoints": true
+    },
+    {
+      "idx": 176,
+      "version": "6",
+      "when": 1798992000000,
+      "tag": "0176_module_change_tools",
+      "breakpoints": true
     }
   ]
 }

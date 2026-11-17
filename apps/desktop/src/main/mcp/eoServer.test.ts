@@ -15,6 +15,10 @@ import {
   MEMORY_NOTE_TOOL_NAME,
   MEMORY_READ_TOOL_NAME,
   memoryNoteEnabled,
+  MODULE_CHANGE_EDIT_TOOL_NAME,
+  MODULE_CHANGE_FREEZE_TOOL_NAME,
+  MODULE_CHANGE_PREPARE_TOOL_NAME,
+  MODULE_CHANGE_TOOLS,
   REPOSITORY_CHECKOUT_TOOL_NAME,
   SKILL_CREATE_TOOL_NAME,
   SKILL_FILE_REMOVE_TOOL_NAME,
@@ -1465,6 +1469,7 @@ describe("every eo tool's annotations", () => {
     enableRepositoryCheckout: true,
     enableSkillRead: true,
     enableSkillTools: true,
+    enableModuleChanges: true,
   });
 
   /** The tools that change nothing. Written out, so a tool added tomorrow is a decision rather than a default. */
@@ -1806,6 +1811,103 @@ describe("skill_read on the shared EO MCP service", () => {
     try {
       const responses = await callServer(dbPath, [INITIALIZE, INITIALIZED, call(10, { slug: "house-style" })], true, eoMcpStdioConfig({ serverPath, dbPath, writeBridge: bridge.tokenFor(item.id) }).env);
       expect(resultFor(responses, 10)).toMatchObject({ isError: true, structuredContent: { error: { code: "TOOL_DISABLED" } } });
+      expect(asked).toEqual([]);
+    } finally {
+      await bridge.close();
+    }
+  });
+});
+
+/**
+ * The module-change tools (EO-813): listed on a turn whose address says
+ * it is an assistant or scenario chat's, handed to EO whole — which run
+ * may stage what is EO's to decide — and refused, without asking EO, on a
+ * learning review's credential or a turn not served them.
+ */
+describe("the module-change tools on the shared EO MCP service", () => {
+  let directory: string;
+  let dbPath: string;
+  let handle: DbHandle;
+  let item: Item;
+
+  beforeEach(() => {
+    directory = mkdtempSync(join(tmpdir(), "eo mcp module change "));
+    dbPath = join(directory, "eo.db");
+    handle = openDb(dbPath);
+    runMigrations(handle.db, migrationsFolder);
+    item = createTestItem(handle.db, { type: "story", title: "Assistance", stepId: "todo" });
+  });
+
+  afterEach(() => {
+    handle.close();
+    removeScratch(directory);
+  });
+
+  const LIST = { jsonrpc: "2.0", id: 2, method: "tools/list" };
+  const call = (id: number, name: string, args: unknown) => ({ jsonrpc: "2.0", id, method: "tools/call", params: { name, arguments: args } });
+  const names = (responses: Record<string, unknown>[]) => (resultFor(responses, 2)["tools"] as { name: string }[]).map((tool) => tool.name);
+  const text = (responses: Record<string, unknown>[], id: number) => (resultFor(responses, id)["content"] as { text: string }[])[0]!.text;
+
+  it("pins its names to packages/core", () => {
+    const own = service as unknown as Record<string, unknown>;
+    expect(own["MODULE_CHANGE_TOOLS"]).toEqual([...MODULE_CHANGE_TOOLS]);
+    expect([own["MODULE_CHANGE_PREPARE_TOOL_NAME"], own["MODULE_CHANGE_EDIT_TOOL_NAME"], own["MODULE_CHANGE_FREEZE_TOOL_NAME"]]).toEqual([
+      MODULE_CHANGE_PREPARE_TOOL_NAME,
+      MODULE_CHANGE_EDIT_TOOL_NAME,
+      MODULE_CHANGE_FREEZE_TOOL_NAME,
+    ]);
+  });
+
+  it("is listed only where the address says the turn is a chat's, in neither backend's spelling", async () => {
+    const { bridge } = await scriptedBridge(() => ({ ok: true, text: "done", data: {} }));
+    try {
+      const chat = await callServer(dbPath, [INITIALIZE, INITIALIZED, LIST], false, eoMcpStdioConfig({ serverPath, dbPath, writeBridge: { ...bridge.tokenFor(item.id), moduleChanges: true } }).env);
+      for (const tool of MODULE_CHANGE_TOOLS) expect(names(chat), tool).toContain(tool);
+      for (const tool of resultFor(chat, 2)["tools"] as { name: string; description: string }[]) {
+        if (!(MODULE_CHANGE_TOOLS as readonly string[]).includes(tool.name)) continue;
+        expect(tool.description).not.toContain(eoToolName(""));
+        expect(tool.description).not.toMatch(/\beo\//);
+      }
+      const other = await callServer(dbPath, [INITIALIZE, INITIALIZED, LIST], false, eoMcpStdioConfig({ serverPath, dbPath, writeBridge: bridge.tokenFor(item.id) }).env);
+      for (const tool of MODULE_CHANGE_TOOLS) expect(names(other), tool).not.toContain(tool);
+      const none = await callServer(dbPath, [INITIALIZE, INITIALIZED, LIST], false, eoMcpStdioConfig({ serverPath, dbPath }).env);
+      for (const tool of MODULE_CHANGE_TOOLS) expect(names(none), tool).not.toContain(tool);
+    } finally {
+      await bridge.close();
+    }
+  });
+
+  it("hands each call to EO whole, refuses an argument the tool does not take, and serves none on another turn or a learning review's credential", async () => {
+    const { asked, bridge } = await scriptedBridge((request) => ({ ok: true, text: `EO answered ${request.tool}.`, data: { proposalId: "p-1" } }));
+    try {
+      const calls = [
+        call(3, MODULE_CHANGE_PREPARE_TOOL_NAME, { moduleId: "m-1" }),
+        call(4, MODULE_CHANGE_EDIT_TOOL_NAME, { stagingId: "s-1", file: "module.js", edits: [{ old_text: "a", new_text: "b" }] }),
+        call(5, MODULE_CHANGE_FREEZE_TOOL_NAME, { stagingId: "s-1", summary: "Why.", tests: [{ description: "d", file: "tests/x.js" }], removeTests: ["t-1"] }),
+        call(6, MODULE_CHANGE_FREEZE_TOOL_NAME, { stagingId: "s-1", summary: "Why.", code: "the whole module again" }),
+        call(7, MODULE_CHANGE_PREPARE_TOOL_NAME, "m-1"),
+      ];
+      const chat = await callServer(dbPath, [INITIALIZE, INITIALIZED, ...calls], false, eoMcpStdioConfig({ serverPath, dbPath, writeBridge: { ...bridge.tokenFor(item.id), moduleChanges: true } }).env);
+      expect(resultFor(chat, 5)).toEqual({ content: [{ type: "text", text: `EO answered ${MODULE_CHANGE_FREEZE_TOOL_NAME}.` }], structuredContent: { proposalId: "p-1", text: `EO answered ${MODULE_CHANGE_FREEZE_TOOL_NAME}.` } });
+      for (const id of [6, 7]) expect(text(chat, id), String(id)).toContain("INVALID_ARGUMENT");
+      expect(asked.map((entry) => entry.request)).toEqual(
+        calls.slice(0, 3).map((each) => ({ tool: each.params.name, args: each.params.arguments })),
+      );
+
+      asked.length = 0;
+      // Another turn: not listed, and not served if called anyway.
+      const other = await callServer(dbPath, [INITIALIZE, INITIALIZED, calls[0]!], false, eoMcpStdioConfig({ serverPath, dbPath, writeBridge: bridge.tokenFor(item.id) }).env);
+      expect(text(other, 3)).toContain("TOOL_DISABLED");
+      // A learning review's fork of a chat's turn lists them, as its run
+      // did, and its credential — which names none — serves none.
+      const review = await callServer(
+        dbPath,
+        [INITIALIZE, INITIALIZED, LIST, ...calls.slice(0, 3)],
+        false,
+        eoMcpStdioConfig({ serverPath, dbPath, writeBridge: { ...bridge.tokenFor(item.id, [MEMORY_NOTE_TOOL_NAME, ...SKILL_WRITE_TOOLS]), moduleChanges: true } }).env,
+      );
+      for (const tool of MODULE_CHANGE_TOOLS) expect(names(review), tool).toContain(tool);
+      for (const id of [3, 4, 5]) expect(text(review, id), String(id)).toContain("TOOL_NOT_SERVED");
       expect(asked).toEqual([]);
     } finally {
       await bridge.close();

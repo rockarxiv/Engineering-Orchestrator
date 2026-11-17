@@ -157,6 +157,20 @@ function afterTheRepositoryCheckoutGrant<T extends { role: string; config: Recor
   });
 }
 
+/**
+ * `afterTheRepositoryCheckoutGrant`, and then 0176 (EO-813): the three
+ * module-change tools appended once each to the system agent's allowlist.
+ */
+const MODULE_CHANGE_GRANTS = ["mcp__eo__module_change_prepare", "mcp__eo__module_change_edit", "mcp__eo__module_change_freeze"];
+function afterTheModuleChangeGrant<T extends { role: string; config: Record<string, unknown> }>(rows: T[]): T[] {
+  return afterTheRepositoryCheckoutGrant(rows).map((row) => {
+    const allowed = row.config["allowedTools"];
+    if (row.role !== "system" || !Array.isArray(allowed)) return row;
+    const missing = MODULE_CHANGE_GRANTS.filter((tool) => !allowed.includes(tool));
+    return missing.length === 0 ? row : { ...row, config: { ...row.config, allowedTools: [...(allowed as unknown[]), ...missing] } };
+  });
+}
+
 function writePreviousMigrationSet(dir: string, dropLast = 1): { droppedTag: string } {
   const source = join(dirname(fileURLToPath(import.meta.url)), "migrations");
   const journal = JSON.parse(readFileSync(join(source, "meta", "_journal.json"), "utf8")) as {
@@ -1354,8 +1368,9 @@ describe("runMigrations", () => {
     // …and then the one tool a later migration appends to every list
     // that names `attachment_read`, this one included (0112, EO-412).
     // And the memory grant 0126 gives the system agent (EO-479), and
-    // `repository_checkout`, which 0157 appends where 0112 did (EO-633).
-    expect(repaired.config["allowedTools"]).toEqual([...built, "mcp__eo_admin", "mcp__eo__attachment_add", "mcp__eo__memory_note", "mcp__eo__repository_checkout"]);
+    // `repository_checkout`, which 0157 appends where 0112 did (EO-633),
+    // and the module-change tools 0176 gives the system agent (EO-813).
+    expect(repaired.config["allowedTools"]).toEqual([...built, "mcp__eo_admin", "mcp__eo__attachment_add", "mcp__eo__memory_note", "mcp__eo__repository_checkout", ...MODULE_CHANGE_GRANTS]);
     // …and with it the capabilities that answer from named entries. An
     // agent with no list is not an unrestricted agent but an inert one:
     // `configToolsEnabled` is what decides whether the `eo` server
@@ -1371,8 +1386,9 @@ describe("runMigrations", () => {
     // The list somebody narrowed is widened by one entry and otherwise
     // left as they wrote it.
     const theirs = after.find((agent) => agent.id === THEIRS)!;
-    // (Then 0126 appends the memory grant, as it does to every system agent.)
-    expect(theirs.config["allowedTools"]).toEqual(["Read", "mcp__eo__thread_read", "mcp__eo_admin", "mcp__eo__memory_note"]);
+    // (Then 0126 appends the memory grant, as it does to every system
+    // agent, and 0176 the module-change tools, EO-813.)
+    expect(theirs.config["allowedTools"]).toEqual(["Read", "mcp__eo__thread_read", "mcp__eo_admin", "mcp__eo__memory_note", ...MODULE_CHANGE_GRANTS]);
     expect(theirs.config["effort"]).toBe("high");
 
     // Nobody else is touched, in either direction. The implementer has no
@@ -3534,7 +3550,7 @@ describe("0120: agents gain a project, and every existing one is global", () => 
     const agents = listAgents(handle.db);
     expect(agents.length).toBe(before.length);
     expect(agents.every((agent) => agent.projectId === null)).toBe(true);
-    expect(agentRowsOn(handle)).toEqual(afterTheRepositoryCheckoutGrant(before));
+    expect(agentRowsOn(handle)).toEqual(afterTheModuleChangeGrant(before));
 
     // A real foreign key: a scope naming no project is refused by the
     // database, not merely by the save command.
@@ -3572,7 +3588,7 @@ describe("0121: agents gain the stamp a replica pages them on", () => {
 
     runMigrations(handle.db, join(dirname(fileURLToPath(import.meta.url)), "migrations"));
 
-    expect(agentRowsOn(handle)).toEqual(afterTheRepositoryCheckoutGrant(before));
+    expect(agentRowsOn(handle)).toEqual(afterTheModuleChangeGrant(before));
     const stamps = handle.db.all<{ updatedAt: number }>(sql`SELECT updated_at AS updatedAt FROM agents`);
     expect(stamps.length).toBe(before.length);
     expect(stamps.every((row) => row.updatedAt === 0)).toBe(true);
@@ -3601,7 +3617,7 @@ describe("0122: agents gain a revision, and the record's revision of the copy a 
 
     runMigrations(handle.db, join(dirname(fileURLToPath(import.meta.url)), "migrations"));
 
-    expect(agentRowsOn(handle)).toEqual(afterTheRepositoryCheckoutGrant(before));
+    expect(agentRowsOn(handle)).toEqual(afterTheModuleChangeGrant(before));
     const stamps = handle.db.all<{ recordStamp: number | null; revision: number }>(sql`SELECT record_stamp AS recordStamp, revision FROM agents`);
     expect(stamps.length).toBe(before.length);
     expect(stamps.every((row) => row.recordStamp === null && row.revision === 0)).toBe(true);

@@ -128,6 +128,7 @@ const APPEND_ONLY: Readonly<Record<string, readonly string[]>> = {
   jobEvents: [],
   skillVersions: [],
   jobWatchChecks: [],
+  moduleChangeProposals: [],
 };
 
 /**

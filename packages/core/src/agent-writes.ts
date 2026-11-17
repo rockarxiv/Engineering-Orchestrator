@@ -2,6 +2,7 @@ import { z } from "zod";
 import { ATTACHMENT_ADD_TOOL_NAME } from "./attachment-tool.js";
 import { COMMENT_TOOL_NAME } from "./comment-tool.js";
 import { MEMORY_NOTE_TOOL_NAME } from "./memory.js";
+import { MODULE_CHANGE_TOOLS } from "./module-change-tools.js";
 import { REPOSITORY_CHECKOUT_TOOL_NAME } from "./repository-checkout-tool.js";
 import { SKILL_READ_TOOL_NAME } from "./skill-read-tool.js";
 import { SKILL_WRITE_TOOLS } from "./skill-write-tools.js";
@@ -17,7 +18,10 @@ import { SKILL_WRITE_TOOLS } from "./skill-write-tools.js";
  * (EO-721), which writes nothing but is answered from which skills the
  * run was given, which only the main process knows. So do the learning
  * review's skill tools (EO-718, `skill-write-tools.ts`), which only a
- * review's credential is served.
+ * review's credential is served. And the module-change tools (EO-813,
+ * `module-change-tools.ts`), which stage and freeze a change to a module
+ * for an assistant or scenario turn: only the main process knows which
+ * run is asking and where its staging area is.
  * Each is handed, as it is called, to the main process over the agent
  * write bridge (`mcp/writeBridge.ts`); the main process applies the
  * rules, writes, and answers with what happened. The tool's answer *is*
@@ -34,7 +38,7 @@ import { SKILL_WRITE_TOOLS } from "./skill-write-tools.js";
  */
 
 /** The `eo` server's tools that write, or act, through the bridge. */
-export const AGENT_WRITE_TOOLS = [COMMENT_TOOL_NAME, ATTACHMENT_ADD_TOOL_NAME, MEMORY_NOTE_TOOL_NAME, REPOSITORY_CHECKOUT_TOOL_NAME, SKILL_READ_TOOL_NAME, ...SKILL_WRITE_TOOLS] as const;
+export const AGENT_WRITE_TOOLS = [COMMENT_TOOL_NAME, ATTACHMENT_ADD_TOOL_NAME, MEMORY_NOTE_TOOL_NAME, REPOSITORY_CHECKOUT_TOOL_NAME, SKILL_READ_TOOL_NAME, ...SKILL_WRITE_TOOLS, ...MODULE_CHANGE_TOOLS] as const;
 export type AgentWriteTool = (typeof AGENT_WRITE_TOOLS)[number];
 
 /**
@@ -56,6 +60,13 @@ export const AgentWriteBridgeAddressSchema = z.object({
    * Absent, the agent's grant decides, as it always has.
    */
   writes: z.array(z.enum(AGENT_WRITE_TOOLS)).optional(),
+  /**
+   * Whether the `eo` server lists the module-change tools (EO-813): set
+   * on an assistant or scenario chat's turns. A listing hint only, and
+   * not signed — the main process decides every call from the run it
+   * comes from — but it keeps the tools off every other turn's list.
+   */
+  moduleChanges: z.boolean().optional(),
 });
 export type AgentWriteBridgeAddress = z.infer<typeof AgentWriteBridgeAddressSchema>;
 
