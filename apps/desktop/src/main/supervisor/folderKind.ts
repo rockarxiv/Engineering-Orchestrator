@@ -6,6 +6,7 @@ import { asFolderWorkspace, folderPathProblem, getRun, getStep } from "../db/rep
 import { fileArtifacts, filesUnder, FILESYSTEM_CLOCK_GRACE_MS, resolveWithin } from "./workspaceFiles.js";
 import { ANY_ACTION, NOTHING_ATTACHED, verifier, type Artifact, type Check, type PrepareWorkspaceOutcome, type VerifiableRun, type WorkspaceKind } from "./workspaceKind.js";
 import { workspaceFor } from "./workspaceResolution.js";
+import { codeSpan } from "../codeSpan.js";
 
 /** What the folder kind needs from the process in order to be built: the rows it reads, and nothing else. */
 export interface FolderWorkspaceKindOptions {
@@ -76,7 +77,7 @@ export function folderWorkspaceKind(options: FolderWorkspaceKindOptions): Worksp
       try {
         mkdirSync(cwd, { recursive: true });
       } catch (error) {
-        return { ok: false, reason: `EO could not make ${item.key}'s folder in ${workspace.config.path}: ${error instanceof Error ? error.message : String(error)}` };
+        return { ok: false, reason: `EO could not make ${item.key}'s folder in ${codeSpan(workspace.config.path)}: ${codeSpan(error instanceof Error ? error.message : String(error))}` };
       }
       return { ok: true, workspace: { cwd, kind: FOLDER_KIND, workspaceId: workspace.id } };
     },
@@ -161,7 +162,7 @@ export function folderWorkspaceKind(options: FolderWorkspaceKindOptions): Worksp
               key,
               passed: false,
               blocks: true,
-              describes: `This step says it produces ${declared}, which is outside ${cwd}. An output is something the run wrote where it worked, so EO will not go looking for it elsewhere.`,
+              describes: `This step says it produces ${codeSpan(declared)}, which is outside ${codeSpan(cwd)}. An output is something the run wrote where it worked, so EO will not go looking for it elsewhere.`,
             };
           }
 
@@ -169,7 +170,7 @@ export function folderWorkspaceKind(options: FolderWorkspaceKindOptions): Worksp
           try {
             modifiedAt = statSync(target).mtimeMs;
           } catch {
-            return { key, passed: false, blocks: true, describes: `This step says it produces ${declared}, and there is no such file in ${cwd}.` };
+            return { key, passed: false, blocks: true, describes: `This step says it produces ${codeSpan(declared)}, and there is no such file in ${codeSpan(cwd)}.` };
           }
 
           // The grace is the two clocks, not slack in the check: see
@@ -179,11 +180,11 @@ export function folderWorkspaceKind(options: FolderWorkspaceKindOptions): Worksp
               key,
               passed: false,
               blocks: true,
-              describes: `${declared} is in ${cwd}, but it has not changed since this run started — so what is there is whatever was there before, not what this run produced.`,
+              describes: `${codeSpan(declared)} is in ${codeSpan(cwd)}, but it has not changed since this run started — so what is there is whatever was there before, not what this run produced.`,
             };
           }
 
-          return { key, passed: true, blocks: true, describes: `${declared} is in ${cwd} and was written while this run was working.` };
+          return { key, passed: true, blocks: true, describes: `${codeSpan(declared)} is in ${codeSpan(cwd)} and was written while this run was working.` };
         });
         },
       ),

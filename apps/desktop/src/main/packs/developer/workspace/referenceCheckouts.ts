@@ -7,6 +7,7 @@ import { asGitWorkspace, getItemByKey, listGitWorkspaces, postComment, projectWo
 import type { ReferenceCheckout, ReferenceCheckoutOutcome, ReferenceCheckoutRequest } from "../../../supervisor/workspaceKind.js";
 import { stillOnItsWay } from "./dispatchWorkspace.js";
 import { git, NETWORK_TIMEOUT_MS, NON_INTERACTIVE_GIT_ENV, type NetworkGitOptions } from "./git.js";
+import { codeSpan } from "../../../codeSpan.js";
 
 /**
  * Temporary, detached checkouts of a branch of a repository on an item's
@@ -108,14 +109,14 @@ async function resolveCommit(
     // two must not be confused: one falls back to the local branch, the
     // other refuses.
     const listed = await git(["ls-remote", "--heads", remote, `refs/heads/${branch}`], repoPath, network);
-    if (!listed.ok) return { ok: false, reason: `Could not fetch \`${branch}\` from ${repository}'s remote \`${remote}\`: ${listed.error}. Nothing was checked out.` };
+    if (!listed.ok) return { ok: false, reason: `Could not fetch \`${branch}\` from ${repository}'s remote \`${remote}\`: ${codeSpan(listed.error)}. Nothing was checked out.` };
 
     if (listed.stdout !== "") {
       // Into the remote-tracking ref rather than read off `FETCH_HEAD`,
       // which any other fetch in this repository overwrites.
       const tracking = `refs/remotes/${remote}/${branch}`;
       const fetched = await git(["fetch", "--no-tags", remote, `+refs/heads/${branch}:${tracking}`], repoPath, network);
-      if (!fetched.ok) return { ok: false, reason: `Could not fetch \`${branch}\` from ${repository}'s remote \`${remote}\`: ${fetched.error}. Nothing was checked out.` };
+      if (!fetched.ok) return { ok: false, reason: `Could not fetch \`${branch}\` from ${repository}'s remote \`${remote}\`: ${codeSpan(fetched.error)}. Nothing was checked out.` };
       const commit = await commitOf(repoPath, tracking);
       if (commit !== null) return { ok: true, commit, source: "remote" };
     }
@@ -159,7 +160,7 @@ export async function checkoutReference(
   if (!resolved.ok) return resolved;
 
   const root = await referencesRoot(repository.repoPath);
-  if (!root.ok) return { ok: false, reason: `Could not find ${repository.name}'s git directory: ${root.error}. Nothing was checked out.` };
+  if (!root.ok) return { ok: false, reason: `Could not find ${repository.name}'s git directory: ${codeSpan(root.error)}. Nothing was checked out.` };
   const path = referencePath(root.root, itemKey, branch);
 
   if (existsSync(path)) await removeReferenceCheckout(repository, path, branch, report);
@@ -172,7 +173,7 @@ export async function checkoutReference(
     await rm(path, { recursive: true, force: true }).catch(() => undefined);
     await git(["worktree", "prune"], repository.repoPath);
     await rmdir(join(path, "..")).catch(() => undefined);
-    return { ok: false, reason: `Could not check out \`${branch}\` of ${repository.name}: ${added.error}` };
+    return { ok: false, reason: `Could not check out \`${branch}\` of ${repository.name}: ${codeSpan(added.error)}` };
   }
 
   // Beside the worktree's own metadata rather than in the checkout, where
@@ -241,7 +242,7 @@ async function inspect(path: string): Promise<string[]> {
   const tracked = await git(["diff", "--name-only", "HEAD"], path);
   const untracked = await git(["ls-files", "--others", "--exclude-standard"], path);
   if (!tracked.ok || !untracked.ok) {
-    found.push(`its state could not be read (${tracked.ok ? "" : tracked.error}${!tracked.ok && !untracked.ok ? "; " : ""}${untracked.ok ? "" : untracked.error})`);
+    found.push(`its state could not be read (${tracked.ok ? "" : codeSpan(tracked.error)}${!tracked.ok && !untracked.ok ? "; " : ""}${untracked.ok ? "" : codeSpan(untracked.error)})`);
   } else {
     const changed = lines(tracked.stdout);
     const added = lines(untracked.stdout);

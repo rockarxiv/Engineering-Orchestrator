@@ -2,6 +2,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync, mkdirSync
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { codeSpan } from "../../../codeSpan.js";
 import { writeWorktreeSkills } from "../../../agentAttachments/worktreeSkills.js";
 import { REPOSITORY_INDEX_DIRECTORIES } from "../repositoryIntelligence/index.js";
 import { branchExists, canonicalPath, checkGitAvailable, git, listWorktrees, statusPorcelain } from "./git.js";
@@ -594,7 +595,7 @@ describe("removeWorktree", () => {
 
       expect(refused.ok).toBe(false);
       if (refused.ok) return;
-      expect(refused.reason).toBe(`Could not remove the worktree for EO-26 at ${path}: ${gitFailure.error}`);
+      expect(refused.reason).toBe(`Could not remove the worktree for EO-26 at ${codeSpan(path)}: ${codeSpan(gitFailure.error)}`);
       // A removal that failed, which is not the same claim as work left
       // unsaved — nothing here established anything about the contents.
       expect(refused.refusal).toBe("removal-failed");

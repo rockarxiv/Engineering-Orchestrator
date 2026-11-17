@@ -5,6 +5,8 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { git, samePath } from "../../workspace/git.js";
 import { CODEWIKI_HOOK_MARKER, containHooks, describeHookEscape, hookRedirectEnv } from "./hooks.js";
 import { run, initRepo } from "../../../../testing/git.js";
+import { codeSpan, cutKeepingCodeSpans } from "../../../../codeSpan.js";
+import { REASON_LIMIT, sayable } from "../sayable.js";
 
 /**
  * Keeping CodeWiki's git hooks out of somebody's repository (EO-146).
@@ -221,6 +223,35 @@ describe("what the guard does with hooks that appear while it is watching", () =
     expect(outcome.leaked).toEqual([hookFile(repoPath, "post-commit")]);
     expect(describeHookEscape(outcome)).toContain("could not remove them");
     expect(describeHookEscape(outcome)).toContain(hookFile(repoPath, "post-commit"));
+  });
+
+  it("names each hook file as a code span, so a Windows path keeps its backslash before .git in a comment (EO-830)", () => {
+    const leaked = "C:\\Users\\name\\src\\my-repo\\.git\\hooks\\post-commit";
+    const restored = "C:\\Users\\name\\src\\my-repo\\.git\\hooks\\pre-push";
+
+    expect(describeHookEscape({ hooksPath: null, restored: [], leaked: [leaked] })).toContain(`at ${codeSpan(leaked)} and EO could not remove them`);
+    expect(describeHookEscape({ hooksPath: null, restored: [restored], leaked: [] })).toContain(`at ${codeSpan(restored)} despite`);
+  });
+
+  it("keeps every code span closed when two long hook paths take the reason past what EO repeats (EO-830)", () => {
+    // Two hooks under a deep Windows checkout, which take the reason past
+    // what \`sayable\` repeats: the cut lands in the second path, past its
+    // \`.eo\` and before its \`.git\`.
+    const deep = `C:\\Users\\name\\.eo\\worktrees\\${"d".repeat(180)}\\my-repo\\.git\\hooks\\`;
+    const leaked = [`${deep}post-commit`, `${deep}post-merge`];
+    const reason = describeHookEscape({ hooksPath: null, restored: [], leaked });
+    if (reason === null) throw new Error("a leaked hook is something to say");
+    const second = reason.lastIndexOf(codeSpan(leaked[1]!));
+    expect(second + "`C:\\Users\\name\\.eo".length).toBeLessThan(REASON_LIMIT);
+    expect(reason.indexOf(".git", second)).toBeGreaterThan(REASON_LIMIT);
+
+    const said = sayable(reason, "unused");
+
+    expect(said).toBe(`${cutKeepingCodeSpans(reason, REASON_LIMIT)}…`);
+    expect(said.length).toBeLessThanOrEqual(REASON_LIMIT + 1);
+    expect(said).toContain(codeSpan(leaked[0]!));
+    // The second path, as far as it goes, still inside a span it closes.
+    expect(said).toMatch(/, `C:\\Users\\name\\\.eo\\[^`]+`…$/);
   });
 
   it("says what happened in words that name files and never quote them", async () => {

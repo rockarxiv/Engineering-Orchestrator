@@ -647,7 +647,7 @@ describe("codexHomePreflight", () => {
 
     it("says so on the item for a locked-down Codex agent, and for no other", () => {
       const [notice] = codexOwnSetupNotices(currentAgent());
-      expect(notice).toContain(`${currentAgent().name} runs with your own Codex setup in ${person}`);
+      expect(notice).toContain(`${currentAgent().name} runs with your own Codex setup in \`${person}\``);
       expect(notice).toContain("keyring");
 
       updateAgent(handle.db, implementer.id, { config: { inheritAmbientConfig: true } });

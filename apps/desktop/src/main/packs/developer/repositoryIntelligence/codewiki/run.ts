@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { killTree } from "../../../../process/killTree.js";
 import { resolveCodeWiki, type ResolveOptions } from "../binary/resolve.js";
+import { codeSpan } from "../../../../codeSpan.js";
 
 /**
  * The only file in this codebase that spawns the CodeWiki binary, and
@@ -328,7 +329,7 @@ function spawnCodeWiki(binaryPath: string, request: CodeWikiRunRequest): Promise
     // as a platform with no published build.
     child.on("error", (error: NodeJS.ErrnoException) => {
       const detail = error.code === "ENOENT" ? "there is no such file" : error.message;
-      finish("unavailable", null, `EO could not start the CodeWiki binary at ${binaryPath}: ${detail}.`);
+      finish("unavailable", null, `EO could not start the CodeWiki binary at ${codeSpan(binaryPath)}: ${error.code === "ENOENT" ? detail : codeSpan(detail)}.`);
     });
 
     child.on("close", (code, signalName) => {

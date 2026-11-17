@@ -19,6 +19,7 @@ import { matchesFilePattern } from "./fileMatch.js";
 import { containHooks, describeHookEscape } from "./hooks.js";
 import { explainOutput, readCommitSha, readFileListing, readIndexReport, readSymbolListing, readSyncReport, readVersion } from "./output.js";
 import { codeWikiExecutable, runCodeWiki, type CodeWikiExecutable, type CodeWikiRunRequest, type CodeWikiRunResult } from "./run.js";
+import { codeSpan } from "../../../../codeSpan.js";
 
 /**
  * The first implementation of the port: CodeWiki behind it, and nothing
@@ -420,13 +421,13 @@ export function createCodeWikiProvider(deps: CodeWikiProviderDeps): RepositoryIn
       return {
         present: false,
         probe: { present: false, indexPath, providerVersion, indexedCommitSha: null, unavailableReason: null },
-        problem: `CodeWiki left no index at ${indexPath}: there is no ${INDEX_DATABASE} in it.`,
+        problem: `CodeWiki left no index at ${codeSpan(indexPath)}: there is no ${INDEX_DATABASE} in it.`,
       };
     }
 
     const result = await invoke(target, ["status"]);
     if (!result.ok) {
-      const problem = `EO could not read the index at ${indexPath}: ${result.problem ?? "CodeWiki did not say what went wrong."} ${explainOutput(result.stdout, result.stderr)}`;
+      const problem = `EO could not read the index at ${codeSpan(indexPath)}: ${result.problem ?? "CodeWiki did not say what went wrong."} ${explainOutput(result.stdout, result.stderr)}`;
       // A non-zero exit is the tool answering — "no index found here" is
       // how it says there is nothing to describe — so the *probe* calls
       // it a fact about the index rather than an unavailability. A
@@ -442,7 +443,7 @@ export function createCodeWikiProvider(deps: CodeWikiProviderDeps): RepositoryIn
     }
 
     if (readIndexReport(result.stdout) === null) {
-      const problem = `EO could not read CodeWiki's description of the index at ${indexPath}: ${explainOutput(result.stdout, result.stderr)}`;
+      const problem = `EO could not read CodeWiki's description of the index at ${codeSpan(indexPath)}: ${explainOutput(result.stdout, result.stderr)}`;
       return {
         present: false,
         probe: { present: false, indexPath, providerVersion, indexedCommitSha: null, unavailableReason: problem },
@@ -572,7 +573,7 @@ export function createCodeWikiProvider(deps: CodeWikiProviderDeps): RepositoryIn
     if (report === null) {
       return {
         ok: false,
-        reason: `EO could not read what CodeWiki's sync did to the index at ${indexPathFor(target)}: ${explainOutput(result.stdout, result.stderr)}`,
+        reason: `EO could not read what CodeWiki's sync did to the index at ${codeSpan(indexPathFor(target))}: ${explainOutput(result.stdout, result.stderr)}`,
       };
     }
 
@@ -618,7 +619,7 @@ export function createCodeWikiProvider(deps: CodeWikiProviderDeps): RepositoryIn
       rmSync(indexPath, { recursive: true, force: true });
       return { ok: true };
     } catch (error) {
-      return { ok: false, reason: `EO could not delete the repository index at ${indexPath}: ${error instanceof Error ? error.message : String(error)}` };
+      return { ok: false, reason: `EO could not delete the repository index at ${codeSpan(indexPath)}: ${codeSpan(error instanceof Error ? error.message : String(error))}` };
     }
   }
 

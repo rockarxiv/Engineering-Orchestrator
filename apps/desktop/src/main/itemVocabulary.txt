@@ -471,7 +471,7 @@ apps/desktop/src/main/supervisor/threadReuse.ts: `${agent.name}'s last run on th
 apps/desktop/src/main/supervisor/threadReuse.ts: `${agent.name}'s last run on this ticket used the "${run.provider}" backend, and it now uses "${agent.provider}". ` +
 apps/desktop/src/main/supervisor/threadReuse.ts: `${agent.name}'s last run on this ticket was a dry run. A dry run's conversation isn't the ticket's history, ` +
 apps/desktop/src/main/supervisor/threadReuse.ts: `${agent.name}'s last run on this ticket was refused by the attempt-limit guard before any backend was ` +
-apps/desktop/src/main/supervisor/threadReuse.ts: `${agent.name}'s last run on this ticket worked in ${before}, and this one works in "${cwd}". ` +
+apps/desktop/src/main/supervisor/threadReuse.ts: `${agent.name}'s last run on this ticket worked in ${before}, and this one works in ${codeSpan(cwd)}. ` +
 apps/desktop/src/main/supervisor/threadReuse.ts: `EO has no record of the instructions ${agent.name}'s last run on this ticket was given — that run predates ` +
 apps/desktop/src/main/supervisor/threadReuse.ts: `EO has no record of which backend issued the thread from ${agent.name}'s last run on this ticket — that run ` +
 apps/desktop/src/main/supervisor/threadReuse.ts: `The MCP servers or skills attached to ${agent.name} have changed since its last run on this ticket. A ` +

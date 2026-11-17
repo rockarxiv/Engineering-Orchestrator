@@ -3,6 +3,7 @@ import { lstat, readdir, readFile, rm, unlink } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, resolve, sep } from "node:path";
 import { uuidv7 } from "@eo/core";
+import { codeSpan } from "../codeSpan.js";
 
 /**
  * A Codex agent's own Codex home (EO-378).
@@ -316,7 +317,7 @@ export function prepareCodexHome(options: CodexHomeOptions): CodexHomePreparatio
     const made = lstatOrNull(fs, path);
     if (made === null || made.isSymbolicLink() || !made.isDirectory()) throw new Error("it is not a real directory");
   } catch (error) {
-    return { ok: false, path, problem: `EO could not create ${path}: ${messageOf(error)}` };
+    return { ok: false, path, problem: `EO could not create ${codeSpan(path)}: ${codeSpan(messageOf(error))}` };
   }
 
   // Before anything is linked, and before every turn: whatever an earlier
@@ -384,7 +385,7 @@ function prepareAgentDirectory(fs: CodexHomeFs, root: string, agentId: string): 
     if (made === null || made.isSymbolicLink() || !made.isDirectory()) throw new Error("it is not a real directory");
     return null;
   } catch (error) {
-    return `EO could not create ${container}: ${messageOf(error)}`;
+    return `EO could not create ${codeSpan(container)}: ${codeSpan(messageOf(error))}`;
   }
 }
 
@@ -485,7 +486,7 @@ function scrubCodexHome(fs: CodexHomeFs, path: string): string | null {
   try {
     names = fs.readdirSync(path);
   } catch (error) {
-    return `EO could not read ${path}: ${messageOf(error)}`;
+    return `EO could not read ${codeSpan(path)}: ${codeSpan(messageOf(error))}`;
   }
   for (const name of names) {
     if (name === CODEX_SESSIONS_DIRECTORY || name === CODEX_CREDENTIAL_FILE) continue;
@@ -497,8 +498,8 @@ function scrubCodexHome(fs: CodexHomeFs, path: string): string | null {
       else fs.unlinkSync(entry);
     } catch (error) {
       return (
-        `EO could not remove ${entry}, which an earlier turn left in this agent's Codex home and Codex would read as configuration: ` +
-        `${messageOf(error)}`
+        `EO could not remove ${codeSpan(entry)}, which an earlier turn left in this agent's Codex home and Codex would read as configuration: ` +
+        `${codeSpan(messageOf(error))}`
       );
     }
   }
@@ -517,14 +518,14 @@ function linkSessions(fs: CodexHomeFs, windows: boolean, target: string, link: s
   try {
     fs.mkdirSync(target, { recursive: true });
   } catch (error) {
-    return `EO could not create ${target}, where Codex keeps the conversations it resumes: ${messageOf(error)}`;
+    return `EO could not create ${codeSpan(target)}, where Codex keeps the conversations it resumes: ${codeSpan(messageOf(error))}`;
   }
   const existing = lstatOrNull(fs, link);
   if (existing !== null) {
     // Junctions read as symbolic links too, which is what makes this one test.
     if (!existing.isSymbolicLink()) {
       return (
-        `${link} is a real directory rather than a link to ${target}, so threads started elsewhere would not resume ` +
+        `${codeSpan(link)} is a real directory rather than a link to ${codeSpan(target)}, so threads started elsewhere would not resume ` +
         `there. EO did not make it and will not delete it; move it aside and reply here to retry.`
       );
     }
@@ -532,14 +533,14 @@ function linkSessions(fs: CodexHomeFs, windows: boolean, target: string, link: s
     try {
       fs.unlinkSync(link);
     } catch (error) {
-      return `EO could not replace the stale link at ${link}: ${messageOf(error)}`;
+      return `EO could not replace the stale link at ${codeSpan(link)}: ${codeSpan(messageOf(error))}`;
     }
   }
   try {
     fs.symlinkSync(target, link, windows ? "junction" : "dir");
     return null;
   } catch (error) {
-    return `EO could not link ${link} to ${target}, where Codex keeps the conversations it resumes: ${messageOf(error)}`;
+    return `EO could not link ${codeSpan(link)} to ${codeSpan(target)}, where Codex keeps the conversations it resumes: ${codeSpan(messageOf(error))}`;
   }
 }
 
@@ -570,13 +571,13 @@ function symlinkCredential(
     try {
       if (existing !== null) fs.unlinkSync(link);
     } catch (error) {
-      return { problem: `EO could not replace ${link} with a link to your Codex sign-in at ${target}: ${messageOf(error)}` };
+      return { problem: `EO could not replace ${codeSpan(link)} with a link to your Codex sign-in at ${codeSpan(target)}: ${codeSpan(messageOf(error))}` };
     }
     try {
       fs.symlinkSync(target, link, "file");
     } catch (error) {
       if (windows && errorCode(error) === "EPERM") return { problem: DEVELOPER_MODE_PROBLEM, developerMode: true };
-      return { problem: `EO could not link ${link} to your Codex sign-in at ${target}: ${messageOf(error)}` };
+      return { problem: `EO could not link ${codeSpan(link)} to your Codex sign-in at ${codeSpan(target)}: ${codeSpan(messageOf(error))}` };
     }
   }
   return fs.existsSync(target) ? "carried" : "absent";
@@ -596,7 +597,7 @@ function dropCredentialThatIsNotALinkSync(fs: { lstatSync: (path: string) => Lin
     fs.unlinkSync(credential);
     return null;
   } catch (error) {
-    return `EO could not remove ${credential}, a hard link to your Codex sign-in that an earlier version of EO made: ${messageOf(error)}`;
+    return `EO could not remove ${codeSpan(credential)}, a hard link to your Codex sign-in that an earlier version of EO made: ${codeSpan(messageOf(error))}`;
   }
 }
 
@@ -737,7 +738,7 @@ export async function removeCodexHomeAsync(path: string, fs: CodexHomeSweepFs = 
 }
 
 function realSessionsProblem(sessionsPath: string, sessions: LinkStat, home: string): string {
-  return `${sessionsPath} is a real ${sessions.isDirectory() ? "directory" : "file"} rather than a link, so EO left ${home} alone rather than delete what is in it`;
+  return `${codeSpan(sessionsPath)} is a real ${sessions.isDirectory() ? "directory" : "file"} rather than a link, so EO left ${codeSpan(home)} alone rather than delete what is in it`;
 }
 
 /**
@@ -999,8 +1000,8 @@ export async function signInIsInKeyringAsync(personHome: string = personCodexHom
 export function keyringNotice(agentName: string, personHome: string = personCodexHome()): string {
   return (
     `Codex is set to keep your sign-in in your operating system's keyring, which EO cannot carry into a Codex home of ${agentName}'s own, ` +
-    `so ${agentName} runs with your own Codex setup in ${personHome}: its config.toml, AGENTS.md, skills and MCP servers reach the agent, ` +
-    `not only what is attached to it in EO. To lock it down, set cli_auth_credentials_store = "file" in ${join(personHome, "config.toml")} ` +
+    `so ${agentName} runs with your own Codex setup in ${codeSpan(personHome)}: its config.toml, AGENTS.md, skills and MCP servers reach the agent, ` +
+    `not only what is attached to it in EO. To lock it down, set cli_auth_credentials_store = "file" in ${codeSpan(join(personHome, "config.toml"))} ` +
     `and sign in to Codex again.`
   );
 }
@@ -1120,7 +1121,7 @@ export function codexHomeRefusal(
   if (prepared.credential === "absent" && cardSays === "signed_in") {
     return (
       `Codex is signed in, but not with a credential file EO can carry into ${agentName}'s own Codex home: ` +
-      `there is nothing at ${prepared.credentialPath}, and Codex's configuration does not say the sign-in is in the keyring. ` +
+      `there is nothing at ${codeSpan(prepared.credentialPath)}, and Codex's configuration does not say the sign-in is in the keyring. ` +
       `${optOut} Then reply here to retry.`
     );
   }
@@ -1202,7 +1203,7 @@ export function sideCallKeyringRefusal(personHome: string = personCodexHome()): 
     "EO's memory calls on Codex — choosing which memory an agent is given, writing notes from its runs, and tidying them — run only in a Codex home of their own, " +
     "and your Codex is set to keep its sign-in in your operating system's keyring (`keyring` or `auto`), which no other home can reach. " +
     "Running them in your own Codex home would hand them your own MCP servers and settings, so this call was not made. " +
-    `To make these calls, set cli_auth_credentials_store = "file" in ${join(personHome, "config.toml")} and sign in to Codex again.`
+    `To make these calls, set cli_auth_credentials_store = "file" in ${codeSpan(join(personHome, "config.toml"))} and sign in to Codex again.`
   );
 }
 

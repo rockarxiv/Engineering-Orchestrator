@@ -29,8 +29,10 @@
  * be edited once.
  */
 
+import { cutKeepingCodeSpans } from "../../../codeSpan.js";
+
 /** How much of somebody else's sentence EO is willing to repeat. */
-const REASON_LIMIT = 500;
+export const REASON_LIMIT = 500;
 
 /**
  * One bounded line of a reason, on its way to a transcript or a comment.
@@ -46,5 +48,7 @@ export function sayable(reason: string, fallback: string): string {
   const line = (first ?? "").trim();
   // A reason that leads with a blank line is not one EO will guess at.
   if (line === "") return fallback;
-  return line.length > REASON_LIMIT ? `${line.slice(0, REASON_LIMIT)}…` : line;
+  // Cut where no code span is left open: a path EO wrote as one would
+  // otherwise lose its backslashes to markdown past the cut (EO-830).
+  return line.length > REASON_LIMIT ? `${cutKeepingCodeSpans(line, REASON_LIMIT)}…` : line;
 }

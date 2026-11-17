@@ -455,6 +455,32 @@ describe("rebaseOntoBase", () => {
     expect(error).not.toContain("ENOENT");
   });
 
+  it("writes git's refusal to create the temporary worktree as a code span (EO-830)", async () => {
+    // A branch that does not exist: nothing holds it, so the rebase goes
+    // to a temporary worktree, and git refuses to add one. Its refusal
+    // can quote a path, which in a comment keeps its backslashes only
+    // inside a code span.
+    const result = await rebaseOntoBase(repoPath, "eo/NO-SUCH-BRANCH", "main");
+
+    expect(result.ok).toBe(false);
+    const error = result.ok ? "" : result.error;
+    expect(error).toMatch(/^Could not create a temporary worktree to rebase `eo\/NO-SUCH-BRANCH` onto `main`: `[^`]+`$/);
+  });
+
+  it("writes git's refusal of a rebase that never started as a code span (EO-830)", async () => {
+    await run(["checkout", "-b", "eo/TICKET-7b"], repoPath);
+    await commit(repoPath, "ticket.txt", "work\n");
+    await run(["checkout", "main"], repoPath);
+
+    // A \`from\` that does not resolve: git refuses before it starts, so
+    // there is nothing to abort and its own words are the reason.
+    const result = await rebaseOntoBase(repoPath, "eo/TICKET-7b", "main", { from: "no-such-ref" });
+
+    expect(result.ok).toBe(false);
+    const error = result.ok ? "" : result.error;
+    expect(error).toMatch(/^Rebasing `eo\/TICKET-7b` onto `main` failed: `[^`]*no-such-ref[^`]*`$/);
+  });
+
   it("refuses to rebase in a worktree EO did not create, and leaves it alone", async () => {
     await run(["checkout", "-b", "eo/TICKET-8"], repoPath);
     await commit(repoPath, "ticket.txt", "work\n");

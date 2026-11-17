@@ -576,7 +576,7 @@ describe("whether the person's Codex sign-in is in the keyring", () => {
     const notice = keyringNotice("Implementer", "/home/p/.codex");
 
     expect(notice).toContain("keyring");
-    expect(notice).toContain("Implementer runs with your own Codex setup in /home/p/.codex");
+    expect(notice).toContain("Implementer runs with your own Codex setup in `/home/p/.codex`");
     expect(notice).toContain("config.toml, AGENTS.md, skills and MCP servers reach the agent");
     expect(notice).toContain('cli_auth_credentials_store = "file"');
   });
@@ -868,7 +868,7 @@ describe("the home a side call runs in", () => {
     const sentence = sideCallKeyringRefusal(person);
 
     expect(sentence).toContain("keyring");
-    expect(sentence).toContain(`set cli_auth_credentials_store = "file" in ${join(person, "config.toml")} and sign in to Codex again`);
+    expect(sentence).toContain(`set cli_auth_credentials_store = "file" in \`${join(person, "config.toml")}\` and sign in to Codex again`);
     // Selection and extraction run on the dispatched agent's backend and
     // consolidation on the system agent's: there is no other backend to
     // choose for them.
