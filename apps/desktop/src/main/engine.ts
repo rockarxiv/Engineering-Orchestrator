@@ -52,6 +52,7 @@ import { useRegistry } from "./registry.js";
 import { useDispatchGate } from "./installedGate.js";
 import { useWorkspaceKinds } from "./workspaceKinds.js";
 import { usePackConnectors } from "./connectors/declared.js";
+import { usePackBriefs } from "./ipc/packBriefs.js";
 import { isItemLive, listAgents, resolveAgentAttachments } from "./db/repos/index.js";
 import { isEnginePausePreferred } from "./engineActivity.js";
 import type { ModuleChangeStaging } from "./roles/moduleChangeProposals.js";
@@ -290,7 +291,7 @@ export function createEngine(options: EngineOptions, packs: readonly CodePack[] 
   // is built, because the registry it reads — what validates a result,
   // which actions are functions EO runs, whether a role reuses its
   // thread — has to be the folded one by the time anything ticks.
-  const { registry: installedRegistry, connectors: installedConnectors, ...installed } = foldPacks(packs);
+  const { registry: installedRegistry, connectors: installedConnectors, briefRenderers: installedBriefs, ...installed } = foldPacks(packs);
   useRegistry(installedRegistry);
   // And what those packs can vouch for, where a screen can ask (EO-312).
   // The supervisor takes the kinds as options below; a column head
@@ -306,6 +307,9 @@ export function createEngine(options: EngineOptions, packs: readonly CodePack[] 
   // reach list on a step and the needs check both read it through an IPC
   // handler that has no engine in hand.
   usePackConnectors(installedConnectors);
+  // And the decision briefs they compute (EO-828), read by `items:brief`,
+  // another handler with no engine in hand.
+  usePackBriefs(installedBriefs);
   // Neither fallback is what production resolves: `main/index.ts`
   // passes both, under Electron's `userData`. These are what a caller
   // that passes nothing gets — a test, or the v1 gate. The sentence

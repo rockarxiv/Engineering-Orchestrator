@@ -93,8 +93,13 @@ export function briefWords(brief: StepBrief | null | undefined, stepNames?: Read
  * page says rather than leaving the heading over nothing.
  */
 export const ItemBriefPartSchema = z.object({
-  /** `summary`, the step's instructions, is the default brief's alone. */
-  show: z.enum(["summary", "output", "comment", "field"]),
+  /**
+   * `summary`, the step's instructions, is the default brief's alone.
+   * `computed` is a part a pack worked out for a step it recognises
+   * (EO-828) — a pull request comment beside its planned reply, the pull
+   * request a step closes — rather than one read off the thread.
+   */
+  show: z.enum(["summary", "output", "comment", "field", "computed"]),
   /** "Current output", "Verdict from Review", "Output of Implement", "Customer". */
   heading: z.string(),
   body: z.string().nullable(),

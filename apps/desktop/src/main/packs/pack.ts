@@ -21,6 +21,7 @@ import { createCoreBuiltinRunners } from "../supervisor/coreBuiltins.js";
 import type { RunSupervisorOptions } from "../supervisor/runSupervisor.js";
 import type { WorkspaceKind } from "../supervisor/workspaceKind.js";
 import type { registerHandler } from "../ipc/registry.js";
+import type { DecisionBriefRenderer } from "../ipc/packBriefs.js";
 
 /**
  * What a code pack is (ARCHITECTURE.md, "The core is domain-neutral", "Where the seams are",
@@ -206,6 +207,19 @@ export interface CodePack extends PackHooks {
    */
   sectionRenderers?: readonly SectionRenderer[];
   /**
+   * The decision briefs this pack computes (EO-828, ARCHITECTURE.md, "The
+   * decision's brief"): for a `user` step it recognises, what the person
+   * deciding is shown behind "Show details", in place of the default.
+   *
+   * Composed like the section renderers rather than collided like a hook:
+   * each answers only for the steps it knows, so two packs each briefing
+   * their own decisions is not a clash. The fold concatenates them in pack
+   * order, and the first to answer for a step is the one shown. Two packs
+   * naming a renderer by one id is refused, so a brief that failed can be
+   * traced to the pack that wrote it.
+   */
+  briefRenderers?: readonly DecisionBriefRenderer[];
+  /**
    * The IPC handlers this pack owns (the forge, Jira, repository and
    * worktree commands).
    *
@@ -252,6 +266,8 @@ export type FoldedPacks = PackHooks & {
   posters: Record<string, CommentPoster>;
   registry: Registry;
   sectionRenderers: readonly SectionRenderer[];
+  /** In pack order; the first to answer for a step is the one shown (EO-828). */
+  briefRenderers: readonly DecisionBriefRenderer[];
   resolveNextState: NonNullable<RunSupervisorOptions["resolveNextState"]>;
   onRunSucceeded: NonNullable<RunSupervisorOptions["onRunSucceeded"]>;
 };
@@ -334,6 +350,7 @@ export function foldPacks(packs: readonly CodePack[]): FoldedPacks {
     }
     for (const action of Object.keys(pack.builtins)) claim("builtin", action, pack);
     for (const name of Object.keys(pack.posters ?? {})) claim("comment poster", name, pack);
+    for (const renderer of pack.briefRenderers ?? []) claim("decision brief", renderer.id, pack);
   }
 
   const roles = new Map<string, RoleEntry>();
@@ -412,6 +429,10 @@ export function foldPacks(packs: readonly CodePack[]): FoldedPacks {
     // hooks above: a section is something added to a prompt, and two
     // packs adding one each is not a clash.
     sectionRenderers: packs.flatMap((pack) => pack.sectionRenderers ?? []),
+    // In pack order too (EO-828): each answers for the decisions it knows,
+    // and with nothing installed there are none and every brief is the
+    // default or the step's own.
+    briefRenderers: packs.flatMap((pack) => pack.briefRenderers ?? []),
     posters,
     // `buildRegistry` rather than the maps alone: a pack whose builtin
     // declares no `failed`, or two roles declaring one action's schema,
