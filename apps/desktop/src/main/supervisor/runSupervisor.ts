@@ -689,7 +689,7 @@ export interface RunSupervisorOptions {
    * dispatched to an agent on it until it is signed in. Any other
    * refusal is the item's, as it always was.
    */
-  checkAuth?: (agent: Agent) => Promise<RuntimeAuthCheck>;
+  checkAuth?: (agent: Agent, itemId?: string) => Promise<RuntimeAuthCheck>;
   /**
    * Told each time EO completes a sign-in of a runtime (EO-795,
    * `runtimes/signedIn.ts`), which lifts a block on it at once (EO-796).
@@ -2337,7 +2337,10 @@ export function createRunSupervisor(
         noteRuntimeHold(item, blockedOn);
         return { kind: "stand-down" };
       }
-      const auth = await checkAuth(runningOn);
+      // With the item the turn will work on, whose Codex home is the one
+      // to make ready (EO-829).
+      const turnItem = turnItemOf(item);
+      const auth = await (turnItem === undefined ? checkAuth(runningOn) : checkAuth(runningOn, turnItem));
       if (auth.signedOut !== undefined) {
         blockRuntime(auth.signedOut, runningOn, item);
         noteRuntimeHold(item, auth.signedOut.runtime);
@@ -2643,6 +2646,15 @@ export function createRunSupervisor(
     const bridge = options.agentWriteBridge?.() ?? null;
     if (bridge === null) return {};
     return { writeBridge: { ...bridge.tokenFor(item.id), ...(listsModuleChanges(item) ? { moduleChanges: true } : {}) } };
+  }
+
+  /**
+   * The id a turn on this item gives its backend (EO-829), or none for a
+   * conversation — the assistant's chat or a scenario chat — whose turns
+   * run in the agent's own Codex home rather than one per item.
+   */
+  function turnItemOf(item: Item): string | undefined {
+    return item.stepId === ASSIST_STEP || item.stepId === SCENARIO_STEP ? undefined : item.id;
   }
 
   /**
@@ -4218,6 +4230,7 @@ export function createRunSupervisor(
     | "skillScope"
     | "environmentVariables"
     | "withheldEnvironmentVariables"
+    | "itemId"
   > => {
     // Every turn's, not only a conversation's, despite the name — every
     // turn path spreads it. `skillScope` is where the run works, for the
@@ -4234,8 +4247,16 @@ export function createRunSupervisor(
       ...turnBudget(item, agent),
       skillScope: skillRunScope(db, item),
       ...turnEnvironment(item),
+      // The item, for the backend that keeps a home per item (EO-829).
+      ...turnItemOption(item),
     };
   };
+
+  /** `AgentTurnOverrides.itemId` for a turn on this item: its id, and nothing on a conversation. */
+  function turnItemOption(item: Item): { itemId?: string } {
+    const turnItem = turnItemOf(item);
+    return turnItem === undefined ? {} : { itemId: turnItem };
+  }
 
   /**
    * The run's environment variables (EO-487), read from disk now — every

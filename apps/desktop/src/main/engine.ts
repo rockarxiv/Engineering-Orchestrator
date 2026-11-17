@@ -21,7 +21,7 @@ import { releaseItemToolDirectories, writeAgentToolDirectory } from "./agentAtta
 import { adminDeliveryFor, adminDispatchFor, type AdminMcpLookup } from "./agentAttachments/adminDelivery.js";
 import type { AdminMcpEndpoint } from "./mcpHost/admin.js";
 import { createCodexProvider, SECRET_WITHHELD, type CodexAgentConfig, type ServerSecretRead } from "./providers/codex.js";
-import { agentsWithCodexHomes, chooseCodexHome, codexHomeRefusal, inheritsAmbientConfig, signInIsInKeyringAsync, sideCallCodexHome, sweepCodexHomes, type CodexHomeOptions } from "./providers/codexHome.js";
+import { agentsWithCodexHomes, chooseCodexHome, codexHomeRefusal, inheritsAmbientConfig, keyringNotice, personCodexHome, signInIsInKeyring, signInIsInKeyringAsync, sideCallCodexHome, sweepCodexHomes, type CodexHomeOptions } from "./providers/codexHome.js";
 import { createSideCallProvider, sideCallSignedIn, sideCallSignInUnreachable } from "./providers/sideCallProviders.js";
 import { defaultAgentModel, resolveSmallModel, smallModelSources } from "./providers/smallModels.js";
 import { managedProviderReady, managedRuntimeEnabled } from "./ipc/runtimeCommands.js";
@@ -52,7 +52,7 @@ import { useRegistry } from "./registry.js";
 import { useDispatchGate } from "./installedGate.js";
 import { useWorkspaceKinds } from "./workspaceKinds.js";
 import { usePackConnectors } from "./connectors/declared.js";
-import { listAgents, resolveAgentAttachments } from "./db/repos/index.js";
+import { isItemLive, listAgents, resolveAgentAttachments } from "./db/repos/index.js";
 import { isEnginePausePreferred } from "./engineActivity.js";
 import type { ModuleChangeStaging } from "./roles/moduleChangeProposals.js";
 
@@ -493,7 +493,7 @@ export function createEngine(options: EngineOptions, packs: readonly CodePack[] 
           }),
         }
       : {}),
-    checkAuth: (agent) => checkAgentAuth(agent, runtimeRoot, db, options.apiKeys, codexHomeRoots),
+    checkAuth: (agent, itemId) => checkAgentAuth(agent, runtimeRoot, db, options.apiKeys, codexHomeRoots, itemId),
     // EO's short model calls that are not runs (EO-477): each backend's
     // own adapter for them, its small model, and its sign-in.
     sideCalls: sideCallsFor(options, runtimeRoot, db, codexHomeRoots),
@@ -514,7 +514,7 @@ export function createEngine(options: EngineOptions, packs: readonly CodePack[] 
     // agent's attached servers would start without their declared values,
     // until EO-377 delivered them; `codexSkillNotices` went the same way
     // when EO-207 delivered skills.
-    dispatchNotices: (agent) => (codexHomeRoots ? codexOwnSetupNotices(agent, codexHomeRoots) : []),
+    dispatchNotices: (agent) => (codexHomeRoots ? codexOwnSetupNotices(agent) : []),
     isAgentAvailable: options.provider
       ? () => true
       : (agent) =>
@@ -1136,8 +1136,10 @@ function buildProvider(
         // EO-378: the agent's own Codex home, made ready per turn. The
         // provider skips it when the agent is ticked over to the
         // person's own setup — the flag is in `config` below, and the
-        // adapter is where it is read, as on Claude.
-        ...(codexHomeRoots ? { codexHome: () => readyCodexHome(codexHomeRoots, agent.id) } : {}),
+        // adapter is where it is read, as on Claude. One per item
+        // (EO-829): the turn names its item, and a turn on no item
+        // names none and runs in the agent's own.
+        ...(codexHomeRoots ? { codexHome: (itemId?: string) => readyCodexHome(codexHomeRoots, agent.id, itemId ?? null) } : {}),
         // Nothing here says whether a turn must be inside a Git
         // repository (EO-386). That was decided on this line, from the
         // agent's role, for this backend only — and this provider is
@@ -1215,6 +1217,8 @@ async function checkAgentAuth(
   db: Db,
   apiKeys?: ApiKeyStoreOptions,
   codexHomeRoots?: readonly string[],
+  /** The item the dispatch is for, whose Codex home is made ready (EO-829); none for a turn on no item. */
+  itemId?: string,
 ): Promise<RuntimeAuthCheck> {
   const executablePath = runtimePathFor(agent.provider, runtimeRoot, db, configuredExecutablePath(agent));
   const verdict = await checkRuntimeAuth({
@@ -1231,7 +1235,7 @@ async function checkAgentAuth(
   // The card's answer is asked again rather than threaded out of the
   // call above, and costs nothing: that call just put it in the cache
   // this reads from.
-  return codexHomePreflight(agent, db, codexHomeRoots, async () => (await runtimeAuth({ provider: "codex", executablePath })).state);
+  return codexHomePreflight(agent, db, codexHomeRoots, async () => (await runtimeAuth({ provider: "codex", executablePath })).state, { itemId: itemId ?? null });
 }
 
 /**
@@ -1259,8 +1263,11 @@ export async function codexHomePreflight(
   db: Db,
   roots: readonly string[],
   cardSays: () => Promise<"signed_in" | "signed_out" | "unknown">,
-  seams: CodexHomeSeams = {},
+  seams: CodexHomeSeams & Pick<CodexHomeOptions, "itemId"> = {},
 ): Promise<{ ok: boolean; reason?: string }> {
+  // The home of the item being dispatched (EO-829), made ready the way
+  // the turn's own will be — and, while that item's warm process runs
+  // in it, not scrubbed, which preparing never does under a running Codex.
   const choice = chooseCodexHome({ ...seams, roots, agentId: agent.id });
   await sweepUnusedCodexHomes(db, roots);
   // An agent running in the person's own home, because their sign-in is
@@ -1280,8 +1287,8 @@ type CodexHomeSeams = Pick<CodexHomeOptions, "platform" | "fs">;
  * why when no home could be made — never a run in the person's home
  * that nobody asked for (EO-378). The preflight refuses that case first.
  */
-function readyCodexHome(roots: readonly string[], agentId: string): string | null {
-  const choice = chooseCodexHome({ roots, agentId });
+function readyCodexHome(roots: readonly string[], agentId: string, itemId: string | null): string | null {
+  const choice = chooseCodexHome({ roots, agentId, itemId });
   if (choice.kind === "unavailable") throw new Error(choice.problem);
   return choice.kind === "own" ? choice.path : null;
 }
@@ -1297,11 +1304,16 @@ function sideCallHome(roots: readonly string[]): string {
  * The note a locked-down Codex agent's dispatch carries when it runs with
  * the person's own setup after all (EO-378): their sign-in is in the
  * keyring. Empty for every other agent.
+ *
+ * Asks only where the sign-in is, which is all `chooseCodexHome` decides
+ * `person` from, rather than making a home ready: the dispatch has no
+ * item here, and a home made for none would be one the agent's tickets
+ * never run in (EO-829).
  */
-export function codexOwnSetupNotices(agent: Agent, roots: readonly string[], seams: CodexHomeSeams = {}): string[] {
+export function codexOwnSetupNotices(agent: Agent): string[] {
   if (agent.provider !== "codex" || inheritsAmbientConfig(agent.config)) return [];
-  const choice = chooseCodexHome({ ...seams, roots, agentId: agent.id });
-  return choice.kind === "person" ? [choice.notice(agent.name)] : [];
+  const personHome = personCodexHome();
+  return signInIsInKeyring(personHome) ? [keyringNotice(agent.name, personHome)] : [];
 }
 
 /**
@@ -1318,7 +1330,12 @@ export async function sweepUnusedCodexHomes(db: Db, roots: readonly string[]): P
     // With the sign-in in the keyring every Codex agent runs in the
     // person's own home, so no agent's home is in use.
     const keyring = await signInIsInKeyringAsync();
-    const keep = (): ReadonlySet<string> => (keyring ? new Set<string>() : agentsWithCodexHomes(listAgents(db)));
+    // Asked afresh for every home, immediately before it is claimed: an
+    // agent's directory while the agent keeps a home at all, and a
+    // item's home in it while the item is neither archived nor
+    // deleted (EO-829).
+    const keep = (agentId: string, itemId: string | null): boolean =>
+      !keyring && agentsWithCodexHomes(listAgents(db)).has(agentId) && (itemId === null || isItemLive(db, itemId));
     for (const root of roots) await sweepCodexHomes(root, keep);
   } catch (error) {
     console.warn(`[eo] could not sweep unused Codex homes: ${error instanceof Error ? error.message : String(error)}`);

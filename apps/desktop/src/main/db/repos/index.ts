@@ -292,6 +292,7 @@ export {
   deleteItem,
   itemWithDescendants,
   getItem,
+  isItemLive,
   getItemByJiraKey,
   getItemByKey,
   hasJiraPullPending,

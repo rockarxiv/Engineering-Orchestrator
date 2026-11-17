@@ -25,7 +25,7 @@ import {
   SECRET_WITHHELD,
 } from "./codex.js";
 import { AppServerExitedError } from "./codexAppServer.js";
-import { chooseCodexHome, prepareCodexHome, type CodexHomePreparation } from "./codexHome.js";
+import { agentCodexHomePath, chooseCodexHome, prepareCodexHome, type CodexHomePreparation } from "./codexHome.js";
 import { windowsWithDeveloperMode } from "../testing/unprivilegedWindowsFs.js";
 import { CodexClient, serializeConfigOverrides, type CodexClientOptions, type CodexThread, type CodexThreadOptions, type CodexTurnOptions } from "./codexClient.js";
 import { fakeAppServer, note, type FakeAppServerScenario } from "../testing/fakeCodexAppServer.js";
@@ -2021,8 +2021,9 @@ describe("createCodexProvider over a stubbed app-server", () => {
       executablePath: "/opt/eo/runtimes/codex/bin/codex",
       ...options,
       // The provider's own construction, with only the spawn swapped.
-      createCodex: (repositoryMcp) =>
-        new CodexClient({ ...codexClientOptions({ executablePath: "/opt/eo/runtimes/codex/bin/codex", ...options }, repositoryMcp), spawn: fake.spawn, shutdownGraceMs: 200 }),
+      // The item too, which is the last argument (EO-829): the home is its.
+      createCodex: (repositoryMcp, ...rest) =>
+        new CodexClient({ ...codexClientOptions({ executablePath: "/opt/eo/runtimes/codex/bin/codex", ...options }, repositoryMcp, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, rest[8]), spawn: fake.spawn, shutdownGraceMs: 200 }),
     });
     return { fake, provider };
   }
@@ -2125,13 +2126,17 @@ describe("createCodexProvider over a stubbed app-server", () => {
     const root = worktree();
     vi.stubEnv("PATH", "/probe/bin:/usr/bin");
 
+    // On an item, whose home it is (EO-829): one per agent and item.
+    const turnItem = "019fb8c6-0000-7000-8000-0000000829a1";
+    const codexHome = vi.fn((itemId?: string) => readyHome(prepareCodexHome({ root, agentId: "019fb8c6-0000-7000-8000-00000000c0de", itemId: itemId ?? null, personHome: person })));
     const { fake, provider } = providerOver(
       { after: { "turn/start": [note.turnStarted(), note.agentMessage("ok"), note.turnCompleted()] } },
-      { codexHome: () => readyHome(prepareCodexHome({ root, agentId: "019fb8c6-0000-7000-8000-00000000c0de", personHome: person })) },
+      { codexHome },
     );
-    await collect(provider.start({ ...startOpts, cwd: worktree() }));
+    await collect(provider.start({ ...startOpts, cwd: worktree(), itemId: turnItem }));
 
-    const home = join(root, "019fb8c6-0000-7000-8000-00000000c0de");
+    const home = join(root, "019fb8c6-0000-7000-8000-00000000c0de", turnItem);
+    expect(codexHome).toHaveBeenLastCalledWith(turnItem);
     expect(fake.launches[0]?.options.env).toMatchObject({ CODEX_HOME: home, PATH: "/probe/bin:/usr/bin" });
     // The home, whole: two links and nothing else EO put there.
     expect(readdirSync(home).sort()).toEqual(["auth.json", "sessions"]);
@@ -2144,6 +2149,15 @@ describe("createCodexProvider over a stubbed app-server", () => {
     for (const theirs of ["config.toml", "AGENTS.md", "skills"]) expect(existsSync(join(home, theirs))).toBe(false);
     // And none of their servers is named on the command line either.
     expect(fake.launches[0]?.args.join("\n")).not.toContain("theirs");
+
+    // A resume on the same item runs in the same home; a turn on no
+    // item asks for none, and runs in the agent's own.
+    await collect(provider.resume("thr_1", "carry on", { cwd: worktree(), itemId: turnItem }));
+    expect(codexHome).toHaveBeenLastCalledWith(turnItem);
+    expect(fake.launches.at(-1)?.options.env).toMatchObject({ CODEX_HOME: home });
+    await collect(provider.start({ ...startOpts, cwd: worktree() }));
+    expect(codexHome).toHaveBeenLastCalledWith();
+    expect(fake.launches.at(-1)?.options.env).toMatchObject({ CODEX_HOME: agentCodexHomePath(root, "019fb8c6-0000-7000-8000-00000000c0de") });
   });
 
   it("launches an agent ticked over to the person's own setup exactly as before, without asking for a home", async () => {
@@ -2193,7 +2207,7 @@ describe("createCodexProvider over a stubbed app-server", () => {
     const person = worktree();
     writeFileSync(join(person, "auth.json"), "{}");
     const root = worktree();
-    const home = join(root, "agent-that-wrote");
+    const home = agentCodexHomePath(root, "agent-that-wrote");
     const codexHome = () => readyHome(prepareCodexHome({ root, agentId: "agent-that-wrote", personHome: person }));
     codexHome();
     writeFileSync(join(home, "config.toml"), '[mcp_servers.mine]\ncommand = "anything"\n');
@@ -2225,7 +2239,7 @@ describe("createCodexProvider over a stubbed app-server", () => {
     );
     await collect(provider.start({ ...startOpts, cwd: worktree() }));
 
-    const home = join(root, "agent-on-windows");
+    const home = agentCodexHomePath(root, "agent-on-windows");
     expect(fake.launches[0]?.options.env).toMatchObject({ CODEX_HOME: home });
     expect(readdirSync(home).sort()).toEqual(["auth.json", "sessions"]);
     expect(lstatSync(join(home, "auth.json")).isSymbolicLink()).toBe(true);

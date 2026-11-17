@@ -125,6 +125,18 @@ export interface AgentTurnOverrides {
   withheldEnvironmentVariables?: string[];
   attachments?: AgentInputAttachment[];
   /**
+   * The item this turn works on, for a backend that keeps state of the
+   * agent's per item (EO-829): a locked-down Codex agent runs every turn
+   * on an item in a Codex home of its own for that agent and that item,
+   * so its turns on two tickets at once never clear a home the other is
+   * running in. Claude keeps no such state and reads none of this.
+   *
+   * Absent on a turn on no item — an assistant conversation or a
+   * scenario chat, though each is an item — which runs in the agent's own
+   * home as it always did.
+   */
+  itemId?: string;
+  /**
    * The run this turn's processes belong to, and the memory they may use
    * together (EO-738, ARCHITECTURE.md, "Guardrails").
    *
