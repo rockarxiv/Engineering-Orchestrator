@@ -48,6 +48,7 @@ import {
   type SuggestionOutcome,
   type UsageEvent,
   type ForkCopy,
+  liveMessageOf,
   skillsForRun,
   withoutReservedEnvironmentVariables,
   SKILL_READ_TOOL_NAME,
@@ -3035,7 +3036,7 @@ export function createCodexProvider(options: CodexProviderOptions = {}): AgentPr
         if (event.type === "thread_started") {
           if (event.fork) fork = event.fork;
         } else if (event.type === "usage") spent = event;
-        else if (event.type === "result") answer = typeof event.data === "string" ? event.data : JSON.stringify(event.data);
+        else if (event.type === "result") answer = suggestionIn(event.data, resumeOpts.outputSchema !== undefined);
         else if (event.type === "error" && event.fatal !== false) failure ??= event.message;
       }
     } catch (error) {
@@ -3242,18 +3243,37 @@ function suggestionSkipped(
 }
 
 /**
+ * What a suggestion's fork answered, as the text its filters judge
+ * (EO-839). On a turn sent with an answer schema the fork answers in
+ * that schema, with the suggestion in the answer's message
+ * (`PROMPT_SUGGESTION_PROMPT`), read as the chat reads any answer's
+ * message (`liveMessageOf`): a structured answer without one is "". On a
+ * turn sent without one, the fork's plain text, as it was.
+ */
+function suggestionIn(data: unknown, structured: boolean): string {
+  const text = typeof data === "string" ? data : JSON.stringify(data);
+  return structured ? liveMessageOf([text]) : text;
+}
+
+/**
  * What a suggestion's fork is opened with (EO-808): what the turn was,
  * so it is launched as the turn was and its request reads the thread
  * from the prompt cache — less what belongs to the turn alone, and with
  * every call refused.
  *
- * Without the answer schema, which would put the suggestion in the
- * answer's shape; the person's attachments, said in the turn's own
- * message; the warm process waiting for the thread's next turn, which is
- * not this; the turn's budget and streaming, and the callbacks that
- * report on the turn (`TURN_ALONE`).
+ * With the turn's answer schema, as the learning review's fork keeps it
+ * (EO-839): the schema is part of the request's cached prefix, and a
+ * fork without it does not match what the turn sent — measured at 99%
+ * of the conversation read from the cache with it, 0–21% without. The
+ * fork answers in the schema, so its suggestion is read from the
+ * answer's message (`suggestionIn`).
+ *
+ * Without the person's attachments, said in the turn's own message; the
+ * warm process waiting for the thread's next turn, which is not this;
+ * the turn's budget and streaming, and the callbacks that report on the
+ * turn (`TURN_ALONE`).
  */
-function suggestionForkOptions(turn: AgentProviderResumeOptions, signal: AbortSignal): AgentProviderResumeOptions {
+export function suggestionForkOptions(turn: AgentProviderResumeOptions, signal: AbortSignal): AgentProviderResumeOptions {
   const launched: AgentProviderResumeOptions = { ...turn };
   for (const own of TURN_ALONE) delete launched[own];
   return { ...launched, refuseCallsExcept: [], signal };
@@ -3261,7 +3281,6 @@ function suggestionForkOptions(turn: AgentProviderResumeOptions, signal: AbortSi
 
 /** What a turn's options say of that turn alone, and a suggestion's fork is not given (EO-808). */
 const TURN_ALONE = [
-  "outputSchema",
   "attachments",
   "warmKey",
   "budgetCents",

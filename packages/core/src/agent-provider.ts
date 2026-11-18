@@ -241,6 +241,9 @@ export const SUGGESTED_REPLY_EVENT = "suggested_reply";
  *   answer and the rule.
  * - `emitted` — passed on as a `PromptSuggestionEvent`: the text, and the
  *   raw answer it was cleaned up from.
+ *
+ * Where the fork answered in the turn's answer schema, the "raw answer"
+ * is that answer's message (EO-839), not the whole structure.
  */
 export type SuggestionOutcome =
   | { kind: "skipped"; rule: SuggestionSkipRule; uncachedTokens?: number; cachedTokens?: number }
