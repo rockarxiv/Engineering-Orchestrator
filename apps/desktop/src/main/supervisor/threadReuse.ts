@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { UNSCOPED_RUN, type Agent, type Run, type Uuid } from "@eo/core";
+import { TEAM_PARTICIPANT_ACTION, UNSCOPED_RUN, type Agent, type Run, type Uuid } from "@eo/core";
 import { agentAttachmentsHash, EMPTY_ATTACHMENTS_HASH } from "../agentAttachments/fingerprint.js";
 import type { Db } from "../db/client.js";
 import { getItem, listItemAttachments, listRunsForItem } from "../db/repos/index.js";
@@ -380,6 +380,10 @@ export function findReusableThread(db: Db, query: ThreadReuseQuery): ThreadReuse
     // is history this dispatch could continue, so neither is worth an
     // account of itself. From here they look like never having run.
     .filter((run) => run.agentId === agent.id)
+    // A team participant's thread is its attempt's alone (EO-845, EO-846):
+    // report-only, in a directory of its own, and never carried on by
+    // the agent's ordinary work on the item.
+    .filter((run) => run.action !== TEAM_PARTICIPANT_ACTION)
     // Newest first. `listRunsForItem` orders by id ascending and ids
     // are uuidv7, minted monotonically, so newest-by-id is
     // newest-by-creation. Deliberately not `started_at`, which is a

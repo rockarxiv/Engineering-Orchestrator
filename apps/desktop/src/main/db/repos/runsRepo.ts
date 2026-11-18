@@ -1,8 +1,9 @@
-import { and, asc, desc, eq, inArray, isNotNull, isNull, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNotNull, isNull, ne, sql } from "drizzle-orm";
 import { onProject } from "./projectScope.js";
 import {
   DEBUG_SENT_EVENT,
   INTERPRET_ACTION,
+  TEAM_PARTICIPANT_ACTION,
   uuidv7,
   type RecordCursor,
   type Run,
@@ -399,7 +400,7 @@ export function activeRunForItem(db: Db, itemId: Uuid): Run | undefined {
   const row = db
     .select()
     .from(runs)
-    .where(and(eq(runs.itemId, itemId), inArray(runs.status, ["queued", "running"])))
+    .where(and(eq(runs.itemId, itemId), inArray(runs.status, ["queued", "running"]), ne(runs.action, TEAM_PARTICIPANT_ACTION)))
     .limit(1)
     .get();
   return row === undefined ? undefined : toDomain(row);
@@ -435,8 +436,32 @@ export function newestRunWithEvent(db: Db, itemId: Uuid, eventType: string): Uui
   return (row?.runId ?? null) as Uuid | null;
 }
 
+/**
+ * Every item's run in flight, queued or running: what the scheduler counts
+ * against its caps and what "the item is being worked on" reads.
+ *
+ * A team participant's run is not one of them (EO-846): the item it works
+ * for already has its run here — the team's own — and a participant is
+ * counted against the team's, the machine's and its agent's limits
+ * instead (`listActiveParticipantRuns`).
+ */
 export function listActiveRuns(db: Db): Run[] {
-  return db.select().from(runs).where(inArray(runs.status, ["queued", "running"])).all().map(toDomain);
+  return db
+    .select()
+    .from(runs)
+    .where(and(inArray(runs.status, ["queued", "running"]), ne(runs.action, TEAM_PARTICIPANT_ACTION)))
+    .all()
+    .map(toDomain);
+}
+
+/** Every team participant's run in flight (EO-846), across every item. */
+export function listActiveParticipantRuns(db: Db): Run[] {
+  return db
+    .select()
+    .from(runs)
+    .where(and(inArray(runs.status, ["queued", "running"]), eq(runs.action, TEAM_PARTICIPANT_ACTION)))
+    .all()
+    .map(toDomain);
 }
 
 /**

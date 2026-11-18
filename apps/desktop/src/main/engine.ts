@@ -466,6 +466,25 @@ export function createEngine(options: EngineOptions, packs: readonly CodePack[] 
           codexHomeRoots,
           options.codexSearchHookCommandPath,
         )),
+    // A team participant's provider, built for its attempt alone and held
+    // report-only (EO-845, EO-846). Not where a caller scripted the
+    // backend: a real participant beside a scripted step is neither.
+    ...(options.provider
+      ? {}
+      : {
+          reportOnlyProvider: (agent: Agent, attemptId: string) =>
+            reportOnlyProviderForAgent({
+              agent,
+              attemptId,
+              eoMcpServerPath,
+              dbPath,
+              runtimeRoot,
+              db,
+              ...(options.apiKeys ? { apiKeys: options.apiKeys } : {}),
+              ...(codexHomeRoots ? { codexHomeRoots } : {}),
+              ...(options.codexSearchHookCommandPath ? { codexSearchHookCommandPath: options.codexSearchHookCommandPath } : {}),
+            }),
+        }),
     runtimeSource: options.provider
       ? () => null
       : (agent) => runtimeSourceForAgent(agent, runtimeRoot, db),
