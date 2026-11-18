@@ -1189,6 +1189,14 @@ describe("the chat layout's home", () => {
       expect(within(card).getByRole("button", { name: "Approve design" })).toBeEnabled();
     });
 
+    it("says why its trial could not be made now, and holds the button (EO-833)", async () => {
+      room({ ...TRIAL, problem: "Nothing was made to test: a trial's test items work on one of the project's workspaces, and it has none attached. Attach a repository or a folder first." });
+
+      const card = await screen.findByRole("region", { name: "Pipeline draft" });
+      expect(await within(card).findByText(/it has none attached/)).toBeInTheDocument();
+      expect(within(card).getByRole("button", { name: "Approve design" })).toBeDisabled();
+    });
+
     it("says what a design posted mid-test changes, and holds the button while its plan does not fit", async () => {
       room({ ...TRIAL, changes: ['it adds the step "Review"'], problem: "The trial plan does not fit this draft, so this design cannot be approved." });
 

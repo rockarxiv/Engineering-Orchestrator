@@ -83,6 +83,7 @@ import {
   shownAssistConversation,
   assistChatProjectId,
 } from "../roles/assist.js";
+import { designTrialProblem } from "../trials/design.js";
 import { designCardView } from "../trials/designCard.js";
 import { discardTrial } from "../trials/discard.js";
 import { readTrialPublish } from "../trials/publishCard.js";
@@ -1245,7 +1246,7 @@ export function readAssistDraftForPublish(db: Db, input: IpcPayload<"assist:draf
   // A design card (EO-587): the turn planned a test with real runs, and
   // the card offers Approve design rather than Publish.
   const comment = getComment(db, messageId);
-  return { ...answer, trial: comment === undefined ? null : designCardView(db, conversation, comment, answer) };
+  return { ...answer, trial: comment === undefined ? null : designCardView(db, conversation, comment, answer, (card) => designTrialProblem(db, conversation, card, () => answer, place)) };
 }
 
 /**

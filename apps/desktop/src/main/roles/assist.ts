@@ -2471,13 +2471,22 @@ export function readAssistDraft(db: Db, conversation: Item, commentId: Uuid): Re
   if (slot === null) {
     return { ok: false, reason: "That card is a proposal rather than a pipeline draft." };
   }
-  const draft = slot.draft;
-  const modules = parsed.data.modules ?? [];
+  return readDraftOfTurn(db, conversation, comment.runId, parsed.data, slot.draft);
+}
+
+/**
+ * `readAssistDraft` from the turn's output itself rather than from a
+ * posted card (EO-833): the draft as Publish would read it, judged as a
+ * card already posted — so a module the same reply proposes must already
+ * be saved, as posting saves it.
+ */
+function readDraftOfTurn(db: Db, conversation: Item, runId: Uuid | null, output: AssistOutput, draft: AssistDraft): ReadAssistDraftResult {
+  const modules = output.modules ?? [];
 
   // The card's own run, so publishing an hour later reaches the same
   // pipeline the card was rendered against — however many messages have
   // been sent from elsewhere in between.
-  const destination = draftDestination(db, conversation, comment.runId, draft);
+  const destination = draftDestination(db, conversation, runId, draft);
   if (destination.kind === "refused") return { ok: false, reason: destination.reason };
   if (destination.kind === "none") {
     return { ok: false, reason: "That draft was not raised on a pipeline's board, so there is nothing here to publish it against." };
@@ -2489,7 +2498,7 @@ export function readAssistDraft(db: Db, conversation: Item, commentId: Uuid): Re
   // For shape, with a module that is waiting for approval treated as
   // present (EO-399): that the draft waits is said beside the graph, in
   // `waiting`, and is not a reason the graph no longer fits.
-  const actions = (parsed.data.actions ?? []).map(proposedActionDraft);
+  const actions = (output.actions ?? []).map(proposedActionDraft);
   const problems = validateDraft(db, judgedAgainst(destination), draft, modules, { unapprovedModulesAsPresent: true, actions });
   if (hasBlockingProblem(problems)) {
     return {
@@ -2638,7 +2647,30 @@ export type AssistPublishableGraph =
  * nothing downstream ever reads these.
  */
 export function assistDraftForPublish(db: Db, conversation: Item, commentId: Uuid): AssistPublishableGraph {
-  const read = readAssistDraft(db, conversation, commentId);
+  return publishableGraphOf(db, readAssistDraft(db, conversation, commentId));
+}
+
+/**
+ * The graph a turn's draft would be published as once its card is
+ * posted, or null where posting would offer no card of it — a draft
+ * `postAssistReply` refuses is posted as a rejection saying why, which is
+ * that reply's own answer (EO-833).
+ *
+ * Posting's own steps, in its order: the draft drawn as a card
+ * (`renderAssistDraft`), the reply's modules saved unapproved
+ * (`saveProposedModules`), then the draft read as Publish reads a posted
+ * card. **It writes those modules**: ask it only inside a transaction
+ * that is rolled back.
+ */
+export function assistTurnDraftAsPosted(db: Db, conversation: Item, runId: Uuid, output: AssistOutput): AssistPublishableGraph | null {
+  const draft = output.draft;
+  if (draft === undefined) return null;
+  if (!renderAssistDraft(db, conversation, output, draft, runId).ok) return null;
+  if (saveProposedModules(db, output.modules ?? []).refusal !== null) return null;
+  return publishableGraphOf(db, readDraftOfTurn(db, conversation, runId, output, draft));
+}
+
+function publishableGraphOf(db: Db, read: ReadAssistDraftResult): AssistPublishableGraph {
   if (!read.ok) return read;
 
   const catalog = listModules(db, true);

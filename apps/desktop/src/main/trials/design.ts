@@ -1,16 +1,20 @@
 import {
+  AssistOutputSchema,
   classifyDesignChange,
   EMPTY_TRIAL_PLAN,
   proposedActionDraft,
   remapStepReferences,
   trialPlanProblems,
   type ActionDefinitionDraft,
+  type AssistDraft,
+  type AssistTrialPlan,
   type IpcPayload,
   type IpcResponse,
   type Item,
   type TrialDesign,
   type TrialPlan,
   type Uuid,
+  uuidv7,
 } from "@eo/core";
 import type { AttachmentStorage } from "../attachments/storage.js";
 import type { Db } from "../db/client.js";
@@ -33,7 +37,7 @@ import {
 } from "../db/repos/index.js";
 import { savePipeline } from "../ipc/configCommands.js";
 import type { EngineHandle } from "../ipc/domainCommands.js";
-import { assistDraftForPublish } from "../roles/assist.js";
+import { assistDraftForPublish, assistTurnDraftAsPosted } from "../roles/assist.js";
 import { ASSIST_STEP } from "../roles/conversationSteps.js";
 import { copiesOf, designOfCard, liveTrialOf, type LiveTrial } from "./designCard.js";
 import { discardTrial } from "./discard.js";
@@ -41,7 +45,7 @@ import { startTrialRound, trialLoopDeps, wakeOnFiling } from "./loop.js";
 import { saveTrialPlan } from "./stepModes.js";
 import { moduleCodeDigest } from "./trialModules.js";
 import { resolvedTrialGraph } from "./publishCard.js";
-import { createTrialFromDraft, fileTrialItem, type TrialPlace } from "./trials.js";
+import { createTrialFromDraft, createTrialFromRead, fileTrialItem, type CreateTrialResult, type TrialDraft, type TrialPlace, type TrialStart } from "./trials.js";
 
 /**
  * Approving a design and running its rounds (EO-587, ARCHITECTURE.md,
@@ -107,40 +111,13 @@ export async function approveTrialDesign(db: Db, deps: DesignDeps, input: IpcPay
   const earlier = liveTrialOf(db, conversation.id);
   if (earlier?.design.commentId === comment.id) return refuse("This design is already approved, and its trial is under way.");
 
-  let made: { trialPipelineId: string; round: TrialRound; items: { id: string; key: string; title: string; itemKey: string }[] };
+  let made: MadeDesign;
   try {
-    made = db.transaction(() => {
-      const created = createTrialFromDraft(
-        db,
-        deps.engine,
-        { conversationId: conversation.id, messageId: comment.id },
-        { ...place, grantedBy: "human", carriedCopies: earlier === undefined ? {} : copiesOf(earlier.design) },
-      );
-      if (!created.ok) throw new DesignRefused(created.problem);
-      const design: TrialDesign = {
-        commentId: comment.id,
-        draft: shown.draft,
-        plan: shown.plan,
-        stepIds: created.stepIds,
-        moduleIds: created.moduleIds,
-        filed: {},
-        rounds: {},
-        applied: null,
-        // What each module's code was as the person approved the design
-        // (EO-588): the publish card marks every one that has moved since.
-        moduleCode: Object.fromEntries(Object.values(created.moduleIds).map((moduleId) => [moduleId, moduleCodeDigest(db, moduleId)])),
-        // And the graph as it was materialised (EO-588): what the publish
-        // card says changed is measured against what was approved here.
-        approvedGraph: resolvedTrialGraph(db, created.trial.id),
-        pending: null,
-      };
-      writeTrialDesign(db, created.trial.id, design);
-      const round = runDesignRound(db, deps, created.trial.id, "human", place);
-      // A fresh trial has run no round and spent nothing, so a guardrail
-      // refusing its first is a setting that allows none: said on the card.
-      if (!round.ok) throw new DesignRefused(round.problem);
-      return { trialPipelineId: created.trial.id, round: round.round, items: round.items };
-    });
+    made = db.transaction(() =>
+      makeDesignTrial(db, deps, { commentId: comment.id, draft: shown.draft, plan: shown.plan }, earlier, place, (start) =>
+        createTrialFromDraft(db, deps.engine, { conversationId: conversation.id, messageId: comment.id }, start),
+      ),
+    );
   } catch (error) {
     if (!(error instanceof DesignRefused)) throw error;
     return refuse(error.message);
@@ -182,6 +159,141 @@ export async function approveTrialDesign(db: Db, deps: DesignDeps, input: IpcPay
   };
 }
 
+
+/** What approving a design made: its trial, and the first round with its test items. */
+type MadeDesign = { trialPipelineId: string; round: TrialRound; items: { id: string; key: string; title: string; itemKey: string }[] };
+
+/** A design as a card offers it for approval: the card, its draft and its trial plan. */
+export interface DesignToMake {
+  commentId: string;
+  draft: AssistDraft;
+  plan: AssistTrialPlan;
+}
+
+/**
+ * Everything Approve design writes, in the caller's transaction (EO-587):
+ * the trial, made by `create` — which reaches `createTrialFromRead`
+ * whoever calls — its design, and its first round, with its test items
+ * and plan. Throws `DesignRefused` with the sentence the person is shown,
+ * and the caller's transaction takes back whatever was written.
+ *
+ * One function for the press and for the checks that a press would
+ * succeed (EO-833, `designTrialProblem`), so the two cannot drift apart.
+ */
+function makeDesignTrial(
+  db: Db,
+  deps: DesignDeps,
+  card: DesignToMake,
+  earlier: LiveTrial | undefined,
+  place: TrialPlace,
+  create: (start: TrialStart) => CreateTrialResult,
+): MadeDesign {
+  const created = create({ ...place, grantedBy: "human", carriedCopies: earlier === undefined ? {} : copiesOf(earlier.design) });
+  if (!created.ok) throw new DesignRefused(created.problem);
+  const design: TrialDesign = {
+    commentId: card.commentId,
+    draft: card.draft,
+    plan: card.plan,
+    stepIds: created.stepIds,
+    moduleIds: created.moduleIds,
+    filed: {},
+    rounds: {},
+    applied: null,
+    // What each module's code was as the person approved the design
+    // (EO-588): the publish card marks every one that has moved since.
+    moduleCode: Object.fromEntries(Object.values(created.moduleIds).map((moduleId) => [moduleId, moduleCodeDigest(db, moduleId)])),
+    // And the graph as it was materialised (EO-588): what the publish
+    // card says changed is measured against what was approved here.
+    approvedGraph: resolvedTrialGraph(db, created.trial.id),
+    pending: null,
+  };
+  writeTrialDesign(db, created.trial.id, design);
+  const round = runDesignRound(db, deps, created.trial.id, "human", place);
+  // A fresh trial has run no round and spent nothing, so a guardrail
+  // refusing its first is a setting that allows none: said on the card.
+  if (!round.ok) throw new DesignRefused(round.problem);
+  return { trialPipelineId: created.trial.id, round: round.round, items: round.items };
+}
+
+/** Thrown to take back a transaction that only asked what it would do. */
+class Undone extends Error {}
+
+/**
+ * Why approving this design would be refused, or null where Approve
+ * design would make its trial and start its first round (EO-833).
+ *
+ * Asked by doing it: `makeDesignTrial`, the function Approve design runs,
+ * with the trial made from `read` by `createTrialFromRead`, inside a
+ * transaction that is always rolled back — and with no engine, so
+ * nothing is told there is work. `prepare` runs first in the same
+ * transaction, for a caller that has to write what posting a card would
+ * (the reply's modules) before the draft can be read; it answers with
+ * the draft, or null where there is nothing to check.
+ *
+ * The answer is a reading of now: the state can change before the press,
+ * which is why Approve design refuses again on its own.
+ */
+export function designTrialProblem(
+  db: Db,
+  conversation: Item,
+  card: DesignToMake,
+  prepare: () => TrialDraft | null,
+  place: TrialPlace = {},
+): string | null {
+  const earlier = liveTrialOf(db, conversation.id);
+  let problem: string | null = null;
+  try {
+    db.transaction(() => {
+      const read = prepare();
+      if (read !== null) {
+        try {
+          makeDesignTrial(db, {}, card, earlier, place, (start) => createTrialFromRead(db, undefined, conversation, read, start));
+        } catch (error) {
+          if (!(error instanceof DesignRefused)) throw error;
+          problem = error.message;
+        }
+      }
+      throw new Undone();
+    });
+  } catch (error) {
+    if (!(error instanceof Undone)) throw error;
+  }
+  return problem;
+}
+
+/**
+ * Why the trial an `assist` reply plans could not be made, or null where
+ * it could or the reply plans none (EO-833).
+ *
+ * Asked by the supervisor while the turn is still open, beside the
+ * EO-440/441 checks, so the agent is re-prompted with the reason and can
+ * fix its draft in the same turn rather than posting a design card whose
+ * Approve design is refused once a person presses it. The answer is
+ * `designTrialProblem`'s — Approve design's own work, done and taken
+ * back — on the draft as its card would be read once posted: posting's
+ * own drawing of the card and saving of the reply's modules come first,
+ * in the transaction that is rolled back. A draft posting would refuse
+ * is not this check's: that refusal is posted in its place, as it always
+ * was.
+ */
+export function proposedTrialProblem(db: Db, conversation: Item, runId: Uuid, reply: unknown): string | null {
+  const parsed = AssistOutputSchema.safeParse(reply);
+  if (!parsed.success) return null;
+  const output = parsed.data;
+  if (output.trial === null || output.draft === undefined) return null;
+  // No card exists yet, so the design is made under an id no comment has.
+  const card = { commentId: uuidv7(), draft: output.draft, plan: output.trial };
+  const problem = designTrialProblem(db, conversation, card, () => {
+    const graph = assistTurnDraftAsPosted(db, conversation, runId, output);
+    return graph === null || !graph.ok ? null : graph;
+  });
+  if (problem === null) return null;
+  return [
+    `This draft's trial could not be made, so the person pressing Approve design on its card would be told: ${problem}`,
+    "",
+    "Change the draft or its trial plan so that its trial can be made, and return it again — or, where nothing in the draft can fix it, say so to the person without a trial plan. Nothing was posted from this reply.",
+  ].join("\n");
+}
 
 type RoundAnswer = { ok: true; round: TrialRound; items: { id: string; key: string; title: string; itemKey: string }[] } | { ok: false; problem: string };
 

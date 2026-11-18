@@ -1,4 +1,4 @@
-import { NONE_KIND, remapStepReferences, TERMINAL_TARGET, USER_ATTENTION_TARGET, uuidv7, type IpcPayload, type Item, type Uuid } from "@eo/core";
+import { NONE_KIND, remapStepReferences, TERMINAL_TARGET, USER_ATTENTION_TARGET, uuidv7, type IpcPayload, type IpcResponse, type Item, type Uuid } from "@eo/core";
 import type { Db } from "../db/client.js";
 import {
   createItem,
@@ -138,27 +138,53 @@ export function createTrialFromDraft(
   input: IpcPayload<"assist:draft">,
   place: TrialStart = {},
 ): CreateTrialResult {
-  const refuse = (problem: string): CreateTrialResult => ({ ok: false, problem: `Nothing was made to test: ${problem}` });
   const conversation = getItem(db, input.conversationId as Uuid);
   const read = readAssistDraftForPublish(db, input, place);
-  if (read.problem !== null || conversation === undefined) return refuse(read.problem ?? "That conversation does not exist.");
+  if (read.problem !== null || conversation === undefined) return refuseTrial(read.problem ?? "That conversation does not exist.");
+  return createTrialFromRead(db, engine, conversation, read, place);
+}
 
+/** A draft as Publish reads it, from a posted card or from a turn not yet posted: what a trial is made from. */
+export type TrialDraft = Pick<
+  IpcResponse<"assist:draft">,
+  "pipelineId" | "newPipelineName" | "steps" | "routes" | "entryStepId" | "entryRules" | "actions" | "rename" | "icon"
+>;
+
+function refuseTrial(problem: string): CreateTrialResult {
+  return { ok: false, problem: `Nothing was made to test: ${problem}` };
+}
+
+/**
+ * Makes a trial from a draft already read (EO-833) — everything
+ * `createTrialFromDraft` does once the card is read, and the one place
+ * its rules are. Asked by Approve design through `createTrialFromDraft`,
+ * and by the checks that a design card's trial could be made — while the
+ * turn is open and when the card is read — inside a transaction they roll
+ * back, so the three cannot disagree about what is refused.
+ */
+export function createTrialFromRead(
+  db: Db,
+  engine: Pick<EngineHandle, "notifyStateChange"> | undefined,
+  conversation: Item,
+  read: TrialDraft,
+  place: TrialStart = {},
+): CreateTrialResult {
   const draftStepIds = new Set(read.steps.map((step) => step.id));
   const handOff = read.routes.find((route) => !draftStepIds.has(route.target) && route.target !== USER_ATTENTION_TARGET && route.target !== TERMINAL_TARGET);
   if (handOff !== undefined) {
     const from = read.steps.find((step) => step.id === handOff.fromStepId)?.name ?? handOff.fromStepId;
-    return refuse(`"${from}" hands work to a step of another pipeline, and a trial item following that route would land on live work.`);
+    return refuseTrial(`"${from}" hands work to a step of another pipeline, and a trial item following that route would land on live work.`);
   }
-  if (read.entryStepId === null || !draftStepIds.has(read.entryStepId)) return refuse("this draft has no step for work to start on.");
+  if (read.entryStepId === null || !draftStepIds.has(read.entryStepId)) return refuseTrial("this draft has no step for work to start on.");
 
   const target = read.pipelineId === null ? undefined : getPipeline(db, read.pipelineId);
-  if (read.pipelineId !== null && target === undefined) return refuse("the pipeline this draft changes no longer exists.");
+  if (read.pipelineId !== null && target === undefined) return refuseTrial("the pipeline this draft changes no longer exists.");
   const baseName = read.newPipelineName ?? read.rename ?? target?.name ?? "Pipeline";
   // Where its test items will work, settled before anything is written:
   // a trial whose items could have no disk would be a trial of nothing.
   const projectId = (target?.projectId ?? conversation.projectId) as Uuid | null;
   const noDisk = noWorkspaceProblem(db, projectId) ?? heldElsewhereProblem(db, projectId, place);
-  if (noDisk !== null) return refuse(noDisk);
+  if (noDisk !== null) return refuseTrial(noDisk);
 
   const stepIds: Record<string, string> = {};
   for (const step of read.steps) stepIds[step.id] = uuidv7();
@@ -224,7 +250,7 @@ export function createTrialFromDraft(
     });
   } catch (error) {
     if (!(error instanceof TrialRefused)) throw error;
-    return refuse(error.message);
+    return refuseTrial(error.message);
   }
 }
 
