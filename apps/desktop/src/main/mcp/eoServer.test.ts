@@ -19,6 +19,8 @@ import {
   MODULE_CHANGE_FREEZE_TOOL_NAME,
   MODULE_CHANGE_PREPARE_TOOL_NAME,
   MODULE_CHANGE_TOOLS,
+  reportOnlyRefusal,
+  TEAM_EVIDENCE_TOOLS,
   REPOSITORY_CHECKOUT_TOOL_NAME,
   SKILL_CREATE_TOOL_NAME,
   SKILL_FILE_REMOVE_TOOL_NAME,
@@ -1913,5 +1915,24 @@ describe("the module-change tools on the shared EO MCP service", () => {
     } finally {
       await bridge.close();
     }
+  });
+});
+
+describe("a report-only team participant's tools (EO-845)", () => {
+  it("pin their names and their refusal to packages/core", () => {
+    const own = service as unknown as Record<string, unknown>;
+    expect(own["TEAM_EVIDENCE_TOOLS"]).toEqual([...TEAM_EVIDENCE_TOOLS]);
+    expect((own["REPORT_ONLY_REFUSAL"] as (tool: string) => string)("Bash")).toBe(reportOnlyRefusal("Bash"));
+  });
+
+  it("are listed on no ordinary turn, and refused there when called", async () => {
+    const ordinary = (service as unknown as { createEoMcpService(options: Record<string, unknown>): { tools: { name: string }[]; handle(request: unknown): Promise<{ result: { isError?: boolean; content: { text: string }[] } }> } }).createEoMcpService({
+      dbPath: undefined,
+      writeBridge: { url: "http://127.0.0.1:1/agent-write", token: "item-1.signed" },
+    });
+    expect(ordinary.tools.map((tool) => tool.name)).not.toContain("evidence_read");
+    const { result } = await ordinary.handle({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "evidence_read", arguments: { path: "a" } } });
+    expect(result.isError).toBe(true);
+    expect(result.content[0]!.text).toContain("Only a report-only team participant");
   });
 });

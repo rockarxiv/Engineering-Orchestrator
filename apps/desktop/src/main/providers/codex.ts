@@ -2819,8 +2819,9 @@ export function createCodexProvider(options: CodexProviderOptions = {}): AgentPr
   function turnThreadOptions(opts: Parameters<typeof threadOptionsFrom>[0], config: CodexAgentConfig | undefined): CodexThreadOptions {
     const thread = threadOptionsFrom(opts, config);
     if (options.reportOnly !== true) return thread;
-    const { model: _asked, ...rest } = thread;
-    return { ...rest, ...(config?.model ? { model: config.model } : {}), sandboxMode: "read-only", approvalPolicy: "never", webSearchEnabled: false };
+    const locked: CodexThreadOptions = { ...thread, sandboxMode: "read-only", approvalPolicy: "never", webSearchEnabled: false };
+    delete locked.model;
+    return config?.model ? { ...locked, model: config.model } : locked;
   }
 
   /**
