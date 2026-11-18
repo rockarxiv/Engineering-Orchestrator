@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { EMPTY_SPEC_SHAPE, LOCAL_PERSON_ID, type IpcPayload, type Item, type RecordAdoptCounts, type Uuid } from "@eo/core";
+import { EMPTY_SPEC_SHAPE, LOCAL_PERSON_ID, StepTeamSchema, type IpcPayload, type Item, type RecordAdoptCounts, type Uuid } from "@eo/core";
 import { sql } from "drizzle-orm";
 import { buildTickInput } from "../supervisor/buildTickInput.js";
 import type { DbHandle } from "../db/client.js";
@@ -36,6 +36,7 @@ import {
   setCommentPinned,
 } from "../db/repos/commentsRepo.js";
 import { createRun, updateRun } from "../db/repos/runsRepo.js";
+import { acceptTeamReport, endTeamAttempt, endTeamSession, getTeamSessionRecord, openTeamSession, startTeamAttempt } from "../db/repos/teamSessionsRepo.js";
 import { appendRunEvent } from "../db/repos/runEventsRepo.js";
 import { setSetting } from "../db/repos/settingsRepo.js";
 import {
@@ -494,6 +495,41 @@ describe("moving a project", () => {
     expect(getProject(recordDb.db, support.id)?.ownerId).toBe(annaPersonId);
   });
 
+  it("carries its items' team sessions, with every attempt and the report each was accepted with (EO-844)", async () => {
+    const support = localProject("Support", "SUP");
+    const item = itemOn(support.id, "A refund");
+    const team = StepTeamSchema.parse({
+      coordination: "independent",
+      participants: [{ key: "policy", role: "reviewer", instructions: "Check it against the refund policy." }],
+      outcomes: [{ key: "fine", label: "Within policy" }],
+      completion: { rules: [], fallback: "approved" },
+    });
+    const session = openTeamSession(annaDb.db, { itemId: item.id, stepId: "todo", team });
+    const runs = [0, 1].map(() => createRun(annaDb.db, { itemId: item.id, agentId: null, action: "review", stepId: "todo" }));
+    const first = startTeamAttempt(annaDb.db, { sessionId: session.id, assignmentKey: "policy", role: "reviewer", agentId: null, instructions: "Go.", runId: runs[0]!.id });
+    if (!first.ok) throw new Error(first.problem);
+    endTeamAttempt(annaDb.db, first.attempt.id, { status: "failed", error: "Crashed." });
+    const second = startTeamAttempt(annaDb.db, { sessionId: session.id, assignmentKey: "policy", role: "reviewer", agentId: null, instructions: "Go.", runId: runs[1]!.id, supersedes: first.attempt.id, evidenceBaseline: { kind: "attachments", ref: "sha256:abc" } });
+    if (!second.ok) throw new Error(second.problem);
+    acceptTeamReport(annaDb.db, { attemptId: second.attempt.id, outcome: "fine", report: "Within thirty days." });
+    endTeamSession(annaDb.db, { sessionId: session.id, status: "finalized", result: "approved" });
+    for (const run of runs) updateRun(annaDb.db, run.id, { status: "succeeded", endedAt: 3 });
+
+    signIn(anna);
+    signIn(laptop);
+    expect(await move(support.id)).toEqual({});
+
+    const unstamped = (handle: DbHandle) => {
+      const read = getTeamSessionRecord(handle.db, session.id);
+      return read === undefined ? undefined : { session: { ...read.session, updatedAt: 0, deviceId: null }, attempts: read.attempts.map((one) => ({ ...one, updatedAt: 0 })) };
+    };
+    expect(unstamped(recordDb)).toEqual(unstamped(annaDb));
+    expect(getTeamSessionRecord(recordDb.db, session.id)?.attempts.map((one) => one.supersededBy)).toEqual([second.attempt.id, null]);
+
+    await laptop.record.sync();
+    expect(unstamped(laptopDb)).toEqual(unstamped(annaDb));
+  });
+
   it("carries the graph its items stand on, and the key counter", async () => {
     const support = localProject("Support", "SUP");
     itemOn(support.id, "A refund");
@@ -911,6 +947,7 @@ function tookNothing(): RecordAdoptCounts {
     attachments: 0,
     memories: 0,
     skills: 0,
+    teamSessions: 0,
     skipped: [],
   };
 }
@@ -936,6 +973,7 @@ function took(page: Parameters<typeof serveAdopt>[1]["page"]): RecordAdoptCounts
     attachments: page.attachments.length,
     memories: page.memories.length,
     skills: page.skills.length,
+    teamSessions: page.teamSessions.length,
     skipped: [],
   };
 }
@@ -1292,6 +1330,7 @@ function nothing(): IpcPayload<"record:adopt">["page"] {
     attachments: [],
     memories: [],
     skills: [],
+    teamSessions: [],
   };
 }
 

@@ -2414,6 +2414,98 @@ export const comments = sqliteTable(
   (table) => [index("idx_comments_item").on(table.itemId, table.createdAt)],
 );
 
+/**
+ * One team's work on one item (EO-844, ARCHITECTURE.md, "A team on an
+ * agent step"): on one step, entered by one transition, under one pinned
+ * pipeline version, with the team as configured when it opened — a copy,
+ * so a later edit to the step does not rewrite what this session was.
+ *
+ * `status` is the orchestration's state (`TeamSessionStatus`), not whether
+ * a provider is running: that is each attempt's run. `run_id` is the
+ * orchestration's own run, whose spending is its own and never its
+ * children's. A replaced session is not deleted or rewritten: it ends
+ * `superseded` and names its successor. Rows go only with their item
+ * (`deleteItem`); archiving touches none.
+ *
+ * `device_id` is the machine whose session it is — the one the record
+ * takes reports of it from. Null on a solo desktop. `updated_at` is what a
+ * replica pages on, and moves when any attempt under the session changes.
+ */
+export const teamSessions = sqliteTable(
+  "team_sessions",
+  {
+    id: text("id").primaryKey(), // uuidv7
+    itemId: text("item_id")
+      .notNull()
+      .references(() => items.id),
+    stepId: text("step_id").notNull(),
+    // Not foreign keys: a replica can learn of a session before the move or
+    // the version it names, and both are only references for reading back.
+    entryTransitionId: text("entry_transition_id"),
+    pipelineVersionId: text("pipeline_version_id"),
+    runId: text("run_id").references(() => runs.id),
+    team: text("team", { mode: "json" }).notNull(),
+    status: text("status").notNull(),
+    result: text("result"),
+    finalCommentId: text("final_comment_id").references(() => comments.id),
+    supersededBy: text("superseded_by"),
+    deviceId: text("device_id"),
+    createdAt: integer("created_at").notNull(),
+    updatedAt: integer("updated_at").notNull(),
+    endedAt: integer("ended_at"),
+  },
+  (table) => [index("idx_team_sessions_item").on(table.itemId), index("idx_team_sessions_updated").on(table.updatedAt, table.id)],
+);
+
+/**
+ * One participant's attempt at one assignment of a team session (EO-844).
+ *
+ * The provider thread, the timing and the spending are its run's — so a
+ * team's spending is its attempts' runs, counted once wherever runs are
+ * summed. The agent is kept by name beside its id, so an agent retired or
+ * renamed later still reads as who made the attempt. `report_comment_id`
+ * and `superseded_by` are written once and never cleared: a result
+ * delivered twice finds its comment already named, and a retry is a new
+ * row naming the one it replaces rather than an edit of it.
+ */
+export const teamAttempts = sqliteTable(
+  "team_attempts",
+  {
+    id: text("id").primaryKey(), // uuidv7
+    sessionId: text("session_id")
+      .notNull()
+      .references(() => teamSessions.id),
+    itemId: text("item_id")
+      .notNull()
+      .references(() => items.id),
+    assignmentKey: text("assignment_key").notNull(),
+    role: text("role").notNull(),
+    agentId: text("agent_id").references(() => agents.id),
+    agentName: text("agent_name").notNull().default(""),
+    instructions: text("instructions").notNull().default(""),
+    round: integer("round").notNull().default(1),
+    attempt: integer("attempt").notNull().default(1),
+    runId: text("run_id").references(() => runs.id),
+    status: text("status").notNull(),
+    outcome: text("outcome"),
+    error: text("error"),
+    evidenceBaseline: text("evidence_baseline", { mode: "json" }),
+    reportCommentId: text("report_comment_id").references(() => comments.id),
+    acceptedAt: integer("accepted_at"),
+    supersededBy: text("superseded_by"),
+    createdAt: integer("created_at").notNull(),
+    updatedAt: integer("updated_at").notNull(),
+    endedAt: integer("ended_at"),
+  },
+  (table) => [
+    index("idx_team_attempts_session").on(table.sessionId),
+    index("idx_team_attempts_item").on(table.itemId),
+    uniqueIndex("idx_team_attempts_number").on(table.sessionId, table.assignmentKey, table.round, table.attempt),
+    uniqueIndex("idx_team_attempts_report").on(table.reportCommentId),
+    uniqueIndex("idx_team_attempts_run").on(table.runId),
+  ],
+);
+
 /** Durable files owned by one item comment. Paths never cross IPC. */
 export const attachments = sqliteTable(
   "attachments",
