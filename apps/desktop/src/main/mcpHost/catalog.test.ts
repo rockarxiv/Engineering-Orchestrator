@@ -40,6 +40,16 @@ import { SERVER_INSTRUCTIONS } from "./server.js";
  * nothing in the contract is unconsidered from MCP.
  */
 const NOT_CATALOGUED: Partial<Record<RecordChannel, string>> = {
+  // A team session's panel and its two controls (EO-849). The read is the
+  // item page's: an agent reads a team's work where it is the conversation —
+  // its reports, questions and answer are comments on the thread `item_get`
+  // and `thread_read` already serve, and each participant's run is in
+  // `item_get`'s runs. Cancelling and retrying are a person's acts on the
+  // item page; a tool would let an agent stop or restart a team it does not
+  // own, which `run_cancel` already covers for the team's own run.
+  "items:teamSessions": "a team's reports, questions and answer are comments on the thread item_get and thread_read serve, and each participant's run is in item_get's runs; this is the item page's view of them",
+  "teams:cancel": "a person's control on the item page; run_cancel on the team's own run already stops the whole session",
+  "teams:retry": "a person's control on the item page; a reply on the thread carries a parked team on in the same way",
   // The command-line tool catalogue (EO-819, EO-822). List, save and
   // archive are tools, and the ticks ride on agent_attachments_list and
   // agent_attachments_set; bringing an archived CLI back is not.

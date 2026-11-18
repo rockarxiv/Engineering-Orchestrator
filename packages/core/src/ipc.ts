@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { NONE_KIND } from "./schemas/workspaces.js";
 import { TeamReadingSchema } from "./team.js";
+import { TeamSessionViewSchema } from "./teamSessionView.js";
 import { StepVerificationSchema } from "./schemas/verification.js";
 import { GalleryNeedSchema, GalleryTemplateViewSchema } from "./schemas/gallery.js";
 import {
@@ -2200,6 +2201,32 @@ export const recordContract = {
    */
   "runs:live": channel(z.object({ runId: z.string() }), z.object({ turn: LiveTurnSchema.nullable() })),
   "runs:cancel": channel(z.object({ runId: z.string() }), z.object({ cancelled: z.boolean() })),
+  /**
+   * An item's team sessions as a person reads them (EO-849,
+   * `TeamSessionViewSchema`), newest first: each with its participants,
+   * their attempts, reports, baselines, timing and spending, why it is
+   * waiting, what produced its result, and which of its controls may be
+   * pressed and why not. Derived from what is stored on every read, so a
+   * reload or a reconnect draws the same thing. Empty for an item no team
+   * has worked.
+   */
+  "items:teamSessions": channel(z.object({ itemId: z.string() }), z.object({ sessions: z.array(TeamSessionViewSchema) })),
+  /**
+   * A person stopping a team session (EO-849): the team's run and every
+   * participant with it, and the session ended `cancelled`, so nothing it
+   * did after can read as running or as a finding. The item stays where it
+   * is and is not offered again until a person moves it or replies. Only
+   * the item's current session; a refusal is `problem`, never a throw.
+   */
+  "teams:cancel": channel(z.object({ sessionId: z.string(), ...ACTING_DEVICE }), z.object({ cancelled: z.boolean(), problem: z.string().nullable() })),
+  /**
+   * A person asking a parked team to try again what failed (EO-849),
+   * keeping every report already accepted: posted on the thread as theirs
+   * and answered as a reply would be. Only the item's current session, on
+   * its step entry, parked with failed work and no open question; a
+   * settled or historical session never runs again.
+   */
+  "teams:retry": channel(z.object({ sessionId: z.string(), ...ACTING_DEVICE }), z.object({ retried: z.boolean(), keys: z.array(z.string()), problem: z.string().nullable() })),
   "engine:pause": channel(z.object({ cancelRunning: z.boolean().default(false) }), EngineStatusSchema),
   "engine:resume": channel(z.void(), EngineStatusSchema),
   "engine:status": channel(z.void(), EngineStatusSchema),
@@ -8103,6 +8130,9 @@ export const ACTOR_SCOPED_CHANNELS = [
   "items:move",
   // EO-567. The comment it posts names who asked, which only the door knows.
   "items:moveToVersion",
+  // EO-849. Cancelling or retrying a team session posts in the person's name.
+  "teams:cancel",
+  "teams:retry",
   "items:decide",
   "items:claim",
   "items:assign",

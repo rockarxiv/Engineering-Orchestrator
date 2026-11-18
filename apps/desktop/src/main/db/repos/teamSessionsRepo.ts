@@ -2,6 +2,7 @@ import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
 import {
   LEADER_ASSIGNMENT_KEY,
   storedTeam,
+  TEAM_RETRY_REQUESTED,
   TeamEvidenceBaselineSchema,
   uuidv7,
   type Comment,
@@ -334,6 +335,10 @@ export function beginTeamAttempt(db: Db, attemptId: string, runId: Uuid, now: nu
   if (attempt === undefined) return { ok: false, problem: "There is no such team attempt." };
   if (attempt.runId === runId) return { ok: true, attempt };
   if (attempt.runId !== null || attempt.status !== "queued") return { ok: false, problem: "That attempt has already started; another run is another attempt." };
+  // A turn that starts after its session ended never reads as running (EO-849).
+  const session = getTeamSession(db, attempt.sessionId);
+  const stale = session === undefined ? "There is no such team session." : staleProblem(session);
+  if (stale !== null) return { ok: false, problem: stale };
   db.update(teamAttempts).set({ runId, status: "running", updatedAt: now }).where(eq(teamAttempts.id, attemptId)).run();
   touchSession(db, attempt.sessionId, now);
   notifyTeamSessionWritten(db, { sessionId: attempt.sessionId as Uuid, itemId: attempt.itemId as Uuid });
@@ -360,6 +365,55 @@ export function endTeamAttempt(
   touchSession(db, attempt.sessionId, now);
   notifyTeamSessionWritten(db, { sessionId: attempt.sessionId as Uuid, itemId: attempt.itemId as Uuid });
   return { ok: true, attempt: getTeamAttempt(db, attemptId)! };
+}
+
+/**
+ * A person's retry of one attempt that could not contribute (EO-849): a
+ * marker attempt, never run, that replaces it and ends `cancelled` at
+ * once — so the planner, which never counts a cancelled attempt against
+ * the retries, gives the assignment one more turn, and every sibling's
+ * accepted report stays exactly as it is. The failed attempt keeps what it
+ * said. Refused, like any attempt, on a session that is not open.
+ */
+export function requestTeamRetry(db: Db, attemptId: string, now: number = Date.now()): TeamWrite<{ attempt: TeamAttemptRow }> {
+  const failed = getTeamAttempt(db, attemptId);
+  if (failed === undefined) return { ok: false, problem: "There is no such team attempt." };
+  if (failed.supersededBy !== null) return { ok: false, problem: "That attempt was already replaced." };
+  const made = startTeamAttempt(db, {
+    sessionId: failed.sessionId,
+    assignmentKey: failed.assignmentKey,
+    role: failed.role,
+    agentId: (failed.agentId as Uuid | null) ?? null,
+    instructions: failed.instructions,
+    round: failed.round,
+    evidenceBaseline: failed.evidenceBaseline,
+    supersedes: failed.id,
+    now,
+  });
+  if (!made.ok) return made;
+  return endTeamAttempt(db, made.attempt.id, { status: "cancelled", error: TEAM_RETRY_REQUESTED }, now);
+}
+
+/**
+ * What a person's retry of a session would run again (EO-849). On an
+ * independent team, each assignment's latest attempt that failed — on a
+ * parked session, one whose retries are used up. On a leader's team, the
+ * leader's latest turn, where it failed or EO refused its answer: a
+ * participant's failure was already handed to the leader, which decides
+ * what to do about it. Accepted reports are never among them.
+ */
+export function teamRetryTargets(db: Db, record: TeamSessionRecord): TeamAttemptRow[] {
+  const latest = record.attempts.filter((attempt) => attempt.supersededBy === null);
+  const leaderTeam = record.session.team.coordination === "leader";
+  return latest.filter((attempt) => {
+    if (leaderTeam && attempt.assignmentKey !== LEADER_ASSIGNMENT_KEY) return false;
+    if (attempt.status === "failed") return true;
+    if (!leaderTeam || attempt.status !== "completed" || attempt.runId === null) return false;
+    const result = db.select({ result: runs.result }).from(runs).where(eq(runs.id, attempt.runId)).get()?.result as { leader?: unknown; verdict?: { decision?: unknown; accepted?: unknown } } | null | undefined;
+    const verdict = result?.leader === true ? result.verdict : undefined;
+    if (verdict === undefined) return false;
+    return verdict.decision === "final" ? verdict.accepted !== true : Array.isArray(verdict.accepted) && verdict.accepted.length === 0;
+  });
 }
 
 export interface AcceptTeamReportInput {
