@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { EntryRule } from "./entryRules.js";
+import { StepTeamSchema, teamWords } from "./team.js";
 import { diffVersions, ghostColumnLabel, moduleUpdateAuthor, moduleUpdateOfAuthor, PipelineGraphSnapshotSchema, pipelineUpdatedBanner, versionLabel, type VersionRoute, type VersionStep } from "./pipelineVersions.js";
 
 /**
@@ -28,6 +29,7 @@ function step(overrides: Partial<VersionStep> = {}): VersionStep {
     watch: null,
     moduleVersion: null,
     brief: null,
+    team: null,
     ...overrides,
   };
 }
@@ -325,6 +327,40 @@ describe("the difference between two versions", () => {
       routes: [],
     });
     expect(parsed.steps[0]?.brief).toBeNull();
+  });
+
+  /** The team an agent step runs as (EO-843): configuring, changing or removing it is a change, and a version from before teams is one agent. */
+  it("lists a team configured, changed and removed, and reads a version written before teams as one agent", () => {
+    const team = StepTeamSchema.parse({ coordination: "leader", leader: { role: "reviewer", instructions: "Split it." }, roles: ["tester"] });
+    const steps = (each: VersionStep["team"]) => [step({ type: "agent", ownerRole: "reviewer", entryAction: "check", team: each })];
+    const configured = diffVersions({ number: 1, steps: steps(null), routes: [] }, { number: 2, steps: steps(team), routes: [] });
+    expect(configured.steps[0]?.fields).toEqual([{ field: "team", before: "one agent", after: teamWords(team) }]);
+    const tighter = StepTeamSchema.parse({ ...team, limits: { maxParallel: 1 } });
+    expect(diffVersions({ number: 2, steps: steps(team), routes: [] }, { number: 3, steps: steps(tighter), routes: [] }).steps[0]?.fields).toEqual([
+      { field: "team", before: teamWords(team), after: teamWords(tighter) },
+    ]);
+    expect(diffVersions({ number: 3, steps: steps(tighter), routes: [] }, { number: 4, steps: steps(null), routes: [] }).steps[0]?.fields).toEqual([
+      { field: "team", before: teamWords(tighter), after: "one agent" },
+    ]);
+    const parsed = PipelineGraphSnapshotSchema.parse({
+      steps: [{ id: "review", pipelineId: "p", position: 1, name: "Review", type: "agent", ownerRole: "reviewer", entryAction: "check", instructionsSummary: null, isTerminal: false, planMode: false }],
+      routes: [],
+    });
+    expect(parsed.steps[0]?.team).toBeNull();
+    expect(PipelineGraphSnapshotSchema.parse({ ...parsed, steps: [{ ...parsed.steps[0], team }] }).steps[0]?.team).toEqual(team);
+  });
+
+  /** An outcome's label and meaning are what a participant is told; editing only one is still a change (EO-843 review). */
+  it("lists a team whose only change is an outcome's label or its meaning", () => {
+    const team = (outcome: object) =>
+      StepTeamSchema.parse({ coordination: "leader", leader: { role: "reviewer", instructions: "Split it." }, roles: ["tester"], outcomes: [outcome] });
+    const steps = (each: VersionStep["team"]) => [step({ type: "agent", ownerRole: "reviewer", entryAction: "check", team: each })];
+    const before = team({ key: "clear", label: "Clear", meaning: "Nothing needs changing." });
+    for (const after of [team({ key: "clear", label: "All clear", meaning: "Nothing needs changing." }), team({ key: "clear", label: "Clear", meaning: "Nothing at all needs changing." })]) {
+      expect(diffVersions({ number: 1, steps: steps(before), routes: [] }, { number: 2, steps: steps(after), routes: [] }).steps[0]?.fields).toEqual([
+        { field: "team", before: teamWords(before), after: teamWords(after) },
+      ]);
+    }
   });
 
   it("names the version a module entry rule pins, so moving it is a change", () => {

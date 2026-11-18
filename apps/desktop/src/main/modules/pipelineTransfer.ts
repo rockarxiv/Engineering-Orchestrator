@@ -409,6 +409,10 @@ function exportedBoard(db: Db, board: BoardToExport, exported: ReadonlySet<strin
       // naming steps by the ids this document carries. Written only where
       // a step declares one, so a document without briefs reads as before.
       ...(step.brief === null ? {} : { brief: step.brief }),
+      // The team an agent step runs as (EO-843), staffed by role, so it
+      // names nothing of this installation. Written only where one is
+      // configured, so a document without teams reads as before.
+      ...(step.team === null ? {} : { team: step.team }),
     })),
     // Only routes both of whose ends the document carries — on this
     // board or on another it carries (EO-762). Exporting one that
@@ -1690,6 +1694,10 @@ function writeImport(
         // The brief arrives as the document says (EO-827), a step it names
         // moved to the id that step has here.
         brief: remapStepReferences(step, mapped).brief ?? null,
+        // The team arrives as the document says (EO-843). It names roles
+        // and its own keys, never a step or an agent id, so nothing in it
+        // is mapped.
+        team: step.team ?? null,
       })),
       board.routes.map((route) => ({
         ...route,

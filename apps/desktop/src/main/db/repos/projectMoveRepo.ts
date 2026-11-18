@@ -23,6 +23,7 @@ import {
   EntryRulesSchema,
   parseStoredCommentOptions,
   storedBrief,
+  storedTeam,
   TrialActionsSchema,
   TrialPlanSchema,
   TrialStepSourcesSchema,
@@ -266,6 +267,8 @@ function toRecordPipeline(db: Db, row: typeof pipelines.$inferSelect): RecordPip
         moduleVersion: step.moduleVersion,
         // What its decision's details show (EO-827), so a replica shows what the record does.
         brief: storedBrief(step.brief),
+        // The team it runs as (EO-843), so a replica runs what the record configures.
+        team: storedTeam(step.team),
       })),
     routes: db
       .select()
@@ -762,6 +765,7 @@ export function upsertReplicaPipeline(db: Db, pipeline: RecordPipeline): "writte
           // is this replica's too once the section's modules have applied.
           moduleVersion: step.moduleVersion,
           brief: step.brief ?? null,
+          team: step.team ?? null,
         })
         .onConflictDoUpdate({
           target: pipelineSteps.id,
@@ -786,6 +790,7 @@ export function upsertReplicaPipeline(db: Db, pipeline: RecordPipeline): "writte
                 results: step.results,
                 moduleVersion: step.moduleVersion,
                 brief: step.brief ?? null,
+                team: step.team ?? null,
                 // `workspaceId` is absent on purpose — see this
                 // function's header. It is the one thing on a step that
                 // belongs to the machine rather than to the graph.
@@ -1739,6 +1744,7 @@ export function writeAdoptedPage(db: Db, project: RecordProject, page: RecordAdo
             // The module version it runs (EO-772), as the sender pins it.
             moduleVersion: step.moduleVersion,
             brief: step.brief ?? null,
+            team: step.team ?? null,
           })
           // Wholesale, because a step carries no timestamp of its own
           // and travels with the pipeline that does. What the sender
@@ -1764,6 +1770,7 @@ export function writeAdoptedPage(db: Db, project: RecordProject, page: RecordAdo
               results: step.results,
               moduleVersion: step.moduleVersion,
               brief: step.brief ?? null,
+              team: step.team ?? null,
             },
           })
           .run();

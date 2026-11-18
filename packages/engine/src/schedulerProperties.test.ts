@@ -81,6 +81,7 @@ function stepFor(pipelineId: string, position: number, role: string): PipelineSt
     ownerGroupId: null,
     moduleVersion: null,
     brief: null,
+    team: null,
     results: [],
   };
 }
