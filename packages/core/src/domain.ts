@@ -5,6 +5,7 @@ import type { StepInputs } from "./schemas/modules.js";
 import type { PreviewItem } from "./schemas/pipelineExport.js";
 import type { StepResult } from "./schemas/pipelines.js";
 import type { StepBrief } from "./stepBrief.js";
+import type { StepTeam } from "./team.js";
 import type { WorkspaceMode } from "./schemas/workspaces.js";
 import type { StepWatch } from "./watch.js";
 import { criteriaField, type SpecShape } from "./schemas/specShape.js";
@@ -698,6 +699,13 @@ export interface PipelineStep {
    * `validatePipeline` refuses one on any other kind of step.
    */
   brief: StepBrief | null;
+  /**
+   * The report-only team this `agent` step runs as (EO-843,
+   * ARCHITECTURE.md, "A team on an agent step"), or null for one agent —
+   * every step written before teams. `validatePipeline` refuses one on
+   * any other kind of step.
+   */
+  team: StepTeam | null;
 }
 
 /**

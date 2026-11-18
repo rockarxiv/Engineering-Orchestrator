@@ -292,6 +292,7 @@ const EDITED_STEP_FIELDS = [
   "watch",
   "workspaceMode",
   "results",
+  "team",
 ] as const;
 const EDITED_ROUTE_FIELDS = ["target", "label", "tone", "position"] as const;
 

@@ -16,6 +16,7 @@ import {
 } from "@eo/core";
 import { entryRuleProblems } from "./entryRules.js";
 import { briefProblems } from "./stepBrief.js";
+import { teamProblems } from "./team.js";
 import { moduleAtPin, type ModuleVersionFacts } from "./modulePins.js";
 
 /** The module a step runs, as its pin makes it (EO-770), or undefined for one it does not run or this installation does not have. */
@@ -266,6 +267,11 @@ export function validatePipeline(input: ValidatePipelineInput): WorkflowProblem[
   // a step, field or comment kind it names has to exist here.
   for (const { stepId, message } of briefProblems(steps, itemTypes)) {
     problems.push({ severity: "error", stateId: stepId, message });
+  }
+  // The report-only team an agent step runs as (EO-843): its staffing,
+  // the action it answers and its limits.
+  for (const { stepId, severity, message } of teamProblems(steps, { registry, staffedRoles, runTimeoutMs })) {
+    problems.push({ severity, stateId: stepId, message });
   }
 
   const byId = new Map(steps.map((step) => [step.id, step]));

@@ -1253,6 +1253,8 @@ function graphOfDocument(db: Db, pipelineId: string, document: PipelineExport, l
       moduleVersion: null,
       // A step's brief (EO-827), naming steps by the document's ids moved to this pipeline's.
       brief: remapStepReferences(step, local).brief ?? null,
+      // The team an agent step runs as (EO-843): roles, never ids.
+      team: step.team ?? null,
     }));
   const routes: StepRoute[] = document.routes.map((route) => ({
     ...route,
@@ -1297,6 +1299,7 @@ export const FIELD_WORDS: Record<ComparedStepField, string> = {
   inputs: "inputs",
   timeoutMs: "time limit",
   results: "results",
+  team: "team",
 };
 
 /**

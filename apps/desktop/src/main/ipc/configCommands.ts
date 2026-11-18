@@ -1,5 +1,5 @@
 import { backendAllowed, bindingRefusal, DEFAULT_MEMORY_DELIVERY_CHARS, DEFAULT_MEMORY_SCOPE_MAX_CHARS, DEFAULT_MEMORY_SCOPE_MAX_ENTRIES, DEFAULT_SKILL_ARCHIVE_AFTER_RUNS, DEFAULT_SKILL_MAX_BODY_CHARS, DEFAULT_SKILL_STALE_AFTER_RUNS, isBuiltinRole, isDispatchable, isPreviewAgent, settledWatch, stepAgentOf, stepAgentProblem, stepHoldsItemsMessage, stepWorkspaceChoice, timeLimitBoundProblem, withMemoryNoteGrant } from "@eo/core";
-import type { ActionDefinitionDraft, Agent, AgentRemovalImpact, StepNamingAgent, EntryRule, GuardConfigView, IpcPayload, IpcResponse, ItemTypeEntry, Registry, Uuid, PipelineStep, StepBrief, StepRoute, StepWatch } from "@eo/core";
+import type { ActionDefinitionDraft, Agent, AgentRemovalImpact, StepNamingAgent, EntryRule, GuardConfigView, IpcPayload, IpcResponse, ItemTypeEntry, Registry, Uuid, PipelineStep, StepBrief, StepRoute, StepTeam, StepWatch } from "@eo/core";
 import { hasBlockingProblem, outsideReachByStep, validatePipeline, type WorkflowProblem } from "@eo/engine";
 import type { Db } from "../db/client.js";
 import { registry, registryForProject, withProposedActions } from "../registry.js";
@@ -852,6 +852,18 @@ function briefFor(db: Db, pipelineId: string, step: IpcPayload<"pipeline:save">[
 }
 
 /**
+ * The team a step of this save ends up with (EO-843), on `briefFor`'s
+ * terms: what the caller sent, `null` included, or where it left the field
+ * out, the step's own row. That is how `pipeline_save`, which is not
+ * offered the field, keeps a step's team rather than clearing it.
+ */
+function teamFor(db: Db, pipelineId: string, step: IpcPayload<"pipeline:save">["steps"][number]): StepTeam | null {
+  if (step.team !== undefined) return step.team;
+  const stored = getStep(db, step.id);
+  return stored !== undefined && stored.pipelineId === pipelineId ? stored.team : null;
+}
+
+/**
  * The live steps this save stops keeping checking (EO-506), for the
  * answer to say so: each kept checking before the save and runs once
  * after it. A step the save removes is not one of them — it is not a
@@ -883,6 +895,8 @@ function toDomainSteps(db: Db, pipelineId: string, steps: IpcPayload<"pipeline:s
     watch: watchFor(db, pipelineId, step),
     // Absent keeps the row's (EO-827) — see `briefFor`.
     brief: briefFor(db, pipelineId, step),
+    // Absent keeps the row's (EO-843) — see `teamFor`.
+    team: teamFor(db, pipelineId, step),
     // Never on the wire, by design: an off-dashboard step is not a column,
     // so the configuration screen has nothing to show for it and nothing
     // to submit. `savePipeline` skips those rows rather than reading this.
