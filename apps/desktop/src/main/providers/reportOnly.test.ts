@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Options } from "@anthropic-ai/claude-agent-sdk";
@@ -12,7 +12,10 @@ import { fakeAppServer, note } from "../testing/fakeCodexAppServer.js";
 import { lockReportOnly, reportOnlyOptionsProblem } from "./claude.js";
 import { codexClientOptions, createCodexProvider, reportOnlyCodexConfigProblem, REPORT_ONLY_CODEX_FEATURES, type CodexProviderOptions } from "./codex.js";
 import { CodexClient, dropWarmCodexThread } from "./codexClient.js";
-import { reportOnlyBridgeProblem } from "./reportOnly.js";
+import { RUNTIMES, versionFor } from "../runtimes/catalog.js";
+import { installDirectory } from "../runtimes/install.js";
+import { CLAUDE_SDK } from "../runtimes/packages.js";
+import { REPORT_ONLY_QUALIFIED_CLAUDE_SDK, REPORT_ONLY_QUALIFIED_RUNTIMES, reportOnlyBridgeProblem } from "./reportOnly.js";
 
 /**
  * What each backend refuses a report-only team participant (EO-845) on
@@ -201,13 +204,25 @@ describe("a participant's provider, from the composition root", () => {
     else process.env["CODEX_HOME"] = priorCodexHome;
   });
 
-  const request = (agent: ReturnType<typeof createAgent>, attemptId: string, roots: string[], participantRoot: string) =>
+  /** A runtime root holding a stand-in for EO's own copy of each pinned runtime, as the Runtimes card installs it. */
+  function installedRuntimes(): string {
+    const root = directory();
+    for (const spec of [RUNTIMES.claude, RUNTIMES.codex]) {
+      const into = installDirectory(root, spec, versionFor(spec, process.platform, process.arch)!);
+      mkdirSync(into, { recursive: true });
+      writeFileSync(join(into, spec.binaryName(process.platform)), "#!/bin/sh\n", { mode: 0o755 });
+    }
+    return root;
+  }
+
+  const request = (agent: ReturnType<typeof createAgent>, attemptId: string, roots: string[], participantRoot: string, runtimeRoot = installedRuntimes(), platform?: NodeJS.Platform) =>
     reportOnlyProviderForAgent({
       agent,
       attemptId,
       eoMcpServerPath: "/app/eoServer.mjs",
       dbPath: undefined,
-      runtimeRoot: directory(),
+      runtimeRoot,
+      ...(platform ? { platform } : {}),
       db: handle.db,
       codexHomeRoots: roots,
       codexSearchHookCommandPath: "/opt/eo/hook.mjs",
@@ -245,4 +260,30 @@ describe("a participant's provider, from the composition root", () => {
     expect(request(codex, "019f0000-0000-7000-8000-000000000008", [], participants)).toMatchObject({ ok: false });
     expect(request(codex, "../escape", roots, participants)).toMatchObject({ ok: false });
   });
+
+  it("refuses, saying why, a runtime EO cannot vouch for: one its agent names, none installed, or a platform EO has none for", () => {
+    const roots = [directory()];
+    const participants = directory();
+    for (const provider of ["claude", "codex"] as const) {
+      const named = createAgent(handle.db, { name: `Own ${provider}`, role: "reviewer", provider, model: "a-model", instructions: ".", config: { executablePath: "/usr/local/bin/agent-cli" } });
+      expect(request(named, uuidLike(1), roots, participants)).toMatchObject({ ok: false, problem: expect.stringContaining("whose version EO cannot vouch for") });
+      const plain = createAgent(handle.db, { name: `Plain ${provider}`, role: "reviewer", provider, model: "a-model", instructions: "." });
+      expect(request(plain, uuidLike(2), roots, participants, directory())).toMatchObject({ ok: false, problem: expect.stringContaining(`EO's own copy of ${RUNTIMES[provider].label} ${REPORT_ONLY_QUALIFIED_RUNTIMES[provider]} is not installed`) });
+      expect(request(plain, uuidLike(3), roots, participants, installedRuntimes(), "aix")).toMatchObject({ ok: false, problem: expect.stringContaining("not made for this platform") });
+      expect(request(plain, uuidLike(4), roots, participants)).toMatchObject({ ok: true });
+    }
+  });
 });
+
+describe("the runtimes a participant may run on (EO-850)", () => {
+  it("are the pinned ones, so a pin moved without running the live report-only probes again fails here", () => {
+    // Moving a pin? Run reportOnlyClaude.live.test.ts and reportOnlyCodex.live.test.ts
+    // on the new version (docs/teams.md, "What has been proved"), then move these with it.
+    expect(REPORT_ONLY_QUALIFIED_RUNTIMES).toEqual({ claude: RUNTIMES.claude.version, codex: RUNTIMES.codex.version });
+    expect(REPORT_ONLY_QUALIFIED_CLAUDE_SDK).toBe(CLAUDE_SDK.version);
+  });
+});
+
+function uuidLike(n: number): string {
+  return `019f0000-0000-7000-8000-${String(n).padStart(12, "0")}`;
+}
