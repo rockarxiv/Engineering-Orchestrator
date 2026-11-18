@@ -14,7 +14,7 @@ import { agentsKey, itemsKey, useChromeVocabulary, usePipelineData, useStepAutho
 import { useInFlight } from "../../../query/useInFlight";
 import { namesItemOrNone, useInvalidateOnPush } from "../../../query/useInvalidateOnPush";
 import { runStatusOf } from "../../../shared/items/status";
-import { groupRuns, isQuietRun, liveRunOf } from "../../../shared/transcript/grouping";
+import { groupRuns, isQuietRun, isTeamParticipantRun, liveRunOf } from "../../../shared/transcript/grouping";
 import { ActAsAdmin } from "../../admin/ActAsAdmin";
 import { ReadOnlyFence } from "../../admin/ReadOnlyFence";
 import { useMayEdit } from "../../HolderGate";
@@ -38,6 +38,7 @@ import { OutputSection } from "./Output";
 import { RunComposer } from "./RunComposer";
 import { StepStateDot, Stepper } from "./Stepper";
 import { SuggestionReview } from "./SuggestionReview";
+import { TeamSessions } from "./TeamSessions";
 import { CommentThread } from "./Thread";
 import { transitionsShown, useItemThread } from "./useEarlierComments";
 import { useKeepInPlace } from "./useKeepInPlace";
@@ -315,8 +316,11 @@ export function ItemView({ itemId }: { itemId: string }) {
   const { item, dependsOn, decision, currentOutput, watch } = detail.data;
   const { branch, pullRequest } = item.git;
   // Conversations, not `runs` rows: counted as the runs view groups them.
-  const runCount = groupRuns(detail.data.runs).length;
-  const latestRun = detail.data.runs.filter((run) => !isQuietRun(run)).at(-1);
+  // A team's participants are its session's, listed under it (EO-849): the
+  // item's runs are the step's own, the team's run among them.
+  const stepRuns = detail.data.runs.filter((run) => !isTeamParticipantRun(run));
+  const runCount = groupRuns(stepRuns).length;
+  const latestRun = stepRuns.filter((run) => !isQuietRun(run)).at(-1);
   // The current step wears its run's state (EO-689): the run the "Run" section below shows, idle with none.
   const runState = runStatusOf(latestRun?.status ?? null);
   const steps = item.stepId === null ? [] : pipelineSteps;
@@ -567,6 +571,9 @@ export function ItemView({ itemId }: { itemId: string }) {
                   </section>
                 ) : null}
               </Card>
+
+              {/* A team working this item's step, its participants underneath (EO-849). Nothing where no team has. */}
+              <TeamSessions itemId={itemId} />
 
               {/* A suggested pipeline change, read before it is decided on (EO-331, ARCHITECTURE.md, "Divergence and suggestions"). */}
               <SuggestionReview itemId={itemId} />
