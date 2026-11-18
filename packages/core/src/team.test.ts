@@ -1,5 +1,16 @@
 import { describe, expect, it } from "vitest";
-import { decideIndependentTeam, deterministicAnswerProblem, StepTeamSchema, storedTeam, teamWords, type IndependentTeam, type TeamContribution } from "./team.js";
+import {
+  decideIndependentTeam,
+  deterministicAnswerProblem,
+  StepTeamSchema,
+  storedTeam,
+  TeamContributionSchema,
+  TeamExecutionFailureSchema,
+  TeamReportSchema,
+  teamWords,
+  type IndependentTeam,
+  type TeamContribution,
+} from "./team.js";
 
 /**
  * The team contract (EO-843, ARCHITECTURE.md, "A team on an agent step"):
@@ -104,6 +115,38 @@ function permutations<T>(values: readonly T[]): T[][] {
   return values.flatMap((value, index) => permutations([...values.slice(0, index), ...values.slice(index + 1)]).map((rest) => [value, ...rest]));
 }
 
+describe("TeamContributionSchema", () => {
+  it("reads a report and a failure, and decides on what it parsed", () => {
+    const report = TeamContributionSchema.parse({ key: "security", status: "completed", outcome: "clear", report: "No gaps." });
+    const failure = TeamContributionSchema.parse({ key: "docs", status: "failed", error: "The run timed out." });
+    expect(TeamReportSchema.parse(report)).toEqual(report);
+    expect(TeamExecutionFailureSchema.parse(failure)).toEqual(failure);
+    expect(decideIndependentTeam(team, [report, done("performance", "clear"), failure])).toMatchObject({ status: "decided", result: "approved" });
+  });
+
+  it("refuses a malformed report", () => {
+    const report = { key: "security", status: "completed", outcome: "clear", report: "No gaps." };
+    for (const malformed of [
+      { ...report, report: "  " },
+      { ...report, report: undefined },
+      { ...report, outcome: undefined },
+      { ...report, outcome: "Not A Key" },
+      { ...report, key: "" },
+      { ...report, status: "done" },
+      { ...report, agentId: "a1" },
+    ]) {
+      expect(TeamContributionSchema.safeParse(malformed).success).toBe(false);
+    }
+  });
+
+  it("keeps a failure to contribute apart from a conclusion: neither carries the other's field", () => {
+    expect(TeamContributionSchema.safeParse({ key: "security", status: "failed", error: "Crashed.", outcome: "blocker" }).success).toBe(false);
+    expect(TeamContributionSchema.safeParse({ key: "security", status: "completed", outcome: "clear", report: "Fine.", error: "Crashed." }).success).toBe(false);
+    expect(TeamContributionSchema.safeParse({ key: "security", status: "failed" }).success).toBe(false);
+    expect(TeamExecutionFailureSchema.safeParse({ key: "security", status: "completed", outcome: "clear", report: "Fine." }).success).toBe(false);
+  });
+});
+
 describe("decideIndependentTeam", () => {
   it("decides by the first rule that holds, and the same way whatever order the contributions arrived in", () => {
     const cases: [TeamContribution[], string, number | null][] = [
@@ -182,5 +225,13 @@ describe("teamWords", () => {
     const other = StepTeamSchema.parse({ ...base, participants: [{ ...base.participants[0], instructions: "Look harder." }, ...base.participants.slice(1)] });
     expect(teamWords(other)).not.toBe(teamWords(team));
     expect(teamWords(team)).toContain("any blocker → rejected, all clear → approved, otherwise changes_requested");
+  });
+
+  it("tells two teams apart by an outcome's label or meaning alone", () => {
+    const withOutcome = (outcome: object) => StepTeamSchema.parse({ ...base, outcomes: [outcome, ...base.outcomes.slice(1)] });
+    const meant = withOutcome({ key: "clear", label: "Clear", meaning: "Nothing needs changing." });
+    expect(teamWords(withOutcome({ key: "clear", label: "All clear" }))).not.toBe(teamWords(team));
+    expect(teamWords(meant)).not.toBe(teamWords(team));
+    expect(teamWords(withOutcome({ key: "clear", label: "Clear", meaning: "Nothing at all needs changing." }))).not.toBe(teamWords(meant));
   });
 });
