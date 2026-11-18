@@ -168,16 +168,31 @@ async function* answer(outcome: string, report: string, cents = 0): AsyncGenerat
   yield { type: "result", data: { outcome, report } };
 }
 
-/** A turn that says it started, spends what it is told, and then works until it is stopped. */
-async function* until(signal: AbortSignal, cents = 0): AsyncGenerator<AgentEvent> {
+/**
+ * A turn that says it started, spends what it is told, and then works
+ * until it is stopped — reporting, as a backend winding down does, what it
+ * spent after the stop, and even an answer EO must not take.
+ */
+async function* until(signal: AbortSignal, cents = 0, afterStop = 0): AsyncGenerator<AgentEvent> {
   yield { type: "thread_started", threadId: `thread-${uuidv7()}` };
   if (cents > 0) yield { type: "usage", scope: "turn", tokensIn: 100, tokensOut: 50, costCents: cents };
-  await new Promise<void>((_, reject) => {
-    const stop = () => reject(Object.assign(new Error("stopped"), { name: "AbortError" }));
-    if (signal.aborted) stop();
-    else signal.addEventListener("abort", stop, { once: true });
+  await new Promise<void>((resolve) => {
+    if (signal.aborted) resolve();
+    else signal.addEventListener("abort", () => resolve(), { once: true });
   });
+  if (afterStop === 0) throw Object.assign(new Error("stopped"), { name: "AbortError" });
+  yield { type: "usage", scope: "turn", tokensIn: 10, tokensOut: 5, costCents: afterStop };
+  yield { type: "result", data: { outcome: "clear", report: "Answered after it was stopped." } };
 }
+
+function attach(name: string, content: string, onItem: Item = item): void {
+  const path = join(scratch, `${uuidv7()}-${name}`);
+  writeFileSync(path, content);
+  insertAttachments(handle.db, [{ id: uuidv7() as Uuid, itemId: onItem.id, commentId: null, storagePath: path, name, mimeType: "text/plain", size: content.length }]);
+}
+
+/** The baseline the supervisor captures for an item with no disk and no attachments. */
+const NOTHING_CAPTURED = evidenceBaselineOf({ version: 1, capturedAt: 1, workspaceKind: "none", source: { kind: "none" }, attachments: [] });
 
 /** The participants' reports: agents' comments other than the summary the step's owner is credited with. */
 const reportsOn = (id: string) => listCommentsForItem(handle.db, id as Uuid).filter((comment) => comment.authorType === "agent" && comment.authorId !== quinn.id);
@@ -317,7 +332,8 @@ describe("an independent team on an agent step (EO-846)", () => {
 
   it("shares the budget between turns running at once and keeps every cent spent when it is stopped", async () => {
     const engine = supervisor({ guards: { perItemBudgetCents: 100 } });
-    script = ({ opts }) => until(opts.signal, 30);
+    // Each reports 10¢ more as it winds down after the stop, and an answer EO must not take.
+    script = ({ opts }) => until(opts.signal, 30, 10);
     const done = engine.runOnce();
     await vi.waitFor(() => expect(participantRuns().filter((run) => (run.costCents ?? 0) === 30)).toHaveLength(2));
     const shares = started.map((one) => one.opts.budgetCents ?? Number.POSITIVE_INFINITY);
@@ -327,17 +343,65 @@ describe("an independent team on an agent step (EO-846)", () => {
     engine.cancelRun(teamRun()[0]!.id);
     await done;
     expect(participantRuns().map((run) => run.status)).toEqual(["cancelled", "cancelled"]);
-    expect(sumCostCentsForItem(handle.db, item.id)).toBe(60);
+    expect(participantRuns().map((run) => run.costCents)).toEqual([40, 40]);
+    expect(sumCostCentsForItem(handle.db, item.id)).toBe(80);
+    expect(reportsOn(item.id)).toEqual([]);
     expect(getItem(handle.db, item.id)?.stepId).toBe("check");
   });
 
   it("stops a participant at its share, not at what the item has left", async () => {
     const engine = supervisor({ guards: { perItemBudgetCents: 40 } });
-    script = ({ agent, opts }) => (agent.name === "Sasha" ? until(opts.signal, 25) : answer("clear", "Fine.", 5));
+    // Stopped by EO at its share, it still reports 3¢ more on the way out.
+    script = ({ agent, opts }) => (agent.name === "Sasha" ? until(opts.signal, 25, 3) : answer("clear", "Fine.", 5));
     await engine.runOnce();
     const sasha = listTeamSessionsForItem(handle.db, item.id)[0]!.attempts.filter((attempt) => attempt.assignmentKey === "security");
     expect(sasha[0]?.status).toBe("failed");
     expect(sasha[0]?.error).toContain("share of the budget (20¢)");
+    expect(getRun(handle.db, sasha[0]!.runId as Uuid)?.costCents).toBe(28);
+    expect(sasha[0]?.outcome).toBeNull();
+  });
+
+  it("holds each item's budget only against its own team's turns, and the day's against every team's", async () => {
+    const second = createTestItem(handle.db, { type: "story", title: "Check the import", stepId: "check" });
+    const wide = { globalConcurrency: 2, perAgentConcurrency: 4, perRepositoryConcurrency: 2 };
+    script = ({ opts }) => until(opts.signal, 1);
+
+    // Separate item budgets and no daily one: neither team's turns shrink the other's.
+    const apart = supervisor({ limits: wide, guards: { perItemBudgetCents: 100 } });
+    const both = apart.runOnce();
+    await vi.waitFor(() => expect(started).toHaveLength(4));
+    expect(started.map((one) => one.opts.budgetCents)).toEqual([50, 50, 50, 50]);
+    for (const run of [...teamRun(), ...listRunsForItem(handle.db, second.id).filter((one) => one.action === "alignment")]) apart.cancelRun(run.id);
+    await both;
+    expect(listCommentsForItem(handle.db, second.id).some((comment) => comment.body.includes("no budget left"))).toBe(false);
+  });
+
+  it("shares a daily budget across teams, so the second waits for what the first holds rather than failing", async () => {
+    const second = createTestItem(handle.db, { type: "story", title: "Check the import", stepId: "check" });
+    const wide = { globalConcurrency: 2, perAgentConcurrency: 4, perRepositoryConcurrency: 2 };
+    const release = gate();
+    script = ({ agent, opts }) =>
+      (async function* () {
+        yield { type: "thread_started", threadId: `t-${uuidv7()}` } as AgentEvent;
+        yield { type: "usage", scope: "turn", tokensIn: 10, tokensOut: 5, costCents: 10 } as AgentEvent;
+        await release.wait;
+        void opts;
+        yield { type: "result", data: { outcome: "clear", report: `${agent.name} found nothing.` } } as AgentEvent;
+      })();
+    const engine = supervisor({ limits: wide, guards: { perItemBudgetCents: 100, dailyBudgetCents: 100 } });
+    const done = engine.runOnce();
+    await vi.waitFor(() => expect(started).toHaveLength(2));
+    await vi.waitFor(() =>
+      expect([item, second].some((one) => listCommentsForItem(handle.db, one.id).some((comment) => comment.body.includes("the budget left is held by participants still working")))).toBe(true),
+    );
+    // The first team's two turns hold the whole day between them; nothing else was started.
+    expect(started.map((one) => one.opts.budgetCents)).toEqual([50, 50]);
+    release.open();
+    await done;
+    // Once they finished, what they did not spend was shared out again: 100 - 20 spent, over two.
+    expect(started.slice(2).map((one) => one.opts.budgetCents)).toEqual([40, 40]);
+    expect(getItem(handle.db, item.id)?.stepId).toBe("accepted");
+    expect(getItem(handle.db, second.id)?.stepId).toBe("accepted");
   });
 });
 
@@ -414,20 +478,25 @@ describe("an independent team across a restart (EO-846)", () => {
     expect(listTransitionsForItem(handle.db, item.id)).toHaveLength(1);
   });
 
-  it("at final settlement: answers with the settled result again without running anyone, and moves the item once", async () => {
-    // A first supervisor runs the team to the point of settling, then EO "dies" before the move.
+  /** A team that settled on "gaps_found", on the evidence as it stood, and EO stopped before the move. */
+  function settledBeforeTheMove(): string {
     const parent = crashedTeamRun();
     const session = openTeamSession(handle.db, { itemId: item.id, stepId: "check", team: team(), runId: parent });
     for (const [key, role, name, outcome] of [
       ["security", "sec", "Sasha", "blocking"],
       ["tests", "tester", "Tess", "clear"],
     ] as const) {
-      const made = startTeamAttempt(handle.db, { sessionId: session.id, assignmentKey: key, role, agentId: agentId(name), instructions: "…", runId: participantRun(name) });
+      const made = startTeamAttempt(handle.db, { sessionId: session.id, assignmentKey: key, role, agentId: agentId(name), instructions: "…", runId: participantRun(name), evidenceBaseline: NOTHING_CAPTURED });
       if (!made.ok) throw new Error(made.problem);
       expect(acceptTeamReport(handle.db, { attemptId: made.attempt.id, outcome, report: `${name}: ${outcome}.` }).ok).toBe(true);
     }
     client().prepare("update runs set status = 'succeeded' where action = ?").run(TEAM_PARTICIPANT_ACTION);
     expect(endTeamSession(handle.db, { sessionId: session.id, status: "finalized", result: "gaps_found" }).ok).toBe(true);
+    return session.id;
+  }
+
+  it("at final settlement: answers with the settled result again without running anyone, and moves the item once", async () => {
+    settledBeforeTheMove();
 
     const engine = supervisor();
     await engine.reconcile();
@@ -438,6 +507,26 @@ describe("an independent team across a restart (EO-846)", () => {
     expect(getItem(handle.db, item.id)?.stepId).toBe("rework");
     expect(listTransitionsForItem(handle.db, item.id)).toHaveLength(1);
     expect(reportsOn(item.id)).toHaveLength(2);
+  });
+
+  it("at final settlement, on evidence that changed before the restart: does not route the stale result, and runs the team again on what is there", async () => {
+    const settled = settledBeforeTheMove();
+    attach("addendum.txt", "a person added this while EO was closed");
+
+    const engine = supervisor();
+    await engine.reconcile();
+    await engine.runOnce();
+
+    // The settled "gaps_found" was about a version that is gone; the new reports say clear.
+    expect(started.map((one) => one.agent).sort()).toEqual(["Sasha", "Tess"]);
+    expect(getItem(handle.db, item.id)?.stepId).toBe("accepted");
+    expect(listTransitionsForItem(handle.db, item.id)).toHaveLength(1);
+    expect(listCommentsForItem(handle.db, item.id).some((comment) => comment.body.includes("its result is not used"))).toBe(true);
+    const sessions = listTeamSessionsForItem(handle.db, item.id).map((record) => record.session);
+    expect(sessions.map((one) => [one.id === settled, one.status])).toEqual([
+      [true, "finalized"],
+      [false, "finalized"],
+    ]);
   });
 });
 
@@ -513,11 +602,6 @@ describe("stopping an independent team (EO-846)", () => {
 });
 
 describe("an independent team's evidence (EO-846)", () => {
-  function attach(name: string, content: string): void {
-    const path = join(scratch, `${uuidv7()}-${name}`);
-    writeFileSync(path, content);
-    insertAttachments(handle.db, [{ id: uuidv7() as Uuid, itemId: item.id, commentId: null, storagePath: path, name, mimeType: "text/plain", size: content.length }]);
-  }
 
   it("supersedes the work done on evidence that changed before it settled, and settles only on the new", async () => {
     attach("brief.txt", "first version");

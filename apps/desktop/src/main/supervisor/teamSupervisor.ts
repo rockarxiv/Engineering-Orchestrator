@@ -16,7 +16,7 @@ import {
   type TeamSessionRow,
   type Uuid,
 } from "@eo/core";
-import { allocateParticipantBudget, planIndependentTeam, type TeamAttemptState, type TeamWaitReason } from "@eo/engine";
+import { allocateParticipantBudget, planIndependentTeam, type BudgetCeiling, type TeamAttemptState, type TeamWaitReason } from "@eo/engine";
 import type { Db } from "../db/client.js";
 import { listAgents } from "../db/repos/agentsRepo.js";
 import { getComment, postComment } from "../db/repos/commentsRepo.js";
@@ -125,8 +125,13 @@ export interface TeamSupervisorDeps {
   ordinaryTurnsOf: (agentId: string) => number;
   /** What stands between this agent and a turn on this item now, or null. */
   restriction: (agent: Agent, item: Item) => ParticipantRestriction | null;
-  /** What the item's and the day's budgets have left, in cents, from persisted spending; null where neither is set. */
-  remainingBudgetCents: (itemId: Uuid) => number | null;
+  /**
+   * What the item's budget and the day's have left, each on its own, in
+   * cents from persisted spending; null for one that is not set. Apart,
+   * because a turn running on another item holds the day's budget and
+   * not this item's.
+   */
+  budgetLeft: (itemId: Uuid) => { itemCents: number | null; dayCents: number | null };
   /** Whether this process still holds the item's lease, where it held one when the team began. */
   holdsLease: (itemId: Uuid) => boolean;
   /** Keeps a promise in the supervisor's in-flight set, so idling and quitting wait for it. */
@@ -135,6 +140,8 @@ export interface TeamSupervisorDeps {
   onChange: () => void;
   /** How often a waiting team looks again at what may have changed — a pause lifted, a slot freed. */
   pollMs?: number;
+  /** How long a stopped participant's backend is read for what it still reports before it is let go. */
+  stopGraceMs?: number;
 }
 
 export interface TeamTurnInput {
@@ -247,6 +254,7 @@ export function createTeamSupervisor(deps: TeamSupervisorDeps): TeamSupervisor {
   /** Team parents in this process, by run. */
   const parents = new Set<string>();
   const pollMs = deps.pollMs ?? 2000;
+  const stopGraceMs = deps.stopGraceMs ?? 5000;
 
   function liveOn(agentId: string): number {
     let count = 0;
@@ -360,22 +368,43 @@ export function createTeamSupervisor(deps: TeamSupervisorDeps): TeamSupervisor {
         ...(bridge === null ? {} : { writeBridge: reportOnlyCredential(bridge, item.id, attempt.id) }),
         signal: entry.controller.signal,
       });
-      for await (const event of stream) {
-        if (entry.controller.signal.aborted) break;
+      // Read to its end even once stopped: a backend reports what it spent
+      // as it winds down, and every cent reported is kept. A stopped turn's
+      // answer is never taken, and a backend that does not end its turn
+      // within the grace after the stop is let go.
+      const iterator = stream[Symbol.asyncIterator]();
+      const givenUp = new Promise<"gave_up">((resolve) => {
+        const arm = () => {
+          const timer = setTimeout(() => resolve("gave_up"), stopGraceMs);
+          timer.unref?.();
+        };
+        if (entry.controller.signal.aborted) arm();
+        else entry.controller.signal.addEventListener("abort", arm, { once: true });
+      });
+      for (;;) {
+        const step = await Promise.race([iterator.next(), givenUp]);
+        if (step === "gave_up") {
+          void Promise.resolve(iterator.return?.(undefined)).catch(() => undefined);
+          break;
+        }
+        if (step.done === true) break;
+        const event = step.value;
+        const stopped = entry.controller.signal.aborted;
         if (event.type !== "output_delta" && event.type !== "heartbeat") buffer.append(run.id, event.type, event);
         if (event.type === "thread_started") updateRun(db, run.id, { threadId: event.threadId });
         else if (event.type === "usage") {
           if (tally.record(event)) {
             const totals = tally.totals();
-            // Every reading, so an interruption keeps all of it.
+            // Every reading, a stopped turn's included, so an interruption keeps all of it.
             updateRun(db, run.id, totals);
             entry.spent = totals.costCents;
-            if (entry.allocation !== null && entry.spent >= entry.allocation && entry.stoppedBecause === null) {
+            if (entry.allocation !== null && entry.spent >= entry.allocation && entry.stoppedBecause === null && failure === null) {
               failure = `It reached its share of the budget (${entry.allocation}¢) before it answered.`;
               entry.controller.abort();
             }
           }
-        } else if (event.type === "result") answer = event.data;
+        } else if (stopped) continue;
+        else if (event.type === "result") answer = event.data;
         else if (event.type === "error" && event.fatal !== false) {
           failure = event.budget === true ? `It reached its share of the budget (${entry.allocation ?? 0}¢) before it answered.` : event.message;
         }
@@ -424,6 +453,11 @@ export function createTeamSupervisor(deps: TeamSupervisorDeps): TeamSupervisor {
       // read a team waiting on its participants as a backend gone quiet.
       yield { type: "heartbeat", callStarted: `team:${parentRunId}` };
 
+      // ── The evidence as it stands, before anything is decided on ──
+      // Captured first, so that not even a session that already settled
+      // answers again from reports about a version that has since gone.
+      const evidence = await capture();
+
       // ── The session: this entry's, adopted; or a new one ─────────
       let session = currentTeamSession(db, item.id);
       if (session !== undefined && (session.stepId !== step.id || !teamSessionOnEntry(db, session))) session = undefined;
@@ -434,11 +468,17 @@ export function createTeamSupervisor(deps: TeamSupervisorDeps): TeamSupervisor {
           .map((record) => record.session)
           .filter((one) => one.stepId === step.id && one.status === "finalized" && teamSessionOnEntry(db, one))
           .at(-1);
-        if (settled !== undefined) {
-          const again = settledAnswer(settled);
-          if (again !== null) {
-            yield { type: "result", data: again };
+        if (settled !== undefined && evidence.ok) {
+          const again = settledAnswer(settled, evidenceContentKey(evidence.evidence.baseline)!);
+          if (again.kind === "replay") {
+            yield { type: "result", data: again.answer };
             return;
+          }
+          // Settled on evidence that has changed since, before the move:
+          // its result is stale, so the team is done again on what is
+          // there now, and the settled session is kept as it was.
+          if (again.kind === "stale") {
+            note(item, parentRunId, `What the team on "${step.name}" read changed after it settled and before this item moved on, so its result is not used: the team runs again on what is there now.`);
           }
         }
         session = openTeamSession(db, { itemId: item.id, stepId: step.id, team, runId: parentRunId, now: deps.now() });
@@ -451,8 +491,6 @@ export function createTeamSupervisor(deps: TeamSupervisorDeps): TeamSupervisor {
       const sessionId = session.id;
       const sessionTeam = session.team.coordination === "independent" ? session.team : team;
 
-      // ── The evidence, captured once and checked before settling ───
-      const evidence = await capture();
       if (!evidence.ok) {
         endTeamSession(db, { sessionId, status: "failed", now: deps.now() });
         yield { type: "error", message: `EO could not capture what the team would read, so no participant was started: ${evidence.problem}`, retryable: false };
@@ -641,10 +679,13 @@ export function createTeamSupervisor(deps: TeamSupervisorDeps): TeamSupervisor {
               if (made.ok) endTeamAttempt(db, made.attempt.id, { status: "failed", error: restricted.reason }, deps.now());
               continue;
             }
-            const allocation = shareFor(item, sessionId, outstanding - started);
+            const share = shareFor(item, sessionId, outstanding - started);
+            const allocation = share.cents;
             if (allocation === 0) {
-              if ([...mine].some((attemptId) => live.has(attemptId))) {
-                tell("the budget left is held by the participants still working, and is shared out again as they finish.");
+              // Held by turns still working, under a budget this one is
+              // under too: given back as they finish, so it waits.
+              if (share.held) {
+                tell("the budget left is held by participants still working, and is shared out again as they finish.");
                 continue;
               }
               await stopAll("The budget ran out.");
@@ -742,44 +783,57 @@ export function createTeamSupervisor(deps: TeamSupervisorDeps): TeamSupervisor {
     }
   }
 
-  /** The answer a finalised session settled on, rebuilt from its accepted reports — deterministic, so the same as when it settled. */
-  function settledAnswer(session: TeamSessionRow): { result: string; summary: string } | null {
-    if (session.team.coordination !== "independent" || session.result === null) return null;
+  /**
+   * What a finalised session settled on, rebuilt from its accepted reports
+   * — deterministic, so the same as when it settled — provided every one of
+   * them was made on the evidence as it is now (`currentKey`); `stale`
+   * where any was not, and the team must run again.
+   */
+  function settledAnswer(session: TeamSessionRow, currentKey: string): { kind: "replay"; answer: { result: string; summary: string } } | { kind: "stale" } | { kind: "none" } {
+    if (session.team.coordination !== "independent" || session.result === null) return { kind: "none" };
     const attempts = listTeamAttempts(db, session.id);
-    const latest = session.team.participants.map((participant) => attempts.filter((attempt) => attempt.assignmentKey === participant.key && attempt.supersededBy === null).at(-1));
-    const states: TeamAttemptState[] = latest
-      .filter((attempt): attempt is TeamAttemptRow => attempt !== undefined)
-      .map((attempt) => ({
-        id: attempt.id,
-        key: attempt.assignmentKey,
-        status: attempt.status,
-        supersededBy: null,
-        outcome: attempt.outcome,
-        report: reportText(db, attempt),
-        error: attempt.error,
-        baseline: "settled",
-        live: false,
-      }));
-    const plan = planIndependentTeam({ team: session.team, attempts: states, baseline: "settled", capacity: { machineFree: 0, agentOf: new Map(), agentFree: new Map() } });
-    if (plan.decision.status !== "decided" || plan.decision.result !== session.result) return null;
-    return { result: plan.decision.result, summary: plan.decision.summary };
+    const states: TeamAttemptState[] = attempts.map((attempt) => ({
+      id: attempt.id,
+      key: attempt.assignmentKey,
+      status: attempt.status,
+      supersededBy: attempt.supersededBy,
+      outcome: attempt.outcome,
+      report: reportText(db, attempt),
+      error: attempt.error,
+      baseline: evidenceContentKey(attempt.evidenceBaseline),
+      live: false,
+    }));
+    const latestCompleted = states.filter((state) => state.supersededBy === null && state.status === "completed");
+    if (latestCompleted.some((state) => state.baseline !== currentKey)) return { kind: "stale" };
+    const plan = planIndependentTeam({ team: session.team, attempts: states, baseline: currentKey, capacity: { machineFree: 0, agentOf: new Map(), agentFree: new Map() } });
+    if (plan.decision.status !== "decided" || plan.decision.result !== session.result) return { kind: "none" };
+    return { kind: "replay", answer: { result: plan.decision.result, summary: plan.decision.summary } };
   }
 
   function sessionReportIds(sessionId: string): string[] {
     return listTeamAttempts(db, sessionId).flatMap((attempt) => (attempt.reportCommentId === null ? [] : [attempt.reportCommentId]));
   }
 
-  function shareFor(item: Item, sessionId: string, outstanding: number): number | null {
-    const session = getTeamSession(db, sessionId);
-    let remaining = deps.remainingBudgetCents(item.id as Uuid);
-    const own = session?.team.limits.budgetCents;
-    if (own !== undefined) {
-      const left = Math.max(0, own - teamSessionTotals(db, sessionId).costCents);
-      remaining = remaining === null ? left : Math.min(remaining, left);
-    }
-    let held = 0;
-    for (const one of live.values()) if (one.allocation !== null) held += Math.max(0, one.allocation - one.spent);
-    return allocateParticipantBudget({ remainingCents: remaining, heldCents: held, outstanding });
+  /**
+   * This turn's share of every budget it is under (EO-846), each reckoned
+   * with only the running turns that budget covers: the item's with this
+   * item's, the team's own with this session's, the day's with every turn
+   * running today. And whether any of that is held by a turn still
+   * working, which a share of nothing waits for rather than fails on.
+   */
+  function shareFor(item: Item, sessionId: string, outstanding: number): { cents: number | null; held: boolean } {
+    const heldBy = (covers: (one: LiveParticipant) => boolean): number => {
+      let held = 0;
+      for (const one of live.values()) if (one.allocation !== null && covers(one)) held += Math.max(0, one.allocation - one.spent);
+      return held;
+    };
+    const ceilings: BudgetCeiling[] = [];
+    const left = deps.budgetLeft(item.id as Uuid);
+    if (left.itemCents !== null) ceilings.push({ remainingCents: left.itemCents, heldCents: heldBy((one) => one.itemId === item.id) });
+    if (left.dayCents !== null) ceilings.push({ remainingCents: left.dayCents, heldCents: heldBy(() => true) });
+    const own = getTeamSession(db, sessionId)?.team.limits.budgetCents;
+    if (own !== undefined) ceilings.push({ remainingCents: Math.max(0, own - teamSessionTotals(db, sessionId).costCents), heldCents: heldBy((one) => one.sessionId === sessionId) });
+    return { cents: allocateParticipantBudget({ ceilings, outstanding }), held: ceilings.some((ceiling) => ceiling.heldCents > 0) };
   }
 
   return {

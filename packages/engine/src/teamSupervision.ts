@@ -219,16 +219,24 @@ export function planIndependentTeam(input: PlanIndependentTeamInput): TeamPlan {
   return { fence, start, waiting, exhausted, working, decision };
 }
 
-export interface ParticipantBudgetInput {
+/** One spending ceiling a participant's turn is under: what it has left, and what turns under it already hold. */
+export interface BudgetCeiling {
+  /** What may still be spent under this ceiling, in cents, from spending already persisted. */
+  remainingCents: number;
   /**
-   * What may still be spent, in cents — the least of what the item's
-   * budget, the day's and the team's own have left, from spending already
-   * persisted — or null where none of them is set.
+   * What turns running under this same ceiling were allocated and have not
+   * yet spent: held for them, not handed out again. Only turns the ceiling
+   * covers — an item's budget is not held by another item's turns, and a
+   * team's own is not held by another team's — while the day's is held by
+   * every turn running today.
    */
-  remainingCents: number | null;
-  /** What turns already running were allocated and have not yet spent: held for them, not handed out again. */
   heldCents: number;
-  /** How many assignments still need a turn, this one included: the share each is owed. */
+}
+
+export interface ParticipantBudgetInput {
+  /** Every ceiling the turn is under — the item's, the day's, the team's own — each with its own holdings. None is no cap. */
+  ceilings: readonly BudgetCeiling[];
+  /** How many assignments of this team still need a turn, this one included: the share each is owed. */
   outstanding: number;
 }
 
@@ -238,18 +246,23 @@ export interface ParticipantBudgetInput {
  *
  * Shared, not copied. Every turn running at once would otherwise be handed
  * the whole of what the item or the day has left, and together spend it
- * several times over before any of them reported. So what is left, less
- * what running turns still hold, is divided between every assignment that
- * still needs a turn, and this turn takes one share; a turn that finishes
- * under its share gives the rest back to the next one, because its share
- * is no longer held and its spending is.
+ * several times over before any of them reported. So under each ceiling,
+ * what is left less what running turns under that ceiling still hold is
+ * divided between every assignment of this team that still needs a turn,
+ * and the turn takes the smallest of those shares; a turn that finishes
+ * under its share gives the rest back, because its share is no longer held
+ * and its spending is.
+ *
+ * Each ceiling is reckoned with only the turns it covers, so one item's
+ * team holding its own item's budget never shrinks another item's, and
+ * only a ceiling they share — the day's — is held across them.
  *
  * Whole cents, rounded down, so the shares never add up to more than is
  * left. Zero means there is nothing to give it, and the host does not
  * start it.
  */
 export function allocateParticipantBudget(input: ParticipantBudgetInput): number | null {
-  if (input.remainingCents === null) return null;
-  const available = Math.max(0, input.remainingCents - Math.max(0, input.heldCents));
-  return Math.floor(available / Math.max(1, input.outstanding));
+  if (input.ceilings.length === 0) return null;
+  const shares = input.ceilings.map((ceiling) => Math.floor(Math.max(0, ceiling.remainingCents - Math.max(0, ceiling.heldCents)) / Math.max(1, input.outstanding)));
+  return Math.min(...shares);
 }
