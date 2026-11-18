@@ -39,6 +39,7 @@ import {
   type MovedFile,
 } from "../db/repos/projectMoveRepo.js";
 import { asRunCommand } from "./runCommand.js";
+import { listTeamSessionsForItem } from "../db/repos/teamSessionsRepo.js";
 
 /**
  * Moving a project to the record (EO-325,
@@ -127,6 +128,8 @@ const PAGE = {
   memories: 200,
   /** Within the contract's two hundred (EO-513). */
   skills: 100,
+  /** Within the contract's fifty (EO-844). */
+  teamSessions: 50,
 } as const;
 
 /** What a page's worth of rows is sent by. Injected so a test can watch the order. */
@@ -229,6 +232,7 @@ function emptyCounts(): RecordAdoptCounts {
     attachments: 0,
     memories: 0,
     skills: 0,
+    teamSessions: 0,
     skipped: [],
   };
 }
@@ -252,6 +256,7 @@ function add(total: RecordAdoptCounts, page: RecordAdoptCounts): void {
   total.attachments += page.attachments;
   total.memories += page.memories;
   total.skills += page.skills;
+  total.teamSessions += page.teamSessions;
   total.skipped.push(...page.skipped);
 }
 
@@ -284,6 +289,7 @@ function sentInPage(page: RecordAdoptPage): Omit<RecordAdoptCounts, "skipped"> {
     attachments: page.attachments.length,
     memories: page.memories.length,
     skills: page.skills.length,
+    teamSessions: page.teamSessions.length,
   };
 }
 
@@ -430,6 +436,7 @@ export async function moveProjectToRecord(options: MoveProjectOptions): Promise<
     files: new Set(),
     memories: new Map(),
     skills: new Map(),
+    teamSessions: new Map(),
   };
   /**
    * The dependency graph as it was last sent, written out.
@@ -630,6 +637,17 @@ export async function moveProjectToRecord(options: MoveProjectOptions): Promise<
       const problem = await send({ mentions: page });
       if (problem !== null) return problem;
       for (const mention of page) sent.mentions.set(mentionKey(mention), `${mention.status}|${mention.addressedBy ?? ""}`);
+      carried += page.length;
+    }
+
+    // The items' team sessions (EO-844), after the runs and comments a
+    // session names — every one, superseded and ended ones too, and again
+    // when one has changed since, as the items are.
+    const newSessions = itemIds.flatMap((itemId) => listTeamSessionsForItem(db, itemId)).filter((one) => stale(sent.teamSessions, one.session.id, one.session.updatedAt));
+    for (const page of chunk(newSessions, PAGE.teamSessions)) {
+      const problem = await send({ teamSessions: page });
+      if (problem !== null) return problem;
+      for (const one of page) sent.teamSessions.set(one.session.id, one.session.updatedAt);
       carried += page.length;
     }
 
@@ -854,6 +872,8 @@ interface SentVersions {
   memories: Map<string, number>;
   /** The project's own skills and its workspaces' (EO-513), at the `updated_at` they were sent at. */
   skills: Map<string, number>;
+  /** Team sessions (EO-844), at the `updated_at` they were sent at: an attempt that changed mid-move moves it, and it goes again. */
+  teamSessions: Map<string, number>;
 }
 
 /** A mention's identity: the three columns its primary key is. */
@@ -902,6 +922,7 @@ function emptyPage(): RecordAdoptPage {
     attachments: [],
     memories: [],
     skills: [],
+    teamSessions: [],
   };
 }
 

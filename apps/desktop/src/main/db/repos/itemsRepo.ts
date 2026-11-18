@@ -47,6 +47,8 @@ import {
   runs,
   itemDeps,
   items,
+  teamAttempts,
+  teamSessions,
   transitions,
 } from "../schema.js";
 
@@ -1443,6 +1445,12 @@ export function deleteItem(db: Db, id: Uuid): { deletedItemIds: Uuid[] } {
       .where(inArray(comments.itemId, ids))
       .all()
       .map((row) => row.id);
+
+    // Their team sessions and attempts (EO-844), before the comments,
+    // runs and items those name. They go with the item as its runs do;
+    // archiving takes none of them.
+    tx.delete(teamAttempts).where(inArray(teamAttempts.itemId, ids)).run();
+    tx.delete(teamSessions).where(inArray(teamSessions.itemId, ids)).run();
 
     // Every file on these items — their comments' and their own
     // (EO-702) — before the comments a file may name. And the note of

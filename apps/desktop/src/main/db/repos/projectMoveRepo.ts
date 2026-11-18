@@ -48,6 +48,7 @@ import { publishedSectionRow } from "./publishedSectionsRepo.js";
 import { isDiverged } from "./divergenceRepo.js";
 import { dropWebhookWaiversWithoutEntry } from "./webhookWaiverRepo.js";
 import { writeArrivedMemory } from "./memoriesRepo.js";
+import { writeAdoptedTeamSession } from "./teamSessionsRepo.js";
 import { PipelineExportSchema, UNBOUND_BACKEND, VersionStepSchema } from "@eo/core";
 import { getAppliedTemplateUpdate, getPipelineOrigin, isTemplateDocument, recordAppliedTemplateUpdate, recordPipelineOrigin } from "./pipelineOriginsRepo.js";
 import {
@@ -71,6 +72,7 @@ import {
   runEvents,
   runs,
   skills,
+  teamSessions,
   stepRoutes,
   transitions,
 } from "../schema.js";
@@ -1097,6 +1099,7 @@ export function countProjectRows(db: Db, projectId: Uuid): Omit<RecordAdoptCount
     ),
     memories: one(sql`select count(*) as n from ${memories} where project_id = ${projectId}`),
     skills: one(sql`select count(*) as n from ${skills} where project_id = ${projectId} and scope <> 'global'`),
+    teamSessions: one(sql`select count(*) as n from ${teamSessions} s join ${items} i on i.id = s.item_id where i.project_id = ${projectId}`),
   };
 }
 
@@ -1640,6 +1643,7 @@ export function writeAdoptedPage(db: Db, project: RecordProject, page: RecordAdo
     attachments: 0,
     memories: 0,
     skills: 0,
+    teamSessions: 0,
     skipped: [],
   };
 
@@ -2441,6 +2445,23 @@ export function writeAdoptedPage(db: Db, project: RecordProject, page: RecordAdo
       writeArrivedMemory(db, { ...entry, source, projectId: project.id });
     }
 
+    // The items' team sessions (EO-844), after the runs and comments they
+    // name. A session on an item this record does not have on the project,
+    // or naming a run or comment that did not arrive, is a skip.
+    for (const one of page.teamSessions) {
+      const here = db.select({ projectId: items.projectId }).from(items).where(eq(items.id, one.session.itemId)).get();
+      if (here?.projectId !== project.id) {
+        skip(counts, `team session ${one.session.id} is on an item that is not this project's`);
+        continue;
+      }
+      const why = writeAdoptedTeamSession(db, one, deviceId, Date.now());
+      if (why !== null) {
+        skip(counts, why);
+        continue;
+      }
+      counts.teamSessions += 1;
+    }
+
     /**
      * The dependency graph, replaced rather than added to (EO-325).
      *
@@ -2605,6 +2626,11 @@ export function writeAdoptedProject(
       // out a project still arriving, and a cursor that moved past its
       // entries meanwhile has to be offered them again.
       db.update(memories).set({ updatedAt: at }).where(eq(memories.projectId, project.id)).run();
+      // …and its items' team sessions, for the same reason (EO-844).
+      db.update(teamSessions)
+        .set({ updatedAt: at })
+        .where(sql`${teamSessions.itemId} in (select ${items.id} from ${items} where ${items.projectId} = ${project.id})`)
+        .run();
       // …and its skills, for the same reason (EO-513) — by the stamp the
       // feed pages on and never by `updated_at`, which is the sender's
       // version: the sweep that follows this commit may still carry an

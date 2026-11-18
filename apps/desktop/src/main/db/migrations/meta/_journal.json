@@ -1282,6 +1282,13 @@
       "when": 1799467200000,
       "tag": "0182_step_team",
       "breakpoints": true
+    },
+    {
+      "idx": 183,
+      "version": "6",
+      "when": 1799510400000,
+      "tag": "0183_team_sessions",
+      "breakpoints": true
     }
   ]
 }

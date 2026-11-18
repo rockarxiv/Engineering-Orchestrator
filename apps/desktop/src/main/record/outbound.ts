@@ -19,6 +19,8 @@ import { onWatchWritten } from "../db/watchEvents.js";
 import { onSideCallRecorded } from "../db/sideCallEvents.js";
 import { onItemAttachmentsChanged } from "../db/itemAttachmentEvents.js";
 import type { SideCallRow } from "../db/repos/sideCallsRepo.js";
+import { onTeamSessionWritten } from "../db/teamSessionEvents.js";
+import { teamSessionCommand } from "../db/repos/teamSessionsRepo.js";
 
 /**
  * Everything this device does, on its way to the record (EO-324,
@@ -192,6 +194,16 @@ export function queueOutbound(options: OutboundOptions): () => void {
     queue([sideCallCommand(call, call.itemId)], call.itemId);
   });
 
+  // A team session this machine runs on a record-held item (EO-844),
+  // whole with its attempts, as it stands the moment it changed. The
+  // record applies it only from the device whose session it is, and the
+  // drain carries the runs it names in front of it.
+  const stopWatchingTeamSessions = onTeamSessionWritten(db, (written) => {
+    if (!options.linked(written.itemId)) return;
+    const command = teamSessionCommand(db, written.sessionId);
+    if (command !== undefined) queue([command], written.itemId);
+  });
+
   // The item's own files (EO-702), put on it and taken off it. A file
   // travels as a comment's does — metadata now, bytes filled in by the
   // drain as it sends — with no comment to come first; a removal is its
@@ -221,6 +233,7 @@ export function queueOutbound(options: OutboundOptions): () => void {
   });
 
   return () => {
+    stopWatchingTeamSessions();
     stopWatchingItemFiles();
     stopWatchingVersionMoves();
     stopWatchingSideCalls();

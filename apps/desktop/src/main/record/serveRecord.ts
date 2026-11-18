@@ -49,6 +49,7 @@ import { createRun, getRun, listRunsForItem, listRunsUpdatedSince, updateRun } f
 import { mirrorReportedSideCall } from "../db/repos/sideCallsRepo.js";
 import { getStep } from "../db/repos/pipelineStepsRepo.js";
 import { asRecordWatch, listItemWatchesUpdatedSince, mirrorItemWatch } from "../db/repos/itemWatchesRepo.js";
+import { applyReportedTeamSession, listTeamSessionsUpdatedSince } from "../db/repos/teamSessionsRepo.js";
 import { getDevice } from "../db/repos/devicesRepo.js";
 import { getModule } from "../db/repos/modulesRepo.js";
 import { originForWire } from "../db/repos/itemOriginsRepo.js";
@@ -1450,6 +1451,14 @@ async function applyOne(context: ServeRecordContext, deviceId: string, command: 
       return ok;
     }
 
+    case "teamSession": {
+      // A team session the device runs on this item (EO-844), taken only
+      // from the device whose current session it is — see
+      // `applyReportedTeamSession` for what makes one stale.
+      const outcome = applyReportedTeamSession(db, deviceId, command);
+      return outcome.ok ? ok : refused(outcome.problem);
+    }
+
     case "runEvents": {
       if (getRun(db, command.runId as Uuid) === undefined) {
         // Deliberately a refusal rather than a run invented here. A run
@@ -1576,6 +1585,7 @@ export async function serveAdopt(
     attachments: 0,
     memories: 0,
     skills: 0,
+    teamSessions: 0,
     skipped: [],
   };
 
@@ -1865,6 +1875,9 @@ export function serveChanges(
   // its rows cannot fill a page and hold the cursor where it is.
   // Finalising stamps them again so they page once the project is live.
   const projectSkills = listProjectSkillsUpdatedSince(db, cursors.skills, limit, within);
+  // …and the team sessions on those items (EO-844), each whole with its
+  // attempts, minus an item still arriving, for the items' reason.
+  const sessions = listTeamSessionsUpdatedSince(db, cursors.teamSessions, limit, within).filter((one) => !arriving.has(one.session.itemId));
   // Every edge, read once for the page rather than twice per item.
   const edges = items.length === 0 ? [] : listAllDependencies(db);
 
@@ -1939,6 +1952,7 @@ export function serveChanges(
     publishedSections: publications.map(({ key: _key, ...row }) => row),
     memories: memoryRows,
     skills: projectSkills.map((row) => row.skill),
+    teamSessions: sessions,
     cursors: {
       items: endOf(items, cursors.items, (item) => ({ ts: item.updatedAt, id: item.id })),
       transitions: endOf(transitions, cursors.transitions, (move) => ({ ts: move.ts, id: move.id })),
@@ -1957,6 +1971,7 @@ export function serveChanges(
       publishedSections: endOf(publications, cursors.publishedSections, (row) => ({ ts: row.publishedAt, id: row.key })),
       memories: endOf(memoryRows, cursors.memories, (entry) => ({ ts: entry.updatedAt, id: entry.id })),
       skills: endOf(projectSkills, cursors.skills, (row) => ({ ts: row.changedAt, id: row.skill.id })),
+      teamSessions: endOf(sessions, cursors.teamSessions, (one) => ({ ts: one.session.updatedAt, id: one.session.id })),
     },
     // A page that came back full is a page that may have been cut. The
     // device loops on this rather than assuming one page is the world,
@@ -1978,7 +1993,8 @@ export function serveChanges(
       projectAgents.length === limit ||
       publications.length === limit ||
       memoryRows.length === limit ||
-      projectSkills.length === limit,
+      projectSkills.length === limit ||
+      sessions.length === limit,
   };
 }
 
