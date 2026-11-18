@@ -556,6 +556,8 @@ export function teamSessionWaitingFor(db: Db, record: TeamSessionRecord): string
  */
 export function teamSessionMismatch(db: Db, record: TeamSessionRecord): string | null {
   const { session } = record;
+  const relationship = attemptsOutsideSession(record);
+  if (relationship !== null) return relationship;
   const runItem = (runId: string): string | undefined => db.select({ itemId: runs.itemId }).from(runs).where(eq(runs.id, runId)).get()?.itemId;
   if (session.runId !== null && runItem(session.runId) !== session.itemId) return `Run ${session.runId} is not on this team session's item.`;
   const runsSeen = new Set<string>(session.runId === null ? [] : [session.runId]);
@@ -584,6 +586,19 @@ export function teamSessionMismatch(db: Db, record: TeamSessionRecord): string |
     return `Comment ${session.finalCommentId} is not on this team session's item.`;
   }
   return null;
+}
+
+/**
+ * Why a session's attempts are not all its own, or null when they are:
+ * every attempt names the session it arrived in and that session's item.
+ * Asked before anything else of a copy, so an attempt can never be written
+ * under one item's session while naming another item.
+ */
+export function attemptsOutsideSession(record: TeamSessionRecord): string | null {
+  const { session } = record;
+  return record.attempts.some((attempt) => attempt.sessionId !== session.id || attempt.itemId !== session.itemId)
+    ? "That team session's attempts do not belong to it."
+    : null;
 }
 
 /** The same JSON whatever order its keys were written in. */
@@ -740,6 +755,8 @@ function writeMerged(db: Db, record: TeamSessionRecord, stamp: number | null): v
  * why it could not be, or null once it is.
  */
 export function writeAdoptedTeamSession(db: Db, record: TeamSessionRecord, deviceId: string, stamp: number): string | null {
+  const outside = attemptsOutsideSession(record);
+  if (outside !== null) return `team session ${record.session.id}: ${outside}`;
   const waiting = teamSessionWaitingFor(db, record);
   if (waiting !== null) return `team session ${record.session.id} names ${waiting}, which did not arrive`;
   const mismatch = teamSessionMismatch(db, record) ?? provenanceConflict(db, getTeamSession(db, record.session.id), record);
@@ -836,9 +853,9 @@ function notCurrentProblem(db: Db, session: TeamSessionRow): string | null {
  */
 export function applyReportedTeamSession(db: Db, deviceId: string, command: RecordTeamSessionCommand, now: number = Date.now()): TeamWrite<{ changed: boolean }> {
   const incoming = command.session;
-  if (incoming.itemId !== command.itemId || command.attempts.some((attempt) => attempt.sessionId !== incoming.id || attempt.itemId !== incoming.itemId)) {
-    return { ok: false, problem: "That team session's attempts do not belong to it." };
-  }
+  if (incoming.itemId !== command.itemId) return { ok: false, problem: "That team session is not on the item it was reported for." };
+  const outside = attemptsOutsideSession(command);
+  if (outside !== null) return { ok: false, problem: outside };
   const held = getTeamSession(db, incoming.id);
   const conflict = provenanceConflict(db, held, command);
   if (conflict !== null) return { ok: false, problem: conflict };
