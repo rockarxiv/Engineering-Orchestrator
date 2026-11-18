@@ -11,6 +11,7 @@ import {
   MemoryScopeKindSchema,
   MODULE_COVERAGE_BAR,
   PipelineSaveInputSchema,
+  PipelineStepSaveSchema,
   pipelineMachineSpecificWarnings,
   testCaseMachineSpecificWarnings,
   PostCommentInputSchema,
@@ -615,6 +616,13 @@ function spelledTool<K extends IpcChannel>(spec: ChannelToolSpec<K>, spelling: T
  * person's, delegated — and a risk is the one thing that cannot be
  * delegated to whoever would be reading the payload.
  */
+/**
+ * A step as an agent may send it to `pipeline_save` and `pipeline_validate`:
+ * without its team (EO-843), which no agent is offered until teams run.
+ * Left out, a step keeps the team it has (`teamFor` in configCommands.ts).
+ */
+const STEP_WITHOUT_TEAM = PipelineStepSaveSchema.omit({ team: true });
+
 const PIPELINE_SAVE_TOOL: ToolSpec = withoutWebhookUnattended(
   withMachineSpecificSteps(
     channelTool({
@@ -639,7 +647,10 @@ const PIPELINE_SAVE_TOOL: ToolSpec = withoutWebhookUnattended(
       // draft *card* is published with, by a person. A definition the
       // assistant writes itself goes through `role_action_save`, which
       // answers with the save's own reasons.
-      input: PipelineSaveInputSchema.omit({ restoredFrom: true, actions: true }),
+      //
+      // And each step without `team` (EO-843): no agent is offered a team
+      // until teams run, so the key is stripped and a step keeps its own.
+      input: PipelineSaveInputSchema.omit({ restoredFrom: true, actions: true }).safeExtend({ steps: z.array(STEP_WITHOUT_TEAM) }),
       kind: "write",
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
       render: renderPipelineSaved,
@@ -3975,6 +3986,8 @@ const UNGATED_WRITE_TOOLS: readonly ToolSpec[] = [
   channelTool({
     name: "pipeline_validate",
     channel: "pipeline:validate",
+    // Read as `pipeline_save` reads a step, so this judges what that would publish (EO-843).
+    input: ipcContract["pipeline:validate"].request.safeExtend({ steps: z.array(STEP_WITHOUT_TEAM) }),
     description:
       "Check a pipeline graph without publishing it. Writes nothing. Call this before pipeline_save — a graph with a " +
       "blocking problem is refused there anyway, and this says what is wrong while it is still cheap to fix.",

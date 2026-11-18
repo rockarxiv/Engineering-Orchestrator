@@ -2276,6 +2276,8 @@ function toStepView(step: PipelineStep): PipelineStepView {
     moduleVersion: step.moduleVersion,
     // What the decision's details show on a person step (EO-827).
     brief: step.brief,
+    // The team an agent step runs as (EO-843).
+    team: step.team,
   };
 }
 

@@ -16,6 +16,7 @@ interface Step {
   inputs: Record<string, unknown>;
   timeoutMs: number | null;
   results: unknown[];
+  team: unknown;
 }
 
 interface Route {
@@ -28,7 +29,7 @@ interface Route {
 }
 
 function step(id: string, overrides: Partial<Step> = {}): Step {
-  return { id, name: id, type: "agent", entryAction: "work", ownerRole: "worker", watch: null, inputs: {}, timeoutMs: null, results: [], ...overrides };
+  return { id, name: id, type: "agent", entryAction: "work", ownerRole: "worker", watch: null, inputs: {}, timeoutMs: null, results: [], team: null, ...overrides };
 }
 
 function route(fromStepId: string, resultKey: string, target: string, overrides: Partial<Route> = {}): Route {
@@ -218,6 +219,25 @@ describe("comparing three graphs", () => {
 });
 
 describe("merging", () => {
+  /** The team an agent step runs as (EO-843): a template's team reaches the person's step, and two different edits are a conflict. */
+  it("takes a template's team where only the template changed it, and holds one both changed differently", () => {
+    const team = { coordination: "leader", leader: { role: "lead", instructions: "Split it." }, roles: ["checker"] };
+    const template = baseGraph();
+    template.steps = template.steps.map((s) => (s.id === "check" ? { ...s, team } : s));
+    const merge = mergeThreeWay(baseGraph(), baseGraph(), template);
+    if (!merge.ok) throw new Error("conflicted");
+    expect(changeOf(merge.comparison.changes, "check: team")).toMatchObject({ outcome: "template", base: null, current: null, template: team });
+    expect(merge.merged.steps.find((s) => s.id === "check")?.team).toEqual(team);
+
+    const current = baseGraph();
+    current.steps = current.steps.map((s) => (s.id === "check" ? { ...s, team: { ...team, roles: ["writer"] } } : s));
+    expect(changeOf(compareThreeWay(baseGraph(), current, template).conflicts, "check: team")).toMatchObject({ outcome: "conflict" });
+    // A person's own team, which the template does not touch, is kept.
+    const kept = mergeThreeWay(baseGraph(), current, baseGraph());
+    if (!kept.ok) throw new Error("conflicted");
+    expect(kept.merged.steps.find((s) => s.id === "check")?.team).toEqual({ ...team, roles: ["writer"] });
+  });
+
   it("applies only what the template changed, and keeps everything the person did", () => {
     const current = baseGraph();
     current.steps = current.steps.map((s) => (s.id === "write" ? { ...s, name: "Write it", ownerRole: "writer" } : s));

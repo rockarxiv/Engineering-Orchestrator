@@ -635,6 +635,14 @@ export const pipelineSteps = sqliteTable(
      * `user` step may declare one; `validatePipeline` refuses it elsewhere.
      */
     brief: text("brief", { mode: "json" }),
+    /**
+     * The report-only team this agent step runs as (EO-843, ARCHITECTURE.md,
+     * "A team on an agent step"): a JSON `StepTeamSchema`, staffed by role.
+     * NULL is one agent, which is every step until somebody configures a
+     * team. Only an `agent` step may have one; `validatePipeline` refuses
+     * it elsewhere.
+     */
+    team: text("team", { mode: "json" }),
   },
   (table) => [index("idx_pipeline_steps_pipeline").on(table.pipelineId, table.position)],
 );

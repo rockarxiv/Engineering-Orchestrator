@@ -7,6 +7,7 @@ import { ModuleChangeCardSchema } from "./schemas/moduleChange.js";
 import { StepInputsSchema } from "./schemas/modules.js";
 import { StepResultSchema } from "./schemas/pipelines.js";
 import { StepBriefSchema } from "./stepBrief.js";
+import { StepTeamSchema } from "./team.js";
 import { ProposalSummarySchema } from "./schemas/proposalSummary.js";
 import { WaitingOnSchema } from "./people.js";
 import { SpecShapeSchema } from "./schemas/specShape.js";
@@ -1058,6 +1059,12 @@ export const PipelineStepViewSchema = z.object({
    * "keep" (`PipelineStepSaveSchema`).
    */
   brief: StepBriefSchema.nullable().default(null),
+  /**
+   * The report-only team an `agent` step runs as (EO-843), or null for one
+   * agent. Defaulted on this view for `watch`'s reason; a save reads
+   * absent as "keep" (`PipelineStepSaveSchema`).
+   */
+  team: StepTeamSchema.nullable().default(null),
 });
 
 /**
@@ -1095,6 +1102,12 @@ export const PipelineStepSaveSchema = PipelineStepViewSchema.extend({
         "{ show: \"comment\", kind?: <comment kind>, role?: <author role> } for the newest such comment, { show: \"field\", field: <item field> } for a field. " +
         "null shows the default (instructions summary, current output, the previous step's verdict). Leave the field out to keep the step's current brief.",
     ),
+  /**
+   * The team, on `watch`'s terms (EO-843): absent keeps the step's own,
+   * `null` makes it one agent again. No description, because no agent is
+   * offered it yet: `pipeline_save` takes it off the steps it is sent.
+   */
+  team: StepTeamSchema.nullable().optional(),
 });
 
 /** Where one declared result of a step sends the item. */

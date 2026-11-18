@@ -2,6 +2,7 @@ import { z } from "zod";
 import { namesAdminServer } from "../agent-capabilities.js";
 import { EntryRulesSchema } from "../entryRules.js";
 import { StepBriefSchema } from "../stepBrief.js";
+import { StepTeamSchema } from "../team.js";
 import { ConnectorSetupSchema, connectorSetupProblems } from "./connectors.js";
 import { PipelineStepViewSchema, StepRouteViewSchema } from "../ipc-schemas.js";
 import { ActionOverridesSchema } from "../registry/index.js";
@@ -242,8 +243,19 @@ import { SpecShapeSchema } from "./specShape.js";
  * build drops rather than refuses, so it parses the document and reaches
  * its format check. Reading an older document is unchanged: no step in it
  * declares a brief, so every step shows the default.
+ *
+ * **16 (EO-843).** An agent step may carry a **team** (`team`): the
+ * report-only participants it runs as, staffed by role and never by an
+ * agent id, so it means the same on any installation.
+ *
+ * Bumped for version 4's reason: a version-15 build strips the key and
+ * imports the step as one agent, which is not what the author published,
+ * and nothing says so. The key is one a version-15 build drops rather than
+ * refuses, so it parses the document and reaches its format check.
+ * Reading an older document is unchanged: no step in it has a team, so
+ * every step is one agent.
  */
-export const PIPELINE_EXPORT_VERSION = 15;
+export const PIPELINE_EXPORT_VERSION = 16;
 
 /**
  * An action a role defines, as the document carries it (EO-424).
@@ -720,6 +732,9 @@ export const ExportedStepSchema = PipelineStepViewSchema.omit({ pipelineId: true
   // The brief a person step declares (EO-827), optional for the same
   // reason: written where one is declared and absent everywhere else.
   brief: StepBriefSchema.optional(),
+  // The team an agent step runs as (EO-843), optional for the same
+  // reason: written where one is configured and absent everywhere else.
+  team: StepTeamSchema.optional(),
 });
 /** A route as the document carries it. Its target is a step of any board in the document, or a sentinel. */
 export const ExportedRouteSchema = StepRouteViewSchema.omit({ id: true, pipelineId: true });
