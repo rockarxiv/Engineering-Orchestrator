@@ -1524,7 +1524,13 @@ const PARTICIPANT_EO_MCP = { serverPath: "/app/eoServer.mjs", enableCommentTool:
 const PARTICIPANT_MODEL = "gpt-participant";
 const participantTurn = (cwd: string, extra: Record<string, unknown> = {}) =>
   ({ ...startOpts, cwd, writeBridge: PARTICIPANT_CREDENTIAL, repositoryMcp, attachFrom: ATTACH_FROM, memoryScopes: [...MEMORY_SCOPES], skillScope: SCOPED_RUN, ...extra }) as never;
-type ParticipantCall = { tool: string; extra?: Record<string, unknown> };
+/**
+ * One class of call a participant must not make: the tool its hook is
+ * offered, what the call carries, and — for an outer call that runs
+ * others, as code mode's `exec` does — the tool it carries inside, which
+ * the hook is offered too; the class is refused only when every one is.
+ */
+type ParticipantCall = { tool: string; input?: Record<string, unknown>; nested?: string; extra?: Record<string, unknown> };
 const PARTICIPANT_CALL_CLASSES: Record<Backend, Record<string, ParticipantCall>> = {
   claude: {
     shell: { tool: "Bash" },
@@ -1544,8 +1550,9 @@ const PARTICIPANT_CALL_CLASSES: Record<Backend, Record<string, ParticipantCall>>
   codex: {
     shell: { tool: "Bash" },
     "file edit": { tool: "apply_patch" },
-    // What code mode's isolate calls to run a command.
-    "nested execution": { tool: "exec_command" },
+    // Code mode's outer `exec`, carrying the isolate's own command; the
+    // real route is driven in `reportOnlyCodex.live.test.ts`.
+    "nested execution": { tool: "exec", input: { input: 'await tools.exec_command({ cmd: "touch written" });' }, nested: "exec_command" },
     "native delegation": { tool: "spawn_agent" },
     "attached server": { tool: "mcp__github__create_issue" },
     "administrative server": { tool: `mcp__${ADMIN_MCP_SERVER_NAME}__agent_save` },
@@ -5387,16 +5394,20 @@ const CODEX: Record<CapabilityName, Proof> = {
 
   "a report-only participant's refusals": async () => {
     // Codex's delivery: the hook command posts each call to EO's listener,
-    // as the stub posts them here — code mode's own `exec_command` among them.
+    // as the stub posts them here — code mode's outer `exec` and the
+    // `exec_command` it carries among them.
     const observe = async (resume: boolean) => {
       const answersFile = join(scratchDirectory(), "hook-answers.jsonl");
-      const classes = Object.entries(PARTICIPANT_CALL_CLASSES.codex);
+      const hooks = Object.entries(PARTICIPANT_CALL_CLASSES.codex).flatMap(([name, call]) => [
+        { name, tool: call.tool, input: call.input ?? {} },
+        ...(call.nested === undefined ? [] : [{ name, tool: call.nested, input: {} }]),
+      ]);
       const { provider } = participantCodex({
         hookAnswers: answersFile,
         after: {
           "turn/start": [
             note.turnStarted(),
-            ...classes.map(([, { tool }], index) => ({ fireHook: { hook_event_name: "PreToolUse", tool_name: tool, tool_input: {}, tool_use_id: `call-${String(index)}` } })),
+            ...hooks.map(({ tool, input }, index) => ({ fireHook: { hook_event_name: "PreToolUse", tool_name: tool, tool_input: input, tool_use_id: `call-${String(index)}` } })),
             note.agentMessage("Reported."),
             note.turnCompleted(),
           ],
@@ -5405,7 +5416,14 @@ const CODEX: Record<CapabilityName, Proof> = {
       const cwd = scratchDirectory();
       await collect(resume ? provider.resume("thr-persisted", "carry on", participantTurn(cwd)) : provider.start(participantTurn(cwd)));
       const said = existsSync(answersFile) ? readFileSync(answersFile, "utf8").trim().split("\n").map((line) => JSON.parse(line) as { status: number; body: string }) : [];
-      return participantRefusals(Object.fromEntries(classes.map(([name], index) => [name, said[index]?.status === 200 ? (JSON.parse(said[index].body) as unknown) : null])));
+      const answer = (index: number): unknown => (said[index]?.status === 200 ? (JSON.parse(said[index].body) as unknown) : null);
+      const denied = (index: number) => (answer(index) as { hookSpecificOutput?: { permissionDecision?: string } } | null)?.hookSpecificOutput?.permissionDecision === "deny";
+      // A class answers as its outer call did, unless something it carries was let through.
+      const answers: Record<string, unknown> = {};
+      hooks.forEach(({ name }, index) => {
+        if (!(name in answers) || !denied(index)) answers[name] = answer(index);
+      });
+      return participantRefusals(answers);
     };
     const start = await observe(false);
     const resume = await observe(true);
