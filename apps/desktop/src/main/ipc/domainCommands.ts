@@ -91,6 +91,7 @@ import { agentStopAnswerRefusal, answerTrialStop } from "../trials/loop.js";
 import { decisionRefusal, dispatchBlocker } from "@eo/engine";
 import { stepNotInVersionMessage, TEAM_PARTICIPANT_ACTION } from "@eo/core";
 import { currentTeamSession, endTeamSession, teamSessionOnEntry } from "../db/repos/teamSessionsRepo.js";
+import type { TeamControlSite } from "../supervisor/teamSessionView.js";
 import { resolveAndValidateMentions } from "../supervisor/escalation.js";
 import { archivedProjectBlocker, buildEligibilityInput, namedBlocker } from "../supervisor/buildTickInput.js";
 import { resumeOutlook, type ItemBlocker } from "../supervisor/dispatchBlockers.js";
@@ -150,6 +151,8 @@ export interface EngineHandle {
   cancelRun: (runId: string, cancellation?: Cancellation) => void;
   /** Stops a whole team session (EO-849); see `RunSupervisor.cancelTeamSession`. Optional, so a handle built for a test need not have it. */
   cancelTeamSession?: (sessionId: string) => { ok: true } | { ok: false; problem: string };
+  /** This desktop and the team runs it drives (EO-849); see `RunSupervisor.teamControlSite`. Absent, no team control acts here. */
+  teamControlSite?: () => TeamControlSite;
   /**
    * Says something to a live run without stopping it (EO-176).
    *

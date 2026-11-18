@@ -41,7 +41,36 @@ import { evidenceContentKey } from "./teamSupervisor.js";
  * is really stopped, why the team is waiting, what produced its result,
  * and which controls a person may press.
  */
-export function itemTeamSessions(db: Db, itemId: string): TeamSessionView[] {
+/**
+ * Where a person's controls on a team would act (EO-849): this desktop, by
+ * the device id its sessions are reported under, and the team runs EO
+ * drives in this process. Null where nothing runs work here.
+ */
+export interface TeamControlSite {
+  deviceId: string;
+  drives: (runId: string) => boolean;
+}
+
+/**
+ * Why a session's controls cannot act from here, or null when they can: a
+ * session another desktop runs, or a team whose runs are working in no
+ * process of this one. Stopping it here would stop nothing while saying it
+ * had, and retrying it here would run it twice.
+ */
+export function teamNotHereProblem(db: Db, session: TeamSessionRecord["session"], site: TeamControlSite): string | null {
+  if (session.deviceId !== null && session.deviceId !== site.deviceId) {
+    return "This team session is running on another desktop, and only that desktop can stop or retry its participants.";
+  }
+  const runs = listRunsForItem(db, session.itemId as Uuid).filter((run) => ACTIVE_RUN.has(run.status));
+  const teamRun = runs.find((run) => run.action !== TEAM_PARTICIPANT_ACTION && run.stepId === session.stepId);
+  if (teamRun !== undefined) return site.drives(teamRun.id) ? null : NOT_HERE;
+  return runs.some((run) => run.action === TEAM_PARTICIPANT_ACTION) ? NOT_HERE : null;
+}
+
+const NOT_HERE = "This team's runs are working, but not in EO on this desktop, so they can only be stopped or retried where they run.";
+const NO_ENGINE = "EO is not running work on this desktop, so it cannot stop or retry a team here.";
+
+export function itemTeamSessions(db: Db, itemId: string, site: TeamControlSite | null = null): TeamSessionView[] {
   const records = listTeamSessionsForItem(db, itemId);
   if (records.length === 0) return [];
   const runs = listRunsForItem(db, itemId as Uuid);
@@ -50,7 +79,7 @@ export function itemTeamSessions(db: Db, itemId: string): TeamSessionView[] {
   const open = new Set<string>(unansweredQuestions(db, itemId as Uuid));
   // A team's own run belongs to the session it opened, and to no other.
   const openedBy = new Set(records.map((record) => record.session.runId).filter((id): id is string => id !== null));
-  return records.map((record) => sessionView(db, record, runs, runById, comments, open, openedBy)).reverse();
+  return records.map((record) => sessionView(db, record, runs, runById, comments, open, openedBy, site)).reverse();
 }
 
 const ACTIVE_RUN = new Set(["queued", "running"]);
@@ -91,6 +120,7 @@ function sessionView(
   comments: readonly Comment[],
   open: ReadonlySet<string>,
   openedBy: ReadonlySet<string>,
+  site: TeamControlSite | null,
 ): TeamSessionView {
   const { session, attempts } = record;
   const team = session.team;
@@ -215,7 +245,9 @@ function sessionView(
       const leaderAttempt = attempts.find((attempt) => attempt.reportCommentId !== null && attempt.reportCommentId === session.finalCommentId) ?? attempts.filter((attempt) => attempt.assignmentKey === LEADER_ASSIGNMENT_KEY && attempt.supersededBy === null).at(-1);
       if (leaderAttempt !== undefined) {
         const recorded = leaderRecord(leaderAttempt.runId === null ? undefined : runById.get(leaderAttempt.runId));
-        const answer = recorded?.answer as { contributions?: unknown; disagreements?: unknown; limitations?: unknown } | undefined;
+        // The leader's answer as its turn gave it: the final answer under `outcome`, or bare.
+        const raw = recorded?.answer as { outcome?: unknown } | undefined;
+        const answer = (typeof raw?.outcome === "object" && raw.outcome !== null ? raw.outcome : raw) as { contributions?: unknown; disagreements?: unknown; limitations?: unknown } | undefined;
         const reportIds = Array.isArray(recorded?.verdict?.contributions) ? (recorded.verdict.contributions as unknown[]) : Array.isArray(answer?.contributions) ? answer.contributions : [];
         final = {
           by: "leader",
@@ -302,13 +334,20 @@ function sessionView(
 
   // ── Controls ────────────────────────────────────────────────────
   const endedWords = session.status === "superseded" ? "This session was superseded by a newer one" : `This session has already ended (${session.status})`;
+  // Only where a press would act: on this desktop, on a team it runs or nobody runs.
+  const notHere = session.status !== "open" ? null : site === null ? NO_ENGINE : teamNotHereProblem(db, session, site);
   const cancel: TeamControl =
-    session.status === "open" ? { allowed: true, reason: null } : { allowed: false, reason: `${endedWords}, so there is nothing to cancel.` };
+    session.status !== "open"
+      ? { allowed: false, reason: `${endedWords}, so there is nothing to cancel.` }
+      : notHere !== null
+        ? { allowed: false, reason: notHere }
+        : { allowed: true, reason: null };
   const retryKeys = retryTargets.map((target) => target.assignmentKey);
   const retry: TeamControl & { keys: string[] } = (() => {
     const no = (reason: string) => ({ allowed: false, reason, keys: retryKeys });
     if (session.status !== "open") return no(`${endedWords}; a settled session never runs again. A new session starts when the step runs again.`);
     if (!onEntry) return no("The item has left the step this session worked on, so it takes nothing more.");
+    if (notHere !== null) return no(notHere);
     if (working) return no("The team is still at work; EO retries a participant whose turn fails itself, within the team's retries.");
     if (current.some((view) => view.state === "waiting")) return no("A team member's question is still open: answer it, and the reply carries the team on.");
     if (!parked) return no("The team is not parked on this session; EO carries it on when it next runs the step.");

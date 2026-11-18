@@ -91,14 +91,16 @@ function duration(startedAt: number | null, endedAt: number | null, now: number)
 
 /**
  * Takes a person to a comment on the item's thread: scrolled to where it
- * is drawn, or to the item page where the thread is.
+ * is drawn, or the item page asked to bring it onto its thread however far
+ * back it is (`?comment=`, which `ItemView` reveals and scrolls to) — from
+ * the runs page, and from the item page when it is not on screen yet.
  */
 function useJumpToComment(itemId: string): (commentId: string) => void {
   const navigate = useNavigate();
   return (commentId) => {
     const shown = document.querySelector(`[data-comment-id="${CSS.escape(commentId)}"]`);
     if (shown !== null) shown.scrollIntoView?.({ block: "center" });
-    else void navigate(`/items/${itemId}`);
+    else void navigate(`/items/${itemId}?comment=${encodeURIComponent(commentId)}`);
   };
 }
 

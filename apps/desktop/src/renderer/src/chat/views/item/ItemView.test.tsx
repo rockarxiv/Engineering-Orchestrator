@@ -21,7 +21,12 @@ import { ItemView } from "./ItemView";
  */
 
 function CurrentRoute() {
-  return <div data-testid="current-route">{useLocation().pathname}</div>;
+  const location = useLocation();
+  return (
+    <div data-testid="current-route" data-search={location.search}>
+      {location.pathname}
+    </div>
+  );
 }
 
 function comment(overrides: Partial<CommentView> = {}): CommentView {
@@ -176,12 +181,12 @@ function mockIpc(data: ItemDetailData, onCall?: (channel: string, payload: unkno
   return invoke;
 }
 
-function renderItem(data: ItemDetailData, onCall?: (channel: string, payload: unknown) => void, replies: Record<string, unknown> = {}, client = createQueryClient()) {
+function renderItem(data: ItemDetailData, onCall?: (channel: string, payload: unknown) => void, replies: Record<string, unknown> = {}, client = createQueryClient(), at = "/items/t1") {
   const invoke = mockIpc(data, onCall, replies);
   const { unmount } = render(
     <ThemeProvider>
       <QueryClientProvider client={client}>
-        <MemoryRouter initialEntries={["/items/t1"]}>
+        <MemoryRouter initialEntries={[at]}>
           <ItemReferenceProvider>
             <ItemView itemId="t1" />
           </ItemReferenceProvider>
@@ -2275,6 +2280,34 @@ describe("a thread longer than one page", () => {
     // comments around it rather than sitting above the control.
     expect(screen.getByText(/a late move/)).toBeInTheDocument();
     expect(screen.queryByText(/an early move/)).toBeNull();
+  });
+
+  it("brings a linked comment onto the page however far back it is, and scrolls to it (EO-849)", async () => {
+    const scrolled: string[] = [];
+    Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
+      configurable: true,
+      value(this: HTMLElement) {
+        const id = this.getAttribute("data-comment-id");
+        if (id !== null) scrolled.push(id);
+      },
+    });
+    try {
+      const { calls, onCall } = recorder();
+      const { replies, base } = fakeThread();
+      // A team's report, three comments before the page the item opens on.
+      renderItem(base, onCall, replies, createQueryClient(), "/items/t1?comment=c1");
+
+      expect(await screen.findByText("Second word.")).toBeInTheDocument();
+      await waitFor(() => expect(asked(calls, "items:get")).toContainEqual({ itemId: "t1", from: "c1" }));
+      await waitFor(() => expect(scrolled).toContain("c1"));
+      // Held at the linked comment, as "Show earlier" holds the page: it and
+      // everything after it, with the history before it read as it is there.
+      await waitFor(() => expect(bodies()).toEqual(["First word.", "Second word.", "Third word.", "Fourth word.", "Newest word."]));
+      // Shown, the request is let go.
+      await waitFor(() => expect(screen.getByTestId("current-route")).toHaveAttribute("data-search", ""));
+    } finally {
+      Reflect.deleteProperty(HTMLElement.prototype, "scrollIntoView");
+    }
   });
 
   it("reads older pages back on demand, oldest first above the page, until there are none", async () => {
