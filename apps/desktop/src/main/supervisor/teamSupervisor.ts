@@ -1,25 +1,49 @@
 import {
-  participantAnswerJsonSchema,
+  LEADER_ASSIGNMENT_KEY,
+  leaderTurnSchema,
+  participantTurnSchema,
   readEvidenceBaseline,
+  readLeaderAnswer,
+  readParticipantAnswer,
   staffingAgents,
   TEAM_PARTICIPANT_ACTION,
-  TeamParticipantAnswerSchema,
   type Agent,
   type AgentEvent,
   type AgentProvider,
+  type ClarificationRequired,
+  type Comment,
   type IndependentTeam,
   type Item,
+  type JsonSchema,
+  type JsonSchemaDocument,
+  type LeaderTeam,
   type PipelineStep,
+  type StepTeam,
   type TeamAttemptRow,
   type TeamEvidenceBaseline,
-  type TeamParticipant,
+  type TeamOutcome,
   type TeamSessionRow,
   type Uuid,
 } from "@eo/core";
-import { allocateParticipantBudget, planIndependentTeam, type BudgetCeiling, type TeamAttemptState, type TeamWaitReason } from "@eo/engine";
+import {
+  allocateParticipantBudget,
+  checkLeaderAssignments,
+  finalStands,
+  leaderFinalProblems,
+  leaderLedger,
+  planIndependentTeam,
+  planLeaderTeam,
+  type BudgetCeiling,
+  type LeaderAttemptState,
+  type LeaderLedger,
+  type LeaderVerdict,
+  type TeamAttemptState,
+  type TeamStart,
+  type TeamWaitReason,
+} from "@eo/engine";
 import type { Db } from "../db/client.js";
 import { listAgents } from "../db/repos/agentsRepo.js";
-import { getComment, postComment } from "../db/repos/commentsRepo.js";
+import { getComment, listCommentsForItem, postComment } from "../db/repos/commentsRepo.js";
 import { getItem } from "../db/repos/itemsRepo.js";
 import { createRunEventBuffer } from "../db/repos/runEventBuffer.js";
 import { createRun, getRun, listActiveParticipantRuns, updateRun } from "../db/repos/runsRepo.js";
@@ -39,13 +63,14 @@ import {
   teamSessionTotals,
 } from "../db/repos/teamSessionsRepo.js";
 import type { AgentWriteBridge } from "../mcp/writeBridge.js";
+import { postClarificationQuestions, unansweredQuestions } from "../roles/clarificationQuestions.js";
 import { captureTeamEvidence, type TeamEvidence } from "./teamEvidence.js";
 import { reportOnlyCredential, type TeamParticipantScopes, type ThreadBoundary } from "./teamParticipants.js";
 import { createUsageTally } from "./usageTally.js";
 import type { PreparedWorkspace, WorkspaceKind } from "./workspaceKind.js";
 
 /**
- * Running an independent team (EO-846, ARCHITECTURE.md, "A team on an agent
+ * Running a team (EO-846, EO-847, ARCHITECTURE.md, "A team on an agent
  * step").
  *
  * **The team is its step's run.** The scheduler dispatches a team step as
@@ -53,9 +78,9 @@ import type { PreparedWorkspace, WorkspaceKind } from "./workspaceKind.js";
  * `runs` row — the team's own, the *parent* — and every guard a dispatch
  * passes. What would have been that run's provider turn is this: a stream
  * that supervises the participants and ends on the one answer the step
- * returns, `{ result, summary }`, which the ordinary machinery validates
- * and routes through `transitionItem` (invariant 1). No participant can
- * route anything; nothing here writes a step.
+ * returns, which the ordinary machinery validates and routes through
+ * `transitionItem` (invariant 1). No participant can route anything;
+ * nothing here writes a step.
  *
  * **Participants are authorised work inside that run**, not dispatches of
  * their own. Each attempt has a `runs` row of its own, recorded under
@@ -66,12 +91,33 @@ import type { PreparedWorkspace, WorkspaceKind } from "./workspaceKind.js";
  * its attempt alone, the four evidence tools answered from its registered
  * scope, and its answer posted by EO as an attributed report.
  *
+ * **A leader works in bounded turns** (EO-847). It is a report-only turn
+ * like any participant's, recorded under the reserved key
+ * `LEADER_ASSIGNMENT_KEY`, and it acts only through its answer: a round of
+ * assignments, a final answer, or questions for the person. A turn that
+ * asks for work ends there — its process is gone, what it asked for is on
+ * its run and its comment — and EO runs the assignments it accepted as
+ * participants; once that round has settled, the leader's next turn is
+ * started with the reports. Nothing waits in a process for anybody. What
+ * the leader asks for is held to the team's roles and limits and refused,
+ * with the reason recorded, past them; its final answer is held to every
+ * required assignment having reported, to relying only on current reports,
+ * and to the step's action's own schema and results, whatever it says.
+ *
+ * **Asking a person parks the session, in either mode** (EO-847). A turn
+ * that asks posts its questions on the thread, attributed to its agent and
+ * run, and ends; what is working finishes, nothing new starts, and the
+ * team's run ends awaiting input with the session left open. The person's
+ * reply dispatches the step again, which adopts the session: the asking
+ * assignment — or the leader — is started again with the question and the
+ * answer, and every report that is still current is kept, not run again.
+ *
  * **Capacity is counted in provider turns.** The parent waits and runs no
  * turn, so it holds its item's slot and nothing a participant needs. A
- * participant's turn counts against the team's `maxParallel`, the
- * machine's participant limit across every team, and its agent's own
- * limit beside that agent's ordinary runs. What cannot start waits and
- * the item is told why, once.
+ * participant's turn, and a leader's, counts against the team's
+ * `maxParallel`, the machine's participant limit across every team, and its
+ * agent's own limit beside that agent's ordinary runs. What cannot start
+ * waits and the item is told why, once.
  *
  * **Restrictions are the participant's own.** Before each turn: EO
  * pausing or closing, the item held, the agent's runtime blocked, the
@@ -97,8 +143,8 @@ import type { PreparedWorkspace, WorkspaceKind } from "./workspaceKind.js";
  * settles, the evidence is captured again; if what it holds has changed,
  * the work done on the old evidence is superseded and done again on the
  * new, and nothing is settled on a stale report. What the team itself
- * posts — reports, notes — carries no attachment and changes no file, so
- * it never moves the evidence.
+ * posts — reports, notes, questions — carries no attachment and changes no
+ * file, so it never moves the evidence.
  */
 
 /** The machine's participant turns at once, across every team, unless a host says otherwise: the most any one team may run. */
@@ -144,14 +190,29 @@ export interface TeamSupervisorDeps {
   stopGraceMs?: number;
 }
 
+/**
+ * The step's action as a leader's final answer is held to it (EO-847):
+ * its answer document, which the leader's turn is constrained to; the
+ * check the ordinary path makes of any agent's answer; and the result keys
+ * it declares. The host's, because only the host has the registry.
+ */
+export interface TeamAnswerContract {
+  /** The action's answer document, or null where nothing defines one. */
+  document: JsonSchemaDocument | null;
+  validate: (raw: unknown) => { ok: true; value: unknown } | { ok: false; error: string };
+  results: readonly string[];
+}
+
 export interface TeamTurnInput {
   item: Item;
   step: PipelineStep;
-  team: IndependentTeam;
+  team: StepTeam;
   /** The team's own run: its step's run. */
   parentRunId: Uuid;
   /** Where the step works, for the evidence; null for an item with no disk. */
   workspace: { kind: WorkspaceKind; prepared: PreparedWorkspace } | null;
+  /** What a leader's final answer is held to. Needed by a leader's team only. */
+  answer?: TeamAnswerContract;
   signal: AbortSignal;
 }
 
@@ -168,6 +229,25 @@ interface LiveParticipant {
   allocation: number | null;
   spent: number;
   done: Promise<void>;
+}
+
+/** What EO makes of a turn's answer once the turn has ended. */
+type TakeResult =
+  /** Taken: the run keeps `result`. */
+  | { kind: "accepted"; result: unknown }
+  /** It asked the person: the questions are posted, attributed to it, and the attempt waits for the answer. */
+  | { kind: "asked"; asked: ClarificationRequired }
+  /** An answer EO could not take: a failed contribution, counted against the retries. */
+  | { kind: "failed"; error: string }
+  /** An answer for a session that has ended or an item that has moved on: kept out of every decision. */
+  | { kind: "late"; problem: string };
+
+/** One turn, as its provider is started and its answer taken. */
+interface TurnSpec {
+  instructions: string;
+  context: string;
+  outputSchema: JsonSchema;
+  take: (answer: unknown, runId: Uuid, at: number) => TakeResult;
 }
 
 export interface TeamSupervisor {
@@ -195,12 +275,17 @@ export interface TeamSupervisor {
   reconcileOrphans(): number;
 }
 
-/** What an attempt's evidence holds, as a key two captures of the same content share and nothing else does. */
+/**
+ * What an attempt's evidence holds, as a key two captures of the same
+ * content share and nothing else does: the workspace, the attachments and,
+ * since EO-847, the item's own task — so an edit to what is asked makes
+ * every report made against the old ask stale, as a changed file does.
+ */
 export function evidenceContentKey(baseline: TeamEvidenceBaseline | null): string | null {
   if (baseline === null) return null;
   const ref = readEvidenceBaseline(baseline);
   if (ref === null) return `unreadable:${baseline.kind}:${baseline.ref}`;
-  return JSON.stringify({ kind: ref.workspaceKind, source: ref.source, attachments: ref.attachments.map((attachment) => [attachment.id, attachment.sha256]) });
+  return JSON.stringify({ kind: ref.workspaceKind, source: ref.source, attachments: ref.attachments.map((attachment) => [attachment.id, attachment.sha256]), task: ref.task?.sha256 ?? null });
 }
 
 /** The report an accepted attempt posted, without the heading EO put over it. */
@@ -212,31 +297,64 @@ function reportText(db: Db, attempt: TeamAttemptRow): string | null {
   return split === -1 ? body : body.slice(split + 2);
 }
 
-function participantInstructions(agent: Agent, step: PipelineStep, team: IndependentTeam): string {
+/** What EO kept of a leader's turn on its run (EO-847): the answer as it said it, and what EO made of it. */
+interface LeaderTurnRecord {
+  leader: true;
+  answer: unknown;
+  verdict: LeaderVerdict;
+  /** On an accepted final answer: the step's answer, as the action's check returned it. */
+  value?: unknown;
+}
+
+function leaderRecordOf(db: Db, attempt: TeamAttemptRow): LeaderTurnRecord | null {
+  if (attempt.runId === null) return null;
+  const result = getRun(db, attempt.runId as Uuid)?.result;
+  if (typeof result !== "object" || result === null || (result as { leader?: unknown }).leader !== true) return null;
+  return result as unknown as LeaderTurnRecord;
+}
+
+function outcomeLines(outcomes: readonly TeamOutcome[]): string[] {
+  return outcomes.map((outcome) => `- \`${outcome.key}\` — ${outcome.label}${outcome.meaning === "" ? "" : `: ${outcome.meaning}`}`);
+}
+
+const REPORT_ONLY =
+  "You are report-only. You read the evidence EO captured for you with `evidence_list`, `evidence_read` and `evidence_search`, and the item and its thread as far as you may see them with `item_context`. You cannot change any file, run any command, post a comment, create or reconfigure an agent, grant anything, or hand work to your backend's own subagents; EO posts what you answer, attributed to you.";
+
+const ASKING =
+  "If only the person can settle something you need, ask them instead of answering: your turn ends, EO posts your questions, and you are started again with their answer. A permission or tool you do not have is something to ask for, never something you can give yourself.";
+
+function participantInstructions(agent: Agent, step: PipelineStep, team: StepTeam): string {
+  const how =
+    team.coordination === "independent"
+      ? `${team.participants.length} participants each look at the work from their own angle, independently, and EO decides the step's result from what each concludes.`
+      : "A leader assigned you this piece of the work, and reads your report with the others' before it answers the step.";
+  const answer =
+    team.outcomes.length === 0
+      ? "Answer with your report: what you looked at, what you found, and why. If you could not establish something, say so in the report rather than guessing."
+      : "Answer with one of the outcomes your assignment declares and your report: what you looked at, what you found, and why it supports that outcome. If you could not establish something, say so in the report rather than guessing.";
   return [
-    `You are ${agent.name}, one participant of a team EO runs on the step "${step.name}". ${team.participants.length} participants each look at the work from their own angle, independently, and EO decides the step's result from what each concludes.`,
+    `You are ${agent.name}, one participant of a team EO runs on the step "${step.name}". ${how}`,
     "",
-    "You are report-only. You read the evidence EO captured for you with `evidence_list`, `evidence_read` and `evidence_search`, and the item and its thread as far as you may see them with `item_context`. You cannot change any file, run any command, post a comment or reach anything else; EO posts your report, attributed to you, once you have answered.",
+    REPORT_ONLY,
     "",
-    "Answer with one of the outcomes your assignment declares and your report: what you looked at, what you found, and why it supports that outcome. If you could not establish something, say so in the report rather than guessing.",
+    answer,
+    "",
+    ASKING,
     ...(agent.instructions.trim() === "" ? [] : ["", "## Your standing instructions", "", agent.instructions.trim()]),
   ].join("\n");
 }
 
-function participantContext(item: Item, team: IndependentTeam, participant: TeamParticipant): string {
-  const outcomes = team.outcomes.map((outcome) => `- \`${outcome.key}\` — ${outcome.label}${outcome.meaning === "" ? "" : `: ${outcome.meaning}`}`);
+function participantContext(item: Item, outcomes: readonly TeamOutcome[], key: string, instructions: string, extra: readonly string[]): string {
   return [
     `# ${item.key} — ${item.title}`,
     "",
     item.body ?? "",
     "",
-    `## Your assignment: ${participant.key}`,
+    `## Your assignment: ${key}`,
     "",
-    participant.instructions,
-    "",
-    "## The outcomes you may report",
-    "",
-    ...outcomes,
+    instructions,
+    ...(outcomes.length === 0 ? [] : ["", "## The outcomes you may report", "", ...outcomeLines(outcomes)]),
+    ...(extra.length === 0 ? [] : ["", ...extra]),
     "",
     "The item's thread, as far as it was when your assignment began, is what `item_context` answers. Other participants' reports are not part of it.",
   ].join("\n");
@@ -314,21 +432,86 @@ export function createTeamSupervisor(deps: TeamSupervisorDeps): TeamSupervisor {
     return count;
   }
 
+  // ── Questions (EO-847) ─────────────────────────────────────────────
+
+  /** The questions an attempt's run asked, oldest first. */
+  function questionsOf(attempt: Pick<TeamAttemptRow, "runId">, comments: readonly Comment[]): Comment[] {
+    if (attempt.runId === null) return [];
+    return comments.filter((comment) => comment.kind === "question" && comment.authorType === "agent" && comment.runId === attempt.runId);
+  }
+
   /**
-   * One participant's turn on one attempt, to its end: a report accepted,
-   * a failure, or EO stopping it. Never throws.
+   * Whether an attempt that ended asking the person has every answer yet:
+   * derived from the thread — the questions its run posted, and the replies
+   * filed under them — and never stored.
    */
-  async function runParticipant(input: {
-    item: Item;
-    step: PipelineStep;
-    team: IndependentTeam;
-    participant: TeamParticipant;
-    attempt: TeamAttemptRow;
-    agent: Agent;
-    evidence: TeamEvidence;
-    boundary: ThreadBoundary;
-    entry: LiveParticipant;
-  }): Promise<void> {
+  function questionStateOf(itemId: string): (attempt: TeamAttemptRow) => "open" | "answered" | null {
+    const comments = listCommentsForItem(db, itemId as Uuid);
+    const open = new Set<string>(unansweredQuestions(db, itemId as Uuid));
+    return (attempt) => {
+      if (attempt.status !== "cancelled") return null;
+      const asked = questionsOf(attempt, comments);
+      if (asked.length === 0) return null;
+      return asked.some((question) => open.has(question.id)) ? "open" : "answered";
+    };
+  }
+
+  /**
+   * What an assignment asked the person and what it was told, for the turn
+   * that carries it on: the comments to show it, and the words. Read along
+   * the whole chain of attempts the new one replaces — not only the one it
+   * replaces directly — so an answer is not lost when the turn after it
+   * failed and was retried, was stopped and replaced, or was superseded
+   * because the evidence moved.
+   */
+  function exchangeOf(itemId: string, attempts: readonly TeamAttemptRow[], replaced: TeamAttemptRow | undefined): { ids: string[]; lines: string[] } {
+    if (replaced === undefined) return { ids: [], lines: [] };
+    const chain: TeamAttemptRow[] = [];
+    const seen = new Set<string>();
+    for (let one: TeamAttemptRow | undefined = replaced; one !== undefined && !seen.has(one.id); one = attempts.find((each) => each.supersededBy === one!.id)) {
+      seen.add(one.id);
+      chain.unshift(one);
+    }
+    const comments = listCommentsForItem(db, itemId as Uuid);
+    const asked = chain.flatMap((attempt) => questionsOf(attempt, comments));
+    if (asked.length === 0) return { ids: [], lines: [] };
+    const ids: string[] = [];
+    const lines = ["## What was asked, and the answer", ""];
+    for (const question of asked) {
+      ids.push(question.id);
+      lines.push(`**Asked:** ${question.body}`);
+      for (const reply of comments.filter((comment) => comment.parentId === question.id && comment.authorType !== "agent")) {
+        ids.push(reply.id);
+        lines.push(`**Answer:** ${reply.body}`);
+      }
+      lines.push("");
+    }
+    lines.push("Use the answer as given. Where it does not settle something, say so rather than assume.");
+    return { ids, lines };
+  }
+
+  /** The open questions a team waits on, as the ordinary path reads an answer that asks: never posted again, since each is on the thread already, attributed to whoever asked. */
+  function openQuestions(itemId: string, attempts: readonly TeamAttemptRow[]): ClarificationRequired {
+    const comments = listCommentsForItem(db, itemId as Uuid);
+    const open = new Set<string>(unansweredQuestions(db, itemId as Uuid));
+    const asked = attempts.flatMap((attempt) => questionsOf(attempt, comments)).filter((question) => open.has(question.id));
+    return {
+      status: "clarification_required",
+      questions: asked.map((question) => ({
+        id: question.id,
+        question: question.body,
+        why: "A member of the team asked this, and its work waits on the answer.",
+        options: (question.options ?? []).filter((option): option is string => typeof option === "string"),
+        allow_free_text: true,
+      })),
+    };
+  }
+
+  /**
+   * One turn on one attempt, to its end: an answer taken, a question
+   * asked, a failure, or EO stopping it. Never throws.
+   */
+  async function runTurn(input: { item: Item; step: PipelineStep; attempt: TeamAttemptRow; agent: Agent; evidence: TeamEvidence; boundary: ThreadBoundary; entry: LiveParticipant; turn: TurnSpec }): Promise<void> {
     const { item, attempt, agent, entry } = input;
     const built = deps.reportOnlyProvider(agent, attempt.id);
     if (!built.ok) {
@@ -360,10 +543,10 @@ export function createTeamSupervisor(deps: TeamSupervisorDeps): TeamSupervisor {
     try {
       const bridge = deps.writeBridge();
       const stream = built.provider.start({
-        instructions: participantInstructions(agent, input.step, input.team),
-        context: participantContext(item, input.team, input.participant),
+        instructions: input.turn.instructions,
+        context: input.turn.context,
         cwd: built.cwd,
-        outputSchema: participantAnswerJsonSchema(input.team),
+        outputSchema: input.turn.outputSchema,
         ...(entry.allocation === null ? {} : { budgetCents: entry.allocation }),
         ...(bridge === null ? {} : { writeBridge: reportOnlyCredential(bridge, item.id, attempt.id) }),
         signal: entry.controller.signal,
@@ -422,26 +605,52 @@ export function createTeamSupervisor(deps: TeamSupervisorDeps): TeamSupervisor {
       endTeamAttempt(db, attempt.id, { status: "cancelled", error: entry.stoppedBecause }, at);
       return;
     }
-    const parsed = answer === undefined ? null : TeamParticipantAnswerSchema.safeParse(answer);
-    if (failure === null && parsed?.success === true) {
-      const accepted = acceptTeamReport(db, { attemptId: attempt.id, outcome: parsed.data.outcome, report: parsed.data.report, now: at });
-      if (accepted.ok) {
-        updateRun(db, run.id, { status: "succeeded", result: parsed.data, endedAt: at });
+    const taken: TakeResult = failure !== null ? { kind: "failed", error: failure } : answer === undefined ? { kind: "failed", error: "Its turn ended without an answer." } : input.turn.take(answer, run.id, at);
+    switch (taken.kind) {
+      case "accepted":
+        updateRun(db, run.id, { status: "succeeded", result: taken.result as Record<string, unknown>, endedAt: at });
+        return;
+      case "asked": {
+        // Only while its session can still take anything: a late question
+        // is no more the team's than a late report.
+        const session = getTeamSession(db, attempt.sessionId);
+        if (session === undefined || session.status !== "open" || !teamSessionOnEntry(db, session)) {
+          const problem = "Its session had ended by the time it asked, so its questions were not posted.";
+          updateRun(db, run.id, { status: "cancelled", error: problem, endedAt: at });
+          endTeamAttempt(db, attempt.id, { status: "cancelled", error: problem }, at);
+          return;
+        }
+        // On the thread, attributed to the agent and the run that asked:
+        // the attempt is then known to be asking by its run's questions.
+        postClarificationQuestions(db, getItem(db, item.id) ?? item, agent.id as Uuid, run.id, taken.asked);
+        updateRun(db, run.id, { status: "succeeded", result: taken.asked as unknown as Record<string, unknown>, endedAt: at });
+        endTeamAttempt(db, attempt.id, { status: "cancelled", error: `It asked the person ${taken.asked.questions.length === 1 ? "a question" : `${taken.asked.questions.length} questions`}, and is started again with the answer.` }, at);
+        deps.onChange();
         return;
       }
-      // A late answer for a session that has ended, or an item that has
-      // moved on: kept out of every decision, and said on the run.
-      updateRun(db, run.id, { status: "cancelled", error: accepted.problem, endedAt: at });
-      endTeamAttempt(db, attempt.id, { status: "cancelled", error: accepted.problem }, at);
-      return;
+      case "failed":
+        updateRun(db, run.id, { status: "failed", error: taken.error, endedAt: at });
+        endTeamAttempt(db, attempt.id, { status: "failed", error: taken.error }, at);
+        return;
+      case "late":
+        updateRun(db, run.id, { status: "cancelled", error: taken.problem, endedAt: at });
+        endTeamAttempt(db, attempt.id, { status: "cancelled", error: taken.problem }, at);
+        return;
     }
-    const error =
-      failure ??
-      (answer === undefined
-        ? "Its turn ended without an answer."
-        : `Its answer was not a report EO could take: ${parsed?.success === false ? (parsed.error.issues[0]?.message ?? "wrong shape") : "wrong shape"}.`);
-    updateRun(db, run.id, { status: "failed", error, endedAt: at });
-    endTeamAttempt(db, attempt.id, { status: "failed", error }, at);
+  }
+
+  /** A participant's answer taken as its report: posted, attributed, once — or its question, or why it is neither. */
+  function takeReport(attemptId: string, outcomes: readonly TeamOutcome[], onDelegation?: (error: string) => void): TurnSpec["take"] {
+    return (answer, _runId, at) => {
+      const read = readParticipantAnswer(outcomes, answer);
+      if (read.kind === "asked") return { kind: "asked", asked: read.asked };
+      if (read.kind === "invalid") {
+        if (read.delegation) onDelegation?.(read.error);
+        return { kind: "failed", error: read.error };
+      }
+      const accepted = acceptTeamReport(db, { attemptId, outcome: read.outcome, report: read.report, now: at });
+      return accepted.ok ? { kind: "accepted", result: { outcome: read.outcome, report: read.report } } : { kind: "late", problem: accepted.problem };
+    };
   }
 
   async function* run(input: TeamTurnInput): AsyncGenerator<AgentEvent> {
@@ -453,6 +662,11 @@ export function createTeamSupervisor(deps: TeamSupervisorDeps): TeamSupervisor {
       // read a team waiting on its participants as a backend gone quiet.
       yield { type: "heartbeat", callStarted: `team:${parentRunId}` };
 
+      if (team.coordination === "leader" && (input.answer === undefined || input.answer.document === null)) {
+        yield { type: "error", message: `The leader of the team on "${step.name}" answers "${step.entryAction ?? ""}", and nothing defines that action's answer, so EO started nobody.`, retryable: false };
+        return;
+      }
+
       // ── The evidence as it stands, before anything is decided on ──
       // Captured first, so that not even a session that already settled
       // answers again from reports about a version that has since gone.
@@ -460,7 +674,7 @@ export function createTeamSupervisor(deps: TeamSupervisorDeps): TeamSupervisor {
 
       // ── The session: this entry's, adopted; or a new one ─────────
       let session = currentTeamSession(db, item.id);
-      if (session !== undefined && (session.stepId !== step.id || !teamSessionOnEntry(db, session))) session = undefined;
+      if (session !== undefined && (session.stepId !== step.id || session.team.coordination !== team.coordination || !teamSessionOnEntry(db, session))) session = undefined;
       if (session === undefined) {
         // Settled on this entry already, and the move it asked for never
         // happened: the same answer again, nothing run twice.
@@ -485,11 +699,13 @@ export function createTeamSupervisor(deps: TeamSupervisorDeps): TeamSupervisor {
         note(
           item,
           parentRunId,
-          `EO is running "${step.name}" as a team of ${team.participants.length}: ${team.participants.map((participant) => `**${participant.key}** (${participant.role})`).join(", ")}, ${team.limits.maxParallel} at a time. Each reports here; EO decides the step's result from what they conclude.`,
+          team.coordination === "independent"
+            ? `EO is running "${step.name}" as a team of ${team.participants.length}: ${team.participants.map((participant) => `**${participant.key}** (${participant.role})`).join(", ")}, ${team.limits.maxParallel} at a time. Each reports here; EO decides the step's result from what they conclude.`
+            : `EO is running "${step.name}" as a team led by a ${team.leader.role} agent, who may assign work to ${team.roles.join(", ")} — at most ${team.limits.maxParticipants} participants over ${team.limits.maxRounds} round${team.limits.maxRounds === 1 ? "" : "s"}, ${team.limits.maxParallel} at a time. Each assignment and report is posted here; the leader answers the step, and EO checks that answer before it is used.`,
         );
       }
       const sessionId = session.id;
-      const sessionTeam = session.team.coordination === "independent" ? session.team : team;
+      const sessionTeam = session.team;
 
       if (!evidence.ok) {
         endTeamSession(db, { sessionId, status: "failed", now: deps.now() });
@@ -538,6 +754,132 @@ export function createTeamSupervisor(deps: TeamSupervisorDeps): TeamSupervisor {
         await Promise.allSettled([...mine].flatMap((attemptId) => { const one = live.get(attemptId); return one === undefined ? [] : [one.done]; }));
       };
 
+      const tell = (key: string, reason: string) => {
+        const told1 = `${key}:${reason}`;
+        if (told.has(told1)) return;
+        told.add(told1);
+        note(item, parentRunId, `**${key}** is waiting to start: ${reason}`);
+      };
+
+      /** Reconciles what the plan fences; answers whether anything not live was ended, so the pass is made again. */
+      const fenceAll = (fence: readonly { attemptId: string; why: "orphaned" | "stale" }[], attempts: readonly TeamAttemptRow[]): boolean => {
+        let fenced = false;
+        for (const { attemptId, why } of fence) {
+          const one = live.get(attemptId);
+          if (one !== undefined) {
+            if (one.stoppedBecause === null) {
+              one.stoppedBecause = "What this participant was reading changed, so its work was superseded.";
+              one.controller.abort();
+            }
+            continue;
+          }
+          const attempt = attempts.find((each) => each.id === attemptId);
+          if (attempt === undefined) continue;
+          closeStopped(attempt, why === "orphaned" ? "EO stopped while this participant worked, so it is started again rather than counted." : "What this participant was reading changed before it began.");
+          fenced = true;
+        }
+        return fenced;
+      };
+
+      /**
+       * Nothing is settled on evidence that has moved. Captured again; the
+       * answer says whether to settle, go round again on the new evidence,
+       * or stop with why.
+       */
+      const stillCurrent = async (): Promise<{ kind: "settle" } | { kind: "moved" } | { kind: "stop"; message: string }> => {
+        const again = await capture();
+        if (!again.ok) return { kind: "stop", message: `EO could not check that what the team read is still current, so it settled nothing: ${again.problem}` };
+        if (evidenceContentKey(again.evidence.baseline) === currentKey) return { kind: "settle" };
+        moves += 1;
+        if (moves > team.limits.maxRetries) {
+          return {
+            kind: "stop",
+            message: `What the team on "${step.name}" was reading changed every time it was about to settle (${moves} times), so EO settled nothing rather than decide on reports about a version that is already gone.`,
+          };
+        }
+        current = again.evidence;
+        currentKey = evidenceContentKey(current.baseline)!;
+        visibleThrough = current.ref.capturedAt;
+        note(item, parentRunId, `What the team was reading changed before it settled, so the reports made on the old version are superseded and done again on the new one.`);
+        return { kind: "moved" };
+      };
+
+      /**
+       * Gives one assignment a turn, within every restriction and budget:
+       * `started`, `skipped` (it waits, or its attempt was refused and ended
+       * with why), or `broke` (no budget is left for anyone: the team stops).
+       */
+      const startTurn = (launch: {
+        key: string;
+        role: string;
+        instructions: string;
+        round: number;
+        supersedes: string | null;
+        agent: Agent | null;
+        outstanding: number;
+        boundary: (attempt: TeamAttemptRow) => ThreadBoundary;
+        turn: (attempt: TeamAttemptRow, agent: Agent) => TurnSpec;
+      }): "started" | "skipped" | "broke" => {
+        const { key, role, agent } = launch;
+        const base = { sessionId, assignmentKey: key, role, instructions: launch.instructions, round: launch.round, evidenceBaseline: current.baseline, ...(launch.supersedes === null ? {} : { supersedes: launch.supersedes }) };
+        if (agent === null) {
+          const made = startTeamAttempt(db, { ...base, agentId: null, now: deps.now() });
+          if (made.ok) endTeamAttempt(db, made.attempt.id, { status: "failed", error: `No enabled "${role}" agent serves this item's project.` }, deps.now());
+          return "skipped";
+        }
+        const restricted = deps.restriction(agent, getItem(db, item.id) ?? item);
+        if (restricted?.kind === "wait") {
+          tell(key, restricted.reason);
+          return "skipped";
+        }
+        if (restricted?.kind === "refuse") {
+          const made = startTeamAttempt(db, { ...base, agentId: agent.id as Uuid, now: deps.now() });
+          if (made.ok) endTeamAttempt(db, made.attempt.id, { status: "failed", error: restricted.reason }, deps.now());
+          return "skipped";
+        }
+        const share = shareFor(item, sessionId, launch.outstanding);
+        const allocation = share.cents;
+        if (allocation === 0) {
+          // Held by turns still working, under a budget this one is
+          // under too: given back as they finish, so it waits.
+          if (share.held) {
+            tell(key, "the budget left is held by participants still working, and is shared out again as they finish.");
+            return "skipped";
+          }
+          return "broke";
+        }
+        const made = startTeamAttempt(db, { ...base, agentId: agent.id as Uuid, now: deps.now() });
+        // The session ended under it: the next pass says so.
+        if (!made.ok) return "skipped";
+        const controller = new AbortController();
+        const entry: LiveParticipant = { attemptId: made.attempt.id, itemId: item.id, sessionId, agentId: agent.id, controller, stoppedBecause: null, runId: null, allocation, spent: 0, done: Promise.resolve() };
+        live.set(made.attempt.id, entry);
+        mine.add(made.attempt.id);
+        entry.done = runTurn({ item, step, attempt: made.attempt, agent, evidence: current, boundary: launch.boundary(made.attempt), entry, turn: launch.turn(made.attempt, agent) })
+          // Whatever went wrong is the attempt's failure, counted
+          // against its retries: an attempt left queued would be read
+          // as EO stopping it, and replaced for ever.
+          .catch((error: unknown) => {
+            const why = `EO could not run it: ${error instanceof Error ? error.message : String(error)}`;
+            if (entry.runId !== null) updateRun(db, entry.runId as Uuid, { status: "failed", error: why, endedAt: deps.now() });
+            endTeamAttempt(db, made.attempt.id, { status: "failed", error: why }, deps.now());
+          })
+          .finally(() => {
+            live.delete(made.attempt.id);
+            mine.delete(made.attempt.id);
+            deps.onChange();
+            nudge();
+          });
+        deps.track(entry.done);
+        return "started";
+      };
+
+      const noBudget = (key: string): AgentEvent => ({
+        type: "error",
+        message: `The team on "${step.name}" has no budget left to start **${key}** — the item's, the day's or the team's own is spent — so EO decided nothing. Raise the budget to let it go on.`,
+        retryable: false,
+      });
+
       try {
         for (;;) {
           if (signal.aborted) {
@@ -561,7 +903,8 @@ export function createTeamSupervisor(deps: TeamSupervisorDeps): TeamSupervisor {
           }
 
           const attempts = listTeamAttempts(db, sessionId);
-          const states: TeamAttemptState[] = attempts.map((attempt) => ({
+          const questionOf = questionStateOf(item.id);
+          const baseState = (attempt: TeamAttemptRow): TeamAttemptState => ({
             id: attempt.id,
             key: attempt.assignmentKey,
             status: attempt.status,
@@ -571,181 +914,44 @@ export function createTeamSupervisor(deps: TeamSupervisorDeps): TeamSupervisor {
             error: attempt.error,
             baseline: evidenceContentKey(attempt.evidenceBaseline),
             live: live.has(attempt.id),
-          }));
-          const agentOf = new Map<string, string | null>();
-          const agents = new Map<string, Agent | null>();
-          for (const participant of sessionTeam.participants) {
-            const agent = staffFor(item, participant.role);
-            agents.set(participant.key, agent);
-            agentOf.set(participant.key, agent?.id ?? null);
-          }
-          const agentFree = new Map<string, number>();
-          for (const agent of agents.values()) {
-            if (agent !== null) agentFree.set(agent.id, Math.max(0, deps.perAgentLimit() - deps.ordinaryTurnsOf(agent.id) - liveOn(agent.id)));
-          }
-          const plan = planIndependentTeam({
-            team: sessionTeam,
-            attempts: states,
-            baseline: currentKey,
-            capacity: { machineFree: Math.max(0, deps.machineLimit() - live.size), agentOf, agentFree },
+            round: attempt.round,
+            reportId: attempt.reportCommentId,
+            question: questionOf(attempt),
           });
 
-          // Reconciled before anything replaces them.
-          let fenced = false;
-          for (const { attemptId, why } of plan.fence) {
-            const one = live.get(attemptId);
-            if (one !== undefined) {
-              if (one.stoppedBecause === null) {
-                one.stoppedBecause = "What this participant was reading changed, so its work was superseded.";
-                one.controller.abort();
-              }
-              continue;
-            }
-            const attempt = attempts.find((each) => each.id === attemptId);
-            if (attempt === undefined) continue;
-            closeStopped(attempt, why === "orphaned" ? "EO stopped while this participant worked, so it is started again rather than counted." : "What this participant was reading changed before it began.");
-            fenced = true;
-          }
-          if (fenced) continue;
-
-          if (plan.decision.status !== "pending" && plan.working.length === 0) {
-            // Nothing is settled on evidence that has moved.
-            const again = await capture();
-            if (again.ok && evidenceContentKey(again.evidence.baseline) !== currentKey) {
-              moves += 1;
-              if (moves > team.limits.maxRetries) {
-                endTeamSession(db, { sessionId, status: "failed", now: deps.now() });
-                yield {
-                  type: "error",
-                  message: `What the team on "${step.name}" was reading changed every time it was about to settle (${moves} times), so EO settled nothing rather than decide on reports about a version that is already gone.`,
-                  retryable: false,
-                };
-                return;
-              }
-              current = again.evidence;
-              currentKey = evidenceContentKey(current.baseline)!;
-              visibleThrough = current.ref.capturedAt;
-              note(item, parentRunId, `What the team was reading changed before it settled, so the reports made on the old version are superseded and done again on the new one.`);
-              continue;
-            }
-            if (!again.ok) {
-              endTeamSession(db, { sessionId, status: "failed", now: deps.now() });
-              yield { type: "error", message: `EO could not check that what the team read is still current, so it settled nothing: ${again.problem}`, retryable: false };
-              return;
-            }
-            if (plan.decision.status === "decided") {
-              const ended = endTeamSession(db, { sessionId, status: "finalized", result: plan.decision.result, now: deps.now() });
-              if (!ended.ok) {
-                yield { type: "error", message: ended.problem, retryable: true };
-                return;
-              }
-              yield { type: "result", data: { result: plan.decision.result, summary: plan.decision.summary } };
-              return;
-            }
-            endTeamSession(db, { sessionId, status: "failed", now: deps.now() });
-            yield {
-              type: "error",
-              message: `The team on "${step.name}" could not decide: ${plan.decision.failed.map((key) => `**${key}**`).join(", ")} could not contribute after ${team.limits.maxRetries} ${team.limits.maxRetries === 1 ? "retry" : "retries"}, and a required participant that did not contribute is never read as a finding.\n\n${plan.decision.summary}`,
-              retryable: false,
-            };
+          // ── One pass of the team's own kind ─────────────────────
+          const pass = sessionTeam.coordination === "independent" ? independentPass(sessionTeam, attempts, baseState) : leaderPass(sessionTeam, attempts, baseState);
+          if (pass.kind === "again") continue;
+          if (pass.kind === "end") {
+            yield pass.event;
             return;
           }
-
-          // Turns, within every bound and every restriction.
-          const outstanding = plan.start.length + plan.waiting.length;
-          let started = 0;
-          for (const start of plan.start) {
-            const participant = sessionTeam.participants.find((one) => one.key === start.key)!;
-            const agent = agents.get(start.key) ?? null;
-            const tell = (reason: string) => {
-              const key = `${start.key}:${reason}`;
-              if (told.has(key)) return;
-              told.add(key);
-              note(item, parentRunId, `**${start.key}** is waiting to start: ${reason}`);
-            };
-            const supersedes = start.supersedes === null ? {} : { supersedes: start.supersedes };
-            if (agent === null) {
-              const made = startTeamAttempt(db, { sessionId, assignmentKey: start.key, role: participant.role, agentId: null, instructions: participant.instructions, evidenceBaseline: current.baseline, now: deps.now(), ...supersedes });
-              if (made.ok) endTeamAttempt(db, made.attempt.id, { status: "failed", error: `No enabled "${participant.role}" agent serves this item's project.` }, deps.now());
-              continue;
-            }
-            const restricted = deps.restriction(agent, getItem(db, item.id) ?? item);
-            if (restricted?.kind === "wait") {
-              tell(restricted.reason);
-              continue;
-            }
-            if (restricted?.kind === "refuse") {
-              const made = startTeamAttempt(db, { sessionId, assignmentKey: start.key, role: participant.role, agentId: agent.id as Uuid, instructions: participant.instructions, evidenceBaseline: current.baseline, now: deps.now(), ...supersedes });
-              if (made.ok) endTeamAttempt(db, made.attempt.id, { status: "failed", error: restricted.reason }, deps.now());
-              continue;
-            }
-            const share = shareFor(item, sessionId, outstanding - started);
-            const allocation = share.cents;
-            if (allocation === 0) {
-              // Held by turns still working, under a budget this one is
-              // under too: given back as they finish, so it waits.
-              if (share.held) {
-                tell("the budget left is held by participants still working, and is shared out again as they finish.");
-                continue;
-              }
-              await stopAll("The budget ran out.");
+          if (pass.kind === "settle" || pass.kind === "undecided") {
+            const checked = await stillCurrent();
+            if (checked.kind === "moved") continue;
+            if (checked.kind === "stop") {
               endTeamSession(db, { sessionId, status: "failed", now: deps.now() });
-              yield { type: "error", message: `The team on "${step.name}" has no budget left to start **${start.key}** — the item's, the day's or the team's own is spent — so EO decided nothing. Raise the budget to let it go on.`, retryable: false };
+              yield { type: "error", message: checked.message, retryable: false };
               return;
             }
-            const made = startTeamAttempt(db, {
-              sessionId,
-              assignmentKey: start.key,
-              role: participant.role,
-              agentId: agent.id as Uuid,
-              instructions: participant.instructions,
-              evidenceBaseline: current.baseline,
-              now: deps.now(),
-              ...supersedes,
-            });
-            if (!made.ok) {
-              // The session ended under it: the next pass says so.
-              continue;
+            if (pass.kind === "undecided") {
+              endTeamSession(db, { sessionId, status: "failed", now: deps.now() });
+              yield pass.event;
+              return;
             }
-            started += 1;
-            const controller = new AbortController();
-            const entry: LiveParticipant = {
-              attemptId: made.attempt.id,
-              itemId: item.id,
-              sessionId,
-              agentId: agent.id,
-              controller,
-              stoppedBecause: null,
-              runId: null,
-              allocation,
-              spent: 0,
-              done: Promise.resolve(),
-            };
-            live.set(made.attempt.id, entry);
-            mine.add(made.attempt.id);
-            const boundary: ThreadBoundary = { visibleThrough, exposedCommentIds: [], hiddenCommentIds: sessionReportIds(sessionId) };
-            entry.done = runParticipant({ item, step, team: sessionTeam, participant, attempt: made.attempt, agent, evidence: current, boundary, entry })
-              // Whatever went wrong is the attempt's failure, counted
-              // against its retries: an attempt left queued would be read
-              // as EO stopping it, and replaced for ever.
-              .catch((error: unknown) => {
-                const why = `EO could not run it: ${error instanceof Error ? error.message : String(error)}`;
-                if (entry.runId !== null) updateRun(db, entry.runId as Uuid, { status: "failed", error: why, endedAt: deps.now() });
-                endTeamAttempt(db, made.attempt.id, { status: "failed", error: why }, deps.now());
-              })
-              .finally(() => {
-                live.delete(made.attempt.id);
-                mine.delete(made.attempt.id);
-                deps.onChange();
-                nudge();
-              });
-            deps.track(entry.done);
+            const ended = endTeamSession(db, { sessionId, status: "finalized", result: pass.result, ...(pass.finalCommentId === null ? {} : { finalCommentId: pass.finalCommentId as Uuid }), now: deps.now() });
+            if (!ended.ok) {
+              yield { type: "error", message: ended.problem, retryable: true };
+              return;
+            }
+            yield { type: "result", data: pass.answer };
+            return;
           }
-          for (const waiting of plan.waiting) {
-            const key = `${waiting.key}:${waiting.reason}`;
-            if (told.has(key)) continue;
-            told.add(key);
-            note(item, parentRunId, `**${waiting.key}** is waiting to start: ${waitWords(waiting.reason, team)}`);
+          if (pass.kind === "broke") {
+            await stopAll("The budget ran out.");
+            endTeamSession(db, { sessionId, status: "failed", now: deps.now() });
+            yield noBudget(pass.key);
+            return;
           }
 
           // Something to wait for: a participant ending, a slot freeing, a
@@ -766,12 +972,303 @@ export function createTeamSupervisor(deps: TeamSupervisorDeps): TeamSupervisor {
         // However the turn ends, none of its participants outlives it.
         await stopAll("The team's run ended, so EO stopped this participant with it.");
       }
+
+      type Pass =
+        | { kind: "again" }
+        | { kind: "wait" }
+        | { kind: "end"; event: AgentEvent }
+        | { kind: "settle"; result: string; answer: unknown; finalCommentId: string | null }
+        /** Settled without a result: said once the evidence is known to be current, as a result would be. */
+        | { kind: "undecided"; event: AgentEvent }
+        | { kind: "broke"; key: string };
+
+      /** The team waits on a person: its run ends awaiting input, the session left open for the reply. */
+      function parkOn(attempts: readonly TeamAttemptRow[]): Pass {
+        return { kind: "end", event: { type: "result", data: openQuestions(item.id, attempts) } };
+      }
+
+      function supersededAttempt(attempts: readonly TeamAttemptRow[], id: string | null): TeamAttemptRow | undefined {
+        return id === null ? undefined : attempts.find((attempt) => attempt.id === id);
+      }
+
+      // ── An independent team (EO-846) ───────────────────────────
+      function independentPass(teamNow: IndependentTeam, attempts: readonly TeamAttemptRow[], stateOf: (attempt: TeamAttemptRow) => TeamAttemptState): Pass {
+        const agents = new Map<string, Agent | null>();
+        const agentOf = new Map<string, string | null>();
+        for (const participant of teamNow.participants) {
+          const agent = staffFor(item, participant.role);
+          agents.set(participant.key, agent);
+          agentOf.set(participant.key, agent?.id ?? null);
+        }
+        const plan = planIndependentTeam({ team: teamNow, attempts: attempts.map(stateOf), baseline: currentKey, capacity: capacityFor(agents, agentOf) });
+        // Reconciled before anything replaces them.
+        if (fenceAll(plan.fence, attempts)) return { kind: "again" };
+
+        if (plan.decision.status !== "pending" && plan.working.length === 0) {
+          if (plan.decision.status === "decided") return { kind: "settle", result: plan.decision.result, answer: { result: plan.decision.result, summary: plan.decision.summary }, finalCommentId: null };
+          return {
+            kind: "undecided",
+            event: {
+              type: "error",
+              message: `The team on "${step.name}" could not decide: ${plan.decision.failed.map((key) => `**${key}**`).join(", ")} could not contribute after ${team.limits.maxRetries} ${team.limits.maxRetries === 1 ? "retry" : "retries"}, and a required participant that did not contribute is never read as a finding.\n\n${plan.decision.summary}`,
+              retryable: false,
+            },
+          };
+        }
+        // Waiting on a person and on nothing else: the session parks.
+        if (plan.asking.length > 0 && plan.working.length === 0 && plan.start.length === 0 && plan.waiting.length === 0) return parkOn(attempts);
+
+        const outstanding = plan.start.length + plan.waiting.length;
+        let started = 0;
+        for (const start of plan.start) {
+          const participant = teamNow.participants.find((one) => one.key === start.key)!;
+          const exchange = exchangeOf(item.id, attempts, supersededAttempt(attempts, start.supersedes));
+          const outcome = startTurn({
+            key: start.key,
+            role: participant.role,
+            instructions: participant.instructions,
+            round: 1,
+            supersedes: start.supersedes,
+            agent: agents.get(start.key) ?? null,
+            outstanding: outstanding - started,
+            boundary: () => ({ visibleThrough, exposedCommentIds: exchange.ids, hiddenCommentIds: sessionReportIds(sessionId) }),
+            turn: (attempt, agent) => ({
+              instructions: participantInstructions(agent, step, teamNow),
+              context: participantContext(itemNow(), teamNow.outcomes, participant.key, participant.instructions, exchange.lines),
+              outputSchema: participantTurnSchema(teamNow.outcomes),
+              take: takeReport(attempt.id, teamNow.outcomes),
+            }),
+          });
+          if (outcome === "broke") return { kind: "broke", key: start.key };
+          if (outcome === "started") started += 1;
+        }
+        for (const waiting of plan.waiting) tell(waiting.key, waitWords(waiting.reason, team));
+        return { kind: "wait" };
+      }
+
+      // ── A leader's team (EO-847) ───────────────────────────────
+      function leaderPass(teamNow: LeaderTeam, attempts: readonly TeamAttemptRow[], stateOf: (attempt: TeamAttemptRow) => TeamAttemptState): Pass {
+        const states: LeaderAttemptState[] = attempts.map((attempt) => ({
+          ...stateOf(attempt),
+          round: attempt.round,
+          verdict: attempt.assignmentKey === LEADER_ASSIGNMENT_KEY && attempt.status === "completed" ? (leaderRecordOf(db, attempt)?.verdict ?? null) : null,
+        }));
+        const ledger = leaderLedger(states, currentKey);
+        const agents = new Map<string, Agent | null>([[LEADER_ASSIGNMENT_KEY, staffFor(item, teamNow.leader.role)]]);
+        for (const assignment of ledger.assignments) agents.set(assignment.key, staffFor(item, assignment.role));
+        const agentOf = new Map([...agents].map(([key, agent]) => [key, agent?.id ?? null] as const));
+        const plan = planLeaderTeam({ team: teamNow, attempts: states, baseline: currentKey, capacity: capacityFor(agents, agentOf) });
+        if (fenceAll(plan.fence, attempts)) return { kind: "again" };
+
+        if (plan.next.kind === "finalize") {
+          const attemptId = plan.next.attemptId;
+          const leaderAttempt = attempts.find((attempt) => attempt.id === attemptId)!;
+          const record = leaderRecordOf(db, leaderAttempt);
+          const value = record?.value as { result?: unknown } | undefined;
+          if (record === null || typeof value?.result !== "string") {
+            endTeamSession(db, { sessionId, status: "failed", now: deps.now() });
+            return { kind: "end", event: { type: "error", message: `EO could not read back the leader's accepted answer on "${step.name}", so it settled nothing.`, retryable: false } };
+          }
+          return { kind: "settle", result: value.result, answer: record.value, finalCommentId: leaderAttempt.reportCommentId };
+        }
+        if (plan.next.kind === "failed") {
+          endTeamSession(db, { sessionId, status: "failed", now: deps.now() });
+          return { kind: "end", event: { type: "error", message: `The team on "${step.name}" could not finish: ${plan.next.reason}`, retryable: false } };
+        }
+        if (plan.next.kind === "park") return parkOn(attempts);
+
+        const outstanding = plan.start.length + plan.waiting.length;
+        let started = 0;
+        for (const start of plan.start) {
+          const previous = supersededAttempt(attempts, start.supersedes);
+          const launched = start.key === LEADER_ASSIGNMENT_KEY ? startLeader(teamNow, start, previous, attempts, states, ledger, agents, outstanding - started) : startAssignment(teamNow, start, previous, attempts, ledger, agents, outstanding - started);
+          if (launched === "broke") return { kind: "broke", key: start.key };
+          if (launched === "started") started += 1;
+        }
+        for (const waiting of plan.waiting) tell(waiting.key, waitWords(waiting.reason, team));
+        return { kind: "wait" };
+      }
+
+      function startAssignment(
+        teamNow: LeaderTeam,
+        start: TeamStart,
+        previous: TeamAttemptRow | undefined,
+        attempts: readonly TeamAttemptRow[],
+        ledger: LeaderLedger,
+        agents: ReadonlyMap<string, Agent | null>,
+        outstanding: number,
+      ): "started" | "skipped" | "broke" {
+        const assignment = ledger.assignments.find((one) => one.key === start.key)!;
+        const exchange = exchangeOf(item.id, attempts, previous);
+        // A follow-up is shown what it said before, which its new instructions answer.
+        const earlier = start.why === "followup" && previous !== undefined && previous.reportCommentId !== null ? previous : undefined;
+        const extra = [
+          ...(earlier === undefined ? [] : ["## Your earlier report on this assignment", "", reportText(db, earlier) ?? "", "", "The leader has asked you to follow up on it: the instructions above are its follow-up."]),
+          ...exchange.lines,
+        ];
+        return startTurn({
+          key: start.key,
+          role: assignment.role,
+          instructions: assignment.instructions,
+          round: start.round ?? assignment.round,
+          supersedes: start.supersedes,
+          agent: agents.get(start.key) ?? null,
+          outstanding,
+          boundary: () => ({
+            visibleThrough,
+            exposedCommentIds: [...exchange.ids, ...(earlier === undefined || earlier.reportCommentId === null ? [] : [earlier.reportCommentId])],
+            hiddenCommentIds: sessionReportIds(sessionId),
+          }),
+          turn: (attempt, agent) => ({
+            instructions: participantInstructions(agent, step, teamNow),
+            context: participantContext(itemNow(), teamNow.outcomes, assignment.key, assignment.instructions, extra),
+            outputSchema: participantTurnSchema(teamNow.outcomes),
+            // A contributor that tries to hand work on is refused, and the
+            // refusal is recorded where the person and the leader read it.
+            take: takeReport(attempt.id, teamNow.outcomes, (error) => note(item, parentRunId, `**${assignment.key}** tried to assign work, which only the leader may do: ${error}`)),
+          }),
+        });
+      }
+
+      function startLeader(
+        teamNow: LeaderTeam,
+        start: TeamStart,
+        previous: TeamAttemptRow | undefined,
+        attempts: readonly TeamAttemptRow[],
+        states: readonly LeaderAttemptState[],
+        ledger: LeaderLedger,
+        agents: ReadonlyMap<string, Agent | null>,
+        outstanding: number,
+      ): "started" | "skipped" | "broke" {
+        const exchange = exchangeOf(item.id, attempts, previous);
+        const reportIds = ledger.contributions.flatMap((one) => (one.reportId === null ? [] : [one.reportId]));
+        const leaderIds = attempts.flatMap((attempt) => (attempt.assignmentKey === LEADER_ASSIGNMENT_KEY && attempt.reportCommentId !== null ? [attempt.reportCommentId] : []));
+        return startTurn({
+          key: LEADER_ASSIGNMENT_KEY,
+          role: teamNow.leader.role,
+          instructions: teamNow.leader.instructions,
+          round: start.round ?? 1,
+          supersedes: start.supersedes,
+          agent: agents.get(LEADER_ASSIGNMENT_KEY) ?? null,
+          outstanding,
+          // The leader reads every current report, its own earlier turns
+          // and what it asked: the reports are why its next turn exists.
+          boundary: () => ({ visibleThrough, exposedCommentIds: [...reportIds, ...leaderIds, ...exchange.ids] }),
+          turn: (attempt, agent) => ({
+            instructions: leaderInstructions(agent, step, teamNow),
+            context: leaderContext(teamNow, start, previous, attempts, states, ledger, exchange.lines),
+            outputSchema: leaderTurnSchema(teamNow, input.answer!.document!),
+            take: takeLeader(teamNow, attempt),
+          }),
+        });
+      }
+
+      /**
+       * What EO makes of a leader's answer (EO-847), kept on its run before
+       * its comment is posted, so a restart between the two redoes the turn
+       * rather than reading half of it. A request for work is held to the
+       * team's roles and limits; a final answer to the reports and to the
+       * step's action. Either way the leader's words go on the thread, and
+       * what EO refused goes with them.
+       */
+      function takeLeader(teamNow: LeaderTeam, attempt: TeamAttemptRow): TurnSpec["take"] {
+        return (answer, runId, at) => {
+          const read = readLeaderAnswer(answer);
+          if (read.kind === "invalid") return { kind: "failed", error: read.error };
+          if (read.kind === "asked") return { kind: "asked", asked: read.asked };
+          const states: LeaderAttemptState[] = listTeamAttempts(db, sessionId).map((one) => ({
+            id: one.id,
+            key: one.assignmentKey,
+            status: one.status,
+            supersededBy: one.supersededBy,
+            outcome: one.outcome,
+            report: null,
+            error: one.error,
+            baseline: evidenceContentKey(one.evidenceBaseline),
+            live: false,
+            round: one.round,
+            reportId: one.reportCommentId,
+            verdict: one.assignmentKey === LEADER_ASSIGNMENT_KEY && one.status === "completed" ? (leaderRecordOf(db, one)?.verdict ?? null) : null,
+          }));
+          const ledger = leaderLedger(states, currentKey);
+          let record: LeaderTurnRecord;
+          let words: string;
+          let refusal: string | null = null;
+          if (read.kind === "assign") {
+            const verdict = checkLeaderAssignments(teamNow, ledger, read.request.assignments);
+            record = { leader: true, answer, verdict };
+            const known = new Set(ledger.keys);
+            words = [
+              verdict.accepted.length === 0 ? `Asked for round ${attempt.round} of work; EO accepted none of it.` : `Assigns round ${attempt.round}:`,
+              ...verdict.accepted.map((one) => `- **${one.key}** (${one.role}${one.required ? "" : ", optional"}${known.has(one.key) ? ", follow-up" : ""}): ${one.instructions}`),
+              ...(read.request.note.trim() === "" ? [] : ["", read.request.note.trim()]),
+            ].join("\n");
+            if (verdict.refused.length > 0) {
+              refusal = `EO refused ${verdict.refused.length === 1 ? "an assignment" : `${verdict.refused.length} assignments`} the leader asked for:\n\n${verdict.refused.map((one) => `- **${one.key}**: ${one.reason}`).join("\n")}`;
+            }
+          } else {
+            const problems = leaderFinalProblems(ledger, states, read.final.contributions);
+            // The result key first, said as such: a key the action does
+            // not declare would route nowhere, whatever else is right.
+            const declared = input.answer!.results;
+            const undeclared = (answer: unknown): string | null => {
+              const result = (answer as { result?: unknown } | null)?.result;
+              if (typeof result !== "string") return null;
+              return declared.includes(result) ? null : `Its result "${result}" is not one "${step.entryAction ?? ""}" declares (${declared.join(", ")}).`;
+            };
+            let value: unknown = undefined;
+            const raw = undeclared(read.final.answer);
+            if (raw !== null) problems.push(raw);
+            else {
+              const checked = input.answer!.validate(read.final.answer);
+              if (!checked.ok) problems.push(`Its answer is not a valid "${step.entryAction ?? ""}" answer: ${checked.error}`);
+              else if (typeof (checked.value as { result?: unknown } | null)?.result !== "string") problems.push(`Its answer names no result, and "${step.entryAction ?? ""}" needs one of ${declared.join(", ")}.`);
+              else {
+                const after = undeclared(checked.value);
+                if (after !== null) problems.push(after);
+                else value = checked.value;
+              }
+            }
+            const verdict: LeaderVerdict = { decision: "final", accepted: problems.length === 0, problems, contributions: read.final.contributions };
+            record = { leader: true, answer, verdict, ...(verdict.accepted ? { value } : {}) };
+            const summary = (read.final.answer as { summary?: unknown } | null)?.summary;
+            words = [
+              `Answers the step${typeof (read.final.answer as { result?: unknown } | null)?.result === "string" ? ` — ${String((read.final.answer as { result: string }).result)}` : ""}`,
+              "",
+              typeof summary === "string" ? summary : JSON.stringify(read.final.answer),
+              "",
+              `**Relies on:** ${read.final.contributions.length === 0 ? "nothing named" : read.final.contributions.join(", ")}`,
+              `**Disagreements:** ${read.final.disagreements}`,
+              `**Limitations:** ${read.final.limitations}`,
+            ].join("\n");
+            if (!verdict.accepted) refusal = `EO did not accept the leader's final answer:\n\n${problems.map((problem) => `- ${problem}`).join("\n")}`;
+          }
+          updateRun(db, runId, { result: record as unknown as Record<string, unknown> });
+          const accepted = acceptTeamReport(db, { attemptId: attempt.id, outcome: null, report: words, now: at });
+          if (!accepted.ok) return { kind: "late", problem: accepted.problem };
+          if (refusal !== null) note(item, parentRunId, refusal);
+          return { kind: "accepted", result: record };
+        };
+      }
+
+      function capacityFor(agents: ReadonlyMap<string, Agent | null>, agentOf: Map<string, string | null>) {
+        const agentFree = new Map<string, number>();
+        for (const agent of agents.values()) {
+          if (agent !== null) agentFree.set(agent.id, Math.max(0, deps.perAgentLimit() - deps.ordinaryTurnsOf(agent.id) - liveOn(agent.id)));
+        }
+        return { machineFree: Math.max(0, deps.machineLimit() - live.size), agentOf, agentFree };
+      }
     } finally {
       parents.delete(parentRunId);
     }
 
     async function capture() {
-      return captureTeamEvidence({ db, item: getItem(db, item.id) ?? item, workspace: input.workspace, now: deps.now(), signal });
+      return captureTeamEvidence({ db, item: itemNow(), workspace: input.workspace, now: deps.now(), signal });
+    }
+
+    /** The item as it is now: what a turn is told is what its baseline's task records, never the item as it was dispatched. */
+    function itemNow(): Item {
+      return getItem(db, item.id) ?? item;
     }
 
     function staleSession(session: TeamSessionRow | undefined): string | null {
@@ -781,16 +1278,96 @@ export function createTeamSupervisor(deps: TeamSupervisorDeps): TeamSupervisor {
       if (!teamSessionOnEntry(db, session)) return "The item has left the step its team was working on, so EO stopped the team's participants.";
       return null;
     }
+
+    function leaderInstructions(agent: Agent, stepNow: PipelineStep, teamNow: LeaderTeam): string {
+      return [
+        `You are ${agent.name}, the leader of a team EO runs on the step "${stepNow.name}". You plan the work, assign focused pieces of it to agents of the roles the team permits, read their reports, and answer the step yourself.`,
+        "",
+        REPORT_ONLY,
+        "",
+        "You act only through your answer, and every answer ends your turn:",
+        "- **assign** a round of work: each assignment a key, a permitted role, focused instructions and whether you cannot answer without it. EO runs what it accepts and starts your next turn with the reports. Name an earlier key again to ask that assignment to follow up; its earlier report is then superseded. Participants cannot assign work on.",
+        "- **final**: answer the step's action. Name in `contributions` the ids of the reports you relied on — only current ones, never a superseded report — say where they disagreed and how you settled it, and what you could not establish. EO checks that every required assignment has reported and that your answer is a valid answer to the step; saying the work is done does not make it so.",
+        `- or ${ASKING.charAt(0).toLowerCase()}${ASKING.slice(1)}`,
+        "",
+        `Limits: at most ${teamNow.limits.maxRounds} round${teamNow.limits.maxRounds === 1 ? "" : "s"} of assignments, ${teamNow.limits.maxParticipants} participants in all, ${teamNow.limits.maxParallel} at a time. EO refuses what goes past them and tells you why.`,
+        ...(agent.instructions.trim() === "" ? [] : ["", "## Your standing instructions", "", agent.instructions.trim()]),
+      ].join("\n");
+    }
+
+    function leaderContext(
+      teamNow: LeaderTeam,
+      start: TeamStart,
+      previous: TeamAttemptRow | undefined,
+      attempts: readonly TeamAttemptRow[],
+      states: readonly LeaderAttemptState[],
+      ledger: LeaderLedger,
+      exchange: readonly string[],
+    ): string {
+      const why: Record<TeamStart["why"], string> = {
+        first: "This is your first turn: nothing has been assigned yet.",
+        reports: "The round you assigned has settled: every assignment has reported or failed. Read the reports below and either assign a follow-up round or answer the step.",
+        correction: "EO could not act on your last answer — see why below. Answer again.",
+        retry: "Your last turn failed before it answered. Answer again.",
+        interrupted: "Your last turn was stopped before it answered. Answer again.",
+        stale: "What the team reads — the item's files, attachments or its own description — changed after your last answer, so that answer is not used: any reports were made again on the new version. Read what is there now and answer again.",
+        answered: "The person has answered what you asked. Carry on with their answer.",
+        followup: "",
+      };
+      const now = itemNow();
+      const lines: string[] = [
+        `# ${now.key} — ${now.title}`,
+        "",
+        now.body ?? "",
+        "",
+        "## What you lead",
+        "",
+        `You answer the step's action, \`${step.entryAction ?? ""}\`, whose results are ${input.answer!.results.map((key) => `\`${key}\``).join(", ")}.`,
+        "",
+        teamNow.leader.instructions,
+        "",
+        `Roles you may assign: ${teamNow.roles.join(", ")}. Rounds used: ${ledger.roundsUsed} of ${teamNow.limits.maxRounds}. Participants: ${ledger.keys.length} of ${teamNow.limits.maxParticipants}.`,
+        ...(teamNow.outcomes.length === 0 ? [] : ["", "Each participant reports one of these outcomes:", "", ...outcomeLines(teamNow.outcomes)]),
+        "",
+        "## This turn",
+        "",
+        why[start.why] || why.reports,
+      ];
+      const lastRecord = previous === undefined || previous.status !== "completed" ? null : leaderRecordOf(db, previous);
+      if (lastRecord?.verdict.decision === "final" && !lastRecord.verdict.accepted) lines.push("", "Why EO refused your final answer:", "", ...lastRecord.verdict.problems.map((problem) => `- ${problem}`));
+      if (lastRecord?.verdict.decision === "assign" && lastRecord.verdict.refused.length > 0) {
+        lines.push("", "Assignments EO refused:", "", ...lastRecord.verdict.refused.map((one) => `- **${one.key}**: ${one.reason}`));
+      }
+      if (previous?.status === "failed" && previous.error !== null) lines.push("", `What went wrong: ${previous.error}`);
+      lines.push("", "## The assignments and their reports", "");
+      if (ledger.assignments.length === 0) lines.push("Nothing has been assigned yet.");
+      for (const assignment of ledger.assignments) {
+        const latest = states.find((state) => state.key === assignment.key && state.round === assignment.round && state.supersededBy === null);
+        const contribution = ledger.contributions.find((one) => one.key === assignment.key);
+        const head = `### ${assignment.key} — ${assignment.role}, ${assignment.required ? "required" : "optional"}, round ${assignment.round}`;
+        lines.push(head, "", `Asked: ${assignment.instructions}`, "");
+        if (contribution !== undefined) {
+          const label = teamNow.outcomes.find((outcome) => outcome.key === contribution.outcome)?.label;
+          lines.push(`Report (comment ${contribution.reportId ?? "?"})${label === undefined ? "" : ` — ${label}`}:`, "", contribution.report ?? "", "");
+        } else if (latest?.status === "failed") lines.push(`It could not contribute: ${latest.error ?? "no reason given"}.`, "");
+        else lines.push("No current report.", "");
+      }
+      const refusedBefore = attempts.filter((attempt) => attempt.assignmentKey !== LEADER_ASSIGNMENT_KEY && attempt.status === "failed" && attempt.supersededBy === null && attempt.error?.startsWith("A contributor cannot hand work on") === true);
+      if (refusedBefore.length > 0) lines.push("Contributors that tried to assign work were refused; only you assign.", "");
+      lines.push(...exchange);
+      return lines.join("\n");
+    }
   }
 
   /**
-   * What a finalised session settled on, rebuilt from its accepted reports
-   * — deterministic, so the same as when it settled — provided every one of
-   * them was made on the evidence as it is now (`currentKey`); `stale`
-   * where any was not, and the team must run again.
+   * What a finalised session settled on, provided every report it rests on
+   * was made on the evidence as it is now (`currentKey`); `stale` where any
+   * was not, and the team must run again. An independent team's is rebuilt
+   * from its reports, deterministic, so the same as when it settled; a
+   * leader's is the accepted answer kept on its turn's run.
    */
-  function settledAnswer(session: TeamSessionRow, currentKey: string): { kind: "replay"; answer: { result: string; summary: string } } | { kind: "stale" } | { kind: "none" } {
-    if (session.team.coordination !== "independent" || session.result === null) return { kind: "none" };
+  function settledAnswer(session: TeamSessionRow, currentKey: string): { kind: "replay"; answer: unknown } | { kind: "stale" } | { kind: "none" } {
+    if (session.result === null) return { kind: "none" };
     const attempts = listTeamAttempts(db, session.id);
     const states: TeamAttemptState[] = attempts.map((attempt) => ({
       id: attempt.id,
@@ -802,7 +1379,23 @@ export function createTeamSupervisor(deps: TeamSupervisorDeps): TeamSupervisor {
       error: attempt.error,
       baseline: evidenceContentKey(attempt.evidenceBaseline),
       live: false,
+      round: attempt.round,
+      reportId: attempt.reportCommentId,
     }));
+    if (session.team.coordination === "leader") {
+      const leaderStates: LeaderAttemptState[] = states.map((state, index) => ({
+        ...state,
+        round: attempts[index]!.round,
+        verdict: state.key === LEADER_ASSIGNMENT_KEY && state.status === "completed" ? (leaderRecordOf(db, attempts[index]!)?.verdict ?? null) : null,
+      }));
+      const final = attempts.findIndex((attempt) => attempt.assignmentKey === LEADER_ASSIGNMENT_KEY && attempt.supersededBy === null && attempt.status === "completed");
+      const record = final === -1 ? null : leaderRecordOf(db, attempts[final]!);
+      if (record === null || record.verdict.decision !== "final" || !record.verdict.accepted) return { kind: "none" };
+      // The leader's own reading counts as much as its reports: an answer
+      // it gave from evidence that has moved is not replayed, reports or none.
+      if (!finalStands(leaderLedger(leaderStates, currentKey), leaderStates, leaderStates[final]!, currentKey)) return { kind: "stale" };
+      return { kind: "replay", answer: record.value };
+    }
     const latestCompleted = states.filter((state) => state.supersededBy === null && state.status === "completed");
     if (latestCompleted.some((state) => state.baseline !== currentKey)) return { kind: "stale" };
     const plan = planIndependentTeam({ team: session.team, attempts: states, baseline: currentKey, capacity: { machineFree: 0, agentOf: new Map(), agentFree: new Map() } });
@@ -850,7 +1443,7 @@ export function createTeamSupervisor(deps: TeamSupervisorDeps): TeamSupervisor {
   };
 }
 
-function waitWords(reason: TeamWaitReason, team: IndependentTeam): string {
+function waitWords(reason: TeamWaitReason, team: StepTeam): string {
   switch (reason) {
     case "team":
       return `the team runs ${team.limits.maxParallel} participant${team.limits.maxParallel === 1 ? "" : "s"} at a time, and that many are working. It starts as one finishes.`;

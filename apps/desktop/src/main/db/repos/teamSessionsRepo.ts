@@ -1,5 +1,6 @@
 import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
 import {
+  LEADER_ASSIGNMENT_KEY,
   storedTeam,
   TeamEvidenceBaselineSchema,
   uuidv7,
@@ -398,10 +399,15 @@ export function acceptTeamReport(db: Db, input: AcceptTeamReportInput): TeamWrit
     if (!onSessionEntry(txDb, session)) return { ok: false, problem: "The item has left the step this team session was working on, so it takes no more contributions." };
     if (attempt.supersededBy !== null) return { ok: false, problem: "That attempt was replaced by a newer one, so its report is not taken." };
     if (ENDED_ATTEMPT.has(attempt.status)) return { ok: false, problem: `That attempt has already ended (${attempt.status}).` };
-    const declared = session.team.outcomes;
+    // A leader's own turn (EO-847) reports what it asked for or answered,
+    // never a participant's outcome: it carries none, whatever the team declares.
+    const leaderTurn = session.team.coordination === "leader" && attempt.assignmentKey === LEADER_ASSIGNMENT_KEY;
+    const declared = leaderTurn ? [] : session.team.outcomes;
     const outcome = declared.find((one) => one.key === input.outcome);
     if (declared.length > 0 && outcome === undefined) return { ok: false, problem: `"${input.outcome ?? ""}" is not an outcome this team declares.` };
-    if (declared.length === 0 && input.outcome !== null) return { ok: false, problem: "This team declares no outcomes, so a report carries none." };
+    if (declared.length === 0 && input.outcome !== null) {
+      return { ok: false, problem: leaderTurn ? "A leader's own turn reports no outcome." : "This team declares no outcomes, so a report carries none." };
+    }
 
     const heading = outcome === undefined ? `**${attempt.assignmentKey}**` : `**${attempt.assignmentKey}** — ${outcome.label}`;
     // On `db`, not the transaction's handle: what was posted is announced

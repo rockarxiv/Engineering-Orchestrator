@@ -36,6 +36,7 @@ import {
 import { listTransitionsForItem } from "../db/repos/transitionsRepo.js";
 import { createTestItem, openMigratedTestDb } from "../db/testHelpers.js";
 import { createRunSupervisor, type RunSupervisor } from "./runSupervisor.js";
+import { taskContextOf } from "./teamEvidence.js";
 import type { ReportOnlyProviderAnswer } from "./teamSupervisor.js";
 
 /**
@@ -192,7 +193,7 @@ function attach(name: string, content: string, onItem: Item = item): void {
 }
 
 /** The baseline the supervisor captures for an item with no disk and no attachments. */
-const NOTHING_CAPTURED = evidenceBaselineOf({ version: 1, capturedAt: 1, workspaceKind: "none", source: { kind: "none" }, attachments: [] });
+const nothingCaptured = () => evidenceBaselineOf({ version: 1, capturedAt: 1, workspaceKind: "none", source: { kind: "none" }, attachments: [], task: taskContextOf(getItem(handle.db, item.id)!) });
 
 /** The participants' reports: agents' comments other than the summary the step's owner is credited with. */
 const reportsOn = (id: string) => listCommentsForItem(handle.db, id as Uuid).filter((comment) => comment.authorType === "agent" && comment.authorId !== quinn.id);
@@ -259,9 +260,12 @@ describe("an independent team on an agent step (EO-846)", () => {
     const output = summary();
     expect(output?.body).toContain('The team\'s result is "gaps_found", by completion rule 1.');
     expect(output?.body).toContain("The export leaks tokens.");
-    const schema = started[0]?.opts.outputSchema as { properties: { outcome: { enum: string[] } }; required: string[] };
-    expect(schema.properties.outcome.enum).toEqual(["clear", "blocking"]);
-    expect(schema.required).toEqual(["outcome", "report"]);
+    // The report, or questions for the person, offered under `outcome` as every agent's answer is (EO-847).
+    const schema = started[0]?.opts.outputSchema as { properties: { outcome: { anyOf: { properties?: { outcome?: { enum: string[] }; status?: unknown }; required?: string[] }[] } } };
+    const report = schema.properties.outcome.anyOf.find((branch) => branch.properties?.outcome !== undefined);
+    expect(report?.properties?.outcome?.enum).toEqual(["clear", "blocking"]);
+    expect(report?.required).toEqual(["outcome", "report"]);
+    expect(schema.properties.outcome.anyOf.some((branch) => branch.properties?.status !== undefined)).toBe(true);
     expect(started[0]?.opts.cwd).toBe(join(scratch, started[0]!.attemptId));
     expect(started[0]?.opts.context).toContain("## Your assignment: security");
   });
@@ -460,7 +464,7 @@ describe("an independent team across a restart (EO-846)", () => {
     const parent = crashedTeamRun();
     const session = openTeamSession(handle.db, { itemId: item.id, stepId: "check", team: team(), runId: parent });
     // Captured from what this item holds — no disk, no attachments — as the supervisor would capture it again.
-    const baseline = evidenceBaselineOf({ version: 1, capturedAt: 1, workspaceKind: "none", source: { kind: "none" }, attachments: [] });
+    const baseline = nothingCaptured();
     const reported = startTeamAttempt(handle.db, { sessionId: session.id, assignmentKey: "security", role: "sec", agentId: agentId("Sasha"), instructions: "Look for ways in.", runId: participantRun("Sasha"), evidenceBaseline: baseline });
     const working = startTeamAttempt(handle.db, { sessionId: session.id, assignmentKey: "tests", role: "tester", agentId: agentId("Tess"), instructions: "Check the tests.", runId: participantRun("Tess"), evidenceBaseline: baseline });
     if (!reported.ok || !working.ok) throw new Error("attempts");
@@ -486,7 +490,7 @@ describe("an independent team across a restart (EO-846)", () => {
       ["security", "sec", "Sasha", "blocking"],
       ["tests", "tester", "Tess", "clear"],
     ] as const) {
-      const made = startTeamAttempt(handle.db, { sessionId: session.id, assignmentKey: key, role, agentId: agentId(name), instructions: "…", runId: participantRun(name), evidenceBaseline: NOTHING_CAPTURED });
+      const made = startTeamAttempt(handle.db, { sessionId: session.id, assignmentKey: key, role, agentId: agentId(name), instructions: "…", runId: participantRun(name), evidenceBaseline: nothingCaptured() });
       if (!made.ok) throw new Error(made.problem);
       expect(acceptTeamReport(handle.db, { attemptId: made.attempt.id, outcome, report: `${name}: ${outcome}.` }).ok).toBe(true);
     }

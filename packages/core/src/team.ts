@@ -37,8 +37,8 @@ import { ACTION_KEY_PATTERN, RESERVED_ANSWER_FIELDS } from "./schemas/actionDefi
  *   is held to that action's schema like any agent's.
  *
  * Contracts only. This file declares the shape and decides what a set of
- * contributions comes to; running participants is the supervisor's, and a
- * step carrying a team runs as one agent until it does.
+ * contributions comes to; what a team's turns answer with is
+ * `teamTurns.ts`, and running them is the supervisor's.
  */
 
 /** A key, an outcome or a result: what a route key is typed as. */
@@ -301,7 +301,16 @@ export type TeamParticipantAnswer = z.infer<typeof TeamParticipantAnswerSchema>;
  * alike: every property required and nothing else allowed, and the
  * outcome one of the keys the team declares.
  */
-export function participantAnswerJsonSchema(team: Pick<IndependentTeam, "outcomes">): Record<string, unknown> {
+export function participantAnswerJsonSchema(team: { outcomes: readonly TeamOutcome[] }): Record<string, unknown> {
+  // A leader's team may declare no outcomes (EO-847): then a report is all there is.
+  if (team.outcomes.length === 0) {
+    return {
+      type: "object",
+      properties: { report: { type: "string", description: "Your report: what you looked at, what you found and why." } },
+      required: ["report"],
+      additionalProperties: false,
+    };
+  }
   return {
     type: "object",
     properties: {

@@ -146,6 +146,14 @@ export const EvidenceBaselineRefSchema = z.strictObject({
   workspaceKind: z.string().min(1),
   source: EvidenceSourceRefSchema,
   attachments: z.array(EvidenceAttachmentRefSchema).max(EVIDENCE_MAX_ATTACHMENTS),
+  /**
+   * The item's own task as the turn was given it (EO-847): the SHA-256 of
+   * its title, body, spec and type. Part of the evidence, so a report made
+   * against requirements a person has since edited is not kept — an item
+   * with no disk included. Absent on a baseline captured before it was
+   * kept, which therefore never compares equal to one captured now.
+   */
+  task: z.strictObject({ sha256: z.string().regex(/^[0-9a-f]{64}$/) }).optional(),
 });
 export type EvidenceBaselineRef = z.infer<typeof EvidenceBaselineRefSchema>;
 
