@@ -1,4 +1,17 @@
-import { classifyDesignChange, EMPTY_TRIAL_PLAN, remapStepReferences, trialPlanProblems, type IpcPayload, type IpcResponse, type Item, type TrialDesign, type TrialPlan, type Uuid } from "@eo/core";
+import {
+  classifyDesignChange,
+  EMPTY_TRIAL_PLAN,
+  proposedActionDraft,
+  remapStepReferences,
+  trialPlanProblems,
+  type ActionDefinitionDraft,
+  type IpcPayload,
+  type IpcResponse,
+  type Item,
+  type TrialDesign,
+  type TrialPlan,
+  type Uuid,
+} from "@eo/core";
 import type { AttachmentStorage } from "../attachments/storage.js";
 import type { Db } from "../db/client.js";
 import {
@@ -9,8 +22,10 @@ import {
   latestTrialGrant,
   listItemTypes,
   postComment,
+  readTrialActions,
   readTrialDesign,
   readTrialPlan,
+  writeTrialActions,
   writeTrialDesign,
   type ItemTypeName,
   type TrialRound,
@@ -295,7 +310,8 @@ export function continueTrialLoop(db: Db, conversation: Item, draftCardIds: read
   const deps = trialLoopDeps(db);
 
   const change = classifyDesignChange(live.design, { draft: shown.draft, plan: shown.plan });
-  const asks = [...change.design, ...moduleChangesBeyond(db, live, shown.output.modules ?? []), ...((shown.output.actions ?? []).length > 0 ? ["it brings action definitions"] : [])];
+  const actionChange = actionDefinitionChanges(readTrialActions(db, live.trial.id), (shown.output.actions ?? []).map(proposedActionDraft));
+  const asks = [...change.design, ...moduleChangesBeyond(db, live, shown.output.modules ?? []), ...actionChange.design];
   const waiting = live.design.pending;
   if (asks.length > 0 || waiting !== null) {
     // This card is now the one waiting: newest wins, as for every card.
@@ -334,7 +350,8 @@ export function continueTrialLoop(db: Db, conversation: Item, draftCardIds: read
   }
   // What the trial runs now (EO-588): the graph the publish card publishes.
   writeTrialDesign(db, live.trial.id, { ...live.design, applied: comment.id });
-  const changed = change.within.length === 0 ? "Nothing about the steps changed, so this is the same design tested again." : `Changed since the design you approved: ${change.within.join("; ")}.`;
+  const within = [...change.within, ...actionChange.within];
+  const changed = within.length === 0 ? "Nothing about the steps changed, so this is the same design tested again." : `Changed since the design you approved: ${within.join("; ")}.`;
   const round = runDesignRound(db, deps, live.trial.id, comment.authorId ?? "human", place);
   answer(
     round.ok
@@ -346,6 +363,40 @@ export function continueTrialLoop(db: Db, conversation: Item, draftCardIds: read
         ].join("\n")
       : `**Applied to the trial without a new design card** — it changes nothing you approved. ${changed} ${round.problem}`,
   );
+}
+
+/**
+ * How a revised draft's action definitions differ from the ones the trial
+ * runs on (EO-832), sorted as `classifyDesignChange` sorts a draft's
+ * routes: a definition added or dropped, or one that declares a result it
+ * did not or no longer declares one, changes what a step may answer — a
+ * declared result added or removed, which is the person's — while its
+ * description, its fields and the words on its results are applied
+ * without a card, as a step's instructions and a result's words are.
+ */
+function actionDefinitionChanges(running: readonly ActionDefinitionDraft[], proposed: readonly ActionDefinitionDraft[]): { design: string[]; within: string[] } {
+  const design: string[] = [];
+  const within: string[] = [];
+  const key = (definition: ActionDefinitionDraft): string => `${definition.role}\u0000${definition.action}`;
+  const named = (definition: ActionDefinitionDraft): string => `${definition.role}'s "${definition.action}"`;
+  const wordsOf = (definition: ActionDefinitionDraft): string =>
+    JSON.stringify([definition.description ?? "", definition.results.map((result) => [result.key, result.label ?? "", result.meaning ?? ""]), definition.fields ?? {}]);
+  const before = new Map(running.map((definition) => [key(definition), definition]));
+  const after = new Map(proposed.map((definition) => [key(definition), definition]));
+  for (const [id, definition] of after) {
+    const was = before.get(id);
+    if (was === undefined) {
+      design.push(`it brings the action definition ${named(definition)}`);
+      continue;
+    }
+    const keysBefore = new Set(was.results.map((result) => result.key));
+    const keysAfter = new Set(definition.results.map((result) => result.key));
+    for (const result of keysAfter) if (!keysBefore.has(result)) design.push(`${named(definition)} declares the result "${result}"`);
+    for (const result of keysBefore) if (!keysAfter.has(result)) design.push(`${named(definition)} no longer declares the result "${result}"`);
+    if (wordsOf(was) !== wordsOf(definition)) within.push(`the action definition ${named(definition)}`);
+  }
+  for (const [id, definition] of before) if (!after.has(id)) design.push(`it no longer brings the action definition ${named(definition)}`);
+  return { design, within };
 }
 
 /**
@@ -379,22 +430,34 @@ function applyToTrial(db: Db, deps: DesignDeps, live: LiveTrial, conversation: I
   if (!graph.ok) return graph.reason;
   const { stepIds, moduleIds } = live.design;
   const mapped = (id: string): string => stepIds[id] ?? id;
-  const saved = savePipeline(db, deps.engine as EngineHandle | undefined, {
-    pipelineId: live.trial.id,
-    steps: graph.steps.map((step) => ({
-      // A brief naming a draft step names that step's trial id (EO-831).
-      ...remapStepReferences(step, mapped),
-      id: mapped(step.id),
+  const saved = savePipeline(
+    db,
+    deps.engine as EngineHandle | undefined,
+    {
       pipelineId: live.trial.id,
-      entryAction: step.type === "module" && step.entryAction !== null ? (moduleIds[step.entryAction] ?? step.entryAction) : step.entryAction,
-      // The newest version of what it runs here (EO-770): a round tests the
-      // module as the draft has just saved it.
-      moduleVersion: step.type === "module" && step.entryAction !== null ? newestModuleVersion(db, moduleIds[step.entryAction] ?? step.entryAction) : null,
-    })),
-    routes: graph.routes.map((route) => ({ ...route, pipelineId: live.trial.id, fromStepId: mapped(route.fromStepId), target: mapped(route.target) })),
-    entryStepId: mapped(graph.entryStepId),
-  });
-  if (saved.saved) return null;
+      steps: graph.steps.map((step) => ({
+        // A brief naming a draft step names that step's trial id (EO-831).
+        ...remapStepReferences(step, mapped),
+        id: mapped(step.id),
+        pipelineId: live.trial.id,
+        entryAction: step.type === "module" && step.entryAction !== null ? (moduleIds[step.entryAction] ?? step.entryAction) : step.entryAction,
+        // The newest version of what it runs here (EO-770): a round tests the
+        // module as the draft has just saved it.
+        moduleVersion: step.type === "module" && step.entryAction !== null ? newestModuleVersion(db, moduleIds[step.entryAction] ?? step.entryAction) : null,
+      })),
+      routes: graph.routes.map((route) => ({ ...route, pipelineId: live.trial.id, fromStepId: mapped(route.fromStepId), target: mapped(route.target) })),
+      entryStepId: mapped(graph.entryStepId),
+      // Judged with the revised draft's definitions, none written (EO-832).
+      ...(graph.actions.length === 0 ? {} : { actions: graph.actions }),
+    },
+    undefined,
+    { judgeActionsOnly: true },
+  );
+  if (saved.saved) {
+    // What the trial's items are held to from now on (EO-832).
+    writeTrialActions(db, live.trial.id, graph.actions);
+    return null;
+  }
   return saved.problems
     .filter((problem) => problem.severity === "error")
     .map((problem) => problem.message)

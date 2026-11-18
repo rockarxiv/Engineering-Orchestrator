@@ -1942,6 +1942,9 @@ export async function publishTrialCommand(
             routes: published.routes,
             entryStepId: published.entryStepId,
             ...entryRulesOf(published),
+            // The trial's definitions (EO-832), written by the same call
+            // as the graph, so a refusal of either publishes neither.
+            ...(published.actions.length > 0 ? { actions: published.actions } : {}),
             ...(published.restoredFrom !== null ? { restoredFrom: published.restoredFrom } : {}),
           },
           (stepIds) => removed.push(...stepIds),

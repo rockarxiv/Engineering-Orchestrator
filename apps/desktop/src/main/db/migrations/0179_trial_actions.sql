@@ -1,0 +1,11 @@
+-- The action definitions a trial's draft proposes (EO-832, ARCHITECTURE.md,
+-- "Trial pipelines").
+--
+-- JSON in the shape of `TrialActionsSchema`: the definitions as the
+-- draft proposed them, laid over the installed registry for the trial's
+-- own items and never written to `action_definitions`, whose rows every
+-- pipeline naming a role reads. On the trial's own pipeline row because
+-- it goes when the trial does: discarding it leaves no definition behind,
+-- and publishing it writes them with the graph. Null on a trial whose
+-- draft proposed none and on every pipeline that is not a trial.
+ALTER TABLE `pipelines` ADD `trial_actions` text;

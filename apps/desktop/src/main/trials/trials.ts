@@ -12,6 +12,7 @@ import {
   listStepsForPipeline,
   markTrialPipeline,
   projectWorkspaceList,
+  writeTrialActions,
   writeTrialStepSources,
   type ItemTypeName,
   type TrialPipeline,
@@ -105,20 +106,22 @@ class TrialRefused extends Error {}
  *
  * The card is read the way Publish reads it (`readAssistDraftForPublish`):
  * still the newest draft in an open assistant conversation, still fitting
- * the pipeline it targets, judged by the same validator. Then two things
- * a published draft may do and a trial may not are refused, each because
- * it would reach past the trial into live work:
- *
- *   * action definitions — a role's definitions are shared by every
- *     pipeline that names the role, so writing one changes live work;
- *   * a route handing work to another pipeline's step — a trial item
- *     following it would land on a live board.
+ * the pipeline it targets, judged by the same validator. Then a route
+ * handing work to another pipeline's step is refused — a trial item
+ * following it would land on a live board.
  *
  * What is written, in one transaction: a pipeline on the conversation's
  * project (the target's, where the draft changes one), marked as a trial
  * of that conversation and that target, and the draft's graph saved into
  * it under fresh step ids through `savePipeline` — which files its
  * version. A graph the save refuses takes the pipeline back with it.
+ *
+ * The draft's action definitions (EO-832) are kept on the trial's own
+ * row, never written as definitions: a role's definitions are shared by
+ * every pipeline that names the role, so a row would change live work
+ * and outlive the trial. The graph is judged against them laid over the
+ * installation's, as Publish would judge it, and the trial's items alone
+ * see them (`registryForItem`) until the publish card writes them.
  *
  * And its modules (EO-583), in the same transaction. Every module the
  * draft runs is granted permission to run on this trial's items, within
@@ -139,10 +142,6 @@ export function createTrialFromDraft(
   const conversation = getItem(db, input.conversationId as Uuid);
   const read = readAssistDraftForPublish(db, input, place);
   if (read.problem !== null || conversation === undefined) return refuse(read.problem ?? "That conversation does not exist.");
-
-  if (read.actions.length > 0) {
-    return refuse("this draft comes with action definitions, which every pipeline naming that role would use — a trial cannot write them without changing live work.");
-  }
 
   const draftStepIds = new Set(read.steps.map((step) => step.id));
   const handOff = read.routes.find((route) => !draftStepIds.has(route.target) && route.target !== USER_ATTENTION_TARGET && route.target !== TERMINAL_TARGET);
@@ -181,6 +180,9 @@ export function createTrialFromDraft(
       // names the steps it keeps by their own ids, and those are what a
       // real step on the trial reads its own values from.
       writeTrialStepSources(db, pipeline.id, Object.fromEntries(read.steps.filter((step) => liveStepIds.has(step.id)).map((step) => [stepIds[step.id]!, step.id])));
+      // The draft's definitions, on the trial's row and nowhere else
+      // (EO-832): what its items' answers are held to.
+      writeTrialActions(db, pipeline.id, read.actions);
       // Before the graph is saved too, because the save judges it: a
       // module step on a trial is accepted on a grant for that trial.
       const moduleIds = grantModules(db, pipeline.id, read.steps, place.grantedBy ?? "human", place.carriedCopies ?? {});
@@ -192,16 +194,24 @@ export function createTrialFromDraft(
         const entryAction = moduleIds[step.entryAction] ?? step.entryAction;
         return { ...step, entryAction, moduleVersion: newestModuleVersion(db, entryAction) };
       };
-      const saved = savePipeline(db, engine, {
-        pipelineId: pipeline.id,
-        // A brief naming a draft step names that step's trial id (EO-831).
-        steps: read.steps.map((step) => ({ ...remapStepReferences(runs(step), mapped), id: mapped(step.id), pipelineId: pipeline.id })),
-        routes: read.routes.map((route) => ({ ...route, pipelineId: pipeline.id, fromStepId: mapped(route.fromStepId), target: mapped(route.target) })),
-        entryStepId: mapped(read.entryStepId!),
-        // The draft's own, where it set any (EO-610). They are not
-        // exercised here, because a trial's items are exempt.
-        ...(read.entryRules === undefined ? {} : { entryRules: read.entryRules }),
-      });
+      const saved = savePipeline(
+        db,
+        engine,
+        {
+          pipelineId: pipeline.id,
+          // A brief naming a draft step names that step's trial id (EO-831).
+          steps: read.steps.map((step) => ({ ...remapStepReferences(runs(step), mapped), id: mapped(step.id), pipelineId: pipeline.id })),
+          routes: read.routes.map((route) => ({ ...route, pipelineId: pipeline.id, fromStepId: mapped(route.fromStepId), target: mapped(route.target) })),
+          entryStepId: mapped(read.entryStepId!),
+          // The draft's own, where it set any (EO-610). They are not
+          // exercised here, because a trial's items are exempt.
+          ...(read.entryRules === undefined ? {} : { entryRules: read.entryRules }),
+          // Judged with the draft's definitions, and none written (EO-832).
+          ...(read.actions.length === 0 ? {} : { actions: read.actions }),
+        },
+        undefined,
+        { judgeActionsOnly: true },
+      );
       if (!saved.saved) {
         throw new TrialRefused(
           saved.problems

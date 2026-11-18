@@ -18,6 +18,7 @@ import {
   moduleForkedFrom,
   newestTrialRound,
   openTrialStop,
+  readTrialActions,
   readTrialPlan,
   trialGrantNeedsOf,
   type TrialGrantNeeds,
@@ -51,7 +52,7 @@ export type TrialPublishRead =
       ok: true;
       view: TrialPublishCard;
       live: LiveTrial;
-      /** The graph to publish: the draft the trial runs, every module step running what the trial ran. */
+      /** The graph to publish: the draft the trial runs, every module step running what the trial ran, with the definitions its items were held to. */
       graph: Extract<AssistPublishableGraph, { ok: true }>;
     }
   | { ok: false; problem: string };
@@ -76,7 +77,9 @@ export function readTrialPublish(db: Db, conversation: Item): TrialPublishRead {
   const sourceId = (design.applied ?? design.commentId) as Uuid;
   const read = assistDraftForPublish(db, conversation, sourceId);
   if (!read.ok) return { ok: false, problem: `The draft under test can no longer be read, so nothing can be published from it: ${read.reason}` };
-  const graph: Extract<AssistPublishableGraph, { ok: true }> = { ...read, ...testedGraph(db, live, read.pipelineId) };
+  // The definitions are the ones the trial's items were held to (EO-832),
+  // kept on its row — published with the graph, as a draft card's are.
+  const graph: Extract<AssistPublishableGraph, { ok: true }> = { ...read, ...testedGraph(db, live, read.pipelineId), actions: readTrialActions(db, trial.id) };
 
   // What changed since approval, measured on the graph itself: the one the
   // trial was materialised with then against the one it runs now. A

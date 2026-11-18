@@ -1,5 +1,17 @@
 import { and, eq, isNotNull, isNull, sql } from "drizzle-orm";
-import { centsOfMicrocents, EMPTY_TRIAL_PLAN, TrialDesignSchema, TrialPlanSchema, TrialStepSourcesSchema, type TrialDesign, type TrialPlan, type Uuid } from "@eo/core";
+import {
+  centsOfMicrocents,
+  EMPTY_TRIAL_PLAN,
+  TrialActionsSchema,
+  TrialDesignSchema,
+  TrialPlanSchema,
+  TrialStepSourcesSchema,
+  type ActionDefinitionDraft,
+  type TrialActions,
+  type TrialDesign,
+  type TrialPlan,
+  type Uuid,
+} from "@eo/core";
 import type { Db } from "../client.js";
 import { items, pipelines, pipelineSteps, pipelineVersions, runs, sideCalls, stepRoutes } from "../schema.js";
 import { releaseTrialModules } from "./moduleTrialGrantsRepo.js";
@@ -110,6 +122,36 @@ export function readTrialStepSources(db: Db, pipelineId: string): Record<string,
   if (row === undefined || row.trialAt === null) return {};
   const parsed = TrialStepSourcesSchema.safeParse(row.sources ?? {});
   return parsed.success ? parsed.data : {};
+}
+
+/**
+ * Records the action definitions a trial's draft proposes (EO-832):
+ * written when the trial is made, and again whenever the test-fix loop
+ * applies a revised draft. Never rows in `action_definitions` — a role's
+ * definitions there are read by every pipeline naming it — so the trial's
+ * items see these and nothing else does. `updated_at` moves with them, as
+ * with the plan, so a revision reaches whichever machine runs the next
+ * trial item.
+ */
+export function writeTrialActions(db: Db, pipelineId: string, actions: readonly ActionDefinitionDraft[]): void {
+  if (!isTrialPipeline(db, pipelineId)) throw new Error(`Pipeline ${pipelineId} is not a trial, and only a trial carries definitions of its own.`);
+  db.update(pipelines)
+    .set({ trialActions: actions.length === 0 ? null : TrialActionsSchema.parse(actions), updatedAt: Date.now() })
+    .where(eq(pipelines.id, pipelineId))
+    .run();
+}
+
+/**
+ * The action definitions a trial's draft proposes (EO-832), as they were
+ * stored; empty for a pipeline that is not a trial, a trial that proposed
+ * none, and anything stored that no longer parses — which the trial's
+ * items then read as the installed registry alone.
+ */
+export function readTrialActions(db: Db, pipelineId: string): TrialActions {
+  const row = db.select({ trialAt: pipelines.trialAt, actions: pipelines.trialActions }).from(pipelines).where(eq(pipelines.id, pipelineId)).get();
+  if (row === undefined || row.trialAt === null || row.actions === null) return [];
+  const parsed = TrialActionsSchema.safeParse(row.actions);
+  return parsed.success ? parsed.data : [];
 }
 
 /**

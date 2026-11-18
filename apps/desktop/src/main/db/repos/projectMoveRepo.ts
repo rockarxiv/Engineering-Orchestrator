@@ -19,7 +19,17 @@ import type {
   Uuid,
 } from "@eo/core";
 import type { Run } from "@eo/core";
-import { EntryRulesSchema, parseStoredCommentOptions, storedBrief, TrialPlanSchema, TrialStepSourcesSchema, type TrialPlan, type TrialStepSources } from "@eo/core";
+import {
+  EntryRulesSchema,
+  parseStoredCommentOptions,
+  storedBrief,
+  TrialActionsSchema,
+  TrialPlanSchema,
+  TrialStepSourcesSchema,
+  type TrialActions,
+  type TrialPlan,
+  type TrialStepSources,
+} from "@eo/core";
 import { keepArrivedOrigin, originForWire } from "./itemOriginsRepo.js";
 import type { Db } from "../client.js";
 import { getRun } from "./runsRepo.js";
@@ -144,6 +154,7 @@ function trialOfRow(row: {
   trialTargetPipelineId: string | null;
   trialPlan: unknown;
   trialStepSources: unknown;
+  trialActions: unknown;
 }): RecordPipeline["trial"] {
   if (row.trialAt === null || row.trialConversationId === null) return null;
   // Its plan with it (EO-584), as it reads: one that no longer parses is
@@ -152,12 +163,16 @@ function trialOfRow(row: {
   // And which live step each of its steps was copied from, as
   // `readTrialStepSources` reads it.
   const sources = TrialStepSourcesSchema.safeParse(row.trialStepSources ?? {});
+  // And the definitions its draft proposes (EO-832), as `readTrialActions`
+  // reads them: what its items' answers are held to wherever they run.
+  const actions = TrialActionsSchema.safeParse(row.trialActions ?? []);
   return {
     at: row.trialAt,
     conversationId: row.trialConversationId,
     targetPipelineId: row.trialTargetPipelineId,
     plan: plan?.success === true ? plan.data : null,
     stepSources: sources.success ? sources.data : {},
+    actions: actions.success ? actions.data : [],
   };
 }
 
@@ -173,6 +188,7 @@ function trialColumnsOf(trial: RecordPipeline["trial"]): {
   trialTargetPipelineId: string | null;
   trialPlan: TrialPlan | null;
   trialStepSources: TrialStepSources | null;
+  trialActions: TrialActions | null;
 } {
   return {
     trialAt: trial?.at ?? null,
@@ -182,6 +198,9 @@ function trialColumnsOf(trial: RecordPipeline["trial"]): {
     // so it is written on every arrival, as the rest of the row is.
     trialPlan: trial?.plan ?? null,
     trialStepSources: trial === null ? null : trial.stepSources,
+    // The draft's definitions change with a revised draft (EO-832), so
+    // they are written on every arrival, like the plan.
+    trialActions: trial === null || trial.actions.length === 0 ? null : trial.actions,
   };
 }
 
@@ -705,7 +724,9 @@ export function upsertReplicaPipeline(db: Db, pipeline: RecordPipeline): "writte
               // edits a trial here, and the test-fix loop saves the plan
               // between rounds, so the record's is the one a trial item
               // run here has to read.
-              { trialPlan: pipeline.trial.plan, updatedAt: sql`${pipelines.updatedAt}` }
+              // So do the draft's definitions (EO-832), which a revised
+              // draft replaces.
+              { trialPlan: pipeline.trial.plan, trialActions: pipeline.trial.actions.length === 0 ? null : pipeline.trial.actions, updatedAt: sql`${pipelines.updatedAt}` }
             : // Left as it is. Drizzle has no "do nothing" inside
               // `onConflictDoUpdate`, and writing the row's own
               // `updated_at` back over itself is the smallest statement
@@ -1683,6 +1704,8 @@ export function writeAdoptedPage(db: Db, project: RecordProject, page: RecordAdo
             archivedAt: sql`case when excluded.updated_at >= ${pipelines.updatedAt} then excluded.archived_at else ${pipelines.archivedAt} end`,
             // A trial's plan changes between rounds (EO-584); newer wins.
             trialPlan: sql`case when excluded.updated_at >= ${pipelines.updatedAt} then excluded.trial_plan else ${pipelines.trialPlan} end`,
+            // And its draft's definitions (EO-832), which a revision replaces; newer wins.
+            trialActions: sql`case when excluded.updated_at >= ${pipelines.updatedAt} then excluded.trial_actions else ${pipelines.trialActions} end`,
             entryRules: sql`case when excluded.updated_at >= ${pipelines.updatedAt} then excluded.entry_rules else ${pipelines.entryRules} end`,
             updatedAt: sql`max(excluded.updated_at, ${pipelines.updatedAt})`,
           },

@@ -1314,18 +1314,29 @@ export function savePipeline(
    * Who the version is filed under, where it is not this machine's person
    * (EO-534): on the organisation's record, the admin whose desktop
    * published a draft resolving a held template update.
+   *
+   * `judgeActionsOnly` (EO-832) is a trial's save: the graph is judged
+   * against `input.actions` laid over the installation's definitions, as
+   * any publish carrying them is, and the definitions are not written.
+   * A trial keeps them on its own row and its items alone see them; a row
+   * in `action_definitions` would be read by every pipeline naming the
+   * role, and outlive the trial.
    */
-  options: { createdBy?: string | null } = {},
+  options: { createdBy?: string | null; judgeActionsOnly?: boolean } = {},
 ): IpcResponse<"pipeline:save"> {
   const steps = toDomainSteps(db, input.pipelineId, input.steps);
   const routes = toDomainRoutes(input.pipelineId, input.routes);
+  // What the graph is judged with, and what is written: the same, but
+  // for a trial's save, which writes none (EO-832).
   const actions = input.actions ?? [];
+  const writtenActions = options.judgeActionsOnly === true ? [] : actions;
 
   // Before anything is judged (EO-426): a managed agents section refuses
   // whatever was sent, as a section lock does everywhere else, and a
   // list of what is wrong with a graph nobody may publish this way
-  // would send somebody to fix the wrong thing.
-  const locked = proposedActionsLocked(db, actions);
+  // would send somebody to fix the wrong thing. A trial's save writes
+  // no definition, so there is nothing for the lock to refuse.
+  const locked = proposedActionsLocked(db, writtenActions);
   if (locked !== null) return { saved: false, problems: [locked], version: null, watchTurnedOff: [] };
 
   // A restored version brings its entry rules back with it (EO-610): they
@@ -1465,12 +1476,12 @@ export function savePipeline(
   );
 
   let written: ReturnType<typeof write>;
-  if (actions.length === 0) {
+  if (writtenActions.length === 0) {
     written = write();
   } else {
     try {
       written = db.transaction(() => {
-        for (const action of actions) {
+        for (const action of writtenActions) {
           const saved = saveActionDefinition(db, action);
           if (!saved.ok) {
             throw new PublishRolledBack(
