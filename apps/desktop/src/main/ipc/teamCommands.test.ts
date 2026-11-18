@@ -31,19 +31,27 @@ beforeEach(() => {
 
 afterEach(() => handle.close());
 
-/** An engine that must not be asked: every refusal here comes before it. */
-const untouched = new Proxy({}, { get: (_target, key) => { throw new Error(`The engine was asked for ${String(key)}.`); } }) as EngineHandle;
+/** An engine on this desktop that must not be asked to act: every refusal here comes before it. */
+const untouched = {
+  teamControlSite: () => ({ deviceId: "local", drives: () => false }),
+  cancelTeamSession: () => {
+    throw new Error("The engine was asked to cancel.");
+  },
+  resumeItem: () => {
+    throw new Error("The engine was asked to resume.");
+  },
+} as unknown as EngineHandle;
 
 describe("the team session channels (EO-849)", () => {
   it("answers an item no team worked with no sessions, and one with a session in the contract's shape", () => {
-    expect(ipcContract["items:teamSessions"].response.parse(teamSessionsCommand(handle.db, { itemId: item.id }))).toEqual({ sessions: [] });
+    expect(ipcContract["items:teamSessions"].response.parse(teamSessionsCommand(handle.db, untouched, { itemId: item.id }))).toEqual({ sessions: [] });
     const agent = createAgent(handle.db, { name: "Rita", role: "reviewer", provider: "claude", model: null, instructions: "Review." }).id as Uuid;
     const parent = createRun(handle.db, { itemId: item.id, agentId: null, action: "review", stepId: "todo", status: "running" });
     const session = openTeamSession(handle.db, { itemId: item.id, stepId: "todo", team: TEAM, runId: parent.id });
     const run = createRun(handle.db, { itemId: item.id, agentId: agent, action: TEAM_PARTICIPANT_ACTION, stepId: "todo", status: "running", provider: "claude" });
     updateRun(handle.db, run.id, { startedAt: 1 });
     startTeamAttempt(handle.db, { sessionId: session.id, assignmentKey: "security", role: "reviewer", agentId: agent, instructions: "Look.", runId: run.id });
-    const answer = ipcContract["items:teamSessions"].response.parse(teamSessionsCommand(handle.db, { itemId: item.id }));
+    const answer = ipcContract["items:teamSessions"].response.parse(teamSessionsCommand(handle.db, untouched, { itemId: item.id }));
     expect(answer.sessions.map((one) => [one.id, one.state, one.assignments.length])).toEqual([[session.id, "running", 1]]);
   });
 
@@ -63,6 +71,6 @@ describe("the team session channels (EO-849)", () => {
 
   it("says so when no engine runs work here, rather than pretending to stop a team", () => {
     const session = openTeamSession(handle.db, { itemId: item.id, stepId: "todo", team: TEAM });
-    expect(cancelTeamSessionCommand(handle.db, undefined, { sessionId: session.id })).toEqual({ cancelled: false, problem: "EO is not running work on this desktop, so it cannot stop a team here." });
+    expect(cancelTeamSessionCommand(handle.db, undefined, { sessionId: session.id })).toEqual({ cancelled: false, problem: "EO is not running work on this desktop, so it cannot stop or retry a team here." });
   });
 });

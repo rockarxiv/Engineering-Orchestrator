@@ -361,6 +361,7 @@ import { agentMentionChain } from "./escalation.js";
 import { answerTeamCall, createTeamParticipantScopes, type TeamParticipantScopes } from "./teamParticipants.js";
 import { createTeamSupervisor, MACHINE_PARTICIPANT_LIMIT, TEAM_RETRY_WORDS, type ReportOnlyProviderAnswer, type TeamAnswerContract } from "./teamSupervisor.js";
 import { currentTeamSession, endTeamSession, getTeamSession } from "../db/repos/teamSessionsRepo.js";
+import { teamNotHereProblem, type TeamControlSite } from "./teamSessionView.js";
 
 function safeTurnAttachments(attachments: NonNullable<ReturnType<typeof listCommentsForItem>[number]["attachments"]>): AgentInputAttachment[] {
   return attachments.flatMap((attachment) => attachment.id ? [{
@@ -1242,6 +1243,8 @@ export interface RunSupervisor {
    * with the reason for a session that has already ended.
    */
   cancelTeamSession: (sessionId: string) => { ok: true } | { ok: false; problem: string };
+  /** This desktop and the team runs it drives: what decides whether a session's controls can act here (EO-849). */
+  teamControlSite: () => TeamControlSite;
   /**
    * Says something to a run that is already going (EO-176).
    *
@@ -11916,6 +11919,9 @@ export function createRunSupervisor(
     return [...teamRuns].find((id) => getRun(db, id as Uuid)?.itemId === itemId);
   }
 
+  /** Where team controls are answered: this desktop, and the team runs it drives (EO-849). */
+  const teamControlSite = (): TeamControlSite => ({ deviceId: deviceId(), drives: (runId) => teamRuns.has(runId) });
+
   function cancelTeamSession(sessionId: string): { ok: true } | { ok: false; problem: string } {
     const session = getTeamSession(db, sessionId);
     if (session === undefined) return { ok: false, problem: "There is no such team session." };
@@ -11925,15 +11931,12 @@ export function createRunSupervisor(
       cancelRun(active, "asked-to-stop");
       return { ok: true };
     }
+    // Run by another desktop, or working in no process here: ending it here
+    // would stop nothing, and say it had.
+    const elsewhere = teamNotHereProblem(db, session, teamControlSite());
+    if (elsewhere !== null) return { ok: false, problem: elsewhere };
+    // Parked, or left by a restart: nothing is working anywhere.
     endTeamSession(db, { sessionId, status: "cancelled", now: now() });
-    // Parked, or left by a restart: nothing is working here. A participant
-    // run still marked as working is nobody's, and ends with the session.
-    for (const run of listRunsForItem(db, session.itemId as Uuid)) {
-      if (run.action === TEAM_PARTICIPANT_ACTION && (run.status === "running" || run.status === "queued")) {
-        updateRun(db, run.id, { status: "cancelled", error: "A person cancelled the team session.", endedAt: now() });
-        announceRun(run.id, run.itemId, "cancelled");
-      }
-    }
     // The team's parked run stops waiting for a reply, and the step is not
     // offered again until a person moves the item or mentions an agent.
     const parked = listRunsForItem(db, session.itemId as Uuid)
@@ -13017,6 +13020,7 @@ export function createRunSupervisor(
     dropSuggestedReply: (conversationId: Uuid) => suggestedReplies.drop(conversationId),
     cancelRun,
     cancelTeamSession,
+    teamControlSite,
     steerRun,
     shutdown,
     runOnce,

@@ -96,7 +96,9 @@ function fail(attemptId: string, runId: Uuid, error: string) {
   updateRun(handle.db, runId, { status: "failed", error, endedAt: 3 });
 }
 
-const view = () => itemTeamSessions(handle.db, item.id);
+/** This desktop, driving whatever team run is working: the solo desktop's case. */
+const here = { deviceId: "local", drives: () => true };
+const view = () => itemTeamSessions(handle.db, item.id, here);
 
 describe("an item's team sessions, as a person reads them (EO-849)", () => {
   it("is empty for an item no team has worked", () => {

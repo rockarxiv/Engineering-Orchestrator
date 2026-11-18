@@ -1548,7 +1548,7 @@ export function registerAllHandlers(db: Db, engine: EngineHandle | undefined, re
   );
   registerHandler("runs:cancel", (payload) => cancelRun(engine, payload), opts);
   // A team session, read whole and controlled whole (EO-849).
-  registerHandler("items:teamSessions", (payload) => teamSessionsCommand(db, payload), opts);
+  registerHandler("items:teamSessions", (payload) => teamSessionsCommand(db, engine, payload), opts);
   registerHandler("teams:cancel", (payload) => cancelTeamSessionCommand(db, engine, payload), opts);
   registerHandler("teams:retry", (payload) => retryTeamSessionCommand(db, engine, payload), opts);
   registerHandler("engine:pause", (payload) => pauseEngine(db, engine, payload), opts);
