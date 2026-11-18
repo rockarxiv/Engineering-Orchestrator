@@ -37,7 +37,7 @@ import { AGENT_WRITE_TOOLS, AgentWriteRequestSchema, SKILL_WRITE_TOOLS, skillToo
  * of them — or null for a credential that carries none, whose turn the
  * agent's grant decides.
  */
-export type AgentWriteHandler = (itemId: string, request: AgentWriteRequest, writes?: readonly AgentWriteTool[] | null) => Promise<AgentWriteAnswer>;
+export type AgentWriteHandler = (itemId: string, request: AgentWriteRequest, writes?: readonly AgentWriteTool[] | null, scope?: string | null) => Promise<AgentWriteAnswer>;
 
 export interface AgentWriteBridge {
   /**
@@ -45,8 +45,14 @@ export interface AgentWriteBridge {
    * With `writes`, a credential for those writes alone (EO-717): the list
    * is part of what is signed, so a turn cannot widen it, and the address
    * carries it for the `eo` server to list only those tools.
+   *
+   * With `scope` as well, the one thing the credential acts for within
+   * the item — a report-only team participant's attempt (EO-845) — signed
+   * with the rest (`<item>~<tool>,<tool>~<scope>`), so one participant's
+   * credential can never be presented as a sibling's. A scope needs
+   * writes: a credential for a scope is always a narrowed one.
    */
-  tokenFor: (itemId: string, writes?: readonly AgentWriteTool[]) => AgentWriteBridgeAddress;
+  tokenFor: (itemId: string, writes?: readonly AgentWriteTool[], scope?: string) => AgentWriteBridgeAddress;
   close: () => Promise<void>;
 }
 
@@ -59,6 +65,8 @@ const MAX_BODY_BYTES = 1024 * 1024;
 const PATH = "/agent-write";
 /** Between a credential's item and the writes it was minted for. In neither a UUID nor a tool name. */
 const WRITES_SEPARATOR = "~";
+/** What a scope may be: an attempt's UUID, never anything holding a separator. */
+const SCOPE = /^[A-Za-z0-9_-]+$/;
 
 /** Binds the bridge's socket and answers it once bound. Rejects where it cannot be bound. */
 export function startAgentWriteBridge(handler: AgentWriteHandler): Promise<AgentWriteBridge> {
@@ -70,7 +78,7 @@ export function startAgentWriteBridge(handler: AgentWriteHandler): Promise<Agent
    * minted: the item, and the writes it was minted for where it names
    * some (`<item>~<tool>,<tool>`), all of it under the MAC.
    */
-  function grantOf(header: string | undefined): { itemId: string; writes: AgentWriteTool[] | null } | null {
+  function grantOf(header: string | undefined): { itemId: string; writes: AgentWriteTool[] | null; scope: string | null } | null {
     if (header === undefined || !header.startsWith("Bearer ")) return null;
     const bearer = header.slice("Bearer ".length).trim();
     const dot = bearer.lastIndexOf(".");
@@ -79,13 +87,13 @@ export function startAgentWriteBridge(handler: AgentWriteHandler): Promise<Agent
     const given = Buffer.from(bearer.slice(dot + 1), "utf8");
     const expected = Buffer.from(mac(subject), "utf8");
     if (given.length !== expected.length || !timingSafeEqual(given, expected)) return null;
-    const tilde = subject.indexOf(WRITES_SEPARATOR);
-    if (tilde === -1) return { itemId: subject, writes: null };
-    const writes = subject
-      .slice(tilde + 1)
-      .split(",")
-      .filter((tool): tool is AgentWriteTool => (AGENT_WRITE_TOOLS as readonly string[]).includes(tool));
-    return { itemId: subject.slice(0, tilde), writes };
+    const parts = subject.split(WRITES_SEPARATOR);
+    if (parts.length === 1) return { itemId: subject, writes: null, scope: null };
+    if (parts.length > 3) return null;
+    const writes = (parts[1] ?? "").split(",").filter((tool): tool is AgentWriteTool => (AGENT_WRITE_TOOLS as readonly string[]).includes(tool));
+    const scope = parts[2] ?? null;
+    if (scope !== null && !SCOPE.test(scope)) return null;
+    return { itemId: parts[0] ?? "", writes, scope };
   }
 
   function answer(response: ServerResponse, status: number, body: AgentWriteAnswer): void {
@@ -123,7 +131,7 @@ export function startAgentWriteBridge(handler: AgentWriteHandler): Promise<Agent
     }
     let outcome: AgentWriteAnswer;
     try {
-      outcome = await handler(grant.itemId, write.data, grant.writes);
+      outcome = await handler(grant.itemId, write.data, grant.writes, grant.scope);
     } catch (error) {
       outcome = refused("WRITE_FAILED", `EO could not write it: ${error instanceof Error ? error.message : String(error)}`);
     }
@@ -143,9 +151,10 @@ export function startAgentWriteBridge(handler: AgentWriteHandler): Promise<Agent
       // Never what keeps a process alive.
       server.unref();
       resolve({
-        tokenFor: (itemId, writes) => {
+        tokenFor: (itemId, writes, scope) => {
+          if (scope !== undefined && (writes === undefined || !SCOPE.test(scope))) throw new Error("A scoped credential names its writes and a scope EO would mint.");
           if (writes === undefined) return { url, token: `${itemId}.${mac(itemId)}` };
-          const subject = `${itemId}${WRITES_SEPARATOR}${writes.join(",")}`;
+          const subject = `${itemId}${WRITES_SEPARATOR}${writes.join(",")}${scope === undefined ? "" : `${WRITES_SEPARATOR}${scope}`}`;
           return { url, token: `${subject}.${mac(subject)}`, writes: [...writes] };
         },
         close: () =>

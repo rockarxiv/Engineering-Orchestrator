@@ -36,6 +36,7 @@ import {
   type AttachmentSource,
   type MemoryReadScope,
   type AgentWriteBridgeAddress,
+  AgentWriteBridgeAddressSchema,
   type InterruptibleStream,
   type JsonSchema,
   type McpServer,
@@ -65,8 +66,9 @@ import { CODEX_SIDE_CALL_SWITCHES, writeSideCallCatalog } from "./codexSideCallL
 
 /** The catalogue Codex caches in every home it runs in, which a side call copies its model's entry from. */
 const CODEX_MODELS_CACHE = "models_cache.json";
-import { REFUSED_CALL_EVENTS, refusedCall } from "./callRefusal.js";
-import { CODEX_SEARCH_TOOL_MATCHER, openCodexSearchHook, probeHookTrust, type CodexHookTrust, type CodexSearchHook } from "./codexSearchHook.js";
+import { REFUSED_CALL_EVENTS, refusedCall, reportOnlyCallRule } from "./callRefusal.js";
+import { reportOnlyBridgeProblem, reportOnlyStartRefusal } from "./reportOnly.js";
+import { CODEX_EVERY_TOOL_MATCHER, CODEX_SEARCH_TOOL_MATCHER, openCodexSearchHook, probeHookTrust, type CodexHookTrust, type CodexSearchHook } from "./codexSearchHook.js";
 import type { SearchNudge } from "./searchNudge.js";
 import { toolResultEvent, toolResultText } from "./toolResult.js";
 import { withAttachmentNote } from "./attachmentNote.js";
@@ -141,6 +143,18 @@ export type ServerSecretRead = string | null | typeof SECRET_WITHHELD;
 export const SECRET_WITHHELD = Object.freeze({ withheld: true as const });
 
 export interface CodexProviderOptions {
+  /**
+   * A report-only team participant's provider (EO-845). Every turn — a
+   * start, a resume, a recovery — runs in the provider's own Codex home
+   * with EO's `eo` server alone, its shell, code execution, subagents,
+   * patching, images, apps, plugins, skills and web search off, its
+   * model's tools taken out of the catalogue it is handed, a read-only
+   * sandbox, and a `PreToolUse` hook refusing every call but the four
+   * evidence tools (`reportOnlyCallRule`). A turn any of that cannot be
+   * set up for is refused before the app-server is started, saying why.
+   * Never warmed and never forked.
+   */
+  reportOnly?: boolean;
   /**
    * The shared EO stdio service. Codex launches the same implementation
    * as Claude; this adapter only translates the provider's config syntax.
@@ -1609,6 +1623,9 @@ export function buildCodexOptions(
   // Asked once per client, and let go of again if the options cannot be
   // built (EO-444): no process will be spawned to let it go after. For
   // the directory the turn runs in (EO-700).
+  // A report-only participant is launched by its own rules (EO-845), and
+  // never with the administrative server: no bearer is minted for it.
+  if (options.reportOnly === true) return reportOnlyCodexOptions(options, searchHook, writeBridge, itemId);
   const admin = options.admin?.(adminDirectory) ?? null;
   try {
     return codexOptionsWith(options, admin, repositoryMcp, searchHook, attachFrom, memoryScopes, environmentVariables, writeBridge, withheldEnvironmentVariables, skillSlugs, itemId);
@@ -1832,6 +1849,109 @@ function codexOptionsWith(
     // design, so a warm-up matches its turn on the name alone.
     ...(admin ? { perTurnEnv: Object.keys(admin.environment) } : {}),
   };
+}
+
+/**
+ * The features a report-only participant's app-server runs with (EO-845):
+ * every switch a side call's has (`CODEX_SIDE_CALL_SWITCHES` — the shell,
+ * unified execution, code mode, subagents, images, apps, plugins, skill
+ * search and the rest) beside memories' own. MCP servers are not a
+ * feature: the `eo` server is still started, and is the participant's
+ * only way to anything.
+ */
+export const REPORT_ONLY_CODEX_FEATURES = { ...CODEX_MEMORY_OFF.features, ...CODEX_SIDE_CALL_SWITCHES.features } as const;
+
+/**
+ * What a report-only participant's app-server is launched with (EO-845),
+ * built on its own rather than from an agent's, so nothing the agent was
+ * given — attached servers, skills, the administrative server, a
+ * repository index, the run's variables — can reach it:
+ *
+ * - EO's `eo` server alone, on the participant's report-only credential;
+ * - the refusing `PreToolUse` hook, trusted by its hash, offered every call;
+ * - the participant's own Codex home, never the person's;
+ * - every tool-bearing feature off, skills off, and a model catalogue
+ *   holding only the participant's model with the keys that bring code
+ *   mode, `apply_patch` and the multi-agent tools taken out — which no
+ *   feature flag reaches (`codexSideCallLockdown.ts`).
+ *
+ * Each is required. One that cannot be had throws the reason, and the
+ * turn is refused before the app-server is spawned.
+ */
+function reportOnlyCodexOptions(
+  options: CodexProviderOptions,
+  searchHook: CodexSearchHookDelivery | undefined,
+  writeBridge: AgentWriteBridgeAddress | undefined,
+  itemId: string | undefined,
+): Pick<CodexClientOptions, "executablePath" | "config" | "env" | "afterTurn" | "perTurnEnv"> {
+  const refuse = (why: string): never => {
+    throw new Error(reportOnlyStartRefusal("Codex", why));
+  };
+  if (!options.eoMcp) return refuse("it has no EO server to read its evidence through");
+  const bridge = reportOnlyBridgeProblem(writeBridge);
+  if (bridge !== null) return refuse(bridge);
+  if (!searchHook) return refuse("no hook refuses its other calls");
+  if (options.config?.inheritAmbientConfig === true) return refuse("its agent uses the person's own Codex setup, which EO does not control");
+  const home = (itemId === undefined ? options.codexHome?.() : options.codexHome?.(itemId)) ?? null;
+  if (home === null) return refuse("it would run in the person's own Codex home, whose servers and settings EO does not control");
+  const model = options.config?.model;
+  if (model === undefined || model === "") return refuse("its agent names no model, so EO cannot take that model's own tools — code execution, patching and subagents — out of what it is offered");
+  const caches = options.sideCallModelCaches ? options.sideCallModelCaches(home) : [join(home, CODEX_MODELS_CACHE), join(personCodexHome(), CODEX_MODELS_CACHE)];
+  const catalog = writeSideCallCatalog(model, caches);
+  if (!catalog.ok) return refuse(`Codex's model catalogue on this machine does not name ${model}, so EO cannot take that model's own tools — code execution, patching and subagents — out of what it is offered`);
+  try {
+    const inherited = inheritedEnvironment();
+    const declared = { values: {}, withheld: new Set<string>() };
+    const headers = headerVariables(new Set([...Object.keys(inherited), ...Object.keys(searchHook.env)]));
+    const env = codexSpawnEnvironment(inherited, declared, headers.values, {}, home, searchHook.env, {});
+    const config = {
+      mcp_servers: { [EO_MCP_SERVER]: eoMcpStdioConfig({ ...options.eoMcp, enableCommentTool: false, enableConfigTools: false, enableFullThread: false, enableMemoryNote: false, writeBridge: writeBridge! }) },
+      hooks: { ...searchHookEntries(searchHook.command, searchHook.matcher), state: { [searchHook.trust.key]: { trusted_hash: searchHook.trust.hash } } },
+      features: { ...REPORT_ONLY_CODEX_FEATURES },
+      memories: CODEX_MEMORY_OFF.memories,
+      skills: CODEX_SIDE_CALL_SWITCHES.skills,
+      model_catalog_json: catalog.path,
+    };
+    const problem = reportOnlyCodexConfigProblem(config, env);
+    if (problem !== null) refuse(problem);
+    return {
+      ...(options.executablePath ? { executablePath: options.executablePath } : {}),
+      config,
+      ...(env ? { env } : {}),
+      afterTurn: catalog.remove,
+    };
+  } catch (error) {
+    catalog.remove();
+    throw error;
+  }
+}
+
+/**
+ * Why this launch does not hold a report-only participant to its rules
+ * (EO-845), or null where it does — read off what the app-server would be
+ * started with, so a lock that was edited away is a refused turn.
+ */
+export function reportOnlyCodexConfigProblem(config: Record<string, unknown>, env: Record<string, string> | undefined): string | null {
+  const servers = Object.keys((config["mcp_servers"] as Record<string, unknown> | undefined) ?? {});
+  if (servers.length !== 1 || servers[0] !== EO_MCP_SERVER) return "it would start servers beside EO's own";
+  const eo = (config["mcp_servers"] as Record<string, { env?: Record<string, string> }>)[EO_MCP_SERVER];
+  let address: unknown;
+  try {
+    address = JSON.parse(eo?.env?.["EO_MCP_WRITE_BRIDGE"] ?? "null");
+  } catch {
+    return "its credential could not be read";
+  }
+  const parsed = AgentWriteBridgeAddressSchema.safeParse(address);
+  const bridge = reportOnlyBridgeProblem(parsed.success ? parsed.data : undefined);
+  if (bridge !== null) return bridge;
+  const hooks = (config["hooks"] as { PreToolUse?: { matcher?: string }[] } | undefined)?.PreToolUse ?? [];
+  if (hooks.length !== 1 || hooks[0]?.matcher !== CODEX_EVERY_TOOL_MATCHER) return "no hook is offered its every call";
+  const features = (config["features"] as Record<string, unknown> | undefined) ?? {};
+  const on = Object.entries(REPORT_ONLY_CODEX_FEATURES).filter(([name, value]) => features[name] !== value).map(([name]) => name);
+  if (on.length > 0) return `${on.join(", ")} would be left on`;
+  if (typeof config["model_catalog_json"] !== "string") return "its model's own tools would be left in its catalogue";
+  if (env?.["CODEX_HOME"] === undefined) return "it would run in the person's own Codex home";
+  return null;
 }
 
 /**
@@ -2321,7 +2441,10 @@ export function createCodexProvider(options: CodexProviderOptions = {}): AgentPr
    * than the turn run with nothing refusing its calls.
    */
   async function searchHookFor(repositoryMcp: RepositoryMcpServer | undefined, cwd: string | undefined, refuseCallsExcept?: readonly string[]): Promise<TurnSearchHook | null> {
-    const refusing = refuseCallsExcept !== undefined;
+    // A report-only participant's every turn refuses all but its four
+    // evidence tools (EO-845), whatever it was handed: no index, no nudge.
+    const reportOnly = options.reportOnly === true;
+    const refusing = refuseCallsExcept !== undefined || reportOnly;
     let hook: CodexSearchHook | null = null;
     try {
       if (cwd === undefined) {
@@ -2329,14 +2452,18 @@ export function createCodexProvider(options: CodexProviderOptions = {}): AgentPr
         return null;
       }
       hook = await openCodexSearchHook({
-        nudge: options.searchNudge,
-        server: repositoryMcp,
+        nudge: reportOnly ? undefined : options.searchNudge,
+        server: reportOnly ? undefined : repositoryMcp,
         cwd,
         commandPath: options.searchHookCommandPath,
         // A turn allowed no calls is allowed none of the repository
         // server's either (EO-808): its tools are still offered, so the
         // request starts as the run's did, and refused when called.
-        ...(refusing ? { refuse: (tool: string) => refusedCall(tool, { eoTools: refuseCallsExcept, repositoryServer: refuseCallsExcept.length === 0 ? null : (repositoryMcp?.name ?? null) }) } : {}),
+        ...(reportOnly
+          ? { refuse: (tool: string) => refusedCall(tool, reportOnlyCallRule()) }
+          : refuseCallsExcept !== undefined
+            ? { refuse: (tool: string) => refusedCall(tool, { eoTools: refuseCallsExcept, repositoryServer: refuseCallsExcept.length === 0 ? null : (repositoryMcp?.name ?? null) }) }
+            : {}),
       });
       if (hook === null) {
         if (refusing) throw new Error("EO has no hook command to run on this machine");
@@ -2563,11 +2690,11 @@ export function createCodexProvider(options: CodexProviderOptions = {}): AgentPr
     // being made did not happen: a refused `skill_read` loaded nothing.
     // Codex reports no completed item for a call its hook denied, so this
     // is the same rule Claude's adapter keeps, held here as well.
-    return resumeOpts?.refuseCallsExcept ? withoutEvents(stream, REFUSED_CALL_EVENTS) : stream;
+    return resumeOpts?.refuseCallsExcept || options.reportOnly === true ? withoutEvents(stream, REFUSED_CALL_EVENTS) : stream;
   }
 
   function resumedSkills(resumeOpts: AgentProviderResumeOptions | undefined): { slugs: string[]; section: string } {
-    if (!resumeOpts?.cwd) return { slugs: [], section: "" };
+    if (!resumeOpts?.cwd || options.reportOnly === true) return { slugs: [], section: "" };
     const restored = writeWorktreeSkills(resumeOpts.cwd, skillsForRun(options.attachedSkills ?? [], resumeOpts.skillScope));
     warnAboutUndeliveredSkills(restored, resumeOpts.cwd);
     return { slugs: restored.delivered.map((skill) => skill.slug), section: worktreeSkillsPromptSection(restored.delivered) };
@@ -2634,7 +2761,7 @@ export function createCodexProvider(options: CodexProviderOptions = {}): AgentPr
       const openThread = fork ? client.forkThread?.bind(client) : client.resumeThread.bind(client);
       if (!openThread) throw new Error("This Codex client cannot fork a thread.");
       const thread = openThread(threadId, {
-        ...threadOptionsFrom(
+        ...turnThreadOptions(
           {
             ...(resumeOpts?.cwd ? { cwd: resumeOpts.cwd } : {}),
             ...(resumeOpts?.model ? { model: resumeOpts.model } : {}),
@@ -2684,6 +2811,19 @@ export function createCodexProvider(options: CodexProviderOptions = {}): AgentPr
    * — checked against this stream in `capabilities.test.ts`.
    */
   /**
+   * A turn's thread options (`threadOptionsFrom`), and for a report-only
+   * participant (EO-845) a read-only sandbox, web search off and the
+   * agent's own model — the one its catalogue was written for — whatever
+   * the turn asked for.
+   */
+  function turnThreadOptions(opts: Parameters<typeof threadOptionsFrom>[0], config: CodexAgentConfig | undefined): CodexThreadOptions {
+    const thread = threadOptionsFrom(opts, config);
+    if (options.reportOnly !== true) return thread;
+    const { model: _asked, ...rest } = thread;
+    return { ...rest, ...(config?.model ? { model: config.model } : {}), sandboxMode: "read-only", approvalPolicy: "never", webSearchEnabled: false };
+  }
+
+  /**
    * The suggested next messages being made (EO-808), by the thread they
    * follow: what stops each when a new turn opens on that thread.
    */
@@ -2708,7 +2848,9 @@ export function createCodexProvider(options: CodexProviderOptions = {}): AgentPr
       // from what was actually written — a skill refused for a folder the
       // checkout already holds is in neither the prompt nor debug mode's
       // record of it. `writeWorktreeSkills` never throws.
-      const skills = writeWorktreeSkills(opts.cwd, skillsForRun(options.attachedSkills ?? [], opts.skillScope));
+      // None for a report-only participant (EO-845): nothing is written
+      // where it works, and it is given no skills.
+      const skills = options.reportOnly === true ? { delivered: [], undelivered: [] } : writeWorktreeSkills(opts.cwd, skillsForRun(options.attachedSkills ?? [], opts.skillScope));
       warnAboutUndeliveredSkills(skills, opts.cwd);
       const skillsSection = worktreeSkillsPromptSection(skills.delivered);
       opts.onSkillsSection?.(skillsSection);
@@ -2730,7 +2872,7 @@ export function createCodexProvider(options: CodexProviderOptions = {}): AgentPr
       // this has opened finds its stop already aborted, and makes none.
       suggesting.get(threadId)?.abort();
       const stop = new AbortController();
-      if (resumeOpts?.suggestNextMessage === true) suggesting.set(threadId, stop);
+      if (resumeOpts?.suggestNextMessage === true && options.reportOnly !== true) suggesting.set(threadId, stop);
       else suggesting.delete(threadId);
       const skills = resumedSkills(resumeOpts);
       resumeOpts?.onSkillsSection?.(skills.section);
@@ -2750,12 +2892,18 @@ export function createCodexProvider(options: CodexProviderOptions = {}): AgentPr
       };
     },
 
-    fork: (threadId, message, forkOpts) => forkTurn(threadId, message, forkOpts),
+    // A report-only participant's thread is its own and nobody's to copy
+    // (EO-845): a fork would be a second turn with its evidence.
+    fork: (threadId, message, forkOpts) =>
+      options.reportOnly === true ? Promise.resolve({ ok: false, reason: "failed", threadId, message: "A report-only team participant's thread is not forked." }) : forkTurn(threadId, message, forkOpts),
 
     dropWarm(): void {
       dropWarmCodexThread();
     },
     prewarm(turn: AgentPrewarmTurn): void {
+      // Never for a report-only participant (EO-845): its every turn is
+      // locked and checked as it is launched.
+      if (options.reportOnly === true) return;
       // Not for a turn with a repository index: its broad-search hook is
       // opened per turn, so a process started without it would never be
       // the one the turn asks for. Conversations have none.
@@ -2850,7 +2998,7 @@ export function createCodexProvider(options: CodexProviderOptions = {}): AgentPr
       // `resume` build them with (EO-392) — so the model, the effort and
       // the two pinned settings are the ones a turn is opened with, not
       // a second reading of the same configuration.
-      const thread = threadOptionsFrom(turn, options.config);
+      const thread = turnThreadOptions(turn, options.config);
       return {
         instructionsSlot: "baseInstructions",
         model: thread.model ?? null,
@@ -2939,7 +3087,7 @@ export function createCodexProvider(options: CodexProviderOptions = {}): AgentPr
     facts: TurnFacts,
     stop: AbortController,
   ): AsyncIterable<AgentEvent> {
-    const asked = resumeOpts?.suggestNextMessage === true;
+    const asked = resumeOpts?.suggestNextMessage === true && options.reportOnly !== true;
     let answered = false;
     let failed = false;
     let nearLimit = false;
@@ -3117,7 +3265,7 @@ export function createCodexProvider(options: CodexProviderOptions = {}): AgentPr
       //   instructions were edited gets a fresh thread
       //   (`findReusableThread`), which is the only way the edit sticks.
       const thread = clientFor(opts.repositoryMcp, hook, opts.attachFrom, opts.memoryScopes, opts.environmentVariables, opts.writeBridge, opts.withheldEnvironmentVariables, opts.cwd, skillSlugs, opts.itemId).startThread({
-        ...threadOptionsFrom(opts, options.config),
+        ...turnThreadOptions(opts, options.config),
         ...(opts.instructions ? { baseInstructions: opts.instructions } : {}),
       });
       // Only what is per turn. The instructions are not here: they went

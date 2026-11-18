@@ -17,6 +17,7 @@ import { commentsAwaitingPlan, planningRound } from "../forge/commentPlans.js";
 import { withoutRepositoryIndex } from "../repositoryIntelligence/indexPaths.js";
 import { createWorktreeWorkspace, forgetIndexesForReleasedWorktrees, releaseStaleWorktrees, releaseWorktreeFor } from "./dispatchWorkspace.js";
 import { git, statusPorcelain } from "./git.js";
+import { gitEvidenceCapability } from "./gitEvidence.js";
 import { referenceCheckoutFor, releaseReferenceCheckouts, releaseStaleReferenceCheckouts } from "./referenceCheckouts.js";
 import { commitNamingCheck } from "./commitNaming.js";
 import { createImplementationVerifier, createVerifiedRange } from "./implementationVerifier.js";
@@ -407,6 +408,9 @@ export function gitWorkspaceKind(options: GitWorkspaceKindOptions): WorkspaceKin
     async releaseReferenceCheckouts(item: Item) {
       await releaseReferenceCheckouts(db, item);
     },
+
+    /** A team's evidence: the working tree's own tree object (EO-845, `gitEvidence.ts`). */
+    evidence: gitEvidenceCapability(),
   };
 }
 
