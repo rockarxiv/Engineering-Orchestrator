@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { INTERPRET_ACTION, type Agent, type Item, type Uuid } from "@eo/core";
+import { INTERPRET_ACTION, TEAM_PARTICIPANT_ACTION, type Agent, type Item, type Uuid } from "@eo/core";
 import type { DbHandle } from "../client.js";
 import { promptHash } from "../../roles/prompts.js";
 import { createTestItem, openMigratedTestDb } from "../testHelpers.js";
@@ -141,6 +141,15 @@ describe("runsRepo", () => {
     updateRun(handle.db, second.id, { status: "running", startedAt: 2 });
 
     expect(listAwaitingInputItemIds(handle.db)).toEqual(new Set());
+  });
+
+  it("listAwaitingInputItemIds() ignores a team participant's turn, which started after its team's run and never parks the item (EO-847)", () => {
+    const team = createRun(handle.db, { itemId: item.id, agentId: agent.id, action: "implement" });
+    updateRun(handle.db, team.id, { status: "awaiting_input", startedAt: 1 });
+    const participant = createRun(handle.db, { itemId: item.id, agentId: agent.id, action: TEAM_PARTICIPANT_ACTION });
+    updateRun(handle.db, participant.id, { status: "succeeded", startedAt: 2 });
+
+    expect(listAwaitingInputItemIds(handle.db)).toEqual(new Set([item.id]));
   });
 
   it("listAwaitingInputItemIds() ignores an interpretation, which leaves a parked item parked", () => {

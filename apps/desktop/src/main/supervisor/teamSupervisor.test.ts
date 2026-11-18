@@ -259,9 +259,12 @@ describe("an independent team on an agent step (EO-846)", () => {
     const output = summary();
     expect(output?.body).toContain('The team\'s result is "gaps_found", by completion rule 1.');
     expect(output?.body).toContain("The export leaks tokens.");
-    const schema = started[0]?.opts.outputSchema as { properties: { outcome: { enum: string[] } }; required: string[] };
-    expect(schema.properties.outcome.enum).toEqual(["clear", "blocking"]);
-    expect(schema.required).toEqual(["outcome", "report"]);
+    // The report, or questions for the person, offered under `outcome` as every agent's answer is (EO-847).
+    const schema = started[0]?.opts.outputSchema as { properties: { outcome: { anyOf: { properties?: { outcome?: { enum: string[] }; status?: unknown }; required?: string[] }[] } } };
+    const report = schema.properties.outcome.anyOf.find((branch) => branch.properties?.outcome !== undefined);
+    expect(report?.properties?.outcome?.enum).toEqual(["clear", "blocking"]);
+    expect(report?.required).toEqual(["outcome", "report"]);
+    expect(schema.properties.outcome.anyOf.some((branch) => branch.properties?.status !== undefined)).toBe(true);
     expect(started[0]?.opts.cwd).toBe(join(scratch, started[0]!.attemptId));
     expect(started[0]?.opts.context).toContain("## Your assignment: security");
   });
