@@ -22,7 +22,7 @@ import {
   getItemType,
   stepForItem,
 } from "../db/repos/index.js";
-import { packMeaningInForce, registryForProject } from "../registry.js";
+import { packMeaningInForce, registryForItem } from "../registry.js";
 import { PREVIEW_TASK_NOTE } from "../preview.js";
 import { createStepAttribution, humanCommentsSince, lastRunOf, latestCommentPerStep } from "./stepAttribution.js";
 import { newestAnswerToLastAsk } from "../roles/answers.js";
@@ -83,7 +83,7 @@ function itemView(db: Db, item: Item): ContextItemInput {
     // calls its bar something else still has it read into the prompt
     // rather than silently sending an agent nothing to work to.
     acceptanceCriteria: acceptanceCriteriaOf(item, type?.specShape),
-    actionOverrides: actionOverridesFor(registryForProject(db, item.projectId), type ?? UNKNOWN_ITEM_TYPE),
+    actionOverrides: actionOverridesFor(registryForItem(db, item), type ?? UNKNOWN_ITEM_TYPE),
     // The resolution the dispatch itself makes (EO-413) — the step's
     // pick before the item's own workspace, and `none` where there is
     // no disk — so a pack's section about a kind of disk is rendered on
@@ -268,7 +268,7 @@ async function taskAppendixFor(db: Db, item: Item, action: string, role: string 
   // Not on a preview, which is held to no role's definition — see
   // `definingRole` in the supervisor: telling the placeholder which keys
   // to answer with would describe a schema it was not sent.
-  const defined = definedActionFor(registryForProject(db, item.projectId), item.previewAt === null ? role : null, action);
+  const defined = definedActionFor(registryForItem(db, item), item.previewAt === null ? role : null, action);
   const definition = defined === undefined ? null : renderActionDefinitionTask(defined.definition);
   const forAction = definition === null ? framing : framing === null ? definition : `${definition}\n\n${framing}`;
 

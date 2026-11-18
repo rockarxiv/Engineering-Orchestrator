@@ -160,7 +160,7 @@ import { missingCliToolNotice } from "../agentAttachments/cliToolsPrompt.js";
 import { resolveAgentCliTools } from "../db/repos/cliToolsRepo.js";
 import type { Db } from "../db/client.js";
 import { startOfDay } from "../dateUtils.js";
-import { packMeaningInForce, proposedActionsProblem, registry, registryForProject } from "../registry.js";
+import { packMeaningInForce, proposedActionsProblem, registry, registryForItem } from "../registry.js";
 import { previewBuiltinRunner } from "../preview.js";
 import { announceDailyBudgetDefault } from "../guardDefaultNotice.js";
 import type { BuiltinOutcome, BuiltinRunner } from "./builtins.js";
@@ -2462,8 +2462,11 @@ export function createRunSupervisor(
    * schema that can classify into it, and one on a project that renamed a
    * type gets the name it has. The module-level registry answers for
    * everything with no item in hand.
+   *
+   * A trial item's also carries the definitions its trial's draft
+   * proposes (EO-832), which no live item sees.
    */
-  const registryFor = (item: Item): Registry => registryForProject(db, item.projectId);
+  const registryFor = (item: Item): Registry => registryForItem(db, item);
 
   /**
    * The role whose own definition of an action this run is held to

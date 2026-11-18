@@ -7,7 +7,7 @@ import { MessageSendSchema } from "./messages.js";
 import { SkillCopySchema } from "./schemas/skills.js";
 import { CommentOptionSchema, parseStoredCommentOptions } from "./schemas/commentOptions.js";
 import { SideCallFailureReasonSchema, SideCallPurposeSchema } from "./side-calls.js";
-import { TrialPlanSchema, TrialStepSourcesSchema } from "./trialPlan.js";
+import { TrialActionsSchema, TrialPlanSchema, TrialStepSourcesSchema } from "./trialPlan.js";
 import { DEPENDENCY_WAITS } from "./domain.js";
 
 /**
@@ -1150,6 +1150,13 @@ export const RecordPipelineSchema = PipelineViewSchema.extend({
        * a page from a build that predates it.
        */
       stepSources: TrialStepSourcesSchema.default({}),
+      /**
+       * The action definitions its draft proposes (EO-832), so whichever
+       * machine runs a trial item holds its answer to the overlay's
+       * schema. Empty on a trial whose draft proposed none and on a page
+       * from a build that predates it.
+       */
+      actions: TrialActionsSchema.default([]),
     })
     .nullable()
     .default(null),

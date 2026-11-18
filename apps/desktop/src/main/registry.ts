@@ -20,6 +20,7 @@ import {
 import type { Db } from "./db/client.js";
 import { listActionDefinitions } from "./db/repos/actionDefinitionsRepo.js";
 import { itemTypesFor } from "./db/repos/itemTypesRepo.js";
+import { readTrialActions } from "./db/repos/trialsRepo.js";
 
 /**
  * The registry in force for this process (KAN-124).
@@ -130,6 +131,39 @@ export function registryForProject(db: Db, projectId: Uuid | null): Registry {
     // `registry:get` sends so the renderer's validator is told the same.
     roleActions: roleActionFactsOf(actionDefinitions),
   };
+}
+
+/**
+ * The registry one item sees (EO-832): its project's, and for a trial
+ * item, the definitions its trial's draft proposes laid over it by
+ * `withProposedActions` — what the draft was judged against when the
+ * trial was made.
+ *
+ * Every question about an item's actions is asked here: the schema a run
+ * is sent and its answer is held to (invariant #5), the definition its
+ * prompt renders, and whether the pack's meaning of an action is in
+ * force. A trial's definitions are never rows — `action_definitions` is
+ * read by every pipeline naming the role — so this is the only place they
+ * are seen, and only by items that carry the trial mark on a trial that
+ * proposed some. A live item is answered `registryForProject` exactly.
+ *
+ * A definition that would not lay over any more — a pack installed since
+ * that ships the pair, say — is left out rather than taking the others
+ * with it, as `definedActions` skips a row it cannot use.
+ */
+export function registryForItem(db: Db, item: Pick<Item, "projectId" | "pipelineId" | "trialAt">): Registry {
+  const installed = registryForProject(db, item.projectId);
+  if (item.trialAt === null || item.pipelineId === null) return installed;
+  const proposed = readTrialActions(db, item.pipelineId);
+  if (proposed.length === 0) return installed;
+  const whole = withProposedActions(installed, proposed);
+  if (whole.ok) return whole.registry;
+  let laid = installed;
+  for (const definition of proposed) {
+    const one = withProposedActions(laid, [definition]);
+    if (one.ok) laid = one.registry;
+  }
+  return laid;
 }
 
 /**
@@ -344,6 +378,6 @@ export function installedRoleShips(role: string, action: string): boolean {
  * `role` is null where there is no agent — a builtin, a module, a
  * caller asking about the action alone — and the answer is then yes.
  */
-export function packMeaningInForce(db: Db, item: Pick<Item, "projectId" | "previewAt">, role: string | null | undefined, action: string): boolean {
-  return packActionInForce(registryForProject(db, item.projectId), item.previewAt === null ? role : null, action);
+export function packMeaningInForce(db: Db, item: Pick<Item, "projectId" | "pipelineId" | "previewAt" | "trialAt">, role: string | null | undefined, action: string): boolean {
+  return packActionInForce(registryForItem(db, item), item.previewAt === null ? role : null, action);
 }

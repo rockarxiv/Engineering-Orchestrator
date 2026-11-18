@@ -162,6 +162,14 @@ export const pipelines = sqliteTable("pipelines", {
    */
   trialDesign: text("trial_design", { mode: "json" }),
   /**
+   * The action definitions the trial's draft proposes (EO-832,
+   * `TrialActionsSchema`): laid over the installed registry for the
+   * trial's own items only, and never written to `action_definitions`
+   * until the trial is published. Null on a trial whose draft proposed
+   * none, and on every pipeline that is not a trial.
+   */
+  trialActions: text("trial_actions", { mode: "json" }),
+  /**
    * Deleting a pipeline archives it (KAN-59) rather than dropping the row,
    * so the work that flowed through it keeps something to point at — the
    * same reason an archived item keeps its runs.

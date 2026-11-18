@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { ActionDefinitionDraftSchema } from "./schemas/actionDefinition.js";
 
 /**
  * A trial plan: how each step of a trial pipeline runs on its test items
@@ -91,6 +92,16 @@ export type TrialPlan = z.infer<typeof TrialPlanSchema>;
  */
 export const TrialStepSourcesSchema = z.record(z.string(), z.string());
 export type TrialStepSources = z.infer<typeof TrialStepSourcesSchema>;
+
+/**
+ * The action definitions a trial's draft proposes (EO-832), stored on the
+ * trial's own row (`pipelines.trial_actions`). Laid over the installed
+ * registry for the trial's items alone — never rows in
+ * `action_definitions`, which every pipeline naming a role reads — and
+ * written for real only when the trial is published.
+ */
+export const TrialActionsSchema = z.array(ActionDefinitionDraftSchema);
+export type TrialActions = z.output<typeof TrialActionsSchema>;
 
 /** The plan a trial has before anybody writes one: every step real. */
 export const EMPTY_TRIAL_PLAN: TrialPlan = { steps: [], expected: [] };
