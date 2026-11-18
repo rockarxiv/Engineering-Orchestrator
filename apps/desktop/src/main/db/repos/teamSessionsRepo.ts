@@ -133,28 +133,39 @@ export function currentTeamSession(db: Db, itemId: string): TeamSessionRow | und
   return row === undefined ? undefined : sessionOf(row);
 }
 
-/** The transition that last moved the item, or undefined for an item no move has touched. */
-function lastMove(db: Db, itemId: string): { id: string; toStepId: string } | undefined {
-  return db
-    .select({ id: transitions.id, toStepId: transitions.toStepId })
-    .from(transitions)
-    .where(eq(transitions.itemId, itemId))
-    .orderBy(desc(transitions.ts), desc(transitions.id))
-    .limit(1)
-    .get();
+/**
+ * The item's current step entry: the transition that last moved it, or
+ * null for an item no move has touched — one still on the step it was
+ * created on.
+ */
+function currentEntry(db: Db, itemId: string): string | null {
+  return (
+    db
+      .select({ id: transitions.id })
+      .from(transitions)
+      .where(eq(transitions.itemId, itemId))
+      .orderBy(desc(transitions.ts), desc(transitions.id))
+      .limit(1)
+      .get()?.id ?? null
+  );
 }
 
 /**
- * Whether the item still stands on the step entry this session was opened
- * on: on its step, and not moved since. A session whose item has left —
- * moved on, or moved away and back, which is a new entry — is stale, and
- * accepts nothing.
+ * Where the item stands against the step entry this session was opened on:
+ * `on` it while it is on the session's step and has not moved since — its
+ * latest move is the session's entry, or, for a session opened on the step
+ * the item was created on, there is no move at all; `moved` to another
+ * step; or `reentered`, moved away and back, which is a new entry. A
+ * session whose item is not `on` its entry is stale, and accepts nothing.
  */
-function onSessionEntry(db: Db, session: TeamSessionRow): boolean {
+function entryState(db: Db, session: Pick<TeamSessionRow, "itemId" | "stepId" | "entryTransitionId">): "on" | "moved" | "reentered" {
   const item = db.select({ stepId: items.stepId }).from(items).where(eq(items.id, session.itemId)).get();
-  if (item === undefined || item.stepId !== session.stepId) return false;
-  if (session.entryTransitionId === null) return true;
-  return lastMove(db, session.itemId)?.id === session.entryTransitionId;
+  if (item === undefined || item.stepId !== session.stepId) return "moved";
+  return currentEntry(db, session.itemId) === session.entryTransitionId ? "on" : "reentered";
+}
+
+function onSessionEntry(db: Db, session: TeamSessionRow): boolean {
+  return entryState(db, session) === "on";
 }
 
 function touchSession(db: Db, sessionId: string, at: number): void {
@@ -176,7 +187,7 @@ export interface OpenTeamSessionInput {
   team: StepTeam;
   /** The orchestration's own run, where there is one. */
   runId?: Uuid | null;
-  /** The move that put the item on the step. Defaults to the item's latest move, where that move was onto this step. */
+  /** The move that put the item on the step. Defaults to the item's latest move, or null for an item never moved. */
   entryTransitionId?: string | null;
   /** Defaults to the version the item is pinned to. */
   pipelineVersionId?: string | null;
@@ -196,8 +207,7 @@ export function openTeamSession(db: Db, input: OpenTeamSessionInput): TeamSessio
   const session = db.transaction((tx) => {
     const item = tx.select({ pipelineVersionId: items.pipelineVersionId }).from(items).where(eq(items.id, input.itemId)).get();
     if (item === undefined) throw new Error(`No item ${input.itemId} to open a team session on.`);
-    const move = lastMove(tx as unknown as Db, input.itemId);
-    const entryTransitionId = "entryTransitionId" in input ? (input.entryTransitionId ?? null) : move !== undefined && move.toStepId === input.stepId ? move.id : null;
+    const entryTransitionId = "entryTransitionId" in input ? (input.entryTransitionId ?? null) : currentEntry(tx as unknown as Db, input.itemId);
     for (const open of tx.select({ id: teamSessions.id }).from(teamSessions).where(and(eq(teamSessions.itemId, input.itemId), eq(teamSessions.status, "open"))).all()) {
       tx.update(teamSessions).set({ status: "superseded", supersededBy: id, endedAt: now, updatedAt: now }).where(eq(teamSessions.id, open.id)).run();
       superseded.push(open.id);
@@ -536,15 +546,117 @@ export function teamSessionWaitingFor(db: Db, record: TeamSessionRecord): string
 }
 
 /**
+ * Why the runs and comments a session names, all of them held here, are
+ * not the session's to name, or null when they are: every run is on the
+ * session's item and belongs to one attempt only; every report is on the
+ * item, written in its attempt's run by its attempt's agent (EO itself for
+ * an attempt with none), and is one attempt's only; the final answer is on
+ * the item. Asked before a copy from elsewhere is written, so a session
+ * cannot borrow another item's run or comment, or another attempt's.
+ */
+export function teamSessionMismatch(db: Db, record: TeamSessionRecord): string | null {
+  const { session } = record;
+  const runItem = (runId: string): string | undefined => db.select({ itemId: runs.itemId }).from(runs).where(eq(runs.id, runId)).get()?.itemId;
+  if (session.runId !== null && runItem(session.runId) !== session.itemId) return `Run ${session.runId} is not on this team session's item.`;
+  const runsSeen = new Set<string>(session.runId === null ? [] : [session.runId]);
+  const reportsSeen = new Set<string>();
+  for (const attempt of record.attempts) {
+    if (attempt.runId !== null) {
+      if (runItem(attempt.runId) !== session.itemId) return `Run ${attempt.runId} is not on this team session's item.`;
+      if (runsSeen.has(attempt.runId)) return `Run ${attempt.runId} is named twice in this team session.`;
+      runsSeen.add(attempt.runId);
+      const other = db.select({ id: teamAttempts.id }).from(teamAttempts).where(eq(teamAttempts.runId, attempt.runId)).get();
+      if (other !== undefined && other.id !== attempt.id) return `Run ${attempt.runId} is another team attempt's.`;
+    }
+    if (attempt.reportCommentId !== null) {
+      const report = getComment(db, attempt.reportCommentId as Uuid);
+      if (report === undefined || report.itemId !== session.itemId) return `Comment ${attempt.reportCommentId} is not on this team session's item.`;
+      if (report.runId !== attempt.runId) return `Comment ${attempt.reportCommentId} was not written in the run of the attempt at "${attempt.assignmentKey}".`;
+      const byAttempt = attempt.agentId === null ? report.authorType === "engine" : report.authorType === "agent" && report.authorId === attempt.agentId;
+      if (!byAttempt) return `Comment ${attempt.reportCommentId} was not written by the agent of the attempt at "${attempt.assignmentKey}".`;
+      if (reportsSeen.has(attempt.reportCommentId)) return `Comment ${attempt.reportCommentId} is named as two attempts' report.`;
+      reportsSeen.add(attempt.reportCommentId);
+      const other = db.select({ id: teamAttempts.id }).from(teamAttempts).where(eq(teamAttempts.reportCommentId, attempt.reportCommentId)).get();
+      if (other !== undefined && other.id !== attempt.id) return `Comment ${attempt.reportCommentId} is another team attempt's report.`;
+    }
+  }
+  if (session.finalCommentId !== null && getComment(db, session.finalCommentId as Uuid)?.itemId !== session.itemId) {
+    return `Comment ${session.finalCommentId} is not on this team session's item.`;
+  }
+  return null;
+}
+
+/** The same JSON whatever order its keys were written in. */
+function sameJson(a: unknown, b: unknown): boolean {
+  const canonical = (value: unknown): unknown =>
+    Array.isArray(value)
+      ? value.map(canonical)
+      : value !== null && typeof value === "object"
+        ? Object.fromEntries(Object.entries(value).sort(([x], [y]) => (x < y ? -1 : x > y ? 1 : 0)).map(([key, inner]) => [key, canonical(inner)]))
+        : value;
+  return JSON.stringify(canonical(a)) === JSON.stringify(canonical(b));
+}
+
+/**
+ * Why an incoming copy of a session contradicts what is held of it, or
+ * null when it does not. What a session and an attempt were — the item,
+ * step, entry, pinned version and team; the assignment, role, agent,
+ * instructions, round, number and evidence — is written once, and a run
+ * once given is kept: a copy saying otherwise is somebody rewriting
+ * history, and is refused rather than merged.
+ */
+function provenanceConflict(db: Db, held: TeamSessionRow | undefined, record: TeamSessionRecord): string | null {
+  const incoming = record.session;
+  if (held !== undefined) {
+    const sessionChanged =
+      held.itemId !== incoming.itemId ||
+      held.stepId !== incoming.stepId ||
+      held.entryTransitionId !== incoming.entryTransitionId ||
+      held.pipelineVersionId !== incoming.pipelineVersionId ||
+      held.createdAt !== incoming.createdAt ||
+      (held.runId !== null && held.runId !== incoming.runId) ||
+      !sameJson(held.team, incoming.team);
+    if (sessionChanged) return "That copy of the team session changes what the session was — its item, step entry, pipeline version, team or run — which is never rewritten.";
+  }
+  for (const attempt of record.attempts) {
+    const was = getTeamAttempt(db, attempt.id);
+    if (was === undefined) continue;
+    const agentChanged = was.agentId !== null && knownAgentId(db, attempt.agentId) !== null && was.agentId !== attempt.agentId;
+    const changed =
+      was.sessionId !== attempt.sessionId ||
+      was.itemId !== attempt.itemId ||
+      was.assignmentKey !== attempt.assignmentKey ||
+      was.role !== attempt.role ||
+      agentChanged ||
+      was.agentName !== attempt.agentName ||
+      was.instructions !== attempt.instructions ||
+      was.round !== attempt.round ||
+      was.attempt !== attempt.attempt ||
+      was.createdAt !== attempt.createdAt ||
+      (was.runId !== null && was.runId !== attempt.runId) ||
+      !sameJson(was.evidenceBaseline, attempt.evidenceBaseline);
+    if (changed) return `That copy of the team session changes what the attempt at "${was.assignmentKey}" was — its assignment, agent, instructions, evidence or run — which is never rewritten.`;
+  }
+  return null;
+}
+
+/**
  * Merges an incoming copy of a session into what is held: what only grows
- * is never taken back. An ended session stays ended as it ended; the
- * device that owns it, once known, stays known.
+ * is never taken back, and what the session was is never rewritten. An
+ * ended session stays ended as it ended; the device that owns it, once
+ * known, stays known.
  */
 function mergeSession(held: TeamSessionRow | undefined, incoming: TeamSessionRow): TeamSessionRow {
   if (held === undefined) return incoming;
   const ended = held.status !== "open";
   return {
     ...incoming,
+    itemId: held.itemId,
+    stepId: held.stepId,
+    entryTransitionId: held.entryTransitionId,
+    pipelineVersionId: held.pipelineVersionId,
+    team: held.team,
+    runId: held.runId ?? incoming.runId,
     status: ended ? held.status : incoming.status,
     result: ended ? held.result : incoming.result,
     finalCommentId: held.finalCommentId ?? incoming.finalCommentId,
@@ -558,7 +670,8 @@ function mergeSession(held: TeamSessionRow | undefined, incoming: TeamSessionRow
 /**
  * The same for one attempt: an accepted report, its outcome, an end and a
  * supersession are each written once and kept, so a copy that arrives
- * late or twice cannot accept a second contribution or undo the first.
+ * late or twice cannot accept a second contribution or undo the first;
+ * and who it was, what it was asked and what it was shown stay as held.
  */
 function mergeAttempt(held: TeamAttemptRow | undefined, incoming: TeamAttemptRow): TeamAttemptRow {
   if (held === undefined) return incoming;
@@ -566,6 +679,16 @@ function mergeAttempt(held: TeamAttemptRow | undefined, incoming: TeamAttemptRow
   const ended = ENDED_ATTEMPT.has(held.status);
   return {
     ...incoming,
+    sessionId: held.sessionId,
+    itemId: held.itemId,
+    assignmentKey: held.assignmentKey,
+    role: held.role,
+    agentId: held.agentId ?? incoming.agentId,
+    agentName: held.agentName,
+    instructions: held.instructions,
+    round: held.round,
+    attempt: held.attempt,
+    evidenceBaseline: held.evidenceBaseline,
     status: ended ? held.status : incoming.status,
     outcome: accepted ? held.outcome : incoming.outcome,
     reportCommentId: held.reportCommentId ?? incoming.reportCommentId,
@@ -619,6 +742,8 @@ function writeMerged(db: Db, record: TeamSessionRecord, stamp: number | null): v
 export function writeAdoptedTeamSession(db: Db, record: TeamSessionRecord, deviceId: string, stamp: number): string | null {
   const waiting = teamSessionWaitingFor(db, record);
   if (waiting !== null) return `team session ${record.session.id} names ${waiting}, which did not arrive`;
+  const mismatch = teamSessionMismatch(db, record) ?? provenanceConflict(db, getTeamSession(db, record.session.id), record);
+  if (mismatch !== null) return `team session ${record.session.id}: ${mismatch}`;
   writeMerged(db, { session: { ...record.session, deviceId: record.session.deviceId ?? deviceId }, attempts: record.attempts }, stamp);
   return null;
 }
@@ -645,6 +770,7 @@ export function mirrorTeamSession(db: Db, record: TeamSessionRecord): { placed: 
 function addsNothing(db: Db, held: TeamSessionRow, command: RecordTeamSessionCommand): boolean {
   if (held.status === "open" && command.session.status !== "open") return false;
   if (held.status === "open" && (held.result !== command.session.result || held.supersededBy !== command.session.supersededBy)) return false;
+  if ((held.runId === null && command.session.runId !== null) || (held.finalCommentId === null && command.session.finalCommentId !== null)) return false;
   for (const incoming of command.attempts) {
     const attempt = getTeamAttempt(db, incoming.id);
     if (attempt === undefined) return false;
@@ -657,9 +783,34 @@ function addsNothing(db: Db, held: TeamSessionRow, command: RecordTeamSessionCom
 }
 
 /**
+ * Why a session may not take a contribution, finalise or open on the
+ * record now, or null when it may: the item is still on the session's step
+ * entry as the record holds it, no other session is open on the item, and
+ * no other session already decided that step entry.
+ */
+function notCurrentProblem(db: Db, session: TeamSessionRow): string | null {
+  const entry = entryState(db, session);
+  if (entry === "moved") return "This record has the item on another step now, so that team session can neither take a contribution nor finalise.";
+  if (entry === "reentered") return "This record has the item on a newer entry to that step, so that team session can neither take a contribution nor finalise.";
+  for (const other of db.select().from(teamSessions).where(eq(teamSessions.itemId, session.itemId)).all().map(sessionOf)) {
+    if (other.id === session.id) continue;
+    if (other.status === "open") return "This record has another team session open on this item, so that one is not current.";
+    const decided = other.status === "finalized" || other.status === "failed";
+    if (decided && other.stepId === session.stepId && other.entryTransitionId === session.entryTransitionId) {
+      return "Another team session already decided this step entry, so that one is not current.";
+    }
+  }
+  return null;
+}
+
+/**
  * The record applying a device's report of a session (EO-844).
  *
- * A device may report only a session that is its own and current:
+ * A copy that contradicts what the record holds of what the session or an
+ * attempt was is refused, whoever sent it. A copy that adds nothing to
+ * what is held — a replay — is then acknowledged and writes nothing.
+ * Otherwise a device may report only a session that is its own and
+ * current:
  *
  * - **Stale device.** Refused while another device holds the item's lease,
  *   or when the session belongs to another device. The one exception is
@@ -668,13 +819,17 @@ function addsNothing(db: Db, held: TeamSessionRow, command: RecordTeamSessionCom
  *   the item is closed so the new one can open.
  * - **Superseded or ended session.** Takes nothing more, and a copy
  *   carrying more is refused.
- *
- * A copy that adds nothing to what is held — a replay — is acknowledged
- * first, whoever sent it, and writes nothing.
- * - **Moved item.** A session whose item the record has on another step
- *   cannot accept a report or finalise.
- * - **A second open session.** Refused: the item's open session has to be
- *   superseded first, which the device reports first.
+ * - **Borrowed references.** A run or comment that is another item's or
+ *   another attempt's, or a report not written by its attempt's agent in
+ *   its attempt's run, is refused (`teamSessionMismatch`).
+ * - **Not current.** Every report the copy newly accepts, a finalisation
+ *   and a new open session each need the session to be the item's
+ *   current one: the item still on its step entry as the record holds it
+ *   (the same step, and no move since the one that opened it), no other
+ *   session open, and none that already decided the entry. That holds
+ *   whatever the copy's own status says: a copy that ends `cancelled` or
+ *   `superseded` may close a session but brings no new report with it
+ *   past this.
  *
  * What is applied is merged: a report accepted here, an end and a
  * supersession are never taken back by a later or repeated copy.
@@ -685,6 +840,8 @@ export function applyReportedTeamSession(db: Db, deviceId: string, command: Reco
     return { ok: false, problem: "That team session's attempts do not belong to it." };
   }
   const held = getTeamSession(db, incoming.id);
+  const conflict = provenanceConflict(db, held, command);
+  if (conflict !== null) return { ok: false, problem: conflict };
   // A copy that adds nothing to what is held — a replay after a lost
   // acknowledgement, an older copy arriving behind a newer one — is
   // acknowledged and writes nothing, whoever sent it.
@@ -712,23 +869,25 @@ export function applyReportedTeamSession(db: Db, deviceId: string, command: Reco
 
   const waiting = teamSessionWaitingFor(db, command);
   if (waiting !== null) return { ok: false, problem: `This record has no ${waiting} yet — send it before the team session that names it.` };
+  const mismatch = teamSessionMismatch(db, command);
+  if (mismatch !== null) return { ok: false, problem: mismatch };
 
-  const ending = incoming.status === "cancelled" || incoming.status === "superseded";
-  const item = db.select({ stepId: items.stepId }).from(items).where(eq(items.id, incoming.itemId)).get();
-  if (!ending && item?.stepId !== incoming.stepId) {
-    return { ok: false, problem: "This record has the item on another step now, so that team session can neither take a contribution nor finalise." };
-  }
+  let accepting = false;
   for (const attempt of command.attempts) {
-    const heldAttempt = held === undefined ? undefined : getTeamAttempt(db, attempt.id);
-    if (heldAttempt?.supersededBy != null && heldAttempt.reportCommentId === null && attempt.reportCommentId !== null) {
-      return { ok: false, problem: `The attempt at "${attempt.assignmentKey}" was replaced, so its report is not taken.` };
+    if (attempt.reportCommentId === null) continue;
+    const heldAttempt = getTeamAttempt(db, attempt.id);
+    if (heldAttempt?.reportCommentId != null) continue;
+    if (heldAttempt?.supersededBy != null) return { ok: false, problem: `The attempt at "${attempt.assignmentKey}" was replaced, so its report is not taken.` };
+    if (heldAttempt !== undefined && ENDED_ATTEMPT.has(heldAttempt.status)) {
+      return { ok: false, problem: `The attempt at "${attempt.assignmentKey}" has already ended (${heldAttempt.status}), so its report is not taken.` };
     }
+    accepting = true;
   }
-  if (held === undefined) {
-    const other = currentTeamSession(db, incoming.itemId);
-    if (other !== undefined && other.id !== incoming.id && incoming.status === "open") {
-      return { ok: false, problem: "This record has another team session open on this item, so that one is not current." };
-    }
+  const deciding = incoming.status === "finalized" || incoming.status === "failed";
+  const opening = held === undefined && incoming.status === "open";
+  if (accepting || deciding || opening) {
+    const why = notCurrentProblem(db, incoming);
+    if (why !== null) return { ok: false, problem: why };
   }
 
   writeMerged(db, { session: { ...incoming, deviceId: held?.deviceId ?? deviceId }, attempts: command.attempts }, now);
