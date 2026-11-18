@@ -32,6 +32,18 @@ import { StepTeamSchema } from "./team.js";
  * contributions; the four others are ends, and only `open` accepts a
  * contribution or a finalisation.
  */
+/**
+ * The action a participant's own run is recorded under (EO-846).
+ *
+ * A participant's turn is a `runs` row, so its thread, timing and spending
+ * are counted where every run's are; but it is not the item's run at its
+ * step, and nothing that reads an item's runs as its step's — the
+ * scheduler's active runs, the retry backoff, the attempt count, thread
+ * reuse — may mistake it for one. The colon keeps it out of any action a
+ * role could define (`ACTION_KEY_PATTERN`).
+ */
+export const TEAM_PARTICIPANT_ACTION = "team:participant";
+
 export const TEAM_SESSION_STATUSES = ["open", "finalized", "failed", "cancelled", "superseded"] as const;
 export const TeamSessionStatusSchema = z.enum(TEAM_SESSION_STATUSES);
 export type TeamSessionStatus = z.infer<typeof TeamSessionStatusSchema>;

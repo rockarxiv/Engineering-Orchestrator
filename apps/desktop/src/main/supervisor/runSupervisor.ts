@@ -143,6 +143,7 @@ import {
   type SuggestionOutcome,
   type SuggestionSpend,
   MICROCENTS_PER_CENT,
+  type IndependentTeam,
   type PipelineStep,
   type WorkspaceKindSlug,
   skillToolNotServed,
@@ -355,7 +356,8 @@ import { createMemoryConsolidator, type MemoryConsolidatorOptions } from "../mem
 import { archiveReachOf, archiveUnusedSkills } from "../skills/archival.js";
 import { currentWatch, markCheckInFlight, ownerMention, recordQuietCheck, waitingLine, watchArrival, watchHold, watchRoundTrips, WATCH_ROUTED_REASON, WATCH_VERIFICATION_FAILED_REASON } from "./watches.js";
 import { agentMentionChain } from "./escalation.js";
-import { answerTeamCall, type TeamParticipantScopes } from "./teamParticipants.js";
+import { answerTeamCall, createTeamParticipantScopes, type TeamParticipantScopes } from "./teamParticipants.js";
+import { createTeamSupervisor, MACHINE_PARTICIPANT_LIMIT, type ReportOnlyProviderAnswer } from "./teamSupervisor.js";
 
 function safeTurnAttachments(attachments: NonNullable<ReturnType<typeof listCommentsForItem>[number]["attachments"]>): AgentInputAttachment[] {
   return attachments.flatMap((attachment) => attachment.id ? [{
@@ -466,6 +468,17 @@ export interface RunSupervisorOptions {
   teamParticipants?: TeamParticipantScopes;
   /** Where the folder kind keeps a team's copies of a folder (EO-845); `~/.eo/team-evidence` when left out. */
   teamEvidenceRoot?: string;
+  /**
+   * A report-only provider for one team participant's attempt (EO-846):
+   * `reportOnlyProviderForAgent`, built afresh per attempt and never
+   * cached. Absent, every participant is refused before it starts, saying
+   * so, and a team step decides nothing.
+   */
+  reportOnlyProvider?: (agent: Agent, attemptId: string) => ReportOnlyProviderAnswer;
+  /** How many team participants this machine runs at once, across every team (EO-846); `MACHINE_PARTICIPANT_LIMIT` when left out. */
+  teamParticipantLimit?: number;
+  /** How often a waiting team looks again at what may have changed, in ms (EO-846). Seam for tests. */
+  teamPollMs?: number;
   /**
    * Where an assistant or scenario turn stages and freezes a change to a
    * module (EO-813): the service behind `module_change_prepare`,
@@ -2710,7 +2723,7 @@ export function createRunSupervisor(
     // A credential minted for an attempt is a report-only team
     // participant's (EO-845): answered from that attempt's own captured
     // evidence and nothing else, every other tool refused.
-    if (scope !== null && writes !== null) return answerTeamCall(db, options.teamParticipants, itemId, request, writes, scope);
+    if (scope !== null && writes !== null) return answerTeamCall(db, teamScopes, itemId, request, writes, scope);
     // The evidence tools are a participant's alone: no other credential
     // is answered them, whatever its server lists.
     if (isTeamEvidenceTool(request.tool)) return { ok: false, code: "TOOL_NOT_SERVED", problem: `Only a report-only team participant is served ${request.tool}, so nothing was read.` };
@@ -4363,6 +4376,70 @@ export function createRunSupervisor(
   /** Runs explicitly cancelled by a person or forced shutdown stay cancelled even if a backend races to finish. */
   const forcedCancellationRunIds = new Set<string>();
   const inFlight = new Set<Promise<void>>();
+  /**
+   * The report-only participants running now, by attempt (EO-845): what
+   * their evidence tools are answered from. The host's, where it passed
+   * one; this process's own otherwise.
+   */
+  const teamScopes: TeamParticipantScopes = options.teamParticipants ?? createTeamParticipantScopes();
+  /** The team runs this process is driving, from their row to their end (EO-846). */
+  const teamRuns = new Set<string>();
+  /**
+   * Independent teams, run as their step's run (EO-846, `teamSupervisor.ts`).
+   * Its participants are counted against the team's, the machine's and
+   * their agents' limits, and against nothing that holds other items.
+   */
+  const teams = createTeamSupervisor({
+    db,
+    now,
+    reportOnlyProvider:
+      options.reportOnlyProvider ??
+      ((agent) => ({ ok: false, problem: `EO did not start ${agent.name} as a report-only team participant, because this desktop has no way to hold a participant to reading and reporting.` })),
+    scopes: teamScopes,
+    writeBridge: () => options.agentWriteBridge?.() ?? null,
+    machineLimit: () => options.teamParticipantLimit ?? MACHINE_PARTICIPANT_LIMIT,
+    perAgentLimit: () => (typeof limits === "function" ? limits() : limits).perAgentConcurrency,
+    ordinaryTurnsOf: (agentId) => listActiveRuns(db).filter((run) => run.agentId === agentId && !teams.isWaitingParent(run.id)).length,
+    restriction: participantRestriction,
+    budgetLeft: (itemId) => {
+      const guards = readGuards();
+      return {
+        itemCents: guards.perItemBudgetCents == null ? null : Math.max(0, guards.perItemBudgetCents - sumCostCentsForItem(db, itemId)),
+        dayCents: guards.dailyBudgetCents == null ? null : Math.max(0, guards.dailyBudgetCents - sumCostCentsSince(db, startOfDay(now()))),
+      };
+    },
+    holdsLease: (itemId) => heldLeases.has(itemId),
+    track: (promise) => {
+      const tracked = promise.then(() => undefined);
+      inFlight.add(tracked);
+      void tracked.finally(() => inFlight.delete(tracked));
+    },
+    onChange: () => notifyStateChange(),
+    ...(options.teamPollMs === undefined ? {} : { pollMs: options.teamPollMs }),
+  });
+
+  /**
+   * What stands between a team participant and its turn now (EO-846):
+   * each of the restrictions any dispatch answers to, asked of the
+   * participant's own agent — none inherited from the team's run, whose
+   * agent may be one a pause lets through and whose budget check passed
+   * before the participant's turn was ever priced.
+   */
+  function participantRestriction(agent: Agent, item: Item): { kind: "wait" | "refuse"; reason: string } | null {
+    if (closing) return { kind: "wait", reason: "EO is closing." };
+    if (paused) return { kind: "wait", reason: "EO is paused, so no new participant starts until it is resumed." };
+    if (item.heldAt !== null) return { kind: "wait", reason: "the item is on hold." };
+    if (shelved(item.id)) return { kind: "wait", reason: "the item's project is archived." };
+    if (waitsForRuntime(agent, item)) return { kind: "wait", reason: `${agent.name}'s backend cannot run here right now; it starts once it can.` };
+    if (!isAgentAvailable(agent)) return { kind: "wait", reason: `${agent.name} is not available on this desktop right now.` };
+    const current = getAgent(db, agent.id);
+    if (current === undefined || current.archivedAt !== null) return { kind: "refuse", reason: `${agent.name} has been archived.` };
+    if (!servesProject(current, item)) return { kind: "refuse", reason: `${agent.name} does not work on this item's project.` };
+    if (!backendAllowed(readPolicy(db), current.provider)) return { kind: "refuse", reason: `Your organisation does not allow ${current.provider} agents to run, so ${agent.name} cannot take part.` };
+    // The budget is the team's to share out (`allocateParticipantBudget`),
+    // which stops the team when there is nothing left to share.
+    return null;
+  }
   /** Set right before aborting a run for a guard reason, so the catch block can tell a guard trip apart from a plain cancelRun(). */
   const guardTripReasons = new Map<string, string>();
   /**
@@ -4547,7 +4624,7 @@ export function createRunSupervisor(
   }
 
   function tickInputNow(): TickInput<GateRefusal> {
-    return buildTickInput(
+    const input = buildTickInput(
       db,
       typeof limits === "function" ? limits() : limits,
       paused,
@@ -4560,6 +4637,15 @@ export function createRunSupervisor(
       closing ? NO_PAUSE_EXEMPTIONS : PAUSE_EXEMPTIONS,
       UNCAPPED_ROLES,
     );
+    // Counted in provider turns (EO-846): a team's waiting run holds its
+    // item's slot and runs no turn, so it takes nothing from its agent;
+    // each participant's turn is its agent at work, and takes from that.
+    const participants = teams.participantAgentIds();
+    return {
+      ...input,
+      activeRuns: input.activeRuns.map((run) => (teams.isWaitingParent(run.id) ? { ...run, agentId: null } : run)),
+      ...(participants.length > 0 ? { participantAgentIds: participants } : {}),
+    };
   }
 
   function forcedRestartIntents(): ForcedRestartIntent[] {
@@ -6214,7 +6300,9 @@ export function createRunSupervisor(
       // skill would start the chat's next message on a new thread, and
       // would hold the slot a quick reply waits for. The chat is reviewed
       // once it has gone quiet (`reviewQuietChats`).
-      if (args[3] !== ASSIST_ACTION) await reviewAfterRun(run.id, item, agent, args[3], args[7]);
+      // Nor for a team's own run (EO-846): it had no thread to fork, and
+      // what its participants did is theirs, not its agent's.
+      if (args[3] !== ASSIST_ACTION && !teamRuns.has(run.id)) await reviewAfterRun(run.id, item, agent, args[3], args[7]);
       // The run moved the counts of the skills it was given (EO-720).
       await archiveAfterRun(item);
     } finally {
@@ -6726,7 +6814,11 @@ export function createRunSupervisor(
         // says why and mentions the person, and a reply is what starts
         // it again.
         if (!outcome.retryable) {
-          const reason = `${agent.name} was stopped by an error its backend reports as not retryable, so this was not tried again:\n\n${outcome.message}\n\nReply to try again.`;
+          // A team's own run says what its team could not do (EO-846): no
+          // backend was involved, and its words are the whole account.
+          const reason = teamRuns.has(run.id)
+            ? `${outcome.message}\n\nReply to run the team again.`
+            : `${agent.name} was stopped by an error its backend reports as not retryable, so this was not tried again:\n\n${outcome.message}\n\nReply to try again.`;
           updateRun(db, run.id, {
             status: "awaiting_input",
             error: outcome.message,
@@ -7568,6 +7660,16 @@ export function createRunSupervisor(
     }
     const workspace = prepared.workspace;
 
+    // A step that runs as an independent team (EO-846): the team is this
+    // run's turn. Everything above — the lease, the lock, every guard, the
+    // workspace — is the team's as it would be one agent's; what changes
+    // is what answers.
+    const teamStep = teamStepFor(item, action, opts.stepId);
+    if (teamStep !== null) {
+      await dispatchTeam(item, agent, action, teamStep.step, teamStep.team, workspace, initiationId, nextAttempt, opts);
+      return;
+    }
+
     /** Set when the thread was fine when it was weighed up and not by the time it was needed. */
     let staleReuse: string | null = null;
     // Is there a conversation to carry on rather than a fresh one to
@@ -7910,6 +8012,67 @@ export function createRunSupervisor(
         attachment,
       },
     );
+  }
+
+  /**
+   * The step this dispatch runs as an independent team, with its team, or
+   * null where it runs as one agent (EO-846): an agent step's own entry
+   * action, on real work. A preview runs on no backend and is answered as
+   * one agent; a reply, a mention or a discussion is one agent's too. A
+   * leader-led team runs as one agent until leaders are supported.
+   */
+  function teamStepFor(item: Item, action: string, stepId: string | undefined): { step: PipelineStep; team: IndependentTeam } | null {
+    if (item.previewAt !== null) return null;
+    const step = stepForItem(db, getItem(db, item.id) ?? item);
+    if (step === undefined || step.type !== "agent" || step.entryAction !== action) return null;
+    if (stepId !== undefined && stepId !== step.id) return null;
+    const team = step.team ?? null;
+    return team !== null && team.coordination === "independent" ? { step, team } : null;
+  }
+
+  /**
+   * An independent team's dispatch, from its run's row to its end
+   * (EO-846). The run is the team's own: it holds the item, runs no
+   * provider turn of its own and so spends nothing, and its stream is the
+   * team's (`teamSupervisor.ts`), ending on the one answer the step
+   * returns — which the ordinary path validates and routes.
+   */
+  async function dispatchTeam(
+    item: Item,
+    agent: Agent,
+    action: string,
+    step: PipelineStep,
+    team: IndependentTeam,
+    workspace: PreparedWorkspace,
+    initiationId: string,
+    attempt: number,
+    opts: DispatchOptions,
+  ): Promise<void> {
+    if (heldBack(agent, item.id) || !getItem(db, item.id) || shelved(item.id) || !isAgentAvailable(agent)) return;
+    if (opts.stillEligible?.() === false) return;
+    const run = createRun(db, {
+      itemId: item.id,
+      agentId: agent.id,
+      action,
+      stepId: step.id,
+      status: "queued",
+      cwd: workspace.cwd,
+      initiationId,
+      attempt,
+    });
+    updateRun(db, run.id, { status: "running", startedAt: now() });
+    announceRun(run.id, item.id, "running");
+    opts.onRunAdmitted?.();
+    const controller = new AbortController();
+    teamRuns.add(run.id);
+    const stream = teams.run({ item, step, team, parentRunId: run.id, workspace: { kind: kindFor(item), prepared: workspace }, signal: controller.signal });
+    try {
+      await runToCompletion(run, item, agent, action, stream, null, controller, {
+        ...(opts.transitionOnSuccess !== undefined ? { transitionOnSuccess: opts.transitionOnSuccess } : {}),
+      });
+    } finally {
+      teamRuns.delete(run.id);
+    }
   }
 
   /**
@@ -10246,6 +10409,9 @@ export function createRunSupervisor(
     // would have the record refuse to offer this machine the work it
     // just handed back.
     await record.releaseLeasesOf(deviceId(), heldLeases.keys());
+    // Team participants a restart left at work (EO-846), each ended as EO
+    // stopping it — before anything could be dispatched to replace it.
+    teams.reconcileOrphans();
     const summary: ReconcileSummary = {
       reattached: 0,
       resumed: 0,
@@ -10273,6 +10439,30 @@ export function createRunSupervisor(
         const adopted = itemLock.acquire(run.itemId);
         if (adopted) adoptedHolds.set(run.id, adopted);
         summary.reattached++;
+        continue;
+      }
+
+      // A team's own run (EO-846) has no thread to resume and nothing to
+      // orphan: its session stays open on the same step entry, so the
+      // next dispatch adopts it and carries on from the reports it already
+      // has. No move is written — a move would be a new step entry, and
+      // the session would be stale.
+      if (!teamRuns.has(run.id) && teams.ownsInterruptedRun(run)) {
+        updateRun(db, run.id, {
+          status: "cancelled",
+          error: "interrupted by an app restart; its team's session is kept, and the next dispatch carries it on",
+          interruption: "restart",
+          endedAt: now(),
+        });
+        postComment(db, {
+          itemId: run.itemId,
+          runId: run.id,
+          author: { type: "engine" },
+          kind: "note",
+          body: "EO stopped while the team on this step was working. The reports it had are kept, and the team carries on from them when this item is dispatched again.",
+        });
+        announceRun(run.id, run.itemId, "cancelled");
+        summary.orphaned++;
         continue;
       }
 
@@ -11965,12 +12155,18 @@ export function createRunSupervisor(
     return paused;
   }
 
+  /**
+   * The provider turns running now (EO-846): every live run but a team's
+   * waiting own run, which holds its item and runs nothing, and every
+   * team participant's turn, which is a real process however it is
+   * counted against the caps.
+   */
   function activeRunCount(): number {
-    return activeControllers.size;
+    return [...activeControllers.keys()].filter((runId) => !teams.isWaitingParent(runId)).length + teams.liveCount();
   }
 
   function finishingRunCount(): number {
-    return [...activeControllers.keys()].filter((runId) => !carriesOn(runId)).length;
+    return [...activeControllers.keys()].filter((runId) => !carriesOn(runId) && !teams.isWaitingParent(runId)).length + teams.liveCount();
   }
 
   async function shutdown(): Promise<void> {

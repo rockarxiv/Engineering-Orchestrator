@@ -92,7 +92,8 @@ describe("a step's team, as part of the graph (EO-843)", () => {
     expect(teamOf()).toBeNull();
     const saved = save(TEAM);
     expect(saved.saved).toBe(true);
-    expect(saved.problems).toContainEqual(expect.objectContaining({ severity: "warning", stateId: check.id, message: expect.stringContaining("runs as one agent") }));
+    // An independent team runs (EO-846), so nothing is said about it running as one agent.
+    expect(saved.problems).not.toContainEqual(expect.objectContaining({ stateId: check.id, message: expect.stringContaining("runs as one agent") }));
     expect(teamOf()).toEqual(TEAM);
     expect(listPipelineStepViews(handle.db, { pipelineId }).steps.find((step) => step.id === check.id)?.team).toEqual(TEAM);
 

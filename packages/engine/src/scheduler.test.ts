@@ -492,6 +492,18 @@ describe("tick — skip conditions", () => {
     expect(result[0]?.agent?.id).toBe("agent-2");
   });
 
+  it("5d. counts a team participant's turn against its agent's cap and against no global slot (EO-846)", () => {
+    const input = {
+      items: [makeItem("A")],
+      steps: [makeState("todo")],
+      agents: [makeAgent("agent-1"), makeAgent("agent-2")],
+      participantAgentIds: ["agent-1"],
+      limits: { globalConcurrency: 1, perAgentConcurrency: 1, perRepositoryConcurrency: 10 },
+    };
+    expect(tick(baseInput(input)).map((dispatch) => dispatch.agent?.id)).toEqual(["agent-2"]);
+    expect(tick(baseInput({ ...input, participantAgentIds: ["agent-1", "agent-2"] }))).toEqual([]);
+  });
+
   it("6. the global pause flag stops every dispatch, even an otherwise-eligible one", () => {
     const result = tick(
       baseInput({
