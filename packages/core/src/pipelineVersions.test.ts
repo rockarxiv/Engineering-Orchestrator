@@ -403,6 +403,19 @@ describe("the difference between two versions", () => {
     expect(PipelineGraphSnapshotSchema.parse({ ...parsed, steps: [{ ...parsed.steps[0], team }] }).steps[0]?.team).toEqual(team);
   });
 
+  /** An outcome's label and meaning are what a participant is told; editing only one is still a change (EO-843 review). */
+  it("lists a team whose only change is an outcome's label or its meaning", () => {
+    const team = (outcome: object) =>
+      StepTeamSchema.parse({ coordination: "leader", leader: { role: "reviewer", instructions: "Split it." }, roles: ["tester"], outcomes: [outcome] });
+    const steps = (each: VersionStep["team"]) => [step({ type: "agent", ownerRole: "reviewer", entryAction: "check", team: each })];
+    const before = team({ key: "clear", label: "Clear", meaning: "Nothing needs changing." });
+    for (const after of [team({ key: "clear", label: "All clear", meaning: "Nothing needs changing." }), team({ key: "clear", label: "Clear", meaning: "Nothing at all needs changing." })]) {
+      expect(diffVersions({ number: 1, steps: steps(before), routes: [] }, { number: 2, steps: steps(after), routes: [] }).steps[0]?.fields).toEqual([
+        { field: "team", before: teamWords(before), after: teamWords(after) },
+      ]);
+    }
+  });
+
   it("names the version a module entry rule pins, so moving it is a change", () => {
     const rule = (moduleVersion: number): EntryRule => ({ kind: "module", module: "mod-gate", moduleVersion });
     const diff = diffVersions({ number: 1, steps: [], routes: [], entryRules: [rule(2)] }, { number: 2, steps: [], routes: [], entryRules: [rule(3)] }, new Map([["mod-gate", "Gate"]]));
