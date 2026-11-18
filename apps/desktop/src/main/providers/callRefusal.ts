@@ -1,4 +1,4 @@
-import { RESERVED_MCP_SERVER_NAME, type AgentEvent } from "@eo/core";
+import { RESERVED_MCP_SERVER_NAME, reportOnlyRefusal, TEAM_EVIDENCE_TOOLS, type AgentEvent } from "@eo/core";
 
 /**
  * Which calls a turn given `refuseCallsExcept` may make (EO-732), decided
@@ -38,6 +38,28 @@ export interface CallRule {
   repositoryServer: string | null;
   /** The backend's own answer tool, which the turn may always call. */
   answerTool?: string;
+  /**
+   * Whose rule this is, for the sentence a refusal says: a report-only
+   * team participant's (EO-845), or — left out — a learning review's or
+   * a turn allowed nothing.
+   */
+  purpose?: "reportOnly";
+}
+
+/**
+ * A report-only team participant's rule (EO-845): its four evidence tools
+ * of EO's own server and the backend's answer tool, and nothing else — no
+ * repository index, which reads a live checkout rather than what was
+ * captured, and no other tool of EO's, `item_detail`, `comment_read`,
+ * `comment_search` and `thread_read` among them, which would read the
+ * thread past where the participant may see.
+ *
+ * Applied on every turn of such a participant — its first, a resume and a
+ * recovery — rather than only on a fork, and default-deny: a tool the
+ * rule does not name, whatever a backend adds next, is refused.
+ */
+export function reportOnlyCallRule(answerTool?: string): CallRule {
+  return { eoTools: TEAM_EVIDENCE_TOOLS, repositoryServer: null, purpose: "reportOnly", ...(answerTool === undefined ? {} : { answerTool }) };
 }
 
 /** Why a call was refused, or null for a call the turn may make. */
@@ -46,6 +68,7 @@ export function refusedCall(tool: string, rule: CallRule): string | null {
   const own = `mcp__${RESERVED_MCP_SERVER_NAME}__`;
   if (tool.startsWith(own) && rule.eoTools.includes(tool.slice(own.length))) return null;
   if (rule.repositoryServer !== null && tool.startsWith(`mcp__${rule.repositoryServer}__`)) return null;
+  if (rule.purpose === "reportOnly") return reportOnlyRefusal(tool);
   // A turn allowed nothing at all (a suggested next message's, EO-808) is
   // told so, rather than that it is a learning review.
   if (rule.eoTools.length === 0 && rule.repositoryServer === null) return `EO refused this call: this turn may make no calls. \`${tool}\` was not run, and nothing it would have done happened.`;
