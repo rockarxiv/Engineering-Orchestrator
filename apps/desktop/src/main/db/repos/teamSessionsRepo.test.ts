@@ -295,4 +295,29 @@ describe("a session arriving with a moved project", () => {
     expect(writeAdoptedTeamSession(handle.db, borrowed, "device", Date.now())).toBe(`team session ${session.id}: Comment ${elsewhere.id} is not on this team session's item.`);
     expect(getTeamSessionRecord(handle.db, session.id)).toEqual(record);
   });
+
+  it("is skipped when an attempt names another item or another session, and the item still deletes cleanly", () => {
+    const session = openTeamSession(handle.db, { itemId: item.id, stepId: "todo", team: TEAM });
+    const { attempt } = attemptWithRun(session.id, "security");
+    const other = createTestItem(handle.db, { type: "story", title: "Another", stepId: "todo" });
+    const otherSession = openTeamSession(handle.db, { itemId: other.id, stepId: "todo", team: TEAM });
+    const record = getTeamSessionRecord(handle.db, session.id)!;
+    const stray = { ...attempt, id: "01a1f000-0000-7000-8000-00000000a001", assignmentKey: "clarity", runId: null, reportCommentId: null, status: "queued" as const };
+
+    for (const wrong of [
+      { ...stray, itemId: other.id },
+      { ...stray, sessionId: otherSession.id },
+      { ...stray, sessionId: otherSession.id, itemId: other.id },
+    ]) {
+      expect(writeAdoptedTeamSession(handle.db, { ...record, attempts: [...record.attempts, wrong] }, "device", Date.now())).toBe(
+        `team session ${session.id}: That team session's attempts do not belong to it.`,
+      );
+    }
+    expect(getTeamSessionRecord(handle.db, session.id)).toEqual(record);
+    expect(handle.db.all(sql`select id from team_attempts where id = ${stray.id}`)).toEqual([]);
+
+    deleteItem(handle.db, item.id);
+    expect(handle.db.all(sql`select id from team_attempts where item_id = ${item.id}`)).toEqual([]);
+    expect(handle.db.all(sql`PRAGMA foreign_key_check`)).toEqual([]);
+  });
 });
