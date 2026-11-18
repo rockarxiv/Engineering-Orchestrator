@@ -1,6 +1,6 @@
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { Archive as ArchiveIcon, Check, ExternalLink, GitBranch, GitPullRequest, RefreshCw, Trash2, X } from "lucide-react";
 import { describeItemOriginKind, itemWatchLines, type CommentView, type IpcRequest, type IpcResponse } from "@eo/core";
 import { cn, Markdown } from "@eo/ui";
@@ -77,6 +77,38 @@ export function ItemView({ itemId }: { itemId: string }) {
   const cost = useQuery({ queryKey: ["costs", "item", itemId], queryFn: () => ipcQuery("costs:getForItem", { itemId }) });
 
   useFollowItemProject(itemId, detail.data?.item.projectId ?? null);
+
+  // A comment asked for by link — a team's report or final output (EO-849),
+  // `?comment=<id>`: brought onto the page however far back it is, then
+  // scrolled to, and the request let go once it has been shown.
+  const [search, setSearch] = useSearchParams();
+  const wanted = search.get("comment");
+  const reveal = earlier.reveal;
+  // Once per request: a comment since deleted is let go by the thread, not asked for again and again.
+  const revealed = useRef<string | null>(null);
+  useEffect(() => {
+    if (wanted === null) {
+      revealed.current = null;
+      return;
+    }
+    if (revealed.current === wanted) return;
+    revealed.current = wanted;
+    reveal(wanted);
+  }, [wanted, reveal]);
+  const wantedShown = wanted !== null && earlier.comments.some((comment) => comment.id === wanted);
+  useEffect(() => {
+    if (wanted === null || !wantedShown) return;
+    document.querySelector(`[data-comment-id="${CSS.escape(wanted)}"]`)?.scrollIntoView?.({ block: "center" });
+    setSearch(
+      (previous) => {
+        const next = new URLSearchParams(previous);
+        next.delete("comment");
+        return next;
+      },
+      { replace: true },
+    );
+  }, [wanted, wantedShown, setSearch]);
+
   // New comments and moves arrive as pushes, so the thread stays live
   // without polling — this item's pushes, or ones naming no item, and no
   // other item's (EO-560).

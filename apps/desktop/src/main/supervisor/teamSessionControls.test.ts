@@ -12,18 +12,21 @@ import {
   type AgentProviderStartOptions,
   type IndependentTeam,
   type Item,
+  type StepTeam,
+  type TeamAttemptRow,
+  type TeamSessionRow,
   type Uuid,
 } from "@eo/core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DbHandle } from "../db/client.js";
 import { saveActionDefinition } from "../db/repos/actionDefinitionsRepo.js";
-import { createAgent } from "../db/repos/agentsRepo.js";
-import { listCommentsForItem } from "../db/repos/commentsRepo.js";
+import { createAgent, listAgents } from "../db/repos/agentsRepo.js";
+import { listCommentsForItem, postComment } from "../db/repos/commentsRepo.js";
 import { createRoute } from "../db/repos/index.js";
 import { getItem } from "../db/repos/itemsRepo.js";
 import { createStep } from "../db/repos/pipelineStepsRepo.js";
-import { listRunsForItem } from "../db/repos/runsRepo.js";
-import { listTeamSessionsForItem } from "../db/repos/teamSessionsRepo.js";
+import { createRun, getRun, listRunsForItem, updateRun } from "../db/repos/runsRepo.js";
+import { listTeamSessionsForItem, mirrorTeamSession, openTeamSession } from "../db/repos/teamSessionsRepo.js";
 import { listTransitionsForItem } from "../db/repos/transitionsRepo.js";
 import { createTestItem, openMigratedTestDb } from "../db/testHelpers.js";
 import { moveItem, postCommentCommand, type EngineHandle } from "../ipc/domainCommands.js";
@@ -180,7 +183,7 @@ const asks = (question: string) => ({ outcome: { status: "clarification_required
 
 const engineOf = (made: RunSupervisor) => made as unknown as EngineHandle;
 const session = () => listTeamSessionsForItem(handle.db, item.id).at(-1)!;
-const shown = () => itemTeamSessions(handle.db, item.id)[0]!;
+const shown = () => itemTeamSessions(handle.db, item.id, supervisors.at(-1)?.teamControlSite() ?? null)[0]!;
 
 describe("a person's controls on a team session (EO-849)", () => {
   it("retries what failed without restarting the accepted sibling, and a settled session never runs again", async () => {
@@ -343,4 +346,169 @@ describe("a person's controls on a team session (EO-849)", () => {
     expect(view.retry.allowed).toBe(false);
     expect(view.cancel.allowed).toBe(false);
   });
+
+  it("refuses to cancel or retry a session another desktop runs, and keeps drawing what that desktop reports", async () => {
+    const engine = supervisor();
+    // The executing desktop's session, as the organisation's record mirrors it here.
+    const sashaId = listAgents(handle.db).find((agent) => agent.name === "Sasha")!.id as Uuid;
+    const parent = createRun(handle.db, { itemId: item.id, agentId: quinn.id, action: "alignment", stepId: "check", status: "running" });
+    updateRun(handle.db, parent.id, { startedAt: 1 });
+    const run = createRun(handle.db, { itemId: item.id, agentId: sashaId, action: TEAM_PARTICIPANT_ACTION, stepId: "check", status: "running", provider: "claude" });
+    updateRun(handle.db, run.id, { startedAt: 2, costCents: 3 });
+    const at = Date.now();
+    const remote: TeamSessionRow = {
+      id: uuidv7(), itemId: item.id, stepId: "check", entryTransitionId: null, pipelineVersionId: null, runId: parent.id, team: team(),
+      status: "open", result: null, finalCommentId: null, supersededBy: null, deviceId: "laptop-2", createdAt: at, updatedAt: at, endedAt: null,
+    };
+    const working: TeamAttemptRow = {
+      id: uuidv7(), sessionId: remote.id, itemId: item.id, assignmentKey: "security", role: "sec", agentId: sashaId, agentName: "Sasha", instructions: "Look for ways in.",
+      round: 1, attempt: 1, runId: run.id, status: "running", outcome: null, error: null, evidenceBaseline: null, reportCommentId: null, acceptedAt: null,
+      supersededBy: null, createdAt: at, updatedAt: at, endedAt: null,
+    };
+    expect(mirrorTeamSession(handle.db, { session: remote, attempts: [working] })).toEqual({ placed: true });
+
+    let view = shown();
+    expect(view.state).toBe("running");
+    expect(view.cancel).toEqual({ allowed: false, reason: "This team session is running on another desktop, and only that desktop can stop or retry its participants." });
+    expect(view.retry.allowed).toBe(false);
+    expect(view.retry.reason).toContain("another desktop");
+
+    // Pressed anyway, from a screen drawn before: refused, and nothing here changed.
+    const answer = cancelTeamSessionCommand(handle.db, engineOf(engine), { sessionId: remote.id });
+    expect(answer.cancelled).toBe(false);
+    expect(answer.problem).toContain("another desktop");
+    expect(engine.cancelTeamSession(remote.id)).toEqual({ ok: false, problem: "This team session is running on another desktop, and only that desktop can stop or retry its participants." });
+    expect(session().session.status).toBe("open");
+    expect(getRun(handle.db, run.id)?.status).toBe("running");
+    expect(listCommentsForItem(handle.db, item.id).some((comment) => comment.body.startsWith("Cancelled the team session"))).toBe(false);
+    expect(retryTeamSessionCommand(handle.db, engineOf(engine), { sessionId: remote.id }).retried).toBe(false);
+
+    // Its report arrives later from the record: drawn as reported, never as cancelled.
+    const report = postComment(handle.db, { itemId: item.id, runId: run.id, author: { type: "agent", agentId: sashaId }, body: "**security** — Nothing found\n\nFine." });
+    updateRun(handle.db, run.id, { status: "succeeded", endedAt: 5 });
+    mirrorTeamSession(handle.db, { session: { ...remote, updatedAt: at + 1 }, attempts: [{ ...working, status: "completed", outcome: "clear", reportCommentId: report.id, acceptedAt: at + 1, updatedAt: at + 1, endedAt: at + 1 }] });
+    view = shown();
+    expect(view.assignments[0]?.attempts[0]).toMatchObject({ state: "completed", reportCommentId: report.id });
+    expect(view.state).toBe("running");
+    expect(view.cancel.allowed).toBe(false);
+
+    // And its end.
+    updateRun(handle.db, parent.id, { status: "succeeded", endedAt: 6 });
+    mirrorTeamSession(handle.db, { session: { ...remote, status: "finalized", result: "aligned", updatedAt: at + 2, endedAt: at + 2 }, attempts: [{ ...working, status: "completed", outcome: "clear", reportCommentId: report.id, acceptedAt: at + 1, updatedAt: at + 1, endedAt: at + 1 }] });
+    view = shown();
+    expect(view.state).toBe("finalized");
+    expect(view.cancel.reason).toContain("already ended (finalized)");
+  });
+
+  it("refuses to cancel a team whose runs are working in no process of this desktop, rather than claim to have stopped them", () => {
+    const engine = supervisor();
+    const parent = createRun(handle.db, { itemId: item.id, agentId: quinn.id, action: "alignment", stepId: "check", status: "running" });
+    const opened = openTeamSession(handle.db, { itemId: item.id, stepId: "check", team: team(), runId: parent.id });
+    expect(shown().cancel.reason).toContain("not in EO on this desktop");
+    expect(cancelTeamSessionCommand(handle.db, engineOf(engine), { sessionId: opened.id }).cancelled).toBe(false);
+    expect(session().session.status).toBe("open");
+  });
 });
+
+// ── A leader-led team (EO-847), under the same controls ─────────────
+
+describe("a person's controls on a leader-led team (EO-849)", () => {
+  /** The leader's turns, in order; one is taken per turn. */
+  let leaderTurns: (() => AsyncIterable<AgentEvent>)[];
+  let sashaTurns: number;
+
+  const leaderTeam = (): StepTeam =>
+    StepTeamSchema.parse({ coordination: "leader", leader: { role: "lead", instructions: "Find out whether the export does what was asked." }, roles: ["sec"], limits: { maxRetries: 1 } });
+  const says = (data: unknown) => () =>
+    (async function* () {
+      yield { type: "thread_started", threadId: `t-${uuidv7()}` } as AgentEvent;
+      yield { type: "result", data } as AgentEvent;
+    })();
+  /** The current accepted report at an assignment, by comment id, as the leader would cite it. */
+  const reportOf = (key: string) => session().attempts.find((attempt) => attempt.assignmentKey === key && attempt.status === "completed" && attempt.supersededBy === null)?.reportCommentId ?? "missing";
+  const final = (result: string, contributions: () => string[]) => () =>
+    (async function* () {
+      yield { type: "thread_started", threadId: `t-${uuidv7()}` } as AgentEvent;
+      yield { type: "result", data: { outcome: { decision: "final", answer: { result, summary: `The team says ${result}.` }, contributions: contributions(), disagreements: "None.", limitations: "Only read." } } } as AgentEvent;
+    })();
+
+  beforeEach(() => {
+    createAgent(handle.db, { name: "Lee", role: "lead", provider: "codex", model: "gpt-5", instructions: "You lead." });
+    (handle.db as unknown as { $client: { prepare(source: string): { run(...args: unknown[]): unknown } } }).$client
+      .prepare("update pipeline_steps set team = ? where id = 'check'")
+      .run(JSON.stringify(leaderTeam()));
+    leaderTurns = [];
+    sashaTurns = 0;
+    script = ({ agent }) => {
+      if (agent.name === "Sasha") {
+        sashaTurns += 1;
+        return answerReport("The login is fine.");
+      }
+      const turn = leaderTurns.shift();
+      if (turn === undefined) throw new Error("Nothing scripted for the leader.");
+      return turn();
+    };
+  });
+
+  /** A contributor's report on a leader's team, which declares no outcomes. */
+  async function* answerReport(text: string): AsyncGenerator<AgentEvent> {
+    yield { type: "thread_started", threadId: `t-${uuidv7()}` };
+    yield { type: "result", data: { outcome: { report: text } } };
+  }
+
+  it("parks a leader whose turns failed and were refused past its retries, retries the leader alone, accepts the corrected answer once, and never again", async () => {
+    leaderTurns = [
+      says({ outcome: { decision: "assign", assignments: [{ key: "auth", role: "sec", instructions: "Check the login.", required: true }], note: "One thing to check." } }),
+      // A turn that crashes, then an answer EO refuses: two corrections past the one retry.
+      () =>
+        (async function* () {
+          yield { type: "thread_started", threadId: `t-${uuidv7()}` } as AgentEvent;
+        })(),
+      final("shipped", () => [reportOf("auth")]),
+    ];
+    const engine = supervisor();
+    await engine.runOnce();
+
+    expect(teamRun()[0]?.status).toBe("awaiting_input");
+    expect(session().session.status).toBe("open");
+    let view = shown();
+    expect(view.coordination).toBe("leader");
+    expect(view.state).toBe("waiting");
+    expect(view.waiting.map((wait) => wait.kind)).toEqual(["limits"]);
+    expect(view.retry).toEqual({ allowed: true, reason: null, keys: ["leader"] });
+    expect(view.assignments.find((one) => one.key === "auth")?.attempts.at(-1)?.state).toBe("completed");
+    // Each leader turn replaces the one before; what each ended as is kept.
+    expect(view.assignments.find((one) => one.key === "leader")?.attempts.map((attempt) => [attempt.state, attempt.status])).toEqual([
+      ["superseded", "completed"],
+      ["superseded", "failed"],
+      ["completed", "completed"],
+    ]);
+    // Leader and contributor on different backends, each attributed to its own.
+    expect(view.assignments.find((one) => one.key === "leader")?.attempts[0]?.provider).toBe("codex");
+    expect(view.assignments.find((one) => one.key === "auth")?.attempts[0]?.provider).toBe("claude");
+
+    leaderTurns.push(final("aligned", () => [reportOf("auth")]));
+    expect(retryTeamSessionCommand(handle.db, engineOf(engine), { sessionId: view.id })).toEqual({ retried: true, keys: ["leader"], problem: null });
+    await vi.waitFor(() => expect(getItem(handle.db, item.id)?.stepId).toBe("accepted"));
+
+    // The accepted report was kept: the contributor ran once.
+    expect(sashaTurns).toBe(1);
+    const leader = session().attempts.filter((attempt) => attempt.assignmentKey === "leader");
+    expect(leader.map((attempt) => attempt.status)).toEqual(["completed", "failed", "completed", "cancelled", "completed"]);
+    expect(leader[3]?.error).toBe(TEAM_RETRY_REQUESTED);
+    view = shown();
+    expect(view.state).toBe("finalized");
+    expect(view.final).toMatchObject({ by: "leader", attemptId: leader[4]!.id, limitations: "Only read." });
+    expect(view.final?.contributions).toEqual([session().attempts.find((attempt) => attempt.assignmentKey === "auth")!.id]);
+    expect(listTransitionsForItem(handle.db, item.id)).toHaveLength(1);
+
+    // Settled: no retry, no second route.
+    const again = retryTeamSessionCommand(handle.db, engineOf(engine), { sessionId: view.id });
+    expect(again.retried).toBe(false);
+    expect(again.problem).toContain("never runs again");
+    await engine.runOnce();
+    expect(listTransitionsForItem(handle.db, item.id)).toHaveLength(1);
+    expect(leaderTurns).toEqual([]);
+  });
+});
+
