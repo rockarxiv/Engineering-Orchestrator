@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { ArchivedItemListFiltersSchema, ItemListFiltersSchema, toRegistryView, type AgentRemovalImpact, type IpcChannel, type IpcResponse, type Message, type Uuid } from "@eo/core";
 import { AttachmentStorage } from "../attachments/storage.js";
 import { pipelineHome } from "./pipelineHome.js";
+import { cancelTeamSessionCommand, retryTeamSessionCommand, teamSessionsCommand } from "./teamCommands.js";
 import type { Db } from "../db/client.js";
 import { archiveAgentCommand, customiseAgent, deleteAgentCommand, listAgentDetails, projectStaffing, readGuards, saveAgent, setAgentBinding, savePipeline, validatePipelineCommand, writeGuards } from "./configCommands.js";
 import { runMemoryFacts } from "../process/runScope.js";
@@ -1546,6 +1547,10 @@ export function registerAllHandlers(db: Db, engine: EngineHandle | undefined, re
     opts,
   );
   registerHandler("runs:cancel", (payload) => cancelRun(engine, payload), opts);
+  // A team session, read whole and controlled whole (EO-849).
+  registerHandler("items:teamSessions", (payload) => teamSessionsCommand(db, payload), opts);
+  registerHandler("teams:cancel", (payload) => cancelTeamSessionCommand(db, engine, payload), opts);
+  registerHandler("teams:retry", (payload) => retryTeamSessionCommand(db, engine, payload), opts);
   registerHandler("engine:pause", (payload) => pauseEngine(db, engine, payload), opts);
   registerHandler("engine:resume", () => resumeEngine(db, engine), opts);
   registerHandler("engine:status", () => engineStatus(db, engine), opts);

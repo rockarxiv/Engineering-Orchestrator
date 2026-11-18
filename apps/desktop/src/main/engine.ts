@@ -1,4 +1,5 @@
 import { mkdirSync } from "node:fs";
+import { onTeamSessionWritten } from "./db/teamSessionEvents.js";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { commentToolEnabled, configToolsEnabled, fullThreadEnabled, memoryNoteEnabled, type Agent, type AgentProvider, type McpServer, type JobRunsOn, type RunRuntimeSource, type Skill, type Item } from "@eo/core";
@@ -338,6 +339,10 @@ export function createEngine(options: EngineOptions, packs: readonly CodePack[] 
   // of their own (`changeAnnouncers.ts`). U-04: the badge follows all of
   // it through `onDomainChange`.
   const { announceItem, announceRun } = createChangeAnnouncers(options.onDomainChange);
+  // A team session or attempt written — begun, reported, failed, ended —
+  // is its item changing (EO-849): the item page's team panel asks again.
+  // The run it names announces itself; this is the session around it.
+  onTeamSessionWritten(db, ({ itemId }) => announceItem(itemId));
 
   // The record and the device, wired into one process (EO-322,
   // `ARCHITECTURE.md`, "The record").

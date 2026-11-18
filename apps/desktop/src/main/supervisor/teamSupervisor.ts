@@ -6,7 +6,9 @@ import {
   readLeaderAnswer,
   readParticipantAnswer,
   staffingAgents,
+  TEAM_ENFORCEMENT_UNAVAILABLE,
   TEAM_PARTICIPANT_ACTION,
+  teamWaitNote,
   type Agent,
   type AgentEvent,
   type AgentProvider,
@@ -46,7 +48,7 @@ import { listAgents } from "../db/repos/agentsRepo.js";
 import { getComment, listCommentsForItem, postComment } from "../db/repos/commentsRepo.js";
 import { getItem } from "../db/repos/itemsRepo.js";
 import { createRunEventBuffer } from "../db/repos/runEventBuffer.js";
-import { createRun, getRun, listActiveParticipantRuns, updateRun } from "../db/repos/runsRepo.js";
+import { createRun, getRun, listActiveParticipantRuns, listRunsForItem, updateRun } from "../db/repos/runsRepo.js";
 import {
   acceptTeamReport,
   beginTeamAttempt,
@@ -54,11 +56,14 @@ import {
   endTeamAttempt,
   endTeamSession,
   getTeamSession,
+  getTeamSessionRecord,
   listTeamAttempts,
   listOpenTeamSessions,
   listTeamSessionsForItem,
   openTeamSession,
+  requestTeamRetry,
   startTeamAttempt,
+  teamRetryTargets,
   teamSessionOnEntry,
   teamSessionTotals,
 } from "../db/repos/teamSessionsRepo.js";
@@ -146,6 +151,9 @@ import type { PreparedWorkspace, WorkspaceKind } from "./workspaceKind.js";
  * posts — reports, notes, questions — carries no attachment and changes no
  * file, so it never moves the evidence.
  */
+
+/** What a parked team tells the person it can do (EO-849). */
+export const TEAM_RETRY_WORDS = "Retry the team, or reply, to try again what failed: every report already accepted is kept. Cancel the session to run the whole team afresh.";
 
 /** The machine's participant turns at once, across every team, unless a host says otherwise: the most any one team may run. */
 export const MACHINE_PARTICIPANT_LIMIT = 4;
@@ -515,7 +523,9 @@ export function createTeamSupervisor(deps: TeamSupervisorDeps): TeamSupervisor {
     const { item, attempt, agent, entry } = input;
     const built = deps.reportOnlyProvider(agent, attempt.id);
     if (!built.ok) {
-      endTeamAttempt(db, attempt.id, { status: "failed", error: built.problem }, deps.now());
+      // Kept recognisable (EO-849): a person is told the agent could not be
+      // held to report-only here, not that it tried and failed.
+      endTeamAttempt(db, attempt.id, { status: "failed", error: `${TEAM_ENFORCEMENT_UNAVAILABLE}${built.problem}` }, deps.now());
       return;
     }
     const run = createRun(db, {
@@ -532,6 +542,7 @@ export function createTeamSupervisor(deps: TeamSupervisorDeps): TeamSupervisor {
     const begun = beginTeamAttempt(db, attempt.id, run.id, deps.now());
     if (!begun.ok) {
       updateRun(db, run.id, { status: "cancelled", error: begun.problem, endedAt: deps.now() });
+      endTeamAttempt(db, attempt.id, { status: "cancelled", error: begun.problem }, deps.now());
       return;
     }
     deps.onChange();
@@ -675,6 +686,7 @@ export function createTeamSupervisor(deps: TeamSupervisorDeps): TeamSupervisor {
       // ── The session: this entry's, adopted; or a new one ─────────
       let session = currentTeamSession(db, item.id);
       if (session !== undefined && (session.stepId !== step.id || session.team.coordination !== team.coordination || !teamSessionOnEntry(db, session))) session = undefined;
+      const adopted = session !== undefined;
       if (session === undefined) {
         // Settled on this entry already, and the move it asked for never
         // happened: the same answer again, nothing run twice.
@@ -706,6 +718,20 @@ export function createTeamSupervisor(deps: TeamSupervisorDeps): TeamSupervisor {
       }
       const sessionId = session.id;
       const sessionTeam = session.team;
+
+      // A team parked on what failed, carried on by a person — their reply
+      // or their Retry (EO-849): what failed is tried once more, and every
+      // report already accepted is kept rather than done again. Only after
+      // a park, so a restart that adopts the session grants nothing.
+      if (adopted) {
+        const before = listRunsForItem(db, item.id).filter((one) => one.id !== parentRunId && one.stepId === step.id && one.action !== TEAM_PARTICIPANT_ACTION).at(-1);
+        const record = getTeamSessionRecord(db, sessionId);
+        if (before?.status === "awaiting_input" && record !== undefined) {
+          const targets = teamRetryTargets(db, record);
+          for (const target of targets) requestTeamRetry(db, target.id, deps.now());
+          if (targets.length > 0) note(item, parentRunId, `Trying again what failed — ${targets.map((target) => `**${target.assignmentKey}**`).join(", ")} — and keeping every report already accepted.`);
+        }
+      }
 
       if (!evidence.ok) {
         endTeamSession(db, { sessionId, status: "failed", now: deps.now() });
@@ -754,11 +780,13 @@ export function createTeamSupervisor(deps: TeamSupervisorDeps): TeamSupervisor {
         await Promise.allSettled([...mine].flatMap((attemptId) => { const one = live.get(attemptId); return one === undefined ? [] : [one.done]; }));
       };
 
-      const tell = (key: string, reason: string) => {
+      // Said once per reason, in words a later read of the session takes
+      // the reason back from (`readTeamWaitNote`, EO-849).
+      const tell = (key: string, reason: string, kind: "capacity" | "restricted" = "restricted") => {
         const told1 = `${key}:${reason}`;
         if (told.has(told1)) return;
         told.add(told1);
-        note(item, parentRunId, `**${key}** is waiting to start: ${reason}`);
+        note(item, parentRunId, teamWaitNote(key, kind, reason));
       };
 
       /** Reconciles what the plan fences; answers whether anything not live was ended, so the pass is made again. */
@@ -843,7 +871,7 @@ export function createTeamSupervisor(deps: TeamSupervisorDeps): TeamSupervisor {
           // Held by turns still working, under a budget this one is
           // under too: given back as they finish, so it waits.
           if (share.held) {
-            tell(key, "the budget left is held by participants still working, and is shared out again as they finish.");
+            tell(key, "the budget left is held by participants still working, and is shared out again as they finish.", "capacity");
             return "skipped";
           }
           return "broke";
@@ -934,8 +962,10 @@ export function createTeamSupervisor(deps: TeamSupervisorDeps): TeamSupervisor {
               yield { type: "error", message: checked.message, retryable: false };
               return;
             }
+            // Parked rather than ended (EO-849): the session stays the item's,
+            // so a person can retry what failed without the accepted reports
+            // being done again, or cancel it to start afresh.
             if (pass.kind === "undecided") {
-              endTeamSession(db, { sessionId, status: "failed", now: deps.now() });
               yield pass.event;
               return;
             }
@@ -1010,7 +1040,7 @@ export function createTeamSupervisor(deps: TeamSupervisorDeps): TeamSupervisor {
             kind: "undecided",
             event: {
               type: "error",
-              message: `The team on "${step.name}" could not decide: ${plan.decision.failed.map((key) => `**${key}**`).join(", ")} could not contribute after ${team.limits.maxRetries} ${team.limits.maxRetries === 1 ? "retry" : "retries"}, and a required participant that did not contribute is never read as a finding.\n\n${plan.decision.summary}`,
+              message: `The team on "${step.name}" could not decide: ${plan.decision.failed.map((key) => `**${key}**`).join(", ")} could not contribute after ${team.limits.maxRetries} ${team.limits.maxRetries === 1 ? "retry" : "retries"}, and a required participant that did not contribute is never read as a finding.\n\n${plan.decision.summary}\n\n${TEAM_RETRY_WORDS}`,
               retryable: false,
             },
           };
@@ -1042,7 +1072,7 @@ export function createTeamSupervisor(deps: TeamSupervisorDeps): TeamSupervisor {
           if (outcome === "broke") return { kind: "broke", key: start.key };
           if (outcome === "started") started += 1;
         }
-        for (const waiting of plan.waiting) tell(waiting.key, waitWords(waiting.reason, team));
+        for (const waiting of plan.waiting) tell(waiting.key, waitWords(waiting.reason, team), "capacity");
         return { kind: "wait" };
       }
 
@@ -1071,9 +1101,9 @@ export function createTeamSupervisor(deps: TeamSupervisorDeps): TeamSupervisor {
           }
           return { kind: "settle", result: value.result, answer: record.value, finalCommentId: leaderAttempt.reportCommentId };
         }
+        // Parked rather than ended (EO-849), for the independent team's reason.
         if (plan.next.kind === "failed") {
-          endTeamSession(db, { sessionId, status: "failed", now: deps.now() });
-          return { kind: "end", event: { type: "error", message: `The team on "${step.name}" could not finish: ${plan.next.reason}`, retryable: false } };
+          return { kind: "end", event: { type: "error", message: `The team on "${step.name}" could not finish: ${plan.next.reason}\n\n${TEAM_RETRY_WORDS}`, retryable: false } };
         }
         if (plan.next.kind === "park") return parkOn(attempts);
 
@@ -1085,7 +1115,7 @@ export function createTeamSupervisor(deps: TeamSupervisorDeps): TeamSupervisor {
           if (launched === "broke") return { kind: "broke", key: start.key };
           if (launched === "started") started += 1;
         }
-        for (const waiting of plan.waiting) tell(waiting.key, waitWords(waiting.reason, team));
+        for (const waiting of plan.waiting) tell(waiting.key, waitWords(waiting.reason, team), "capacity");
         return { kind: "wait" };
       }
 

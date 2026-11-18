@@ -51,6 +51,7 @@ export * from "./entryRules.js";
 export * from "./stepBrief.js";
 export * from "./team.js";
 export * from "./teamSession.js";
+export * from "./teamSessionView.js";
 export * from "./teamTurns.js";
 export * from "./team-evidence.js";
 export * from "./portability.js";
