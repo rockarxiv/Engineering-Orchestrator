@@ -11,11 +11,13 @@ import { createRun } from "../db/repos/runsRepo.js";
 import { appendRunEvent, listRunEvents } from "../db/repos/runEventsRepo.js";
 import { getComment, listCommentsForItem, postComment } from "../db/repos/commentsRepo.js";
 import { pendingCommands } from "../db/repos/recordCommandsRepo.js";
+import { transitionItem } from "../db/repos/transitionsRepo.js";
 import {
   acceptTeamReport,
   endTeamAttempt,
   endTeamSession,
   getTeamSessionRecord,
+  mirrorTeamSession,
   openTeamSession,
   startTeamAttempt,
   teamSessionCommand,
@@ -285,5 +287,159 @@ describe("a team session on an item the organisation's record holds", () => {
     expect(pendingCommands(danaDb.db)).toEqual([]);
     expect(getTeamSessionRecord(recordDb.db, first.id)!.session).toMatchObject({ status: "superseded", supersededBy: second.id, deviceId: annaDevice });
     expect(getTeamSessionRecord(recordDb.db, second.id)!.session).toMatchObject({ status: "open", deviceId: danaDevice });
+  });
+
+  it("whose item the record has moved away and back cannot take a contribution or finalise", async () => {
+    // Created on "todo" and never moved, so the session's entry is the item's creation.
+    const session = openTeamSession(annaDb.db, { itemId: item.id, stepId: "todo", team: TEAM });
+    const { attempt } = attemptOn(annaDb.db, session.id, "security");
+    await anna.sync();
+    // The record moves the item away and back before Anna hears of it.
+    transitionItem(recordDb.db, { itemId: item.id, toStepId: "review", actor: "human" });
+    transitionItem(recordDb.db, { itemId: item.id, toStepId: "todo", actor: "human" });
+
+    acceptTeamReport(annaDb.db, { attemptId: attempt.id, outcome: "clear", report: "Still here?" });
+    // The report's comment goes first, as the drain sends it; the session naming it is what is judged.
+    const accepting = await serveApply(serving, { deviceId: annaDevice, commands: pendingCommands(annaDb.db).map((entry) => entry.command) });
+    expect(accepting.results.at(-1)).toMatchObject({
+      applied: false,
+      problem: "This record has the item on a newer entry to that step, so that team session can neither take a contribution nor finalise.",
+    });
+    endTeamSession(annaDb.db, { sessionId: session.id, status: "finalized", result: "approved" });
+    const finalising = await serveApply(serving, { deviceId: annaDevice, commands: [teamSessionCommand(annaDb.db, session.id)!] });
+    expect(finalising.results[0]?.applied).toBe(false);
+    expect(getTeamSessionRecord(recordDb.db, session.id)!.session.status).toBe("open");
+    expect(getTeamSessionRecord(recordDb.db, session.id)!.attempts[0]?.reportCommentId).toBeNull();
+  });
+
+  describe("unseen by the record and ended in the copy", () => {
+    /** Dana's session, current on the record; then the item back with Anna, whose replica never heard of it. */
+    async function currentElsewhere() {
+      leaseTo(danaDevice);
+      const current = openTeamSession(danaDb.db, { itemId: item.id, stepId: "todo", team: TEAM });
+      await dana.sync();
+      leaseTo(annaDevice);
+      const stale = openTeamSession(annaDb.db, { itemId: item.id, stepId: "todo", team: TEAM });
+      const { attempt } = attemptOn(annaDb.db, stale.id, "security");
+      return { current, stale, attempt };
+    }
+
+    it("cancelled, brings no report past another session that is current", async () => {
+      const { current, stale, attempt } = await currentElsewhere();
+      acceptTeamReport(annaDb.db, { attemptId: attempt.id, outcome: "blocking", report: "Smuggled in." });
+      endTeamSession(annaDb.db, { sessionId: stale.id, status: "cancelled" });
+      // The run and the comment reach the record ahead of the session, as the drain sends them.
+      await anna.sync();
+
+      expect(getTeamSessionRecord(recordDb.db, stale.id)).toBeUndefined();
+      const copy = teamSessionCommand(annaDb.db, stale.id)!;
+      const answer = await serveApply(serving, { deviceId: annaDevice, commands: [copy, { ...copy, id: `${copy.id}:superseded`, session: { ...copy.session, status: "superseded" } }] });
+      expect(answer.results.map((result) => [result.applied, result.problem])).toEqual([
+        [false, "This record has another team session open on this item, so that one is not current."],
+        [false, "This record has another team session open on this item, so that one is not current."],
+      ]);
+      expect(getTeamSessionRecord(recordDb.db, current.id)!.session.status).toBe("open");
+    });
+
+    it("finalised, is refused while another is open and once another has decided the entry", async () => {
+      const { current, stale, attempt } = await currentElsewhere();
+      endTeamAttempt(annaDb.db, attempt.id, { status: "failed", error: "Crashed." });
+      endTeamSession(annaDb.db, { sessionId: stale.id, status: "failed" });
+      await anna.sync();
+      expect(getTeamSessionRecord(recordDb.db, stale.id)).toBeUndefined();
+
+      // Dana's session decides the entry; Anna's, arriving after, does not decide it again.
+      leaseTo(danaDevice);
+      endTeamSession(danaDb.db, { sessionId: current.id, status: "finalized", result: "approved" });
+      await dana.sync();
+      leaseTo(annaDevice);
+      const answer = await serveApply(serving, { deviceId: annaDevice, commands: [teamSessionCommand(annaDb.db, stale.id)!] });
+      expect(answer.results[0]).toMatchObject({ applied: false, problem: "Another team session already decided this step entry, so that one is not current." });
+      expect(getTeamSessionRecord(recordDb.db, stale.id)).toBeUndefined();
+    });
+
+    it("cancelled with nothing new to accept, is kept as history", async () => {
+      const { current, stale, attempt } = await currentElsewhere();
+      endTeamAttempt(annaDb.db, attempt.id, { status: "cancelled", error: "Stopped." });
+      endTeamSession(annaDb.db, { sessionId: stale.id, status: "cancelled" });
+      await anna.sync();
+
+      expect(getTeamSessionRecord(recordDb.db, stale.id)!.session.status).toBe("cancelled");
+      expect(getTeamSessionRecord(recordDb.db, current.id)!.session.status).toBe("open");
+    });
+  });
+
+  it("cannot rewrite what a session or an attempt was, on the record or on a replica", async () => {
+    const session = openTeamSession(annaDb.db, { itemId: item.id, stepId: "todo", team: TEAM });
+    const { attempt } = attemptOn(annaDb.db, session.id, "security");
+    await anna.sync();
+    const before = getTeamSessionRecord(recordDb.db, session.id)!;
+
+    acceptTeamReport(annaDb.db, { attemptId: attempt.id, outcome: "clear", report: "Fine." });
+    await anna.sync();
+    const accepted = teamSessionCommand(annaDb.db, session.id)!;
+    const rewrites: RecordTeamSessionCommand[] = [
+      { ...accepted, attempts: accepted.attempts.map((one) => ({ ...one, agentName: "Someone else" })) },
+      { ...accepted, attempts: accepted.attempts.map((one) => ({ ...one, instructions: "Different instructions." })) },
+      { ...accepted, attempts: accepted.attempts.map((one) => ({ ...one, evidenceBaseline: { kind: "git-worktree", ref: "another-tree" } })) },
+      { ...accepted, attempts: accepted.attempts.map((one) => ({ ...one, assignmentKey: "clarity" })) },
+      { ...accepted, session: { ...accepted.session, pipelineVersionId: "another-version" } },
+      { ...accepted, session: { ...accepted.session, team: { ...TEAM, outcomes: TEAM.outcomes.map((one) => ({ ...one, label: `${one.label}, renamed` })) } } },
+      { ...accepted, session: { ...accepted.session, status: "finalized", result: "approved", entryTransitionId: "another-entry" } },
+    ];
+    const answer = await serveApply(serving, { deviceId: annaDevice, commands: rewrites.map((one, n) => ({ ...one, id: `${one.id}:${n}` })) });
+    expect(answer.results.every((result) => result.applied === false && /never rewritten/.test(result.problem ?? ""))).toBe(true);
+
+    const held = getTeamSessionRecord(recordDb.db, session.id)!;
+    expect(held.session).toMatchObject({ team: before.session.team, pipelineVersionId: before.session.pipelineVersionId, entryTransitionId: null, status: "open" });
+    expect(held.attempts[0]).toMatchObject({ agentName: "Rita", instructions: "Attempt at security.", assignmentKey: "security", evidenceBaseline: { kind: "git-worktree", ref: "tree-of-security" } });
+
+    // A replica given a newer copy that says otherwise keeps what it held, and takes what grew.
+    await dana.sync();
+    const there = getTeamSessionRecord(danaDb.db, session.id)!;
+    const later = { session: { ...there.session, team: rewrites[5]!.session.team, updatedAt: there.session.updatedAt + 1 }, attempts: there.attempts.map((one) => ({ ...one, agentName: "Someone else", instructions: "Different." })) };
+    expect(mirrorTeamSession(danaDb.db, later)).toEqual({ placed: true });
+    const kept = getTeamSessionRecord(danaDb.db, session.id)!;
+    expect(kept.session.team).toEqual(TEAM);
+    expect(kept.attempts[0]).toMatchObject({ agentName: "Rita", instructions: "Attempt at security.", reportCommentId: there.attempts[0]!.reportCommentId });
+  });
+
+  it("cannot name another item's run or comment, or a report its attempt did not write", async () => {
+    const session = openTeamSession(annaDb.db, { itemId: item.id, stepId: "todo", team: TEAM });
+    const { attempt, run } = attemptOn(annaDb.db, session.id, "security");
+    const queued = startTeamAttempt(annaDb.db, { sessionId: session.id, assignmentKey: "clarity", role: "reviewer", agentId: AGENT_ID, instructions: "Read it." });
+    if (!queued.ok) throw new Error(queued.problem);
+    await anna.sync();
+    const other = createTestItem(recordDb.db, { type: "story", title: "Another", stepId: "todo", projectId: item.projectId });
+    const elsewhereRun = createRun(recordDb.db, { itemId: other.id, agentId: AGENT_ID, action: "review", stepId: "todo" });
+    const elsewhereComment = postComment(recordDb.db, { itemId: other.id, author: { type: "agent", agentId: AGENT_ID }, runId: elsewhereRun.id, body: "Elsewhere." });
+    const byPerson = postComment(recordDb.db, { itemId: item.id, author: { type: "engine" }, runId: run.id, body: "Not Rita." });
+    const otherRun = postComment(recordDb.db, { itemId: item.id, author: { type: "agent", agentId: AGENT_ID }, body: "No run." });
+
+    const base = teamSessionCommand(annaDb.db, session.id)!;
+    const reporting = (commentId: string) => ({ ...base, attempts: base.attempts.map((one) => (one.id === attempt.id ? { ...one, status: "completed" as const, outcome: "clear", reportCommentId: commentId, acceptedAt: Date.now() } : one)) });
+    const commands: RecordTeamSessionCommand[] = [
+      { ...base, attempts: base.attempts.map((one) => (one.id === queued.attempt.id ? { ...one, runId: elsewhereRun.id, status: "running" as const } : one)) },
+      { ...base, session: { ...base.session, runId: elsewhereRun.id } },
+      reporting(elsewhereComment.id),
+      reporting(byPerson.id),
+      reporting(otherRun.id),
+      { ...base, session: { ...base.session, status: "cancelled", finalCommentId: elsewhereComment.id } },
+    ];
+    const answer = await serveApply(serving, { deviceId: annaDevice, commands: commands.map((one, n) => ({ ...one, id: `${one.id}:${n}` })) });
+    expect(answer.results.map((result) => result.problem)).toEqual([
+      `Run ${elsewhereRun.id} is not on this team session's item.`,
+      `Run ${elsewhereRun.id} is not on this team session's item.`,
+      `Comment ${elsewhereComment.id} is not on this team session's item.`,
+      `Comment ${byPerson.id} was not written by the agent of the attempt at "security".`,
+      `Comment ${otherRun.id} was not written in the run of the attempt at "security".`,
+      `Comment ${elsewhereComment.id} is not on this team session's item.`,
+    ]);
+    const held = getTeamSessionRecord(recordDb.db, session.id)!;
+    expect(held.session).toMatchObject({ status: "open", runId: null, finalCommentId: null });
+    expect(held.attempts.map((one) => [one.runId, one.reportCommentId])).toEqual([
+      [run.id, null],
+      [null, null],
+    ]);
   });
 });

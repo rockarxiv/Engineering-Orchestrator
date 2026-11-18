@@ -5,7 +5,7 @@ import type { DbHandle } from "../client.js";
 import { createTestItem, openMigratedTestDb } from "../testHelpers.js";
 import { createAgent, deleteAgent, updateAgent } from "./agentsRepo.js";
 import { createRun, sumCostCentsForItem, sumCostCentsSince, updateRun } from "./runsRepo.js";
-import { listCommentsForItem } from "./commentsRepo.js";
+import { listCommentsForItem, postComment } from "./commentsRepo.js";
 import { deleteItem, setItemArchived } from "./itemsRepo.js";
 import { transitionItem } from "./transitionsRepo.js";
 import { onTeamSessionWritten } from "../teamSessionEvents.js";
@@ -20,6 +20,7 @@ import {
   openTeamSession,
   startTeamAttempt,
   teamSessionTotals,
+  writeAdoptedTeamSession,
 } from "./teamSessionsRepo.js";
 
 /**
@@ -204,6 +205,34 @@ describe("a stale session", () => {
     expect(endTeamSession(handle.db, { sessionId: session.id, status: "cancelled" }).ok).toBe(true);
   });
 
+  it("opened on the step the item was created on, cannot take a contribution or finalise once the item has moved away and back", () => {
+    // No move has touched the item yet, so the session's entry is "created here".
+    const session = openTeamSession(handle.db, { itemId: item.id, stepId: "todo", team: TEAM });
+    expect(session.entryTransitionId).toBeNull();
+    const { attempt } = attemptWithRun(session.id, "security");
+    transitionItem(handle.db, { itemId: item.id, toStepId: "review", actor: "human" });
+    transitionItem(handle.db, { itemId: item.id, toStepId: "todo", actor: "human" });
+
+    expect(acceptTeamReport(handle.db, { attemptId: attempt.id, outcome: "clear", report: "Back again." }).ok).toBe(false);
+    expect(endTeamAttempt(handle.db, attempt.id, { status: "cancelled", error: "The item moved." }).ok).toBe(true);
+    expect(endTeamSession(handle.db, { sessionId: session.id, status: "finalized", result: "approved" }).ok).toBe(false);
+    expect(listCommentsForItem(handle.db, item.id).some((comment) => comment.body.includes("Back again."))).toBe(false);
+  });
+
+  it("opened on a later entry, cannot take a contribution or finalise once the item has moved away and back", () => {
+    transitionItem(handle.db, { itemId: item.id, toStepId: "review", actor: "human" });
+    transitionItem(handle.db, { itemId: item.id, toStepId: "todo", actor: "human" });
+    const session = openTeamSession(handle.db, { itemId: item.id, stepId: "todo", team: TEAM });
+    const [entry] = handle.db.all<{ id: string }>(sql`select id from transitions where item_id = ${item.id} and to_step_id = 'todo'`);
+    expect(session.entryTransitionId).toBe(entry!.id);
+    const { attempt } = attemptWithRun(session.id, "security");
+    transitionItem(handle.db, { itemId: item.id, toStepId: "review", actor: "human" });
+    transitionItem(handle.db, { itemId: item.id, toStepId: "todo", actor: "human" });
+
+    expect(acceptTeamReport(handle.db, { attemptId: attempt.id, outcome: "clear", report: "Back again." }).ok).toBe(false);
+    expect(endTeamSession(handle.db, { sessionId: session.id, status: "failed" }).ok).toBe(false);
+  });
+
   it("cannot be finalised while an attempt is still at work, nor accept a report on a replaced attempt", () => {
     const session = openTeamSession(handle.db, { itemId: item.id, stepId: "todo", team: TEAM });
     const first = attemptWithRun(session.id, "security");
@@ -251,5 +280,19 @@ describe("team data kept or removed with the item", () => {
     expect(read.attempts[0]).toMatchObject({ agentId: reviewer, agentName: "Rita", status: "completed", outcome: "clear" });
     // The team is the session's own copy, not the step's.
     expect(read.session.team).toEqual(TEAM);
+  });
+});
+
+describe("a session arriving with a moved project", () => {
+  it("is skipped when it names a report on another item, and writes nothing", () => {
+    const session = openTeamSession(handle.db, { itemId: item.id, stepId: "todo", team: TEAM });
+    const { attempt } = attemptWithRun(session.id, "security");
+    const other = createTestItem(handle.db, { type: "story", title: "Another", stepId: "todo" });
+    const elsewhere = postComment(handle.db, { itemId: other.id, author: { type: "agent", agentId: reviewer }, runId: attempt.runId as Uuid, body: "Elsewhere." });
+    const record = getTeamSessionRecord(handle.db, session.id)!;
+    const borrowed = { ...record, attempts: record.attempts.map((one) => ({ ...one, status: "completed" as const, outcome: "clear", reportCommentId: elsewhere.id })) };
+
+    expect(writeAdoptedTeamSession(handle.db, borrowed, "device", Date.now())).toBe(`team session ${session.id}: Comment ${elsewhere.id} is not on this team session's item.`);
+    expect(getTeamSessionRecord(handle.db, session.id)).toEqual(record);
   });
 });
