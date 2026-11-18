@@ -143,9 +143,11 @@ import {
   type SuggestionOutcome,
   type SuggestionSpend,
   MICROCENTS_PER_CENT,
-  type IndependentTeam,
+  type StepTeam,
   type PipelineStep,
   type WorkspaceKindSlug,
+  actionFactsFor,
+  resultSchemaFor,
   skillToolNotServed,
   isTeamEvidenceTool,
   uuidv7,
@@ -357,7 +359,7 @@ import { archiveReachOf, archiveUnusedSkills } from "../skills/archival.js";
 import { currentWatch, markCheckInFlight, ownerMention, recordQuietCheck, waitingLine, watchArrival, watchHold, watchRoundTrips, WATCH_ROUTED_REASON, WATCH_VERIFICATION_FAILED_REASON } from "./watches.js";
 import { agentMentionChain } from "./escalation.js";
 import { answerTeamCall, createTeamParticipantScopes, type TeamParticipantScopes } from "./teamParticipants.js";
-import { createTeamSupervisor, MACHINE_PARTICIPANT_LIMIT, type ReportOnlyProviderAnswer } from "./teamSupervisor.js";
+import { createTeamSupervisor, MACHINE_PARTICIPANT_LIMIT, type ReportOnlyProviderAnswer, type TeamAnswerContract } from "./teamSupervisor.js";
 
 function safeTurnAttachments(attachments: NonNullable<ReturnType<typeof listCommentsForItem>[number]["attachments"]>): AgentInputAttachment[] {
   return attachments.flatMap((attachment) => attachment.id ? [{
@@ -6846,7 +6848,11 @@ export function createRunSupervisor(
         // is no claim to check and no work to move on. The questions go
         // into the thread and the item waits for every one of them.
         if (askedFor) {
-          postClarificationQuestions(db, item, agent.id, run.id, askedFor);
+          // A team's questions are on the thread already, each attributed
+          // to the member and the run that asked it (EO-847): its own run
+          // only parks, and posting them again as its owner's would put
+          // words in the wrong mouth.
+          if (!teamRuns.has(run.id)) postClarificationQuestions(db, item, agent.id, run.id, askedFor);
           updateRun(db, run.id, { status: "awaiting_input", endedAt: now(), threadId });
           announceRun(run.id, item.id, "awaiting_input");
           return;
@@ -8015,34 +8021,35 @@ export function createRunSupervisor(
   }
 
   /**
-   * The step this dispatch runs as an independent team, with its team, or
-   * null where it runs as one agent (EO-846): an agent step's own entry
-   * action, on real work. A preview runs on no backend and is answered as
-   * one agent; a reply, a mention or a discussion is one agent's too. A
-   * leader-led team runs as one agent until leaders are supported.
+   * The step this dispatch runs as a team, with its team, or null where it
+   * runs as one agent (EO-846, EO-847): an agent step's own entry action,
+   * on real work, whichever way the team coordinates. A preview runs on no
+   * backend and is answered as one agent; a mention or a discussion is one
+   * agent's too. A reply to a team's question is the step's entry action
+   * again, so it reaches the team and adopts its session.
    */
-  function teamStepFor(item: Item, action: string, stepId: string | undefined): { step: PipelineStep; team: IndependentTeam } | null {
+  function teamStepFor(item: Item, action: string, stepId: string | undefined): { step: PipelineStep; team: StepTeam } | null {
     if (item.previewAt !== null) return null;
     const step = stepForItem(db, getItem(db, item.id) ?? item);
     if (step === undefined || step.type !== "agent" || step.entryAction !== action) return null;
     if (stepId !== undefined && stepId !== step.id) return null;
-    const team = step.team ?? null;
-    return team !== null && team.coordination === "independent" ? { step, team } : null;
+    return step.team === null || step.team === undefined ? null : { step, team: step.team };
   }
 
   /**
-   * An independent team's dispatch, from its run's row to its end
-   * (EO-846). The run is the team's own: it holds the item, runs no
-   * provider turn of its own and so spends nothing, and its stream is the
-   * team's (`teamSupervisor.ts`), ending on the one answer the step
-   * returns — which the ordinary path validates and routes.
+   * A team's dispatch, from its run's row to its end (EO-846, EO-847). The
+   * run is the team's own: it holds the item, runs no provider turn of its
+   * own and so spends nothing, and its stream is the team's
+   * (`teamSupervisor.ts`), ending on the one answer the step returns —
+   * which the ordinary path validates and routes — or on the questions a
+   * member asked, which park it.
    */
   async function dispatchTeam(
     item: Item,
     agent: Agent,
     action: string,
     step: PipelineStep,
-    team: IndependentTeam,
+    team: StepTeam,
     workspace: PreparedWorkspace,
     initiationId: string,
     attempt: number,
@@ -8065,7 +8072,23 @@ export function createRunSupervisor(
     opts.onRunAdmitted?.();
     const controller = new AbortController();
     teamRuns.add(run.id);
-    const stream = teams.run({ item, step, team, parentRunId: run.id, workspace: { kind: kindFor(item), prepared: workspace }, signal: controller.signal });
+    // A leader's final answer is held to what any agent's answer to this
+    // step is held to (EO-847): the action's schema as its owner's role
+    // defines it, and the results the action declares.
+    const answer: TeamAnswerContract | undefined =
+      team.coordination === "leader"
+        ? {
+            document: resultSchemaFor(registryFor(item), action, typeOf(item), definingRole(item, agent))?.toJsonSchema() ?? null,
+            validate: (raw) => {
+              const checked = validateResult(item, action, raw, definingRole(item, agent), run.id);
+              if (!checked.ok) return checked;
+              if ("clarification" in checked) return { ok: false, error: "A final answer cannot be a question; ask the person instead of answering." };
+              return { ok: true, value: checked.value };
+            },
+            results: (actionFactsFor(registryFor(item), definingRole(item, agent), action)?.results ?? []).map((result) => result.key),
+          }
+        : undefined;
+    const stream = teams.run({ item, step, team, parentRunId: run.id, workspace: { kind: kindFor(item), prepared: workspace }, signal: controller.signal, ...(answer === undefined ? {} : { answer }) });
     try {
       await runToCompletion(run, item, agent, action, stream, null, controller, {
         ...(opts.transitionOnSuccess !== undefined ? { transitionOnSuccess: opts.transitionOnSuccess } : {}),

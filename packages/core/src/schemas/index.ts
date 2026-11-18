@@ -283,15 +283,27 @@ const EMBEDDED_BRANCH_ID = "urn:eo:output-schema:";
  * rather than on the name of the keyword it passes through.
  */
 function placeBranch(document: JsonSchemaDocument, index: number, defs: Record<string, unknown>): JsonSchema {
+  return placeSubschema(document, `${EMBEDDED_BRANCH_PREFIX}${index}`, defs, String(index));
+}
+
+/**
+ * A document placed inside a larger one, by `placeBranch`'s rule: inline
+ * where it carries no reference machinery, and otherwise embedded whole
+ * under `defs[name]` with an identity of its own, so every reference in
+ * it still means what it meant. Exported for a schema that carries an
+ * action's answer as one property of its own answer (EO-847, a team
+ * leader's final answer), which has the same problem one level down.
+ */
+export function placeSubschema(document: JsonSchemaDocument, name: string, defs: Record<string, unknown>, id: string = name): JsonSchema {
   if (typeof document === "boolean") return document ? {} : { not: {} };
 
   const copy = { ...document };
   delete copy["$schema"];
   if (!carriesReferences(copy)) return copy;
 
-  if (typeof copy["$id"] !== "string") copy["$id"] = `${EMBEDDED_BRANCH_ID}${index}`;
-  defs[`${EMBEDDED_BRANCH_PREFIX}${index}`] = copy;
-  return { $ref: `#/$defs/${EMBEDDED_BRANCH_PREFIX}${index}` };
+  if (typeof copy["$id"] !== "string") copy["$id"] = `${EMBEDDED_BRANCH_ID}${id}`;
+  defs[name] = copy;
+  return { $ref: `#/$defs/${name}` };
 }
 
 /**

@@ -745,6 +745,12 @@ export function sumCostCentsBetween(db: Db, startMs: number, endMs: number): num
  *
  * Every caller asks the same question — is this item parked? — so the
  * exclusion belongs here rather than in each of them.
+ *
+ * So does a team participant's turn (EO-846, EO-847), for a reason of
+ * the same shape: it runs inside its team's run, starts after it, and
+ * never parks the item itself. A team that parks to ask the person ends
+ * its own run awaiting input after every participant turn it started,
+ * and those turns must not read as the item's newest run.
  */
 export function listAwaitingInputItemIds(db: Db): Set<Uuid> {
   const rows = db.all<{ itemId: string }>(sql`
@@ -755,6 +761,7 @@ export function listAwaitingInputItemIds(db: Db): Set<Uuid> {
         select 1 from ${runs} r2
         where r2.item_id = r1.item_id
           and r2.action <> ${INTERPRET_ACTION}
+          and r2.action <> ${TEAM_PARTICIPANT_ACTION}
           and (r2.started_at > r1.started_at or (r2.started_at = r1.started_at and r2.id > r1.id))
       )
   `);
