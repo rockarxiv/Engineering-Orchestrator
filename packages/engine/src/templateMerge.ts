@@ -26,7 +26,8 @@
  *   side's is the changed settings, and neither is the base's.
  * - a step **setting**, by step id and field, where the step is in all
  *   three: its type, its entry action, its owner, keep checking, its
- *   inputs, its time limit and its results (`COMPARED_STEP_FIELDS`).
+ *   inputs, its time limit, its results and the team it runs as
+ *   (`COMPARED_STEP_FIELDS`).
  * - a **route**, by the step it leaves and the result key it routes —
  *   two routes out of one result is a graph the validator refuses, so
  *   that pair is a route's identity. Its value is where it goes, with
@@ -43,7 +44,7 @@
  */
 
 /** The step settings compared field by field. */
-export const COMPARED_STEP_FIELDS = ["type", "entryAction", "ownerRole", "watch", "inputs", "timeoutMs", "results"] as const;
+export const COMPARED_STEP_FIELDS = ["type", "entryAction", "ownerRole", "watch", "inputs", "timeoutMs", "results", "team"] as const;
 export type ComparedStepField = (typeof COMPARED_STEP_FIELDS)[number];
 
 /** The route fields that make up a route's value. Its order among its siblings is not one of them. */

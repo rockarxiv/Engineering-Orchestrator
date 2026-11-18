@@ -1,0 +1,11 @@
+-- The report-only team an agent step runs as (EO-843, ARCHITECTURE.md,
+-- "A team on an agent step").
+--
+-- JSON for `brief`'s reason: one step's setting, published with the graph
+-- document in the same click and never queried across steps. NULL on every
+-- existing row, because a step with no team is one agent, which is what
+-- every step written before this column ran as.
+--
+-- Not on `pipeline_versions`: a version freezes its steps whole in its
+-- `steps` document, which carries the team as it carries `brief`.
+ALTER TABLE `pipeline_steps` ADD `team` text;

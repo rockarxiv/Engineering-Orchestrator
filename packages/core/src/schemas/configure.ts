@@ -108,6 +108,10 @@ export const DraftStepSchema = PipelineStepViewSchema.omit({
   // save pins it to that module's newest approved version.
   moduleVersion: true,
   brief: true,
+  // Not offered to the assistant yet (EO-843): a team is configured
+  // through a draft once teams run (EO-848). A draft leaves a step's team
+  // as it is.
+  team: true,
 }).extend({
   /**
    * What a person step's decision bar shows behind "Show details"

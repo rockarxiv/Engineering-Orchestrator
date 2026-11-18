@@ -191,6 +191,8 @@ export function documentGraph(document: PipelineExport): { steps: VersionStep[];
       moduleVersion: null,
       // What the decision's details show (EO-827), which a document carries.
       brief: step.brief ?? null,
+      // The team an agent step runs as (EO-843), which a document carries.
+      team: step.team ?? null,
       results: step.results.map((result) => ({
         key: result.key,
         label: result.label,

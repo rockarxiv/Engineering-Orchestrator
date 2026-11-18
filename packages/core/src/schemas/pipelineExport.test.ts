@@ -137,7 +137,7 @@ describe("a watch that never gives up, in a document", () => {
   });
 
   it("parses under the watch a version-9 build reads, so that build reaches its format check and refuses it there", () => {
-    expect(neverGivesUp.eoPipelineExport).toBe(15);
+    expect(neverGivesUp.eoPipelineExport).toBe(16);
     // `StepWatchSchema` as format 9 had it.
     const version9Watch = z.object({ everyMinutes: z.number().finite(), giveUpAfterHours: z.number().finite().default(168) });
     const watch = (JSON.parse(JSON.stringify(neverGivesUp)) as { steps: { watch: unknown }[] }).steps[0]!.watch;
@@ -181,7 +181,7 @@ describe("a pinned module version, in a document", () => {
   });
 
   it("parses under the step and module schemas a version-13 build reads, so that build reaches its format check and refuses it there", () => {
-    expect(pinned.eoPipelineExport).toBe(15);
+    expect(pinned.eoPipelineExport).toBe(16);
     const version13Step = ExportedStepSchema.omit({ moduleVersion: true });
     const version13Module = ExportedModuleSchema.omit({ version: true });
     expect(version13Step.safeParse(step).success).toBe(true);
@@ -221,7 +221,7 @@ describe("a person step's brief, in a document", () => {
   const approve = { id: "approve", position: 1, name: "Approve", type: "user", ownerRole: null, entryAction: null, instructionsSummary: null, isTerminal: true, planMode: false, brief };
 
   it("parses under the step schema a version-14 build reads, so that build reaches its format check", () => {
-    expect(PIPELINE_EXPORT_VERSION).toBe(15);
+    expect(PIPELINE_EXPORT_VERSION).toBeGreaterThanOrEqual(15);
     expect(ExportedStepSchema.omit({ brief: true }).safeParse(approve).success).toBe(true);
   });
 
@@ -233,5 +233,46 @@ describe("a person step's brief, in a document", () => {
 
   it("refuses a part it cannot read", () => {
     expect(PipelineExportSchema.safeParse(document({ steps: [{ ...approve, brief: [{ show: "mood" }] }] })).success).toBe(false);
+  });
+});
+
+/**
+ * Format 16 (EO-843): an agent step may carry a report-only team, staffed
+ * by role. A version-15 build drops the key rather than refusing it, so it
+ * parses the document and refuses it at its format check instead of
+ * importing the step as one agent.
+ */
+describe("an agent step's team, in a document", () => {
+  const team = {
+    coordination: "independent",
+    participants: [
+      { key: "security", role: "reviewer", instructions: "Look for injection and auth gaps." },
+      { key: "tests", role: "tester", instructions: "Check the tests cover the criteria.", required: false },
+    ],
+    outcomes: [
+      { key: "clear", label: "Clear" },
+      { key: "concerns", label: "Concerns" },
+    ],
+    completion: { rules: [{ when: "any", outcomes: ["concerns"], result: "changes_requested" }], fallback: "approved" },
+  };
+  const review = { id: "review", position: 1, name: "Review", type: "agent", ownerRole: "reviewer", entryAction: "check", instructionsSummary: null, isTerminal: true, planMode: false, team };
+
+  it("parses under the step schema a version-15 build reads, so that build reaches its format check", () => {
+    expect(PIPELINE_EXPORT_VERSION).toBe(16);
+    expect(ExportedStepSchema.omit({ team: true }).safeParse(review).success).toBe(true);
+  });
+
+  it("reads the team back unchanged through JSON, with its limits filled in, and a step without one as one agent", () => {
+    const parsed = PipelineExportSchema.parse(JSON.parse(JSON.stringify(document({ steps: [document().steps[0], review] }))));
+    expect(parsed.steps[1]?.team).toMatchObject({ ...team, limits: { maxParticipants: 4, maxParallel: 2, maxRetries: 1 } });
+    expect(PipelineExportSchema.parse(JSON.parse(JSON.stringify(parsed))).steps[1]?.team).toEqual(parsed.steps[1]?.team);
+    expect(parsed.steps[0]).not.toHaveProperty("team");
+  });
+
+  it("refuses a team naming an agent rather than a role, or granting a participant tools", () => {
+    const withAgent = { ...team, participants: [{ ...team.participants[0], agentId: "019f0000-0000-7000-8000-000000000001" }] };
+    const withTools = { ...team, participants: [{ ...team.participants[0], allowedTools: ["Bash"] }] };
+    expect(PipelineExportSchema.safeParse(document({ steps: [{ ...review, team: withAgent }] })).success).toBe(false);
+    expect(PipelineExportSchema.safeParse(document({ steps: [{ ...review, team: withTools }] })).success).toBe(false);
   });
 });

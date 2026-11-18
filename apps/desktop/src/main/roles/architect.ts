@@ -419,8 +419,20 @@ export function toDomainSteps(pipelineId: string, draft: DraftWithLimits, existi
       // What the decision's details show (EO-827), as entry rules are set:
       // what the draft says, `[]` clearing it, or else the step's own.
       brief: draftStepBrief(draftStep, existing),
+      // A draft is not offered a team yet (EO-843): the step keeps its own.
+      team: draftStepTeam(step, existing),
     };
   });
+}
+
+/**
+ * A draft step's team (EO-843): the step's own, since a draft cannot
+ * configure one yet — unless the draft makes it something other than an
+ * agent's step, which cannot run as a team, and then it is one agent's
+ * no longer and its team goes with it, as the version diff says.
+ */
+export function draftStepTeam(step: { type: PipelineStep["type"] }, existing: Pick<PipelineStep, "team"> | undefined): PipelineStep["team"] {
+  return step.type === "agent" ? (existing?.team ?? null) : null;
 }
 
 /**

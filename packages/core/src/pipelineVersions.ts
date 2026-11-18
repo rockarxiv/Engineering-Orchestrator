@@ -4,6 +4,7 @@ import { describeDuration } from "./limits.js";
 import { PipelineStepViewSchema, StepRouteViewSchema } from "./ipc-schemas.js";
 import { StepWatchSchema, watchLine } from "./watch.js";
 import { StepBriefSchema, briefWords } from "./stepBrief.js";
+import { StepTeamSchema, teamWords } from "./team.js";
 
 /**
  * A published shape of one pipeline (EO-327, the original design).
@@ -258,6 +259,13 @@ export const VersionStepSchema = z.object({
    * so a version written before briefs parses as showing the default.
    */
   brief: StepBriefSchema.nullable().default(null),
+  /**
+   * The report-only team an agent step runs as (EO-843), or null for one
+   * agent. Carried for `results`' reason — who contributes and how the
+   * result is decided is what the step does — and defaulted so a version
+   * written before teams parses as one agent.
+   */
+  team: StepTeamSchema.nullable().default(null),
 });
 export type VersionStep = z.infer<typeof VersionStepSchema>;
 
@@ -355,7 +363,7 @@ export type VersionDiff = z.infer<typeof VersionDiffSchema>;
  * deliberately, and `results` because the buttons a human step offers
  * are what a person on an older version is actually given.
  */
-const DIFFED_FIELDS = ["name", "type", "ownerRole", "entryAction", "instructionsSummary", "isTerminal", "planMode", "offBoard", "position", "results", "watch", "brief"] as const;
+const DIFFED_FIELDS = ["name", "type", "ownerRole", "entryAction", "instructionsSummary", "isTerminal", "planMode", "offBoard", "position", "results", "watch", "brief", "team"] as const;
 
 /**
  * And of a route, in the order it lists them.
@@ -441,6 +449,8 @@ function shownStepField(field: (typeof DIFFED_FIELDS)[number], step: VersionStep
   if (field === "results") return shownResults(step.results);
   // "the default" rather than nothing, for `watch`'s reason below (EO-827).
   if (field === "brief") return briefWords(step.brief, names);
+  // "one agent" rather than nothing, for the same reason (EO-843).
+  if (field === "team") return teamWords(step.team);
   // "runs once" rather than nothing, so turning the mode off reads as a
   // change to something rather than the field disappearing.
   if (field === "watch") return watchLine(step) ?? "runs once";
