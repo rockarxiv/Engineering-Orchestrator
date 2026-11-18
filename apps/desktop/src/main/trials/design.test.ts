@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ADMIN_MCP_SERVER_NAME, AssistOutputSchema, SCRATCH_KIND, pageDescriptorFor, type Agent, type AgentEvent, type Item, type Uuid } from "@eo/core";
+import { ADMIN_MCP_SERVER_NAME, AssistOutputSchema, MOCKED_TEAM_NOTE, SCRATCH_KIND, pageDescriptorFor, type Agent, type AgentEvent, type Item, type Uuid } from "@eo/core";
 import { eq } from "drizzle-orm";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AttachmentStorage } from "../attachments/storage.js";
@@ -24,6 +24,7 @@ import {
   listTrialItemIds,
   listTrialOutcomes,
   getPipeline,
+  listAgents,
   listTrialRounds,
   moduleForkedFrom,
   replacePipelineGraph,
@@ -31,6 +32,7 @@ import {
   readTrialPlan,
   saveModule,
   transitionItem,
+  updateAgent,
   updateRun,
 } from "../db/repos/index.js";
 import { setSetting } from "../db/repos/settingsRepo.js";
@@ -229,6 +231,38 @@ describe("the design card", () => {
     });
     expect(shown.trial!.modules).toEqual([{ slug: "deploy", name: "Deploy" }]);
     expect(shown.trial!).toMatchObject({ changes: [], problem: null, approved: null });
+  });
+
+  it("says whether a team step's team runs for real on the test items, or is mocked and so not tested (EO-848)", async () => {
+    // Team members are held to report-only, which EO can do on Claude and not on the seeded fake backend.
+    for (const agent of listAgents(handle.db)) updateAgent(handle.db, agent.id, { provider: "claude" });
+    const team = { coordination: "leader", leader: { role: "implementer", instructions: "Plan the fix and weigh the reports." }, roles: ["reviewer"] };
+    const draft = hotfixDraft();
+    draft.steps[0] = { ...draft.steps[0]!, team } as (typeof draft.steps)[number];
+    const chat = await conversation();
+
+    const real = read(chat, turn(chat, { message: "The team runs.", draft, trial: hotfixPlan() })!);
+    expect(real.problem).toBeNull();
+    const fix = real.trial!.steps.find((entry) => entry.stepId === "fix")!;
+    expect(fix.team).toEqual({ coordination: "leader", tested: true, note: expect.stringContaining("Runs as a leader-led team for real: its participants run on the test items") });
+    // A step with no team says nothing about one.
+    expect(real.trial!.steps.find((entry) => entry.stepId === "deploy")!.team).toBeNull();
+
+    const plan = hotfixPlan();
+    plan.steps[0] = {
+      stepId: "fix",
+      mode: "mocked",
+      reason: "The team is not what this test is about.",
+      mocks: [
+        { item: "login", resultKey: "done", output: "Fixed." },
+        { item: "drop", resultKey: "done", output: "Fixed." },
+      ],
+    };
+    const mocked = read(chat, turn(chat, { message: "The team is mocked.", draft, trial: plan })!);
+    const mockedFix = mocked.trial!.steps.find((entry) => entry.stepId === "fix")!;
+    expect(mockedFix.mode).toBe("mocked");
+    expect(mockedFix.team).toEqual({ coordination: "leader", tested: false, note: expect.stringContaining(MOCKED_TEAM_NOTE) });
+    expect(mockedFix.team!.note).toMatch(/^Mocked — a leader-led team that does not run on this trial\./);
   });
 
   it("is a publish card, with no trial, when the turn planned no test", async () => {

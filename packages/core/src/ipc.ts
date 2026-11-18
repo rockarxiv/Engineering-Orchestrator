@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { NONE_KIND } from "./schemas/workspaces.js";
+import { TeamReadingSchema } from "./team.js";
 import { StepVerificationSchema } from "./schemas/verification.js";
 import { GalleryNeedSchema, GalleryTemplateViewSchema } from "./schemas/gallery.js";
 import {
@@ -3515,6 +3516,12 @@ export const recordContract = {
       /** The same rules in the words a refusal would use, or null for a pipeline with none. */
       entrySentence: z.string().nullable().default(null),
       /**
+       * Each step that runs as a report-only team (EO-848), read as
+       * dispatch would act on it: staffing, restrictions, the action its
+       * answer is held to and the results it can end on.
+       */
+      teams: z.array(TeamReadingSchema).default([]),
+      /**
        * Each rule as one line, in the order the pipeline lists them, for a
        * person reading what the pipeline asks (EO-736): its words, a module
        * rule's module by name and its time limit, and the types it applies to.
@@ -3876,6 +3883,8 @@ export const recordContract = {
        * mode on a trial.
        */
       outsideReach: OutsideReachByStepSchema.default({}),
+      /** Each step of the graph sent that runs as a team (EO-848), as `pipelineSteps:list` reads a published one. */
+      teams: z.array(TeamReadingSchema).default([]),
     }),
   ),
 

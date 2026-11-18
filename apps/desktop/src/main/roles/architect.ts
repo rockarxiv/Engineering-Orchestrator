@@ -30,6 +30,10 @@ import {
   settledWatch,
   type WorkspaceMode,
   entryRuleWords,
+  NO_TEAM,
+  type StepTeam,
+  teamFactLines,
+  teamWords,
 } from "@eo/core";
 import { hasBlockingProblem, validatePipeline, type WorkflowProblem } from "@eo/engine";
 import type { Db } from "../db/client.js";
@@ -50,7 +54,7 @@ import {
 } from "../db/repos/index.js";
 import { sideEffectingServersByStep } from "../connectors/sideEffects.js";
 import { agentNamed } from "../stepAgents.js";
-import { itemTypesJudged, readGuards, stepAgentsForPipeline } from "../ipc/configCommands.js";
+import { itemTypesJudged, readGuards, reportOnlyRoleProblemsForPipeline, staffedRolesForPipeline, stepAgentsForPipeline } from "../ipc/configCommands.js";
 import { actionUsedBy, describeActionUse } from "../ipc/roleActionCommands.js";
 import { activeProjectId } from "../ipc/repositoryCommands.js";
 
@@ -162,6 +166,11 @@ export function validateDraft(
     // The publish path's own answer (EO-875): the agents a step may name,
     // and the pipeline's project — the two must not disagree about a draft.
     ...stepAgentsForPipeline(db, pipelineId),
+    // The roles a team may be staffed with (EO-843), and whether they could
+    // be staffed with an agent EO cannot hold to report-only (EO-848), as
+    // the publish path asks it.
+    staffedRoles: staffedRolesForPipeline(db, pipelineId),
+    reportOnlyRoleProblems: reportOnlyRoleProblemsForPipeline(db, pipelineId),
     itemCountByStep,
     // Off-dashboard steps are absent from a draft exactly as they are
     // absent from the editor's submission, and "absent" is how a removal
@@ -245,6 +254,8 @@ export interface DraftStepSettings {
   watch?: StepWatch | typeof RUNS_ONCE | undefined;
   workspaceId?: string | undefined;
   workspaceMode?: WorkspaceMode | undefined;
+  /** An agent step's report-only team, or `NO_TEAM` for one agent again (EO-848). */
+  team?: StepTeam | typeof NO_TEAM | undefined;
 }
 
 /**
@@ -265,7 +276,7 @@ export type DraftWithLimits = Omit<PipelineDraft, "steps" | "routes"> & {
 };
 
 /** The keys of `DraftStepSettings`, which `withoutDraftSettings` takes off a step. */
-const DRAFT_SETTING_KEYS = ["timeoutMs", "inputs", "watch", "workspaceId", "workspaceMode"] as const satisfies readonly (keyof DraftStepSettings)[];
+const DRAFT_SETTING_KEYS = ["timeoutMs", "inputs", "watch", "workspaceId", "workspaceMode", "team"] as const satisfies readonly (keyof DraftStepSettings)[];
 
 /**
  * A draft step without the settings it may carry, so what is published is
@@ -286,6 +297,7 @@ export interface SettledStepSettings {
   watch: StepWatch | null;
   workspaceId: string | null;
   workspaceMode: WorkspaceMode;
+  team: StepTeam | null;
 }
 
 /**
@@ -302,7 +314,10 @@ export interface SettledStepSettings {
  * limit, and one that runs nothing of its own loses keep checking —
  * unless the draft *said* one, which is then judged as said: a person's
  * step set to keep checking is a draft `validatePipeline` refuses by
- * name, not one quietly published running once.
+ * name, not one quietly published running once. The same for a team
+ * (EO-848): a step that is no longer an agent's loses the one it had,
+ * and one the draft gives a step that is not an agent's is judged — and
+ * refused — as given.
  */
 export function settledStepSettings(step: { type: string } & DraftStepSettings, existing: PipelineStep | undefined): SettledStepSettings {
   const runsSomething = step.type === "builtin" || step.type === "module";
@@ -313,6 +328,7 @@ export function settledStepSettings(step: { type: string } & DraftStepSettings, 
     watch: step.watch === RUNS_ONCE ? null : step.watch !== undefined ? settledWatch(step.watch) : runsSomething ? (existing?.watch ?? null) : null,
     workspaceId: step.workspaceId === ITEM_WORKSPACE ? null : (step.workspaceId ?? existing?.workspaceId ?? null),
     workspaceMode: step.workspaceMode ?? existing?.workspaceMode ?? DEFAULT_WORKSPACE_MODE,
+    team: step.team === NO_TEAM ? null : step.team !== undefined ? step.team : step.type === "agent" ? (existing?.team ?? null) : null,
   };
 }
 
@@ -440,20 +456,8 @@ export function toDomainSteps(
       // What the decision's details show (EO-827), as entry rules are set:
       // what the draft says, `[]` clearing it, or else the step's own.
       brief: draftStepBrief(draftStep, existing),
-      // A draft is not offered a team yet (EO-843): the step keeps its own.
-      team: draftStepTeam(step, existing),
     };
   });
-}
-
-/**
- * A draft step's team (EO-843): the step's own, since a draft cannot
- * configure one yet — unless the draft makes it something other than an
- * agent's step, which cannot run as a team, and then it is one agent's
- * no longer and its team goes with it, as the version diff says.
- */
-export function draftStepTeam(step: { type: PipelineStep["type"] }, existing: Pick<PipelineStep, "team"> | undefined): PipelineStep["team"] {
-  return step.type === "agent" ? (existing?.team ?? null) : null;
 }
 
 /**
@@ -633,9 +637,15 @@ export function renderDraft(
   // beside its name, so a rename or a removal still says which agent it
   // is. Not where the change itself already says it ("A runs x → B runs x").
   const runBy = (step: { type: string; agent: string | null; entryAction: string | null; isTerminal: boolean }) =>
-    step.type === "agent" && !step.isTerminal ? ` (${describeStep(step)})` : "";
+    step.type === "agent" && !step.isTerminal ? ` (${describeStep(named(step))})` : "";
   if (added.length > 0) {
-    lines.push("**Added**", "", ...added.map((step) => `- ${step.name} — ${describeStep(named(step))}${limitsOf(step, draft.routes, workspaceName, stepNames)}`), "");
+    lines.push("**Added**", "");
+    for (const step of added) {
+      lines.push(`- ${step.name} — ${describeStep(named(step))}${limitsOf(step, draft.routes, workspaceName, stepNames)}`);
+      // The whole team a new step runs as (EO-848), under it.
+      if (step.team !== undefined && step.team !== NO_TEAM) lines.push(...teamLines(step.team, "  "));
+    }
+    lines.push("");
   }
   if (changed.length > 0) {
     lines.push("**Changed**", "");
@@ -914,7 +924,25 @@ function limitsOf(
   }
   // What its decision's details show, where the draft declares it (EO-827).
   if (step.brief !== undefined && step.brief.length > 0) parts.push(`details show ${briefWords(step.brief, stepNames)}`);
+  // Its team (EO-848) in a word here; `teamLines` lists the whole of it under the step.
+  if (step.team !== undefined && step.team !== NO_TEAM) parts.push(step.team.coordination === "leader" ? "runs as a leader-led team" : "runs as an independent team");
   return parts.length === 0 ? "" : ` · ${parts.join(" · ")}`;
+}
+
+/**
+ * A team on a draft card (EO-848), indented under its step: how it is
+ * coordinated, every member with its instructions, what members may
+ * conclude, how it finishes, its limits and that it only reports — the
+ * whole of what Publish would set, in labels a person reads.
+ */
+function teamLines(team: StepTeam, indent: string): string[] {
+  return teamFactLines(team).map((line) => `${indent}- ${line}`);
+}
+
+/** "one agent", "an independent team" or "a leader-led team". */
+function teamKind(team: StepTeam | null): string {
+  if (team === null) return "one agent";
+  return team.coordination === "leader" ? "a leader-led team" : "an independent team";
 }
 
 /**
@@ -950,6 +978,13 @@ function settingChanges(
   if (was.workspaceMode !== now.workspaceMode) changes.push(`Repository: ${modeWords(was.workspaceMode)} → ${modeWords(now.workspaceMode)}`);
   // What the decision's details show (EO-827).
   if (JSON.stringify(was.brief) !== JSON.stringify(now.brief)) changes.push(`Details show: ${briefWords(was.brief, stepNames)} → ${briefWords(now.brief, stepNames)}`);
+  // Its team (EO-848): what it was in a word, then the whole of what it becomes.
+  // Compared as `teamWords` says them, which is the version diff's own
+  // reading: two teams that read the same there are the same team.
+  if (teamWords(was.team) !== teamWords(now.team)) {
+    const head = teamKind(was.team) === teamKind(now.team) ? `Team: ${teamKind(now.team)}, changed` : `Team: ${teamKind(was.team)} → ${teamKind(now.team)}`;
+    changes.push(now.team === null ? head : [head, ...teamLines(now.team, "    ")].join("\n"));
+  }
 
   // "Needs a reason" on a result the step already offered, or on a new
   // one where the draft said it.

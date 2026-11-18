@@ -112,8 +112,8 @@ export const DraftStepSchema = PipelineStepViewSchema.omit({
   // it: the id is this installation's, and a name is what the assistant
   // and the person reading the card both read.
   agentId: true,
-  // Not offered to the assistant yet (EO-843): a team is configured
-  // through a draft once teams run (EO-848). A draft leaves a step's team
+  // Not this draft's (EO-843): the assistant's draft carries a team
+  // (`AssistDraftStepSchema`, EO-848), and this one leaves a step's team
   // as it is.
   team: true,
 }).extend({

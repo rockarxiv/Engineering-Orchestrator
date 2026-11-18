@@ -367,3 +367,39 @@ describe("what the system agent's prompt says about several cards in one reply (
     expect(Number(/prompt-version:\s*(\d+)/.exec(prompt)![1])).toBeGreaterThanOrEqual(63);
   });
 });
+
+describe("what the system agent's prompt says about report-only teams (EO-848)", () => {
+  const teams = () => section("### A report-only team on an agent step");
+
+  it("offers `team` on a draft's agent step, and `\"none\"` for one agent again", () => {
+    expect(flat).toContain("- **An `agent` step may set `team`** — the report-only team it runs as,");
+    expect(teams()).toContain("A team is configured only through a draft and published from its card; `pipeline_save` takes the key off.");
+  });
+
+  it("says every member is report-only, and what it cannot do", () => {
+    expect(teams()).toContain("posts an attributed report on the thread, and cannot edit the work, run commands, change anything outside EO or widen what it may use.");
+  });
+
+  it("gives both coordination modes, their completion and limits", () => {
+    expect(teams()).toContain('"coordination": "independent"');
+    expect(teams()).toContain('"coordination": "leader"');
+    expect(teams()).toContain("A required participant that could not contribute fails the team");
+    expect(teams()).toContain("Left out they are 4, 2, 1 and 2.");
+  });
+
+  it("sends an independent team to the action catalogue, and to a custom action of its own rather than a pack's", () => {
+    expect(teams()).toContain("read the actions with `registry_get`");
+    expect(teams()).toContain("carry a definition of your own in `actions` beside the draft");
+    expect(teams()).toContain("never point the team at a pack's action");
+  });
+
+  it("says what is refused before a card, that live work keeps its version, and how a mocked team is reported on a trial", () => {
+    expect(teams()).toContain("**What is refused**, and named, before a card is offered");
+    expect(teams()).toContain("**Publishing a team files a new version.**");
+    expect(teams()).toContain("do not report the team as tested from a mocked result.");
+  });
+
+  it("is a newer version than the one before teams were drafted", () => {
+    expect(Number(/prompt-version:\s*(\d+)/.exec(prompt)![1])).toBeGreaterThanOrEqual(64);
+  });
+});

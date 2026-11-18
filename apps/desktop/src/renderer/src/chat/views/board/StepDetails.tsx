@@ -8,6 +8,8 @@ import {
   WAITING_RESULT,
   builtinCanWait,
   describeDuration,
+  teamFacts,
+  type StepTeam,
   type HandOffTargets,
   type ModuleView,
   type PipelineStepView,
@@ -129,6 +131,7 @@ export function StepDetails({
       description="This step as published. To change it, ask the assistant."
     >
       <Facts label="Step details" items={facts} />
+      {step.type === "agent" && step.team != null ? <TeamDetails team={step.team} /> : null}
       <section aria-label="Results" className="flex flex-col gap-1.5">
         <h3 className="text-[12.5px] font-medium text-ink">Results and where each goes</h3>
         {results.length === 0 ? (
@@ -157,6 +160,40 @@ export function StepDetails({
       {/* A person's step runs nothing, so nothing of its own is given to a run. */}
       {step.type === "user" ? null : <StepValues stepId={step.id} declared={module?.manifest.needs.env ?? []} />}
     </CardSection>
+  );
+}
+
+/**
+ * The report-only team an agent step runs as (EO-848): how it is
+ * coordinated, who is on it and what each is asked to look at, what they
+ * may conclude, how the step's result is reached, its limits — and that
+ * none of them can change the work, said where a person would look for
+ * what the team is allowed to do.
+ */
+export function TeamDetails({ team }: { team: StepTeam }) {
+  const facts = teamFacts(team);
+  const list = (label: string, lines: readonly string[]) => (
+    <ul aria-label={label} className="flex flex-col gap-0.5">
+      {lines.map((line) => (
+        <li key={line}>{line}</li>
+      ))}
+    </ul>
+  );
+  const items: { term: ReactNode; value: ReactNode }[] = [
+    { term: "Coordination", value: facts.coordination },
+    { term: team.coordination === "leader" ? "Leader and roles" : "Members", value: list("Members", facts.members) },
+  ];
+  if (facts.outcomes.length > 0) items.push({ term: "Outcomes", value: list("Outcomes", facts.outcomes) });
+  items.push({ term: "Completion", value: list("Completion", facts.completion) });
+  items.push({ term: "Limits", value: list("Limits", facts.limits) });
+  return (
+    <section aria-label="Team" className="flex flex-col gap-1.5">
+      <h3 className="text-[12.5px] font-medium text-ink">Runs as a team</h3>
+      <p className="text-[12.5px] text-ink-muted">
+        <Chip>report-only</Chip> {facts.reportOnly}
+      </p>
+      <Facts label="Team details" items={items} />
+    </section>
   );
 }
 
@@ -233,6 +270,12 @@ export function resultRows(
 function whoActs(step: PipelineStepView, verification: StepVerification | undefined, agentKind: string | null): string {
   switch (step.type) {
     case "agent":
+      // A team answers for the step's role (EO-848): its members are said below.
+      if (step.team != null) {
+        return step.team.coordination === "leader"
+          ? `A report-only team, led by a ${step.team.leader.role} agent`
+          : `A report-only team of ${step.team.participants.length} agents — EO decides the result`;
+      }
       return step.agentId === null ? "An agent — none chosen" : agentKind === null ? "An agent" : `An agent — ${agentKind}`;
     case "user":
       return verification?.waitsOn ? `A person — waits on ${verification.waitsOn}` : "A person — EO hands off and waits";

@@ -65,7 +65,6 @@ import { chatPipelineProjectId } from "../ipc/pipelineHome.js";
 import { registry } from "../registry.js";
 import {
   draftStepBrief,
-  draftStepTeam,
   draftStepResults,
   holdingPhrase,
   publishedStepInputs,
@@ -2735,8 +2734,6 @@ function publishableGraphOf(db: Db, read: ReadAssistDraftResult): AssistPublisha
         moduleVersion: null,
         // What the decision's details show (EO-827): the draft's, or the step's own where it says nothing.
         brief: draftStepBrief(draftStep, existing),
-        // Not the draft's to set (EO-843): the step keeps its own team.
-        team: draftStepTeam(step, existing),
       };
     }),
     // "Needs a reason" is the result's, carried above, not the route's.

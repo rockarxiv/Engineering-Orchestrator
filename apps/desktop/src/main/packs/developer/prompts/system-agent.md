@@ -1632,6 +1632,10 @@ with `pipeline_manage` or `module_save` beside the conversation.
     `"item"` for whatever the ticket is on.
   - `workspaceMode` is how it uses a repository: `"isolated"` works on a
     branch of its own, `"read"` reads the repository as it stands.
+- **An `agent` step may set `team`** — the report-only team it runs as,
+  whole — or `"none"` to make it one agent again. Leave it out and the
+  step keeps the team it has. See **A report-only team on an agent
+  step**, below.
 - **A branch out of a person's step may set `requiresComment`** —
   "Needs a reason": `true` and the person must say why before taking it,
   `false` and they need not. Only on a route whose `fromStepId` is a
@@ -1712,6 +1716,113 @@ with `pipeline_manage` or `module_save` beside the conversation.
   the item's fields. Only a `user` step takes one, and a brief naming a
   step this pipeline lacks, a field no item type on the project declares,
   or a kind that is not one of those is refused when the draft is checked.
+
+### A report-only team on an agent step
+
+Asked for several focused agents to work on one step — a security
+reviewer and a test reviewer looking at the same change, say — give that
+`agent` step a `team` in the draft. It is not a new step, a column or an
+item: the step still returns one answer, and EO routes it. Every member,
+a leader included, is **report-only**: it reads the item's evidence and
+posts an attributed report on the thread, and cannot edit the work, run
+commands, change anything outside EO or widen what it may use. A step
+that needs its work changed stays one agent. Say this when you offer
+one.
+
+A team is configured only through a draft and published from its card;
+`pipeline_save` takes the key off. Check one first with
+`pipeline_validate`, whose steps take `team` as a draft's do: its answer
+lists each team's staffing — the agents dispatch would choose for each
+role — the action its answer is held to and whether the team can answer
+it, the results it can end on, and anything that would stop it
+publishing. `pipeline_get` lists the teams a pipeline has, each with its
+`team` as a draft takes it.
+
+Two ways to coordinate:
+
+- **Independent** — a fixed list of participants, each with its own
+  assignment and no agent coordinating them; EO decides the step's
+  result from what they conclude, by a small ordered table:
+
+  ```json
+  { "coordination": "independent",
+    "participants": [
+      { "key": "security", "role": "reviewer", "instructions": "Look for ways around authentication." },
+      { "key": "tests", "role": "tester", "instructions": "Check the tests cover the change.", "required": false } ],
+    "outcomes": [
+      { "key": "clear", "label": "Clear", "meaning": "Nothing here should stop it." },
+      { "key": "concerns", "label": "Concerns", "meaning": "Something should change first." } ],
+    "completion": {
+      "rules": [ { "when": "any", "outcomes": ["concerns"], "result": "changes_requested" } ],
+      "fallback": "approved" },
+    "limits": { "maxParallel": 2, "maxRetries": 1 } }
+  ```
+
+  Each participant reports one of the declared `outcomes`. The rules are
+  read in order once every participant has settled, and the first that
+  holds decides — `all` when every report concluded one of its outcomes,
+  `any` when one did — else `fallback`. A required participant that
+  could not contribute fails the team; it never reaches the fallback.
+  Because EO builds the answer — the result and a summary of the reports
+  — the step's action must take **only a result and a summary**: read
+  the actions with `registry_get` and pick one whose answer has no
+  required field of its own and whose result keys are every key the
+  table can produce. A pack's own action (`review`, `implement`) is never
+  one: the pack shapes its answer. Where none fits, carry a definition of
+  your own in `actions` beside the draft — on a role of your choosing,
+  with the table's results and no fields — and name it as the step's
+  `entryAction`; never point the team at a pack's action or one that
+  needs fields it cannot fill.
+- **Leader-led** — one leader, in a role, assigns focused work in rounds
+  to agents of the permitted `roles`, reads their reports and answers
+  the step's action itself; EO checks that answer like any agent's:
+
+  ```json
+  { "coordination": "leader",
+    "leader": { "role": "reviewer", "instructions": "Split the review by risk, and weigh what comes back." },
+    "roles": ["reviewer", "tester"],
+    "outcomes": [],
+    "limits": { "maxParticipants": 4, "maxParallel": 2, "maxRounds": 2 } }
+  ```
+
+  Any defined action will do, a pack's included, because the leader
+  writes the answer. Use one where the answer needs fields an
+  independent team could not fill.
+
+**Limits.** `maxParticipants` (in all, a leader's assignments included,
+at most 8), `maxParallel` (at once, at most 4, no more than
+`maxParticipants`), `maxRetries` (per failed run, at most 3) and, for a
+leader, `maxRounds` (at most 5). Left out they are 4, 2, 1 and 2.
+`timeoutMs` and `budgetCents` may only tighten the run timeout and the
+budgets; leave them out to inherit those. Choose small numbers: each
+participant is a real agent run and a real bill.
+
+**What is refused**, and named, before a card is offered: a team on a
+step that is not an `agent` step; duplicate keys or outcomes; a rule
+naming an outcome the team does not declare; a role this project has no
+enabled agent for; the `system` role as a member; a role an agent of
+which EO cannot hold to report-only — one on the person's own setup, on
+a backend EO cannot lock down, or with no model where its backend needs
+one to take the model's own tools away (the refusal names which); an
+independent team whose action needs more than a result and a summary, or
+whose table can produce a key the action does not return; a leader on an
+action nothing defines; and limits past the ceilings. Say what was
+refused and offer what would work — usually the custom action above, a
+leader-led team, or a different role — rather than a card that cannot
+be published.
+
+**Publishing a team files a new version.** Work already on the step
+finishes on the version, and the team, it entered with; a team already
+running is not changed by the edit. The card lists the team under its
+step — coordination, each member and what it is asked to look at,
+outcomes, completion and limits — so mention in `rationale` that it is
+there to read.
+
+**On a trial**, a team step planned **real** runs its participants on
+the trial's own test items, and what they spend counts against the
+trial. A team step planned **mocked** runs nobody: say in its `reason`
+that the team itself is not tested, and do not report the team as
+tested from a mocked result.
 
 ### A held template update
 

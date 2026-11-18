@@ -1,13 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { StepTeamSchema, type IpcChannel, type IpcPayload, type PipelineStep, type StepTeam, type Uuid } from "@eo/core";
+import { StepTeamSchema, TEAM_REPORT_ONLY, type IpcChannel, type IpcPayload, type IpcResponse, type PipelineStep, type StepTeam, type Uuid } from "@eo/core";
 import type { DbHandle } from "../db/client.js";
 import { openMigratedTestDb } from "../db/testHelpers.js";
 import { saveActionDefinition } from "../db/repos/actionDefinitionsRepo.js";
 import { copyPipeline } from "../db/repos/pipelineCopyRepo.js";
-import { createPipeline, createProject, createRoute, createStep, currentVersion, listStepsForPipeline, setEntryStep, versionSnapshot } from "../db/repos/index.js";
+import { createPipeline, createProject, createRoute, createStep, currentVersion, listAgents, listStepsForPipeline, setEntryStep, updateAgent, versionSnapshot } from "../db/repos/index.js";
 import { TOOLS, type Dispatch } from "../mcpHost/catalog.js";
 import { exportPipeline, importPipeline } from "../modules/pipelineTransfer.js";
-import { savePipeline } from "./configCommands.js";
+import { savePipeline, validatePipelineCommand } from "./configCommands.js";
 import { listPipelineStepViews } from "./domainQueries.js";
 import { pipelineVersionsCommand } from "./pipelineCommands.js";
 import { clearHandlerRegistry, dispatchIpc, registerHandler } from "./registry.js";
@@ -41,6 +41,10 @@ const TEAM: StepTeam = StepTeamSchema.parse({
 
 beforeEach(() => {
   handle = openMigratedTestDb();
+  // A team's members are held to report-only (EO-845), which EO can do on
+  // Claude and Codex and not on the seeded fake backend — and a team
+  // nobody could be staffed for is refused at publish (EO-848).
+  for (const agent of listAgents(handle.db)) updateAgent(handle.db, agent.id, { provider: "claude" });
   // An action of result and summary alone, which an independent team can answer.
   const defined = saveActionDefinition(handle.db, {
     role: "reviewer",
@@ -174,13 +178,11 @@ describe("a step's team through pipeline_save (EO-843)", () => {
     registerHandler("pipeline:save", (payload) => savePipeline(handle.db, undefined, payload), { exposeErrorDetails: true });
   });
 
-  it("is not offered to an agent, which can neither set nor clear one, and keeps the team a step has", async () => {
-    for (const name of ["pipeline_save", "pipeline_validate"]) {
-      const advertised = JSON.stringify(tool(name).inputSchema);
-      // A step's other settings are offered; its team is not.
-      expect(advertised, name).toContain('"watch"');
-      expect(advertised, name).not.toContain('"team"');
-    }
+  it("is not offered to pipeline_save, which can neither set nor clear one, and keeps the team a step has (EO-848: a team is published from a draft's card)", async () => {
+    const advertised = JSON.stringify(tool("pipeline_save").inputSchema);
+    // A step's other settings are offered; its team is not.
+    expect(advertised).toContain('"watch"');
+    expect(advertised).not.toContain('"team"');
 
     expect(save(TEAM).saved).toBe(true);
     const cleared = await tool("pipeline_save").run(dispatch, graph(null));
@@ -191,5 +193,76 @@ describe("a step's team through pipeline_save (EO-843)", () => {
     const set = await tool("pipeline_save").run(dispatch, graph(TEAM));
     expect(set.ok).toBe(true);
     expect(teamOf()).toBeNull();
+  });
+
+  it("is checked by pipeline_validate, whose answer reads each team as dispatch would: staffing, report-only, the action and its results (EO-848)", async () => {
+    registerHandler("pipeline:validate", (payload) => validatePipelineCommand(handle.db, payload), { exposeErrorDetails: true });
+    expect(JSON.stringify(tool("pipeline_validate").inputSchema)).toContain('"team"');
+
+    const valid = await tool("pipeline_validate").run(dispatch, graph(TEAM));
+    if (!valid.ok) throw new Error(valid.message);
+    const answer = valid.data as IpcResponse<"pipeline:validate">;
+    expect(answer.problems).toEqual([]);
+    expect(answer.teams).toHaveLength(1);
+    const [reading] = answer.teams;
+    expect(reading).toMatchObject({
+      stepId: check.id,
+      coordination: "independent",
+      reportOnly: TEAM_REPORT_ONLY,
+      finalAction: { role: "reviewer", action: "check", answeredBy: "eo", problem: null },
+      results: ["changes_requested", "approved"],
+      problems: [],
+    });
+    expect(reading!.staffing).toEqual([
+      { role: "reviewer", serves: "security", agents: ["Reviewer"], problem: null },
+      { role: "implementer", serves: "tests", agents: ["Implementer"], problem: null },
+    ]);
+    expect(valid.text).toContain("## Teams");
+    expect(valid.text).toContain("- Staffing: reviewer (security) — Reviewer");
+    expect(valid.text).toContain("- Final answer: `reviewer / check`; EO builds the answer (result and summary) from the completion table — compatible");
+    expect(valid.text).toContain("- Completion: If any report concludes Concerns → changes_requested");
+
+    // An action that needs a field the team cannot fill, and an agent EO cannot hold to report-only: both said, as Publish would refuse them.
+    const audit = saveActionDefinition(handle.db, {
+      role: "reviewer",
+      action: "audit",
+      results: [{ key: "approved" }, { key: "changes_requested" }],
+      fields: { type: "object", properties: { findings: { type: "array", items: { type: "string" } } }, required: ["findings"] },
+    });
+    if (!audit.ok) throw new Error(JSON.stringify(audit));
+    const implementer = listAgents(handle.db).find((agent) => agent.role === "implementer")!;
+    updateAgent(handle.db, implementer.id, { config: { inheritAmbientConfig: true } });
+    const auditing = graph(TEAM);
+    auditing.steps = auditing.steps.map((step) => (step.id === check.id ? { ...step, entryAction: "audit" } : step));
+    const refused = await tool("pipeline_validate").run(dispatch, auditing);
+    if (!refused.ok) throw new Error(refused.message);
+    const read = (refused.data as IpcResponse<"pipeline:validate">).teams[0]!;
+    expect(read.finalAction.problem).toMatch(/also requires "findings"\. Use a leader-led team/);
+    expect(read.staffing.find((staff) => staff.role === "implementer")?.problem).toContain("uses the person's own setup");
+    expect(read.problems).toEqual([
+      expect.stringContaining('could be staffed by a "implementer" agent EO cannot hold to report-only'),
+      expect.stringMatching(/also requires "findings"/),
+    ]);
+    // The same sentences the validator refuses a publish with.
+    const problems = (refused.data as IpcResponse<"pipeline:validate">).problems.map((problem) => problem.message);
+    for (const problem of read.problems) expect(problems).toContain(problem);
+    expect(refused.text).toContain("**not compatible**");
+    // And Publish refuses it in the same words, the team as it was left in place.
+    const publishing = savePipeline(handle.db, { notifyStateChange: () => {} }, auditing);
+    expect(publishing.saved).toBe(false);
+    expect(publishing.problems.map((problem) => problem.message)).toEqual(expect.arrayContaining(read.problems));
+    expect(teamOf()).toBeNull();
+  });
+
+  it("is listed by pipeline_get, in a person's words and as a draft's `team` takes it (EO-848)", async () => {
+    registerHandler("pipelineSteps:list", (payload) => listPipelineStepViews(handle.db, payload), { exposeErrorDetails: true });
+    expect(save(TEAM).saved).toBe(true);
+    const read = await tool("pipeline_get").run(dispatch, { pipelineId });
+    if (!read.ok) throw new Error(read.message);
+    expect((read.data as IpcResponse<"pipelineSteps:list">).teams.map((team) => team.stepId)).toEqual([check.id]);
+    expect(read.text).toContain(`### Check (id: ${check.id}) — independent`);
+    expect(read.text).toContain("- Member: security: a reviewer agent, required — Look for auth gaps.");
+    expect(read.text).toContain(`- \`team\`: ${JSON.stringify(TEAM)}`);
+    expect(read.text).toContain("pipeline_save cannot set one");
   });
 });

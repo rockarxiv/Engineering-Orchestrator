@@ -3,7 +3,7 @@ import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { StepTeamSchema, type StepTeam, type Uuid } from "@eo/core";
 import type { DbHandle } from "../db/client.js";
-import { adoptPipeline, getPipelineOrigin, listStepsForPipeline, openUpdateConflict, replacePipelineGraph, listRoutesForPipeline } from "../db/repos/index.js";
+import { adoptPipeline, getPipelineOrigin, listAgents, listStepsForPipeline, updateAgent, openUpdateConflict, replacePipelineGraph, listRoutesForPipeline } from "../db/repos/index.js";
 import { createProject } from "../db/repos/projectsRepo.js";
 import { openMigratedTestDb } from "../db/testHelpers.js";
 import { loadTemplateHistory, type TemplateHistory, type TemplateVersion } from "./history.js";
@@ -28,6 +28,10 @@ let shipped: TemplateHistory;
 
 beforeEach(() => {
   handle = openMigratedTestDb();
+  // A team's members are held to report-only, which EO can do on Claude
+  // and not on the seeded fake backend: a team nobody could be staffed for
+  // is refused when its graph is judged (EO-848).
+  for (const agent of listAgents(handle.db)) updateAgent(handle.db, agent.id, { provider: "claude" });
   shipped = loadTemplateHistory(GALLERY_DIRECTORY);
   // Delivery on the newest version shipped, as a fresh install has it after its first launch.
   // Adopted first, so the board the newest version adds is made on the same project (EO-763).

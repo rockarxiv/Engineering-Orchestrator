@@ -48,6 +48,9 @@ import {
   type JobSummary,
   type JobTrigger,
   type WebhookTrigger,
+  type StepTeam,
+  type TeamReading,
+  TEAM_REPORT_ONLY,
 } from "@eo/core";
 import { describeActionUse } from "../ipc/roleActionCommands.js";
 import { isDeliverable } from "../agentAttachments/pluginDirectory.js";
@@ -1031,6 +1034,11 @@ export function renderPipeline(data: IpcResponse<"pipelineSteps:list">): string 
   lines.push("", "## Routes", "", "A step's result key decides where its ticket goes next.", "");
   for (const route of data.routes) {
     lines.push(`- from ${route.fromStepId} on \`${route.resultKey}\` → ${route.target}${route.label ? ` (${route.label})` : ""}`);
+  }
+  // Each step that runs as a report-only team (EO-848), with its team as
+  // a draft's `team` takes it, so a draft can restate or change it.
+  if (data.teams.length > 0) {
+    lines.push("", ...renderTeamReadings(data.teams, (stepId) => data.steps.find((step) => step.id === stepId)?.team ?? null));
   }
   // As pipeline_save takes them, so what is shown can be sent back
   // (EO-610). Said only where there are any.
@@ -2061,8 +2069,44 @@ export function renderPipelineProblems(data: IpcResponse<"pipeline:validate">): 
     const line = outsideReachLine(reach);
     return line === null ? [] : [`- ${stepId}: ${line}`];
   });
-  if (reaching.length === 0) return verdict.join("\n");
-  return [...verdict, "", "## Steps that act outside EO", "", ...reaching].join("\n");
+  const teams = data.teams.length === 0 ? [] : ["", ...renderTeamReadings(data.teams, () => null)];
+  if (reaching.length === 0) return [...verdict, ...teams].join("\n");
+  return [...verdict, "", "## Steps that act outside EO", "", ...reaching, ...teams].join("\n");
+}
+
+/**
+ * The teams of a graph (EO-848), as `pipeline_get` and `pipeline_validate`
+ * say them: each in a person's words, who dispatch would staff each role
+ * with, the action its single answer is held to and who writes it, the
+ * results it can end on, and what would stop it publishing. `teamOf`
+ * gives the team as a draft's `team` takes it, where the caller has it.
+ */
+function renderTeamReadings(teams: readonly TeamReading[], teamOf: (stepId: string) => StepTeam | null): string[] {
+  const lines = [
+    "## Teams",
+    "",
+    `${TEAM_REPORT_ONLY} A team is set only by a draft's \`team\` on its step, which a person publishes from its card; pipeline_save cannot set one.`,
+  ];
+  for (const team of teams) {
+    lines.push("", `### ${team.stepName} (id: ${team.stepId}) — ${team.coordination === "leader" ? "leader-led" : "independent"}`, "");
+    lines.push(`- Coordination: ${team.facts.coordination}`);
+    for (const member of team.facts.members) lines.push(`- Member: ${member}`);
+    if (team.facts.outcomes.length > 0) lines.push(`- Outcomes a member may report: ${team.facts.outcomes.join("; ")}`);
+    for (const line of team.facts.completion) lines.push(`- Completion: ${line}`);
+    lines.push(`- Limits: ${team.facts.limits.join(", ")}`);
+    for (const staff of team.staffing) {
+      const who = staff.agents.length === 0 ? "nobody" : staff.agents.join(", ");
+      lines.push(`- Staffing: ${staff.role} (${staff.serves}) — ${who}${staff.problem === null ? "" : ` — **${staff.problem}**`}`);
+    }
+    const action = team.finalAction.action === null ? "no action" : `\`${team.finalAction.role ?? "?"} / ${team.finalAction.action}\``;
+    const writer = team.finalAction.answeredBy === "eo" ? "EO builds the answer (result and summary) from the completion table" : "the leader writes the answer, held to the action's schema";
+    lines.push(`- Final answer: ${action}; ${writer}${team.finalAction.problem === null ? " — compatible" : ` — **not compatible**: ${team.finalAction.problem}`}`);
+    lines.push(`- Can end on: ${team.results.length === 0 ? "nothing declared" : team.results.map((key) => `\`${key}\``).join(", ")}`);
+    for (const problem of team.problems) lines.push(`- Would not publish: ${problem}`);
+    const json = teamOf(team.stepId);
+    if (json !== null) lines.push(`- \`team\`: ${JSON.stringify(json)}`);
+  }
+  return lines;
 }
 
 /**

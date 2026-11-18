@@ -122,6 +122,15 @@ export interface ValidatePipelineInput {
    */
   runTimeoutMs?: number;
   /**
+   * Why a role's agents cannot be held to report-only, by role (EO-848):
+   * for each role an agent of which dispatch could choose and EO would
+   * refuse to start as a team participant — a backend that cannot be
+   * locked, the person's own setup, no model to take tools out of. Read
+   * from the agents by the caller, since this package reads nothing.
+   * Absent is "every role can be".
+   */
+  reportOnlyRoleProblems?: Readonly<Record<string, string>>;
+  /**
    * What roles, built-in functions and item types this installation
    * knows about (KAN-124).
    *
@@ -254,6 +263,7 @@ export function validatePipeline(input: ValidatePipelineInput): WorkflowProblem[
     moduleVersions,
     entryRules = [],
     itemTypes = registry.itemTypes,
+    reportOnlyRoleProblems = {},
   } = input;
 
   if (steps.length === 0) {
@@ -270,7 +280,7 @@ export function validatePipeline(input: ValidatePipelineInput): WorkflowProblem[
   }
   // The report-only team an agent step runs as (EO-843): its staffing,
   // the action it answers and its limits.
-  for (const { stepId, severity, message } of teamProblems(steps, { registry, staffedRoles, runTimeoutMs })) {
+  for (const { stepId, severity, message } of teamProblems(steps, { registry, staffedRoles, runTimeoutMs, reportOnlyRoleProblems })) {
     problems.push({ severity, stateId: stepId, message });
   }
 
