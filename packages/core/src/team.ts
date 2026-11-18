@@ -256,9 +256,33 @@ export function deterministicAnswerProblem(stepName: string, action: string, fac
  * run that crashed, timed out or never answered is not a participant who
  * found a problem, and nothing reads one as the other.
  */
-export type TeamContribution =
-  | { key: string; status: "completed"; outcome: string; report: string }
-  | { key: string; status: "failed"; error: string };
+export const TeamReportSchema = z.strictObject({
+  /** The participant's assignment key. */
+  key: TeamKeySchema,
+  status: z.literal("completed"),
+  /** One of the team's declared outcomes — what the participant concluded. */
+  outcome: TeamKeySchema,
+  /** The participant's attributed report, as it goes to the item's thread. */
+  report: z.string().trim().min(1),
+});
+export type TeamReport = z.infer<typeof TeamReportSchema>;
+
+/**
+ * A participant that could not contribute: its run crashed, timed out, ran
+ * out of budget or never answered. It carries no outcome — strictness
+ * refuses one — so a failure can never be read as a conclusion.
+ */
+export const TeamExecutionFailureSchema = z.strictObject({
+  key: TeamKeySchema,
+  status: z.literal("failed"),
+  /** What went wrong with the run, for the summary. Not a finding about the work. */
+  error: z.string().trim().min(1),
+});
+export type TeamExecutionFailure = z.infer<typeof TeamExecutionFailureSchema>;
+
+/** One settled contribution, as it crosses a boundary: a report or a failure, never both. */
+export const TeamContributionSchema = z.discriminatedUnion("status", [TeamReportSchema, TeamExecutionFailureSchema]);
+export type TeamContribution = z.infer<typeof TeamContributionSchema>;
 
 /** What an independent team's contributions come to. */
 export type TeamDecision =
@@ -342,7 +366,12 @@ export function teamWords(team: StepTeam | null | undefined): string {
     ...(team.limits.timeoutMs === undefined ? [] : [`within ${team.limits.timeoutMs} ms`]),
     ...(team.limits.budgetCents === undefined ? [] : [`within ${team.limits.budgetCents}¢`]),
   ].join(", ");
-  const outcomes = team.outcomes.length === 0 ? "" : `; outcomes ${team.outcomes.map((outcome) => outcome.key).join(", ")}`;
+  // Labels and meanings too: a meaning is what a participant is told an
+  // outcome is for, so changing one changes what the team does.
+  const outcomes =
+    team.outcomes.length === 0
+      ? ""
+      : `; outcomes ${team.outcomes.map((outcome) => `${outcome.key} "${outcome.label}"${outcome.meaning === "" ? "" : ` (${JSON.stringify(outcome.meaning)})`}`).join(", ")}`;
   if (team.coordination === "leader") {
     return `led by ${team.leader.role} ("${team.leader.instructions}"), assigning to ${team.roles.join(", ")}${outcomes}; ${limits}`;
   }
