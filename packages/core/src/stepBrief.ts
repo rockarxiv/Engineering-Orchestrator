@@ -58,6 +58,23 @@ export function storedBrief(value: unknown): StepBrief | null {
   return parsed === undefined || parsed.length === 0 ? null : parsed;
 }
 
+/**
+ * A step with every reference it makes to another step of its pipeline
+ * moved through `mapped` (EO-831): what each writer that gives a
+ * pipeline's steps fresh ids — a trial made or revised, a publish, a copy,
+ * an import, a template update — runs every step through beside its id,
+ * its routes and the entry step. Today the one such reference is a brief's
+ * `output` part; the next field that names a step is added here, and every
+ * one of those writers moves it.
+ *
+ * An absent or null brief stays as it was, so a document's step that
+ * declares none still reads as declaring none.
+ */
+export function remapStepReferences<T extends { brief?: StepBrief | null | undefined }>(step: T, mapped: (stepId: string) => string): T {
+  if (step.brief === undefined || step.brief === null) return step;
+  return { ...step, brief: step.brief.map((part) => (part.show === "output" ? { ...part, step: mapped(part.step) } : part)) };
+}
+
 /** The author roles a comment part may name that are not an agent's role. */
 export const NON_AGENT_AUTHOR_ROLES: readonly string[] = ["human", "engine", "module"];
 

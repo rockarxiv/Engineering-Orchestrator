@@ -1,4 +1,4 @@
-import { classifyDesignChange, resolvedGraphChanges, uuidv7, type Item, type ResolvedGraph, type PipelineStep, type TrialItemVerdict, type TrialPublishCard, type TrialStepOutcome, type Uuid } from "@eo/core";
+import { classifyDesignChange, remapStepReferences, resolvedGraphChanges, uuidv7, type Item, type ResolvedGraph, type PipelineStep, type TrialItemVerdict, type TrialPublishCard, type TrialStepOutcome, type Uuid } from "@eo/core";
 import type { Db } from "../db/client.js";
 import {
   boundGraphForItem,
@@ -213,7 +213,8 @@ function testedGraph(db: Db, live: LiveTrial, pipelineId: string | null): Pick<E
   const into = pipelineId ?? "";
   const trialGraph = resolvedTrialGraph(db, live.trial.id);
   return {
-    steps: trialGraph.steps.map((step) => ({ ...step, id: back(step.id), pipelineId: into })),
+    // A brief naming a trial step names the draft's id for it (EO-831).
+    steps: trialGraph.steps.map((step) => ({ ...remapStepReferences(step, back), id: back(step.id), pipelineId: into })),
     routes: trialGraph.routes.map((route) => ({ ...route, id: uuidv7(), pipelineId: into, fromStepId: back(route.fromStepId), target: back(route.target) })),
     entryStepId: back(trialGraph.entryStepId ?? ""),
     // What the approved design says of them (EO-610), and not the trial's

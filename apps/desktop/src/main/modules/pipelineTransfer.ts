@@ -40,6 +40,7 @@ import {
   pipelineStepMachineSpecificWarnings,
   qualifiedItemType,
   RESERVED_MCP_SERVER_NAME_LIST,
+  remapStepReferences,
   resultsFromRoutes,
   roleAskingForAdminGrant,
   servesProject,
@@ -1688,7 +1689,7 @@ function writeImport(
         watch: step.watch,
         // The brief arrives as the document says (EO-827), a step it names
         // moved to the id that step has here.
-        brief: step.brief === undefined ? null : step.brief.map((part) => (part.show === "output" ? { ...part, step: mapped(part.step) } : part)),
+        brief: remapStepReferences(step, mapped).brief ?? null,
       })),
       board.routes.map((route) => ({
         ...route,

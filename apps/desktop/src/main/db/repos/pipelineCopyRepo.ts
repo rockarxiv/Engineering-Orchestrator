@@ -1,5 +1,5 @@
 import { asc, desc, eq } from "drizzle-orm";
-import { uuidv7, type Uuid } from "@eo/core";
+import { remapStepReferences, StepBriefSchema, uuidv7, type Uuid } from "@eo/core";
 import type { Db } from "../client.js";
 import { pipelines, pipelineSteps, pipelineVersions, stepRoutes } from "../schema.js";
 
@@ -112,7 +112,7 @@ export function copyPipeline(db: Db, sourceId: string, projectId: Uuid, options:
       })
       .run();
 
-    for (const step of steps) tx.insert(pipelineSteps).values({ ...step, id: stepOf(step.id), pipelineId: copyId }).run();
+    for (const step of steps) tx.insert(pipelineSteps).values({ ...referencesOf(step, stepOf), id: stepOf(step.id), pipelineId: copyId }).run();
     for (const route of routes) {
       tx.insert(stepRoutes)
         .values({ ...route, id: routeOf(route.id), pipelineId: copyId, fromStepId: stepOf(route.fromStepId), target: targetOf(route.target) })
@@ -125,7 +125,7 @@ export function copyPipeline(db: Db, sourceId: string, projectId: Uuid, options:
           id: versionIds.get(version.id) as string,
           pipelineId: copyId,
           steps: arrayOf(version.steps).map((step) =>
-            isRecord(step) ? { ...step, id: typeof step["id"] === "string" ? stepOf(step["id"]) : step["id"], pipelineId: copyId } : step,
+            isRecord(step) ? { ...referencesOf(step, stepOf), id: typeof step["id"] === "string" ? stepOf(step["id"]) : step["id"], pipelineId: copyId } : step,
           ),
           routes: arrayOf(version.routes).map((route) =>
             isRecord(route)
@@ -197,6 +197,17 @@ function arrayOf(value: unknown): unknown[] {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/**
+ * A stored step — a row, or one in a version's snapshot — with the steps it
+ * names moved onto the copy's ids (EO-831): a brief that names a step of
+ * the source would otherwise name a step of another pipeline. A brief this
+ * cannot read is copied as it is, as every other column is.
+ */
+function referencesOf<T extends { brief?: unknown }>(step: T, stepOf: (id: string) => string): T {
+  const brief = StepBriefSchema.safeParse(step.brief);
+  return brief.success ? { ...step, brief: remapStepReferences({ brief: brief.data }, stepOf).brief } : step;
 }
 
 /** A `{ templateStepId: stepId }` map with each value moved onto the copy's ids. */

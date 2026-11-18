@@ -455,6 +455,19 @@ describe("publishing a tested draft", () => {
     expect(getPipeline(handle.db, answer.pipelineId!)?.entryRules).toEqual([{ kind: "description" }]);
   });
 
+  it("publishes a brief naming another step under the published pipeline's own id for it (EO-831)", async () => {
+    const draft = hotfixDraft();
+    draft.steps[2] = step("hf_check", 2, "Check", { brief: [{ show: "output", step: "hf_fix" }, { show: "comment", kind: "approval" }] });
+    const { chat } = await testedHotfix({ steps: draft.steps });
+
+    const answer = await publish(chat, askToPublish(chat));
+
+    expect(answer).toMatchObject({ saved: true, problem: null });
+    const steps = listStepsForPipeline(handle.db, answer.pipelineId!);
+    const fix = steps.find((entry) => entry.name === "Fix")!;
+    expect(steps.find((entry) => entry.name === "Check")?.brief).toEqual([{ show: "output", step: fix.id }, { show: "comment", kind: "approval" }]);
+  });
+
   it("leaves the target's entry rules alone when the draft said nothing of them, those set since the trial was made among them (EO-610)", async () => {
     const { target, chat, trialId, design, to, press, copyId } = await releaseOnTrial();
     const rules = [{ kind: "description" }];
