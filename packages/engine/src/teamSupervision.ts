@@ -496,6 +496,19 @@ export function leaderFinalProblems(ledger: Pick<LeaderLedger, "assignments" | "
   return problems;
 }
 
+/**
+ * Whether a leader's accepted final answer still stands on the evidence as
+ * it is now (EO-847): the turn that gave it was itself given this evidence,
+ * and every report it relied on, and every required one, is current. The
+ * first half is what holds a leader that answered from its own reading,
+ * relying on no report, to evidence that has since moved.
+ */
+export function finalStands(ledger: Pick<LeaderLedger, "assignments" | "contributions">, attempts: readonly LeaderAttemptState[], final: LeaderAttemptState, baseline: string): boolean {
+  if (final.verdict?.decision !== "final" || !final.verdict.accepted) return false;
+  if (final.baseline !== baseline) return false;
+  return leaderFinalProblems(ledger, attempts, final.verdict.contributions).length === 0;
+}
+
 export interface PlanLeaderTeamInput {
   team: LeaderTeam;
   /** Every attempt the session made, the leader's included, in the order they were made. */
@@ -609,10 +622,12 @@ export function planLeaderTeam(input: PlanLeaderTeamInput): LeaderPlan {
   if (verdict === null) return tooMany() ?? leaderNeed("correction", latest.round);
   if (verdict.decision === "final") {
     if (!verdict.accepted) return tooMany() ?? leaderNeed("correction", latest.round);
-    // Accepted, and still standing only while every report it relied on,
-    // and every required one, is current: evidence that moved since
-    // supersedes them, and the leader answers again on the new reports.
-    if (leaderFinalProblems(ledger, attempts, verdict.contributions).length === 0) return done({ kind: "finalize", attemptId: latest.id });
+    // Accepted, and still standing only while it is itself current — the
+    // leader read the evidence too, and may answer with no reports at all —
+    // and every report it relied on, and every required one, is current:
+    // evidence that moved since supersedes them, and the leader answers
+    // again on what is there now.
+    if (finalStands(ledger, attempts, latest, baseline)) return done({ kind: "finalize", attemptId: latest.id });
     return leaderNeed("stale", latest.round);
   }
   if (verdict.accepted.length === 0) return tooMany() ?? leaderNeed("correction", latest.round);
