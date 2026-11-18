@@ -27,9 +27,8 @@ export interface TeamProblem {
  *   for its answer to be held to anything;
  * - a team's own time limit can only be tighter than the run timeout.
  *
- * A leader-led team also gets a warning saying it runs as one agent for
- * now: independent teams run (EO-846), and a leader's orchestration ships
- * after them, so a team nobody runs must not look like one that ran.
+ * Both kinds run (EO-846, EO-847), so neither carries a warning that it
+ * would run as one agent.
  */
 export function teamProblems(
   steps: readonly Pick<PipelineStep, "id" | "name" | "type" | "ownerRole" | "entryAction" | "team">[],
@@ -69,13 +68,6 @@ export function teamProblems(
       }
     } else if (step.entryAction === null || step.entryAction === "") {
       error(`The team on "${step.name}" has no action to answer: give the step an entry action.`);
-    }
-    if (team.coordination === "leader") {
-      problems.push({
-        stepId: step.id,
-        severity: "warning",
-        message: `"${step.name}" has a leader-led team, which this version of EO does not run yet: it runs as one agent until leader-led teams are available.`,
-      });
     }
   }
   return problems;
