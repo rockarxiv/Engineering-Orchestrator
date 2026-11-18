@@ -223,6 +223,30 @@ export interface CaptureTeamEvidenceInput {
   signal?: AbortSignal;
 }
 
+/** The same JSON whatever order its keys were written in. */
+function canonical(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonical);
+  if (value === null || typeof value !== "object") return value;
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>)
+      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+      .map(([key, inner]) => [key, canonical(inner)]),
+  );
+}
+
+/**
+ * The item's task as a team's turns are given it (EO-847): its title, its
+ * body, its spec and its type, hashed. What a person edits to change what
+ * is asked — so a report made against what was asked before is not kept
+ * once it changes, on an item with no disk as on one with a repository.
+ * The thread is not part of it: a reply, a report or a note asks nothing
+ * new of the work, and a team's own comments must never move its evidence.
+ */
+export function taskContextOf(item: Pick<Item, "title" | "body" | "spec" | "typeId">): { sha256: string } {
+  const text = JSON.stringify(canonical({ title: item.title, body: item.body ?? "", spec: item.spec ?? null, type: item.typeId }));
+  return { sha256: createHash("sha256").update(text).digest("hex") };
+}
+
 /**
  * Captures a team's evidence baseline (EO-845): the workspace through its
  * kind's capability, and the attachments with their SHA-256s. Refused
@@ -242,6 +266,7 @@ export async function captureTeamEvidence(input: CaptureTeamEvidenceInput): Prom
     workspaceKind: input.workspace === null ? NONE_KIND : input.workspace.kind.slug,
     source: workspace.evidence.source,
     attachments: attachments.value,
+    task: taskContextOf(input.item),
   };
   return { ok: true, evidence: { ref, baseline: evidenceBaselineOf(ref), workspace: workspace.evidence } };
 }

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { IndependentTeamSchema, LEADER_ASSIGNMENT_KEY, LeaderTeamSchema, type LeaderAssignment, type LeaderTeam } from "@eo/core";
 import {
   checkLeaderAssignments,
+  finalStands,
   leaderFinalProblems,
   leaderLedger,
   planIndependentTeam,
@@ -98,6 +99,13 @@ describe("planLeaderTeam (EO-847)", () => {
     const redone = reported("auth", { baseline: "B2" });
     auth.supersededBy = redone.id;
     expect(plan(chain(lead, auth, answer, redone), "B2").start).toEqual([{ key: LEADER_ASSIGNMENT_KEY, supersedes: answer.id, why: "stale", round: 2 }]);
+  });
+
+  it("does not finalise an answer the leader gave on evidence that has since moved, even one relying on no report", () => {
+    const answer = finalTurn({ decision: "final", accepted: true, problems: [], contributions: [] }, { baseline: "B1" });
+    expect(plan([answer], "B1").next).toEqual({ kind: "finalize", attemptId: answer.id });
+    expect(finalStands(leaderLedger([answer], "B2"), [answer], answer, "B2")).toBe(false);
+    expect(plan([answer], "B2").start).toEqual([{ key: LEADER_ASSIGNMENT_KEY, supersedes: answer.id, why: "stale", round: 1 }]);
   });
 
   it("corrects a refused answer within the team's retries, and fails past them", () => {
