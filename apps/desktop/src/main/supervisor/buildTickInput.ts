@@ -1,4 +1,4 @@
-import type { Item, Uuid } from "@eo/core";
+import { TEAM_PARTICIPANT_ACTION, type Item, type Uuid } from "@eo/core";
 import type { CapacityKeyOf, DispatchBlocker, DispatchGate, EligibilityInput, TickInput, WatchHold } from "@eo/engine";
 import type { Db } from "../db/client.js";
 import {
@@ -208,7 +208,8 @@ function retryBackoffs(db: Db, items: Item[], now: number, attemptLimit: number)
     if (until <= now) continue;
     // Refusal placeholders are not runs of the step (`isGuardPlaceholder`).
     const latest = listRunsForItem(db, failed.itemId)
-      .filter((run) => !(run.status === "awaiting_input" && run.threadId === null))
+      // Nor is a team participant's (EO-846): the team's own run is the step's.
+      .filter((run) => !(run.status === "awaiting_input" && run.threadId === null) && run.action !== TEAM_PARTICIPANT_ACTION)
       .sort((left, right) => (left.startedAt ?? 0) - (right.startedAt ?? 0) || left.id.localeCompare(right.id))
       .at(-1);
     if (latest?.id !== failed.id) continue;

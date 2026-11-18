@@ -127,6 +127,11 @@ export function listTeamSessionsForItem(db: Db, itemId: string): TeamSessionReco
     .map((row) => ({ session: sessionOf(row), attempts: listTeamAttempts(db, row.id) }));
 }
 
+/** Every open session, across every item (EO-846): what a restart reconciles before anything is dispatched. */
+export function listOpenTeamSessions(db: Db): TeamSessionRow[] {
+  return db.select().from(teamSessions).where(eq(teamSessions.status, "open")).orderBy(asc(teamSessions.createdAt), asc(teamSessions.id)).all().map(sessionOf);
+}
+
 /** The item's open session, if it has one. There is never more than one. */
 export function currentTeamSession(db: Db, itemId: string): TeamSessionRow | undefined {
   const row = db.select().from(teamSessions).where(and(eq(teamSessions.itemId, itemId), eq(teamSessions.status, "open"))).get();
@@ -165,6 +170,15 @@ function entryState(db: Db, session: Pick<TeamSessionRow, "itemId" | "stepId" | 
 }
 
 function onSessionEntry(db: Db, session: TeamSessionRow): boolean {
+  return entryState(db, session) === "on";
+}
+
+/**
+ * Whether the item is still on the step entry this session was opened on
+ * (EO-846): what a supervisor asks before adopting a session after a
+ * restart, and before it lets one settle.
+ */
+export function teamSessionOnEntry(db: Db, session: Pick<TeamSessionRow, "itemId" | "stepId" | "entryTransitionId">): boolean {
   return entryState(db, session) === "on";
 }
 

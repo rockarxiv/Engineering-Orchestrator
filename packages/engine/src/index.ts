@@ -21,3 +21,4 @@ export * from "./team.js";
 export * from "./watch.js";
 export * from "./templateMerge.js";
 export * from "./modulePins.js";
+export * from "./teamSupervision.js";

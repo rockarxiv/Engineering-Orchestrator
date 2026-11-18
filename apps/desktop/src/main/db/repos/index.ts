@@ -255,6 +255,7 @@ export {
   getRun,
   activeRunForItem,
   listActiveRuns,
+  listActiveParticipantRuns,
   resumableRunCwds,
   listAwaitingInputItemIds,
   listRunsFailedSince,

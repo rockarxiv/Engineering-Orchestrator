@@ -284,6 +284,35 @@ export type TeamExecutionFailure = z.infer<typeof TeamExecutionFailureSchema>;
 export const TeamContributionSchema = z.discriminatedUnion("status", [TeamReportSchema, TeamExecutionFailureSchema]);
 export type TeamContribution = z.infer<typeof TeamContributionSchema>;
 
+/**
+ * What a participant answers with (EO-846): the declared outcome it
+ * concluded and its report. EO posts the report, attributed to the
+ * participant, once it has checked the outcome against the team's; the
+ * participant writes nothing itself.
+ */
+export const TeamParticipantAnswerSchema = z.strictObject({
+  outcome: TeamKeySchema,
+  report: z.string().trim().min(1).max(20_000),
+});
+export type TeamParticipantAnswer = z.infer<typeof TeamParticipantAnswerSchema>;
+
+/**
+ * The output schema a participant's turn is constrained to, both backends
+ * alike: every property required and nothing else allowed, and the
+ * outcome one of the keys the team declares.
+ */
+export function participantAnswerJsonSchema(team: Pick<IndependentTeam, "outcomes">): Record<string, unknown> {
+  return {
+    type: "object",
+    properties: {
+      outcome: { type: "string", enum: team.outcomes.map((outcome) => outcome.key), description: "The one declared outcome your report concludes." },
+      report: { type: "string", description: "Your report: what you looked at, what you found and why it supports the outcome." },
+    },
+    required: ["outcome", "report"],
+    additionalProperties: false,
+  };
+}
+
 /** What an independent team's contributions come to. */
 export type TeamDecision =
   /** A participant has not settled yet. */
