@@ -77,6 +77,7 @@ function took(page: AdoptRequest["page"]): RecordAdoptCounts {
     attachments: page.attachments.length,
     memories: page.memories.length,
     skills: page.skills.length,
+    teamSessions: page.teamSessions.length,
     skipped: [],
   };
 }

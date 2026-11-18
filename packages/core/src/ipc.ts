@@ -6861,6 +6861,7 @@ export const recordContract = {
         watches: { ts: 0, id: "" },
         memories: { ts: 0, id: "" },
         skills: { ts: 0, id: "" },
+        teamSessions: { ts: 0, id: "" },
       }),
       limit: z.number().int().positive().max(1000).default(500),
       /**
