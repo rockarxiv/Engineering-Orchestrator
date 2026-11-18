@@ -102,6 +102,14 @@ const ALLOWLIST: readonly Allowed[] = [
     ],
   },
   {
+    file: "apps/desktop/src/main/engine.ts",
+    why: "A report-only team participant's provider (EO-845, `reportOnlyProviderForAgent`): the composition root constructing the adapter for the agent's backend, as `buildProvider` does, and refusing a backend that is neither — `fake`, `scripted` and `demo` cannot be held to report-only. Both backends are locked by their own adapters to the same rule, which `providerParity.test.ts` holds them to.",
+    lines: [
+      'if (agent.provider !== "claude" && agent.provider !== "codex") return refuse(`EO cannot hold a ${agent.provider} agent to reading its evidence and reporting; only Claude and Codex agents can be team participants`);',
+      'if (agent.provider === "codex") {',
+    ],
+  },
+  {
     file: "apps/desktop/src/main/ipc/conversationView.ts",
     why: "The two backends store reasoning effort under different config keys (`effort`, `reasoningEffort`), each the name its own SDK uses. Both have the setting; this reads it from where it was saved.",
     lines: ['const effortKey = agent.provider === "claude" ? "effort" : "reasoningEffort";'],
