@@ -25,14 +25,17 @@ export interface TeamProblem {
  *   EO can build from a result and a summary (`deterministicAnswerProblem`);
  *   a leader-led team's leader answers it, so the action must be defined
  *   for its answer to be held to anything;
- * - a team's own time limit can only be tighter than the run timeout.
+ * - a team's own time limit can only be tighter than the run timeout;
+ * - every agent dispatch could staff one of its roles with must be one EO
+ *   can hold to report-only (EO-848, `reportOnlyRoleProblems`), so a team
+ *   that would be refused at its first participant is refused at publish.
  *
  * Both kinds run (EO-846, EO-847), so neither carries a warning that it
  * would run as one agent.
  */
 export function teamProblems(
   steps: readonly Pick<PipelineStep, "id" | "name" | "type" | "ownerRole" | "entryAction" | "team">[],
-  context: { registry: RegistryFacts; staffedRoles: readonly string[]; runTimeoutMs: number },
+  context: { registry: RegistryFacts; staffedRoles: readonly string[]; runTimeoutMs: number; reportOnlyRoleProblems?: Readonly<Record<string, string>> },
 ): TeamProblem[] {
   const staffed = new Set(context.staffedRoles);
   const problems: TeamProblem[] = [];
@@ -48,6 +51,10 @@ export function teamProblems(
     for (const message of teamConfigProblems(team)) error(`The team on "${step.name}": ${message}`);
     for (const role of new Set(teamRoles(team))) {
       if (!staffed.has(role)) error(`The team on "${step.name}" needs a "${role}" agent, and this project has none enabled.`);
+      else {
+        const why = context.reportOnlyRoleProblems?.[role];
+        if (why !== undefined) error(`The team on "${step.name}" could be staffed by a "${role}" agent EO cannot hold to report-only: ${why}`);
+      }
     }
     if (team.limits.timeoutMs !== undefined && team.limits.timeoutMs > context.runTimeoutMs) {
       error(`The team on "${step.name}" allows ${team.limits.timeoutMs} ms, longer than the ${context.runTimeoutMs} ms any run may take: a team's limit can only be tighter.`);
