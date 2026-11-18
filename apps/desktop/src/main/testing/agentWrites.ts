@@ -23,13 +23,13 @@ export interface TestWriteBridge {
 
 export async function startTestWriteBridge(): Promise<TestWriteBridge> {
   let target: AgentWriteHandler | null = null;
-  const bridge = await startAgentWriteBridge((itemId, request, writes) =>
-    target === null ? Promise.resolve({ ok: false, code: "NO_RUN", problem: "No supervisor is serving this bridge yet." }) : target(itemId, request, writes),
+  const bridge = await startAgentWriteBridge((itemId, request, writes, scope) =>
+    target === null ? Promise.resolve({ ok: false, code: "NO_RUN", problem: "No supervisor is serving this bridge yet." }) : target(itemId, request, writes, scope),
   );
   return {
     agentWriteBridge: () => bridge,
     serve: (supervisor) => {
-      target = (itemId, request, writes) => supervisor.handleAgentWrite(itemId, request, writes);
+      target = (itemId, request, writes, scope) => supervisor.handleAgentWrite(itemId, request, writes, scope);
     },
     close: () => bridge.close(),
   };

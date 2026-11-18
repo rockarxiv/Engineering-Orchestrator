@@ -1,4 +1,5 @@
 import type { Agent, Item, PipelineStep, RepositoryMcpServer, Skill, Uuid, WorkspaceKindSlug } from "@eo/core";
+import type { WorkspaceEvidenceCapability } from "./teamEvidence.js";
 
 /**
  * What a workspace *is*, as five members (EO-295, EO-297,
@@ -223,6 +224,15 @@ export interface WorkspaceKind {
    * is `release({ what: "stale" })`'s, as it is for a workspace.
    */
   releaseReferenceCheckouts?(item: Item): Promise<void>;
+
+  /**
+   * Capturing what a prepared workspace holds for a report-only team, and
+   * opening that capture again (EO-845, `teamEvidence.ts`): content, not a
+   * place, so every participant reads the same bytes whatever changes on
+   * disk meanwhile. Optional: a kind without it is refused for a team with
+   * the reason, never read live in its place.
+   */
+  readonly evidence?: WorkspaceEvidenceCapability;
 }
 
 /** Which repository and which branch an item is asking to read (EO-632). */
