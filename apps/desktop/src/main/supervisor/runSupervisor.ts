@@ -146,6 +146,7 @@ import {
   type PipelineStep,
   type WorkspaceKindSlug,
   skillToolNotServed,
+  isTeamEvidenceTool,
   uuidv7,
   WAITING_RESULT,
   watchDurationWords,
@@ -354,6 +355,7 @@ import { createMemoryConsolidator, type MemoryConsolidatorOptions } from "../mem
 import { archiveReachOf, archiveUnusedSkills } from "../skills/archival.js";
 import { currentWatch, markCheckInFlight, ownerMention, recordQuietCheck, waitingLine, watchArrival, watchHold, watchRoundTrips, WATCH_ROUTED_REASON, WATCH_VERIFICATION_FAILED_REASON } from "./watches.js";
 import { agentMentionChain } from "./escalation.js";
+import { answerTeamCall, type TeamParticipantScopes } from "./teamParticipants.js";
 
 function safeTurnAttachments(attachments: NonNullable<ReturnType<typeof listCommentsForItem>[number]["attachments"]>): AgentInputAttachment[] {
   return attachments.flatMap((attachment) => attachment.id ? [{
@@ -456,6 +458,14 @@ export interface RunSupervisorOptions {
    * that nothing could be written, because nothing could write it.
    */
   agentWriteBridge?: () => Pick<AgentWriteBridge, "tokenFor"> | null;
+  /**
+   * The report-only team participants running now, by attempt (EO-845,
+   * `teamParticipants.ts`): what a participant's evidence tools are
+   * answered from. Absent, every such call is refused.
+   */
+  teamParticipants?: TeamParticipantScopes;
+  /** Where the folder kind keeps a team's copies of a folder (EO-845); `~/.eo/team-evidence` when left out. */
+  teamEvidenceRoot?: string;
   /**
    * Where an assistant or scenario turn stages and freezes a change to a
    * module (EO-813): the service behind `module_change_prepare`,
@@ -2400,7 +2410,7 @@ export function createRunSupervisor(
    * collision check is between *packs* rather than against the core.
    */
   const coreKinds = new Map<WorkspaceKindSlug, WorkspaceKind>(
-    [noDisk, folderWorkspaceKind({ db }), scratchWorkspaceKind({ db, ...(scratchRoot ? { root: scratchRoot } : {}) })].map((kind) => [kind.slug, kind]),
+    [noDisk, folderWorkspaceKind({ db, ...(options.teamEvidenceRoot ? { evidenceRoot: options.teamEvidenceRoot } : {}) }), scratchWorkspaceKind({ db, ...(scratchRoot ? { root: scratchRoot } : {}) })].map((kind) => [kind.slug, kind]),
   );
 
   /**
@@ -2696,7 +2706,14 @@ export function createRunSupervisor(
    * answered with what happened — which is what the tool answers the
    * agent, so "written" is only ever said of something that was.
    */
-  async function handleAgentWrite(itemId: string, request: AgentWriteRequest, writes: readonly AgentWriteTool[] | null = null): Promise<AgentWriteAnswer> {
+  async function handleAgentWrite(itemId: string, request: AgentWriteRequest, writes: readonly AgentWriteTool[] | null = null, scope: string | null = null): Promise<AgentWriteAnswer> {
+    // A credential minted for an attempt is a report-only team
+    // participant's (EO-845): answered from that attempt's own captured
+    // evidence and nothing else, every other tool refused.
+    if (scope !== null && writes !== null) return answerTeamCall(db, options.teamParticipants, itemId, request, writes, scope);
+    // The evidence tools are a participant's alone: no other credential
+    // is answered them, whatever its server lists.
+    if (isTeamEvidenceTool(request.tool)) return { ok: false, code: "TOOL_NOT_SERVED", problem: `Only a report-only team participant is served ${request.tool}, so nothing was read.` };
     // A credential minted for some writes alone is a learning review's
     // (EO-717), and is made as that review, never as a run's turn.
     if (writes !== null) return reviewWrite(itemId, request, writes);

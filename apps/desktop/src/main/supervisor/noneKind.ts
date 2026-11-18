@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { NONE_KIND, type Item } from "@eo/core";
 import { NOTHING_ATTACHED, type PrepareWorkspaceOutcome, type WorkspaceKind } from "./workspaceKind.js";
+import { NO_DISK_EVIDENCE } from "./teamEvidence.js";
 
 /** Where the empty directories live. `~/.eo/no-disk`, beside the worktrees, for the same reason they are not in the repository. */
 export function defaultNoDiskRoot(): string {
@@ -117,5 +118,8 @@ export function noneWorkspaceKind(root: string = defaultNoDiskRoot()): Workspace
     capacityKeyOf(): string | null {
       return null;
     },
+
+    // No disk, so no files: a team reads the item and its attachments (EO-845).
+    evidence: NO_DISK_EVIDENCE,
   };
 }

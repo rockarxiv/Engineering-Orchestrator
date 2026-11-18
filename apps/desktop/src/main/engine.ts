@@ -1,3 +1,4 @@
+import { mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { commentToolEnabled, configToolsEnabled, fullThreadEnabled, memoryNoteEnabled, type Agent, type AgentProvider, type McpServer, type JobRunsOn, type RunRuntimeSource, type Skill, type Item } from "@eo/core";
@@ -54,6 +55,7 @@ import { useWorkspaceKinds } from "./workspaceKinds.js";
 import { usePackConnectors } from "./connectors/declared.js";
 import { usePackBriefs } from "./ipc/packBriefs.js";
 import { isItemLive, listAgents, resolveAgentAttachments } from "./db/repos/index.js";
+import { getTeamAttempt } from "./db/repos/teamSessionsRepo.js";
 import { isEnginePausePreferred } from "./engineActivity.js";
 import type { ModuleChangeStaging } from "./roles/moduleChangeProposals.js";
 
@@ -1205,6 +1207,105 @@ function buildProvider(
 }
 
 /**
+ * Where report-only team participants work (EO-845): an empty directory
+ * per attempt, so no participant's turn starts in the item's checkout and
+ * Claude keys each attempt's session to a directory of its own.
+ */
+export function defaultTeamParticipantRoot(): string {
+  return join(homedir(), ".eo", "team-participants");
+}
+
+export interface ReportOnlyProviderRequest {
+  agent: Agent;
+  /** The participant's attempt, whose runtime state — its directory, its Codex home, its sessions — is its own. */
+  attemptId: string;
+  eoMcpServerPath: string;
+  dbPath: string | undefined;
+  runtimeRoot: string;
+  db: Db;
+  apiKeys?: ApiKeyStoreOptions;
+  codexHomeRoots?: readonly string[];
+  codexSearchHookCommandPath?: string;
+  /** Where an attempt's working directory is made; `defaultTeamParticipantRoot()` when left out. */
+  participantRoot?: string;
+}
+
+export type ReportOnlyProviderOutcome = { ok: true; provider: AgentProvider; cwd: string } | { ok: false; problem: string };
+
+const ATTEMPT_SEGMENT = /^[A-Za-z0-9_-]+$/;
+
+/**
+ * A report-only team participant's provider, for one attempt (EO-845,
+ * ARCHITECTURE.md, "A team on an agent step"), and the empty directory
+ * its turns run in — or the reason one cannot be had, said before any
+ * process starts.
+ *
+ * Built afresh for the attempt and never cached, so two attempts of one
+ * agent share nothing a provider holds: no warm process, no Codex home
+ * (each attempt has its own, `codex-homes/<agent>/<attempt>`), no working
+ * directory (Claude keys a session to the directory it began in, so one
+ * attempt's thread is not found from another's). Built from the agent's
+ * backend, executable, credential and model alone: none of its attached
+ * servers, skills, administrative grant, comment or memory grants, or
+ * search nudge reaches a participant. The adapters then lock and check
+ * every turn (`reportOnly`).
+ *
+ * Refused for anything EO cannot hold to report-only: a backend other
+ * than Claude or Codex, an agent on the person's own setup, a Codex agent
+ * whose sign-in is in the keyring (it would run in the person's own home),
+ * one without EO's hook command or a model to take the tools out of.
+ */
+export function reportOnlyProviderForAgent(request: ReportOnlyProviderRequest): ReportOnlyProviderOutcome {
+  const { agent, attemptId, db } = request;
+  const refuse = (why: string): ReportOnlyProviderOutcome => ({ ok: false, problem: `EO did not start ${agent.name} as a report-only team participant, because ${why}.` });
+  if (!ATTEMPT_SEGMENT.test(attemptId)) return refuse("its attempt has no id EO would name a directory after");
+  if (agent.provider !== "claude" && agent.provider !== "codex") return refuse(`EO cannot hold a ${agent.provider} agent to reading its evidence and reporting; only Claude and Codex agents can be team participants`);
+  if (inheritsAmbientConfig(agent.config)) return refuse("it uses the person's own setup, whose tools, servers and settings EO does not control; untick that on the agent to make it a participant");
+  const executablePath = runtimePathFor(agent.provider, request.runtimeRoot, db, configuredExecutablePath(agent));
+  const eoMcp = { serverPath: request.eoMcpServerPath, ...(request.dbPath ? { dbPath: request.dbPath } : {}), enableCommentTool: false, enableConfigTools: false, enableFullThread: false, enableMemoryNote: false };
+  const model = agent.model ?? (typeof agent.config["model"] === "string" ? agent.config["model"] : undefined);
+  let provider: AgentProvider;
+  if (agent.provider === "codex") {
+    const roots = request.codexHomeRoots ?? [];
+    if (roots.length === 0) return refuse("EO has nowhere to make it a Codex home of its own");
+    if (request.codexSearchHookCommandPath === undefined) return refuse("EO has no hook command on this machine to refuse its other calls with");
+    if (model === undefined || model === "") return refuse("it names no model, so EO cannot take that model's own tools — code execution, patching and subagents — out of what it is offered");
+    const home = chooseCodexHome({ roots, agentId: agent.id, itemId: attemptId });
+    if (home.kind === "person") return refuse("its Codex sign-in is in the keyring, so it would run in the person's own Codex home, whose servers and settings EO does not control");
+    if (home.kind === "unavailable") return refuse(home.problem);
+    const codexConfig = agent.config as CodexAgentConfig;
+    provider = createCodexProvider({
+      reportOnly: true,
+      eoMcp,
+      executablePath,
+      codexHome: () => readyCodexHome(roots, agent.id, attemptId),
+      searchHookCommandPath: request.codexSearchHookCommandPath,
+      config: { model, ...(codexConfig.reasoningEffort ? { reasoningEffort: codexConfig.reasoningEffort } : {}) },
+      onUnmappedEvent: (event) => console.warn(`[eo] unmapped Codex event: ${"method" in event ? event.method : event.type}`),
+    });
+  } else {
+    const claudeConfig = agent.config as ClaudeAgentConfig;
+    provider = createClaudeProvider({
+      reportOnly: true,
+      eoMcp,
+      enableCommentTool: false,
+      executablePath,
+      sdkEntryPath: resolvePackageSet(request.runtimeRoot, CLAUDE_SDK),
+      ...(request.apiKeys ? { apiKey: () => readApiKey(request.apiKeys!, "claude") } : {}),
+      config: { ...(model ? { model } : {}), ...(claudeConfig.effort ? { effort: claudeConfig.effort } : {}) },
+      onUnmappedMessage: (message) => console.warn(`[eo] unmapped Claude message: ${message.type}`),
+    });
+  }
+  const cwd = join(request.participantRoot ?? defaultTeamParticipantRoot(), attemptId);
+  try {
+    mkdirSync(cwd, { recursive: true });
+  } catch (error) {
+    return refuse(`EO could not make it a directory of its own to work in (${error instanceof Error ? error.message : String(error)})`);
+  }
+  return { ok: true, provider, cwd };
+}
+
+/**
  * Is the agent's backend signed in? (EO-82)
  *
  * Asked of the executable this agent would actually run — its own
@@ -1321,6 +1422,16 @@ export function codexOwnSetupNotices(agent: Agent): string[] {
 }
 
 /**
+ * Whether a home's id names a report-only participant's attempt whose
+ * item is still live (EO-845): its home is kept, so a recovered attempt
+ * resumes in the home it ran in.
+ */
+function isLiveTeamAttempt(db: Db, id: string): boolean {
+  const attempt = getTeamAttempt(db, id);
+  return attempt !== undefined && isItemLive(db, attempt.itemId);
+}
+
+/**
  * Removes the Codex homes no agent uses any more (EO-378). Never rejects.
  *
  * Two callers: the dispatch preflight, and `startMain` once the window
@@ -1339,7 +1450,7 @@ export async function sweepUnusedCodexHomes(db: Db, roots: readonly string[]): P
     // item's home in it while the item is neither archived nor
     // deleted (EO-829).
     const keep = (agentId: string, itemId: string | null): boolean =>
-      !keyring && agentsWithCodexHomes(listAgents(db)).has(agentId) && (itemId === null || isItemLive(db, itemId));
+      !keyring && agentsWithCodexHomes(listAgents(db)).has(agentId) && (itemId === null || isItemLive(db, itemId) || isLiveTeamAttempt(db, itemId));
     for (const root of roots) await sweepCodexHomes(root, keep);
   } catch (error) {
     console.warn(`[eo] could not sweep unused Codex homes: ${error instanceof Error ? error.message : String(error)}`);

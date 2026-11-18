@@ -18,6 +18,7 @@ import { withoutRepositoryIndex } from "../repositoryIntelligence/indexPaths.js"
 import { createWorktreeWorkspace, forgetIndexesForReleasedWorktrees, releaseStaleWorktrees, releaseWorktreeFor } from "./dispatchWorkspace.js";
 import { git, remoteUrl, statusPorcelain } from "./git.js";
 import { parseRemoteUrl } from "../forge/remote.js";
+import { gitEvidenceCapability } from "./gitEvidence.js";
 import { referenceCheckoutFor, releaseReferenceCheckouts, releaseStaleReferenceCheckouts } from "./referenceCheckouts.js";
 import { commitNamingCheck } from "./commitNaming.js";
 import { createImplementationVerifier, createVerifiedRange } from "./implementationVerifier.js";
@@ -422,6 +423,9 @@ export function gitWorkspaceKind(options: GitWorkspaceKindOptions): WorkspaceKin
       const url = await remoteUrl(git.config.repoPath, git.config.forgeRemote);
       return url.ok ? (parseRemoteUrl(url.stdout)?.path ?? null) : null;
     },
+
+    /** A team's evidence: the working tree's own tree object (EO-845, `gitEvidence.ts`). */
+    evidence: gitEvidenceCapability(),
   };
 }
 

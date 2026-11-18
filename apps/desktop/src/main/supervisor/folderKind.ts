@@ -6,11 +6,14 @@ import { asFolderWorkspace, folderPathProblem, getRun, getStep } from "../db/rep
 import { fileArtifacts, filesUnder, FILESYSTEM_CLOCK_GRACE_MS, resolveWithin } from "./workspaceFiles.js";
 import { ANY_ACTION, NOTHING_ATTACHED, verifier, type Artifact, type Check, type PrepareWorkspaceOutcome, type VerifiableRun, type WorkspaceKind } from "./workspaceKind.js";
 import { workspaceFor } from "./workspaceResolution.js";
+import { folderEvidenceCapability } from "./folderEvidence.js";
 import { codeSpan } from "../codeSpan.js";
 
 /** What the folder kind needs from the process in order to be built: the rows it reads, and nothing else. */
 export interface FolderWorkspaceKindOptions {
   db: Db;
+  /** Where a team's copies of the folder are kept (EO-845, `folderEvidence.ts`); `~/.eo/team-evidence` when left out. */
+  evidenceRoot?: string;
 }
 
 /**
@@ -246,5 +249,8 @@ export function folderWorkspaceKind(options: FolderWorkspaceKindOptions): Worksp
     capacityKeyOf(item: Item): string | null {
       return workspaceFor(db, item)?.id ?? null;
     },
+
+    // A team's evidence is a copy EO keeps of the folder (EO-845).
+    evidence: folderEvidenceCapability(options.evidenceRoot),
   };
 }
