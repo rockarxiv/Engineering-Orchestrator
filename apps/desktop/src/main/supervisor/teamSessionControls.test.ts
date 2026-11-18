@@ -142,12 +142,6 @@ afterEach(async () => {
 
 // ── Scripted participants ────────────────────────────────────────────
 
-function gate(): { wait: Promise<void>; open: () => void } {
-  let open = (): void => undefined;
-  const wait = new Promise<void>((resolve) => (open = resolve));
-  return { wait, open };
-}
-
 async function* answer(outcome: string, report: string, cents = 0): AsyncGenerator<AgentEvent> {
   yield { type: "thread_started", threadId: `thread-${uuidv7()}` };
   if (cents > 0) yield { type: "usage", scope: "turn", tokensIn: 100, tokensOut: 50, costCents: cents };
@@ -173,8 +167,6 @@ async function* until(signal: AbortSignal, cents = 0, afterStop = 0): AsyncGener
 
 /** The participants' reports: agents' comments other than the summary the step's owner is credited with. */
 const reportsOn = (id: string) => listCommentsForItem(handle.db, id as Uuid).filter((comment) => comment.authorType === "agent" && comment.authorId !== quinn.id);
-/** The team's answer, posted as the step owner's own summary by the ordinary path. */
-const summary = () => listCommentsForItem(handle.db, item.id).find((comment) => comment.authorType === "agent" && comment.authorId === quinn.id);
 const participantRuns = () => listRunsForItem(handle.db, item.id).filter((run) => run.action === TEAM_PARTICIPANT_ACTION);
 const teamRun = () => listRunsForItem(handle.db, item.id).filter((run) => run.action === "alignment");
 

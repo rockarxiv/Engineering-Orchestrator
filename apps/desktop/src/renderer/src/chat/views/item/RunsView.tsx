@@ -4,7 +4,7 @@ import { cn } from "@eo/ui";
 import { ipcQuery } from "../../../query/client";
 import { useChromeVocabulary } from "../../../query/hooks";
 import { namesItemOrNone, useInvalidateOnPush } from "../../../query/useInvalidateOnPush";
-import { groupRuns } from "../../../shared/transcript/grouping";
+import { groupRuns, isTeamParticipantRun, type RunGroup } from "../../../shared/transcript/grouping";
 import { useViewParameters } from "../../../shared/view/ViewPublisher";
 import { EmptyState, ErrorLine, Loading, Segmented, StatusDot } from "../../kit";
 import { RefText } from "../items/ItemReference";
@@ -12,6 +12,7 @@ import { turnLabel } from "../../../shared/transcript/transcript";
 import { RunDetails, Transcript, runTone, spokenStatus } from "../transcript/Transcript";
 import { useFollowItemProject } from "../shared";
 import { ItemHeader } from "./ItemHeader";
+import { TeamSessions } from "./TeamSessions";
 
 /**
  * `/items/:itemId/runs`: an item's runs, one conversation per row, and
@@ -25,6 +26,11 @@ import { ItemHeader } from "./ItemHeader";
  *
  * The details sit beside the transcript where the canvas is wide, and a
  * switch away where it is not.
+ *
+ * A team's participants are not rows of their own (EO-849): each is a
+ * turn of its team's session, listed under the team with its round,
+ * attempt, report and spending, and its transcript opened from there — so
+ * a team reads as one step's work, not as several agents competing for it.
  */
 export function RunsView({ itemId }: { itemId: string }) {
   const vocabulary = useChromeVocabulary();
@@ -38,9 +44,14 @@ export function RunsView({ itemId }: { itemId: string }) {
   useInvalidateOnPush("runs:changed", detailKey, { filter: ours });
   useFollowItemProject(itemId, detail.data?.item.projectId ?? null);
 
-  const groups = useMemo(() => groupRuns(detail.data?.runs ?? []), [detail.data]);
+  const groups = useMemo(() => groupRuns((detail.data?.runs ?? []).filter((run) => !isTeamParticipantRun(run))), [detail.data]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const selected = groups.find((group) => group.id === selectedId) ?? groups[0];
+  // A participant's turn, opened from its team: a conversation of its own.
+  const participant = useMemo((): RunGroup | undefined => {
+    const run = (detail.data?.runs ?? []).find((one) => one.id === selectedId && isTeamParticipantRun(one));
+    return run === undefined ? undefined : { id: run.id, runs: [run], latest: run };
+  }, [detail.data, selectedId]);
+  const selected = participant ?? groups.find((group) => group.id === selectedId) ?? groups[0];
   useViewParameters({ selection: selected === undefined ? [] : [selected.id] });
   const [pane, setPane] = useState<"transcript" | "details">("transcript");
 
@@ -106,6 +117,8 @@ export function RunsView({ itemId }: { itemId: string }) {
           );
         })}
       </nav>
+
+      <TeamSessions itemId={itemId} selectedRunId={selected.id} onSelectRun={setSelectedId} className="mb-3" />
 
       <div className="mb-3 @4xl:hidden">
         <Segmented
