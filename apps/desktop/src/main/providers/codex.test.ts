@@ -1645,6 +1645,40 @@ describe("createCodexProvider", () => {
       expect(fromCodex.ok && (fromCodex.value as { draft: { steps: { watch?: unknown }[] } }).draft.steps[0]!.watch).toEqual({ everyMinutes: 10, giveUpAfterHours: 168, neverGivesUp: true });
     });
 
+    it("gives the same report-only team on a draft's step as a Claude answer, and \"none\" as it is (EO-848)", async () => {
+      // Every key the strict schema makes required, null where the agent says nothing.
+      const strictTeam = {
+        coordination: "independent",
+        participants: [{ key: "security", role: "reviewer", instructions: "Look for auth gaps.", required: null }],
+        outcomes: [{ key: "clear", label: "Clear", meaning: null }],
+        completion: { rules: [{ when: "all", outcomes: ["clear"], result: "approved" }], fallback: "changes_requested" },
+        limits: { maxParticipants: null, maxParallel: 1, maxRetries: null, timeoutMs: null, budgetCents: null },
+      };
+      const codex = structuredClone(ASSIST_ANSWER_WITH_MAPS.codex) as unknown as { outcome: { draft: { steps: { team: unknown }[] } } };
+      codex.outcome.draft.steps[0]!.team = strictTeam;
+      codex.outcome.draft.steps[1]!.team = "none";
+      const strict = jsonSchemaOutputSchema(strictCodexOutputSchema(assistSchema())).parse(codex);
+      expect(strict.ok ? [] : strict.issues).toEqual([]);
+
+      const claude = structuredClone(ASSIST_ANSWER_WITH_MAPS.claude) as unknown as { outcome: { draft: { steps: { team?: unknown }[] } } };
+      claude.outcome.draft.steps[0]!.team = {
+        coordination: "independent",
+        participants: [{ key: "security", role: "reviewer", instructions: "Look for auth gaps." }],
+        outcomes: [{ key: "clear", label: "Clear" }],
+        completion: { rules: [{ when: "all", outcomes: ["clear"], result: "approved" }], fallback: "changes_requested" },
+        limits: { maxParallel: 1 },
+      };
+      claude.outcome.draft.steps[1]!.team = "none";
+
+      const fromCodex = validateActionResult(registry, "assist", await answerFromCodex(codex));
+      const fromClaude = validateActionResult(registry, "assist", claude);
+      expect(fromClaude.ok).toBe(true);
+      expect(fromCodex).toEqual(fromClaude);
+      const steps = fromCodex.ok ? (fromCodex.value as { draft: { steps: { team?: unknown }[] } }).draft.steps : [];
+      expect(steps[0]!.team).toMatchObject({ participants: [{ required: true }], limits: { maxParticipants: 4, maxParallel: 1, maxRetries: 1 } });
+      expect(steps[1]!.team).toBe("none");
+    });
+
     it("reads a new step's inputs of `{ ciWaitSeconds: 2400 }` from the one entry that says so", () => {
       const schema = { type: "object", properties: { inputs: { type: "object", propertyNames: { type: "string" }, additionalProperties: { type: "number" } } } };
       expect(fromStrictCodexAnswer({ inputs: [{ name: "ciWaitSeconds", value: 2400 }] }, schema)).toEqual({ inputs: { ciWaitSeconds: 2400 } });

@@ -210,6 +210,20 @@ export const AssistTrialCardSchema = z.object({
       reaches: z.enum(["sends", "creates"]).nullable(),
       /** For a mocked step, what it reports for each test item, by the item's title. */
       mocks: z.array(z.object({ item: z.string(), resultKey: z.string(), output: z.string() })),
+      /**
+       * Where the step runs as a report-only team (EO-848), whether the
+       * trial exercises it — `tested` is false for a mocked step, whose
+       * team runs nobody — and the sentence the card says it in. Null for
+       * a step that is one agent or not an agent's.
+       */
+      team: z
+        .object({
+          coordination: z.enum(["independent", "leader"]),
+          tested: z.boolean(),
+          note: z.string(),
+        })
+        .nullable()
+        .default(null),
     }),
   ),
   /** Every module the draft runs, by slug: each is granted trial-only permission within its declared needs when the design is approved. */

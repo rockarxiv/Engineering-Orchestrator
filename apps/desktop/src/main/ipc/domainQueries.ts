@@ -127,6 +127,7 @@ import { outputFor } from "./outputCommands.js";
 import { originIndex, originOfItem } from "../jobs/origin.js";
 import { projectWorkspaceKind, stepWorkspaceKind, resolveItemWorkspace } from "../supervisor/workspaceResolution.js";
 import { verificationOfKind } from "../workspaceKinds.js";
+import { teamReadingsForPipeline } from "./configCommands.js";
 import { activeProjectId } from "./repositoryCommands.js";
 import { workspaceView } from "./workspaceCommands.js";
 import { providerSteersLiveTurns } from "../providers/capabilities.js";
@@ -2527,6 +2528,9 @@ export function listPipelineStepViews(
     // webhook refusal classifies them, with the registry the validator
     // judges this project's pipelines by.
     outsideReach: outsideReachForSteps(db, onBoard, registryForProject(db, projectId)),
+    // Each step that runs as a report-only team (EO-848), read as
+    // dispatch would act on it and judged as `pipeline:validate` judges it.
+    teams: teamReadingsForPipeline(db, input.pipelineId, onBoard, registryForProject(db, projectId)),
   };
 }
 

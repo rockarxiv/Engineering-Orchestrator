@@ -118,10 +118,23 @@ export const EMPTY_TRIAL_PLAN: TrialPlan = { steps: [], expected: [] };
  */
 export const MOCKED_OUTPUT_MARK = "**Mocked on this trial** — this step did not run.";
 
-/** The body of a mocked step's output comment: the mark, which result it reports, then the output the plan names. */
-export function mockedOutputBody(stepName: string, resultKey: string, output: string): string {
+/**
+ * What a mocked step that runs as a team says beside the mark (EO-848):
+ * nobody on the team ran, so the result is the plan's and the team itself
+ * has not been tested — said on the thread and on the design card, so a
+ * mocked team is never read as one that was exercised.
+ */
+export const MOCKED_TEAM_NOTE = "It runs as a report-only team, and no member of the team ran: this result is the plan's, and the team is not tested by it.";
+
+/**
+ * The body of a mocked step's output comment: the mark, which result it
+ * reports, that its team did not run where it has one (EO-848), then the
+ * output the plan names.
+ */
+export function mockedOutputBody(stepName: string, resultKey: string, output: string, options: { team?: boolean } = {}): string {
   const said = output.trim() === "" ? "" : `\n\n${output}`;
-  return `${MOCKED_OUTPUT_MARK} The trial plan has "${stepName}" report \`${resultKey}\` for this test item.${said}`;
+  const team = options.team === true ? ` ${MOCKED_TEAM_NOTE}` : "";
+  return `${MOCKED_OUTPUT_MARK} The trial plan has "${stepName}" report \`${resultKey}\` for this test item.${team}${said}`;
 }
 
 /** Whether a comment is a mocked step's output: EO's own output comment, opening with the mark. */

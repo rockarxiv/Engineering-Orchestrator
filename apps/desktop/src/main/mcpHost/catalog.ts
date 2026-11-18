@@ -617,9 +617,12 @@ function spelledTool<K extends IpcChannel>(spec: ChannelToolSpec<K>, spelling: T
  * delegated to whoever would be reading the payload.
  */
 /**
- * A step as an agent may send it to `pipeline_save` and `pipeline_validate`:
- * without its team (EO-843), which no agent is offered until teams run.
- * Left out, a step keeps the team it has (`teamFor` in configCommands.ts).
+ * A step as an agent may send it to `pipeline_save`: without its team
+ * (EO-843). A team is configured through the assistant's draft and the
+ * card a person publishes (EO-848), never written by a tool — so the key
+ * is taken off, and a step keeps the team it has (`teamFor` in
+ * configCommands.ts). `pipeline_validate` takes it, to judge a team
+ * before it is drafted.
  */
 const STEP_WITHOUT_TEAM = PipelineStepSaveSchema.omit({ team: true });
 
@@ -648,8 +651,9 @@ const PIPELINE_SAVE_TOOL: ToolSpec = withoutWebhookUnattended(
       // assistant writes itself goes through `role_action_save`, which
       // answers with the save's own reasons.
       //
-      // And each step without `team` (EO-843): no agent is offered a team
-      // until teams run, so the key is stripped and a step keeps its own.
+      // And each step without `team` (EO-843, EO-848): a team reaches a
+      // pipeline only through a draft's card, so the key is stripped and a
+      // step keeps its own.
       input: PipelineSaveInputSchema.omit({ restoredFrom: true, actions: true }).safeExtend({ steps: z.array(STEP_WITHOUT_TEAM) }),
       kind: "write",
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
@@ -2235,7 +2239,9 @@ const READ_TOOLS: readonly ToolSpec[] = [
     channel: "pipelineSteps:list",
     description:
       "One pipeline's steps and the routes between them — where work enters, what each step is for, and which result " +
-      "key sends a ticket where. The graph is data, so this is the whole of it.",
+      "key sends a ticket where. The graph is data, so this is the whole of it. A step that runs as a report-only team " +
+      "is listed under Teams: its members, coordination, completion and limits, who would staff each role, and the " +
+      "action its one answer is held to.",
     kind: "read",
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     render: renderPipeline,
@@ -4002,11 +4008,13 @@ const UNGATED_WRITE_TOOLS: readonly ToolSpec[] = [
   channelTool({
     name: "pipeline_validate",
     channel: "pipeline:validate",
-    // Read as `pipeline_save` reads a step, so this judges what that would publish (EO-843).
-    input: ipcContract["pipeline:validate"].request.safeExtend({ steps: z.array(STEP_WITHOUT_TEAM) }),
+    // With each step's team (EO-848): a team is judged here before it is
+    // drafted, and a step that leaves the key out keeps the one it has.
     description:
       "Check a pipeline graph without publishing it. Writes nothing. Call this before pipeline_save — a graph with a " +
-      "blocking problem is refused there anyway, and this says what is wrong while it is still cheap to fix.",
+      "blocking problem is refused there anyway, and this says what is wrong while it is still cheap to fix. A step may " +
+      "carry `team`, as a draft's step does, to check a report-only team before you draft it: the answer lists each team's " +
+      "staffing, restrictions, the action its answer is held to and the results it can end on.",
     kind: "read",
     list: "problems",
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },

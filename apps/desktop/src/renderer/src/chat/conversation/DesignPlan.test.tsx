@@ -18,7 +18,7 @@ const STEPS: DrawnStep[] = [
 ];
 
 function planned(stepId: string, name: string): AssistTrialCard["steps"][number] {
-  return { stepId, name, mode: "real", reason: null, reaches: null, mocks: [] };
+  return { stepId, name, mode: "real", reason: null, reaches: null, mocks: [], team: null };
 }
 
 const TRIAL: AssistTrialCard = {
@@ -51,6 +51,21 @@ describe("the design card's plan", () => {
     render(<DesignPlan trial={TRIAL} steps={STEPS} />);
 
     expect(chipOf("Done")).toBeNull();
+  });
+
+  it("labels a mocked team as mocked and not tested, and a real one as running for real (EO-848)", () => {
+    const steps = [
+      { ...planned("draft", "Draft"), team: { coordination: "independent" as const, tested: true, note: "Runs as an independent team for real." } },
+      { ...planned("match", "Match PO"), mode: "mocked" as const, team: { coordination: "leader" as const, tested: false, note: "Mocked — the team does not run." } },
+    ];
+    render(<DesignPlan trial={{ ...TRIAL, steps }} steps={STEPS} />);
+    const row = (name: string) => within(screen.getByRole("region", { name: "How each step runs" })).getByText(name).closest("li")!;
+
+    expect(row("Draft")).toHaveTextContent("team · runs for real");
+    expect(row("Draft")).toHaveTextContent("Runs as an independent team for real.");
+    expect(row("Match PO")).toHaveTextContent("team · mocked, not tested");
+    expect(row("Match PO")).not.toHaveTextContent("runs for real");
+    expect(row("Match PO")).toHaveTextContent("Mocked — the team does not run.");
   });
 
   it("guesses no kind for a step the draft does not draw", () => {

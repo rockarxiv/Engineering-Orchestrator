@@ -3,6 +3,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   evidenceBaselineOf,
+  isMockedOutput,
+  MOCKED_TEAM_NOTE,
   StepTeamSchema,
   TEAM_EVIDENCE_TOOLS,
   TEAM_PARTICIPANT_ACTION,
@@ -34,6 +36,8 @@ import {
   startTeamAttempt,
 } from "../db/repos/teamSessionsRepo.js";
 import { listTransitionsForItem } from "../db/repos/transitionsRepo.js";
+import { trialSpendCentsSince } from "../db/repos/trialLoopsRepo.js";
+import { writeTrialPlan } from "../db/repos/trialsRepo.js";
 import { createTestItem, openMigratedTestDb } from "../db/testHelpers.js";
 import { createRunSupervisor, type RunSupervisor } from "./runSupervisor.js";
 import { taskContextOf } from "./teamEvidence.js";
@@ -650,5 +654,57 @@ describe("an independent team's evidence (EO-846)", () => {
     await supervisor().runOnce();
     expect(started).toHaveLength(2);
     expect(listTeamSessionsForItem(handle.db, item.id)[0]!.attempts.every((attempt) => attempt.supersededBy === null)).toBe(true);
+  });
+});
+
+/**
+ * A team on a trial (EO-848): planned real, its participants run on the
+ * trial's own test item — every run, report and cent under the trial —
+ * and planned mocked, nobody on it runs and the output says the team was
+ * not tested, so a mocked team is never read as an exercised one.
+ */
+describe("a team on a trial item (EO-848)", () => {
+  /** The board made a trial, and the item one of its test items. */
+  function onTrial(): Item {
+    client().prepare("update pipelines set trial_at = ?, trial_conversation_id = ? where id = 'default'").run(Date.now(), uuidv7());
+    client().prepare("update items set trial_at = ? where id = ?").run(Date.now(), item.id);
+    return getItem(handle.db, item.id)!;
+  }
+
+  it("runs a team planned real on the test item itself: its participants, reports and spending are the trial's", async () => {
+    const trialItem = onTrial();
+    const live = createTestItem(handle.db, { type: "story", title: "Live work", stepId: "accepted" });
+    script = ({ agent }) => answer("clear", `${agent.name} found nothing.`, agent.name === "Sasha" ? 30 : 20);
+    await supervisor().runOnce();
+
+    expect(getItem(handle.db, trialItem.id)?.stepId).toBe("accepted");
+    expect(started.map((one) => one.agent).sort()).toEqual(["Sasha", "Tess"]);
+    // Every participant run is a row on the trial's test item, and nothing ran on live work.
+    expect(participantRuns()).toHaveLength(2);
+    expect(participantRuns().every((run) => run.itemId === trialItem.id)).toBe(true);
+    expect(listRunsForItem(handle.db, live.id)).toEqual([]);
+    // Reports are on the test item's own thread.
+    expect(reportsOn(trialItem.id)).toHaveLength(2);
+    // What they spent is what the trial's budget counts.
+    expect(trialSpendCentsSince(handle.db, "default", 0)).toBe(50);
+    expect(listTeamSessionsForItem(handle.db, trialItem.id).map((record) => record.session.status)).toEqual(["finalized"]);
+  });
+
+  it("runs nobody for a team planned mocked, and marks its output as a mocked team that was not tested", async () => {
+    const trialItem = onTrial();
+    writeTrialPlan(handle.db, "default", { steps: [{ stepId: "check", mode: "mocked", mocks: [{ itemId: trialItem.id, resultKey: "aligned", output: "Looks aligned." }] }], expected: [] });
+    script = () => {
+      throw new Error("a mocked team must start no participant");
+    };
+    await supervisor().runOnce();
+
+    expect(started).toEqual([]);
+    expect(listRunsForItem(handle.db, trialItem.id)).toEqual([]);
+    expect(listTeamSessionsForItem(handle.db, trialItem.id)).toEqual([]);
+    const output = listCommentsForItem(handle.db, trialItem.id).find((comment) => comment.kind === "output");
+    expect(output !== undefined && isMockedOutput(output)).toBe(true);
+    expect(output?.body).toContain(MOCKED_TEAM_NOTE);
+    expect(output?.body).toContain("Looks aligned.");
+    expect(getItem(handle.db, trialItem.id)?.stepId).toBe("accepted");
   });
 });

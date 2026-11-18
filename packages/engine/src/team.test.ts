@@ -151,6 +151,17 @@ describe("validatePipeline: a team on an agent step (EO-843)", () => {
     expect(teamErrors(pipeline(team(600_000), {}, { runTimeoutMs: 1_800_000 }))).toEqual([]);
   });
 
+  it("refuses a team that dispatch could staff with an agent EO cannot hold to report-only, for every kind of member (EO-848)", () => {
+    const reportOnlyRoleProblems = { tester: "Tess runs on the person's own setup." };
+    expect(teamErrors(pipeline(independent(), {}, { reportOnlyRoleProblems }))).toEqual([
+      'The team on "review" could be staffed by a "tester" agent EO cannot hold to report-only: Tess runs on the person\'s own setup.',
+    ]);
+    expect(teamErrors(pipeline(leader(), {}, { reportOnlyRoleProblems: { reviewer: "Rex has no model." } }))).toEqual([expect.stringContaining('a "reviewer" agent EO cannot hold to report-only: Rex has no model.')]);
+    // An unstaffed role is said once, as unstaffed; a step without a team is not asked.
+    expect(teamErrors(pipeline(independent(), {}, { staffedRoles: ["reviewer"], reportOnlyRoleProblems }))).toEqual([expect.stringContaining('needs a "tester" agent')]);
+    expect(teamErrors(pipeline(null, {}, { reportOnlyRoleProblems }))).toEqual([]);
+  });
+
   it("refuses a team built without parsing that breaks its own rules", () => {
     const valid = independent();
     if (valid.coordination !== "independent") throw new Error("independent");

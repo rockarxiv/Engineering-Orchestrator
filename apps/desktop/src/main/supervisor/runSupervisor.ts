@@ -8289,7 +8289,7 @@ export function createRunSupervisor(
       return true;
     }
 
-    postComment(db, { itemId: current.id, author: { type: "engine" }, kind: "output", body: mockedOutputBody(step.name, mode.mock.resultKey, mode.mock.output) });
+    postComment(db, { itemId: current.id, author: { type: "engine" }, kind: "output", body: mockedOutputBody(step.name, mode.mock.resultKey, mode.mock.output, { team: step.type === "agent" && step.team !== null && step.team !== undefined }) });
     const next = routeResult(db, step, listPipelineSteps(db), mode.mock.resultKey, current);
     if (next === null) {
       const reason = `"${step.name}" is mocked on this trial and reported "${mode.mock.resultKey}", which leads nowhere from this step, so the item has not moved.`;
