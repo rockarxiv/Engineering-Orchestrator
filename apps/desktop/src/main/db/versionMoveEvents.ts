@@ -1,5 +1,6 @@
 import type { Uuid } from "@eo/core";
 import type { Db } from "./client.js";
+import { eventsHeld } from "./heldEvents.js";
 
 /**
  * A move to another pipeline version asked of the record, announced
@@ -32,6 +33,7 @@ export function onVersionMoveAsked(db: Db, listener: VersionMoveListener): () =>
 }
 
 export function notifyVersionMoveAsked(db: Db, asked: VersionMoveAsked): void {
+  if (eventsHeld(db)) return;
   for (const listener of listeners.get(db) ?? []) {
     try {
       listener(asked);

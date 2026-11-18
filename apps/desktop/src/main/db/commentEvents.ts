@@ -1,5 +1,6 @@
 import type { Comment, Uuid } from "@eo/core";
 import type { Db } from "./client.js";
+import { eventsHeld } from "./heldEvents.js";
 
 /**
  * What a listener is told beside the comment itself (EO-324).
@@ -76,6 +77,7 @@ export function onCommentPosted(db: Db, listener: CommentListener): () => void {
  * comment must never be able to take down the thing that wrote it.
  */
 export function notifyCommentPosted(db: Db, comment: Comment, context: CommentContext = { staysHere: false }): void {
+  if (eventsHeld(db)) return;
   for (const listener of listeners.get(db) ?? []) {
     try {
       listener(comment, context);
@@ -117,6 +119,7 @@ export function onCommentPinned(db: Db, listener: PinListener): () => void {
 
 /** Announces a pin. Called by `setCommentPinned`, and nowhere else. */
 export function notifyCommentPinned(db: Db, pinned: PinnedComment): void {
+  if (eventsHeld(db)) return;
   for (const listener of pinListeners.get(db) ?? []) {
     try {
       listener(pinned);
@@ -148,6 +151,7 @@ export function onCommentsRemoved(db: Db, listener: ThreadListener): () => void 
 
 /** Announces removed comments. Called by `deleteComment`, and nowhere else. */
 export function notifyCommentsRemoved(db: Db, itemId: Uuid): void {
+  if (eventsHeld(db)) return;
   for (const listener of removalListeners.get(db) ?? []) {
     try {
       listener(itemId);
@@ -207,6 +211,7 @@ export function onMentionSettled(db: Db, listener: MentionListener): () => void 
  * record its own decision back, once per machine that pulled it.
  */
 export function notifyMentionSettled(db: Db, settled: SettledMention): void {
+  if (eventsHeld(db)) return;
   for (const listener of mentionListeners.get(db) ?? []) {
     try {
       listener(settled);

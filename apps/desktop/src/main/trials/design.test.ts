@@ -3,9 +3,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ADMIN_MCP_SERVER_NAME, AssistOutputSchema, SCRATCH_KIND, pageDescriptorFor, type Agent, type AgentEvent, type Item, type Uuid } from "@eo/core";
 import { eq } from "drizzle-orm";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AttachmentStorage } from "../attachments/storage.js";
 import type { DbHandle } from "../db/client.js";
+import { onCommentPosted } from "../db/commentEvents.js";
 import {
   appendRunEvent,
   approveModule,
@@ -35,6 +36,9 @@ import {
 import { setSetting } from "../db/repos/settingsRepo.js";
 import { items, modules, moduleTrialGrants, pipelines, trialRounds, workspaces } from "../db/schema.js";
 import { openMigratedTestDb } from "../db/testHelpers.js";
+import { onTransitionApplied } from "../db/transitionEvents.js";
+import { CHANGE_PUSH_WINDOW_MS } from "../changeAnnouncers.js";
+import { createEngine } from "../engine.js";
 import { readAssistDraftForPublish, sendToAssist } from "../ipc/assistCommands.js";
 import { GUARDS_KEY } from "../ipc/configCommands.js";
 import { clearPublishedView } from "../ipc/currentView.js";
@@ -749,6 +753,54 @@ describe("the check that a design's trial can be made", () => {
     const answer = await approve(chat, card);
     expect(answer).toMatchObject({ approved: true, round: 1 });
     expect(rows()).toMatchObject({ pipelines: before.pipelines + 1, modules: before.modules + 1, rounds: before.rounds + 1 });
+  });
+
+  it("tells nobody of what it took back: not the engine's comment subscription, the trial loop or the record's queue", async () => {
+    // The engine as the app wires it: a comment announces its item to the
+    // renderer (`items:changed`), which is what `onDomainChange` hears.
+    const domainChange = vi.fn();
+    createEngine({ db: handle.db, eoMcpServerPath: "/unused", worktreeRoot: "/unused", onDomainChange: domainChange });
+    const chat = await conversation();
+    // A design whose entry step is a person's: filing each test item on it
+    // wakes the assistant with a comment on the conversation.
+    const personFirst = {
+      ...hotfixDraft(),
+      entryStepId: "check",
+      steps: hotfixDraft().steps.filter((entry) => ["check", "done", "dropped"].includes(entry.id)),
+      routes: hotfixDraft().routes.filter((route) => route.fromStepId === "check"),
+    };
+    const personPlan = { items: hotfixPlan().items, steps: [] };
+    const card = turn(chat, { message: "Here is the design.", draft: personFirst, trial: personPlan })!;
+    const agent = assistAgent(handle.db)!;
+    const run = createRun(handle.db, { itemId: chat.id, agentId: agent.id, action: ASSIST_ACTION });
+    const heard: string[] = [];
+    const stopComments = onCommentPosted(handle.db, (comment) => heard.push(`comment: ${comment.body.split("\n")[0]}`));
+    const stopMoves = onTransitionApplied(handle.db, (move) => heard.push(`move: ${move.itemId}`));
+    // Past the window the engine folds an item's announcements into, so
+    // none from posting the card is still to come, and one now would be.
+    const windowCloses = () => new Promise((resolve) => setTimeout(resolve, CHANGE_PUSH_WINDOW_MS * 2));
+    await windowCloses();
+    domainChange.mockClear();
+
+    // A trial that could be made, its items filed on a person's step.
+    expect(proposedTrialProblem(handle.db, chat, run.id as Uuid, { message: "Here is the design.", draft: personFirst, trial: personPlan })).toBeNull();
+    expect(read(chat, card).trial?.problem).toBeNull();
+    // A first round a guardrail stops, which posts its stop on the conversation.
+    setSetting(handle.db, GUARDS_KEY, { trialRoundsPerDraft: 0 });
+    expect(proposedTrialProblem(handle.db, chat, run.id as Uuid, { message: "Here is the design.", draft: hotfixDraft(), trial: hotfixPlan() })).toContain("No round was started");
+    expect(read(chat, card).trial?.problem).toContain("No round was started");
+
+    await windowCloses();
+    expect(heard).toEqual([]);
+    expect(domainChange).not.toHaveBeenCalled();
+
+    // The listeners were listening: Approve design, pressed, is heard.
+    setSetting(handle.db, GUARDS_KEY, {});
+    expect(await approve(chat, card)).toMatchObject({ approved: true });
+    expect(heard.length).toBeGreaterThan(0);
+    expect(domainChange).toHaveBeenCalled();
+    stopComments();
+    stopMoves();
   });
 
   it("holds Approve design on a card read after its project lost its last workspace, saying why, as a press would", async () => {

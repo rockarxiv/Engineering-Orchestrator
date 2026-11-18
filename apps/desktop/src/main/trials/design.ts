@@ -18,6 +18,7 @@ import {
 } from "@eo/core";
 import type { AttachmentStorage } from "../attachments/storage.js";
 import type { Db } from "../db/client.js";
+import { withEventsHeld } from "../db/heldEvents.js";
 import {
   getComment,
   getItem,
@@ -224,8 +225,9 @@ class Undone extends Error {}
  *
  * Asked by doing it: `makeDesignTrial`, the function Approve design runs,
  * with the trial made from `read` by `createTrialFromRead`, inside a
- * transaction that is always rolled back — and with no engine, so
- * nothing is told there is work. `prepare` runs first in the same
+ * transaction that is always rolled back — and with no engine, and every
+ * write announcement held (`withEventsHeld`), so nobody is told of a row
+ * that never comes to exist. `prepare` runs first in the same
  * transaction, for a caller that has to write what posting a card would
  * (the reply's modules) before the draft can be read; it answers with
  * the draft, or null where there is nothing to check.
@@ -243,7 +245,9 @@ export function designTrialProblem(
   const earlier = liveTrialOf(db, conversation.id);
   let problem: string | null = null;
   try {
-    db.transaction(() => {
+    // Nobody is told of a row that is about to be taken back: not the
+    // engine's comment subscription, the trial loop or the record's queue.
+    withEventsHeld(db, () => db.transaction(() => {
       const read = prepare();
       if (read !== null) {
         try {
@@ -254,7 +258,7 @@ export function designTrialProblem(
         }
       }
       throw new Undone();
-    });
+    }));
   } catch (error) {
     if (!(error instanceof Undone)) throw error;
   }

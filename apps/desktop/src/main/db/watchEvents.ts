@@ -1,4 +1,5 @@
 import type { Db } from "./client.js";
+import { eventsHeld } from "./heldEvents.js";
 import type { ItemWatch } from "./repos/itemWatchesRepo.js";
 
 export type WatchListener = (watch: ItemWatch) => void;
@@ -28,6 +29,7 @@ export function onWatchWritten(db: Db, listener: WatchListener): () => void {
 
 /** Announces a watch this database changed. A listener that throws is logged and skipped. */
 export function notifyWatchWritten(db: Db, watch: ItemWatch): void {
+  if (eventsHeld(db)) return;
   for (const listener of listeners.get(db) ?? []) {
     try {
       listener(watch);

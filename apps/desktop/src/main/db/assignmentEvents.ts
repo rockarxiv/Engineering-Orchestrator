@@ -1,5 +1,6 @@
 import type { Uuid } from "@eo/core";
 import type { Db } from "./client.js";
+import { eventsHeld } from "./heldEvents.js";
 
 /**
  * A claim, an assignment or a takeover asked of the record, announced
@@ -35,6 +36,7 @@ export function onAssignmentAsked(db: Db, listener: AssignmentListener): () => v
 }
 
 export function notifyAssignmentAsked(db: Db, asked: AssignmentAsked): void {
+  if (eventsHeld(db)) return;
   for (const listener of listeners.get(db) ?? []) {
     try {
       listener(asked);

@@ -1,4 +1,5 @@
 import type { Db } from "./client.js";
+import { eventsHeld } from "./heldEvents.js";
 import type { SideCallRow } from "./repos/sideCallsRepo.js";
 
 export type SideCallListener = (call: SideCallRow) => void;
@@ -29,6 +30,7 @@ export function onSideCallRecorded(db: Db, listener: SideCallListener): () => vo
 
 /** Announces a side call this machine made. A listener that throws is logged and skipped. */
 export function notifySideCallRecorded(db: Db, call: SideCallRow): void {
+  if (eventsHeld(db)) return;
   for (const listener of listeners.get(db) ?? []) {
     try {
       listener(call);
