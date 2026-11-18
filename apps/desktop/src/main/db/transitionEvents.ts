@@ -1,5 +1,6 @@
 import type { Transition } from "@eo/core";
 import type { Db } from "./client.js";
+import { eventsHeld } from "./heldEvents.js";
 
 /**
  * A move, as written (EO-324, `ARCHITECTURE.md`,
@@ -79,6 +80,7 @@ export function onTransitionApplied(db: Db, listener: TransitionListener): () =>
  * way.
  */
 export function notifyTransitionApplied(db: Db, transition: AppliedTransition): void {
+  if (eventsHeld(db)) return;
   for (const listener of listeners.get(db) ?? []) {
     try {
       listener(transition);

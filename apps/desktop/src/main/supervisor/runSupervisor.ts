@@ -330,6 +330,7 @@ import { readDebugMode } from "../debug/debugMode.js";
 import { capturingProvider, type SendContext } from "../providers/sentCapture.js";
 import { scenarioResultProblem } from "../roles/scenario.js";
 import { proposedPipelineProblem } from "../roles/discussion.js";
+import { proposedTrialProblem } from "../trials/design.js";
 import { liveDrafts } from "./liveDrafts.js";
 import { createSuggestedReplies, type SuggestedReply } from "./suggestedReplies.js";
 import { createSideCaller, type SideCaller, type SideCallerOptions } from "../sideCalls/sideCall.js";
@@ -4937,6 +4938,18 @@ export function createRunSupervisor(
     // value approval would accept, or let through one it would refuse.
     if (action === ASSIST_ACTION) {
       const problem = proposedPipelineProblem(db, item.projectId, parsed.value);
+      if (problem !== null) return { ok: false, error: problem };
+    }
+
+    // A design card whose trial could not be made is sent back the same
+    // way (EO-833), rather than posted to be refused once a person presses
+    // Approve design. Asked by Approve design's own work, done inside a
+    // transaction that is always rolled back, so the two cannot disagree.
+    if (action === ASSIST_ACTION) {
+      // The turn's lines so far, written down first: a draft of a pipeline
+      // is read as its card will be, against the pipeline this turn read.
+      activeEventBuffers.get(runId)?.flush();
+      const problem = proposedTrialProblem(db, item, runId, parsed.value);
       if (problem !== null) return { ok: false, error: problem };
     }
 

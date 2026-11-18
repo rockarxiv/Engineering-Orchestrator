@@ -16,6 +16,7 @@ import { getModule, listTrialPipelinesForConversation, newestTrialRound, readTri
 import { validatePipelineCommand } from "../ipc/configCommands.js";
 import { assistDraftSlot } from "../roles/assist.js";
 import { outputOf, threadOf } from "../roles/conversationThread.js";
+import type { DesignToMake } from "./design.js";
 import { moduleShownFor, trialModuleFor } from "./trialModules.js";
 
 /**
@@ -23,8 +24,11 @@ import { moduleShownFor, trialModuleFor } from "./trialModules.js";
  * card whose turn planned a test with real runs, read for the card.
  *
  * Its own module, apart from approving one (`design.ts`), because the
- * draft card's read (`assist:draft`) asks it, and that read must not
- * depend on what makes a trial.
+ * draft card's read (`assist:draft`) asks it. The one thing it asks of
+ * approving is whether a press would succeed now (EO-833), which that
+ * read hands it as `trialProblem` — `designTrialProblem`, approving and
+ * taking it back — so that this module, which `publishCard.ts` and through
+ * it the assistant's own module load, does not import what makes a trial.
  */
 
 /** A trial under test from this conversation, and the design the person approved for it. */
@@ -104,8 +108,16 @@ export function designOfCard(db: Db, conversation: Item, comment: Comment): { dr
  * `read` is the graph that read answered with, so each step's mode is
  * shown beside the step as it would be saved, and what it reaches outside
  * EO is classified from it by `pipeline:validate`'s own reading (EO-584).
+ * `trialProblem` answers why Approve design would be refused now, or null
+ * (EO-833): the card's `problem`, with the button held.
  */
-export function designCardView(db: Db, conversation: Item, comment: Comment, read: Pick<IpcResponse<"assist:draft">, "pipelineId" | "steps" | "routes" | "entryStepId" | "problem">): AssistTrialCard | null {
+export function designCardView(
+  db: Db,
+  conversation: Item,
+  comment: Comment,
+  read: Pick<IpcResponse<"assist:draft">, "pipelineId" | "steps" | "routes" | "entryStepId" | "problem">,
+  trialProblem: (card: DesignToMake) => string | null,
+): AssistTrialCard | null {
   const shown = designOfCard(db, conversation, comment);
   if (shown === null) return null;
   const { draft, plan } = shown;
@@ -145,6 +157,13 @@ export function designCardView(db: Db, conversation: Item, comment: Comment, rea
   const changes =
     classified.length > 0 || pending === null ? classified : ["nothing you approved, but it follows a change to the design that is waiting for you, so testing waits until you approve a design"];
   const unfit = trialPlanProblems(draft, plan);
+  // Whether pressing Approve design now would make its trial (EO-833),
+  // asked by doing it and taking it back: what a press would be refused
+  // with — a workspace detached since the card was posted, a guardrail
+  // allowing no round — is said on the card, and the button held, rather
+  // than found out by pressing. A card already approved has no press.
+  const refused =
+    unfit.length > 0 || approvedHere || read.problem !== null ? null : trialProblem({ commentId: comment.id, draft, plan });
 
   return {
     items: plan.items.map((item) => ({
@@ -170,7 +189,8 @@ export function designCardView(db: Db, conversation: Item, comment: Comment, rea
       }),
     modules: [...modules.values()],
     changes,
-    problem: unfit.length === 0 ? null : `The trial plan does not fit this draft, so this design cannot be approved: ${unfit.join(" ")} Ask for the draft again with its trial plan.`,
+    problem:
+      unfit.length > 0 ? `The trial plan does not fit this draft, so this design cannot be approved: ${unfit.join(" ")} Ask for the draft again with its trial plan.` : refused,
     approved: approvedHere ? { trialPipelineId: own.trial.id, round: newestTrialRound(db, own.trial.id)?.number ?? null } : null,
   };
 }

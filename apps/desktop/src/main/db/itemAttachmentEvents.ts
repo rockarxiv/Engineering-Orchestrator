@@ -1,5 +1,6 @@
 import type { Uuid } from "@eo/core";
 import type { Db } from "./client.js";
+import { eventsHeld } from "./heldEvents.js";
 import type { AttachmentRecord } from "./repos/attachmentsRepo.js";
 
 /**
@@ -26,6 +27,7 @@ export function onItemAttachmentsChanged(db: Db, listener: ItemAttachmentListene
 }
 
 export function notifyItemAttachmentsAdded(db: Db, itemId: Uuid, attachments: readonly AttachmentRecord[]): void {
+  if (eventsHeld(db)) return;
   for (const listener of listeners.get(db) ?? []) {
     try {
       listener.added?.(itemId, attachments);
@@ -36,6 +38,7 @@ export function notifyItemAttachmentsAdded(db: Db, itemId: Uuid, attachments: re
 }
 
 export function notifyItemAttachmentRemoved(db: Db, attachment: AttachmentRecord): void {
+  if (eventsHeld(db)) return;
   for (const listener of listeners.get(db) ?? []) {
     try {
       listener.removed?.(attachment);

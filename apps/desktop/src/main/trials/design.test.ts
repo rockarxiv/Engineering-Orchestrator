@@ -1,11 +1,14 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { AssistOutputSchema, SCRATCH_KIND, pageDescriptorFor, type Item, type Uuid } from "@eo/core";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { ADMIN_MCP_SERVER_NAME, AssistOutputSchema, SCRATCH_KIND, pageDescriptorFor, type Agent, type AgentEvent, type Item, type Uuid } from "@eo/core";
+import { eq } from "drizzle-orm";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AttachmentStorage } from "../attachments/storage.js";
 import type { DbHandle } from "../db/client.js";
+import { onCommentPosted } from "../db/commentEvents.js";
 import {
+  appendRunEvent,
   approveModule,
   createPipeline,
   createProject,
@@ -30,13 +33,21 @@ import {
   transitionItem,
   updateRun,
 } from "../db/repos/index.js";
+import { setSetting } from "../db/repos/settingsRepo.js";
+import { items, modules, moduleTrialGrants, pipelines, trialRounds, workspaces } from "../db/schema.js";
 import { openMigratedTestDb } from "../db/testHelpers.js";
+import { onTransitionApplied } from "../db/transitionEvents.js";
+import { CHANGE_PUSH_WINDOW_MS } from "../changeAnnouncers.js";
+import { createEngine } from "../engine.js";
 import { readAssistDraftForPublish, sendToAssist } from "../ipc/assistCommands.js";
+import { GUARDS_KEY } from "../ipc/configCommands.js";
 import { clearPublishedView } from "../ipc/currentView.js";
 import { clearHandlerRegistry } from "../ipc/registry.js";
 import { assistAgent, postAssistReply } from "../roles/assist.js";
 import { ASSIST_ACTION } from "../roles/conversationSteps.js";
-import { approveTrialDesign, continueTrialLoop } from "./design.js";
+import { PROPOSAL_KIND } from "../roles/proposal.js";
+import { createRunSupervisor } from "../supervisor/runSupervisor.js";
+import { approveTrialDesign, continueTrialLoop, proposedTrialProblem } from "./design.js";
 import { installTrialLoop } from "./loop.js";
 
 /**
@@ -158,17 +169,23 @@ async function conversation(): Promise<Item> {
 }
 
 /** One assistant turn, posted as the supervisor posts it and handed to the loop as the pack's wiring hands it. Its draft card, if it posted one. */
-function turn(chat: Item, output: unknown): Uuid | undefined {
+function turn(chat: Item, output: unknown, readPipeline?: string): Uuid | undefined {
   const parsed = AssistOutputSchema.parse(output);
   const agent = assistAgent(handle.db)!;
   const question = listCommentsForItem(handle.db, chat.id).filter((comment) => comment.authorType === "human").at(-1)!.id;
   const run = createRun(handle.db, { itemId: chat.id, agentId: agent.id, action: ASSIST_ACTION, initiationId: question });
+  // The pipeline the draft changes, read in the turn as a draft of one has to be.
+  if (readPipeline !== undefined) {
+    appendRunEvent(handle.db, run.id, "tool_call", { name: PIPELINE_READ, args: { pipelineId: readPipeline }, callId: "call-0" });
+    appendRunEvent(handle.db, run.id, "tool_result", { name: PIPELINE_READ, callId: "call-0", ok: true, output: "", truncated: false });
+  }
   updateRun(handle.db, run.id, { status: "succeeded", result: { raw: JSON.stringify(parsed), parsed } });
   const posted = postAssistReply(handle.db, chat, agent.id, run.id, parsed);
   continueTrialLoop(handle.db, chat, posted.draftCardIds ?? []);
   return posted.draftCardIds?.[0];
 }
 
+const PIPELINE_READ = `mcp__${ADMIN_MCP_SERVER_NAME}__pipeline_get`;
 const read = (chat: Item, messageId: Uuid) => readAssistDraftForPublish(handle.db, { conversationId: chat.id, messageId });
 const approve = (chat: Item, messageId: Uuid) => approveTrialDesign(handle.db, { attachmentStorage: attachments, worktreeRoot: join(scratch, "worktrees") }, { conversationId: chat.id, messageId });
 
@@ -596,5 +613,210 @@ describe("the modules a redesign grants", () => {
     // The adopted copy is live work's now: still approved, still in the catalogue, unchanged.
     expect(getModule(handle.db, copy)).toMatchObject({ code: fixed, archivedAt: null });
     expect(getModule(handle.db, copy)?.approvedAt).not.toBeNull();
+  });
+});
+
+/**
+ * EO-833. Whether Approve design would make its trial is asked before
+ * the card is offered — while the assistant's turn is still open, and
+ * again whenever the card is read — by doing what Approve design does
+ * inside a transaction that is always rolled back.
+ */
+describe("the check that a design's trial can be made", () => {
+  /**
+   * A draft of a pipeline the project has — one being made can hand work
+   * nowhere — whose Check hands its rejections to a step of another of
+   * the project's pipelines; and the pipeline it changes, which the turn
+   * has to have read.
+   */
+  function handingOff() {
+    const live = createPipeline(handle.db, { projectId, name: "Live hotfix" });
+    replacePipelineGraph(handle.db, live.id, [{ id: "lh_start", pipelineId: live.id as Uuid, position: 0, name: "Start", type: "user", isTerminal: true }], [], { entryStepId: "lh_start" });
+    const ops = createPipeline(handle.db, { projectId, name: "Ops" });
+    replacePipelineGraph(handle.db, ops.id, [{ id: "ops_take", pipelineId: ops.id as Uuid, position: 0, name: "Take", type: "user", isTerminal: true }], [], { entryStepId: "ops_take" });
+    const draft = { ...hotfixDraft(), target: { pipelineId: live.id }, removes: ["lh_start"] };
+    draft.routes = draft.routes.map((route) => (route.resultKey === "reject" ? { ...route, target: "ops_take" } : route));
+    return { draft, read: live.id };
+  }
+  const HAND_OFF = 'Nothing was made to test: "Check" hands work to a step of another pipeline, and a trial item following that route would land on live work.';
+
+  /** Every row a made trial writes, counted. */
+  function rows() {
+    return {
+      pipelines: handle.db.select().from(pipelines).all().length,
+      grants: handle.db.select().from(moduleTrialGrants).all().length,
+      modules: handle.db.select().from(modules).all().length,
+      items: handle.db.select().from(items).all().length,
+      rounds: handle.db.select().from(trialRounds).all().length,
+    };
+  }
+
+  /** The assistant's turn, answered by each of `replies` in order, through the supervisor; what it was sent back with. */
+  async function assistantTurn(replies: unknown[], readPipeline?: string): Promise<string[]> {
+    let index = 0;
+    const sentBack: string[] = [];
+    async function* answer(): AsyncIterable<AgentEvent> {
+      const data = replies[Math.min(index, replies.length - 1)];
+      index += 1;
+      yield { type: "result", data };
+    }
+    const provider = {
+      async *start(): AsyncIterable<AgentEvent> {
+        yield { type: "thread_started", threadId: "t1" };
+        if (readPipeline !== undefined) {
+          yield { type: "tool_call", name: PIPELINE_READ, args: { pipelineId: readPipeline }, callId: "call-0" };
+          yield { type: "tool_result", name: PIPELINE_READ, callId: "call-0", ok: true, output: "", truncated: false };
+        }
+        yield* answer();
+      },
+      async *resume(_threadId: string, message: string): AsyncIterable<AgentEvent> {
+        sentBack.push(message);
+        yield* answer();
+      },
+    };
+    await createRunSupervisor({
+      db: handle.db,
+      provider,
+      limits: { globalConcurrency: 5, perAgentConcurrency: 5, perRepositoryConcurrency: 10 },
+      onRunSucceeded: (item: Item, agent: Agent, action: string, parsedResult: unknown, runId: Uuid): void => {
+        if (action !== ASSIST_ACTION) return;
+        const posted = postAssistReply(handle.db, item, agent.id, runId, parsedResult);
+        continueTrialLoop(handle.db, item, posted.draftCardIds ?? []);
+      },
+    }).runOnce();
+    return sentBack;
+  }
+
+  const draftCards = (chat: Item) => listCommentsForItem(handle.db, chat.id).filter((comment) => comment.authorType === "agent" && comment.kind === PROPOSAL_KIND);
+
+  it("sends a draft trial creation would refuse back to the assistant with Approve design's sentence, posting no card", async () => {
+    const chat = await conversation();
+    const { draft, read: target } = handingOff();
+    const before = rows();
+
+    const sentBack = await assistantTurn(
+      [
+        { message: "Here is the design.", draft, trial: hotfixPlan() },
+        { message: "Here it is, ending in Dropped.", draft: hotfixDraft(), trial: hotfixPlan() },
+      ],
+      target,
+    );
+
+    const correction = sentBack.find((message) => message.includes("This draft's trial could not be made"));
+    expect(correction).toContain(HAND_OFF);
+    expect(correction).toContain("Nothing was posted from this reply.");
+    // The corrected reply is the one posted: a single card, whose trial could be made.
+    const cards = draftCards(chat);
+    expect(cards).toHaveLength(1);
+    expect(listCommentsForItem(handle.db, chat.id).some((comment) => comment.body.includes("Here is the design."))).toBe(false);
+    expect(read(chat, cards[0]!.id as Uuid).trial?.problem).toBeNull();
+    expect(rows()).toEqual(before);
+
+    // And it is the sentence Approve design answers the same draft with, posted.
+    const posted = turn(chat, { message: "Again.", draft, trial: hotfixPlan() }, target)!;
+    expect(await approve(chat, posted)).toMatchObject({ approved: false, problem: HAND_OFF });
+  });
+
+  it("sends back a design whose first round a guardrail would refuse", async () => {
+    setSetting(handle.db, GUARDS_KEY, { trialRoundsPerDraft: 0 });
+    const chat = await conversation();
+    const before = rows();
+
+    const sentBack = await assistantTurn([{ message: "Here is the design.", draft: hotfixDraft(), trial: hotfixPlan() }, { message: "Testing is switched off here, so I will not plan a trial." }]);
+
+    const correction = sentBack.find((message) => message.includes("This draft's trial could not be made"));
+    expect(correction).toContain("No round was started: 0 rounds have run, which is as many as one draft is allowed (0).");
+    expect(draftCards(chat)).toEqual([]);
+    expect(rows()).toEqual(before);
+  });
+
+  it("leaves no row behind and tells no engine, when the trial could be made", async () => {
+    // A module live work runs, so the trial forks a copy of it.
+    approveModule(handle.db, deployModuleId);
+    liveOn(deployModuleId, "live");
+    stopLoop();
+    let notified = 0;
+    stopLoop = installTrialLoop(handle.db, { engine: { notifyStateChange: () => (notified += 1) } as never, attachmentStorage: attachments });
+    const chat = await conversation();
+    const agent = assistAgent(handle.db)!;
+    const run = createRun(handle.db, { itemId: chat.id, agentId: agent.id, action: ASSIST_ACTION });
+    const commentsBefore = listCommentsForItem(handle.db, chat.id).length;
+    const before = rows();
+
+    expect(proposedTrialProblem(handle.db, chat, run.id as Uuid, { message: "Here is the design.", draft: hotfixDraft(), trial: hotfixPlan() })).toBeNull();
+
+    expect(rows()).toEqual(before);
+    expect(listCommentsForItem(handle.db, chat.id)).toHaveLength(commentsBefore);
+    expect(notified).toBe(0);
+    // It did make them: a press now forks the module and files both test items.
+    const card = turn(chat, { message: "Here is the design.", draft: hotfixDraft(), trial: hotfixPlan() })!;
+    const answer = await approve(chat, card);
+    expect(answer).toMatchObject({ approved: true, round: 1 });
+    expect(rows()).toMatchObject({ pipelines: before.pipelines + 1, modules: before.modules + 1, rounds: before.rounds + 1 });
+  });
+
+  it("tells nobody of what it took back: not the engine's comment subscription, the trial loop or the record's queue", async () => {
+    // The engine as the app wires it: a comment announces its item to the
+    // renderer (`items:changed`), which is what `onDomainChange` hears.
+    const domainChange = vi.fn();
+    createEngine({ db: handle.db, eoMcpServerPath: "/unused", worktreeRoot: "/unused", onDomainChange: domainChange });
+    const chat = await conversation();
+    // A design whose entry step is a person's: filing each test item on it
+    // wakes the assistant with a comment on the conversation.
+    const personFirst = {
+      ...hotfixDraft(),
+      entryStepId: "check",
+      steps: hotfixDraft().steps.filter((entry) => ["check", "done", "dropped"].includes(entry.id)),
+      routes: hotfixDraft().routes.filter((route) => route.fromStepId === "check"),
+    };
+    const personPlan = { items: hotfixPlan().items, steps: [] };
+    const card = turn(chat, { message: "Here is the design.", draft: personFirst, trial: personPlan })!;
+    const agent = assistAgent(handle.db)!;
+    const run = createRun(handle.db, { itemId: chat.id, agentId: agent.id, action: ASSIST_ACTION });
+    const heard: string[] = [];
+    const stopComments = onCommentPosted(handle.db, (comment) => heard.push(`comment: ${comment.body.split("\n")[0]}`));
+    const stopMoves = onTransitionApplied(handle.db, (move) => heard.push(`move: ${move.itemId}`));
+    // Past the window the engine folds an item's announcements into, so
+    // none from posting the card is still to come, and one now would be.
+    const windowCloses = () => new Promise((resolve) => setTimeout(resolve, CHANGE_PUSH_WINDOW_MS * 2));
+    await windowCloses();
+    domainChange.mockClear();
+
+    // A trial that could be made, its items filed on a person's step.
+    expect(proposedTrialProblem(handle.db, chat, run.id as Uuid, { message: "Here is the design.", draft: personFirst, trial: personPlan })).toBeNull();
+    expect(read(chat, card).trial?.problem).toBeNull();
+    // A first round a guardrail stops, which posts its stop on the conversation.
+    setSetting(handle.db, GUARDS_KEY, { trialRoundsPerDraft: 0 });
+    expect(proposedTrialProblem(handle.db, chat, run.id as Uuid, { message: "Here is the design.", draft: hotfixDraft(), trial: hotfixPlan() })).toContain("No round was started");
+    expect(read(chat, card).trial?.problem).toContain("No round was started");
+
+    await windowCloses();
+    expect(heard).toEqual([]);
+    expect(domainChange).not.toHaveBeenCalled();
+
+    // The listeners were listening: Approve design, pressed, is heard.
+    setSetting(handle.db, GUARDS_KEY, {});
+    expect(await approve(chat, card)).toMatchObject({ approved: true });
+    expect(heard.length).toBeGreaterThan(0);
+    expect(domainChange).toHaveBeenCalled();
+    stopComments();
+    stopMoves();
+  });
+
+  it("holds Approve design on a card read after its project lost its last workspace, saying why, as a press would", async () => {
+    const chat = await conversation();
+    const card = turn(chat, { message: "Here is the design.", draft: hotfixDraft(), trial: hotfixPlan() })!;
+    expect(read(chat, card).trial?.problem).toBeNull();
+
+    handle.db.update(workspaces).set({ projectId: null }).where(eq(workspaces.projectId, projectId)).run();
+    const before = rows();
+
+    const shown = read(chat, card);
+    const NO_WORKSPACE = "Nothing was made to test: a trial's test items work on one of the project's workspaces, and it has none attached. Attach a repository or a folder first.";
+    expect(shown.problem).toBeNull();
+    expect(shown.trial?.problem).toBe(NO_WORKSPACE);
+    expect(rows()).toEqual(before);
+    // The press still refuses on its own, in the same words.
+    expect(await approve(chat, card)).toMatchObject({ approved: false, problem: NO_WORKSPACE });
   });
 });
