@@ -425,7 +425,8 @@ describe("a leader-led team (EO-847)", () => {
     expect(refusals[1]).toContain('Its result "shipped" is not one "alignment" declares (aligned, gaps_found).');
     expect(refusals[2]).toContain('not a valid "alignment" answer');
     expect(teamRuns()[0]?.status).toBe("awaiting_input");
-    expect(listTeamSessionsForItem(handle.db, item.id)[0]?.session.status).toBe("failed");
+    // Parked, not ended (EO-849): a person may give the leader another turn.
+    expect(listTeamSessionsForItem(handle.db, item.id)[0]?.session.status).toBe("open");
     expect(notes().at(-1)).toContain("could not finish");
   });
 

@@ -52,7 +52,7 @@ function CurrentRoute() {
   return <div data-testid="current-route">{useLocation().pathname}</div>;
 }
 
-function renderRuns(runs: () => RunView[], onCall?: (channel: string, payload: unknown) => void) {
+function renderRuns(runs: () => RunView[], onCall?: (channel: string, payload: unknown) => void, answers: Record<string, unknown> = {}) {
   // Every listener, not the last: the view refetches on this push, and a
   // running run's live words (the transcript's) listen to it as well.
   const runsChangedListeners: ((push: unknown) => void)[] = [];
@@ -62,6 +62,7 @@ function renderRuns(runs: () => RunView[], onCall?: (channel: string, payload: u
       return { ok: true, data: { item: { id: "t1", key: "EO-1", title: "Rate limit the API", projectId: null }, runs: runs(), comments: [], transitions: [], dependsOn: [], decision: [] } };
     }
     if (channel === "runs:listEvents") return { ok: true, data: { events: [], nextSeq: null } };
+    if (channel in answers) return { ok: true, data: answers[channel] };
     return { ok: true, data: {} };
   }) as never;
   const itemsChangedListeners: ((push: unknown) => void)[] = [];
@@ -174,6 +175,65 @@ describe("the runs view", () => {
     const details = await screen.findByRole("complementary", { name: "Run details" });
     expect(within(details).getByText("Checks failed")).toBeInTheDocument();
     expect(screen.getByRole("region", { name: "Transcript" })).toBeInTheDocument();
+  });
+
+  it("lists a team's participants under its session, not as runs competing for the step (EO-849)", async () => {
+    const publishes: unknown[] = [];
+    const teamSession = {
+      id: "s1",
+      itemId: "t1",
+      stepId: "review",
+      stepName: "Review",
+      coordination: "independent",
+      status: "open",
+      state: "running",
+      current: true,
+      result: null,
+      final: null,
+      teamRunIds: ["team"],
+      createdAt: 1,
+      endedAt: null,
+      totals: { runs: 3, costCents: 9, tokensIn: 0, tokensOut: 0, teamRunCents: 0 },
+      waiting: [],
+      endReason: null,
+      cancel: { allowed: true, reason: null },
+      retry: { allowed: false, reason: "The team is still at work.", keys: [] },
+      assignments: [
+        {
+          key: "security",
+          role: "sec",
+          leader: false,
+          required: true,
+          current: "a1",
+          attempts: [
+            {
+              id: "a1", assignmentKey: "security", leader: false, role: "sec", agentId: "ag1", agentName: "Sasha", provider: "claude", instructions: "", round: 1, attempt: 1,
+              state: "running", status: "running", outcome: null, outcomeLabel: null, error: null, enforcementUnavailable: false, baseline: null, baselineCurrent: null,
+              reportCommentId: null, acceptedAt: null, runId: "p1", startedAt: 2_000, endedAt: null, costCents: 9, tokensIn: null, tokensOut: null, supersedes: null, supersededBy: null, questions: [],
+            },
+          ],
+        },
+      ],
+    };
+    renderRuns(
+      () => [
+        run({ id: "team", action: "alignment", agentName: "Quinn", startedAt: 1_000 }),
+        run({ id: "p1", action: "team:participant", agentName: "Sasha", startedAt: 2_000 }),
+        run({ id: "p2", action: "team:participant", agentName: "Tess", startedAt: 2_100 }),
+      ],
+      (channel, payload) => {
+        if (channel === "view:publish") publishes.push((payload as { selection?: unknown }).selection);
+      },
+      { "items:teamSessions": { sessions: [teamSession] } },
+    );
+
+    const nav = await screen.findByRole("navigation", { name: "Runs" });
+    // One run is the step's — the team's own; its participants are under the team.
+    expect(within(nav).getAllByRole("button")).toHaveLength(1);
+    expect(within(nav).getByText("alignment")).toBeInTheDocument();
+    const participant = await screen.findByRole("listitem", { name: "Participant security" });
+    fireEvent.click(within(participant).getByRole("button", { name: "Transcript" }));
+    await waitFor(() => expect(publishes.at(-1)).toEqual(["p1"]));
   });
 
   it("says so when nothing has run yet, in the project's word", async () => {

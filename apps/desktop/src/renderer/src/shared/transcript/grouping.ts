@@ -1,4 +1,4 @@
-import type { RunView } from "@eo/core";
+import { TEAM_PARTICIPANT_ACTION, type RunView } from "@eo/core";
 
 /**
  * One conversation, however many `runs` rows it took.
@@ -186,4 +186,14 @@ export interface LiveRun {
 export function liveRunOf(run: RunView | undefined): LiveRun | null {
   if (!run || !isRunActive(run.status)) return null;
   return { runId: run.id, agentName: run.agentName, steerable: run.steerable };
+}
+
+/**
+ * A team participant's own turn (EO-849): attributed to its team's session,
+ * never a run of the item's step beside the team's own. Listed under the
+ * team, not with the item's runs, and never "the latest run" a composer
+ * would speak to.
+ */
+export function isTeamParticipantRun(run: Pick<RunView, "action">): boolean {
+  return run.action === TEAM_PARTICIPANT_ACTION;
 }

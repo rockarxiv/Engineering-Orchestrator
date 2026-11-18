@@ -21,7 +21,7 @@ import {
   type WatchHold,
 } from "@eo/engine";
 import type { MemoryConsolidateNowResult, MemoryScope, OrganisationPolicy, PersonBudget } from "@eo/core";
-import { isDispatchable, isSystemAgent, mockedOutputBody, SYSTEM_ROLE } from "@eo/core";
+import { isDispatchable, isSystemAgent, mockedOutputBody, SYSTEM_ROLE, TEAM_PARTICIPANT_ACTION } from "@eo/core";
 import {
   backendAllowed,
   disallowedBackendRefusal,
@@ -359,7 +359,9 @@ import { archiveReachOf, archiveUnusedSkills } from "../skills/archival.js";
 import { currentWatch, markCheckInFlight, ownerMention, recordQuietCheck, waitingLine, watchArrival, watchHold, watchRoundTrips, WATCH_ROUTED_REASON, WATCH_VERIFICATION_FAILED_REASON } from "./watches.js";
 import { agentMentionChain } from "./escalation.js";
 import { answerTeamCall, createTeamParticipantScopes, type TeamParticipantScopes } from "./teamParticipants.js";
-import { createTeamSupervisor, MACHINE_PARTICIPANT_LIMIT, type ReportOnlyProviderAnswer, type TeamAnswerContract } from "./teamSupervisor.js";
+import { createTeamSupervisor, MACHINE_PARTICIPANT_LIMIT, TEAM_RETRY_WORDS, type ReportOnlyProviderAnswer, type TeamAnswerContract } from "./teamSupervisor.js";
+import { currentTeamSession, endTeamSession, getTeamSession } from "../db/repos/teamSessionsRepo.js";
+import { teamNotHereProblem, type TeamControlSite } from "./teamSessionView.js";
 
 function safeTurnAttachments(attachments: NonNullable<ReturnType<typeof listCommentsForItem>[number]["attachments"]>): AgentInputAttachment[] {
   return attachments.flatMap((attachment) => attachment.id ? [{
@@ -1233,6 +1235,16 @@ export interface RunSupervisor {
    * run to stop.
    */
   cancelRun: (runId: string, cancellation?: Cancellation) => void;
+  /**
+   * A person stopping a whole team session (EO-849): the team's run and
+   * every participant with it if it is at work here, the parked run if it
+   * is parked, and the session ended `cancelled` either way — so no
+   * participant's late answer can read as running or as a finding. Refused
+   * with the reason for a session that has already ended.
+   */
+  cancelTeamSession: (sessionId: string) => { ok: true } | { ok: false; problem: string };
+  /** This desktop and the team runs it drives: what decides whether a session's controls can act here (EO-849). */
+  teamControlSite: () => TeamControlSite;
   /**
    * Says something to a run that is already going (EO-176).
    *
@@ -6819,7 +6831,9 @@ export function createRunSupervisor(
           // A team's own run says what its team could not do (EO-846): no
           // backend was involved, and its words are the whole account.
           const reason = teamRuns.has(run.id)
-            ? `${outcome.message}\n\nReply to run the team again.`
+            ? outcome.message.endsWith(TEAM_RETRY_WORDS)
+              ? outcome.message
+              : `${outcome.message}\n\nReply to run the team again.`
             : `${agent.name} was stopped by an error its backend reports as not retryable, so this was not tried again:\n\n${outcome.message}\n\nReply to try again.`;
           updateRun(db, run.id, {
             status: "awaiting_input",
@@ -11882,7 +11896,59 @@ export function createRunSupervisor(
   }
 
   function cancelRun(runId: string, cancellation: Cancellation = "asked-to-stop"): void {
+    // A participant's turn is its team's (EO-849): stopping one stops the
+    // team it works for, which is the run holding the item, rather than
+    // leaving the rest of the session running under it.
+    const run = getRun(db, runId as Uuid);
+    if (run?.action === TEAM_PARTICIPANT_ACTION) {
+      const team = teamRunOn(run.itemId);
+      if (team === undefined) return;
+      runId = team;
+    }
+    // A person's stop of a team's run ends its session: nothing it does
+    // after is the item's, and a reply starts the team afresh.
+    if (cancellation === "asked-to-stop" && teamRuns.has(runId)) {
+      const session = run === undefined ? undefined : currentTeamSession(db, run.itemId);
+      if (session !== undefined) endTeamSession(db, { sessionId: session.id, status: "cancelled", now: now() });
+    }
     cancelActiveRun(runId, cancellation);
+  }
+
+  /** The team run this process is driving for an item, if any. */
+  function teamRunOn(itemId: string): string | undefined {
+    return [...teamRuns].find((id) => getRun(db, id as Uuid)?.itemId === itemId);
+  }
+
+  /** Where team controls are answered: this desktop, and the team runs it drives (EO-849). */
+  const teamControlSite = (): TeamControlSite => ({ deviceId: deviceId(), drives: (runId) => teamRuns.has(runId) });
+
+  function cancelTeamSession(sessionId: string): { ok: true } | { ok: false; problem: string } {
+    const session = getTeamSession(db, sessionId);
+    if (session === undefined) return { ok: false, problem: "There is no such team session." };
+    if (session.status !== "open") return { ok: false, problem: `This team session has already ended (${session.status}), so there is nothing to cancel.` };
+    const active = teamRunOn(session.itemId);
+    if (active !== undefined) {
+      cancelRun(active, "asked-to-stop");
+      return { ok: true };
+    }
+    // Run by another desktop, or working in no process here: ending it here
+    // would stop nothing, and say it had.
+    const elsewhere = teamNotHereProblem(db, session, teamControlSite());
+    if (elsewhere !== null) return { ok: false, problem: elsewhere };
+    // Parked, or left by a restart: nothing is working anywhere.
+    endTeamSession(db, { sessionId, status: "cancelled", now: now() });
+    // The team's parked run stops waiting for a reply, and the step is not
+    // offered again until a person moves the item or mentions an agent.
+    const parked = listRunsForItem(db, session.itemId as Uuid)
+      .filter((run) => run.stepId === session.stepId && run.action !== TEAM_PARTICIPANT_ACTION)
+      .at(-1);
+    if (parked?.status === "awaiting_input") {
+      updateRun(db, parked.id, { status: "cancelled", error: "A person cancelled the team session." });
+      announceRun(parked.id, parked.itemId, "cancelled");
+      endInitiation({ ...parked, status: "cancelled" });
+    }
+    notifyStateChange();
+    return { ok: true };
   }
 
   /**
@@ -12953,6 +13019,8 @@ export function createRunSupervisor(
     prewarmConversation,
     dropSuggestedReply: (conversationId: Uuid) => suggestedReplies.drop(conversationId),
     cancelRun,
+    cancelTeamSession,
+    teamControlSite,
     steerRun,
     shutdown,
     runOnce,

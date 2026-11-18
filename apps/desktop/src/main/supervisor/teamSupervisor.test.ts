@@ -243,7 +243,7 @@ describe("an independent team on an agent step (EO-846)", () => {
     script = ({ agent }) => answer("clear", `${agent.name} found nothing.`);
     await supervisor({ teamParticipantLimit: 1 }).runOnce();
     expect(getItem(handle.db, item.id)?.stepId).toBe("accepted");
-    expect(listCommentsForItem(handle.db, item.id).some((comment) => comment.body.includes("**tests** is waiting to start: every participant slot on this machine is in use"))).toBe(true);
+    expect(listCommentsForItem(handle.db, item.id).some((comment) => comment.body.includes("**tests** is waiting for room to start: every participant slot on this machine is in use"))).toBe(true);
     expect(started.map((one) => one.agent)).toEqual(["Sasha", "Tess"]);
   });
 
@@ -334,7 +334,9 @@ describe("an independent team on an agent step (EO-846)", () => {
     const escalation = listCommentsForItem(handle.db, item.id).at(-1);
     expect(escalation?.body).toContain("could not decide");
     expect(escalation?.body).toContain("**tests**");
-    expect(listTeamSessionsForItem(handle.db, item.id)[0]?.session.status).toBe("failed");
+    // Parked, not ended (EO-849): the session stays the item's, so what failed can be retried.
+    expect(listTeamSessionsForItem(handle.db, item.id)[0]?.session.status).toBe("open");
+    expect(escalation?.body).toContain("every report already accepted is kept");
     expect(listTransitionsForItem(handle.db, item.id)).toEqual([]);
   });
 
