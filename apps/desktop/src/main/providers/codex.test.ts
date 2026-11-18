@@ -23,6 +23,7 @@ import {
   fromStrictCodexAnswer,
   EO_MCP_SERVER,
   SECRET_WITHHELD,
+  suggestionForkOptions,
 } from "./codex.js";
 import { AppServerExitedError } from "./codexAppServer.js";
 import { agentCodexHomePath, chooseCodexHome, prepareCodexHome, type CodexHomePreparation } from "./codexHome.js";
@@ -4370,6 +4371,90 @@ describe("a suggested next message on a prediction-mode fork (EO-808)", () => {
     expect(events.at(-1)?.type).toBe("result");
     // Spent all the same, and reported.
     expect(spent).toHaveLength(1);
+  });
+
+  /**
+   * An assistant chat turn sent with its answer schema (EO-839): the
+   * fork keeps the schema, so its request matches the turn's cached
+   * prefix, and answers in it with the suggestion in the message.
+   */
+  describe("on a turn sent with an answer schema (EO-839)", () => {
+    const assistSchema = () => outputSchemaFor(developerRegistry(), "assist")!;
+    /** The assistant's answer as Codex's strict mode writes it: the message, and every other field null. */
+    const structured = (message: string | null) => JSON.stringify({ outcome: { message, questions: null, draft: null, alternatives: null, modules: null, actions: null, proposals: null, change: null, changeProposalId: null, card: null, trial: null } });
+    const chatAnswered = (): Notes => [
+      note.turnStarted("turn-1", "$THREAD"),
+      note.agentMessage(structured("Drafted EO-12. File it on Delivery?"), "m", "turn-1", "$THREAD"),
+      note.tokenUsage({ input: 12_000, cached: 11_000, output: 50 }, "turn-1", "$THREAD"),
+      note.turnCompleted("completed", null, "turn-1", "$THREAD"),
+    ];
+    const outputSchemas = (fake: { sent: { method?: string; params?: unknown }[] }) =>
+      fake.sent.filter((message) => message.method === "turn/start").map((message) => (message.params as { outputSchema?: unknown }).outputSchema);
+
+    it("opens the fork with the schema the turn was resumed with, and nothing else the turn's own", () => {
+      const schema = assistSchema();
+      const signal = new AbortController().signal;
+      const turn = {
+        cwd: "/w",
+        outputSchema: schema,
+        attachments: [{ kind: "image", path: "/w/a.png" }],
+        warmKey: "chat-1",
+        budgetCents: 50,
+        streamDeltas: true,
+        streamAnswer: true,
+        onSkillsSection: () => undefined,
+        onSuggestionSpend: () => undefined,
+        onSuggestionOutcome: () => undefined,
+        suggestNextMessage: true,
+        signal: new AbortController().signal,
+      } as unknown as Parameters<typeof suggestionForkOptions>[0];
+      expect(suggestionForkOptions(turn, signal)).toEqual({ cwd: "/w", outputSchema: schema, refuseCallsExcept: [], signal });
+      expect(suggestionForkOptions(turn, signal).outputSchema).toBe(schema);
+    });
+
+    it("sends the fork's turn the same schema as the chat's, and passes on the answer's message", async () => {
+      const told: SuggestionOutcome[] = [];
+      const { provider, fake, forks } = suggesting({ after: { "turn/start": chatAnswered() }, afterFork: { "turn/start": forkTurn(structured("is that per agent?")) } });
+      const events = await collect(provider.resume("thr-chat", "draft it", { cwd: worktree, outputSchema: assistSchema(), suggestNextMessage: true, onSuggestionOutcome: (said) => told.push(said) }));
+      expect(forks()).toHaveLength(1);
+      const [chat, fork] = outputSchemas(fake);
+      expect(chat).toBeDefined();
+      expect(fork).toEqual(chat);
+      expect(suggestions(events)).toEqual([{ type: "prompt_suggestion", text: "is that per agent?", threadId: "thr-chat" }]);
+      expect(told).toEqual([{ kind: "emitted", text: "is that per agent?", answer: "is that per agent?" }]);
+    });
+
+    it.each([
+      ["an empty message", structured("")],
+      ["a null message", structured(null)],
+      ["no message at all", JSON.stringify({ outcome: { questions: null } })],
+    ])("emits nothing for a structured answer with %s, and says it was dropped as empty", async (_case, answer) => {
+      const told: SuggestionOutcome[] = [];
+      const { provider } = suggesting({ after: { "turn/start": chatAnswered() }, afterFork: { "turn/start": forkTurn(answer) } });
+      const events = await collect(provider.resume("thr-chat", "draft it", { cwd: worktree, outputSchema: assistSchema(), suggestNextMessage: true, onSuggestionOutcome: (said) => told.push(said) }));
+      expect(suggestions(events)).toEqual([]);
+      expect(told).toEqual([{ kind: "dropped", answer: "", rule: "empty" }]);
+      expect(events.filter((event) => event.type === "error")).toEqual([]);
+    });
+
+    it("drops a structured message the filters drop, by the same rule as plain text", async () => {
+      const told: SuggestionOutcome[] = [];
+      const { provider } = suggesting({ after: { "turn/start": chatAnswered() }, afterFork: { "turn/start": forkTurn(structured("Thanks, that looks great!")) } });
+      const events = await collect(provider.resume("thr-chat", "draft it", { cwd: worktree, outputSchema: assistSchema(), suggestNextMessage: true, onSuggestionOutcome: (said) => told.push(said) }));
+      expect(suggestions(events)).toEqual([]);
+      expect(told).toEqual([{ kind: "dropped", answer: "Thanks, that looks great!", rule: "praise" }]);
+    });
+
+    it("keeps the plain-text path on a turn sent without a schema: no schema on the fork, and its text read as written", async () => {
+      const told: SuggestionOutcome[] = [];
+      const answer = structured("is that per agent?");
+      const { provider, fake } = suggesting({ after: { "turn/start": chatTurn() }, afterFork: { "turn/start": forkTurn(answer) } });
+      const events = await collect(provider.resume("thr-chat", "draft it", { cwd: worktree, suggestNextMessage: true, onSuggestionOutcome: (said) => told.push(said) }));
+      expect(outputSchemas(fake)).toEqual([undefined, undefined]);
+      // Not unwrapped: without a schema the fork's text is the suggestion, braces and all, and dropped as it always was.
+      expect(told).toEqual([{ kind: "dropped", answer, rule: "bracketed" }]);
+      expect(suggestions(events)).toEqual([]);
+    });
   });
 
   it("emits nothing, and fails nothing, when the fork cannot be opened", async () => {

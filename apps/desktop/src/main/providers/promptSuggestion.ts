@@ -29,7 +29,9 @@ Write it the way the person writes, in 2 to 12 words and one sentence at most. N
 
 Answers that fit: "file it on Delivery", "publish the draft", "approve the proposal", "run the tests", "yes".
 
-Reply with the message alone: no quotes, no label, no explanation. To give nothing, reply with nothing.`;
+Reply with the message alone: no quotes, no label, no explanation. To give nothing, reply with nothing.
+
+When your answer has a structure, put the suggested message in the answer's message field and leave every other field empty or null. To give nothing there, leave the message empty.`;
 
 /**
  * How many tokens the turn's last request may have spent uncached, input

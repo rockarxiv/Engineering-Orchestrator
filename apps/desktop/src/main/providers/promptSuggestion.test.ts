@@ -139,6 +139,9 @@ describe("the suggestion prompt (EO-808)", () => {
       "publish the draft",
       "approve the proposal",
       "Do not call any tool",
+      // A turn with an answer schema: the suggestion in its message, the rest empty (EO-839).
+      "When your answer has a structure, put the suggested message in the answer's message field",
+      "leave every other field empty or null",
     ]) {
       expect(PROMPT_SUGGESTION_PROMPT).toContain(rule);
     }
