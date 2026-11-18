@@ -25,6 +25,7 @@ import type { AdminMcpEndpoint } from "./mcpHost/admin.js";
 import { createCodexProvider, SECRET_WITHHELD, type CodexAgentConfig, type ServerSecretRead } from "./providers/codex.js";
 import { agentsWithCodexHomes, chooseCodexHome, codexHomeRefusal, inheritsAmbientConfig, keyringNotice, personCodexHome, signInIsInKeyring, signInIsInKeyringAsync, sideCallCodexHome, sweepCodexHomes, type CodexHomeOptions } from "./providers/codexHome.js";
 import { createSideCallProvider, sideCallSignedIn, sideCallSignInUnreachable } from "./providers/sideCallProviders.js";
+import { reportOnlyRuntimeProblem } from "./providers/reportOnly.js";
 import { defaultAgentModel, resolveSmallModel, smallModelSources } from "./providers/smallModels.js";
 import { managedProviderReady, managedRuntimeEnabled } from "./ipc/runtimeCommands.js";
 import { readGuards } from "./ipc/configCommands.js";
@@ -1252,6 +1253,9 @@ export interface ReportOnlyProviderRequest {
   codexSearchHookCommandPath?: string;
   /** Where an attempt's working directory is made; `defaultTeamParticipantRoot()` when left out. */
   participantRoot?: string;
+  /** The platform and architecture EO's runtime copy is looked for on; this process's when left out. For a test of another platform. */
+  platform?: NodeJS.Platform;
+  arch?: string;
 }
 
 export type ReportOnlyProviderOutcome = { ok: true; provider: AgentProvider; cwd: string } | { ok: false; problem: string };
@@ -1275,7 +1279,9 @@ const ATTEMPT_SEGMENT = /^[A-Za-z0-9_-]+$/;
  * every turn (`reportOnly`).
  *
  * Refused for anything EO cannot hold to report-only: a backend other
- * than Claude or Codex, an agent on the person's own setup, a Codex agent
+ * than Claude or Codex, an agent on the person's own setup, a runtime
+ * other than EO's own copy at the version the live probes passed on
+ * (EO-850, `reportOnlyRuntimeProblem`), a Codex agent
  * whose sign-in is in the keyring (it would run in the person's own home),
  * one without EO's hook command or a model to take the tools out of.
  */
@@ -1285,7 +1291,18 @@ export function reportOnlyProviderForAgent(request: ReportOnlyProviderRequest): 
   if (!ATTEMPT_SEGMENT.test(attemptId)) return refuse("its attempt has no id EO would name a directory after");
   if (agent.provider !== "claude" && agent.provider !== "codex") return refuse(`EO cannot hold a ${agent.provider} agent to reading its evidence and reporting; only Claude and Codex agents can be team participants`);
   if (inheritsAmbientConfig(agent.config)) return refuse("it uses the person's own setup, whose tools, servers and settings EO does not control; untick that on the agent to make it a participant");
-  const executablePath = runtimePathFor(agent.provider, request.runtimeRoot, db, configuredExecutablePath(agent));
+  // Only on EO's own copy of a runtime the live probes passed on (EO-850):
+  // part of what holds a participant is the CLI honouring what it is told.
+  const runtime = resolveRuntime({
+    spec: RUNTIMES[agent.provider],
+    root: request.runtimeRoot,
+    configuredPath: configuredExecutablePath(agent),
+    managedEnabled: managedRuntimeEnabled({ db }, agent.provider),
+    ...(request.platform ? { platform: request.platform, arch: request.arch ?? process.arch } : {}),
+  });
+  const unqualified = reportOnlyRuntimeProblem(agent.provider, runtime);
+  if (unqualified !== null) return refuse(unqualified);
+  const executablePath = runtime.path;
   const eoMcp = { serverPath: request.eoMcpServerPath, ...(request.dbPath ? { dbPath: request.dbPath } : {}), enableCommentTool: false, enableConfigTools: false, enableFullThread: false, enableMemoryNote: false };
   const model = agent.model ?? (typeof agent.config["model"] === "string" ? agent.config["model"] : undefined);
   let provider: AgentProvider;

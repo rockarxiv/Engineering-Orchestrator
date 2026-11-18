@@ -312,6 +312,12 @@ describe("a team drafted by the assistant (EO-848)", () => {
       expect(await refused(INDEPENDENT)).toContain(`could be staffed by a "implementer" agent EO cannot hold to report-only: ${implementer.name} uses the person's own setup`);
     });
 
+    it("a role an agent of which runs its own executable, whose version EO cannot vouch for (EO-850)", async () => {
+      const implementer = listAgents(handle.db).find((agent) => agent.role === "implementer")!;
+      updateAgent(handle.db, implementer.id, { config: { executablePath: "/opt/claude/bin/claude" } });
+      expect(await refused(INDEPENDENT)).toContain(`${implementer.name} runs its own Claude executable, whose version EO cannot vouch for`);
+    });
+
     it("a team on a step that is not an agent's", async () => {
       const reason = await refused(INDEPENDENT, { type: "user", ownerRole: null, entryAction: null });
       expect(reason).toContain(`"Check" has a team, but only a step an agent does can run as one.`);
