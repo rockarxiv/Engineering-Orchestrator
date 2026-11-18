@@ -134,16 +134,22 @@ describe("planIndependentTeam (EO-846)", () => {
 
 describe("allocateParticipantBudget (EO-846)", () => {
   it("caps nothing where no budget is set", () => {
-    expect(allocateParticipantBudget({ remainingCents: null, heldCents: 0, outstanding: 3 })).toBeNull();
+    expect(allocateParticipantBudget({ ceilings: [], outstanding: 3 })).toBeNull();
   });
 
   it("divides what is left between every assignment still owed a turn, so concurrent turns never each get the whole", () => {
-    const shares = [3, 2, 1].map((outstanding, index) => allocateParticipantBudget({ remainingCents: 100, heldCents: index === 0 ? 0 : index === 1 ? 33 : 66, outstanding }));
+    const shares = [3, 2, 1].map((outstanding, index) => allocateParticipantBudget({ ceilings: [{ remainingCents: 100, heldCents: index === 0 ? 0 : index === 1 ? 33 : 66 }], outstanding }));
     expect(shares).toEqual([33, 33, 34]);
     expect(shares.reduce((sum, share) => sum! + share!, 0)).toBeLessThanOrEqual(100);
   });
 
   it("gives nothing when what running turns hold already takes all that is left", () => {
-    expect(allocateParticipantBudget({ remainingCents: 40, heldCents: 50, outstanding: 1 })).toBe(0);
+    expect(allocateParticipantBudget({ ceilings: [{ remainingCents: 40, heldCents: 50 }], outstanding: 1 })).toBe(0);
+  });
+
+  it("takes the smallest share any of its ceilings leaves, each reckoned with only what it covers", () => {
+    // The item's budget is untouched by another item's turns; the day's is held by them.
+    expect(allocateParticipantBudget({ ceilings: [{ remainingCents: 100, heldCents: 0 }, { remainingCents: 300, heldCents: 100 }], outstanding: 2 })).toBe(50);
+    expect(allocateParticipantBudget({ ceilings: [{ remainingCents: 100, heldCents: 0 }, { remainingCents: 100, heldCents: 100 }], outstanding: 2 })).toBe(0);
   });
 });

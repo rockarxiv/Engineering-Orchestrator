@@ -4401,7 +4401,13 @@ export function createRunSupervisor(
     perAgentLimit: () => (typeof limits === "function" ? limits() : limits).perAgentConcurrency,
     ordinaryTurnsOf: (agentId) => listActiveRuns(db).filter((run) => run.agentId === agentId && !teams.isWaitingParent(run.id)).length,
     restriction: participantRestriction,
-    remainingBudgetCents,
+    budgetLeft: (itemId) => {
+      const guards = readGuards();
+      return {
+        itemCents: guards.perItemBudgetCents == null ? null : Math.max(0, guards.perItemBudgetCents - sumCostCentsForItem(db, itemId)),
+        dayCents: guards.dailyBudgetCents == null ? null : Math.max(0, guards.dailyBudgetCents - sumCostCentsSince(db, startOfDay(now()))),
+      };
+    },
     holdsLease: (itemId) => heldLeases.has(itemId),
     track: (promise) => {
       const tracked = promise.then(() => undefined);
