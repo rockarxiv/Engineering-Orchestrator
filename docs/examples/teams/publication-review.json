@@ -1,0 +1,215 @@
+{
+  "eoPipelineExport": 16,
+  "pipeline": {
+    "name": "Publication review (team example)",
+    "icon": "file-text",
+    "entryStepId": "review"
+  },
+  "steps": [
+    {
+      "id": "review",
+      "position": 0,
+      "name": "Specialist review",
+      "type": "agent",
+      "ownerRole": "editor",
+      "entryAction": "assess",
+      "instructionsSummary": "Three report-only specialists read the draft independently; EO decides the result from their reports",
+      "isTerminal": false,
+      "planMode": false,
+      "results": [],
+      "team": {
+        "coordination": "independent",
+        "participants": [
+          {
+            "key": "accuracy",
+            "role": "fact_checker",
+            "instructions": "Check every factual claim and figure in the attached draft against the sources the item names. Report blocking for any claim you cannot trace to a source.",
+            "required": true
+          },
+          {
+            "key": "legal",
+            "role": "counsel",
+            "instructions": "Read the attached draft for defamation, confidentiality and licensing risk. Report blocking for anything that must change before it is published.",
+            "required": true
+          },
+          {
+            "key": "style",
+            "role": "copy_editor",
+            "instructions": "Read the attached draft against the house style the item describes. Report blocking only for something a reader would misunderstand.",
+            "required": false
+          }
+        ],
+        "outcomes": [
+          {
+            "key": "ready",
+            "label": "Ready",
+            "meaning": "Nothing in your area stops this being published as it is."
+          },
+          {
+            "key": "blocking",
+            "label": "Must change",
+            "meaning": "Something in your area must change before this is published. Say what and where."
+          }
+        ],
+        "completion": {
+          "rules": [
+            {
+              "when": "any",
+              "outcomes": [
+                "blocking"
+              ],
+              "result": "needs_revision"
+            }
+          ],
+          "fallback": "ready_to_publish"
+        },
+        "limits": {
+          "maxParticipants": 3,
+          "maxParallel": 2,
+          "maxRetries": 1,
+          "budgetCents": 300
+        }
+      }
+    },
+    {
+      "id": "revise",
+      "position": 1,
+      "name": "Revise",
+      "type": "user",
+      "ownerRole": null,
+      "entryAction": null,
+      "instructionsSummary": "You revise the draft from the specialists' reports and send it back",
+      "isTerminal": false,
+      "planMode": false,
+      "results": [
+        {
+          "key": "resubmit",
+          "label": "Send for review again",
+          "tone": "info",
+          "requiresComment": false
+        }
+      ]
+    },
+    {
+      "id": "publish",
+      "position": 2,
+      "name": "Ready to publish",
+      "type": "user",
+      "ownerRole": null,
+      "entryAction": null,
+      "instructionsSummary": null,
+      "isTerminal": true,
+      "planMode": false,
+      "results": []
+    }
+  ],
+  "routes": [
+    {
+      "fromStepId": "review",
+      "resultKey": "ready_to_publish",
+      "label": "Ready to publish",
+      "tone": "success",
+      "target": "publish",
+      "position": 0
+    },
+    {
+      "fromStepId": "review",
+      "resultKey": "needs_revision",
+      "label": "Needs revision",
+      "tone": "warning",
+      "target": "revise",
+      "position": 1
+    },
+    {
+      "fromStepId": "revise",
+      "resultKey": "resubmit",
+      "label": "Send for review again",
+      "tone": "info",
+      "target": "review",
+      "position": 0
+    }
+  ],
+  "roles": [
+    {
+      "slug": "editor",
+      "prompt": "You own the decision to publish. On this step a team of specialists reports to you and EO decides from their reports; you are not asked anything yourself.",
+      "schemasByAction": {},
+      "actions": [
+        {
+          "action": "assess",
+          "description": "Decide whether the attached draft can be published as it is.",
+          "results": [
+            {
+              "key": "ready_to_publish",
+              "label": "Ready to publish",
+              "meaning": "No specialist found anything that must change."
+            },
+            {
+              "key": "needs_revision",
+              "label": "Needs revision",
+              "meaning": "At least one specialist found something that must change first."
+            }
+          ],
+          "fields": {}
+        }
+      ],
+      "allowedTools": null,
+      "backend": "claude",
+      "model": null
+    },
+    {
+      "slug": "fact_checker",
+      "prompt": "You check facts and figures against their sources. You only read and report.",
+      "schemasByAction": {},
+      "actions": [],
+      "allowedTools": null,
+      "backend": "claude",
+      "model": null
+    },
+    {
+      "slug": "counsel",
+      "prompt": "You read drafts for legal risk. You only read and report.",
+      "schemasByAction": {},
+      "actions": [],
+      "allowedTools": null,
+      "backend": "claude",
+      "model": null
+    },
+    {
+      "slug": "copy_editor",
+      "prompt": "You read drafts against the house style. You only read and report.",
+      "schemasByAction": {},
+      "actions": [],
+      "allowedTools": null,
+      "backend": "claude",
+      "model": null
+    }
+  ],
+  "itemTypes": [
+    {
+      "packSlug": "publication-review",
+      "slug": "draft",
+      "label": "Draft",
+      "plural": "Drafts",
+      "container": false,
+      "specShape": {
+        "type": "object",
+        "properties": {
+          "sources": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Where each fact and figure comes from."
+          },
+          "house_style": {
+            "type": "string",
+            "description": "The style it must follow."
+          }
+        },
+        "required": []
+      },
+      "actionOverrides": {}
+    }
+  ]
+}

@@ -1,0 +1,178 @@
+{
+  "eoPipelineExport": 16,
+  "pipeline": {
+    "name": "Incident investigation (team example)",
+    "icon": "search",
+    "entryStepId": "investigate"
+  },
+  "steps": [
+    {
+      "id": "investigate",
+      "position": 0,
+      "name": "Investigate",
+      "type": "agent",
+      "ownerRole": "coordinator",
+      "entryAction": "investigate",
+      "instructionsSummary": "A report-only lead assigns focused questions to analysts, follows up where the answers fall short, and answers for the step",
+      "isTerminal": false,
+      "planMode": false,
+      "results": [],
+      "team": {
+        "coordination": "leader",
+        "leader": {
+          "role": "incident_lead",
+          "instructions": "Work out what happened in the incident the item and its attachments describe, and whether anything still needs doing. Assign focused questions to the analysts, follow up where an answer leaves a gap, and answer only from reports you can name."
+        },
+        "roles": [
+          "log_analyst",
+          "customer_liaison"
+        ],
+        "outcomes": [],
+        "limits": {
+          "maxParticipants": 4,
+          "maxParallel": 2,
+          "maxRounds": 3,
+          "maxRetries": 1,
+          "budgetCents": 500
+        }
+      }
+    },
+    {
+      "id": "act",
+      "position": 1,
+      "name": "Act on findings",
+      "type": "user",
+      "ownerRole": null,
+      "entryAction": null,
+      "instructionsSummary": "You do what the investigation says still needs doing",
+      "isTerminal": false,
+      "planMode": false,
+      "results": [
+        {
+          "key": "done",
+          "label": "Done",
+          "tone": "success",
+          "requiresComment": false
+        }
+      ]
+    },
+    {
+      "id": "closed",
+      "position": 2,
+      "name": "Closed",
+      "type": "user",
+      "ownerRole": null,
+      "entryAction": null,
+      "instructionsSummary": null,
+      "isTerminal": true,
+      "planMode": false,
+      "results": []
+    }
+  ],
+  "routes": [
+    {
+      "fromStepId": "investigate",
+      "resultKey": "explained",
+      "label": "Explained",
+      "tone": "success",
+      "target": "closed",
+      "position": 0
+    },
+    {
+      "fromStepId": "investigate",
+      "resultKey": "action_needed",
+      "label": "Action needed",
+      "tone": "warning",
+      "target": "act",
+      "position": 1
+    },
+    {
+      "fromStepId": "act",
+      "resultKey": "done",
+      "label": "Done",
+      "tone": "success",
+      "target": "closed",
+      "position": 0
+    }
+  ],
+  "roles": [
+    {
+      "slug": "coordinator",
+      "prompt": "You own the incident's outcome. On this step a lead and analysts report to you; the lead answers for the step.",
+      "schemasByAction": {},
+      "actions": [
+        {
+          "action": "investigate",
+          "description": "Establish what happened and whether anything still needs doing.",
+          "results": [
+            {
+              "key": "explained",
+              "label": "Explained",
+              "meaning": "The cause is established from the evidence and nothing further needs doing."
+            },
+            {
+              "key": "action_needed",
+              "label": "Action needed",
+              "meaning": "Something still needs doing; the summary says what."
+            }
+          ],
+          "fields": {}
+        }
+      ],
+      "allowedTools": null,
+      "backend": "claude",
+      "model": null
+    },
+    {
+      "slug": "incident_lead",
+      "prompt": "You lead investigations by assigning focused questions. You only read and report.",
+      "schemasByAction": {},
+      "actions": [],
+      "allowedTools": null,
+      "backend": "claude",
+      "model": null
+    },
+    {
+      "slug": "log_analyst",
+      "prompt": "You read logs and timelines. You only read and report.",
+      "schemasByAction": {},
+      "actions": [],
+      "allowedTools": null,
+      "backend": "claude",
+      "model": null
+    },
+    {
+      "slug": "customer_liaison",
+      "prompt": "You read customer reports and support notes. You only read and report.",
+      "schemasByAction": {},
+      "actions": [],
+      "allowedTools": null,
+      "backend": "claude",
+      "model": null
+    }
+  ],
+  "itemTypes": [
+    {
+      "packSlug": "incident-investigation",
+      "slug": "incident",
+      "label": "Incident",
+      "plural": "Incidents",
+      "container": false,
+      "specShape": {
+        "type": "object",
+        "properties": {
+          "started": {
+            "type": "string",
+            "description": "When it began."
+          },
+          "affected": {
+            "type": "string",
+            "description": "Who or what was affected."
+          }
+        },
+        "required": []
+      },
+      "actionOverrides": {}
+    }
+  ]
+}
