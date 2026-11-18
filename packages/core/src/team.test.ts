@@ -2,10 +2,12 @@ import { describe, expect, it } from "vitest";
 import {
   decideIndependentTeam,
   deterministicAnswerProblem,
+  participantAnswerJsonSchema,
   StepTeamSchema,
   storedTeam,
   TeamContributionSchema,
   TeamExecutionFailureSchema,
+  TeamParticipantAnswerSchema,
   TeamReportSchema,
   teamWords,
   type IndependentTeam,
@@ -202,6 +204,19 @@ describe("decideIndependentTeam", () => {
     expect(() => decideIndependentTeam(team, [done("stranger", "clear")])).toThrow(/No participant/);
     expect(() => decideIndependentTeam(team, [done("security", "clear"), done("security", "concerns")])).toThrow(/Two contributions/);
     expect(() => decideIndependentTeam(team, [done("security", "meh")])).toThrow(/not an outcome/);
+  });
+});
+
+describe("a participant's answer (EO-846)", () => {
+  it("is an outcome and a report and nothing else", () => {
+    expect(TeamParticipantAnswerSchema.safeParse({ outcome: "clear", report: "Read it all." }).success).toBe(true);
+    expect(TeamParticipantAnswerSchema.safeParse({ outcome: "clear", report: "  " }).success).toBe(false);
+    expect(TeamParticipantAnswerSchema.safeParse({ outcome: "clear", report: "Fine.", result: "approved" }).success).toBe(false);
+  });
+
+  it("is constrained to the team's declared outcomes, every property required and no other allowed", () => {
+    const schema = participantAnswerJsonSchema({ outcomes: [{ key: "clear", label: "Clear", meaning: "" }, { key: "blocking", label: "Blocking", meaning: "" }] });
+    expect(schema).toMatchObject({ required: ["outcome", "report"], additionalProperties: false, properties: { outcome: { enum: ["clear", "blocking"] } } });
   });
 });
 

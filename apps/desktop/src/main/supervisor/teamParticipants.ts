@@ -56,6 +56,12 @@ export interface ThreadBoundary {
   visibleThrough: number;
   /** Comments after it a later coordination round shows the participant, by id. */
   exposedCommentIds: readonly string[];
+  /**
+   * Comments before it the participant is not shown, by id (EO-846): its
+   * own team's reports, which a retry or a replacement started after its
+   * siblings reported must not read any more than the first pass could.
+   */
+  hiddenCommentIds?: readonly string[];
 }
 
 /** The boundary a first pass is given: the instant its evidence was captured, and nothing after it. */
@@ -123,7 +129,8 @@ export function participantResumeProblem(db: Db, attemptId: string, threadId: st
 /** The comments of an item's thread a participant may see, oldest first. */
 export function participantThread(db: Db, itemId: string, boundary: ThreadBoundary): Comment[] {
   const exposed = new Set(boundary.exposedCommentIds);
-  return listCommentsForItem(db, itemId as Uuid).filter((comment) => comment.createdAt <= boundary.visibleThrough || exposed.has(comment.id));
+  const hidden = new Set(boundary.hiddenCommentIds ?? []);
+  return listCommentsForItem(db, itemId as Uuid).filter((comment) => exposed.has(comment.id) || (comment.createdAt <= boundary.visibleThrough && !hidden.has(comment.id)));
 }
 
 /**

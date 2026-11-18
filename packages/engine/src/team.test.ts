@@ -107,13 +107,12 @@ describe("validatePipeline: a team on an agent step (EO-843)", () => {
     expect(validatePipeline(pipeline(null))).toEqual([]);
   });
 
-  it("accepts an independent team answering an action of result and summary alone, and says it runs as one agent for now", () => {
-    const problems = validatePipeline(pipeline(independent()));
-    expect(problems.filter((problem) => problem.severity === "error")).toEqual([]);
-    expect(problems).toEqual([expect.objectContaining({ severity: "warning", stateId: "review", message: expect.stringContaining("runs as one agent") })]);
+  it("accepts an independent team answering an action of result and summary alone, with nothing to warn about now that it runs (EO-846)", () => {
+    expect(validatePipeline(pipeline(independent()))).toEqual([]);
   });
 
-  it("accepts a leader-led team on any defined action, a pack's included", () => {
+  it("accepts a leader-led team on any defined action, a pack's included, and says it runs as one agent for now", () => {
+    expect(validatePipeline(pipeline(leader()))).toEqual([expect.objectContaining({ severity: "warning", stateId: "review", message: expect.stringContaining("runs as one agent") })]);
     expect(teamErrors(pipeline(leader()))).toEqual([]);
     expect(teamErrors(pipeline(leader(), { entryAction: "audit" }))).toEqual([]);
   });
