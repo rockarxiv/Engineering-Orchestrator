@@ -28,6 +28,7 @@ import {
 import {
   allocateParticipantBudget,
   checkLeaderAssignments,
+  finalStands,
   leaderFinalProblems,
   leaderLedger,
   planIndependentTeam,
@@ -274,12 +275,17 @@ export interface TeamSupervisor {
   reconcileOrphans(): number;
 }
 
-/** What an attempt's evidence holds, as a key two captures of the same content share and nothing else does. */
+/**
+ * What an attempt's evidence holds, as a key two captures of the same
+ * content share and nothing else does: the workspace, the attachments and,
+ * since EO-847, the item's own task — so an edit to what is asked makes
+ * every report made against the old ask stale, as a changed file does.
+ */
 export function evidenceContentKey(baseline: TeamEvidenceBaseline | null): string | null {
   if (baseline === null) return null;
   const ref = readEvidenceBaseline(baseline);
   if (ref === null) return `unreadable:${baseline.kind}:${baseline.ref}`;
-  return JSON.stringify({ kind: ref.workspaceKind, source: ref.source, attachments: ref.attachments.map((attachment) => [attachment.id, attachment.sha256]) });
+  return JSON.stringify({ kind: ref.workspaceKind, source: ref.source, attachments: ref.attachments.map((attachment) => [attachment.id, attachment.sha256]), task: ref.task?.sha256 ?? null });
 }
 
 /** The report an accepted attempt posted, without the heading EO put over it. */
@@ -450,11 +456,24 @@ export function createTeamSupervisor(deps: TeamSupervisorDeps): TeamSupervisor {
     };
   }
 
-  /** What an attempt asked and what it was told, for the turn that carries it on: the comments to show it, and the words. */
-  function exchangeOf(itemId: string, attempt: TeamAttemptRow | undefined): { ids: string[]; lines: string[] } {
-    if (attempt === undefined) return { ids: [], lines: [] };
+  /**
+   * What an assignment asked the person and what it was told, for the turn
+   * that carries it on: the comments to show it, and the words. Read along
+   * the whole chain of attempts the new one replaces — not only the one it
+   * replaces directly — so an answer is not lost when the turn after it
+   * failed and was retried, was stopped and replaced, or was superseded
+   * because the evidence moved.
+   */
+  function exchangeOf(itemId: string, attempts: readonly TeamAttemptRow[], replaced: TeamAttemptRow | undefined): { ids: string[]; lines: string[] } {
+    if (replaced === undefined) return { ids: [], lines: [] };
+    const chain: TeamAttemptRow[] = [];
+    const seen = new Set<string>();
+    for (let one: TeamAttemptRow | undefined = replaced; one !== undefined && !seen.has(one.id); one = attempts.find((each) => each.supersededBy === one!.id)) {
+      seen.add(one.id);
+      chain.unshift(one);
+    }
     const comments = listCommentsForItem(db, itemId as Uuid);
-    const asked = questionsOf(attempt, comments);
+    const asked = chain.flatMap((attempt) => questionsOf(attempt, comments));
     if (asked.length === 0) return { ids: [], lines: [] };
     const ids: string[] = [];
     const lines = ["## What was asked, and the answer", ""];
@@ -1003,7 +1022,7 @@ export function createTeamSupervisor(deps: TeamSupervisorDeps): TeamSupervisor {
         let started = 0;
         for (const start of plan.start) {
           const participant = teamNow.participants.find((one) => one.key === start.key)!;
-          const previous = supersededAttempt(attempts, start.supersedes);
+          const exchange = exchangeOf(item.id, attempts, supersededAttempt(attempts, start.supersedes));
           const outcome = startTurn({
             key: start.key,
             role: participant.role,
@@ -1012,13 +1031,10 @@ export function createTeamSupervisor(deps: TeamSupervisorDeps): TeamSupervisor {
             supersedes: start.supersedes,
             agent: agents.get(start.key) ?? null,
             outstanding: outstanding - started,
-            boundary: () => {
-              const exchange = exchangeOf(item.id, start.why === "answered" ? previous : undefined);
-              return { visibleThrough, exposedCommentIds: exchange.ids, hiddenCommentIds: sessionReportIds(sessionId) };
-            },
+            boundary: () => ({ visibleThrough, exposedCommentIds: exchange.ids, hiddenCommentIds: sessionReportIds(sessionId) }),
             turn: (attempt, agent) => ({
               instructions: participantInstructions(agent, step, teamNow),
-              context: participantContext(item, teamNow.outcomes, participant.key, participant.instructions, exchangeOf(item.id, start.why === "answered" ? previous : undefined).lines),
+              context: participantContext(itemNow(), teamNow.outcomes, participant.key, participant.instructions, exchange.lines),
               outputSchema: participantTurnSchema(teamNow.outcomes),
               take: takeReport(attempt.id, teamNow.outcomes),
             }),
@@ -1065,7 +1081,7 @@ export function createTeamSupervisor(deps: TeamSupervisorDeps): TeamSupervisor {
         let started = 0;
         for (const start of plan.start) {
           const previous = supersededAttempt(attempts, start.supersedes);
-          const launched = start.key === LEADER_ASSIGNMENT_KEY ? startLeader(teamNow, start, previous, attempts, states, ledger, agents, outstanding - started) : startAssignment(teamNow, start, previous, ledger, agents, outstanding - started);
+          const launched = start.key === LEADER_ASSIGNMENT_KEY ? startLeader(teamNow, start, previous, attempts, states, ledger, agents, outstanding - started) : startAssignment(teamNow, start, previous, attempts, ledger, agents, outstanding - started);
           if (launched === "broke") return { kind: "broke", key: start.key };
           if (launched === "started") started += 1;
         }
@@ -1073,9 +1089,17 @@ export function createTeamSupervisor(deps: TeamSupervisorDeps): TeamSupervisor {
         return { kind: "wait" };
       }
 
-      function startAssignment(teamNow: LeaderTeam, start: TeamStart, previous: TeamAttemptRow | undefined, ledger: LeaderLedger, agents: ReadonlyMap<string, Agent | null>, outstanding: number): "started" | "skipped" | "broke" {
+      function startAssignment(
+        teamNow: LeaderTeam,
+        start: TeamStart,
+        previous: TeamAttemptRow | undefined,
+        attempts: readonly TeamAttemptRow[],
+        ledger: LeaderLedger,
+        agents: ReadonlyMap<string, Agent | null>,
+        outstanding: number,
+      ): "started" | "skipped" | "broke" {
         const assignment = ledger.assignments.find((one) => one.key === start.key)!;
-        const exchange = exchangeOf(item.id, start.why === "answered" ? previous : undefined);
+        const exchange = exchangeOf(item.id, attempts, previous);
         // A follow-up is shown what it said before, which its new instructions answer.
         const earlier = start.why === "followup" && previous !== undefined && previous.reportCommentId !== null ? previous : undefined;
         const extra = [
@@ -1097,7 +1121,7 @@ export function createTeamSupervisor(deps: TeamSupervisorDeps): TeamSupervisor {
           }),
           turn: (attempt, agent) => ({
             instructions: participantInstructions(agent, step, teamNow),
-            context: participantContext(item, teamNow.outcomes, assignment.key, assignment.instructions, extra),
+            context: participantContext(itemNow(), teamNow.outcomes, assignment.key, assignment.instructions, extra),
             outputSchema: participantTurnSchema(teamNow.outcomes),
             // A contributor that tries to hand work on is refused, and the
             // refusal is recorded where the person and the leader read it.
@@ -1116,7 +1140,7 @@ export function createTeamSupervisor(deps: TeamSupervisorDeps): TeamSupervisor {
         agents: ReadonlyMap<string, Agent | null>,
         outstanding: number,
       ): "started" | "skipped" | "broke" {
-        const exchange = exchangeOf(item.id, start.why === "answered" ? previous : undefined);
+        const exchange = exchangeOf(item.id, attempts, previous);
         const reportIds = ledger.contributions.flatMap((one) => (one.reportId === null ? [] : [one.reportId]));
         const leaderIds = attempts.flatMap((attempt) => (attempt.assignmentKey === LEADER_ASSIGNMENT_KEY && attempt.reportCommentId !== null ? [attempt.reportCommentId] : []));
         return startTurn({
@@ -1239,7 +1263,12 @@ export function createTeamSupervisor(deps: TeamSupervisorDeps): TeamSupervisor {
     }
 
     async function capture() {
-      return captureTeamEvidence({ db, item: getItem(db, item.id) ?? item, workspace: input.workspace, now: deps.now(), signal });
+      return captureTeamEvidence({ db, item: itemNow(), workspace: input.workspace, now: deps.now(), signal });
+    }
+
+    /** The item as it is now: what a turn is told is what its baseline's task records, never the item as it was dispatched. */
+    function itemNow(): Item {
+      return getItem(db, item.id) ?? item;
     }
 
     function staleSession(session: TeamSessionRow | undefined): string | null {
@@ -1281,14 +1310,15 @@ export function createTeamSupervisor(deps: TeamSupervisorDeps): TeamSupervisor {
         correction: "EO could not act on your last answer — see why below. Answer again.",
         retry: "Your last turn failed before it answered. Answer again.",
         interrupted: "Your last turn was stopped before it answered. Answer again.",
-        stale: "What the team read changed after your last answer, so the reports were made again on the new version. Read them and answer again.",
+        stale: "What the team reads — the item's files, attachments or its own description — changed after your last answer, so that answer is not used: any reports were made again on the new version. Read what is there now and answer again.",
         answered: "The person has answered what you asked. Carry on with their answer.",
         followup: "",
       };
+      const now = itemNow();
       const lines: string[] = [
-        `# ${item.key} — ${item.title}`,
+        `# ${now.key} — ${now.title}`,
         "",
-        item.body ?? "",
+        now.body ?? "",
         "",
         "## What you lead",
         "",
@@ -1358,11 +1388,12 @@ export function createTeamSupervisor(deps: TeamSupervisorDeps): TeamSupervisor {
         round: attempts[index]!.round,
         verdict: state.key === LEADER_ASSIGNMENT_KEY && state.status === "completed" ? (leaderRecordOf(db, attempts[index]!)?.verdict ?? null) : null,
       }));
-      const final = attempts.filter((attempt) => attempt.assignmentKey === LEADER_ASSIGNMENT_KEY && attempt.supersededBy === null && attempt.status === "completed").at(-1);
-      const record = final === undefined ? null : leaderRecordOf(db, final);
+      const final = attempts.findIndex((attempt) => attempt.assignmentKey === LEADER_ASSIGNMENT_KEY && attempt.supersededBy === null && attempt.status === "completed");
+      const record = final === -1 ? null : leaderRecordOf(db, attempts[final]!);
       if (record === null || record.verdict.decision !== "final" || !record.verdict.accepted) return { kind: "none" };
-      const ledger = leaderLedger(leaderStates, currentKey);
-      if (leaderFinalProblems(ledger, leaderStates, record.verdict.contributions).length > 0) return { kind: "stale" };
+      // The leader's own reading counts as much as its reports: an answer
+      // it gave from evidence that has moved is not replayed, reports or none.
+      if (!finalStands(leaderLedger(leaderStates, currentKey), leaderStates, leaderStates[final]!, currentKey)) return { kind: "stale" };
       return { kind: "replay", answer: record.value };
     }
     const latestCompleted = states.filter((state) => state.supersededBy === null && state.status === "completed");

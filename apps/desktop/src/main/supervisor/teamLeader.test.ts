@@ -27,10 +27,11 @@ import { createRoute } from "../db/repos/index.js";
 import { getItem } from "../db/repos/itemsRepo.js";
 import { createStep } from "../db/repos/pipelineStepsRepo.js";
 import { createRun, getRun, listRunsForItem, updateRun } from "../db/repos/runsRepo.js";
-import { acceptTeamReport, listTeamSessionsForItem, openTeamSession, startTeamAttempt, teamSessionTotals } from "../db/repos/teamSessionsRepo.js";
+import { acceptTeamReport, endTeamSession, listTeamSessionsForItem, openTeamSession, startTeamAttempt, teamSessionTotals } from "../db/repos/teamSessionsRepo.js";
 import { listTransitionsForItem } from "../db/repos/transitionsRepo.js";
 import { createTestItem, openMigratedTestDb } from "../db/testHelpers.js";
 import { createRunSupervisor, type RunSupervisor } from "./runSupervisor.js";
+import { taskContextOf } from "./teamEvidence.js";
 import type { ReportOnlyProviderAnswer } from "./teamSupervisor.js";
 
 /**
@@ -201,6 +202,8 @@ const reportId = (key: string): string => {
   if (found === undefined || found === null) throw new Error(`No current report at ${key}.`);
   return found;
 };
+/** The baseline the supervisor captures for this item, with no disk and no attachments, as its task now reads. */
+const nothingCaptured = () => evidenceBaselineOf({ version: 1, capturedAt: 1, workspaceKind: "none", source: { kind: "none" }, attachments: [], task: taskContextOf(getItem(handle.db, item.id)!) });
 const teamRuns = () => listRunsForItem(handle.db, item.id).filter((run) => run.action === "alignment");
 const participantRuns = () => listRunsForItem(handle.db, item.id).filter((run) => run.action === TEAM_PARTICIPANT_ACTION);
 const notes = () => listCommentsForItem(handle.db, item.id).map((comment) => comment.body);
@@ -208,6 +211,18 @@ const turnsOf = (name: string) => started.filter((one) => one.agent === name);
 
 const agentNamed = (name: string): Uuid =>
   ((handle.db as unknown as { $client: { prepare(source: string): { get(...args: unknown[]): unknown } } }).$client.prepare("select id from agents where name = ?").get(name) as { id: Uuid }).id;
+
+/** A file put on the item: evidence every member reads. */
+function attach(name: string, content: string): void {
+  const path = join(scratch, `${uuidv7()}-${name}`);
+  writeFileSync(path, content);
+  insertAttachments(handle.db, [{ id: uuidv7() as Uuid, itemId: item.id, commentId: null, storagePath: path, name, mimeType: "text/plain", size: content.length }]);
+}
+
+/** A person edits what the item asks for. */
+function editBody(body: string): void {
+  (handle.db as unknown as { $client: { prepare(source: string): { run(...args: unknown[]): unknown } } }).$client.prepare("update items set body = ? where id = ?").run(body, item.id);
+}
 
 /** The person answers the question an agent asked, under it, as the item view files a reply. */
 function reply(questionAuthor: string, body: string): void {
@@ -415,7 +430,7 @@ describe("a leader-led team (EO-847)", () => {
   });
 
   it("carries on after a restart from what was persisted: neither the leader's turn nor the report is done again, and the leader's next turn gets the report", async () => {
-    const nothing = evidenceBaselineOf({ version: 1, capturedAt: 1, workspaceKind: "none", source: { kind: "none" }, attachments: [] });
+    const nothing = nothingCaptured();
     const parent = createRun(handle.db, { itemId: item.id, agentId: quinn.id, action: "alignment", stepId: "check", status: "running", initiationId: `entered:${item.id}` }).id;
     const session = openTeamSession(handle.db, { itemId: item.id, stepId: "check", team: leaderTeam(), runId: parent });
     const verdict = { decision: "assign", accepted: [{ key: "auth", role: "sec", instructions: "Look at the login.", required: true }], refused: [] };
@@ -447,6 +462,63 @@ describe("a leader-led team (EO-847)", () => {
     expect(listTeamSessionsForItem(handle.db, item.id)).toHaveLength(1);
     expect(listTransitionsForItem(handle.db, item.id)).toHaveLength(1);
     expect(teamSessionTotals(handle.db, session.id).costCents).toBe(5);
+  });
+
+  it("does not finalise a leader's answer, given with no reports, on evidence that moved while it answered: the leader answers again", async () => {
+    leaderTurns = [
+      sayingThen(() => {
+        // The evidence moves while the leader is answering from its own reading.
+        attach("spec.txt", "The export must be signed.");
+        return final({ result: "aligned", summary: "Read it myself; fine." }, []);
+      }),
+      sayingThen(({ opts }) => {
+        expect(opts.context).toContain("changed after your last answer");
+        return final({ result: "gaps_found", summary: "The spec now asks for signing, which is missing." }, []);
+      }),
+    ];
+    await supervisor().runOnce();
+
+    expect(turnsOf("Lee")).toHaveLength(2);
+    expect(getItem(handle.db, item.id)?.stepId).toBe("rework");
+    expect(listTeamSessionsForItem(handle.db, item.id)[0]?.session.result).toBe("gaps_found");
+    expect(listTransitionsForItem(handle.db, item.id)).toHaveLength(1);
+  });
+
+  describe("a leader's session that settled before the item moved", () => {
+    /** As a restart leaves it: the team's run interrupted, the session finalised on the leader's answer from its own reading. */
+    function settledByLeader(): void {
+      const parent = createRun(handle.db, { itemId: item.id, agentId: quinn.id, action: "alignment", stepId: "check", status: "running", initiationId: `entered:${item.id}` }).id;
+      const session = openTeamSession(handle.db, { itemId: item.id, stepId: "check", team: leaderTeam(), runId: parent });
+      const leaderRun = createRun(handle.db, { itemId: item.id, agentId: lee.id, action: TEAM_PARTICIPANT_ACTION, stepId: "check", status: "succeeded" }).id;
+      const value = { result: "aligned", summary: "Read it myself; fine." };
+      updateRun(handle.db, leaderRun, { result: { leader: true, answer: {}, verdict: { decision: "final", accepted: true, problems: [], contributions: [] }, value } });
+      const turn = startTeamAttempt(handle.db, { sessionId: session.id, assignmentKey: LEADER_ASSIGNMENT_KEY, role: "lead", agentId: lee.id, instructions: "Lead.", runId: leaderRun, evidenceBaseline: nothingCaptured() });
+      if (!turn.ok) throw new Error(turn.problem);
+      expect(acceptTeamReport(handle.db, { attemptId: turn.attempt.id, outcome: null, report: "Answers the step." }).ok).toBe(true);
+      expect(endTeamSession(handle.db, { sessionId: session.id, status: "finalized", result: "aligned" }).ok).toBe(true);
+    }
+
+    it("answers with the settled result again, running nobody, while nothing it read has changed", async () => {
+      settledByLeader();
+      const engine = supervisor();
+      await engine.reconcile();
+      await engine.runOnce();
+      expect(started).toEqual([]);
+      expect(getItem(handle.db, item.id)?.stepId).toBe("accepted");
+      expect(listTransitionsForItem(handle.db, item.id)).toHaveLength(1);
+    });
+
+    it("does not replay it once what is asked has changed, though it relied on no report: the leader runs again", async () => {
+      settledByLeader();
+      editBody("The export must also be signed.");
+      leaderTurns = [says(final({ result: "gaps_found", summary: "Signing is missing." }, []))];
+      const engine = supervisor();
+      await engine.reconcile();
+      await engine.runOnce();
+      expect(turnsOf("Lee")).toHaveLength(1);
+      expect(getItem(handle.db, item.id)?.stepId).toBe("rework");
+      expect(listTeamSessionsForItem(handle.db, item.id).map((record) => record.session.status)).toEqual(["finalized", "finalized"]);
+    });
   });
 
   it("runs a leader and its contributors on different backends under the same rules", async () => {
@@ -503,11 +575,6 @@ describe("a leaderless team (EO-847)", () => {
 // ── Asking the person ────────────────────────────────────────────────
 
 describe("a team member asking the person (EO-847)", () => {
-  function attach(name: string, content: string): void {
-    const path = join(scratch, `${uuidv7()}-${name}`);
-    writeFileSync(path, content);
-    insertAttachments(handle.db, [{ id: uuidv7() as Uuid, itemId: item.id, commentId: null, storagePath: path, name, mimeType: "text/plain", size: content.length }]);
-  }
 
   describe("on a leaderless team", () => {
     beforeEach(() => {
@@ -575,6 +642,77 @@ describe("a team member asking the person (EO-847)", () => {
       expect(turnsOf("Tess")).toHaveLength(2);
       const tests = attempts().filter((attempt) => attempt.assignmentKey === "tests");
       expect(tests[0]?.supersededBy).toBe(tests[1]?.id);
+      // Restarted because the evidence moved, not only because it was answered: the answer still reaches it.
+      expect(turnsOf("Sasha")[1]?.opts.context).toContain("**Answer:** Production.");
+    });
+
+    it("keeps the person's answer through a failed turn after it, and the retry that replaces that", async () => {
+      let sashaTurns = 0;
+      participants = {
+        Sasha: (call) => {
+          sashaTurns += 1;
+          if (sashaTurns === 1) return says(asks("Which environment?"))(call);
+          if (sashaTurns === 2)
+            return (async function* () {
+              yield { type: "error", message: "The backend crashed.", retryable: true } as AgentEvent;
+            })();
+          expect(call.opts.context).toContain("**Asked:** Which environment?");
+          expect(call.opts.context).toContain("**Answer:** Staging.");
+          return says({ outcome: { outcome: "clear", report: "Staging is fine." } })(call);
+        },
+        Tess: says({ outcome: { outcome: "clear", report: "Tests are fine." } }),
+      };
+      const engine = supervisor();
+      await engine.runOnce();
+      reply("Sasha", "Staging.");
+      await engine.resumeItem(item.id);
+
+      expect(sashaTurns).toBe(3);
+      expect(getItem(handle.db, item.id)?.stepId).toBe("accepted");
+      expect(attempts().filter((attempt) => attempt.assignmentKey === "security").map((attempt) => attempt.status)).toEqual(["cancelled", "failed", "completed"]);
+    });
+
+    it("does not keep a verdict made against requirements a person edited while it waited, on an item with no disk", async () => {
+      let sashaTurns = 0;
+      participants = {
+        Sasha: (call) => {
+          sashaTurns += 1;
+          return says(sashaTurns === 1 ? asks("Which environment?") : { outcome: { outcome: "clear", report: "Production is fine." } })(call);
+        },
+        Tess: (call) => says({ outcome: { outcome: call.opts.context.includes("must also export JSON") ? "blocking" : "clear", report: "Read the requirements." } })(call),
+      };
+      const engine = supervisor();
+      await engine.runOnce();
+      expect(teamRuns()[0]?.status).toBe("awaiting_input");
+
+      editBody("The export must also export JSON.");
+      reply("Sasha", "Production.");
+      await engine.resumeItem(item.id);
+
+      // The sibling's verdict on the old requirements was not kept: it read the new ones and found the gap.
+      expect(turnsOf("Tess")).toHaveLength(2);
+      expect(turnsOf("Tess")[1]?.opts.context).toContain("The export must also export JSON.");
+      expect(getItem(handle.db, item.id)?.stepId).toBe("rework");
+      expect(turnsOf("Sasha")[1]?.opts.context).toContain("**Answer:** Production.");
+    });
+
+    it("keeps a sibling's verdict across a clarification when nothing it read changed", async () => {
+      let sashaTurns = 0;
+      participants = {
+        Sasha: (call) => {
+          sashaTurns += 1;
+          return says(sashaTurns === 1 ? asks("Which environment?") : { outcome: { outcome: "clear", report: "Fine." } })(call);
+        },
+        Tess: says({ outcome: { outcome: "clear", report: "Tests are fine." } }),
+      };
+      const engine = supervisor();
+      await engine.runOnce();
+      // A person's reply, and the team's own comments, are not a change to what is asked.
+      postComment(handle.db, { itemId: item.id, author: { type: "human" }, body: "Thanks, looking." });
+      reply("Sasha", "Production.");
+      await engine.resumeItem(item.id);
+      expect(turnsOf("Tess")).toHaveLength(1);
+      expect(getItem(handle.db, item.id)?.stepId).toBe("accepted");
     });
   });
 
@@ -605,6 +743,44 @@ describe("a team member asking the person (EO-847)", () => {
       // Asking for a permission changed nothing about what the leader is dispatched with.
       expect(getAgent(handle.db, lee.id)).toEqual(before);
       expect(turnsOf("Lee")).toHaveLength(2);
+    });
+
+    it("keeps a contributor's answer, and the leader's, when the evidence changed while they waited", async () => {
+      leaderTurns = [
+        says(asks("Which release should the team check?")),
+        sayingThen(({ opts }) => {
+          expect(opts.context).toContain("**Answer:** Release 2.");
+          return assign([{ key: "auth", role: "sec", instructions: "Look at the login in release 2." }]);
+        }),
+        sayingThen(({ opts }) => {
+          // Its own earlier question and answer are still in front of it on a later turn.
+          expect(opts.context).toContain("**Answer:** Release 2.");
+          return final({ result: "aligned", summary: "Fine." }, [reportId("auth")]);
+        }),
+      ];
+      let sashaTurns = 0;
+      participants = {
+        Sasha: (call) => {
+          sashaTurns += 1;
+          if (sashaTurns === 1) return says(asks("Staging or production?"))(call);
+          expect(call.opts.context).toContain("**Answer:** Staging.");
+          return says(report("Staging is fine."))(call);
+        },
+      };
+      const engine = supervisor();
+      await engine.runOnce();
+      attach("notes.txt", "Release 2 notes.");
+      reply("Lee", "Release 2.");
+      await engine.resumeItem(item.id);
+      expect(teamRuns().at(-1)?.status).toBe("awaiting_input");
+
+      attach("more.txt", "More notes.");
+      reply("Sasha", "Staging.");
+      await engine.resumeItem(item.id);
+
+      expect(getItem(handle.db, item.id)?.stepId).toBe("accepted");
+      expect(sashaTurns).toBe(2);
+      expect(turnsOf("Lee")).toHaveLength(3);
     });
 
     it("resumes the assignment that asked, keeps its sibling's report, and hands the leader both", async () => {

@@ -7,7 +7,7 @@ import type { DbHandle } from "../db/client.js";
 import { insertAttachments, listAttachmentsForItem } from "../db/repos/attachmentsRepo.js";
 import { createTestItem, openMigratedTestDb } from "../db/testHelpers.js";
 import { folderEvidenceCapability, type FolderCaptureProbe } from "./folderEvidence.js";
-import { NO_DISK_EVIDENCE, captureTeamEvidence, evidencePath, openTeamEvidence, readCapturedAttachment } from "./teamEvidence.js";
+import { NO_DISK_EVIDENCE, captureTeamEvidence, evidencePath, openTeamEvidence, readCapturedAttachment, taskContextOf } from "./teamEvidence.js";
 import type { PreparedWorkspace, WorkspaceKind } from "./workspaceKind.js";
 
 /**
@@ -336,3 +336,16 @@ function captureIds(): string[] {
     .sort((a, b) => (a.name < b.name ? -1 : 1))
     .map((attachment) => attachment.id);
 }
+
+describe("the item's task in a team's evidence (EO-847)", () => {
+  const base = { title: "Export", body: "Export as CSV.", spec: { criteria: ["CSV"], owner: "ops" }, typeId: "t1" as Uuid };
+
+  it("changes with what the item asks — title, body, spec or type — and with nothing else", () => {
+    const sha = taskContextOf(base).sha256;
+    expect(taskContextOf({ ...base, spec: { owner: "ops", criteria: ["CSV"] } }).sha256).toBe(sha);
+    for (const changed of [{ title: "Import" }, { body: "Export as JSON." }, { spec: { criteria: ["CSV", "JSON"], owner: "ops" } }, { typeId: "t2" as Uuid }]) {
+      expect(taskContextOf({ ...base, ...changed }).sha256).not.toBe(sha);
+    }
+    expect(taskContextOf({ ...base, body: null }).sha256).toBe(taskContextOf({ ...base, body: "" }).sha256);
+  });
+});
