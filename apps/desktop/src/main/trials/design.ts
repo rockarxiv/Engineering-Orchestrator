@@ -1,4 +1,4 @@
-import { classifyDesignChange, EMPTY_TRIAL_PLAN, trialPlanProblems, type IpcPayload, type IpcResponse, type Item, type TrialDesign, type TrialPlan, type Uuid } from "@eo/core";
+import { classifyDesignChange, EMPTY_TRIAL_PLAN, remapStepReferences, trialPlanProblems, type IpcPayload, type IpcResponse, type Item, type TrialDesign, type TrialPlan, type Uuid } from "@eo/core";
 import type { AttachmentStorage } from "../attachments/storage.js";
 import type { Db } from "../db/client.js";
 import {
@@ -382,7 +382,8 @@ function applyToTrial(db: Db, deps: DesignDeps, live: LiveTrial, conversation: I
   const saved = savePipeline(db, deps.engine as EngineHandle | undefined, {
     pipelineId: live.trial.id,
     steps: graph.steps.map((step) => ({
-      ...step,
+      // A brief naming a draft step names that step's trial id (EO-831).
+      ...remapStepReferences(step, mapped),
       id: mapped(step.id),
       pipelineId: live.trial.id,
       entryAction: step.type === "module" && step.entryAction !== null ? (moduleIds[step.entryAction] ?? step.entryAction) : step.entryAction,

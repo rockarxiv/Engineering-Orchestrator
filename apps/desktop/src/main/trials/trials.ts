@@ -1,4 +1,4 @@
-import { NONE_KIND, TERMINAL_TARGET, USER_ATTENTION_TARGET, uuidv7, type IpcPayload, type Item, type Uuid } from "@eo/core";
+import { NONE_KIND, remapStepReferences, TERMINAL_TARGET, USER_ATTENTION_TARGET, uuidv7, type IpcPayload, type Item, type Uuid } from "@eo/core";
 import type { Db } from "../db/client.js";
 import {
   createItem,
@@ -194,7 +194,8 @@ export function createTrialFromDraft(
       };
       const saved = savePipeline(db, engine, {
         pipelineId: pipeline.id,
-        steps: read.steps.map((step) => ({ ...runs(step), id: mapped(step.id), pipelineId: pipeline.id })),
+        // A brief naming a draft step names that step's trial id (EO-831).
+        steps: read.steps.map((step) => ({ ...remapStepReferences(runs(step), mapped), id: mapped(step.id), pipelineId: pipeline.id })),
         routes: read.routes.map((route) => ({ ...route, pipelineId: pipeline.id, fromStepId: mapped(route.fromStepId), target: mapped(route.target) })),
         entryStepId: mapped(read.entryStepId!),
         // The draft's own, where it set any (EO-610). They are not

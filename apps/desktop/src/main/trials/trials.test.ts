@@ -303,6 +303,19 @@ describe("creating a trial from a draft", () => {
     expect(fileOn(made.trial.id, "Nothing written down").body).toBeNull();
   });
 
+  it("moves a brief naming another draft step onto that step's trial id (EO-831)", async () => {
+    const target = hotfix();
+    const conversation = await conversationOn(`/pipelines/${target}`);
+    const draft = hotfixWithCheck({ pipelineId: target });
+    draft.steps[1] = step("hotfix_check", 1, "Check", { brief: [{ show: "output", step: "hotfix_fix" }, { show: "comment", kind: "approval" }] });
+    const [messageId] = turn(conversation, { message: "Here.", draft }, target);
+
+    const made = trialFrom(conversation, messageId!);
+
+    const check = listStepsForPipeline(handle.db, made.trial.id).find((entry) => entry.name === "Check");
+    expect(check?.brief).toEqual([{ show: "output", step: made.stepIds.hotfix_fix }, { show: "comment", kind: "approval" }]);
+  });
+
   it("makes a trial of a draft that creates a pipeline, with no pipeline to replace", async () => {
     const conversation = await conversationOn("/settings");
     const [messageId] = turn(conversation, { message: "Here.", draft: hotfixWithCheck({ newPipeline: "Triage" }) });

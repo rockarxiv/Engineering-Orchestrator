@@ -5,6 +5,7 @@ import {
   documentBoards,
   documentSteps,
   MODULE_ENTRY_RULE_KIND,
+  remapStepReferences,
   sameBoard,
   TERMINAL_TARGET,
   USER_ATTENTION_TARGET,
@@ -1123,7 +1124,7 @@ function graphOfDocument(db: Db, pipelineId: string, document: PipelineExport, l
       // names nothing here; the save chooses one.
       moduleVersion: null,
       // A step's brief (EO-827), naming steps by the document's ids moved to this pipeline's.
-      brief: step.brief === undefined ? null : step.brief.map((part) => (part.show === "output" ? { ...part, step: local(part.step) } : part)),
+      brief: remapStepReferences(step, local).brief ?? null,
     }));
   const routes: StepRoute[] = document.routes.map((route) => ({
     ...route,

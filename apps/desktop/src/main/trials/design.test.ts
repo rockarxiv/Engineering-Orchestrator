@@ -347,6 +347,21 @@ describe("a draft revised while its design is under test", () => {
     expect(read(chat, card).trial?.approved).toEqual({ trialPipelineId: trialId, round: 2 });
   });
 
+  it("saves a revised draft whose brief names another step, under that step's trial id (EO-831)", async () => {
+    const { chat, trialId } = await approved();
+    const draft = hotfixDraft();
+    draft.steps[0]!.instructionsSummary = "Fix what the item says, and run the tests before you finish.";
+    draft.steps[2] = step("check", 2, "Check", { brief: [{ show: "output", step: "fix" }, { show: "comment", kind: "approval" }] });
+
+    const revision = turn(chat, { message: "The check now shows what Fix produced.", draft })!;
+
+    const design = readTrialDesign(handle.db, trialId)!;
+    const answer = listCommentsForItem(handle.db, chat.id).find((comment) => comment.parentId === revision)!;
+    expect(answer.body).toContain("**Applied to the trial without a new design card**");
+    const check = listStepsForPipeline(handle.db, trialId).find((entry) => entry.id === design.stepIds.check);
+    expect(check?.brief).toEqual([{ show: "output", step: design.stepIds.fix }, { show: "comment", kind: "approval" }]);
+  });
+
   it("applies module code changed within the grant without a card", async () => {
     const { chat, trialId } = await approved();
     const changed = saveModule(handle.db, {
