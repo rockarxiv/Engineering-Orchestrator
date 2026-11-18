@@ -417,3 +417,153 @@ export function teamWords(team: StepTeam | null | undefined): string {
   const rules = team.completion.rules.map((rule) => `${rule.when} ${rule.outcomes.join("/")} → ${rule.result}`);
   return `independent: ${who}${outcomes}; ${[...rules, `otherwise ${team.completion.fallback}`].join(", ")}; ${limits}`;
 }
+
+/**
+ * What a draft says for a step's team when it means "one agent again"
+ * (EO-848) — `team: null` on a saved step.
+ *
+ * A word rather than `null`, for the reason `RUNS_ONCE` and
+ * `DEFAULT_TIME_LIMIT` are (invariant 12): Codex's strict output writes
+ * every optional field, as `null` where it has nothing to say, so a null
+ * meaning "remove the team" would remove it from every step a Codex draft
+ * did not mention.
+ */
+export const NO_TEAM = "none";
+
+/**
+ * What a team may and may not do, in the words every surface showing a
+ * team uses (EO-848): the step details, a draft's card and the pipeline
+ * read and validation answers say it the same way.
+ */
+export const TEAM_REPORT_ONLY =
+  "Report-only: every member, a leader included, reads the evidence and posts an attributed report on the thread. " +
+  "None of them can edit the work, run commands, change anything outside EO or widen what it may use; EO alone decides where the item goes.";
+
+/**
+ * A team in a person's words (EO-848), section by section: how it is
+ * coordinated, who is on it, what its members may conclude, how it
+ * finishes, its limits, and that it only reports.
+ *
+ * Where `teamWords` is one line for a version diff to compare, this is
+ * for reading: the step details, a draft card and the answers of the
+ * pipeline read and validation tools. Labels beside keys wherever the
+ * team declares one.
+ */
+export const TeamFactsSchema = z.object({
+  coordination: z.string(),
+  members: z.array(z.string()),
+  outcomes: z.array(z.string()),
+  completion: z.array(z.string()),
+  limits: z.array(z.string()),
+  reportOnly: z.string(),
+});
+export type TeamFacts = z.infer<typeof TeamFactsSchema>;
+
+function moneyWords(cents: number): string {
+  if (cents < 100) return `${cents}¢`;
+  const dollars = cents / 100;
+  return `$${Number.isInteger(dollars) ? dollars : dollars.toFixed(2)}`;
+}
+
+function durationWords(ms: number): string {
+  if (ms % 60_000 === 0) return `${ms / 60_000} minute${ms === 60_000 ? "" : "s"}`;
+  if (ms % 1000 === 0) return `${ms / 1000} second${ms === 1000 ? "" : "s"}`;
+  return `${ms}ms`;
+}
+
+export function teamFacts(team: StepTeam): TeamFacts {
+  const labels = new Map(team.outcomes.map((outcome) => [outcome.key, outcome.label]));
+  const label = (key: string) => labels.get(key) ?? key;
+  const outcomes = team.outcomes.map((outcome) => `${outcome.label} (${outcome.key})${outcome.meaning === "" ? "" : ` — ${outcome.meaning}`}`);
+  const counted = (count: number, one: string, many: string) => `${count} ${count === 1 ? one : many}`;
+  const limits = [
+    `${counted(team.limits.maxParallel, "participant", "participants")} at a time`,
+    `${counted(team.limits.maxParticipants, "participant", "participants")} in all`,
+    ...(team.coordination === "leader" ? [`${counted(team.limits.maxRounds, "round", "rounds")} of assignments`] : []),
+    `${counted(team.limits.maxRetries, "retry", "retries")} for a participant whose run fails`,
+    team.limits.timeoutMs === undefined ? "time: the run timeout" : `time: ${durationWords(team.limits.timeoutMs)} for the whole team`,
+    team.limits.budgetCents === undefined
+      ? "spending: the item's and the day's budgets"
+      : `spending: ${moneyWords(team.limits.budgetCents)} for the whole team, within the item's and the day's budgets`,
+  ];
+
+  if (team.coordination === "leader") {
+    return {
+      coordination: `Leader-led — a ${team.leader.role} agent assigns focused work to ${team.roles.join(", ")}, reads their reports and answers the step; EO checks its answer before it is used.`,
+      members: [`Leader: a ${team.leader.role} agent — ${team.leader.instructions}`, `May assign work to: ${team.roles.join(", ")}`],
+      outcomes,
+      completion: [
+        "The leader answers the step's action itself, citing the reports it used.",
+        "EO refuses an answer that misses a required assignment, cites a superseded report, does not fit the action or names a result the action does not declare.",
+      ],
+      limits,
+      reportOnly: TEAM_REPORT_ONLY,
+    };
+  }
+
+  const either = (keys: readonly string[]) => keys.map(label).join(" or ");
+  return {
+    coordination: `Independent — ${counted(team.participants.length, "participant reports", "participants each report")} on their own, and EO decides the step's result from what they conclude. No agent coordinates them.`,
+    members: team.participants.map((participant) => `${participant.key}: a ${participant.role} agent, ${participant.required ? "required" : "optional"} — ${participant.instructions}`),
+    outcomes,
+    completion: [
+      ...team.completion.rules.map((rule) =>
+        rule.when === "all" ? `If every report concludes ${either(rule.outcomes)} → ${rule.result}` : `If any report concludes ${either(rule.outcomes)} → ${rule.result}`,
+      ),
+      `Otherwise → ${team.completion.fallback}`,
+      "A required participant that cannot contribute fails the team rather than reaching the fallback.",
+    ],
+    limits,
+    reportOnly: TEAM_REPORT_ONLY,
+  };
+}
+
+/** `teamFacts` as lines, each led by the section it is from, for a card or a tool's answer. */
+export function teamFactLines(team: StepTeam): string[] {
+  const facts = teamFacts(team);
+  return [
+    `Coordination: ${facts.coordination}`,
+    ...facts.members.map((line) => `Member: ${line}`),
+    ...(facts.outcomes.length === 0 ? [] : [`Outcomes a member may report: ${facts.outcomes.join("; ")}`]),
+    ...facts.completion.map((line) => `Completion: ${line}`),
+    `Limits: ${facts.limits.join(", ")}`,
+    facts.reportOnly,
+  ];
+}
+
+/**
+ * One team step as the pipeline read and validation answers describe it
+ * (EO-848), read as dispatch would act on it: who would be staffed for
+ * each role, what the team is restricted to, which action its one answer
+ * is held to and whether it can answer it, the results it can end on, and
+ * every problem the validator has with it.
+ */
+export const TeamReadingSchema = z.object({
+  stepId: z.string(),
+  stepName: z.string(),
+  coordination: z.enum(["independent", "leader"]),
+  /** Each role the team dispatches, with the agents dispatch would choose among, and why it cannot be staffed, or null. */
+  staffing: z.array(
+    z.object({
+      role: z.string(),
+      /** What the role is for on this team: `leader`, `assignments`, or the participant keys it staffs. */
+      serves: z.string(),
+      agents: z.array(z.string()),
+      problem: z.string().nullable(),
+    }),
+  ),
+  reportOnly: z.string(),
+  /** The action the team's single answer is held to, who writes that answer, and why the team cannot answer it, or null. */
+  finalAction: z.object({
+    role: z.string().nullable(),
+    action: z.string().nullable(),
+    answeredBy: z.enum(["eo", "leader"]),
+    problem: z.string().nullable(),
+  }),
+  /** The result keys the team can end on: an independent team's table, or the action's declared results for a leader. */
+  results: z.array(z.string()),
+  facts: TeamFactsSchema,
+  /** What `validatePipeline` says about this team, word for word. */
+  problems: z.array(z.string()),
+});
+export type TeamReading = z.infer<typeof TeamReadingSchema>;

@@ -7,6 +7,7 @@ import {
   NO_GIT_STATE,
   REVIEW_ACTION,
   SECTION_LOCK_TEXT,
+  StepTeamSchema,
   developerRegistry,
   toRegistryView,
   type HandOffTargets,
@@ -617,6 +618,56 @@ describe("a step's details, read-only (EO-524)", () => {
     // A person's step runs nothing, so it has nothing of a run's to show.
     expect(detailsOf()).not.toHaveProperty("Time limit");
     expect(screen.queryByRole("region", { name: "Variables and secrets" })).toBeNull();
+  });
+
+  it("shows the report-only team an agent step runs as: membership, coordination, completion and limits in labels, and that it cannot edit the work (EO-848)", async () => {
+    const team = StepTeamSchema.parse({
+      coordination: "independent",
+      participants: [
+        { key: "security", role: "reviewer", instructions: "Look for auth gaps." },
+        { key: "tests", role: "tester", instructions: "Check the tests.", required: false },
+      ],
+      outcomes: [
+        { key: "clear", label: "Clear" },
+        { key: "concerns", label: "Concerns", meaning: "Something should change first." },
+      ],
+      completion: { rules: [{ when: "any", outcomes: ["concerns"], result: "changes_requested" }], fallback: "approved" },
+      limits: { maxParallel: 2, maxRetries: 1, budgetCents: 250 },
+    });
+    mockIpc({ steps: [step("todo", "To Do", 0, { team })] });
+    renderGraph();
+
+    fireEvent.click(await screen.findByRole("button", { name: "To Do" }));
+    expect(detailsOf()["Who acts"]).toBe("A report-only team of 2 agents — EO decides the result");
+    const section = screen.getByRole("region", { name: "Team" });
+    expect(within(section).getByText("report-only")).toBeInTheDocument();
+    expect(section.textContent).toContain("None of them can edit the work");
+    const list = (name: string) => within(section).getByRole("list", { name }).textContent ?? "";
+    expect(list("Members")).toContain("security: a reviewer agent, required — Look for auth gaps.");
+    expect(list("Members")).toContain("tests: a tester agent, optional — Check the tests.");
+    expect(list("Outcomes")).toContain("Concerns (concerns) — Something should change first.");
+    expect(list("Completion")).toContain("If any report concludes Concerns → changes_requested");
+    expect(list("Completion")).toContain("Otherwise → approved");
+    expect(list("Limits")).toContain("2 participants at a time");
+    expect(list("Limits")).toContain("spending: $2.50 for the whole team");
+    expect(section.textContent).toContain("Independent — 2 participants each report on their own");
+  });
+
+  it("says who leads a leader-led team, whom it may assign to, and its rounds (EO-848)", async () => {
+    const led = StepTeamSchema.parse({ coordination: "leader", leader: { role: "reviewer", instructions: "Split the review." }, roles: ["tester", "security"] });
+    mockIpc({ steps: [step("todo", "To Do", 0, { team: led })] });
+    renderGraph();
+    fireEvent.click(await screen.findByRole("button", { name: "To Do" }));
+    expect(detailsOf()["Who acts"]).toBe("A report-only team, led by a reviewer agent");
+    expect(screen.getByRole("region", { name: "Team" }).textContent).toContain("Leader-led — a reviewer agent assigns focused work to tester, security");
+    expect(within(screen.getByRole("region", { name: "Team" })).getByRole("list", { name: "Limits" }).textContent).toContain("2 rounds of assignments");
+  });
+
+  it("shows no team on a step that runs as one agent", async () => {
+    mockIpc({ steps: [step("todo", "To Do", 0)] });
+    renderGraph();
+    fireEvent.click(await screen.findByRole("button", { name: "To Do" }));
+    expect(screen.queryByRole("region", { name: "Team" })).toBeNull();
   });
 
   it("says a step that never gives up never does, instead of an hour count (EO-571)", async () => {

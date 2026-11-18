@@ -9,6 +9,7 @@ import { StepInputsSchema } from "./modules.js";
 import { PipelineIconSchema } from "./pipelines.js";
 import { WorkspaceModeSchema } from "./workspaces.js";
 import { StepWatchSchema } from "../watch.js";
+import { NO_TEAM, StepTeamSchema } from "../team.js";
 
 /**
  * What a draft says for "Works on" when it means the item's own disk
@@ -34,8 +35,8 @@ export const RUNS_ONCE = "off";
  * deliberately leaves out: how long a module step may run (EO-162), what
  * it sets for the inputs its module or builtin declares (EO-78, EO-507),
  * whether it keeps checking (EO-456, EO-516), which disk it works on
- * (EO-301) and whether it works on a branch or reads the repository
- * (EO-296).
+ * (EO-301), whether it works on a branch or reads the repository
+ * (EO-296), and the report-only team an agent step runs as (EO-848).
  *
  * They are left out *there* because on a step that already exists they
  * are somebody's setting of this installation, and a draft that had to
@@ -69,6 +70,12 @@ export const AssistDraftStepSchema = DraftStepSchema.extend({
   workspaceId: z.string().min(1).optional(),
   /** On a repository, `isolated` works on a branch of its own and `read` reads the repository as it stands. Absent keeps the step's own. */
   workspaceMode: WorkspaceModeSchema.optional(),
+  /**
+   * An agent step's report-only team (EO-848), whole, or `"none"` to make
+   * it one agent again. Absent keeps the step's own. Published only through
+   * the card, whose Publish a person presses: no tool writes one.
+   */
+  team: z.union([StepTeamSchema, z.literal(NO_TEAM)]).optional(),
 });
 
 /**

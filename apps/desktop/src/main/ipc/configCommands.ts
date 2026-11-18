@@ -1,5 +1,5 @@
 import { backendAllowed, bindingRefusal, DEFAULT_MEMORY_DELIVERY_CHARS, DEFAULT_MEMORY_SCOPE_MAX_CHARS, DEFAULT_MEMORY_SCOPE_MAX_ENTRIES, DEFAULT_SKILL_ARCHIVE_AFTER_RUNS, DEFAULT_SKILL_MAX_BODY_CHARS, DEFAULT_SKILL_STALE_AFTER_RUNS, isBuiltinRole, isDispatchable, isPreviewAgent, rolesStaffedFor, settledWatch, staffingAgents, stepHoldsItemsMessage, stepWorkspaceChoice, timeLimitBoundProblem, withMemoryNoteGrant } from "@eo/core";
-import type { ActionDefinitionDraft, Agent, AgentRemovalImpact, EntryRule, GuardConfigView, IpcPayload, IpcResponse, ItemTypeEntry, Registry, Uuid, PipelineStep, StepBrief, StepRoute, StepTeam, StepWatch } from "@eo/core";
+import type { ActionDefinitionDraft, Agent, AgentRemovalImpact, RegistryFacts, TeamReading, EntryRule, GuardConfigView, IpcPayload, IpcResponse, ItemTypeEntry, Registry, Uuid, PipelineStep, StepBrief, StepRoute, StepTeam, StepWatch } from "@eo/core";
 import { hasBlockingProblem, outsideReachByStep, validatePipeline, type WorkflowProblem } from "@eo/engine";
 import type { Db } from "../db/client.js";
 import { registry, registryForProject, withProposedActions } from "../registry.js";
@@ -52,6 +52,7 @@ import {
   itemTypesFor,
 } from "../db/repos/index.js";
 import { sideEffectingServersByStep } from "../connectors/sideEffects.js";
+import { reportOnlyRoleProblems, teamReadings } from "./teamReadings.js";
 import { readPolicy } from "../policy/policy.js";
 import { activeProjectId } from "./repositoryCommands.js";
 import { signedInPersonId } from "../identity/viewer.js";
@@ -970,6 +971,29 @@ function registryWith(db: Db, actions: readonly ActionDefinitionDraft[]): { regi
  * Exported because the architect's draft is judged by it too, and a
  * draft and a publish must not disagree about who staffs a step.
  */
+/**
+ * Why each role could be staffed, on this pipeline's work, with an agent
+ * EO cannot hold to report-only as a team member (EO-848), by role.
+ */
+export function reportOnlyRoleProblemsForPipeline(db: Db, pipelineId: string): Record<string, string> {
+  return reportOnlyRoleProblems(listAgents(db), projectsServedByPipeline(db, pipelineId));
+}
+
+/**
+ * The teams of a graph as `pipelineSteps:list` and `pipeline:validate`
+ * describe them (EO-848), judged with what `validatePipeline` is given.
+ */
+export function teamReadingsForPipeline(db: Db, pipelineId: string, steps: readonly PipelineStep[], registryInForce: RegistryFacts): TeamReading[] {
+  if (!steps.some((step) => step.team !== null && step.team !== undefined)) return [];
+  return teamReadings(steps, {
+    agents: listAgents(db),
+    projects: projectsServedByPipeline(db, pipelineId),
+    registry: registryInForce,
+    staffedRoles: staffedRolesForPipeline(db, pipelineId),
+    runTimeoutMs: readGuards(db).wallClockTimeoutMs,
+  });
+}
+
 export function staffedRolesForPipeline(db: Db, pipelineId: string): string[] {
   const agents = listAgents(db);
   return [...new Set(projectsServedByPipeline(db, pipelineId).flatMap((projectId) => rolesStaffedFor(agents, { previewAt: null, projectId })))];
@@ -1059,6 +1083,9 @@ function validationInput(
     // published with.
     registry: registryInForce ?? registryForProject(db, projects.find((projectId) => projectId !== null) ?? projects[0] ?? null),
     staffedRoles: staffedRolesForPipeline(db, pipelineId),
+    // Which roles a team could be staffed with an agent EO cannot hold to
+    // report-only (EO-848), by the rule dispatch staffs a team with.
+    reportOnlyRoleProblems: reportOnlyRoleProblemsForPipeline(db, pipelineId),
     // Archived ones included: a step naming a deleted module is a distinct
     // problem from one naming a module that was never here, and the
     // validator can only tell them apart if it is given both (KAN-104).
@@ -1260,6 +1287,8 @@ export function validatePipelineCommand(db: Db, input: IpcPayload<"pipeline:vali
     // What each step of the graph reaches outside EO (EO-584), from the
     // very inputs the webhook refusal above was judged with.
     outsideReach: outsideReachByStep(judged),
+    // Each team of the graph sent (EO-848), read as dispatch would act on it.
+    teams: teamReadingsForPipeline(db, input.pipelineId, judged.steps, judged.registry),
   };
 }
 

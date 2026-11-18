@@ -75,8 +75,11 @@ export function DesignPlan({
                   {drawn === undefined || drawn.isTerminal ? null : <StepKindChip step={drawn} />}
                   <Chip tone={MODE[step.mode].tone}>{MODE[step.mode].label}</Chip>
                   {step.reaches ? <Chip>{REACHES[step.reaches]}</Chip> : null}
+                  {/* A team (EO-848): a mocked one is said to be untested, never shown as exercised. */}
+                  {step.team ? <Chip tone={step.team.tested ? "neutral" : "paused"}>{step.team.tested ? "team · runs for real" : "team · mocked, not tested"}</Chip> : null}
                 </div>
                 {step.reason ? <p className="text-ink-muted">{step.reason}</p> : null}
+                {step.team ? <p className="text-ink-muted">{step.team.note}</p> : null}
                 {step.mocks.length > 0 ? (
                   <ul className="pl-4 text-ink-muted">
                     {step.mocks.map((mock) => (
