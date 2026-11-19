@@ -5,6 +5,7 @@ import { runWithEntryVerdicts } from "../db/repos/entryRulesRepo.js";
 import type { CreateItemInput } from "../db/repos/itemsRepo.js";
 import { withModuleEntryChecks } from "../modules/entryChecks.js";
 import { isProjectReplica } from "../db/recordRole.js";
+import { soleWorkspaceOf } from "../ipc/repositoryCommands.js";
 import { existingBranchRefusal, storyGitState } from "../roles/refine.js";
 import { fillTemplate } from "./template.js";
 import { JOB_MESSAGE_SOURCE, messageJobOwner } from "./ownerMessage.js";
@@ -126,8 +127,17 @@ class Refused extends Error {
   }
 }
 
-/** What one firing asks `createItem` for: the template with its blanks filled, on the pipeline's entry step. */
-function firingInput(job: Job, dueAt: number, overrides: FireOverrides, pipelineId: Uuid, entryStepId: string): CreateItemInput {
+/**
+ * What one firing asks `createItem` for: the template with its blanks
+ * filled, on the pipeline's entry step.
+ *
+ * On a project with exactly one repository the item gets it (EO-855), as
+ * it does from the board, an assistant's proposal and `ctx.createItem`;
+ * without one, an entry step that cuts a branch has nothing to cut it
+ * from. With none, or several, it gets none — a job has no way to name
+ * one of several.
+ */
+function firingInput(db: Db, job: Job, dueAt: number, overrides: FireOverrides, pipelineId: Uuid, entryStepId: string): CreateItemInput {
   const template = job.template!;
   const blanks = { dueAt, job: job.name };
   const git = overrides.existingBranch === undefined ? undefined : storyGitState({ existingBranch: overrides.existingBranch });
@@ -138,6 +148,7 @@ function firingInput(job: Job, dueAt: number, overrides: FireOverrides, pipeline
     ...(overrides.spec === undefined ? {} : { spec: overrides.spec }),
     ...(git === undefined ? {} : { git }),
     projectId: job.projectId as Uuid | null,
+    workspaceId: soleWorkspaceOf(db, job.projectId as Uuid | null),
     pipelineId,
     stepId: entryStepId,
     createdBy: job.ownerId as Uuid,
@@ -180,7 +191,7 @@ export async function jobEntryVerdicts(db: Db, job: Job, options: FireOptions & 
   if (job.template === null || job.pipelineId === null) return verdicts;
   const pipeline = getPipeline(db, job.pipelineId);
   if (pipeline === undefined || pipeline.entryStepId === null) return verdicts;
-  const input = firingInput(job, options.dueAt, options.overrides ?? {}, pipeline.id as Uuid, pipeline.entryStepId);
+  const input = firingInput(db, job, options.dueAt, options.overrides ?? {}, pipeline.id as Uuid, pipeline.entryStepId);
   const type = resolveItemType(db, input.projectId ?? null, input.type);
   if (!type.ok) return verdicts;
   // Judged until it settles, so a rule published or a module changed
@@ -290,7 +301,7 @@ export function fireJob(db: Db, job: Job, options: FireOptions = {}): FireResult
         throw new Refused(`"${pipeline.name}" has no step for new work to start on, so there was nowhere to file this.`);
       }
 
-      const input = firingInput(job, dueAt, options.overrides ?? {}, pipeline.id as Uuid, pipeline.entryStepId);
+      const input = firingInput(db, job, dueAt, options.overrides ?? {}, pipeline.id as Uuid, pipeline.entryStepId);
       const branch = options.overrides?.existingBranch;
       const unusable = branch === undefined ? null : existingBranchProblem(db, input, branch);
       if (unusable !== null) throw new Refused(unusable);
