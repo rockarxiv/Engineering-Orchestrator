@@ -1713,6 +1713,7 @@ const JOB_CREATE_INPUT = z.object({
   budgetPerOccurrenceCents: z.number().int().min(0).nullable().optional(),
   maxItemsPerHour: z.number().int().min(1).nullable().optional(),
   runsOn: JobRunsOnSchema.optional(),
+  workspaceId: z.string().nullable().optional(),
 });
 
 const JOB_UPDATE_INPUT = z.object({
@@ -1724,6 +1725,7 @@ const JOB_UPDATE_INPUT = z.object({
   budgetPerOccurrenceCents: z.number().int().min(0).nullable().optional(),
   maxItemsPerHour: z.number().int().min(1).nullable().optional(),
   runsOn: JobRunsOnSchema.optional(),
+  workspaceId: z.string().nullable().optional(),
 });
 
 type JobUpdateArguments = z.infer<typeof JOB_UPDATE_INPUT>;
@@ -1829,7 +1831,7 @@ const JOB_READ_TOOLS: readonly ToolSpec[] = [
     channel: "jobs:list",
     description:
       "The jobs on a project: each one's id, name, trigger (manual, schedule, watch or webhook), the pipeline it files on and " +
-      "the template it files, where it runs, whether it is paused, its next and last run, and its budget. Pass projectId " +
+      "the template it files, the repository its items are filed on, where it runs, whether it is paused, its next and last run, and its budget. Pass projectId " +
       "from projects_list; omit it for the project the app window is showing, or pass pipelineId for the jobs filing onto " +
       "one pipeline. A webhook job's signing secret is never in the answer: a person reads it on the Job page.",
     kind: "read",
@@ -1864,7 +1866,9 @@ const JOB_WRITE_TOOLS: readonly ToolSpec[] = [
         "Make a job, saved at once: a manual job (fired by Run now on the Job page), a schedule job ({ kind: \"schedule\", " +
         "schedule: daily, weekly or cron, timeZone: an IANA name }) or a watch job ({ kind: \"watch\", moduleId, inputs, " +
         "everyMinutes }, its module approved and declaring watch: true). Every kind needs pipelineId and template " +
-        "{ type: a qualified item type such as developer:story, title, body }; {{date}} and {{job}} are filled in. A job " +
+        "{ type: a qualified item type such as developer:story, title, body }; {{date}} and {{job}} are filled in. workspaceId, from repositories_list, " +
+        "is the repository its items are filed on; left out, they go on the project's only repository, and a project with " +
+        "several needs one where the pipeline's first step works on a branch. A job " +
         "that could not fire is refused with the reason and nothing is made. Webhook jobs are not made over MCP. " +
         "EO's own agents are not offered this tool.",
       kind: "write",
@@ -1884,7 +1888,7 @@ const JOB_WRITE_TOOLS: readonly ToolSpec[] = [
       channel: "jobs:update",
       description:
         "Change a job, saved at once. Send only what changes: its name, trigger, pipelineId, template, budget, " +
-        "maxItemsPerHour or where it runs; null clears a budget. Checked as job_create checks, and refused with the " +
+        "maxItemsPerHour, where it runs or workspaceId (the repository its items are filed on); null clears a budget or the repository. Checked as job_create checks, and refused with the " +
         "reason where the job could no longer fire. A webhook job keeps its address and signing secret — send its " +
         "trigger as { kind: \"webhook\", mapping } to change what it files — and stays a webhook job. A conversation's " +
         "job is not changed. EO's own agents are not offered this tool.",

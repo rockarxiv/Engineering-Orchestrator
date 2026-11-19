@@ -5,8 +5,8 @@ import { Play, Workflow } from "lucide-react";
 import { JOB_ID_FACET, describeJobTrigger, type JobMachine, type JobOccurrenceRow, type JobPlacement, type JobSummary, type ModuleView, type PipelineView, type RegistryFacts } from "@eo/core";
 import { NOTHING, costOf, durationOf, pauseChipOf, timeZoneNote, whenOf, zoneOf } from "../../../shared/jobs/format";
 import { ipcQuery } from "../../../query/client";
-import { itemsKey, jobKey, jobsRootKey, useModules, usePipelines, useRegistry, useSession } from "../../../query/hooks";
-import { Card, CardSection, Chip, EmptyState, Facts, Loading, Switch, Tabs, ViewHeader, Button } from "../../kit";
+import { itemsKey, jobKey, jobsRootKey, useModules, usePipelines, useRegistry, useSession, workspacesKey } from "../../../query/hooks";
+import { Card, CardSection, Chip, EmptyState, Facts, Loading, Select, Switch, Tabs, ViewHeader, Button } from "../../kit";
 import { ItemKeyLink } from "../inbox/references";
 import { RunsOn } from "./RunsOn";
 import { WatchChecks, WatchStatus, watchFacts } from "./Watch";
@@ -25,7 +25,9 @@ import { JobEvents, WebhookAddress, WebhookMappingTable } from "./Webhook";
  *
  * Making, changing and deleting a job are the agents' (EO-784): the
  * assistant's job cards, which a person presses, and an outside agent's
- * job tools. So the page has no form, no Save and no Delete.
+ * job tools. So the page has no form, no Save and no Delete — save for
+ * the repository its items are filed on (EO-856), which a person picks
+ * from the project's here.
  */
 export function JobView({ jobId }: { jobId: string }) {
   const queryClient = useQueryClient();
@@ -143,7 +145,9 @@ export function JobView({ jobId }: { jobId: string }) {
       {webhook === null ? null : <WebhookAddress trigger={webhook} />}
 
       <CardSection title="Definition" description="Set up and changed by the assistant, or by an agent connected to EO.">
-        <Facts items={definitionFacts(job, pipelines, registry, modules.data?.modules ?? [])} />
+        <Facts
+          items={[...definitionFacts(job, pipelines, registry, modules.data?.modules ?? []), { term: "Repository", value: <JobRepository job={job} onSaved={refresh} /> }]}
+        />
         {webhook === null ? null : (
           <WebhookMappingTable
             mapping={webhook.mapping}
@@ -195,6 +199,54 @@ export function JobView({ jobId }: { jobId: string }) {
         )}
       </Card>
 
+    </div>
+  );
+}
+
+/**
+ * The repository every item the job files is filed on (EO-856): one of
+ * its project's, or — for none, which files on the project's only
+ * repository when it has exactly one. Saved on change through
+ * `jobs:update`, whose refusal — a project with several and an entry step
+ * that needs one — is shown beside it.
+ */
+function JobRepository({ job, onSaved }: { job: JobSummary; onSaved: () => void }) {
+  const workspaces = useQuery({
+    queryKey: [...workspacesKey, job.projectId] as const,
+    queryFn: () => ipcQuery("workspaces:list", { projectId: job.projectId }),
+    enabled: job.projectId !== null,
+  });
+  const [problem, setProblem] = useState<string | null>(null);
+  const save = useMutation({
+    mutationFn: (workspaceId: string | null) => ipcQuery("jobs:update", { jobId: job.id, workspaceId }),
+    onSuccess: (result) => {
+      setProblem(result.problem);
+      if (result.job !== null) onSaved();
+    },
+  });
+  const options = workspaces.data?.workspaces ?? [];
+  const gone = job.workspaceId !== null && !options.some((workspace) => workspace.id === job.workspaceId);
+  return (
+    <div className="flex min-w-0 flex-col gap-1">
+      <Select
+        aria-label="Repository"
+        value={job.workspaceId ?? ""}
+        disabled={save.isPending || workspaces.isLoading}
+        onChange={(event) => save.mutate(event.target.value === "" ? null : event.target.value)}
+      >
+        <option value="">{NOTHING}</option>
+        {options.map((workspace) => (
+          <option key={workspace.id} value={workspace.id}>
+            {workspace.label}
+          </option>
+        ))}
+        {gone ? <option value={job.workspaceId!}>{`${job.workspaceName ?? job.workspaceId} — no longer on this project`}</option> : null}
+      </Select>
+      {problem === null ? null : (
+        <p role="alert" className="text-[12.5px] text-danger">
+          {problem}
+        </p>
+      )}
     </div>
   );
 }

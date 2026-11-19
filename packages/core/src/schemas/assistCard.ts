@@ -325,6 +325,13 @@ export const AssistCardSchema = z.discriminatedUnion("kind", [
     maxItemsPerHour: z.number().int().min(1).nullable(),
     /** Null for this machine, where every job has always run. */
     runsOn: JobRunsOnSchema.nullable(),
+    /**
+     * The repository its items are filed on (EO-856), by the id
+     * `repositories_list` gives — one of the project's. Null names none:
+     * the project's only repository, if it has exactly one. Defaulted, so
+     * a card offered before the field existed still reads.
+     */
+    workspaceId: z.string().min(1).nullable().default(null),
   }),
   z.object({
     /**
@@ -341,6 +348,8 @@ export const AssistCardSchema = z.discriminatedUnion("kind", [
     budgetPerOccurrenceCents: z.union([z.number().int().min(0), z.literal(JOB_CARD_CLEAR)]).nullable(),
     maxItemsPerHour: z.union([z.number().int().min(1), z.literal(JOB_CARD_CLEAR)]).nullable(),
     runsOn: JobRunsOnSchema.nullable(),
+    /** The repository its items are filed on (EO-856), by id: null leaves it, `"none"` clears it. */
+    workspaceId: z.union([z.string().min(1), z.literal(JOB_CARD_CLEAR)]).nullable().default(null),
   }),
   z.object({
     /** Delete a job (EO-786) — `jobs:delete`. Whether its items are archived is the person's choice on the card. */

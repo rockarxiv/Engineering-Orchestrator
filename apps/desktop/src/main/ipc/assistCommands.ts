@@ -2547,6 +2547,7 @@ async function carryOutJob(db: Db, doors: AssistCardDoors, card: JobCard, archiv
       budgetPerOccurrenceCents: card.budgetPerOccurrenceCents,
       maxItemsPerHour: card.maxItemsPerHour,
       ...(card.runsOn === null ? {} : { runsOn: card.runsOn }),
+      workspaceId: card.workspaceId,
     });
     if (!created.ok) return { done: false, said: `“${name}” was not created: ${created.reason}` };
     if (created.data.job === null) return { done: false, said: `“${name}” was not created: ${created.data.problem ?? "EO refused it."}` };

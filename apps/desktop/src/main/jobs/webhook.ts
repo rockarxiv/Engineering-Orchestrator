@@ -27,6 +27,7 @@ import {
   recordJobEvent,
 } from "../db/repos/index.js";
 import { fireJob, jobEntryVerdicts } from "./fire.js";
+import { jobRepository } from "./repository.js";
 import { JOB_MESSAGE_SOURCE, messageJobOwner } from "./ownerMessage.js";
 import { hashWebhookBody, webhookSignatureMatches } from "./webhookSignature.js";
 
@@ -309,8 +310,9 @@ export async function receiveWebhook(db: Db, delivery: WebhookDelivery, deps: We
     });
   }
   if (filed.kind === "refused") {
-    // 422: read and understood, and no amount of sending it again makes
-    // this payload fill the field. `fireJob` has told the owner.
+    // 422: read and understood, and sending it again files nothing —
+    // this payload does not fill the field, or the job's repository needs
+    // a person to put it right. `fireJob` has told the owner.
     return recorded(db, job, { ...accepted, outcome: "refused", reason: filed.reason, status: 422 });
   }
   return recorded(db, job, { ...accepted, outcome: "held", reason: filed.reason, status: 202 });
@@ -326,7 +328,9 @@ export async function receiveWebhook(db: Db, delivery: WebhookDelivery, deps: We
  * the tenth event of a burst is never overtaken by the fortieth.
  *
  * A job that still cannot file work — paused, or its pipeline deleted —
- * is passed over in silence. It said why when it held the first one, and
+ * is passed over in silence. (Not one whose repository cannot be answered,
+ * EO-856: that refuses what it holds, below, and tells the owner once.) It
+ * said why when it held the first one, and
  * a sentence a minute about a state that has not changed is how an inbox
  * becomes something nobody reads.
  */
@@ -336,11 +340,18 @@ export async function releaseHeldWebhookEvents(db: Db, deps: WebhookDeps & { now
   for (const jobId of jobsHoldingEvents(db)) {
     const job = getJob(db, jobId as Uuid);
     if (job === undefined || job.trigger.kind !== "webhook") continue;
+    let toldOwnerOfRepository = false;
     for (const held of heldEvents(db, jobId as Uuid)) {
       // Asked again for every event rather than once per job, because
       // filing one is what puts the next one over the cap.
       if (whyItWaits(db, job, now) !== null) break;
-      const filed = await fileTheItem(db, job, { receivedAt: held.receivedAt, eventKey: held.eventKey, payload: held.payload }, deps, now);
+      // A job whose repository cannot be answered (EO-856) refuses every
+      // held event, each with its `failed` occurrence and `refused` row,
+      // as a fresh delivery is refused; holding them would wait on a
+      // person who was never told. The owner is told once per sweep: it
+      // is one thing about the job to put right, not one per event.
+      const quiet = toldOwnerOfRepository && !jobRepository(db, job).ok;
+      const filed = await fileTheItem(db, job, { receivedAt: held.receivedAt, eventKey: held.eventKey, payload: held.payload }, deps, now, quiet);
       // Anything but a creation means this job cannot file work at all
       // this minute, so the rest of its queue keeps its order and waits
       // for the next sweep. Nothing is recorded for it: the `held` row
@@ -353,6 +364,7 @@ export async function releaseHeldWebhookEvents(db: Db, deps: WebhookDeps & { now
       // is what takes it out of the queue, and the next one goes on.
       if (filed.kind === "refused") {
         recordJobEvent(db, { jobId: job.id as Uuid, receivedAt: held.receivedAt, eventKey: held.eventKey, payload: held.payload, outcome: "refused", reason: filed.reason });
+        if (filed.forRepository) toldOwnerOfRepository = true;
         continue;
       }
       if (filed.kind !== "created") break;
@@ -378,7 +390,7 @@ interface AcceptedEvent {
  * the row is already there — a second one per minute would grow the
  * queue this function exists to drain.
  */
-type FileResult = { kind: "created"; item: Item; row: JobEvent } | { kind: "duplicate" } | { kind: "unfiled"; reason: string } | { kind: "refused"; reason: string };
+type FileResult = { kind: "created"; item: Item; row: JobEvent } | { kind: "duplicate" } | { kind: "unfiled"; reason: string } | { kind: "refused"; reason: string; forRepository: boolean };
 
 /**
  * Creates the item, records the event that created it, and attaches the
@@ -396,25 +408,29 @@ type FileResult = { kind: "created"; item: Item; row: JobEvent } | { kind: "dupl
  * one: the server creates the item and the owner's inbox is where its
  * mentions go (ARCHITECTURE.md, "Where a job runs").
  */
-async function fileTheItem(db: Db, job: Job, event: AcceptedEvent, deps: WebhookDeps, now: number): Promise<FileResult> {
+async function fileTheItem(db: Db, job: Job, event: AcceptedEvent, deps: WebhookDeps, now: number, quiet = false): Promise<FileResult> {
   const trigger = job.trigger as WebhookTrigger;
   const overrides = itemFromPayload(trigger.mapping ?? EMPTY_WEBHOOK_MAPPING, event.payload);
 
   // The pipeline's module entry rules first (EO-736): the firing below is
   // one transaction, which cannot wait on a module.
   const entryVerdicts = await jobEntryVerdicts(db, job, { dueAt: event.receivedAt, firedAt: now, overrides });
-  let filed: { item: Item; row: JobEvent } | { refused: string };
+  let filed: { item: Item; row: JobEvent } | { refused: string; forRepository: boolean };
   try {
     filed = db.transaction(() => {
       // `dueAt` is when the event arrived and `firedAt` is when EO got
       // to it, and for a held event those are hours apart: the
       // occurrence keeps both, which is what makes the cap countable
       // and the history readable.
-      const fired = fireJob(db, job, { dueAt: event.receivedAt, firedAt: now, overrides, entryVerdicts });
+      const fired = fireJob(db, job, { dueAt: event.receivedAt, firedAt: now, overrides, entryVerdicts, quiet });
       // Returned rather than thrown: this firing is over, and its `failed`
       // occurrence and the owner's message have to outlive this
       // transaction, which a throw would take back (EO-610).
-      if (fired.item === null && fired.refusedAtEntry === true) return { refused: fired.problem ?? "Its pipeline refused it." };
+      if (fired.item === null && fired.refusedAtEntry === true) return { refused: fired.problem ?? "Its pipeline refused it.", forRepository: false };
+      // So is one about the job's repository (EO-856): the occurrence is
+      // `failed` and the owner told, as Run now, the schedule and a watch
+      // finding do, rather than rolled back into a held event.
+      if (fired.item === null && fired.refusedForRepository === true) return { refused: fired.problem ?? "EO could not tell which repository to file it on.", forRepository: true };
       if (fired.item === null) throw new Unfiled(fired.problem ?? "EO could not file an item for it.");
       return {
         item: fired.item,
@@ -436,7 +452,7 @@ async function fileTheItem(db: Db, job: Job, event: AcceptedEvent, deps: Webhook
     return { kind: "duplicate" };
   }
 
-  if ("refused" in filed) return { kind: "refused", reason: filed.refused };
+  if ("refused" in filed) return { kind: "refused", reason: filed.refused, forRepository: filed.forRepository };
   await attachPayload(db, filed.item, event.payload, deps);
   return { kind: "created", item: filed.item, row: filed.row };
 }

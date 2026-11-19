@@ -20,6 +20,7 @@ import {
 } from "../db/repos/index.js";
 import { compileSchedule } from "../schedule/cron.js";
 import { isKnownTimeZone } from "../schedule/timeZone.js";
+import { jobRepositoryProblem } from "./repository.js";
 import { watchTriggerProblem } from "./watch.js";
 
 /**
@@ -44,6 +45,13 @@ export interface CreateJobInput {
   maxItemsPerHour?: number | null;
   /** Omitted is `device` (EO-330, ARCHITECTURE.md, "Where a job runs") — where every job has always run. */
   runsOn?: JobRunsOn;
+  /**
+   * The repository every item it files is filed on (EO-856): one of the
+   * project's. Omitted or null is EO-855's rule — the project's only
+   * repository, otherwise none — which `jobRepository` refuses where the
+   * project has several and the entry step needs one.
+   */
+  workspaceId?: Uuid | null;
 }
 
 /**
@@ -98,8 +106,9 @@ export function createJob(db: Db, input: CreateJobInput): CreateJobResult {
     };
   }
 
+  const workspaceId = input.workspaceId ?? null;
   const fireable =
-    checkFireable(db, input.projectId, input.trigger, pipelineId, template, null, input.runsOn ?? DEFAULT_JOB_RUNS_ON) ??
+    checkFireable(db, input.projectId, input.trigger, pipelineId, template, null, input.runsOn ?? DEFAULT_JOB_RUNS_ON, workspaceId) ??
     templateRefusal(db, input.projectId, input.trigger, pipelineId, template);
   if (fireable !== null) return { ok: false, problem: fireable };
 
@@ -112,6 +121,7 @@ export function createJob(db: Db, input: CreateJobInput): CreateJobResult {
       pipelineId,
       template,
       ownerId,
+      workspaceId,
       ...(input.budgetPerOccurrenceCents === undefined ? {} : { budgetPerOccurrenceCents: input.budgetPerOccurrenceCents }),
       ...(input.maxItemsPerHour === undefined ? {} : { maxItemsPerHour: input.maxItemsPerHour }),
       ...(input.runsOn === undefined ? {} : { runsOn: input.runsOn }),
@@ -140,6 +150,7 @@ function checkFireable(
   template: JobTemplate | null,
   exceptJobId: Uuid | null = null,
   runsOn: JobRunsOn = DEFAULT_JOB_RUNS_ON,
+  workspaceId: Uuid | null = null,
 ): string | null {
   if (pipelineId === null || template === null) {
     return "A job that fires on its own needs a pipeline to file work on and a template to file.";
@@ -181,7 +192,11 @@ function checkFireable(
   }
 
   const type = resolveItemType(db, projectId, templateType(template));
-  return type.ok ? null : type.problem;
+  if (!type.ok) return type.problem;
+  // Where its items are filed (EO-856): one of the project's
+  // repositories, and one at all where the entry step cuts a branch of
+  // the item's own and the project has several to choose from.
+  return jobRepositoryProblem(db, { projectId, workspaceId, pipelineId, template });
 }
 
 /**
@@ -283,7 +298,9 @@ export function updateJob(db: Db, input: EditJobInput): CreateJobResult {
   const pipelineId = input.pipelineId === undefined ? job.pipelineId : input.pipelineId;
   const template = input.template === undefined ? job.template : input.template;
 
-  const fireable = checkFireable(db, job.projectId as Uuid | null, trigger, pipelineId, template, job.id as Uuid, input.runsOn ?? job.runsOn ?? DEFAULT_JOB_RUNS_ON);
+  const workspaceId = input.workspaceId === undefined ? (job.workspaceId as Uuid | null) : input.workspaceId;
+
+  const fireable = checkFireable(db, job.projectId as Uuid | null, trigger, pipelineId, template, job.id as Uuid, input.runsOn ?? job.runsOn ?? DEFAULT_JOB_RUNS_ON, workspaceId);
   if (fireable !== null) return { ok: false, problem: fireable };
   // Only where the save touches what the rules read, so a rule added
   // later cannot stop somebody renaming a job or changing its budget. A
@@ -293,7 +310,7 @@ export function updateJob(db: Db, input: EditJobInput): CreateJobResult {
     if (refused !== null) return { ok: false, problem: refused };
   }
 
-  const updated = updateJobRow(db, input.jobId, { ...input, name, trigger, pipelineId, template });
+  const updated = updateJobRow(db, input.jobId, { ...input, name, trigger, pipelineId, template, workspaceId });
   if (!updated) return { ok: false, problem: "That job no longer exists." };
   return { ok: true, job: updated };
 }

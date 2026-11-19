@@ -2531,6 +2531,12 @@ function agentTriggerLine(trigger: AgentJobTrigger): string {
   }
 }
 
+/** The repository a job names (EO-856), or what naming none means. */
+function jobRepositoryLine(job: AgentJob): string {
+  if (job.workspaceId === null) return "none named — the project's only repository, if it has exactly one";
+  return job.workspaceName === null ? `${job.workspaceId}, which is no longer on the project` : `"${job.workspaceName}" (id: ${job.workspaceId})`;
+}
+
 function jobLines(job: AgentJob): string[] {
   const status =
     job.pausedAt === null ? "active" : `paused ${job.pausedReason === null ? "" : `(${job.pausedReason}) `}since ${stamp(job.pausedAt)}`;
@@ -2539,6 +2545,7 @@ function jobLines(job: AgentJob): string[] {
     `- "${job.name}" (id: ${job.id}) — ${status}`,
     `  - trigger: ${agentTriggerLine(job.trigger)}`,
     `  - files on pipeline ${job.pipelineId ?? "none"}, template ${template}, runs on the ${job.runsOn === "server" ? "organisation server" : "desktop"}`,
+    `  - files its items on repository ${jobRepositoryLine(job)}`,
     `  - next run ${job.nextRunAt === null ? "none" : stamp(job.nextRunAt)}, last run ${job.lastRunAt === null ? "never" : stamp(job.lastRunAt)}` +
       `${job.lastStatus === null ? "" : ` (${job.lastStatus})`}`,
     `  - budget per occurrence ${job.budgetPerOccurrenceCents === null ? "none" : money(job.budgetPerOccurrenceCents)}, ` +

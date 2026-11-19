@@ -19,7 +19,7 @@ import {
 } from "@eo/core";
 import type { z } from "zod";
 import type { Db } from "../db/client.js";
-import { getItem, getJob, getModule, getPipeline, getProject, itemIdsFiredBy } from "../db/repos/index.js";
+import { getItem, getJob, getModule, getPipeline, getProject, getWorkspace, itemIdsFiredBy, workspaceLabel } from "../db/repos/index.js";
 import { runsOnOf } from "../jobs/placement.js";
 import { unfitWatchModule } from "../jobs/watch.js";
 
@@ -58,6 +58,8 @@ interface JobShape {
   budgetPerOccurrenceCents: number | null;
   maxItemsPerHour: number | null;
   runsOn: JobRunsOn;
+  /** The repository its items are filed on (EO-856), or null for none named. */
+  workspaceId: string | null;
 }
 
 /**
@@ -79,6 +81,7 @@ function shapeOf(job: Job): JobShape {
     budgetPerOccurrenceCents: job.budgetPerOccurrenceCents,
     maxItemsPerHour: job.maxItemsPerHour,
     runsOn: runsOnOf(job),
+    workspaceId: job.workspaceId,
   };
 }
 
@@ -113,6 +116,7 @@ function shapeOfCreate(card: Extract<AssistCard, { kind: "jobCreate" }>): JobSha
     budgetPerOccurrenceCents: card.budgetPerOccurrenceCents,
     maxItemsPerHour: card.maxItemsPerHour,
     runsOn: card.runsOn ?? "device",
+    workspaceId: card.workspaceId,
   };
 }
 
@@ -171,6 +175,8 @@ export function jobUpdatePayload(job: Job, card: JobUpdateCard): IpcPayload<"job
   const cap = card.maxItemsPerHour === JOB_CARD_CLEAR ? null : card.maxItemsPerHour;
   if (card.maxItemsPerHour !== null && cap !== standing.maxItemsPerHour) payload.maxItemsPerHour = cap;
   if (card.runsOn !== null && card.runsOn !== standing.runsOn) payload.runsOn = card.runsOn;
+  const repository = card.workspaceId === JOB_CARD_CLEAR ? null : card.workspaceId;
+  if (card.workspaceId !== null && repository !== standing.workspaceId) payload.workspaceId = repository;
   return payload;
 }
 
@@ -190,6 +196,7 @@ function shapeAfter(job: Job, payload: IpcPayload<"jobs:update">): JobShape {
     budgetPerOccurrenceCents: payload.budgetPerOccurrenceCents === undefined ? standing.budgetPerOccurrenceCents : payload.budgetPerOccurrenceCents,
     maxItemsPerHour: payload.maxItemsPerHour === undefined ? standing.maxItemsPerHour : payload.maxItemsPerHour,
     runsOn: payload.runsOn ?? standing.runsOn,
+    workspaceId: payload.workspaceId === undefined ? standing.workspaceId : payload.workspaceId,
   };
 }
 
@@ -315,8 +322,16 @@ function linesOf(db: Db, shape: JobShape): JobCardLine[] {
     { label: "Budget per run", value: shape.budgetPerOccurrenceCents === null ? "None" : money(shape.budgetPerOccurrenceCents) },
     { label: "Items an hour", value: shape.maxItemsPerHour === null ? "No cap" : `At most ${shape.maxItemsPerHour}` },
     { label: "Runs on", value: shape.runsOn === "server" ? "The organisation server" : "This machine" },
+    { label: "Repository", value: repositoryWords(db, shape.workspaceId) },
   );
   return lines;
+}
+
+/** The repository a job names (EO-856), by its name where it is still here. */
+function repositoryWords(db: Db, workspaceId: string | null): string {
+  if (workspaceId === null) return "None named — the project's only repository, if it has one";
+  const workspace = getWorkspace(db, workspaceId as Uuid);
+  return workspace === undefined ? `${workspaceId}, which no longer exists` : workspaceLabel(workspace);
 }
 
 /** Each line an update changes, as it is and as it would be. */

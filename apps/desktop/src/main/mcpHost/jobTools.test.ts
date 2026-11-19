@@ -3,7 +3,7 @@ import type { ModuleManifest, Uuid } from "@eo/core";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { DbHandle } from "../db/client.js";
 import { getJob, listJobs, recordWatchCheck, saveModule } from "../db/repos/index.js";
-import { createTestItem, openMigratedTestDb } from "../db/testHelpers.js";
+import { attachWorkspace, createTestItem, openMigratedTestDb } from "../db/testHelpers.js";
 import { createJobCommand, deleteJobCommand, getJobCommand, listJobsCommand, updateJobCommand } from "../ipc/jobCommands.js";
 import { clearHandlerRegistry, registerHandler } from "../ipc/registry.js";
 import { recordItemsFromConversation } from "../jobs/fromDiscussion.js";
@@ -206,6 +206,26 @@ describe("the reads", () => {
       expect(textOf(answer)).toContain(`answered waiting after 4s, 1 finding(s), filed ${item.key}`);
       expect(textOf(answer)).toContain("answered failed after 2s, 0 finding(s) — gh is not signed in.");
     }
+  });
+
+  it("report the repository a job's items are filed on, by name, and what naming none means (EO-856)", async () => {
+    const repository = attachWorkspace(handle.db, { name: "payments", keyPrefix: "PAY", repoPath: "/tmp/eo-job-tools-payments", baseBranch: "main" });
+    const named = createJob(handle.db, { projectId: repository.projectId as Uuid, name: "Named", trigger: { kind: "manual" }, pipelineId: "default", template: TEMPLATE, workspaceId: repository.id as Uuid });
+    if (!named.ok) throw new Error(named.problem);
+    const unnamed = createJob(handle.db, { projectId: repository.projectId as Uuid, name: "Unnamed", trigger: { kind: "manual" }, pipelineId: "default", template: TEMPLATE });
+    if (!unnamed.ok) throw new Error(unnamed.problem);
+
+    const list = await call("jobs_list", { projectId: repository.projectId });
+    const one = await call("job_get", { jobId: named.job.id });
+
+    expect(textOf(list)).toContain(`files its items on repository "payments" (id: ${repository.id})`);
+    expect(textOf(list)).toContain("files its items on repository none named — the project's only repository, if it has exactly one");
+    expect((list.structuredContent as { jobs: { name: string; workspaceId: string | null }[] }).jobs.map((job) => [job.name, job.workspaceId]).sort()).toEqual([
+      ["Named", repository.id],
+      ["Unnamed", null],
+    ]);
+    expect(textOf(one)).toContain(`files its items on repository "payments"`);
+    expect((one.structuredContent as { job: { workspaceId: string; workspaceName: string } }).job).toMatchObject({ workspaceId: repository.id, workspaceName: "payments" });
   });
 
   it("keeps the secret out of a narrowed answer too", async () => {

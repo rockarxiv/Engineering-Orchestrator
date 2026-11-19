@@ -5245,6 +5245,15 @@ export const recordContract = {
        * handlers).
        */
       runsOn: JobRunsOnSchema.optional(),
+      /**
+       * The repository its items are filed on (EO-856): one of the job's
+       * project's, by id. Null clears it, back to EO-855's rule — the
+       * project's only repository, otherwise none. Refused, naming the
+       * project's repositories, where it is not one of them, or where
+       * none is named on a project with several and the pipeline's entry
+       * step cuts a branch of the item's own repository.
+       */
+      workspaceId: z.string().nullable().optional(),
     }),
     z.object({
       job: JobSummarySchema.nullable(),
@@ -5277,6 +5286,8 @@ export const recordContract = {
       maxItemsPerHour: z.number().int().min(1).nullable().optional(),
       /** Omitted is `device`, which is where every job has always run (EO-330, ARCHITECTURE.md, "Where a job runs"). */
       runsOn: JobRunsOnSchema.optional(),
+      /** The repository its items are filed on (EO-856) — see `jobs:update`. Omitted or null names none. */
+      workspaceId: z.string().nullable().optional(),
     }),
     z.object({
       job: JobSummarySchema.nullable(),
