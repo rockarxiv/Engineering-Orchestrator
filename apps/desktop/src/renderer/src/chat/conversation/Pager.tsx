@@ -4,8 +4,9 @@ import { IconButton } from "../kit";
 
 /**
  * The chevrons and "N of M" a paged block in the conversation turns its
- * pages with: a batch of questions (`QuestionCard`) and a reply's cards
- * (`CardBlock`, EO-863). One piece, so the two look and behave the same.
+ * pages with: a batch of questions (`QuestionCard`), a reply's cards
+ * (`CardBlock`, EO-863) and a reply's work proposals (`ProposalBlock`,
+ * EO-864). One piece, so they look and behave the same.
  * Nothing at all for a single page.
  *
  * `noun` names a page in the chevrons' labels: "Previous question",

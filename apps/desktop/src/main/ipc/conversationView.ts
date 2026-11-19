@@ -204,10 +204,10 @@ export function settingsFor(db: Db, conversation: Item, kind: ConversationKind):
 /**
  * Which proposal, if any, is still live.
  *
- * Only the newest one, and only while nothing has been filed under it:
- * between reading a proposal and clicking approve the agent may have
- * revised it, and applying the older one is the outcome nobody could
- * have intended.
+ * Only the newest one, and only while nothing has been filed under it
+ * but a failed approval's rejection (EO-864): between reading a proposal
+ * and clicking approve the agent may have revised it, and applying the
+ * older one is the outcome nobody could have intended.
  *
  * An applied proposal is recognised by the approval comment filed under
  * it, so approving twice is not possible even if two windows are open.
@@ -221,9 +221,17 @@ export function approvableIds(db: Db, conversation: Item, kind: ConversationKind
   // A reply carrying several cards (EO-862) is spent once every card on
   // it has had something filed under it, not at the first: each card is
   // pressed on its own, and pressing one leaves the others to press.
+  //
+  // A work proposal whose approval failed is not spent either (EO-864):
+  // the rejection filed under it says why, and the proposal stays open to
+  // be approved again, so one failure in "Approve all" leaves it with its
+  // button. An approval, or anything else filed under it, spends it.
   const spent = (comment: Comment): boolean => {
     const cards = kind.card?.(db, conversation, comment, here) ?? null;
-    return cards === null || cards.length === 0 ? answered.has(comment.id) : cards.every((card) => card.outcome !== null);
+    if (cards !== null && cards.length > 0) return cards.every((card) => card.outcome !== null);
+    if (!answered.has(comment.id)) return false;
+    if ((kind.proposal?.(db, conversation, comment, here) ?? null) === null) return true;
+    return here.under(comment.id).some((entry) => entry.kind !== "rejection");
   };
 
   const newest = comments
@@ -309,8 +317,9 @@ function moduleCardOf(
  *
  * The reason is read from what `approvableIds` reads — the comments filed
  * under the card. An approval there is the work having been created; a
- * rejection is the approval path turning it away; anything else, or
- * nothing, is a card a newer one replaced. A closed conversation closes
+ * rejection is the approval path turning it away, on a work card a newer
+ * one has since replaced, since until then it stays open to be approved
+ * again; anything else, or nothing, is a card a newer one replaced. A closed conversation closes
  * every card in it and is a reason about none of them — except one that
  * was approved first, which stays approved and keeps naming what it made.
  */

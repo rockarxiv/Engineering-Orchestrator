@@ -496,6 +496,12 @@ apps/desktop/src/main/supervisor/workspaceResolution.ts: // A pick whose row has
 apps/desktop/src/main/supervisor/workspaceResolution.ts: // is the right disk for this ticket — it is the answer a step with
 apps/desktop/src/main/supervisor/workspaceResolution.ts: // the missing row above falls through: the ticket's own workspace
 apps/desktop/src/renderer/src/chat/conversation/Composer.test.tsx: it.each(["default", "chat"] as const)("links ticket keys in %s composer alerts", async (appearance) => {
+apps/desktop/src/renderer/src/chat/conversation/ProposalBlock.test.tsx: await within(block()).findByRole("button", { hidden: true, name: "Create ticket" });
+apps/desktop/src/renderer/src/chat/conversation/ProposalBlock.test.tsx: expect(await screen.findByRole("button", { name: "Create ticket" })).toBeInTheDocument();
+apps/desktop/src/renderer/src/chat/conversation/ProposalBlock.test.tsx: expect(await within(shown()).findByRole("button", { name: "Create ticket" })).toBeEnabled();
+apps/desktop/src/renderer/src/chat/conversation/ProposalBlock.test.tsx: expect(within(shown()).getByRole("button", { name: "Create ticket" })).toBeEnabled();
+apps/desktop/src/renderer/src/chat/conversation/ProposalBlock.test.tsx: fireEvent.click(await within(shown()).findByRole("button", { name: "Create ticket" }));
+apps/desktop/src/renderer/src/chat/conversation/ProposalBlock.test.tsx: fireEvent.click(within(shown()).getByRole("button", { name: "Create ticket" }));
 apps/desktop/src/renderer/src/chat/conversation/ProposalCard.test.tsx: expect(await screen.findByRole("button", { name: "Create ticket" })).toBeInTheDocument();
 apps/desktop/src/renderer/src/chat/conversation/ProposalCard.test.tsx: expect(screen.getByRole("region", { name: "Proposal" })).not.toHaveTextContent(/ticket|story|feature/i);
 apps/desktop/src/renderer/src/chat/conversation/ProposalCard.test.tsx: expect(screen.queryByRole("button", { name: "Create ticket" })).not.toBeInTheDocument();
