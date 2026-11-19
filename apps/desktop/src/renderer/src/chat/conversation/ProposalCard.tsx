@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import { Layers } from "lucide-react";
@@ -11,6 +11,7 @@ import { proposalKey } from "../views/proposal/useProposal";
 import { addedFieldValues, clearAddedFieldDrafts } from "../views/proposal/addedFieldDrafts";
 import { priorityLabel, showsPriorityBadge } from "../../shared/pipeline/priority";
 import { Button } from "../kit";
+import type { CardPress } from "./OperationCard";
 
 /**
  * A change the assistant proposed to the work, with the button that makes it.
@@ -31,8 +32,27 @@ import { Button } from "../kit";
  *
  * A card with no readable proposal behind it falls back to its body, which
  * is what every card drew before.
+ *
+ * In a reply's block of several (EO-864) the block can hold the button
+ * still (`disabled`), and is handed this card's own press while it could
+ * be pressed (`onPress`), which is how "Approve all" approves it: through
+ * the very call the button makes.
  */
-export function ProposalCard({ message, conversationId, onDone }: { message: DiscussionMessage; conversationId: string; onDone: () => void }) {
+export function ProposalCard({
+  message,
+  conversationId,
+  onDone,
+  disabled = false,
+  onPress,
+}: {
+  message: DiscussionMessage;
+  conversationId: string;
+  onDone: () => void;
+  /** Holds the button still, as a block does while "Approve all" runs. */
+  disabled?: boolean;
+  /** Given this card's own press while its button could be pressed, and null when it no longer could. */
+  onPress?: (press: CardPress | null) => void;
+}) {
   const vocabulary = useChromeVocabulary();
   const queryClient = useQueryClient();
   const [problem, setProblem] = useState<string | null>(null);
@@ -55,6 +75,26 @@ export function ProposalCard({ message, conversationId, onDone }: { message: Dis
     },
     onError: (error: unknown) => setProblem(error instanceof Error ? error.message : String(error)),
   });
+  // The press a block's "Approve all" makes: this button's, to the
+  // letter, resolving to whether the proposal was applied.
+  const pressNow = useRef<() => Promise<boolean>>(async () => false);
+  pressNow.current = async () => {
+    // Never a second press over one still in flight.
+    if (approve.isPending) return false;
+    try {
+      return (await approve.mutateAsync()).applied;
+    } catch {
+      return false;
+    }
+  };
+  const report = useRef(onPress);
+  report.current = onPress;
+  const pending = approve.isPending;
+  useEffect(() => {
+    report.current?.(message.canApprove ? { verb: "Approve", pending, press: () => pressNow.current() } : null);
+  }, [message.canApprove, pending]);
+  useEffect(() => () => report.current?.(null), []);
+
   const summary = message.proposal ?? null;
   const several = vocabulary.items.toLowerCase();
 
@@ -84,7 +124,7 @@ export function ProposalCard({ message, conversationId, onDone }: { message: Dis
       ) : null}
       {message.canApprove ? (
         <div className="flex items-center gap-2">
-          <Button variant="primary" size="sm" onClick={() => approve.mutate()} disabled={approve.isPending}>
+          <Button variant="primary" size="sm" onClick={() => approve.mutate()} disabled={disabled || approve.isPending}>
             {approve.isPending ? "Applying…" : message.approves === "changes" ? "Apply change" : `Create ${vocabulary.item.toLowerCase()}`}
           </Button>
           <span className="text-[11px] text-ink-subtle">or say what should change</span>

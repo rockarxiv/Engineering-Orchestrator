@@ -14,7 +14,8 @@ import { assistDraftKey, drawAssistReply, mergedMessages, pendingToDraw, SENT_IN
 import { OfferedAnswers } from "./conversation/OfferedAnswers";
 import { CardBlock } from "./conversation/CardBlock";
 import { ProposalCard } from "./conversation/ProposalCard";
-import { QuestionCard, transcriptRows, type TranscriptRow } from "./conversation/QuestionCard";
+import { ProposalBlock, withProposalBlocks, type ChatTranscriptRow } from "./conversation/ProposalBlock";
+import { QuestionCard, transcriptRows } from "./conversation/QuestionCard";
 import { Composer, type ComposerCompletion } from "./conversation/Composer";
 import { ChatSettings } from "./conversation/ChatSettings";
 import { LiveTurnBody, TurnFold } from "./conversation/TurnView";
@@ -86,7 +87,8 @@ export function ChatConversation({
   // in both (the view moved on while a page was read) is drawn once.
   const olderMessages = room.earlier.messages;
   const messages = useMemo(() => mergedMessages(olderMessages, view?.messages ?? []), [view, olderMessages]);
-  const rows = useMemo(() => transcriptRows(messages), [messages]);
+  // A reply's several work proposals are one row, drawn as one paged block (EO-864).
+  const rows = useMemo(() => withProposalBlocks(transcriptRows(messages)), [messages]);
   // The message on its way, until the conversation holding it is drawn (EO-549).
   const pending = pendingToDraw(room.pending, view?.id ?? null, messages);
   const thinking = view?.thinking ?? false;
@@ -289,7 +291,7 @@ export function ChatConversation({
 
             {shownRows.map((row) => (
               <ChatRow
-                key={row.kind === "questions" ? row.batch.id : row.message.id}
+                key={row.kind === "questions" ? row.batch.id : row.kind === "proposals" ? row.messages[0]!.id : row.message.id}
                 row={row}
                 conversationId={view?.id ?? ""}
                 retry={row.kind === "message" && retry !== null && row.message.id === lastSaid?.id}
@@ -384,7 +386,7 @@ interface RowHandlers {
 }
 
 interface ChatRowProps {
-  row: TranscriptRow;
+  row: ChatTranscriptRow;
   conversationId: string;
   /** Whether Retry sits under this row: the reply to the person's last message, and nothing since. */
   retry: boolean;
@@ -396,9 +398,12 @@ interface ChatRowProps {
 /** An answered question card has nothing left to send. */
 const answerNothing = async (): Promise<undefined> => undefined;
 
-/** The same row: the same message, or the same questions in the same state. Rows are rebuilt on every read; their messages are not. */
-function sameRow(before: TranscriptRow, after: TranscriptRow): boolean {
+/** The same row: the same message or messages, or the same questions in the same state. Rows are rebuilt on every read; their messages are not. */
+function sameRow(before: ChatTranscriptRow, after: ChatTranscriptRow): boolean {
   if (before.kind === "message" && after.kind === "message") return before.message === after.message;
+  if (before.kind === "proposals" && after.kind === "proposals") {
+    return before.messages.length === after.messages.length && before.messages.every((message, index) => message === after.messages[index]);
+  }
   if (before.kind === "questions" && after.kind === "questions") {
     const was = before.batch.questions;
     const now = after.batch.questions;
@@ -420,6 +425,14 @@ function ChatRowView({ row, conversationId, retry, busy, handlers }: ChatRowProp
       <QuestionCard questions={row.batch.questions} live busy={busy} onSubmit={handlers.answer} />
     ) : (
       <QuestionCard questions={row.batch.questions} live={false} busy={false} onSubmit={answerNothing} />
+    );
+  }
+  // One reply's several work proposals (EO-864): one paged block, with "Approve all".
+  if (row.kind === "proposals") {
+    return (
+      <Turn name="Assistant" message={row.messages[0]!}>
+        <ProposalBlock messages={row.messages} conversationId={conversationId} onDone={handlers.refresh} />
+      </Turn>
     );
   }
   const { message } = row;

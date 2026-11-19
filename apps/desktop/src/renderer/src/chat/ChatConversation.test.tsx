@@ -303,3 +303,45 @@ describe("a suggested reply in the conversation", () => {
     expect(box()).not.toHaveAttribute("placeholder", "the Delivery board");
   });
 });
+
+describe("a reply's work proposals in the conversation (EO-864)", () => {
+  const proposal = (id: string, runId: string, createdAt: number) =>
+    message({
+      id,
+      runId,
+      createdAt,
+      kind: "decision",
+      body: `The prose of ${id}.`,
+      canApprove: true,
+      approves: "items",
+      proposal: { container: null, rows: [{ kind: "new", title: `Work of ${id}`, typeLabel: "Story", acceptanceCriteria: [], waitsOn: [], under: null }], closed: null },
+    });
+
+  it("draws each reply's proposals as its own block, and one reply's single proposal as the card alone", async () => {
+    conversation = {
+      ...running(),
+      thinking: false,
+      liveTurn: null as never,
+      messages: [
+        message({ id: "h1", authorType: "human", authorName: "You", body: ASKED, createdAt: 1 }),
+        proposal("a1", "run-a", 2),
+        proposal("a2", "run-a", 3),
+        message({ id: "h2", authorType: "human", authorName: "You", body: FOLLOW_UP, createdAt: 4 }),
+        proposal("b1", "run-b", 5),
+        proposal("b2", "run-b", 6),
+        proposal("b3", "run-b", 7),
+        message({ id: "h3", authorType: "human", authorName: "You", body: "One more", createdAt: 8 }),
+        proposal("c1", "run-c", 9),
+      ],
+    };
+    open();
+
+    await waitFor(() => expect(screen.getAllByRole("group", { name: "Proposals from the assistant" })).toHaveLength(2));
+    const [first, second] = screen.getAllByRole("group", { name: "Proposals from the assistant" });
+    expect(within(first!).getByText("1 of 2")).toBeInTheDocument();
+    expect(within(second!).getByText("1 of 3")).toBeInTheDocument();
+    // The single proposal is the card alone, outside any block.
+    const alone = screen.getByRole("link", { name: /Work of c1/ });
+    expect(alone.closest('[role="group"]')).toBeNull();
+  });
+});
