@@ -162,3 +162,73 @@ export function setAgentCliTool(
   }
   return { ok: true, attachments: getAgentCliTools(db, agentId) };
 }
+
+/** What `assignCliTools` is asked to do: `agentCliTools:assign`'s request. */
+export interface CliToolsAssignment {
+  add: readonly { name: string; command: string; description?: string }[];
+  agents: readonly { agentId: string; give: readonly string[]; take: readonly string[] }[];
+}
+
+export type AssignCliToolsResult =
+  | { ok: true; added: CliTool[]; ticks: { agentId: string; cliToolId: string; attached: boolean }[] }
+  | { ok: false; problem: string };
+
+/** Thrown inside `assignCliTools`'s transaction to roll it back; never escapes it. */
+class AssignmentRefused extends Error {}
+
+/**
+ * Adds CLIs and ticks them on or off for several agents, all or nothing
+ * (EO-859) — a `cliToolsAssign` card's press.
+ *
+ * The adds first, through `saveCliTool`, so they are refused exactly as
+ * `cliTools:save` refuses them; then each agent's gives and takes,
+ * through `setAgentCliTool`, as `agentCliTools:set` applies them. A give
+ * names a CLI by its id, or by the command of one of this assignment's
+ * own adds, which resolves to the row just added. A refused row rolls
+ * the whole transaction back, and the sentence names that row.
+ *
+ * Stricter than the single tick in two ways, because a card was read
+ * against them: a deleted agent is refused rather than ticked, and an
+ * archived CLI is not given.
+ */
+export function assignCliTools(db: Db, assignment: CliToolsAssignment, now: number = Date.now()): AssignCliToolsResult {
+  const refuse = (problem: string): never => {
+    throw new AssignmentRefused(problem);
+  };
+  try {
+    return db.transaction(() => {
+      const added: CliTool[] = [];
+      const byCommand = new Map<string, CliTool>();
+      for (const entry of assignment.add) {
+        const saved = saveCliTool(db, { name: entry.name, command: entry.command, description: entry.description ?? "" }, now);
+        if (!saved.ok) refuse(`Adding “${entry.name.trim()}” (\`${entry.command.trim()}\`) was refused: ${saved.problems.join(" ")}`);
+        else {
+          added.push(saved.cliTool);
+          byCommand.set(saved.cliTool.command, saved.cliTool);
+        }
+      }
+
+      const ticks: { agentId: string; cliToolId: string; attached: boolean }[] = [];
+      for (const entry of assignment.agents) {
+        const agent = getAgent(db, entry.agentId as Uuid);
+        const agentName = agent?.name ?? `the agent ${entry.agentId}`;
+        const rows = [...entry.give.map((cli) => ({ cli, attached: true })), ...entry.take.map((cli) => ({ cli, attached: false }))];
+        for (const { cli, attached } of rows) {
+          const tool = byCommand.get(cli.trim()) ?? getCliTool(db, cli);
+          const what = tool === undefined ? `“${cli}”` : `“${tool.name}” (\`${tool.command}\`)`;
+          const row = attached ? `Giving ${agentName} ${what}` : `Taking ${what} away from ${agentName}`;
+          if (agent === undefined || agent.deletedAt !== null) refuse(`${row} was refused: that agent no longer exists.`);
+          if (tool === undefined) refuse(`${row} was refused: that command-line tool no longer exists.`);
+          if (attached && tool!.archivedAt !== null) refuse(`${row} was refused: it is archived. Restore it on the Agent tools screen first.`);
+          const set = setAgentCliTool(db, { agentId: entry.agentId, cliToolId: tool!.id, attached }, now);
+          if (!set.ok) refuse(`${row} was refused: ${set.problem}`);
+          ticks.push({ agentId: entry.agentId, cliToolId: tool!.id, attached });
+        }
+      }
+      return { ok: true as const, added, ticks };
+    });
+  } catch (error) {
+    if (error instanceof AssignmentRefused) return { ok: false, problem: error.message };
+    throw error;
+  }
+}

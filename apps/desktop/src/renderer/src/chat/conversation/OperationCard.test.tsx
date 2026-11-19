@@ -654,3 +654,114 @@ describe("a card for a command-line tool (EO-822)", () => {
     expect(screen.getByRole("button", { name: "Take CLI away" })).toBeDisabled();
   });
 });
+
+describe("a card adding CLIs and giving them to several agents (EO-859)", () => {
+  type Row = Extract<AssistCardDetail, { kind: "cliToolsAssign" }>["rows"][number];
+  const row = (overrides: Partial<Row>): Row => ({
+    agentId: "a-impl",
+    agentName: "Implementer",
+    cli: "c-gh",
+    cliToolId: "c-gh",
+    add: null,
+    cliToolName: "GitHub CLI",
+    command: "gh",
+    give: true,
+    current: false,
+    inPlace: false,
+    problem: null,
+    ...overrides,
+  });
+  const newJira = { cli: "jira", cliToolId: null, add: "jira", cliToolName: "Jira CLI", command: "jira" };
+  const ASSIGN: AssistCardDetail = {
+    kind: "cliToolsAssign",
+    adds: [
+      { name: "Jira CLI", command: "jira", description: "Issues on Jira.", detection: { found: true, path: "/usr/bin/jira" }, problem: null },
+      { name: "Deployer", command: "deploy", description: "", detection: { found: false }, problem: null },
+    ],
+    rows: [
+      row({}),
+      row(newJira),
+      row({ agentId: "a-rev", agentName: "Reviewer", ...newJira }),
+      row({ agentId: "a-rev", agentName: "Reviewer", current: true, inPlace: true }),
+      row({ agentId: "a-rev", agentName: "Reviewer", cli: "c-old", cliToolId: "c-old", cliToolName: "Old CLI", command: "old", give: false, current: true }),
+    ],
+  };
+  const box = (name: string) => screen.getByRole("checkbox", { name });
+
+  it("shows each add with its install detection, and a row per agent × CLI with give or take and its state; a row in place has no box", async () => {
+    draw(message({ kind: "cliToolsAssign", outcome: null }), ASSIGN);
+
+    const jira = await screen.findByRole("region", { name: "Add Jira CLI" });
+    expect(within(jira).getByLabelText("The command-line tool")).toHaveTextContent("On this machineFound at /usr/bin/jira");
+    expect(within(screen.getByRole("region", { name: "Add Deployer" })).getByLabelText("The command-line tool")).toHaveTextContent("On this machineNot found");
+    expect(box("Add Jira CLI")).toBeChecked();
+
+    const agents = screen.getByRole("list", { name: "Agents" });
+    expect(within(agents).getByRole("listitem", { name: "Give Implementer GitHub CLI" })).toHaveTextContent("gh· does not have it now");
+    expect(within(agents).getByRole("listitem", { name: "Give Reviewer Jira CLI" })).toHaveTextContent("jira· new");
+    expect(within(agents).getByRole("listitem", { name: "Take Old CLI from Reviewer" })).toHaveTextContent("old· has it now");
+    for (const name of ["Give Implementer GitHub CLI", "Give Implementer Jira CLI", "Give Reviewer Jira CLI", "Take Old CLI from Reviewer"]) expect(box(name)).toBeChecked();
+    // Already in place: shown, with no box.
+    const inPlace = within(agents).getByRole("listitem", { name: "Give Reviewer GitHub CLI" });
+    expect(inPlace).toHaveTextContent("already has it");
+    expect(within(inPlace).queryByRole("checkbox")).toBeNull();
+
+    expect(screen.getByRole("button", { name: "Add 2, give 3, take 1" })).toBeEnabled();
+  });
+
+  it("unticking an add unticks and disables every row giving that new CLI, and the press leaves out what is unticked", async () => {
+    const { calls, onDone } = draw(message({ kind: "cliToolsAssign", outcome: null }), ASSIGN, {
+      "assist:applyCard": { applied: true, problem: null, said: "Added …", conversation: {} },
+    });
+    await screen.findByRole("region", { name: "Add Jira CLI" });
+
+    fireEvent.click(box("Add Jira CLI"));
+    expect(box("Add Jira CLI")).not.toBeChecked();
+    for (const name of ["Give Implementer Jira CLI", "Give Reviewer Jira CLI"]) {
+      expect(box(name)).not.toBeChecked();
+      expect(box(name)).toBeDisabled();
+    }
+    expect(box("Give Implementer GitHub CLI")).toBeEnabled();
+
+    fireEvent.click(box("Take Old CLI from Reviewer"));
+    fireEvent.click(screen.getByRole("button", { name: "Add 1, give 1" }));
+
+    await waitFor(() => expect(onDone).toHaveBeenCalled());
+    expect(sent(calls, "assist:applyCard")).toEqual([
+      { conversationId: "conv-1", messageId: "card-1", choices: {}, unticked: { adds: ["jira"], rows: [{ agentId: "a-rev", cli: "c-old" }] } },
+    ]);
+    expect(sent(calls, "agentCliTools:assign")).toEqual([]);
+
+    // Ticking the add again gives its rows back their boxes.
+    fireEvent.click(box("Add Jira CLI"));
+    expect(box("Give Reviewer Jira CLI")).toBeChecked();
+    expect(box("Give Reviewer Jira CLI")).toBeEnabled();
+  });
+
+  it("says a refused press on the card, which stays to press again, and re-reads the catalogue and ticks after one that applied", async () => {
+    draw(message({ kind: "cliToolsAssign", outcome: null }), ASSIGN, {
+      "assist:applyCard": { applied: false, problem: "Nothing was changed. Adding “Jira CLI” (`jira`) was refused: \"Jira\" already runs `jira`.", said: null, conversation: {} },
+    });
+    fireEvent.click(await screen.findByRole("button", { name: "Add 2, give 3, take 1" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Adding “Jira CLI” (`jira`) was refused");
+    expect(screen.getByRole("button", { name: "Add 2, give 3, take 1" })).toBeEnabled();
+    cleanup();
+
+    const invalidate = vi.spyOn(QueryClient.prototype, "invalidateQueries");
+    try {
+      const applied = draw(message({ kind: "cliToolsAssign", outcome: null }), ASSIGN, { "assist:applyCard": { applied: true, problem: null, said: "Added.", conversation: {} } });
+      fireEvent.click(await screen.findByRole("button", { name: "Add 2, give 3, take 1" }));
+      await waitFor(() => expect(applied.onDone).toHaveBeenCalled());
+      expect(invalidate).toHaveBeenCalledWith({ queryKey: ["cliTools"] });
+      expect(invalidate).toHaveBeenCalledWith({ queryKey: ["agentCliTools"] });
+    } finally {
+      invalidate.mockRestore();
+    }
+  });
+
+  it("turns the button off when nothing is ticked", async () => {
+    draw(message({ kind: "cliToolsAssign", outcome: null }), { kind: "cliToolsAssign", adds: [], rows: [row({})] });
+    fireEvent.click(await screen.findByRole("checkbox", { name: "Give Implementer GitHub CLI" }));
+    expect(screen.getByRole("button", { name: "Nothing ticked" })).toBeDisabled();
+  });
+});

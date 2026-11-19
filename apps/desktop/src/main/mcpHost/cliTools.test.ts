@@ -206,7 +206,7 @@ describe("EO's system agent and the CLI catalogue", () => {
 
     const answer = await call("agent_attachments_set", { agentId: implementer.id, kind: "cliTool", id, attached: true }, "admin");
     expect(textOf(answer)).toBe(CLI_TOOL_ATTACH_ADMIN_REFUSAL);
-    expect(CLI_TOOL_ATTACH_ADMIN_REFUSAL).toContain("`cliToolAttach` card");
+    expect(CLI_TOOL_ATTACH_ADMIN_REFUSAL).toContain("`cliToolsAssign` card");
     expect(getAgentCliTools(handle.db, implementer.id).cliToolIds).toEqual([]);
 
     // And a call that does not say which listener it came on is the

@@ -481,6 +481,42 @@ describe("the cards for command-line tools (EO-822)", () => {
   });
 });
 
+describe("the card that adds CLIs and gives them to several agents (EO-859)", () => {
+  const offer = (card: unknown) => AssistOutputSchema.safeParse({ message: "The card does it.", card });
+  const GH = { name: "GitHub CLI", command: "gh", description: "Pull requests and issues on GitHub." };
+
+  it("accepts adds alone, agents alone, and both, with a new CLI named by its command", () => {
+    expect(offer({ kind: "cliToolsAssign", add: [GH], agents: [] }).success).toBe(true);
+    expect(offer({ kind: "cliToolsAssign", add: [], agents: [{ agentId: "a", give: ["c1"], take: [] }] }).success).toBe(true);
+    expect(
+      offer({
+        kind: "cliToolsAssign",
+        add: [GH],
+        agents: [
+          { agentId: "implementer", give: ["gh", "jira-id"], take: [] },
+          { agentId: "reviewer", give: ["gh"], take: ["old-id"] },
+        ],
+      }).success,
+    ).toBe(true);
+  });
+
+  it("refuses a card with no adds and no agents", () => {
+    expect(offer({ kind: "cliToolsAssign", add: [], agents: [] }).success).toBe(false);
+  });
+
+  it("refuses a card that names one CLI in both give and take for one agent", () => {
+    const parsed = offer({ kind: "cliToolsAssign", add: [], agents: [{ agentId: "a", give: ["c1", "c2"], take: ["c2"] }] });
+    expect(parsed.success).toBe(false);
+    expect(JSON.stringify(parsed.error?.issues)).toContain('\\"c2\\" is both given to and taken from the agent \\"a\\"');
+  });
+
+  it("refuses an agent named twice, a program added twice, and an agent given and taken nothing", () => {
+    expect(offer({ kind: "cliToolsAssign", add: [], agents: [{ agentId: "a", give: ["c1"], take: [] }, { agentId: "a", give: ["c2"], take: [] }] }).success).toBe(false);
+    expect(offer({ kind: "cliToolsAssign", add: [GH, { ...GH, name: "Again" }], agents: [] }).success).toBe(false);
+    expect(offer({ kind: "cliToolsAssign", add: [GH], agents: [{ agentId: "a", give: [], take: [] }] }).success).toBe(false);
+  });
+});
+
 describe("alternative drafts and keeping one's own pipeline (EO-534)", () => {
   const target = { pipelineId: "default" };
   const draft = (rationale: string) => ({ ...graph(), rationale, target });

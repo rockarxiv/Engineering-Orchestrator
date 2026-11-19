@@ -43,6 +43,10 @@ const NOT_CATALOGUED: Partial<Record<RecordChannel, string>> = {
   // The command-line tool catalogue (EO-819, EO-822). List, save and
   // archive are tools, and the ticks ride on agent_attachments_list and
   // agent_attachments_set; bringing an archived CLI back is not.
+  // A `cliToolsAssign` card's press (EO-859). An outside client does the
+  // same one row at a time with cli_tool_save and agent_attachments_set.
+  "agentCliTools:assign":
+    "a cliToolsAssign card's press, which a person makes; over MCP the same adds and ticks are cli_tool_save and agent_attachments_set, one row at a time, with the same refusals",
   "cliTools:restore": "bringing an archived CLI back is Restore on the Agent tools screen; over MCP a catalogue is listed, saved and archived, as the MCP servers' is, which has no restore at all",
   // What the organisation published, and the two writes that publish it
   // (EO-329). Publishing is an act on the record, performed by an admin

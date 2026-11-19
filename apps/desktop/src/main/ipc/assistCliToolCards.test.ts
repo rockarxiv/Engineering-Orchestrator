@@ -122,7 +122,7 @@ describe("adding a command-line tool", () => {
 
     expect(cardId).toBeUndefined();
     expect(rejections).toEqual([
-      `No card was offered: "GitHub CLI" already runs \`gh\`, with the id ${id}. To give it to an agent, offer a \`cliToolAttach\` card naming that id.`,
+      `No card was offered: "GitHub CLI" already runs \`gh\`, with the id ${id}. To give it to an agent, offer a \`cliToolsAssign\` card naming that id in \`give\`.`,
     ]);
   });
 

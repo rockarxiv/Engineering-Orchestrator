@@ -96,6 +96,7 @@ export {
 } from "./agentAttachmentsRepo.js";
 export {
   archiveCliTool,
+  assignCliTools,
   getAgentCliTools,
   getCliTool,
   getCliToolByCommand,
@@ -105,6 +106,8 @@ export {
   restoreCliTool,
   saveCliTool,
   setAgentCliTool,
+  type AssignCliToolsResult,
+  type CliToolsAssignment,
   type SaveCliToolResult,
   type SetAgentCliToolResult,
 } from "./cliToolsRepo.js";

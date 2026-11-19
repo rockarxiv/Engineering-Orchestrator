@@ -881,6 +881,52 @@ export const AssistCardDetailSchema = z.discriminatedUnion("kind", [
     archived: z.boolean(),
   }),
   z.object({
+    /**
+     * Add command-line tools and give them to several agents, or take
+     * them away, in one press (EO-859). Every row is read now: names,
+     * whether a program is installed here, and whether each agent already
+     * has each CLI.
+     */
+    kind: z.literal("cliToolsAssign"),
+    /** One per `add` entry, as `cliToolAdd`'s detail shows it. */
+    adds: z.array(
+      z.object({
+        name: z.string(),
+        /** Trimmed, as `cliTools:save` trims it — what a row naming this new CLI refers to. */
+        command: z.string(),
+        description: z.string(),
+        /** Whether the command is installed on this machine, read now; null where it could not be checked. */
+        detection: CliToolDetectionSchema.nullable(),
+        /** What `cliTools:save` would refuse it with now, or null. */
+        problem: z.string().nullable(),
+      }),
+    ),
+    /** One per agent × CLI the card names, in the card's order: an agent's gives, then its takes. */
+    rows: z.array(
+      z.object({
+        agentId: z.string(),
+        /** The agent's name, or its id where it no longer exists. */
+        agentName: z.string(),
+        /** The CLI as the card names it — a catalogue id or an `add` entry's command. What a press's `unticked` names it by. */
+        cli: z.string(),
+        /** The catalogued CLI's id; null for one of this card's own `add` entries, or one that is not here. */
+        cliToolId: z.string().nullable(),
+        /** The `add` entry's trimmed command when the row is about a CLI this card adds; null otherwise. */
+        add: z.string().nullable(),
+        cliToolName: z.string(),
+        command: z.string(),
+        /** True gives the agent the CLI, false takes it away. */
+        give: z.boolean(),
+        /** Whether the agent has it now. */
+        current: z.boolean(),
+        /** Already as the card asks — the agent has it, or does not — so there is nothing to tick. */
+        inPlace: z.boolean(),
+        /** What the press would refuse this row with now — the agent or the CLI gone, an archived CLI — or null. */
+        problem: z.string().nullable(),
+      }),
+    ),
+  }),
+  z.object({
     /** A webhook job's new secret or test event (EO-786). Never the secret itself. */
     kind: z.literal("jobWebhook"),
     jobId: z.string(),
@@ -2969,6 +3015,18 @@ export const recordContract = {
        * own default.
        */
       archiveItems: z.boolean().optional(),
+      /**
+       * A `cliToolsAssign` card's press (EO-859): the rows the person
+       * unticked, which are left out — an `add` entry by its command, an
+       * agent's row by the agent and the CLI as the card names it. Absent
+       * on every other press, and absent here means every row is ticked.
+       */
+      unticked: z
+        .object({
+          adds: z.array(z.string()),
+          rows: z.array(z.object({ agentId: z.string(), cli: z.string() })),
+        })
+        .optional(),
     }),
     z.object({
       applied: z.boolean(),
@@ -4550,6 +4608,27 @@ export const recordContract = {
   "agentCliTools:set": channel(
     z.object({ agentId: z.string(), cliToolId: z.string(), attached: z.boolean() }),
     z.object({ attachments: AgentCliToolsSchema.nullable(), problem: z.string().nullable() }),
+  ),
+
+  // Several CLIs added and ticked in one go (EO-859): a `cliToolsAssign`
+  // card's press. The adds first, refused as `cliTools:save` refuses
+  // them, then each agent's gives and takes, as `agentCliTools:set`
+  // applies them — all in one transaction, so a refused row leaves
+  // nothing written and `problem` names that row. A give names a CLI by
+  // its id, or by the command of one of this request's `add` entries.
+  "agentCliTools:assign": channel(
+    z.object({
+      add: z.array(CliToolDraftSchema.omit({ id: true })),
+      agents: z.array(z.object({ agentId: z.string(), give: z.array(z.string()), take: z.array(z.string()) })),
+    }),
+    z.object({
+      applied: z.boolean(),
+      problem: z.string().nullable(),
+      /** The rows added, in the request's order; empty when refused. */
+      added: z.array(CliToolSchema),
+      /** Each tick written, by id, in the request's order; empty when refused. */
+      ticks: z.array(z.object({ agentId: z.string(), cliToolId: z.string(), attached: z.boolean() })),
+    }),
   ),
 
   // U-11: what a backend can be configured with. Static options are

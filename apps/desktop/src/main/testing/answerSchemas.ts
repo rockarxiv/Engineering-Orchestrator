@@ -388,6 +388,15 @@ const CARDS = [
   // Command-line tools (EO-822): adding one, and giving one to an agent.
   { kind: "cliToolAdd", name: "GitHub CLI", command: "gh", description: "Pull requests and issues on GitHub." },
   { kind: "cliToolAttach", agentId: "implementer", cliToolId: "github-cli", attached: true },
+  // Several CLIs for several agents in one press (EO-859), a new one named by its command.
+  {
+    kind: "cliToolsAssign",
+    add: [{ name: "Jira CLI", command: "jira", description: "Issues on Jira." }],
+    agents: [
+      { agentId: "implementer", give: ["github-cli", "jira"], take: [] },
+      { agentId: "reviewer", give: ["github-cli"], take: ["old-cli"] },
+    ],
+  },
 ] as const;
 
 export const ASSIST_ANSWERS_WITH_CARDS = {

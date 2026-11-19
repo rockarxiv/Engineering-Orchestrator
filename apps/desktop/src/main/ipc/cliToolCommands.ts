@@ -1,6 +1,6 @@
 import type { IpcPayload, IpcResponse } from "@eo/core";
 import type { Db } from "../db/client.js";
-import { archiveCliTool, getAgentCliTools, listAgentCliTools, listCliTools, restoreCliTool, saveCliTool, setAgentCliTool } from "../db/repos/index.js";
+import { archiveCliTool, assignCliTools, getAgentCliTools, listAgentCliTools, listCliTools, restoreCliTool, saveCliTool, setAgentCliTool } from "../db/repos/index.js";
 import { detectCliTool, draftCliToolDescription, type CliToolProbeOptions } from "../agentAttachments/cliTools.js";
 
 /**
@@ -49,6 +49,17 @@ export function setAgentCliToolCommand(db: Db, input: IpcPayload<"agentCliTools:
   const result = setAgentCliTool(db, input);
   if (!result.ok) return { attachments: null, problem: result.problem };
   return { attachments: result.attachments, problem: null };
+}
+
+/**
+ * Several CLIs added and ticked in one transaction (EO-859) — a
+ * `cliToolsAssign` card's press. All or nothing: `problem` names the
+ * row that was refused, and nothing is written.
+ */
+export function assignAgentCliToolsCommand(db: Db, input: IpcPayload<"agentCliTools:assign">): IpcResponse<"agentCliTools:assign"> {
+  const result = assignCliTools(db, input);
+  if (!result.ok) return { applied: false, problem: result.problem, added: [], ticks: [] };
+  return { applied: true, problem: null, added: result.added, ticks: result.ticks };
 }
 
 /** Whether the command is installed here, on the PATH an agent is spawned with. */
