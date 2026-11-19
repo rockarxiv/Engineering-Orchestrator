@@ -445,8 +445,9 @@ export function AgentsView() {
                     save.error?.message ??
                     bind.error?.message ??
                     customise.error?.message ??
-                    (save.data?.saved === false ? (save.data.problem ?? undefined) : undefined) ??
-                    (customise.data?.saved === false ? (customise.data.problem ?? undefined) : undefined)
+                    (save.data?.saved === false ? save.data.problem : null) ??
+                    (customise.data?.saved === false ? customise.data.problem : null) ??
+                    undefined
                   }
                   onCancel={() => setCreating(null)}
                   // Two saves under a lock: the published fields through `agents:save`, the runtime and model through `agents:setBinding`.

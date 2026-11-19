@@ -3,7 +3,13 @@ packages:
   - "packages/*"
 
 catalog:
-  typescript: 5.9.3
+  # TypeScript 7.0 ships `tsc` but no JS compiler API (it returns in 7.1).
+  # So `tsc` comes from 7.0 under @typescript/native, and the name `typescript`
+  # is Microsoft's TS 6 API package, for typescript-eslint (which refuses 7.0)
+  # and the tests that parse source with ts.createSourceFile. Undo once
+  # typescript-eslint and those tests work on the 7.x API.
+  typescript: "npm:@typescript/typescript6@6.0.2"
+  "@typescript/native": "npm:typescript@7.0.2"
   vitest: 5.1.0
   "@vitest/coverage-v8": 5.1.0
   eslint: 10.15.0
