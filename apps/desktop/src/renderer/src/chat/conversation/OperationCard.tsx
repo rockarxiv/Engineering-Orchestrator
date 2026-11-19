@@ -691,7 +691,6 @@ function CliToolAddBody({ detail }: { detail: Extract<AssistCardDetail, { kind: 
           ) : found.found ? (
             <>
               Found at <code className="font-mono">{found.path}</code>
-              {found.version === null ? "" : ` · ${found.version}`}
             </>
           ) : (
             "Not found"

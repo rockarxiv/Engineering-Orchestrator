@@ -230,7 +230,7 @@ describe("the contract", () => {
 
     expect(await detectCliToolCommand({ command: "eo-no-such-cli" }, { env })).toEqual({ detection: { found: false } });
     const draft = await draftCliToolCommand({ command: "eo-no-such-cli" }, { env });
-    expect(draft).toEqual({ draft: { version: null, description: "" } });
+    expect(draft).toEqual({ draft: { description: "" } });
     expect(ipcContract["cliTools:draft"].response.safeParse(draft).success).toBe(true);
   });
 });

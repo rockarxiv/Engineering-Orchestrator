@@ -573,7 +573,7 @@ describe("a card for a command-line tool (EO-822)", () => {
     name: "GitHub CLI",
     command: "gh",
     description: "Pull requests and issues on GitHub.",
-    detection: { found: true, path: "/usr/bin/gh", version: "gh version 2.63.0" },
+    detection: { found: true, path: "/usr/bin/gh" },
     problem: null,
   };
   const ATTACH: AssistCardDetail = {
@@ -597,7 +597,7 @@ describe("a card for a command-line tool (EO-822)", () => {
     const shown = await within(card).findByLabelText("The command-line tool");
     expect(shown).toHaveTextContent("Commandgh");
     expect(shown).toHaveTextContent("DescriptionPull requests and issues on GitHub.");
-    expect(shown).toHaveTextContent("On this machineFound at /usr/bin/gh · gh version 2.63.0");
+    expect(shown).toHaveTextContent("On this machineFound at /usr/bin/gh");
 
     fireEvent.click(within(card).getByRole("button", { name: "Add CLI" }));
 

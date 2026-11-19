@@ -446,8 +446,6 @@ export interface AgentCliTool {
   description: string;
   /** The absolute path the command resolved to on the agent's PATH. */
   path: string;
-  /** The first line `--version` printed, or null where it printed nothing usable. */
-  version: string | null;
 }
 
 export interface AgentProviderStartOptions extends AgentTurnOverrides {
