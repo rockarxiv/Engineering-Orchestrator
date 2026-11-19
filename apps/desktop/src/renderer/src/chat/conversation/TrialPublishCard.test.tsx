@@ -27,7 +27,7 @@ function message(outcome: { done: boolean; said: string } | null = null): Discus
     canApprove: outcome === null,
     approves: outcome === null ? "card" : null,
     moduleSlug: null,
-    card: { kind: "trialPublish", outcome },
+    cards: [{ index: 0, kind: "trialPublish", outcome }],
     proposedType: null,
     status: null,
   };
@@ -84,7 +84,7 @@ function draw(card: DiscussionMessage, read: AssistCardDetail | null, answers: A
   const stub = ipcStub({ "assist:card": { card: read, problem: null }, "modules:list": { modules: [] }, ...answers });
   window.eo.ipc.invoke = stub.invoke as never;
   const onDone = vi.fn();
-  renderSection(<TrialPublishCard message={card} conversationId="conv-1" onDone={onDone} />);
+  renderSection(<TrialPublishCard message={card} card={card.cards![0]!} conversationId="conv-1" onDone={onDone} />);
   return { calls: stub.calls, onDone };
 }
 
@@ -113,7 +113,7 @@ describe("the publish card after trials", () => {
 
     fireEvent.click(button);
     await waitFor(() => expect(onDone).toHaveBeenCalled());
-    expect(sent(calls, "assist:publishTrial")).toEqual([{ conversationId: "conv-1", messageId: "card-1", acknowledgeLowCoverage: [] }]);
+    expect(sent(calls, "assist:publishTrial")).toEqual([{ conversationId: "conv-1", messageId: "card-1", index: 0, acknowledgeLowCoverage: [] }]);
     expect(sent(calls, "assist:applyCard")).toEqual([]);
   });
 

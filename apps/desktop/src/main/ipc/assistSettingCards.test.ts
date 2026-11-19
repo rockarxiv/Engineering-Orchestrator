@@ -131,11 +131,11 @@ describe("webhook items sent on unread", () => {
     webhookJobOnto();
     const conversation = await chat("Let the support webhook's items through without anybody reading them.");
 
-    const { cardIds, rejections } = turn(conversation, { message: "That is yours to accept.", card: { kind: "pipelineWebhookUnattended", pipelineId: "default", unattended: true } });
+    const { cardIds, rejections } = turn(conversation, { message: "That is yours to accept.", cards: [{ kind: "pipelineWebhookUnattended", pipelineId: "default", unattended: true }] });
 
     expect(rejections).toEqual([]);
     const card = await messageOf(conversation, cardIds[0]!);
-    expect(card).toMatchObject({ canApprove: true, approves: "card", card: { kind: "pipelineWebhookUnattended", outcome: null } });
+    expect(card).toMatchObject({ canApprove: true, approves: "card", cards: [{ kind: "pipelineWebhookUnattended", outcome: null }] });
     expect(card.body).toContain(WEBHOOK_UNATTENDED_LABEL);
     expect(card.body).toContain(WEBHOOK_UNATTENDED_RISK);
     expect((await read(conversation, cardIds[0]!)).card).toEqual({
@@ -153,7 +153,7 @@ describe("webhook items sent on unread", () => {
 
     expect(pressed.applied).toBe(true);
     expect(unattended()).toBe(true);
-    expect(await messageOf(conversation, cardIds[0]!)).toMatchObject({ canApprove: false, card: { outcome: { done: true } } });
+    expect(await messageOf(conversation, cardIds[0]!)).toMatchObject({ canApprove: false, cards: [{ outcome: { done: true } }] });
     // Spent: a second press cannot apply it twice.
     expect((await press(conversation, cardIds[0]!)).problem).toContain("already been pressed");
   });
@@ -162,7 +162,7 @@ describe("webhook items sent on unread", () => {
     webhookJobOnto();
     setWebhookUnattended(handle.db, "default", true);
     const conversation = await chat("Stop sending them on unread.");
-    const { cardIds } = turn(conversation, { message: "Press it.", card: { kind: "pipelineWebhookUnattended", pipelineId: "default", unattended: false } });
+    const { cardIds } = turn(conversation, { message: "Press it.", cards: [{ kind: "pipelineWebhookUnattended", pipelineId: "default", unattended: false }] });
 
     expect((await press(conversation, cardIds[0]!)).applied).toBe(true);
 
@@ -172,12 +172,12 @@ describe("webhook items sent on unread", () => {
   it("is not offered for a pipeline no webhook job files onto, nor for a setting already as asked", async () => {
     const conversation = await chat();
 
-    const noJob = turn(conversation, { message: "x", card: { kind: "pipelineWebhookUnattended", pipelineId: "default", unattended: true } });
+    const noJob = turn(conversation, { message: "x", cards: [{ kind: "pipelineWebhookUnattended", pipelineId: "default", unattended: true }] });
     expect(noJob.cardIds).toEqual([]);
     expect(noJob.rejections[0]).toContain("no webhook job files onto");
 
     webhookJobOnto();
-    const already = turn(conversation, { message: "x", card: { kind: "pipelineWebhookUnattended", pipelineId: "default", unattended: false } });
+    const already = turn(conversation, { message: "x", cards: [{ kind: "pipelineWebhookUnattended", pipelineId: "default", unattended: false }] });
     expect(already.cardIds).toEqual([]);
     expect(already.rejections[0]).toContain("nothing to change");
   });
@@ -185,7 +185,7 @@ describe("webhook items sent on unread", () => {
   it("says the organisation manages it before the press, and files the lock's refusal when pressed", async () => {
     webhookJobOnto();
     const conversation = await chat();
-    const { cardIds } = turn(conversation, { message: "x", card: { kind: "pipelineWebhookUnattended", pipelineId: "default", unattended: true } });
+    const { cardIds } = turn(conversation, { message: "x", cards: [{ kind: "pipelineWebhookUnattended", pipelineId: "default", unattended: true }] });
     publishSection(handle.db, { section: "pipelines", subjectId: "default", versionId: "a-version", versionNumber: 1, publishedAt: Date.now(), publishedBy: "dana-id", publishedByName: "Dana" });
     const stopBeingAReplica = markReplica(handle.db, () => true);
     try {
@@ -214,11 +214,11 @@ describe("a step's own secret or variable", () => {
     await call("moduleSecrets:set", { name: "DEPLOY_TOKEN", value: "the-old-token-value", stepId: step.id });
     const conversation = await chat("Give the first step its own deploy token.");
 
-    const { cardIds, rejections } = turn(conversation, { message: "Type it on the card.", card: { kind: "stepSecret", stepId: step.id, name: "DEPLOY_TOKEN", action: "set" } });
+    const { cardIds, rejections } = turn(conversation, { message: "Type it on the card.", cards: [{ kind: "stepSecret", stepId: step.id, name: "DEPLOY_TOKEN", action: "set" }] });
 
     expect(rejections).toEqual([]);
     const card = await messageOf(conversation, cardIds[0]!);
-    expect(card).toMatchObject({ canApprove: true, approves: "card", card: { kind: "stepSecret", outcome: null } });
+    expect(card).toMatchObject({ canApprove: true, approves: "card", cards: [{ kind: "stepSecret", outcome: null }] });
     expect(card.body).toContain("DEPLOY_TOKEN");
     expect(card.body).toContain(step.name);
     const detail = await read(conversation, cardIds[0]!);
@@ -229,7 +229,7 @@ describe("a step's own secret or variable", () => {
   it("sets the secret to what the person typed, through moduleSecrets:set, for that step alone", async () => {
     const step = aStep();
     const conversation = await chat();
-    const { cardIds } = turn(conversation, { message: "x", card: { kind: "stepSecret", stepId: step.id, name: "DEPLOY_TOKEN", action: "set" } });
+    const { cardIds } = turn(conversation, { message: "x", cards: [{ kind: "stepSecret", stepId: step.id, name: "DEPLOY_TOKEN", action: "set" }] });
 
     const pressed = await press(conversation, cardIds[0]!, "typed-on-the-card");
 
@@ -242,12 +242,12 @@ describe("a step's own secret or variable", () => {
   it("sets and clears a step's own variable", async () => {
     const step = aStep();
     const conversation = await chat();
-    const set = turn(conversation, { message: "x", card: { kind: "stepVariable", stepId: step.id, name: "REGION", action: "set" } });
+    const set = turn(conversation, { message: "x", cards: [{ kind: "stepVariable", stepId: step.id, name: "REGION", action: "set" }] });
     expect((await press(conversation, set.cardIds[0]!, "eu-west-1")).applied).toBe(true);
     expect((await call("environmentVariables:list", { stepId: step.id })).variables).toEqual([{ name: "REGION", value: "eu-west-1", scope: "step" }]);
 
     await call("assist:send", { page: pageDescriptorFor("/settings"), conversationId: conversation.id, body: "Now remove it.", attachmentIds: [], interrupt: false });
-    const clear = turn(conversation, { message: "x", card: { kind: "stepVariable", stepId: step.id, name: "REGION", action: "clear" } });
+    const clear = turn(conversation, { message: "x", cards: [{ kind: "stepVariable", stepId: step.id, name: "REGION", action: "clear" }] });
     expect((await read(conversation, clear.cardIds[0]!)).card).toMatchObject({ set: true, action: "clear" });
     expect((await press(conversation, clear.cardIds[0]!)).applied).toBe(true);
 
@@ -257,36 +257,36 @@ describe("a step's own secret or variable", () => {
   it("files nothing for a Set pressed with nothing typed, so the card stays to fill in", async () => {
     const step = aStep();
     const conversation = await chat();
-    const { cardIds } = turn(conversation, { message: "x", card: { kind: "stepSecret", stepId: step.id, name: "DEPLOY_TOKEN", action: "set" } });
+    const { cardIds } = turn(conversation, { message: "x", cards: [{ kind: "stepSecret", stepId: step.id, name: "DEPLOY_TOKEN", action: "set" }] });
 
     const pressed = await press(conversation, cardIds[0]!);
 
     expect(pressed).toMatchObject({ applied: false, said: null });
     expect(pressed.problem).toContain("Type the value");
-    expect(await messageOf(conversation, cardIds[0]!)).toMatchObject({ canApprove: true, card: { outcome: null } });
+    expect(await messageOf(conversation, cardIds[0]!)).toMatchObject({ canApprove: true, cards: [{ outcome: null }] });
   });
 
   it("files the channel's refusal under the card", async () => {
     const step = aStep();
     const conversation = await chat();
     await call("environmentVariables:set", { name: "DEPLOY_TOKEN", value: "plain", stepId: step.id });
-    const { cardIds } = turn(conversation, { message: "x", card: { kind: "stepSecret", stepId: step.id, name: "DEPLOY_TOKEN", action: "set" } });
+    const { cardIds } = turn(conversation, { message: "x", cards: [{ kind: "stepSecret", stepId: step.id, name: "DEPLOY_TOKEN", action: "set" }] });
 
     const pressed = await press(conversation, cardIds[0]!, "a-secret");
 
     expect(pressed.applied).toBe(false);
     expect(pressed.said).toContain("never both");
-    expect(await messageOf(conversation, cardIds[0]!)).toMatchObject({ card: { outcome: { done: false } } });
+    expect(await messageOf(conversation, cardIds[0]!)).toMatchObject({ cards: [{ outcome: { done: false } }] });
   });
 
   it("is not offered for a step that is not there or a name that is not a variable's", async () => {
     const conversation = await chat();
 
-    const noStep = turn(conversation, { message: "x", card: { kind: "stepSecret", stepId: "no-such-step", name: "DEPLOY_TOKEN", action: "set" } });
+    const noStep = turn(conversation, { message: "x", cards: [{ kind: "stepSecret", stepId: "no-such-step", name: "DEPLOY_TOKEN", action: "set" }] });
     expect(noStep.cardIds).toEqual([]);
     expect(noStep.rejections[0]).toContain("no step with the ID");
 
-    const badName = turn(conversation, { message: "x", card: { kind: "stepVariable", stepId: aStep().id, name: "not a name", action: "set" } });
+    const badName = turn(conversation, { message: "x", cards: [{ kind: "stepVariable", stepId: aStep().id, name: "not a name", action: "set" }] });
     expect(badName.cardIds).toEqual([]);
     expect(badName.rejections[0]).toContain("is not an environment-variable name");
   });
@@ -302,7 +302,7 @@ describe("a step's own secret or variable", () => {
 describe("what a card says the step is left with", () => {
   async function pressed(card: { kind: "stepSecret" | "stepVariable"; stepId: string; name: string; action: "set" | "clear" }, value?: string) {
     const conversation = await chat();
-    const { cardIds } = turn(conversation, { message: "x", card });
+    const { cardIds } = turn(conversation, { message: "x", cards: [card] });
     const detail = (await read(conversation, cardIds[0]!)).card;
     return { detail, said: (await press(conversation, cardIds[0]!, value)).said };
   }
@@ -357,7 +357,7 @@ describe("what a card says the step is left with", () => {
     const step = aStep();
     await call("environmentVariables:set", { name: "DEPLOY_TOKEN", value: "plain", stepId: step.id });
     const conversation = await chat();
-    const { cardIds } = turn(conversation, { message: "x", card: { kind: "stepSecret", stepId: step.id, name: "DEPLOY_TOKEN", action: "set" } });
+    const { cardIds } = turn(conversation, { message: "x", cards: [{ kind: "stepSecret", stepId: step.id, name: "DEPLOY_TOKEN", action: "set" }] });
 
     expect((await read(conversation, cardIds[0]!)).card).toMatchObject({ set: false, setAsOther: true });
   });
@@ -381,10 +381,10 @@ describe("the value a person types on the card", () => {
     const VARIABLE = "typed-variable-eo522-d4e5f6";
     const step = aStep();
     const conversation = await chat("Give the first step its own token and region.");
-    const secret = turn(conversation, { message: "Type it on the card.", card: { kind: "stepSecret", stepId: step.id, name: "DEPLOY_TOKEN", action: "set" } });
+    const secret = turn(conversation, { message: "Type it on the card.", cards: [{ kind: "stepSecret", stepId: step.id, name: "DEPLOY_TOKEN", action: "set" }] });
     expect((await press(conversation, secret.cardIds[0]!, SECRET)).problem).toBeNull();
     await call("assist:send", { page: pageDescriptorFor("/settings"), conversationId: conversation.id, body: "And the region.", attachmentIds: [], interrupt: false });
-    const variable = turn(conversation, { message: "Type it on the card.", card: { kind: "stepVariable", stepId: step.id, name: "REGION", action: "set" } });
+    const variable = turn(conversation, { message: "Type it on the card.", cards: [{ kind: "stepVariable", stepId: step.id, name: "REGION", action: "set" }] });
     expect((await press(conversation, variable.cardIds[0]!, VARIABLE)).problem).toBeNull();
     // The person says something after, so a next turn is due.
     await call("assist:send", { page: pageDescriptorFor("/settings"), conversationId: conversation.id, body: "Done?", attachmentIds: [], interrupt: false });

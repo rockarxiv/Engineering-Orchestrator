@@ -1042,10 +1042,10 @@ export function renderPipeline(data: IpcResponse<"pipelineSteps:list">): string 
       data.webhook.unattended
         ? "A webhook job files onto this pipeline, and a person has let what it delivers reach a step that sends without anybody reading it first. " +
             "Publishing reports that as a warning. Only a person can turn it off again, by pressing the button on the assistant's card for it " +
-            `(\`card\` with the kind \`${WEBHOOK_UNATTENDED_CARD_KIND}\`); no tool can.`
+            `(a card in \`cards\` with the kind \`${WEBHOOK_UNATTENDED_CARD_KIND}\`); no tool can.`
         : "A webhook job files onto this pipeline. Publishing is refused while a step that acts outside EO can be reached before a human step. " +
             `A person can accept that for this pipeline by pressing the button on the assistant's card for it ("${WEBHOOK_UNATTENDED_LABEL}", ` +
-            `\`card\` with the kind \`${WEBHOOK_UNATTENDED_CARD_KIND}\`); no tool can.`,
+            `a card in \`cards\` with the kind \`${WEBHOOK_UNATTENDED_CARD_KIND}\`); no tool can.`,
     );
   }
   return lines.join("\n");

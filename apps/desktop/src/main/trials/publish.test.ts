@@ -190,7 +190,7 @@ function turn(chat: Item, output: unknown, readPipeline?: string): Uuid {
 }
 
 /** The assistant asking for the publish card. */
-const askToPublish = (chat: Item) => turn(chat, { message: "Every test item ended where it was expected to.", card: { kind: "trialPublish" } });
+const askToPublish = (chat: Item) => turn(chat, { message: "Every test item ended where it was expected to.", cards: [{ kind: "trialPublish" }] });
 
 async function approve(chat: Item, card: Uuid): Promise<string> {
   const answer = await approveTrialDesign(handle.db, { attachmentStorage: attachments }, { conversationId: chat.id, messageId: card });
@@ -228,13 +228,13 @@ const doors = {
 };
 
 async function cardOf(chat: Item, messageId: Uuid) {
-  const read = await readAssistCardCommand(handle.db, doors, { conversationId: chat.id, messageId });
+  const read = await readAssistCardCommand(handle.db, doors, { conversationId: chat.id, messageId, index: 0 });
   if (read.card?.kind !== "trialPublish") throw new Error(read.problem ?? "not a publish card");
   return read.card;
 }
 
 const publish = (chat: Item, messageId: Uuid, tests: Pick<ReturnType<typeof runner>, "run"> = runner()) =>
-  publishTrialCommand(handle.db, undefined, tests, { attachmentStorage: attachments, worktreeRoot: join(scratch, "worktrees") }, { conversationId: chat.id, messageId, acknowledgeLowCoverage: [] });
+  publishTrialCommand(handle.db, undefined, tests, { attachmentStorage: attachments, worktreeRoot: join(scratch, "worktrees") }, { conversationId: chat.id, messageId, index: 0, acknowledgeLowCoverage: [] });
 
 /** Moves a trial item as a run's result would, or as the assistant pressing a person's step in their place. */
 function mover(trialId: string) {

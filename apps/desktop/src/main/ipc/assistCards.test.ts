@@ -148,19 +148,19 @@ describe("a card is the assistant's whole part", () => {
   it("is posted as a card naming what it is for, with nothing done", async () => {
     const conversation = await chat("Delete the default pipeline.");
 
-    const { cardIds, rejections } = turn(conversation, { message: "That one is yours to press.", card: { kind: "pipelineDelete", pipelineId: "default" } });
+    const { cardIds, rejections } = turn(conversation, { message: "That one is yours to press.", cards: [{ kind: "pipelineDelete", pipelineId: "default" }] });
 
     expect(rejections).toEqual([]);
     expect(cardIds).toHaveLength(1);
     const card = await messageOf(conversation, cardIds[0]!);
-    expect(card).toMatchObject({ canApprove: true, approves: "card", card: { kind: "pipelineDelete", outcome: null } });
+    expect(card).toMatchObject({ canApprove: true, approves: "card", cards: [{ kind: "pipelineDelete", outcome: null }] });
     expect(card.body).toContain("**Delete**");
     expect(getPipeline(handle.db, "default")?.archivedAt).toBeNull();
   });
 
   it("is refused as work: the approve channel sends it back to its own button", async () => {
     const conversation = await chat();
-    const { cardIds } = turn(conversation, { message: "Here.", card: { kind: "pipelineExport", pipelineId: "default" } });
+    const { cardIds } = turn(conversation, { message: "Here.", cards: [{ kind: "pipelineExport", pipelineId: "default" }] });
 
     const approved = await call("assist:approve", { conversationId: conversation.id, messageId: cardIds[0]! });
 
@@ -171,7 +171,7 @@ describe("a card is the assistant's whole part", () => {
   it("names a pipeline that is not there as a sentence, with no card", async () => {
     const conversation = await chat();
 
-    const { cardIds, rejections } = turn(conversation, { message: "Here.", card: { kind: "pipelineExport", pipelineId: "no-such-pipeline" } });
+    const { cardIds, rejections } = turn(conversation, { message: "Here.", cards: [{ kind: "pipelineExport", pipelineId: "no-such-pipeline" }] });
 
     expect(cardIds).toEqual([]);
     expect(rejections[0]).toContain("no pipeline with the ID");
@@ -185,23 +185,23 @@ describe("a card is the assistant's whole part", () => {
 
   it("stops being pressable once a newer card replaces it — the rule every card in the room has", async () => {
     const conversation = await chat();
-    const older = turn(conversation, { message: "Here.", card: { kind: "pipelineExport", pipelineId: "default" } });
+    const older = turn(conversation, { message: "Here.", cards: [{ kind: "pipelineExport", pipelineId: "default" }] });
     await call("assist:send", { page: pageDescriptorFor("/settings"), conversationId: conversation.id, body: "Delete it instead.", attachmentIds: [], interrupt: false });
-    turn(conversation, { message: "Fine.", card: { kind: "pipelineDelete", pipelineId: "default" } });
+    turn(conversation, { message: "Fine.", cards: [{ kind: "pipelineDelete", pipelineId: "default" }] });
 
     const pressed = await press(conversation, older.cardIds[0]!);
 
     expect(pressed).toMatchObject({ applied: false, said: null });
     expect(pressed.problem).toContain("superseded");
     expect(saveFile).not.toHaveBeenCalled();
-    expect(await messageOf(conversation, older.cardIds[0]!)).toMatchObject({ canApprove: false, card: { outcome: null } });
+    expect(await messageOf(conversation, older.cardIds[0]!)).toMatchObject({ canApprove: false, cards: [{ outcome: null }] });
   });
 });
 
 describe("exporting a pipeline", () => {
   it("saves the file where the person chose, as the editor's Export did, and the card says so once", async () => {
     const conversation = await chat("Export the default pipeline.");
-    const { cardIds } = turn(conversation, { message: "Press Export.", card: { kind: "pipelineExport", pipelineId: "default" } });
+    const { cardIds } = turn(conversation, { message: "Press Export.", cards: [{ kind: "pipelineExport", pipelineId: "default" }] });
     const pipeline = getPipeline(handle.db, "default")!;
 
     expect(await read(conversation, cardIds[0]!)).toEqual({ card: { kind: "pipelineExport", pipelineId: "default", pipelineName: pipeline.name }, problem: null });
@@ -213,7 +213,7 @@ describe("exporting a pipeline", () => {
     expect(saveFile).toHaveBeenCalledTimes(1);
     const written = PipelineExportSchema.parse(JSON.parse(readFileSync(chosenPath!, "utf8")));
     expect(written.pipeline.name).toBe(pipeline.name);
-    expect(await messageOf(conversation, cardIds[0]!)).toMatchObject({ canApprove: false, card: { outcome: { done: true, said: pressed.said } } });
+    expect(await messageOf(conversation, cardIds[0]!)).toMatchObject({ canApprove: false, cards: [{ outcome: { done: true, said: pressed.said } }] });
 
     // And not twice: the outcome filed under it is what spends it.
     const again = await press(conversation, cardIds[0]!);
@@ -223,7 +223,7 @@ describe("exporting a pipeline", () => {
 
   it("carries out a card pressed twice at once only once — another window, while the first waits on its dialog", async () => {
     const conversation = await chat();
-    const { cardIds } = turn(conversation, { message: "Press Export.", card: { kind: "pipelineExport", pipelineId: "default" } });
+    const { cardIds } = turn(conversation, { message: "Press Export.", cards: [{ kind: "pipelineExport", pipelineId: "default" }] });
     let answer!: (path: string) => void;
     saveFile.mockImplementationOnce(() => new Promise((resolve) => (answer = resolve)));
 
@@ -239,13 +239,13 @@ describe("exporting a pipeline", () => {
 
   it("files nothing when the person closes the save dialog, and the card can be pressed again", async () => {
     const conversation = await chat();
-    const { cardIds } = turn(conversation, { message: "Press Export.", card: { kind: "pipelineExport", pipelineId: "default" } });
+    const { cardIds } = turn(conversation, { message: "Press Export.", cards: [{ kind: "pipelineExport", pipelineId: "default" }] });
     chosenPath = null;
 
     const cancelled = await press(conversation, cardIds[0]!);
 
     expect(cancelled).toMatchObject({ applied: false, problem: null, said: null });
-    expect(await messageOf(conversation, cardIds[0]!)).toMatchObject({ canApprove: true, card: { outcome: null } });
+    expect(await messageOf(conversation, cardIds[0]!)).toMatchObject({ canApprove: true, cards: [{ outcome: null }] });
     chosenPath = join(scratch, "second-try.json");
     expect((await press(conversation, cardIds[0]!)).applied).toBe(true);
     expect(existsSync(chosenPath)).toBe(true);
@@ -267,7 +267,7 @@ describe("importing an attached pipeline file", () => {
 
   it("shows what the import would create and each module it collides with, and imports with the person's choices", async () => {
     const { conversation, attachmentId } = await attachedExport();
-    const { cardIds, rejections } = turn(conversation, { message: "The card shows what it needs.", card: { kind: "pipelineImport", attachmentId } });
+    const { cardIds, rejections } = turn(conversation, { message: "The card shows what it needs.", cards: [{ kind: "pipelineImport", attachmentId }] });
     expect(rejections).toEqual([]);
     const before = { pipelines: listPipelines(handle.db).length, modules: listModules(handle.db).length };
 
@@ -289,12 +289,12 @@ describe("importing an attached pipeline file", () => {
     expect(listPipelines(handle.db)).toHaveLength(before.pipelines + 1);
     // Theirs, beside mine — what "Import theirs" means.
     expect(listModules(handle.db)).toHaveLength(before.modules + 1);
-    expect(await messageOf(conversation, cardIds[0]!)).toMatchObject({ canApprove: false, card: { kind: "pipelineImport", outcome: { done: true } } });
+    expect(await messageOf(conversation, cardIds[0]!)).toMatchObject({ canApprove: false, cards: [{ kind: "pipelineImport", outcome: { done: true } }] });
   });
 
   it("keeps mine when that is the choice, bringing no second module", async () => {
     const { conversation, attachmentId } = await attachedExport();
-    const { cardIds } = turn(conversation, { message: "Here.", card: { kind: "pipelineImport", attachmentId } });
+    const { cardIds } = turn(conversation, { message: "Here.", cards: [{ kind: "pipelineImport", attachmentId }] });
     const modules = listModules(handle.db).length;
 
     expect((await press(conversation, cardIds[0]!, { deploy: "reuse" })).applied).toBe(true);
@@ -305,7 +305,7 @@ describe("importing an attached pipeline file", () => {
   it("offers no card for a file that is not attached to this chat", async () => {
     const conversation = await chat();
 
-    const { cardIds, rejections } = turn(conversation, { message: "Here.", card: { kind: "pipelineImport", attachmentId: "019a0000-0000-7000-8000-000000000000" } });
+    const { cardIds, rejections } = turn(conversation, { message: "Here.", cards: [{ kind: "pipelineImport", attachmentId: "019a0000-0000-7000-8000-000000000000" }] });
 
     expect(cardIds).toEqual([]);
     expect(rejections[0]).toContain("attached to this chat");
@@ -314,7 +314,7 @@ describe("importing an attached pipeline file", () => {
   it("says why a file that is not a pipeline cannot be imported, and offers nothing to press", async () => {
     const conversation = await chat("Import this.", [{ name: "notes.txt", text: "not a pipeline" }]);
     const attachmentId = listAttachmentsForItem(handle.db, conversation.id)[0]!.id;
-    const { cardIds } = turn(conversation, { message: "Here.", card: { kind: "pipelineImport", attachmentId } });
+    const { cardIds } = turn(conversation, { message: "Here.", cards: [{ kind: "pipelineImport", attachmentId }] });
 
     const shown = await read(conversation, cardIds[0]!);
 
@@ -349,7 +349,7 @@ describe("importing into the chat's own project", () => {
     const conversation = await chat("Import this.", [{ name: "shipping.eo-pipeline.json", text: exported.document! }]);
     expect(conversation.projectId).toBe(a);
     const attachmentId = listAttachmentsForItem(handle.db, conversation.id)[0]!.id;
-    const { cardIds } = turn(conversation, { message: "Here.", card: { kind: "pipelineImport", attachmentId } });
+    const { cardIds } = turn(conversation, { message: "Here.", cards: [{ kind: "pipelineImport", attachmentId }] });
     // The chat's project lacks a type the document brings, and the other has it.
     handle.db.run(sql`DELETE FROM item_types WHERE slug = 'bug' AND project_id = ${a}`);
     // The person moves to the other project before the card is drawn.
@@ -387,7 +387,7 @@ describe("importing into the chat's own project", () => {
     const { a, b } = twoProjects();
     setSetting(handle.db, ACTIVE_PROJECT_KEY, b);
     const attachmentId = listAttachmentsForItem(handle.db, conversation.id)[0]!.id;
-    const { cardIds } = turn(conversation, { message: "Here.", card: { kind: "pipelineImport", attachmentId } });
+    const { cardIds } = turn(conversation, { message: "Here.", cards: [{ kind: "pipelineImport", attachmentId }] });
     handle.db.run(sql`DELETE FROM item_types WHERE slug = 'bug' AND project_id = ${a}`);
 
     const shown = await read(conversation, cardIds[0]!);
@@ -407,7 +407,7 @@ describe("importing into the chat's own project", () => {
     const conversation = await chat("Import this.", [{ name: "shipping.eo-pipeline.json", text: exported.document! }]);
     const before = listPipelines(handle.db, undefined, true).length;
     const attachmentId = listAttachmentsForItem(handle.db, conversation.id)[0]!.id;
-    const { cardIds } = turn(conversation, { message: "Here.", card: { kind: "pipelineImport", attachmentId } });
+    const { cardIds } = turn(conversation, { message: "Here.", cards: [{ kind: "pipelineImport", attachmentId }] });
 
     const shown = await read(conversation, cardIds[0]!);
 
@@ -439,7 +439,7 @@ describe("deleting a pipeline", () => {
     const projectId = listPipelines(handle.db).find((pipeline) => pipeline.id === "default")?.projectId ?? null;
     const items = [1, 2].map((n) => createTestItem(handle.db, { type: "story", projectId, title: `Work ${n}`, stepId: entry }));
     const conversation = await chat("Delete the default pipeline.");
-    const { cardIds } = turn(conversation, { message: "Press Delete.", card: { kind: "pipelineDelete", pipelineId: "default" } });
+    const { cardIds } = turn(conversation, { message: "Press Delete.", cards: [{ kind: "pipelineDelete", pipelineId: "default" }] });
 
     expect((await read(conversation, cardIds[0]!)).card).toMatchObject({ kind: "pipelineDelete", pipelineId: "default", itemCount: 2 });
 
@@ -449,7 +449,7 @@ describe("deleting a pipeline", () => {
     expect(pressed.said).toContain("Archive");
     expect(getPipeline(handle.db, "default")?.archivedAt).not.toBeNull();
     expect(items.map((item) => getItem(handle.db, item.id)?.archivedAt)).toEqual([expect.any(Number), expect.any(Number)]);
-    expect(await messageOf(conversation, cardIds[0]!)).toMatchObject({ card: { outcome: { done: true } } });
+    expect(await messageOf(conversation, cardIds[0]!)).toMatchObject({ cards: [{ outcome: { done: true } }] });
   });
 
   it("shows a refusal on the card and archives nothing", async () => {
@@ -459,7 +459,7 @@ describe("deleting a pipeline", () => {
     const stopBeingAReplica = markReplica(handle.db, () => true);
     try {
       const conversation = await chat("Delete the default pipeline.");
-      const { cardIds } = turn(conversation, { message: "Press Delete.", card: { kind: "pipelineDelete", pipelineId: "default" } });
+      const { cardIds } = turn(conversation, { message: "Press Delete.", cards: [{ kind: "pipelineDelete", pipelineId: "default" }] });
 
       const pressed = await press(conversation, cardIds[0]!);
 
@@ -467,7 +467,7 @@ describe("deleting a pipeline", () => {
       expect(pressed.problem).toContain("not deleted");
       expect(pressed.problem).toContain("pipelines");
       expect(getPipeline(handle.db, "default")?.archivedAt).toBeNull();
-      expect(await messageOf(conversation, cardIds[0]!)).toMatchObject({ canApprove: false, card: { outcome: { done: false, said: pressed.said } } });
+      expect(await messageOf(conversation, cardIds[0]!)).toMatchObject({ canApprove: false, cards: [{ outcome: { done: false, said: pressed.said } }] });
     } finally {
       stopBeingAReplica();
     }
@@ -504,7 +504,7 @@ describe("discarding this machine's edits to an organisation pipeline", () => {
       const firstStep = listStepsForPipeline(handle.db, "default").sort((a, b) => a.position - b.position)[0]!;
       expect(firstStep.name).toBe("Edited here");
       const conversation = await chat("Throw my edits away.");
-      const { cardIds, rejections } = turn(conversation, { message: "Press Discard my edits.", card: { kind: "pipelineDiscardEdits", pipelineId: "default" } });
+      const { cardIds, rejections } = turn(conversation, { message: "Press Discard my edits.", cards: [{ kind: "pipelineDiscardEdits", pipelineId: "default" }] });
       expect(rejections).toEqual([]);
       expect((await read(conversation, cardIds[0]!)).card).toMatchObject({ kind: "pipelineDiscardEdits", pipelineId: "default", version });
       expect((await messageOf(conversation, cardIds[0]!)).body).toContain("updates resume");
@@ -524,7 +524,7 @@ describe("discarding this machine's edits to an organisation pipeline", () => {
   it("offers no card for a pipeline whose copy here is not edited", async () => {
     const conversation = await chat();
 
-    const { cardIds, rejections } = turn(conversation, { message: "Here.", card: { kind: "pipelineDiscardEdits", pipelineId: "default" } });
+    const { cardIds, rejections } = turn(conversation, { message: "Here.", cards: [{ kind: "pipelineDiscardEdits", pipelineId: "default" }] });
 
     expect(cardIds).toEqual([]);
     expect(rejections[0]).toContain("has not been edited locally");

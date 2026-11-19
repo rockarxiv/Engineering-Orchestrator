@@ -2914,7 +2914,16 @@ export const recordContract = {
    * and the person has not chosen "Publish anyway".
    */
   "assist:publishTrial": channel(
-    z.object({ conversationId: z.string(), messageId: z.string(), acknowledgeLowCoverage: z.array(z.string()).default([]) }),
+    z.object({
+      conversationId: z.string(),
+      messageId: z.string(),
+      /**
+       * Which of the reply's `cards` this is (EO-862), from the card's
+       * `index`. 0 where it is absent: a reply from before EO-862 had one.
+       */
+      index: z.number().int().min(0).default(0),
+      acknowledgeLowCoverage: z.array(z.string()).default([]),
+    }),
     z.object({
       saved: z.boolean(),
       pipelineId: z.string().nullable(),
@@ -2967,10 +2976,19 @@ export const recordContract = {
    * A read: nothing is written, and a card that has been pressed or
    * superseded is still answered, so it keeps saying what it was about.
    * `problem` with no `card` for a message that is not such a card, or
-   * one whose pipeline or file can no longer be read.
+   * one whose pipeline or file can no longer be read. One card of the
+   * message, by its `index` (EO-862).
    */
   "assist:card": channel(
-    z.object({ conversationId: z.string(), messageId: z.string() }),
+    z.object({
+      conversationId: z.string(),
+      messageId: z.string(),
+      /**
+       * Which of the reply's `cards` this is (EO-862), from the card's
+       * `index`. 0 where it is absent: a reply from before EO-862 had one.
+       */
+      index: z.number().int().min(0).default(0),
+    }),
     z.object({ card: AssistCardDetailSchema.nullable(), problem: z.string().nullable() }),
   ),
   /**
@@ -2987,7 +3005,9 @@ export const recordContract = {
    * since EO-523 `itemTypes:create`, `update` and `delete`, and since
    * EO-786 `jobs:create`, `update`, `delete`, `regenerateSecret` and
    * `testEvent`. Held to the "newest card wins" rule, and what came of it — done or
-   * refused — is filed under the card, which is what makes it spent. A
+   * refused — is filed under the card, which is what makes it spent. One
+   * card of the message, by its `index` (EO-862): the others on it stay
+   * as they are. A
    * save dialog the person closed is neither, nor is a Set pressed with
    * nothing typed, and either leaves the card to press again.
    *
@@ -2998,6 +3018,11 @@ export const recordContract = {
     z.object({
       conversationId: z.string(),
       messageId: z.string(),
+      /**
+       * Which of the reply's `cards` this is (EO-862), from the card's
+       * `index`. 0 where it is absent: a reply from before EO-862 had one.
+       */
+      index: z.number().int().min(0).default(0),
       /** An import card's choice for each colliding module slug: keep mine (`reuse`), or bring theirs in beside it (`import`). */
       choices: z.record(z.string(), z.enum(["reuse", "import"])).default({}),
       /**

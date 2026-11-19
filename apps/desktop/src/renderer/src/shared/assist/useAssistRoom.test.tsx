@@ -556,7 +556,7 @@ describe("the pushes the room is re-read for", () => {
     const { assistCardKey, assistDraftKey } = await import("./useAssistRoom");
     const { proposalKey } = await import("../../chat/views/proposal/useProposal");
     const { client, result, opens } = await openRoom();
-    const cards = [assistDraftKey("m1"), assistCardKey("m2"), proposalKey("m3")];
+    const cards = [assistDraftKey("m1"), assistCardKey("m2", 0), proposalKey("m3")];
     for (const key of cards) client.setQueryData(key, { cached: true });
     const before = opens();
 

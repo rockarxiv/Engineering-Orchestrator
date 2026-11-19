@@ -530,33 +530,33 @@ const CAPABILITIES = [
       "keep a pipeline as it is and skip its held template update, publish a draft as it was tested (EO-588), " +
       "or create, change or delete a job, or regenerate a webhook job's secret or send it a test event (EO-786), " +
       "or add a command-line tool or give one to an agent (EO-822), or add CLIs and give them to several agents in one card (EO-859), or add several CLIs to nobody in one card (EO-860) — " +
-      "reads back as that card and nothing beside it",
+      "reads back as that card and nothing beside it; and three cards of different kinds in one reply (EO-862) read back as those three, in order",
     same: {
       read: [
-        { valid: true, card: { kind: "pipelineExport", pipelineId: "release" }, besideIt: [] },
-        { valid: true, card: { kind: "pipelineImport", attachmentId: "019a0000-0000-7000-8000-000000000521" }, besideIt: [] },
-        { valid: true, card: { kind: "pipelineDelete", pipelineId: "release" }, besideIt: [] },
-        { valid: true, card: { kind: "pipelineDiscardEdits", pipelineId: "release" }, besideIt: [] },
+        { valid: true, cards: [{ kind: "pipelineExport", pipelineId: "release" }], besideIt: [] },
+        { valid: true, cards: [{ kind: "pipelineImport", attachmentId: "019a0000-0000-7000-8000-000000000521" }], besideIt: [] },
+        { valid: true, cards: [{ kind: "pipelineDelete", pipelineId: "release" }], besideIt: [] },
+        { valid: true, cards: [{ kind: "pipelineDiscardEdits", pipelineId: "release" }], besideIt: [] },
         // The settings that are a person's (EO-522): no value travels in either backend's card.
-        { valid: true, card: { kind: "pipelineWebhookUnattended", pipelineId: "release", unattended: true }, besideIt: [] },
-        { valid: true, card: { kind: "stepSecret", stepId: "release-deploy", name: "DEPLOY_TOKEN", action: "set" }, besideIt: [] },
-        { valid: true, card: { kind: "stepVariable", stepId: "release-deploy", name: "REGION", action: "clear" }, besideIt: [] },
+        { valid: true, cards: [{ kind: "pipelineWebhookUnattended", pipelineId: "release", unattended: true }], besideIt: [] },
+        { valid: true, cards: [{ kind: "stepSecret", stepId: "release-deploy", name: "DEPLOY_TOKEN", action: "set" }], besideIt: [] },
+        { valid: true, cards: [{ kind: "stepVariable", stepId: "release-deploy", name: "REGION", action: "clear" }], besideIt: [] },
         // A project's item types (EO-523): what a change leaves alone is null on both backends.
         {
           valid: true,
-          card: { kind: "itemTypeCreate", projectId: "payments", label: "Case", plural: "Cases", container: false, fields: [{ name: "customer", kind: "string", required: true }] },
+          cards: [{ kind: "itemTypeCreate", projectId: "payments", label: "Case", plural: "Cases", container: false, fields: [{ name: "customer", kind: "string", required: true }] }],
           besideIt: [],
         },
-        { valid: true, card: { kind: "itemTypeUpdate", itemTypeId: "case", label: "Request", plural: "Requests", container: null, fields: null }, besideIt: [] },
-        { valid: true, card: { kind: "itemTypeDelete", itemTypeId: "case" }, besideIt: [] },
+        { valid: true, cards: [{ kind: "itemTypeUpdate", itemTypeId: "case", label: "Request", plural: "Requests", container: null, fields: null }], besideIt: [] },
+        { valid: true, cards: [{ kind: "itemTypeDelete", itemTypeId: "case" }], besideIt: [] },
         // Keeping one's own pipeline, skipping a held template update (EO-534).
-        { valid: true, card: { kind: "pipelineKeepMine", pipelineId: "release" }, besideIt: [] },
+        { valid: true, cards: [{ kind: "pipelineKeepMine", pipelineId: "release" }], besideIt: [] },
         // The publish card after a draft's trials (EO-588).
-        { valid: true, card: { kind: "trialPublish" }, besideIt: [] },
+        { valid: true, cards: [{ kind: "trialPublish" }], besideIt: [] },
         // Jobs (EO-786): a create with EO's defaults null, a change clearing a budget, a delete and both webhook buttons.
         {
           valid: true,
-          card: {
+          cards: [{
             kind: "jobCreate",
             projectId: "payments",
             name: "Monday report",
@@ -567,44 +567,58 @@ const CAPABILITIES = [
             maxItemsPerHour: null,
             runsOn: null,
             workspaceId: "payments-api",
-          },
+          }],
           besideIt: [],
         },
         {
           valid: true,
-          card: { kind: "jobUpdate", jobId: "monday-report", name: null, trigger: null, pipelineId: null, template: null, budgetPerOccurrenceCents: "none", maxItemsPerHour: 4, runsOn: null, workspaceId: "none" },
+          cards: [{ kind: "jobUpdate", jobId: "monday-report", name: null, trigger: null, pipelineId: null, template: null, budgetPerOccurrenceCents: "none", maxItemsPerHour: 4, runsOn: null, workspaceId: "none" }],
           besideIt: [],
         },
-        { valid: true, card: { kind: "jobDelete", jobId: "monday-report" }, besideIt: [] },
-        { valid: true, card: { kind: "jobWebhook", jobId: "helpdesk", action: "regenerateSecret" }, besideIt: [] },
-        { valid: true, card: { kind: "jobWebhook", jobId: "helpdesk", action: "testEvent" }, besideIt: [] },
+        { valid: true, cards: [{ kind: "jobDelete", jobId: "monday-report" }], besideIt: [] },
+        { valid: true, cards: [{ kind: "jobWebhook", jobId: "helpdesk", action: "regenerateSecret" }], besideIt: [] },
+        { valid: true, cards: [{ kind: "jobWebhook", jobId: "helpdesk", action: "testEvent" }], besideIt: [] },
         // Command-line tools (EO-822).
-        { valid: true, card: { kind: "cliToolAdd", name: "GitHub CLI", command: "gh", description: "Pull requests and issues on GitHub." }, besideIt: [] },
-        { valid: true, card: { kind: "cliToolAttach", agentId: "implementer", cliToolId: "github-cli", attached: true }, besideIt: [] },
+        { valid: true, cards: [{ kind: "cliToolAdd", name: "GitHub CLI", command: "gh", description: "Pull requests and issues on GitHub." }], besideIt: [] },
+        { valid: true, cards: [{ kind: "cliToolAttach", agentId: "implementer", cliToolId: "github-cli", attached: true }], besideIt: [] },
         // Several CLIs for several agents (EO-859).
         {
           valid: true,
-          card: {
-            kind: "cliToolsAssign",
-            add: [{ name: "Jira CLI", command: "jira", description: "Issues on Jira." }],
-            agents: [
-              { agentId: "implementer", give: ["github-cli", "jira"], take: [] },
-              { agentId: "reviewer", give: ["github-cli"], take: ["old-cli"] },
-            ],
-          },
+          cards: [
+            {
+              kind: "cliToolsAssign",
+              add: [{ name: "Jira CLI", command: "jira", description: "Issues on Jira." }],
+              agents: [
+                { agentId: "implementer", give: ["github-cli", "jira"], take: [] },
+                { agentId: "reviewer", give: ["github-cli"], take: ["old-cli"] },
+              ],
+            },
+          ],
           besideIt: [],
         },
         // Several CLIs added, given to nobody (EO-860).
         {
           valid: true,
-          card: {
-            kind: "cliToolsAssign",
-            add: [
-              { name: "GitHub CLI", command: "gh", description: "Pull requests and issues on GitHub." },
-              { name: "Jira CLI", command: "jira", description: "Issues on Jira." },
-            ],
-            agents: [],
-          },
+          cards: [
+            {
+              kind: "cliToolsAssign",
+              add: [
+                { name: "GitHub CLI", command: "gh", description: "Pull requests and issues on GitHub." },
+                { name: "Jira CLI", command: "jira", description: "Issues on Jira." },
+              ],
+              agents: [],
+            },
+          ],
+          besideIt: [],
+        },
+        // Three cards of different kinds in one reply (EO-862).
+        {
+          valid: true,
+          cards: [
+            { kind: "pipelineDelete", pipelineId: "release" },
+            { kind: "itemTypeDelete", itemTypeId: "case" },
+            { kind: "cliToolAttach", agentId: "implementer", cliToolId: "github-cli", attached: true },
+          ],
           besideIt: [],
         },
       ],
@@ -2034,9 +2048,9 @@ function trialRead(events: readonly AgentEvent[]): unknown {
 }
 
 /**
- * What EO makes of an `assist` answer offering a card (EO-521): the card
- * as validated, and which of the other cards a reply can carry came
- * with it — none, since a card comes on its own.
+ * What EO makes of an `assist` answer offering cards (EO-521, EO-862):
+ * the cards as validated, and which of the other cards a reply can carry
+ * came with them — none, since cards come on their own.
  */
 function cardRead(events: readonly AgentEvent[]): unknown {
   const outcome = outcomeOf(events);
@@ -2046,7 +2060,7 @@ function cardRead(events: readonly AgentEvent[]): unknown {
   const besideIt = ["draft", "modules", "actions", "change"].filter((key) => value[key] !== undefined && value[key] !== null);
   if ((value["proposals"] as unknown[] | undefined)?.length) besideIt.push("proposals");
   if ((value["questions"] as unknown[] | undefined)?.length) besideIt.push("questions");
-  return { valid: true, card: value["card"], besideIt };
+  return { valid: true, cards: value["cards"], besideIt };
 }
 
 /**

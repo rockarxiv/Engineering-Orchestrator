@@ -712,7 +712,7 @@ describe("the chat layout's home", () => {
       body: "**Delete** Delivery.",
       canApprove: true,
       approves: "card",
-      card: { kind: "pipelineDelete", outcome: null },
+      cards: [{ index: 0, kind: "pipelineDelete", outcome: null }],
     });
     const invoke = bridge({
       "assist:open": { conversation: conversation([card]) },
@@ -729,6 +729,43 @@ describe("the chat layout's home", () => {
 
     await waitFor(() => expect(invoke.mock.calls.some(([channel]) => channel === "assist:applyCard")).toBe(true));
     expect(invoke.mock.calls.some(([channel]) => channel === "assist:approve" || channel === "pipelines:delete")).toBe(false);
+  });
+
+  // EO-862: one reply can carry several cards. Until the pager, each is
+  // drawn as a lone card is, one under another, and each reads and is
+  // pressed by its own index — a card the reply refused keeps its index
+  // and is simply not there.
+  it("draws each card of a reply with several, and presses each by its own index", async () => {
+    const card = message({
+      id: "c1",
+      kind: "decision",
+      body: "**Card 1 of 3.** **Delete** Delivery.\n\n**Card 3 of 3.** **Delete** Shipping.",
+      canApprove: true,
+      approves: "card",
+      cards: [
+        { index: 0, kind: "pipelineDelete", outcome: null },
+        { index: 2, kind: "pipelineDelete", outcome: { done: true, said: "Deleted Shipping." } },
+      ],
+    });
+    const invoke = bridge({
+      "assist:open": { conversation: conversation([card]) },
+      "assist:card": { card: { kind: "pipelineDelete", pipelineId: "delivery", pipelineName: "Delivery", itemCount: 2 }, problem: null },
+      "assist:applyCard": { applied: true, problem: null, said: "Deleted Delivery.", conversation: conversation([card]) },
+    });
+    open("/chat", invoke);
+
+    await waitFor(() => expect(screen.getAllByRole("region", { name: "Delete a pipeline" })).toHaveLength(2));
+    const [first, third] = screen.getAllByRole("region", { name: "Delete a pipeline" });
+    expect(within(third!).getByText("Deleted Shipping.")).toBeInTheDocument();
+    expect(within(third!).queryByRole("button", { name: "Delete pipeline" })).not.toBeInTheDocument();
+    await waitFor(() =>
+      expect(invoke.mock.calls.filter(([channel]) => channel === "assist:card").map(([, payload]) => (payload as { index: number }).index).sort()).toEqual([0, 2]),
+    );
+
+    fireEvent.click(await within(first!).findByRole("button", { name: "Delete pipeline" }));
+
+    await waitFor(() => expect(invoke.mock.calls.some(([channel]) => channel === "assist:applyCard")).toBe(true));
+    expect(invoke.mock.calls.find(([channel]) => channel === "assist:applyCard")?.[1]).toMatchObject({ messageId: "c1", index: 0 });
   });
 
   // EO-407: the work a turn proposes is one card of compact rows, drawn
@@ -4087,8 +4124,8 @@ describe("what a press in the conversation answers with, drawn without reading t
   });
 
   it("spends an operation card as soon as assist:applyCard answers", async () => {
-    const card = message({ id: "c1", kind: "decision", body: "**Delete** Delivery.", canApprove: true, approves: "card", card: { kind: "pipelineDelete", outcome: null } });
-    const spent = conversation([{ ...card, canApprove: false, card: { kind: "pipelineDelete", outcome: { done: true, said: "Deleted Delivery." } } }]);
+    const card = message({ id: "c1", kind: "decision", body: "**Delete** Delivery.", canApprove: true, approves: "card", cards: [{ index: 0, kind: "pipelineDelete", outcome: null }] });
+    const spent = conversation([{ ...card, canApprove: false, cards: [{ index: 0, kind: "pipelineDelete", outcome: { done: true, said: "Deleted Delivery." } }] }]);
     const { invoke, opens } = openedOnce(conversation([card]), {
       "assist:card": { card: { kind: "pipelineDelete", pipelineId: "delivery", pipelineName: "Delivery", itemCount: 2 }, problem: null },
       "assist:applyCard": { applied: true, problem: null, said: "Deleted Delivery.", conversation: spent },

@@ -2460,15 +2460,17 @@ export const DiscussionMessageSchema = z.object({
    */
   moduleChange: ModuleChangeCardSchema.nullable().optional(),
   /**
-   * Set on a card offering something only a person may do — exporting,
+   * Set on a reply offering things only a person may do — exporting,
    * importing or deleting a pipeline, or discarding this machine's edits
-   * to one (EO-521). Null or absent on every other message.
+   * to one (EO-521): each card it draws, in order (EO-862). Null or
+   * absent on every other message.
    *
    * Not gated on `canApprove`, as `moduleChange` is not: a card that has
-   * been pressed is no longer approvable and still shows what came of
-   * it, which is `outcome`.
+   * been pressed still shows what came of it, which is its `outcome`.
+   * `canApprove` is true while any card on the message is open, and each
+   * card's own `outcome` says whether it still offers its button.
    */
-  card: AssistCardViewSchema.nullable().optional(),
+  cards: z.array(AssistCardViewSchema).nullable().optional(),
   /**
    * Set on EO's record, in a module's scenario chat, that a test case the
    * turn wrote withdrew the module's approval (EO-501). Null or absent

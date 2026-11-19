@@ -447,8 +447,8 @@ export const ASSIST_CARD_KINDS = [
 ] as const satisfies readonly AssistCardKind[];
 
 /**
- * What a card says about itself on the message it is (EO-521) — see
- * `DiscussionMessage.card`.
+ * What a card says about itself on the message it is part of (EO-521) —
+ * see `DiscussionMessage.cards`.
  *
  * Its kind, so the conversation draws the right card, and what pressing
  * it came to: null while it is still to press. Everything else the card
@@ -456,6 +456,13 @@ export const ASSIST_CARD_KINDS = [
  * about a pipeline is true at the moment it is read.
  */
 export const AssistCardViewSchema = z.object({
+  /**
+   * Which of its reply's `cards` this is (EO-862): what a press names it
+   * by, beside the message. Not its place among the drawn cards, since a
+   * card refused when the reply was posted is not drawn and keeps its
+   * index. 0 for a reply from before EO-862, which had one card.
+   */
+  index: z.number().int().min(0),
   kind: z.enum(ASSIST_CARD_KINDS),
   /**
    * What came of pressing it, as EO filed it under the card: `done` when

@@ -58,64 +58,163 @@ import { readTrialPublish } from "../trials/publishCard.js";
  * anything — this file says what a card is, posts one, and reads back
  * what came of it.
  *
- * A card is found the way a draft is: it is the last thing its run said.
- * `postAssistReply` posts it after the message, and the schema lets
- * nothing else that would be a card arrive beside it — no draft, modules,
- * change or work proposals — so the last agent comment of a run whose
- * result carries a `card` is that card, and every other comment of it is
- * not.
+ * Cards are found the way a draft is: they are the last thing their run
+ * said. `postAssistReply` posts them after the message, as one comment,
+ * and the schema lets nothing else that would be a card arrive beside
+ * them — no draft, modules, change or work proposals — so the last agent
+ * comment of a run whose result carries `cards` is those cards, and every
+ * other comment of it is not. One reply may carry several (EO-862): each
+ * is addressed by that comment and its index in the run's `cards`.
  *
- * What came of pressing it is the comment filed under it: an approval
- * when it was carried out and a rejection when it was refused, each with
- * the sentence the card shows. That comment is also what stops the card
- * being pressed again — `approvableIds` offers no card with anything
- * filed under it — so "cannot be applied twice" holds across windows,
- * and the outcome survives the chat being closed and opened.
+ * What came of pressing one is the comment filed under the reply for it:
+ * an approval when it was carried out and a rejection when it was
+ * refused, each with the sentence the card shows, headed with the card it
+ * is about when the reply carries several. That comment is also what
+ * stops the card being pressed again, and the reply stays live while any
+ * card on it has nothing filed — `approvableIds` — so "cannot be applied
+ * twice" holds across windows, and the outcome survives the chat being
+ * closed and opened.
  */
 
-/** The card a comment is, as its run wrote it, or null when the comment is not one. */
-export function assistCardOf(db: Db, conversation: Item, comment: Comment, thread?: ConversationThread): AssistCard | null {
-  if (comment.kind !== PROPOSAL_KIND || comment.runId === null || comment.authorType !== "agent") return null;
-  if (runOf(db, comment.runId, thread)?.action !== ASSIST_ACTION) return null;
-  const card = outputOf(db, comment.runId, AssistOutputSchema, thread)?.card ?? null;
-  if (card === null) return null;
+/** One card of a reply, with the index in its reply's `cards` it is pressed by (EO-862). */
+export interface ReplyCard {
+  index: number;
+  card: AssistCard;
+}
+
+/**
+ * What heads each card's part of a reply carrying several, and each
+ * outcome filed under one (EO-862): "**Card 2 of 3.** ", counted from 1.
+ *
+ * It is how a comment records which card it is about — the drawn cards
+ * of a reply are the parts of its body, and an outcome is about the card
+ * its heading names — and it is what a later turn reads it by. A reply
+ * with one card, and every reply from before EO-862, has no heading:
+ * there is only card 0 to be about.
+ */
+function cardHeading(index: number, count: number): string {
+  return `**Card ${index + 1} of ${count}.** `;
+}
+
+const CARD_HEADING = /^\*\*Card (\d+) of (\d+)\.\*\* /;
+
+/**
+ * Text set under a heading — what a card says about itself, why it was
+ * refused, what came of pressing it — with anything in it that reads as
+ * a heading escaped, so the headings of a comment are only ever the ones
+ * written here. A card's own words (a CLI tool's description, a job's
+ * name) are the assistant's, and a heading inside them would otherwise
+ * make a refused card look drawn, or one card's outcome look like
+ * another's.
+ */
+function unheaded(text: string): string {
+  return text.replace(/\*\*Card(?= \d+ of \d+\.\*\*)/g, "\\*\\*Card");
+}
+
+/**
+ * The card a body is headed with, and the rest of it, or null where it is
+ * not headed as a card of a reply carrying `count`. A heading naming
+ * another count, or an index past it, is not one this reply wrote.
+ */
+function headedIndex(body: string, count: number): { index: number; rest: string } | null {
+  const heading = CARD_HEADING.exec(body);
+  if (heading === null || Number(heading[2]) !== count) return null;
+  const index = Number(heading[1]) - 1;
+  return index >= 0 && index < count ? { index, rest: body.slice(heading[0].length) } : null;
+}
+
+/** The cards a reply's run returned, or none for a comment that is not an agent's card comment of an `assist` run. */
+function cardsReturned(db: Db, comment: Comment, thread?: ConversationThread): AssistCard[] {
+  if (comment.kind !== PROPOSAL_KIND || comment.runId === null || comment.authorType !== "agent") return [];
+  if (runOf(db, comment.runId, thread)?.action !== ASSIST_ACTION) return [];
+  return outputOf(db, comment.runId, AssistOutputSchema, thread)?.cards ?? [];
+}
+
+/**
+ * The cards a comment draws, as its run wrote them, in order — none when
+ * the comment is not a card comment (EO-862).
+ *
+ * The cards of a reply are one comment, the last thing its run said;
+ * which of them it draws is the headings of its body, since a card
+ * refused when the reply was posted is left out (`postAssistCards`). A
+ * reply with one card draws it, as every reply from before EO-862 did.
+ */
+export function assistCardsOf(db: Db, conversation: Item, comment: Comment, thread?: ConversationThread): ReplyCard[] {
+  const cards = cardsReturned(db, comment, thread);
+  if (cards.length === 0) return [];
 
   // Agent comments only, so an engine note filed against the run — a
-  // guard's sentence, "Turn stopped." — cannot displace the card from
-  // the end of its own turn.
-  const last = (thread ?? threadOf(db, conversation.id)).agentCommentsOf(comment.runId).at(-1);
-  return last?.id === comment.id ? card : null;
+  // guard's sentence, "Turn stopped." — cannot displace the cards from
+  // the end of their own turn.
+  const last = (thread ?? threadOf(db, conversation.id)).agentCommentsOf(comment.runId!).at(-1);
+  if (last?.id !== comment.id) return [];
+  if (cards.length === 1) return [{ index: 0, card: cards[0]! }];
+
+  const drawn: ReplyCard[] = [];
+  for (const part of comment.body.split("\n\n")) {
+    const heading = headedIndex(part, cards.length);
+    if (heading === null) continue;
+    const card = cards[heading.index];
+    if (card !== undefined && !drawn.some((entry) => entry.index === heading.index)) drawn.push({ index: heading.index, card });
+  }
+  return drawn;
+}
+
+/** One card a comment draws, by its index in the reply's `cards`, or null when the comment draws no such card. */
+export function assistCardOf(db: Db, conversation: Item, comment: Comment, index: number, thread?: ConversationThread): AssistCard | null {
+  return assistCardsOf(db, conversation, comment, thread).find((entry) => entry.index === index)?.card ?? null;
 }
 
 /**
- * What a card says about itself to the conversation drawing it, or null
- * for a comment that is not one — see `DiscussionMessage.card`.
+ * What each card on a comment says about itself to the conversation
+ * drawing it, in order, or null for a comment that draws none — see
+ * `DiscussionMessage.cards`.
  */
-export function assistCardView(db: Db, conversation: Item, comment: Comment, thread?: ConversationThread): AssistCardView | null {
-  const card = assistCardOf(db, conversation, comment, thread);
-  if (card === null) return null;
-  return { kind: card.kind, outcome: cardOutcome(db, conversation, comment.id, thread) };
-}
-
-/** What was filed under a card when its button was pressed, or null while nothing has been. */
-export function cardOutcome(db: Db, conversation: Item, commentId: string, thread?: ConversationThread): AssistCardView["outcome"] {
-  const filed = (thread ?? threadOf(db, conversation.id)).under(commentId).find((entry) => entry.kind === "approval" || entry.kind === "rejection");
-  return filed === undefined ? null : { done: filed.kind === "approval", said: filed.body };
+export function assistCardView(db: Db, conversation: Item, comment: Comment, thread?: ConversationThread): AssistCardView[] | null {
+  const cards = assistCardsOf(db, conversation, comment, thread);
+  if (cards.length === 0) return null;
+  return cards.map(({ index, card }) => ({ index, kind: card.kind, outcome: cardOutcome(db, conversation, comment.id, index, thread) }));
 }
 
 /**
- * Files what came of pressing a card under it, which spends the card.
+ * What was filed under one card of a reply when its button was pressed,
+ * or null while nothing has been (EO-862): the approval or rejection
+ * under the reply whose heading names that card. One with no heading is
+ * card 0's, which is every outcome filed before EO-862.
+ */
+export function cardOutcome(db: Db, conversation: Item, commentId: string, index: number, thread?: ConversationThread): AssistCardView["outcome"] {
+  const read = thread ?? threadOf(db, conversation.id);
+  const reply = read.find(commentId);
+  const count = reply === undefined ? 0 : cardsReturned(db, reply, read).length;
+  for (const entry of read.under(commentId)) {
+    if (entry.kind !== "approval" && entry.kind !== "rejection") continue;
+    // A reply with one card has no headings to read: whatever was filed
+    // is that card's, as it was before EO-862.
+    const filed = count > 1 ? headedIndex(entry.body, count) : { index: 0, rest: entry.body };
+    if (filed?.index === index) return { done: entry.kind === "approval", said: filed.rest };
+  }
+  return null;
+}
+
+/**
+ * Files what came of pressing one card of a reply under the reply, which
+ * spends that card and no other (EO-862).
+ *
+ * Headed with the card it is about when the reply carries several, so it
+ * is read back for that card only and a later turn reads which card it
+ * was. A reply with one card gets the outcome as it always did.
  *
  * As the person, since it was their press: the same author an applied
  * module change files its note as (EO-418).
  */
-export function fileCardOutcome(db: Db, conversation: Item, commentId: Uuid, outcome: { done: boolean; said: string }): void {
+export function fileCardOutcome(db: Db, conversation: Item, comment: Comment, index: number, outcome: { done: boolean; said: string }): void {
+  const count = cardsReturned(db, comment).length;
   postComment(db, {
     itemId: conversation.id,
     author: { type: "human" },
     kind: outcome.done ? "approval" : "rejection",
-    parentId: commentId,
-    body: outcome.said,
+    parentId: comment.id,
+    body: count > 1 ? `${cardHeading(index, count)}${unheaded(outcome.said)}` : outcome.said,
     parseBodyMentions: false,
   });
 }
@@ -288,21 +387,52 @@ export function assistCardBody(db: Db, card: AssistCard): string {
 }
 
 /**
- * Posts the card a turn returned, or the reason it cannot be offered
- * (EO-521). Last, after the message — the place `assistCardOf` reads it
- * from.
+ * Posts the cards a turn returned, and the reason for each that cannot
+ * be offered (EO-521, EO-862). Last, after the message — the place
+ * `assistCardsOf` reads them from.
+ *
+ * Each card is asked `assistCardRefusal` on its own. A refused card is
+ * not drawn; it is a rejection carrying the reason, naming the card by
+ * its place and kind so the next turn knows which one to put right
+ * (invariant #8). Every reason of the reply goes in one rejection, posted
+ * before the cards that can be offered, which are one comment: each
+ * card's prose in order, headed with its place, so a later turn reads
+ * every card the reply offered. With every card refused there is only the
+ * rejection, and nothing to press.
+ *
+ * A reply with one card posts it, or its reason, as it always did.
  */
-export function postAssistCard(db: Db, conversation: Item, agentId: Uuid, runId: Uuid, initiationId: Uuid | null, card: AssistCard): void {
-  const refusal = assistCardRefusal(db, conversation, card);
-  postComment(db, {
-    itemId: conversation.id,
-    runId,
-    author: { type: "agent", agentId },
+export function postAssistCards(db: Db, conversation: Item, agentId: Uuid, runId: Uuid, initiationId: Uuid | null, cards: readonly AssistCard[]): void {
+  if (cards.length === 0) return;
+  const post = (kind: typeof PROPOSAL_KIND | "rejection", body: string) =>
+    postComment(db, {
+      itemId: conversation.id,
+      runId,
+      author: { type: "agent", agentId },
+      kind,
+      body,
+      parentId: initiationId,
+      parseBodyMentions: false,
+    });
+
+  const judged = cards.map((card, index) => ({ index, card, refusal: assistCardRefusal(db, conversation, card) }));
+  if (cards.length === 1) {
+    const [only] = judged;
     // A card that cannot be offered is a rejection carrying the reason,
     // as an unpublishable draft is: nothing with a button on it.
-    kind: refusal === null ? PROPOSAL_KIND : "rejection",
-    body: refusal ?? assistCardBody(db, card),
-    parentId: initiationId,
-    parseBodyMentions: false,
-  });
+    post(only!.refusal === null ? PROPOSAL_KIND : "rejection", only!.refusal ?? assistCardBody(db, only!.card));
+    return;
+  }
+
+  const refused = judged.filter((entry) => entry.refusal !== null);
+  if (refused.length > 0) {
+    post(
+      "rejection",
+      refused
+        .map(({ index, card, refusal }) => `${cardHeading(index, cards.length)}The \`${card.kind}\` card was not offered: ${unheaded(refusal!.replace(/^No card was offered: /, ""))}`)
+        .join("\n\n"),
+    );
+  }
+  const offered = judged.filter((entry) => entry.refusal === null);
+  if (offered.length > 0) post(PROPOSAL_KIND, offered.map(({ index, card }) => `${cardHeading(index, cards.length)}${unheaded(assistCardBody(db, card))}`).join("\n\n"));
 }

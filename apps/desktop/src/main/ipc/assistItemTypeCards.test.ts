@@ -123,7 +123,7 @@ describe("adding an item type", () => {
     const { cardId, rejections } = turn(conversation, { ...CASE, projectId });
 
     expect(rejections).toEqual([]);
-    expect(await messageOf(cardId!)).toMatchObject({ canApprove: true, approves: "card", card: { kind: "itemTypeCreate", outcome: null } });
+    expect(await messageOf(cardId!)).toMatchObject({ canApprove: true, approves: "card", cards: [{ kind: "itemTypeCreate", outcome: null }] });
     const shown = await read(conversation, cardId!);
     expect(shown.card).toEqual({
       kind: "itemTypeCreate",
@@ -149,7 +149,7 @@ describe("adding an item type", () => {
     expect(pressed).toMatchObject({ applied: true, problem: null });
     expect(pressed.said).toContain("Added the item type “Case” to support");
     expect(await typeNamed("case")).toMatchObject({ packSlug: "local", label: "Case", plural: "Cases", container: false });
-    expect((await messageOf(cardId!)).card).toEqual({ kind: "itemTypeCreate", outcome: { done: true, said: pressed.said } });
+    expect((await messageOf(cardId!)).cards).toEqual([{ index: 0, kind: "itemTypeCreate", outcome: { done: true, said: pressed.said } }]);
   });
 
   it("cannot be pressed twice", async () => {
@@ -231,7 +231,7 @@ describe("changing an item type", () => {
     const pressed = await press(conversation, cardId!);
 
     expect(pressed).toMatchObject({ applied: false, problem: `“${story.label}” was not changed: ${refusal}` });
-    expect((await messageOf(cardId!)).card).toEqual({ kind: "itemTypeUpdate", outcome: { done: false, said: `“${story.label}” was not changed: ${refusal}` } });
+    expect((await messageOf(cardId!)).cards).toEqual([{ index: 0, kind: "itemTypeUpdate", outcome: { done: false, said: `“${story.label}” was not changed: ${refusal}` } }]);
     expect(await typeNamed(story.slug)).toMatchObject({ container: false });
   });
 

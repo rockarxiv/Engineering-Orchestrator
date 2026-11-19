@@ -57,7 +57,7 @@ import type { ItemRecord } from "../record/record.js";
 import { followApprovedModule } from "../modules/followApproved.js";
 import type { ModuleTestRunner } from "../modules/moduleTestRunner.js";
 import { appliedChangeNote } from "../roles/moduleChange.js";
-import { assistCardOf, assistCardView, cardOutcome, fileCardOutcome, liveStep } from "../roles/assistCards.js";
+import { assistCardOf, assistCardsOf, assistCardView, cardOutcome, fileCardOutcome, liveStep } from "../roles/assistCards.js";
 import { isItemTypeCard, itemTypeCardDetail, itemTypeUpdatePayload } from "../roles/itemTypeCards.js";
 import {
   cliToolCardDetail,
@@ -168,7 +168,7 @@ const ASSIST: ConversationKind = {
   approves: (db, conversation, comment, thread) =>
     // Something only a person may do (EO-521): its own button, on its own
     // channel, asked first so nothing below mistakes it for work.
-    assistCardOf(db, conversation, comment, thread) !== null
+    assistCardsOf(db, conversation, comment, thread).length > 0
       ? "card"
       : isAssistDraftCard(db, conversation, comment.id, thread)
         ? "pipeline"
@@ -1070,7 +1070,7 @@ function assistApprovalRefusal(db: Db, conversation: Item, messageId: Uuid): str
 
   // And for the fifth (EO-521): a card for something only a person may do
   // is carried out through `assist:applyCard`, by the channel it names.
-  if (card && assistCardOf(db, conversation, card) !== null) {
+  if (card && assistCardsOf(db, conversation, card).length > 0) {
     return "That card is not work to create. Press the button on the card itself in the chat.";
   }
 
@@ -1809,13 +1809,13 @@ export async function publishTrialCommand(
   });
   const conversation = assistConversationForWrite(db, input.conversationId);
   const messageId = input.messageId as Uuid;
+  const { index } = input;
   const comment = getComment(db, messageId);
-  if (comment === undefined || comment.itemId !== conversation.id || assistCardOf(db, conversation, comment)?.kind !== TRIAL_PUBLISH_CARD_KIND) {
+  if (comment === undefined || comment.itemId !== conversation.id || assistCardOf(db, conversation, comment, index)?.kind !== TRIAL_PUBLISH_CARD_KIND) {
     return refuse("That message is not a publish card.");
   }
-  if (!approvableIds(db, conversation, ASSIST).has(messageId)) {
-    return refuse(cardOutcome(db, conversation, messageId) !== null ? "That card has already been pressed." : "That card has been superseded by a newer reply. Read the latest and press that one instead.");
-  }
+  const closed = cardClosed(db, conversation, messageId, index);
+  if (closed !== null) return refuse(closed);
 
   const read = readTrialPublish(db, conversation);
   if (!read.ok) return refuse(read.problem);
@@ -1829,8 +1829,9 @@ export async function publishTrialCommand(
     if (lock !== null) return refuse(metadataLockedReason(lock, graph.rename, graph.icon));
   }
 
-  if (pressing.has(messageId)) return refuse("That card is already being pressed.");
-  pressing.add(messageId);
+  const pressKey = pressingKey(messageId, index);
+  if (pressing.has(pressKey)) return refuse("That card is already being pressed.");
+  pressing.add(pressKey);
   try {
     // 1. Judge every module the published graph runs, in the order the
     // card lists them — one approved before included: it goes onto live
@@ -1881,9 +1882,9 @@ export async function publishTrialCommand(
         // been closed, while they ran.
         const still = getItem(db, conversation.id);
         if (still === undefined || still.archivedAt !== null || still.stepId !== ASSIST_STEP) throw new PublishRefused("The conversation was closed while the tests were running.");
-        if (!approvableIds(db, still, ASSIST).has(messageId)) {
+        if (cardClosed(db, still, messageId, index) !== null) {
           throw new PublishRefused(
-            cardOutcome(db, still, messageId) !== null
+            cardOutcome(db, still, messageId, index) !== null
               ? "That card was pressed elsewhere while the tests were running."
               : "That card was superseded by a newer reply while the tests were running. Read the latest and press that one instead.",
           );
@@ -1994,11 +1995,11 @@ export async function publishTrialCommand(
       else lines.push(`The trial and its ${discarded.deletedItemIds.length === 1 ? "test item have" : `${discarded.deletedItemIds.length} test items have`} been deleted.`);
     }
     if (problem !== null) lines.push(problem);
-    fileCardOutcome(db, conversation, messageId, { done: true, said: lines.join("\n") });
+    fileCardOutcome(db, conversation, comment, index, { done: true, said: lines.join("\n") });
     engine?.notifyStateChange();
     return { saved: true, pipelineId: written.pipelineId, created: written.created, problem, modules: outcomes, coverage: [] };
   } finally {
-    pressing.delete(messageId);
+    pressing.delete(pressKey);
   }
 }
 
@@ -2065,7 +2066,7 @@ export async function readAssistCardCommand(db: Db, doors: AssistCardDoors, inpu
   const nothing = (problem: string): IpcResponse<"assist:card"> => ({ card: null, problem });
   const conversation = assistConversationForRead(db, input.conversationId);
   const comment = conversation === undefined ? undefined : getComment(db, input.messageId as Uuid);
-  const card = conversation !== undefined && comment !== undefined && comment.itemId === conversation.id ? assistCardOf(db, conversation, comment) : null;
+  const card = conversation !== undefined && comment !== undefined && comment.itemId === conversation.id ? assistCardOf(db, conversation, comment, input.index) : null;
   if (conversation === undefined || card === null) return nothing("That message is not a card.");
 
   // The publish card after a draft's trials (EO-588): read from the trial.
@@ -2097,7 +2098,7 @@ export async function readAssistCardCommand(db: Db, doors: AssistCardDoors, inpu
   // A job (EO-786): the job as it is and as it would be, in words, and
   // once pressed, what it made — the job, or a test event's item.
   if (isJobCard(card)) {
-    const read = jobCardDetail(db, card, cardOutcome(db, conversation, comment!.id));
+    const read = jobCardDetail(db, card, cardOutcome(db, conversation, comment!.id, input.index));
     return "problem" in read ? nothing(read.problem) : { card: read.detail, problem: null };
   }
 
@@ -2275,15 +2276,14 @@ export async function applyAssistCardCommand(
 ): Promise<IpcResponse<"assist:applyCard">> {
   const conversation = assistConversationForWrite(db, input.conversationId);
   const messageId = input.messageId as Uuid;
+  const { index } = input;
   const unchanged = (problem: string | null): IpcResponse<"assist:applyCard"> => ({ applied: false, problem, said: null, conversation: toView(db, conversation) });
 
-  if (!approvableIds(db, conversation, ASSIST).has(messageId)) {
-    const outcome = cardOutcome(db, conversation, messageId);
-    return unchanged(outcome !== null ? "That card has already been pressed." : "That card has been superseded by a newer reply. Read the latest and press that one instead.");
-  }
+  const closed = cardClosed(db, conversation, messageId, index);
+  if (closed !== null) return unchanged(closed);
   const comment = getComment(db, messageId);
-  const card = comment === undefined ? null : assistCardOf(db, conversation, comment);
-  if (card === null) return unchanged("That message is not a card.");
+  const card = comment === undefined ? null : assistCardOf(db, conversation, comment, index);
+  if (comment === undefined || card === null) return unchanged("That message is not a card.");
   // Its own button, with the module tests and the coverage question
   // Approve and publish has (EO-588): nothing is filed here, so the card
   // stays to press.
@@ -2299,8 +2299,9 @@ export async function applyAssistCardCommand(
   // Asked and claimed before the first await, so a second press — another
   // window, while the first waits on its save dialog — cannot pass the
   // check above before the first has filed anything.
-  if (pressing.has(messageId)) return unchanged("That card is already being pressed.");
-  pressing.add(messageId);
+  const pressKey = pressingKey(messageId, index);
+  if (pressing.has(pressKey)) return unchanged("That card is already being pressed.");
+  pressing.add(pressKey);
   let outcome: { done: boolean; said: string } | { retry: string } | null;
   try {
     outcome = await carryOut(db, doors, conversation, card, {
@@ -2310,14 +2311,14 @@ export async function applyAssistCardCommand(
       unticked: input.unticked,
     });
   } finally {
-    pressing.delete(messageId);
+    pressing.delete(pressKey);
   }
   if (outcome === null) return unchanged(null);
   // Refused with nothing written, and the card left to press again once
   // the person has unticked the row it names (EO-859).
   if ("retry" in outcome) return unchanged(outcome.retry);
 
-  fileCardOutcome(db, conversation, messageId, outcome);
+  fileCardOutcome(db, conversation, comment, index, outcome);
   engine?.notifyStateChange();
   return {
     applied: outcome.done,
@@ -2327,8 +2328,25 @@ export async function applyAssistCardCommand(
   };
 }
 
-/** The cards whose button is being carried out right now, by message id. */
+/** The cards whose button is being carried out right now, by message id and index — see `pressingKey`. */
 const pressing = new Set<string>();
+
+/** How `pressing` names one card of a reply (EO-862): a press of one card does not hold up its neighbours. */
+function pressingKey(messageId: string, index: number): string {
+  return `${messageId}#${index}`;
+}
+
+/**
+ * Why one card of a reply can no longer be pressed, or null while it can
+ * (EO-862): the reply is held to "newest wins", and the card is spent by
+ * what was filed under it for that card — another card's outcome leaves
+ * it open.
+ */
+function cardClosed(db: Db, conversation: Item, messageId: Uuid, index: number): string | null {
+  if (cardOutcome(db, conversation, messageId, index) !== null) return "That card has already been pressed.";
+  if (!approvableIds(db, conversation, ASSIST).has(messageId)) return "That card has been superseded by a newer reply. Read the latest and press that one instead.";
+  return null;
+}
 
 /**
  * What doing a card came to, in the sentence filed under it, or null for

@@ -446,21 +446,23 @@ function ChatRowView({ row, conversationId, retry, busy, handlers }: ChatRowProp
       </Turn>
     );
   }
-  // Something only a person may do (EO-521): export, import or delete a pipeline, or discard
-  // this machine's edits to one. Its card whether or not its button is still on it: once
-  // pressed it shows what came of it.
+  // Things only a person may do (EO-521): export, import or delete a pipeline, or discard
+  // this machine's edits to one. Each its card whether or not its button is still on it: once
+  // pressed it shows what came of it. One reply can carry several (EO-862), drawn one under
+  // another, each pressed on its own.
   // The publish card after a draft's trials (EO-588): its own card, with the graph and the module rows.
-  if (message.card?.kind === "trialPublish") {
+  if (message.cards && message.cards.length > 0) {
     return (
       <Turn name="Assistant" message={message}>
-        <TrialPublishCard message={message} conversationId={conversationId} onDone={handlers.refresh} />
-      </Turn>
-    );
-  }
-  if (message.card) {
-    return (
-      <Turn name="Assistant" message={message}>
-        <OperationCard message={message} conversationId={conversationId} onDone={handlers.refresh} />
+        <div className="flex flex-col gap-2.5">
+          {message.cards.map((card) =>
+            card.kind === "trialPublish" ? (
+              <TrialPublishCard key={card.index} message={message} card={card} conversationId={conversationId} onDone={handlers.refresh} />
+            ) : (
+              <OperationCard key={card.index} message={message} card={card} conversationId={conversationId} onDone={handlers.refresh} />
+            ),
+          )}
+        </div>
       </Turn>
     );
   }
