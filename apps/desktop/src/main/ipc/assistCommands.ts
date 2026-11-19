@@ -59,7 +59,15 @@ import type { ModuleTestRunner } from "../modules/moduleTestRunner.js";
 import { appliedChangeNote } from "../roles/moduleChange.js";
 import { assistCardOf, assistCardView, cardOutcome, fileCardOutcome, liveStep } from "../roles/assistCards.js";
 import { isItemTypeCard, itemTypeCardDetail, itemTypeUpdatePayload } from "../roles/itemTypeCards.js";
-import { cliToolCardDetail, isCliToolCard, type CliToolCard } from "../roles/cliToolCards.js";
+import {
+  cliToolCardDetail,
+  cliToolsAssignDetail,
+  cliToolsAssignedSaid,
+  cliToolsAssignPress,
+  isCliToolCard,
+  type CliToolCard,
+  type CliToolsUnticked,
+} from "../roles/cliToolCards.js";
 import { createdJobSaid, filedItemSaid, isJobCard, jobCardDetail, jobUpdatePayload, keptJob, triggerOfCard, type JobCard } from "../roles/jobCards.js";
 import {
   applyAssistModuleChange,
@@ -2095,6 +2103,16 @@ export async function readAssistCardCommand(db: Db, doors: AssistCardDoors, inpu
 
   // A command-line tool (EO-822): an add card's command looked up on
   // this machine now, through the channel the Agent tools screen asks.
+  if (card.kind === "cliToolsAssign") {
+    // Several CLIs at once (EO-859): each add's command looked up the same way.
+    const detections = await Promise.all(
+      card.add.map(async (entry) => {
+        const detected = await dispatched(doors, "cliTools:detect", { command: entry.command.trim() });
+        return detected.ok ? detected.data.detection : null;
+      }),
+    );
+    return { card: cliToolsAssignDetail(db, card, detections), problem: null };
+  }
   if (isCliToolCard(card)) {
     const detected = card.kind === "cliToolAdd" ? await dispatched(doors, "cliTools:detect", { command: card.command.trim() }) : null;
     const detection = detected?.ok === true ? detected.data.detection : null;
@@ -2283,13 +2301,21 @@ export async function applyAssistCardCommand(
   // check above before the first has filed anything.
   if (pressing.has(messageId)) return unchanged("That card is already being pressed.");
   pressing.add(messageId);
-  let outcome: { done: boolean; said: string } | null;
+  let outcome: { done: boolean; said: string } | { retry: string } | null;
   try {
-    outcome = await carryOut(db, doors, conversation, card, { choices: input.choices, value: input.value, archiveItems: input.archiveItems ?? false });
+    outcome = await carryOut(db, doors, conversation, card, {
+      choices: input.choices,
+      value: input.value,
+      archiveItems: input.archiveItems ?? false,
+      unticked: input.unticked,
+    });
   } finally {
     pressing.delete(messageId);
   }
   if (outcome === null) return unchanged(null);
+  // Refused with nothing written, and the card left to press again once
+  // the person has unticked the row it names (EO-859).
+  if ("retry" in outcome) return unchanged(outcome.retry);
 
   fileCardOutcome(db, conversation, messageId, outcome);
   engine?.notifyStateChange();
@@ -2304,19 +2330,29 @@ export async function applyAssistCardCommand(
 /** The cards whose button is being carried out right now, by message id. */
 const pressing = new Set<string>();
 
-/** What doing a card came to, in the sentence filed under it, or null for a save dialog the person closed. */
+/**
+ * What doing a card came to, in the sentence filed under it, or null for
+ * a save dialog the person closed. `retry` is a refusal that wrote
+ * nothing and leaves the card to press again, said but not filed.
+ */
 async function carryOut(
   db: Db,
   doors: AssistCardDoors,
   conversation: Item,
   card: AssistCard,
-  { choices, value, archiveItems }: { choices: Record<string, "reuse" | "import">; value: string | undefined; archiveItems: boolean },
-): Promise<{ done: boolean; said: string } | null> {
+  {
+    choices,
+    value,
+    archiveItems,
+    unticked,
+  }: { choices: Record<string, "reuse" | "import">; value: string | undefined; archiveItems: boolean; unticked: CliToolsUnticked | undefined },
+): Promise<{ done: boolean; said: string } | { retry: string } | null> {
   // Pressed through `assist:publishTrial`, never here (EO-588).
   if (card.kind === TRIAL_PUBLISH_CARD_KIND) return null;
   if (card.kind === "stepSecret" || card.kind === "stepVariable") return carryOutStepValue(db, doors, card, value);
   if (isItemTypeCard(card)) return carryOutItemType(db, doors, card);
   if (isJobCard(card)) return carryOutJob(db, doors, card, archiveItems);
+  if (card.kind === "cliToolsAssign") return carryOutCliToolsAssign(db, doors, card, unticked);
   if (isCliToolCard(card)) return carryOutCliTool(db, doors, card);
   if (card.kind === "pipelineImport") {
     const file = await attachedDocument(db, doors, conversation, card.attachmentId);
@@ -2568,7 +2604,7 @@ async function carryOutJob(db: Db, doors: AssistCardDoors, card: JobCard, archiv
  * names the new row's id, which a later turn needs to offer giving it to
  * an agent.
  */
-async function carryOutCliTool(db: Db, doors: AssistCardDoors, card: CliToolCard): Promise<{ done: boolean; said: string }> {
+async function carryOutCliTool(db: Db, doors: AssistCardDoors, card: Exclude<CliToolCard, { kind: "cliToolsAssign" }>): Promise<{ done: boolean; said: string }> {
   if (card.kind === "cliToolAdd") {
     const name = card.name.trim();
     const saved = await dispatched(doors, "cliTools:save", { name: card.name, command: card.command, description: card.description });
@@ -2595,6 +2631,32 @@ async function carryOutCliTool(db: Db, doors: AssistCardDoors, card: CliToolCard
       ? `Gave ${agentName} ${toolName}. It is told about it from its next dispatch, when EO finds the program installed on the machine it runs on.`
       : `${agentName} is no longer told about ${toolName}, from its next dispatch.`,
   };
+}
+
+/**
+ * Adds CLIs and gives them to several agents, or takes them away, in one
+ * press (EO-859): the rows the person left ticked, through
+ * `agentCliTools:assign`, which writes them in one transaction.
+ *
+ * A refusal wrote nothing, and is said on the card rather than filed
+ * under it, so the person can untick the row it names and press again.
+ * What is filed once it applies says what changed and what was left
+ * unticked — what a later turn reads.
+ */
+async function carryOutCliToolsAssign(
+  db: Db,
+  doors: AssistCardDoors,
+  card: Extract<AssistCard, { kind: "cliToolsAssign" }>,
+  unticked: CliToolsUnticked | undefined,
+): Promise<{ done: boolean; said: string } | { retry: string }> {
+  const press = cliToolsAssignPress(db, card, unticked);
+  if (press.empty) return { retry: "Nothing on the card is ticked that would change anything. Tick a row, or say what should change." };
+  const applied = await dispatched(doors, "agentCliTools:assign", press.request);
+  if (!applied.ok) return { retry: `Nothing was changed: ${applied.reason}` };
+  if (!applied.data.applied) {
+    return { retry: `Nothing was changed. ${applied.data.problem ?? "EO refused it."} Untick that row and press again, or say what should change.` };
+  }
+  return { done: true, said: cliToolsAssignedSaid(db, press, applied.data) };
 }
 
 /** What an import brought, in the words the editor's Import used. */

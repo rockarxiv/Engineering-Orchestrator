@@ -116,6 +116,7 @@ import {
   restoreCliToolCommand,
   saveCliToolCommand,
   setAgentCliToolCommand,
+  assignAgentCliToolsCommand,
 } from "./cliToolCommands.js";
 import { clearStepSecrets } from "../modules/secrets.js";
 import { createItemLock } from "../supervisor/itemLock.js";
@@ -963,6 +964,8 @@ export function registerAllHandlers(db: Db, engine: EngineHandle | undefined, re
   registerHandler("cliTools:restore", (payload) => announcePipeline(restoreCliToolCommand(db, payload)), opts);
   registerHandler("agentCliTools:list", (payload) => listAgentCliToolsCommand(db, payload), opts);
   registerHandler("agentCliTools:set", (payload) => announcePipeline(setAgentCliToolCommand(db, payload)), opts);
+  // A `cliToolsAssign` card's press (EO-859): the adds and the ticks above, in one transaction.
+  registerHandler("agentCliTools:assign", (payload) => announcePipeline(assignAgentCliToolsCommand(db, payload)), opts);
   registerHandler("cliTools:detect", (payload) => detectCliToolCommand(payload), opts);
   registerHandler("cliTools:draft", (payload) => draftCliToolCommand(payload), opts);
 

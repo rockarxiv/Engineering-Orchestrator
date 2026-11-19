@@ -58,6 +58,9 @@ import { StepInputsSchema } from "./modules.js";
  * giving one to an agent or taking it away. Only a person decides which
  * programs agents are told to reach for, so the system agent proposes
  * either as a card, through the channel the Agent tools screen calls.
+ * A third (EO-859) does both for several CLIs and agents in one press,
+ * and is the one the system agent offers for giving or taking a CLI;
+ * `cliToolAttach` stays so cards already in a conversation still work.
  *
  * Every branch writes all of its keys, so it is the same document from
  * both backends: there is no optional field for a Codex agent to fill
@@ -133,6 +136,82 @@ export const JOB_CARD_CLEAR = "none";
 /** The two buttons that left a webhook job's page (EO-786). */
 export const JobWebhookCardActionSchema = z.enum(["regenerateSecret", "testEvent"]);
 export type JobWebhookCardAction = z.infer<typeof JobWebhookCardActionSchema>;
+
+/**
+ * Add command-line tools and give them to several agents, or take them
+ * away, in one press (EO-859) — what would otherwise be a `cliToolAdd`
+ * card per program and a `cliToolAttach` card per agent and program.
+ *
+ * `add` are new catalogue rows, saved as `cliTools:save` would save
+ * them. `agents` say, per agent, which CLIs it is given and which it
+ * loses, because assignments are often uneven. Each entry of `give` and
+ * `take` is a catalogued CLI's id (`cli_tools_list`), or the `command`
+ * of one of this card's own `add` entries — which is how a program not
+ * catalogued yet is named. The press applies what the person left
+ * ticked, through `agentCliTools:assign`, in one transaction.
+ *
+ * What the schema can say alone it says here: something to do, every
+ * agent and every added command named once, and no CLI both given to
+ * and taken from one agent.
+ */
+export const CliToolsAssignCardSchema = z
+  .object({
+    kind: z.literal("cliToolsAssign"),
+    /** New catalogue rows, each as `cliToolAdd` names one. May be empty. */
+    add: z.array(
+      z.object({
+        /** What a person reads in the catalogue — "GitHub CLI". */
+        name: z.string().min(1),
+        /** What an agent types — `gh`: one program name, or an absolute path to one. */
+        command: z.string().min(1),
+        /** What it is and when to use it here, in a sentence or two. */
+        description: z.string(),
+      }),
+    ),
+    /** Per agent, the CLIs it gets and the CLIs it loses. */
+    agents: z.array(
+      z.object({
+        /** The agent, by the id `agents_list` gives. */
+        agentId: z.string().min(1),
+        /** CLIs to give it: a catalogue id, or the `command` of one of this card's `add` entries. */
+        give: z.array(z.string().min(1)),
+        /** CLIs to take away from it, by catalogue id. */
+        take: z.array(z.string().min(1)),
+      }),
+    ),
+  })
+  .superRefine((card, context) => {
+    if (card.add.length === 0 && card.agents.length === 0) {
+      context.addIssue({ code: "custom", path: ["agents"], message: "a `cliToolsAssign` card adds at least one CLI or names at least one agent" });
+    }
+    const commands = new Set<string>();
+    card.add.forEach((entry, index) => {
+      const command = entry.command.trim();
+      if (commands.has(command)) context.addIssue({ code: "custom", path: ["add", index, "command"], message: `\`${command}\` is added twice: add each program once` });
+      commands.add(command);
+    });
+    const agents = new Set<string>();
+    card.agents.forEach((entry, index) => {
+      if (agents.has(entry.agentId)) {
+        context.addIssue({ code: "custom", path: ["agents", index, "agentId"], message: `the agent "${entry.agentId}" is named twice: put all of its CLIs in one entry` });
+      }
+      agents.add(entry.agentId);
+      if (entry.give.length === 0 && entry.take.length === 0) {
+        context.addIssue({ code: "custom", path: ["agents", index], message: `the agent "${entry.agentId}" is given nothing and loses nothing: name a CLI in \`give\` or \`take\`, or leave the agent out` });
+      }
+      const given = new Set(entry.give);
+      for (const cli of entry.take) {
+        if (given.has(cli)) {
+          context.addIssue({ code: "custom", path: ["agents", index, "take"], message: `"${cli}" is both given to and taken from the agent "${entry.agentId}": keep it in one of the two` });
+        }
+      }
+      for (const list of [entry.give, entry.take]) {
+        if (new Set(list).size !== list.length) context.addIssue({ code: "custom", path: ["agents", index], message: `the agent "${entry.agentId}" names a CLI twice` });
+      }
+    });
+  });
+
+export type CliToolsAssignCard = z.infer<typeof CliToolsAssignCardSchema>;
 
 export const AssistCardSchema = z.discriminatedUnion("kind", [
   z.object({
@@ -304,6 +383,7 @@ export const AssistCardSchema = z.discriminatedUnion("kind", [
     /** True to give it to the agent, false to take it away. */
     attached: z.boolean(),
   }),
+  CliToolsAssignCardSchema,
   z.object({
     /**
      * Keep a pipeline as it is and skip its held template update (EO-534)
@@ -351,6 +431,7 @@ export const ASSIST_CARD_KINDS = [
   "jobWebhook",
   "cliToolAdd",
   "cliToolAttach",
+  "cliToolsAssign",
 ] as const satisfies readonly AssistCardKind[];
 
 /**

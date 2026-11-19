@@ -211,6 +211,9 @@ const REACHED_BY_A_CARD: Partial<Record<keyof typeof ipcContract, string>> = {
   "jobs:delete": "ipc/assistCommands.ts — Delete job on a jobDelete card",
   "jobs:regenerateSecret": "ipc/assistCommands.ts — the button on a jobWebhook card whose action is regenerateSecret",
   "jobs:testEvent": "ipc/assistCommands.ts — the button on a jobWebhook card whose action is testEvent",
+  // EO-859. Several CLIs added and ticked in one transaction; the Agent
+  // tools screen ticks one at a time through agentCliTools:set.
+  "agentCliTools:assign": "ipc/assistCommands.ts — the button on a cliToolsAssign card",
 };
 
 /**

@@ -3496,7 +3496,7 @@ const AgentAttachmentSetArgsSchema = z.object({
 /** What EO's system agent is told when it asks to tick a CLI itself (EO-822). */
 export const CLI_TOOL_ATTACH_ADMIN_REFUSAL =
   "Nothing was attached or detached: which command-line tools an agent is told about is a person's decision. " +
-  "Offer a `cliToolAttach` card instead, and the person presses it. Nothing has changed.";
+  "Offer a `cliToolsAssign` card instead, and the person presses it. Nothing has changed.";
 
 const AGENT_ATTACHMENT_SET_TOOL: ToolSpec = {
   name: "agent_attachments_set",

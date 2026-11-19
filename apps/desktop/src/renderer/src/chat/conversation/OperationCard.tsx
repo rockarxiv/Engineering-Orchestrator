@@ -11,6 +11,7 @@ import {
   WEBHOOK_UNATTENDED_RISK,
   type AssistCardDetail,
   type AssistCardKind,
+  type CliToolDetection,
   type DiscussionMessage,
   type ItemTypeCardShape,
   type JobCardLine,
@@ -32,7 +33,7 @@ import {
   sectionsKey,
   useChromeVocabulary,
 } from "../../query/hooks";
-import { Button, Chip, Segmented, TextInput } from "../kit";
+import { Button, Checkbox, Chip, Segmented, TextInput } from "../kit";
 import { ImportNeeds } from "./ImportNeeds";
 import { assistCardKey, drawAssistReply } from "../../shared/assist/useAssistRoom";
 import { useInvalidateOnPush } from "../../query/useInvalidateOnPush";
@@ -77,6 +78,14 @@ import { useInvalidateOnPush } from "../../query/useInvalidateOnPush";
  * never a webhook's signing secret. Delete asks whether the job's items
  * are kept or archived; once pressed, the card links the job it made or
  * the item a test event filed.
+ *
+ * And one adds command-line tools and gives them to several agents, or
+ * takes them away, in one press (EO-859): a section per CLI it adds, then
+ * a row per agent × CLI. Every row starts ticked and the person unticks
+ * what they do not want; unticking an add unticks and disables each row
+ * giving that new CLI. A row already in place has no box. The button
+ * counts what it will do — "Add 2, give 5" — and a press refused at that
+ * moment writes nothing and leaves the card to untick the row it names.
  */
 export function OperationCard({ message, conversationId, onDone }: { message: DiscussionMessage; conversationId: string; onDone: () => void }) {
   const queryClient = useQueryClient();
@@ -114,6 +123,11 @@ export function OperationCard({ message, conversationId, onDone }: { message: Di
   const [archiveItems, setArchiveItems] = useState<"keep" | "archive">("keep");
   const asksItems = detail?.kind === "jobDelete" && detail.itemCount > 0;
 
+  // A `cliToolsAssign` card's boxes (EO-859): what the person unticked —
+  // adds by command, rows by agent and CLI. Everything else is ticked.
+  const [unticked, setUnticked] = useState<CliToolsUnticked>(NOTHING_UNTICKED);
+  const assigned = detail?.kind === "cliToolsAssign" ? assignTicks(detail, unticked) : null;
+
   const [problem, setProblem] = useState<string | null>(null);
   const press = useMutation({
     mutationFn: () =>
@@ -123,6 +137,7 @@ export function OperationCard({ message, conversationId, onDone }: { message: Di
         choices: chosen,
         ...(typesValue ? { value } : {}),
         ...(kind === "jobDelete" ? { archiveItems: asksItems && archiveItems === "archive" } : {}),
+        ...(kind === "cliToolsAssign" ? { unticked: { adds: [...unticked.adds], rows: [...unticked.rows].map(rowOfKey) } } : {}),
       }),
     onSuccess: (result) => {
       setValue("");
@@ -131,6 +146,8 @@ export function OperationCard({ message, conversationId, onDone }: { message: Di
       // What was filed under the card arrives with the conversation; a
       // problem nothing was filed for is said here instead.
       setProblem(result.said === null ? result.problem : null);
+      // A refused assignment wrote nothing: re-read the card, which now shows why on the row.
+      if (result.said === null && kind === "cliToolsAssign") void queryClient.invalidateQueries({ queryKey: assistCardKey(message.id) });
       if (result.said !== null) {
         if (detail?.kind === "pipelineWebhookUnattended") void queryClient.invalidateQueries({ queryKey: pipelineStepsKey(detail.pipelineId) });
         if (kind === "stepSecret") void queryClient.invalidateQueries({ queryKey: moduleSecretsRootKey });
@@ -145,6 +162,10 @@ export function OperationCard({ message, conversationId, onDone }: { message: Di
         // A CLI card: the Agent tools screen's catalogue and ticks move (EO-821's keys).
         if (kind === "cliToolAdd") void queryClient.invalidateQueries({ queryKey: cliToolsKey });
         if (kind === "cliToolAttach") void queryClient.invalidateQueries({ queryKey: agentCliToolsKey });
+        if (kind === "cliToolsAssign") {
+          void queryClient.invalidateQueries({ queryKey: cliToolsKey });
+          void queryClient.invalidateQueries({ queryKey: agentCliToolsKey });
+        }
         if (kind === "pipelineDelete" || kind === "pipelineImport") void queryClient.invalidateQueries({ queryKey: itemsKey });
         if (kind === "pipelineImport") void queryClient.invalidateQueries({ queryKey: modulesKey });
         // A type change is when the registry moves, as the editor's Types section said.
@@ -165,8 +186,8 @@ export function OperationCard({ message, conversationId, onDone }: { message: Di
     },
   });
 
-  const label = buttonFor(kind, detail);
-  const refused = detail !== null && cannotPress(detail);
+  const label = assigned === null ? buttonFor(kind, detail) : { ...buttonFor(kind, detail), idle: assigned.label };
+  const refused = detail !== null && (cannotPress(detail) || (assigned !== null && assigned.count === 0));
 
   return (
     <section aria-label={TITLE[kind]} className="flex flex-col gap-2.5 rounded-[14px] bg-canvas-subtle px-4 py-3.5">
@@ -177,7 +198,9 @@ export function OperationCard({ message, conversationId, onDone }: { message: Di
       </div>
 
       {/* What pressing it would do — until it has been pressed, when what it did is below instead. */}
-      {outcome !== null ? null : detail !== null ? (
+      {outcome !== null ? null : detail?.kind === "cliToolsAssign" && assigned !== null ? (
+        <CliToolsAssignBody detail={detail} ticks={assigned} open={open} unticked={unticked} onChange={setUnticked} />
+      ) : detail !== null ? (
         <Body detail={detail} itemsWord={vocabulary.items.toLowerCase()} itemWord={vocabulary.item.toLowerCase()} aliasesRetired={aliasesRetired} />
       ) : (
         <Markdown className="text-[13px] leading-relaxed">{message.body}</Markdown>
@@ -300,6 +323,7 @@ const TITLE: Record<AssistCardKind, string> = {
   jobWebhook: "A webhook job",
   cliToolAdd: "Add a command-line tool",
   cliToolAttach: "An agent's command-line tool",
+  cliToolsAssign: "Command-line tools for agents",
 };
 
 const STATE: Record<AssistCardKind, string> = {
@@ -321,6 +345,7 @@ const STATE: Record<AssistCardKind, string> = {
   jobWebhook: "webhook",
   cliToolAdd: "add CLI",
   cliToolAttach: "agent CLI",
+  cliToolsAssign: "agent CLIs",
 };
 
 const ICON: Record<AssistCardKind, ReactNode> = {
@@ -342,6 +367,7 @@ const ICON: Record<AssistCardKind, ReactNode> = {
   jobWebhook: <Webhook aria-hidden size={14} />,
   cliToolAdd: <Terminal aria-hidden size={14} />,
   cliToolAttach: <Terminal aria-hidden size={14} />,
+  cliToolsAssign: <Terminal aria-hidden size={14} />,
 };
 
 type ButtonWords = { idle: string; pending: string; done: string; refused: string };
@@ -361,6 +387,8 @@ const BUTTON: Record<Exclude<AssistCardKind, "pipelineWebhookUnattended" | "step
   jobUpdate: { idle: "Save job", pending: "Saving…", done: "Saved", refused: "Not saved" },
   jobDelete: { idle: "Delete job", pending: "Deleting…", done: "Deleted", refused: "Not deleted" },
   cliToolAdd: { idle: "Add CLI", pending: "Adding…", done: "Added", refused: "Not added" },
+  // Its idle words count the ticked rows instead — see `assignTicks`.
+  cliToolsAssign: { idle: "Apply", pending: "Applying…", done: "Applied", refused: "Not applied" },
 };
 
 /**
@@ -458,6 +486,10 @@ function subjectOf(detail: AssistCardDetail): string {
       return detail.name;
     case "cliToolAttach":
       return `${detail.cliToolName} · ${detail.agentName}`;
+    case "cliToolsAssign": {
+      const agents = new Set(detail.rows.map((row) => row.agentId)).size;
+      return agents === 0 ? "Command-line tools" : `Command-line tools · ${agents === 1 ? detail.rows[0]!.agentName : `${agents} agents`}`;
+    }
     default:
       return detail.pipelineName;
   }
@@ -650,6 +682,9 @@ function Body({ detail, itemsWord, itemWord, aliasesRetired }: { detail: AssistC
           ) : null}
         </div>
       );
+    case "cliToolsAssign":
+      // Drawn by `CliToolsAssignBody`, which holds the boxes.
+      return null;
     case "jobWebhook":
       return detail.action === "regenerateSecret" ? (
         <p className={text}>
@@ -677,26 +712,7 @@ function CliToolAddBody({ detail }: { detail: Extract<AssistCardDetail, { kind: 
       <p className="text-[13px] leading-relaxed text-ink-muted">
         A new command-line tool in the catalogue. No agent is told about it until one is given it, and it grants nothing: an agent runs it through the shell it already has.
       </p>
-      <dl aria-label="The command-line tool" className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1 text-[12.5px]">
-        <dt className="text-ink-subtle">Command</dt>
-        <dd>
-          <code className="font-mono text-ink">{detail.command}</code>
-        </dd>
-        <dt className="text-ink-subtle">Description</dt>
-        <dd className="break-words text-ink">{detail.description === "" ? <span className="text-ink-subtle">None</span> : detail.description}</dd>
-        <dt className="text-ink-subtle">On this machine</dt>
-        <dd className="break-words text-ink">
-          {found === null ? (
-            <span className="text-ink-subtle">Could not be checked</span>
-          ) : found.found ? (
-            <>
-              Found at <code className="font-mono">{found.path}</code>
-            </>
-          ) : (
-            "Not found"
-          )}
-        </dd>
-      </dl>
+      <CliToolLines command={detail.command} description={detail.description} detection={found} />
       {found !== null && !found.found ? (
         <p className="text-[12.5px] text-ink-subtle">An agent given it is told about it only on a machine where EO finds it installed.</p>
       ) : null}
@@ -706,6 +722,174 @@ function CliToolAddBody({ detail }: { detail: Extract<AssistCardDetail, { kind: 
         </p>
       ) : null}
     </div>
+  );
+}
+
+type CliToolsAssignDetail = Extract<AssistCardDetail, { kind: "cliToolsAssign" }>;
+type CliToolsAssignRow = CliToolsAssignDetail["rows"][number];
+/** What the person unticked on a `cliToolsAssign` card: adds by command, rows by `rowKey`. */
+type CliToolsUnticked = { adds: ReadonlySet<string>; rows: ReadonlySet<string> };
+
+const NOTHING_UNTICKED: CliToolsUnticked = { adds: new Set(), rows: new Set() };
+
+/** One agent × CLI row's key: the agent and the CLI as the card names it. */
+const rowKey = (row: { agentId: string; cli: string }): string => JSON.stringify([row.agentId, row.cli]);
+function rowOfKey(key: string): { agentId: string; cli: string } {
+  const [agentId, cli] = JSON.parse(key) as [string, string];
+  return { agentId, cli };
+}
+
+/** Which of a `cliToolsAssign` card's boxes are ticked, and what the button says it will do. */
+interface AssignTicks {
+  addTicked: (command: string) => boolean;
+  /** Ticked and pressable: not in place, and not giving a new CLI whose add is unticked. */
+  rowTicked: (row: CliToolsAssignRow) => boolean;
+  /** A row whose box cannot be changed: its add is unticked, so there is nothing to give. */
+  rowDisabled: (row: CliToolsAssignRow) => boolean;
+  count: number;
+  label: string;
+}
+
+function assignTicks(detail: CliToolsAssignDetail, unticked: CliToolsUnticked): AssignTicks {
+  const addTicked = (command: string) => !unticked.adds.has(command);
+  const rowDisabled = (row: CliToolsAssignRow) => row.add !== null && !addTicked(row.add);
+  const rowTicked = (row: CliToolsAssignRow) => !row.inPlace && !rowDisabled(row) && !unticked.rows.has(rowKey(row));
+  const adds = detail.adds.filter((add) => addTicked(add.command)).length;
+  const gives = detail.rows.filter((row) => row.give && rowTicked(row)).length;
+  const takes = detail.rows.filter((row) => !row.give && rowTicked(row)).length;
+  const words = [adds > 0 ? `add ${adds}` : null, gives > 0 ? `give ${gives}` : null, takes > 0 ? `take ${takes}` : null].filter((word) => word !== null).join(", ");
+  return {
+    addTicked,
+    rowTicked,
+    rowDisabled,
+    count: adds + gives + takes,
+    label: words === "" ? "Nothing ticked" : words.charAt(0).toUpperCase() + words.slice(1),
+  };
+}
+
+/** Toggles one entry of a set, as a new set. */
+function toggled(set: ReadonlySet<string>, key: string, on: boolean): ReadonlySet<string> {
+  const next = new Set(set);
+  if (on) next.add(key);
+  else next.delete(key);
+  return next;
+}
+
+/**
+ * A `cliToolsAssign` card's body (EO-859): a section per CLI it adds,
+ * with whether this machine has it, then a row per agent × CLI with
+ * give or take and what the agent has now. Boxes only while the card can
+ * be pressed, and none on a row already in place.
+ */
+function CliToolsAssignBody({
+  detail,
+  ticks,
+  open,
+  unticked,
+  onChange,
+}: {
+  detail: CliToolsAssignDetail;
+  ticks: AssignTicks;
+  open: boolean;
+  unticked: CliToolsUnticked;
+  onChange: (next: CliToolsUnticked) => void;
+}) {
+  return (
+    <div className="flex flex-col gap-2.5">
+      <p className="text-[13px] leading-relaxed text-ink-muted">
+        Untick anything you do not want. An agent is told about a CLI it is given from its next dispatch, where EO finds the program installed; a CLI grants nothing, as an agent
+        runs it through the shell it already has.
+      </p>
+      {detail.adds.map((add) => (
+        <section key={add.command} aria-label={`Add ${add.name}`} className="flex flex-col gap-1.5 rounded-[10px] bg-canvas px-3 py-2">
+          {open ? (
+            <Checkbox
+              checked={ticks.addTicked(add.command)}
+              ariaLabel={`Add ${add.name}`}
+              onChange={(on) => onChange({ ...unticked, adds: toggled(unticked.adds, add.command, !on) })}
+              label={<b className="font-semibold">Add {add.name}</b>}
+            />
+          ) : (
+            <b className="text-[13px] font-semibold text-ink">Add {add.name}</b>
+          )}
+          <CliToolLines command={add.command} description={add.description} detection={add.detection} />
+          {add.problem !== null ? (
+            <p role="note" aria-label="Refused" className="text-[12.5px] text-danger">
+              {add.problem}
+            </p>
+          ) : null}
+        </section>
+      ))}
+      {detail.rows.length > 0 ? (
+        <ul aria-label="Agents" className="flex flex-col gap-1">
+          {detail.rows.map((row) => {
+            const words = row.give ? `Give ${row.agentName} ${row.cliToolName}` : `Take ${row.cliToolName} from ${row.agentName}`;
+            const now = row.inPlace
+              ? row.current
+                ? "already has it"
+                : "does not have it"
+              : row.current
+                ? "has it now"
+                : row.add !== null
+                  ? "new"
+                  : "does not have it now";
+            const line = (
+              <span className="flex flex-wrap items-baseline gap-x-1.5">
+                <span>{words}</span>
+                <code className="font-mono text-[12px] text-ink-muted">{row.command}</code>
+                <span className="text-[12px] text-ink-subtle">· {now}</span>
+              </span>
+            );
+            return (
+              <li key={rowKey(row)} aria-label={words} className="flex flex-col gap-0.5 text-[13px] text-ink">
+                {open && !row.inPlace ? (
+                  <Checkbox
+                    checked={ticks.rowTicked(row)}
+                    disabled={ticks.rowDisabled(row)}
+                    ariaLabel={words}
+                    onChange={(on) => onChange({ ...unticked, rows: toggled(unticked.rows, rowKey(row), !on) })}
+                    label={line}
+                  />
+                ) : (
+                  <span className={row.inPlace ? "text-ink-subtle" : undefined}>{line}</span>
+                )}
+                {row.problem !== null ? (
+                  <p role="note" aria-label="Refused" className="pl-6 text-[12.5px] text-danger">
+                    {row.problem}
+                  </p>
+                ) : null}
+              </li>
+            );
+          })}
+        </ul>
+      ) : null}
+    </div>
+  );
+}
+
+/** A CLI's command, description and whether this machine has it — as an add card shows them. */
+function CliToolLines({ command, description, detection }: { command: string; description: string; detection: CliToolDetection | null }) {
+  return (
+    <dl aria-label="The command-line tool" className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1 text-[12.5px]">
+      <dt className="text-ink-subtle">Command</dt>
+      <dd>
+        <code className="font-mono text-ink">{command}</code>
+      </dd>
+      <dt className="text-ink-subtle">Description</dt>
+      <dd className="break-words text-ink">{description === "" ? <span className="text-ink-subtle">None</span> : description}</dd>
+      <dt className="text-ink-subtle">On this machine</dt>
+      <dd className="break-words text-ink">
+        {detection === null ? (
+          <span className="text-ink-subtle">Could not be checked</span>
+        ) : detection.found ? (
+          <>
+            Found at <code className="font-mono">{detection.path}</code>
+          </>
+        ) : (
+          "Not found"
+        )}
+      </dd>
+    </dl>
   );
 }
 
