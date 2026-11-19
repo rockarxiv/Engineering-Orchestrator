@@ -529,7 +529,7 @@ const CAPABILITIES = [
       "let its webhook items through unread, set or clear a step's own secret or variable, add, change or remove an item type, " +
       "keep a pipeline as it is and skip its held template update, publish a draft as it was tested (EO-588), " +
       "or create, change or delete a job, or regenerate a webhook job's secret or send it a test event (EO-786), " +
-      "or add a command-line tool or give one to an agent (EO-822), or add CLIs and give them to several agents in one card (EO-859) — " +
+      "or add a command-line tool or give one to an agent (EO-822), or add CLIs and give them to several agents in one card (EO-859), or add several CLIs to nobody in one card (EO-860) — " +
       "reads back as that card and nothing beside it",
     same: {
       read: [
@@ -590,6 +590,19 @@ const CAPABILITIES = [
               { agentId: "implementer", give: ["github-cli", "jira"], take: [] },
               { agentId: "reviewer", give: ["github-cli"], take: ["old-cli"] },
             ],
+          },
+          besideIt: [],
+        },
+        // Several CLIs added, given to nobody (EO-860).
+        {
+          valid: true,
+          card: {
+            kind: "cliToolsAssign",
+            add: [
+              { name: "GitHub CLI", command: "gh", description: "Pull requests and issues on GitHub." },
+              { name: "Jira CLI", command: "jira", description: "Issues on Jira." },
+            ],
+            agents: [],
           },
           besideIt: [],
         },

@@ -796,10 +796,17 @@ function CliToolsAssignBody({
 }) {
   return (
     <div className="flex flex-col gap-2.5">
-      <p className="text-[13px] leading-relaxed text-ink-muted">
-        Untick anything you do not want. An agent is told about a CLI it is given from its next dispatch, where EO finds the program installed; a CLI grants nothing, as an agent
-        runs it through the shell it already has.
-      </p>
+      {detail.rows.length === 0 ? (
+        // Adds alone (EO-860): nobody is given anything, so no agent rows.
+        <p className="text-[13px] leading-relaxed text-ink-muted">
+          Untick anything you do not want. Adding a CLI gives it to no agent: none is told about it until one is given it.
+        </p>
+      ) : (
+        <p className="text-[13px] leading-relaxed text-ink-muted">
+          Untick anything you do not want. An agent is told about a CLI it is given from its next dispatch, where EO finds the program installed; a CLI grants nothing, as an
+          agent runs it through the shell it already has.
+        </p>
+      )}
       {detail.adds.map((add) => (
         <section key={add.command} aria-label={`Add ${add.name}`} className="flex flex-col gap-1.5 rounded-[10px] bg-canvas px-3 py-2">
           {open ? (

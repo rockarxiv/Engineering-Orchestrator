@@ -275,8 +275,8 @@ describe("what the system agent's prompt says about command-line tools (EO-822)"
     expect(cards()).toContain("you have no tool that adds, changes, archives or attaches a CLI — `agent_attachments_set` refuses one from you — and the card is the only way.");
   });
 
-  it("gives the add card's shape, and says a CLI grants nothing", () => {
-    expect(cards()).toContain('`{ "kind": "cliToolAdd", "name": "GitHub CLI", "command": "gh", "description": "Pull requests, issues and checks on GitHub." }`');
+  // The add card's own shape left the prompt with EO-860: adding is a `cliToolsAssign` with no agents.
+  it("says a CLI grants nothing", () => {
     expect(cards()).toContain("A CLI grants nothing: an agent runs it through the shell it already has");
   });
 
@@ -288,8 +288,7 @@ describe("what the system agent's prompt says about command-line tools (EO-822)"
 describe("what the system agent's prompt says about giving CLIs to several agents (EO-859)", () => {
   const cards = () => section("### Cards for what only a person may do");
 
-  it("offers cliToolsAssign for every give or take, a single one included, and cliToolAdd only to add without giving", () => {
-    expect(cards()).toContain("to add one without giving it to anyone,");
+  it("offers cliToolsAssign for every give or take, a single one included", () => {
     expect(cards()).toContain(
       '`{ "kind": "cliToolsAssign", "add": [{ "name": "Jira CLI", "command": "jira", "description": "Issues on our Jira." }], "agents": [{ "agentId": "…", "give": ["…", "jira"], "take": [] }] }`',
     );
@@ -303,5 +302,27 @@ describe("what the system agent's prompt says about giving CLIs to several agent
 
   it("is a newer version than the one before it", () => {
     expect(Number(/prompt-version:\s*(\d+)/.exec(prompt)![1])).toBeGreaterThanOrEqual(60);
+  });
+});
+
+describe("what the system agent's prompt says about adding several CLIs in one card (EO-860)", () => {
+  const cards = () => section("### Cards for what only a person may do");
+
+  it("offers cliToolsAssign for every CLI change, adding without giving included, with an add-only example", () => {
+    expect(cards()).toContain("One card kind does every CLI change, `cliToolsAssign`:");
+    expect(cards()).toContain("to add CLIs to the catalogue without giving them to anyone — one program or several, each its own entry in `add` — leave `agents` empty:");
+    expect(cards()).toContain(
+      '`{ "kind": "cliToolsAssign", "add": [{ "name": "GitHub CLI", "command": "gh", "description": "Pull requests, issues and checks on GitHub." }, { "name": "Jira CLI", "command": "jira", "description": "Issues on our Jira." }], "agents": [] }`',
+    );
+    expect(cards()).toContain("Only for a command the catalogue does not already run, archived entries included;");
+    expect(cards()).toContain('The card\'s button says what it will do — "Add 2", or "Add 1, give 3" —');
+  });
+
+  it("no longer offers cliToolAdd", () => {
+    expect(prompt).not.toContain("cliToolAdd");
+  });
+
+  it("is a newer version than the one before it", () => {
+    expect(Number(/prompt-version:\s*(\d+)/.exec(prompt)![1])).toBeGreaterThanOrEqual(61);
   });
 });

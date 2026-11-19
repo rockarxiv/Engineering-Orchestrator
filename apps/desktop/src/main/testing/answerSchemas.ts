@@ -397,6 +397,15 @@ const CARDS = [
       { agentId: "reviewer", give: ["github-cli"], take: ["old-cli"] },
     ],
   },
+  // Several CLIs added to the catalogue and given to nobody (EO-860).
+  {
+    kind: "cliToolsAssign",
+    add: [
+      { name: "GitHub CLI", command: "gh", description: "Pull requests and issues on GitHub." },
+      { name: "Jira CLI", command: "jira", description: "Issues on Jira." },
+    ],
+    agents: [],
+  },
 ] as const;
 
 export const ASSIST_ANSWERS_WITH_CARDS = {

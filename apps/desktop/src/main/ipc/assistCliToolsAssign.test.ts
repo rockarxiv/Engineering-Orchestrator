@@ -380,3 +380,102 @@ describe("what a later turn reads", () => {
     expect(body).toContain("nothing changes until the button on the card is pressed.");
   });
 });
+
+describe("a card that only adds CLIs, several at once (EO-860)", () => {
+  const KUBE = "eo-860-kube";
+  const ADD_ONLY: AssistCard = {
+    kind: "cliToolsAssign",
+    add: [
+      { name: "Deployer", command: DEPLOY, description: "Deploys to staging." },
+      { name: "Linter", command: LINT, description: "" },
+      { name: "Kube", command: KUBE, description: "" },
+    ],
+    agents: [],
+  };
+  /** Every agent's CLI ticks, to show a press left them alone. */
+  const everyTick = () => listAgents(handle.db).map((agent) => [agent.id, cliIds(agent)]);
+
+  it("is drawn, shows its adds with install detection and no agent rows, and changes nothing until pressed", async () => {
+    const conversation = await chat("Add three CLIs.");
+    const { cardId, rejections } = turn(conversation, ADD_ONLY);
+    expect(rejections).toEqual([]);
+    expect(cardId).toBeDefined();
+    expect(listCliTools(handle.db)).toEqual([]);
+
+    const shown = (await read(conversation, cardId!)).card;
+    expect(shown).toMatchObject({ kind: "cliToolsAssign", rows: [] });
+    expect(shown?.kind === "cliToolsAssign" ? shown.adds.map((add) => [add.command, add.detection]) : null).toEqual([
+      [DEPLOY, { found: false }],
+      [LINT, { found: false }],
+      [KUBE, { found: false }],
+    ]);
+  });
+
+  it("creates exactly the ticked catalogue rows, and touches no agent's attachments", async () => {
+    const gh = catalogue("GitHub CLI", "gh");
+    const implementer = agentOf("implementer");
+    setAgentCliTool(handle.db, { agentId: implementer.id, cliToolId: gh, attached: true });
+    const before = everyTick();
+    const conversation = await chat();
+    const { cardId } = turn(conversation, ADD_ONLY);
+
+    const pressed = await press(conversation, cardId!);
+    expect(pressed.applied).toBe(true);
+    expect(listCliTools(handle.db).map((tool) => tool.command).sort()).toEqual([DEPLOY, KUBE, LINT, "gh"].sort());
+    expect(everyTick()).toEqual(before);
+    expect(pressed.said).toContain("No agent is told about what was added until one is given it.");
+  });
+
+  it("with one add unticked, creates only the other two", async () => {
+    const before = everyTick();
+    const conversation = await chat();
+    const { cardId } = turn(conversation, ADD_ONLY);
+
+    const pressed = await press(conversation, cardId!, { adds: [LINT], rows: [] });
+    expect(pressed.applied).toBe(true);
+    expect(listCliTools(handle.db).map((tool) => tool.command).sort()).toEqual([DEPLOY, KUBE].sort());
+    expect(everyTick()).toEqual(before);
+    expect(pressed.said).toContain(`Unticked, so not done: adding “Linter” (\`${LINT}\`).`);
+  });
+
+  it("is not drawn for an add whose command the catalogue already has, and says which entry", async () => {
+    const lint = catalogue("Someone's linter", LINT);
+    const { cardId, rejections } = turn(await chat(), ADD_ONLY);
+    expect(cardId).toBeUndefined();
+    expect(rejections).toEqual([`No card was offered: "Someone's linter" already runs \`${LINT}\`, with the id ${lint}. Leave it out of \`add\` and name that id in \`give\` instead.`]);
+    expect(listCliTools(handle.db)).toHaveLength(1);
+  });
+
+  it("is not drawn for an add whose command an archived row already has", async () => {
+    const kube = catalogue("Old kube", KUBE);
+    archiveCliTool(handle.db, kube);
+    const { cardId, rejections } = turn(await chat(), ADD_ONLY);
+    expect(cardId).toBeUndefined();
+    expect(rejections).toEqual([
+      `No card was offered: an archived command-line tool, "Old kube", already runs \`${KUBE}\`, with the id ${kube}. ` +
+        "A person restores it on the Agent tools screen; then leave it out of `add` and name that id in `give`.",
+    ]);
+  });
+
+  it("is not drawn for an add with an invalid command or name, and names the entry and why", async () => {
+    const command = turn(await chat(), { kind: "cliToolsAssign", add: [ADD_ONLY.add[0]!, { name: "PRs", command: "gh pr", description: "" }], agents: [] });
+    expect(command.cardId).toBeUndefined();
+    expect(command.rejections).toEqual([
+      'No card was offered: `add` entry 2 (“PRs”, `gh pr`) would be refused: "gh pr" has a space in it: enter only the program, like `gh`, not its arguments. Fix that entry or leave it out.',
+    ]);
+
+    const name = turn(await chat(), { kind: "cliToolsAssign", add: [{ name: "   ", command: DEPLOY, description: "" }], agents: [] });
+    expect(name.cardId).toBeUndefined();
+    expect(name.rejections).toEqual([`No card was offered: \`add\` entry 1 (\`${DEPLOY}\`) would be refused: A command-line tool needs a name. Fix that entry or leave it out.`]);
+    expect(listCliTools(handle.db)).toEqual([]);
+  });
+
+  it("reads to a later turn as the tools it adds, with no agent lines", () => {
+    const body = assistCardBody(handle.db, ADD_ONLY);
+    expect(body).toContain("**Add** these 3 command-line tools to the catalogue:");
+    expect(body).toContain(`- “Deployer” (\`${DEPLOY}\`) — “Deploys to staging.”\n- “Linter” (\`${LINT}\`)\n- “Kube” (\`${KUBE}\`)`);
+    expect(body).toContain("no agent is told about a CLI added here until one is given it.");
+    expect(body).not.toMatch(/\*\* is given|loses/);
+    for (const agent of listAgents(handle.db)) expect(body).not.toContain(agent.name);
+  });
+});

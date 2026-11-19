@@ -91,7 +91,7 @@ export function cliToolCardRefusal(db: Db, card: CliToolCard): string | null {
   if (tool === undefined) {
     return (
       `No card was offered: there is no command-line tool with the ID "${card.cliToolId}". Read the catalogue with \`cli_tools_list\`, ` +
-      "or offer a `cliToolAdd` card first when the program is not in it."
+      "or add the program in a `cliToolsAssign` card's `add` when it is not in it."
     );
   }
   if (card.attached && tool.archivedAt !== null) {
@@ -238,7 +238,7 @@ function assignRowProblem(row: AssignRow): string | null {
  * each sentence names what is wrong and the fix (invariant #8).
  */
 function cliToolsAssignRefusal(db: Db, card: CliToolsAssignCard): string | null {
-  for (const entry of card.add) {
+  for (const [index, entry] of card.add.entries()) {
     const command = entry.command.trim();
     const taken = getCliToolByCommand(db, command);
     if (taken !== undefined && taken.archivedAt === null) {
@@ -254,7 +254,11 @@ function cliToolsAssignRefusal(db: Db, card: CliToolsAssignCard): string | null 
       );
     }
     const problem = cliToolAddProblem(db, entry);
-    if (problem !== null) return `No card was offered: adding “${entry.name.trim()}” would be refused: ${problem}`;
+    if (problem !== null) {
+      // By its place and what it holds, since the name itself may be what is wrong (EO-860).
+      const named = [entry.name.trim() === "" ? null : `“${entry.name.trim()}”`, command === "" ? null : `\`${command}\``].filter((part) => part !== null).join(", ");
+      return `No card was offered: \`add\` entry ${index + 1}${named === "" ? "" : ` (${named})`} would be refused: ${problem} Fix that entry or leave it out.`;
+    }
   }
 
   for (const entry of card.agents) {
@@ -350,8 +354,27 @@ function listed(words: readonly string[]): string {
   return words.length <= 1 ? (words[0] ?? "") : `${words.slice(0, -1).join(", ")} and ${words.at(-1)}`;
 }
 
-/** What a `cliToolsAssign` card says in prose — what a later turn reads back. */
+/** An `add` entry in words — “GitHub CLI” (`gh`) — “Pull requests on GitHub.”. */
+function addWords(entry: AssignAdd): string {
+  const description = entry.description.trim() === "" ? "" : ` — “${entry.description.trim()}”`;
+  return `“${entry.name.trim()}” (\`${entry.command.trim()}\`)${description}`;
+}
+
+/**
+ * What a `cliToolsAssign` card says in prose — what a later turn reads
+ * back. A card with only adds (EO-860) reads as one list of what it
+ * catalogues, with no agent in it.
+ */
 function cliToolsAssignBody(db: Db, card: CliToolsAssignCard): string {
+  if (card.agents.length === 0) {
+    const count = card.add.length;
+    return [
+      count === 1 ? "**Add** this command-line tool to the catalogue:" : `**Add** these ${count} command-line tools to the catalogue:`,
+      card.add.map((entry) => `- ${addWords(entry)}`).join("\n"),
+      `The card shows whether ${count === 1 ? "it is" : "each is"} installed on this machine. Every row starts ticked and the person may untick any; ` +
+        "nothing is saved until the button on the card is pressed, and no agent is told about a CLI added here until one is given it.",
+    ].join("\n\n");
+  }
   const adds = card.add.map((entry) => {
     const description = entry.description.trim() === "" ? "" : ` — “${entry.description.trim()}”`;
     return `**Add** the command-line tool “${entry.name.trim()}” (\`${entry.command.trim()}\`) to the catalogue${description}.`;
