@@ -307,19 +307,24 @@ export function Segmented<T extends string>({
   options,
   onChange,
   size = "md",
+  disabled = false,
 }: {
   label: string;
   value: T;
   options: readonly { value: T; label: ReactNode; title?: string }[];
   onChange: (value: T) => void;
   size?: "md" | "sm";
+  /** Held still: no segment answers a click or an arrow. */
+  disabled?: boolean;
 }) {
   return (
     <div
       role="radiogroup"
       aria-label={label}
-      className="inline-flex shrink-0 gap-0.5 rounded-[10px] bg-canvas-raised p-0.5"
+      aria-disabled={disabled || undefined}
+      className={cn("inline-flex shrink-0 gap-0.5 rounded-[10px] bg-canvas-raised p-0.5", disabled && "opacity-60")}
       onKeyDown={(event) => {
+        if (disabled) return;
         // A radio group is one stop for Tab, and the arrows choose within it.
         const step = event.key === "ArrowRight" || event.key === "ArrowDown" ? 1 : event.key === "ArrowLeft" || event.key === "ArrowUp" ? -1 : 0;
         if (step === 0) return;
@@ -337,6 +342,7 @@ export function Segmented<T extends string>({
           type="button"
           role="radio"
           aria-checked={option.value === value}
+          disabled={disabled}
           // One stop for Tab: the chosen option, or the first when none is.
           tabIndex={option.value === value || (index === 0 && !options.some((candidate) => candidate.value === value)) ? 0 : -1}
           {...(option.title ? { title: option.title } : {})}

@@ -27,7 +27,8 @@ const NO_DO_ALL: ReadonlySet<AssistCardKind> = new Set<AssistCardKind>(["stepSec
  * presses each in order through its own press, the very call its button
  * makes. Each files its own outcome; one that fails stays open with its
  * reason and its button, and the rest go ahead. Then the block says what
- * came of it and shows the first that failed.
+ * came of it and shows the first that failed. It waits for any card
+ * pressed on its own to land first, so no card is pressed twice at once.
  */
 export function CardBlock({ message, conversationId, onDone }: { message: DiscussionMessage; conversationId: string; onDone: () => void }) {
   const cards = message.cards ?? [];
@@ -67,8 +68,11 @@ export function CardBlock({ message, conversationId, onDone }: { message: Discus
   const verbs = new Set(ready.map((card) => presses[card.index]!.verb));
   const doAll = running ?? (ready.length >= 2 ? { verb: verbs.size === 1 ? [...verbs][0]! : "Do", count: ready.length } : null);
   const done = cards.filter((card) => card.outcome?.done === true).length;
+  // A card pressed on its own and not back yet: no batch starts over it.
+  const inFlight = cards.some((card) => presses[card.index]?.pending === true);
 
   const pressAll = async () => {
+    if (runningNow.current || inFlight) return;
     const queue = ready.map((card) => ({ position: cards.indexOf(card), press: presses[card.index]! }));
     runningNow.current = true;
     setRunning({ verb: doAll!.verb, count: queue.length });
@@ -101,7 +105,7 @@ export function CardBlock({ message, conversationId, onDone }: { message: Discus
     >
       <div className="flex items-center gap-2 text-[11.5px] text-ink-subtle">
         {doAll !== null ? (
-          <Button size="sm" disabled={running !== null} onClick={() => void pressAll()}>
+          <Button size="sm" disabled={running !== null || inFlight} onClick={() => void pressAll()}>
             {doAll.verb} all ({doAll.count})
           </Button>
         ) : null}

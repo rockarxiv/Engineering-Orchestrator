@@ -220,6 +220,8 @@ export function OperationCard({
   // what the person chose on the card goes with it.
   const pressNow = useRef<() => Promise<boolean>>(async () => false);
   pressNow.current = async () => {
+    // Never a second press over one still in flight.
+    if (press.isPending) return false;
     try {
       const result = await press.mutateAsync();
       return result.said !== null && result.applied;
@@ -230,9 +232,10 @@ export function OperationCard({
   const report = useRef(onPress);
   report.current = onPress;
   const verb = verbOf(buttonFor(kind, detail).idle);
+  const pending = press.isPending;
   useEffect(() => {
-    report.current?.(pressable ? { verb, press: () => pressNow.current() } : null);
-  }, [pressable, verb]);
+    report.current?.(pressable ? { verb, pending, press: () => pressNow.current() } : null);
+  }, [pressable, verb, pending]);
   useEffect(() => () => report.current?.(null), []);
 
   return (
@@ -245,7 +248,7 @@ export function OperationCard({
 
       {/* What pressing it would do — until it has been pressed, when what it did is below instead. */}
       {outcome !== null ? null : detail?.kind === "cliToolsAssign" && assigned !== null ? (
-        <CliToolsAssignBody detail={detail} ticks={assigned} open={open} unticked={unticked} onChange={setUnticked} />
+        <CliToolsAssignBody detail={detail} ticks={assigned} open={open} disabled={disabled} unticked={unticked} onChange={setUnticked} />
       ) : detail !== null ? (
         <Body detail={detail} itemsWord={vocabulary.items.toLowerCase()} itemWord={vocabulary.item.toLowerCase()} aliasesRetired={aliasesRetired} />
       ) : (
@@ -262,6 +265,7 @@ export function OperationCard({
               </span>
               <Segmented
                 size="sm"
+                disabled={disabled}
                 label={`What to do about ${collision.slug}`}
                 value={chosen[collision.slug] ?? "reuse"}
                 options={CHOICES}
@@ -290,7 +294,7 @@ export function OperationCard({
           <span>
             Its {detail.itemCount === 1 ? "item" : `${detail.itemCount} items`}:
           </span>
-          <Segmented size="sm" label="What happens to the job's items" value={archiveItems} options={ITEMS_CHOICES} onChange={setArchiveItems} />
+          <Segmented size="sm" disabled={disabled} label="What happens to the job's items" value={archiveItems} options={ITEMS_CHOICES} onChange={setArchiveItems} />
         </div>
       ) : null}
 
@@ -342,6 +346,8 @@ export function OperationCard({
 export interface CardPress {
   /** The button's verb, for the block's "… all": "Give", "Add", "Create". */
   verb: string;
+  /** Its own press is in flight: a block starts no "do all" until it lands. */
+  pending: boolean;
   /** Presses the card through its own button's call; true when it ended done. */
   press: () => Promise<boolean>;
 }
@@ -844,12 +850,15 @@ function CliToolsAssignBody({
   detail,
   ticks,
   open,
+  disabled,
   unticked,
   onChange,
 }: {
   detail: CliToolsAssignDetail;
   ticks: AssignTicks;
   open: boolean;
+  /** Held still, as a block does while "do all" runs (EO-863). */
+  disabled: boolean;
   unticked: CliToolsUnticked;
   onChange: (next: CliToolsUnticked) => void;
 }) {
@@ -871,6 +880,7 @@ function CliToolsAssignBody({
           {open ? (
             <Checkbox
               checked={ticks.addTicked(add.command)}
+              disabled={disabled}
               ariaLabel={`Add ${add.name}`}
               onChange={(on) => onChange({ ...unticked, adds: toggled(unticked.adds, add.command, !on) })}
               label={<b className="font-semibold">Add {add.name}</b>}
@@ -911,7 +921,7 @@ function CliToolsAssignBody({
                 {open && !row.inPlace ? (
                   <Checkbox
                     checked={ticks.rowTicked(row)}
-                    disabled={ticks.rowDisabled(row)}
+                    disabled={disabled || ticks.rowDisabled(row)}
                     ariaLabel={words}
                     onChange={(on) => onChange({ ...unticked, rows: toggled(unticked.rows, rowKey(row), !on) })}
                     label={line}

@@ -47,6 +47,8 @@ function server(kinds: AssistCardKind[], { outcomes = [], failing = [] }: { outc
   const detail = (payload: unknown): { card: AssistCardDetail; problem: null } => {
     const index = (payload as { index: number }).index;
     switch (kinds[index]) {
+      case "jobDelete":
+        return { card: { kind: "jobDelete", jobId: `j-${index}`, jobName: `Job ${index + 1}`, lines: [], itemCount: 2 }, problem: null };
       case "pipelineDelete":
         return { card: { kind: "pipelineDelete", pipelineId: `p-${index}`, pipelineName: `Pipeline ${index + 1}`, itemCount: 0 }, problem: null };
       case "stepSecret":
@@ -256,5 +258,66 @@ describe("“do all”", () => {
     release();
     await waitFor(() => expect(within(block()).getByText("3 done")).toBeInTheDocument());
     expect(within(block()).getByRole("button", { name: "Previous card" })).toBeEnabled();
+  });
+
+  it("holds a card's own choices still while it runs", async () => {
+    const { stub, calls } = draw(["jobDelete", "jobDelete"]);
+    let release = () => {};
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    window.eo.ipc.invoke = (async (channel: string, payload: unknown) => {
+      if (channel === "assist:applyCard") await gate;
+      return stub.invoke(channel, payload);
+    }) as never;
+
+    const doAll = await within(block()).findByRole("button", { name: "Delete all (2)" });
+    // Each job's own keep-or-archive choice, on each card.
+    const choice = () => within(shownCard()).getByRole("radiogroup", { name: "What happens to the job's items" });
+    fireEvent.click(within(choice()).getByRole("radio", { name: "Archive them" }));
+    fireEvent.click(doAll);
+
+    await waitFor(() => expect(within(shownCard()).getByRole("button", { name: "Deleting…" })).toBeDisabled());
+    for (const radio of within(block()).getAllByRole("radio", { hidden: true })) expect(radio).toBeDisabled();
+    // Neither a click nor an arrow changes what was chosen.
+    fireEvent.click(within(choice()).getByRole("radio", { name: "Keep them" }));
+    fireEvent.keyDown(within(choice()).getByRole("radio", { name: "Archive them" }), { key: "ArrowLeft" });
+    expect(within(choice()).getByRole("radio", { name: "Archive them" })).toHaveAttribute("aria-checked", "true");
+
+    release();
+    await waitFor(() => expect(within(block()).getByText("2 done")).toBeInTheDocument());
+    // The first card's choice went with its press; the second's default with its own.
+    expect(sent(calls, "assist:applyCard")).toEqual([
+      { conversationId: "conv-1", messageId: "reply-1", index: 0, choices: {}, archiveItems: true },
+      { conversationId: "conv-1", messageId: "reply-1", index: 1, choices: {}, archiveItems: false },
+    ]);
+  });
+
+  it("waits for a card pressed on its own to land, and then presses each card once", async () => {
+    const { stub } = draw(["cliToolAttach", "cliToolAttach", "cliToolAttach", "cliToolAttach"]);
+    let release = () => {};
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    /** Each press as it is sent, before any answer. */
+    const pressed: number[] = [];
+    window.eo.ipc.invoke = (async (channel: string, payload: unknown) => {
+      if (channel === "assist:applyCard") pressed.push((payload as { index: number }).index);
+      if (channel === "assist:applyCard" && (payload as { index: number }).index === 0) await gate;
+      return stub.invoke(channel, payload);
+    }) as never;
+
+    const doAll = await within(block()).findByRole("button", { name: "Give all (4)" });
+    await waitFor(() => expect(within(shownCard()).getByRole("button", { name: "Give CLI" })).toBeEnabled());
+    fireEvent.click(within(shownCard()).getByRole("button", { name: "Give CLI" }));
+
+    // The first card's own press is in flight: no batch can start over it.
+    await waitFor(() => expect(doAll).toBeDisabled());
+    fireEvent.click(doAll);
+    expect(pressed).toEqual([0]);
+
+    release();
+    const rest = await within(block()).findByRole("button", { name: "Give all (3)" });
+    await waitFor(() => expect(rest).toBeEnabled());
+    fireEvent.click(rest);
+
+    await waitFor(() => expect(within(block()).getByText("3 done")).toBeInTheDocument());
+    expect(pressed).toEqual([0, 1, 2, 3]);
   });
 });
