@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from "react";
-import { Check, ChevronLeft, ChevronRight, LoaderCircle, Minus, Pencil, X } from "lucide-react";
+import { Check, LoaderCircle, Minus, Pencil, X } from "lucide-react";
 import { Markdown, cn } from "@eo/ui";
 import type { AskedQuestion, QuestionCardProps } from "../../shared/discussions/questions";
 import { Button, IconButton } from "../kit";
+import { Pager, pageByArrow } from "./Pager";
 import { ReferenceText } from "./references";
 
 // The grouping is the thread's, not the drawing's: one helper, so this
@@ -136,14 +137,7 @@ export function QuestionCard({ questions, live, busy, onSubmit }: QuestionCardPr
           void answer(current.options[digit - 1] ?? null);
           return;
         }
-        if (event.key === "ArrowLeft" && index > 0) {
-          event.preventDefault();
-          setIndex(index - 1);
-        }
-        if (event.key === "ArrowRight" && index < questions.length - 1) {
-          event.preventDefault();
-          setIndex(index + 1);
-        }
+        pageByArrow(event, index, questions.length, setIndex);
       }}
       className="flex flex-col gap-2.5 rounded-[14px] bg-canvas-subtle px-4 py-3.5 shadow-[inset_0_0_0_1px_var(--color-line-strong)] focus:outline-none"
     >
@@ -158,27 +152,7 @@ export function QuestionCard({ questions, live, busy, onSubmit }: QuestionCardPr
           </div>
         </div>
         <div className="-mr-1.5 -mt-1 flex shrink-0 items-center gap-0.5 text-[11.5px] text-ink-subtle">
-          {questions.length > 1 ? (
-            <>
-              <IconButton
-                label="Previous question"
-                icon={<ChevronLeft size={14} />}
-                disabled={index === 0 || disabled}
-                onClick={() => setIndex(index - 1)}
-                className="h-[26px] w-[26px] disabled:opacity-30"
-              />
-              <span aria-live="polite" className="tabular-nums">
-                {index + 1} of {questions.length}
-              </span>
-              <IconButton
-                label="Next question"
-                icon={<ChevronRight size={14} />}
-                disabled={index === questions.length - 1 || disabled}
-                onClick={() => setIndex(index + 1)}
-                className="h-[26px] w-[26px] disabled:opacity-30"
-              />
-            </>
-          ) : null}
+          <Pager noun="question" index={index} count={questions.length} disabled={disabled} onChange={setIndex} />
           <IconButton
             label="Skip the rest"
             title="Skip whatever is left and let the product owner decide"

@@ -12,8 +12,7 @@ import { useLiveDrafts } from "../shared/assist/liveDeltas";
 import { useSuggestedReply } from "../shared/assist/suggestedReply";
 import { assistDraftKey, drawAssistReply, mergedMessages, pendingToDraw, SENT_INTO_THE_TURN, useAssistRoom, type PendingSend } from "../shared/assist/useAssistRoom";
 import { OfferedAnswers } from "./conversation/OfferedAnswers";
-import { OperationCard } from "./conversation/OperationCard";
-import { TrialPublishCard } from "./conversation/TrialPublishCard";
+import { CardBlock } from "./conversation/CardBlock";
 import { ProposalCard } from "./conversation/ProposalCard";
 import { QuestionCard, transcriptRows, type TranscriptRow } from "./conversation/QuestionCard";
 import { Composer, type ComposerCompletion } from "./conversation/Composer";
@@ -448,21 +447,13 @@ function ChatRowView({ row, conversationId, retry, busy, handlers }: ChatRowProp
   }
   // Things only a person may do (EO-521): export, import or delete a pipeline, or discard
   // this machine's edits to one. Each its card whether or not its button is still on it: once
-  // pressed it shows what came of it. One reply can carry several (EO-862), drawn one under
-  // another, each pressed on its own.
-  // The publish card after a draft's trials (EO-588): its own card, with the graph and the module rows.
+  // pressed it shows what came of it. One reply can carry several (EO-862), drawn as one paged
+  // block, each pressed on its own or, when they are of one kind, all at once (EO-863).
+  // The publish card after a draft's trials (EO-588) is among them, with the graph and the module rows.
   if (message.cards && message.cards.length > 0) {
     return (
       <Turn name="Assistant" message={message}>
-        <div className="flex flex-col gap-2.5">
-          {message.cards.map((card) =>
-            card.kind === "trialPublish" ? (
-              <TrialPublishCard key={card.index} message={message} card={card} conversationId={conversationId} onDone={handlers.refresh} />
-            ) : (
-              <OperationCard key={card.index} message={message} card={card} conversationId={conversationId} onDone={handlers.refresh} />
-            ),
-          )}
-        </div>
+        <CardBlock message={message} conversationId={conversationId} onDone={handlers.refresh} />
       </Turn>
     );
   }

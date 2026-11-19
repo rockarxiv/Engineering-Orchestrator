@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import { Archive, CalendarClock, Download, KeyRound, Shapes, ShieldCheck, Terminal, Trash2, Upload, UnlockKeyhole, Variable, Webhook } from "lucide-react";
@@ -87,18 +87,30 @@ import { useInvalidateOnPush } from "../../query/useInvalidateOnPush";
  * giving that new CLI. A row already in place has no box. The button
  * counts what it will do — "Add 2, give 5" — and a press refused at that
  * moment writes nothing and leaves the card to untick the row it names.
+ *
+ * In a reply's block of several (EO-863) the block can hold every button
+ * still (`disabled`), and is handed this card's own press while its
+ * button could be pressed (`onPress`), which is how "do all" presses it:
+ * through the very call the button makes, with whatever the person chose
+ * on the card.
  */
 export function OperationCard({
   message,
   card,
   conversationId,
   onDone,
+  disabled = false,
+  onPress,
 }: {
   message: DiscussionMessage;
   /** Which of the message's cards this is (EO-862): one reply can carry several, each pressed on its own. */
   card: AssistCardView;
   conversationId: string;
   onDone: () => void;
+  /** Holds the button still, as a block does while "do all" runs (EO-863). */
+  disabled?: boolean;
+  /** Given this card's own press while its button could be pressed, and null when it no longer could. */
+  onPress?: (press: CardPress | null) => void;
 }) {
   const queryClient = useQueryClient();
   const vocabulary = useChromeVocabulary();
@@ -201,6 +213,27 @@ export function OperationCard({
 
   const label = assigned === null ? buttonFor(kind, detail) : { ...buttonFor(kind, detail), idle: assigned.label };
   const refused = detail !== null && (cannotPress(detail) || (assigned !== null && assigned.count === 0));
+  const pressable = open && detail !== null && !refused && !(typesValue && value === "");
+
+  // The press a block's "do all" makes (EO-863): this button's, to the
+  // letter, resolving to whether it ended done. The latest render's, so
+  // what the person chose on the card goes with it.
+  const pressNow = useRef<() => Promise<boolean>>(async () => false);
+  pressNow.current = async () => {
+    try {
+      const result = await press.mutateAsync();
+      return result.said !== null && result.applied;
+    } catch {
+      return false;
+    }
+  };
+  const report = useRef(onPress);
+  report.current = onPress;
+  const verb = verbOf(buttonFor(kind, detail).idle);
+  useEffect(() => {
+    report.current?.(pressable ? { verb, press: () => pressNow.current() } : null);
+  }, [pressable, verb]);
+  useEffect(() => () => report.current?.(null), []);
 
   return (
     <section aria-label={TITLE[kind]} className="flex flex-col gap-2.5 rounded-[14px] bg-canvas-subtle px-4 py-3.5">
@@ -266,7 +299,7 @@ export function OperationCard({
           <Button
             variant={kind === "pipelineDelete" || kind === "itemTypeDelete" || kind === "jobDelete" ? "danger" : "primary"}
             size="sm"
-            disabled={press.isPending || detail === null || refused || (typesValue && value === "")}
+            disabled={disabled || press.isPending || detail === null || refused || (typesValue && value === "")}
             onClick={() => press.mutate()}
           >
             {press.isPending ? label.pending : label.idle}
@@ -303,6 +336,19 @@ export function OperationCard({
       ) : null}
     </section>
   );
+}
+
+/** A card's own press, as a block's "do all" makes it (EO-863). */
+export interface CardPress {
+  /** The button's verb, for the block's "… all": "Give", "Add", "Create". */
+  verb: string;
+  /** Presses the card through its own button's call; true when it ended done. */
+  press: () => Promise<boolean>;
+}
+
+/** The verb a button's words start with: "Give CLI" → "Give", "Export…" → "Export". */
+function verbOf(idle: string): string {
+  return (idle.split(" ")[0] ?? idle).replace(/…$/, "");
 }
 
 /** An import's choice per colliding module, as the editor's Import offered it. */

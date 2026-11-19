@@ -735,7 +735,7 @@ describe("the chat layout's home", () => {
   // drawn as a lone card is, one under another, and each reads and is
   // pressed by its own index — a card the reply refused keeps its index
   // and is simply not there.
-  it("draws each card of a reply with several, and presses each by its own index", async () => {
+  it("draws a reply's cards as one paged block, and presses each by its own index", async () => {
     const card = message({
       id: "c1",
       kind: "decision",
@@ -754,15 +754,21 @@ describe("the chat layout's home", () => {
     });
     open("/chat", invoke);
 
-    await waitFor(() => expect(screen.getAllByRole("region", { name: "Delete a pipeline" })).toHaveLength(2));
-    const [first, third] = screen.getAllByRole("region", { name: "Delete a pipeline" });
-    expect(within(third!).getByText("Deleted Shipping.")).toBeInTheDocument();
-    expect(within(third!).queryByRole("button", { name: "Delete pipeline" })).not.toBeInTheDocument();
+    // One paged block (EO-863): one card on show at a time.
+    const block = await screen.findByRole("group", { name: "Cards from the assistant" });
+    expect(within(block).getByText("1 of 2")).toBeInTheDocument();
+    expect(within(block).getAllByRole("region", { name: "Delete a pipeline" })).toHaveLength(1);
+    fireEvent.click(within(block).getByRole("button", { name: "Next card" }));
+    const third = within(block).getByRole("region", { name: "Delete a pipeline" });
+    expect(within(third).getByText("Deleted Shipping.")).toBeInTheDocument();
+    expect(within(third).queryByRole("button", { name: "Delete pipeline" })).not.toBeInTheDocument();
     await waitFor(() =>
       expect(invoke.mock.calls.filter(([channel]) => channel === "assist:card").map(([, payload]) => (payload as { index: number }).index).sort()).toEqual([0, 2]),
     );
 
-    fireEvent.click(await within(first!).findByRole("button", { name: "Delete pipeline" }));
+    fireEvent.click(within(block).getByRole("button", { name: "Previous card" }));
+    const first = within(block).getByRole("region", { name: "Delete a pipeline" });
+    fireEvent.click(await within(first).findByRole("button", { name: "Delete pipeline" }));
 
     await waitFor(() => expect(invoke.mock.calls.some(([channel]) => channel === "assist:applyCard")).toBe(true));
     expect(invoke.mock.calls.find(([channel]) => channel === "assist:applyCard")?.[1]).toMatchObject({ messageId: "c1", index: 0 });
