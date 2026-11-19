@@ -629,7 +629,7 @@ const PIPELINE_SAVE_TOOL: ToolSpec = withoutWebhookUnattended(
         "item must have to enter: left out keeps the pipeline's rules, `[]` clears them, and eo_change_pipeline says how they are written. Where a webhook job files " +
         "onto the pipeline, a graph in which a step that acts outside EO " +
         "can be reached before a human step is refused; a person may accept that for one pipeline by pressing the button " +
-        `on the assistant's card for it (\`card\` with the kind \`${WEBHOOK_UNATTENDED_CARD_KIND}\`), and this tool cannot — ` +
+        `on the assistant's card for it (a card in \`cards\` with the kind \`${WEBHOOK_UNATTENDED_CARD_KIND}\`), and this tool cannot — ` +
         "a call that tries to is refused and publishes nothing.",
       // Without `restoredFrom` (EO-359): restoring who a human step waits on
       // is a person's decision, for the reason `steps:setOwner` is not a
@@ -1675,6 +1675,15 @@ const RUN_EVENTS_TOOL: ToolSpec = {
  * event are a card the person presses (catalog.test.ts says why).
  */
 
+/**
+ * What the catalogue says of the assistant's cards when several things
+ * are asked for at once (EO-862): one reply carries a card for each,
+ * which the system agent's prompt says at length.
+ */
+export const SEVERAL_CARDS =
+  "Several asked for at once are several cards in one reply's `cards` — at most 20, each one decision the person presses " +
+  "on its own, and on their own, with no draft, modules, change or proposals beside them.";
+
 /** A text an agent must fill, refused by its own name rather than as the channel's "Invalid request payload". */
 function filledText(why: string) {
   return z.string().refine((value) => value.trim() !== "", { error: `must not be blank — ${why}` });
@@ -2180,7 +2189,8 @@ const READ_TOOLS: readonly ToolSpec[] = [
       "project's own, marked as added in this project, beside the pack's, and is never deleted; one made here " +
       "can be reshaped, and deleted while no item is of it. Pass projectId from projects_list; omit it for the project " +
       "the app window is showing. No tool adds, changes or removes a type — that is a card a person presses in the " +
-      "assistant's chat.",
+      "assistant's chat. " +
+      SEVERAL_CARDS,
     kind: "read",
     list: "types",
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
@@ -3500,7 +3510,9 @@ const AgentAttachmentSetArgsSchema = z.object({
 /** What EO's system agent is told when it asks to tick a CLI itself (EO-822). */
 export const CLI_TOOL_ATTACH_ADMIN_REFUSAL =
   "Nothing was attached or detached: which command-line tools an agent is told about is a person's decision. " +
-  "Offer a `cliToolsAssign` card instead, and the person presses it. Nothing has changed.";
+  "Offer a `cliToolsAssign` card instead, and the person presses it. " +
+  SEVERAL_CARDS +
+  " Nothing has changed.";
 
 const AGENT_ATTACHMENT_SET_TOOL: ToolSpec = {
   name: "agent_attachments_set",

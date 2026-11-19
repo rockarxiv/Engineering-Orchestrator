@@ -66,9 +66,9 @@ async function chat(body = "Set up the CLIs."): Promise<Item> {
   return getItem(handle.db, sent.conversation.id as Uuid)!;
 }
 
-/** A succeeded `assist` run returning `card`, and what it posted. */
+/** A succeeded `assist` run returning `card` as its one card, and what it posted. */
 function turn(conversation: Item, card: AssistCard): { cardId: Uuid | undefined; rejections: string[] } {
-  const output = { message: "That is yours to press.", card };
+  const output = { message: "That is yours to press.", cards: [card] };
   const parsed = AssistOutputSchema.parse(output);
   const agent = assistAgent(handle.db)!;
   const initiationId = listCommentsForItem(handle.db, conversation.id)

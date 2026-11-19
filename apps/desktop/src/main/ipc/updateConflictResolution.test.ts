@@ -223,7 +223,7 @@ function resolutionReply(conflict: UpdateConflictDetail): AssistReply {
     message: "Three ways to resolve it. I recommend the first: it keeps your squash merge and adds autofix.",
     draft: recommendedDraft(conflict),
     alternatives: [templateDraft(conflict)],
-    card: { kind: "pipelineKeepMine", pipelineId: conflict.pipelineId },
+    cards: [{ kind: "pipelineKeepMine", pipelineId: conflict.pipelineId }],
   };
 }
 
@@ -526,11 +526,11 @@ describe("Keep my pipeline", () => {
   it("is not offered for a pipeline with no held update", async () => {
     const { conflictId, noticeId } = heldUpdate();
     const chat = await openChat(conflictId, noticeId);
-    turn(chat, { message: "Keep it?", card: { kind: "pipelineKeepMine", pipelineId: "default" } });
+    turn(chat, { message: "Keep it?", cards: [{ kind: "pipelineKeepMine", pipelineId: "default" }] });
     expect(postedCards(chat).cards).toHaveLength(1);
 
     await call("pipeline:keepOwnVersion", { pipelineId: "default" });
-    turn(chat, { message: "Keep it?", card: { kind: "pipelineKeepMine", pipelineId: "default" } });
+    turn(chat, { message: "Keep it?", cards: [{ kind: "pipelineKeepMine", pipelineId: "default" }] });
 
     expect(postedCards(chat)).toEqual({ cards: [], rejections: [expect.stringContaining('No card was offered: "Delivery" has no held template update')] });
   });

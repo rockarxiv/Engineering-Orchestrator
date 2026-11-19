@@ -137,8 +137,8 @@ describe("the `assist` action", () => {
   it("validates a turn's result, and says which field is wrong when it does not", () => {
     const ok = validateActionResult(registry, "assist", { message: "That is on Review." });
     expect(ok.ok).toBe(true);
-    // `change` is null rather than absent on a turn that carries none (EO-418), and so are `card` (EO-521) and `trial` (EO-587).
-    expect(ok.ok && ok.value).toEqual({ message: "That is on Review.", questions: [], proposals: [], change: null, changeProposalId: null, card: null, trial: null });
+    // `change` is null rather than absent on a turn that carries none (EO-418), and so is `trial` (EO-587); `cards` is empty (EO-521, EO-862).
+    expect(ok.ok && ok.value).toEqual({ message: "That is on Review.", questions: [], proposals: [], change: null, changeProposalId: null, cards: [], trial: null });
 
     const bad = validateActionResult(registry, "assist", { message: "Here.", questions: [{ ...question, options: [] }] });
     expect(bad.ok).toBe(false);
@@ -336,10 +336,11 @@ describe("the action definitions an assist draft carries (EO-426)", () => {
 describe("a card for something only a person may do (EO-521)", () => {
   const card = { kind: "pipelineDelete" as const, pipelineId: "default" };
 
-  it("is null on an ordinary turn, so a reply from before it read back exactly as it did", () => {
+  it("is an empty list on an ordinary turn", () => {
     const parsed = AssistOutputSchema.parse({ message: "Nothing to press." });
 
-    expect(parsed.card).toBeNull();
+    expect(parsed.cards).toEqual([]);
+    expect(parsed).not.toHaveProperty("card");
   });
 
   it("accepts each kind on its own, naming only what it is about", () => {
@@ -349,28 +350,106 @@ describe("a card for something only a person may do (EO-521)", () => {
       { kind: "pipelineDelete", pipelineId: "default" },
       { kind: "pipelineDiscardEdits", pipelineId: "default" },
     ]) {
-      expect(AssistOutputSchema.safeParse({ message: "The card does it.", card: offered }).success).toBe(true);
+      expect(AssistOutputSchema.safeParse({ message: "The card does it.", cards: [offered] }).success).toBe(true);
     }
   });
 
   it("refuses a kind it does not know and a card missing what it is about", () => {
-    expect(AssistOutputSchema.safeParse({ message: "x", card: { kind: "pipelineRename", pipelineId: "default" } }).success).toBe(false);
-    expect(AssistOutputSchema.safeParse({ message: "x", card: { kind: "pipelineImport", pipelineId: "default" } }).success).toBe(false);
+    expect(AssistOutputSchema.safeParse({ message: "x", cards: [{ kind: "pipelineRename", pipelineId: "default" }] }).success).toBe(false);
+    expect(AssistOutputSchema.safeParse({ message: "x", cards: [{ kind: "pipelineImport", pipelineId: "default" }] }).success).toBe(false);
   });
 
   it("comes on its own: not beside a draft, a change, modules or work proposals", () => {
-    const beside = AssistOutputSchema.safeParse({ message: "x", card, draft: graph() });
+    const beside = AssistOutputSchema.safeParse({ message: "x", cards: [card], draft: graph() });
 
     expect(beside.success).toBe(false);
-    expect(beside.success ? [] : beside.error.issues.map((issue) => issue.path.join("."))).toContain("card");
+    expect(beside.success ? [] : beside.error.issues.map((issue) => issue.path.join("."))).toContain("cards");
     const proposals = [{ action: "amend", item: "EO-42", why: "The title is wrong.", title: "A better title" }];
     expect(AssistOutputSchema.safeParse({ message: "x", proposals }).success).toBe(true);
-    const withProposals = AssistOutputSchema.safeParse({ message: "x", card, proposals });
-    expect(withProposals.success ? [] : withProposals.error.issues.map((issue) => issue.path.join("."))).toContain("card");
+    const withProposals = AssistOutputSchema.safeParse({ message: "x", cards: [card], proposals });
+    expect(withProposals.success ? [] : withProposals.error.issues.map((issue) => issue.path.join("."))).toContain("cards");
   });
 
   it("is not offered by a turn that asks", () => {
-    expect(AssistOutputSchema.safeParse({ message: "x", card, questions: [question] }).success).toBe(false);
+    expect(AssistOutputSchema.safeParse({ message: "x", cards: [card], questions: [question] }).success).toBe(false);
+  });
+});
+
+describe("several cards in one reply (EO-862)", () => {
+  const cards = [
+    { kind: "pipelineDelete" as const, pipelineId: "default" },
+    { kind: "itemTypeDelete" as const, itemTypeId: "case" },
+    { kind: "jobDelete" as const, jobId: "monday-report" },
+  ];
+  const keep = { kind: "pipelineKeepMine" as const, pipelineId: "default" };
+  const pathsOf = (result: ReturnType<typeof AssistOutputSchema.safeParse>) => (result.success ? [] : result.error.issues.map((issue) => issue.path.join(".")));
+  const moduleChange = {
+    moduleId: "m1",
+    script: "export default async () => ({ result: 'done' });",
+    manifest: { slug: "m1", name: "M1", description: "Does it.", results: [{ key: "done" }] },
+    rationale: "Because.",
+  };
+
+  it("carries several cards of different kinds, in order", () => {
+    expect(AssistOutputSchema.parse({ message: "Three things.", cards }).cards).toEqual(cards);
+  });
+
+  it("carries twenty, and refuses twenty-one, telling the agent to offer the rest later", () => {
+    const many = (count: number) => Array.from({ length: count }, (_, index) => ({ kind: "jobDelete" as const, jobId: `job-${index}` }));
+    expect(AssistOutputSchema.safeParse({ message: "x", cards: many(20) }).success).toBe(true);
+    const over = AssistOutputSchema.safeParse({ message: "x", cards: many(21) });
+    expect(over.success).toBe(false);
+    expect(pathsOf(over)).toContain("cards");
+    expect(over.success ? "" : over.error.issues.map((issue) => issue.message).join(" ")).toContain("offer the rest once the person has pressed these");
+  });
+
+  it("refuses cards beside a draft, modules, a change, a frozen change or work proposals", () => {
+    const proposals = [{ action: "amend", item: "EO-42", why: "The title is wrong.", title: "A better title" }];
+    const module = { slug: "m2", name: "M2", description: "x", script: "export default async () => ({ result: 'done' })", manifest: {}, tests: [] };
+    for (const beside of [
+      { draft: graph() },
+      { modules: [module] },
+      { change: moduleChange },
+      { changeProposalId: "019a0000-0000-7000-8000-000000000814" },
+      { proposals },
+    ]) {
+      const parsed = AssistOutputSchema.safeParse({ message: "x", cards, ...beside });
+      expect(parsed.success, JSON.stringify(Object.keys(beside))).toBe(false);
+    }
+    for (const beside of [{ draft: graph() }, { proposals }]) {
+      expect(pathsOf(AssistOutputSchema.safeParse({ message: "x", cards, ...beside }))).toContain("cards");
+    }
+  });
+
+  it("lets a lone keep-pipeline card beside drafts, and nothing more", () => {
+    expect(AssistOutputSchema.safeParse({ message: "x", cards: [keep], draft: graph() }).success).toBe(true);
+    expect(pathsOf(AssistOutputSchema.safeParse({ message: "x", cards: [keep, keep], draft: graph() }))).toContain("cards");
+    expect(pathsOf(AssistOutputSchema.safeParse({ message: "x", cards: [keep, cards[0]], draft: graph() }))).toContain("cards");
+  });
+
+  it("refuses cards beside questions", () => {
+    expect(AssistOutputSchema.safeParse({ message: "x", cards, questions: [question] }).success).toBe(false);
+  });
+});
+
+describe("a run stored before EO-862, which said `card`", () => {
+  it("reads `card: {...}` as a list of that one card", () => {
+    const card = { kind: "pipelineExport" as const, pipelineId: "default" };
+    const parsed = AssistOutputSchema.parse({ message: "Export it.", questions: [], proposals: [], change: null, changeProposalId: null, card, trial: null });
+
+    expect(parsed.cards).toEqual([card]);
+    expect(parsed).not.toHaveProperty("card");
+  });
+
+  it("reads `card: null` as no cards", () => {
+    const parsed = AssistOutputSchema.parse({ message: "Nothing to press.", questions: [], proposals: [], change: null, changeProposalId: null, card: null, trial: null });
+
+    expect(parsed.cards).toEqual([]);
+    expect(parsed).not.toHaveProperty("card");
+  });
+
+  it("is still held to the rules: an old card beside questions is refused", () => {
+    expect(AssistOutputSchema.safeParse({ message: "x", card: { kind: "pipelineExport", pipelineId: "default" }, questions: [question] }).success).toBe(false);
   });
 });
 
@@ -383,23 +462,23 @@ describe("the cards for settings that are a person's (EO-522)", () => {
       { kind: "stepSecret", stepId: "deploy", name: "DEPLOY_TOKEN", action: "clear" },
       { kind: "stepVariable", stepId: "deploy", name: "REGION", action: "set" },
     ]) {
-      expect(AssistOutputSchema.safeParse({ message: "The card does it.", card: offered }).success).toBe(true);
+      expect(AssistOutputSchema.safeParse({ message: "The card does it.", cards: [offered] }).success).toBe(true);
     }
   });
 
   it("has no place for a value: one the agent writes is dropped, so it never reaches the card", () => {
     const parsed = AssistOutputSchema.parse({
       message: "The card does it.",
-      card: { kind: "stepSecret", stepId: "deploy", name: "DEPLOY_TOKEN", action: "set", value: "hunter2" },
+      cards: [{ kind: "stepSecret", stepId: "deploy", name: "DEPLOY_TOKEN", action: "set", value: "hunter2" }],
     });
 
-    expect(parsed.card).toEqual({ kind: "stepSecret", stepId: "deploy", name: "DEPLOY_TOKEN", action: "set" });
+    expect(parsed.cards).toEqual([{ kind: "stepSecret", stepId: "deploy", name: "DEPLOY_TOKEN", action: "set" }]);
     expect(JSON.stringify(parsed)).not.toContain("hunter2");
   });
 
   it("refuses a webhook card that does not say which way, and a step card that does not say set or clear", () => {
-    expect(AssistOutputSchema.safeParse({ message: "x", card: { kind: "pipelineWebhookUnattended", pipelineId: "default" } }).success).toBe(false);
-    expect(AssistOutputSchema.safeParse({ message: "x", card: { kind: "stepVariable", stepId: "deploy", name: "REGION", action: "reveal" } }).success).toBe(false);
+    expect(AssistOutputSchema.safeParse({ message: "x", cards: [{ kind: "pipelineWebhookUnattended", pipelineId: "default" }] }).success).toBe(false);
+    expect(AssistOutputSchema.safeParse({ message: "x", cards: [{ kind: "stepVariable", stepId: "deploy", name: "REGION", action: "reveal" }] }).success).toBe(false);
   });
 });
 
@@ -413,17 +492,17 @@ describe("the cards for a project's item types (EO-523)", () => {
       { kind: "itemTypeUpdate", itemTypeId: "t", label: null, plural: null, container: true, fields: [] },
       { kind: "itemTypeDelete", itemTypeId: "t" },
     ]) {
-      expect(AssistOutputSchema.safeParse({ message: "The card does it.", card: offered }).success).toBe(true);
+      expect(AssistOutputSchema.safeParse({ message: "The card does it.", cards: [offered] }).success).toBe(true);
     }
   });
 
   it("refuses a change that leaves out what it keeps rather than saying null, so both backends write one document", () => {
-    expect(AssistOutputSchema.safeParse({ message: "x", card: { kind: "itemTypeUpdate", itemTypeId: "t", label: "Request" } }).success).toBe(false);
+    expect(AssistOutputSchema.safeParse({ message: "x", cards: [{ kind: "itemTypeUpdate", itemTypeId: "t", label: "Request" }] }).success).toBe(false);
   });
 
   it("refuses a field of a kind the editor never offered", () => {
     const odd = { ...create, fields: [{ name: "when", kind: "date", required: false }] };
-    expect(AssistOutputSchema.safeParse({ message: "x", card: odd }).success).toBe(false);
+    expect(AssistOutputSchema.safeParse({ message: "x", cards: [odd] }).success).toBe(false);
   });
 });
 
@@ -451,15 +530,15 @@ describe("the cards for jobs (EO-786)", () => {
       { kind: "jobWebhook", jobId: "j", action: "regenerateSecret" },
       { kind: "jobWebhook", jobId: "j", action: "testEvent" },
     ]) {
-      expect(AssistOutputSchema.safeParse({ message: "The card does it.", card: offered }).success, JSON.stringify(offered)).toBe(true);
+      expect(AssistOutputSchema.safeParse({ message: "The card does it.", cards: [offered] }).success, JSON.stringify(offered)).toBe(true);
     }
   });
 
   it("refuses a webhook job created on a card, a webhook action it does not know, and a change that leaves keys out", () => {
     const webhook = { ...create, trigger: { kind: "webhook", path: "helpdesk", secret: "x".repeat(40), mapping: { title: null, body: null, eventKey: null, spec: {} } } };
-    expect(AssistOutputSchema.safeParse({ message: "x", card: webhook }).success).toBe(false);
-    expect(AssistOutputSchema.safeParse({ message: "x", card: { kind: "jobWebhook", jobId: "j", action: "showSecret" } }).success).toBe(false);
-    expect(AssistOutputSchema.safeParse({ message: "x", card: { kind: "jobUpdate", jobId: "j", name: "Other" } }).success).toBe(false);
+    expect(AssistOutputSchema.safeParse({ message: "x", cards: [webhook] }).success).toBe(false);
+    expect(AssistOutputSchema.safeParse({ message: "x", cards: [{ kind: "jobWebhook", jobId: "j", action: "showSecret" }] }).success).toBe(false);
+    expect(AssistOutputSchema.safeParse({ message: "x", cards: [{ kind: "jobUpdate", jobId: "j", name: "Other" }] }).success).toBe(false);
   });
 });
 
@@ -471,13 +550,13 @@ describe("the cards for command-line tools (EO-822)", () => {
       { kind: "cliToolAttach", agentId: "a", cliToolId: "c", attached: true },
       { kind: "cliToolAttach", agentId: "a", cliToolId: "c", attached: false },
     ]) {
-      expect(AssistOutputSchema.safeParse({ message: "The card does it.", card: offered }).success, JSON.stringify(offered)).toBe(true);
+      expect(AssistOutputSchema.safeParse({ message: "The card does it.", cards: [offered] }).success, JSON.stringify(offered)).toBe(true);
     }
   });
 
   it("refuses a CLI with no command, and a tick that does not say which way", () => {
-    expect(AssistOutputSchema.safeParse({ message: "x", card: { kind: "cliToolAdd", name: "GitHub CLI", command: "", description: "" } }).success).toBe(false);
-    expect(AssistOutputSchema.safeParse({ message: "x", card: { kind: "cliToolAttach", agentId: "a", cliToolId: "c" } }).success).toBe(false);
+    expect(AssistOutputSchema.safeParse({ message: "x", cards: [{ kind: "cliToolAdd", name: "GitHub CLI", command: "", description: "" }] }).success).toBe(false);
+    expect(AssistOutputSchema.safeParse({ message: "x", cards: [{ kind: "cliToolAttach", agentId: "a", cliToolId: "c" }] }).success).toBe(false);
   });
 });
 
@@ -547,10 +626,10 @@ describe("alternative drafts and keeping one's own pipeline (EO-534)", () => {
   });
 
   it("carries up to two alternatives beside the recommended draft, and a Keep my pipeline card with them", () => {
-    const parsed = AssistOutputSchema.parse({ message: "Three ways.", draft: draft("Merge both."), alternatives: [draft("Take the template.")], card: keep });
+    const parsed = AssistOutputSchema.parse({ message: "Three ways.", draft: draft("Merge both."), alternatives: [draft("Take the template.")], cards: [keep] });
 
     expect(parsed.alternatives?.map((alternative) => alternative.rationale)).toEqual(["Take the template."]);
-    expect(parsed.card).toEqual(keep);
+    expect(parsed.cards).toEqual([keep]);
     expect(AssistOutputSchema.safeParse({ message: "x", draft: draft("a"), alternatives: [draft("b"), draft("c")] }).success).toBe(true);
   });
 
@@ -573,9 +652,9 @@ describe("alternative drafts and keeping one's own pipeline (EO-534)", () => {
   });
 
   it("lets only Keep my pipeline come beside a draft: every other card still comes on its own", () => {
-    expect(AssistOutputSchema.safeParse({ message: "x", card: keep }).success).toBe(true);
-    expect(AssistOutputSchema.safeParse({ message: "x", draft: draft("a"), card: keep }).success).toBe(true);
-    expect(paths(AssistOutputSchema.safeParse({ message: "x", draft: draft("a"), card: { kind: "pipelineDelete", pipelineId: "default" } }))).toContain("card");
-    expect(paths(AssistOutputSchema.safeParse({ message: "x", card: keep, proposals: [{ action: "amend", item: "EO-42", why: "Wrong.", title: "Better" }] }))).toContain("card");
+    expect(AssistOutputSchema.safeParse({ message: "x", cards: [keep] }).success).toBe(true);
+    expect(AssistOutputSchema.safeParse({ message: "x", draft: draft("a"), cards: [keep] }).success).toBe(true);
+    expect(paths(AssistOutputSchema.safeParse({ message: "x", draft: draft("a"), cards: [{ kind: "pipelineDelete", pipelineId: "default" }] }))).toContain("cards");
+    expect(paths(AssistOutputSchema.safeParse({ message: "x", cards: [keep], proposals: [{ action: "amend", item: "EO-42", why: "Wrong.", title: "Better" }] }))).toContain("cards");
   });
 });

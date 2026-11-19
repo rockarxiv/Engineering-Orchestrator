@@ -21,6 +21,9 @@ import { StepWatchSchema } from "../watch.js";
  */
 export const ITEM_WORKSPACE = "item";
 
+/** How many action cards one `assist` reply may carry (EO-862). */
+export const MAX_ASSIST_CARDS = 20;
+
 /** What a draft says for a step's time limit when it means EO's default (EO-520) — `timeoutMs: null` on a step. A word, for `ITEM_WORKSPACE`'s reason. */
 export const DEFAULT_TIME_LIMIT = "default";
 
@@ -182,7 +185,7 @@ export type AssistDraft = z.infer<typeof AssistDraftSchema>;
  * becomes items through the same approval path Discussions uses; this
  * schema only says what a turn is allowed to hand back.
  */
-export const AssistOutputSchema = z
+const AssistOutputShapeSchema = z
   .object({
     /** What the agent says back, in markdown. Always present: this action exists to continue, not to finish. */
     message: z.string().min(1),
@@ -308,23 +311,32 @@ export const AssistOutputSchema = z
      */
     changeProposalId: ModuleChangeProposalIdSchema.nullable().default(null),
     /**
-     * Something only a person may do, as a card whose button does it
-     * (EO-521) — exporting a pipeline to a file, importing an attached
-     * one, deleting one, or discarding this machine's edits to one the
-     * organisation manages; letting its webhook items through unread, or
-     * setting a step's own secret or variable (EO-522), whose value the
-     * person types on the card; adding, changing or removing an item type
-     * (EO-523). Null on every other turn.
+     * Things only a person may do, each as a card whose button does it
+     * (EO-521, EO-862) — exporting a pipeline to a file, importing an
+     * attached one, deleting one, or discarding this machine's edits to
+     * one the organisation manages; letting its webhook items through
+     * unread, or setting a step's own secret or variable (EO-522), whose
+     * value the person types on the card; adding, changing or removing an
+     * item type (EO-523). Empty on every other turn.
      *
-     * Nothing is done by returning it: see `AssistCardSchema`. At most
-     * one, and on its own — no `draft`, `modules`, `change` or
-     * `proposals` beside it — because each of those is a card with a
-     * button of its own, and two buttons from one turn that both change
-     * pipelines would be two decisions offered as one.
+     * Nothing is done by returning them: see `AssistCardSchema`. Several
+     * when the person asked for several things, each one decision pressed
+     * on its own, and at most `MAX_ASSIST_CARDS`. On their own — no
+     * `draft`, `modules`, `change` or `proposals` beside them — because
+     * each of those is a card with a button of its own, and two buttons
+     * from one turn that both change pipelines would be two decisions
+     * offered as one.
      *
-     * Nullable with a default rather than optional, for `change`'s reason.
+     * A list with a default rather than optional, for `change`'s reason.
+     * A run stored before EO-862 says `card`, one or null, and reads as a
+     * list of that one or none (`AssistOutputSchema`'s preprocess).
      */
-    card: AssistCardSchema.nullable().default(null),
+    cards: z
+      .array(AssistCardSchema)
+      .max(MAX_ASSIST_CARDS, {
+        message: `at most ${MAX_ASSIST_CARDS} \`cards\` in one reply. Return the first ${MAX_ASSIST_CARDS}, and offer the rest once the person has pressed these`,
+      })
+      .default([]),
     /**
      * How the `draft` is to be tested with real runs (EO-587), where the
      * person asked for that: the test items, where each must end, and how
@@ -354,7 +366,7 @@ export const AssistOutputSchema = z
         (output.actions ?? []).length === 0 &&
         output.change === null &&
         output.changeProposalId === null &&
-        output.card === null),
+        output.cards.length === 0),
     {
       message: "a turn either asks or proposes — a proposal built on unanswered questions is a guess with a button on it",
     },
@@ -376,24 +388,26 @@ export const AssistOutputSchema = z
   })
   .refine(
     (output) =>
-      output.card === null ||
+      output.cards.length === 0 ||
       (output.draft === undefined &&
         (output.modules ?? []).length === 0 &&
         output.change === null &&
         output.changeProposalId === null &&
         output.proposals.length === 0) ||
       // Keeping one's own pipeline is the alternative to the drafts that
-      // resolve a held template update (EO-534), offered beside them.
-      (output.card.kind === KEEP_PIPELINE_CARD_KIND &&
+      // resolve a held template update (EO-534), offered beside them —
+      // that one card alone.
+      (output.cards.length === 1 &&
+        output.cards[0]?.kind === KEEP_PIPELINE_CARD_KIND &&
         (output.modules ?? []).length === 0 &&
         output.change === null &&
         output.changeProposalId === null &&
         output.proposals.length === 0),
     {
       message:
-        "a `card` comes on its own: no `draft`, `modules`, `change` or `proposals` in the same reply. Return the card, and propose the rest once the person has pressed it. " +
-        `The one exception is a \`${KEEP_PIPELINE_CARD_KIND}\` card, which may come beside the drafts that resolve a held template update`,
-      path: ["card"],
+        "`cards` come on their own: no `draft`, `modules`, `change` or `proposals` in the same reply. Return the cards, and propose the rest once the person has pressed them. " +
+        `The one exception is a lone \`${KEEP_PIPELINE_CARD_KIND}\` card, which may come beside the drafts that resolve a held template update`,
+      path: ["cards"],
     },
   )
   .refine((output) => (output.alternatives ?? []).length === 0 || output.draft !== undefined, {
@@ -430,6 +444,26 @@ export const AssistOutputSchema = z
     for (const problem of trialPlanProblems(output.draft, output.trial)) context.addIssue({ code: "custom", path: ["trial"], message: problem });
   });
 
+/**
+ * An `assist` result as a run stored it before EO-862, read as one now:
+ * `card`, one card or null, becomes `cards`, a list of that one or none.
+ * A result that already says `cards` is left as it is.
+ */
+function cardsForCard(value: unknown): unknown {
+  if (value === null || typeof value !== "object" || Array.isArray(value) || !("card" in value)) return value;
+  const { card, ...rest } = value as Record<string, unknown>;
+  if ("cards" in rest) return rest;
+  return { ...rest, cards: card === null || card === undefined ? [] : [card] };
+}
+
+/**
+ * The whole of an `assist` result, read from an answer or from a run
+ * stored before EO-862 alike — see `cardsForCard`. What an agent is
+ * asked to write is the shape alone: zod emits a root preprocess as the
+ * schema it feeds.
+ */
+export const AssistOutputSchema = z.preprocess(cardsForCard, AssistOutputShapeSchema);
+
 /** Whether two drafts say the same thing about which pipeline they are for. */
 function sameTarget(a: AssistDraftTarget | undefined, b: AssistDraftTarget | undefined): boolean {
   return JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
@@ -437,7 +471,7 @@ function sameTarget(a: AssistDraftTarget | undefined, b: AssistDraftTarget | und
 
 export type AssistOutput = z.infer<typeof AssistOutputSchema>;
 /** An `assist` result as an agent may write it, before the defaults are filled in: Claude leaves `change` out where Codex writes `null`. */
-export type AssistReply = z.input<typeof AssistOutputSchema>;
+export type AssistReply = z.input<typeof AssistOutputShapeSchema>;
 
 /**
  * A module a draft card is waiting on (EO-399).

@@ -319,8 +319,9 @@ export const ASSIST_ANSWER_WITH_MAPS = {
       change: null,
       // Nor a change named by a frozen proposal (EO-814), for the same reason.
       changeProposalId: null,
-      // Nor a card (EO-521), for the same reason.
-      card: null,
+      // Nor cards (EO-521, EO-862): a list on both backends, which is why
+      // they are one (invariant #12) — empty where the other leaves it out.
+      cards: [],
       // Nor other drafts beside this one (EO-534): optional in the shared
       // schema, so required-and-nullable for Codex.
       alternatives: null,
@@ -409,11 +410,18 @@ const CARDS = [
   },
 ] as const;
 
+/**
+ * The cards each answer below offers: every card above on its own, and
+ * then three of different kinds in one reply (EO-862), which is how an
+ * answer offers several things the person asked for at once.
+ */
+const CARD_SETS: readonly (readonly (typeof CARDS)[number][])[] = [...CARDS.map((card) => [card]), [CARDS[2], CARDS[9], CARDS[18]]];
+
 export const ASSIST_ANSWERS_WITH_CARDS = {
-  claude: CARDS.map((card) => ({ outcome: { message: "That is yours to press: the card below does it.", card } })),
-  codex: CARDS.map((card) => ({
+  claude: CARD_SETS.map((cards) => ({ outcome: { message: "That is yours to press: the cards below do it.", cards } })),
+  codex: CARD_SETS.map((cards) => ({
     outcome: {
-      message: "That is yours to press: the card below does it.",
+      message: "That is yours to press: the cards below do it.",
       questions: null,
       draft: null,
       modules: null,
@@ -421,7 +429,7 @@ export const ASSIST_ANSWERS_WITH_CARDS = {
       proposals: null,
       change: null,
       changeProposalId: null,
-      card,
+      cards,
       alternatives: null,
       trial: null,
     },
@@ -485,7 +493,7 @@ export const ASSIST_ANSWER_WITH_TRIAL = {
       proposals: null,
       change: null,
       changeProposalId: null,
-      card: null,
+      cards: [],
       alternatives: null,
       trial: {
         items: [

@@ -299,7 +299,7 @@ describe("a template update the organisation's record holds", () => {
     const chat = await openChat(conflictId, projectId);
     const { data, text } = await readConflict();
     await scriptedTurn(
-      { message: "Two ways, and keeping yours.", draft: recommendedDraft(data.conflict!), card: { kind: "pipelineKeepMine", pipelineId: "default" } },
+      { message: "Two ways, and keeping yours.", draft: recommendedDraft(data.conflict!), cards: [{ kind: "pipelineKeepMine", pipelineId: "default" }] },
       text,
     );
     const { cards, rejections } = postedCards(chat);
@@ -365,7 +365,7 @@ describe("a template update the organisation's record holds", () => {
     const { conflictId, projectId } = await heldOnTheRecord();
     const chat = await openChat(conflictId, projectId);
     const { data, text } = await readConflict();
-    await scriptedTurn({ message: "Or keep yours.", draft: recommendedDraft(data.conflict!), card: { kind: "pipelineKeepMine", pipelineId: "default" } }, text);
+    await scriptedTurn({ message: "Or keep yours.", draft: recommendedDraft(data.conflict!), cards: [{ kind: "pipelineKeepMine", pipelineId: "default" }] }, text);
     const keep = postedCards(chat).cards[1]!;
     const before = { record: listRoutesForPipeline(recordDb.db, "default").map(({ id: _id, ...route }) => route), version: currentVersion(recordDb.db, "default")?.number };
 
@@ -494,7 +494,7 @@ describe("a desktop conflict from before the record held the pipeline", () => {
     // Read: the record's update.
     const { data, text } = await readConflict();
     expect(data.conflict?.conflictId).toBe(conflictId);
-    await scriptedTurn({ message: "Two ways.", draft: recommendedDraft(data.conflict!), card: { kind: "pipelineKeepMine", pipelineId: "default" } }, text);
+    await scriptedTurn({ message: "Two ways.", draft: recommendedDraft(data.conflict!), cards: [{ kind: "pipelineKeepMine", pipelineId: "default" }] }, text);
     const [draft, keep] = postedCards(chat).cards;
 
     // Publish: recognised as resolving the record's update, and resolved there.

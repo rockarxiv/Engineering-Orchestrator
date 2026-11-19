@@ -111,14 +111,16 @@ export interface ConversationKind {
    */
   moduleChange?(db: Db, conversation: Item, comment: Comment, thread: ConversationThread): ModuleChangeCard | null;
   /**
-   * What a card offering something only a person may do says about
-   * itself, or null — see `DiscussionMessage.card` (EO-521).
+   * What each card offering something only a person may do on this
+   * comment says about itself, in order, or null — see
+   * `DiscussionMessage.cards` (EO-521, EO-862).
    *
    * Absent on every room but the assistant's. Asked of every comment, as
-   * `moduleChange` is, since a pressed card is no longer approvable and
-   * still shows what came of it.
+   * `moduleChange` is, since a pressed card still shows what came of it;
+   * and by `approvableIds`, since a reply with a card still open is not
+   * spent.
    */
-  card?(db: Db, conversation: Item, comment: Comment, thread: ConversationThread): AssistCardView | null;
+  card?(db: Db, conversation: Item, comment: Comment, thread: ConversationThread): AssistCardView[] | null;
   /**
    * The module whose approval this comment records as withdrawn, or null
    * — see `DiscussionMessage.approvalWithdrawn` (EO-501).
@@ -216,9 +218,17 @@ export function approvableIds(db: Db, conversation: Item, kind: ConversationKind
   const comments = here.comments;
   const answered = new Set(comments.map((comment) => comment.parentId).filter((id): id is Uuid => id !== null));
 
+  // A reply carrying several cards (EO-862) is spent once every card on
+  // it has had something filed under it, not at the first: each card is
+  // pressed on its own, and pressing one leaves the others to press.
+  const spent = (comment: Comment): boolean => {
+    const cards = kind.card?.(db, conversation, comment, here) ?? null;
+    return cards === null || cards.length === 0 ? answered.has(comment.id) : cards.every((card) => card.outcome !== null);
+  };
+
   const newest = comments
     .filter((comment) => kind.isProposal(db, comment, here))
-    .filter((comment) => !answered.has(comment.id))
+    .filter((comment) => !spent(comment))
     .sort((a, b) => b.createdAt - a.createdAt || (a.id < b.id ? 1 : -1));
 
   // Every proposal from the newest run stays live, not just one: a single
@@ -459,7 +469,7 @@ export function conversationView(db: Db, conversation: Item, kind: ConversationK
       proposedType: approvable.has(comment.id) ? kind.proposedType(db, conversation, comment, thread) : null,
       ...moduleCardOf(db, conversation, kind, comment, thread),
       moduleChange: kind.moduleChange?.(db, conversation, comment, thread) ?? null,
-      card: kind.card?.(db, conversation, comment, thread) ?? null,
+      cards: kind.card?.(db, conversation, comment, thread) ?? null,
       approvalWithdrawn: kind.approvalWithdrawn?.(db, conversation, comment, thread) ?? null,
       proposal: proposalOf(db, conversation, kind, comment, thread, approvable),
       status:

@@ -64,7 +64,7 @@ describe("what the system agent's prompt says about cards for what only a person
   });
 
   it("says a card comes on its own", () => {
-    expect(cards()).toContain("`card` comes on its own — no `draft`, `modules`, `change` or `proposals` beside it");
+    expect(cards()).toContain("`cards` come on their own — no `draft`, `modules`, `change` or `proposals` beside them");
   });
 
   it("is a new version of the prompt", () => {
@@ -105,7 +105,7 @@ describe("what the system agent's prompt says about item types (EO-523)", () => 
   const cards = () => section("### Cards for what only a person may do");
 
   it("names them among what only a person may do", () => {
-    expect(section("## How you change anything")).toContain("adding, changing or removing an item type are each returned as `card`");
+    expect(section("## How you change anything")).toContain("adding, changing or removing an item type are each returned as a card in `cards`");
   });
 
   it("describes the read tool: each type's fields, and whether a pack ships it", () => {
@@ -179,7 +179,7 @@ describe("what the system agent's prompt says about a held template update (EO-5
 
   it("lists the Keep my pipeline card among the cards, the one that may come beside a draft", () => {
     expect(cards()).toContain('**Keep my pipeline** — `{ "kind": "pipelineKeepMine", "pipelineId": "…" }`');
-    expect(cards()).toContain("The one exception is Keep my pipeline, which comes beside the drafts resolving a held template update.");
+    expect(cards()).toContain("The one exception is a lone Keep my pipeline card, which comes beside the drafts resolving a held template update.");
     expect(section("## How you change anything")).toContain("so is keeping a pipeline as it is and skipping a held template update");
   });
 
@@ -344,5 +344,26 @@ describe("what the system agent's prompt says about a job's repository (EO-856)"
 
   it("is a newer version than the one before a job named its repository", () => {
     expect(Number(/prompt-version:\s*(\d+)/.exec(prompt)![1])).toBeGreaterThanOrEqual(62);
+  });
+});
+
+describe("what the system agent's prompt says about several cards in one reply (EO-862)", () => {
+  const cards = () => section("### Cards for what only a person may do");
+
+  it("says several things asked for at once are several cards in one reply, each its own decision", () => {
+    expect(cards()).toContain("**Several cards in one reply.** When the person asked for several things at once");
+    expect(cards()).toContain("return a card for each in `cards`, in the order they asked, rather than one a turn.");
+    expect(cards()).toContain("Each card is one independent decision: the person presses each on its own");
+  });
+
+  it("caps them at twenty, keeps them on their own, and says a refused one is told by its place and kind", () => {
+    expect(cards()).toContain("At most 20 in one reply; with more, offer the first 20 and the rest once those are pressed.");
+    expect(cards()).toContain("Several cards still come on their own, as above.");
+    expect(cards()).toContain("its place in `cards`, its kind and why — and offers the others.");
+    expect(flat).not.toContain("one card a reply");
+  });
+
+  it("is a newer version than the one with one card a reply", () => {
+    expect(Number(/prompt-version:\s*(\d+)/.exec(prompt)![1])).toBeGreaterThanOrEqual(63);
   });
 });

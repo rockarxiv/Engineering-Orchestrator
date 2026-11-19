@@ -340,7 +340,7 @@ describe("an agent asking for it", () => {
   it("advertises pipeline_save as sending the person to the assistant's card for it", () => {
     const description = tool("pipeline_save").description.replace(/\s+/g, " ");
 
-    expect(description).toContain("by pressing the button on the assistant's card for it (`card` with the kind `pipelineWebhookUnattended`), and this tool cannot");
+    expect(description).toContain("by pressing the button on the assistant's card for it (a card in `cards` with the kind `pipelineWebhookUnattended`), and this tool cannot");
     expect(description).not.toContain("configuration screen");
   });
 

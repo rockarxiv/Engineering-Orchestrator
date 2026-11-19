@@ -16,7 +16,7 @@ import { OperationCard } from "./OperationCard";
  * way of doing it that skipped "newest wins" and left nothing filed.
  */
 
-function message(card: AssistCardView, overrides: Partial<DiscussionMessage> = {}): DiscussionMessage {
+function message(card: Omit<AssistCardView, "index">, overrides: Partial<DiscussionMessage> = {}): DiscussionMessage {
   return {
     id: "card-1",
     authorType: "agent",
@@ -32,7 +32,7 @@ function message(card: AssistCardView, overrides: Partial<DiscussionMessage> = {
     canApprove: card.outcome === null,
     approves: card.outcome === null ? "card" : null,
     moduleSlug: null,
-    card,
+    cards: [{ index: 0, ...card }],
     proposedType: null,
     status: null,
     ...overrides,
@@ -69,7 +69,7 @@ function draw(card: DiscussionMessage, detail: AssistCardDetail | null, answers:
   const stub = ipcStub({ "assist:card": { card: detail, problem: null }, ...answers });
   window.eo.ipc.invoke = stub.invoke as never;
   const onDone = vi.fn();
-  renderSection(<OperationCard message={card} conversationId="conv-1" onDone={onDone} />);
+  renderSection(<OperationCard message={card} card={card.cards![0]!} conversationId="conv-1" onDone={onDone} />);
   return { calls: stub.calls, onDone };
 }
 
@@ -86,7 +86,7 @@ describe("a card for deleting a pipeline", () => {
     fireEvent.click(within(card).getByRole("button", { name: "Delete pipeline" }));
 
     await waitFor(() => expect(onDone).toHaveBeenCalled());
-    expect(sent(calls, "assist:applyCard")).toEqual([{ conversationId: "conv-1", messageId: "card-1", choices: {} }]);
+    expect(sent(calls, "assist:applyCard")).toEqual([{ conversationId: "conv-1", messageId: "card-1", index: 0, choices: {} }]);
     expect(sent(calls, "pipelines:delete")).toEqual([]);
     expect(sent(calls, "assist:approve")).toEqual([]);
   });
@@ -153,7 +153,7 @@ describe("a card for importing an attached pipeline file", () => {
     fireEvent.click(screen.getByRole("button", { name: "Import" }));
 
     await waitFor(() => expect(onDone).toHaveBeenCalled());
-    expect(sent(calls, "assist:applyCard")).toEqual([{ conversationId: "conv-1", messageId: "card-1", choices: { deploy: "import", notify: "reuse" } }]);
+    expect(sent(calls, "assist:applyCard")).toEqual([{ conversationId: "conv-1", messageId: "card-1", index: 0, choices: { deploy: "import", notify: "reuse" } }]);
     expect(sent(calls, "pipelines:import")).toEqual([]);
   });
 
@@ -212,7 +212,7 @@ describe("a card for letting webhook items through unread", () => {
     fireEvent.click(within(card).getByRole("button", { name: "Send on unread" }));
 
     await waitFor(() => expect(onDone).toHaveBeenCalled());
-    expect(sent(calls, "assist:applyCard")).toEqual([{ conversationId: "conv-1", messageId: "card-1", choices: {} }]);
+    expect(sent(calls, "assist:applyCard")).toEqual([{ conversationId: "conv-1", messageId: "card-1", index: 0, choices: {} }]);
     expect(sent(calls, "pipelines:setWebhookUnattended")).toEqual([]);
   });
 
@@ -252,7 +252,7 @@ describe("a card for a step's own secret or variable", () => {
     await waitFor(() => expect(onDone).toHaveBeenCalled());
     // The value goes in the press and nowhere else: not to the store's
     // channel from here, and not left in the field once pressed.
-    expect(sent(calls, "assist:applyCard")).toEqual([{ conversationId: "conv-1", messageId: "card-1", choices: {}, value: "typed-on-the-card" }]);
+    expect(sent(calls, "assist:applyCard")).toEqual([{ conversationId: "conv-1", messageId: "card-1", index: 0, choices: {}, value: "typed-on-the-card" }]);
     expect(sent(calls, "moduleSecrets:set")).toEqual([]);
     expect(within(card).getByLabelText("Value for DEPLOY_TOKEN")).toHaveValue("");
   });
@@ -329,7 +329,7 @@ describe("a card for a project's item type (EO-523)", () => {
     fireEvent.click(within(card).getByRole("button", { name: "Add type" }));
 
     await waitFor(() => expect(onDone).toHaveBeenCalled());
-    expect(sent(calls, "assist:applyCard")).toEqual([{ conversationId: "conv-1", messageId: "card-1", choices: {} }]);
+    expect(sent(calls, "assist:applyCard")).toEqual([{ conversationId: "conv-1", messageId: "card-1", index: 0, choices: {} }]);
     expect(sent(calls, "itemTypes:create")).toEqual([]);
   });
 
@@ -427,7 +427,7 @@ describe("a card for keeping my pipeline", () => {
     fireEvent.click(within(card).getByRole("button", { name: "Keep my pipeline" }));
 
     await waitFor(() => expect(onDone).toHaveBeenCalled());
-    expect(sent(calls, "assist:applyCard")).toEqual([{ conversationId: "conv-1", messageId: "card-1", choices: {} }]);
+    expect(sent(calls, "assist:applyCard")).toEqual([{ conversationId: "conv-1", messageId: "card-1", index: 0, choices: {} }]);
     expect(sent(calls, "pipeline:keepOwnVersion")).toEqual([]);
   });
 
@@ -475,7 +475,7 @@ describe("a card for a job", () => {
     fireEvent.click(within(card).getByRole("button", { name: "Create job" }));
 
     await waitFor(() => expect(onDone).toHaveBeenCalled());
-    expect(sent(calls, "assist:applyCard")).toEqual([{ conversationId: "conv-1", messageId: "card-1", choices: {} }]);
+    expect(sent(calls, "assist:applyCard")).toEqual([{ conversationId: "conv-1", messageId: "card-1", index: 0, choices: {} }]);
     expect(sent(calls, "jobs:create")).toEqual([]);
   });
 
@@ -511,7 +511,7 @@ describe("a card for a job", () => {
     fireEvent.click(screen.getByRole("button", { name: "Save job" }));
 
     await waitFor(() => expect(onDone).toHaveBeenCalled());
-    expect(sent(calls, "assist:applyCard")).toEqual([{ conversationId: "conv-1", messageId: "card-1", choices: {} }]);
+    expect(sent(calls, "assist:applyCard")).toEqual([{ conversationId: "conv-1", messageId: "card-1", index: 0, choices: {} }]);
   });
 
   it("asks whether to keep or archive the job's items, and Delete job sends that choice", async () => {
@@ -526,7 +526,7 @@ describe("a card for a job", () => {
     fireEvent.click(screen.getByRole("button", { name: "Delete job" }));
 
     await waitFor(() => expect(onDone).toHaveBeenCalled());
-    expect(sent(calls, "assist:applyCard")).toEqual([{ conversationId: "conv-1", messageId: "card-1", choices: {}, archiveItems: true }]);
+    expect(sent(calls, "assist:applyCard")).toEqual([{ conversationId: "conv-1", messageId: "card-1", index: 0, choices: {}, archiveItems: true }]);
   });
 
   it("keeps the items unless the person says otherwise", async () => {
@@ -540,7 +540,7 @@ describe("a card for a job", () => {
     fireEvent.click(screen.getByRole("button", { name: "Delete job" }));
 
     await waitFor(() => expect(onDone).toHaveBeenCalled());
-    expect(sent(calls, "assist:applyCard")).toEqual([{ conversationId: "conv-1", messageId: "card-1", choices: {}, archiveItems: false }]);
+    expect(sent(calls, "assist:applyCard")).toEqual([{ conversationId: "conv-1", messageId: "card-1", index: 0, choices: {}, archiveItems: false }]);
   });
 
   it("says a new secret stops the old one working the moment it is pressed", async () => {
@@ -602,7 +602,7 @@ describe("a card for a command-line tool (EO-822)", () => {
     fireEvent.click(within(card).getByRole("button", { name: "Add CLI" }));
 
     await waitFor(() => expect(onDone).toHaveBeenCalled());
-    expect(sent(calls, "assist:applyCard")).toEqual([{ conversationId: "conv-1", messageId: "card-1", choices: {} }]);
+    expect(sent(calls, "assist:applyCard")).toEqual([{ conversationId: "conv-1", messageId: "card-1", index: 0, choices: {} }]);
     expect(sent(calls, "cliTools:save")).toEqual([]);
   });
 
@@ -643,7 +643,7 @@ describe("a card for a command-line tool (EO-822)", () => {
     fireEvent.click(screen.getByRole("button", { name: "Give CLI" }));
 
     await waitFor(() => expect(onDone).toHaveBeenCalled());
-    expect(sent(calls, "assist:applyCard")).toEqual([{ conversationId: "conv-1", messageId: "card-1", choices: {} }]);
+    expect(sent(calls, "assist:applyCard")).toEqual([{ conversationId: "conv-1", messageId: "card-1", index: 0, choices: {} }]);
     expect(sent(calls, "agentCliTools:set")).toEqual([]);
   });
 
@@ -728,7 +728,7 @@ describe("a card adding CLIs and giving them to several agents (EO-859)", () => 
 
     await waitFor(() => expect(onDone).toHaveBeenCalled());
     expect(sent(calls, "assist:applyCard")).toEqual([
-      { conversationId: "conv-1", messageId: "card-1", choices: {}, unticked: { adds: ["jira"], rows: [{ agentId: "a-rev", cli: "c-old" }] } },
+      { conversationId: "conv-1", messageId: "card-1", index: 0, choices: {}, unticked: { adds: ["jira"], rows: [{ agentId: "a-rev", cli: "c-old" }] } },
     ]);
     expect(sent(calls, "agentCliTools:assign")).toEqual([]);
 

@@ -161,7 +161,7 @@ describe("creating a job", () => {
     const { cardId, rejections } = turn(conversation, create());
 
     expect(rejections).toEqual([]);
-    expect(await messageOf(cardId!)).toMatchObject({ canApprove: true, approves: "card", card: { kind: "jobCreate", outcome: null } });
+    expect(await messageOf(cardId!)).toMatchObject({ canApprove: true, approves: "card", cards: [{ kind: "jobCreate", outcome: null }] });
     const shown = (await read(conversation, cardId!)).card;
     expect(shown).toMatchObject({ kind: "jobCreate", projectName: "support", name: "Monday report", created: null });
     const lines = shown?.kind === "jobCreate" ? Object.fromEntries(shown.lines.map((line) => [line.label, line.value])) : {};
@@ -183,7 +183,7 @@ describe("creating a job", () => {
     expect(job).toMatchObject({ projectId, pipelineId: "default", budgetPerOccurrenceCents: 150, trigger: { kind: "schedule", timeZone: "Europe/Berlin", catchUpWithinMinutes: 180 } });
     expect(pressed.said).toContain("Created the job “Monday report”");
     expect((await read(conversation, cardId!)).card).toMatchObject({ kind: "jobCreate", created: { jobId: job.id, name: "Monday report" } });
-    expect((await messageOf(cardId!)).card).toEqual({ kind: "jobCreate", outcome: { done: true, said: pressed.said } });
+    expect((await messageOf(cardId!)).cards).toEqual([{ index: 0, kind: "jobCreate", outcome: { done: true, said: pressed.said } }]);
   });
 
   it("cannot be pressed twice", async () => {
@@ -205,7 +205,7 @@ describe("creating a job", () => {
 
     expect(pressed.applied).toBe(false);
     expect(pressed.said).toMatch(/^“Monday report” was not created: /);
-    expect((await messageOf(cardId!)).card?.outcome).toEqual({ done: false, said: pressed.said });
+    expect((await messageOf(cardId!)).cards?.[0]?.outcome).toEqual({ done: false, said: pressed.said });
     expect(listAllJobs(handle.db).filter((job) => job.name === "Monday report")).toEqual([]);
   });
 

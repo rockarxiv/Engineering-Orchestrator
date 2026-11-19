@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { GitFork } from "lucide-react";
-import { MODULE_COVERAGE_BAR, type AssistCardDetail, type DiscussionMessage, type TrialItemVerdict, type TrialStepOutcome } from "@eo/core";
+import { MODULE_COVERAGE_BAR, type AssistCardDetail, type AssistCardView, type DiscussionMessage, type TrialItemVerdict, type TrialStepOutcome } from "@eo/core";
 import { Markdown } from "@eo/ui";
 import { ipcQuery } from "../../query/client";
 import { itemsKey, modulesKey } from "../../query/hooks";
@@ -28,8 +28,8 @@ const VERDICT: Record<TrialItemVerdict, { label: string; tone: Tone }> = {
   unfinished: { label: "Has not ended", tone: "paused" },
 };
 
-function publishTrial(conversationId: string, messageId: string, acknowledgeLowCoverage: readonly string[]) {
-  return ipcQuery("assist:publishTrial", { conversationId, messageId, acknowledgeLowCoverage: [...acknowledgeLowCoverage] });
+function publishTrial(conversationId: string, messageId: string, index: number, acknowledgeLowCoverage: readonly string[]) {
+  return ipcQuery("assist:publishTrial", { conversationId, messageId, index, acknowledgeLowCoverage: [...acknowledgeLowCoverage] });
 }
 
 /**
@@ -55,25 +55,36 @@ function publishTrial(conversationId: string, messageId: string, acknowledgeLowC
  * trial is deleted. Coverage under the bar is asked about here, before
  * anything is approved, as on a draft card.
  */
-export function TrialPublishCard({ message, conversationId, onDone }: { message: DiscussionMessage; conversationId: string; onDone: () => void }) {
+export function TrialPublishCard({
+  message,
+  card,
+  conversationId,
+  onDone,
+}: {
+  message: DiscussionMessage;
+  /** Which of the message's cards this is (EO-862). */
+  card: AssistCardView;
+  conversationId: string;
+  onDone: () => void;
+}) {
   const queryClient = useQueryClient();
-  const outcome = message.card?.outcome ?? null;
+  const { index, outcome } = card;
   const open = message.canApprove && outcome === null;
   const read = useQuery({
-    queryKey: assistCardKey(message.id),
-    queryFn: () => ipcQuery("assist:card", { conversationId, messageId: message.id }),
+    queryKey: assistCardKey(message.id, index),
+    queryFn: () => ipcQuery("assist:card", { conversationId, messageId: message.id, index }),
     // Once pressed the trial is gone, and what came of it is the card.
     enabled: outcome === null,
   });
-  useInvalidateOnPush("items:changed", assistCardKey(message.id));
-  useInvalidateOnPush("config:changed", assistCardKey(message.id));
+  useInvalidateOnPush("items:changed", assistCardKey(message.id, index));
+  useInvalidateOnPush("config:changed", assistCardKey(message.id, index));
   const detail = read.data?.card?.kind === "trialPublish" ? read.data.card : null;
 
   const [problem, setProblem] = useState<string | null>(null);
   const [refusals, setRefusals] = useState<Record<string, string>>({});
   const [asking, setAsking] = useState<Answer["coverage"] | null>(null);
   const publish = useMutation({
-    mutationFn: (acknowledged: readonly string[]) => publishTrial(conversationId, message.id, acknowledged),
+    mutationFn: (acknowledged: readonly string[]) => publishTrial(conversationId, message.id, index, acknowledged),
     onSuccess: (result) => {
       const refused = result.modules.flatMap((module) => (module.outcome === "refused" && module.problem !== null ? [[module.slug, module.problem] as const] : []));
       setRefusals(Object.fromEntries(refused));

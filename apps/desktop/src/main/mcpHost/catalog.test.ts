@@ -1,6 +1,6 @@
 import { ipcContract, machineContract, recordContract, type IpcChannel, type MachineChannel, type RecordChannel } from "@eo/core";
 import { describe, expect, it } from "vitest";
-import { describeAgentRemoval, TOOLS } from "./catalog.js";
+import { CLI_TOOL_ATTACH_ADMIN_REFUSAL, describeAgentRemoval, SEVERAL_CARDS, TOOLS } from "./catalog.js";
 import { toolsFor } from "./gate.js";
 import { GUIDES } from "./guides.js";
 import { renderGuards, renderProjects } from "./render.js";
@@ -1973,5 +1973,23 @@ describe("the MCP tool catalog", () => {
     expect(submit).toMatch(/acceptanceCriteria is optional on a bug and kept when you send it/i);
     // And the guide, which is where a first-time submitter is sent.
     expect(GUIDES.find((guide) => guide.name === "eo_submit_work")?.body).toMatch(/not required to declare any/i);
+  });
+});
+
+describe("the assistant's cards, several at once (EO-862)", () => {
+  it("says several things asked for at once are several cards in one reply: at most 20, each one decision, on their own", () => {
+    expect(SEVERAL_CARDS).toContain("several cards in one reply's `cards`");
+    expect(SEVERAL_CARDS).toContain("at most 20, each one decision the person presses on its own");
+    expect(SEVERAL_CARDS).toContain("with no draft, modules, change or proposals beside them");
+  });
+
+  it("is said where a card stands in for a tool: an item type, and a CLI given to agents", () => {
+    expect(TOOLS.find((tool) => tool.name === "item_types_list")?.description).toContain(SEVERAL_CARDS);
+    expect(CLI_TOOL_ATTACH_ADMIN_REFUSAL).toContain(SEVERAL_CARDS);
+  });
+
+  it("names the field the cards are in, not the one-card field it replaced", () => {
+    expect(TOOLS.find((tool) => tool.name === "pipeline_save")?.description).toContain("a card in `cards` with the kind `pipelineWebhookUnattended`");
+    expect(TOOLS.map((tool) => tool.description).join(" ")).not.toContain("(`card` with");
   });
 });

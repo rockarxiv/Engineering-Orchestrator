@@ -1418,7 +1418,7 @@ describe("createCodexProvider", () => {
             proposals: null,
             change: { moduleId: "mod-1", summary: "Stops asking for two variables.", code: "export default async () => ({ ok: true, result: 'deployed' });", manifest: manifestFromCodex, tests: [], removeTests: [] },
             changeProposalId: null,
-            card: null,
+            cards: [],
             alternatives: null,
             trial: null,
           },
@@ -1459,7 +1459,7 @@ describe("createCodexProvider", () => {
         const assist = jsonSchemaOutputSchema(strictCodexOutputSchema(assistSchema()));
         const scenario = jsonSchemaOutputSchema(strictCodexOutputSchema(scenarioSchema()));
         const assistAnswer = (manifest: unknown) => ({
-          outcome: { message: "Here.", questions: null, draft: null, modules: null, actions: null, proposals: null, change: { moduleId: "mod-1", summary: "x", code: "export default async () => ({});", manifest, tests: [], removeTests: [] }, changeProposalId: null, card: null, alternatives: null, trial: null },
+          outcome: { message: "Here.", questions: null, draft: null, modules: null, actions: null, proposals: null, change: { moduleId: "mod-1", summary: "x", code: "export default async () => ({});", manifest, tests: [], removeTests: [] }, changeProposalId: null, cards: [], alternatives: null, trial: null },
         });
         const scenarioAnswer = (manifest: unknown) => ({
           outcome: { message: "Here.", questions: [], testId: null, diagnosis: null, change: { summary: "x", code: "export default async () => ({});", manifest }, changeProposalId: null },
@@ -1490,7 +1490,7 @@ describe("createCodexProvider", () => {
       // is actually sent, built from the registry's own output schema.
       it("is held by the strict schema to each field's own structure and rules, nested values included, in both chats", () => {
         const assistAnswer = (manifest: unknown) => ({
-          outcome: { message: "Here.", questions: null, draft: null, modules: null, actions: null, proposals: null, change: { moduleId: "mod-1", summary: "x", code: "export default async () => ({});", manifest, tests: [], removeTests: [] }, changeProposalId: null, card: null, alternatives: null, trial: null },
+          outcome: { message: "Here.", questions: null, draft: null, modules: null, actions: null, proposals: null, change: { moduleId: "mod-1", summary: "x", code: "export default async () => ({});", manifest, tests: [], removeTests: [] }, changeProposalId: null, cards: [], alternatives: null, trial: null },
         });
         const scenarioAnswer = (manifest: unknown) => ({
           outcome: { message: "Here.", questions: [], testId: null, diagnosis: null, change: { summary: "x", code: "export default async () => ({});", manifest }, changeProposalId: null },
@@ -4381,7 +4381,7 @@ describe("a suggested next message on a prediction-mode fork (EO-808)", () => {
   describe("on a turn sent with an answer schema (EO-839)", () => {
     const assistSchema = () => outputSchemaFor(developerRegistry(), "assist")!;
     /** The assistant's answer as Codex's strict mode writes it: the message, and every other field null. */
-    const structured = (message: string | null) => JSON.stringify({ outcome: { message, questions: null, draft: null, alternatives: null, modules: null, actions: null, proposals: null, change: null, changeProposalId: null, card: null, trial: null } });
+    const structured = (message: string | null) => JSON.stringify({ outcome: { message, questions: null, draft: null, alternatives: null, modules: null, actions: null, proposals: null, change: null, changeProposalId: null, cards: [], trial: null } });
     const chatAnswered = (): Notes => [
       note.turnStarted("turn-1", "$THREAD"),
       note.agentMessage(structured("Drafted EO-12. File it on Delivery?"), "m", "turn-1", "$THREAD"),

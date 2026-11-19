@@ -331,13 +331,13 @@ function passRound(trialId: string, claim: Item): void {
 }
 
 const publish = (chat: Item, messageId: Uuid) =>
-  publishTrialCommand(handle.db, undefined, noModuleTests, { attachmentStorage: attachments, worktreeRoot: join(scratch, "worktrees") }, { conversationId: chat.id, messageId, acknowledgeLowCoverage: [] });
+  publishTrialCommand(handle.db, undefined, noModuleTests, { attachmentStorage: attachments, worktreeRoot: join(scratch, "worktrees") }, { conversationId: chat.id, messageId, index: 0, acknowledgeLowCoverage: [] });
 
 describe("publishing a trial that brought a definition", () => {
   it("writes the definition and the graph in one press, then discards the trial", async () => {
     const { chat, trialId, claim } = await evidenceOnTrial();
     passRound(trialId, claim);
-    const card = turn(chat, { message: "Every test item ended where it was expected to.", card: { kind: "trialPublish" } });
+    const card = turn(chat, { message: "Every test item ended where it was expected to.", cards: [{ kind: "trialPublish" }] });
 
     const answer = await publish(chat, card);
 
@@ -363,7 +363,7 @@ describe("publishing a trial that brought a definition", () => {
     passRound(trialId, claim);
     // What the trial carries no longer saves: a definition with no results.
     writeTrialActions(handle.db, trialId, [{ ...analyseEvidence(), fields: {}, results: [] }]);
-    const card = turn(chat, { message: "Every test item ended where it was expected to.", card: { kind: "trialPublish" } });
+    const card = turn(chat, { message: "Every test item ended where it was expected to.", cards: [{ kind: "trialPublish" }] });
     const before = definitionRows();
 
     const answer = await publish(chat, card);

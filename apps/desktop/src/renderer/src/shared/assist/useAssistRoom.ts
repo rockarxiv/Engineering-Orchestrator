@@ -64,7 +64,7 @@ export const assistRoomKey = ["assist"] as const;
  * event. A card is refreshed by what changes it.
  */
 export const assistDraftKey = (messageId: string) => ["assistDraft", messageId] as const;
-export const assistCardKey = (messageId: string) => ["assistCard", messageId] as const;
+export const assistCardKey = (messageId: string, index: number) => ["assistCard", messageId, index] as const;
 
 /**
  * Draws the conversation a write answered with, at once (EO-548).

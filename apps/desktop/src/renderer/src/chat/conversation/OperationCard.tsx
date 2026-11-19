@@ -11,6 +11,7 @@ import {
   WEBHOOK_UNATTENDED_RISK,
   type AssistCardDetail,
   type AssistCardKind,
+  type AssistCardView,
   type CliToolDetection,
   type DiscussionMessage,
   type ItemTypeCardShape,
@@ -87,24 +88,35 @@ import { useInvalidateOnPush } from "../../query/useInvalidateOnPush";
  * counts what it will do — "Add 2, give 5" — and a press refused at that
  * moment writes nothing and leaves the card to untick the row it names.
  */
-export function OperationCard({ message, conversationId, onDone }: { message: DiscussionMessage; conversationId: string; onDone: () => void }) {
+export function OperationCard({
+  message,
+  card,
+  conversationId,
+  onDone,
+}: {
+  message: DiscussionMessage;
+  /** Which of the message's cards this is (EO-862): one reply can carry several, each pressed on its own. */
+  card: AssistCardView;
+  conversationId: string;
+  onDone: () => void;
+}) {
   const queryClient = useQueryClient();
   const vocabulary = useChromeVocabulary();
   const aliasesRetired = useAliasesRetired();
-  const kind: AssistCardKind = message.card!.kind;
-  const outcome = message.card?.outcome ?? null;
+  const kind: AssistCardKind = card.kind;
+  const { index, outcome } = card;
   const open = message.canApprove && outcome === null;
 
   const read = useQuery({
-    queryKey: assistCardKey(message.id),
-    queryFn: () => ipcQuery("assist:card", { conversationId, messageId: message.id }),
+    queryKey: assistCardKey(message.id, index),
+    queryFn: () => ipcQuery("assist:card", { conversationId, messageId: message.id, index }),
   });
   // Re-read when the work or the configuration moves, which is what can
   // change whether the button would be refused. It used to ride along
   // with every re-read of the room, including each streamed event of any
   // run; it no longer sits under the room's key (EO-550).
-  useInvalidateOnPush("items:changed", assistCardKey(message.id));
-  useInvalidateOnPush("config:changed", assistCardKey(message.id));
+  useInvalidateOnPush("items:changed", assistCardKey(message.id, index));
+  useInvalidateOnPush("config:changed", assistCardKey(message.id, index));
   const detail = read.data?.card ?? null;
 
   // Keep mine unless the person says otherwise: the module here is code
@@ -134,6 +146,7 @@ export function OperationCard({ message, conversationId, onDone }: { message: Di
       ipcQuery("assist:applyCard", {
         conversationId,
         messageId: message.id,
+        index,
         choices: chosen,
         ...(typesValue ? { value } : {}),
         ...(kind === "jobDelete" ? { archiveItems: asksItems && archiveItems === "archive" } : {}),
@@ -147,7 +160,7 @@ export function OperationCard({ message, conversationId, onDone }: { message: Di
       // problem nothing was filed for is said here instead.
       setProblem(result.said === null ? result.problem : null);
       // A refused assignment wrote nothing: re-read the card, which now shows why on the row.
-      if (result.said === null && kind === "cliToolsAssign") void queryClient.invalidateQueries({ queryKey: assistCardKey(message.id) });
+      if (result.said === null && kind === "cliToolsAssign") void queryClient.invalidateQueries({ queryKey: assistCardKey(message.id, index) });
       if (result.said !== null) {
         if (detail?.kind === "pipelineWebhookUnattended") void queryClient.invalidateQueries({ queryKey: pipelineStepsKey(detail.pipelineId) });
         if (kind === "stepSecret") void queryClient.invalidateQueries({ queryKey: moduleSecretsRootKey });
@@ -156,7 +169,7 @@ export function OperationCard({ message, conversationId, onDone }: { message: Di
         // A job card: the Jobs list and page move, and the card re-reads what it made, for its link.
         if (kind.startsWith("job")) {
           void queryClient.invalidateQueries({ queryKey: jobsRootKey });
-          void queryClient.invalidateQueries({ queryKey: assistCardKey(message.id) });
+          void queryClient.invalidateQueries({ queryKey: assistCardKey(message.id, index) });
           if (kind === "jobDelete" || kind === "jobWebhook") void queryClient.invalidateQueries({ queryKey: itemsKey });
         }
         // A CLI card: the Agent tools screen's catalogue and ticks move (EO-821's keys).
@@ -203,7 +216,7 @@ export function OperationCard({ message, conversationId, onDone }: { message: Di
       ) : detail !== null ? (
         <Body detail={detail} itemsWord={vocabulary.items.toLowerCase()} itemWord={vocabulary.item.toLowerCase()} aliasesRetired={aliasesRetired} />
       ) : (
-        <Markdown className="text-[13px] leading-relaxed">{message.body}</Markdown>
+        <Markdown className="text-[13px] leading-relaxed">{proseOf(message, index)}</Markdown>
       )}
       {read.data?.problem && outcome === null ? <p className="text-xs text-danger">{read.data.problem}</p> : null}
 
@@ -996,4 +1009,15 @@ function ItemTypeBody({
 
 function containerWords(container: boolean): string {
   return container ? "Other items" : "Is the work";
+}
+
+/**
+ * What a card says in prose, shown until what it shows is read: the
+ * message's body, or on a reply carrying several cards (EO-862) the part
+ * of it headed with this card's place — "**Card 2 of 3.** …".
+ */
+function proseOf(message: DiscussionMessage, index: number): string {
+  if ((message.cards?.length ?? 0) < 2) return message.body;
+  const heading = `**Card ${index + 1} of `;
+  return message.body.split("\n\n").find((part) => part.startsWith(heading)) ?? message.body;
 }

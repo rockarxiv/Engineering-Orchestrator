@@ -74,7 +74,7 @@ import {
   validateDraft,
   withoutDraftSettings,
 } from "./architect.js";
-import { postAssistCard } from "./assistCards.js";
+import { postAssistCards } from "./assistCards.js";
 import { outputOf, runOf, threadOf, type ConversationThread } from "./conversationThread.js";
 import { ASSIST_ACTION, ASSIST_SETTINGS_KEY, ASSIST_STEP } from "./conversationSteps.js";
 import { postDiscussionQuestions, renderProposal } from "./discussion.js";
@@ -1025,9 +1025,10 @@ export function isAssistProposal(db: Db, comment: Comment, thread?: Conversation
  * writes nothing to the catalog: that card saves when a person presses
  * Apply, never when it is posted.
  *
- * A turn with a `card` ends in that card (EO-521) — an export, an
- * import, a delete or a discard for the person to press — and does
- * nothing else: see `assistCards.ts`.
+ * A turn with `cards` ends in them (EO-521, EO-862) — an export, an
+ * import, a delete or a discard for the person to press, one comment
+ * for every card that can be offered — and does nothing else: see
+ * `assistCards.ts`.
  */
 export function postAssistReply(db: Db, conversation: Item, agentId: Uuid, runId: Uuid, parsedResult: unknown): PostedAssistReply {
   const parsed = AssistOutputSchema.safeParse(parsedResult);
@@ -1069,15 +1070,15 @@ export function postAssistReply(db: Db, conversation: Item, agentId: Uuid, runId
     });
   }
 
-  // Something only a person may do (EO-521): a card whose button does it,
-  // and nothing done. Last, and on its own — the schema refuses a card
-  // beside a draft, modules, a change or work proposals — so it is the
-  // last thing its run said, which is where `assistCardOf` reads it. The
-  // one card that may come beside drafts, keeping one's own pipeline
+  // Things only a person may do (EO-521): cards whose buttons do them,
+  // and nothing done. Last, and on their own — the schema refuses cards
+  // beside a draft, modules, a change or work proposals — so they are the
+  // last thing their run said, which is where `assistCardsOf` reads them.
+  // The one card that may come beside drafts, keeping one's own pipeline
   // (EO-534), is posted after them, below.
   const drafts = draftsOf(parsed.data);
-  if (parsed.data.card && drafts.length === 0) {
-    postAssistCard(db, conversation, agentId, runId, initiationId, parsed.data.card);
+  if (parsed.data.cards.length > 0 && drafts.length === 0) {
+    postAssistCards(db, conversation, agentId, runId, initiationId, parsed.data.cards);
     return { modulesSaved: false };
   }
 
@@ -1145,8 +1146,9 @@ export function postAssistReply(db: Db, conversation: Item, agentId: Uuid, runId
   }
   // Keeping one's own pipeline, beside the drafts that would resolve a
   // held template update another way (EO-534): last, where
-  // `assistCardOf` reads a card.
-  if (parsed.data.card) postAssistCard(db, conversation, agentId, runId, initiationId, parsed.data.card);
+  // `assistCardsOf` reads a card. Alone: the schema lets no other card
+  // beside drafts, so it is one comment, as `assistDraftSlot` counts it.
+  postAssistCards(db, conversation, agentId, runId, initiationId, parsed.data.cards);
   return { modulesSaved, draftCardIds };
 }
 
@@ -2409,7 +2411,7 @@ export function assistDraftSlot(
   if (drafts.length === 0) return null;
 
   const said = agentCommentsOfRun(db, conversation, comment, thread);
-  const slots = (output.card === null ? said : said.slice(0, -1)).slice(-drafts.length);
+  const slots = (output.cards.length === 0 ? said : said.slice(0, -1)).slice(-drafts.length);
   if (slots.length !== drafts.length) return null;
   const index = slots.findIndex((entry) => entry.id === comment.id);
   const draft = drafts[index];
