@@ -1,5 +1,6 @@
 import type { WorkspaceKindSlug } from "@eo/core";
 import { describesChecks, verifiesAnything, type VerifiedStep, type WorkspaceKind } from "./supervisor/workspaceKind.js";
+import type { Workspace } from "./db/repos/workspacesRepo.js";
 
 /**
  * The workspace kinds in force for this process (EO-312).
@@ -80,4 +81,23 @@ export function verificationOfKind(slug: WorkspaceKindSlug, step: VerifiedStep):
     verifiesAction: checks.length > 0,
     kindVerifies: verifiesAnything(kind),
   };
+}
+
+/**
+ * The forge path of this workspace's repository — `owner/repo`, or
+ * `group/subgroup/repo` — as its kind reads it, or null where its kind is
+ * not installed, is not on a forge, or cannot read it (EO-857).
+ *
+ * A question, like everything else here: it reads a remote and does
+ * nothing to it. It is how a watch finding naming a forge repository is
+ * matched without the job code importing the forge (invariant 13).
+ */
+export async function forgePathOf(workspace: Workspace): Promise<string | null> {
+  const kind = current.get(workspace.kind);
+  if (kind?.forgePath === undefined) return null;
+  try {
+    return await kind.forgePath(workspace);
+  } catch {
+    return null;
+  }
 }

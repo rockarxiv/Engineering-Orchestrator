@@ -210,8 +210,10 @@
  *     `news` always a list — and the failure a real run gets when its
  *     manifest does not declare `watch: true`. On an intake check
  *     (`intake`) it also has `findings: [{ key, title, body?, spec?,
- *     existingBranch? }]`, always a list, parsed as a real run parses
- *     them; anywhere else a module returning `findings` fails.
+ *     existingBranch?, repository? }]`, always a list, parsed as a real
+ *     run parses them; anywhere else a module returning `findings`
+ *     fails. `repository` is recorded as the module gave it, trimmed: a
+ *     case has no project, so which repository it names is not judged.
  *   - `comments`: `[{ key, body }]`, every comment `ctx.comment()` and
  *     `ctx.commentOn()` would have posted, under the same caps. Recorded,
  *     never posted: nothing reaches any thread.
@@ -4526,7 +4528,7 @@ function findingsElsewhere(intake, result) {
  */
 function readFindings(value) {
   const shape =
-    `An intake check that is still waiting returns { ok: true, result: "${WAITING_RESULT}", detail, findings: [{ key, title, body?, spec?, existingBranch? }, …] }, ` +
+    `An intake check that is still waiting returns { ok: true, result: "${WAITING_RESULT}", detail, findings: [{ key, title, body?, spec?, existingBranch?, repository? }, …] }, ` +
     `where each key is the module's own stable name for what it found, at most ${MAX_FINDING_KEY_CHARS} characters, and each title is text.`;
   if (value === undefined || value === null) return { findings: [] };
   if (!Array.isArray(value)) return { problem: `${shape} This one's findings is not a list.` };
@@ -4575,6 +4577,11 @@ function findingShape(entry) {
     const branch = text("existingBranch");
     if (branch === null || branch === "") return { problem: "has an existingBranch that is not a branch's name, as non-empty text." };
     finding.existingBranch = branch;
+  }
+  if (entry.repository !== undefined) {
+    const repository = text("repository");
+    if (repository === null || repository === "") return { problem: "has a repository that is not a repository's name or forge path (owner/repo), as non-empty text." };
+    finding.repository = repository;
   }
   return { finding };
 }

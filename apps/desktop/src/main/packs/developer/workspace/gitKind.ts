@@ -2,7 +2,7 @@ import { existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { GIT_WORKTREE_KIND, PLAN_COMMENT_RESPONSE_ACTION, PlanCommentResponseOutputSchema, type Agent, type Item } from "@eo/core";
 import type { Db } from "../../../db/client.js";
-import { getGitWorkspace, getItem, stepForItem } from "../../../db/repos/index.js";
+import { asGitWorkspace, getGitWorkspace, getItem, stepForItem, type Workspace } from "../../../db/repos/index.js";
 import { emitPush } from "../../../ipc/push.js";
 import { verifier } from "../../../supervisor/workspaceKind.js";
 import type { Artifact, Check, PreparedWorkspace, ReferenceCheckoutRequest, VerifiableRun, WorkspaceAttachment, WorkspaceKind, ReleaseRequest } from "../../../supervisor/workspaceKind.js";
@@ -16,7 +16,8 @@ import { borrowedFromSiblings } from "./borrowed.js";
 import { commentsAwaitingPlan, planningRound } from "../forge/commentPlans.js";
 import { withoutRepositoryIndex } from "../repositoryIntelligence/indexPaths.js";
 import { createWorktreeWorkspace, forgetIndexesForReleasedWorktrees, releaseStaleWorktrees, releaseWorktreeFor } from "./dispatchWorkspace.js";
-import { git, statusPorcelain } from "./git.js";
+import { git, remoteUrl, statusPorcelain } from "./git.js";
+import { parseRemoteUrl } from "../forge/remote.js";
 import { referenceCheckoutFor, releaseReferenceCheckouts, releaseStaleReferenceCheckouts } from "./referenceCheckouts.js";
 import { commitNamingCheck } from "./commitNaming.js";
 import { createImplementationVerifier, createVerifiedRange } from "./implementationVerifier.js";
@@ -406,6 +407,20 @@ export function gitWorkspaceKind(options: GitWorkspaceKindOptions): WorkspaceKin
     /** Removes them when the item settles, saying on it what was written to any (EO-632). */
     async releaseReferenceCheckouts(item: Item) {
       await releaseReferenceCheckouts(db, item);
+    },
+
+    /**
+     * The path its forge remote names (EO-857): `remote.ts`'s reading of
+     * `git remote get-url`, so a watch finding naming
+     * `owner/repo` is matched to this repository as a pull request
+     * would be opened on it. Null where the remote is missing or names
+     * no forge path.
+     */
+    async forgePath(workspace: Workspace) {
+      const git = asGitWorkspace(workspace);
+      if (git === undefined) return null;
+      const url = await remoteUrl(git.config.repoPath, git.config.forgeRemote);
+      return url.ok ? (parseRemoteUrl(url.stdout)?.path ?? null) : null;
     },
   };
 }

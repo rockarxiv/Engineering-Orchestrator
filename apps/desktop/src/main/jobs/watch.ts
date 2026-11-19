@@ -13,11 +13,14 @@ import {
   itemIdsCreatedByEvents,
   latestRefusalFor,
   listAllJobs,
+  projectWorkspaceList,
   recordJobEvent,
   recordWatchCheck,
   saveJobWatchState,
   stepForItem,
+  workspaceLabel,
   type JobWatchStateRow,
+  type Workspace,
 } from "../db/repos/index.js";
 import { getModule } from "../db/repos/modulesRepo.js";
 import { projectMovedToTheRecord } from "../db/repos/projectsRepo.js";
@@ -28,6 +31,7 @@ import { runModule, type ModuleHostLauncher, type ModuleOutcome } from "../modul
 import { resolveModuleRun } from "../modules/readiness.js";
 import type { ModuleSecretsOptions } from "../modules/secrets.js";
 import { startInterval } from "../schedule/interval.js";
+import { forgePathOf } from "../workspaceKinds.js";
 import { pauseJob } from "./budget.js";
 import { fireJob, jobEntryVerdicts, type FireOptions } from "./fire.js";
 import { JOB_MESSAGE_SOURCE, messageJobOwner } from "./ownerMessage.js";
@@ -451,6 +455,12 @@ async function fileFinding(db: Db, jobId: Uuid, finding: WatchFinding, at: numbe
   const before = liveWatchJob(db, jobId);
   if (before === null) return STOPPED;
   if (createdEventFor(db, jobId, finding.key) !== undefined) return null;
+  let workspaceId: Uuid | undefined;
+  if (finding.repository !== undefined) {
+    const named = await findingWorkspace(db, before, finding.repository);
+    if (!named.ok) return refuseFinding(db, jobId, finding, at, named.reason);
+    workspaceId = named.workspaceId;
+  }
   const options: FireOptions & { dueAt: number } = {
     dueAt: at,
     firedAt: at,
@@ -460,6 +470,7 @@ async function fileFinding(db: Db, jobId: Uuid, finding: WatchFinding, at: numbe
       ...(finding.body === undefined ? {} : { body: finding.body }),
       ...(finding.spec === undefined ? {} : { spec: finding.spec }),
       ...(finding.existingBranch === undefined ? {} : { existingBranch: finding.existingBranch }),
+      ...(workspaceId === undefined ? {} : { workspaceId }),
     },
   };
   const entryVerdicts = await entryVerdictsOf(db, before, options);
@@ -489,9 +500,65 @@ async function fileFinding(db: Db, jobId: Uuid, finding: WatchFinding, at: numbe
   }
   if (filed === STOPPED) return STOPPED;
   if ("itemId" in filed) return filed.itemId;
-  const { job } = filed;
-  messageJobOwner(db, job, `"${job.name}" could not file "${finding.title}" (${finding.key}), which its module found. ${filed.refused}`, { source: JOB_MESSAGE_SOURCE.watch });
+  tellOwnerOfRefusal(db, filed.job, finding, filed.refused);
   return null;
+}
+
+function tellOwnerOfRefusal(db: Db, job: Job, finding: WatchFinding, reason: string): void {
+  messageJobOwner(db, job, `"${job.name}" could not file "${finding.title}" (${finding.key}), which its module found. ${reason}`, { source: JOB_MESSAGE_SOURCE.watch });
+}
+
+/**
+ * A finding refused before it reached `fireJob` (EO-857): a `refused`
+ * row for its key and a message to the owner, both only the first time
+ * the key is refused for this reason, as `fileFinding`'s own refusals.
+ * Nothing was fired, so no occurrence is written.
+ */
+function refuseFinding(db: Db, jobId: Uuid, finding: WatchFinding, at: number, reason: string): null | typeof STOPPED {
+  const refused = db.transaction(() => {
+    const job = liveWatchJob(db, jobId);
+    if (job === null) return STOPPED;
+    if (latestRefusalFor(db, jobId, finding.key)?.reason === reason) return null;
+    recordJobEvent(db, { jobId, receivedAt: at, eventKey: finding.key, payload: "", outcome: "refused", reason });
+    return job;
+  });
+  if (refused === STOPPED || refused === null) return refused;
+  tellOwnerOfRefusal(db, refused, finding, reason);
+  return null;
+}
+
+/**
+ * The repository a finding's `repository` names (EO-857): the one of the
+ * job's project's repositories whose name, as `repositories_list` gives
+ * it, or whose forge path, as its kind reads its remote, is that value,
+ * without regard to case. A value that is both one repository's name and
+ * another's path names two.
+ *
+ * Exactly one, or a refusal naming the project's repositories: a value
+ * matching none, or several, is not guessed at, since an item filed on
+ * the wrong repository is work done on the wrong code.
+ */
+async function findingWorkspace(db: Db, job: Job, wanted: string): Promise<{ ok: true; workspaceId: Uuid } | { ok: false; reason: string }> {
+  const members = job.projectId === null ? [] : projectWorkspaceList(db, job.projectId as Uuid);
+  if (members.length === 0) {
+    return { ok: false, reason: `It names the repository "${wanted}", and this job's project has no repositories to file it on.` };
+  }
+  const paths = await Promise.all(members.map((workspace) => forgePathOf(workspace)));
+  const sought = wanted.toLowerCase();
+  const matches = members.filter((workspace, index) => workspaceLabel(workspace).toLowerCase() === sought || paths[index]?.toLowerCase() === sought);
+  if (matches.length === 1) return { ok: true, workspaceId: matches[0]!.id };
+  const described = (workspace: Workspace): string => {
+    const path = paths[members.indexOf(workspace)];
+    return path == null ? `"${workspaceLabel(workspace)}"` : `"${workspaceLabel(workspace)}" (${path})`;
+  };
+  const listed = `This project's repositories are ${members.map(described).join(", ")}; a finding names one by its name or by its forge path.`;
+  return {
+    ok: false,
+    reason:
+      matches.length === 0
+        ? `It names the repository "${wanted}", which is neither the name nor the forge path of any repository on this project. ${listed}`
+        : `It names the repository "${wanted}", which matches ${matches.length} repositories on this project (${matches.map(described).join(", ")}), so EO cannot tell which to file it on. ${listed}`,
+  };
 }
 
 /**

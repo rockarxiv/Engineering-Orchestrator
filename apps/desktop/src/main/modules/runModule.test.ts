@@ -892,7 +892,7 @@ describe("a module that is a pipeline's intake", () => {
   it("answers waiting with its findings, parsed and trimmed, and no findings as an empty list", async () => {
     const outcome = await intakeRun(
       returning(`[
-        { key: "dependabot:o/r#1", title: " Bump zod ", body: "From 4.6", spec: { pr: 1 }, existingBranch: "dependabot/zod", ignored: true },
+        { key: "dependabot:o/r#1", title: " Bump zod ", body: "From 4.6", spec: { pr: 1 }, existingBranch: "dependabot/zod", repository: " o/r ", ignored: true },
         { key: "dependabot:o/r#2", title: "Bump vite" },
       ]`),
     ).outcome;
@@ -902,7 +902,7 @@ describe("a module that is a pipeline's intake", () => {
       detail: "looked",
       news: [],
       findings: [
-        { key: "dependabot:o/r#1", title: "Bump zod", body: "From 4.6", spec: { pr: 1 }, existingBranch: "dependabot/zod" },
+        { key: "dependabot:o/r#1", title: "Bump zod", body: "From 4.6", spec: { pr: 1 }, existingBranch: "dependabot/zod", repository: "o/r" },
         { key: "dependabot:o/r#2", title: "Bump vite" },
       ],
     });
@@ -942,6 +942,7 @@ describe("a module that is a pipeline's intake", () => {
       [`[{ key: "a", title: "A", body: 3 }]`, "findings[0] has a body that is not text"],
       [`[{ key: "a", title: "A", spec: [1] }]`, "findings[0] has a spec that is not an object"],
       [`[{ key: "a", title: "A", existingBranch: "" }]`, "findings[0] has an existingBranch that is not a branch's name"],
+      [`[{ key: "a", title: "A", repository: 7 }]`, "findings[0] has a repository that is not a repository's name or forge path"],
     ];
     for (const [findings, reason] of cases) {
       const outcome = await intakeRun(returning(findings)).outcome;

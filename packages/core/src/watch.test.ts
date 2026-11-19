@@ -85,9 +85,10 @@ describe("keep checking, as the item page says it (EO-456)", () => {
 });
 
 describe("what an intake check found (EO-752)", () => {
-  it("takes a key, a title and the optional body, spec and existing branch", () => {
-    const finding = { key: "dependabot:owner/repo#123", title: "Bump zod", body: "From 4.6 to 4.7", spec: { pr: 123 }, existingBranch: "dependabot/zod" };
+  it("takes a key, a title and the optional body, spec, existing branch and repository", () => {
+    const finding = { key: "dependabot:owner/repo#123", title: "Bump zod", body: "From 4.6 to 4.7", spec: { pr: 123 }, existingBranch: "dependabot/zod", repository: "owner/repo" };
     expect(WatchFindingSchema.parse(finding)).toEqual(finding);
+    expect(WatchFindingSchema.parse({ key: "a", title: "b", repository: " group/sub/repo " }).repository).toBe("group/sub/repo");
     expect(WatchFindingSchema.parse({ key: "a", title: "b" })).toEqual({ key: "a", title: "b" });
   });
 
@@ -100,6 +101,7 @@ describe("what an intake check found (EO-752)", () => {
     expect(WatchFindingSchema.safeParse({ key: "k", title: "t", body: 3 }).success).toBe(false);
     expect(WatchFindingSchema.safeParse({ key: "k", title: "t", spec: [1] }).success).toBe(false);
     expect(WatchFindingSchema.safeParse({ key: "k", title: "t", existingBranch: "" }).success).toBe(false);
+    expect(WatchFindingSchema.safeParse({ key: "k", title: "t", repository: "  " }).success).toBe(false);
   });
 
   it("names what keeps a list of findings from being filed", () => {

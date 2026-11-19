@@ -87,6 +87,12 @@ export interface FireOverrides {
    * on no branch, refuses the firing.
    */
   existingBranch?: string;
+  /**
+   * The repository to file on, in place of the project's only one
+   * (EO-857, a watch finding's `repository`, already matched to one of
+   * the job's project's repositories by `watch.ts`).
+   */
+  workspaceId?: Uuid;
 }
 
 export interface FireResult {
@@ -134,8 +140,8 @@ class Refused extends Error {
  * On a project with exactly one repository the item gets it (EO-855), as
  * it does from the board, an assistant's proposal and `ctx.createItem`;
  * without one, an entry step that cuts a branch has nothing to cut it
- * from. With none, or several, it gets none — a job has no way to name
- * one of several.
+ * from. With none, or several, it gets none, unless the firing names one
+ * — a watch finding's `repository` (EO-857).
  */
 function firingInput(db: Db, job: Job, dueAt: number, overrides: FireOverrides, pipelineId: Uuid, entryStepId: string): CreateItemInput {
   const template = job.template!;
@@ -148,7 +154,7 @@ function firingInput(db: Db, job: Job, dueAt: number, overrides: FireOverrides, 
     ...(overrides.spec === undefined ? {} : { spec: overrides.spec }),
     ...(git === undefined ? {} : { git }),
     projectId: job.projectId as Uuid | null,
-    workspaceId: soleWorkspaceOf(db, job.projectId as Uuid | null),
+    workspaceId: overrides.workspaceId ?? soleWorkspaceOf(db, job.projectId as Uuid | null),
     pipelineId,
     stepId: entryStepId,
     createdBy: job.ownerId as Uuid,
