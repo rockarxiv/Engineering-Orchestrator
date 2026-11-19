@@ -59,8 +59,9 @@ import { StepInputsSchema } from "./modules.js";
  * programs agents are told to reach for, so the system agent proposes
  * either as a card, through the channel the Agent tools screen calls.
  * A third (EO-859) does both for several CLIs and agents in one press,
- * and is the one the system agent offers for giving or taking a CLI;
- * `cliToolAttach` stays so cards already in a conversation still work.
+ * and is the one the system agent offers for every CLI change — adding
+ * without giving too, with no agents (EO-860). `cliToolAdd` and
+ * `cliToolAttach` stay so cards already in a conversation still work.
  *
  * Every branch writes all of its keys, so it is the same document from
  * both backends: there is no optional field for a Codex agent to fill
@@ -150,9 +151,11 @@ export type JobWebhookCardAction = z.infer<typeof JobWebhookCardActionSchema>;
  * catalogued yet is named. The press applies what the person left
  * ticked, through `agentCliTools:assign`, in one transaction.
  *
- * What the schema can say alone it says here: something to do, every
- * agent and every added command named once, and no CLI both given to
- * and taken from one agent.
+ * With no agents it only adds — several programs in one card (EO-860).
+ *
+ * What the schema can say alone it says here: something to do (an add or
+ * an agent), every agent and every added command (trimmed) named once,
+ * and no CLI both given to and taken from one agent.
  */
 export const CliToolsAssignCardSchema = z
   .object({

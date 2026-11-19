@@ -765,3 +765,53 @@ describe("a card adding CLIs and giving them to several agents (EO-859)", () => 
     expect(screen.getByRole("button", { name: "Nothing ticked" })).toBeDisabled();
   });
 });
+
+describe("a card that adds several CLIs, and what its button says (EO-860)", () => {
+  type Detail = Extract<AssistCardDetail, { kind: "cliToolsAssign" }>;
+  type Row = Detail["rows"][number];
+  const add = (name: string, command: string): Detail["adds"][number] => ({ name, command, description: "", detection: { found: false }, problem: null });
+  const ADDS = [add("GitHub CLI", "gh"), add("Jira CLI", "jira"), add("Kubectl", "kubectl")];
+  const give = (agent: string, cli: string): Row => ({
+    agentId: `a-${agent}`,
+    agentName: agent,
+    cli: `c-${cli}`,
+    cliToolId: `c-${cli}`,
+    add: null,
+    cliToolName: cli,
+    command: cli,
+    give: true,
+    current: false,
+    inPlace: false,
+    problem: null,
+  });
+  const newGive = (agent: string, command: string): Row => ({ ...give(agent, command), cli: command, cliToolId: null, add: command });
+
+  it("shows an add-only card's add sections with install detection, no agent rows, and Add 3", async () => {
+    draw(message({ kind: "cliToolsAssign", outcome: null }), { kind: "cliToolsAssign", adds: ADDS, rows: [] });
+
+    for (const name of ["GitHub CLI", "Jira CLI", "Kubectl"]) {
+      const section = await screen.findByRole("region", { name: `Add ${name}` });
+      expect(within(section).getByLabelText("The command-line tool")).toHaveTextContent("On this machineNot found");
+      expect(screen.getByRole("checkbox", { name: `Add ${name}` })).toBeChecked();
+    }
+    expect(screen.queryByRole("list", { name: "Agents" })).toBeNull();
+    expect(screen.getByText(/Adding a CLI gives it to no agent/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Add 3" })).toBeEnabled();
+
+    // Ticking works as it does beside agent rows.
+    fireEvent.click(screen.getByRole("checkbox", { name: "Add Jira CLI" }));
+    expect(screen.getByRole("button", { name: "Add 2" })).toBeEnabled();
+  });
+
+  it("says Give 5 for gives alone", async () => {
+    const rows = [give("Implementer", "gh"), give("Implementer", "jira"), give("Reviewer", "gh"), give("Reviewer", "jira"), give("Tester", "gh")];
+    draw(message({ kind: "cliToolsAssign", outcome: null }), { kind: "cliToolsAssign", adds: [], rows });
+    expect(await screen.findByRole("button", { name: "Give 5" })).toBeEnabled();
+  });
+
+  it("says Add 2, give 5 for both", async () => {
+    const rows = [give("Implementer", "gh"), newGive("Implementer", "jira"), newGive("Implementer", "kubectl"), newGive("Reviewer", "jira"), give("Reviewer", "gh")];
+    draw(message({ kind: "cliToolsAssign", outcome: null }), { kind: "cliToolsAssign", adds: ADDS.slice(1), rows });
+    expect(await screen.findByRole("button", { name: "Add 2, give 5" })).toBeEnabled();
+  });
+});

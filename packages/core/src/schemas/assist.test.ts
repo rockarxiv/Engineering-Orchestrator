@@ -517,6 +517,25 @@ describe("the card that adds CLIs and gives them to several agents (EO-859)", ()
   });
 });
 
+describe("a card that only adds CLIs, several at once (EO-860)", () => {
+  const offer = (card: unknown) => AssistOutputSchema.safeParse({ message: "The card does it.", card });
+  const cli = (command: string) => ({ name: `CLI ${command}`, command, description: "" });
+
+  it("accepts three adds and no agents", () => {
+    expect(offer({ kind: "cliToolsAssign", add: [cli("gh"), cli("jira"), cli("kubectl")], agents: [] }).success).toBe(true);
+  });
+
+  it("still refuses a card with no adds and no agents", () => {
+    expect(offer({ kind: "cliToolsAssign", add: [], agents: [] }).success).toBe(false);
+  });
+
+  it("refuses two adds whose commands are equal once trimmed", () => {
+    const parsed = offer({ kind: "cliToolsAssign", add: [cli("gh"), cli("jira"), cli("  gh ")], agents: [] });
+    expect(parsed.success).toBe(false);
+    expect(JSON.stringify(parsed.error?.issues)).toContain("`gh` is added twice");
+  });
+});
+
 describe("alternative drafts and keeping one's own pipeline (EO-534)", () => {
   const target = { pipelineId: "default" };
   const draft = (rationale: string) => ({ ...graph(), rationale, target });
