@@ -181,13 +181,17 @@ WHERE json_valid(`manifest`)
 -- A proposal that never carried the field — `new_feature`, `new_story`,
 -- `new_bug` — is copied through untouched rather than given an
 -- `"item": null` it never had.
+--
+-- The subquery is wrapped in `json()` because a scalar subquery's value
+-- does not keep its JSON subtype (SQLite 3.54, better-sqlite3 13.2), and
+-- without it `json_set` would store the array as a quoted string.
 UPDATE `runs`
-SET `result` = json_set(`result`, '$.parsed.proposals', (
+SET `result` = json_set(`result`, '$.parsed.proposals', json((
       SELECT json_group_array(json(
                CASE WHEN json_type(proposal.value, '$.ticket') IS NOT NULL
                     THEN json_remove(json_set(proposal.value, '$.item', json_extract(proposal.value, '$.ticket')), '$.ticket')
                     ELSE proposal.value END))
-        FROM (SELECT key, value FROM json_each(json_extract(`runs`.`result`, '$.parsed.proposals')) ORDER BY key) AS proposal))
+        FROM (SELECT key, value FROM json_each(json_extract(`runs`.`result`, '$.parsed.proposals')) ORDER BY key) AS proposal)))
 WHERE json_valid(`result`)
   AND json_type(`result`, '$.parsed.proposals') = 'array'
   AND EXISTS (SELECT 1 FROM json_each(json_extract(`runs`.`result`, '$.parsed.proposals')) AS p WHERE json_type(p.value, '$.ticket') IS NOT NULL);
@@ -195,12 +199,12 @@ WHERE json_valid(`result`)
 
 -- The same, for a result stored before A-02 wrapped it in `raw`/`parsed`.
 UPDATE `runs`
-SET `result` = json_set(`result`, '$.proposals', (
+SET `result` = json_set(`result`, '$.proposals', json((
       SELECT json_group_array(json(
                CASE WHEN json_type(proposal.value, '$.ticket') IS NOT NULL
                     THEN json_remove(json_set(proposal.value, '$.item', json_extract(proposal.value, '$.ticket')), '$.ticket')
                     ELSE proposal.value END))
-        FROM (SELECT key, value FROM json_each(json_extract(`runs`.`result`, '$.proposals')) ORDER BY key) AS proposal))
+        FROM (SELECT key, value FROM json_each(json_extract(`runs`.`result`, '$.proposals')) ORDER BY key) AS proposal)))
 WHERE json_valid(`result`)
   AND json_type(`result`, '$.proposals') = 'array'
   AND EXISTS (SELECT 1 FROM json_each(json_extract(`runs`.`result`, '$.proposals')) AS p WHERE json_type(p.value, '$.ticket') IS NOT NULL);
