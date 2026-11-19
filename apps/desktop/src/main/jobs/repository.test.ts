@@ -11,8 +11,10 @@ import {
   createProject,
   getItem,
   getPipeline,
+  listJobEvents,
   listCommentsForItem,
   listOccurrences,
+  removeWorkspaceFromProject,
   listRunsForItem,
   saveModule,
   setEntryStep,
@@ -20,7 +22,7 @@ import {
   type GitWorkspace,
 } from "../db/repos/index.js";
 import { jobs as jobRows } from "../db/schema.js";
-import { attachWorkspace, openMigratedTestDb } from "../db/testHelpers.js";
+import { attachWorkspace, messagesAboutJob, openMigratedTestDb } from "../db/testHelpers.js";
 import { createEngine } from "../engine.js";
 import { runJobNowCommand } from "../ipc/jobCommands.js";
 import type { ModuleOutcome } from "../modules/runModule.js";
@@ -28,7 +30,7 @@ import { createFakeProvider } from "../providers/fake.js";
 import { happyPathFixture } from "../providers/fixtures.js";
 import { run } from "../testing/git.js";
 import { removeScratch } from "../testing/scratch.js";
-import { fireJob } from "./fire.js";
+import { fireJob, jobEntryVerdicts } from "./fire.js";
 import { createJob } from "./jobs.js";
 import { runJobTick } from "./scheduler.js";
 import { runWatchTick, type WatchCheck } from "./watch.js";
@@ -188,5 +190,150 @@ describe("a job on a project with no repository, or several", () => {
     const fired = fireJob(handle.db, manualJob(bare.id as Uuid));
 
     expect(fired.item?.workspaceId ?? null).toBeNull();
+  });
+});
+
+/**
+ * A finding that names its repository is filed on it (EO-857): by the
+ * name `repositories_list` gives it, or by the forge path of its remote,
+ * either without regard to case. Anything matching none, or several, is
+ * refused rather than guessed at, and the rest of the check is filed.
+ */
+describe("a watch finding that names its repository", () => {
+  const ENGINEERING = "git@github.com:rockarxiv/Engineering-Orchestrator.git";
+  const at = (hour: number): number => Date.UTC(2026, 10, 19, hour, 0);
+
+  /** A repository on the project, a real checkout whose `origin` is `remote`. */
+  async function addRepository(name: string, remote: string | null): Promise<GitWorkspace> {
+    const repoPath = join(scratch, name.replace(/\//g, "-"));
+    mkdirSync(repoPath, { recursive: true });
+    await run(["init", "-b", "main"], repoPath);
+    if (remote !== null) await run(["remote", "add", "origin", remote], repoPath);
+    const workspace = createGitWorkspace(handle.db, { config: { name, repoPath } });
+    addWorkspaceToProject(handle.db, projectId, workspace.id as Uuid);
+    return workspace;
+  }
+
+  const reporting =
+    (...findings: WatchFinding[]): WatchCheck =>
+    async () => ({ ok: true, result: "waiting", detail: "", findings });
+
+  beforeEach(() => {
+    // The engine installs the workspace kinds, and the git kind is what
+    // reads a repository's forge path; the job code never imports it.
+    createEngine({ db: handle.db, eoMcpServerPath: "/unused", worktreeRoot: join(scratch, "work trees"), provider: createFakeProvider(happyPathFixture) });
+  });
+
+  it("files on the repository it names, without regard to case, rather than the job's", async () => {
+    const web = await addRepository("Web", null);
+    watchJob();
+
+    const { filed } = await runWatchTick(handle.db, { check: reporting({ key: "k1", title: "Bump zod", repository: "wEB" }), now: () => at(9) });
+
+    expect(filed).toHaveLength(1);
+    expect(getItem(handle.db, filed[0] as Uuid)?.workspaceId).toBe(web.id);
+  });
+
+  it("files on the repository whose forge remote has the path it names", async () => {
+    const engineering = await addRepository("eo", ENGINEERING);
+    watchJob();
+
+    const { filed } = await runWatchTick(handle.db, {
+      check: reporting({ key: "k1", title: "Bump zod", repository: "rockarxiv/Engineering-Orchestrator" }, { key: "k2", title: "Bump vite", repository: "ROCKARXIV/engineering-orchestrator" }),
+      now: () => at(9),
+    });
+
+    expect(filed).toHaveLength(2);
+    expect(filed.map((id) => getItem(handle.db, id as Uuid)?.workspaceId)).toEqual([engineering.id, engineering.id]);
+  });
+
+  it("matches a GitLab subgroup's path", async () => {
+    const gitlab = await addRepository("api", "https://gitlab.com/group/subgroup/api.git");
+    watchJob();
+
+    const { filed } = await runWatchTick(handle.db, { check: reporting({ key: "k1", title: "Bump zod", repository: "group/subgroup/api" }), now: () => at(9) });
+
+    expect(getItem(handle.db, filed[0] as Uuid)?.workspaceId).toBe(gitlab.id);
+  });
+
+  it("refuses a finding naming no repository, messages the owner once naming them, and files the rest where the job files", async () => {
+    await addRepository("eo", ENGINEERING);
+    const job = watchJob();
+    const check = reporting({ key: "lost", title: "Bump zod", repository: "rockarxiv/elsewhere" }, { key: "kept", title: "Bump vite" });
+
+    const first = await runWatchTick(handle.db, { check, now: () => at(9) });
+    const again = await runWatchTick(handle.db, { check, now: () => at(11) });
+
+    expect(first.filed).toHaveLength(1);
+    // Two repositories and none named: filed as the job files, with none.
+    expect(getItem(handle.db, first.filed[0] as Uuid)?.workspaceId).toBeNull();
+    expect(again.filed).toEqual([]);
+    const events = listJobEvents(handle.db, job.id as Uuid);
+    expect(events.filter((event) => event.eventKey === "lost").map((event) => event.outcome)).toEqual(["refused"]);
+    expect(events.filter((event) => event.eventKey === "kept").map((event) => event.outcome)).toEqual(["created"]);
+    const messages = messagesAboutJob(handle.db, job.id);
+    expect(messages).toHaveLength(1);
+    expect(messages[0]?.body).toContain('"rockarxiv/elsewhere"');
+    expect(messages[0]?.body).toContain('"the repo"');
+    expect(messages[0]?.body).toContain('"eo" (rockarxiv/Engineering-Orchestrator)');
+  });
+
+  it("refuses a finding naming two repositories, and files the rest", async () => {
+    await addRepository("eo", ENGINEERING);
+    await addRepository("eo fork", ENGINEERING);
+    const job = watchJob();
+
+    const { filed } = await runWatchTick(handle.db, {
+      check: reporting({ key: "both", title: "Bump zod", repository: "rockarxiv/Engineering-Orchestrator" }, { key: "named", title: "Bump vite", repository: "the repo" }),
+      now: () => at(9),
+    });
+
+    expect(filed).toHaveLength(1);
+    expect(getItem(handle.db, filed[0] as Uuid)?.workspaceId).toBe(repository.id);
+    const refused = listJobEvents(handle.db, job.id as Uuid).filter((event) => event.eventKey === "both");
+    expect(refused.map((event) => event.outcome)).toEqual(["refused"]);
+    expect(refused[0]?.reason).toContain("matches 2 repositories");
+    const messages = messagesAboutJob(handle.db, job.id);
+    expect(messages).toHaveLength(1);
+    expect(messages[0]?.body).toContain('"eo fork" (rockarxiv/Engineering-Orchestrator)');
+  });
+
+  it("refuses a finding whose repository leaves the project while its entry rules run, and files the rest", async () => {
+    const engineering = await addRepository("eo", ENGINEERING);
+    const job = watchJob();
+    let detached = false;
+
+    const { filed } = await runWatchTick(handle.db, {
+      check: reporting({ key: "moved", title: "Bump zod", repository: "rockarxiv/Engineering-Orchestrator" }, { key: "stays", title: "Bump vite", repository: "the repo" }),
+      now: () => at(9),
+      // A person detaches the repository while the first finding's entry module runs.
+      entryVerdicts: async (db, onJob, options) => {
+        if (!detached) {
+          detached = true;
+          removeWorkspaceFromProject(db, projectId, engineering.id as Uuid);
+        }
+        return jobEntryVerdicts(db, onJob, options);
+      },
+    });
+
+    expect(filed).toHaveLength(1);
+    expect(getItem(handle.db, filed[0] as Uuid)?.workspaceId).toBe(repository.id);
+    const events = listJobEvents(handle.db, job.id as Uuid);
+    const refused = events.filter((event) => event.eventKey === "moved");
+    expect(refused.map((event) => event.outcome)).toEqual(["refused"]);
+    expect(refused[0]?.reason).toContain("left this project");
+    expect(events.filter((event) => event.eventKey === "stays").map((event) => event.outcome)).toEqual(["created"]);
+    const messages = messagesAboutJob(handle.db, job.id);
+    expect(messages).toHaveLength(1);
+    expect(messages[0]?.body).toContain('"rockarxiv/Engineering-Orchestrator"');
+    expect(messages[0]?.body).toContain('This project\'s repositories are "the repo".');
+  });
+
+  it("files a finding with no repository on the project's only one, as before", async () => {
+    watchJob();
+
+    const { filed } = await runWatchTick(handle.db, { check: reporting({ key: "k1", title: "Bump zod" }), now: () => at(9) });
+
+    expect(getItem(handle.db, filed[0] as Uuid)?.workspaceId).toBe(repository.id);
   });
 });

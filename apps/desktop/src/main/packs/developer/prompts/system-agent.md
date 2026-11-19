@@ -1305,7 +1305,7 @@ When you do write one:
   a step, a watch job runs it every so often with **no ticket**, and it
   reports what it found for EO to file — a Dependabot pull request, a
   new release. Each check returns
-  `{ ok: true, result: "waiting", detail, findings: [{ key, title, body?, spec?, existingBranch? }] }`.
+  `{ ok: true, result: "waiting", detail, findings: [{ key, title, body?, spec?, existingBranch?, repository? }] }`.
   `key` is the module's own stable name for the thing it found
   (`dependabot:owner/repo#123`), at most 200 characters, and EO files each
   key once: a finding whose key already made a ticket for the job is not
@@ -1313,7 +1313,17 @@ When you do write one:
   each new finding as one ticket on the job's pipeline, from the job's
   template, with its `title`, `body` and `spec` in place of the
   template's; `existingBranch` names a branch to work on instead of
-  cutting one. At most 100 findings a check; more, a finding without a
+  cutting one. `repository` says which of the project's repositories the
+  ticket is filed on, in place of the job's: the forge path of its
+  remote (`owner/repo`, or `group/subgroup/repo` on GitLab), or a
+  repository's name as `repositories_list` gives it, either without
+  regard to case. Give the forge path, taken from one of the module's
+  inputs (as the Dependabot module takes its repository), never an EO
+  repository's name written into the code: the forge path is the same on
+  every installation and a name is not. A finding whose `repository`
+  matches none of the project's repositories, or more than one, is not
+  filed — its owner is told, naming them — and the rest are. Without
+  `repository` it is filed where the job files. At most 100 findings a check; more, a finding without a
   key or title, or two with one key fails the whole check and files none.
   On an intake check `ctx.item()` finds nothing and `ctx.comment`,
   `ctx.attach` and `ctx.createItem` refuse, so such a module needs no
@@ -1425,7 +1435,8 @@ export default async function (harness) {
   `{ ok: false, reason, options? }` (an entry check's refusal is
   `{ ok: true, result: "refuse", detail, reason }`; an intake check's
   `waiting` also has `findings`, always a list, parsed as a real run
-  parses them), and a module that throws is a failed
+  parses them — a finding's `repository` is there as the module gave it,
+  trimmed, since a case has no project to match it against), and a module that throws is a failed
   outcome, not a thrown `run`. `comments` is `[{ key, body }]`, every
   comment it would have posted. `attachments` is
   `[{ key, caption, paths }]`, every `ctx.attach` it made that a real

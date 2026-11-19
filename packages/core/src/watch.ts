@@ -115,6 +115,15 @@ export const MAX_WATCH_FINDING_KEY_CHARS = 200;
  * many checks report it. `existingBranch` names a branch that already
  * exists, to work on instead of cutting one, as `ctx.createItem`'s does.
  *
+ * `repository` says which of the job's project's repositories the item
+ * is filed on, in place of the job's (EO-857): the name of one, as
+ * `repositories_list` gives it, or the forge path of its remote —
+ * `owner/repo`, `group/subgroup/repo` — either compared without regard to
+ * case. A module should give the forge path, taken from one of its
+ * inputs: it is the same on every installation, and a repository's name
+ * in EO is not. A value naming none of them, or more than one, is not
+ * guessed at — that finding is refused and the rest are filed.
+ *
  * Mirrored by `findingProblem` in `moduleHost.mjs`, which cannot import
  * this; the parent parses what the host sends with this schema again.
  */
@@ -124,6 +133,7 @@ export const WatchFindingSchema = z.object({
   body: z.string().optional(),
   spec: z.record(z.string(), z.unknown()).optional(),
   existingBranch: z.string().trim().min(1).optional(),
+  repository: z.string().trim().min(1).optional(),
 });
 export type WatchFinding = z.infer<typeof WatchFindingSchema>;
 

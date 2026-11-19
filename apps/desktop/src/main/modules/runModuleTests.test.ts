@@ -1213,10 +1213,25 @@ describe("runModuleTests", () => {
       expect(run.cases[0]).toMatchObject({ passed: true });
     });
 
+    it("reports a finding's repository, trimmed, as the module gave it (EO-857)", async () => {
+      const run = await runModuleTests(launcher, {
+        module: { code: returning(`[{ key: "a", title: "A", repository: " rockarxiv/Engineering-Orchestrator " }, { key: "b", title: "B" }]`), manifest: WATCH },
+        tests: [
+          testCase(`import assert from "node:assert/strict";
+            export default async function (harness) {
+              const run = await harness.run({ intake: ${INTAKE} });
+              assert.deepEqual(run.outcome.findings, [{ key: "a", title: "A", repository: "rockarxiv/Engineering-Orchestrator" }, { key: "b", title: "B" }]);
+            }`),
+        ],
+      });
+      expect(run.cases[0]?.failure).toBeNull();
+    });
+
     it("refuses too many findings, one the schema refuses, a repeated key, and findings on a result, as a real run does", async () => {
       const cases: Array<[string, string]> = [
         [returning(`Array.from({ length: 101 }, (_, i) => ({ key: "k" + i, title: "t" }))`), "may report at most 100 findings, and this one reported 101"],
         [returning(`[{ key: "a", title: "A" }, { key: "b" }]`), "findings[1] has no title"],
+        [returning(`[{ key: "a", title: "A", repository: "  " }]`), "findings[0] has a repository that is not"],
         [returning(`[{ key: "a", title: "A" }, { key: "a", title: "B" }]`), 'findings[0] and findings[1] both have the key "a"'],
         [`export default async function () { return { ok: true, result: "merged", findings: [] }; }`, 'answers "waiting"'],
       ];

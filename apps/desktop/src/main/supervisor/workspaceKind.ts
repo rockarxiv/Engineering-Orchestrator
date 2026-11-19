@@ -1,4 +1,5 @@
 import type { Agent, Item, PipelineStep, RepositoryMcpServer, Skill, Uuid, WorkspaceKindSlug } from "@eo/core";
+import type { Workspace } from "../db/repos/workspacesRepo.js";
 
 /**
  * What a workspace *is*, as five members (EO-295, EO-297,
@@ -223,6 +224,22 @@ export interface WorkspaceKind {
    * is `release({ what: "stale" })`'s, as it is for a workspace.
    */
   releaseReferenceCheckouts?(item: Item): Promise<void>;
+
+  /**
+   * The path of this workspace's repository on its forge — `owner/repo`,
+   * or `group/subgroup/repo` on GitLab — as its forge remote names it, or
+   * null where it has none or it cannot be read (EO-857).
+   *
+   * Asked of a workspace rather than an item, the one member that is:
+   * a watch finding names the repository its item is to be filed on
+   * before there is an item, and a module knows its repository by this
+   * path, which is the same on every installation. It is how code with
+   * no business knowing what a forge is matches one, through the kind
+   * rather than by importing the forge.
+   *
+   * Optional, and absent is "this kind is not on a forge".
+   */
+  forgePath?(workspace: Workspace): Promise<string | null>;
 }
 
 /** Which repository and which branch an item is asking to read (EO-632). */
