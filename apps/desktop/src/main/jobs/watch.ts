@@ -10,6 +10,7 @@ import {
   getJob,
   getJobWatchState,
   getProject,
+  getWorkspace,
   itemIdsCreatedByEvents,
   latestRefusalFor,
   listAllJobs,
@@ -482,12 +483,16 @@ async function fileFinding(db: Db, jobId: Uuid, finding: WatchFinding, at: numbe
       // guards only see the job they are handed.
       const job = liveWatchJob(db, jobId);
       if (job === null) return STOPPED;
-      const fired = fireJob(db, job, { ...options, entryVerdicts });
-      if (fired.item !== null) {
+      // The repository the finding named, read again for the same reason:
+      // it may have left the project while the entry rules ran, and
+      // neither `fireJob` nor `createItem` asks whose it is.
+      const departed = workspaceId === undefined ? null : departedRepositoryProblem(db, job, finding, workspaceId);
+      const fired = departed === null ? fireJob(db, job, { ...options, entryVerdicts }) : null;
+      if (fired !== null && fired.item !== null) {
         recordJobEvent(db, { jobId, receivedAt: at, eventKey: finding.key, payload: "", outcome: "created", itemId: fired.item.id as Uuid });
         return { itemId: fired.item.id };
       }
-      const reason = fired.problem ?? "EO could not file it.";
+      const reason = departed ?? fired?.problem ?? "EO could not file it.";
       if (latestRefusalFor(db, jobId, finding.key)?.reason === reason) throw new AlreadySaid();
       recordJobEvent(db, { jobId, receivedAt: at, eventKey: finding.key, payload: "", outcome: "refused", reason });
       return { refused: reason, job };
@@ -502,6 +507,22 @@ async function fileFinding(db: Db, jobId: Uuid, finding: WatchFinding, at: numbe
   if ("itemId" in filed) return filed.itemId;
   tellOwnerOfRefusal(db, filed.job, finding, filed.refused);
   return null;
+}
+
+/**
+ * Why the repository a finding was matched to can no longer take its
+ * item, or null where it still can (EO-857): it is not on the job's
+ * project any more — detached, deleted, or the job moved — since the
+ * finding was matched. Synchronous, so it names the project's
+ * repositories by name only: their forge paths cannot be read inside the
+ * transaction that files.
+ */
+function departedRepositoryProblem(db: Db, job: Job, finding: WatchFinding, workspaceId: Uuid): string | null {
+  const projectId = job.projectId as Uuid | null;
+  if (projectId !== null && getWorkspace(db, workspaceId)?.projectId === projectId) return null;
+  const members = projectId === null ? [] : projectWorkspaceList(db, projectId);
+  const listed = members.length === 0 ? "This project has no repositories now." : `This project's repositories are ${members.map((workspace) => `"${workspaceLabel(workspace)}"`).join(", ")}.`;
+  return `It names the repository "${finding.repository ?? ""}", and the repository that matched it left this project before the item could be filed. ${listed}`;
 }
 
 function tellOwnerOfRefusal(db: Db, job: Job, finding: WatchFinding, reason: string): void {

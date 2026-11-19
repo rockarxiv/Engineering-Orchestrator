@@ -14,6 +14,7 @@ import {
   listJobEvents,
   listCommentsForItem,
   listOccurrences,
+  removeWorkspaceFromProject,
   listRunsForItem,
   saveModule,
   setEntryStep,
@@ -29,7 +30,7 @@ import { createFakeProvider } from "../providers/fake.js";
 import { happyPathFixture } from "../providers/fixtures.js";
 import { run } from "../testing/git.js";
 import { removeScratch } from "../testing/scratch.js";
-import { fireJob } from "./fire.js";
+import { fireJob, jobEntryVerdicts } from "./fire.js";
 import { createJob } from "./jobs.js";
 import { runJobTick } from "./scheduler.js";
 import { runWatchTick, type WatchCheck } from "./watch.js";
@@ -295,6 +296,37 @@ describe("a watch finding that names its repository", () => {
     const messages = messagesAboutJob(handle.db, job.id);
     expect(messages).toHaveLength(1);
     expect(messages[0]?.body).toContain('"eo fork" (rockarxiv/Engineering-Orchestrator)');
+  });
+
+  it("refuses a finding whose repository leaves the project while its entry rules run, and files the rest", async () => {
+    const engineering = await addRepository("eo", ENGINEERING);
+    const job = watchJob();
+    let detached = false;
+
+    const { filed } = await runWatchTick(handle.db, {
+      check: reporting({ key: "moved", title: "Bump zod", repository: "rockarxiv/Engineering-Orchestrator" }, { key: "stays", title: "Bump vite", repository: "the repo" }),
+      now: () => at(9),
+      // A person detaches the repository while the first finding's entry module runs.
+      entryVerdicts: async (db, onJob, options) => {
+        if (!detached) {
+          detached = true;
+          removeWorkspaceFromProject(db, projectId, engineering.id as Uuid);
+        }
+        return jobEntryVerdicts(db, onJob, options);
+      },
+    });
+
+    expect(filed).toHaveLength(1);
+    expect(getItem(handle.db, filed[0] as Uuid)?.workspaceId).toBe(repository.id);
+    const events = listJobEvents(handle.db, job.id as Uuid);
+    const refused = events.filter((event) => event.eventKey === "moved");
+    expect(refused.map((event) => event.outcome)).toEqual(["refused"]);
+    expect(refused[0]?.reason).toContain("left this project");
+    expect(events.filter((event) => event.eventKey === "stays").map((event) => event.outcome)).toEqual(["created"]);
+    const messages = messagesAboutJob(handle.db, job.id);
+    expect(messages).toHaveLength(1);
+    expect(messages[0]?.body).toContain('"rockarxiv/Engineering-Orchestrator"');
+    expect(messages[0]?.body).toContain('This project\'s repositories are "the repo".');
   });
 
   it("files a finding with no repository on the project's only one, as before", async () => {
