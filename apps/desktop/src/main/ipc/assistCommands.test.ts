@@ -2018,6 +2018,41 @@ describe("the buttons on a card", () => {
   });
 
   /**
+   * One reply's proposals approved one after another, as "Approve all"
+   * does (EO-864): one whose approval fails says why under it and stays
+   * open with its button, and the others are approved around it.
+   */
+  it("keeps a proposal whose approval failed open beside the reply's others, and approves it when pressed again", async () => {
+    const conversation = await openedOn("/settings");
+    const titled = (title: string) => ({ ...A_STORY, title, stories: [{ ...A_STORY.stories[0]!, title: `${title} work` }] });
+    const { cardIds } = turn(conversation, { message: "Three things.", questions: [], proposals: [titled("One"), titled("Two"), titled("Three")] });
+    const [first, second, third] = cardIds;
+
+    const one = approveAssistProposal(handle.db, undefined, { conversationId: conversation.id, messageId: first! });
+    // Refused as the approval path refuses it, with nothing created: a value for a field the row's type was not given.
+    const two = approveAssistProposal(handle.db, undefined, { conversationId: conversation.id, messageId: second!, addedFields: [{ row: 0, values: { acceptance_criteria: [] } }] });
+    const three = approveAssistProposal(handle.db, undefined, { conversationId: conversation.id, messageId: third! });
+
+    expect([one.applied, two.applied, three.applied]).toEqual([true, false, true]);
+    expect(two.createdKeys).toEqual([]);
+    // The failure is filed under its card, as it always was.
+    const under = listCommentsForItem(handle.db, conversation.id).filter((comment) => comment.parentId === second);
+    expect(under.map((comment) => comment.kind)).toEqual(["rejection"]);
+    expect(under[0]!.body).toContain("“acceptance_criteria” is not a field this project added");
+    // The conversation the renderer draws once the third is approved: the second still open, the others applied.
+    const shown = (messageId: string) => three.conversation.messages.find((message) => message.id === messageId)!;
+    expect(shown(first!)).toMatchObject({ canApprove: false, proposal: { closed: "applied" } });
+    expect(shown(second!)).toMatchObject({ canApprove: true, approves: "items", proposal: { closed: null } });
+    expect(shown(third!)).toMatchObject({ canApprove: false, proposal: { closed: "applied" } });
+
+    // Pressed again, it is approved, and then it is spent.
+    const again = approveAssistProposal(handle.db, undefined, { conversationId: conversation.id, messageId: second! });
+    expect(again.applied).toBe(true);
+    expect(again.conversation.messages.find((message) => message.id === second)).toMatchObject({ canApprove: false, proposal: { closed: "applied" } });
+    expect(approveAssistProposal(handle.db, undefined, { conversationId: conversation.id, messageId: second! }).problem).toContain("superseded or already applied");
+  });
+
+  /**
    * The card's rows and the work its button creates are one reading of
    * one proposal (EO-407).
    *

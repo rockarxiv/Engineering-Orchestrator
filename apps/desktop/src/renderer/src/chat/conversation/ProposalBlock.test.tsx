@@ -42,17 +42,18 @@ function proposal(id: string, { runId = "run-1", canApprove = true, closed = nul
 /**
  * What the main process holds: each proposal, approved by its press. A
  * press of one in `failing` applies nothing and says why, and the
- * proposal is left as it was.
+ * proposal stays open to be approved again — what `approvableIds` makes
+ * of the rejection a failed approval files (assistCommands.test.ts,
+ * "keeps a proposal whose approval failed open…").
  */
 function server(ids: string[], { approved = [], failing = [] }: { approved?: string[]; failing?: string[] } = {}) {
   const applied = new Set(approved);
   const messages = () => ids.map((id) => (applied.has(id) ? proposal(id, { canApprove: false, closed: "applied" }) : proposal(id)));
   const approve = (payload: unknown) => {
     const id = (payload as { messageId: string }).messageId;
-    const conversation = { id: "conv-1", messages: [] };
-    if (failing.includes(id)) return { applied: false, problem: `${id} could not be created.`, createdKeys: [], changedKeys: [], conversation };
+    if (failing.includes(id)) return { applied: false, problem: `${id} could not be created.`, createdKeys: [], changedKeys: [], conversation: { id: "conv-1", messages: messages() } };
     applied.add(id);
-    return { applied: true, problem: null, createdKeys: ["EO-1"], changedKeys: [], conversation };
+    return { applied: true, problem: null, createdKeys: ["EO-1"], changedKeys: [], conversation: { id: "conv-1", messages: messages() } };
   };
   return { messages, approve, applied };
 }
