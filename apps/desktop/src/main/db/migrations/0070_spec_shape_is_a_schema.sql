@@ -21,19 +21,24 @@
 -- It is here because the alternative is a row whose shape no longer
 -- parses, which `specShapeOf` reads as "demands nothing" — safe, silent,
 -- and wrong about a field somebody declared.
+--
+-- Each subquery is wrapped in `json()`. A scalar subquery's value does not
+-- keep the JSON subtype its `json_group_*` gave it — SQLite 3.54 (with
+-- better-sqlite3 13.2) stopped carrying it through — so without the wrap
+-- `json_object` embeds the document as a quoted string.
 UPDATE `item_types`
 SET `spec_shape` = json_object(
 	'type', 'object',
 	'properties', COALESCE(
-		(SELECT json_group_object(json_extract(`field`.`value`, '$.name'), json_object('type', 'string'))
+		json((SELECT json_group_object(json_extract(`field`.`value`, '$.name'), json_object('type', 'string'))
 		 FROM json_each(`item_types`.`spec_shape`) AS `field`
-		 WHERE json_extract(`field`.`value`, '$.name') IS NOT NULL),
+		 WHERE json_extract(`field`.`value`, '$.name') IS NOT NULL)),
 		json_object()
 	),
 	'required', COALESCE(
-		(SELECT json_group_array(json_extract(`field`.`value`, '$.name'))
+		json((SELECT json_group_array(json_extract(`field`.`value`, '$.name'))
 		 FROM json_each(`item_types`.`spec_shape`) AS `field`
-		 WHERE json_extract(`field`.`value`, '$.required') = 1),
+		 WHERE json_extract(`field`.`value`, '$.required') = 1)),
 		json_array()
 	)
 )
