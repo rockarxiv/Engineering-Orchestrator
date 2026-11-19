@@ -2702,6 +2702,18 @@ export const jobs = sqliteTable("jobs", {
    */
   runsOn: text("runs_on").notNull().default("device"),
   /**
+   * The repository every item it files is filed on (EO-856, 0180): one of
+   * its project's workspaces, by id, so renaming the repository does not
+   * detach the job. Null is EO-855's rule — the project's only
+   * repository, otherwise none.
+   *
+   * No `references()`: a repository removed from the project leaves the
+   * id here, and the next firing fails saying so (`jobs/repository.ts`)
+   * rather than filing somewhere nobody chose. Never sent to the record —
+   * a workspace never travels.
+   */
+  workspaceId: text("workspace_id"),
+  /**
    * When a person deleted it — a tombstone, not a gone row (EO-308,
    * ARCHITECTURE.md, "The inbox, the archive and jobs").
    *

@@ -2,7 +2,19 @@ import { rmSync } from "node:fs";
 import { AssistOutputSchema, pageDescriptorFor, type AssistCard, type IpcChannel, type IpcResponse, type Item, type ModuleManifest, type Uuid } from "@eo/core";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { DbHandle } from "../db/client.js";
-import { createRun, getItem, getJob, listAllJobs, listCommentsForItem, listProjects, saveModule, updateRun } from "../db/repos/index.js";
+import {
+  addWorkspaceToProject,
+  createGitWorkspace,
+  createRun,
+  getItem,
+  getJob,
+  listAllJobs,
+  listCommentsForItem,
+  listProjects,
+  projectWorkspaceList,
+  saveModule,
+  updateRun,
+} from "../db/repos/index.js";
 import { attachWorkspace, openMigratedTestDb } from "../db/testHelpers.js";
 import { createJob } from "../jobs/jobs.js";
 import { assistAgent, postAssistReply } from "../roles/assist.js";
@@ -101,12 +113,13 @@ function create(overrides: Partial<Extract<AssistCard, { kind: "jobCreate" }>> =
     budgetPerOccurrenceCents: 150,
     maxItemsPerHour: null,
     runsOn: null,
+    workspaceId: null,
     ...overrides,
   };
 }
 
 function update(jobId: string, overrides: Partial<Extract<AssistCard, { kind: "jobUpdate" }>> = {}): AssistCard {
-  return { kind: "jobUpdate", jobId, name: null, trigger: null, pipelineId: null, template: null, budgetPerOccurrenceCents: null, maxItemsPerHour: null, runsOn: null, ...overrides };
+  return { kind: "jobUpdate", jobId, name: null, trigger: null, pipelineId: null, template: null, budgetPerOccurrenceCents: null, maxItemsPerHour: null, runsOn: null, workspaceId: null, ...overrides };
 }
 
 function aJob(name = "Nightly", trigger: Parameters<typeof createJob>[1]["trigger"] = { kind: "manual" }) {
@@ -283,6 +296,72 @@ describe("changing a job", () => {
 
     expect(getJob(handle.db, job.id as Uuid)?.trigger).toEqual({ kind: "webhook", path: "helpdesk", secret: SECRET, mapping });
     expect(await everythingSaid(conversation)).not.toContain(SECRET);
+  });
+});
+
+describe("the repository a job's items are filed on (EO-856)", () => {
+  const linesOf = (card: unknown): Record<string, string> =>
+    card !== null && typeof card === "object" && "lines" in card ? Object.fromEntries((card as { lines: { label: string; value: string }[] }).lines.map((line) => [line.label, line.value])) : {};
+
+  function secondRepository(): string {
+    const other = createGitWorkspace(handle.db, { config: { name: "billing", repoPath: "/tmp/eo-job-cards-billing" } });
+    addWorkspaceToProject(handle.db, projectId, other.id as Uuid);
+    return other.id;
+  }
+
+  it("is set by a create card, which shows it, and is none named where the card leaves it null", async () => {
+    const billing = secondRepository();
+    const conversation = await chat();
+    const named = turn(conversation, create({ workspaceId: billing }));
+
+    expect(linesOf((await read(conversation, named.cardId!)).card)["Repository"]).toBe("billing");
+    expect(await press(conversation, named.cardId!)).toMatchObject({ applied: true });
+    expect(listAllJobs(handle.db).find((job) => job.name === "Monday report")?.workspaceId).toBe(billing);
+
+    const unnamed = turn(conversation, create({ name: "Tuesday report", pipelineId: "default", trigger: { kind: "manual" } }));
+    expect(linesOf((await read(conversation, unnamed.cardId!)).card)["Repository"]).toBe("None named — the project's only repository, if it has one");
+  });
+
+  it("files the press's refusal, naming the project's repositories, for one that is not the project's", async () => {
+    const elsewhere = createGitWorkspace(handle.db, { config: { name: "elsewhere", repoPath: "/tmp/eo-job-cards-elsewhere" } });
+    const conversation = await chat();
+    const { cardId } = turn(conversation, create({ workspaceId: elsewhere.id }));
+
+    const pressed = await press(conversation, cardId!);
+
+    expect(pressed.applied).toBe(false);
+    expect(pressed.said).toContain(`"elsewhere" is not one of this job's project's repositories.`);
+    expect(pressed.said).toContain(`'s repositories are "support".`);
+  });
+
+  it("is set, changed, cleared or left by a change card, each shown as old → new", async () => {
+    const job = aJob();
+    const support = projectWorkspaceList(handle.db, projectId)[0]!.id;
+    const conversation = await chat();
+
+    const set = turn(conversation, update(job.id, { workspaceId: support }));
+    expect((await read(conversation, set.cardId!)).card).toMatchObject({
+      changes: [{ label: "Repository", before: "None named — the project's only repository, if it has one", after: "support" }],
+    });
+    expect(await press(conversation, set.cardId!)).toMatchObject({ applied: true });
+    expect(getJob(handle.db, job.id as Uuid)?.workspaceId).toBe(support);
+
+    const left = turn(conversation, update(job.id, { name: "Nightly sweep" }));
+    expect(await press(conversation, left.cardId!)).toMatchObject({ applied: true });
+    expect(getJob(handle.db, job.id as Uuid)?.workspaceId).toBe(support);
+
+    const cleared = turn(conversation, update(job.id, { workspaceId: "none" }));
+    expect((await read(conversation, cleared.cardId!)).card).toMatchObject({ changes: [{ label: "Repository", before: "support" }] });
+    expect(await press(conversation, cleared.cardId!)).toMatchObject({ applied: true });
+    expect(getJob(handle.db, job.id as Uuid)?.workspaceId).toBeNull();
+
+    const billing = secondRepository();
+    const changed = turn(conversation, update(job.id, { workspaceId: billing }));
+    expect(await press(conversation, changed.cardId!)).toMatchObject({ applied: true });
+    expect(getJob(handle.db, job.id as Uuid)?.workspaceId).toBe(billing);
+
+    const again = turn(conversation, update(job.id, { workspaceId: billing }));
+    expect(again.cardId).toBeUndefined();
   });
 });
 

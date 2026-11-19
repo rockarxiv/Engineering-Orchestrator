@@ -36,6 +36,8 @@ function job(overrides: Partial<JobSummary> = {}): JobSummary {
     lastRunAt: null,
     lastStatus: null,
     watch: null,
+    workspaceId: null,
+    workspaceName: null,
     ...overrides,
   };
 }

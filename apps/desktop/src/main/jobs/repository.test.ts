@@ -1,7 +1,7 @@
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Job, Uuid, WatchFinding } from "@eo/core";
+import { NO_WORKSPACE, type IpcPayload, type Job, type Uuid, type WatchFinding } from "@eo/core";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { DbHandle } from "../db/client.js";
 import { eq } from "drizzle-orm";
@@ -11,20 +11,22 @@ import {
   createProject,
   getItem,
   getPipeline,
-  listJobEvents,
+  heldEventCount,
   listCommentsForItem,
+  listJobEvents,
   listOccurrences,
-  removeWorkspaceFromProject,
   listRunsForItem,
+  removeWorkspaceFromProject,
   saveModule,
   setEntryStep,
+  setJobPaused,
   updateStep,
   type GitWorkspace,
 } from "../db/repos/index.js";
 import { jobs as jobRows } from "../db/schema.js";
-import { attachWorkspace, messagesAboutJob, openMigratedTestDb } from "../db/testHelpers.js";
+import { attachWorkspace, messagesAboutJob, messagesFrom, openMigratedTestDb } from "../db/testHelpers.js";
 import { createEngine } from "../engine.js";
-import { runJobNowCommand } from "../ipc/jobCommands.js";
+import { createJobCommand, getJobCommand, listJobsCommand, runJobNowCommand, updateJobCommand } from "../ipc/jobCommands.js";
 import type { ModuleOutcome } from "../modules/runModule.js";
 import { createFakeProvider } from "../providers/fake.js";
 import { happyPathFixture } from "../providers/fixtures.js";
@@ -32,15 +34,17 @@ import { run } from "../testing/git.js";
 import { removeScratch } from "../testing/scratch.js";
 import { fireJob, jobEntryVerdicts } from "./fire.js";
 import { createJob } from "./jobs.js";
+import { JOB_MESSAGE_SOURCE } from "./ownerMessage.js";
 import { runJobTick } from "./scheduler.js";
 import { runWatchTick, type WatchCheck } from "./watch.js";
+import { receiveWebhook, releaseHeldWebhookEvents } from "./webhook.js";
+import { mintWebhookSecret, signWebhook } from "./webhookSignature.js";
 
 /**
  * What a job files on a project with one repository carries that
  * repository (EO-855), as an item from the board, an assistant's proposal
  * or `ctx.createItem` does — so a pipeline whose entry step cuts a branch
- * has one to cut. With several, the job has no way to name one, and the
- * item is filed with none, as it always was.
+ * has one to cut. With several, the job names one (EO-856, below).
  */
 
 let scratch: string;
@@ -78,7 +82,7 @@ function manualJob(onProject: Uuid | null = projectId): Job {
   return created.job;
 }
 
-function watchJob(): Job {
+function watchJob(workspaceId: Uuid | null = null): Job {
   const saved = saveModule(handle.db, {
     slug: "dependabot-watch",
     name: "Dependabot watch",
@@ -101,6 +105,7 @@ function watchJob(): Job {
     trigger: { kind: "watch", moduleId: saved.module.id, inputs: {}, everyMinutes: 60, waitWhileOpen: false },
     pipelineId: "default",
     template: TEMPLATE,
+    workspaceId,
   });
   if (!created.ok) throw new Error(created.problem);
   return created.job;
@@ -169,22 +174,8 @@ describe("a job on a project with one repository", () => {
   });
 });
 
-describe("a job on a project with no repository, or several", () => {
-  it("files with no repository where the project has several, as it always has", async () => {
-    const second = createGitWorkspace(handle.db, { config: { name: "the other repo", repoPath: join(scratch, "other") } });
-    addWorkspaceToProject(handle.db, projectId, second.id as Uuid);
-
-    const manual = fireJob(handle.db, manualJob());
-    watchJob();
-    const { filed } = await runWatchTick(handle.db, { check: finds, now: () => Date.UTC(2026, 10, 19, 9, 0) });
-
-    expect(manual.problem).toBeNull();
-    expect(manual.item?.workspaceId).toBeNull();
-    expect(filed).toHaveLength(1);
-    expect(getItem(handle.db, filed[0] as Uuid)?.workspaceId).toBeNull();
-  });
-
-  it("files with no repository where the project has none", () => {
+describe("a job on a project with no repository", () => {
+  it("files with no repository", () => {
     const bare = createProject(handle.db, { name: "Notes", keyPrefix: "NOTE" });
 
     const fired = fireJob(handle.db, manualJob(bare.id as Uuid));
@@ -226,7 +217,7 @@ describe("a watch finding that names its repository", () => {
 
   it("files on the repository it names, without regard to case, rather than the job's", async () => {
     const web = await addRepository("Web", null);
-    watchJob();
+    watchJob(repository.id as Uuid);
 
     const { filed } = await runWatchTick(handle.db, { check: reporting({ key: "k1", title: "Bump zod", repository: "wEB" }), now: () => at(9) });
 
@@ -236,7 +227,7 @@ describe("a watch finding that names its repository", () => {
 
   it("files on the repository whose forge remote has the path it names", async () => {
     const engineering = await addRepository("eo", ENGINEERING);
-    watchJob();
+    watchJob(repository.id as Uuid);
 
     const { filed } = await runWatchTick(handle.db, {
       check: reporting({ key: "k1", title: "Bump zod", repository: "rockarxiv/Engineering-Orchestrator" }, { key: "k2", title: "Bump vite", repository: "ROCKARXIV/engineering-orchestrator" }),
@@ -249,7 +240,7 @@ describe("a watch finding that names its repository", () => {
 
   it("matches a GitLab subgroup's path", async () => {
     const gitlab = await addRepository("api", "https://gitlab.com/group/subgroup/api.git");
-    watchJob();
+    watchJob(repository.id as Uuid);
 
     const { filed } = await runWatchTick(handle.db, { check: reporting({ key: "k1", title: "Bump zod", repository: "group/subgroup/api" }), now: () => at(9) });
 
@@ -258,15 +249,15 @@ describe("a watch finding that names its repository", () => {
 
   it("refuses a finding naming no repository, messages the owner once naming them, and files the rest where the job files", async () => {
     await addRepository("eo", ENGINEERING);
-    const job = watchJob();
+    const job = watchJob(repository.id as Uuid);
     const check = reporting({ key: "lost", title: "Bump zod", repository: "rockarxiv/elsewhere" }, { key: "kept", title: "Bump vite" });
 
     const first = await runWatchTick(handle.db, { check, now: () => at(9) });
     const again = await runWatchTick(handle.db, { check, now: () => at(11) });
 
     expect(first.filed).toHaveLength(1);
-    // Two repositories and none named: filed as the job files, with none.
-    expect(getItem(handle.db, first.filed[0] as Uuid)?.workspaceId).toBeNull();
+    // Filed where the job files: the repository it names (EO-856).
+    expect(getItem(handle.db, first.filed[0] as Uuid)?.workspaceId).toBe(repository.id);
     expect(again.filed).toEqual([]);
     const events = listJobEvents(handle.db, job.id as Uuid);
     expect(events.filter((event) => event.eventKey === "lost").map((event) => event.outcome)).toEqual(["refused"]);
@@ -281,7 +272,7 @@ describe("a watch finding that names its repository", () => {
   it("refuses a finding naming two repositories, and files the rest", async () => {
     await addRepository("eo", ENGINEERING);
     await addRepository("eo fork", ENGINEERING);
-    const job = watchJob();
+    const job = watchJob(repository.id as Uuid);
 
     const { filed } = await runWatchTick(handle.db, {
       check: reporting({ key: "both", title: "Bump zod", repository: "rockarxiv/Engineering-Orchestrator" }, { key: "named", title: "Bump vite", repository: "the repo" }),
@@ -300,7 +291,7 @@ describe("a watch finding that names its repository", () => {
 
   it("refuses a finding whose repository leaves the project while its entry rules run, and files the rest", async () => {
     const engineering = await addRepository("eo", ENGINEERING);
-    const job = watchJob();
+    const job = watchJob(repository.id as Uuid);
     let detached = false;
 
     const { filed } = await runWatchTick(handle.db, {
@@ -329,11 +320,313 @@ describe("a watch finding that names its repository", () => {
     expect(messages[0]?.body).toContain('This project\'s repositories are "the repo".');
   });
 
+  it("files a finding naming its repository where the job names none and the project has gained a second, and refuses one naming none (EO-856)", async () => {
+    const job = watchJob();
+    const web = await addRepository("Web", null);
+
+    const { filed } = await runWatchTick(handle.db, {
+      check: reporting({ key: "named", title: "Bump zod", repository: "web" }, { key: "unnamed", title: "Bump vite" }),
+      now: () => at(9),
+    });
+
+    expect(filed).toHaveLength(1);
+    expect(getItem(handle.db, filed[0] as Uuid)?.workspaceId).toBe(web.id);
+    const unnamed = listJobEvents(handle.db, job.id as Uuid).filter((event) => event.eventKey === "unnamed");
+    expect(unnamed.map((event) => event.outcome)).toEqual(["refused"]);
+    expect(unnamed[0]?.reason).toContain("this job names none");
+  });
+
   it("files a finding with no repository on the project's only one, as before", async () => {
     watchJob();
 
     const { filed } = await runWatchTick(handle.db, { check: reporting({ key: "k1", title: "Bump zod" }), now: () => at(9) });
 
     expect(getItem(handle.db, filed[0] as Uuid)?.workspaceId).toBe(repository.id);
+  });
+});
+
+/**
+ * A job that names its repository (EO-856): where every item it files
+ * goes, refused at the save where it is not the project's or where the
+ * project has several and the entry step cuts a branch of the item's own,
+ * and refused again at the firing when either stops being true.
+ */
+describe("a job that names its repository", () => {
+  let other: GitWorkspace;
+  const JOBS = { facts: async () => ({ authKind: () => "api_key" as const }) };
+
+  /** A second repository on the project, so a job has to say which. */
+  function addSecondRepository(): void {
+    other = createGitWorkspace(handle.db, { config: { name: "the other repo", repoPath: join(scratch, "other") } });
+    addWorkspaceToProject(handle.db, projectId, other.id as Uuid);
+  }
+
+  /** Delivery's Worktree as the entry, cutting a branch of the item's own repository. */
+  function entryCutsABranch(): void {
+    setEntryStep(handle.db, getPipeline(handle.db, "default")!.id, "worktree");
+    updateStep(handle.db, "worktree", { workspaceMode: "isolated" });
+  }
+
+  const create = (overrides: Partial<IpcPayload<"jobs:create">> = {}) =>
+    createJobCommand(handle.db, JOBS, { projectId, name: "Weekly sweep", trigger: { kind: "manual" }, pipelineId: "default", template: TEMPLATE, ...overrides });
+
+  describe("when it is saved", () => {
+    it("refuses a repository that is not one of the project's, naming the ones it has", async () => {
+      const elsewhere = createGitWorkspace(handle.db, { config: { name: "somebody else's", repoPath: join(scratch, "elsewhere") } });
+
+      const answer = await create({ workspaceId: elsewhere.id });
+
+      expect(answer.job).toBeNull();
+      expect(answer.problem).toContain(`"somebody else's" is not one of this job's project's repositories.`);
+      expect(answer.problem).toContain(`'s repositories are "the repo".`);
+    });
+
+    it("refuses one that no longer exists", async () => {
+      const answer = await create({ workspaceId: "0190aaaa-0000-7000-8000-000000000000" });
+
+      expect(answer.job).toBeNull();
+      expect(answer.problem).toContain("The repository this job names no longer exists.");
+    });
+
+    it("keeps the repository it names, and jobs_list and job_get report it", async () => {
+      addSecondRepository();
+
+      const answer = await create({ workspaceId: other.id });
+
+      expect(answer.problem).toBeNull();
+      expect(answer.job?.workspaceId).toBe(other.id);
+      expect(answer.job?.workspaceName).toBe("the other repo");
+      expect(listJobsCommand(handle.db, { projectId }).jobs.find((job) => job.id === answer.job!.id)?.workspaceName).toBe("the other repo");
+      expect(getJobCommand(handle.db, { jobId: answer.job!.id }).job?.workspaceId).toBe(other.id);
+    });
+
+    it("refuses none where the project has several and the entry step cuts a branch of the item's own, naming them", async () => {
+      addSecondRepository();
+      entryCutsABranch();
+
+      const answer = await create();
+
+      expect(answer.job).toBeNull();
+      expect(answer.problem).toContain("starts new work on a branch of the item's own repository, and this job names none.");
+      expect(answer.problem).toContain(`'s repositories are "the repo", "the other repo".`);
+    });
+
+    it("saves none where the entry step picks a repository of its own", async () => {
+      addSecondRepository();
+      entryCutsABranch();
+      updateStep(handle.db, "worktree", { workspaceId: other.id });
+
+      const answer = await create();
+
+      expect(answer.problem).toBeNull();
+      expect(answer.job?.workspaceId).toBeNull();
+    });
+
+    it("saves none where the entry step works on no workspace", async () => {
+      addSecondRepository();
+      entryCutsABranch();
+      updateStep(handle.db, "worktree", { workspaceId: NO_WORKSPACE });
+
+      const answer = await create();
+
+      expect(answer.problem).toBeNull();
+    });
+
+    it("lets jobs:update set, change and clear it, and refuses what jobs:create refuses", async () => {
+      const job = (await create()).job!;
+      const elsewhere = createGitWorkspace(handle.db, { config: { name: "somebody else's", repoPath: join(scratch, "elsewhere") } });
+
+      const foreign = await updateJobCommand(handle.db, JOBS, { jobId: job.id, workspaceId: elsewhere.id });
+      expect(foreign.job).toBeNull();
+      expect(foreign.problem).toContain(`"the repo"`);
+
+      const set = await updateJobCommand(handle.db, JOBS, { jobId: job.id, workspaceId: repository.id });
+      expect(set.job?.workspaceId).toBe(repository.id);
+
+      addSecondRepository();
+      const changed = await updateJobCommand(handle.db, JOBS, { jobId: job.id, workspaceId: other.id });
+      expect(changed.job?.workspaceId).toBe(other.id);
+
+      entryCutsABranch();
+      const cleared = await updateJobCommand(handle.db, JOBS, { jobId: job.id, workspaceId: null });
+      expect(cleared.job).toBeNull();
+      expect(cleared.problem).toContain(`"the repo", "the other repo"`);
+
+      // A rename leaves it as it is.
+      const renamed = await updateJobCommand(handle.db, JOBS, { jobId: job.id, name: "Monthly sweep" });
+      expect(renamed.job?.workspaceId).toBe(other.id);
+
+      updateStep(handle.db, "worktree", { workspaceId: NO_WORKSPACE });
+      const clearedNow = await updateJobCommand(handle.db, JOBS, { jobId: job.id, workspaceId: null });
+      expect(clearedNow.problem).toBeNull();
+      expect(clearedNow.job?.workspaceId).toBeNull();
+    });
+  });
+
+  describe("when it fires", () => {
+    beforeEach(() => {
+      addSecondRepository();
+      entryCutsABranch();
+    });
+
+    it("files Run now's item there", async () => {
+      const job = (await create({ workspaceId: other.id })).job!;
+
+      const answer = runJobNowCommand(handle.db, undefined, { jobId: job.id });
+
+      expect(answer.problem ?? null).toBeNull();
+      expect(getItem(handle.db, answer.itemId as Uuid)?.workspaceId).toBe(other.id);
+    });
+
+    it("files a scheduled occurrence's item there", async () => {
+      const due = Date.UTC(2026, 10, 19, 8, 0);
+      const job = (
+        await create({ trigger: { kind: "schedule", schedule: { kind: "daily", hour: 8, minute: 0 }, timeZone: "UTC", catchUpWithinMinutes: 180 }, workspaceId: other.id })
+      ).job!;
+      handle.db.update(jobRows).set({ createdAt: due - 60_000 }).where(eq(jobRows.id, job.id)).run();
+
+      runJobTick(handle.db, { now: due });
+
+      const occurrence = listOccurrences(handle.db, job.id as Uuid).find((row) => row.status === "fired");
+      expect(getItem(handle.db, occurrence?.itemId as Uuid)?.workspaceId).toBe(other.id);
+    });
+
+    it("files what a watch finding files there", async () => {
+      watchJob(other.id as Uuid);
+
+      const { filed } = await runWatchTick(handle.db, { check: finds, now: () => Date.UTC(2026, 10, 19, 9, 0) });
+
+      expect(filed).toHaveLength(1);
+      expect(getItem(handle.db, filed[0] as Uuid)?.workspaceId).toBe(other.id);
+    });
+
+    it("files nothing once the repository it names has left the project: a failed occurrence, and the owner told", async () => {
+      const job = (await create({ workspaceId: other.id })).job!;
+      removeWorkspaceFromProject(handle.db, projectId, other.id as Uuid);
+
+      const answer = runJobNowCommand(handle.db, undefined, { jobId: job.id });
+
+      expect(answer.fired).toBe(false);
+      expect(answer.itemId).toBeNull();
+      const [occurrence] = listOccurrences(handle.db, job.id as Uuid);
+      expect(occurrence?.status).toBe("failed");
+      expect(occurrence?.reason).toContain(`"the other repo" is not one of this job's project's repositories.`);
+      expect(occurrence?.reason).toContain(`'s repositories are "the repo".`);
+      expect(messagesFrom(handle.db, JOB_MESSAGE_SOURCE.failed).map((message) => message.body)).toEqual([
+        expect.stringContaining(`"Weekly sweep" could not run. "the other repo" is not one of`),
+      ]);
+    });
+
+    it("refuses a watch finding once the repository has left the project, telling the owner once", async () => {
+      const job = watchJob(other.id as Uuid);
+      removeWorkspaceFromProject(handle.db, projectId, other.id as Uuid);
+
+      await runWatchTick(handle.db, { check: finds, now: () => Date.UTC(2026, 10, 19, 9, 0) });
+      await runWatchTick(handle.db, { check: finds, now: () => Date.UTC(2026, 10, 19, 11, 0) });
+
+      const events = listJobEvents(handle.db, job.id as Uuid);
+      // Refused again for the same reason, it writes nothing, as any refused finding does.
+      expect(events.map((event) => event.outcome)).toEqual(["refused"]);
+      expect(events[0]?.reason).toContain(`"the other repo" is not one of this job's project's repositories.`);
+      expect(messagesFrom(handle.db, JOB_MESSAGE_SOURCE.watch)).toHaveLength(1);
+    });
+  });
+
+  describe("a webhook event", () => {
+    const SECRET = mintWebhookSecret();
+    const AT = Date.UTC(2026, 10, 19, 9, 0);
+
+    function webhookJob(workspaceId: Uuid | null): Job {
+      const created = createJob(handle.db, {
+        projectId,
+        name: "Deploys",
+        trigger: { kind: "webhook", path: "deploys", secret: SECRET, mapping: { title: null, body: null, eventKey: null, spec: {} } },
+        pipelineId: "default",
+        template: TEMPLATE,
+        workspaceId,
+      });
+      if (!created.ok) throw new Error(created.problem);
+      return created.job;
+    }
+
+    const deliver = (body: string, now = AT) =>
+      receiveWebhook(handle.db, { path: "deploys", rawBody: body, signature: signWebhook(SECRET, now, body), timestamp: String(now), now });
+
+    it("is filed on the repository the job names", async () => {
+      addSecondRepository();
+      webhookJob(other.id as Uuid);
+
+      const answer = await deliver('{"id":"evt-1"}');
+
+      expect(answer.outcome).toBe("created");
+      expect(getItem(handle.db, answer.itemId as Uuid)?.workspaceId).toBe(other.id);
+    });
+
+    it("files nothing once the repository it names has left the project: a failed occurrence, a refused event, and the owner told", async () => {
+      addSecondRepository();
+      const job = webhookJob(other.id as Uuid);
+      removeWorkspaceFromProject(handle.db, projectId, other.id as Uuid);
+
+      const answer = await deliver('{"id":"evt-1"}');
+
+      expect(answer).toMatchObject({ status: 422, outcome: "refused", itemId: null });
+      expect(answer.event?.reason).toContain(`"the other repo" is not one of this job's project's repositories.`);
+      const [occurrence] = listOccurrences(handle.db, job.id as Uuid);
+      expect(occurrence?.status).toBe("failed");
+      expect(occurrence?.reason).toContain(`"the other repo" is not one of this job's project's repositories.`);
+      expect(listJobEvents(handle.db, job.id as Uuid).map((event) => event.outcome)).toEqual(["refused"]);
+      expect(messagesFrom(handle.db, JOB_MESSAGE_SOURCE.failed).map((message) => message.body)).toEqual([
+        expect.stringContaining(`"Deploys" could not run. "the other repo" is not one of`),
+      ]);
+    });
+
+    it("files nothing where the project has gained a second repository and the job names none", async () => {
+      const job = webhookJob(null);
+      addSecondRepository();
+      entryCutsABranch();
+
+      const answer = await deliver('{"id":"evt-1"}');
+
+      expect(answer).toMatchObject({ status: 422, outcome: "refused", itemId: null });
+      expect(listOccurrences(handle.db, job.id as Uuid)[0]).toMatchObject({ status: "failed" });
+      expect(listOccurrences(handle.db, job.id as Uuid)[0]?.reason).toContain("this job names none");
+      expect(messagesFrom(handle.db, JOB_MESSAGE_SOURCE.failed)).toHaveLength(1);
+    });
+
+    it("refuses held events once the repository is wrong: a failed occurrence and a refused event each, and the owner told once", async () => {
+      addSecondRepository();
+      const job = webhookJob(other.id as Uuid);
+      setJobPaused(handle.db, job.id as Uuid, AT, "by hand");
+      await deliver('{"id":"evt-1"}', AT + 1);
+      await deliver('{"id":"evt-2"}', AT + 2);
+      removeWorkspaceFromProject(handle.db, projectId, other.id as Uuid);
+      setJobPaused(handle.db, job.id as Uuid, null);
+
+      await releaseHeldWebhookEvents(handle.db, { now: AT + 3 });
+
+      expect(heldEventCount(handle.db, job.id as Uuid)).toBe(0);
+      const occurrences = listOccurrences(handle.db, job.id as Uuid);
+      expect(occurrences.map((occurrence) => occurrence.status)).toEqual(["failed", "failed"]);
+      expect(occurrences[0]?.reason).toContain(`"the other repo" is not one of this job's project's repositories.`);
+      const refused = listJobEvents(handle.db, job.id as Uuid).filter((event) => event.outcome === "refused");
+      expect(refused).toHaveLength(2);
+      expect(refused[0]?.reason).toContain(`"the other repo" is not one of this job's project's repositories.`);
+      expect(messagesFrom(handle.db, JOB_MESSAGE_SOURCE.failed).map((message) => message.body)).toEqual([
+        expect.stringContaining(`"Deploys" could not run. "the other repo" is not one of`),
+      ]);
+    });
+  });
+
+  it("files nothing where the project has gained a second repository since a job naming none was saved", () => {
+    const job = manualJob();
+    addSecondRepository();
+    entryCutsABranch();
+
+    const fired = fireJob(handle.db, job);
+
+    expect(fired.item).toBeNull();
+    expect(fired.occurrence?.status).toBe("failed");
+    expect(fired.problem).toContain("this job names none");
+    expect(messagesFrom(handle.db, JOB_MESSAGE_SOURCE.failed)).toHaveLength(1);
   });
 });

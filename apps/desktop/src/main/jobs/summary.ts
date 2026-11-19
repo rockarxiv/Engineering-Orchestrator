@@ -1,6 +1,6 @@
 import { JobWatchCheckBriefSchema, type Job, type JobOccurrenceRow, type JobSummary, type JobWatchCheck, type JobWatchCheckBrief, type JobWatchCheckRow, type JobWatchState, type Uuid } from "@eo/core";
 import type { Db } from "../db/client.js";
-import { getItem, getJobWatchState, latestOccurrence, listWatchChecks, latestOccurrenceWithStatus, listOccurrences, listRunsForItem, sumCostCentsForItem } from "../db/repos/index.js";
+import { getItem, getJobWatchState, getWorkspace, workspaceLabel, latestOccurrence, listWatchChecks, latestOccurrenceWithStatus, listOccurrences, listRunsForItem, sumCostCentsForItem } from "../db/repos/index.js";
 import { compileSchedule, nextOccurrenceAfter } from "../schedule/cron.js";
 
 /**
@@ -70,7 +70,15 @@ export function jobSummary(db: Db, job: Job, now: number = Date.now()): JobSumma
     lastRunAt: lastFired?.firedAt ?? null,
     lastStatus: latest?.status ?? null,
     watch: watchStateOf(db, job),
+    workspaceName: workspaceNameOf(db, job),
   };
+}
+
+/** The name of the repository the job names (EO-856), or null for none or one since removed. */
+function workspaceNameOf(db: Db, job: Job): string | null {
+  if (job.workspaceId === null) return null;
+  const workspace = getWorkspace(db, job.workspaceId as Uuid);
+  return workspace === undefined ? null : workspaceLabel(workspace);
 }
 
 /** A watch job's state as the jobs IPC returns it, or null for any other kind or before its first check. */

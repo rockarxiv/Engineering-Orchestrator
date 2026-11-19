@@ -204,8 +204,10 @@ const REACHED_BY_A_CARD: Partial<Record<keyof typeof ipcContract, string>> = {
   // EO-786, EO-787. Jobs are made, changed and deleted by agents: the
   // system agent proposes a job card a person presses, and outside agents
   // save through the job tools (which also catalogue the first three).
-  // The Jobs list and Job page keep only Pause, Resume and Run now, so
-  // these five are the job cards' and no screen's — held below.
+  // The Jobs list and Job page keep only Pause, Resume and Run now — and,
+  // since EO-856, the Job page's repository picker, which sends
+  // `jobs:update` — so these are the job cards' and, but for that one,
+  // no screen's — held below.
   "jobs:create": "ipc/assistCommands.ts — Create job on a jobCreate card",
   "jobs:update": "ipc/assistCommands.ts — Save job on a jobUpdate card",
   "jobs:delete": "ipc/assistCommands.ts — Delete job on a jobDelete card",
@@ -220,8 +222,13 @@ const REACHED_BY_A_CARD: Partial<Record<keyof typeof ipcContract, string>> = {
  * The channels only a card may send from inside EO (EO-787): the renderer
  * calls none of them, so a person reaches them by pressing the card the
  * assistant proposed, never by a screen's own button.
+ *
+ * `jobs:update` is not among them since EO-856: the Job page's Definition
+ * saves the repository a job's items are filed on through it, and nothing
+ * else (`JobRepository` in JobView.tsx). Every other change to a job is
+ * still a card's.
  */
-const ONLY_BY_A_CARD: readonly (keyof typeof ipcContract)[] = ["jobs:create", "jobs:update", "jobs:delete", "jobs:regenerateSecret", "jobs:testEvent"];
+const ONLY_BY_A_CARD: readonly (keyof typeof ipcContract)[] = ["jobs:create", "jobs:delete", "jobs:regenerateSecret", "jobs:testEvent"];
 
 describe("every IPC channel is reachable", () => {
   it("has a renderer that calls it, or a tool that offers it", () => {

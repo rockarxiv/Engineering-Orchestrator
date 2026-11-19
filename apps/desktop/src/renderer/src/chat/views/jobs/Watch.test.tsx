@@ -98,6 +98,8 @@ function job(overrides: Partial<JobSummary> = {}): JobSummary {
     lastRunAt: null,
     lastStatus: null,
     watch: state(),
+    workspaceId: null,
+    workspaceName: null,
     ...overrides,
   };
 }
@@ -182,7 +184,8 @@ describe("what a watch job was set up with", () => {
     // An input the trigger leaves out is the module's default, and is not listed.
     expect(definition.queryByText(/limit/)).not.toBeInTheDocument();
     expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
-    expect(screen.queryByRole("combobox")).not.toBeInTheDocument();
+    // The repository picker (EO-856) is the one control the Definition has.
+    expect(screen.getAllByRole("combobox").map((box) => box.getAttribute("aria-label"))).toEqual(["Repository"]);
     expect(screen.queryByRole("button", { name: "Save" })).not.toBeInTheDocument();
     expect(invoke.mock.calls.some((call: unknown[]) => call[0] === "jobs:update")).toBe(false);
   });

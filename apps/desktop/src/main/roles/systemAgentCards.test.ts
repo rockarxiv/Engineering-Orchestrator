@@ -242,7 +242,7 @@ describe("what the system agent's prompt says about jobs (EO-786)", () => {
   it("gives the four cards' shapes, with null for what a change leaves and \"none\" to clear a limit", () => {
     expect(cards()).toContain('`{ "kind": "jobCreate", "projectId": "…", "name": "Monday report", "trigger": { "kind": "schedule"');
     expect(cards()).toContain('`{ "kind": "jobUpdate", "jobId": "…", "name": null, "trigger": null');
-    expect(cards()).toContain("`\"none\"` removes a budget or a cap");
+    expect(cards()).toContain("`\"none\"` removes a budget, a cap or the repository (`workspaceId`)");
     expect(cards()).toContain('`{ "kind": "jobDelete", "jobId": "…" }`');
     expect(cards()).toContain('`{ "kind": "jobWebhook", "jobId": "…", "action": "regenerateSecret" }`');
     expect(cards()).toContain("the old one stops working the moment the button is pressed");
@@ -324,5 +324,25 @@ describe("what the system agent's prompt says about adding several CLIs in one c
 
   it("is a newer version than the one before it", () => {
     expect(Number(/prompt-version:\s*(\d+)/.exec(prompt)![1])).toBeGreaterThanOrEqual(61);
+  });
+});
+
+describe("what the system agent's prompt says about a job's repository (EO-856)", () => {
+  const cards = () => section("### Cards for what only a person may do");
+
+  it("puts workspaceId on both job cards' shapes", () => {
+    expect(cards()).toContain('"maxItemsPerHour": null, "runsOn": null, "workspaceId": null }`');
+    expect(cards()).toContain('"maxItemsPerHour": 4, "runsOn": null, "workspaceId": null }`');
+  });
+
+  it("says what it is, where its id comes from, what null means and when a project needs one named", () => {
+    expect(cards()).toContain("`workspaceId` is the repository every item the job files is filed on, by the id `repositories_list` gives, and must be one of the project's");
+    expect(cards()).toContain("`null` names none, which files on the project's only repository when it has exactly one");
+    expect(cards()).toContain("On a project with several, a job whose pipeline's first step works on a branch of the item's own repository is refused without one");
+    expect(cards()).toContain("`\"none\"` removes a budget, a cap or the repository (`workspaceId`)");
+  });
+
+  it("is a newer version than the one before a job named its repository", () => {
+    expect(Number(/prompt-version:\s*(\d+)/.exec(prompt)![1])).toBeGreaterThanOrEqual(62);
   });
 });

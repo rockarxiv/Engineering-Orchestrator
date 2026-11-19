@@ -52,6 +52,8 @@ function job(overrides: Partial<JobSummary> = {}): JobSummary {
     lastRunAt: null,
     lastStatus: null,
     watch: null,
+    workspaceId: null,
+    workspaceName: null,
     pausedReason: null,
     ...overrides,
   };
@@ -111,7 +113,15 @@ interface Options {
   placement?: unknown;
   machine?: unknown;
   checks?: JobWatchCheckRow[];
+  /** What `jobs:update` answers a save of the repository with (EO-856). */
+  updateProblem?: string | null;
 }
+
+/** The project's repositories, as `workspaces:list` gives them (EO-856). */
+const WORKSPACES = [
+  { id: "w-api", projectId: "p1", kind: "git", label: "api", summary: "", problem: null, position: 0, itemCount: 0, config: {} },
+  { id: "w-web", projectId: "p1", kind: "git", label: "web", summary: "", problem: null, position: 1, itemCount: 0, config: {} },
+];
 
 function mockIpc(options: Options = {}) {
   // A queue, so a test can answer one thing before a save and another after.
@@ -140,6 +150,13 @@ function mockIpc(options: Options = {}) {
       case "jobs:pause":
       case "jobs:resume":
         return { ok: true, data: { job: job() } };
+      case "workspaces:list":
+        return { ok: true, data: { workspaces: WORKSPACES } };
+      case "jobs:update": {
+        const problem = options.updateProblem ?? null;
+        const workspaceId = (_payload as { workspaceId: string | null }).workspaceId;
+        return { ok: true, data: { job: problem === null ? job({ workspaceId }) : null, problem } };
+      }
       case "jobs:checks":
         return { ok: true, data: { checks: options.checks ?? [], nextBefore: null } };
       case "jobs:events":
@@ -246,13 +263,13 @@ describe("what it was set up with", () => {
     expect(definition.getByText("$5.00")).toBeInTheDocument();
   });
 
-  it("offers no form, no Save and no Delete", async () => {
+  it("offers no form, no Save and no Delete — only the repository's picker", async () => {
     const invoke = mockIpc();
     renderView();
 
     await screen.findByLabelText("Definition");
     expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
-    expect(screen.queryByRole("combobox")).not.toBeInTheDocument();
+    expect(screen.getAllByRole("combobox").map((box) => box.getAttribute("aria-label"))).toEqual(["Repository"]);
     expect(screen.queryByRole("button", { name: "Save" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Delete" })).not.toBeInTheDocument();
     expect([...calls(invoke, "jobs:update"), ...calls(invoke, "jobs:delete")]).toHaveLength(0);
@@ -263,6 +280,64 @@ describe("what it was set up with", () => {
     renderView();
 
     expect(within(await screen.findByLabelText("Definition")).getByText("None")).toBeInTheDocument();
+  });
+});
+
+describe("the repository its items are filed on (EO-856)", () => {
+  const picker = async () => (await within(await screen.findByLabelText("Definition")).findByRole("combobox", { name: "Repository" })) as HTMLSelectElement;
+
+  it("shows — when the job names none, and offers the project's repositories", async () => {
+    mockIpc();
+    renderView();
+
+    const select = await picker();
+    await waitFor(() => expect([...select.options].map((option) => option.text)).toEqual(["—", "api", "web"]));
+    expect(select.value).toBe("");
+    expect(select.selectedOptions[0]?.text).toBe("—");
+  });
+
+  it("shows the one it names", async () => {
+    mockIpc({ jobs: [job({ workspaceId: "w-web", workspaceName: "web" })] });
+    renderView();
+
+    const select = await picker();
+    await waitFor(() => expect(select.selectedOptions[0]?.text).toBe("web"));
+  });
+
+  it("names one that has left the project rather than showing none", async () => {
+    mockIpc({ jobs: [job({ workspaceId: "w-gone", workspaceName: "old" })] });
+    renderView();
+
+    const select = await picker();
+    await waitFor(() => expect(select.selectedOptions[0]?.text).toBe("old — no longer on this project"));
+  });
+
+  it("sets, changes and clears it through jobs:update", async () => {
+    const invoke = mockIpc();
+    renderView();
+    const select = await picker();
+    await waitFor(() => expect(select.options).toHaveLength(3));
+
+    fireEvent.change(select, { target: { value: "w-api" } });
+    await waitFor(() => expect(calls(invoke, "jobs:update").at(-1)?.[1]).toEqual({ jobId: "job-1", workspaceId: "w-api" }));
+
+    fireEvent.change(select, { target: { value: "w-web" } });
+    await waitFor(() => expect(calls(invoke, "jobs:update").at(-1)?.[1]).toEqual({ jobId: "job-1", workspaceId: "w-web" }));
+
+    fireEvent.change(select, { target: { value: "" } });
+    await waitFor(() => expect(calls(invoke, "jobs:update").at(-1)?.[1]).toEqual({ jobId: "job-1", workspaceId: null }));
+  });
+
+  it("shows the refusal when the save is refused", async () => {
+    const problem = '"Delivery" starts new work on a branch of the item\'s own repository, and this job names none.';
+    mockIpc({ jobs: [job({ workspaceId: "w-api", workspaceName: "api" })], updateProblem: problem });
+    renderView();
+    const select = await picker();
+    await waitFor(() => expect(select.options).toHaveLength(3));
+
+    fireEvent.change(select, { target: { value: "" } });
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(problem);
   });
 });
 
@@ -314,7 +389,7 @@ describe("Runs on", () => {
     renderView();
 
     expect(await screen.findByText("Runs on this machine")).toBeInTheDocument();
-    expect(screen.queryByRole("combobox")).not.toBeInTheDocument();
+    expect(screen.queryByRole("combobox", { name: /Runs on/ })).not.toBeInTheDocument();
     expect(screen.getByText(/Runs while EO is open on Anna's MacBook · last online 3h ago/)).toBeInTheDocument();
     expect(screen.queryByText("Runs while EO is open on this machine.")).not.toBeInTheDocument();
   });

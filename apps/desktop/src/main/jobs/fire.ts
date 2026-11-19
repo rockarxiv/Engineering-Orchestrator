@@ -5,8 +5,8 @@ import { runWithEntryVerdicts } from "../db/repos/entryRulesRepo.js";
 import type { CreateItemInput } from "../db/repos/itemsRepo.js";
 import { withModuleEntryChecks } from "../modules/entryChecks.js";
 import { isProjectReplica } from "../db/recordRole.js";
-import { soleWorkspaceOf } from "../ipc/repositoryCommands.js";
 import { existingBranchRefusal, storyGitState } from "../roles/refine.js";
+import { jobRepository, type JobRepositoryAnswer } from "./repository.js";
 import { fillTemplate } from "./template.js";
 import { JOB_MESSAGE_SOURCE, messageJobOwner } from "./ownerMessage.js";
 
@@ -88,9 +88,9 @@ export interface FireOverrides {
    */
   existingBranch?: string;
   /**
-   * The repository to file on, in place of the project's only one
-   * (EO-857, a watch finding's `repository`, already matched to one of
-   * the job's project's repositories by `watch.ts`).
+   * The repository to file on, in place of the job's own (EO-856) or the
+   * project's only one (EO-857, a watch finding's `repository`, already
+   * matched to one of the job's project's repositories by `watch.ts`).
    */
   workspaceId?: Uuid;
 }
@@ -120,6 +120,15 @@ export interface FireResult {
    * the job, so a webhook does not hold the event to try it again.
    */
   refusedAtEntry?: true;
+  /**
+   * The job's repository could not be answered (EO-856): the one it names
+   * has left its project, or it names none where the project has several
+   * and the entry step needs one. About the job rather than the event, but
+   * a webhook keeps the `failed` occurrence and the owner's message rather
+   * than holding the event, as every other door does: holding it would
+   * wait on something only a person changing the job can put right.
+   */
+  refusedForRepository?: true;
 }
 
 /** Carries a refusal out through the transaction that has to roll back for it. */
@@ -127,6 +136,7 @@ class Refused extends Error {
   constructor(
     readonly reason: string,
     readonly refusedAtEntry = false,
+    readonly refusedForRepository = false,
   ) {
     super(reason);
     this.name = "Refused";
@@ -134,16 +144,24 @@ class Refused extends Error {
 }
 
 /**
- * What one firing asks `createItem` for: the template with its blanks
- * filled, on the pipeline's entry step.
- *
- * On a project with exactly one repository the item gets it (EO-855), as
- * it does from the board, an assistant's proposal and `ctx.createItem`;
- * without one, an entry step that cuts a branch has nothing to cut it
- * from. With none, or several, it gets none, unless the firing names one
- * — a watch finding's `repository` (EO-857).
+ * The repository one firing files on: the one the firing names, which
+ * wins over the job's (EO-857), else `jobRepository`'s answer (EO-856).
  */
-function firingInput(db: Db, job: Job, dueAt: number, overrides: FireOverrides, pipelineId: Uuid, entryStepId: string): CreateItemInput {
+function firingRepository(db: Db, job: Job, overrides: FireOverrides): JobRepositoryAnswer {
+  return overrides.workspaceId === undefined ? jobRepository(db, job) : { ok: true, workspaceId: overrides.workspaceId };
+}
+
+/**
+ * What one firing asks `createItem` for: the template with its blanks
+ * filled, on the pipeline's entry step, in `workspaceId`.
+ *
+ * `workspaceId` is `firingRepository`'s answer: the repository the firing
+ * names (a watch finding's `repository`, EO-857), else the one the job
+ * names (EO-856), else the project's only one (EO-855), as an item from
+ * the board, an assistant's proposal and `ctx.createItem` gets — without
+ * one, an entry step that cuts a branch has nothing to cut it from.
+ */
+function firingInput(job: Job, dueAt: number, overrides: FireOverrides, pipelineId: Uuid, entryStepId: string, workspaceId: Uuid | null): CreateItemInput {
   const template = job.template!;
   const blanks = { dueAt, job: job.name };
   const git = overrides.existingBranch === undefined ? undefined : storyGitState({ existingBranch: overrides.existingBranch });
@@ -154,7 +172,7 @@ function firingInput(db: Db, job: Job, dueAt: number, overrides: FireOverrides, 
     ...(overrides.spec === undefined ? {} : { spec: overrides.spec }),
     ...(git === undefined ? {} : { git }),
     projectId: job.projectId as Uuid | null,
-    workspaceId: overrides.workspaceId ?? soleWorkspaceOf(db, job.projectId as Uuid | null),
+    workspaceId,
     pipelineId,
     stepId: entryStepId,
     createdBy: job.ownerId as Uuid,
@@ -197,7 +215,9 @@ export async function jobEntryVerdicts(db: Db, job: Job, options: FireOptions & 
   if (job.template === null || job.pipelineId === null) return verdicts;
   const pipeline = getPipeline(db, job.pipelineId);
   if (pipeline === undefined || pipeline.entryStepId === null) return verdicts;
-  const input = firingInput(db, job, options.dueAt, options.overrides ?? {}, pipeline.id as Uuid, pipeline.entryStepId);
+  const repository = firingRepository(db, job, options.overrides ?? {});
+  if (!repository.ok) return verdicts;
+  const input = firingInput(job, options.dueAt, options.overrides ?? {}, pipeline.id as Uuid, pipeline.entryStepId, repository.workspaceId);
   const type = resolveItemType(db, input.projectId ?? null, input.type);
   if (!type.ok) return verdicts;
   // Judged until it settles, so a rule published or a module changed
@@ -307,7 +327,11 @@ export function fireJob(db: Db, job: Job, options: FireOptions = {}): FireResult
         throw new Refused(`"${pipeline.name}" has no step for new work to start on, so there was nowhere to file this.`);
       }
 
-      const input = firingInput(db, job, dueAt, options.overrides ?? {}, pipeline.id as Uuid, pipeline.entryStepId);
+      // The repository it files on (EO-856), asked again here because
+      // one can leave the project, or a second join it, after the save.
+      const repository = firingRepository(db, job, options.overrides ?? {});
+      if (!repository.ok) throw new Refused(repository.problem, false, true);
+      const input = firingInput(job, dueAt, options.overrides ?? {}, pipeline.id as Uuid, pipeline.entryStepId, repository.workspaceId);
       const branch = options.overrides?.existingBranch;
       const unusable = branch === undefined ? null : existingBranchProblem(db, input, branch);
       if (unusable !== null) throw new Refused(unusable);
@@ -341,6 +365,12 @@ export function fireJob(db: Db, job: Job, options: FireOptions = {}): FireResult
       reason: error.reason,
     });
     if (options.quiet !== true) messageJobOwner(db, job, `"${job.name}" could not run. ${error.reason}`, { source: JOB_MESSAGE_SOURCE.failed });
-    return { occurrence, item: null, problem: error.reason, ...(error.refusedAtEntry ? { refusedAtEntry: true as const } : {}) };
+    return {
+      occurrence,
+      item: null,
+      problem: error.reason,
+      ...(error.refusedAtEntry ? { refusedAtEntry: true as const } : {}),
+      ...(error.refusedForRepository ? { refusedForRepository: true as const } : {}),
+    };
   }
 }

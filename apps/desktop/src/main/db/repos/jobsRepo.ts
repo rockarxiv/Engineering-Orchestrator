@@ -66,6 +66,7 @@ function toJob(row: typeof jobs.$inferSelect): Job {
     // never picked. `device` is the one answer that is true of every
     // installation.
     runsOn: JobRunsOnSchema.safeParse(row.runsOn).data ?? DEFAULT_JOB_RUNS_ON,
+    workspaceId: row.workspaceId,
     deletedAt: row.deletedAt,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
@@ -96,6 +97,8 @@ export interface InsertJobInput {
   maxItemsPerHour?: number | null;
   /** Omitted is `device` — see the column, and `DEFAULT_JOB_RUNS_ON`. */
   runsOn?: JobRunsOn;
+  /** The repository its items are filed on (EO-856). Omitted is none. */
+  workspaceId?: Uuid | null;
 }
 
 /** Writes the row. What is checked before it is written is `main/jobs/jobs.ts`'s. */
@@ -116,6 +119,7 @@ export function insertJob(db: Db, input: InsertJobInput): Job {
       budgetPerOccurrenceCents: input.budgetPerOccurrenceCents ?? null,
       maxItemsPerHour: input.maxItemsPerHour ?? null,
       runsOn: input.runsOn ?? DEFAULT_JOB_RUNS_ON,
+      workspaceId: input.workspaceId ?? null,
       deletedAt: null,
       createdAt: now,
       updatedAt: now,
@@ -251,6 +255,8 @@ export interface UpdateJobInput {
   maxItemsPerHour?: number | null;
   /** Never null: a job runs somewhere, so "clear it" is not a thing to say. */
   runsOn?: JobRunsOn;
+  /** The repository its items are filed on (EO-856). Null clears it. */
+  workspaceId?: Uuid | null;
 }
 
 export function updateJobRow(db: Db, id: Uuid, input: UpdateJobInput): Job | undefined {
@@ -264,6 +270,7 @@ export function updateJobRow(db: Db, id: Uuid, input: UpdateJobInput): Job | und
       ...(input.budgetPerOccurrenceCents === undefined ? {} : { budgetPerOccurrenceCents: input.budgetPerOccurrenceCents }),
       ...(input.maxItemsPerHour === undefined ? {} : { maxItemsPerHour: input.maxItemsPerHour }),
       ...(input.runsOn === undefined ? {} : { runsOn: input.runsOn }),
+      ...(input.workspaceId === undefined ? {} : { workspaceId: input.workspaceId }),
       updatedAt: Date.now(),
     })
     .where(eq(jobs.id, id))

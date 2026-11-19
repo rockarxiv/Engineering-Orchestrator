@@ -132,6 +132,7 @@ function blankJob(job: PlacedJob): Job {
     budgetPerOccurrenceCents: null,
     maxItemsPerHour: null,
     runsOn: job.runsOn,
+    workspaceId: null,
     deletedAt: null,
     createdAt: 0,
     updatedAt: 0,
@@ -279,6 +280,7 @@ export async function updateJobCommand(
     ...(input.budgetPerOccurrenceCents === undefined ? {} : { budgetPerOccurrenceCents: input.budgetPerOccurrenceCents }),
     ...(input.maxItemsPerHour === undefined ? {} : { maxItemsPerHour: input.maxItemsPerHour }),
     ...(input.runsOn === undefined ? {} : { runsOn: input.runsOn }),
+    ...(input.workspaceId === undefined ? {} : { workspaceId: input.workspaceId as Uuid | null }),
   });
   if (!result.ok) return { job: null, problem: result.problem };
   return { job: jobSummary(db, result.job), problem: null, notice: moduleRulesNotice(db, result.job) };
@@ -309,6 +311,7 @@ export async function createJobCommand(
     ...(input.budgetPerOccurrenceCents === undefined ? {} : { budgetPerOccurrenceCents: input.budgetPerOccurrenceCents }),
     ...(input.maxItemsPerHour === undefined ? {} : { maxItemsPerHour: input.maxItemsPerHour }),
     ...(input.runsOn === undefined ? {} : { runsOn: input.runsOn }),
+    ...(input.workspaceId === undefined ? {} : { workspaceId: input.workspaceId as Uuid | null }),
   });
   if (!result.ok) return { job: null, problem: result.problem };
   // A summary, like every other `jobs:*` answer about one job (EO-308):

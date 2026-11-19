@@ -328,6 +328,13 @@ export const JobViewSchema = z.object({
    */
   runsOn: JobRunsOnSchema.default(DEFAULT_JOB_RUNS_ON),
   /**
+   * The repository every item it files is filed on (EO-856): one of its
+   * project's workspaces, by id. Null is EO-855's rule — the project's
+   * only repository, otherwise none. Defaulted so a job from a build
+   * before it reads as naming none.
+   */
+  workspaceId: z.string().nullable().default(null),
+  /**
    * When a person deleted it — a tombstone rather than a gone row
    * (EO-308, ARCHITECTURE.md, "The inbox, the archive and jobs").
    *
@@ -443,6 +450,12 @@ export const JobSummarySchema = JobViewSchema.extend({
   lastStatus: JobOccurrenceStatusSchema.nullable(),
   /** A watch job's checks (EO-753). Null for every other kind, and for a watch job not yet checked. */
   watch: JobWatchStateSchema.nullable().default(null),
+  /**
+   * What the repository `workspaceId` names is called now (EO-856), so a
+   * screen and an agent read a name rather than an id. Null where it
+   * names none, and where the repository it names has since been removed.
+   */
+  workspaceName: z.string().nullable().default(null),
 });
 export type JobSummary = z.infer<typeof JobSummarySchema>;
 
