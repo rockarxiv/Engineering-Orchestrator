@@ -59,24 +59,22 @@ export type AgentCliTools = z.infer<typeof AgentCliToolsSchema>;
 
 /**
  * Whether a command is installed on this machine: found on the PATH an
- * agent is spawned with, with the absolute path it resolved to and the
- * first line `--version` printed (null where it printed nothing usable).
+ * agent is spawned with, with the absolute path it resolved to. Only
+ * looked up — the program is not started (EO-858).
  */
 export const CliToolDetectionSchema = z.discriminatedUnion("found", [
-  z.object({ found: z.literal(true), path: z.string(), version: z.string().nullable() }),
+  z.object({ found: z.literal(true), path: z.string() }),
   z.object({ found: z.literal(false) }),
 ]);
 
 export type CliToolDetection = z.infer<typeof CliToolDetectionSchema>;
 
 /**
- * A suggested description, drafted from the program's own `--version`
- * and `--help`. Empty — `description: ""`, `version: null` — when the
- * program is not there, hangs or says nothing usable. Never saved
- * without a person.
+ * A suggested description, drafted from the program's own `--help`.
+ * Empty — `description: ""` — when the program is not there, hangs or
+ * says nothing usable. Never saved without a person.
  */
 export const CliToolDescriptionDraftSchema = z.object({
-  version: z.string().nullable(),
   description: z.string(),
 });
 

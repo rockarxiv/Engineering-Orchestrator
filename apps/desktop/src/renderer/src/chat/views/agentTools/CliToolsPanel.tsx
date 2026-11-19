@@ -18,7 +18,7 @@ import { AttachedCliAgents, useNextDispatchNote } from "./attach";
  * A row is information, not a grant — it tells an agent a program exists
  * and what it is for — so the panel only ever writes what a person typed.
  * Entering a command asks this machine whether it is installed and for a
- * description drafted from its own `--version` and `--help`; the draft
+ * description drafted from its own `--help`; the draft
  * fills the box and goes nowhere until the person saves. Whether each
  * row's command is installed is asked afresh here every time the panel
  * is drawn, because the row's word for it would be wrong the first time
@@ -44,7 +44,7 @@ interface Probe {
 const SERVED_ELSEWHERE =
   "This window is served by the organisation's server, which cannot see what is installed on the desktop that runs your agents. Open EO on that desktop to check a command.";
 
-/** Found, with where and which version, or not — the same words on a row and in the editor. */
+/** Found, with where, or not — the same words on a row and in the editor. */
 function DetectionLine({ detection }: { detection: CliToolDetection }) {
   if (!detection.found) {
     return (
@@ -60,7 +60,6 @@ function DetectionLine({ detection }: { detection: CliToolDetection }) {
       <span className="truncate font-mono text-[11.5px] text-ink-subtle" title={detection.path}>
         {detection.path}
       </span>
-      <span className="truncate text-[11.5px] text-ink-subtle">{detection.version ?? "no version reported"}</span>
     </div>
   );
 }

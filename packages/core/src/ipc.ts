@@ -7683,15 +7683,16 @@ export const machineContract = {
   ),
   /**
    * Whether a CLI's command is installed on this machine (EO-819):
-   * looked up on the PATH an agent is spawned with, and its version read.
+   * looked up on the PATH an agent is spawned with, and not started.
    * The machine half because the answer is this desktop's disk.
    */
   "cliTools:detect": channel(z.object({ command: z.string() }), z.object({ detection: CliToolDetectionSchema })),
   /**
    * A suggested description for a command, drafted from its own
-   * `--version` and `--help`, run here without a shell, under a timeout
-   * and with its output capped. Empty when the program is missing, hangs
-   * or says nothing usable. Never saved without a person.
+   * `--help`, run here under a timeout and with its output capped —
+   * without a shell, or through `cmd.exe` for a Windows `.cmd` or `.bat`.
+   * Empty when the program is missing, hangs or says nothing usable.
+   * Never saved without a person.
    */
   "cliTools:draft": channel(z.object({ command: z.string() }), z.object({ draft: CliToolDescriptionDraftSchema })),
 } as const;

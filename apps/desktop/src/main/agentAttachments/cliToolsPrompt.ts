@@ -8,8 +8,8 @@ import { oneLine, withSkillsSection } from "./skillsPrompt.js";
  * One function and one wording for both, as the Skills section beside it
  * is (invariant 12): a capability worded per adapter is one that drifts
  * on one of them while its tests pass. Only the CLIs EO found installed
- * at dispatch are named, each with what a person said it is for, where it
- * resolved and what version answered — so the agent is told what it can
+ * at dispatch are named, each with what a person said it is for and where
+ * it resolved — so the agent is told what it can
  * run, not what somebody once meant to install.
  *
  * Information, not a grant (invariant 11): nothing here, and nothing an
@@ -35,8 +35,7 @@ export function cliToolsPromptSection(tools: readonly AgentCliTool[]): string {
  */
 function cliToolLine(tool: AgentCliTool): string {
   const description = oneLine(tool.description);
-  const version = tool.version === null ? "" : oneLine(tool.version);
-  return `- \`${tool.command}\`${description ? ` — ${description}` : ""} (\`${tool.path}\`${version ? `, ${version}` : ""})`;
+  return `- \`${tool.command}\`${description ? ` — ${description}` : ""} (\`${tool.path}\`)`;
 }
 
 /**

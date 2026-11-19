@@ -346,12 +346,12 @@ const structuredOfResult = (result: EoToolResult): string => JSON.stringify(resu
 
 /**
  * Two command-line tools EO found installed at dispatch (EO-820), one
- * whose description a person wrote over three lines and one with no
- * version, and the section both backends must open the thread with.
+ * whose description a person wrote over three lines and one on one,
+ * and the section both backends must open the thread with.
  */
 const FOUND_CLI_TOOLS = [
-  { command: "gh", description: "GitHub's own CLI.\nUse it for pull requests,\n\n  issues and CI runs.", path: "/usr/bin/gh", version: "gh version 2.62.0 (2024-11-14)" },
-  { command: "psql", description: "Talks to the staging database.", path: "/opt/pg/bin/psql", version: null },
+  { command: "gh", description: "GitHub's own CLI.\nUse it for pull requests,\n\n  issues and CI runs.", path: "/usr/bin/gh" },
+  { command: "psql", description: "Talks to the staging database.", path: "/opt/pg/bin/psql" },
 ];
 const CLI_TOOLS_SECTION = [
   "## Command-line tools",
@@ -359,7 +359,7 @@ const CLI_TOOLS_SECTION = [
   "These command-line tools are installed on this machine.",
   "You may run them through your shell when they fit what you are doing:",
   "",
-  "- `gh` — GitHub's own CLI. Use it for pull requests, issues and CI runs. (`/usr/bin/gh`, gh version 2.62.0 (2024-11-14))",
+  "- `gh` — GitHub's own CLI. Use it for pull requests, issues and CI runs. (`/usr/bin/gh`)",
   "- `psql` — Talks to the staging database. (`/opt/pg/bin/psql`)",
 ].join("\n");
 /** The Command-line tools section of a prompt, to its end, or null when it has none. */

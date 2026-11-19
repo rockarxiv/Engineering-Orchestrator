@@ -61,7 +61,7 @@ describe("command-line tools at dispatch (EO-820)", () => {
 
   const engineNotes = () => listCommentsForItem(handle.db, item.id).filter((comment) => comment.authorType === "engine").map((comment) => comment.body);
 
-  it("hands the turn the CLIs found, with path and version, and says once on the item which one was not found", async () => {
+  it("hands the turn the CLIs found, with their path, and says once on the item which one was not found", async () => {
     attach("GitHub CLI", "gh", "GitHub from the command line.\nFor PRs.");
     const missing = attach("Terraform", "terraform", "Plans infrastructure.");
     const asked: { command: string; cwd: string }[] = [];
@@ -72,7 +72,7 @@ describe("command-line tools at dispatch (EO-820)", () => {
       limits: LIMITS,
       detectCliTool: async (command, cwd): Promise<CliToolDetection> => {
         asked.push({ command, cwd });
-        return command === "gh" ? { found: true, path: "/usr/bin/gh", version: "gh version 2.62.0" } : { found: false };
+        return command === "gh" ? { found: true, path: "/usr/bin/gh" } : { found: false };
       },
     });
 
@@ -82,7 +82,7 @@ describe("command-line tools at dispatch (EO-820)", () => {
     // Looked up from where the run is spawned.
     expect(new Set(asked.map((ask) => ask.cwd))).toEqual(new Set([starts[0]?.cwd]));
     expect(starts).toHaveLength(1);
-    expect(starts[0]?.cliTools).toEqual([{ command: "gh", description: "GitHub from the command line.\nFor PRs.", path: "/usr/bin/gh", version: "gh version 2.62.0" }]);
+    expect(starts[0]?.cliTools).toEqual([{ command: "gh", description: "GitHub from the command line.\nFor PRs.", path: "/usr/bin/gh" }]);
 
     // The run went ahead, and the item was told about the missing one on it, once.
     const runs = listRunsForItem(handle.db, item.id);
@@ -142,7 +142,7 @@ describe("command-line tools at dispatch (EO-820)", () => {
           attachedMidway = true;
           attach("psql", "psql", "The staging database.");
         }
-        return { found: true, path: `/usr/bin/${command}`, version: null };
+        return { found: true, path: `/usr/bin/${command}` };
       },
     });
 
@@ -187,7 +187,7 @@ describe("command-line tools at dispatch (EO-820)", () => {
       kinds: kindsPreparing(cwd),
       limits: LIMITS,
       detectCliTool: async (command): Promise<CliToolDetection> =>
-        command === "gh" ? { found: true, path: "/usr/bin/gh", version: "gh version 2.62.0" } : { found: false },
+        command === "gh" ? { found: true, path: "/usr/bin/gh" } : { found: false },
     });
 
     await supervisor.runOnce();

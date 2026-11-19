@@ -39,7 +39,7 @@ const KUBECTL: CliTool = {
 
 const REVIEWER = { id: "019fb8c6-0000-7000-8000-0000000000c1", name: "Reviewer", role: "reviewer", provider: "claude", model: null, enabled: true, archivedAt: null };
 
-const FOUND = { detection: { found: true, path: "/usr/bin/gh", version: "gh version 2.62.0 (2026-10-01)" } };
+const FOUND = { detection: { found: true, path: "/usr/bin/gh" } };
 const MISSING = { detection: { found: false } };
 
 type Answer = unknown | ((payload: unknown) => unknown);
@@ -52,7 +52,7 @@ const DEFAULTS: Record<string, Answer> = {
   "agentAttachments:list": { attachments: [] },
   "agentCliTools:list": { attachments: [] },
   "cliTools:detect": MISSING,
-  "cliTools:draft": { draft: { version: null, description: "" } },
+  "cliTools:draft": { draft: { description: "" } },
   "registry:get": toRegistryView(developerRegistry()),
 };
 
@@ -94,7 +94,7 @@ describe("the CLIs panel", () => {
     expect(within(gh).getByText("Reads and opens pull requests and issues.")).toBeInTheDocument();
     expect(await within(gh).findByText("Found")).toBeInTheDocument();
     expect(within(gh).getByText("/usr/bin/gh")).toBeInTheDocument();
-    expect(within(gh).getByText("gh version 2.62.0 (2026-10-01)")).toBeInTheDocument();
+    expect(within(gh).queryByText(/version/)).toBeNull();
 
     const kubectl = screen.getByRole("region", { name: "kubectl" });
     expect(await within(kubectl).findByText("Not found on this machine")).toBeInTheDocument();
@@ -108,7 +108,7 @@ describe("the CLIs panel", () => {
   it("checks a command that is installed, pre-fills its drafted description, and saves only when told to", async () => {
     const calls = mockIpc({
       "cliTools:detect": FOUND,
-      "cliTools:draft": { draft: { version: "gh version 2.62.0 (2026-10-01)", description: "Work seamlessly with GitHub from the command line." } },
+      "cliTools:draft": { draft: { description: "Work seamlessly with GitHub from the command line." } },
       "cliTools:save": { saved: true, cliTool: GH, problem: null },
     });
     await openClis();
@@ -120,7 +120,7 @@ describe("the CLIs panel", () => {
     const result = await screen.findByRole("status", { name: "What this machine has" });
     expect(within(result).getByText("Found")).toBeInTheDocument();
     expect(within(result).getByText("/usr/bin/gh")).toBeInTheDocument();
-    expect(within(result).getByText("gh version 2.62.0 (2026-10-01)")).toBeInTheDocument();
+    expect(within(result).queryByText(/version/)).toBeNull();
     await waitFor(() => expect(screen.getByLabelText(/^What it is/)).toHaveValue("Work seamlessly with GitHub from the command line."));
     expect(sent(calls, "cliTools:detect")).toEqual([{ command: "gh" }]);
     expect(sent(calls, "cliTools:draft")).toEqual([{ command: "gh" }]);
@@ -137,7 +137,7 @@ describe("the CLIs panel", () => {
   });
 
   it("says a missing command is not found, drafts nothing and saves nothing", async () => {
-    const calls = mockIpc({ "cliTools:detect": MISSING, "cliTools:draft": { draft: { version: null, description: "" } } });
+    const calls = mockIpc({ "cliTools:detect": MISSING, "cliTools:draft": { draft: { description: "" } } });
     await openClis();
 
     fireEvent.click(await screen.findByRole("button", { name: "New CLI" }));
@@ -154,7 +154,7 @@ describe("the CLIs panel", () => {
   });
 
   it("never replaces a description the person wrote with a draft", async () => {
-    mockIpc({ "cliTools:detect": FOUND, "cliTools:draft": { draft: { version: "2", description: "Drafted words." } } });
+    mockIpc({ "cliTools:detect": FOUND, "cliTools:draft": { draft: { description: "Drafted words." } } });
     await openClis();
 
     fireEvent.click(await screen.findByRole("button", { name: "New CLI" }));

@@ -7784,7 +7784,7 @@ export function createRunSupervisor(
     for (const tool of cliTools) {
       const detection = cliDetections.get(tool.command);
       if (detection?.found) {
-        foundCliTools.push({ command: tool.command, description: tool.description, path: detection.path, version: detection.version });
+        foundCliTools.push({ command: tool.command, description: tool.description, path: detection.path });
         continue;
       }
       postComment(db, {

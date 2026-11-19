@@ -1,11 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { cliToolsPromptSection, openingPrompt } from "./cliToolsPrompt.js";
 
-const gh = { command: "gh", description: "GitHub's own CLI.\nUse it for pull requests,\n\n  issues and CI runs.", path: "/usr/bin/gh", version: "gh version 2.62.0 (2024-11-14)" };
+const gh = { command: "gh", description: "GitHub's own CLI.\nUse it for pull requests,\n\n  issues and CI runs.", path: "/usr/bin/gh" };
 
 describe("cliToolsPromptSection (EO-820)", () => {
-  it("names each found CLI on one bullet line: command, description, path and version", () => {
-    const section = cliToolsPromptSection([gh, { command: "psql", description: "", path: "/opt/pg/bin/psql", version: null }]);
+  it("names each found CLI on one bullet line: command, description and path", () => {
+    const section = cliToolsPromptSection([gh, { command: "psql", description: "", path: "/opt/pg/bin/psql" }]);
     expect(section).toBe(
       [
         "## Command-line tools",
@@ -13,7 +13,7 @@ describe("cliToolsPromptSection (EO-820)", () => {
         "These command-line tools are installed on this machine.",
         "You may run them through your shell when they fit what you are doing:",
         "",
-        "- `gh` — GitHub's own CLI. Use it for pull requests, issues and CI runs. (`/usr/bin/gh`, gh version 2.62.0 (2024-11-14))",
+        "- `gh` — GitHub's own CLI. Use it for pull requests, issues and CI runs. (`/usr/bin/gh`)",
         "- `psql` (`/opt/pg/bin/psql`)",
       ].join("\n"),
     );
@@ -23,7 +23,7 @@ describe("cliToolsPromptSection (EO-820)", () => {
     const bullets = cliToolsPromptSection([gh])
       .split("\n")
       .filter((line) => line.includes("GitHub") || line.includes("issues"));
-    expect(bullets).toEqual(["- `gh` — GitHub's own CLI. Use it for pull requests, issues and CI runs. (`/usr/bin/gh`, gh version 2.62.0 (2024-11-14))"]);
+    expect(bullets).toEqual(["- `gh` — GitHub's own CLI. Use it for pull requests, issues and CI runs. (`/usr/bin/gh`)"]);
   });
 
   it("is nothing at all when none is found — no heading with nothing under it", () => {
