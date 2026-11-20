@@ -987,7 +987,13 @@ export function parseWriteBridge(raw) {
   // (EO-717): kept whole or not at all, since an unreadable list must not
   // turn into "whatever the agent's grant says".
   // And whether it lists the module-change tools (EO-813): a hint only.
-  const listing = { ...(parsed.moduleChanges === true ? { moduleChanges: true } : {}), ...(parsed.reportOnly === true ? { reportOnly: true } : {}) };
+  const listing = {
+    ...(parsed.moduleChanges === true ? { moduleChanges: true } : {}),
+    ...(parsed.reportOnly === true ? { reportOnly: true } : {}),
+    // An isolated team member's thread boundary (EO-867), kept as given;
+    // `memberThreadView` reads it, and refuses the thread on one it cannot.
+    ...(parsed.teamMember !== undefined ? { teamMember: parsed.teamMember } : {}),
+  };
   if (parsed.writes === undefined) return { url: parsed.url, token: parsed.token, ...listing };
   return Array.isArray(parsed.writes) && parsed.writes.every((tool) => typeof tool === "string") ? { url: parsed.url, token: parsed.token, writes: [...parsed.writes], ...listing } : null;
 }
@@ -1032,6 +1038,40 @@ async function writeThroughEo(writeBridge, tool, args) {
     return toolError(typeof body.code === "string" && body.code !== "" ? body.code : "WRITE_REFUSED", body.problem);
   }
   return toolError("EO_UNREACHABLE", `EO answered in a way that does not say anything was written (HTTP ${String(response.status)}).`);
+}
+
+
+// ── An isolated team member's view of the thread (EO-867) ─────────────
+
+/**
+ * Where an isolated team member's view of its item's thread ends, from
+ * its address: `{ itemId, visible(row) }`, the rule a report-only
+ * participant's `item_context` applies — a comment shown where it is
+ * exposed, or was written at or before the boundary and is not hidden —
+ * so a member never reads its team's other reports. `"unreadable"` where
+ * the address names a boundary this cannot read: the thread is then
+ * refused, never shown whole. Null for every other turn.
+ */
+export function memberThreadView(raw, bridge) {
+  const named = (typeof raw === "string" && /"teamMember"/.test(raw)) || (validObject(bridge) && bridge.teamMember !== undefined);
+  if (!named) return null;
+  const member = validObject(bridge) ? bridge.teamMember : undefined;
+  const strings = (value) => Array.isArray(value) && value.every((one) => typeof one === "string");
+  if (!validObject(member) || typeof member.itemId !== "string" || typeof member.visibleThrough !== "number" || !strings(member.exposed) || !strings(member.hidden)) return "unreadable";
+  const exposed = new Set(member.exposed);
+  const hidden = new Set(member.hidden);
+  return {
+    itemId: member.itemId,
+    visibleThrough: member.visibleThrough,
+    visible: (row) => row.item_id !== member.itemId || exposed.has(row.id) || (Number(row.created_at) <= member.visibleThrough && !hidden.has(row.id)),
+  };
+}
+
+const MEMBER_THREAD_UNREADABLE = "EO could not read where this team member's view of the thread ends, so it shows none of the thread rather than all of it.";
+
+/** The comments of a thread a view may show; all of them with no view. */
+function shownRows(rows, view) {
+  return view === null || view === undefined ? rows : rows.filter((row) => view.visible(row));
 }
 
 // ── Configuration tools ───────────────────────────────────────
@@ -1387,7 +1427,7 @@ function commentBlock(comment, owned, indent = "", { timestamp = false } = {}) {
  * the argument about the item has been. `thread_read` answers with all of
  * it, for the roles whose work *is* the conversation.
  */
-function renderItem(db, requestedKey, { withThread = false } = {}) {
+function renderItem(db, requestedKey, { withThread = false, view = null } = {}) {
   // The type is a row of its own since KAN-129, so the word this
   // renders comes from a join rather than from a column — an inner one,
   // because every item has a type and an item without one is a broken
@@ -1455,18 +1495,22 @@ function renderItem(db, requestedKey, { withThread = false } = {}) {
   // dependency key. The same selection `shippedSummary` makes: the newest
   // succeeded run that returned something, dry runs excluded — borrowing a
   // worktree to watch a module work is not what an item shipped (KAN-106).
+  // For an isolated member (EO-867), what the item had shipped by where
+  // its view ends, and never another member's turn: its result is its
+  // report, and a team that settled since summarises every report.
   const shipped = queryOne(
     db,
     `SELECT result FROM runs
-      WHERE item_id = ? AND status = 'succeeded' AND result IS NOT NULL AND dry_run = 0
+      WHERE item_id = ? AND status = 'succeeded' AND result IS NOT NULL AND dry_run = 0${view === null || view.itemId !== item.id ? "" : " AND action != 'team:participant' AND ended_at <= ?"}
       ORDER BY ended_at DESC, id DESC
       LIMIT 1`,
     item.id,
+    ...(view === null || view.itemId !== item.id ? [] : [view.visibleThrough]),
   );
   if (shipped) lines.push("", "## What it shipped", "", "```json", shippedResult(shipped.result), "```");
 
   if (withThread) {
-    const comments = queryAll(db, `${COMMENT_SELECT} WHERE c.item_id = ? ORDER BY c.created_at, c.id`, item.id);
+    const comments = shownRows(queryAll(db, `${COMMENT_SELECT} WHERE c.item_id = ? ORDER BY c.created_at, c.id`, item.id), view);
     const byComment = attachmentsByComment(db, item.id);
 
     if (comments.length > 0) {
@@ -1611,11 +1655,11 @@ function shippedResult(result) {
   }
 }
 
-async function renderCommentSearch(db, requestedKey, pattern) {
+async function renderCommentSearch(db, requestedKey, pattern, view = null) {
   const item = queryOne(db, "SELECT id, key FROM items WHERE key = ?", requestedKey.trim());
   if (!item) return null;
 
-  const comments = queryAll(db, `${COMMENT_SELECT} WHERE c.item_id = ? ORDER BY c.created_at DESC, c.id DESC`, item.id);
+  const comments = shownRows(queryAll(db, `${COMMENT_SELECT} WHERE c.item_id = ? ORDER BY c.created_at DESC, c.id DESC`, item.id), view);
   const byComment = attachmentsByComment(db, item.id);
 
   const bodies = comments.map((comment) => String(comment.body ?? "").slice(0, MAX_SEARCH_BODY));
@@ -1698,12 +1742,13 @@ function wholeCharBoundary(text, index) {
  * grouped in memory, so depth costs no extra round trips, and `seen`
  * makes a parent cycle terminate instead of recursing forever.
  */
-function renderCommentSubtree(db, requestedId) {
+function renderCommentSubtree(db, requestedId, view = null) {
   const root = queryOne(db, `${COMMENT_SELECT} WHERE c.id = ?`, requestedId.trim());
-  if (!root) return null;
+  // One outside a member's view does not exist for it (EO-867).
+  if (!root || shownRows([root], view).length === 0) return null;
 
   const item = queryOne(db, "SELECT key FROM items WHERE id = ?", root.item_id);
-  const thread = queryAll(db, `${COMMENT_SELECT} WHERE c.item_id = ? ORDER BY c.created_at, c.id`, root.item_id);
+  const thread = shownRows(queryAll(db, `${COMMENT_SELECT} WHERE c.item_id = ? ORDER BY c.created_at, c.id`, root.item_id), view);
   const byComment = attachmentsByComment(db, root.item_id);
 
   const repliesByParent = new Map();
@@ -1997,7 +2042,14 @@ async function answerEoTool({
   enableRepositoryCheckout = writeBridge !== null,
   enableModuleChanges = false,
   served = null,
+  threadView = null,
 }) {
+  // An isolated team member's view of the thread (EO-867): null on every
+  // other turn; one it cannot read refuses every thread read.
+  const view = threadView === "unreadable" ? null : threadView;
+  if (threadView === "unreadable" && ["item_detail", "ticket_detail", "thread_read", "comment_search", "comment_read"].includes(name)) {
+    return toolError("THREAD_UNREADABLE", MEMBER_THREAD_UNREADABLE);
+  }
   // The writes this turn is served, where its credential names them
   // (EO-717): any other write is refused here, as EO's bridge refuses it
   // too. The tool is listed all the same (EO-732) — a learning review is
@@ -2068,7 +2120,7 @@ async function answerEoTool({
     if (!validateSingleString(args, "key")) return toolError("INVALID_ARGUMENT", "item_detail requires exactly one non-empty ticket key.");
     if (!db) return toolError("DATABASE_UNAVAILABLE", "EO's ticket store is unavailable.");
     try {
-      const rendered = renderItem(db, args.key);
+      const rendered = renderItem(db, args.key, { view });
       return { content: [{ type: "text", text: rendered ?? `No ticket with key "${args.key}". Check the board listing for the keys that exist.` }] };
     } catch {
       return toolError("DATABASE_UNAVAILABLE", "EO could not read the ticket store.");
@@ -2082,7 +2134,7 @@ async function answerEoTool({
     if (!validateSingleString(args, "key")) return toolError("INVALID_ARGUMENT", "thread_read requires exactly one non-empty ticket key.");
     if (!db) return toolError("DATABASE_UNAVAILABLE", "EO's ticket store is unavailable.");
     try {
-      const rendered = renderItem(db, args.key, { withThread: true });
+      const rendered = renderItem(db, args.key, { withThread: true, view });
       return { content: [{ type: "text", text: rendered ?? `No ticket with key "${args.key}". Check the board listing for the keys that exist.` }] };
     } catch {
       return toolError("DATABASE_UNAVAILABLE", "EO could not read the ticket store.");
@@ -2113,7 +2165,7 @@ async function answerEoTool({
     }
     if (!db) return toolError("DATABASE_UNAVAILABLE", "EO's comment store is unavailable.");
     try {
-      const rendered = await renderCommentSearch(db, args.key, args.pattern);
+      const rendered = await renderCommentSearch(db, args.key, args.pattern, view);
       return { content: [{ type: "text", text: rendered ?? `No ticket with key "${args.key}". Check the board listing for the keys that exist.` }] };
     } catch {
       return toolError("DATABASE_UNAVAILABLE", "EO could not read the comment store.");
@@ -2128,7 +2180,7 @@ async function answerEoTool({
     if (!db) return toolError("DATABASE_UNAVAILABLE", "EO's comment store is unavailable.");
     let rendered;
     try {
-      rendered = renderCommentSubtree(db, args.commentId);
+      rendered = renderCommentSubtree(db, args.commentId, view);
     } catch {
       return toolError("DATABASE_UNAVAILABLE", "EO could not read the comment store.");
     }
@@ -2265,6 +2317,9 @@ export function createEoMcpService({
   // memory for an agent whose own turns may not, and posts nothing.
   // EO's bridge refuses any other write on that credential as well.
   const served = bridge !== null && Array.isArray(bridge.writes) ? bridge.writes : null;
+  // An isolated team member's view of its item's thread (EO-867), read
+  // from the raw address too so a mangled one fails closed.
+  const threadView = memberThreadView(process.env["EO_MCP_WRITE_BRIDGE"] ?? null, bridge ?? writeBridge);
   // What is listed does not depend on the credential (EO-732): a learning
   // review's fork is sent the run's own tools, so that the backend reads
   // the run's thread from its prompt cache, and a tool listed on one and
@@ -2319,6 +2374,7 @@ export function createEoMcpService({
           enableModuleChanges: listed.enableModuleChanges,
           writeBridge: bridge,
           served,
+          threadView,
         });
         return { jsonrpc: "2.0", id: request.id, result };
       }

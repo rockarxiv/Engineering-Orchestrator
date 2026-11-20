@@ -9,7 +9,12 @@ import {
   TeamExecutionFailureSchema,
   TeamParticipantAnswerSchema,
   TeamReportSchema,
+  teamFactLines,
+  teamFacts,
+  teamMemberMode,
   teamWords,
+  TEAM_ISOLATED,
+  TEAM_REPORT_ONLY,
   type IndependentTeam,
   type TeamContribution,
 } from "./team.js";
@@ -248,5 +253,25 @@ describe("teamWords", () => {
     expect(teamWords(withOutcome({ key: "clear", label: "All clear" }))).not.toBe(teamWords(team));
     expect(teamWords(meant)).not.toBe(teamWords(team));
     expect(teamWords(withOutcome({ key: "clear", label: "Clear", meaning: "Nothing at all needs changing." }))).not.toBe(teamWords(meant));
+  });
+});
+
+describe("a team's member mode (EO-867)", () => {
+  it("is report-only unless a team says isolated, and a stored team from before modes reads as report-only", () => {
+    expect(team.members).toBe("report_only");
+    expect(teamMemberMode(StepTeamSchema.parse({ ...base, members: "isolated" }))).toBe("isolated");
+    expect(teamMemberMode({})).toBe("report_only");
+    expect(issues({ ...base, members: "writing" })).not.toEqual([]);
+  });
+
+  it("is named in the version diff's words, so a mode change reads as one, and said by the facts every surface shows", () => {
+    const isolated = StepTeamSchema.parse({ ...base, members: "isolated" });
+    expect(teamWords(team).startsWith("report-only members; independent:")).toBe(true);
+    expect(teamWords(isolated).startsWith("isolated members; independent:")).toBe(true);
+    expect(teamWords(isolated).slice("isolated".length)).toBe(teamWords(team).slice("report-only".length));
+    expect(teamFacts(team)).toMatchObject({ mode: "report_only", reportOnly: TEAM_REPORT_ONLY });
+    expect(teamFacts(isolated)).toMatchObject({ mode: "isolated", reportOnly: TEAM_ISOLATED });
+    expect(teamFactLines(isolated)[0]).toBe("Members: isolated");
+    expect(teamFactLines(isolated)).toContain(TEAM_ISOLATED);
   });
 });

@@ -1649,6 +1649,7 @@ describe("createCodexProvider", () => {
       // Every key the strict schema makes required, null where the agent says nothing.
       const strictTeam = {
         coordination: "independent",
+        members: null,
         participants: [{ key: "security", role: "reviewer", instructions: "Look for auth gaps.", required: null }],
         outcomes: [{ key: "clear", label: "Clear", meaning: null }],
         completion: { rules: [{ when: "all", outcomes: ["clear"], result: "approved" }], fallback: "changes_requested" },
@@ -1675,7 +1676,7 @@ describe("createCodexProvider", () => {
       expect(fromClaude.ok).toBe(true);
       expect(fromCodex).toEqual(fromClaude);
       const steps = fromCodex.ok ? (fromCodex.value as { draft: { steps: { team?: unknown }[] } }).draft.steps : [];
-      expect(steps[0]!.team).toMatchObject({ participants: [{ required: true }], limits: { maxParticipants: 4, maxParallel: 1, maxRetries: 1 } });
+      expect(steps[0]!.team).toMatchObject({ members: "report_only", participants: [{ required: true }], limits: { maxParticipants: 4, maxParallel: 1, maxRetries: 1 } });
       expect(steps[1]!.team).toBe("none");
     });
 

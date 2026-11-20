@@ -17,8 +17,9 @@ import { ACTION_KEY_PATTERN, RESERVED_ANSWER_FIELDS } from "./schemas/actionDefi
  * the project's ordinary staffing rule (`staffingAgents`), and never by an
  * agent id, so a pipeline exported from one installation means the same
  * thing on another. Nothing here names a tool, a server or a grant: a
- * participant is dispatched with what its role's agent already has, report
- * only, and the objects are strict so a key that tried to say otherwise —
+ * participant is dispatched with what its role's agent already has —
+ * reduced to report-only, or as it is in a copy of its own where the team's
+ * members are `isolated` (EO-867) — and the objects are strict so a key that tried to say otherwise —
  * `allowedTools`, `mcpServers`, an `agentId` — is refused rather than
  * dropped (invariant 11).
  *
@@ -86,6 +87,32 @@ const sharedLimits = {
   budgetCents: z.number().int().positive().optional(),
 };
 
+/**
+ * How a team's members work (EO-867), chosen per team:
+ *
+ * - `report_only`, the default and every team written before this: each
+ *   member reads a captured copy of the evidence through four tools and
+ *   changes nothing (EO-845). For content EO should not let an agent act
+ *   on.
+ * - `isolated`: each member is dispatched exactly as its role's agent is
+ *   on an ordinary dispatch of the step — its backend, executable, model,
+ *   setup, servers, skills, CLI tools, grants, permissions, the
+ *   repository index and the ordinary context — standing in a copy of the
+ *   item's workspace made for its attempt alone and removed when the
+ *   attempt ends. Nothing it does there reaches the item's work or
+ *   another member's, and it sees none of its team's other reports.
+ */
+export const TEAM_MEMBER_MODES = ["report_only", "isolated"] as const;
+export type TeamMemberMode = (typeof TEAM_MEMBER_MODES)[number];
+export const DEFAULT_TEAM_MEMBER_MODE: TeamMemberMode = "report_only";
+
+/** A team's member mode, read from a stored team: report-only for one written before modes existed. */
+export function teamMemberMode(team: { members?: TeamMemberMode } | null | undefined): TeamMemberMode {
+  return team?.members ?? DEFAULT_TEAM_MEMBER_MODE;
+}
+
+const TeamMemberModeSchema = z.enum(TEAM_MEMBER_MODES).default(DEFAULT_TEAM_MEMBER_MODE);
+
 /** An independent team's limits. No rounds: every participant contributes once. */
 export const IndependentTeamLimitsSchema = z.strictObject(sharedLimits);
 
@@ -136,6 +163,8 @@ export type TeamCompletionRule = z.infer<typeof TeamCompletionRuleSchema>;
 
 export const IndependentTeamSchema = z.strictObject({
   coordination: z.literal("independent"),
+  /** How its members work (`TEAM_MEMBER_MODES`). */
+  members: TeamMemberModeSchema,
   participants: z.array(TeamParticipantSchema).min(1).max(TEAM_CEILINGS.participants),
   outcomes: z.array(TeamOutcomeSchema).min(1),
   completion: z.strictObject({
@@ -150,6 +179,8 @@ export type IndependentTeam = z.infer<typeof IndependentTeamSchema>;
 
 export const LeaderTeamSchema = z.strictObject({
   coordination: z.literal("leader"),
+  /** How its members work, the leader included (`TEAM_MEMBER_MODES`). */
+  members: TeamMemberModeSchema,
   /** Who leads: an agent of this role, assigning work and answering the step's action. */
   leader: z.strictObject({ role: RoleSchema, instructions: InstructionsSchema }),
   /** The roles the leader may assign work to. */
@@ -410,12 +441,15 @@ export function teamWords(team: StepTeam | null | undefined): string {
     team.outcomes.length === 0
       ? ""
       : `; outcomes ${team.outcomes.map((outcome) => `${outcome.key} "${outcome.label}"${outcome.meaning === "" ? "" : ` (${JSON.stringify(outcome.meaning)})`}`).join(", ")}`;
+  // The member mode leads (EO-867), so a diff of a team whose members
+  // went from report-only to isolated says so in its first words.
+  const mode = `${memberModeWords(teamMemberMode(team))} members`;
   if (team.coordination === "leader") {
-    return `led by ${team.leader.role} ("${team.leader.instructions}"), assigning to ${team.roles.join(", ")}${outcomes}; ${limits}`;
+    return `${mode}; led by ${team.leader.role} ("${team.leader.instructions}"), assigning to ${team.roles.join(", ")}${outcomes}; ${limits}`;
   }
   const who = team.participants.map((participant) => `${participant.key} (${participant.role}${participant.required ? "" : ", optional"}): "${participant.instructions}"`).join("; ");
   const rules = team.completion.rules.map((rule) => `${rule.when} ${rule.outcomes.join("/")} → ${rule.result}`);
-  return `independent: ${who}${outcomes}; ${[...rules, `otherwise ${team.completion.fallback}`].join(", ")}; ${limits}`;
+  return `${mode}; independent: ${who}${outcomes}; ${[...rules, `otherwise ${team.completion.fallback}`].join(", ")}; ${limits}`;
 }
 
 /**
@@ -430,6 +464,11 @@ export function teamWords(team: StepTeam | null | undefined): string {
  */
 export const NO_TEAM = "none";
 
+/** A member mode as a person reads it: "report-only" or "isolated". */
+export function memberModeWords(mode: TeamMemberMode): string {
+  return mode === "isolated" ? "isolated" : "report-only";
+}
+
 /**
  * What a team may and may not do, in the words every surface showing a
  * team uses (EO-848): the step details, a draft's card and the pipeline
@@ -438,6 +477,16 @@ export const NO_TEAM = "none";
 export const TEAM_REPORT_ONLY =
   "Report-only: every member, a leader included, reads the evidence and posts an attributed report on the thread. " +
   "None of them can edit the work, run commands, change anything outside EO or widen what it may use; EO alone decides where the item goes.";
+
+/** The same for a team whose members are isolated (EO-867). */
+export const TEAM_ISOLATED =
+  "Isolated: every member, a leader included, works as its role's agent does on an ordinary dispatch of this step — the same tools, servers, skills, repository index and context — in a copy of the item's workspace made for it alone and removed when its turn ends. " +
+  "Nothing it does there reaches the item's work, its branch or another member's copy, it sees none of its team's other reports, and it posts nothing itself: EO posts its report, and alone decides where the item goes.";
+
+/** What a team's members may do, in the words for its mode. */
+export function teamRightsWords(team: { members?: TeamMemberMode }): string {
+  return teamMemberMode(team) === "isolated" ? TEAM_ISOLATED : TEAM_REPORT_ONLY;
+}
 
 /**
  * A team in a person's words (EO-848), section by section: how it is
@@ -450,11 +499,14 @@ export const TEAM_REPORT_ONLY =
  * team declares one.
  */
 export const TeamFactsSchema = z.object({
+  /** How its members work (EO-867). */
+  mode: z.enum(TEAM_MEMBER_MODES),
   coordination: z.string(),
   members: z.array(z.string()),
   outcomes: z.array(z.string()),
   completion: z.array(z.string()),
   limits: z.array(z.string()),
+  /** What its members may and may not do, in its mode's words (`teamRightsWords`); named for the one mode there first was. */
   reportOnly: z.string(),
 });
 export type TeamFacts = z.infer<typeof TeamFactsSchema>;
@@ -497,7 +549,8 @@ export function teamFacts(team: StepTeam): TeamFacts {
         "EO refuses an answer that misses a required assignment, cites a superseded report, does not fit the action or names a result the action does not declare.",
       ],
       limits,
-      reportOnly: TEAM_REPORT_ONLY,
+      mode: teamMemberMode(team),
+      reportOnly: teamRightsWords(team),
     };
   }
 
@@ -514,7 +567,8 @@ export function teamFacts(team: StepTeam): TeamFacts {
       "A required participant that cannot contribute fails the team rather than reaching the fallback.",
     ],
     limits,
-    reportOnly: TEAM_REPORT_ONLY,
+    mode: teamMemberMode(team),
+    reportOnly: teamRightsWords(team),
   };
 }
 
@@ -522,6 +576,7 @@ export function teamFacts(team: StepTeam): TeamFacts {
 export function teamFactLines(team: StepTeam): string[] {
   const facts = teamFacts(team);
   return [
+    `Members: ${memberModeWords(facts.mode)}`,
     `Coordination: ${facts.coordination}`,
     ...facts.members.map((line) => `Member: ${line}`),
     ...(facts.outcomes.length === 0 ? [] : [`Outcomes a member may report: ${facts.outcomes.join("; ")}`]),
@@ -542,6 +597,8 @@ export const TeamReadingSchema = z.object({
   stepId: z.string(),
   stepName: z.string(),
   coordination: z.enum(["independent", "leader"]),
+  /** How its members work (EO-867). */
+  members: z.enum(TEAM_MEMBER_MODES),
   /** Each role the team dispatches, with the agents dispatch would choose among, and why it cannot be staffed, or null. */
   staffing: z.array(
     z.object({
@@ -552,6 +609,7 @@ export const TeamReadingSchema = z.object({
       problem: z.string().nullable(),
     }),
   ),
+  /** What its members may and may not do, in its mode's words (`teamRightsWords`). */
   reportOnly: z.string(),
   /** The action the team's single answer is held to, who writes that answer, and why the team cannot answer it, or null. */
   finalAction: z.object({

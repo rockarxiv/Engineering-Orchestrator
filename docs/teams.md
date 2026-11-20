@@ -1,6 +1,6 @@
-# Report-only teams on an agent step
+# Teams on an agent step
 
-An `agent` step can run as a **team**: several focused agents each contribute a report to the item's thread, and EO turns those reports into the one result the step returns. Nobody gets a separate item or column for their part. This page covers what a team can do, how it decides, how it is held to reading and reporting, what it costs, how a person controls it, and what this release leaves out. The design is in [`ARCHITECTURE.md`](../ARCHITECTURE.md) §4.2a. This page is the operating manual.
+An `agent` step can run as a **team**: several focused agents each contribute a report to the item's thread, and EO turns those reports into the one result the step returns. Nobody gets a separate item or column for their part. A team's members are either **report-only** (the default) or **isolated**. This page covers what a team can do, how it decides, how each kind of member is held to its mode, what it costs, how a person controls it, and what this release leaves out. The design is in [`ARCHITECTURE.md`](../ARCHITECTURE.md) §4.2a. This page is the operating manual.
 
 ## Configuration
 
@@ -8,7 +8,21 @@ A team is a setting on an agent step (`pipeline_steps.team`, `StepTeamSchema` in
 
 You add or change a team by **describing it to the assistant**. Its draft can carry `team` on an agent step, or `"none"` to make the step one agent again, and a person's Publish writes it. The Graph view and the draft card show the team in words. The configure screen's step form does not edit teams, and the `pipeline_save` tool removes the key. A tool can never publish a team.
 
-Members are staffed by **role**, never by agent id, using the project's usual staffing rule. A team names no tool, server or grant. Each member runs with what its role's agent already has, reduced to report-only (below). The `system` role is never a member.
+Members are staffed by **role**, never by agent id, using the project's usual staffing rule. A team names no tool, server or grant. Each member runs with what its role's agent already has: reduced to report-only, or exactly as it is in a copy of its own where the team's members are isolated (below). The `system` role is never a member.
+
+### Member mode
+
+A team's `members` key chooses how every member works, the leader included:
+
+| | `report_only` (the default) | `isolated` |
+|---|---|---|
+| For | Content EO should not let an agent act on: a draft from outside, an attachment, anything a member must only read | Members that should work as the role's agent does: a review that runs the tests or traces what a change reaches, an investigation that tries a fix |
+| What a member is given | Four evidence tools over a captured copy, and nothing else ([below](#report-only-what-a-member-can-and-cannot-do)) | Everything an ordinary dispatch of its agent on the step gets ([below](#isolated-a-member-works-as-its-roles-agent-does)) |
+| Where it stands | An empty directory of its own | A copy of the item's workspace made for its attempt alone |
+| Which agents can be members | Only agents EO can lock down (the table below) | Any agent that can run the step alone |
+| Which workspaces | Any kind that can capture evidence (not `scratch`) | A kind that can copy for each member: a Git repository, or no disk. A folder or scratch step is refused |
+
+A team written without the key is report-only. The mode is part of the team: it is versioned, exported and imported with it, the version diff names a change to it ("report-only members" → "isolated members"), and the Graph view, the draft card and the pipeline tools say which mode a team runs in.
 
 There are two ways to coordinate:
 
@@ -29,7 +43,7 @@ There are two ways to coordinate:
 | Rounds, leader-led only (`maxRounds`) | 2 | 5 |
 | `timeoutMs`, `budgetCents` | the run timeout and the item/daily budgets | can only tighten them |
 
-A member must be an agent EO can hold to report-only: Claude or Codex, not using the person's own setup, not naming its own executable, and, on Codex, naming a model. A draft or Publish that would staff a role with any other agent is refused, and the refusal says why.
+A report-only member must be an agent EO can hold to report-only: Claude or Codex, not using the person's own setup, not naming its own executable, and, on Codex, naming a model. A draft or Publish that would staff a report-only team's role with any other agent is refused, and the refusal says why. None of this applies to an isolated team. Its draft or Publish is refused instead where the step works in a workspace that cannot give each member a copy, and the refusal names the kind.
 
 ## How a team completes
 
@@ -102,6 +116,19 @@ A refused participant is an execution failure with the reason on the thread. The
 
 **A runtime upgrade cannot quietly switch enforcement off.** Part of the boundary depends on the CLI honouring what it is told, so moving a runtime pin in `runtimes/catalog.ts` or `runtimes/packages.ts` fails `providers/reportOnly.test.ts` until the live probes below are run on the new version and `REPORT_ONLY_QUALIFIED_RUNTIMES` is moved with it.
 
+## Isolated: a member works as its role's agent does
+
+An isolated member has exactly the rights and treatment its role's agent has on an ordinary dispatch of the step. The one difference is where it stands.
+
+- **The same provider.** It is built through the ordinary path (`providerForAgent` in `engine.ts`), never `reportOnlyProviderForAgent`. That means the agent's backend, executable, credential, model, its own setup where it uses one, its attached servers and skills, its CLI tools, its `eo` grants, and the backend's ordinary permissions: `bypassPermissions` on Claude, `danger-full-access` on Codex. It gets no report-only hook, lock or credential, and none of the report-only refusals or runtime pins apply.
+- **The same index and context.** It is given the repository index the step's dispatch is lent. That is the item's own index: it describes the same files as they stand in the item's workspace. Its context is the ordinary one for its agent and the step's action: the current output (the diff), the handover, pinned comments, human comments since, memory chosen before it starts, and the pack's sections.
+- **The same instructions, then the team's.** Its agent's own instructions come first (for a reviewer, `reviewer.md`). The team framing follows: which team, its assignment, the outcomes it may report. It is held to the same contribution schema as a report-only member, so completion, routing and the leader's checks are unchanged.
+- **Its own copy.** Each attempt works in a copy of the item's workspace made for it alone, never the item's worktree. For a repository it is a detached worktree, under the repository's git directory, of the tree the team's evidence captured, wrapped in a commit whose parent is the branch's HEAD. So it holds committed, modified and untracked files, and `git diff HEAD~1` shows the uncommitted work. For no disk, the copy is an empty directory of its own. A member's commits, resets and writes move nothing but its copy: not the item's worktree, not its branch, not another member's copy. Nothing it changes is merged back.
+- **Removed when its attempt ends.** Before the copy goes, what was done in it (files changed or added, a moved HEAD) is put on the member's report. A member that left no report gets a note instead. Copies a crash left behind are swept on startup, and when the item settles, is archived or is deleted, with the same line on the item.
+- **Independent, and silent.** A member never sees another member's report from its session, or the leader's turns. Its context, `comment_read`, `comment_search`, `thread_read` and what `item_detail` says the item shipped all apply the rule report-only's `item_context` does: the thread as far as the team's first capture, and nothing of its own team's after it. An `eo` server that cannot read that boundary shows none of the thread. A member posts nothing on the item: its credential serves no `comment` and no `attachment_add`. EO posts its answer as its report, attributed to it.
+
+This independence is held at EO's surfaces. A member runs unsandboxed with a shell, exactly as the step's own agent does. That means it could read EO's database file, or `git push` from its copy, as that agent could. Use report-only where a member must not be able to.
+
 ## Evidence and freshness
 
 A team reads a **captured** baseline, never a live source:
@@ -157,7 +184,8 @@ The imported agents recommend Claude. Change any member to Codex (with a model) 
 - `apps/desktop/src/main/supervisor/teamQualification.test.ts` imports both examples and runs them end to end with every member on Claude, every member on Codex, and a mix of the two. It covers the positive and the negative independent result and a leader's adaptive follow-up. It then runs a failure matrix: disagreement, malformed report, participant crash, lost provider thread, restart during finalisation, duplicate delivery, capacity pressure, shared-budget exhaustion, cancellation, a human question, a source change and an organisation lease handoff. Each scenario ends in the same checks: execution stayed within limits; spending and history were kept; no report was accepted twice; nothing settled on stale evidence; the item moved at most once per settled session, to where the accepted reports route.
 - `packages/engine/src/teamExamples.test.ts` decides the publication review example in the pure engine alone, with no repository involved.
 - `teamSupervisor.test.ts`, `teamLeader.test.ts`, `teamSessionControls.test.ts`, `teamParticipants.test.ts`, `teamEvidence.test.ts` and `teamSessionsRepo.test.ts` cover the mechanisms one at a time.
-- `providers/providerParity.test.ts` holds **both adapters** to the same report-only surface, refusals and refusal to start. `providers/reportOnly.test.ts` covers each adapter's lock, the runtime qualification and the pin tripwire.
+- `providers/providerParity.test.ts` holds **both adapters** to the same report-only surface, refusals and refusal to start. It also holds them to an isolated member's surface: the ordinary `eo` server, index, servers, skills and permissions, with no report-only hook.
+- `supervisor/teamIsolated.test.ts` covers isolated members end to end. It checks that a member's turn differs from the same agent's ordinary dispatch of the step only in where it stands, its attempt, its framing and posting nothing. It checks its context, that its copy is removed with the change line on its report, and the refusal of a kind that makes no copy. It runs a team of four with `maxParallel: 2` and checks that the two members starting after the first reports see neither, in their context or through `comment_read`, `comment_search`, `thread_read` and `item_detail`. It also covers freshness, cancelling and a leader-led isolated team. `packs/developer/workspace/memberCopies.test.ts` writes, commits and resets in one member's copy of a real repository, and checks that the item's worktree, its branch, a sibling's copy and the remote are untouched. `providers/reportOnly.test.ts` covers each adapter's lock, the runtime qualification and the pin tripwire.
 
 **Real CLIs (opt-in, no credit spent).** A local server stands in for the model and scripts the calls a participant must not be able to make: a shell command, a file write, code mode's nested `exec_command`/`apply_patch`, a subagent, EO's `comment` and the repository index. It runs them on a fresh session and a resumed one, then checks that no marker file exists and that EO's bridge was asked only for evidence.
 
@@ -170,9 +198,8 @@ Last run for EO-850 on Linux x64, with Claude Code 0.3.322 + Claude Agent SDK 0.
 
 ## Not in this release
 
-- **Writing participants.** Every member is report-only. No member edits the workspace, even in a separate copy.
-- **Separate-worktree integration.** Members' changes are never merged back, because members make none.
-- **File locks** between members. Nothing writes, so nothing is locked.
-- **Arbitrary command execution.** No shell, no test run and no code execution for any member.
+- **Writing participants.** An isolated member may change its own copy, but nothing it changes reaches the item's work: no member implements.
+- **Merging a member's copy back.** A copy is discarded when its attempt ends, and what changed in it is said on the report.
+- **A copy on a folder or scratch workspace.** Only a Git repository and no disk give isolated members copies. A folder step's team must be report-only.
 - **Recursive teams.** A member cannot lead a team or assign work. Only the configured leader assigns, and only to declared roles.
 - Editing a team on the configure screen's step form. Teams are configured through the assistant's draft.

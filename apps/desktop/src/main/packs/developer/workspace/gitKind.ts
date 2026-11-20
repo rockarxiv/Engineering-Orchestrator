@@ -19,6 +19,7 @@ import { createWorktreeWorkspace, forgetIndexesForReleasedWorktrees, releaseStal
 import { git, remoteUrl, statusPorcelain } from "./git.js";
 import { parseRemoteUrl } from "../forge/remote.js";
 import { gitEvidenceCapability } from "./gitEvidence.js";
+import { makeMemberCopy, releaseMemberCopies } from "./memberCopies.js";
 import { referenceCheckoutFor, releaseReferenceCheckouts, releaseStaleReferenceCheckouts } from "./referenceCheckouts.js";
 import { commitNamingCheck } from "./commitNaming.js";
 import { createImplementationVerifier, createVerifiedRange } from "./implementationVerifier.js";
@@ -424,8 +425,21 @@ export function gitWorkspaceKind(options: GitWorkspaceKindOptions): WorkspaceKin
       return url.ok ? (parseRemoteUrl(url.stdout)?.path ?? null) : null;
     },
 
-    /** A team's evidence: the working tree's own tree object (EO-845, `gitEvidence.ts`). */
-    evidence: gitEvidenceCapability(),
+    /**
+     * A team's evidence: the working tree's own tree object (EO-845,
+     * `gitEvidence.ts`); and an isolated member's copy of it, a detached
+     * worktree of that tree made a commit (EO-867, `memberCopies.ts`).
+     */
+    evidence: {
+      ...gitEvidenceCapability(),
+      async copy(item: Item, workspace: PreparedWorkspace, source, request) {
+        if (source.kind !== "git") return { ok: false, problem: "That evidence was not captured from a repository, so EO cannot make a member a copy of it." };
+        const top = await git(["rev-parse", "--show-toplevel"], workspace.cwd);
+        if (!top.ok) return { ok: false, problem: `\`${workspace.cwd}\` is not in a Git repository EO can read, so EO could not make the member a copy of it.` };
+        return makeMemberCopy(top.stdout, item.key, source, request.attemptId);
+      },
+      releaseCopies: (request) => releaseMemberCopies(db, request),
+    },
   };
 }
 

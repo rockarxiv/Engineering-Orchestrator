@@ -8,10 +8,12 @@ import {
   staffingAgents,
   TEAM_ENFORCEMENT_UNAVAILABLE,
   TEAM_PARTICIPANT_ACTION,
+  teamMemberMode,
   teamWaitNote,
   type Agent,
   type AgentEvent,
   type AgentProvider,
+  type AgentProviderStartOptions,
   type ClarificationRequired,
   type Comment,
   type IndependentTeam,
@@ -20,6 +22,7 @@ import {
   type JsonSchemaDocument,
   type LeaderTeam,
   type PipelineStep,
+  type Run,
   type StepTeam,
   type TeamAttemptRow,
   type TeamEvidenceBaseline,
@@ -44,10 +47,10 @@ import {
   type TeamWaitReason,
 } from "@eo/engine";
 import type { Db } from "../db/client.js";
-import { listAgents } from "../db/repos/agentsRepo.js";
+import { getAgent, listAgents } from "../db/repos/agentsRepo.js";
 import { getComment, listCommentsForItem, postComment } from "../db/repos/commentsRepo.js";
 import { getItem } from "../db/repos/itemsRepo.js";
-import { createRunEventBuffer } from "../db/repos/runEventBuffer.js";
+import { createRunEventBuffer, type RunEventBuffer } from "../db/repos/runEventBuffer.js";
 import { createRun, getRun, listActiveParticipantRuns, listRunsForItem, updateRun } from "../db/repos/runsRepo.js";
 import {
   acceptTeamReport,
@@ -55,6 +58,7 @@ import {
   currentTeamSession,
   endTeamAttempt,
   endTeamSession,
+  getTeamAttempt,
   getTeamSession,
   getTeamSessionRecord,
   listTeamAttempts,
@@ -69,7 +73,7 @@ import {
 } from "../db/repos/teamSessionsRepo.js";
 import type { AgentWriteBridge } from "../mcp/writeBridge.js";
 import { postClarificationQuestions, unansweredQuestions } from "../roles/clarificationQuestions.js";
-import { captureTeamEvidence, type TeamEvidence } from "./teamEvidence.js";
+import { captureTeamEvidence, type MemberCopy, type TeamEvidence } from "./teamEvidence.js";
 import { reportOnlyCredential, type TeamParticipantScopes, type ThreadBoundary } from "./teamParticipants.js";
 import { createUsageTally } from "./usageTally.js";
 import type { PreparedWorkspace, WorkspaceKind } from "./workspaceKind.js";
@@ -164,11 +168,51 @@ export type ParticipantRestriction = { kind: "wait"; reason: string } | { kind: 
 /** A report-only provider for one attempt and its working directory, or why there is none (`reportOnlyProviderForAgent`). */
 export type ReportOnlyProviderAnswer = { ok: true; provider: Pick<AgentProvider, "start">; cwd: string } | { ok: false; problem: string };
 
+/**
+ * What an isolated member's turn is built from (EO-867): everything an
+ * ordinary dispatch of its step would know, and where it stands instead.
+ */
+export interface IsolatedTurnRequest {
+  item: Item;
+  step: PipelineStep;
+  agent: Agent;
+  attemptId: string;
+  /** The member's own run, already written. */
+  run: Run;
+  /** Its own copy of the item's workspace, where it works. */
+  cwd: string;
+  /** The item's own workspace, for what an ordinary dispatch is lent from it — the repository index. Null for an item with no disk. */
+  workspace: PreparedWorkspace | null;
+  /** The team framing: what is added after the agent's own instructions, and after the ordinary context. */
+  framing: { instructions: string; context: string };
+  /** Where the member's view of the thread ends: its team's other reports are not part of it. */
+  boundary: ThreadBoundary;
+}
+
+/**
+ * An isolated member's turn as an ordinary dispatch of its step would open
+ * it, standing in its copy (EO-867): the agent's ordinary provider and the
+ * options an ordinary dispatch starts it with — but its own working
+ * directory, its team framing, a thread its team's reports are kept out
+ * of, and an `eo` credential that posts nothing on the item. `observe` is
+ * handed each event, for what the host records of any run's turn, and
+ * answers true for one it recorded itself.
+ */
+export type IsolatedTurnAnswer =
+  | { ok: true; provider: Pick<AgentProvider, "start">; options: Omit<AgentProviderStartOptions, "signal" | "outputSchema">; observe?: (event: AgentEvent, buffer: RunEventBuffer) => boolean; done?: () => void }
+  | { ok: false; problem: string };
+
 export interface TeamSupervisorDeps {
   db: Db;
   now: () => number;
   /** A report-only provider built for one attempt (`reportOnlyProviderForAgent`), or why there is none. */
   reportOnlyProvider: (agent: Agent, attemptId: string) => ReportOnlyProviderAnswer;
+  /**
+   * An isolated member's turn, built by the host through the ordinary
+   * dispatch path (EO-867), or why there is none. Absent, an isolated
+   * team's members are refused, saying so.
+   */
+  isolatedTurn?: (request: IsolatedTurnRequest) => Promise<IsolatedTurnAnswer>;
   scopes: TeamParticipantScopes;
   writeBridge: () => Pick<AgentWriteBridge, "tokenFor"> | null;
   /** How many participant turns this machine runs at once, across every team. */
@@ -236,6 +280,8 @@ interface LiveParticipant {
   runId: string | null;
   allocation: number | null;
   spent: number;
+  /** Whether it is an isolated member (EO-867), whose `eo` writes are answered for its run. */
+  isolated: boolean;
   done: Promise<void>;
 }
 
@@ -255,7 +301,8 @@ interface TurnSpec {
   instructions: string;
   context: string;
   outputSchema: JsonSchema;
-  take: (answer: unknown, runId: Uuid, at: number) => TakeResult;
+  /** `appendix`: the line an isolated member's report carries about its copy, or null. */
+  take: (answer: unknown, runId: Uuid, at: number, appendix: string | null) => TakeResult;
 }
 
 export interface TeamSupervisor {
@@ -267,6 +314,10 @@ export interface TeamSupervisor {
   participantAgentIds(): string[];
   /** How many participant turns are running now. */
   liveCount(): number;
+  /** The isolated member's turn running now on this attempt (EO-867) — its run, agent and item — or null. */
+  liveMember(attemptId: string): { runId: string; agentId: string; itemId: string } | null;
+  /** Whether a turn of this process is working this attempt now. */
+  isLive(attemptId: string): boolean;
   /**
    * Whether an item's run a restart interrupted is a team's own (EO-846):
    * one whose item is still on the step entry of a session on its step
@@ -331,6 +382,19 @@ const REPORT_ONLY =
 const ASKING =
   "If only the person can settle something you need, ask them instead of answering: your turn ends, EO posts your questions, and you are started again with their answer. A permission or tool you do not have is something to ask for, never something you can give yourself.";
 
+/**
+ * What an isolated member is told of where it stands (EO-867): the
+ * sentence that replaces `REPORT_ONLY` for a member that works as its
+ * role's agent does.
+ */
+const ISOLATED =
+  "You work as you would on this step alone, with everything you are given for it, in a working directory that is a copy of the item's workspace EO made for you alone. Change, build and test whatever you need there. Nothing you do in it reaches the item's work, its branch or another member's copy, and EO removes it when your turn ends, saying on your report what you changed; do not push from it. Where you have the repository index, it describes the same files as they stand in the item's own workspace: read and change them in your copy. You post nothing on the item yourself — EO posts your answer as your report, attributed to you — and you are not shown the other members' reports.";
+
+/** Whether a team's members are isolated (EO-867). */
+function isolatedTeam(team: StepTeam): boolean {
+  return teamMemberMode(team) === "isolated";
+}
+
 function participantInstructions(agent: Agent, step: PipelineStep, team: StepTeam): string {
   const how =
     team.coordination === "independent"
@@ -340,6 +404,11 @@ function participantInstructions(agent: Agent, step: PipelineStep, team: StepTea
     team.outcomes.length === 0
       ? "Answer with your report: what you looked at, what you found, and why. If you could not establish something, say so in the report rather than guessing."
       : "Answer with one of the outcomes your assignment declares and your report: what you looked at, what you found, and why it supports that outcome. If you could not establish something, say so in the report rather than guessing.";
+  // An isolated member's own instructions come first, as on any dispatch
+  // of its agent; this is the team framing after them (EO-867).
+  if (isolatedTeam(team)) {
+    return ["## Your part in a team", "", `You are ${agent.name}, one member of a team EO runs on the step "${step.name}". ${how}`, "", ISOLATED, "", answer, "", ASKING].join("\n");
+  }
   return [
     `You are ${agent.name}, one participant of a team EO runs on the step "${step.name}". ${how}`,
     "",
@@ -352,20 +421,64 @@ function participantInstructions(agent: Agent, step: PipelineStep, team: StepTea
   ].join("\n");
 }
 
-function participantContext(item: Item, outcomes: readonly TeamOutcome[], key: string, instructions: string, extra: readonly string[]): string {
+function participantContext(item: Item, outcomes: readonly TeamOutcome[], key: string, instructions: string, extra: readonly string[], isolated = false): string {
+  // An isolated member's context is its step's ordinary one, the item
+  // included, with this after it (EO-867).
+  const head = isolated ? [] : [`# ${item.key} — ${item.title}`, "", item.body ?? "", ""];
   return [
-    `# ${item.key} — ${item.title}`,
-    "",
-    item.body ?? "",
-    "",
+    ...head,
     `## Your assignment: ${key}`,
     "",
     instructions,
     ...(outcomes.length === 0 ? [] : ["", "## The outcomes you may report", "", ...outcomeLines(outcomes)]),
     ...(extra.length === 0 ? [] : ["", ...extra]),
     "",
-    "The item's thread, as far as it was when your assignment began, is what `item_context` answers. Other participants' reports are not part of it.",
+    isolated
+      ? "The item's thread is shown to you as far as it was when your team began. Other members' reports are not part of it, here or through EO's tools."
+      : "The item's thread, as far as it was when your assignment began, is what `item_context` answers. Other participants' reports are not part of it.",
   ].join("\n");
+}
+
+/**
+ * Why an isolated team cannot run where its step works (EO-867): the
+ * workspace kind makes no copy for a member, and EO never runs one in the
+ * item's own workspace in its place.
+ */
+export function isolatedCopyRefusal(slug: string | null): string {
+  return slug === null
+    ? "This team's members are isolated, and the step has no workspace EO can copy for each of them, so EO started nobody."
+    : `This team's members are isolated, and its step works in a "${slug}" workspace, which cannot give each member a copy of its own, so EO started nobody rather than run a member in the item's own workspace. Make the team's members report-only, or have the step work in a Git repository or on no disk.`;
+}
+
+/** What EO says of a member's changed copy where the member left no report to carry it (EO-867). */
+export function memberCopyNote(key: string, agentName: string, changed: readonly string[]): string {
+  return `**${key}** (${agentName}) changed its own copy of the workspace, which EO has removed and none of which reached the item's work: ${changed.join("; ")}.`;
+}
+
+/**
+ * Says on its item what a member had changed in a copy a sweep is about to
+ * remove (EO-867) — one its turn did not remove itself, after a crash or
+ * a stop. Never throws: a copy whose attempt is gone has nobody to tell,
+ * and that goes to the log.
+ */
+export function reportMemberCopy(db: Db, attemptId: string, changed: readonly string[]): void {
+  try {
+    const attempt = getTeamAttempt(db, attemptId);
+    const session = attempt === undefined ? undefined : getTeamSession(db, attempt.sessionId);
+    if (attempt === undefined || session === undefined || getItem(db, session.itemId as Uuid) === undefined) {
+      console.log(`[eo] a team member's copy for attempt ${attemptId} was changed before EO removed it: ${changed.join("; ")}`);
+      return;
+    }
+    const agentName = attempt.agentId === null ? attempt.role : (getAgent(db, attempt.agentId as Uuid)?.name ?? attempt.role);
+    postComment(db, { itemId: session.itemId as Uuid, ...(attempt.runId === null ? {} : { runId: attempt.runId as Uuid }), author: { type: "engine" }, kind: "note", body: memberCopyNote(attempt.assignmentKey, agentName, changed) });
+  } catch (error) {
+    console.error(`[eo] could not say what a team member changed in its copy (attempt ${attemptId}): ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+/** The line a member's report carries where it changed its copy (EO-867), as a reference checkout's removal says it. */
+function copyChangedLine(changed: readonly string[]): string {
+  return `**In its own copy of the workspace**, which EO has removed and none of which reached the item's work: ${changed.join("; ")}.`;
 }
 
 function abortError(): Error {
@@ -519,15 +632,70 @@ export function createTeamSupervisor(deps: TeamSupervisorDeps): TeamSupervisor {
    * One turn on one attempt, to its end: an answer taken, a question
    * asked, a failure, or EO stopping it. Never throws.
    */
-  async function runTurn(input: { item: Item; step: PipelineStep; attempt: TeamAttemptRow; agent: Agent; evidence: TeamEvidence; boundary: ThreadBoundary; entry: LiveParticipant; turn: TurnSpec }): Promise<void> {
+  async function runTurn(input: {
+    item: Item;
+    step: PipelineStep;
+    attempt: TeamAttemptRow;
+    agent: Agent;
+    evidence: TeamEvidence;
+    boundary: ThreadBoundary;
+    entry: LiveParticipant;
+    turn: TurnSpec;
+    /** Where the step works, for an isolated member's copy; null for an item with no disk. */
+    workspace: TeamTurnInput["workspace"];
+  }): Promise<void> {
     const { item, attempt, agent, entry } = input;
-    const built = deps.reportOnlyProvider(agent, attempt.id);
-    if (!built.ok) {
-      // Kept recognisable (EO-849): a person is told the agent could not be
-      // held to report-only here, not that it tried and failed.
-      endTeamAttempt(db, attempt.id, { status: "failed", error: `${TEAM_ENFORCEMENT_UNAVAILABLE}${built.problem}` }, deps.now());
-      return;
+    // An isolated member works in a copy of its own (EO-867), made before
+    // its run and removed however its turn ends; never the item's own
+    // workspace in its place.
+    let copy: MemberCopy | null = null;
+    let cwd: string;
+    let reportOnly: Pick<AgentProvider, "start"> | null = null;
+    if (entry.isolated) {
+      const made = await memberCopyFor(input.workspace, item, input.evidence, attempt.id);
+      if (!made.ok) {
+        endTeamAttempt(db, attempt.id, { status: "failed", error: made.problem }, deps.now());
+        return;
+      }
+      copy = made.copy;
+      cwd = copy.cwd;
+    } else {
+      const built = deps.reportOnlyProvider(agent, attempt.id);
+      if (!built.ok) {
+        // Kept recognisable (EO-849): a person is told the agent could not be
+        // held to report-only here, not that it tried and failed.
+        endTeamAttempt(db, attempt.id, { status: "failed", error: `${TEAM_ENFORCEMENT_UNAVAILABLE}${built.problem}` }, deps.now());
+        return;
+      }
+      reportOnly = built.provider;
+      cwd = built.cwd;
     }
+    try {
+      await turnIn(input, cwd, reportOnly, copy);
+    } finally {
+      await copy?.remove();
+    }
+  }
+
+  /** An isolated member's copy of the captured workspace, or why EO cannot make one — never the item's own workspace instead. */
+  async function memberCopyFor(workspace: TeamTurnInput["workspace"], item: Item, evidence: TeamEvidence, attemptId: string): Promise<{ ok: true; copy: MemberCopy } | { ok: false; problem: string }> {
+    const capability = workspace?.kind.evidence?.copy;
+    if (workspace === null || capability === undefined) return { ok: false, problem: isolatedCopyRefusal(workspace?.kind.slug ?? null) };
+    try {
+      const made = await capability.call(workspace.kind.evidence, item, workspace.prepared, evidence.ref.source, { attemptId });
+      return made.ok ? made : { ok: false, problem: `EO could not give it a copy of the item's workspace to work in, so it did not start: ${made.problem}` };
+    } catch (error) {
+      return { ok: false, problem: `EO could not give it a copy of the item's workspace to work in, so it did not start: ${error instanceof Error ? error.message : String(error)}` };
+    }
+  }
+
+  async function turnIn(
+    input: Parameters<typeof runTurn>[0],
+    cwd: string,
+    reportOnly: Pick<AgentProvider, "start"> | null,
+    copy: MemberCopy | null,
+  ): Promise<void> {
+    const { item, attempt, agent, entry } = input;
     const run = createRun(db, {
       itemId: item.id,
       agentId: agent.id as Uuid,
@@ -535,7 +703,7 @@ export function createTeamSupervisor(deps: TeamSupervisorDeps): TeamSupervisor {
       stepId: input.step.id,
       status: "running",
       provider: agent.provider,
-      cwd: built.cwd,
+      cwd,
     });
     entry.runId = run.id;
     updateRun(db, run.id, { startedAt: deps.now() });
@@ -546,22 +714,48 @@ export function createTeamSupervisor(deps: TeamSupervisorDeps): TeamSupervisor {
       return;
     }
     deps.onChange();
-    const release = deps.scopes.register({ attemptId: attempt.id, itemId: item.id, evidence: input.evidence, thread: input.boundary });
+    // An isolated member's turn is the host's to build, as an ordinary
+    // dispatch of the step builds one (EO-867).
+    let isolated: Extract<IsolatedTurnAnswer, { ok: true }> | null = null;
+    if (copy !== null) {
+      let built: IsolatedTurnAnswer;
+      try {
+        built =
+          deps.isolatedTurn === undefined
+            ? { ok: false, problem: `EO did not start ${agent.name} as an isolated team member, because this desktop has no way to build its turn.` }
+            : await deps.isolatedTurn({ item, step: input.step, agent, attemptId: attempt.id, run: getRun(db, run.id) ?? run, cwd, workspace: input.workspace?.prepared ?? null, framing: { instructions: input.turn.instructions, context: input.turn.context }, boundary: input.boundary });
+      } catch (error) {
+        built = { ok: false, problem: `EO could not build its turn: ${error instanceof Error ? error.message : String(error)}` };
+      }
+      if (!built.ok) {
+        updateRun(db, run.id, { status: "failed", error: built.problem, endedAt: deps.now() });
+        endTeamAttempt(db, attempt.id, { status: "failed", error: built.problem }, deps.now());
+        return;
+      }
+      isolated = built;
+    }
+    const release = reportOnly === null ? () => undefined : deps.scopes.register({ attemptId: attempt.id, itemId: item.id, evidence: input.evidence, thread: input.boundary });
     const buffer = createRunEventBuffer(db);
     const tally = createUsageTally();
     let answer: unknown = undefined;
     let failure: string | null = null;
     try {
+      // Stopped while its turn was being built: nothing is started.
+      if (entry.controller.signal.aborted && entry.stoppedBecause !== null) throw abortError();
       const bridge = deps.writeBridge();
-      const stream = built.provider.start({
-        instructions: input.turn.instructions,
-        context: input.turn.context,
-        cwd: built.cwd,
-        outputSchema: input.turn.outputSchema,
-        ...(entry.allocation === null ? {} : { budgetCents: entry.allocation }),
-        ...(bridge === null ? {} : { writeBridge: reportOnlyCredential(bridge, item.id, attempt.id) }),
-        signal: entry.controller.signal,
-      });
+      const budget = entry.allocation === null ? {} : { budgetCents: entry.allocation };
+      const stream =
+        isolated !== null
+          ? isolated.provider.start({ ...isolated.options, outputSchema: input.turn.outputSchema, ...budget, signal: entry.controller.signal })
+          : reportOnly!.start({
+              instructions: input.turn.instructions,
+              context: input.turn.context,
+              cwd,
+              outputSchema: input.turn.outputSchema,
+              ...budget,
+              ...(bridge === null ? {} : { writeBridge: reportOnlyCredential(bridge, item.id, attempt.id) }),
+              signal: entry.controller.signal,
+            });
       // Read to its end even once stopped: a backend reports what it spent
       // as it winds down, and every cent reported is kept. A stopped turn's
       // answer is never taken, and a backend that does not end its turn
@@ -584,6 +778,9 @@ export function createTeamSupervisor(deps: TeamSupervisorDeps): TeamSupervisor {
         if (step.done === true) break;
         const event = step.value;
         const stopped = entry.controller.signal.aborted;
+        // What the host records of an isolated member's event as it would
+        // of any run's — skill usage — is not recorded again as it came.
+        if (isolated?.observe?.(event, buffer) === true) continue;
         if (event.type !== "output_delta" && event.type !== "heartbeat") buffer.append(run.id, event.type, event);
         if (event.type === "thread_started") updateRun(db, run.id, { threadId: event.threadId });
         else if (event.type === "usage") {
@@ -607,21 +804,36 @@ export function createTeamSupervisor(deps: TeamSupervisorDeps): TeamSupervisor {
       if (entry.stoppedBecause === null && failure === null) failure = error instanceof Error ? error.message : String(error);
     } finally {
       release();
+      isolated?.done?.();
       buffer.dispose();
     }
+
+    // What an isolated member did in its copy, said before the copy goes
+    // (EO-867): on its report where it has one, else as a note.
+    const changed = copy === null ? [] : await copy.changes().catch((error: unknown) => [`what was done in it could not be read (${error instanceof Error ? error.message : String(error)})`]);
+    const appendix = changed.length === 0 ? null : copyChangedLine(changed);
+    const noteCopy = () => {
+      if (appendix !== null && getItem(db, item.id) !== undefined) {
+        postComment(db, { itemId: item.id, runId: run.id, author: { type: "engine" }, kind: "note", body: memberCopyNote(attempt.assignmentKey, agent.name, changed) });
+        deps.onChange();
+      }
+    };
 
     const at = deps.now();
     if (entry.stoppedBecause !== null) {
       updateRun(db, run.id, { status: "cancelled", error: entry.stoppedBecause, endedAt: at });
       endTeamAttempt(db, attempt.id, { status: "cancelled", error: entry.stoppedBecause }, at);
+      noteCopy();
       return;
     }
-    const taken: TakeResult = failure !== null ? { kind: "failed", error: failure } : answer === undefined ? { kind: "failed", error: "Its turn ended without an answer." } : input.turn.take(answer, run.id, at);
+    const taken: TakeResult =
+      failure !== null ? { kind: "failed", error: failure } : answer === undefined ? { kind: "failed", error: "Its turn ended without an answer." } : input.turn.take(answer, run.id, at, appendix);
     switch (taken.kind) {
       case "accepted":
         updateRun(db, run.id, { status: "succeeded", result: taken.result as Record<string, unknown>, endedAt: at });
         return;
       case "asked": {
+        noteCopy();
         // Only while its session can still take anything: a late question
         // is no more the team's than a late report.
         const session = getTeamSession(db, attempt.sessionId);
@@ -642,24 +854,27 @@ export function createTeamSupervisor(deps: TeamSupervisorDeps): TeamSupervisor {
       case "failed":
         updateRun(db, run.id, { status: "failed", error: taken.error, endedAt: at });
         endTeamAttempt(db, attempt.id, { status: "failed", error: taken.error }, at);
+        noteCopy();
         return;
       case "late":
         updateRun(db, run.id, { status: "cancelled", error: taken.problem, endedAt: at });
         endTeamAttempt(db, attempt.id, { status: "cancelled", error: taken.problem }, at);
+        noteCopy();
         return;
     }
   }
 
   /** A participant's answer taken as its report: posted, attributed, once — or its question, or why it is neither. */
   function takeReport(attemptId: string, outcomes: readonly TeamOutcome[], onDelegation?: (error: string) => void): TurnSpec["take"] {
-    return (answer, _runId, at) => {
+    return (answer, _runId, at, appendix) => {
       const read = readParticipantAnswer(outcomes, answer);
       if (read.kind === "asked") return { kind: "asked", asked: read.asked };
       if (read.kind === "invalid") {
         if (read.delegation) onDelegation?.(read.error);
         return { kind: "failed", error: read.error };
       }
-      const accepted = acceptTeamReport(db, { attemptId, outcome: read.outcome, report: read.report, now: at });
+      const report = appendix === null ? read.report : `${read.report}\n\n${appendix}`;
+      const accepted = acceptTeamReport(db, { attemptId, outcome: read.outcome, report, now: at });
       return accepted.ok ? { kind: "accepted", result: { outcome: read.outcome, report: read.report } } : { kind: "late", problem: accepted.problem };
     };
   }
@@ -675,6 +890,13 @@ export function createTeamSupervisor(deps: TeamSupervisorDeps): TeamSupervisor {
 
       if (team.coordination === "leader" && (input.answer === undefined || input.answer.document === null)) {
         yield { type: "error", message: `The leader of the team on "${step.name}" answers "${step.entryAction ?? ""}", and nothing defines that action's answer, so EO started nobody.`, retryable: false };
+        return;
+      }
+
+      // An isolated team needs a copy for each member (EO-867): refused,
+      // with the kind named, where the step's workspace makes none.
+      if (isolatedTeam(team) && (input.workspace === null || input.workspace.kind.evidence?.copy === undefined)) {
+        yield { type: "error", message: isolatedCopyRefusal(input.workspace?.kind.slug ?? null), retryable: false };
         return;
       }
 
@@ -880,10 +1102,10 @@ export function createTeamSupervisor(deps: TeamSupervisorDeps): TeamSupervisor {
         // The session ended under it: the next pass says so.
         if (!made.ok) return "skipped";
         const controller = new AbortController();
-        const entry: LiveParticipant = { attemptId: made.attempt.id, itemId: item.id, sessionId, agentId: agent.id, controller, stoppedBecause: null, runId: null, allocation, spent: 0, done: Promise.resolve() };
+        const entry: LiveParticipant = { attemptId: made.attempt.id, itemId: item.id, sessionId, agentId: agent.id, controller, stoppedBecause: null, runId: null, allocation, spent: 0, isolated: isolatedTeam(sessionTeam), done: Promise.resolve() };
         live.set(made.attempt.id, entry);
         mine.add(made.attempt.id);
-        entry.done = runTurn({ item, step, attempt: made.attempt, agent, evidence: current, boundary: launch.boundary(made.attempt), entry, turn: launch.turn(made.attempt, agent) })
+        entry.done = runTurn({ item, step, attempt: made.attempt, agent, evidence: current, boundary: launch.boundary(made.attempt), entry, turn: launch.turn(made.attempt, agent), workspace: input.workspace })
           // Whatever went wrong is the attempt's failure, counted
           // against its retries: an attempt left queued would be read
           // as EO stopping it, and replaced for ever.
@@ -1064,7 +1286,7 @@ export function createTeamSupervisor(deps: TeamSupervisorDeps): TeamSupervisor {
             boundary: () => ({ visibleThrough, exposedCommentIds: exchange.ids, hiddenCommentIds: sessionReportIds(sessionId) }),
             turn: (attempt, agent) => ({
               instructions: participantInstructions(agent, step, teamNow),
-              context: participantContext(itemNow(), teamNow.outcomes, participant.key, participant.instructions, exchange.lines),
+              context: participantContext(itemNow(), teamNow.outcomes, participant.key, participant.instructions, exchange.lines, isolatedTeam(teamNow)),
               outputSchema: participantTurnSchema(teamNow.outcomes),
               take: takeReport(attempt.id, teamNow.outcomes),
             }),
@@ -1151,7 +1373,7 @@ export function createTeamSupervisor(deps: TeamSupervisorDeps): TeamSupervisor {
           }),
           turn: (attempt, agent) => ({
             instructions: participantInstructions(agent, step, teamNow),
-            context: participantContext(itemNow(), teamNow.outcomes, assignment.key, assignment.instructions, extra),
+            context: participantContext(itemNow(), teamNow.outcomes, assignment.key, assignment.instructions, extra, isolatedTeam(teamNow)),
             outputSchema: participantTurnSchema(teamNow.outcomes),
             // A contributor that tries to hand work on is refused, and the
             // refusal is recorded where the person and the leader read it.
@@ -1202,7 +1424,7 @@ export function createTeamSupervisor(deps: TeamSupervisorDeps): TeamSupervisor {
        * what EO refused goes with them.
        */
       function takeLeader(teamNow: LeaderTeam, attempt: TeamAttemptRow): TurnSpec["take"] {
-        return (answer, runId, at) => {
+        return (answer, runId, at, appendix) => {
           const read = readLeaderAnswer(answer);
           if (read.kind === "invalid") return { kind: "failed", error: read.error };
           if (read.kind === "asked") return { kind: "asked", asked: read.asked };
@@ -1274,7 +1496,7 @@ export function createTeamSupervisor(deps: TeamSupervisorDeps): TeamSupervisor {
             if (!verdict.accepted) refusal = `EO did not accept the leader's final answer:\n\n${problems.map((problem) => `- ${problem}`).join("\n")}`;
           }
           updateRun(db, runId, { result: record as unknown as Record<string, unknown> });
-          const accepted = acceptTeamReport(db, { attemptId: attempt.id, outcome: null, report: words, now: at });
+          const accepted = acceptTeamReport(db, { attemptId: attempt.id, outcome: null, report: appendix === null ? words : `${words}\n\n${appendix}`, now: at });
           if (!accepted.ok) return { kind: "late", problem: accepted.problem };
           if (refusal !== null) note(item, parentRunId, refusal);
           return { kind: "accepted", result: record };
@@ -1310,10 +1532,14 @@ export function createTeamSupervisor(deps: TeamSupervisorDeps): TeamSupervisor {
     }
 
     function leaderInstructions(agent: Agent, stepNow: PipelineStep, teamNow: LeaderTeam): string {
+      const isolated = isolatedTeam(teamNow);
       return [
+        // An isolated leader's own instructions come first, as on any
+        // dispatch of its agent; this is the framing after them (EO-867).
+        ...(isolated ? ["## Your part in a team", ""] : []),
         `You are ${agent.name}, the leader of a team EO runs on the step "${stepNow.name}". You plan the work, assign focused pieces of it to agents of the roles the team permits, read their reports, and answer the step yourself.`,
         "",
-        REPORT_ONLY,
+        isolated ? ISOLATED.replace(" and you are not shown the other members' reports.", " and you read the members' reports below, as EO gives them to you.") : REPORT_ONLY,
         "",
         "You act only through your answer, and every answer ends your turn:",
         "- **assign** a round of work: each assignment a key, a permitted role, focused instructions and whether you cannot answer without it. EO runs what it accepts and starts your next turn with the reports. Name an earlier key again to ask that assignment to follow up; its earlier report is then superseded. Participants cannot assign work on.",
@@ -1321,7 +1547,7 @@ export function createTeamSupervisor(deps: TeamSupervisorDeps): TeamSupervisor {
         `- or ${ASKING.charAt(0).toLowerCase()}${ASKING.slice(1)}`,
         "",
         `Limits: at most ${teamNow.limits.maxRounds} round${teamNow.limits.maxRounds === 1 ? "" : "s"} of assignments, ${teamNow.limits.maxParticipants} participants in all, ${teamNow.limits.maxParallel} at a time. EO refuses what goes past them and tells you why.`,
-        ...(agent.instructions.trim() === "" ? [] : ["", "## Your standing instructions", "", agent.instructions.trim()]),
+        ...(isolated || agent.instructions.trim() === "" ? [] : ["", "## Your standing instructions", "", agent.instructions.trim()]),
       ].join("\n");
     }
 
@@ -1346,10 +1572,9 @@ export function createTeamSupervisor(deps: TeamSupervisorDeps): TeamSupervisor {
       };
       const now = itemNow();
       const lines: string[] = [
-        `# ${now.key} — ${now.title}`,
-        "",
-        now.body ?? "",
-        "",
+        // An isolated leader's context is the step's ordinary one, the item
+        // included, with this after it (EO-867).
+        ...(isolatedTeam(teamNow) ? [] : [`# ${now.key} — ${now.title}`, "", now.body ?? "", ""]),
         "## What you lead",
         "",
         `You answer the step's action, \`${step.entryAction ?? ""}\`, whose results are ${input.answer!.results.map((key) => `\`${key}\``).join(", ")}.`,
@@ -1464,6 +1689,11 @@ export function createTeamSupervisor(deps: TeamSupervisorDeps): TeamSupervisor {
     isWaitingParent: (runId) => parents.has(runId),
     participantAgentIds: () => [...live.values()].map((one) => one.agentId),
     liveCount: () => live.size,
+    liveMember: (attemptId) => {
+      const one = live.get(attemptId);
+      return one === undefined || !one.isolated || one.runId === null ? null : { runId: one.runId, agentId: one.agentId, itemId: one.itemId };
+    },
+    isLive: (attemptId) => live.has(attemptId),
     reconcileOrphans,
     ownsInterruptedRun: (run) => {
       if (run.stepId === null) return false;

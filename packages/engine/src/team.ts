@@ -1,4 +1,4 @@
-import { actionFactsFor, deterministicAnswerProblem, teamConfigProblems, teamResultKeys, teamRoles } from "@eo/core";
+import { actionFactsFor, deterministicAnswerProblem, teamConfigProblems, teamMemberMode, teamResultKeys, teamRoles } from "@eo/core";
 import type { PipelineStep, RegistryFacts } from "@eo/core";
 
 /** One problem with a step's team, on that step. */
@@ -28,14 +28,27 @@ export interface TeamProblem {
  * - a team's own time limit can only be tighter than the run timeout;
  * - every agent dispatch could staff one of its roles with must be one EO
  *   can hold to report-only (EO-848, `reportOnlyRoleProblems`), so a team
- *   that would be refused at its first participant is refused at publish.
+ *   that would be refused at its first participant is refused at publish —
+ *   for a report-only team only: an isolated team's member runs as its
+ *   role's agent does on an ordinary dispatch (EO-867), so any agent that
+ *   can run the step alone can be one;
+ * - an isolated team's step must work where each member can be given a
+ *   copy of its own (`isolatedCopyProblems`, by step: the sentence naming
+ *   the workspace kind that cannot make one).
  *
  * Both kinds run (EO-846, EO-847), so neither carries a warning that it
  * would run as one agent.
  */
 export function teamProblems(
   steps: readonly Pick<PipelineStep, "id" | "name" | "type" | "ownerRole" | "entryAction" | "team">[],
-  context: { registry: RegistryFacts; staffedRoles: readonly string[]; runTimeoutMs: number; reportOnlyRoleProblems?: Readonly<Record<string, string>> },
+  context: {
+    registry: RegistryFacts;
+    staffedRoles: readonly string[];
+    runTimeoutMs: number;
+    reportOnlyRoleProblems?: Readonly<Record<string, string>>;
+    /** Why an isolated team on this step could not give its members copies of their own, by step id (EO-867). */
+    isolatedCopyProblems?: Readonly<Record<string, string>>;
+  },
 ): TeamProblem[] {
   const staffed = new Set(context.staffedRoles);
   const problems: TeamProblem[] = [];
@@ -49,12 +62,17 @@ export function teamProblems(
       continue;
     }
     for (const message of teamConfigProblems(team)) error(`The team on "${step.name}": ${message}`);
+    const isolated = teamMemberMode(team) === "isolated";
     for (const role of new Set(teamRoles(team))) {
       if (!staffed.has(role)) error(`The team on "${step.name}" needs a "${role}" agent, and this project has none enabled.`);
-      else {
+      else if (!isolated) {
         const why = context.reportOnlyRoleProblems?.[role];
         if (why !== undefined) error(`The team on "${step.name}" could be staffed by a "${role}" agent EO cannot hold to report-only: ${why}`);
       }
+    }
+    if (isolated) {
+      const why = context.isolatedCopyProblems?.[step.id];
+      if (why !== undefined) error(`The team on "${step.name}" has isolated members, ${why}`);
     }
     if (team.limits.timeoutMs !== undefined && team.limits.timeoutMs > context.runTimeoutMs) {
       error(`The team on "${step.name}" allows ${team.limits.timeoutMs} ms, longer than the ${context.runTimeoutMs} ms any run may take: a team's limit can only be tighter.`);
