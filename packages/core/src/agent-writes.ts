@@ -92,6 +92,8 @@ export const AgentWriteBridgeAddressSchema = z.object({
    */
   teamMember: z
     .object({
+      /** The item the boundary is on: another item's thread is read as it is. */
+      itemId: z.string(),
       visibleThrough: z.number(),
       exposed: z.array(z.string()),
       hidden: z.array(z.string()),

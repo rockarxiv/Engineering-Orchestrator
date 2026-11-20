@@ -135,7 +135,7 @@ export function memberWrites(memoryNote: boolean): AgentWriteTool[] {
 export function memberCredential(bridge: Pick<AgentWriteBridge, "tokenFor">, itemId: string, attemptId: string, writes: readonly AgentWriteTool[], boundary: ThreadBoundary): AgentWriteBridgeAddress {
   return {
     ...bridge.tokenFor(itemId, writes, `${MEMBER_SCOPE_PREFIX}${attemptId}`),
-    teamMember: { visibleThrough: boundary.visibleThrough, exposed: [...boundary.exposedCommentIds], hidden: [...(boundary.hiddenCommentIds ?? [])] },
+    teamMember: { itemId, visibleThrough: boundary.visibleThrough, exposed: [...boundary.exposedCommentIds], hidden: [...(boundary.hiddenCommentIds ?? [])] },
   };
 }
 

@@ -360,7 +360,7 @@ import { archiveReachOf, archiveUnusedSkills } from "../skills/archival.js";
 import { currentWatch, markCheckInFlight, ownerMention, recordQuietCheck, waitingLine, watchArrival, watchHold, watchRoundTrips, WATCH_ROUTED_REASON, WATCH_VERIFICATION_FAILED_REASON } from "./watches.js";
 import { agentMentionChain } from "./escalation.js";
 import { answerTeamCall, createTeamParticipantScopes, memberAttemptOf, memberCredential, memberWrites, withinBoundary, type TeamParticipantScopes } from "./teamParticipants.js";
-import { createTeamSupervisor, MACHINE_PARTICIPANT_LIMIT, memberCopyNote, TEAM_RETRY_WORDS, type IsolatedTurnAnswer, type IsolatedTurnRequest, type ReportOnlyProviderAnswer, type TeamAnswerContract } from "./teamSupervisor.js";
+import { createTeamSupervisor, MACHINE_PARTICIPANT_LIMIT, reportMemberCopy, TEAM_RETRY_WORDS, type IsolatedTurnAnswer, type IsolatedTurnRequest, type ReportOnlyProviderAnswer, type TeamAnswerContract } from "./teamSupervisor.js";
 import { currentTeamSession, endTeamSession, getTeamSession } from "../db/repos/teamSessionsRepo.js";
 import { teamNotHereProblem, type TeamControlSite } from "./teamSessionView.js";
 
@@ -4909,6 +4909,10 @@ export function createRunSupervisor(
       // the stale sweep does, so a kind is asked once.
       const lending = new Map<WorkspaceKindSlug, WorkspaceKind>([...coreKinds, ...kinds]);
       for (const kind of lending.values()) await kind.releaseReferenceCheckouts?.(item);
+      // And any isolated team member's copy its turn left (EO-867).
+      for (const kind of lending.values()) {
+        await kind.evidence?.releaseCopies?.({ item, keep: (attemptId) => teams.isLive(attemptId), report: (attemptId, changed) => reportMemberCopy(db, attemptId, changed) });
+      }
     } catch (error) {
       postComment(db, {
         itemId: item.id,
@@ -10787,6 +10791,11 @@ export function createRunSupervisor(
     // else would ever come back for.
     const sweeping = new Map<WorkspaceKindSlug, WorkspaceKind>([...coreKinds, ...kinds]);
     for (const kind of sweeping.values()) await kind.release({ what: "stale", hasActiveRun });
+    // And isolated team members' copies no turn of this process works in
+    // (EO-867): a restart's, saying on the item what was changed in each.
+    for (const kind of sweeping.values()) {
+      await kind.evidence?.releaseCopies?.({ keep: (attemptId) => teams.isLive(attemptId), report: (attemptId, changed) => reportMemberCopy(db, attemptId, changed) }).catch(() => []);
+    }
   }
 
   /** Does any run for this item key still hold its worktree? Drives stale-worktree cleanup. */

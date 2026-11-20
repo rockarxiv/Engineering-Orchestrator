@@ -47,7 +47,7 @@ import {
   type TeamWaitReason,
 } from "@eo/engine";
 import type { Db } from "../db/client.js";
-import { listAgents } from "../db/repos/agentsRepo.js";
+import { getAgent, listAgents } from "../db/repos/agentsRepo.js";
 import { getComment, listCommentsForItem, postComment } from "../db/repos/commentsRepo.js";
 import { getItem } from "../db/repos/itemsRepo.js";
 import { createRunEventBuffer, type RunEventBuffer } from "../db/repos/runEventBuffer.js";
@@ -58,6 +58,7 @@ import {
   currentTeamSession,
   endTeamAttempt,
   endTeamSession,
+  getTeamAttempt,
   getTeamSession,
   getTeamSessionRecord,
   listTeamAttempts,
@@ -452,6 +453,27 @@ export function isolatedCopyRefusal(slug: string | null): string {
 /** What EO says of a member's changed copy where the member left no report to carry it (EO-867). */
 export function memberCopyNote(key: string, agentName: string, changed: readonly string[]): string {
   return `**${key}** (${agentName}) changed its own copy of the workspace, which EO has removed and none of which reached the item's work: ${changed.join("; ")}.`;
+}
+
+/**
+ * Says on its item what a member had changed in a copy a sweep is about to
+ * remove (EO-867) — one its turn did not remove itself, after a crash or
+ * a stop. Never throws: a copy whose attempt is gone has nobody to tell,
+ * and that goes to the log.
+ */
+export function reportMemberCopy(db: Db, attemptId: string, changed: readonly string[]): void {
+  try {
+    const attempt = getTeamAttempt(db, attemptId);
+    const session = attempt === undefined ? undefined : getTeamSession(db, attempt.sessionId);
+    if (attempt === undefined || session === undefined || getItem(db, session.itemId as Uuid) === undefined) {
+      console.log(`[eo] a team member's copy for attempt ${attemptId} was changed before EO removed it: ${changed.join("; ")}`);
+      return;
+    }
+    const agentName = attempt.agentId === null ? attempt.role : (getAgent(db, attempt.agentId as Uuid)?.name ?? attempt.role);
+    postComment(db, { itemId: session.itemId as Uuid, ...(attempt.runId === null ? {} : { runId: attempt.runId as Uuid }), author: { type: "engine" }, kind: "note", body: memberCopyNote(attempt.assignmentKey, agentName, changed) });
+  } catch (error) {
+    console.error(`[eo] could not say what a team member changed in its copy (attempt ${attemptId}): ${error instanceof Error ? error.message : String(error)}`);
+  }
 }
 
 /** The line a member's report carries where it changed its copy (EO-867), as a reference checkout's removal says it. */

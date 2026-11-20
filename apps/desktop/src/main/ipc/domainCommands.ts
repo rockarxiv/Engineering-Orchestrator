@@ -113,6 +113,7 @@ import { getGroup } from "../db/repos/groupsRepo.js";
 import { emitPush } from "./push.js";
 import { withModuleEntryChecks } from "../modules/entryChecks.js";
 import { clearEnginePausePreference, isEnginePausePreferred, persistEnginePause } from "../engineActivity.js";
+import { releaseMemberCopiesOf } from "../workspaceKinds.js";
 
 /**
  * Tells every window this item changed. Returns its argument so it can
@@ -2352,6 +2353,11 @@ export function setArchived(db: Db, input: IpcPayload<"items:setArchived">): Ipc
   if (!getItem(db, itemId)) return { archived: false, problem: "That ticket no longer exists." };
 
   setItemArchived(db, itemId, input.archived ? Date.now() : null);
+  // An archived item's team members' copies go with it (EO-867).
+  if (input.archived) {
+    const item = getItem(db, itemId);
+    if (item) void releaseMemberCopiesOf(db, item);
+  }
   return { archived: input.archived, problem: null };
 }
 
