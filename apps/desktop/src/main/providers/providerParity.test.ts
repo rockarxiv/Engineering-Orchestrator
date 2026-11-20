@@ -1057,6 +1057,11 @@ const CAPABILITIES = [
     },
   },
   {
+    name: "an isolated member's surface",
+    what: "an isolated team member's turn (EO-867) is started on its agent's ordinary provider exactly as an ordinary dispatch's is: EO's `eo` server listing what its agent's grants list, beside the repository index and its attached servers and skills; its backend's ordinary permissions (`bypassPermissions` on Claude, `danger-full-access` on Codex) and no report-only lock or hook — on a credential of its attempt's that serves no posting on the item and carries where its view of the thread ends",
+    same: { eoAndIndex: true, eoListsComment: true, credential: { reportOnly: null, writes: [REPOSITORY_CHECKOUT_TOOL_NAME, SKILL_READ_TOOL_NAME] }, threadBounded: true, ordinaryPermissions: true, everyCallHooked: false, skillsOffered: true },
+  },
+  {
     name: "a report-only participant's refusals",
     what: "a report-only team participant's hook refuses, on a fresh turn and a resumed one alike, a shell command, a file edit, a command run inside a subagent or code execution, native delegation, an attached server's tool, the administrative server, EO's write tools, memory and skill writes, EO's thread-reading tools, the repository index and the web — saying why — and lets its four evidence tools through (EO-845)",
     same: {
@@ -1574,6 +1579,24 @@ function participantRefusals(answers: Record<string, unknown>): { refused: strin
     allowed: Object.keys(answers).filter((name) => !refused.includes(name)).sort(),
     reasonSaid: refused.every((name) => (decision(answers[name])?.permissionDecisionReason ?? "").includes("report-only team participant")),
   };
+}
+
+/** An isolated team member's credential (EO-867): its attempt's, posting nothing, with its thread's boundary. */
+const MEMBER_CREDENTIAL = {
+  url: "http://127.0.0.1:1/agent-write",
+  token: "item-1~repository_checkout,skill_read~member_attempt-1.signed",
+  writes: [REPOSITORY_CHECKOUT_TOOL_NAME, SKILL_READ_TOOL_NAME],
+  teamMember: { itemId: "item-1", visibleThrough: 1, exposed: [], hidden: ["report-1"] },
+};
+const memberTurn = (cwd: string, extra: Record<string, unknown> = {}) =>
+  ({ ...startOpts, cwd, writeBridge: MEMBER_CREDENTIAL, repositoryMcp, memoryScopes: [...MEMORY_SCOPES], skillScope: SCOPED_RUN, ...extra }) as never;
+
+/** What an isolated member's `eo` server lists and was handed (EO-867). */
+function memberServer(env: Record<string, string> | undefined): { eoListsComment: boolean; credential: unknown; threadBounded: boolean } {
+  const read = participantServer(env);
+  const raw = env?.["EO_MCP_WRITE_BRIDGE"];
+  const bridge = raw === undefined ? null : (JSON.parse(raw) as { teamMember?: unknown });
+  return { eoListsComment: read.eoLists.includes("comment"), credential: read.credential, threadBounded: bridge?.teamMember !== undefined };
 }
 
 /** What the `eo` server started from this environment lists, and the credential it was handed. */
@@ -3813,6 +3836,27 @@ const CLAUDE: Record<CapabilityName, Proof> = {
     return { start: await observe(false), resume: await observe(true) };
   },
 
+  "an isolated member's surface": async () => {
+    // Claude's delivery: options. The agent's ordinary provider, handed the
+    // member's turn — its own directory, a tool directory, the index and
+    // memory — opens it as it opens any dispatch's.
+    const toolDirectory = scratchDirectory();
+    writeToolDirectory(toolDirectory, attachmentsForRun({ servers: [catalogueServer("github")], skills: SCOPED_SKILLS }, SCOPED_RUN));
+    const turn = scripted([sdk.init(), sdk.result()]);
+    const provider = createClaudeProvider({ runQuery: turn.runQuery, eoMcp: PARTICIPANT_EO_MCP, enableCommentTool: true, config: { allowedTools: ["Bash", "mcp__eo__comment"] } });
+    const events = await collect(provider.start(memberTurn("/tmp/member-copy", { toolDirectory })));
+    const options = turn.calls[0]?.options ?? {};
+    const servers = options["mcpServers"] as Record<string, { env?: Record<string, string> }> | undefined;
+    const hooks = (options["hooks"] as { PreToolUse?: { matcher?: string }[] } | undefined)?.PreToolUse ?? [];
+    return {
+      eoAndIndex: servers?.["eo"] !== undefined && servers[repositoryMcp.name] !== undefined,
+      ...memberServer(servers?.["eo"]?.env),
+      ordinaryPermissions: options["permissionMode"] === "bypassPermissions" && options["cwd"] === "/tmp/member-copy" && JSON.stringify(options["tools"]) !== "[]",
+      everyCallHooked: hooks.some((hook) => hook.matcher === undefined),
+      skillsOffered: events.some((event) => event.type === "skills_delivered" && event.slugs.length > 0),
+    };
+  },
+
   "a report-only participant's refusals": async () => {
     // Claude's delivery: the one `PreToolUse` callback the lock writes,
     // asked about each call as the CLI would ask — a subagent's own call
@@ -5392,6 +5436,34 @@ const CODEX: Record<CapabilityName, Proof> = {
     return { start: await observe(false), resume: await observe(true) };
   },
 
+  "an isolated member's surface": async () => {
+    // Codex's delivery: the launch's configuration and the thread it opens,
+    // from the agent's ordinary provider — nothing report-only about it.
+    const home = scratchDirectory();
+    const { fake, provider } = codexOver(
+      { after: { "turn/start": [note.turnStarted(), note.agentMessage("done"), note.turnCompleted()] } },
+      { eoMcp: PARTICIPANT_EO_MCP, codexHome: () => home, config: { model: PARTICIPANT_MODEL }, attachedServers: [catalogueServer("github")], attachedSkills: SCOPED_SKILLS } as Parameters<typeof createCodexProvider>[0],
+    );
+    const cwd = scratchDirectory();
+    const events = await collect(provider.start(memberTurn(cwd)));
+    const args = fake.launches[0]?.args ?? [];
+    const opened = fake.paramsOf("thread/start") ?? {};
+    const env = Object.fromEntries(
+      args
+        .filter((argument) => argument.startsWith("mcp_servers.eo.env."))
+        .map((argument) => argument.slice("mcp_servers.eo.env.".length))
+        .map((pair) => [pair.slice(0, pair.indexOf("=")), JSON.parse(pair.slice(pair.indexOf("=") + 1)) as string]),
+    );
+    const servers = new Set(args.filter((argument) => argument.startsWith("mcp_servers.")).map((argument) => argument.split(".")[1]));
+    return {
+      eoAndIndex: servers.has("eo") && servers.has(repositoryMcp.name),
+      ...memberServer(env),
+      ordinaryPermissions: opened["sandbox"] === "danger-full-access" && opened["cwd"] === cwd && !args.includes("features.shell_tool=false"),
+      everyCallHooked: args.some((argument) => argument.startsWith("hooks.PreToolUse=") && argument.includes('matcher = "*"')),
+      skillsOffered: events.some((event) => event.type === "skills_delivered" && event.slugs.length > 0),
+    };
+  },
+
   "a report-only participant's refusals": async () => {
     // Codex's delivery: the hook command posts each call to EO's listener,
     // as the stub posts them here — code mode's outer `exec` and the
@@ -5606,6 +5678,7 @@ describe("the shared list", () => {
       "a sign-in failure reported",
       "a suggested next message",
       "a report-only participant's surface",
+      "an isolated member's surface",
       "a report-only participant's refusals",
       "report-only enforcement that cannot be set up",
     ]);
