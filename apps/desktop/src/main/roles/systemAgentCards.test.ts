@@ -403,3 +403,24 @@ describe("what the system agent's prompt says about report-only teams (EO-848)",
     expect(Number(/prompt-version:\s*(\d+)/.exec(prompt)![1])).toBeGreaterThanOrEqual(64);
   });
 });
+
+describe("what the system agent's prompt says about a team's member mode (EO-867)", () => {
+  const teams = () => section("### A report-only team on an agent step");
+
+  it("says what each mode is for: report-only for content EO should not let an agent act on, isolated where members should work as the role's agent does", () => {
+    expect(teams()).toContain("**Members: report-only or isolated.**");
+    expect(teams()).toContain('`"report_only"`, the default, is for content EO should not let an agent act on');
+    expect(teams()).toContain('`"isolated"` is for a team whose members should work as the role\'s agent does');
+    expect(teams()).toContain("in a copy of the item's workspace made for it alone and removed when its turn ends.");
+    expect(teams()).toContain('Set it beside `coordination`: `"members": "isolated"`.');
+  });
+
+  it("says an isolated team escapes the report-only refusals and is refused where its workspace cannot be copied", () => {
+    expect(teams()).toContain("none of the report-only refusals below applies to it");
+    expect(teams()).toContain("a step that works in a workspace EO cannot copy for each member — a folder, a scratch directory — is refused instead, and the refusal names the kind.");
+  });
+
+  it("is a newer version than the one before member modes", () => {
+    expect(Number(/prompt-version:\s*(\d+)/.exec(prompt)![1])).toBeGreaterThanOrEqual(65);
+  });
+});

@@ -50,6 +50,8 @@ import {
   type WebhookTrigger,
   type StepTeam,
   type TeamReading,
+  memberModeWords,
+  TEAM_ISOLATED,
   TEAM_REPORT_ONLY,
 } from "@eo/core";
 import { describeActionUse } from "../ipc/roleActionCommands.js";
@@ -2058,10 +2060,11 @@ function renderTeamReadings(teams: readonly TeamReading[], teamOf: (stepId: stri
   const lines = [
     "## Teams",
     "",
-    `${TEAM_REPORT_ONLY} A team is set only by a draft's \`team\` on its step, which a person publishes from its card; pipeline_save cannot set one.`,
+    `A team's \`members\` are \`report_only\` (the default) or \`isolated\` (EO-867). ${TEAM_REPORT_ONLY} ${TEAM_ISOLATED} A team is set only by a draft's \`team\` on its step, which a person publishes from its card; pipeline_save cannot set one.`,
   ];
   for (const team of teams) {
-    lines.push("", `### ${team.stepName} (id: ${team.stepId}) — ${team.coordination === "leader" ? "leader-led" : "independent"}`, "");
+    lines.push("", `### ${team.stepName} (id: ${team.stepId}) — ${team.coordination === "leader" ? "leader-led" : "independent"}, ${memberModeWords(team.members)} members`, "");
+    lines.push(`- Members: ${team.reportOnly}`);
     lines.push(`- Coordination: ${team.facts.coordination}`);
     for (const member of team.facts.members) lines.push(`- Member: ${member}`);
     if (team.facts.outcomes.length > 0) lines.push(`- Outcomes a member may report: ${team.facts.outcomes.join("; ")}`);

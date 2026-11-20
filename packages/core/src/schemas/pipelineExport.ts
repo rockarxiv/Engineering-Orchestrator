@@ -254,6 +254,10 @@ import { SpecShapeSchema } from "./specShape.js";
  * refuses, so it parses the document and reaches its format check.
  * Reading an older document is unchanged: no step in it has a team, so
  * every step is one agent.
+ *
+ * A team's `members` (EO-867, `report_only` or `isolated`) joined format
+ * 16 before any build reading it was released, so it did not take a
+ * number of its own; a team written without it is report-only.
  */
 export const PIPELINE_EXPORT_VERSION = 16;
 
