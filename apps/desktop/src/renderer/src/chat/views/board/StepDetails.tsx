@@ -8,6 +8,7 @@ import {
   WAITING_RESULT,
   builtinCanWait,
   describeDuration,
+  memberModeWords,
   teamFacts,
   type StepTeam,
   type HandOffTargets,
@@ -164,7 +165,8 @@ export function StepDetails({
 }
 
 /**
- * The report-only team an agent step runs as (EO-848): how it is
+ * The team an agent step runs as (EO-848) — its members report-only or
+ * isolated, said first (EO-867) — and how it is
  * coordinated, who is on it and what each is asked to look at, what they
  * may conclude, how the step's result is reached, its limits — and that
  * none of them can change the work, said where a person would look for
@@ -190,7 +192,7 @@ export function TeamDetails({ team }: { team: StepTeam }) {
     <section aria-label="Team" className="flex flex-col gap-1.5">
       <h3 className="text-[12.5px] font-medium text-ink">Runs as a team</h3>
       <p className="text-[12.5px] text-ink-muted">
-        <Chip>report-only</Chip> {facts.reportOnly}
+        <Chip>{memberModeWords(facts.mode)}</Chip> {facts.reportOnly}
       </p>
       <Facts label="Team details" items={items} />
     </section>

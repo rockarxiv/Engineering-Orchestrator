@@ -288,6 +288,14 @@ describe("an agent step's team, in a document", () => {
     expect(ExportedStepSchema.omit({ team: true }).safeParse(review).success).toBe(true);
   });
 
+  it("carries a team's member mode (EO-867): isolated read back as written, and a team that names none as report-only", () => {
+    const isolated = { ...review, team: { ...team, members: "isolated" } };
+    const parsed = PipelineExportSchema.parse(JSON.parse(JSON.stringify(document({ steps: [document().steps[0], isolated] }))));
+    expect(parsed.steps[1]?.team?.members).toBe("isolated");
+    expect(PipelineExportSchema.parse(JSON.parse(JSON.stringify(parsed))).steps[1]?.team?.members).toBe("isolated");
+    expect(PipelineExportSchema.parse(JSON.parse(JSON.stringify(document({ steps: [document().steps[0], review] })))).steps[1]?.team?.members).toBe("report_only");
+  });
+
   it("reads the team back unchanged through JSON, with its limits filled in, and a step without one as one agent", () => {
     const parsed = PipelineExportSchema.parse(JSON.parse(JSON.stringify(document({ steps: [document().steps[0], review] }))));
     expect(parsed.steps[1]?.team).toMatchObject({ ...team, limits: { maxParticipants: 4, maxParallel: 2, maxRetries: 1 } });
