@@ -18,7 +18,6 @@ import {
   type Item,
   type RepositoryMcpServer,
   type StepTeam,
-  type Uuid,
 } from "@eo/core";
 import type { SectionRenderer } from "@eo/engine";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
