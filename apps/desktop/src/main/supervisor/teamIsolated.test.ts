@@ -422,3 +422,77 @@ describe("an isolated member's independence (EO-867)", () => {
     }
   });
 });
+
+describe("an isolated team behaves as a team does (EO-867)", () => {
+  it("supersedes and redoes a report made on content that moved before the team settled, each attempt in a copy of its own", async () => {
+    setTeam(isolated([{ key: "own", role: "qa" }]));
+    script = ({ nth }) =>
+      (async function* () {
+        yield { type: "thread_started", threadId: `t-${String(nth)}` } as AgentEvent;
+        // A person rewrites what the item asks for while the first turn works.
+        if (nth === 1) client().prepare("update items set body = ? where id = ?").run("Check the export, and its footer.", item.id);
+        yield { type: "result", data: { outcome: "clear", report: `Report ${String(nth)}.` } } as AgentEvent;
+      })();
+    await supervisor().runOnce();
+    expect(started).toHaveLength(2);
+    expect(copies).toHaveLength(2);
+    expect(copies[0]!.cwd).not.toBe(copies[1]!.cwd);
+    expect(copies.every((copy) => copy.removed)).toBe(true);
+    expect(getItem(handle.db, item.id)?.stepId).toBe("accepted");
+    const attempts = listTeamSessionsForItem(handle.db, item.id).at(-1)!.attempts;
+    expect(attempts.filter((attempt) => attempt.supersededBy !== null)).toHaveLength(1);
+  });
+
+  it("stops every member with the team's run, its copy removed, and moves nothing", async () => {
+    setTeam(isolated([{ key: "own", role: "qa" }]));
+    script = ({ opts }) =>
+      (async function* () {
+        yield { type: "thread_started", threadId: "t-1" } as AgentEvent;
+        await new Promise<void>((resolve) => (opts.signal.aborted ? resolve() : opts.signal.addEventListener("abort", () => resolve(), { once: true })));
+        throw Object.assign(new Error("stopped"), { name: "AbortError" });
+      })();
+    const engine = supervisor();
+    const done = engine.runOnce();
+    await vi.waitFor(() => expect(started).toHaveLength(1));
+    const teamRun = listRunsForItem(handle.db, item.id).find((run) => run.action === "alignment")!;
+    engine.cancelRun(teamRun.id);
+    await done;
+    await vi.waitFor(() => expect(copies[0]?.removed).toBe(true));
+    expect(getItem(handle.db, item.id)?.stepId).toBe("check");
+    expect(listRunsForItem(handle.db, item.id).find((run) => run.action === TEAM_PARTICIPANT_ACTION)?.status).toBe("cancelled");
+  });
+
+  it("runs a leader-led team's leader and members as their agents' ordinary turns; the leader reads the reports, the members none of the leader's turns", async () => {
+    createAgent(handle.db, { name: "Sasha", role: "sec", provider: "claude", instructions: "You find ways in." });
+    setTeam(
+      StepTeamSchema.parse({
+        coordination: "leader",
+        members: "isolated",
+        leader: { role: "qa", instructions: "Split the check by risk." },
+        roles: ["sec"],
+      }),
+    );
+    let quinnTurns = 0;
+    script = ({ agent }) => {
+      if (agent.name === "Sasha") return answer({ outcome: { report: "SASHA-REPORT: the login holds." } });
+      quinnTurns += 1;
+      if (quinnTurns === 1) return answer({ outcome: { decision: "assign", assignments: [{ key: "auth", role: "sec", instructions: "Look at the login.", required: true }], note: "One thing to check." } });
+      const reportId = listTeamSessionsForItem(handle.db, item.id).at(-1)!.attempts.find((attempt) => attempt.assignmentKey === "auth" && attempt.status === "completed")!.reportCommentId!;
+      return answer({ outcome: { decision: "final", answer: { result: "aligned", summary: "The login holds." }, contributions: [reportId], disagreements: "None.", limitations: "None." } });
+    };
+    await supervisor().runOnce();
+    expect(getItem(handle.db, item.id)?.stepId).toBe("accepted");
+    expect(started.map((one) => one.agent.name)).toEqual(["Quinn", "Sasha", "Quinn"]);
+    // Every turn on its agent's ordinary provider, its own instructions first.
+    for (const one of started) {
+      expect(one.provider).toBe(providers.get(one.agent.id));
+      expect(one.opts.instructions.startsWith(`${one.agent.instructions}\n\n## Your part in a team`)).toBe(true);
+      expect(one.opts.instructions).not.toContain("You are report-only");
+    }
+    expect(started[0]!.opts.context).toContain("## What you lead");
+    expect(started[2]!.opts.context).toContain("SASHA-REPORT");
+    expect(started[1]!.opts.context).not.toContain("One thing to check.");
+    expect(copies).toHaveLength(3);
+    expect(copies.every((copy) => copy.removed)).toBe(true);
+  });
+});
