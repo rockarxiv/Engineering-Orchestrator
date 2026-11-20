@@ -34,6 +34,11 @@ function itemWorktree(): { repo: string; remote: string; worktree: string } {
   const repo = join(root, "repo");
   git(root, "init", "-q", "--bare", "-b", "main", remote);
   git(root, "init", "-q", "-b", "main", repo);
+  // The bytes as written, whatever the machine's own Git says: a Windows
+  // runner's global `core.autocrlf=true` would check the copy out with
+  // CRLF, as it would any checkout there, and the comparisons below are
+  // of content, not of line endings.
+  git(repo, "config", "core.autocrlf", "false");
   writeFileSync(join(repo, "export.ts"), "export const csv = false;\n");
   writeFileSync(join(repo, ".gitignore"), "build/\n");
   git(repo, "add", "-A");
