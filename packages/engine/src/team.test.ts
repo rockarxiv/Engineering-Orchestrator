@@ -162,6 +162,21 @@ describe("validatePipeline: a team on an agent step (EO-843)", () => {
     expect(teamErrors(pipeline(null, {}, { reportOnlyRoleProblems }))).toEqual([]);
   });
 
+  it("holds an isolated team to none of the report-only refusals, and to giving each member a copy of its own (EO-867)", () => {
+    const reportOnlyRoleProblems = { tester: "Tess runs on the person's own setup.", reviewer: "Rex has no model." };
+    // Any agent that can run the step alone can be an isolated member.
+    expect(teamErrors(pipeline(independent({ members: "isolated" }), {}, { reportOnlyRoleProblems }))).toEqual([]);
+    expect(teamErrors(pipeline(leader({ members: "isolated" }), {}, { reportOnlyRoleProblems }))).toEqual([]);
+    // Still staffed by role, as every team is.
+    expect(teamErrors(pipeline(independent({ members: "isolated" }), {}, { staffedRoles: ["reviewer"] }))).toEqual([expect.stringContaining('needs a "tester" agent')]);
+    // A workspace that makes no copy refuses it, naming the kind; a report-only team there is not asked.
+    const isolatedCopyProblems = { review: 'but it works in a "folder" workspace, which cannot give each member a copy of its own.' };
+    expect(teamErrors(pipeline(independent({ members: "isolated" }), {}, { isolatedCopyProblems }))).toEqual([
+      'The team on "review" has isolated members, but it works in a "folder" workspace, which cannot give each member a copy of its own.',
+    ]);
+    expect(teamErrors(pipeline(independent(), {}, { isolatedCopyProblems }))).toEqual([]);
+  });
+
   it("refuses a team built without parsing that breaks its own rules", () => {
     const valid = independent();
     if (valid.coordination !== "independent") throw new Error("independent");
