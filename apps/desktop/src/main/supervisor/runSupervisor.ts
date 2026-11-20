@@ -299,7 +299,7 @@ import { budgetRefusal, occurrenceOverBudget, pauseForBudget } from "../jobs/bud
 import { readPolicy } from "../policy/policy.js";
 import { ownerOfItem, parkForPersonBudget } from "../policy/personBudget.js";
 import { postClarificationQuestions, unansweredQuestions } from "../roles/clarificationQuestions.js";
-import { buildTurnContext, followUpComments } from "./buildDispatchContext.js";
+import { buildTurnContext, followUpComments, type ThreadFilter } from "./buildDispatchContext.js";
 import { archivedProjectBlocker, buildEligibilityInput, buildTickInput, namedBlocker, type PackScheduling } from "./buildTickInput.js";
 import { createLocalRecord } from "../record/localRecord.js";
 import type { ItemRecord, WorkOffer } from "../record/record.js";
@@ -358,8 +358,8 @@ import { createMemoryConsolidator, type MemoryConsolidatorOptions } from "../mem
 import { archiveReachOf, archiveUnusedSkills } from "../skills/archival.js";
 import { currentWatch, markCheckInFlight, ownerMention, recordQuietCheck, waitingLine, watchArrival, watchHold, watchRoundTrips, WATCH_ROUTED_REASON, WATCH_VERIFICATION_FAILED_REASON } from "./watches.js";
 import { agentMentionChain } from "./escalation.js";
-import { answerTeamCall, createTeamParticipantScopes, type TeamParticipantScopes } from "./teamParticipants.js";
-import { createTeamSupervisor, MACHINE_PARTICIPANT_LIMIT, TEAM_RETRY_WORDS, type ReportOnlyProviderAnswer, type TeamAnswerContract } from "./teamSupervisor.js";
+import { answerTeamCall, createTeamParticipantScopes, memberAttemptOf, memberCredential, memberWrites, withinBoundary, type TeamParticipantScopes } from "./teamParticipants.js";
+import { createTeamSupervisor, MACHINE_PARTICIPANT_LIMIT, memberCopyNote, TEAM_RETRY_WORDS, type IsolatedTurnAnswer, type IsolatedTurnRequest, type ReportOnlyProviderAnswer, type TeamAnswerContract } from "./teamSupervisor.js";
 import { currentTeamSession, endTeamSession, getTeamSession } from "../db/repos/teamSessionsRepo.js";
 import { teamNotHereProblem, type TeamControlSite } from "./teamSessionView.js";
 
@@ -894,6 +894,12 @@ export interface RunSupervisorOptions {
     agent: Agent,
     action: string,
     resumingRun: Run | null,
+    /**
+     * Which of the item's comments it may show (EO-867): absent on every
+     * ordinary dispatch; an isolated team member's turn passes its thread
+     * boundary, so its team's other reports are not part of its context.
+     */
+    visible?: ThreadFilter,
   ) => string | Promise<string>;
   /**
    * What state an item moves to on success.
@@ -2132,7 +2138,7 @@ export function createRunSupervisor(
     // Wrapped rather than passed as the bare default, so the pack's own
     // sections reach the assembly without the seam growing a parameter
     // every test that stubs it would have to ignore.
-    buildContext = (db, item, agent, action, resumingRun) => buildTurnContext(db, item, agent, action, resumingRun, sectionRenderers),
+    buildContext = (db, item, agent, action, resumingRun, visible) => buildTurnContext(db, item, agent, action, resumingRun, sectionRenderers, visible),
     resolveNextState = () => undefined,
     onRunSucceeded = () => {},
     onPushEvents,
@@ -2737,6 +2743,10 @@ export function createRunSupervisor(
     // A credential minted for an attempt is a report-only team
     // participant's (EO-845): answered from that attempt's own captured
     // evidence and nothing else, every other tool refused.
+    // One scoped to an isolated member's attempt (EO-867) is answered for
+    // that member's own run.
+    const memberAttempt = memberAttemptOf(scope);
+    if (memberAttempt !== null && writes !== null) return memberWrite(itemId, request, writes, memberAttempt);
     if (scope !== null && writes !== null) return answerTeamCall(db, teamScopes, itemId, request, writes, scope);
     // The evidence tools are a participant's alone: no other credential
     // is answered them, whatever its server lists.
@@ -4409,6 +4419,8 @@ export function createRunSupervisor(
     reportOnlyProvider:
       options.reportOnlyProvider ??
       ((agent) => ({ ok: false, problem: `EO did not start ${agent.name} as a report-only team participant, because this desktop has no way to hold a participant to reading and reporting.` })),
+    // An isolated member's turn (EO-867): the ordinary dispatch's, in its copy.
+    isolatedTurn: (request) => isolatedMemberTurn(request),
     scopes: teamScopes,
     writeBridge: () => options.agentWriteBridge?.() ?? null,
     machineLimit: () => options.teamParticipantLimit ?? MACHINE_PARTICIPANT_LIMIT,
@@ -8109,6 +8121,106 @@ export function createRunSupervisor(
       });
     } finally {
       teamRuns.delete(run.id);
+    }
+  }
+
+  /**
+   * An isolated team member's turn (EO-867), built as an ordinary dispatch
+   * of its step builds its agent's turn — the same provider
+   * (`sendingProvider`, so `providerForAgent` in the engine), the same
+   * instructions, context (`buildContext`, seed or full thread by the
+   * agent's own grant), memory chosen before start, repository index,
+   * CLI tools, tool directory, per-turn options and `eo` server — with
+   * these differences and no others: it stands in its own copy (`cwd`);
+   * its run is its attempt's; the team framing follows its instructions
+   * and its context; its thread stops at its boundary, so its team's
+   * other reports are part of nothing it reads; and its `eo` credential
+   * is its attempt's, serving its agent's writes less posting on the item.
+   *
+   * Nothing here holds it report-only: no hook, no lock, no report-only
+   * credential, and none of the report-only refusals.
+   */
+  async function isolatedMemberTurn(request: IsolatedTurnRequest): Promise<IsolatedTurnAnswer> {
+    const { item, step, agent, run, cwd } = request;
+    const action = step.entryAction ?? "";
+    const visible = withinBoundary(request.boundary);
+    const ordinary = await buildContext(db, item, agent, action, null, visible);
+    const copyWorkspace: PreparedWorkspace = { cwd, kind: kindFor(item).slug, workspaceId: item.workspaceId };
+    // The index the step's ordinary dispatch is lent, which is the item's
+    // own: an index is kept per item, and building one for a copy would
+    // overwrite the item's.
+    const [attachment, cliDetections] = await Promise.all([
+      attachWorkspace(item, agent, request.workspace),
+      detectCliTools(resolveAgentCliTools(db, agent.id), cwd),
+    ]);
+    const scopes = turnMemoryScopes(item);
+    const pending = memoryForTurn(run, item, agent, action, scopes);
+    const memory = pending instanceof Promise ? await pending : pending;
+    const attachments = runAttachmentsHash(agent, item);
+    const toolDirectory = prepareToolDirectory(item, agent);
+    const foundCliTools: AgentCliTool[] = [];
+    for (const tool of resolveAgentCliTools(db, agent.id)) {
+      const detection = cliDetections.get(tool.command);
+      if (detection?.found) foundCliTools.push({ command: tool.command, description: tool.description, path: detection.path });
+      else postComment(db, { itemId: item.id, runId: run.id, author: { type: "engine" }, kind: "note", body: missingCliToolNotice(tool, agent.name) });
+    }
+    for (const notice of attachment.notices) postComment(db, { itemId: item.id, runId: run.id, author: { type: "engine" }, kind: "note", body: notice });
+    const bridge = options.agentWriteBridge?.() ?? null;
+    const instructions = agent.instructions.trim() === "" ? request.framing.instructions : `${agent.instructions}\n\n${request.framing.instructions}`;
+    const context = [ordinary, ...(memory.section === null ? [] : [memory.section]), request.framing.context].join("\n\n");
+    return {
+      ok: true,
+      provider: sendingProvider(run, agent, item, action, { purpose: "dispatch" }),
+      options: {
+        instructions,
+        context,
+        cwd: copyWorkspace.cwd,
+        ...(foundCliTools.length > 0 ? { cliTools: foundCliTools } : {}),
+        ...discussionTurnOptions(item, agent),
+        warmKey: attachments,
+        ...(toolDirectory ? { toolDirectory: toolDirectory.path } : {}),
+        ...(attachment.mcpServers[0] ? { repositoryMcp: attachment.mcpServers[0] } : {}),
+        // No `attachFrom`: a member posts nothing on the item, files
+        // included — its report is what reaches the thread.
+        ...(scopes.length > 0 ? { memoryScopes: memoryReadScopes(scopes) } : {}),
+        ...(bridge === null ? {} : { writeBridge: memberCredential(bridge, item.id, request.attemptId, memberWrites(memoryNoteEnabled(agent)), request.boundary) }),
+      },
+      observe: (event, buffer) => {
+        if (event.type !== "skills_delivered" && event.type !== "skill_loaded") return false;
+        recordSkillUsage(run.id, buffer, item, agent, event);
+        return true;
+      },
+      done: () => {
+        settleSkillUsage(run.id);
+        runSkills.delete(run.id);
+      },
+    };
+  }
+
+  /**
+   * A write an isolated team member asked for (EO-867), made as its own
+   * run: its agent's grants, less posting anything on the item — its
+   * report is what reaches the thread, and EO posts that.
+   */
+  async function memberWrite(itemId: string, request: AgentWriteRequest, writes: readonly AgentWriteTool[], attemptId: string): Promise<AgentWriteAnswer> {
+    if (!writes.includes(request.tool)) return { ok: false, code: "TOOL_NOT_SERVED", problem: `A team member posts nothing on the item itself, so it is not served ${request.tool}: EO posts its answer as its report.` };
+    const member = teams.liveMember(attemptId);
+    if (member === null || member.itemId !== itemId) return { ok: false, code: "NO_RUN", problem: "No team member of this desktop's is running with that credential now, so nothing was written." };
+    const item = getItem(db, itemId as Uuid);
+    if (!item) return { ok: false, code: "NO_RUN", problem: "EO no longer has the item this member works on, so nothing was written." };
+    try {
+      switch (request.tool) {
+        case MEMORY_NOTE_TOOL_NAME:
+          return await noteMemory(item, member.runId as Uuid, request.args);
+        case REPOSITORY_CHECKOUT_TOOL_NAME:
+          return await checkoutForAgent(item, request.args);
+        case SKILL_READ_TOOL_NAME:
+          return readSkillForAgent(member.runId as Uuid, request.args);
+        default:
+          return { ok: false, code: "TOOL_NOT_SERVED", problem: `A team member is not served ${request.tool}, so nothing was written.` };
+      }
+    } catch (error) {
+      return { ok: false, code: "WRITE_FAILED", problem: `EO could not write it, so nothing was written: ${error instanceof Error ? error.message : String(error)}` };
     }
   }
 

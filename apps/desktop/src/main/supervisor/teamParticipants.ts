@@ -10,6 +10,9 @@ import {
   isTeamEvidenceTool,
   ITEM_CONTEXT_TOOL_NAME,
   ItemContextArgsSchema,
+  MEMORY_NOTE_TOOL_NAME,
+  REPOSITORY_CHECKOUT_TOOL_NAME,
+  SKILL_READ_TOOL_NAME,
   reportOnlyRefusal,
   TEAM_EVIDENCE_TOOLS,
   type AgentWriteAnswer,
@@ -105,6 +108,45 @@ export function reportOnlyCredential(bridge: Pick<AgentWriteBridge, "tokenFor">,
 }
 
 /**
+ * What an isolated member's credential's scope is prefixed with (EO-867),
+ * so the bridge answers its writes for its own run rather than as a
+ * report-only participant's evidence calls.
+ */
+export const MEMBER_SCOPE_PREFIX = "member_";
+
+/** The attempt a member's scope names, or null for a scope that is not a member's. */
+export function memberAttemptOf(scope: string | null): string | null {
+  return scope !== null && scope.startsWith(MEMBER_SCOPE_PREFIX) ? scope.slice(MEMBER_SCOPE_PREFIX.length) : null;
+}
+
+/** The writes an isolated member is served: its agent's own, less posting anything on the item (EO-867). */
+export function memberWrites(memoryNote: boolean): AgentWriteTool[] {
+  const writes: AgentWriteTool[] = [REPOSITORY_CHECKOUT_TOOL_NAME as AgentWriteTool, SKILL_READ_TOOL_NAME as AgentWriteTool];
+  return memoryNote ? [MEMORY_NOTE_TOOL_NAME as AgentWriteTool, ...writes] : writes;
+}
+
+/**
+ * The credential an isolated member's turn hands its ordinary `eo` server
+ * (EO-867): its attempt under the MAC, the writes it is served — never
+ * `comment` or `attachment_add`, since it posts nothing on the item — and
+ * where its view of the thread ends, so its team's other reports stay
+ * out of every thread read.
+ */
+export function memberCredential(bridge: Pick<AgentWriteBridge, "tokenFor">, itemId: string, attemptId: string, writes: readonly AgentWriteTool[], boundary: ThreadBoundary): AgentWriteBridgeAddress {
+  return {
+    ...bridge.tokenFor(itemId, writes, `${MEMBER_SCOPE_PREFIX}${attemptId}`),
+    teamMember: { visibleThrough: boundary.visibleThrough, exposed: [...boundary.exposedCommentIds], hidden: [...(boundary.hiddenCommentIds ?? [])] },
+  };
+}
+
+/** Whether a comment is within a boundary: the rule `participantThread` applies, as a predicate. */
+export function withinBoundary(boundary: ThreadBoundary): (comment: Pick<Comment, "id" | "createdAt">) => boolean {
+  const exposed = new Set(boundary.exposedCommentIds);
+  const hidden = new Set(boundary.hiddenCommentIds ?? []);
+  return (comment) => exposed.has(comment.id) || (comment.createdAt <= boundary.visibleThrough && !hidden.has(comment.id));
+}
+
+/**
  * The provider thread a participant's attempt may resume (EO-845): the one
  * its own run recorded, and no other. A retry is a new attempt and starts
  * a thread of its own; two attempts of one agent, side by side or one
@@ -128,9 +170,7 @@ export function participantResumeProblem(db: Db, attemptId: string, threadId: st
 
 /** The comments of an item's thread a participant may see, oldest first. */
 export function participantThread(db: Db, itemId: string, boundary: ThreadBoundary): Comment[] {
-  const exposed = new Set(boundary.exposedCommentIds);
-  const hidden = new Set(boundary.hiddenCommentIds ?? []);
-  return listCommentsForItem(db, itemId as Uuid).filter((comment) => exposed.has(comment.id) || (comment.createdAt <= boundary.visibleThrough && !hidden.has(comment.id)));
+  return listCommentsForItem(db, itemId as Uuid).filter(withinBoundary(boundary));
 }
 
 /**

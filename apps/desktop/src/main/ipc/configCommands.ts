@@ -52,7 +52,7 @@ import {
   itemTypesFor,
 } from "../db/repos/index.js";
 import { sideEffectingServersByStep } from "../connectors/sideEffects.js";
-import { reportOnlyRoleProblems, teamReadings } from "./teamReadings.js";
+import { isolatedCopyProblems, reportOnlyRoleProblems, teamReadings } from "./teamReadings.js";
 import { readPolicy } from "../policy/policy.js";
 import { activeProjectId } from "./repositoryCommands.js";
 import { signedInPersonId } from "../identity/viewer.js";
@@ -980,12 +980,24 @@ export function reportOnlyRoleProblemsForPipeline(db: Db, pipelineId: string): R
 }
 
 /**
+ * Why each step's isolated team could not give every member a copy of its
+ * own (EO-867), by step id: a sentence naming the kinds of workspace the
+ * step could work in that make none. Read as dispatch resolves a step's
+ * workspace — the one it names, no disk, or (inheriting) any of the
+ * workspaces of the projects its work comes from.
+ */
+export function isolatedCopyProblemsForPipeline(db: Db, pipelineId: string, steps: readonly Pick<PipelineStep, "id" | "team" | "workspaceId">[]): Record<string, string> {
+  return isolatedCopyProblems(db, projectsServedByPipeline(db, pipelineId), steps);
+}
+
+/**
  * The teams of a graph as `pipelineSteps:list` and `pipeline:validate`
  * describe them (EO-848), judged with what `validatePipeline` is given.
  */
 export function teamReadingsForPipeline(db: Db, pipelineId: string, steps: readonly PipelineStep[], registryInForce: RegistryFacts): TeamReading[] {
   if (!steps.some((step) => step.team !== null && step.team !== undefined)) return [];
   return teamReadings(steps, {
+    db,
     agents: listAgents(db),
     projects: projectsServedByPipeline(db, pipelineId),
     registry: registryInForce,
@@ -1086,6 +1098,9 @@ function validationInput(
     // Which roles a team could be staffed with an agent EO cannot hold to
     // report-only (EO-848), by the rule dispatch staffs a team with.
     reportOnlyRoleProblems: reportOnlyRoleProblemsForPipeline(db, pipelineId),
+    // And where an isolated team's members could not each have a copy of
+    // their own (EO-867), by the workspace dispatch would give the step.
+    isolatedCopyProblems: isolatedCopyProblemsForPipeline(db, pipelineId, steps),
     // Archived ones included: a step naming a deleted module is a distinct
     // problem from one naming a module that was never here, and the
     // validator can only tell them apart if it is given both (KAN-104).

@@ -78,6 +78,25 @@ export const AgentWriteBridgeAddressSchema = z.object({
    * reads it would otherwise answer itself from EO's database.
    */
   reportOnly: z.boolean().optional(),
+  /**
+   * Where an isolated team member's view of the item's thread ends
+   * (EO-867): the `eo` server's thread reads — `comment_read`,
+   * `comment_search`, `thread_read` and what `item_detail` says the item
+   * shipped — show a comment only where it is `exposed`, or was written
+   * at or before `visibleThrough` and is not `hidden`, the rule a
+   * report-only participant's `item_context` applies. So a member never
+   * reads its team's other reports. Set with a credential scoped to the
+   * member's attempt, whose writes leave out posting on the item. Not
+   * signed: the server fails closed on an address that names it and
+   * cannot be read.
+   */
+  teamMember: z
+    .object({
+      visibleThrough: z.number(),
+      exposed: z.array(z.string()),
+      hidden: z.array(z.string()),
+    })
+    .optional(),
 });
 export type AgentWriteBridgeAddress = z.infer<typeof AgentWriteBridgeAddressSchema>;
 
