@@ -310,6 +310,14 @@ exports[`the JSON Schema each provider receives > is unchanged for assist (undef
                                     "type": "string",
                                     "const": "independent"
                                   },
+                                  "members": {
+                                    "default": "report_only",
+                                    "type": "string",
+                                    "enum": [
+                                      "report_only",
+                                      "isolated"
+                                    ]
+                                  },
                                   "participants": {
                                     "minItems": 1,
                                     "maxItems": 8,
@@ -467,6 +475,14 @@ exports[`the JSON Schema each provider receives > is unchanged for assist (undef
                                   "coordination": {
                                     "type": "string",
                                     "const": "leader"
+                                  },
+                                  "members": {
+                                    "default": "report_only",
+                                    "type": "string",
+                                    "enum": [
+                                      "report_only",
+                                      "isolated"
+                                    ]
                                   },
                                   "leader": {
                                     "type": "object",
@@ -954,6 +970,14 @@ exports[`the JSON Schema each provider receives > is unchanged for assist (undef
                                       "type": "string",
                                       "const": "independent"
                                     },
+                                    "members": {
+                                      "default": "report_only",
+                                      "type": "string",
+                                      "enum": [
+                                        "report_only",
+                                        "isolated"
+                                      ]
+                                    },
                                     "participants": {
                                       "minItems": 1,
                                       "maxItems": 8,
@@ -1111,6 +1135,14 @@ exports[`the JSON Schema each provider receives > is unchanged for assist (undef
                                     "coordination": {
                                       "type": "string",
                                       "const": "leader"
+                                    },
+                                    "members": {
+                                      "default": "report_only",
+                                      "type": "string",
+                                      "enum": [
+                                        "report_only",
+                                        "isolated"
+                                      ]
                                     },
                                     "leader": {
                                       "type": "object",
