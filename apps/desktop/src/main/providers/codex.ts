@@ -2351,6 +2351,11 @@ function objectBranchFits(value: Record<string, unknown>, branch: Record<string,
   return Object.entries(properties).every(([key, property]) => {
     if (!isSchemaObject(property)) return true;
     if (!(key in value)) return !(("const" in property || "enum" in property) && required.has(key));
+    // A null in place of an optional field is the strict answer's absent
+    // one (EO-376), whatever its schema allows: it is taken out once the
+    // branch is chosen. A team's optional `members` is the first such enum
+    // in a union branch (EO-867).
+    if (value[key] === null && !required.has(key)) return true;
     if ("const" in property) return property["const"] === value[key];
     const enumValues = property["enum"];
     return !Array.isArray(enumValues) || enumValues.includes(value[key]);
