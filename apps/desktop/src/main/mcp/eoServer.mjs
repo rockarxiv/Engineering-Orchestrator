@@ -1062,6 +1062,7 @@ export function memberThreadView(raw, bridge) {
   const hidden = new Set(member.hidden);
   return {
     itemId: member.itemId,
+    visibleThrough: member.visibleThrough,
     visible: (row) => row.item_id !== member.itemId || exposed.has(row.id) || (Number(row.created_at) <= member.visibleThrough && !hidden.has(row.id)),
   };
 }
@@ -1494,15 +1495,17 @@ function renderItem(db, requestedKey, { withThread = false, view = null } = {}) 
   // dependency key. The same selection `shippedSummary` makes: the newest
   // succeeded run that returned something, dry runs excluded — borrowing a
   // worktree to watch a module work is not what an item shipped (KAN-106).
-  // A team member's turn is not what an item shipped, and for an
-  // isolated member another's would be its report (EO-867).
+  // For an isolated member (EO-867), what the item had shipped by where
+  // its view ends, and never another member's turn: its result is its
+  // report, and a team that settled since summarises every report.
   const shipped = queryOne(
     db,
     `SELECT result FROM runs
-      WHERE item_id = ? AND status = 'succeeded' AND result IS NOT NULL AND dry_run = 0${view === null ? "" : " AND action != 'team:participant'"}
+      WHERE item_id = ? AND status = 'succeeded' AND result IS NOT NULL AND dry_run = 0${view === null || view.itemId !== item.id ? "" : " AND action != 'team:participant' AND ended_at <= ?"}
       ORDER BY ended_at DESC, id DESC
       LIMIT 1`,
     item.id,
+    ...(view === null || view.itemId !== item.id ? [] : [view.visibleThrough]),
   );
   if (shipped) lines.push("", "## What it shipped", "", "```json", shippedResult(shipped.result), "```");
 
