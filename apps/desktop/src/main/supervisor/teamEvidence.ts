@@ -83,7 +83,43 @@ export type EvidenceCaptureOutcome = { ok: true; evidence: WorkspaceEvidence } |
 export interface WorkspaceEvidenceCapability {
   capture(item: Item, workspace: PreparedWorkspace, signal?: AbortSignal): Promise<EvidenceCaptureOutcome>;
   open(item: Item, workspace: PreparedWorkspace, source: EvidenceSourceRef, signal?: AbortSignal): Promise<EvidenceCaptureOutcome>;
+  /**
+   * A copy of a capture for one isolated team member's attempt to work in
+   * (EO-867): what the capture held — committed, modified and untracked
+   * files alike — somewhere that is not the item's workspace, made for
+   * that attempt alone, so nothing done in it reaches the item's work or
+   * another member's copy. Optional: a kind without it refuses an
+   * isolated team, and never runs a member in the item's own workspace
+   * instead.
+   */
+  copy?(item: Item, workspace: PreparedWorkspace, source: EvidenceSourceRef, request: MemberCopyRequest): Promise<MemberCopyOutcome>;
+  /**
+   * Removes member copies left on disk (EO-867): every one of this item's,
+   * or — with no item, on startup — every one whose attempt `keep` does
+   * not name. Before each goes, what was done in it is handed to `report`
+   * with the attempt it was made for. Answers the paths removed. Never
+   * throws.
+   */
+  releaseCopies?(request: { item?: Pick<Item, "id" | "key">; keep?: (attemptId: string) => boolean; report: (attemptId: string, changed: string[]) => void }): Promise<string[]>;
 }
+
+/** Which attempt a member copy is for. */
+export interface MemberCopyRequest {
+  attemptId: string;
+  signal?: AbortSignal;
+}
+
+/** One isolated member's own copy of the workspace (EO-867). */
+export interface MemberCopy {
+  /** Where the member works. */
+  readonly cwd: string;
+  /** What was done in it since EO made it, as phrases a sentence lists; empty when nothing was. */
+  changes(): Promise<string[]>;
+  /** Removes it, whatever was done in it: nothing in a copy is anyone's work. Never throws. */
+  remove(): Promise<void>;
+}
+
+export type MemberCopyOutcome = { ok: true; copy: MemberCopy } | { ok: false; problem: string };
 
 /** The most bytes of one file a read or a search looks at. */
 export const EVIDENCE_FILE_MAX_BYTES = 4 * 1024 * 1024;

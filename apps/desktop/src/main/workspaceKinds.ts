@@ -1,4 +1,4 @@
-import type { WorkspaceKindSlug } from "@eo/core";
+import { FOLDER_KIND, NONE_KIND, SCRATCH_KIND, type WorkspaceKindSlug } from "@eo/core";
 import { describesChecks, verifiesAnything, type VerifiedStep, type WorkspaceKind } from "./supervisor/workspaceKind.js";
 import type { Workspace } from "./db/repos/workspacesRepo.js";
 
@@ -100,4 +100,20 @@ export async function forgePathOf(workspace: Workspace): Promise<string | null> 
   } catch {
     return null;
   }
+}
+
+/**
+ * Whether a run on `slug` can give each isolated team member a copy of its
+ * own (EO-867), which is what lets a team's members be isolated there.
+ *
+ * The core's kinds are answered here, since the supervisor builds them and
+ * they are never installed: `none` gives a member an empty directory of
+ * its own, as it gives its step's agent; `folder` and `scratch` make no
+ * copy. Any other kind answers by having the capability
+ * (`evidence.copy`) — the git kind does. A kind nothing installed cannot.
+ */
+export function kindMakesMemberCopies(slug: WorkspaceKindSlug): boolean {
+  if (slug === NONE_KIND) return true;
+  if (slug === FOLDER_KIND || slug === SCRATCH_KIND) return false;
+  return current.get(slug)?.evidence?.copy !== undefined;
 }

@@ -131,6 +131,13 @@ export interface ValidatePipelineInput {
    */
   reportOnlyRoleProblems?: Readonly<Record<string, string>>;
   /**
+   * Why a step's isolated team could not give each member a copy of its
+   * own (EO-867), by step id: the sentence naming the workspace kind the
+   * step could work in that makes no copy. Read by the caller, which
+   * knows the installed kinds. Absent is "every step can".
+   */
+  isolatedCopyProblems?: Readonly<Record<string, string>>;
+  /**
    * What roles, built-in functions and item types this installation
    * knows about (KAN-124).
    *
@@ -264,6 +271,7 @@ export function validatePipeline(input: ValidatePipelineInput): WorkflowProblem[
     entryRules = [],
     itemTypes = registry.itemTypes,
     reportOnlyRoleProblems = {},
+    isolatedCopyProblems = {},
   } = input;
 
   if (steps.length === 0) {
@@ -280,7 +288,7 @@ export function validatePipeline(input: ValidatePipelineInput): WorkflowProblem[
   }
   // The report-only team an agent step runs as (EO-843): its staffing,
   // the action it answers and its limits.
-  for (const { stepId, severity, message } of teamProblems(steps, { registry, staffedRoles, runTimeoutMs, reportOnlyRoleProblems })) {
+  for (const { stepId, severity, message } of teamProblems(steps, { registry, staffedRoles, runTimeoutMs, reportOnlyRoleProblems, isolatedCopyProblems })) {
     problems.push({ severity, stateId: stepId, message });
   }
 

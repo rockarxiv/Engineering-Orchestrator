@@ -54,7 +54,7 @@ import {
 } from "../db/repos/index.js";
 import { sideEffectingServersByStep } from "../connectors/sideEffects.js";
 import { agentNamed } from "../stepAgents.js";
-import { itemTypesJudged, readGuards, reportOnlyRoleProblemsForPipeline, staffedRolesForPipeline, stepAgentsForPipeline } from "../ipc/configCommands.js";
+import { isolatedCopyProblemsForPipeline, itemTypesJudged, readGuards, reportOnlyRoleProblemsForPipeline, staffedRolesForPipeline, stepAgentsForPipeline } from "../ipc/configCommands.js";
 import { actionUsedBy, describeActionUse } from "../ipc/roleActionCommands.js";
 import { activeProjectId } from "../ipc/repositoryCommands.js";
 
@@ -171,6 +171,9 @@ export function validateDraft(
     // the publish path asks it.
     staffedRoles: staffedRolesForPipeline(db, pipelineId),
     reportOnlyRoleProblems: reportOnlyRoleProblemsForPipeline(db, pipelineId),
+    // And whether each isolated team's members could have copies of their
+    // own (EO-867), as the publish path asks it.
+    isolatedCopyProblems: isolatedCopyProblemsForPipeline(db, pipelineId, domainSteps),
     itemCountByStep,
     // Off-dashboard steps are absent from a draft exactly as they are
     // absent from the editor's submission, and "absent" is how a removal
