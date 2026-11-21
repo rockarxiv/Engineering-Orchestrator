@@ -11,12 +11,13 @@ import { createProject, getProject } from "../db/repos/projectsRepo.js";
 import { createPerson } from "../db/repos/peopleRepo.js";
 import { issueDevice } from "../db/repos/devicesRepo.js";
 import { createRun, updateRun } from "../db/repos/runsRepo.js";
-import { createPipeline, createStep } from "../db/repos/pipelineStepsRepo.js";
+import { createPipeline, createStep, getStep } from "../db/repos/pipelineStepsRepo.js";
+import { listOpenMessages } from "../db/repos/messagesRepo.js";
 import { transitionItem } from "../db/repos/transitionsRepo.js";
 import { getSkill, saveSkill, upsertReplicaSkill } from "../db/repos/skillsRepo.js";
 import { saveMcpServer } from "../db/repos/mcpServersRepo.js";
 import { setSetting } from "../db/repos/settingsRepo.js";
-import { countProjectRows, upsertReplicaProjectAgent } from "../db/repos/projectMoveRepo.js";
+import { countProjectRows, STEP_AGENT_BOUND_ON_MOVE, upsertReplicaProjectAgent } from "../db/repos/projectMoveRepo.js";
 import { sectionDocument } from "../managed/configuration.js";
 import { sectionLockFor } from "../managed/locks.js";
 import { publishSectionCommand } from "../ipc/sectionCommands.js";
@@ -632,5 +633,65 @@ describe("a record-held project's agents on a replica reading one row a page (EO
     await laptop.record.sync();
 
     expect(getAgentAttachments(laptopDb.db, writer.id).skillIds).not.toContain(skillId);
+  });
+});
+
+/**
+ * A moved step that names a global agent (EO-875).
+ *
+ * A step names an agent by this desktop's id, and only the project's own
+ * agents travel with a move. So a step naming one of Anna's global agents
+ * arrives on a record that may not have it: the record binds it to its
+ * own agent of the kind and tells her, or names nobody and tells her —
+ * it never leaves the step naming an agent that is not there, and
+ * dispatch never chooses for it.
+ */
+describe("moving a step that names a global agent (EO-875)", () => {
+  function supportNaming(agentId: Uuid) {
+    const support = createProject(annaDb.db, { name: "Support", keyPrefix: "SUP", managed: false });
+    const pipeline = createPipeline(annaDb.db, { projectId: support.id, name: "Support delivery" });
+    const step = createStep(annaDb.db, { pipelineId: pipeline.id, position: 0, name: "Check", type: "agent", agentId, entryAction: "review" });
+    const item = createTestItem(annaDb.db, { type: "story", title: "A refund", stepId: step.id, projectId: support.id });
+    return { support, step, item };
+  }
+  const bindingNotes = () => listOpenMessages(recordDb.db, [annaPersonId]).filter((message) => message.source === STEP_AGENT_BOUND_ON_MOVE);
+
+  it("binds it to the record's agent of the kind where the record has not got that agent, runs that one, and tells the person", async () => {
+    const hers = createAgent(annaDb.db, { name: "Anna's reviewer", role: "reviewer", provider: "fake", instructions: "Review as Anna does." });
+    const { support, step, item } = supportNaming(hers.id);
+    expect(getAgent(recordDb.db, hers.id)).toBeUndefined();
+
+    expect(await move(support.id)).toEqual({});
+
+    const theirs = listAgents(recordDb.db).find((agent) => agent.role === "reviewer" && agent.projectId === null)!;
+    expect(theirs.id).not.toBe(hers.id);
+    expect(getStep(recordDb.db, step.id)?.agentId).toBe(theirs.id);
+    const notes = bindingNotes();
+    expect(notes).toHaveLength(1);
+    expect(notes[0]!.body).toContain(`"Check" on the "Support delivery" pipeline named Anna's reviewer`);
+    expect(notes[0]!.body).toContain(`so it now runs **${theirs.name}**`);
+    const offers = await serving.offerWork(anna.deviceId, 1);
+    expect(offers.find((offer) => offer.dispatch.item.id === item.id)?.dispatch.agent?.id).toBe(theirs.id);
+  });
+
+  it("names no agent where the record has no agent of the kind, and says what to do", async () => {
+    const hers = createAgent(annaDb.db, { name: "Anna's auditor", role: "auditor", provider: "fake", instructions: "Audit." });
+    const { support, step } = supportNaming(hers.id);
+
+    expect(await move(support.id)).toEqual({});
+
+    expect(getStep(recordDb.db, step.id)?.agentId).toBeNull();
+    expect(bindingNotes().map((message) => message.body)).toEqual([expect.stringContaining("So the step names no agent, and its work waits there: choose an agent on the step.")]);
+  });
+
+  it("keeps a global agent the record holds too, and says nothing", async () => {
+    const shared = listAgents(annaDb.db).find((agent) => agent.role === "reviewer" && agent.projectId === null)!;
+    expect(getAgent(recordDb.db, shared.id)).toBeDefined();
+    const { support, step } = supportNaming(shared.id);
+
+    expect(await move(support.id)).toEqual({});
+
+    expect(getStep(recordDb.db, step.id)?.agentId).toBe(shared.id);
+    expect(bindingNotes()).toEqual([]);
   });
 });

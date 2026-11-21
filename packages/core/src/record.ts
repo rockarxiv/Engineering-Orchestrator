@@ -1124,6 +1124,15 @@ export const RecordPipelineSchema = PipelineViewSchema.extend({
   previewItem: z.unknown().nullable().default(null),
   updatedAt: z.number().default(0),
   /**
+   * Each agent the steps name, by its id: its name, its kind and the
+   * project it works for (EO-875). A step names an agent by an id that
+   * is this installation's, and only a project's own agents travel with
+   * a move. So a record that has not got a global agent a moved step
+   * names binds that step to its own agent of the kind, and says so,
+   * from this. Absent on a page from a build that predates it.
+   */
+  stepAgents: z.record(z.string(), z.object({ name: z.string(), kind: z.string(), projectId: z.string().nullable() })).optional(),
+  /**
    * What makes this pipeline a trial, and what of (EO-582, ARCHITECTURE.md,
    * "Trial pipelines"): when it was made, the conversation it came from,
    * and the pipeline its draft would replace or null. Null on every

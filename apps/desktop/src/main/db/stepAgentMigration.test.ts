@@ -18,7 +18,7 @@ import { listOpenMessages } from "./repos/messagesRepo.js";
 import { createPipeline, getStep, listStepsForPipeline } from "./repos/pipelineStepsRepo.js";
 import { versionGraph } from "./repos/pipelineVersionsRepo.js";
 import { createProject } from "./repos/projectsRepo.js";
-import { appendRunEvent, createRun } from "./repos/index.js";
+import { appendRunEvent, createRun, transitionItem } from "./repos/index.js";
 import { createTestItem } from "./testHelpers.js";
 
 /**
@@ -224,6 +224,8 @@ describe("migration 0181: a step names its agent (EO-875)", () => {
       const run = createRun(handle.db, { itemId: item.id, agentId: implementer.id, action: "implement", status: "succeeded" });
       appendRunEvent(handle.db, run.id, "output", { text: "Built it." });
       appendRunEvent(handle.db, run.id, "result", { result: "done" });
+      // The move that run's result made, as the engine writes it.
+      transitionItem(handle.db, { itemId: item.id, toStepId: "review", toPipelineId: "default" as Uuid, actor: implementer.id, runId: run.id, reason: "result:done" });
     });
     const read = () => ({
       runs: handle.db.all(sql`SELECT * FROM runs ORDER BY id`),
@@ -236,6 +238,8 @@ describe("migration 0181: a step names its agent (EO-875)", () => {
 
     expect(read()).toEqual(before);
     expect(before.events).toHaveLength(2);
+    // Something to compare: the transition is there, whole, before and after.
+    expect(before.transitions).toEqual([expect.objectContaining({ from_step_id: "todo", to_step_id: "review", actor: implementer.id, reason: "result:done" })]);
     // And the step those runs were made on runs the same agent they did.
     expect(listStepsForPipeline(handle.db, "default").find((step) => step.id === "todo")?.agentId).toBe(implementer.id);
   });
