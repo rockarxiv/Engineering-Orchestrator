@@ -358,9 +358,9 @@ import { createMemoryConsolidator, type MemoryConsolidatorOptions } from "../mem
 import { archiveReachOf, archiveUnusedSkills } from "../skills/archival.js";
 import { currentWatch, markCheckInFlight, ownerMention, recordQuietCheck, waitingLine, watchArrival, watchHold, watchRoundTrips, WATCH_ROUTED_REASON, WATCH_VERIFICATION_FAILED_REASON } from "./watches.js";
 import { agentMentionChain } from "./escalation.js";
-import { answerTeamCall, createTeamParticipantScopes, memberAttemptOf, memberCredential, memberWrites, withinBoundary, type TeamParticipantScopes } from "./teamParticipants.js";
+import { answerTeamCall, createTeamParticipantScopes, memberAttemptOf, MEMBER_NO_BRIDGE, memberCredential, memberWrites, withinBoundary, type TeamParticipantScopes } from "./teamParticipants.js";
 import { createTeamSupervisor, MACHINE_PARTICIPANT_LIMIT, reportMemberCopy, TEAM_RETRY_WORDS, type IsolatedTurnAnswer, type IsolatedTurnRequest, type ReportOnlyProviderAnswer, type TeamAnswerContract } from "./teamSupervisor.js";
-import { currentTeamSession, endTeamSession, getTeamSession } from "../db/repos/teamSessionsRepo.js";
+import { currentTeamSession, endTeamSession, getTeamAttempt, getTeamSession, getTeamSessionRecord, runsOfTeamSession } from "../db/repos/teamSessionsRepo.js";
 import { teamNotHereProblem, type TeamControlSite } from "./teamSessionView.js";
 
 function safeTurnAttachments(attachments: NonNullable<ReturnType<typeof listCommentsForItem>[number]["attachments"]>): AgentInputAttachment[] {
@@ -900,6 +900,13 @@ export interface RunSupervisorOptions {
      * boundary, so its team's other reports are not part of its context.
      */
     visible?: ThreadFilter,
+    /**
+     * Runs that are not the agent having looked (EO-870): absent on every
+     * ordinary dispatch; an isolated member's turn passes its own team
+     * session's, so a sibling's run or a leader turn of the same agent
+     * does not empty its "human comments since".
+     */
+    notLooked?: ReadonlySet<string>,
   ) => string | Promise<string>;
   /**
    * What state an item moves to on success.
@@ -2147,7 +2154,7 @@ export function createRunSupervisor(
     // Wrapped rather than passed as the bare default, so the pack's own
     // sections reach the assembly without the seam growing a parameter
     // every test that stubs it would have to ignore.
-    buildContext = (db, item, agent, action, resumingRun, visible) => buildTurnContext(db, item, agent, action, resumingRun, sectionRenderers, visible),
+    buildContext = (db, item, agent, action, resumingRun, visible, notLooked) => buildTurnContext(db, item, agent, action, resumingRun, sectionRenderers, visible, notLooked),
     resolveNextState = () => undefined,
     resultKeyOf = () => undefined,
     onRunSucceeded = () => {},
@@ -8166,9 +8173,22 @@ export function createRunSupervisor(
    */
   async function isolatedMemberTurn(request: IsolatedTurnRequest): Promise<IsolatedTurnAnswer> {
     const { item, step, agent, run, cwd } = request;
+    // Its team boundary reaches its `eo` server only on its credential
+    // (EO-870): with no bridge to sign one — not listening yet, or never —
+    // the server would serve it the whole thread, its team's other
+    // reports included. So it does not start, and the attempt fails as
+    // any execution failure does, to be retried.
+    const bridge = options.agentWriteBridge?.() ?? null;
+    if (bridge === null) return { ok: false, problem: MEMBER_NO_BRIDGE };
     const action = step.entryAction ?? "";
     const visible = withinBoundary(request.boundary);
-    const ordinary = await buildContext(db, item, agent, action, null, visible);
+    // Neither a sibling's run nor a leader turn of its own agent, in its
+    // own session, is the agent having looked (EO-870): its "human
+    // comments since" is what an ordinary dispatch would show it.
+    const attempt = getTeamAttempt(db, request.attemptId);
+    const record = attempt === undefined ? undefined : getTeamSessionRecord(db, attempt.sessionId);
+    const ownSession = new Set(record === undefined ? [] : runsOfTeamSession(record));
+    const ordinary = await buildContext(db, item, agent, action, null, visible, ownSession);
     const copyWorkspace: PreparedWorkspace = { cwd, kind: kindFor(item).slug, workspaceId: item.workspaceId };
     // The index the step's ordinary dispatch is lent, which is the item's
     // own: an index is kept per item, and building one for a copy would
@@ -8189,7 +8209,6 @@ export function createRunSupervisor(
       else postComment(db, { itemId: item.id, runId: run.id, author: { type: "engine" }, kind: "note", body: missingCliToolNotice(tool, agent.name) });
     }
     for (const notice of attachment.notices) postComment(db, { itemId: item.id, runId: run.id, author: { type: "engine" }, kind: "note", body: notice });
-    const bridge = options.agentWriteBridge?.() ?? null;
     const instructions = agent.instructions.trim() === "" ? request.framing.instructions : `${agent.instructions}\n\n${request.framing.instructions}`;
     const context = [ordinary, ...(memory.section === null ? [] : [memory.section]), request.framing.context].join("\n\n");
     return {
@@ -8207,7 +8226,7 @@ export function createRunSupervisor(
         // No `attachFrom`: a member posts nothing on the item, files
         // included — its report is what reaches the thread.
         ...(scopes.length > 0 ? { memoryScopes: memoryReadScopes(scopes) } : {}),
-        ...(bridge === null ? {} : { writeBridge: memberCredential(bridge, item.id, request.attemptId, memberWrites(memoryNoteEnabled(agent)), request.boundary) }),
+        writeBridge: memberCredential(bridge, item.id, request.attemptId, memberWrites(memoryNoteEnabled(agent)), request.boundary),
       },
       observe: (event, buffer) => {
         if (event.type !== "skills_delivered" && event.type !== "skill_loaded") return false;
