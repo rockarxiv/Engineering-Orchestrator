@@ -159,6 +159,7 @@ function outputView(db: Db, item: Item, agentsById: Map<string, Agent>, visible:
  */
 export type ThreadFilter = (comment: Comment) => boolean;
 const ALL: ThreadFilter = () => true;
+const NONE: ReadonlySet<string> = new Set();
 
 /**
  * "What shipped" for a dependency — the structured result of its last
@@ -586,7 +587,16 @@ function triggerComment(db: Db, item: Item, agent: Agent, action: string, agents
  * receive the same text. That is a real difference from the full
  * assembly and worth stating rather than discovering.
  */
-export async function buildSeedContext(db: Db, item: Item, agent: Agent, action: string, sectionRenderers: readonly SectionRenderer[] = [], visible: ThreadFilter = ALL): Promise<string> {
+export async function buildSeedContext(
+  db: Db,
+  item: Item,
+  agent: Agent,
+  action: string,
+  sectionRenderers: readonly SectionRenderer[] = [],
+  visible: ThreadFilter = ALL,
+  /** Runs that are not the agent having looked: an isolated member's own team session's (EO-870). None on an ordinary dispatch. */
+  notLooked: ReadonlySet<string> = NONE,
+): Promise<string> {
   const agentsById = new Map(listAgents(db).map((candidate) => [candidate.id as string, candidate]));
   const comments = listCommentsForItem(db, item.id).filter(visible);
   const runs = listRunsForItem(db, item.id);
@@ -616,7 +626,7 @@ export async function buildSeedContext(db: Db, item: Item, agent: Agent, action:
     comment: attribute(entry.comment, agentsById),
   }));
 
-  const humanComments = humanCommentsSince(said, lastRunOf(runs, agent.id)).map((comment) => attribute(comment, agentsById));
+  const humanComments = humanCommentsSince(said, lastRunOf(notLooked.size === 0 ? runs : runs.filter((run) => !notLooked.has(run.id)), agent.id)).map((comment) => attribute(comment, agentsById));
   // The repositories among them, because that is what this section
   // says it lists and what its fields are — a path to a checkout and a
   // description of what lives there. A folder workspace has neither,
@@ -734,6 +744,8 @@ export async function buildTurnContext(
   sectionRenderers: readonly SectionRenderer[] = [],
   /** Which comments it may show: all, but for an isolated team member's turn (EO-867), which never resumes a thread. */
   visible: ThreadFilter = ALL,
+  /** Runs that are not the agent having looked: none, but for an isolated team member's turn, its own session's (EO-870). */
+  notLooked: ReadonlySet<string> = NONE,
 ): Promise<string> {
   if (resumingRun !== null) {
     return buildFollowUpContext(db, item, agent, action, resumingRun, {
@@ -769,5 +781,5 @@ export async function buildTurnContext(
   // context about the work but the work itself.
   return fullThreadEnabled(agent) || CONVERSATION_ACTIONS.has(action)
     ? buildDispatchContext(db, item, action, sectionRenderers, undefined, agent.role, visible)
-    : buildSeedContext(db, item, agent, action, sectionRenderers, visible);
+    : buildSeedContext(db, item, agent, action, sectionRenderers, visible, notLooked);
 }
