@@ -2,20 +2,20 @@ import { staffingLine, useProjectOwnAgents, useProjectStaffing } from "../../../
 
 /**
  * Under a project in the chat layout's settings: its own agents, and for
- * each role its pipelines use, who will be dispatched (EO-475). What is
- * said is the app's (`shared/agents/agentScope`), shared with the classic
- * layout; only the drawing is here.
+ * each agent step of its pipelines, the agent the step names (EO-475,
+ * EO-876) — read from the step, never from a staffing rule. What is said
+ * is the app's (`shared/agents/agentScope`); only the drawing is here.
  */
 export function ProjectAgents({ projectId }: { projectId: string }) {
   const own = useProjectOwnAgents(projectId);
   const staffing = useProjectStaffing(projectId);
-  const roles = staffing.data?.roles ?? [];
+  const steps = staffing.data?.steps ?? [];
 
   return (
     <div aria-label="This project's agents" className="flex flex-col gap-1 text-[11.5px] leading-snug text-ink-subtle">
       <p aria-label="Agents of this project's own">
         {own.length === 0 ? (
-          "No agents of its own: its work goes to the global agents. Customise one for this project under Agents."
+          "No agents of its own: its steps name global agents. Customise one for this project under Agents."
         ) : (
           <>
             This project&apos;s own agents:{" "}
@@ -30,11 +30,12 @@ export function ProjectAgents({ projectId }: { projectId: string }) {
         )}
       </p>
       {staffing.error ? <p className="text-danger">{staffing.error.message}</p> : null}
-      {roles.length > 0 ? (
-        <ul aria-label="Who is dispatched, by role" className="flex flex-col gap-0.5">
-          {roles.map((entry) => (
-            <li key={entry.role} aria-label={entry.role}>
-              <span className="font-mono">{entry.role}</span> → <span className={entry.from === "nobody" ? "text-danger" : "text-ink"}>{staffingLine(entry)}</span>
+      {steps.length > 0 ? (
+        <ul aria-label="Who runs each step" className="flex flex-col gap-0.5">
+          {steps.map((entry) => (
+            <li key={entry.stepId} aria-label={`${entry.pipelineName} · ${entry.stepName}`}>
+              {entry.pipelineName} · <span className="text-ink-muted">{entry.stepName}</span> →{" "}
+              <span className={entry.problem === null ? "text-ink" : "text-danger"}>{staffingLine(entry)}</span>
             </li>
           ))}
         </ul>

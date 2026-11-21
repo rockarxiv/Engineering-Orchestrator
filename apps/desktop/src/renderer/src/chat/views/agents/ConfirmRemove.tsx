@@ -1,6 +1,5 @@
 import type { AgentRemovalImpact } from "@eo/core";
 import type { AgentRemoval } from "../../../shared/agents/removal";
-import { useChromeVocabulary } from "../../../query/hooks";
 import { Button, Dialog } from "../../kit";
 import { ItemKeyLink } from "../../conversation/references";
 
@@ -10,9 +9,11 @@ import { ItemKeyLink } from "../../conversation/references";
  *
  * What it says comes from the main process's unconfirmed
  * `agents:archive` / `agents:delete`, not from anything cached: who else
- * holds the role and which run is in progress are facts about this
+ * steps name it and which run is in progress are facts about this
  * moment. Nothing is offered to confirm until that answer is in, and a
- * refusal is shown as the sentence it came back as.
+ * refusal is shown as the sentence it came back as. An agent a pipeline
+ * step names is refused (EO-876): the steps are listed, and nothing is
+ * offered to confirm until each names another agent.
  */
 export function ConfirmRemove({
   name,
@@ -33,8 +34,9 @@ export function ConfirmRemove({
   onConfirm: () => void;
   onCancel: () => void;
 }) {
-  const vocabulary = useChromeVocabulary();
   const verb = removal === "delete" ? "Delete" : "Archive";
+  // Refused while a step names it (EO-876): the answer's own sentence says so.
+  const named = impact !== null && impact.steps.length > 0;
 
   return (
     <Dialog
@@ -48,9 +50,9 @@ export function ConfirmRemove({
       footer={
         <>
           <Button variant="ghost" onClick={onCancel} disabled={busy}>
-            {impact === null && problem !== null ? "Close" : "Keep it"}
+            {(impact === null && problem !== null) || named ? "Close" : "Keep it"}
           </Button>
-          {impact !== null ? (
+          {impact !== null && !named ? (
             <Button variant="danger" disabled={busy} onClick={onConfirm}>
               {verb} {name}
             </Button>
@@ -65,17 +67,17 @@ export function ConfirmRemove({
           ) : null
         ) : (
           <>
-            <p>
-              {removal === "delete"
-                ? "It disappears from this screen, archived agents included, and nothing dispatches it again. Its past runs and comments keep its name. This cannot be undone."
-                : "Nothing dispatches it again and it staffs no role. Its runs and comments are kept, and nothing brings it back."}
-            </p>
+            {named ? null : (
+              <p>
+                {removal === "delete"
+                  ? "It disappears from this screen, archived agents included, and nothing dispatches it again. Its past runs and comments keep its name. This cannot be undone."
+                  : "Nothing dispatches it again and no step can name it. Its runs and comments are kept, and nothing brings it back."}
+              </p>
+            )}
 
-            {impact.steps.length > 0 ? (
-              <div aria-label="Steps owned by its role" className="flex flex-col gap-1">
-                <p>
-                  Its role, <span className="font-mono text-ink">{impact.role}</span>, owns these steps:
-                </p>
+            {named ? (
+              <div aria-label="Steps that name it" className="flex flex-col gap-1">
+                <p>These pipeline steps name it:</p>
                 <ul className="list-disc pl-5">
                   {impact.steps.map((step) => (
                     <li key={step.stepId}>
@@ -83,18 +85,10 @@ export function ConfirmRemove({
                     </li>
                   ))}
                 </ul>
-                {impact.leavesStepsWithNobody ? (
-                  <p role="alert" className="text-paused">
-                    {impact.agentName} is the last enabled agent on this role. These steps will have nobody, and {vocabulary.items.toLowerCase()} reaching
-                    them will wait until another agent takes the role.
-                  </p>
-                ) : impact.coveredBy.length > 0 ? (
-                  <p>Still covered by {impact.coveredBy.join(", ")}.</p>
-                ) : null}
               </div>
             ) : null}
 
-            {impact.activeRuns.length > 0 ? (
+            {!named && impact.activeRuns.length > 0 ? (
               <div role="alert" aria-label="Runs in progress" className="flex flex-col gap-1 text-paused">
                 <p>It is working on this now. {verb === "Delete" ? "Deleting" : "Archiving"} cancels the run:</p>
                 <ul className="list-disc pl-5">
@@ -107,7 +101,7 @@ export function ConfirmRemove({
               </div>
             ) : null}
 
-            {impact.lastSystemAgent ? (
+            {!named && impact.lastSystemAgent ? (
               <p role="alert" className="text-paused">
                 It is the last enabled system agent. The assistant will have nobody to answer.
               </p>

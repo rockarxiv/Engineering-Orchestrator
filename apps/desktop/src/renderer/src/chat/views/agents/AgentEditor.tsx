@@ -387,6 +387,14 @@ export function AgentEditor({
             {chip.label}
           </Chip>
         </div>
+        {/* Which pipeline steps name it (EO-876): a step runs the agent it names, so these are where it works. */}
+        {isNew ? null : (
+          <p aria-label="Steps that name it" className="text-[11.5px] leading-snug text-ink-subtle">
+            {(agent.steps ?? []).length === 0
+              ? "No pipeline step names it, so nothing dispatches it."
+              : `Named by ${(agent.steps ?? []).map((step) => `${step.stepName} in ${step.pipelineName}`).join(", ")}.`}
+          </p>
+        )}
         {/* What the organisation manages, said where somebody is about to try to edit it. */}
         <ManagedLockLine section="agents" />
         {/* Reachable to be read, and must not imply that Save brings it back (EO-186). */}

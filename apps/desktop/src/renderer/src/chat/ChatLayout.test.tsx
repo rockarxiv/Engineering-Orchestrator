@@ -1394,7 +1394,7 @@ describe("the canvas", () => {
     const approve = await within(canvas).findByRole("region", { name: /^Approve/ });
     expect(within(approve).getByText("you")).toBeInTheDocument();
     expect(await within(approve).findByText("Week of 29 September")).toBeInTheDocument();
-    expect(within(within(canvas).getByRole("region", { name: /^Gather/ })).getByText("reporter")).toBeInTheDocument();
+    expect(within(within(canvas).getByRole("region", { name: /^Gather/ })).getByText("reporter — reporter · Built in (fake) · default model")).toBeInTheDocument();
     expect(screen.getByRole("region", { name: "Conversation" })).toBeInTheDocument();
   });
 

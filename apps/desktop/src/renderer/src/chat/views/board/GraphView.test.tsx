@@ -570,10 +570,22 @@ describe("a step's details, read-only (EO-524)", () => {
     const details = screen.getByRole("region", { name: "To Do" });
     expect(within(details).getByText("An agent — implementer")).toBeInTheDocument();
     expect(detailsOf()).toMatchObject({ "Who acts": "An agent — implementer", Action: "implement" });
+    // The agent the step names, with its kind, backend and model (EO-876).
+    expect(detailsOf().Agent).toMatch(/ — implementer · .+ · /);
     expect(screen.getByRole("button", { name: "To Do" })).toHaveAttribute("aria-pressed", "true");
     // Pressed again, it closes.
     fireEvent.click(screen.getByRole("button", { name: "To Do" }));
     expect(screen.queryByRole("region", { name: "To Do" })).toBeNull();
+  });
+
+  it("says in words when a step names no agent, or one EO no longer has (EO-876)", async () => {
+    mockIpc({ steps: [step("todo", "To Do", 0, { type: "agent", agentId: null, entryAction: "implement" }), step("check", "Check", 1, { type: "agent", agentId: "agent-gone", entryAction: "review" }), { ...STEPS[2]!, position: 2 }] });
+    renderGraph();
+
+    fireEvent.click(await screen.findByRole("button", { name: "To Do" }));
+    expect(detailsOf().Agent).toBe("No agent is chosen for this step, so nothing runs here until one is.");
+    fireEvent.click(screen.getByRole("button", { name: "Check" }));
+    expect(detailsOf().Agent).toBe("This step names an agent EO no longer has, so nothing runs here until it names another.");
   });
 
   /**

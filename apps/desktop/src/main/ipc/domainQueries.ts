@@ -2227,6 +2227,8 @@ export function listAgentViews(db: Db): IpcResponse<"agents:list"> {
       model: agent.model,
       enabled: agent.enabled,
       archivedAt: agent.archivedAt,
+      // So a step naming a tombstone says "deleted" (EO-876).
+      deletedAt: agent.deletedAt,
     })),
   };
 }

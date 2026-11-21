@@ -6,7 +6,7 @@ import { summarizeInstructions } from "@eo/core";
 import type { AgentDetail, AgentRemovalImpact, IpcRequest } from "@eo/core";
 import { cn } from "@eo/ui";
 import { ipcQuery } from "../../../query/client";
-import { agentAttachmentsKey, agentsKey, useLockedSections, useRegistry } from "../../../query/hooks";
+import { agentAttachmentsKey, agentsKey, pipelineStepsRootKey, useLockedSections, useRegistry } from "../../../query/hooks";
 import { agentDetailsKey } from "../../../shared/settings/primitives";
 import { runtimeLabel } from "../../../shared/agents/catalog";
 import { machineAvailable } from "../../../ipc/bridge";
@@ -137,6 +137,8 @@ export function AgentsView() {
   const [showArchived, setShowArchived] = useState(false);
   /** A refused binding or archive, said where the list is rather than beside the prompt (EO-186). */
   const [rowProblem, setRowProblem] = useState<string | null>(null);
+  /** What a save or a copy changed beyond the agent (EO-876): the steps a disable stops, the steps a copy now runs on. */
+  const [notice, setNotice] = useState<string | null>(null);
   const locked = useLockedSections().isLocked("agents");
   // `?actions=<role>` (EO-428): the role whose Actions section somebody was sent here for.
   const [searchParams] = useSearchParams();
@@ -150,6 +152,7 @@ export function AgentsView() {
     onSuccess: (result) => {
       // A refusal leaves the editor open, holding what was typed (EO-328).
       if (!result.saved) return;
+      setNotice(result.warning ?? null);
       void queryClient.invalidateQueries({ queryKey: agentDetailsKey });
       void queryClient.invalidateQueries({ queryKey: agentsKey });
       setCreating(null);
@@ -176,8 +179,17 @@ export function AgentsView() {
     mutationFn: (input: { agentId: string; projectId: string }) => ipcQuery("agents:customise", input),
     onSuccess: (result) => {
       if (!result.saved || result.agent === null) return;
+      // Which of the project's steps now name the copy (EO-876).
+      const changed = result.changedSteps ?? [];
+      setNotice(
+        changed.length === 0
+          ? `${result.agent.name} is made. No step of the project named the original, so no step names the copy yet.`
+          : `${result.agent.name} is made, and now runs ${changed.map((step) => `${step.stepName} in ${step.pipelineName}`).join(", ")} in place of the original.`,
+      );
       void queryClient.invalidateQueries({ queryKey: agentDetailsKey });
       void queryClient.invalidateQueries({ queryKey: agentsKey });
+      // The steps changed agent, so every board drawing them reads them again.
+      void queryClient.invalidateQueries({ queryKey: pipelineStepsRootKey });
       // The copy's MCP servers and skills were written with it, into a
       // join the picker reads from its own cache entry. Left alone, the
       // copy's editor would draw the answer from before it existed —
@@ -282,6 +294,7 @@ export function AgentsView() {
     builtin: false,
     config: {},
     pipelineCount: 0,
+    steps: [],
     projectId: null,
   };
 
@@ -387,6 +400,11 @@ export function AgentsView() {
           </div>
 
           {rowProblem !== null ? <p role="alert" className="whitespace-pre-line text-[12.5px] text-danger">{rowProblem}</p> : null}
+          {notice !== null ? (
+            <p role="status" aria-label="What changed" className="text-[12.5px] text-paused">
+              {notice}
+            </p>
+          ) : null}
           {agents.error ? <ErrorLine>{agents.error.message}</ErrorLine> : null}
 
           {removing !== null ? (

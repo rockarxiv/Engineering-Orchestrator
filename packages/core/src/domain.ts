@@ -288,7 +288,7 @@ export function stepAgentRefusal(agent: StepAgentFacts, item: Pick<Item, "previe
 }
 
 /** What a screen or a tool reads of the agent a step names, to say who runs the step (EO-876). */
-export type ShownStepAgent = Pick<Agent, "name" | "role" | "provider" | "model" | "enabled" | "archivedAt"> & { readonly id: string; readonly deletedAt?: number | null };
+export type ShownStepAgent = Pick<Agent, "name" | "role" | "provider" | "model" | "enabled" | "archivedAt"> & { readonly id: string; readonly deletedAt?: number | null | undefined };
 
 /**
  * The agent a step names, in a line: its kind, its backend and its model
