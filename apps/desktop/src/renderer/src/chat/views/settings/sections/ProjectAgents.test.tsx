@@ -17,6 +17,7 @@ const step = (stepName: string, agent: IpcResponse<"projects:staffing">["steps"]
   stepName,
   pipelineId: "p-delivery",
   pipelineName: "Delivery",
+  version: null,
   agent,
   problem,
 });

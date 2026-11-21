@@ -935,12 +935,34 @@ export const AgentViewSchema = z.object({
    * naming a tombstone say "deleted" rather than "archived" (EO-876).
    */
   deletedAt: z.number().nullable().optional(),
+  /**
+   * The project this agent works for, or null for a global one (EO-474).
+   * What lets a step whose agent was moved to another project say that
+   * nothing runs there (EO-876). Optional, so a listing from before it
+   * reads as every agent global.
+   */
+  projectId: z.string().nullable().optional(),
 });
 
 export type AgentView = z.infer<typeof AgentViewSchema>;
 
-/** A pipeline step that names an agent (EO-876): what the Agents screen lists under it, and what archiving it is refused for. */
-export const StepNamingAgentSchema = z.object({ stepId: z.string(), stepName: z.string(), pipelineId: z.string(), pipelineName: z.string() });
+/**
+ * A pipeline step that names an agent (EO-876): what the Agents screen
+ * lists under it, and what archiving it is refused for.
+ *
+ * `version` is the older version of the pipeline the step names it on,
+ * where unfinished items still run on that version and its step names
+ * the agent although the current graph's may not; null for the current
+ * graph. Defaulted, so an answer from before it reads as the current
+ * graph.
+ */
+export const StepNamingAgentSchema = z.object({
+  stepId: z.string(),
+  stepName: z.string(),
+  pipelineId: z.string(),
+  pipelineName: z.string(),
+  version: z.number().int().positive().nullable().default(null),
+});
 export type StepNamingAgent = z.infer<typeof StepNamingAgentSchema>;
 
 /**

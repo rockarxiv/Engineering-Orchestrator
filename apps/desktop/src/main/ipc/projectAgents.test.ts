@@ -9,6 +9,13 @@ import { giveSeededDelivery, openMigratedTestDb } from "../db/testHelpers.js";
 import { writePolicy } from "../policy/policy.js";
 import { NO_POLICY } from "@eo/core";
 import { customiseAgent, listAgentDetails, projectStaffing, saveAgent } from "./configCommands.js";
+import { listPipelineStepViews } from "./domainQueries.js";
+import { pipelines } from "../db/schema.js";
+import { markReplica } from "../db/recordRole.js";
+import { publishSection } from "../db/repos/publishedSectionsRepo.js";
+import { markDiverged } from "../db/repos/divergenceRepo.js";
+import { listPipelinesUpdatedSince } from "../db/repos/projectMoveRepo.js";
+import { sectionLockFor } from "../managed/locks.js";
 
 /**
  * A project's own agents, from the two commands the Agents screen and a
@@ -172,6 +179,80 @@ describe("customising changes what the project's own steps name", () => {
   });
 });
 
+describe("customising where the organisation manages pipelines (EO-876)", () => {
+  let stopBeingAReplica: (() => void) | null = null;
+  afterEach(() => {
+    stopBeingAReplica?.();
+    stopBeingAReplica = null;
+  });
+
+  it("refuses, writing nothing, where pipelines are published and agents are not, since the copy would rewrite a managed step", () => {
+    const project = createProject(handle.db, { name: "Support", keyPrefix: "SUP" });
+    giveSeededDelivery(handle.db, project.id);
+    stopBeingAReplica = markReplica(handle.db, () => true);
+    publishSection(handle.db, { section: "pipelines", publishedAt: Date.now(), publishedBy: null, publishedByName: "Dana" });
+    // The channel itself is the agents section's, which is not published.
+    expect(sectionLockFor(handle.db, "agents:customise", { agentId: implementer.id, projectId: project.id })).toBeNull();
+    const agents = listAgents(handle.db).length;
+    const before = listPipelineSteps(handle.db).map((step) => [step.id, step.agentId]);
+
+    const answer = customiseAgent(handle.db, { agentId: implementer.id, projectId: project.id });
+
+    expect(answer).toMatchObject({ saved: false, agent: null, changedSteps: [], locked: { locked: true, section: "pipelines", publishedBy: "Dana" } });
+    expect(answer.problem).toContain("The pipelines section is managed by your organisation. Dana published it.");
+    expect(answer.problem).toContain("nothing was copied");
+    expect(listAgents(handle.db)).toHaveLength(agents);
+    expect(listPipelineSteps(handle.db).map((step) => [step.id, step.agentId])).toEqual(before);
+  });
+
+  it("copies and re-points a pipeline this machine diverged, which `pipeline:save` may edit too", () => {
+    const project = createProject(handle.db, { name: "Support", keyPrefix: "SUP" });
+    giveSeededDelivery(handle.db, project.id);
+    stopBeingAReplica = markReplica(handle.db, () => true);
+    publishSection(handle.db, { section: "pipelines", publishedAt: Date.now(), publishedBy: null, publishedByName: "Dana" });
+    markDiverged(handle.db, "default", null, Date.now());
+
+    const answer = customiseAgent(handle.db, { agentId: implementer.id, projectId: project.id });
+
+    expect(answer.saved).toBe(true);
+    expect(answer.locked).toBeNull();
+    expect(answer.changedSteps.length).toBeGreaterThan(0);
+  });
+
+  it("copies where no step of the project names the original, since no managed step is rewritten", () => {
+    const project = createProject(handle.db, { name: "Support", keyPrefix: "SUP" });
+    stopBeingAReplica = markReplica(handle.db, () => true);
+    publishSection(handle.db, { section: "pipelines", publishedAt: Date.now(), publishedBy: null, publishedByName: "Dana" });
+
+    const answer = customiseAgent(handle.db, { agentId: implementer.id, projectId: project.id });
+
+    expect(answer).toMatchObject({ saved: true, changedSteps: [], locked: null });
+  });
+});
+
+describe("customising pages the re-pointed steps to replicas (EO-876)", () => {
+  it("moves each changed pipeline's updated_at, so a replica that already read it reads its steps again", () => {
+    const project = createProject(handle.db, { name: "Support", keyPrefix: "SUP" });
+    giveSeededDelivery(handle.db, project.id);
+    // A replica that has read every pipeline up to here.
+    handle.db.update(pipelines).set({ updatedAt: 1_000 }).run();
+    const cursor = { ts: 1_000, id: "\uffff" };
+    expect(listPipelinesUpdatedSince(handle.db, cursor, 100, project.id)).toEqual([]);
+
+    const answer = customiseAgent(handle.db, { agentId: implementer.id, projectId: project.id });
+
+    const changed = new Set(answer.changedSteps.map((step) => step.pipelineId));
+    expect(changed.size).toBeGreaterThan(0);
+    const paged = listPipelinesUpdatedSince(handle.db, cursor, 100, project.id);
+    expect(new Set(paged.map((pipeline) => pipeline.id as string))).toEqual(changed);
+    for (const pipeline of paged) {
+      for (const step of answer.changedSteps.filter((each) => each.pipelineId === pipeline.id)) {
+        expect(pipeline.steps.find((each) => each.id === step.stepId)?.agentId).toBe(answer.agent!.id);
+      }
+    }
+  });
+});
+
 describe("who runs a project's steps", () => {
   it("lists each agent step of the project's pipelines with the agent the step names (EO-876)", () => {
     const project = createProject(handle.db, { name: "Support", keyPrefix: "SUP" });
@@ -214,6 +295,27 @@ describe("who runs a project's steps", () => {
     for (const step of implementing) {
       expect(step.agent?.id).toBe(implementer.id);
       expect(step.problem).toBe(`${implementer.name} is disabled, so nothing runs here until it is enabled or the step names another agent.`);
+    }
+  });
+
+  it("says so where the step's global agent was moved to another project after the step named it, as dispatch refuses it (EO-876)", () => {
+    const project = createProject(handle.db, { name: "Support", keyPrefix: "SUP" });
+    giveSeededDelivery(handle.db, project.id);
+    const other = createProject(handle.db, { name: "Shop", keyPrefix: "SHOP" });
+    // Moved through `agents:save`, the way the Agents screen moves it.
+    const moved = saveAgent(handle.db, { id: implementer.id, name: implementer.name, role: implementer.role, provider: implementer.provider, model: implementer.model, instructions: implementer.instructions, enabled: true, projectId: other.id });
+    expect(moved.saved).toBe(true);
+    const sentence = `${implementer.name} works for another project, so nothing runs here until the step names another agent.`;
+
+    // Project settings.
+    const implementing = projectStaffing(handle.db, { projectId: project.id }).steps.filter((step) => step.agent?.id === implementer.id);
+    expect(implementing.length).toBeGreaterThan(0);
+    for (const step of implementing) expect(step.problem).toBe(sentence);
+    // The Graph view, the board's column head and `pipeline_get` all read `pipelineSteps:list`.
+    for (const pipelineId of new Set(implementing.map((step) => step.pipelineId))) {
+      const graph = listPipelineStepViews(handle.db, { pipelineId });
+      expect(graph.pipelineProjectId).toBe(project.id);
+      for (const step of implementing.filter((each) => each.pipelineId === pipelineId)) expect(graph.stepAgents?.[step.stepId]?.problem).toBe(sentence);
     }
   });
 });

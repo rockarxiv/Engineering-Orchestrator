@@ -193,24 +193,35 @@ describe("a step's agent (EO-875)", () => {
 });
 
 describe("why nothing runs on an agent step, in words (EO-876)", () => {
-  const agent = { id: "r", name: "Reviewer", role: "reviewer", provider: "claude", model: null, enabled: true, archivedAt: null, deletedAt: null };
+  const agent = { id: "r", name: "Reviewer", role: "reviewer", provider: "claude", model: null, enabled: true, archivedAt: null, deletedAt: null, projectId: null as string | null };
   const step = (agentId: string | null) => ({ type: "agent", agentId });
 
   it("is null where the step's agent can run, and for a step of another type", () => {
-    expect(stepAgentProblem([agent], step("r"))).toBeNull();
-    expect(stepAgentProblem([agent], { type: "user", agentId: null })).toBeNull();
+    expect(stepAgentProblem([agent], step("r"), "p")).toBeNull();
+    expect(stepAgentProblem([agent], { type: "user", agentId: null }, "p")).toBeNull();
   });
 
   it("says no agent is chosen, and an agent EO no longer has", () => {
-    expect(stepAgentProblem([agent], step(null))).toBe("No agent is chosen for this step, so nothing runs here until one is.");
-    expect(stepAgentProblem([agent], step("gone"))).toBe("This step names an agent EO no longer has, so nothing runs here until it names another.");
+    expect(stepAgentProblem([agent], step(null), "p")).toBe("No agent is chosen for this step, so nothing runs here until one is.");
+    expect(stepAgentProblem([agent], step("gone"), "p")).toBe("This step names an agent EO no longer has, so nothing runs here until it names another.");
   });
 
   it("names the agent and what to do, deleted before archived before disabled before unbound", () => {
-    expect(stepAgentProblem([{ ...agent, deletedAt: 1, archivedAt: 1, enabled: false }], step("r"))).toBe("Reviewer has been deleted, so nothing runs here until the step names another agent.");
-    expect(stepAgentProblem([{ ...agent, archivedAt: 1, enabled: false }], step("r"))).toBe("Reviewer is archived, so nothing runs here until the step names another agent.");
-    expect(stepAgentProblem([{ ...agent, enabled: false }], step("r"))).toBe("Reviewer is disabled, so nothing runs here until it is enabled or the step names another agent.");
-    expect(stepAgentProblem([{ ...agent, provider: UNBOUND_BACKEND }], step("r"))).toContain("Reviewer has no backend on this machine");
+    expect(stepAgentProblem([{ ...agent, deletedAt: 1, archivedAt: 1, enabled: false }], step("r"), "p")).toBe("Reviewer has been deleted, so nothing runs here until the step names another agent.");
+    expect(stepAgentProblem([{ ...agent, archivedAt: 1, enabled: false }], step("r"), "p")).toBe("Reviewer is archived, so nothing runs here until the step names another agent.");
+    expect(stepAgentProblem([{ ...agent, enabled: false }], step("r"), "p")).toBe("Reviewer is disabled, so nothing runs here until it is enabled or the step names another agent.");
+    expect(stepAgentProblem([{ ...agent, provider: UNBOUND_BACKEND }], step("r"), "p")).toContain("Reviewer has no backend on this machine");
+  });
+
+  it("says so where the agent was moved to another project after the step named it, as dispatch refuses it", () => {
+    // A global agent, chosen on a project's step, then given to another project on the Agents screen.
+    expect(stepAgentProblem([{ ...agent, projectId: "q" }], step("r"), "p")).toBe("Reviewer works for another project, so nothing runs here until the step names another agent.");
+    expect(stepAgentProblem([{ ...agent, projectId: "q" }], step("r"), null)).toContain("Reviewer works for one project only, and this pipeline belongs to none");
+    // Its own project's agent, and a global one anywhere, run.
+    expect(stepAgentProblem([{ ...agent, projectId: "p" }], step("r"), "p")).toBeNull();
+    expect(stepAgentProblem([agent], step("r"), null)).toBeNull();
+    // A disabled agent says what to do first, whatever its project.
+    expect(stepAgentProblem([{ ...agent, projectId: "q", enabled: false }], step("r"), "p")).toContain("is disabled");
   });
 
   it("says who runs it in a line: kind, backend and model", () => {

@@ -22,7 +22,7 @@ import { moduleAddress } from "../settings/org/moduleAddress";
 import { BoardView } from "./BoardView";
 
 /** An agent of each kind the fixtures' steps name, as `agent-<kind>` (EO-875): a step's kind is its agent's. */
-const kindAgent = (role: string) => ({ id: `agent-${role}`, name: role, role, provider: "fake", model: null, enabled: true, archivedAt: null });
+const kindAgent = (role: string) => ({ id: `agent-${role}`, name: role, role, provider: "fake", model: null, enabled: true, archivedAt: null, projectId: null as string | null });
 /** The owner line of a step naming `kindAgent("implementer")`: its name, kind, backend and model (EO-876). */
 const IMPLEMENTER_LINE = "implementer — implementer · Built in (fake) · default model";
 
@@ -197,6 +197,8 @@ function mockIpc(
     jira?: boolean;
     modules?: unknown[];
     agents?: unknown[];
+    /** The project the pipeline belongs to (EO-876). Absent is the board's own project. */
+    pipelineProjectId?: string | null;
     onMove?: (payload: unknown) => unknown;
     onHold?: (payload: unknown) => unknown;
     onResume?: (payload: unknown) => unknown;
@@ -223,6 +225,7 @@ function mockIpc(
           ok: true,
           data: {
             steps: options.states ?? STATES,
+            pipelineProjectId: options.pipelineProjectId === undefined ? "b1" : options.pipelineProjectId,
             routes: [],
             verification: options.verification ?? [],
             version: options.version ?? null,
@@ -568,6 +571,18 @@ describe("a column's owner line", () => {
     const todo = await column("To Do");
     expect(await within(todo).findByText("Tester — tester · Codex · gpt-5")).toBeInTheDocument();
     expect(within(todo).getByRole("status")).toHaveTextContent("Tester is disabled, so nothing runs here until it is enabled or the step names another agent.");
+  });
+
+  it("says nothing runs there where the step's agent was moved to another project after the step named it (EO-876)", async () => {
+    mockIpc({
+      states: [{ id: "todo", pipelineId: "default", position: 0, name: "To Do", type: "agent", agentId: "agent-tester", entryAction: "test", instructionsSummary: null, isTerminal: false }],
+      items: [],
+      agents: [{ ...kindAgent("tester"), name: "Tester", projectId: "elsewhere" }],
+    });
+    renderBoard();
+
+    const todo = await column("To Do");
+    expect(await within(todo).findByRole("status")).toHaveTextContent("Tester works for another project, so nothing runs here until the step names another agent.");
   });
 });
 

@@ -2229,6 +2229,8 @@ export function listAgentViews(db: Db): IpcResponse<"agents:list"> {
       archivedAt: agent.archivedAt,
       // So a step naming a tombstone says "deleted" (EO-876).
       deletedAt: agent.deletedAt,
+      // So a step whose agent moved to another project says nothing runs there (EO-876).
+      projectId: agent.projectId,
     })),
   };
 }
@@ -2480,12 +2482,15 @@ export function listPipelineStepViews(
       kind: agent?.role ?? null,
       provider: agent?.provider ?? null,
       model: agent?.model ?? null,
-      problem: stepAgentProblem(agents, step),
+      // Asked of the pipeline's own project, not the active one: an agent
+      // that works for another project is refused by dispatch here.
+      problem: stepAgentProblem(agents, step, getPipeline(db, input.pipelineId)?.projectId ?? null),
     };
   }
   return {
     steps: onBoard.map(toStepView),
     stepAgents,
+    pipelineProjectId: getPipeline(db, input.pipelineId)?.projectId ?? null,
     // Where work enters, alongside the graph it enters: the configuration
     // screen edits and publishes all three together (ARCHITECTURE.md, "Vocabulary").
     entryStepId: getPipeline(db, input.pipelineId)?.entryStepId ?? null,

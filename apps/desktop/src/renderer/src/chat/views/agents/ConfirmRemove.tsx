@@ -80,8 +80,9 @@ export function ConfirmRemove({
                 <p>These pipeline steps name it:</p>
                 <ul className="list-disc pl-5">
                   {impact.steps.map((step) => (
-                    <li key={step.stepId}>
+                    <li key={`${step.stepId}:${step.version ?? "current"}`}>
                       <span className="text-ink">{step.stepName}</span> in {step.pipelineName}
+                      {step.version == null ? null : ` — v${step.version}, which unfinished items still run on`}
                     </li>
                   ))}
                 </ul>

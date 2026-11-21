@@ -2206,7 +2206,7 @@ export function renderAgentSaved(data: IpcResponse<"agents:save">): string {
   const staffed =
     agent.steps.length === 0
       ? "No pipeline step names this agent yet, so nothing dispatches to it until one does (pipeline_save, with its id as a step's `agentId`)."
-      : `Named by ${agent.steps.map((step) => `"${step.stepName}" (${step.pipelineName})`).join(", ")}.`;
+      : `Named by ${agent.steps.map((step) => `"${step.stepName}" (${step.pipelineName}${step.version == null ? "" : `, v${step.version}, which unfinished items still run on`})`).join(", ")}.`;
   const lines = [
     `Saved ${agent.name} (id: ${agent.id}) — kind \`${agent.role}\`, running on ${agent.provider} with ${model}${agent.enabled ? "" : ", disabled"}.`,
     staffed,

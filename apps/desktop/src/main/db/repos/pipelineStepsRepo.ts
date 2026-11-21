@@ -506,9 +506,18 @@ export function setStepOwner(db: Db, id: string, owner: { personId: Uuid | null;
  * agent it copied. Not a change of shape — the copy is of the same kind,
  * so the step's action and routes hold — which is `updateStep`'s reason
  * for writing in place rather than publishing the graph.
+ *
+ * The step's pipeline's `updated_at` moves with it, in one transaction:
+ * `pipeline_steps` carries no timestamp of its own, and the record pages
+ * a pipeline's graph to its replicas on that column
+ * (`listPipelinesUpdatedSince`), so a step changed without it would reach
+ * nobody who had already read the pipeline.
  */
 export function setStepAgent(db: Db, id: string, agentId: Uuid | null): void {
-  db.update(pipelineSteps).set({ agentId }).where(eq(pipelineSteps.id, id)).run();
+  db.transaction((tx) => {
+    const step = tx.update(pipelineSteps).set({ agentId }).where(eq(pipelineSteps.id, id)).returning({ pipelineId: pipelineSteps.pipelineId }).get();
+    if (step !== undefined) tx.update(pipelines).set({ updatedAt: Date.now() }).where(eq(pipelines.id, step.pipelineId)).run();
+  });
 }
 
 export function getStep(db: Db, id: string): PipelineStep | undefined {

@@ -74,6 +74,7 @@ import {
   transitionItem,
 } from "../db/repos/index.js";
 import { agentOfKind, attachWorkspace, createTestItem, openMigratedTestDb } from "../db/testHelpers.js";
+import { listPipelineVersions } from "../db/repos/pipelineVersionsRepo.js";
 import {
   archiveAgentCommand,
   dailyBudgetDefaultApplies,
@@ -798,6 +799,42 @@ describe("agents", () => {
     expect(asked).toMatchObject({ archived: false, problem: null });
     expect(asked.impact?.steps).toEqual([]);
     expect(archiveAgentCommand(handle.db, { id: reviewer.id, confirm: true }).archived).toBe(true);
+  });
+
+  it("refuses to archive or delete an agent an older version still runs unfinished items on, naming the step and the version (EO-876)", () => {
+    const reviewer = listAgentDetails(handle.db).agents.find((agent) => agent.role === "reviewer")!;
+    const reviewing = listPipelineSteps(handle.db).find((step) => step.pipelineId === "default" && step.type === "agent" && step.agentId === reviewer.id && !step.isTerminal)!;
+    // An item enters while the step names the Reviewer, so it finishes on that version.
+    const item = createTestItem(handle.db, { type: "story", title: "Under review", stepId: reviewing.id });
+    const entered = getItem(handle.db, item.id)!.pipelineVersionId;
+    expect(entered).not.toBeNull();
+    // The next version names a stand-in on every step that named the Reviewer.
+    const standIn = createAgent(handle.db, { name: "Stand-in reviewer", role: "reviewer", provider: "fake", model: null, instructions: "x" });
+    const steps = currentStates().map((step) => (step.type === "agent" && step.agentId === reviewer.id ? { ...step, agentId: standIn.id } : step));
+    expect(savePipeline(handle.db, fakeEngine(), { pipelineId: "default", steps, routes: currentRoutes(), entryStepId: "worktree" })).toMatchObject({ saved: true });
+    expect(listPipelineSteps(handle.db).some((step) => step.pipelineId === "default" && step.agentId === reviewer.id)).toBe(false);
+    const older = listPipelineVersions(handle.db, "default").find((version) => version.id === entered)!.number;
+
+    for (const confirm of [false, true]) {
+      const archived = archiveAgentCommand(handle.db, { id: reviewer.id, confirm });
+      const deleted = deleteAgentCommand(handle.db, { id: reviewer.id, confirm });
+      expect(archived.archived).toBe(false);
+      expect(deleted.deleted).toBe(false);
+      for (const problem of [archived.problem, deleted.problem]) {
+        expect(problem).toContain(`"${reviewing.name}" on `);
+        expect(problem).toContain(`'s v${older}`);
+        expect(problem).toContain("Let the items still on that older version finish, or move them to the current version first");
+      }
+      expect(archived.impact?.steps).toContainEqual(expect.objectContaining({ stepId: reviewing.id, pipelineId: "default", version: older }));
+      expect(deleted.impact?.steps).toContainEqual(expect.objectContaining({ stepId: reviewing.id, pipelineId: "default", version: older }));
+    }
+    // The Agents screen lists it too.
+    expect(listAgentDetails(handle.db).agents.find((agent) => agent.id === reviewer.id)!.steps).toContainEqual(expect.objectContaining({ stepId: reviewing.id, version: older }));
+    expect(getAgent(handle.db, reviewer.id as Uuid)).toMatchObject({ archivedAt: null, deletedAt: null });
+
+    // Once no unfinished item runs on that version, it may go.
+    setItemArchived(handle.db, item.id, Date.now());
+    expect(archiveAgentCommand(handle.db, { id: reviewer.id, confirm: false }).impact?.steps.filter((step) => step.pipelineId === "default")).toEqual([]);
   });
 
   it("lists, under each agent, the pipeline steps that name it (EO-876)", () => {

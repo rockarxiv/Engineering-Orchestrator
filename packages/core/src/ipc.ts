@@ -3293,6 +3293,14 @@ export const recordContract = {
        * there is the copy and nothing else changes.
        */
       changedSteps: z.array(StepNamingAgentSchema).default([]),
+      /**
+       * The publication lock that refused the copy, where the pipelines
+       * section is managed and a step of the project's that names the
+       * original is on a pipeline this machine has not diverged (EO-876):
+       * the copy would rewrite that step, so nothing is copied. Null
+       * otherwise.
+       */
+      locked: SectionLockSchema.nullable().default(null),
     }),
   ),
   /**
@@ -3475,6 +3483,12 @@ export const recordContract = {
           z.object({ name: z.string().nullable(), kind: z.string().nullable(), provider: z.string().nullable(), model: z.string().nullable(), problem: z.string().nullable() }),
         )
         .optional(),
+      /**
+       * The project the pipeline belongs to, null for one on no project
+       * (EO-876): what a screen asks `stepAgentProblem` whether a step's
+       * agent works for. The pipeline's own, never the active project's.
+       */
+      pipelineProjectId: z.string().nullable().optional(),
       routes: z.array(StepRouteViewSchema),
       entryStepId: z.string().nullable(),
       /** What an item must have to enter (EO-610), as `pipeline:save` takes them. */

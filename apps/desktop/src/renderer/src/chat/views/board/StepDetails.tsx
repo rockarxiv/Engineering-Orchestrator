@@ -59,7 +59,7 @@ export function StepDetails({
   // Whether what it runs can keep checking (EO-456): its declaration says so, and `waiting` is then an outcome it has whatever its results list.
   const canWait = step.type === "builtin" ? builtinCanWait(registry, step.entryAction) : step.type === "module" ? module?.manifest.watch === true : false;
   // The kind of the agent the step names (EO-875): what its action's results are looked up by.
-  const stepAgents = useStepAgents();
+  const stepAgents = useStepAgents(step.pipelineId);
   const agentKind = stepAgents.kindOf(step);
   const results = resultRows(step, steps, routes, elsewhere, declaredResults(registry, step, modules, agentKind), (key) => resultLabel(registry, key), canWait);
   const declared = declaredInputs(registry, step, modules) ?? {};

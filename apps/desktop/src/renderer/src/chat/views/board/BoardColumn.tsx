@@ -46,7 +46,7 @@ function ownerLineOf(step: PipelineStepView, module: ModuleView | undefined, age
 
 /** What runs here: the role, the module, the action, or "you" — a link where there is something to open. */
 function OwnerLine({ step, module, ink }: { step: PipelineStepView; module: ModuleView | undefined; ink: string }) {
-  const stepAgents = useStepAgents();
+  const stepAgents = useStepAgents(step.pipelineId);
   const { label, to } = ownerLineOf(step, module, { kind: stepAgents.kindOf(step), line: stepAgents.lineOf(step) });
   // Why nothing runs here, in words, where the step's agent cannot run (EO-876).
   const problem = stepAgents.problemOf(step);

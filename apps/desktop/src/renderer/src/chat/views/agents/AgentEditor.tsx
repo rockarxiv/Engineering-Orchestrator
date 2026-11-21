@@ -392,7 +392,7 @@ export function AgentEditor({
           <p aria-label="Steps that name it" className="text-[11.5px] leading-snug text-ink-subtle">
             {(agent.steps ?? []).length === 0
               ? "No pipeline step names it, so nothing dispatches it."
-              : `Named by ${(agent.steps ?? []).map((step) => `${step.stepName} in ${step.pipelineName}`).join(", ")}.`}
+              : `Named by ${(agent.steps ?? []).map((step) => `${step.stepName} in ${step.pipelineName}${step.version == null ? "" : ` (v${step.version}, which unfinished items still run on)`}`).join(", ")}.`}
           </p>
         )}
         {/* What the organisation manages, said where somebody is about to try to edit it. */}
