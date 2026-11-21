@@ -144,7 +144,11 @@ describe("the bundled set", () => {
     // actions, and was left to a story of its own when EO-424 asked.
     // Named exactly, so anything else appearing here fails — and so
     // that fixing the route fails this line and gets it removed.
-    expect(problems.map((problem) => [problem.severity, problem.resultKey])).toEqual(slug === "inbox-triage" ? [["error", "escalate"]] : []);
+    // The import made each step's agent switched off, since no backend
+    // is signed in here, and the step says so (EO-875): that is about
+    // this installation, not the template's graph.
+    const ofTheGraph = problems.filter((problem) => !problem.message.includes("which is disabled"));
+    expect(ofTheGraph.map((problem) => [problem.severity, problem.resultKey])).toEqual(slug === "inbox-triage" ? [["error", "escalate"]] : []);
   });
 
   /**

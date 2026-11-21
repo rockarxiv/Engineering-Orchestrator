@@ -296,6 +296,9 @@ export function createTemplateBoards(
   }
   const target = (id: string): string | null => (id === USER_ATTENTION_TARGET || id === TERMINAL_TARGET ? id : (fresh.get(id) ?? elsewhere.get(id) ?? null));
   const moduleId = (slug: string): string => getModuleBySlug(db, slug)?.id ?? slug;
+  // The board names kinds; each agent step is bound to this project's
+  // agent of its kind (EO-875), as an import binds one.
+  const agents = listAgents(db);
 
   return db.transaction(() =>
     making.map(({ index, board }) => {
@@ -313,11 +316,12 @@ export function createTemplateBoards(
       const written = replacePipelineGraph(
         db,
         pipeline.id,
-        board.steps.map((step) => {
+        board.steps.map(({ ownerRole, ...step }) => {
           const id = fresh.get(step.id) ?? step.id;
           return {
             ...step,
             id,
+            agentId: step.type === "agent" ? ((agentForKind(agents, ownerRole, projectId)?.id ?? null) as Uuid | null) : null,
             pipelineId: pipeline.id,
             entryAction: step.type === "module" && step.entryAction !== null ? moduleId(step.entryAction) : step.entryAction,
             // The document's pin is a number on the machine that wrote it
