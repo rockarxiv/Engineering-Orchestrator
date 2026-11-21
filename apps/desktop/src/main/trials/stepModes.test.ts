@@ -43,7 +43,7 @@ import {
   updateRun,
 } from "../db/repos/index.js";
 import { listPipelinesUpdatedSince, readProjectPipelines, upsertReplicaPipeline } from "../db/repos/projectMoveRepo.js";
-import { createTestItem, openMigratedTestDb } from "../db/testHelpers.js";
+import { agentOfKind, createTestItem, openMigratedTestDb } from "../db/testHelpers.js";
 import { itemTypes, projects } from "../db/schema.js";
 import { usePackConnectors } from "../connectors/declared.js";
 import { sendToAssist } from "../ipc/assistCommands.js";
@@ -595,11 +595,11 @@ describe("what the assistant reads about a step's reach outside EO", () => {
 
   const graph = (pipelineId: string, sending: string, quiet: string) => ({
     steps: [
-      { id: "rx_pr", pipelineId: pipelineId as Uuid, position: 0, name: "Open PR", type: "builtin" as const, ownerRole: null, entryAction: "open_pull_request", isTerminal: false },
-      { id: "rx_worktree", pipelineId: pipelineId as Uuid, position: 1, name: "Worktree", type: "builtin" as const, ownerRole: null, entryAction: "create_worktree", isTerminal: false },
-      { id: "rx_send", pipelineId: pipelineId as Uuid, position: 2, name: "Send", type: "module" as const, ownerRole: null, entryAction: sending, isTerminal: false },
-      { id: "rx_build", pipelineId: pipelineId as Uuid, position: 3, name: "Build", type: "module" as const, ownerRole: null, entryAction: quiet, isTerminal: false },
-      { id: "rx_reply", pipelineId: pipelineId as Uuid, position: 4, name: "Reply", type: "agent" as const, ownerRole: "implementer", entryAction: "implement", isTerminal: false },
+      { id: "rx_pr", pipelineId: pipelineId as Uuid, position: 0, name: "Open PR", type: "builtin" as const, agentId: null, entryAction: "open_pull_request", isTerminal: false },
+      { id: "rx_worktree", pipelineId: pipelineId as Uuid, position: 1, name: "Worktree", type: "builtin" as const, agentId: null, entryAction: "create_worktree", isTerminal: false },
+      { id: "rx_send", pipelineId: pipelineId as Uuid, position: 2, name: "Send", type: "module" as const, agentId: null, entryAction: sending, isTerminal: false },
+      { id: "rx_build", pipelineId: pipelineId as Uuid, position: 3, name: "Build", type: "module" as const, agentId: null, entryAction: quiet, isTerminal: false },
+      { id: "rx_reply", pipelineId: pipelineId as Uuid, position: 4, name: "Reply", type: "agent" as const, agentId: agentOfKind(handle.db, "implementer"), entryAction: "implement", isTerminal: false },
       { id: "rx_done", pipelineId: pipelineId as Uuid, position: 5, name: "Done", type: "user" as const, isTerminal: true },
     ],
   });
@@ -640,7 +640,7 @@ describe("what the assistant reads about a step's reach outside EO", () => {
     });
     if (!creating.ok) throw new Error(creating.reason);
     const pipeline = createPipeline(handle.db, { projectId, name: "Support" });
-    const steps = graph(pipeline.id, sending.id, creating.module.id).steps.map((one) => ({ instructionsSummary: null, planMode: false, ownerRole: null, entryAction: null, ...one }));
+    const steps = graph(pipeline.id, sending.id, creating.module.id).steps.map((one) => ({ instructionsSummary: null, planMode: false, agentId: null, entryAction: null, ...one }));
 
     const judged = validatePipelineCommand(handle.db, ipcContract["pipeline:validate"].request.parse({ pipelineId: pipeline.id, steps, routes: [], entryStepId: "rx_pr" }));
 

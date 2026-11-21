@@ -485,7 +485,10 @@ function exportedRoles(
   const named = steps.flatMap((step) => stepAgentOf(agents, step) ?? []);
   const wanted = [...new Set(named.map((agent) => agent.role))];
   const reaching = agents.filter((agent) => agent.archivedAt === null && servesProject(agent, { projectId: projectId as Uuid | null }));
-  const live = [...named, ...reaching.filter((agent) => agent.projectId !== null), ...reaching.filter((agent) => agent.projectId === null)];
+  // An archived or deleted agent is recommended to nobody: its kind still
+  // travels, under no prompt, as a kind nobody here runs does.
+  const kept = named.filter((agent) => agent.archivedAt === null && agent.deletedAt === null);
+  const live = [...kept, ...reaching.filter((agent) => agent.projectId !== null), ...reaching.filter((agent) => agent.projectId === null)];
 
   const document: ExportedRole[] = [];
   let adminGrantHeldBy: string | null = null;

@@ -90,7 +90,7 @@ import { formatDateKey } from "../dateUtils.js";
 import { buildTickInput } from "../supervisor/buildTickInput.js";
 import { discardTrial } from "./discard.js";
 import { createTrialFromDraft, fileTrialItem } from "./trials.js";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 
 /**
  * Trial pipelines (EO-582): a draft materialised as a hidden pipeline,
@@ -364,9 +364,11 @@ describe("trial items", () => {
   });
 
   it("are dispatched to their agent's real backend, unlike a preview", async () => {
-    // The project's own implementer, on Claude: what the step is staffed by.
+    // The project's own implementer, on Claude: the agent the step names (EO-875).
     const claude = createAgent(handle.db, { name: "Claude implementer", role: "implementer", provider: "claude", instructions: "x", projectId });
-    const { conversation, messageId } = await draftOfHotfix(hotfix());
+    const live = hotfix();
+    handle.db.run(sql`UPDATE pipeline_steps SET agent_id = ${claude.id} WHERE id = 'hotfix_fix'`);
+    const { conversation, messageId } = await draftOfHotfix(live);
     const item = fileOn(trialFrom(conversation, messageId).trial.id);
 
     const dispatches = tick(buildTickInput(handle.db, { globalConcurrency: 1, perAgentConcurrency: 1, perRepositoryConcurrency: 1 }, false));

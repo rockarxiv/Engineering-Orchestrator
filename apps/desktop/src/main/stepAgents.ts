@@ -67,3 +67,23 @@ export function kindBinder(
     return (agentForKind(agents, step.ownerRole, projectId, options)?.id ?? null) as Uuid | null;
   };
 }
+
+/**
+ * A new pipeline's agent steps, bound again on the project it is being
+ * created on (EO-875).
+ *
+ * A draft for a pipeline that does not exist yet is judged before it has
+ * a project, so its kinds were bound on the one on screen. The pipeline
+ * is created on the project the draft's conversation goes to, which can
+ * be another, and a step there names that project's agent of its kind —
+ * its own before a global one, as `agentForKind` binds it. A step whose
+ * kind nobody has on that project keeps what it had, and the save says
+ * what is wrong with it.
+ */
+export function bindOnProject<S extends { readonly type: string; readonly agentId: string | null }>(agents: readonly Agent[], steps: readonly S[], projectId: string | null): S[] {
+  return steps.map((step) => {
+    if (step.type !== "agent") return step;
+    const bound = agentForKind(agents, stepAgentKind(agents, step), projectId);
+    return bound === undefined ? step : { ...step, agentId: bound.id };
+  });
+}

@@ -216,9 +216,10 @@ describe("exporting a pipeline whose project has memory (EO-482)", () => {
  * another project's agent never runs this pipeline's work.
  */
 describe("exporting a pipeline beside project-scoped agents (EO-476)", () => {
-  function writerPipeline(projectId: Uuid | null) {
+  /** A writing pipeline whose Write step names `agentId`, or the first writer here. */
+  function writerPipeline(projectId: Uuid | null, agentId: Uuid = agentOfKind(handle.db, "writer")) {
     const pipeline = createPipeline(handle.db, { name: "Writing", projectId });
-    createStep(handle.db, { id: `write-${pipeline.id}`, pipelineId: pipeline.id, position: 0, name: "Write", type: "agent", agentId: agentOfKind(handle.db, "writer") });
+    createStep(handle.db, { id: `write-${pipeline.id}`, pipelineId: pipeline.id, position: 0, name: "Write", type: "agent", agentId });
     createStep(handle.db, { id: `done-${pipeline.id}`, pipelineId: pipeline.id, position: 1, name: "Done", type: "user", isTerminal: true });
     createRoute(handle.db, { pipelineId: pipeline.id, fromStepId: `write-${pipeline.id}`, resultKey: "done", label: "Done", target: `done-${pipeline.id}` });
     setEntryStep(handle.db, pipeline.id, `write-${pipeline.id}`);
@@ -250,9 +251,9 @@ describe("exporting a pipeline beside project-scoped agents (EO-476)", () => {
     expect(Object.keys(built.document)).not.toContain("agents");
   });
 
-  it("carries the prompt of the agent that would run the pipeline's work: the project's own first", () => {
-    const { support } = arrange();
-    const built = exportPipeline(handle.db, writerPipeline(support.id).id);
+  it("carries the prompt of the agent the step names (EO-875)", () => {
+    const { support, supportsOwn } = arrange();
+    const built = exportPipeline(handle.db, writerPipeline(support.id, supportsOwn.id).id);
     if (!built.ok) throw new Error(built.reason);
 
     expect(built.document.roles.find((role) => role.slug === "writer")?.prompt).toBe("Write for Support.");
@@ -2312,10 +2313,13 @@ describe("the pack", () => {
       expect(definitionsIn(fresh.db)).toContainEqual({ role: "triager", ...SORT_DEFINITION });
       expect(listAgents(fresh.db).some((agent) => agent.role === "triager")).toBe(false);
 
-      // And out the other side again: still unstaffed, still defined.
-      const again = exportPipeline(fresh.db, imported.pipelineId as Uuid);
-      if (!again.ok) throw new Error(again.reason);
-      expect(again.document.roles).toEqual(built.document.roles);
+      // The step there names nobody (EO-875): no agent of the kind was
+      // made, and a step's kind is its agent's. So it waits for one to be
+      // chosen, and the definitions stay where they are.
+      const agentSteps = listStepsForPipeline(fresh.db, imported.pipelineId as Uuid).filter((step) => step.type === "agent");
+      const triaging = built.document.steps.filter((step) => step.ownerRole === "triager").map((step) => step.name);
+      expect(triaging).not.toEqual([]);
+      expect(agentSteps.filter((step) => triaging.includes(step.name)).map((step) => step.agentId)).toEqual(triaging.map(() => null));
     } finally {
       fresh.close();
     }
@@ -2324,7 +2328,10 @@ describe("the pack", () => {
   /** A role nobody staffs that defines nothing still contributes nothing. */
   it("leaves out a role nobody staffs that defines no action", () => {
     const pipeline = createPipeline(handle.db, { name: "Empty slot" });
-    createStep(handle.db, { id: "slot", pipelineId: pipeline.id, position: 0, name: "Slot", type: "agent", agentId: agentOfKind(handle.db, "nobody_yet"), isTerminal: true });
+    // Its one agent archived (EO-875): a kind with no live agent and no definition.
+    const retired = createAgent(handle.db, { name: "Nobody yet", role: "nobody_yet", provider: "fake", instructions: "" });
+    archiveAgent(handle.db, retired.id);
+    createStep(handle.db, { id: "slot", pipelineId: pipeline.id, position: 0, name: "Slot", type: "agent", agentId: retired.id, isTerminal: true });
 
     const built = exportPipeline(handle.db, pipeline.id);
     if (!built.ok) throw new Error(built.reason);
