@@ -404,7 +404,7 @@ describe("a draft replacing a definition live work uses", () => {
     const checks = createPipeline(handle.db, { projectId, name: "Checks" });
     // The live step names a QA agent (EO-875); the draft below names its kind.
     const qa = createAgent(handle.db, { name: "QA", role: "qa", provider: "claude", instructions: "Check the work." });
-    const { ownerRole: _kind, ...align } = step("chk_align", 0, "Align", { type: "agent", entryAction: "alignment" });
+    const align = (({ ownerRole: _kind, ...rest }: ReturnType<typeof step>) => rest)(step("chk_align", 0, "Align", { type: "agent", entryAction: "alignment" }));
     const liveSteps = [
       { ...align, agentId: qa.id, pipelineId: checks.id, results: [], timeoutMs: null, workspaceId: null },
       { ...step("chk_rework", 1, "Rework", { isTerminal: true }), pipelineId: checks.id, results: [], timeoutMs: null, workspaceId: null },
