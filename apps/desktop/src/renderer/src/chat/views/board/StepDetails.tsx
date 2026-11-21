@@ -20,6 +20,7 @@ import { ipcQuery } from "../../../query/client";
 import { environmentVariablesKey, environmentVariablesRootKey, moduleSecretsKey, moduleSecretsRootKey, useChromeVocabulary, useModules, useRegistry } from "../../../query/hooks";
 import { useInvalidateOnPush } from "../../../query/useInvalidateOnPush";
 import { WORKSPACE_MODES, declaredInputs, declaredResults, resultLabel } from "../../../shared/pipeline/configuration";
+import { useStepAgentKind } from "../../../shared/agents/stepAgentKind";
 import { CardSection, Chip, Facts, StepKindChip } from "../../kit";
 import { targetName } from "../shared";
 
@@ -57,11 +58,14 @@ export function StepDetails({
   const module = step.type === "module" ? modules.find((candidate) => candidate.id === step.entryAction) : undefined;
   // Whether what it runs can keep checking (EO-456): its declaration says so, and `waiting` is then an outcome it has whatever its results list.
   const canWait = step.type === "builtin" ? builtinCanWait(registry, step.entryAction) : step.type === "module" ? module?.manifest.watch === true : false;
-  const results = resultRows(step, steps, routes, elsewhere, declaredResults(registry, step, modules), (key) => resultLabel(registry, key), canWait);
+  // The kind of the agent the step names (EO-875): what its action's results are looked up by.
+  const kindOf = useStepAgentKind();
+  const agentKind = kindOf(step);
+  const results = resultRows(step, steps, routes, elsewhere, declaredResults(registry, step, modules, agentKind), (key) => resultLabel(registry, key), canWait);
   const declared = declaredInputs(registry, step, modules) ?? {};
   const inputNames = [...new Set([...Object.keys(declared), ...Object.keys(step.inputs)])];
 
-  const facts: { term: ReactNode; value: ReactNode }[] = [{ term: "Who acts", value: whoActs(step, verification) }];
+  const facts: { term: ReactNode; value: ReactNode }[] = [{ term: "Who acts", value: whoActs(step, verification, agentKind) }];
   const runs = whatItRuns(step, module, registry.builtins.get(step.entryAction ?? "")?.label);
   if (runs !== null) facts.push(runs);
   if (step.type === "agent" && step.planMode) facts.push({ term: "Plan first", value: "Proposes a plan and changes nothing, then waits" });
@@ -102,7 +106,7 @@ export function StepDetails({
     <CardSection
       title={step.name}
       // The kind chip the drawing it was clicked in uses (EO-680, EO-681); an end is not a kind of work.
-      {...(step.isTerminal ? {} : { titleAside: <StepKindChip step={step} /> })}
+      {...(step.isTerminal ? {} : { titleAside: <StepKindChip step={{ ...step, agentKind }} /> })}
       description="This step as published. To change it, ask the assistant."
     >
       <Facts label="Step details" items={facts} />
@@ -207,10 +211,10 @@ export function resultRows(
   return rows;
 }
 
-function whoActs(step: PipelineStepView, verification: StepVerification | undefined): string {
+function whoActs(step: PipelineStepView, verification: StepVerification | undefined, agentKind: string | null): string {
   switch (step.type) {
     case "agent":
-      return step.ownerRole === null ? "An agent — no role picked" : `An agent — ${step.ownerRole}`;
+      return step.agentId === null ? "An agent — none chosen" : agentKind === null ? "An agent" : `An agent — ${agentKind}`;
     case "user":
       return verification?.waitsOn ? `A person — waits on ${verification.waitsOn}` : "A person — EO hands off and waits";
     case "module":

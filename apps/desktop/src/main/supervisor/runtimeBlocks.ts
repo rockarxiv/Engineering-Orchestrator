@@ -3,7 +3,7 @@ import {
   quotaResetAt,
   quotaWindowPhrase,
   RuntimeIdSchema,
-  staffingAgents,
+  stepAgentOf,
   type Agent,
   type CommentOption,
   type Item,
@@ -80,12 +80,9 @@ function stepOf<R extends DispatchRefusal>(input: TickInput<R>, item: Item): Pip
  * The items nothing stands between and a run but a blocked runtime.
  *
  * Eligible on every other count — no blocker, not held by a pause — at
- * an agent step, where every agent `staffingAgents` would choose from
- * runs on a blocked runtime. Asked of the agents as they are, before any
- * is left out, so a project whose own agent is blocked waits for it
- * rather than going to a global agent the project stepped out from
- * under (EO-474). An item with one candidate on another runtime is not
- * held: it goes to that one.
+ * an agent step whose agent (EO-875) runs on a blocked runtime. The step
+ * names that agent and no other, so the item waits for it rather than
+ * going to another agent of the same kind on another runtime.
  *
  * Read off the agent's own backend, not the run's: a preview's runs use
  * the fake backend, but the agent it would be handed to is still one on
@@ -99,23 +96,23 @@ export function heldByBlockedRuntimes<R extends DispatchRefusal>(input: TickInpu
   for (const item of input.items) {
     if (notEligible.has(item.id)) continue;
     const step = stepOf(input, item);
-    if (step?.type !== "agent" || step.ownerRole === null) continue;
-    if (input.paused && !input.pauseExemptRoles?.has(step.ownerRole)) continue;
-    const staff = staffingAgents(input.agents, step.ownerRole, item);
-    const runtimes = staff.map(runtimeOf);
-    const first = runtimes[0];
-    if (first === undefined || first === null) continue;
-    if (!runtimes.every((runtime) => runtime !== null && blocked.has(runtime))) continue;
-    held.push({ item, runtime: first, agents: staff });
+    const agent = step === undefined ? undefined : stepAgentOf(input.agents, step);
+    if (agent === undefined) continue;
+    if (input.paused && !input.pauseExemptRoles?.has(agent.role)) continue;
+    const runtime = runtimeOf(agent);
+    if (runtime === null || !blocked.has(runtime)) continue;
+    held.push({ item, runtime, agents: [agent] });
   }
   return held;
 }
 
 /**
  * The scheduler's input with the blocked runtimes taken out: the held
- * items left out of the pick, and the agents on a blocked runtime out of
- * the candidates for everything else. Dependencies still resolve
- * against every item, held or not.
+ * items left out of the pick. Dependencies still resolve against every
+ * item, held or not. The agents stay as they are (EO-875): every other
+ * item's step names its own agent, so an agent on a blocked runtime is
+ * offered nothing but the items held here, and leaving it in keeps a
+ * step that names it from reading as naming an agent that is not there.
  */
 export function withoutBlockedRuntimes<R extends DispatchRefusal>(input: TickInput<R>, blocked: ReadonlySet<RuntimeId>, held: readonly HeldItem[]): TickInput<R> {
   if (blocked.size === 0) return input;
@@ -124,10 +121,6 @@ export function withoutBlockedRuntimes<R extends DispatchRefusal>(input: TickInp
     ...input,
     dependencyItems: input.dependencyItems ?? input.items,
     items: input.items.filter((item) => !heldIds.has(item.id)),
-    agents: input.agents.filter((agent) => {
-      const runtime = runtimeOf(agent);
-      return runtime === null || !blocked.has(runtime);
-    }),
   };
 }
 

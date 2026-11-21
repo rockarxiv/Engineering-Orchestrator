@@ -86,14 +86,15 @@ export function withArticleCapital(word: string): string {
 /**
  * Who holds a step: an agent role, you, a module, or EO itself.
  *
- * Read off the step's own `type` and `ownerRole`, which is the whole of
- * what makes a step whose it is — so a step on a pipeline somebody drew
- * yesterday is labelled exactly as one from a template.
+ * Read off the step's own `type`, and for an agent step the kind of the
+ * agent it names (`agentKind`, EO-875, read by the caller from the
+ * agents) — so a step on a pipeline somebody drew yesterday is labelled
+ * exactly as one from a template.
  */
-export function ownerOf(step: Pick<PipelineStepView, "type" | "ownerRole" | "entryAction">): { kind: PipelineStepView["type"]; label: string } {
+export function ownerOf(step: Pick<PipelineStepView, "type" | "entryAction"> & { agentKind?: string | null }): { kind: PipelineStepView["type"]; label: string } {
   switch (step.type) {
     case "agent":
-      return { kind: "agent", label: step.ownerRole ?? "agent" };
+      return { kind: "agent", label: step.agentKind ?? "agent" };
     case "user":
       return { kind: "user", label: "you" };
     case "module":

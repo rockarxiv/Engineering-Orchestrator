@@ -97,7 +97,8 @@ import {
   builtinResults,
   isBuiltinAction,
   servesProject,
-  staffingAgents,
+  stepAgentOf,
+  stepAgentRefusal,
   isThreadNotFound,
   isTurnNotEnded,
   TurnNotEndedError,
@@ -321,7 +322,7 @@ import { ASSIST_ACTION, ASSIST_STEP, conversationTurnOptions, CONVERSATION_SETTI
 import { changeReferenceProblem, createModuleChangeStaging, type ModuleChangeStaging } from "../roles/moduleChangeProposals.js";
 import { attachRunFiles } from "./runAttachments.js";
 import { blockedByActiveRunRefusal, createItemLock, type ItemHold, type ItemLock } from "./itemLock.js";
-import { archivedAgentRefusal, mentionDepthRefusal, outOfProjectDispatchRefusal, outOfProjectMentionRefusal, outOfProjectRecoveryNote, pullRequestHoldNote, rerunRefusal, stoppedByHandNote, type GateRefusal, type ItemBlocker, type OutOfProject, type RerunBlocker } from "./dispatchBlockers.js";
+import { archivedAgentRefusal, mentionDepthRefusal, outOfProjectDispatchRefusal, outOfProjectMentionRefusal, outOfProjectRecoveryNote, pullRequestHoldNote, rerunRefusal, stoppedByHandNote, unrunnableStepNote, type GateRefusal, type ItemBlocker, type OutOfProject, type RerunBlocker } from "./dispatchBlockers.js";
 import { watchDependencyRegressions } from "./dependencyGates.js";
 import { declaresNoCriteria, isMissingCriteriaAsk, missingCriteriaRefusal } from "./reviewCriteria.js";
 import { recordStop, stopStands } from "./stoppedByHand.js";
@@ -9869,10 +9870,9 @@ export function createRunSupervisor(
 
   function whereItStandsNow(item: Item): { nowAt: string; rerunWith: string | null } {
     const step = stepForItem(db, item);
-    const owner =
-      step && step.type === "agent" && !step.isTerminal && step.ownerRole !== null
-        ? staffingAgents(listAgents(db), step.ownerRole, item)[0]
-        : undefined;
+    // The agent the step names (EO-875), which is who a rerun is asked of.
+    const named = step && !step.isTerminal ? stepAgentOf(listAgents(db), step) : undefined;
+    const owner = named !== undefined && stepAgentRefusal(named, item) === null ? named : undefined;
     return { nowAt: step?.name ?? "no step", rerunWith: owner?.name ?? null };
   }
 
@@ -10831,6 +10831,9 @@ export function createRunSupervisor(
       // And an item whose pull request waits for its stacked
       // dependency's (EO-781) is told so, once for each stay on the step.
       notePullRequestHolds(tickInput);
+      // And an item on a step that names no agent, or one that cannot run
+      // it (EO-875), is told which and what to do, once for each stay.
+      noteUnrunnableSteps(tickInput);
       // **The device asks; it does not decide** (EO-324, ARCHITECTURE.md, "The record"). What
       // comes back is work the record has already leased to this
       // machine. In one process that is the same sweep-pick-claim this
@@ -10951,8 +10954,7 @@ export function createRunSupervisor(
       if (asked.has(item.id)) continue;
       const initiationId = workflowInitiationId(item, REVIEW_ACTION);
       const step = stepForItem(db, item);
-      const reviewer =
-        staffingAgents(input.agents, step?.ownerRole ?? null, item)[0] ?? null;
+      const reviewer = (step === undefined ? undefined : stepAgentOf(input.agents, step)) ?? null;
       refuseDispatch(
         item,
         reviewer,
@@ -10987,6 +10989,38 @@ export function createRunSupervisor(
       const step = stepForItem(db, item);
       if (step === undefined) continue;
       const body = pullRequestHoldNote(step.name, blocker);
+      const enteredAt = stepEntryTimes(db, [item.id]).get(item.id) ?? item.createdAt;
+      const alreadySaid = listCommentsForItem(db, item.id, { since: enteredAt }).some(
+        (comment) => comment.authorType === "engine" && comment.body === body,
+      );
+      if (alreadySaid) continue;
+      postComment(db, { itemId: item.id, author: { type: "engine" }, kind: "note", body });
+      onItemChanged(item.id);
+    }
+  }
+
+  /**
+   * Says once, in the thread, why an item is not dispatched at a step
+   * that names no agent or names one that cannot run it (EO-875,
+   * invariant 8): which agent, and what to do — enable it, or choose
+   * another agent on the step. The step names that agent and no other,
+   * so the item is never handed to another agent of the same kind, and
+   * without this it would sit on the board with nothing on its thread
+   * saying why.
+   *
+   * `notePullRequestHolds`' shape: a note and no run, since the fix is
+   * the step's or the agent's and lifts the hold by itself on the next
+   * tick; said once for each stay on the step, by asking the thread
+   * whether these words were already posted since the item entered it.
+   * Off-board steps are left alone: they hold conversations, which are
+   * answered when somebody writes in them rather than dispatched here.
+   */
+  function noteUnrunnableSteps(input: TickInput<GateRefusal>): void {
+    for (const { item, blocker } of dispatchBlockers(input)) {
+      if (blocker.kind !== "no_agent" && blocker.kind !== "agent_unavailable") continue;
+      const step = stepForItem(db, item);
+      if (step === undefined || step.offBoard) continue;
+      const body = unrunnableStepNote(step.name, blocker);
       const enteredAt = stepEntryTimes(db, [item.id]).get(item.id) ?? item.createdAt;
       const alreadySaid = listCommentsForItem(db, item.id, { since: enteredAt }).some(
         (comment) => comment.authorType === "engine" && comment.body === body,

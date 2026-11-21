@@ -1,8 +1,9 @@
-import { outputSchemaFor, type ActionRouteUse, type ActionUse, type IpcPayload, type IpcResponse, type PipelineStep, type RegistryView, type StepRoute, type Uuid } from "@eo/core";
+import { outputSchemaFor, stepAgentKind, type ActionRouteUse, type ActionUse, type IpcPayload, type IpcResponse, type PipelineStep, type RegistryView, type StepRoute, type Uuid } from "@eo/core";
 import type { Db } from "../db/client.js";
 import {
   deleteActionDefinition,
   getActionDefinition,
+  listAgents,
   listPipelines,
   listRoutesForPipeline,
   listStepsForPipeline,
@@ -39,8 +40,9 @@ function pairKey(role: string, action: string): string {
  * dispatches nothing and is left out: a refusal naming a step nobody can
  * open would be a refusal nobody could clear.
  *
- * **The pair, exactly.** A step uses a definition when its owner is the
- * definition's role and its entry action is the definition's action —
+ * **The pair, exactly.** A step uses a definition when the agent it
+ * names is of the definition's kind (EO-875) and its entry action is the
+ * definition's action —
  * the first thing a dispatch resolves (EO-421). A custom role falling
  * through to a pack's action of the same name is not a use of that
  * role's own entry, and is not listed under it.
@@ -71,9 +73,12 @@ function pairKey(role: string, action: string): string {
  */
 export function actionUses(db: Db): Map<string, ActionUse[]> {
   const uses = new Map<string, ActionUse[]>();
+  const agents = listAgents(db);
   const add = (step: PipelineStep, pipelineName: string, finishing?: { version: number; items: number }) => {
-    if (step.type !== "agent" || step.ownerRole === null || step.entryAction === null) return;
-    const key = pairKey(step.ownerRole, step.entryAction);
+    // Keyed on the kind of the agent the step names (EO-875).
+    const kind = stepAgentKind(agents, step);
+    if (kind === null || step.entryAction === null) return;
+    const key = pairKey(kind, step.entryAction);
     const held = uses.get(key) ?? [];
     // A step the current graph still defines this way is one use, said
     // once: the older version adds nothing a person has to act on.
@@ -111,8 +116,9 @@ export function actionUses(db: Db): Map<string, ActionUse[]> {
  */
 export function actionRouteUses(db: Db, role: string, action: string): ActionRouteUse[] {
   const uses: ActionRouteUse[] = [];
+  const agents = listAgents(db);
   const add = (step: PipelineStep, routes: readonly StepRoute[], pipelineName: string, finishing?: { version: number; items: number }) => {
-    if (step.type !== "agent" || step.ownerRole !== role || step.entryAction !== action) return;
+    if (stepAgentKind(agents, step) !== role || step.entryAction !== action) return;
     const routedKeys = [...new Set(routes.filter((route) => route.fromStepId === step.id).map((route) => route.resultKey))];
     if (finishing !== undefined) {
       const live = uses.find((use) => use.stepId === step.id && use.finishing === undefined);

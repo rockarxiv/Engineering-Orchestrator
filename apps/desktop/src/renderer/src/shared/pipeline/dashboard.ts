@@ -103,7 +103,11 @@ export function ownerIdOf(step: PipelineStepView, verification: readonly StepVer
 }
 
 /** A default line under a step name, when nobody wrote one. */
-export function descriptionFor(step: PipelineStepView): string {
+export function descriptionFor(
+  step: PipelineStepView,
+  /** The kind of the agent an agent step names (EO-875): a step carries no role of its own. */
+  agentKind: string | null = null,
+): string {
   if (step.type === "builtin") {
     if (step.entryAction === "open_pull_request") return "Opens the pull request";
     if (step.entryAction === "watch_pull_request") return "Watches the pull request";
@@ -111,7 +115,7 @@ export function descriptionFor(step: PipelineStepView): string {
     return "Prepares the worktree";
   }
   if (step.type === "user") return step.isTerminal ? "Finished work" : "Waiting on a person";
-  return step.ownerRole ? `Owned by ${step.ownerRole}` : "";
+  return agentKind ? `Run by ${agentKind}` : "";
 }
 
 /**

@@ -79,7 +79,7 @@ describe("the document, as the diff reads it", () => {
       published: version([{ id: "review", name: "Review", agentId: "reviewer-agent" }]),
       document: document([{ ...STEP, name: "Second opinion" }]),
       // The document names the kind; this installation binds it (EO-875).
-      agentFor: (kind) => (kind === "reviewer" ? "reviewer-agent" : null),
+      agentFor: (step) => (step.ownerRole === "reviewer" ? "reviewer-agent" : null),
     });
 
     expect(diff.steps).toEqual([

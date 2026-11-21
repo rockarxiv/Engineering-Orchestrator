@@ -243,7 +243,7 @@ export function restoreVersion(db: Db, pipelineId: string, version: PipelineVers
       position: step.position,
       name: step.name,
       type: step.type,
-      ownerRole: step.ownerRole,
+      agentId: step.agentId,
       entryAction: step.entryAction,
       instructionsSummary: step.instructionsSummary,
       isTerminal: step.isTerminal,

@@ -6,7 +6,8 @@ import {
   isDeliverableMcpServer,
   isManagedServer,
   placementReason,
-  staffingAgents,
+  stepAgentOf,
+  stepAgentRefusal,
   stepWorkspaceChoice,
   type Job,
   type JobPlacement,
@@ -43,12 +44,12 @@ import { listSecretNames, type ModuleSecretsOptions } from "../modules/secrets.j
  * prompt.
  *
  * The agent for an `agent` step is found the way dispatch finds it —
- * `ownerRole`, dispatchable, bound — so that placement describes the
- * run that would actually happen rather than the row somebody might
- * have meant. A role nothing staffs contributes nothing: an unstaffed
- * step is already refused at dispatch with its own sentence, and a
- * second one here wearing placement's name would send a person to the
- * wrong screen.
+ * the one the step names, if it can run the job's work and is bound —
+ * so that placement describes the run that would actually happen rather
+ * than the row somebody might have meant. A step whose agent cannot run
+ * contributes nothing: it is already refused at dispatch with its own
+ * sentence, and a second one here wearing placement's name would send a
+ * person to the wrong screen.
  *
  * ## Why this is not the import preflight
  *
@@ -126,14 +127,14 @@ export function placementForJob(db: Db, job: Job, facts: PlacementFacts): JobPla
   for (const step of listStepsForPipeline(db, job.pipelineId as Uuid)) {
     const stepName = step.name;
 
-    if (step.type === "agent" && step.ownerRole !== null) {
-      // The same predicate dispatch uses, so that placement describes
-      // the run that would happen. A role nobody staffs is silent here
-      // — see the header.
-      // Since EO-474 that includes the project: the job files onto its
-      // project, so another project's agent never runs it and the
-      // project's own outranks a global one.
-      const agent = staffingAgents(agents, step.ownerRole, { previewAt: null, projectId: job.projectId as Uuid | null }).find(isBoundAgent);
+    const named = stepAgentOf(agents, step);
+    if (named !== undefined) {
+      // The same predicate dispatch uses (EO-875), so that placement
+      // describes the run that would happen: the step's own agent, if it
+      // can run work filed onto the job's project. One that cannot is
+      // silent here — see the header.
+      const runs = stepAgentRefusal(named, { previewAt: null, projectId: job.projectId as Uuid | null }) === null && isBoundAgent(named);
+      const agent = runs ? named : undefined;
       if (agent !== undefined) {
         if (facts.authKind(agent.provider) === "subscription") {
           machineBound.push(

@@ -12,6 +12,7 @@ import {
   matchesItemFilter,
   orderAgents,
   showsAgentList,
+  stepAgentKind,
   orderInbox,
   parseItemSort,
   sortItems,
@@ -37,6 +38,7 @@ import {
   getStep,
   getItem,
   listActiveRuns,
+  listAgents,
   listDependencies,
   listRoutesForPipeline,
   graphForItem,
@@ -524,7 +526,9 @@ function resolveItemStep(db: Db, item: Item) {
     id: step.id as string,
     name: step.name,
     type: step.type,
-    ownerRole: step.ownerRole,
+    agentId: step.type === "agent" ? step.agentId : null,
+    // The kind of the agent the step names (EO-875): a step has no role of its own.
+    ownerRole: stepAgentKind(listAgents(db), step),
     entryAction: step.entryAction,
     isTerminal: step.isTerminal,
     // And its routes from the same version (EO-327). What an agent is
@@ -588,6 +592,7 @@ function latestRunStatusOf(db: Db, item: Item): string | null {
 }
 
 function resolvePipeline(db: Db, pipelineId: string, filter: ViewFilter | null) {
+  const agents = listAgents(db);
   const pipeline = getPipeline(db, pipelineId);
   // Archived is *deleted*, for a pipeline. `pipelines:delete` archives
   // rather than drops (KAN-59) so the work that flowed through one still
@@ -685,7 +690,8 @@ function resolvePipeline(db: Db, pipelineId: string, filter: ViewFilter | null) 
           name: step.name,
           position: step.position,
           type: step.type,
-          ownerRole: step.ownerRole,
+          agentId: step.type === "agent" ? step.agentId : null,
+          ownerRole: stepAgentKind(agents, step),
           entryAction: step.entryAction,
           holding: holding.get(step.id) ?? 0,
           running: running.get(step.id) ?? 0,

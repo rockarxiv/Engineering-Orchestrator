@@ -246,7 +246,7 @@ export type StepAgentFacts = Pick<Agent, "id" | "name" | "role" | "enabled" | "a
  * undefined for a step that names none, a step of another kind, and a
  * name whose row is not among `agents`.
  */
-export function stepAgentOf<A extends Pick<Agent, "id">>(agents: readonly A[], step: Pick<PipelineStep, "type" | "agentId">): A | undefined {
+export function stepAgentOf<A extends { readonly id: string }>(agents: readonly A[], step: { readonly type: string; readonly agentId: string | null }): A | undefined {
   if (step.type !== "agent" || step.agentId === null) return undefined;
   return agents.find((agent) => agent.id === step.agentId);
 }
@@ -259,7 +259,7 @@ export function stepAgentOf<A extends Pick<Agent, "id">>(agents: readonly A[], s
  * definitions, the pack's default prompt. Null where the step names no
  * agent, or one whose row is not among `agents`.
  */
-export function stepAgentKind(agents: readonly Pick<Agent, "id" | "role">[], step: Pick<PipelineStep, "type" | "agentId">): string | null {
+export function stepAgentKind(agents: readonly { readonly id: string; readonly role: string }[], step: { readonly type: string; readonly agentId: string | null }): string | null {
   return stepAgentOf(agents, step)?.role ?? null;
 }
 

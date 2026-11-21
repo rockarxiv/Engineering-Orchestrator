@@ -7,6 +7,7 @@ import {
   MODULE_ENTRY_RULE_KIND,
   remapStepReferences,
   sameBoard,
+  stepAgentKind,
   TERMINAL_TARGET,
   USER_ATTENTION_TARGET,
   uuidv7,
@@ -26,6 +27,7 @@ import {
   getStep,
   getSetting,
   getTemplateSnapshot,
+  listAgents,
   listPipelines,
   listRoutesForPipeline,
   listStepsForPipeline,
@@ -52,6 +54,7 @@ import { TEMPLATE_CONFLICT_SOURCE } from "../db/repos/pipelineUpdateConflictsRep
 import { projectMovedToTheRecord } from "../db/repos/projectsRepo.js";
 import { storedGraphProblems } from "../ipc/configCommands.js";
 import { sendMessageHere } from "../messages/messages.js";
+import { agentForKind, withKind } from "../stepAgents.js";
 import { compareTemplateVersions, type TemplateHistory, type TemplateVersion } from "./history.js";
 
 /**
@@ -451,14 +454,23 @@ export function newerTemplateVersion(origin: PipelineOrigin, history: TemplateHi
   return newest;
 }
 
+/**
+ * A step as the comparison reads it: with its kind as `ownerRole`
+ * (EO-875). A template names kinds and a pipeline's steps name agents,
+ * so the pipeline's own are read with the kind their agent brings
+ * (`withKind`), and a step is compared by kind and action. Which agent
+ * of that kind it names is the person's, and no update changes it.
+ */
+export type KindedStep = PipelineStep & { ownerRole: string | null };
+
 /** The three graphs, in this pipeline's own step ids, and how they compare. */
 export interface PipelineComparison {
   origin: PipelineOrigin;
   template: TemplateVersion;
-  base: ComparableGraph<PipelineStep, StepRoute>;
-  current: ComparableGraph<PipelineStep, StepRoute>;
-  next: ComparableGraph<PipelineStep, StepRoute>;
-  merge: ReturnType<typeof mergeThreeWay<PipelineStep, StepRoute>>;
+  base: ComparableGraph<KindedStep, StepRoute>;
+  current: ComparableGraph<KindedStep, StepRoute>;
+  next: ComparableGraph<KindedStep, StepRoute>;
+  merge: ReturnType<typeof mergeThreeWay<KindedStep, StepRoute>>;
   /**
    * This pipeline's board of the base and of the new version, each as a
    * document of one board (EO-762). Where the template has one board,
@@ -504,10 +516,13 @@ export function compareWithTemplate(db: Db, pipelineId: string, template: Templa
   const nextLocal = installedStepIds(db, origin, template.document, nextIndex, nextSiblings);
   const base = graphOfDocument(db, pipelineId, baseBoard, installedStepIds(db, origin, origin.base, baseIndex));
   const next = graphOfDocument(db, pipelineId, nextBoard, nextLocal);
-  const current: ComparableGraph<PipelineStep, StepRoute> = {
+  const agents = listAgents(db);
+  const current: ComparableGraph<KindedStep, StepRoute> = {
     // Off-board steps are not the graph a template describes, and a
     // publish never sees them either (`savePipeline`).
-    steps: listStepsForPipeline(db, pipelineId).filter((step) => !step.offBoard),
+    steps: listStepsForPipeline(db, pipelineId)
+      .filter((step) => !step.offBoard)
+      .map((step) => withKind(agents, step)),
     routes: listRoutesForPipeline(db, pipelineId),
   };
   return { origin, template, base, current, next, merge: mergeThreeWay(base, current, next), baseBoard, nextBoard, nextLocal };
@@ -1060,7 +1075,7 @@ function conflictNoticeBody(db: Db, facts: ConflictNoticeFacts): string {
 function placeMerge(
   db: Db,
   compared: PipelineComparison,
-  merged: { steps: PipelineStep[]; routes: StepRoute[] },
+  merged: { steps: KindedStep[]; routes: StepRoute[] },
   mint: (templateStepId: string) => string = () => uuidv7(),
 ): { steps: PipelineStep[]; routes: StepRoute[]; stepIds: Record<string, string> } {
   const pipelineId = compared.origin.pipelineId;
@@ -1074,7 +1089,25 @@ function placeMerge(
   const placed = (id: string): string => renamed.get(id) ?? id;
   const added = merged.steps.some((step) => !before.has(step.id)) || merged.steps.length !== compared.current.steps.length;
 
-  const steps = merged.steps.map((step, index) => ({ ...step, id: placed(step.id), pipelineId: pipelineId as Uuid, position: added ? index : step.position }));
+  // Each agent step's agent (EO-875): the one it names where that agent is
+  // still of the kind the merge left the step needing — a person's choice
+  // of agent is theirs, and no update overwrites it — and otherwise the
+  // kind bound on this pipeline's project, as an import binds it: a step
+  // the template adds, or one whose kind the template changed.
+  const agents = listAgents(db);
+  const projectId = getPipeline(db, pipelineId)?.projectId ?? null;
+  const agentOf = (step: KindedStep): Uuid | null => {
+    if (step.type !== "agent") return null;
+    if (step.agentId !== null && stepAgentKind(agents, step) === step.ownerRole) return step.agentId;
+    return (agentForKind(agents, step.ownerRole, projectId)?.id ?? null) as Uuid | null;
+  };
+  const steps = merged.steps.map(({ ownerRole: _kind, ...step }, index) => ({
+    ...step,
+    agentId: agentOf({ ...step, ownerRole: _kind }),
+    id: placed(step.id),
+    pipelineId: pipelineId as Uuid,
+    position: added ? index : step.position,
+  }));
   // A route's source is always a step here. Its target is re-pointed
   // only where the template supplied it: a route of the person's that
   // hands work to another pipeline's step of the same id must still go
@@ -1105,13 +1138,15 @@ function placeMerge(
  * reads as theirs. A module step names its module by slug in a
  * document, and by id here.
  */
-function graphOfDocument(db: Db, pipelineId: string, document: PipelineExport, local: (id: string) => string): ComparableGraph<PipelineStep, StepRoute> {
-  const steps: PipelineStep[] = [...document.steps]
+function graphOfDocument(db: Db, pipelineId: string, document: PipelineExport, local: (id: string) => string): ComparableGraph<KindedStep, StepRoute> {
+  const steps: KindedStep[] = [...document.steps]
     .sort((a, b) => a.position - b.position)
     .map((step) => ({
       ...step,
       id: local(step.id),
       pipelineId: pipelineId as Uuid,
+      // A document names a kind; which agent runs it is the pipeline's (`placeMerge`).
+      agentId: null,
       entryAction: step.type === "module" && step.entryAction !== null ? (getModuleBySlug(db, step.entryAction)?.id ?? step.entryAction) : step.entryAction,
       inputs: {},
       timeoutMs: null,

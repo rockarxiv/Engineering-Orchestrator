@@ -433,7 +433,7 @@ export const pipelineSteps = sqliteTable(
     /** What it is called in front of a person: "Reviewer", "Merge Request". */
     name: text("name").notNull(),
     /**
-     * Who acts here: `agent` dispatches a role, `user` waits for a person,
+     * Who acts here: `agent` dispatches the agent it names, `user` waits for a person,
      * `builtin` runs a function EO ships (`PipelineStepType`).
      *
      * This decides which executor runs, which is the difference from the
@@ -442,8 +442,16 @@ export const pipelineSteps = sqliteTable(
      * choosing one changed an icon and nothing else.
      */
     type: text("type").notNull().default("agent"), // agent | user | builtin
-    /** The role dispatched on an `agent` step. NULL on every other kind. */
-    ownerRole: text("owner_role"),
+    /**
+     * The agent an `agent` step runs (EO-875, migration 0181). NULL on
+     * every other kind, and on an agent step with no agent chosen.
+     *
+     * No foreign key, as with `workspace_id`: an agent is tombstoned
+     * rather than deleted, and a replica may be sent a step naming an
+     * agent it does not have yet. The step carries no role: the kind it
+     * needs is the agent's `role`.
+     */
+    agentId: text("agent_id"),
     /** The agent action, or the builtin function. NULL on a `user` step. */
     entryAction: text("entry_action"),
     /** The prose shown under the step in the configuration screen. */
@@ -3172,10 +3180,10 @@ export const publishedSections = sqliteTable(
  *
  * Keyed by role and action, and by nothing else: a definition is a thing
  * somebody wrote about one role, and it never applies to another. Keyed
- * on the role's *name* rather than on an agent, unlike the attachment
- * tables, because that is what a step names — `ownerRole` — and what a
- * dispatch is resolved by; two agents staffing one role answer the same
- * action in the same shape.
+ * on the role's *name* — an agent's kind — rather than on an agent,
+ * unlike the attachment tables: a step's action must be one of its
+ * agent's kind's actions (EO-875), and two agents of one kind answer the
+ * same action in the same shape.
  *
  * Written only through `saveActionDefinition`, which holds every row to
  * `readActionDefinitionDraft` in `packages/core`.

@@ -439,7 +439,7 @@ function diffableGraph(snapshot: PipelineGraphSnapshot): DiffableGraph {
       position: step.position,
       name: step.name,
       type: step.type,
-      ownerRole: step.ownerRole,
+      agentId: step.agentId,
       entryAction: step.entryAction,
       instructionsSummary: step.instructionsSummary,
       isTerminal: step.isTerminal,
@@ -542,7 +542,7 @@ export interface BoundGraph {
 /** A parsed snapshot as the rest of EO's types spell it. */
 function graphOf(snapshot: PipelineGraphSnapshot): { steps: PipelineStep[]; routes: StepRoute[] } {
   return {
-    steps: snapshot.steps.map((step) => ({ ...step, pipelineId: step.pipelineId as Uuid, ownerPersonId: step.ownerPersonId as Uuid | null })),
+    steps: snapshot.steps.map((step) => ({ ...step, pipelineId: step.pipelineId as Uuid, agentId: step.agentId as Uuid | null, ownerPersonId: step.ownerPersonId as Uuid | null })),
     routes: snapshot.routes.map((route) => ({ ...route, id: route.id as Uuid, pipelineId: route.pipelineId as Uuid })),
   };
 }

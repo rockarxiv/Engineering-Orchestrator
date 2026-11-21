@@ -181,7 +181,7 @@ export function documentGraph(
    * between them is honest only once the kinds are bound. Absent, no step
    * names an agent.
    */
-  agentFor: (kind: string | null) => string | null = () => null,
+  agentFor: (step: { id: string; type: string; ownerRole: string | null }) => string | null = () => null,
 ): { steps: VersionStep[]; routes: VersionRoute[]; entryRules: EntryRule[] } {
   return {
     steps: document.steps.map((step) => ({
@@ -189,7 +189,7 @@ export function documentGraph(
       position: step.position,
       name: step.name,
       type: step.type,
-      agentId: step.type === "agent" ? agentFor(step.ownerRole) : null,
+      agentId: step.type === "agent" ? agentFor(step) : null,
       entryAction: step.entryAction,
       instructionsSummary: step.instructionsSummary,
       isTerminal: step.isTerminal,
@@ -232,7 +232,7 @@ export function suggestionDiff(input: {
   published: { number: number; steps: VersionStep[]; routes: VersionRoute[]; entryRules?: readonly EntryRule[] };
   document: PipelineExport;
   /** `documentGraph`'s binding of the document's kinds to agents. */
-  agentFor?: (kind: string | null) => string | null;
+  agentFor?: (step: { id: string; type: string; ownerRole: string | null }) => string | null;
 }): VersionDiff {
   return diffVersions({ ...input.published, ...withoutPins({ ...onBoard(input.published), ...(input.published.entryRules === undefined ? {} : { entryRules: input.published.entryRules }) }) }, { number: input.published.number + 1, ...documentGraph(input.document, input.agentFor) });
 }

@@ -42,6 +42,7 @@ import {
   entryRefusalSentence,
   entryRuleWords,
   shownEntryRule,
+  stepAgentKind,
 } from "@eo/core";
 import type { Db } from "../db/client.js";
 import type { Project } from "../db/repos/projectsRepo.js";
@@ -1026,7 +1027,11 @@ export interface ModuleItemView {
   trial: boolean;
   createdBy: string | null;
   pipeline: { id: string; name: string } | null;
-  step: { id: string; name: string; kind: string; ownerRole: string | null } | null;
+  /**
+   * `ownerRole` is the kind of the agent the step names (EO-875), kept
+   * under the name modules and tools already read; `agentId` is the agent.
+   */
+  step: { id: string; name: string; kind: string; ownerRole: string | null; agentId: string | null } | null;
   pipelineVersion: { id: string; number: number } | null;
   git: {
     branch: string | null;
@@ -1118,7 +1123,10 @@ export function moduleItemView(db: Db, item: Item, targetBranch: string | null):
     trial: item.trialAt !== null,
     createdBy: item.createdBy === null ? null : (getPerson(db, item.createdBy)?.name ?? null),
     pipeline: pipeline === undefined ? null : { id: pipeline.id, name: pipeline.name },
-    step: step === undefined ? null : { id: step.id, name: step.name, kind: step.type, ownerRole: step.ownerRole },
+    step:
+      step === undefined
+        ? null
+        : { id: step.id, name: step.name, kind: step.type, ownerRole: stepAgentKind(listAgents(db), step), agentId: step.type === "agent" ? step.agentId : null },
     pipelineVersion: version === undefined ? null : { id: version.id, number: version.number },
     git: {
       branch,
@@ -2254,7 +2262,7 @@ function toStepView(step: PipelineStep): PipelineStepView {
     position: step.position,
     name: step.name,
     type: step.type,
-    ownerRole: step.ownerRole,
+    agentId: step.agentId,
     entryAction: step.entryAction,
     instructionsSummary: step.instructionsSummary,
     isTerminal: step.isTerminal,

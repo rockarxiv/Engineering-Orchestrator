@@ -1,4 +1,5 @@
 import type { AssistTrialCard, PipelineStepView } from "@eo/core";
+import { useStepAgentKind } from "../../shared/agents/stepAgentKind";
 import { Chip, StepKindChip, type Tone } from "../kit";
 
 const MODE: Record<AssistTrialCard["steps"][number]["mode"], { label: string; tone: Tone }> = {
@@ -33,9 +34,10 @@ export function DesignPlan({
 }: {
   trial: AssistTrialCard;
   /** The draft's steps, as the graph above draws them. */
-  steps: readonly Pick<PipelineStepView, "id" | "type" | "ownerRole" | "entryAction" | "isTerminal">[];
+  steps: readonly Pick<PipelineStepView, "id" | "type" | "agentId" | "entryAction" | "isTerminal">[];
 }) {
   const stepOf = (stepId: string) => steps.find((step) => step.id === stepId);
+  const kindOf = useStepAgentKind();
   return (
     <div className="flex flex-col gap-2.5">
       {trial.changes.length > 0 ? (
@@ -72,7 +74,7 @@ export function DesignPlan({
               <li key={step.stepId} className="flex flex-col gap-0.5 text-[12.5px]">
                 <div className="flex min-w-0 flex-wrap items-center gap-2">
                   <b className="font-semibold text-ink">{step.name}</b>
-                  {drawn === undefined || drawn.isTerminal ? null : <StepKindChip step={drawn} />}
+                  {drawn === undefined || drawn.isTerminal ? null : <StepKindChip step={{ ...drawn, agentKind: kindOf(drawn) }} />}
                   <Chip tone={MODE[step.mode].tone}>{MODE[step.mode].label}</Chip>
                   {step.reaches ? <Chip>{REACHES[step.reaches]}</Chip> : null}
                 </div>

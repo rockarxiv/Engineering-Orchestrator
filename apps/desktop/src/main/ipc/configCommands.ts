@@ -1,4 +1,4 @@
-import { backendAllowed, bindingRefusal, DEFAULT_MEMORY_DELIVERY_CHARS, DEFAULT_MEMORY_SCOPE_MAX_CHARS, DEFAULT_MEMORY_SCOPE_MAX_ENTRIES, DEFAULT_SKILL_ARCHIVE_AFTER_RUNS, DEFAULT_SKILL_MAX_BODY_CHARS, DEFAULT_SKILL_STALE_AFTER_RUNS, isBuiltinRole, isDispatchable, isPreviewAgent, rolesStaffedFor, settledWatch, staffingAgents, stepHoldsItemsMessage, stepWorkspaceChoice, timeLimitBoundProblem, withMemoryNoteGrant } from "@eo/core";
+import { backendAllowed, bindingRefusal, DEFAULT_MEMORY_DELIVERY_CHARS, DEFAULT_MEMORY_SCOPE_MAX_CHARS, DEFAULT_MEMORY_SCOPE_MAX_ENTRIES, DEFAULT_SKILL_ARCHIVE_AFTER_RUNS, DEFAULT_SKILL_MAX_BODY_CHARS, DEFAULT_SKILL_STALE_AFTER_RUNS, isBuiltinRole, isDispatchable, isPreviewAgent, settledWatch, stepAgentOf, stepAgentRefusal, stepHoldsItemsMessage, stepWorkspaceChoice, timeLimitBoundProblem, withMemoryNoteGrant } from "@eo/core";
 import type { ActionDefinitionDraft, Agent, AgentRemovalImpact, EntryRule, GuardConfigView, IpcPayload, IpcResponse, ItemTypeEntry, Registry, Uuid, PipelineStep, StepBrief, StepRoute, StepWatch } from "@eo/core";
 import { hasBlockingProblem, outsideReachByStep, validatePipeline, type WorkflowProblem } from "@eo/engine";
 import type { Db } from "../db/client.js";
@@ -236,15 +236,15 @@ export function writeGuards(db: Db, input: IpcPayload<"guards:set">): IpcRespons
 }
 
 export function listAgentDetails(db: Db): IpcResponse<"agents:listDetailed"> {
-  // Counted from the steps, not stored: a role is referenced by whatever
-  // steps happen to name it, across every pipeline, and any stored tally
-  // would drift the moment someone rewired one.
-  const pipelinesByRole = new Map<string, Set<string>>();
+  // Counted from the steps, not stored: an agent is referenced by
+  // whatever steps happen to name it (EO-875), across every pipeline, and
+  // any stored tally would drift the moment someone rewired one.
+  const pipelinesByAgent = new Map<string, Set<string>>();
   for (const step of listPipelineSteps(db)) {
-    if (!step.ownerRole) continue;
-    const seen = pipelinesByRole.get(step.ownerRole) ?? new Set<string>();
+    if (step.type !== "agent" || step.agentId === null) continue;
+    const seen = pipelinesByAgent.get(step.agentId) ?? new Set<string>();
     seen.add(step.pipelineId);
-    pipelinesByRole.set(step.ownerRole, seen);
+    pipelinesByAgent.set(step.agentId, seen);
   }
 
   return {
@@ -275,7 +275,7 @@ export function listAgentDetails(db: Db): IpcResponse<"agents:listDetailed"> {
       builtin: isBuiltinRole(registry, agent.role),
       config: agent.config,
       projectId: agent.projectId,
-      pipelineCount: pipelinesByRole.get(agent.role)?.size ?? 0,
+      pipelineCount: pipelinesByAgent.get(agent.id)?.size ?? 0,
     })),
   };
 }
@@ -432,9 +432,9 @@ export function saveAgent(db: Db, input: IpcPayload<"agents:save">): IpcResponse
         projectId: projectId as Uuid | null,
       });
 
-  // Recomputed rather than carried in: saving an agent can change its
-  // role, which changes how many pipelines it answers for.
-  const pipelineCount = new Set(listPipelineSteps(db).filter((step) => step.ownerRole === saved.role).map((step) => step.pipelineId)).size;
+  // Recomputed rather than carried in: how many pipelines have a step
+  // naming this agent (EO-875).
+  const pipelineCount = new Set(listPipelineSteps(db).filter((step) => step.type === "agent" && step.agentId === saved.id).map((step) => step.pipelineId)).size;
 
   return {
     saved: true,
@@ -530,36 +530,37 @@ export function customiseAgent(db: Db, input: IpcPayload<"agents:customise">): I
 }
 
 /**
- * Who a project's work goes to, role by role (EO-475, `projects:staffing`).
+ * Who a project's work goes to, kind by kind (EO-475, `projects:staffing`).
  *
- * The roles are the ones the agent steps of the project's live pipelines
- * name — `listPipelines`'s idea of the project's, so a pipeline nothing
- * has adopted yet counts, as it does everywhere else — in the order the
- * pipelines and their steps come. Each is answered by `staffingAgents`
- * asked of a real item on the project: the scheduler's rule, so this
- * cannot name an agent the scheduler would pass over.
+ * Read from the steps (EO-875): each agent step of the project's live
+ * pipelines — `listPipelines`'s idea of the project's, so a pipeline
+ * nothing has adopted yet counts, as it does everywhere else — names the
+ * agent that runs it, and that is the whole answer. Grouped by the kind
+ * of the agents they name, in the order the pipelines and their steps
+ * come; an agent that cannot run this project's work (`stepAgentRefusal`)
+ * is not counted, so a kind whose every step names one says "nobody".
  */
 export function projectStaffing(db: Db, input: IpcPayload<"projects:staffing">): IpcResponse<"projects:staffing"> {
   const projectId = input.projectId as Uuid;
   const pipelineIds = listPipelines(db, projectId).map((pipeline) => pipeline.id);
   const steps = listPipelineSteps(db);
-  const roles: string[] = [];
+  const agents = listAgents(db);
+  const item = { previewAt: null, projectId };
+  const byKind = new Map<string, Agent[]>();
   for (const pipelineId of pipelineIds) {
     for (const step of steps) {
-      if (step.pipelineId !== pipelineId || step.type !== "agent" || step.ownerRole === null) continue;
-      if (!roles.includes(step.ownerRole)) roles.push(step.ownerRole);
+      if (step.pipelineId !== pipelineId) continue;
+      const agent = stepAgentOf(agents, step);
+      if (agent === undefined) continue;
+      const named = byKind.get(agent.role) ?? [];
+      if (stepAgentRefusal(agent, item) === null && !named.includes(agent)) named.push(agent);
+      byKind.set(agent.role, named);
     }
   }
-  // Tombstones left out, as every other reader of the list does: a
-  // deleted agent is archived as well, so it would never staff anything,
-  // but it has no business being looked at either.
-  const agents = listAgents(db).filter((agent) => agent.deletedAt === null);
-  const item = { previewAt: null, projectId };
   return {
-    roles: roles.map((role) => {
-      const candidates = staffingAgents(agents, role, item);
-      const from = candidates.length === 0 ? "nobody" : candidates.some((agent) => agent.projectId !== null) ? "project" : "global";
-      return { role, from, agents: candidates.map((agent) => ({ id: agent.id, name: agent.name })) };
+    roles: [...byKind].map(([role, named]) => {
+      const from = named.length === 0 ? "nobody" : named.some((agent) => agent.projectId !== null) ? "project" : "global";
+      return { role, from, agents: named.map((agent) => ({ id: agent.id, name: agent.name })) };
     }),
   };
 }
@@ -574,20 +575,16 @@ export type RunCanceller = Pick<EngineHandle, "cancelRun">;
  * they act, so the two confirmations cannot come to say different
  * things about the same agent.
  *
- * **Steps.** Every `type === "agent"` step, in every live pipeline, whose
- * owner is this agent's role — a builtin, a module or a `user` step names
- * no role and has nobody to lose. Off-board steps are included, as they
- * were in the refusal this replaced: the two conversation steps carry
- * `owner_role` NULL and so are already out, while an off-board step
- * somebody wired to a role is a step items can still reach.
+ * **Steps.** Every `type === "agent"` step, in every pipeline, that
+ * names this agent (EO-875) — a builtin, a module or a `user` step names
+ * no agent and has nobody to lose. Off-board steps are included: an
+ * off-board step is a step items can still reach.
  *
- * **Who staffs them.** Enabled, non-archived, non-preview agents only,
- * on *both* sides of the question. A disabled or archived agent staffs
- * nothing (`isDispatchable`), and a preview's own agent runs rehearsals
- * only (EO-316) — so it can neither be what still covers a role nor be
- * what leaves it empty. The second half is the bug this fixed: the
- * gallery's "writer (preview)" was refused archiving as "the only
- * enabled agent" on a role it never staffed.
+ * **Who covers them.** Nobody: a step runs the agent it names and is
+ * never handed to another of the same kind, so `coveredBy` is empty and
+ * every step naming a dispatchable agent is left with nobody when it
+ * goes. A preview's own agent runs rehearsals only (EO-316), so taking it
+ * away leaves no real step with nobody.
  *
  * **The system agent.** The Assistant is answered by whichever
  * dispatchable `system` agent `productOwner` finds; the last one going
@@ -596,13 +593,13 @@ export type RunCanceller = Pick<EngineHandle, "cancelRun">;
 export function agentRemovalImpact(db: Db, agent: Agent): AgentRemovalImpact {
   const staffs = (candidate: Agent) => isDispatchable(candidate) && !isPreviewAgent(candidate);
   const others = listAgents(db).filter((other) => other.id !== agent.id && other.role === agent.role);
-  const coveredBy = others.filter(staffs).map((other) => other.name);
+  const coveredBy: string[] = [];
 
   // Archived pipelines included: "every pipeline" is what the person is
   // told, and a step in an archived one still names this role.
   const pipelineNames = new Map(listPipelines(db, undefined, true).map((pipeline) => [pipeline.id as string, pipeline.name]));
   const steps = listPipelineSteps(db)
-    .filter((step) => step.type === "agent" && step.ownerRole === agent.role && pipelineNames.has(step.pipelineId))
+    .filter((step) => step.type === "agent" && step.agentId === agent.id && pipelineNames.has(step.pipelineId))
     .map((step) => ({ stepId: step.id, stepName: step.name, pipelineId: step.pipelineId, pipelineName: pipelineNames.get(step.pipelineId)! }));
 
   const activeRuns = listActiveRuns(db)
@@ -764,7 +761,7 @@ function toDomainSteps(db: Db, pipelineId: string, steps: IpcPayload<"pipeline:s
     position: step.position,
     name: step.name,
     type: step.type,
-    ownerRole: step.ownerRole,
+    agentId: step.type === "agent" ? (step.agentId as Uuid | null) : null,
     entryAction: step.entryAction,
     instructionsSummary: step.instructionsSummary,
     isTerminal: step.isTerminal,
@@ -931,34 +928,19 @@ function registryWith(db: Db, actions: readonly ActionDefinitionDraft[]): { regi
 }
 
 /**
- * The roles somebody would be dispatched for on this pipeline's work —
- * what `validatePipeline` is handed as `staffedRoles`.
- *
- * `rolesStaffedFor`, which is `staffingAgents` — the scheduler's own
- * rule — asked of a real item on the pipeline's project (EO-474). So:
- * not an archived or disabled agent (EO-186), or a step owned only by
- * retired agents would validate clean and then never dispatch — the
- * silent park "which has no enabled agent" exists to make loud; not the
- * preview's own (EO-316), or a step nobody real staffs would validate
- * clean because a rehearsal could walk it; and not another project's
- * agent, which the scheduler will never send this pipeline's work to.
- *
- * A pipeline no project has adopted yet belongs to whichever project is
- * asking (`listPipelines`), and the scheduler staffs each item on it by
- * that item's own project (EO-514). So it is asked of the projects whose
- * work stands on it, and a role is staffed where any of them would
- * dispatch somebody: the seeded Delivery pipeline, carrying SHOP's work,
- * is staffed by SHOP's own implementer. With no work on it yet, it is
- * asked of every live project and of none, since any of them could bring
- * some. Asking it of no project at all — global agents only — warned
- * that a role SHOP's agent fills was unstaffed.
+ * What `validatePipeline` judges a pipeline's agent steps against
+ * (EO-875): every agent, archived and deleted ones included so a step
+ * naming one is told apart from a step naming nobody, and the project
+ * the pipeline belongs to — the project a pipeline that does not exist
+ * yet is about to be made in.
  *
  * Exported because the architect's draft is judged by it too, and a
- * draft and a publish must not disagree about who staffs a step.
+ * draft and a publish must not disagree about whether a step's agent may
+ * run it.
  */
-export function staffedRolesForPipeline(db: Db, pipelineId: string): string[] {
-  const agents = listAgents(db);
-  return [...new Set(projectsServedByPipeline(db, pipelineId).flatMap((projectId) => rolesStaffedFor(agents, { previewAt: null, projectId })))];
+export function stepAgentsForPipeline(db: Db, pipelineId: string): { agents: Agent[]; projectId: string | null } {
+  const pipeline = getPipeline(db, pipelineId);
+  return { agents: listAgents(db), projectId: pipeline === undefined ? activeProjectId(db) : pipeline.projectId };
 }
 
 /**
@@ -1044,7 +1026,7 @@ function validationInput(
     // (EO-426), so the graph is judged with the definitions it is being
     // published with.
     registry: registryInForce ?? registryForProject(db, projects.find((projectId) => projectId !== null) ?? projects[0] ?? null),
-    staffedRoles: staffedRolesForPipeline(db, pipelineId),
+    ...stepAgentsForPipeline(db, pipelineId),
     // Archived ones included: a step naming a deleted module is a distinct
     // problem from one naming a module that was never here, and the
     // validator can only tell them apart if it is given both (KAN-104).

@@ -49,7 +49,8 @@ import {
   workspaceLabel,
 } from "../db/repos/index.js";
 import { sideEffectingServersByStep } from "../connectors/sideEffects.js";
-import { itemTypesJudged, readGuards, staffedRolesForPipeline } from "../ipc/configCommands.js";
+import { kindBinder, withKind } from "../stepAgents.js";
+import { itemTypesJudged, readGuards, stepAgentsForPipeline } from "../ipc/configCommands.js";
 import { actionUsedBy, describeActionUse } from "../ipc/roleActionCommands.js";
 import { activeProjectId } from "../ipc/repositoryCommands.js";
 
@@ -104,7 +105,7 @@ export function validateDraft(
   // The pipeline's steps as they stand, which is what the draft's own
   // steps carry their keep checking from (EO-505).
   const existingSteps = new Map(listStepsForPipeline(db, pipelineId).map((step) => [step.id, step]));
-  const domainSteps = toDomainSteps(pipelineId, draft, existingSteps);
+  const domainSteps = toDomainSteps(pipelineId, draft, existingSteps, draftAgentBinder(db, pipelineId));
   const refusedActions: WorkflowProblem[] = proposed.ok
     ? []
     : proposed.problems.map((message) => ({ severity: "error" as const, stateId: null, message: `The proposed action definition cannot be saved — ${message}` }));
@@ -158,10 +159,9 @@ export function validateDraft(
     steps: domainSteps,
     routes: toDomainRoutes(pipelineId, draft),
     entryStepId: draft.entryStepId,
-    // The publish path's own answer (EO-186, EO-474) — a retired agent,
-    // a preview's own and another project's agent staff nothing — and
-    // the two must not disagree about a draft.
-    staffedRoles: staffedRolesForPipeline(db, pipelineId),
+    // The publish path's own answer (EO-875): the agents a step may name,
+    // and the pipeline's project — the two must not disagree about a draft.
+    ...stepAgentsForPipeline(db, pipelineId),
     itemCountByStep,
     // Off-dashboard steps are absent from a draft exactly as they are
     // absent from the editor's submission, and "absent" is how a removal
@@ -370,13 +370,33 @@ export function draftStepResults(
   });
 }
 
+/**
+ * The agent each of a draft's agent steps names once published (EO-875).
+ *
+ * A draft names a kind, as a document does. Publishing keeps the agent
+ * the step already names where that agent is still of the kind — a
+ * person's choice is theirs — and otherwise binds the kind on the
+ * pipeline's project (`agentForKind`). The card and Publish both read
+ * this, so they cannot disagree about who runs a step.
+ */
+export function draftAgentBinder(db: Db, pipelineId: string): (step: { id: string; type: string; ownerRole: string | null }) => Uuid | null {
+  const { agents, projectId } = stepAgentsForPipeline(db, pipelineId);
+  return kindBinder(agents, projectId, listStepsForPipeline(db, pipelineId));
+}
+
 /** The draft's steps as the engine sees them. `pipelineId` is stamped rather than asked for. */
-export function toDomainSteps(pipelineId: string, draft: DraftWithLimits, existingSteps: ReadonlyMap<string, PipelineStep> = new Map()): PipelineStep[] {
+export function toDomainSteps(
+  pipelineId: string,
+  draft: DraftWithLimits,
+  existingSteps: ReadonlyMap<string, PipelineStep> = new Map(),
+  agentFor: (step: { id: string; type: string; ownerRole: string | null }) => Uuid | null = () => null,
+): PipelineStep[] {
   return draft.steps.map((draftStep) => {
-    const step = withoutDraftSettings(draftStep);
+    const { ownerRole, ...step } = withoutDraftSettings(draftStep);
     const existing = existingSteps.get(step.id);
     return {
       ...step,
+      agentId: agentFor({ id: step.id, type: step.type, ownerRole }),
       pipelineId: pipelineId as Uuid,
       // Never on the wire, by design: an off-dashboard step is not a column,
       // so a draft has nothing to say about one.
@@ -543,7 +563,11 @@ export function renderDraft(
     };
   }
 
-  const before = listStepsForPipeline(db, pipelineId).filter((step) => !step.offBoard);
+  // Read with the kind each step's agent brings (EO-875): the draft names kinds.
+  const agents = listAgents(db);
+  const before = listStepsForPipeline(db, pipelineId)
+    .filter((step) => !step.offBoard)
+    .map((step) => withKind(agents, step));
   const beforeById = new Map(before.map((step) => [step.id, step]));
   // Every step by name, as a brief that names one is said (EO-827).
   const stepNames = new Map<string, string>([...before, ...draft.steps].map((step) => [step.id, step.name]));
@@ -819,7 +843,7 @@ function removalRefusal(draft: PipelineDraft, removed: PipelineStep[], counts: R
  * inserted above it would bury the edit that was actually made.
  */
 function changesOf(
-  was: PipelineStep,
+  was: PipelineStep & { ownerRole: string | null },
   now: { name: string; type: string; ownerRole: string | null; entryAction: string | null; isTerminal: boolean; planMode: boolean; instructionsSummary: string | null },
 ): string[] {
   const changes: string[] = [];

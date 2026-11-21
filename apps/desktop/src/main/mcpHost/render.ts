@@ -976,7 +976,8 @@ export function renderPipeline(data: IpcResponse<"pipelineSteps:list">): string 
     const marks: string[] = [step.type];
     if (step.id === data.entryStepId) marks.push("work enters here");
     if (step.isTerminal) marks.push("terminal");
-    if (step.ownerRole !== null) marks.push(`role ${step.ownerRole}`);
+    // The agent it runs, by the id `pipeline_save` takes (EO-875).
+    if (step.agentId !== null) marks.push(`agent ${step.agentId}`);
     lines.push(`- ${step.name} (id: ${step.id}) [${marks.join("; ")}]`);
     // Whether it reaches outside EO (EO-584): what a trial's plan decides
     // to run for real, redirect or mock, said on the step it is about.
@@ -2445,7 +2446,7 @@ export function renderUpdateConflict(data: IpcResponse<"pipeline:updateConflict"
         name: step.name,
         type: step.type,
         entryAction: step.entryAction,
-        ownerRole: step.ownerRole,
+        agentId: step.agentId,
         isTerminal: step.isTerminal,
         inputs: step.inputs,
         watch: step.watch,

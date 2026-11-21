@@ -298,14 +298,13 @@ export function blockerWords(blocker: Exclude<RerunBlocker, { kind: "run_active"
             fix: `Nothing to do: it carries on by itself once ${blocker.dependencyKey} gets there or finishes. Or remove the dependency.`,
           };
     }
-    case "no_enabled_agent":
+    case "no_agent":
       return {
-        condition:
-          blocker.role === null
-            ? "this step names no role, so nobody can be staffed on it"
-            : `no enabled agent holds the "${blocker.role}" role`,
-        fix: "Enable one in Settings.",
+        condition: "this step names no agent, so nobody can run it",
+        fix: "Choose an agent for the step.",
       };
+    case "agent_unavailable":
+      return agentUnavailableWords(blocker);
     case "dependency_pull_request_pending":
       return {
         condition: `its branch is built on ${blocker.dependencyKey}'s, so it waits for ${blocker.dependencyKey} to open its pull request`,
@@ -323,6 +322,60 @@ export function blockerWords(blocker: Exclude<RerunBlocker, { kind: "run_active"
         fix: "Move it to one.",
       };
   }
+}
+
+/**
+ * Why the agent a step names cannot run this item, and what to do
+ * (EO-875). The step names that agent and no other, so the fix is
+ * always about it or about the step: enable it where it can be enabled,
+ * otherwise choose another agent on the step. Never "another agent of
+ * the kind will pick it up", because none will.
+ */
+function agentUnavailableWords(blocker: Extract<ItemBlocker, { kind: "agent_unavailable" }>): { condition: string; fix: string } {
+  const name = blocker.agentName ?? "the agent it names";
+  switch (blocker.why) {
+    case "disabled":
+      return {
+        condition: `${name}, the agent this step names, is disabled`,
+        fix: `Enable ${name} in Agents, or choose another agent on the step.`,
+      };
+    case "archived":
+      return {
+        condition: `${name}, the agent this step names, has been archived`,
+        fix: "Choose another agent on the step.",
+      };
+    case "deleted":
+      return {
+        condition: `${name}, the agent this step names, has been deleted`,
+        fix: "Choose another agent on the step.",
+      };
+    case "missing":
+      return {
+        condition: "the agent this step names is not on this installation",
+        fix: "Choose another agent on the step.",
+      };
+    case "other_project":
+      return {
+        condition: `${name}, the agent this step names, works for another project than this ticket's`,
+        fix: "Choose an agent of this ticket's project, or a global one, on the step.",
+      };
+    case "preview_only":
+      return {
+        condition: `${name}, the agent this step names, runs previews only`,
+        fix: "Choose another agent on the step.",
+      };
+  }
+}
+
+/**
+ * The comment EO posts once on an item that reaches a step it cannot run
+ * (EO-875, invariant 8): the step names no agent, or one that cannot run
+ * this item. A note on the thread, said once for each stay on the step
+ * (`noteUnrunnableSteps`), naming the agent and the fix.
+ */
+export function unrunnableStepNote(stepName: string, blocker: Extract<ItemBlocker, { kind: "no_agent" | "agent_unavailable" }>): string {
+  const { condition, fix } = blockerWords(blocker);
+  return `Nothing will run "${stepName}" for this ticket: ${condition}. ${fix} It is not handed to another agent of the same kind.`;
 }
 
 /**

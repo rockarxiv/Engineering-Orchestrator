@@ -40,7 +40,7 @@ import {
 import { isTemplateDocument, templateBoardHolders, type TemplateDocument } from "../db/repos/pipelineOriginsRepo.js";
 import { savePipeline } from "../ipc/configCommands.js";
 import type { TemplateVersion } from "./history.js";
-import { compareWithTemplate, conflictStepNames, describeConflicts, FIELD_WORDS, heldByTheRecord, pointRoutesWaitingOn, type PipelineComparison } from "./templateUpdates.js";
+import { compareWithTemplate, conflictStepNames, describeConflicts, FIELD_WORDS, heldByTheRecord, pointRoutesWaitingOn, type KindedStep, type PipelineComparison } from "./templateUpdates.js";
 
 /**
  * A held template update, read whole for the assistant (EO-534), and
@@ -179,7 +179,7 @@ function heldTemplate(db: Db, conflict: PipelineUpdateConflict): TemplateVersion
   return { slug: conflict.templateSlug, version: conflict.toVersion, notes: conflict.notes, document };
 }
 
-function graphView(graph: ComparableGraph<PipelineStep, StepRoute>, entryStepId: string | null): UpdateConflictGraph {
+function graphView(graph: ComparableGraph<KindedStep, StepRoute>, entryStepId: string | null): UpdateConflictGraph {
   return {
     steps: graph.steps.map((step) => PipelineStepViewSchema.parse(step)),
     routes: graph.routes.map((route) => StepRouteViewSchema.parse(route)),
@@ -280,7 +280,7 @@ function baseMovedSince(
 const EDITED_STEP_FIELDS = [
   "name",
   "type",
-  "ownerRole",
+  "agentId",
   "entryAction",
   "instructionsSummary",
   "isTerminal",
