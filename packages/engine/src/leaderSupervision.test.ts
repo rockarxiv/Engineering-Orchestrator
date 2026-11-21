@@ -9,7 +9,6 @@ import {
   planLeaderTeam,
   type LeaderAttemptState,
   type LeaderVerdict,
-  type TeamCapacity,
 } from "./teamSupervision.js";
 
 /** A leader-led team's pure half (EO-847), and a member of either kind asking the person. */
@@ -21,19 +20,6 @@ const TEAM: LeaderTeam = LeaderTeamSchema.parse({
   limits: { maxParticipants: 2, maxParallel: 2, maxRounds: 2, maxRetries: 1 },
 });
 
-const ROOMY: TeamCapacity = {
-  machineFree: 4,
-  agentOf: new Map([
-    [LEADER_ASSIGNMENT_KEY, "lee"],
-    ["auth", "rita"],
-    ["suite", "tom"],
-  ]),
-  agentFree: new Map([
-    ["lee", 1],
-    ["rita", 1],
-    ["tom", 1],
-  ]),
-};
 
 let counter = 0;
 function attempt(key: string, status: LeaderAttemptState["status"], extra: Partial<LeaderAttemptState> = {}): LeaderAttemptState {
@@ -55,7 +41,7 @@ function chain(...attempts: LeaderAttemptState[]): LeaderAttemptState[] {
   }
   return attempts;
 }
-const plan = (attempts: LeaderAttemptState[], baseline = "B1") => planLeaderTeam({ team: TEAM, attempts, baseline, capacity: ROOMY });
+const plan = (attempts: LeaderAttemptState[], baseline = "B1") => planLeaderTeam({ team: TEAM, attempts, baseline });
 
 describe("planLeaderTeam (EO-847)", () => {
   it("starts the leader alone first, and nobody else", () => {
@@ -195,20 +181,19 @@ describe("planIndependentTeam with a participant asking (EO-847)", () => {
     outcomes: [{ key: "clear", label: "Nothing found" }],
     completion: { rules: [], fallback: "approved" },
   });
-  const capacity: TeamCapacity = { machineFree: 4, agentOf: new Map([["security", "rita"], ["tests", "tom"]]), agentFree: new Map([["rita", 1], ["tom", 1]]) };
 
   it("decides nothing while a question is open, and restarts only the asker on the answer, keeping its sibling's report", () => {
     const asking = attempt("security", "cancelled", { question: "open" });
     const tests = attempt("tests", "completed", { outcome: "clear", report: "Fine." });
-    const open = planIndependentTeam({ team, attempts: [asking, tests], baseline: "B1", capacity });
+    const open = planIndependentTeam({ team, attempts: [asking, tests], baseline: "B1" });
     expect(open.asking).toEqual(["security"]);
     expect(open.start).toEqual([]);
     expect(open.decision.status).toBe("pending");
     asking.question = "answered";
-    const answered = planIndependentTeam({ team, attempts: [asking, tests], baseline: "B1", capacity });
+    const answered = planIndependentTeam({ team, attempts: [asking, tests], baseline: "B1" });
     expect(answered.start).toEqual([{ key: "security", supersedes: asking.id, why: "answered" }]);
     // A question answered after the evidence moved is started on the new evidence, and the sibling's old verdict is not kept.
-    const moved = planIndependentTeam({ team, attempts: [asking, tests], baseline: "B2", capacity });
+    const moved = planIndependentTeam({ team, attempts: [asking, tests], baseline: "B2" });
     expect(moved.start).toEqual([
       { key: "security", supersedes: asking.id, why: "stale" },
       { key: "tests", supersedes: tests.id, why: "stale" },

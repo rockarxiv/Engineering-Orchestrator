@@ -696,6 +696,17 @@ describe("a step's details, read-only (EO-524)", () => {
     expect(within(screen.getByRole("region", { name: "Team" })).getByRole("list", { name: "Limits" }).textContent).toContain("2 rounds of assignments");
   });
 
+  it("names an isolated team's mode where it says who acts, and nowhere calls it report-only (EO-871)", async () => {
+    const isolated = StepTeamSchema.parse({ coordination: "leader", members: "isolated", leader: { role: "reviewer", instructions: "Split the review." }, roles: ["reviewer"] });
+    mockIpc({ steps: [step("todo", "To Do", 0, { team: isolated })] });
+    renderGraph();
+    fireEvent.click(await screen.findByRole("button", { name: "To Do" }));
+    expect(detailsOf()["Who acts"]).toBe("An isolated team, led by a reviewer agent");
+    const section = screen.getByRole("region", { name: "Team" });
+    expect(within(section).getByText("isolated")).toBeInTheDocument();
+    expect(document.body.textContent).not.toMatch(/report-only/i);
+  });
+
   it("shows no team on a step that runs as one agent", async () => {
     mockIpc({ steps: [step("todo", "To Do", 0)] });
     renderGraph();

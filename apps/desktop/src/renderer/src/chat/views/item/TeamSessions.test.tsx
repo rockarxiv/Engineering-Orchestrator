@@ -51,6 +51,7 @@ function session(overrides: Partial<TeamSessionView> = {}): TeamSessionView {
     stepId: "review",
     stepName: "Review",
     coordination: "independent",
+    members: "report_only",
     status: "open",
     state: "running",
     current: true,
@@ -116,6 +117,13 @@ describe("an item's team sessions (EO-849)", () => {
     expect(screen.getByText("Working")).toBeInTheDocument();
   });
 
+  it("names the team's mode as the session has it: report-only or isolated (EO-871)", async () => {
+    renderTeam(() => [session({ id: "s-isolated", coordination: "leader", members: "isolated" }), session({ id: "s-report", stepName: "Check" })]);
+    expect(await screen.findByText("Leader-led · isolated")).toBeInTheDocument();
+    expect(screen.getByText("Independent · report-only")).toBeInTheDocument();
+    expect(screen.queryByText("Leader-led · report-only")).not.toBeInTheDocument();
+  });
+
   it("shows one session with its participants underneath, attributed across backends, and its spending once", async () => {
     const selected: string[] = [];
     renderTeam(
@@ -155,7 +163,7 @@ describe("an item's team sessions (EO-849)", () => {
       session({
         state: "waiting",
         waiting: [
-          { kind: "capacity", keys: ["tests"], text: "every participant slot on this machine is in use by a team." },
+          { kind: "capacity", keys: ["tests"], text: "the team runs 2 participants at a time, and that many are working. It starts as one finishes." },
           { kind: "human", keys: ["clarity"], text: "**clarity** asked a question." },
           { kind: "enforcement", keys: ["docs"], text: "EO could not hold **docs** to report-only on this machine." },
           { kind: "limits", keys: ["security"], text: "The team could not decide." },

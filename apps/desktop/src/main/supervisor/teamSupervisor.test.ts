@@ -239,11 +239,12 @@ describe("an independent team on an agent step (EO-846)", () => {
     expect(started).toHaveLength(2);
   });
 
-  it("waits for a machine slot rather than deadlocking, and says why", async () => {
+  it("waits for room under the team's own limit rather than deadlocking, and says why", async () => {
+    setTeam(team({ limits: { maxParallel: 1 } }));
     script = ({ agent }) => answer("clear", `${agent.name} found nothing.`);
-    await supervisor({ teamParticipantLimit: 1 }).runOnce();
+    await supervisor().runOnce();
     expect(getItem(handle.db, item.id)?.stepId).toBe("accepted");
-    expect(listCommentsForItem(handle.db, item.id).some((comment) => comment.body.includes("**tests** is waiting for room to start: every participant slot on this machine is in use"))).toBe(true);
+    expect(listCommentsForItem(handle.db, item.id).some((comment) => comment.body.includes("**tests** is waiting for room to start: the team runs 1 participant at a time"))).toBe(true);
     expect(started.map((one) => one.agent)).toEqual(["Sasha", "Tess"]);
   });
 

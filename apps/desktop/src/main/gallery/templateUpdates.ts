@@ -753,9 +753,12 @@ function updateInstallation(db: Db, pipelineIds: readonly string[], history: Tem
 
     // Judged, each with the others as they will be written.
     const alongside = new Map(prepared.map((each) => [each.candidate.pipelineId, { steps: each.steps, routes: each.routes }]));
+    // Judged as Publish judges it, but for whether an isolated team can be
+    // given member copies (EO-871): that is said on each item it cannot
+    // run on, at start, and never holds the board on its old version.
     for (const each of prepared) {
       if (each.taken.length === 0) continue;
-      const problems = [...unheldLinks(db, each), ...storedGraphProblems(db, each.candidate.pipelineId, each.steps, each.routes, each.entryStepId, alongside).filter((problem) => problem.severity === "error").map((problem) => problem.message)];
+      const problems = [...unheldLinks(db, each), ...storedGraphProblems(db, each.candidate.pipelineId, each.steps, each.routes, each.entryStepId, alongside, undefined, { templateUpdate: true }).filter((problem) => problem.severity === "error").map((problem) => problem.message)];
       if (problems.length === 0) continue;
       hold(each, [], problems);
       leaving.add(each.candidate.pipelineId);

@@ -170,11 +170,16 @@ describe("validatePipeline: a team on an agent step (EO-843)", () => {
     // Still staffed by role, as every team is.
     expect(teamErrors(pipeline(independent({ members: "isolated" }), {}, { staffedRoles: ["reviewer"] }))).toEqual([expect.stringContaining('needs a "tester" agent')]);
     // A workspace that makes no copy refuses it, naming the kind; a report-only team there is not asked.
-    const isolatedCopyProblems = { review: 'but it works in a "folder" workspace, which cannot give each member a copy of its own.' };
+    const isolatedCopyProblems = { review: { severity: "error" as const, why: 'but it works in a "folder" workspace, which cannot give each member a copy of its own.' } };
     expect(teamErrors(pipeline(independent({ members: "isolated" }), {}, { isolatedCopyProblems }))).toEqual([
       'The team on "review" has isolated members, but it works in a "folder" workspace, which cannot give each member a copy of its own.',
     ]);
     expect(teamErrors(pipeline(independent(), {}, { isolatedCopyProblems }))).toEqual([]);
+    // Where only some of its workspaces cannot, it is a warning, and nothing refuses the pipeline (EO-871).
+    const somewhere = { review: { severity: "warning" as const, why: 'and some of the workspaces it may work in — "folder" — cannot give each member a copy of its own.' } };
+    const warned = validatePipeline(pipeline(independent({ members: "isolated" }), {}, { isolatedCopyProblems: somewhere }));
+    expect(warned.filter((problem) => problem.severity === "error")).toEqual([]);
+    expect(warned.filter((problem) => problem.severity === "warning").map((problem) => problem.message)).toContainEqual(expect.stringContaining('has isolated members, and some of the workspaces it may work in — "folder"'));
   });
 
   it("refuses a team built without parsing that breaks its own rules", () => {

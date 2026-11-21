@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { StepTeamSchema, type IndependentTeam } from "@eo/core";
-import { planIndependentTeam, type TeamAttemptState, type TeamCapacity } from "./teamSupervision.js";
+import { planIndependentTeam, type TeamAttemptState } from "./teamSupervision.js";
 
 /**
  * The publication review example (`docs/examples/teams/`, EO-850), decided
@@ -16,11 +16,6 @@ const parsed = StepTeamSchema.parse(document.steps.find((step) => step.team !== 
 if (parsed.coordination !== "independent") throw new Error("independent");
 const TEAM: IndependentTeam = parsed;
 
-const CAPACITY: TeamCapacity = {
-  machineFree: 4,
-  agentOf: new Map(TEAM.participants.map((participant) => [participant.key, participant.role])),
-  agentFree: new Map(TEAM.participants.map((participant) => [participant.role, 1])),
-};
 
 type Answer = { outcome: string } | "crash";
 
@@ -32,7 +27,7 @@ function settle(answers: Record<string, Answer[]>, baseline = "draft-v1"): { dec
   const attempts: TeamAttemptState[] = [];
   let turns = 0;
   for (let step = 0; step < 50; step += 1) {
-    const plan = planIndependentTeam({ team: TEAM, attempts, baseline, capacity: CAPACITY });
+    const plan = planIndependentTeam({ team: TEAM, attempts, baseline });
     if (plan.decision.status !== "pending" || plan.start.length === 0) return { decision: plan.decision, turns };
     for (const start of plan.start) {
       turns += 1;
@@ -91,7 +86,7 @@ describe("the publication review example in the pure engine (EO-850)", () => {
       baseline: "draft-v1",
       live: false,
     }));
-    const plan = planIndependentTeam({ team: TEAM, attempts, baseline: "draft-v2", capacity: CAPACITY });
+    const plan = planIndependentTeam({ team: TEAM, attempts, baseline: "draft-v2" });
     expect(plan.decision.status).toBe("pending");
     // Each is done again on the new draft, replacing the stale report, as fast as the team's limits allow.
     expect(plan.start.map((one) => [one.key, one.supersedes])).toEqual([

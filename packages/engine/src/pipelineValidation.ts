@@ -16,7 +16,7 @@ import {
 } from "@eo/core";
 import { entryRuleProblems } from "./entryRules.js";
 import { briefProblems } from "./stepBrief.js";
-import { teamProblems } from "./team.js";
+import { teamProblems, type IsolatedCopyProblem } from "./team.js";
 import { moduleAtPin, type ModuleVersionFacts } from "./modulePins.js";
 
 /** The module a step runs, as its pin makes it (EO-770), or undefined for one it does not run or this installation does not have. */
@@ -132,11 +132,12 @@ export interface ValidatePipelineInput {
   reportOnlyRoleProblems?: Readonly<Record<string, string>>;
   /**
    * Why a step's isolated team could not give each member a copy of its
-   * own (EO-867), by step id: the sentence naming the workspace kind the
-   * step could work in that makes no copy. Read by the caller, which
+   * own (EO-867), by step id: the sentence naming the workspace kinds the
+   * step could work in that make no copy, an error where none of them
+   * does and a warning where some do (EO-871). Read by the caller, which
    * knows the installed kinds. Absent is "every step can".
    */
-  isolatedCopyProblems?: Readonly<Record<string, string>>;
+  isolatedCopyProblems?: Readonly<Record<string, IsolatedCopyProblem>>;
   /**
    * What roles, built-in functions and item types this installation
    * knows about (KAN-124).

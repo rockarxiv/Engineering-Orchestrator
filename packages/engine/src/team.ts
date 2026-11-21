@@ -34,11 +34,25 @@ export interface TeamProblem {
  *   can run the step alone can be one;
  * - an isolated team's step must work where each member can be given a
  *   copy of its own (`isolatedCopyProblems`, by step: the sentence naming
- *   the workspace kind that cannot make one).
+ *   the workspace kinds that cannot make one). An error only where no
+ *   workspace the step could work in makes copies; where some do, a
+ *   warning (EO-871), since an item in one that cannot is refused at start
+ *   with a comment, and the team runs everywhere else.
  *
  * Both kinds run (EO-846, EO-847), so neither carries a warning that it
  * would run as one agent.
  */
+/**
+ * Why an isolated team's step could not give each member a copy of its own
+ * (EO-867): `why` is the clause naming the workspace kinds that make none.
+ * An `error` where no workspace the step could work in makes copies, so the
+ * team could never run; a `warning` where only some cannot (EO-871).
+ */
+export interface IsolatedCopyProblem {
+  severity: "error" | "warning";
+  why: string;
+}
+
 export function teamProblems(
   steps: readonly Pick<PipelineStep, "id" | "name" | "type" | "ownerRole" | "entryAction" | "team">[],
   context: {
@@ -46,8 +60,8 @@ export function teamProblems(
     staffedRoles: readonly string[];
     runTimeoutMs: number;
     reportOnlyRoleProblems?: Readonly<Record<string, string>>;
-    /** Why an isolated team on this step could not give its members copies of their own, by step id (EO-867). */
-    isolatedCopyProblems?: Readonly<Record<string, string>>;
+    /** Why an isolated team on this step could not give its members copies of their own, by step id (EO-867), and whether that is everywhere it could work or only somewhere (EO-871). */
+    isolatedCopyProblems?: Readonly<Record<string, IsolatedCopyProblem>>;
   },
 ): TeamProblem[] {
   const staffed = new Set(context.staffedRoles);
@@ -71,8 +85,8 @@ export function teamProblems(
       }
     }
     if (isolated) {
-      const why = context.isolatedCopyProblems?.[step.id];
-      if (why !== undefined) error(`The team on "${step.name}" has isolated members, ${why}`);
+      const copy = context.isolatedCopyProblems?.[step.id];
+      if (copy !== undefined) problems.push({ stepId: step.id, severity: copy.severity, message: `The team on "${step.name}" has isolated members, ${copy.why}` });
     }
     if (team.limits.timeoutMs !== undefined && team.limits.timeoutMs > context.runTimeoutMs) {
       error(`The team on "${step.name}" allows ${team.limits.timeoutMs} ms, longer than the ${context.runTimeoutMs} ms any run may take: a team's limit can only be tighter.`);

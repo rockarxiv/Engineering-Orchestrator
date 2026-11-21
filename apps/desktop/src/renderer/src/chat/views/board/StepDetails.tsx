@@ -10,6 +10,7 @@ import {
   describeDuration,
   memberModeWords,
   teamFacts,
+  teamMemberMode,
   type StepTeam,
   type HandOffTargets,
   type ModuleView,
@@ -272,11 +273,12 @@ export function resultRows(
 function whoActs(step: PipelineStepView, verification: StepVerification | undefined, agentKind: string | null): string {
   switch (step.type) {
     case "agent":
-      // A team answers for the step's role (EO-848): its members are said below.
+      // A team answers for the step's role (EO-848): its members are said
+      // below, and its mode is named as the team has it (EO-871).
       if (step.team != null) {
-        return step.team.coordination === "leader"
-          ? `A report-only team, led by a ${step.team.leader.role} agent`
-          : `A report-only team of ${step.team.participants.length} agents — EO decides the result`;
+        const mode = teamMemberMode(step.team);
+        const team = `${mode === "isolated" ? "An" : "A"} ${memberModeWords(mode)} team`;
+        return step.team.coordination === "leader" ? `${team}, led by a ${step.team.leader.role} agent` : `${team} of ${step.team.participants.length} agents — EO decides the result`;
       }
       return step.agentId === null ? "An agent — none chosen" : agentKind === null ? "An agent" : `An agent — ${agentKind}`;
     case "user":

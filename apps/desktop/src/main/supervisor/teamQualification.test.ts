@@ -628,13 +628,13 @@ describe("the integrated failure matrix (EO-850)", () => {
     await qualifies(item);
   });
 
-  it("capacity pressure: a machine with one participant slot runs the team one turn at a time, says why it waits, and leaves other items to the ordinary cap", async () => {
+  it("capacity pressure: the team runs to its own limit, says why its third waits, and its session holds the one slot another item's team waits for", async () => {
     turns = allReady();
     const first = draft(review, "Spring newsletter");
     const second = draft(review, "Summer newsletter");
-    const engine = supervisor({ teamParticipantLimit: 1 });
+    const engine = supervisor();
     await engine.runOnce();
-    expect(peak).toBe(1);
+    expect(peak).toBe(2);
     // One item's team ran; the other waited on the global cap of one, as any item would.
     const ran = [first, second].filter((one) => listRunsForItem(handle.db, one.id).length > 0);
     expect(ran).toHaveLength(1);
