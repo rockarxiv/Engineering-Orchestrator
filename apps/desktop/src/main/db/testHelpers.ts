@@ -1,10 +1,11 @@
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { Item, Message } from "@eo/core";
+import type { Item, Message, Uuid } from "@eo/core";
 import { asc, eq } from "drizzle-orm";
 import { openDb, type Db, type DbHandle } from "./client.js";
 import { runMigrations } from "./migrate.js";
 import { createItem, type CreateItemInput } from "./repos/itemsRepo.js";
+import { listAgents } from "./repos/agentsRepo.js";
 import { getMessage } from "./repos/messagesRepo.js";
 import { messages, pipelines } from "./schema.js";
 import { createDefaultProject } from "./repos/projectsRepo.js";
@@ -159,4 +160,20 @@ export function messagesAboutJob(db: Db, jobId: string): Message[] {
  */
 export function giveSeededDelivery(db: Db, projectId: string): void {
   db.update(pipelines).set({ projectId, updatedAt: Date.now() }).where(eq(pipelines.id, "default")).run();
+}
+
+/**
+ * The agent a test's agent step of this kind names (EO-875): a step names
+ * an agent, not a role. The first live (not archived) agent of the kind,
+ * in staffing order — what migration 0181 bound a seeded step to, so on
+ * `openMigratedTestDb()` "implementer" is the seeded Implementer.
+ *
+ * Throws where there is none, so a test that builds a step before the
+ * agent it should name finds out at the line that is wrong. A step meant
+ * to name nobody says `agentId: null`.
+ */
+export function agentOfKind(db: Db, kind: string): Uuid {
+  const agent = listAgents(db).find((candidate) => candidate.role === kind && candidate.archivedAt === null);
+  if (agent === undefined) throw new Error(`No agent of the "${kind}" kind to name on a step — create it before the step.`);
+  return agent.id;
 }
