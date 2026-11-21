@@ -2466,8 +2466,15 @@ export function listPipelineStepViews(
   const inheritedKind = projectWorkspaceKind(db, projectId);
   const { entryRules = [], name: pipelineName = "" } = getPipeline(db, input.pipelineId) ?? {};
   const moduleNames = new Map(listModules(db, true).map((module) => [module.id as string, module.name]));
+  const agents = listAgents(db);
+  const stepKinds: Record<string, string> = {};
+  for (const step of onBoard) {
+    const kind = stepAgentKind(agents, step);
+    if (kind !== null) stepKinds[step.id] = kind;
+  }
   return {
     steps: onBoard.map(toStepView),
+    stepKinds,
     // Where work enters, alongside the graph it enters: the configuration
     // screen edits and publishes all three together (ARCHITECTURE.md, "Vocabulary").
     entryStepId: getPipeline(db, input.pipelineId)?.entryStepId ?? null,

@@ -22,7 +22,18 @@ import { PipelineStepViewSchema, StepRouteViewSchema } from "./ipc-schemas.js";
 
 /** One of the three graphs, in this pipeline's step ids. */
 export const UpdateConflictGraphSchema = z.object({
-  steps: z.array(PipelineStepViewSchema),
+  steps: z.array(
+    PipelineStepViewSchema.extend({
+      /**
+       * The kind of agent an agent step needs, as a draft names it
+       * (EO-875); null on every other kind of step. The base and the
+       * template name kinds, not agents, so this is the one thing all
+       * three graphs can say about who runs a step — and what a draft
+       * built from any of them must carry.
+       */
+      ownerRole: z.string().nullable(),
+    }),
+  ),
   routes: z.array(StepRouteViewSchema),
   entryStepId: z.string().nullable(),
 });

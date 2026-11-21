@@ -37,6 +37,7 @@ import {
   getActionDefinition,
   listActionDefinitions,
   publishSection,
+  createAgent,
   createProject,
   createRun,
   deleteItem,
@@ -4219,6 +4220,12 @@ describe("a pipeline built from the chat", () => {
      * the publish are not one transaction.
      */
     describe("a refusal after an approval has been written", () => {
+      // A step names an agent of its kind (EO-875): the `qa` step below
+      // is bound to this one when the draft is judged and published.
+      beforeEach(() => {
+        createAgent(handle.db, { name: "QA", role: "qa", provider: "fake", model: null, instructions: "Check the work." });
+      });
+
       /** A module in the catalog, unapproved, with one passing case, that a draft step names by its id. */
       function inTheCatalog(slug: string, result: string): string {
         const saved = saveModule(handle.db, {
@@ -5014,7 +5021,14 @@ describe("a pipeline built from the chat", () => {
   });
 
   describe("a draft that brings the action definitions it needs (EO-426)", () => {
-    const UNDEFINED_ACTION = 'its answer is not validated and will route as "done"';
+    // A step's action must be one of its agent's kind's actions (EO-875).
+    const UNDEFINED_ACTION = 'has no "alignment" action';
+    // A step names an agent of its kind (EO-875): the `qa` step below
+    // is bound to this one when the draft is judged and published.
+    beforeEach(() => {
+      createAgent(handle.db, { name: "QA", role: "qa", provider: "fake", model: null, instructions: "Check the work." });
+    });
+
 
     /** `qa` defines `alignment`, as the agent writes it beside a draft. */
     const ALIGNMENT = {
@@ -5061,12 +5075,13 @@ describe("a pipeline built from the chat", () => {
       expect(listActionDefinitions(handle.db)).toEqual([]);
     });
 
-    it("offers the same draft without the definition under the undefined-action warning", async () => {
+    it("refuses the same draft without the definition: QA's kind has no such action (EO-875)", async () => {
       const conversation = await openedOn("/settings");
 
-      const { cardIds } = turn(conversation, { message: "Here.", draft: qaDraft({ newPipeline: "QA gate" }) });
+      const { cardIds, rejections } = turn(conversation, { message: "Here.", draft: qaDraft({ newPipeline: "QA gate" }) });
 
-      expect(cardBody(conversation, cardIds[0]!)).toContain(UNDEFINED_ACTION);
+      expect(cardIds).toEqual([]);
+      expect(rejections.join("\n")).toContain(UNDEFINED_ACTION);
     });
 
     it("creates the pipeline and writes its definitions in one publish", async () => {
