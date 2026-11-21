@@ -17,7 +17,7 @@ import {
   syncItemTypes,
   updateAgent,
 } from "../db/repos/index.js";
-import { attachWorkspace, createTestItem, openMigratedTestDb } from "../db/testHelpers.js";
+import { agentOfKind, attachWorkspace, createTestItem, openMigratedTestDb } from "../db/testHelpers.js";
 import { createRoleWiring } from "../packs/developer/wiring.js";
 import { createScriptedProvider } from "../providers/scripted.js";
 import { createRunSupervisor } from "../supervisor/runSupervisor.js";
@@ -81,7 +81,7 @@ describe("the shipped pipeline", () => {
     // makes "who is responsible right now" a complete description of it.
     const done = states.find((state) => state.id === "ready_to_merge")!;
     expect(done.isTerminal).toBe(true);
-    expect(done.ownerRole).toBeNull(); // nothing runs where work has finished
+    expect(done.agentId).toBeNull(); // nothing runs where work has finished
     expect(done.entryAction).toBeNull();
   });
 });
@@ -1068,7 +1068,7 @@ describe("decomposing into a type the pack shipped (KAN-147)", () => {
     // not a status"), so a step that
     // runs it is configured here — which is exactly what a person could
     // do, and all this needs from a pipeline.
-    createStep(handle.db, { id: "plan", pipelineId: "default" as never, position: -1, name: "Refine", type: "agent", ownerRole: "system", entryAction: "refine" });
+    createStep(handle.db, { id: "plan", pipelineId: "default" as never, position: -1, name: "Refine", type: "agent", agentId: agentOfKind(handle.db, "system"), entryAction: "refine" });
     createRoute(handle.db, { pipelineId: "default" as never, fromStepId: "plan", resultKey: "decomposed", label: "Decomposed", target: "todo", position: 0 });
     createRoute(handle.db, { pipelineId: "default" as never, fromStepId: "plan", resultKey: "clarified", label: "Clarified", target: "todo", position: 1 });
     container = createTestItem(handle.db, { type: "feature", title: "Refunds", stepId: "plan" });

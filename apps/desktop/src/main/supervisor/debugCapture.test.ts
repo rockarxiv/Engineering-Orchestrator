@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { DbHandle } from "../db/client.js";
 import { createRoute, createStep, getItemType, listAgents, listCommentsForItem, listRunEvents, listRunsForItem, postComment, updateAgent } from "../db/repos/index.js";
 import { getSetting, setSetting } from "../db/repos/settingsRepo.js";
-import { createTestItem, openMigratedTestDb } from "../db/testHelpers.js";
+import { agentOfKind, createTestItem, openMigratedTestDb } from "../db/testHelpers.js";
 import { DEBUG_MODE_KEY, readDebugMode, writeDebugMode } from "../debug/debugMode.js";
 import { BUILTIN_RUNNERS } from "../packs/developer/builtins.js";
 import { createRoleWiring } from "../packs/developer/wiring.js";
@@ -235,7 +235,7 @@ describe("the output schema a send names", () => {
     // already wrote, the developer pack holds it to `clarify`. The
     // window's "Output schema" has to say which answer was asked for.
     writeDebugMode(handle.db, true);
-    createStep(handle.db, { id: "plan", pipelineId: "default" as never, position: -1, name: "Refine", type: "agent", ownerRole: "system", entryAction: "refine" });
+    createStep(handle.db, { id: "plan", pipelineId: "default" as never, position: -1, name: "Refine", type: "agent", agentId: agentOfKind(handle.db, "system"), entryAction: "refine" });
     createRoute(handle.db, { pipelineId: "default" as never, fromStepId: "plan", resultKey: "clarified", label: "Clarified", target: "todo", position: 1 });
     const story = createTestItem(handle.db, { type: "story", title: "Rate limit the public API", body: "Return 429 after 100 requests.", stepId: "plan" });
     const wiring = createRoleWiring(handle.db);

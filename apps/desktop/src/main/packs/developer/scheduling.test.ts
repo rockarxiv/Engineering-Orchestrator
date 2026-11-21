@@ -24,6 +24,10 @@ vi.mock("node:child_process", async (importOriginal) => {
 
 /** Any `item_types` row: these fixtures never read the type's row, only the word on it. */
 const STORY_TYPE_ID = "0199aa00-0000-7000-8000-000000000001" as Uuid;
+/** Agents the steps below name: the gate never reads an agent, only the step's action. */
+const REVIEWER_AGENT_ID = "0199aa00-0000-7000-8000-0000000000a1" as Uuid;
+const IMPLEMENTER_AGENT_ID = "0199aa00-0000-7000-8000-0000000000a2" as Uuid;
+const QA_AGENT_ID = "0199aa00-0000-7000-8000-0000000000a3" as Uuid;
 /**
  * The scheduling decision this pack makes for the engine (platform
  * ARCHITECTURE.md, "The core is domain-neutral", KAN-161).
@@ -79,7 +83,7 @@ function step(overrides: Partial<PipelineStep> = {}): PipelineStep {
     position: 1,
     name: "Review",
     type: "agent",
-    ownerRole: "reviewer",
+    agentId: REVIEWER_AGENT_ID,
     entryAction: "review",
     instructionsSummary: null,
     isTerminal: false,
@@ -148,14 +152,14 @@ describe("what this pack requires before a step runs", () => {
   it("says nothing about a step that is not judging the item", () => {
     // Keyed on the action, so an implementer step with no criteria is
     // dispatched exactly as it always was.
-    expect(developerDispatchGate(item(), step({ id: "todo", name: "To Do", entryAction: "implement", ownerRole: "implementer" }))).toBeNull();
+    expect(developerDispatchGate(item(), step({ id: "todo", name: "To Do", entryAction: "implement", agentId: IMPLEMENTER_AGENT_ID }))).toBeNull();
   });
 
-  it("applies to any step that runs `review`, whatever it is called and whoever owns it", () => {
+  it("applies to any step that runs `review`, whatever it is called and whichever agent it names", () => {
     // Invariant #7: inserting a `qa` step that reviews takes no
     // TypeScript, so the rule cannot be keyed on the shipped pipeline's
-    // step id or on the reviewer role.
-    expect(developerDispatchGate(item({ stepId: "qa" }), step({ id: "qa", name: "QA", ownerRole: "qa" }))).toEqual({ kind: "no_acceptance_criteria" });
+    // step id or on the reviewer agent.
+    expect(developerDispatchGate(item({ stepId: "qa" }), step({ id: "qa", name: "QA", agentId: QA_AGENT_ID }))).toEqual({ kind: "no_acceptance_criteria" });
   });
 
   it("reads the criteria by the name the item's type declares (KAN-147)", () => {
@@ -200,7 +204,7 @@ describe("a stacked child's pull request waits for its dependency's (EO-781)", (
   let dependency: Item;
   let workspaceId: Uuid;
 
-  const openPullRequest = step({ id: "open_pr", name: "Open pull request", type: "builtin", ownerRole: null, entryAction: "open_pull_request" });
+  const openPullRequest = step({ id: "open_pr", name: "Open pull request", type: "builtin", agentId: null, entryAction: "open_pull_request" });
   const fresh = (stale: Item): Item => getItem(handle.db, stale.id)!;
 
   function child(stackedOn: Item | null): Item {
@@ -258,9 +262,9 @@ describe("a stacked child's pull request waits for its dependency's (EO-781)", (
   it("does not refuse any other action", () => {
     const stacked = child(dependency);
 
-    expect(gate(stacked, step({ id: "todo", name: "To Do", entryAction: "implement", ownerRole: "implementer" }))).toBeNull();
-    expect(gate(stacked, step({ id: "watch", name: "Watch merge request", type: "builtin", ownerRole: null, entryAction: "watch_pull_request" }))).toBeNull();
-    expect(gate(stacked, step({ id: "worktree", name: "Worktree", type: "builtin", ownerRole: null, entryAction: "create_worktree" }))).toBeNull();
+    expect(gate(stacked, step({ id: "todo", name: "To Do", entryAction: "implement", agentId: IMPLEMENTER_AGENT_ID }))).toBeNull();
+    expect(gate(stacked, step({ id: "watch", name: "Watch merge request", type: "builtin", agentId: null, entryAction: "watch_pull_request" }))).toBeNull();
+    expect(gate(stacked, step({ id: "worktree", name: "Worktree", type: "builtin", agentId: null, entryAction: "create_worktree" }))).toBeNull();
   });
 
   it("is said the same way wherever EO explains it", () => {

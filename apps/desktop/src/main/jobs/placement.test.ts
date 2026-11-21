@@ -14,7 +14,7 @@ import {
   type Uuid,
 } from "@eo/core";
 import type { DbHandle } from "../db/client.js";
-import { openMigratedTestDb } from "../db/testHelpers.js";
+import { agentOfKind, openMigratedTestDb } from "../db/testHelpers.js";
 import { archiveAgent, listAgents, updateAgent } from "../db/repos/agentsRepo.js";
 import { setAgentAttachment } from "../db/repos/agentAttachmentsRepo.js";
 import { saveMcpServer, setMcpServerEnabled } from "../db/repos/mcpServersRepo.js";
@@ -391,9 +391,9 @@ describe("where a row that predates the column says it runs", () => {
 
 /** The seeded graph these walks assume, so a change to it fails here rather than mysteriously. */
 describe("the pipeline being walked", () => {
-  it("has an agent step called 'To do' staffed by the implementer", () => {
+  it("has an agent step called 'To do' that names the implementer", () => {
     const steps = listStepsForPipeline(handle.db, "default" as Uuid);
 
-    expect(steps.find((step) => step.ownerRole === "implementer")?.name).toBe("To Do");
+    expect(steps.find((step) => step.agentId === agentOfKind(handle.db, "implementer"))?.name).toBe("To Do");
   });
 });

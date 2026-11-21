@@ -9,6 +9,7 @@ import {
   type Agent,
   type AssistReply,
   pageDescriptorFor,
+  stepAgentKind,
   type IpcChannel,
   type StepInputs,
   type IpcResponse,
@@ -128,7 +129,7 @@ async function pipelineGetText(pipelineId = "default"): Promise<string> {
 const graphOf = (pipelineId = "default") => ({
   steps: listStepsForPipeline(handle.db, pipelineId)
     .filter((step) => !step.offBoard)
-    .map(({ id, type, entryAction, ownerRole, watch, inputs, results, name, position }) => ({ id, type, entryAction, ownerRole, watch, inputs, results, name, position })),
+    .map(({ id, type, entryAction, agentId, watch, inputs, results, name, position }) => ({ id, type, entryAction, agentId, watch, inputs, results, name, position })),
   routes: listRoutesForPipeline(handle.db, pipelineId).map(({ fromStepId, resultKey, target, label, tone }) => ({ fromStepId, resultKey, target, label, tone })),
 });
 
@@ -165,7 +166,9 @@ type DraftOf = NonNullable<AssistReply["draft"]>;
 
 /** A step as a draft names it: what it is, with its settings left to the step unless given. */
 function draftStep(step: ConflictGraph["steps"][number], position: number, settings: Record<string, unknown> = {}) {
-  const { id, name, type, ownerRole, entryAction, instructionsSummary, isTerminal, planMode } = step;
+  const { id, name, type, entryAction, instructionsSummary, isTerminal, planMode } = step;
+  // A draft names the kind its step's agent is (EO-875).
+  const ownerRole = stepAgentKind(listAgents(handle.db), step);
   return { id, position, name, type, ownerRole, entryAction, instructionsSummary, isTerminal, planMode, ...settings };
 }
 

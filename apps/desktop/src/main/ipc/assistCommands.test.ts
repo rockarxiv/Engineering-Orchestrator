@@ -19,6 +19,7 @@ import {
   ProposalSummarySchema,
   proposedItemPath,
   specFields,
+  stepAgentKind,
 } from "@eo/core";
 import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -51,6 +52,7 @@ import {
   listRunEvents,
   listRunsForItem,
   postComment,
+  listAgents,
   listStepsForPipeline,
   approveModule,
   deleteModuleTest,
@@ -75,7 +77,7 @@ import {
   getPipeline,
   versionSnapshot,
 } from "../db/repos/index.js";
-import { createTestItem, openMigratedTestDb } from "../db/testHelpers.js";
+import { agentOfKind, createTestItem, openMigratedTestDb } from "../db/testHelpers.js";
 import { PREVIEW_PROJECT_KEY } from "../gallery/commands.js";
 import { PIPELINE_NEEDS_PROJECT } from "./pipelineHome.js";
 import { ACTIVE_PROJECT_KEY } from "./repositoryCommands.js";
@@ -1844,7 +1846,8 @@ describe("the buttons on a card", () => {
           position: step.position,
           name: step.name,
           type: step.type,
-          ownerRole: step.ownerRole,
+          // A draft names the kind; the step names its agent (EO-875).
+          ownerRole: stepAgentKind(listAgents(handle.db), step),
           entryAction: step.entryAction,
           instructionsSummary: step.instructionsSummary,
           isTerminal: step.isTerminal,
@@ -2810,14 +2813,20 @@ describe("the buttons on a card", () => {
       [
         ...base.steps
           .filter((step) => step.id !== "qa")
-          .map((step) => ({ ...step, pipelineId: "default" as Uuid, inputs: {}, timeoutMs: null })),
+          .map(({ ownerRole, ...step }) => ({
+            ...step,
+            pipelineId: "default" as Uuid,
+            agentId: ownerRole === null ? null : agentOfKind(handle.db, ownerRole),
+            inputs: {},
+            timeoutMs: null,
+          })),
         {
           pipelineId: "default" as Uuid,
           id: "ship",
           position: base.steps.length,
           name: "Ship",
           type: "module" as const,
-          ownerRole: null,
+          agentId: null,
           entryAction: moduleId,
           instructionsSummary: null,
           isTerminal: false,
@@ -4935,7 +4944,7 @@ describe("a pipeline built from the chat", () => {
         handle.db,
         pipeline.id,
         [
-          { id: "hotfix_fix", pipelineId: pipeline.id as Uuid, position: 0, name: "Fix", type: "agent", ownerRole: "implementer", entryAction: "implement", isTerminal: false },
+          { id: "hotfix_fix", pipelineId: pipeline.id as Uuid, position: 0, name: "Fix", type: "agent", agentId: agentOfKind(handle.db, "implementer"), entryAction: "implement", isTerminal: false },
           { id: "hotfix_done", pipelineId: pipeline.id as Uuid, position: 1, name: "Done", type: "user", isTerminal: true },
         ],
         [{ pipelineId: pipeline.id as Uuid, fromStepId: "hotfix_fix", resultKey: "done", label: "Done", tone: "success", target: "hotfix_done", position: 0 }],

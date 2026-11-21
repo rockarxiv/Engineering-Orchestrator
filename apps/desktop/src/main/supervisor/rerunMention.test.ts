@@ -18,7 +18,7 @@ import {
 import { listTransitionsForItem, transitionItem } from "../db/repos/transitionsRepo.js";
 import { getStep, listRoutesForPipeline, listStepsForPipeline, replacePipelineGraph } from "../db/repos/pipelineStepsRepo.js";
 import { holdItem, moveItem, postHumanComment, resumeHeldItem } from "../ipc/domainCommands.js";
-import { createTestItem, openMigratedTestDb, REVIEWABLE_SPEC } from "../db/testHelpers.js";
+import { agentOfKind, createTestItem, openMigratedTestDb, REVIEWABLE_SPEC } from "../db/testHelpers.js";
 import { createFakeProvider, type FakeProviderScript } from "../providers/fake.js";
 import { createRoleWiring } from "../packs/developer/wiring.js";
 import { createRunSupervisor, type RunSupervisor } from "./runSupervisor.js";
@@ -477,7 +477,7 @@ describe("a rerun whose preflight turns back", () => {
   }
 
   /**
-   * Hands Review to another role, through the same call the pipeline
+   * Hands Review to an agent of another kind, through the same call the pipeline
    * configuration screen publishes with — steps are updated in place, so
    * the item stays exactly where it is and only the contract changes.
    */
@@ -493,7 +493,7 @@ describe("a rerun whose preflight turns back", () => {
         position: step.position,
         name: step.name,
         type: step.type,
-        ownerRole: step.id === "review" ? role : step.ownerRole,
+        agentId: step.id === "review" ? agentOfKind(handle.db, role) : step.agentId,
         entryAction: step.entryAction,
         isTerminal: step.isTerminal,
       })),

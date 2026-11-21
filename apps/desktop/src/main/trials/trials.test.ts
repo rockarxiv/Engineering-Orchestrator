@@ -72,7 +72,7 @@ import { trialCreationRefusal } from "../modules/moduleCreations.js";
 import { createModuleRunnerLookup } from "../modules/registry.js";
 import { asRecordItem } from "../record/serveRecord.js";
 import { preparingAt } from "../supervisor/testWorkspaceKinds.js";
-import { createTestItem, openMigratedTestDb } from "../db/testHelpers.js";
+import { agentOfKind, createTestItem, openMigratedTestDb } from "../db/testHelpers.js";
 import { readAssistDraftForPublish, sendToAssist } from "../ipc/assistCommands.js";
 import { DEFAULT_GUARD_CONFIG } from "../ipc/configCommands.js";
 import { createRunSupervisor } from "../supervisor/runSupervisor.js";
@@ -179,7 +179,7 @@ function hotfix(): string {
     handle.db,
     pipeline.id,
     [
-      { id: "hotfix_fix", pipelineId: pipeline.id as Uuid, position: 0, name: "Fix", type: "agent", ownerRole: "implementer", entryAction: "implement", isTerminal: false },
+      { id: "hotfix_fix", pipelineId: pipeline.id as Uuid, position: 0, name: "Fix", type: "agent", agentId: agentOfKind(handle.db, "implementer"), entryAction: "implement", isTerminal: false },
       { id: "hotfix_done", pipelineId: pipeline.id as Uuid, position: 1, name: "Done", type: "user", isTerminal: true },
     ],
     [{ pipelineId: pipeline.id as Uuid, fromStepId: "hotfix_fix", resultKey: "done", label: "Done", tone: "success", target: "hotfix_done", position: 0 }],

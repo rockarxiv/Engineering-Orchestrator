@@ -4,7 +4,7 @@ import type { DbHandle } from "../db/client.js";
 import { getItem, listCommentsForItem, listRunsForItem, listItems } from "../db/repos/index.js";
 import { createProject } from "../db/repos/projectsRepo.js";
 import { createRoute, createStep } from "../db/repos/index.js";
-import { attachWorkspace, createTestItem, openMigratedTestDb, REVIEWABLE_SPEC } from "../db/testHelpers.js";
+import { agentOfKind, attachWorkspace, createTestItem, openMigratedTestDb, REVIEWABLE_SPEC } from "../db/testHelpers.js";
 import { createFakeProvider } from "../providers/fake.js";
 import { blockingEscalationFixture } from "../providers/fixtures.js";
 import { createScriptedProvider } from "../providers/scripted.js";
@@ -68,8 +68,8 @@ beforeEach(() => {
   // not a status") — a
   // conversation drives them now. These configure steps that run them,
   // which is exactly what a person could do and all these tests need.
-  createStep(handle.db, { id: "ask", pipelineId: "default" as never, position: -2, name: "Intake", type: "agent", ownerRole: "system", entryAction: "intake" });
-  createStep(handle.db, { id: "plan", pipelineId: "default" as never, position: -1, name: "Refine", type: "agent", ownerRole: "system", entryAction: "refine" });
+  createStep(handle.db, { id: "ask", pipelineId: "default" as never, position: -2, name: "Intake", type: "agent", agentId: agentOfKind(handle.db, "system"), entryAction: "intake" });
+  createStep(handle.db, { id: "plan", pipelineId: "default" as never, position: -1, name: "Refine", type: "agent", agentId: agentOfKind(handle.db, "system"), entryAction: "refine" });
   createRoute(handle.db, { pipelineId: "default" as never, fromStepId: "ask", resultKey: "done", label: "Understood", target: "plan", position: 0 });
   createRoute(handle.db, { pipelineId: "default" as never, fromStepId: "ask", resultKey: "classified_non_feature", label: "Already written", target: "todo", position: 1 });
   createRoute(handle.db, { pipelineId: "default" as never, fromStepId: "plan", resultKey: "decomposed", label: "Decomposed", target: "todo", position: 0 });

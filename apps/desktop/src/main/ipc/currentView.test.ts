@@ -1122,7 +1122,7 @@ describe("a pipeline's Changes view", () => {
         position: index,
         name: step.name,
         type: step.type,
-        ownerRole: step.ownerRole,
+        agentId: step.agentId,
         entryAction: step.entryAction,
         instructionsSummary: step.instructionsSummary,
         isTerminal: step.isTerminal,

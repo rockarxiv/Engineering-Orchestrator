@@ -63,7 +63,7 @@ import {
 } from "../db/repos/index.js";
 import { registryForProject } from "../registry.js";
 import { migrateCarriedSchemas } from "../actionDefinitionAdoption.js";
-import { openMigratedTestDb } from "../db/testHelpers.js";
+import { agentOfKind, openMigratedTestDb } from "../db/testHelpers.js";
 import { exportPipeline, importPipeline, parseExport, preflightImport } from "./pipelineTransfer.js";
 import { galleryNeeds } from "../gallery/form.js";
 import { storeReference, storeSecret, storeVariable, type ModuleSecretsOptions } from "./secrets.js";
@@ -189,7 +189,7 @@ describe("exporting a pipeline whose project has memory (EO-482)", () => {
   it("contains no memory entry", () => {
     const project = createProject(handle.db, { name: "Support", keyPrefix: "SUP" });
     const pipeline = createPipeline(handle.db, { name: "Support work", projectId: project.id });
-    createStep(handle.db, { id: "answer", pipelineId: pipeline.id, position: 0, name: "Answer", type: "agent", ownerRole: "implementer" });
+    createStep(handle.db, { id: "answer", pipelineId: pipeline.id, position: 0, name: "Answer", type: "agent", agentId: agentOfKind(handle.db, "implementer") });
     createStep(handle.db, { id: "answered", pipelineId: pipeline.id, position: 1, name: "Answered", type: "user", isTerminal: true });
     createRoute(handle.db, { pipelineId: pipeline.id, fromStepId: "answer", resultKey: "done", label: "Done", target: "answered" });
     setEntryStep(handle.db, pipeline.id, "answer");
@@ -218,7 +218,7 @@ describe("exporting a pipeline whose project has memory (EO-482)", () => {
 describe("exporting a pipeline beside project-scoped agents (EO-476)", () => {
   function writerPipeline(projectId: Uuid | null) {
     const pipeline = createPipeline(handle.db, { name: "Writing", projectId });
-    createStep(handle.db, { id: `write-${pipeline.id}`, pipelineId: pipeline.id, position: 0, name: "Write", type: "agent", ownerRole: "writer" });
+    createStep(handle.db, { id: `write-${pipeline.id}`, pipelineId: pipeline.id, position: 0, name: "Write", type: "agent", agentId: agentOfKind(handle.db, "writer") });
     createStep(handle.db, { id: `done-${pipeline.id}`, pipelineId: pipeline.id, position: 1, name: "Done", type: "user", isTerminal: true });
     createRoute(handle.db, { pipelineId: pipeline.id, fromStepId: `write-${pipeline.id}`, resultKey: "done", label: "Done", target: `done-${pipeline.id}` });
     setEntryStep(handle.db, pipeline.id, `write-${pipeline.id}`);
@@ -1131,7 +1131,7 @@ describe("a pack's roles and their prompts", () => {
   function packWithPrompt(prompt: string) {
     createAgent(handle.db, { name: "Release manager", role: "release_manager", provider: "fake", instructions: prompt });
     const pipeline = createPipeline(handle.db, { name: "Delivery" });
-    createStep(handle.db, { id: "implement", pipelineId: pipeline.id, position: 0, name: "Implement", type: "agent", ownerRole: "release_manager" });
+    createStep(handle.db, { id: "implement", pipelineId: pipeline.id, position: 0, name: "Implement", type: "agent", agentId: agentOfKind(handle.db, "release_manager") });
     createStep(handle.db, { id: "done", pipelineId: pipeline.id, position: 1, name: "Done", type: "user", isTerminal: true });
     const built = exportPipeline(handle.db, pipeline.id);
     if (!built.ok) throw new Error(built.reason);
@@ -1541,7 +1541,7 @@ describe("the pack", () => {
     if (!saved.ok) throw new Error(saved.reason);
 
     const pipeline = createPipeline(db, { projectId: project.id, name: "Triage", previewItem: PREVIEW_ITEM });
-    createStep(db, { id: "triage", pipelineId: pipeline.id, position: 0, name: "Triage", type: "agent", ownerRole: "triager" });
+    createStep(db, { id: "triage", pipelineId: pipeline.id, position: 0, name: "Triage", type: "agent", agentId: agentOfKind(db, "triager") });
     createStep(db, { id: "ship", pipelineId: pipeline.id, position: 1, name: "Ship", type: "module", entryAction: saved.module.id });
     createStep(db, {
       id: "approve",
@@ -2324,7 +2324,7 @@ describe("the pack", () => {
   /** A role nobody staffs that defines nothing still contributes nothing. */
   it("leaves out a role nobody staffs that defines no action", () => {
     const pipeline = createPipeline(handle.db, { name: "Empty slot" });
-    createStep(handle.db, { id: "slot", pipelineId: pipeline.id, position: 0, name: "Slot", type: "agent", ownerRole: "nobody_yet", isTerminal: true });
+    createStep(handle.db, { id: "slot", pipelineId: pipeline.id, position: 0, name: "Slot", type: "agent", agentId: agentOfKind(handle.db, "nobody_yet"), isTerminal: true });
 
     const built = exportPipeline(handle.db, pipeline.id);
     if (!built.ok) throw new Error(built.reason);
@@ -2922,7 +2922,7 @@ describe("the pack", () => {
       config: { allowedTools: ["mcp__slack__prod__list_channels"] },
     });
     const pipeline = createPipeline(handle.db, { name: "Sorting" });
-    createStep(handle.db, { id: "sort", pipelineId: pipeline.id, position: 0, name: "Sort", type: "agent", ownerRole: "sorter" });
+    createStep(handle.db, { id: "sort", pipelineId: pipeline.id, position: 0, name: "Sort", type: "agent", agentId: agentOfKind(handle.db, "sorter") });
     createStep(handle.db, { id: "sorted", pipelineId: pipeline.id, position: 1, name: "Sorted", type: "user", isTerminal: true });
 
     const built = exportPipeline(handle.db, pipeline.id);
@@ -3158,7 +3158,7 @@ describe("the pack", () => {
         config: { allowedTools: ["mcp__eo_admin__pipeline_save"] },
       });
       const pipeline = createPipeline(handle.db, { projectId: project.id, name: "Triage" });
-      createStep(handle.db, { id: "triage", pipelineId: pipeline.id, position: 0, name: "Triage", type: "agent", ownerRole: "triager" });
+      createStep(handle.db, { id: "triage", pipelineId: pipeline.id, position: 0, name: "Triage", type: "agent", agentId: agentOfKind(handle.db, "triager") });
       createStep(handle.db, { id: "done", pipelineId: pipeline.id, position: 1, name: "Done", type: "user", isTerminal: true });
 
       const built = exportPipeline(handle.db, pipeline.id);

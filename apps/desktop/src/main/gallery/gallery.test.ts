@@ -13,6 +13,7 @@ import { registryForProject } from "../registry.js";
 import { createRunSupervisor } from "../supervisor/runSupervisor.js";
 import { importPipeline } from "../modules/pipelineTransfer.js";
 import { previewGalleryCommand, listGalleryCommand, useGalleryCommand } from "../ipc/galleryCommands.js";
+import { stepAgentsForPipeline } from "../ipc/configCommands.js";
 import { forgetListed } from "./session.js";
 import { bundledTemplates, listGalleryTemplates } from "./templates.js";
 
@@ -127,9 +128,8 @@ describe("the bundled set", () => {
       steps,
       routes: listRoutesForPipeline(handle.db, imported.pipelineId as Uuid),
       entryStepId: listPipelines(handle.db).find((pipeline) => pipeline.id === imported.pipelineId)?.entryStepId ?? null,
-      // The roles land unbound — no backend is signed in on a test
-      // machine — and "nobody staffs this" is not what is being asked.
-      staffedRoles: Object.keys(expected),
+      // Each step names the agent its kind was bound to on import (EO-875).
+      ...stepAgentsForPipeline(handle.db, imported.pipelineId as Uuid),
       itemCountByStep: {},
       existingSteps: [],
       registry: registryForProject(handle.db, null),

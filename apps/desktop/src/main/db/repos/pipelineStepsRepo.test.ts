@@ -2,7 +2,7 @@ import { sql } from "drizzle-orm";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Uuid } from "@eo/core";
 import type { DbHandle } from "../client.js";
-import { createTestItem, openMigratedTestDb } from "../testHelpers.js";
+import { agentOfKind, createTestItem, openMigratedTestDb } from "../testHelpers.js";
 import { createProject } from "./projectsRepo.js";
 import { localPerson } from "./peopleRepo.js";
 import { setItemArchived } from "./itemsRepo.js";
@@ -33,13 +33,13 @@ describe("pipelineStepsRepo", () => {
     handle.close();
   });
 
-  it("round-trips owner_role = NULL for a human-owned gate", () => {
+  it("round-trips agent_id = NULL for a human-owned gate", () => {
     const created = createStep(handle.db, { id: "awaiting_signoff", pipelineId: "default" as Uuid, position: 10, name: "Awaiting signoff" });
-    expect(created.ownerRole).toBeNull();
+    expect(created.agentId).toBeNull();
     expect(created.entryAction).toBeNull();
     expect(created.isTerminal).toBe(false);
 
-    expect(getStep(handle.db, "awaiting_signoff")?.ownerRole).toBeNull();
+    expect(getStep(handle.db, "awaiting_signoff")?.agentId).toBeNull();
   });
 
   it("seed migration produces the default pipeline in project order", () => {
@@ -49,13 +49,13 @@ describe("pipelineStepsRepo", () => {
     // pending_approval is the R-01 human gate: owned by nobody, so the
     // engine hands off and stops dispatching until a human approves.
     expect(states.map((state) => state.id)).toEqual(["worktree", "repository_index", "todo", "review", "merge_request", "pull_request_watch", "ready_to_merge"]);
-    // Only the `agent` steps carry a role: a person's step and a built-in
-    // one have nobody to dispatch to.
-    expect(states.map((state) => state.ownerRole)).toEqual([
+    // Only the `agent` steps name an agent (EO-875): a person's step and a
+    // built-in one have nobody to dispatch to.
+    expect(states.map((state) => state.agentId)).toEqual([
       null, // worktree — built in
       null, // repository_index — built in
-      "implementer",
-      "reviewer",
+      agentOfKind(handle.db, "implementer"),
+      agentOfKind(handle.db, "reviewer"),
       null, // merge_request — built in
       null, // pull_request_watch — built in, keeps checking
       null, // ready_to_merge — terminal
@@ -69,7 +69,7 @@ describe("pipelineStepsRepo", () => {
     // The load-bearing half: `tick()` skips human-owned states, so a
     // conversation never takes a capacity slot from work. What runs it
     // is the mention path instead.
-    expect(discussion?.ownerRole).toBeNull();
+    expect(discussion?.agentId).toBeNull();
     expect(discussion?.entryAction).toBeNull();
     expect(discussion?.isTerminal).toBe(false);
   });
@@ -78,7 +78,7 @@ describe("pipelineStepsRepo", () => {
     const terminal = listPipelineSteps(handle.db).filter((state) => state.isTerminal);
     expect(terminal).toHaveLength(1);
     expect(terminal[0]?.id).toBe("ready_to_merge");
-    expect(terminal[0]?.ownerRole).toBeNull();
+    expect(terminal[0]?.agentId).toBeNull();
   });
 });
 
@@ -203,7 +203,7 @@ describe("plan mode", () => {
       position: 0,
       name: "Build",
       type: "agent",
-      ownerRole: "implementer",
+      agentId: agentOfKind(handle.db, "implementer"),
       entryAction: "implement",
       planMode: true,
     });
@@ -243,7 +243,7 @@ describe("a step's workspace mode", () => {
     position: 20,
     name: id,
     type: "agent" as const,
-    ownerRole: "implementer",
+    agentId: agentOfKind(handle.db, "implementer"),
     entryAction: "implement",
     ...(workspaceMode ? { workspaceMode } : {}),
   });
@@ -569,14 +569,14 @@ describe("replacing a graph that removes a step with items on it", () => {
   beforeEach(() => {
     handle = openMigratedTestDb();
     pipelineId = createPipeline(handle.db, { name: "Delivery" }).id;
-    build = createStep(handle.db, { pipelineId, position: 0, name: "Build", type: "agent", ownerRole: "implementer", entryAction: "implement" }).id;
-    review = createStep(handle.db, { pipelineId, position: 1, name: "Reviewer", type: "agent", ownerRole: "reviewer", entryAction: "review" }).id;
+    build = createStep(handle.db, { pipelineId, position: 0, name: "Build", type: "agent", agentId: agentOfKind(handle.db, "implementer"), entryAction: "implement" }).id;
+    review = createStep(handle.db, { pipelineId, position: 1, name: "Reviewer", type: "agent", agentId: agentOfKind(handle.db, "reviewer"), entryAction: "review" }).id;
     createRoute(handle.db, { pipelineId, fromStepId: build, resultKey: "done", label: "Done", target: review });
   });
   afterEach(() => handle.close());
 
   const graph = (steps: { id: string; name: string; position: number }[]) =>
-    steps.map((step) => ({ ...step, pipelineId, type: "agent" as const, ownerRole: "implementer", entryAction: "implement" }));
+    steps.map((step) => ({ ...step, pipelineId, type: "agent" as const, agentId: agentOfKind(handle.db, "implementer"), entryAction: "implement" }));
 
   it("refuses with the step's name and how many, and writes nothing", () => {
     createTestItem(handle.db, { type: "story", title: "One", stepId: review });
@@ -623,7 +623,7 @@ describe("replacing a graph that removes a step with items on it", () => {
       pipelineId,
       [
         ...graph([{ id: build, name: "Build", position: 0 }]),
-        { id: review, pipelineId, position: 1, name: "Code review", type: "user" as const, ownerRole: null, entryAction: null },
+        { id: review, pipelineId, position: 1, name: "Code review", type: "user" as const, agentId: null, entryAction: null },
       ],
       [],
     );

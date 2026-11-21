@@ -42,7 +42,8 @@ describe("db client", () => {
         position: 99,
         name: "Test",
         type: "agent",
-        ownerRole: null,
+        // Naming no agent (EO-875): a step is given one by whoever adds it.
+        agentId: null,
         entryAction: null,
         instructionsSummary: null,
         isTerminal: false,

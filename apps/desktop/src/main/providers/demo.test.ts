@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { DbHandle } from "../db/client.js";
 import { getItem, listCommentsForItem, listRunsForItem } from "../db/repos/index.js";
 import { createRoute, createStep } from "../db/repos/index.js";
-import { createTestItem, openMigratedTestDb, REVIEWABLE_SPEC } from "../db/testHelpers.js";
+import { agentOfKind, createTestItem, openMigratedTestDb, REVIEWABLE_SPEC } from "../db/testHelpers.js";
 import { createRoleWiring } from "../packs/developer/wiring.js";
 import { createRunSupervisor } from "../supervisor/runSupervisor.js";
 import { createDemoProvider, DEMO_LIMIT_REACHED } from "./demo.js";
@@ -42,8 +42,8 @@ beforeEach(() => {
   // not a status") — a
   // conversation drives them now. These configure steps that run them,
   // which is exactly what a person could do and all these tests need.
-  createStep(handle.db, { id: "ask", pipelineId: "default" as never, position: -2, name: "Intake", type: "agent", ownerRole: "system", entryAction: "intake" });
-  createStep(handle.db, { id: "plan", pipelineId: "default" as never, position: -1, name: "Refine", type: "agent", ownerRole: "system", entryAction: "refine" });
+  createStep(handle.db, { id: "ask", pipelineId: "default" as never, position: -2, name: "Intake", type: "agent", agentId: agentOfKind(handle.db, "system"), entryAction: "intake" });
+  createStep(handle.db, { id: "plan", pipelineId: "default" as never, position: -1, name: "Refine", type: "agent", agentId: agentOfKind(handle.db, "system"), entryAction: "refine" });
   createRoute(handle.db, { pipelineId: "default" as never, fromStepId: "ask", resultKey: "done", label: "Understood", target: "plan", position: 0 });
   createRoute(handle.db, { pipelineId: "default" as never, fromStepId: "ask", resultKey: "classified_non_feature", label: "Already written", target: "todo", position: 1 });
   createRoute(handle.db, { pipelineId: "default" as never, fromStepId: "plan", resultKey: "decomposed", label: "Decomposed", target: "todo", position: 0 });

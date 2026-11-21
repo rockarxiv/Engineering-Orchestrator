@@ -5,7 +5,7 @@ import { FOLDER_KIND, MEMORY_DELIVERED_EVENT, MEMORY_USED_EVENT, MEMORY_NOTE_DEF
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DbHandle } from "../db/client.js";
 import { addMemory, appendRunEvent, memoryDeliveredToRun, createProject, createRun, createStep, createWorkspace, deleteItem, getRun, listAgents, listCommentsForItem, listMemories, postComment, listRunEvents, listRunsForItem, listSideCalls, retireMemory, updateAgent, updateItem, updateRun } from "../db/repos/index.js";
-import { createTestItem, openMigratedTestDb } from "../db/testHelpers.js";
+import { agentOfKind, createTestItem, openMigratedTestDb } from "../db/testHelpers.js";
 import { listAgentDetails, saveAgent } from "../ipc/configCommands.js";
 import { listMemoryCommand, searchMemoryCommand } from "../ipc/memoryCommands.js";
 import { listRuns } from "../ipc/runAnalysis.js";
@@ -586,7 +586,7 @@ describe("memory on a dispatch", () => {
     }
     /** A step owned by a role EO ships no prompt for, and a person's own agent in it, made on the Agents screen. */
     function writerAgent(): Agent {
-      createStep(handle.db, { id: "draft", pipelineId: "default" as never, position: -4, name: "Draft", type: "agent", ownerRole: "writer", entryAction: "implement" });
+      createStep(handle.db, { id: "draft", pipelineId: "default" as never, position: -4, name: "Draft", type: "agent", agentId: agentOfKind(handle.db, "writer"), entryAction: "implement" });
       saveAgent(handle.db, { name: "Writer", role: "writer", provider: "claude", model: null, instructions: "You write release notes in the house style, and nothing else.", enabled: true });
       return agentNamed("Writer");
     }

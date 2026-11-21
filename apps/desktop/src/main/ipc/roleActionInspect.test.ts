@@ -1,8 +1,8 @@
 import { rmSync } from "node:fs";
-import { actionDefinitionProviderSchema, developerRegistry, outputSchemaFor, SECTION_LOCKED_CHANNELS, type IpcChannel, type IpcResponse } from "@eo/core";
+import { actionDefinitionProviderSchema, developerRegistry, outputSchemaFor, SECTION_LOCKED_CHANNELS, type IpcChannel, type IpcResponse, type Uuid } from "@eo/core";
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { DbHandle } from "../db/client.js";
-import { createPipeline, createRoute, createStep, currentVersion, saveActionDefinition } from "../db/repos/index.js";
+import { createAgent, createPipeline, createRoute, createStep, currentVersion, listAgents, saveActionDefinition } from "../db/repos/index.js";
 import { createTestItem, openMigratedTestDb } from "../db/testHelpers.js";
 import { fakePlatform } from "../testing/platform.js";
 import { listPipelineStepViews } from "./domainQueries.js";
@@ -47,7 +47,7 @@ async function publish(graph: ReturnType<typeof delivery>) {
 
 /** Delivery with a "Check" step — `qa` running `alignment` — routing the keys given. */
 function withCheck(before: ReturnType<typeof delivery>, keys: string[]) {
-  const check = { ...before.steps[0]!, id: "qa_check", name: "Check", type: "agent" as const, ownerRole: "qa", entryAction: "alignment", isTerminal: false, position: 99 };
+  const check = { ...before.steps[0]!, id: "qa_check", name: "Check", type: "agent" as const, agentId: agentOf("qa"), entryAction: "alignment", isTerminal: false, position: 99 };
   return {
     ...before,
     steps: [...before.steps, check],
@@ -71,6 +71,13 @@ afterEach(() => {
 afterAll(() => {
   for (const directory of directories) rmSync(directory, { recursive: true, force: true });
 });
+
+/** The agent of `kind` a step here names (EO-875): the installation's own, or one made for it, since a step names an agent rather than a role. */
+function agentOf(kind: string): Uuid {
+  const held = listAgents(handle.db).find((agent) => agent.role === kind && agent.archivedAt === null);
+  return held?.id ?? createAgent(handle.db, { name: kind, role: kind, provider: "fake", model: null, instructions: "" }).id;
+}
+
 
 describe("the schema a provider is handed", () => {
   it("is the pack's own for a shipped role's shipped action, not one generated from its result keys", async () => {
@@ -96,10 +103,10 @@ describe("the schema a provider is handed", () => {
 describe("the steps a change of result keys reaches", () => {
   it("names a step dispatching a pair nobody has defined yet, with the keys it routes", async () => {
     const pipeline = createPipeline(handle.db, { name: "Quality" });
-    const check = createStep(handle.db, { pipelineId: pipeline.id, position: 0, name: "Check", type: "agent", ownerRole: "qa", entryAction: "alignment" });
+    const check = createStep(handle.db, { pipelineId: pipeline.id, position: 0, name: "Check", type: "agent", agentId: agentOf("qa"), entryAction: "alignment" });
     createRoute(handle.db, { pipelineId: pipeline.id, fromStepId: check.id, resultKey: "done", label: "Done", target: "terminal", position: 0 });
-    // Another role's step on the same action name is not a use of this pair.
-    createStep(handle.db, { pipelineId: pipeline.id, position: 1, name: "Edit", type: "agent", ownerRole: "editor", entryAction: "alignment" });
+    // A step of another kind on the same action name is not a use of this pair.
+    createStep(handle.db, { pipelineId: pipeline.id, position: 1, name: "Edit", type: "agent", agentId: agentOf("editor"), entryAction: "alignment" });
 
     expect((await inspect("qa", "alignment")).uses).toEqual([{ pipelineId: pipeline.id, pipelineName: "Quality", stepId: check.id, stepName: "Check", routedKeys: ["done"] }]);
     expect((await inspect("qa", "smoke")).uses).toEqual([]);

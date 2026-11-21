@@ -4,7 +4,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { eq, sql } from "drizzle-orm";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ADMIN_MCP_SERVER_NAME, type Agent, type AssistReply, type IpcChannel, type IpcPayload, type IpcResponse, type Item, type UpdateConflictDetail, type Uuid } from "@eo/core";
+import { ADMIN_MCP_SERVER_NAME, stepAgentKind, type Agent, type AssistReply, type IpcChannel, type IpcPayload, type IpcResponse, type Item, type UpdateConflictDetail, type Uuid } from "@eo/core";
 import { AttachmentStorage } from "../attachments/storage.js";
 import type { DbHandle } from "../db/client.js";
 import { issueDevice } from "../db/repos/devicesRepo.js";
@@ -18,6 +18,7 @@ import {
   getMessage,
   getPipelineOrigin,
   getUpdateConflict,
+  listAgents,
   listCommentsForItem,
   listRoutesForPipeline,
   listStepsForPipeline,
@@ -225,7 +226,9 @@ type DraftOf = NonNullable<AssistReply["draft"]>;
 type ConflictGraph = UpdateConflictDetail["current"];
 
 const draftStep = (step: ConflictGraph["steps"][number], position: number, settings: Record<string, unknown> = {}) => {
-  const { id, name, type, ownerRole, entryAction, instructionsSummary, isTerminal, planMode } = step;
+  const { id, name, type, entryAction, instructionsSummary, isTerminal, planMode } = step;
+  // A draft names the kind its step's agent is (EO-875).
+  const ownerRole = stepAgentKind(listAgents(anna.handle.db), step);
   return { id, position, name, type, ownerRole, entryAction, instructionsSummary, isTerminal, planMode, ...settings };
 };
 const draftRoute = ({ fromStepId, resultKey, label, tone, target }: ConflictGraph["routes"][number], position: number) => ({ fromStepId, resultKey, label, tone, target, position });

@@ -2,7 +2,7 @@ import type { ItemBriefPart, StepBrief, Uuid } from "@eo/core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DbHandle } from "../db/client.js";
 import { createAgent, createRoute, createRun, createStep, postComment, transitionItem } from "../db/repos/index.js";
-import { createTestItem, openMigratedTestDb } from "../db/testHelpers.js";
+import { agentOfKind, createTestItem, openMigratedTestDb } from "../db/testHelpers.js";
 import { foldPacks } from "../packs/pack.js";
 import { getItemBrief } from "./itemBrief.js";
 import { packBriefs, usePackBriefs, type DecisionBriefContext, type DecisionBriefRenderer } from "./packBriefs.js";
@@ -40,8 +40,8 @@ function later(): void {
 
 function pipeline(brief: StepBrief | null = null): void {
   const pipelineId = "default" as Uuid;
-  createStep(handle.db, { id: "note_draft", pipelineId, position: 20, name: "Draft", type: "agent", ownerRole: "implementer", entryAction: "implement" });
-  createStep(handle.db, { id: "note_review", pipelineId, position: 21, name: "Review", type: "agent", ownerRole: "reviewer", entryAction: "review" });
+  createStep(handle.db, { id: "note_draft", pipelineId, position: 20, name: "Draft", type: "agent", agentId: agentOfKind(handle.db, "implementer"), entryAction: "implement" });
+  createStep(handle.db, { id: "note_review", pipelineId, position: 21, name: "Review", type: "agent", agentId: agentOfKind(handle.db, "reviewer"), entryAction: "review" });
   createStep(handle.db, {
     id: "note_approval",
     pipelineId,

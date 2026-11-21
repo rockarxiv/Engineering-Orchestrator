@@ -47,7 +47,7 @@ function graph(brief: StepBrief | null | undefined): Omit<PipelineStepView, "bri
       position: step.position,
       name: step.name,
       type: step.type,
-      ownerRole: step.ownerRole,
+      agentId: step.agentId,
       entryAction: step.entryAction,
       instructionsSummary: step.instructionsSummary,
       isTerminal: step.isTerminal,

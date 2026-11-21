@@ -39,7 +39,7 @@ import {
   updateStep,
 } from "../db/repos/index.js";
 import type { Workspace } from "../db/repos/index.js";
-import { attachWorkspace, createTestItem, openMigratedTestDb, REVIEWABLE_SPEC } from "../db/testHelpers.js";
+import { agentOfKind, attachWorkspace, createTestItem, openMigratedTestDb, REVIEWABLE_SPEC } from "../db/testHelpers.js";
 import type { JiraContext } from "../packs/developer/jira/connection.js";
 import { pullItem } from "../packs/developer/jira/pull.js";
 import { handleIpcRequest } from "./handleRequest.js";
@@ -1454,7 +1454,7 @@ describe("handing an item to another pipeline by hand (EO-70)", () => {
       pipelineId: pipeline.id,
       position: 0,
       name: "Merge It",
-      ownerRole: "reviewer",
+      agentId: agentOfKind(handle.db, "reviewer"),
       entryAction: "review",
     });
     setEntryStep(handle.db, pipeline.id, step.id);
@@ -1602,7 +1602,7 @@ describe("listing pipelines (KAN-59, KAN-67)", () => {
 
   it("hides an archived pipeline until the Archive asks for it", () => {
     const pipeline = createPipeline(handle.db, { name: "Hotfix" });
-    createStep(handle.db, { id: "hx", pipelineId: pipeline.id, position: 0, name: "Build", ownerRole: "implementer", entryAction: "implement" });
+    createStep(handle.db, { id: "hx", pipelineId: pipeline.id, position: 0, name: "Build", agentId: agentOfKind(handle.db, "implementer"), entryAction: "implement" });
 
     expect(listPipelineViews(handle.db, { projectId: null }).pipelines.map((p) => p.id)).toContain(pipeline.id);
 

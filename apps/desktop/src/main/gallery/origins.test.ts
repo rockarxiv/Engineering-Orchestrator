@@ -4,7 +4,8 @@ import { sql } from "drizzle-orm";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { uuidv7, type Uuid } from "@eo/core";
 import type { DbHandle } from "../db/client.js";
-import { createPipeline, createStep, getPipelineOrigin, getSetting, listStepsForPipeline } from "../db/repos/index.js";
+import { createPipeline, createStep, getPipelineOrigin, getSetting, listAgents, listStepsForPipeline } from "../db/repos/index.js";
+import { withKind } from "../stepAgents.js";
 import { openMigratedTestDb } from "../db/testHelpers.js";
 import { loadTemplateHistory, type TemplateHistory } from "./history.js";
 import { backfillPipelineOrigins, matchTemplateVersion, ORIGINS_BACKFILLED_KEY } from "./origins.js";
@@ -56,7 +57,9 @@ describe("matching step ids against the history", () => {
    * of the two is the one.
    */
   it("tells two versions with the same steps apart by what the steps are set to", () => {
-    const steps = listStepsForPipeline(handle.db, "default");
+    // Matched with the kind each step's agent brings, as `backfillPipelineOrigins` reads them (EO-875).
+    const agents = listAgents(handle.db);
+    const steps = listStepsForPipeline(handle.db, "default").map((step) => withKind(agents, step));
     const ids = steps.map((step) => step.id);
     expect(steps.find((step) => step.id === "pull_request_watch")?.watch).toEqual({ everyMinutes: 5, giveUpAfterHours: 168 });
     expect(matchTemplateVersion(ids, history, steps)?.version.version).toBe("1.1");

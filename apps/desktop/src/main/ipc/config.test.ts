@@ -51,6 +51,7 @@ import {
   localPerson,
   postComment,
   replacePipelineGraph,
+  saveActionDefinition,
   saveJiraBinding,
   saveModule,
   setSetting,
@@ -58,7 +59,7 @@ import {
   suggestKeyPrefix,
   transitionItem,
 } from "../db/repos/index.js";
-import { attachWorkspace, createTestItem, openMigratedTestDb } from "../db/testHelpers.js";
+import { agentOfKind, attachWorkspace, createTestItem, openMigratedTestDb } from "../db/testHelpers.js";
 import {
   archiveAgentCommand,
   dailyBudgetDefaultApplies,
@@ -96,6 +97,21 @@ function currentStates(): PipelineStepView[] {
 
 function currentRoutes(): StepRouteView[] {
   return listPipelineStepViews(handle.db, { pipelineId: "default" }).routes;
+}
+
+/**
+ * The `tester` kind's `test` action, answering `done`: a step's action
+ * must be one its agent's kind has (EO-875), so a `qa` step on a Tester
+ * needs it defined.
+ */
+function testerTests(): void {
+  const saved = saveActionDefinition(handle.db, { role: "tester", action: "test", results: [{ key: "done", label: "Done", meaning: "The work passed its tests." }] });
+  if (!saved.ok) throw new Error("the tester's test action was refused");
+}
+
+/** Where a `qa` step's `done` goes: every result an agent step's action declares is routed (EO-423). */
+function qaDone(): StepRouteView {
+  return { id: "qa-done", pipelineId: "default", fromStepId: "qa", resultKey: "done", label: "Done", tone: "success", target: "merge_request", position: 0 };
 }
 
 /**
@@ -441,7 +457,7 @@ describe("a module step's time limit", () => {
       position: 0,
       name: "Merge",
       type: "module",
-      ownerRole: null,
+      agentId: null,
       entryAction: saved.module.id,
       instructionsSummary: null,
       isTerminal: false,
@@ -731,12 +747,12 @@ describe("agents", () => {
     expect(listAgents(handle.db).length).toBe(before);
   });
 
-  it("disabling an agent leaves its role unstaffed, which the workflow validator notices", () => {
+  it("disabling the agent a step names leaves the step waiting, which the workflow validator notices", () => {
     const existing = listAgentDetails(handle.db).agents.find((agent) => agent.role === "reviewer")!;
     saveAgent(handle.db, { ...existing, enabled: false });
 
     const { problems } = validatePipelineCommand(handle.db, { pipelineId: "default", steps: currentStates(), routes: currentRoutes(), entryStepId: "worktree" });
-    expect(problems.some((problem) => problem.message.includes("reviewer") && problem.message.includes("no enabled agent"))).toBe(true);
+    expect(problems.some((problem) => problem.message.includes(`names ${existing.name}, which is disabled`))).toBe(true);
   });
 
   it("answers with the steps it would leave with nobody, and archives nothing, until the call confirms", () => {
@@ -745,7 +761,7 @@ describe("agents", () => {
     // leaving the Review step with nobody, and a person who has read
     // that may go ahead.
     const reviewer = listAgentDetails(handle.db).agents.find((agent) => agent.role === "reviewer")!;
-    const owned = listPipelineSteps(handle.db).filter((step) => step.type === "agent" && step.ownerRole === "reviewer");
+    const owned = listPipelineSteps(handle.db).filter((step) => step.type === "agent" && step.agentId === reviewer.id);
     expect(owned.length).toBeGreaterThan(0);
 
     const asked = archiveAgentCommand(handle.db, { id: reviewer.id, confirm: false });
@@ -765,21 +781,23 @@ describe("agents", () => {
     expect(listAgents(handle.db).find((agent) => agent.id === reviewer.id)!.archivedAt).not.toBeNull();
     // Which is the state the validator reports, now arrived at on purpose.
     const { problems } = validatePipelineCommand(handle.db, { pipelineId: "default", steps: currentStates(), routes: currentRoutes(), entryStepId: "worktree" });
-    expect(problems.some((problem) => problem.message.includes("reviewer") && problem.message.includes("no enabled agent"))).toBe(true);
+    expect(problems.some((problem) => problem.message.includes(`names ${reviewer.name}, which has been archived`))).toBe(true);
   });
 
-  it("says who still covers the role when another enabled agent holds it", () => {
+  it("leaves the steps naming it with nobody, though another enabled agent of its kind is there (EO-875)", () => {
+    // A step runs the agent it names and is never handed to another of
+    // the same kind, so a second reviewer covers nothing.
     const second = wrote(saveAgent(handle.db, { name: "Second Reviewer", role: "reviewer", provider: "fake", model: null, instructions: "x", enabled: true, config: {} }));
     const first = listAgentDetails(handle.db).agents.find((agent) => agent.role === "reviewer" && agent.id !== second.id)!;
 
     const asked = archiveAgentCommand(handle.db, { id: first.id, confirm: false });
 
-    expect(asked.impact?.leavesStepsWithNobody).toBe(false);
-    expect(asked.impact?.coveredBy).toEqual(["Second Reviewer"]);
+    expect(asked.impact?.leavesStepsWithNobody).toBe(true);
+    expect(asked.impact?.coveredBy).toEqual([]);
     expect(asked.impact?.steps.length).toBeGreaterThan(0);
     expect(archiveAgentCommand(handle.db, { id: first.id, confirm: true }).archived).toBe(true);
-    // …and now the second one is the last, which the next answer says.
-    expect(archiveAgentCommand(handle.db, { id: second.id, confirm: false }).impact?.leavesStepsWithNobody).toBe(true);
+    // …and the second one names no step, so archiving it takes nothing away.
+    expect(archiveAgentCommand(handle.db, { id: second.id, confirm: false }).impact).toMatchObject({ steps: [], leavesStepsWithNobody: false });
   });
 
   it("names no steps for a role no step is owned by", () => {
@@ -805,7 +823,7 @@ describe("agents", () => {
       saveAgent(handle.db, { name: "reviewer (preview)", role: "reviewer", provider: "fake", model: null, instructions: "x", enabled: true, config: { [PREVIEW_AGENT_KEY]: true } }),
     );
 
-    expect(archiveAgentCommand(handle.db, { id: preview.id, confirm: false }).impact).toMatchObject({ leavesStepsWithNobody: false, coveredBy: [reviewer.name] });
+    expect(archiveAgentCommand(handle.db, { id: preview.id, confirm: false }).impact).toMatchObject({ leavesStepsWithNobody: false, coveredBy: [] });
     expect(deleteAgentCommand(handle.db, { id: preview.id, confirm: false }).impact?.leavesStepsWithNobody).toBe(false);
 
     // …even when it is the only *enabled* agent on the role, which is the
@@ -862,7 +880,7 @@ describe("agents", () => {
 
   it("names the role's steps in archived pipelines too", () => {
     const retired = createPipeline(handle.db, { projectId: null, name: "Old Review" });
-    createStep(handle.db, { pipelineId: retired.id, position: 0, name: "Second look", type: "agent", ownerRole: "reviewer" });
+    createStep(handle.db, { pipelineId: retired.id, position: 0, name: "Second look", type: "agent", agentId: agentOfKind(handle.db, "reviewer") });
     archivePipeline(handle.db, retired.id);
     const reviewer = listAgentDetails(handle.db).agents.find((agent) => agent.role === "reviewer")!;
 
@@ -893,23 +911,20 @@ describe("agents", () => {
     });
   });
 
-  it("does not count an archived agent towards its role having an enabled agent", () => {
-    // The other half of the same rule, on the validator's side (EO-186).
-    // An archived agent that still counted would leave a step reported
-    // as fine and dispatching nothing — the failure both this warning
-    // and `no_enabled_agent` exist to make loud.
+  it("reports a step naming an archived agent, though another agent of its kind is enabled", () => {
+    // The other half of the same rule, on the validator's side (EO-186,
+    // EO-875). An archived agent that still counted would leave a step
+    // reported as fine and dispatching nothing — the failure both this
+    // warning and `agent_unavailable` exist to make loud. Nor does a
+    // second agent of the kind make it fine: the step is not handed to it.
     const second = wrote(saveAgent(handle.db, { name: "Second Reviewer", role: "reviewer", provider: "fake", model: null, instructions: "x", enabled: true, config: {} }));
     const first = listAgentDetails(handle.db).agents.find((agent) => agent.role === "reviewer" && agent.id !== second.id)!;
     archiveAgentCommand(handle.db, { id: first.id, confirm: true });
-    // Leaving the second one enabled and archived is not something the
-    // command will do — it is the last holder — so the row is stamped
-    // directly. Which is the case worth testing: `enabled` alone says
-    // this role is staffed, and it is not.
-    archiveAgent(handle.db, second.id as Uuid);
 
     const { problems } = validatePipelineCommand(handle.db, { pipelineId: "default", steps: currentStates(), routes: currentRoutes(), entryStepId: "worktree" });
 
-    expect(problems.some((problem) => problem.message.includes("reviewer") && problem.message.includes("no enabled agent"))).toBe(true);
+    expect(problems.some((problem) => problem.message.includes(`names ${first.name}, which has been archived`))).toBe(true);
+    expect(problems.some((problem) => problem.message.includes(second.name))).toBe(false);
   });
 });
 
@@ -952,7 +967,7 @@ describe("deleting an agent", () => {
     expect(isDispatchable(tombstone)).toBe(false);
 
     const { problems } = validatePipelineCommand(handle.db, { pipelineId: "default", steps: currentStates(), routes: currentRoutes(), entryStepId: "worktree" });
-    expect(problems.some((problem) => problem.message.includes("reviewer") && problem.message.includes("no enabled agent"))).toBe(true);
+    expect(problems.some((problem) => problem.message.includes(`names ${reviewer.name}, which has been deleted`))).toBe(true);
 
     // Gone is gone: not deleted twice, not archived, not saved back.
     expect(deleteAgentCommand(handle.db, { id: reviewer.id, confirm: true }).deleted).toBe(false);
@@ -1250,13 +1265,14 @@ describe("workflow saving", () => {
 
   it("adds a state, which becomes a project column with no code change", () => {
     saveAgent(handle.db, { name: "Tester", role: "tester", provider: "fake", model: null, instructions: "", enabled: true, config: {} });
+    testerTests();
 
     const next = withStepBefore(
-      { id: "qa", pipelineId: "default", position: 0, name: "qa", type: "agent", ownerRole: "tester", entryAction: "test", instructionsSummary: null, isTerminal: false, planMode: false, workspaceMode: "isolated", workspaceId: null, inputs: {}, timeoutMs: null, watch: null, results: [], moduleVersion: null, brief: null },
+      { id: "qa", pipelineId: "default", position: 0, name: "qa", type: "agent", agentId: agentOfKind(handle.db, "tester"), entryAction: "test", instructionsSummary: null, isTerminal: false, planMode: false, workspaceMode: "isolated", workspaceId: null, inputs: {}, timeoutMs: null, watch: null, results: [], moduleVersion: null, brief: null },
       "merge_request",
     );
 
-    const result = savePipeline(handle.db, fakeEngine(), { pipelineId: "default", steps: next, routes: currentRoutes(), entryStepId: "worktree" });
+    const result = savePipeline(handle.db, fakeEngine(), { pipelineId: "default", steps: next, routes: [...currentRoutes(), qaDone()], entryStepId: "worktree" });
 
     expect(result.saved).toBe(true);
     // The project derives its columns from exactly this list (U-02).
@@ -1298,7 +1314,7 @@ describe("workflow saving", () => {
       position: 0,
       name: "Deploy",
       type: "module",
-      ownerRole: null,
+      agentId: null,
       entryAction: moduleId,
       instructionsSummary: null,
       isTerminal: false,
@@ -1344,16 +1360,16 @@ describe("workflow saving", () => {
     });
   });
 
-  it("creates a working human gate when owner_role is none", () => {
+  it("creates a working human gate when it names no agent", () => {
     const next = withStepBefore(
-      { id: "sign_off", pipelineId: "default", position: 0, name: "sign_off", type: "user", ownerRole: null, entryAction: null, instructionsSummary: null, isTerminal: false, planMode: false, workspaceMode: "isolated", workspaceId: null, inputs: {}, timeoutMs: null, watch: null, results: [], moduleVersion: null, brief: null },
+      { id: "sign_off", pipelineId: "default", position: 0, name: "sign_off", type: "user", agentId: null, entryAction: null, instructionsSummary: null, isTerminal: false, planMode: false, workspaceMode: "isolated", workspaceId: null, inputs: {}, timeoutMs: null, watch: null, results: [], moduleVersion: null, brief: null },
       "todo",
     );
 
     expect(savePipeline(handle.db, fakeEngine(), { pipelineId: "default", steps: next, routes: currentRoutes(), entryStepId: "worktree" }).saved).toBe(true);
 
     const gate = listPipelineSteps(handle.db).find((state) => state.id === "sign_off")!;
-    expect(gate.ownerRole).toBeNull(); // the scheduler's first skip condition
+    expect(gate.agentId).toBeNull(); // the scheduler's first skip condition
   });
 
   it("refuses an invalid workflow and says exactly why", () => {
@@ -1487,7 +1503,7 @@ describe("workflow saving", () => {
       // keeps its branch — and a human step's branches are the results
       // it offers (EO-310). The case is about the rename and the type.
       steps: consistent(
-        currentStates().map((state) => (state.id === "todo" ? { ...state, name: "Backlog", type: "user" as const, ownerRole: null, entryAction: null } : state)),
+        currentStates().map((state) => (state.id === "todo" ? { ...state, name: "Backlog", type: "user" as const, agentId: null, entryAction: null } : state)),
         currentRoutes(),
       ),
       routes: currentRoutes(),
@@ -1842,7 +1858,7 @@ describe("handing work to another pipeline (EO-58, EO-69)", () => {
             position: 0,
             name: "Hand over",
             type: "user",
-            ownerRole: null,
+            agentId: null,
             entryAction: null,
             instructionsSummary: null,
             isTerminal: false,
@@ -2314,13 +2330,14 @@ describe("repositories", () => {
 describe("the project reflects config changes", () => {
   it("an item in a newly added state appears under it", () => {
     saveAgent(handle.db, { name: "Tester", role: "tester", provider: "fake", model: null, instructions: "", enabled: true, config: {} });
+    testerTests();
     savePipeline(handle.db, fakeEngine(), {
       pipelineId: "default",
       entryStepId: "worktree",
-      routes: currentRoutes(),
+      routes: [...currentRoutes(), qaDone()],
       steps: [
         ...currentStates().map((state) => (state.position >= 5 ? { ...state, position: state.position + 1 } : state)),
-        { id: "qa", pipelineId: "default", position: 5, name: "qa", type: "agent", ownerRole: "tester", entryAction: "test", instructionsSummary: null, isTerminal: false, planMode: false, workspaceMode: "isolated", workspaceId: null, inputs: {}, timeoutMs: null, watch: null, results: [], moduleVersion: null },
+        { id: "qa", pipelineId: "default", position: 5, name: "qa", type: "agent", agentId: agentOfKind(handle.db, "tester"), entryAction: "test", instructionsSummary: null, isTerminal: false, planMode: false, workspaceMode: "isolated", workspaceId: null, inputs: {}, timeoutMs: null, watch: null, results: [], moduleVersion: null },
       ],
     });
 
@@ -2331,12 +2348,12 @@ describe("the project reflects config changes", () => {
 });
 
 describe("an agent's pipeline count (KAN-67)", () => {
-  it("counts the pipelines whose steps name the agent's role, not the steps", () => {
-    // Two steps of one pipeline owned by the same role is still one
+  it("counts the pipelines whose steps name the agent, not the steps", () => {
+    // Two steps of one pipeline naming the same agent is still one
     // pipeline: the number answers "how much stops if I disable this?".
     const pipeline = createPipeline(handle.db, { name: "Hotfix" });
-    createStep(handle.db, { id: "hx_a", pipelineId: pipeline.id, position: 0, name: "A", ownerRole: "implementer", entryAction: "implement" });
-    createStep(handle.db, { id: "hx_b", pipelineId: pipeline.id, position: 1, name: "B", ownerRole: "implementer", entryAction: "implement" });
+    createStep(handle.db, { id: "hx_a", pipelineId: pipeline.id, position: 0, name: "A", agentId: agentOfKind(handle.db, "implementer"), entryAction: "implement" });
+    createStep(handle.db, { id: "hx_b", pipelineId: pipeline.id, position: 1, name: "B", agentId: agentOfKind(handle.db, "implementer"), entryAction: "implement" });
 
     const implementer = listAgentDetails(handle.db).agents.find((agent) => agent.role === "implementer");
 
@@ -2489,7 +2506,7 @@ describe("a pipeline a webhook can enter", () => {
       position: 0,
       name: "Approve",
       type: "user",
-      ownerRole: null,
+      agentId: null,
       entryAction: null,
       instructionsSummary: null,
       isTerminal: false,
@@ -2685,7 +2702,7 @@ describe("keep checking across a save that does not mention it (EO-506)", () => 
    */
   function watchHandedToAPerson(watch: Record<string, unknown>) {
     const graph = listPipelineStepViews(handle.db, { pipelineId: "default" });
-    const steps = graph.steps.map((step) => (step.id === "pull_request_watch" ? { ...step, type: "user" as const, entryAction: null, ownerRole: null } : step));
+    const steps = graph.steps.map((step) => (step.id === "pull_request_watch" ? { ...step, type: "user" as const, entryAction: null, agentId: null } : step));
     // Less the branches that went to a person: on a person's step that is
     // where the item already is.
     const routes = graph.routes.filter((route) => route.fromStepId !== "pull_request_watch" || route.target !== USER_ATTENTION_TARGET);
@@ -2808,7 +2825,7 @@ describe("a module step's pinned version", () => {
       position: 0,
       name: "Merge",
       type: "module" as const,
-      ownerRole: null,
+      agentId: null,
       entryAction: moduleId,
       instructionsSummary: null,
       isTerminal: false,

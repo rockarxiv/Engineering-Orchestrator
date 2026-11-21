@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentProvider } from "@eo/core";
 import type { DbHandle } from "./db/client.js";
 import { createRoute, createRun, createStep, getItem, listAgents, listRunsForItem, postComment, setSetting, updateRun } from "./db/repos/index.js";
-import { createTestItem, openMigratedTestDb } from "./db/testHelpers.js";
+import { agentOfKind, createTestItem, openMigratedTestDb } from "./db/testHelpers.js";
 import { createEngine } from "./engine.js";
 import { persistEnginePause } from "./engineActivity.js";
 import { pauseEngine, resumeEngine } from "./ipc/domainCommands.js";
@@ -28,7 +28,7 @@ describe("persistent engine activity preference", () => {
     // that needs no worktree — `createWorktreeWorkspace` refuses a
     // repo-less story on purpose, since an implementer with nowhere to
     // write is useless, and the items below have no repository.
-    createStep(handle.db, { id: "ask", pipelineId: "default" as never, position: -1, name: "Intake", type: "agent", ownerRole: "system", entryAction: "intake" });
+    createStep(handle.db, { id: "ask", pipelineId: "default" as never, position: -1, name: "Intake", type: "agent", agentId: agentOfKind(handle.db, "system"), entryAction: "intake" });
     createRoute(handle.db, { pipelineId: "default" as never, fromStepId: "ask", resultKey: "done", label: "Understood", target: "todo", position: 0 });
   });
 

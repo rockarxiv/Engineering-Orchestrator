@@ -3,7 +3,7 @@ import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { uuidv7, type EntryRule, type ModuleManifest, type Uuid } from "@eo/core";
 import type { DbHandle } from "../db/client.js";
-import { createTestItem, messagesFrom, openMigratedTestDb } from "../db/testHelpers.js";
+import { agentOfKind, createTestItem, messagesFrom, openMigratedTestDb } from "../db/testHelpers.js";
 import {
   approveModule,
   archivePipeline,
@@ -340,10 +340,12 @@ describe("a moved pin on a pipeline made from a template", () => {
     const installed = replacePipelineGraph(
       handle.db,
       copy.id,
-      base.steps.map((step) => ({
+      base.steps.map(({ ownerRole, ...step }) => ({
         ...step,
         id: local(step.id),
         pipelineId: copy.id as Uuid,
+        // A document names a kind; the step names that kind's agent here (EO-875).
+        agentId: ownerRole === null ? null : agentOfKind(handle.db, ownerRole),
         // The document's own number names nothing here (EO-772); only the Notify step pins one.
         moduleVersion: step.type === "module" ? 3 : null,
         ...(step.type === "module" ? { entryAction: id } : {}),

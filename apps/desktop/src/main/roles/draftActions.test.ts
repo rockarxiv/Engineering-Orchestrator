@@ -1,22 +1,25 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { ConfigureOutputSchema, proposedActionDraft, type ConfigureOutput, type ParsedActionDefinitionDraft, type PipelineDraft } from "@eo/core";
+import { ConfigureOutputSchema, proposedActionDraft, stepAgentKind, type Agent, type ConfigureOutput, type ParsedActionDefinitionDraft, type PipelineDraft } from "@eo/core";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { DbHandle } from "../db/client.js";
 import { markReplica } from "../db/recordRole.js";
 import {
+  createAgent,
   createPipeline,
   createStep,
   getActionDefinition,
   listActionDefinitions,
+  listAgents,
   listRoutesForPipeline,
   listStepsForPipeline,
   publishSection,
   saveActionDefinition,
 } from "../db/repos/index.js";
-import { openMigratedTestDb } from "../db/testHelpers.js";
+import { agentOfKind, openMigratedTestDb } from "../db/testHelpers.js";
 import { savePipeline, validatePipelineCommand } from "../ipc/configCommands.js";
 import { listPipelineStepViews } from "../ipc/domainQueries.js";
+import { kindBinder } from "../stepAgents.js";
 import { renderDraft, validateDraft } from "./architect.js";
 import { sourcePromptsDir } from "./prompts.js";
 
@@ -32,9 +35,12 @@ import { sourcePromptsDir } from "./prompts.js";
 
 let handle: DbHandle;
 let stopBeingAReplica: (() => void) | null = null;
+/** The agent a draft's `qa` step is bound to: a step names an agent, and one of no agent is refused (EO-875). */
+let qa: Agent;
 
 beforeEach(() => {
   handle = openMigratedTestDb();
+  qa = createAgent(handle.db, { name: "QA", role: "qa", provider: "fake", model: null, instructions: "Check the work." });
 });
 
 afterEach(() => {
@@ -77,7 +83,7 @@ function withQaStep(second = "gaps_found"): PipelineDraft {
         position: step.position,
         name: step.name,
         type: step.type,
-        ownerRole: step.ownerRole,
+        ownerRole: stepAgentKind(listAgents(handle.db), step),
         entryAction: step.entryAction,
         instructionsSummary: step.instructionsSummary,
         isTerminal: step.isTerminal,
@@ -123,11 +129,15 @@ function render(output: Reply): { card: string | undefined; rejections: string[]
 
 /** The graph Publish would send for a draft: its steps and routes, stamped with the pipeline, each step keeping what it had. */
 function asPublished(draft: PipelineDraft) {
-  const current = new Map(listPipelineStepViews(handle.db, { pipelineId: "default" }).steps.map((step) => [step.id, step]));
+  const views = listPipelineStepViews(handle.db, { pipelineId: "default" }).steps;
+  const current = new Map(views.map((step) => [step.id, step]));
+  // The kind a draft's step names, bound to an agent as Publish binds it (EO-875).
+  const agentFor = kindBinder(listAgents(handle.db), null, views);
   return {
     pipelineId: "default",
-    steps: draft.steps.map((step) => ({
+    steps: draft.steps.map(({ ownerRole, ...step }) => ({
       ...step,
+      agentId: agentFor({ ...step, ownerRole }),
       pipelineId: "default",
       inputs: current.get(step.id)?.inputs ?? {},
       timeoutMs: current.get(step.id)?.timeoutMs ?? null,
@@ -205,7 +215,7 @@ describe("the draft card", () => {
     saveActionDefinition(handle.db, { ...ALIGNMENT, fields: {} });
     // Another pipeline already dispatches the action this card redraws.
     const quality = createPipeline(handle.db, { name: "Quality" });
-    createStep(handle.db, { pipelineId: quality.id, position: 0, name: "Check", type: "agent", ownerRole: "qa", entryAction: "alignment" });
+    createStep(handle.db, { pipelineId: quality.id, position: 0, name: "Check", type: "agent", agentId: agentOfKind(handle.db, "qa"), entryAction: "alignment" });
 
     const { card } = render(
       reply(withQaStep("blocked"), [{ ...ALIGNMENT, fields: [], results: [ALIGNMENT.results[0], { key: "blocked", label: "Blocked", meaning: "" }] }]),
@@ -277,7 +287,7 @@ describe("publishing a draft that carries definitions", () => {
 
     expect(saved.saved).toBe(true);
     expect(getActionDefinition(handle.db, "qa", "alignment")).toMatchObject({ description: ALIGNMENT.description, results: ALIGNMENT.results });
-    expect(listStepsForPipeline(handle.db, "default").find((step) => step.id === "qa_check")).toMatchObject({ ownerRole: "qa", entryAction: "alignment" });
+    expect(listStepsForPipeline(handle.db, "default").find((step) => step.id === "qa_check")).toMatchObject({ agentId: qa.id, entryAction: "alignment" });
   });
 
   it("replaces a definition the role already has when the draft changes it", () => {

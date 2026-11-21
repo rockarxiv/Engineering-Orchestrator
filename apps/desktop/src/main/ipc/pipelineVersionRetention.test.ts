@@ -51,7 +51,7 @@ describe("pipeline version history", () => {
       position: index,
       name: step.name,
       type: step.type,
-      ownerRole: step.ownerRole,
+      agentId: step.agentId,
       entryAction: step.entryAction,
       instructionsSummary: step.instructionsSummary,
       isTerminal: step.isTerminal,

@@ -10,7 +10,7 @@ import {
 } from "../db/repos/index.js";
 import { getStep, listRoutesForPipeline, listStepsForPipeline, replacePipelineGraph } from "../db/repos/pipelineStepsRepo.js";
 import { holdItem, moveItem, postHumanComment, resumeHeldItem } from "../ipc/domainCommands.js";
-import { createTestItem, openMigratedTestDb } from "../db/testHelpers.js";
+import { agentOfKind, createTestItem, openMigratedTestDb } from "../db/testHelpers.js";
 import { createFakeProvider } from "../providers/fake.js";
 import { validImplementResult } from "../providers/fixtures.js";
 import type { BuiltinRunner } from "./builtins.js";
@@ -113,7 +113,7 @@ function engineNotes(itemId = item.id): string[] {
     .map((comment) => comment.body);
 }
 
-/** Hands a step to another role, through the call the pipeline screen publishes with. */
+/** Hands a step to an agent of another kind, through the call the pipeline screen publishes with. */
 function reassign(stepId: string, role: string): void {
   const pipelineId = getStep(handle.db, stepId)!.pipelineId;
   const steps = listStepsForPipeline(handle.db, pipelineId);
@@ -126,7 +126,7 @@ function reassign(stepId: string, role: string): void {
       position: step.position,
       name: step.name,
       type: step.type,
-      ownerRole: step.id === stepId ? role : step.ownerRole,
+      agentId: step.id === stepId ? agentOfKind(handle.db, role) : step.agentId,
       entryAction: step.entryAction,
       isTerminal: step.isTerminal,
     })),

@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { DbHandle } from "../../db/client.js";
 import { createRoute, createRun, createStep, getItem, listAgents, transitionItem, updateRun } from "../../db/repos/index.js";
 import { pipelines } from "../../db/schema.js";
-import { attachWorkspace, createTestItem, openMigratedTestDb } from "../../db/testHelpers.js";
+import { agentOfKind, attachWorkspace, createTestItem, openMigratedTestDb } from "../../db/testHelpers.js";
 import { getItemBrief } from "../../ipc/itemBrief.js";
 import { foldPacks } from "../pack.js";
 import { developerBriefRenderers } from "./briefs.js";
@@ -113,7 +113,7 @@ describe('the "Approve plan" brief', () => {
 
   /** The comments board's last two steps, under whatever ids a test gives them. */
   function steps(ids: { review: string; approve: string }, brief: StepBrief | null = null): void {
-    createStep(handle.db, { id: ids.review, pipelineId: PIPELINE, position: 20, name: "Review plan", type: "agent", ownerRole: "reviewer", entryAction: REVIEW_PLAN_ACTION });
+    createStep(handle.db, { id: ids.review, pipelineId: PIPELINE, position: 20, name: "Review plan", type: "agent", agentId: agentOfKind(handle.db, "reviewer"), entryAction: REVIEW_PLAN_ACTION });
     createStep(handle.db, {
       id: ids.approve,
       pipelineId: PIPELINE,

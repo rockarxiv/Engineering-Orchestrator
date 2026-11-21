@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { DbHandle } from "../db/client.js";
 import { getItem, listCommentsForItem, listRunsForItem } from "../db/repos/index.js";
 import { archivePipeline, createPipeline, createStep, setEntryStep } from "../db/repos/pipelineStepsRepo.js";
-import { openMigratedTestDb } from "../db/testHelpers.js";
+import { agentOfKind, openMigratedTestDb } from "../db/testHelpers.js";
 import { sendToAssist } from "../ipc/assistCommands.js";
 import { clearPublishedView } from "../ipc/currentView.js";
 import { postAssistReply } from "../roles/assist.js";
@@ -57,7 +57,7 @@ beforeEach(() => {
   handle = openMigratedTestDb();
   // A second placeable pipeline, so the correction has more than one to list.
   const pipeline = createPipeline(handle.db, { name: "Hotfix", projectId: null });
-  const step = createStep(handle.db, { id: "hx_build", pipelineId: pipeline.id, position: 0, name: "Build", ownerRole: "implementer", entryAction: "implement" });
+  const step = createStep(handle.db, { id: "hx_build", pipelineId: pipeline.id, position: 0, name: "Build", agentId: agentOfKind(handle.db, "implementer"), entryAction: "implement" });
   setEntryStep(handle.db, pipeline.id, step.id);
   hotfix = pipeline;
 });

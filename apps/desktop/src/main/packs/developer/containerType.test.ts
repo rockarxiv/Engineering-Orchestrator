@@ -12,7 +12,7 @@ import {
   listProjects,
   syncItemTypes,
 } from "../../db/repos/index.js";
-import { attachWorkspace, createTestItem, openMigratedTestDb } from "../../db/testHelpers.js";
+import { agentOfKind, attachWorkspace, createTestItem, openMigratedTestDb } from "../../db/testHelpers.js";
 import { createRoleWiring } from "./wiring.js";
 import { openPullRequestForItem } from "./forge/openForItem.js";
 import { applyNewItem } from "../../roles/discussion.js";
@@ -124,7 +124,7 @@ describe("a container type the code never heard of (KAN-146)", () => {
    */
   function refineStep(): { step: ReturnType<typeof createStep>; steps: ReturnType<typeof listPipelineSteps> } {
     const pipelineId = listPipelines(handle.db)[0]!.id;
-    const step = createStep(handle.db, { pipelineId, id: "planning", position: 9, name: "Planning", ownerRole: "product-owner", entryAction: "refine" });
+    const step = createStep(handle.db, { pipelineId, id: "planning", position: 9, name: "Planning", agentId: agentOfKind(handle.db, "product-owner"), entryAction: "refine" });
     createRoute(handle.db, { pipelineId, fromStepId: step.id, resultKey: "decomposed", label: "Decomposed", target: "review" });
     createRoute(handle.db, { pipelineId, fromStepId: step.id, resultKey: "clarified", label: "Clarified", target: "todo" });
     return { step, steps: listPipelineSteps(handle.db) };

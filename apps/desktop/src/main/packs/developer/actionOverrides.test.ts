@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { developerRegistry, EMPTY_SPEC_SHAPE, refineOutputSchemaFor, resultSchemaFor, schemaByAction, type Item, type ItemTypeEntry } from "@eo/core";
 import type { DbHandle } from "../../db/client.js";
 import { createRoute, createStep, getItem, getItemType, listCommentsForItem, listItems, listRunsForItem, syncItemTypes } from "../../db/repos/index.js";
-import { createTestItem, openMigratedTestDb } from "../../db/testHelpers.js";
+import { agentOfKind, createTestItem, openMigratedTestDb } from "../../db/testHelpers.js";
 import { createScriptedProvider } from "../../providers/scripted.js";
 import { buildDispatchContext } from "../../supervisor/buildDispatchContext.js";
 import { createRunSupervisor } from "../../supervisor/runSupervisor.js";
@@ -97,7 +97,7 @@ describe("what refine means, as the type's own data (KAN-163)", () => {
     // runs it is configured here — exactly what a person could do. The
     // two outcomes go to visibly different places, so "routed as
     // decomposed" cannot pass by accident.
-    createStep(handle.db, { id: "plan", pipelineId: "default" as never, position: -1, name: "Refine", type: "agent", ownerRole: "system", entryAction: "refine" });
+    createStep(handle.db, { id: "plan", pipelineId: "default" as never, position: -1, name: "Refine", type: "agent", agentId: agentOfKind(handle.db, "system"), entryAction: "refine" });
     createRoute(handle.db, { pipelineId: "default" as never, fromStepId: "plan", resultKey: "decomposed", label: "Decomposed", target: "review", position: 0 });
     createRoute(handle.db, { pipelineId: "default" as never, fromStepId: "plan", resultKey: "clarified", label: "Clarified", target: "todo", position: 1 });
   });

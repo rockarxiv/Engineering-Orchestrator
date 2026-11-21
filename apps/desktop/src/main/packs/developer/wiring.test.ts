@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AssistOutputSchema, INTERPRET_ACTION } from "@eo/core";
 import type { DbHandle } from "../../db/client.js";
 import { createPipeline, createRun, createStep, getItem, listModules, listPipelineSteps, listCommentsForItem } from "../../db/repos/index.js";
-import { createTestItem, openMigratedTestDb } from "../../db/testHelpers.js";
+import { agentOfKind, createTestItem, openMigratedTestDb } from "../../db/testHelpers.js";
 import { createRoleWiring } from "./wiring.js";
 import { bridgePushChannels } from "../../ipc/push.js";
 import { ASSIST_ACTION, assistAgent, openAssistRoom } from "../../roles/assist.js";
@@ -108,7 +108,7 @@ describe("routing a conversation", () => {
     // with no route for what came back is the case that *should* reach a
     // human.
     const pipeline = createPipeline(handle.db, { name: "Bespoke", projectId: null });
-    const step = createStep(handle.db, { id: "bespoke-build", pipelineId: pipeline.id, position: 0, name: "Build", ownerRole: "implementer", entryAction: "implement" });
+    const step = createStep(handle.db, { id: "bespoke-build", pipelineId: pipeline.id, position: 0, name: "Build", agentId: agentOfKind(handle.db, "implementer"), entryAction: "implement" });
     const item = createTestItem(handle.db, { type: "story", title: "Work", stepId: step.id });
 
     createRoleWiring(handle.db).resolveNextState(step, [step], { result: "done" }, "implement", item);

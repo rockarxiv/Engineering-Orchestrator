@@ -38,7 +38,7 @@ import {
   type Workspace,
 } from "../db/repos/index.js";
 import { beginAdoption } from "../db/repos/projectsRepo.js";
-import { attachWorkspace, createTestItem, openMigratedTestDb } from "../db/testHelpers.js";
+import { agentOfKind, attachWorkspace, createTestItem, openMigratedTestDb } from "../db/testHelpers.js";
 import { PREVIEW_PROJECT_KEY } from "../gallery/commands.js";
 import { writePolicy } from "../policy/policy.js";
 import type { CliRunner } from "../packs/developer/forge/cli.js";
@@ -400,7 +400,7 @@ describe("a write tool", () => {
     // written and the answer is a sentence.
     const item = createTestItem(handle.db, { type: "story", title: "Ready to merge", stepId: "todo" });
     const merge = createPipeline(handle.db, { name: "Merge" });
-    createStep(handle.db, { id: "mg_merge", pipelineId: merge.id, position: 0, name: "Merge It", ownerRole: "reviewer", entryAction: "review" });
+    createStep(handle.db, { id: "mg_merge", pipelineId: merge.id, position: 0, name: "Merge It", agentId: agentOfKind(handle.db, "reviewer"), entryAction: "review" });
     registerHandler("items:move", (payload) => moveItem(handle.db, undefined, payload), opts);
 
     // `review` is the default pipeline's step, so it is not Merge's to
@@ -426,7 +426,7 @@ describe("a write tool", () => {
     // than a tool that cannot hand anything over.
     const item = createTestItem(handle.db, { type: "story", title: "Ready to merge", stepId: "todo" });
     const merge = createPipeline(handle.db, { name: "Merge" });
-    const step = createStep(handle.db, { id: "mg_merge", pipelineId: merge.id, position: 0, name: "Merge It", ownerRole: "reviewer", entryAction: "review" });
+    const step = createStep(handle.db, { id: "mg_merge", pipelineId: merge.id, position: 0, name: "Merge It", agentId: agentOfKind(handle.db, "reviewer"), entryAction: "review" });
     registerHandler("items:move", (payload) => moveItem(handle.db, undefined, payload), opts);
 
     const outcome = await tool("ticket_move").run(dispatch, { ticketId: item.id, toStepId: step.id, toPipelineId: merge.id });

@@ -21,7 +21,7 @@ import {
   transitionItem,
   updateRun,
 } from "../db/repos/index.js";
-import { attachWorkspace, createTestItem, openMigratedTestDb } from "../db/testHelpers.js";
+import { agentOfKind, attachWorkspace, createTestItem, openMigratedTestDb } from "../db/testHelpers.js";
 import { archivePipeline, createPipeline, createStep, getPipeline, setEntryStep } from "../db/repos/pipelineStepsRepo.js";
 import { featureIsDone, featureProgress } from "./featureLifecycle.js";
 import { openAssistConversation, postAssistReply } from "./assist.js";
@@ -499,7 +499,7 @@ describe("changing work that already exists", () => {
       pipelineId: pipeline.id,
       position: 0,
       name: "Second look",
-      ownerRole: "reviewer",
+      agentId: agentOfKind(handle.db, "reviewer"),
       entryAction: "review",
     });
     const target = createTestItem(handle.db, {
@@ -524,7 +524,7 @@ describe("changing work that already exists", () => {
     // to rewrite them. `owner_role` is free text, so it was a second
     // hardcoded slug wearing the first one's clothes.
     const pipeline = createPipeline(handle.db, { name: "With QA", projectId: null });
-    const step = createStep(handle.db, { id: "qa", pipelineId: pipeline.id, position: 0, name: "QA", ownerRole: "qa", entryAction: "review" });
+    const step = createStep(handle.db, { id: "qa", pipelineId: pipeline.id, position: 0, name: "QA", agentId: agentOfKind(handle.db, "qa"), entryAction: "review" });
     const target = createTestItem(handle.db, {
       type: "story",
       title: "Add the limiter",
@@ -575,7 +575,7 @@ describe("changing work that already exists", () => {
     // yet, and refusing to refine an item at precisely the point that is
     // what the step is for would be the guard doing harm.
     const pipeline = createPipeline(handle.db, { name: "Triage first", projectId: null });
-    const step = createStep(handle.db, { id: "triage", pipelineId: pipeline.id, position: 0, name: "Triage", ownerRole: "reviewer", entryAction: "refine" });
+    const step = createStep(handle.db, { id: "triage", pipelineId: pipeline.id, position: 0, name: "Triage", agentId: agentOfKind(handle.db, "reviewer"), entryAction: "refine" });
     const target = createTestItem(handle.db, { type: "story", title: "Add the limiter", stepId: step.id, spec: { acceptance_criteria: ["old criterion"] } });
 
     const { proposalIds } = turn(says("Sharpening it.", { action: "amend", item: target.key, why: "w", title: "Add the rate limiter" }));
@@ -1239,7 +1239,7 @@ describe("the pipeline a proposal names", () => {
   /** A placeable pipeline beside Delivery: one step on the board, and that step is where work enters. */
   function secondPipeline(name: string) {
     const pipeline = createPipeline(handle.db, { name, projectId: null });
-    const step = createStep(handle.db, { id: `${name.toLowerCase().replace(/\W+/g, "_")}_build`, pipelineId: pipeline.id, position: 0, name: "Build", ownerRole: "implementer", entryAction: "implement" });
+    const step = createStep(handle.db, { id: `${name.toLowerCase().replace(/\W+/g, "_")}_build`, pipelineId: pipeline.id, position: 0, name: "Build", agentId: agentOfKind(handle.db, "implementer"), entryAction: "implement" });
     setEntryStep(handle.db, pipeline.id, step.id);
     return { pipeline, step };
   }

@@ -1,7 +1,9 @@
-import { McpServerDraftSchema, SkillDraftSchema, type Agent, type Uuid } from "@eo/core";
+import { McpServerDraftSchema, SkillDraftSchema, stepAgentKind, type Agent, type Uuid } from "@eo/core";
+import { and, eq } from "drizzle-orm";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { DbHandle } from "../db/client.js";
-import { archiveAgent, copyPipeline, createProject, getAgent, listAgents, listPipelineSteps, updateAgent } from "../db/repos/index.js";
+import { archiveAgent, copyPipeline, createProject, getAgent, listAgents, listPipelines, listPipelineSteps, updateAgent } from "../db/repos/index.js";
+import { pipelineSteps } from "../db/schema.js";
 import { getAgentAttachments, setAgentAttachment } from "../db/repos/agentAttachmentsRepo.js";
 import { saveMcpServer } from "../db/repos/mcpServersRepo.js";
 import { saveSkill } from "../db/repos/skillsRepo.js";
@@ -122,9 +124,23 @@ describe("customising a global agent for a project", () => {
 });
 
 describe("who a project's work goes to", () => {
-  const rolesOfShippedPipeline = () => [...new Set(listPipelineSteps(handle.db).filter((step) => step.type === "agent" && step.ownerRole !== null).map((step) => step.ownerRole!))];
+  // The kinds of the agents the shipped pipeline's steps name (EO-875).
+  const rolesOfShippedPipeline = () => {
+    const agents = listAgents(handle.db);
+    return [...new Set(listPipelineSteps(handle.db).flatMap((step) => stepAgentKind(agents, step) ?? []))];
+  };
+  /** Points every step of the project's pipelines that names `from` at `to` instead. */
+  const renameStepAgent = (projectId: Uuid, from: Uuid, to: Uuid) => {
+    for (const pipeline of listPipelines(handle.db, projectId)) {
+      handle.db
+        .update(pipelineSteps)
+        .set({ agentId: to })
+        .where(and(eq(pipelineSteps.pipelineId, pipeline.id), eq(pipelineSteps.agentId, from)))
+        .run();
+    }
+  };
 
-  it("names the global agents in every role the project's pipelines use while the project has none of its own", () => {
+  it("names the global agents the project's steps name, kind by kind, while the project has none of its own", () => {
     const project = createProject(handle.db, { name: "Support", keyPrefix: "SUP" });
     giveSeededDelivery(handle.db, project.id);
 
@@ -135,33 +151,40 @@ describe("who a project's work goes to", () => {
     expect(implementing).toEqual({ role: "implementer", from: "global", agents: [{ id: implementer.id, name: implementer.name }] });
   });
 
-  it("names the project's own agent once it has one, and only for that project", () => {
+  it("names the project's own agent once the project's step names it, and only for that project", () => {
     const project = createProject(handle.db, { name: "Support", keyPrefix: "SUP" });
     giveSeededDelivery(handle.db, project.id);
     const other = createProject(handle.db, { name: "Shop", keyPrefix: "SHOP" });
     copyPipeline(handle.db, "default", other.id);
     const own = customiseAgent(handle.db, { agentId: implementer.id, projectId: project.id }).agent!;
 
+    // A copy alone changes nothing: the step still names the global one,
+    // and that is the one that runs (EO-875).
+    const global = { role: "implementer", from: "global", agents: [{ id: implementer.id, name: implementer.name }] };
+    expect(projectStaffing(handle.db, { projectId: project.id }).roles.find((entry) => entry.role === "implementer")).toEqual(global);
+
+    renameStepAgent(project.id, implementer.id, own.id as Uuid);
     const ours = projectStaffing(handle.db, { projectId: project.id }).roles.find((entry) => entry.role === "implementer");
     const theirs = projectStaffing(handle.db, { projectId: other.id }).roles.find((entry) => entry.role === "implementer");
 
     expect(ours).toEqual({ role: "implementer", from: "project", agents: [{ id: own.id, name: own.name }] });
-    expect(theirs).toEqual({ role: "implementer", from: "global", agents: [{ id: implementer.id, name: implementer.name }] });
+    expect(theirs).toEqual(global);
   });
 
-  it("falls back to the global agent when the project's own is switched off, and says nobody when no agent holds the role", () => {
+  it("says nobody when the agent the step names is switched off, rather than another agent of its kind", () => {
     const project = createProject(handle.db, { name: "Support", keyPrefix: "SUP" });
     giveSeededDelivery(handle.db, project.id);
     const own = customiseAgent(handle.db, { agentId: implementer.id, projectId: project.id }).agent!;
+    renameStepAgent(project.id, implementer.id, own.id as Uuid);
     updateAgent(handle.db, own.id as Uuid, { enabled: false });
 
-    expect(projectStaffing(handle.db, { projectId: project.id }).roles.find((entry) => entry.role === "implementer")?.from).toBe("global");
+    // The global Implementer is still enabled, and is not who the step runs.
+    const nobody = { role: "implementer", from: "nobody", agents: [] };
+    expect(projectStaffing(handle.db, { projectId: project.id }).roles.find((entry) => entry.role === "implementer")).toEqual(nobody);
 
+    renameStepAgent(project.id, own.id as Uuid, implementer.id);
     updateAgent(handle.db, implementer.id, { enabled: false });
-    expect(projectStaffing(handle.db, { projectId: project.id }).roles.find((entry) => entry.role === "implementer")).toEqual({
-      role: "implementer",
-      from: "nobody",
-      agents: [],
-    });
+    expect(projectStaffing(handle.db, { projectId: project.id }).roles.find((entry) => entry.role === "implementer")).toEqual(nobody);
   });
 });
+

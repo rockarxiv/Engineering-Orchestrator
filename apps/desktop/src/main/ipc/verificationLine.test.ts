@@ -5,7 +5,7 @@ import { FOLDER_KIND, GIT_WORKTREE_KIND, LOCAL_PERSON_ID, NONE_KIND, NO_WORKSPAC
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { DbHandle } from "../db/client.js";
 import { createPerson, createStep, createWorkspace, getStep } from "../db/repos/index.js";
-import { attachWorkspace, openMigratedTestDb } from "../db/testHelpers.js";
+import { agentOfKind, attachWorkspace, openMigratedTestDb } from "../db/testHelpers.js";
 import { folderWorkspaceKind } from "../supervisor/folderKind.js";
 import { noneWorkspaceKind } from "../supervisor/noneKind.js";
 import { fakeWorkspaceKind } from "../supervisor/testWorkspaceKinds.js";
@@ -110,7 +110,7 @@ describe("a board that says what is checked", () => {
       position: 99,
       name: "Ask",
       type: "agent",
-      ownerRole: "implementer",
+      agentId: agentOfKind(handle.db, "implementer"),
       entryAction: "implement",
       workspaceId: NO_WORKSPACE,
     });
@@ -129,7 +129,7 @@ describe("a board that says what is checked", () => {
       position: 99,
       name: "Ask",
       type: "agent",
-      ownerRole: "implementer",
+      agentId: agentOfKind(handle.db, "implementer"),
       entryAction: "implement",
       workspaceId: NO_WORKSPACE,
     });
