@@ -1,3 +1,4 @@
+import { sql } from "drizzle-orm";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Item } from "@eo/core";
 import type { DbHandle } from "../db/client.js";
@@ -337,8 +338,11 @@ describe("a dispatch still in preflight when its project is archived", () => {
  * the global one, that picks the work back up.
  */
 describe("an archived project's own agents (EO-476)", () => {
+  /** The project's own implementer, named on the step its work stands on (EO-875): a step runs the agent it names. */
   function ownImplementer(project: Project) {
-    return createAgent(handle.db, { name: "ShopImplementer", role: "implementer", provider: "fake", instructions: "Implement for the shop.", projectId: project.id });
+    const own = createAgent(handle.db, { name: "ShopImplementer", role: "implementer", provider: "fake", instructions: "Implement for the shop.", projectId: project.id });
+    handle.db.run(sql`UPDATE pipeline_steps SET agent_id = ${own.id} WHERE id = 'todo'`);
+    return own;
   }
 
   it("are left in place but not dispatched, and pick the project's work up again once it is restored", async () => {
@@ -361,8 +365,8 @@ describe("an archived project's own agents (EO-476)", () => {
     await engine.runOnce();
     await engine.waitForIdle();
 
-    // The project's own agent, not the global implementer, which was
-    // never handed the project's work.
+    // The project's own agent, which the step names, and not the global
+    // implementer, which was never handed the project's work.
     const runs = listRunsForItem(handle.db, cart.id);
     expect(runs.map((run) => [run.action, run.agentId])).toEqual([["implement", own.id]]);
   });

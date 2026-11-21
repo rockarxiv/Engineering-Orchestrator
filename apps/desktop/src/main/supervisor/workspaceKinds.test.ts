@@ -17,7 +17,7 @@ import {
   transitionItem,
 } from "../db/repos/index.js";
 import { createDefaultProject } from "../db/repos/projectsRepo.js";
-import { agentOfKind, createTestItem, openMigratedTestDb } from "../db/testHelpers.js";
+import { createTestItem, openMigratedTestDb } from "../db/testHelpers.js";
 import { createFakeProvider } from "../providers/fake.js";
 import { validImplementResult } from "../providers/fixtures.js";
 import { noneWorkspaceKind } from "./noneKind.js";
@@ -228,7 +228,7 @@ describe("what a check does to the run", () => {
     // Somewhere for a claim nobody could confirm to go: a column a
     // person owns, which is what a pipeline that wants these triaged
     // rather than retried would draw.
-    createStep(handle.db, { id: "unconfirmed", pipelineId: DEFAULT_PIPELINE, position: 20, name: "Unconfirmed", agentId: agentOfKind(handle.db, "product_owner") });
+    createStep(handle.db, { id: "unconfirmed", pipelineId: DEFAULT_PIPELINE, position: 20, name: "Unconfirmed" });
     createRoute(handle.db, {
       pipelineId: DEFAULT_PIPELINE,
       fromStepId: "todo",

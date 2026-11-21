@@ -399,7 +399,8 @@ describe("what still stops a system agent run while paused", () => {
     expect(start).not.toHaveBeenCalled();
     expect(resume).not.toHaveBeenCalled();
     expect(runsOn(own)).toEqual([]);
-    expect(supervisor.dispatchBlockerFor(own.id)).toMatchObject({ kind: "no_enabled_agent" });
+    // The step names that agent (EO-875), so it is that agent that is off.
+    expect(supervisor.dispatchBlockerFor(own.id)).toMatchObject({ kind: "agent_unavailable", agentId: system.id, why: "disabled" });
   });
 
   it("an archived agent starts nothing, and is refused once EO is resumed, as any other agent would be", async () => {
