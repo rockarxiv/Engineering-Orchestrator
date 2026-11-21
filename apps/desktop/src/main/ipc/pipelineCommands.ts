@@ -1,6 +1,7 @@
 import { diffVersions, WEBHOOK_UNATTENDED_NO_ENTRY, type IpcPayload, type IpcResponse, type Item, type PipelineVersion, type Uuid } from "@eo/core";
 import type { Db } from "../db/client.js";
 import {
+  listAgents,
   archivePipeline,
   createPipeline,
   currentVersion,
@@ -288,7 +289,7 @@ export function pipelineVersionsCommand(db: Db, input: IpcPayload<"pipeline:vers
   const after = versionGraph(db, to.id);
   if (!before || !after) return { versions, current, graph, diff: null, local };
 
-  return { versions, current, graph, diff: diffVersions({ number: from.number, ...before }, { number: to.number, ...after }, moduleNamesById(db)), local };
+  return { versions, current, graph, diff: diffVersions({ number: from.number, ...before }, { number: to.number, ...after }, moduleNamesById(db), agentNamesById(db)), local };
 }
 
 /**
@@ -388,8 +389,13 @@ function localChanges(db: Db, pipelineId: string): IpcResponse<"pipeline:version
   const before = base === undefined ? undefined : versionGraph(db, base.id);
   if (base === undefined || before === undefined) return null;
 
-  const diff = diffVersions({ number: base.number, ...before }, { number: base.number, ...liveGraph(db, pipelineId) }, moduleNamesById(db));
+  const diff = diffVersions({ number: base.number, ...before }, { number: base.number, ...liveGraph(db, pipelineId) }, moduleNamesById(db), agentNamesById(db));
   return { basedOn: base.number, diff };
+}
+
+/** Every agent's name by id, archived and deleted ones included, so a version diff names the agent a step runs (EO-876). */
+function agentNamesById(db: Db): Map<string, string> {
+  return new Map(listAgents(db).map((agent) => [agent.id as string, agent.name]));
 }
 
 /** Every module's name by id, archived ones included, so a version diff names the module a rule runs (EO-736). */

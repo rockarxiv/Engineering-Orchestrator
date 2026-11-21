@@ -500,6 +500,17 @@ export function setStepOwner(db: Db, id: string, owner: { personId: Uuid | null;
   db.update(pipelineSteps).set({ ownerPersonId: owner.personId, ownerGroupId: owner.groupId }).where(eq(pipelineSteps.id, id)).run();
 }
 
+/**
+ * Which agent an agent step runs, changed in place (EO-876): what
+ * "Customise for this project" does to a project's steps that named the
+ * agent it copied. Not a change of shape — the copy is of the same kind,
+ * so the step's action and routes hold — which is `updateStep`'s reason
+ * for writing in place rather than publishing the graph.
+ */
+export function setStepAgent(db: Db, id: string, agentId: Uuid | null): void {
+  db.update(pipelineSteps).set({ agentId }).where(eq(pipelineSteps.id, id)).run();
+}
+
 export function getStep(db: Db, id: string): PipelineStep | undefined {
   const row = db.select().from(pipelineSteps).where(eq(pipelineSteps.id, id)).get();
   return row ? toStep(row) : undefined;

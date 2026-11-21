@@ -2682,7 +2682,7 @@ function publishableGraphOf(db: Db, read: ReadAssistDraftResult): AssistPublisha
   const pipelineId = read.pipelineId ?? NOT_YET_CREATED;
   const before = new Map(read.pipelineId === null ? [] : listStepsForPipeline(db, read.pipelineId).map((step) => [step.id, step]));
   const proposedSlugs = new Set(read.modules.map((module) => module.slug));
-  // The kind each agent step names, bound to an agent as the card judged it (EO-875).
+  // The agent each agent step names, by name, bound as the card judged it (EO-876).
   const agentFor = draftAgentBinder(db, pipelineId);
 
   return {
@@ -2692,7 +2692,7 @@ function publishableGraphOf(db: Db, read: ReadAssistDraftResult): AssistPublisha
     steps: read.draft.steps.map((draftStep) => {
       // The settings are `settledStepSettings`' to decide, never the
       // draft's to spread in: what it says, or else what the step has.
-      const { ownerRole, ...step } = withoutDraftSettings(draftStep);
+      const { agent, ...step } = withoutDraftSettings(draftStep);
       const entryAction =
         step.type === "module" && step.entryAction !== null && proposedSlugs.has(step.entryAction)
           ? (bySlug.get(step.entryAction)?.id ?? step.entryAction)
@@ -2709,7 +2709,7 @@ function publishableGraphOf(db: Db, read: ReadAssistDraftResult): AssistPublisha
       const settled = settledStepSettings(draftStep, existing);
       return {
         ...step,
-        agentId: agentFor({ id: step.id, type: step.type, ownerRole }),
+        agentId: agentFor({ type: step.type, agent }),
         entryAction,
         pipelineId,
         ...settled,

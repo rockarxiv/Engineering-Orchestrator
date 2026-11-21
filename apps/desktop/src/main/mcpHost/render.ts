@@ -976,11 +976,16 @@ export function renderPipeline(data: IpcResponse<"pipelineSteps:list">): string 
     const marks: string[] = [step.type];
     if (step.id === data.entryStepId) marks.push("work enters here");
     if (step.isTerminal) marks.push("terminal");
-    // The agent it runs, by the id `pipeline_save` takes (EO-875).
-    // And its kind, which is what a draft names for the step.
-    const kind = data.stepKinds?.[step.id];
-    if (step.agentId !== null) marks.push(kind === undefined ? `agent ${step.agentId}` : `agent ${step.agentId}, kind ${kind}`);
+    // The agent it runs (EO-876): by name, which is what a draft names it
+    // by, with the id `pipeline_save` takes as `agentId`, and its kind,
+    // backend and model. Said where it cannot run, and why.
+    const shown = data.stepAgents?.[step.id];
+    if (step.type === "agent") {
+      if (shown?.name != null) marks.push(`agent "${shown.name}" (agentId: ${step.agentId ?? "none"}; kind ${shown.kind ?? "?"}, ${shown.provider ?? "?"}, ${shown.model ?? "default model"})`);
+      else marks.push(step.agentId === null ? "no agent" : `agentId: ${step.agentId}`);
+    }
     lines.push(`- ${step.name} (id: ${step.id}) [${marks.join("; ")}]`);
+    if (shown?.problem != null) lines.push(`  ${shown.problem}`);
     // Whether it reaches outside EO (EO-584): what a trial's plan decides
     // to run for real, redirect or mock, said on the step it is about.
     const reach = outsideReachLine(data.outsideReach[step.id]);
@@ -2197,18 +2202,21 @@ export function renderAgentSaved(data: IpcResponse<"agents:save">): string {
   const agent = data.agent;
   if (agent === null) return data.problem ?? "Nothing was saved.";
   const model = agent.model === null ? "the provider's own default model" : agent.model;
+  // The steps that name it (EO-876): a step runs the agent it names.
   const staffed =
-    agent.pipelineCount === 0
-      ? `No pipeline has a step owned by \`${agent.role}\` yet, so nothing dispatches to this agent until one does.`
-      : `${agent.pipelineCount} pipeline(s) have a step owned by \`${agent.role}\`.`;
+    agent.steps.length === 0
+      ? "No pipeline step names this agent yet, so nothing dispatches to it until one does (pipeline_save, with its id as a step's `agentId`)."
+      : `Named by ${agent.steps.map((step) => `"${step.stepName}" (${step.pipelineName})`).join(", ")}.`;
   const lines = [
-    `Saved ${agent.name} (id: ${agent.id}) — role \`${agent.role}\`, running on ${agent.provider} with ${model}${agent.enabled ? "" : ", disabled"}.`,
+    `Saved ${agent.name} (id: ${agent.id}) — kind \`${agent.role}\`, running on ${agent.provider} with ${model}${agent.enabled ? "" : ", disabled"}.`,
     staffed,
+    // What disabling it stops (EO-876).
+    ...(data.warning == null ? [] : [data.warning]),
     // Both said out loud because both are things a caller would
-    // otherwise learn by being surprised: the role by having a later
+    // otherwise learn by being surprised: the kind by having a later
     // edit refused, the timing by watching a running agent go on using
     // the prompt it was given.
-    "The role is fixed now — a pipeline step names the role rather than the agent, so a later agent_save cannot change it.",
+    "The kind is fixed now — it is what a step's action is looked up by, so a later agent_save cannot change it.",
     "New instructions take effect on the next dispatch; a run already in flight keeps the prompt it started with.",
   ];
   // What the instructions hold that only exists here (EO-450): advice on a save that has happened.

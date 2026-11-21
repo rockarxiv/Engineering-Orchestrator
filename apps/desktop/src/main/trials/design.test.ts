@@ -111,7 +111,7 @@ const step = (id: string, position: number, name: string, extra: Record<string, 
   position,
   name,
   type: "user",
-  ownerRole: null,
+  agent: null,
   entryAction: null as string | null,
   instructionsSummary: null as string | null,
   isTerminal: false,
@@ -126,7 +126,7 @@ function hotfixDraft() {
     entryStepId: "fix",
     target: { newPipeline: "Hotfix" },
     steps: [
-      step("fix", 0, "Fix", { type: "agent", ownerRole: "implementer", entryAction: "implement", instructionsSummary: "Fix what the item says." }),
+      step("fix", 0, "Fix", { type: "agent", agent: "Implementer", entryAction: "implement", instructionsSummary: "Fix what the item says." }),
       step("deploy", 1, "Deploy", { type: "module", entryAction: deployModuleId }),
       step("check", 2, "Check"),
       step("done", 3, "Done", { isTerminal: true }),
@@ -399,7 +399,7 @@ describe("a draft revised while its design is under test", () => {
   it("posts a step added as a new design card, and starts no round until it is approved", async () => {
     const { chat, trialId } = await approved();
     const draft = hotfixDraft();
-    draft.steps.splice(1, 0, step("hotfix_review", 1, "Review", { type: "agent", ownerRole: "implementer", entryAction: "implement" }));
+    draft.steps.splice(1, 0, step("hotfix_review", 1, "Review", { type: "agent", agent: "Implementer", entryAction: "implement" }));
     draft.steps.forEach((entry, index) => (entry.position = index));
     draft.routes[0]!.target = "hotfix_review";
     draft.routes.push({ fromStepId: "hotfix_review", resultKey: "done", label: "Done", tone: "success", target: "deploy", position: 0 });

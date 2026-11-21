@@ -22,7 +22,7 @@ import {
 import { compareThreeWay } from "@eo/engine";
 import type { AttachmentStorage } from "../attachments/storage.js";
 import type { Db } from "../db/client.js";
-import { bindOnProject, withKind } from "../stepAgents.js";
+import { withKind } from "../stepAgents.js";
 import {
   approveModule,
   getAgent,
@@ -1533,8 +1533,9 @@ function createAndSavePipeline(db: Db, engine: EngineHandle | undefined, project
   const pipeline = createPipeline(db, { projectId: home.projectId, name, icon: graph.icon, position: Date.now() });
   const saved = savePipeline(db, engine, {
     pipelineId: pipeline.id,
-    // Each kind bound on the project the pipeline is made on (EO-875).
-    steps: bindOnProject(listAgents(db), graph.steps, home.projectId).map((step) => ({ ...step, pipelineId: pipeline.id })),
+    // Each step names the agent the draft named (EO-876): one that cannot
+    // work for this project is refused by the save, in its words.
+    steps: graph.steps.map((step) => ({ ...step, pipelineId: pipeline.id })),
     routes: graph.routes.map((route) => ({ ...route, pipelineId: pipeline.id })),
     entryStepId: graph.entryStepId ?? "",
     ...entryRulesOf(graph),

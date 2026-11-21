@@ -327,7 +327,12 @@ export function suggestionDetailCommand(
   const snapshot = against === null ? undefined : versionGraph(db, against);
   // The document's kinds bound as approving it would bind them (EO-875).
   const agentFor = snapshot === undefined ? undefined : kindBinder(listAgents(db), getPipeline(db, spec.pipelineId)?.projectId ?? null, snapshot.steps);
-  const diff = snapshot === undefined || number === null ? null : suggestionDiff({ published: { number, ...snapshot }, document, ...(agentFor === undefined ? {} : { agentFor }) });
+  const diff = snapshot === undefined || number === null ? null : suggestionDiff({
+          published: { number, ...snapshot },
+          document,
+          ...(agentFor === undefined ? {} : { agentFor }),
+          agentNames: new Map(listAgents(db).map((agent) => [agent.id as string, agent.name])),
+        });
 
   // The same lines the author's own needs check drew, from the same
   // function: what the document asks of the machine that would run it.

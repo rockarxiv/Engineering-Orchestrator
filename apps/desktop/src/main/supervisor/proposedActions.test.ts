@@ -67,8 +67,8 @@ function qaDraft(target?: Record<string, string>) {
     entryStepId: "qa_gate_check",
     ...(target === undefined ? {} : { target }),
     steps: [
-      { id: "qa_gate_check", position: 0, name: "Check", type: "agent", ownerRole: "qa", entryAction: "alignment", instructionsSummary: null, isTerminal: false, planMode: false },
-      { id: "qa_gate_done", position: 1, name: "Checked", type: "user", ownerRole: null, entryAction: null, instructionsSummary: null, isTerminal: true, planMode: false },
+      { id: "qa_gate_check", position: 0, name: "Check", type: "agent", agent: "QA", entryAction: "alignment", instructionsSummary: null, isTerminal: false, planMode: false },
+      { id: "qa_gate_done", position: 1, name: "Checked", type: "user", agent: null, entryAction: null, instructionsSummary: null, isTerminal: true, planMode: false },
     ],
     routes: [
       { fromStepId: "qa_gate_check", resultKey: "aligned", label: "Aligned", tone: "success", target: "qa_gate_done", position: 0 },

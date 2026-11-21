@@ -108,12 +108,21 @@ export const DraftStepSchema = PipelineStepViewSchema.omit({
   // save pins it to that module's newest approved version.
   moduleVersion: true,
   brief: true,
-  // A draft names a kind, not an agent (EO-875): publishing binds it to
-  // one of the project's agents of that kind.
+  // A draft names its agent by name (EO-876), as the Agents screen shows
+  // it: the id is this installation's, and a name is what the assistant
+  // and the person reading the card both read.
   agentId: true,
 }).extend({
-  /** The kind of agent an agent step needs, bound to an agent when the draft is published. Null on every other kind of step. */
-  ownerRole: z.string().nullable(),
+  /**
+   * The agent an agent step runs, by its name as the Agents screen and
+   * `agents_list` show it (EO-876). Null on every other kind of step.
+   * A name nobody here has, an agent of another project, or one whose
+   * kind lacks the step's action is refused as Publish refuses it.
+   */
+  agent: z
+    .string()
+    .nullable()
+    .describe("On an agent step, the name of the agent that runs it, exactly as agents_list shows it; its kind must have the step's entryAction. Null on every other kind of step."),
   /**
    * What a person step's decision bar shows behind "Show details"
    * (EO-827), as entry rules are set: left out keeps the step's brief,

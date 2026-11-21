@@ -1,4 +1,4 @@
-import { ADMIN_MCP_SERVER_NAME, AssistOutputSchema, NO_WORKSPACE, SCRATCH_KIND, pageDescriptorFor, stepAgentKind, type AssistOutput, type Item, type Uuid } from "@eo/core";
+import { ADMIN_MCP_SERVER_NAME, AssistOutputSchema, NO_WORKSPACE, SCRATCH_KIND, pageDescriptorFor, stepAgentOf, type AssistOutput, type Item, type Uuid } from "@eo/core";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { DbHandle } from "../db/client.js";
 import { markReplica } from "../db/recordRole.js";
@@ -140,7 +140,7 @@ const step = (id: string, position: number, name: string, extra: Record<string, 
   id,
   position,
   name,
-  ownerRole: null,
+  agent: null,
   entryAction: null,
   instructionsSummary: null,
   isTerminal: false,
@@ -639,8 +639,8 @@ describe("restoring a version", () => {
         position,
         name,
         type,
-        // A draft names the kind; the version names the agent (EO-875).
-        ownerRole: stepAgentKind(listAgents(handle.db), { type, agentId }),
+        // A draft names the agent by name (EO-876).
+        agent: stepAgentOf(listAgents(handle.db), { type, agentId })?.name ?? null,
         entryAction,
         instructionsSummary,
         isTerminal,

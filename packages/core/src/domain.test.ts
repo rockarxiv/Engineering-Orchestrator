@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
   PREVIEW_AGENT_KEY,
+  UNBOUND_BACKEND,
+  stepAgentFactsLine,
+  stepAgentProblem,
   THREAD_PER_CONVERSATION_ACTIONS,
   isThreadPerConversationAction,
   resultsFromRoutes,
@@ -186,5 +189,32 @@ describe("a step's agent (EO-875)", () => {
     expect(stepAgentRefusal(agent({ projectId: "0199aa00-0000-7000-8000-0000000000a2" as Uuid }), real)).toBe("other_project");
     expect(stepAgentRefusal(agent({ config: { [PREVIEW_AGENT_KEY]: true } }), real)).toBe("preview_only");
     expect(stepAgentRefusal(agent({ config: { [PREVIEW_AGENT_KEY]: true } }), { previewAt: 1, projectId: P })).toBeNull();
+  });
+});
+
+describe("why nothing runs on an agent step, in words (EO-876)", () => {
+  const agent = { id: "r", name: "Reviewer", role: "reviewer", provider: "claude", model: null, enabled: true, archivedAt: null, deletedAt: null };
+  const step = (agentId: string | null) => ({ type: "agent", agentId });
+
+  it("is null where the step's agent can run, and for a step of another type", () => {
+    expect(stepAgentProblem([agent], step("r"))).toBeNull();
+    expect(stepAgentProblem([agent], { type: "user", agentId: null })).toBeNull();
+  });
+
+  it("says no agent is chosen, and an agent EO no longer has", () => {
+    expect(stepAgentProblem([agent], step(null))).toBe("No agent is chosen for this step, so nothing runs here until one is.");
+    expect(stepAgentProblem([agent], step("gone"))).toBe("This step names an agent EO no longer has, so nothing runs here until it names another.");
+  });
+
+  it("names the agent and what to do, deleted before archived before disabled before unbound", () => {
+    expect(stepAgentProblem([{ ...agent, deletedAt: 1, archivedAt: 1, enabled: false }], step("r"))).toBe("Reviewer has been deleted, so nothing runs here until the step names another agent.");
+    expect(stepAgentProblem([{ ...agent, archivedAt: 1, enabled: false }], step("r"))).toBe("Reviewer is archived, so nothing runs here until the step names another agent.");
+    expect(stepAgentProblem([{ ...agent, enabled: false }], step("r"))).toBe("Reviewer is disabled, so nothing runs here until it is enabled or the step names another agent.");
+    expect(stepAgentProblem([{ ...agent, provider: UNBOUND_BACKEND }], step("r"))).toContain("Reviewer has no backend on this machine");
+  });
+
+  it("says who runs it in a line: kind, backend and model", () => {
+    expect(stepAgentFactsLine({ ...agent, model: "opus" }, (id) => (id === "claude" ? "Claude Code" : id))).toBe("reviewer · Claude Code · opus");
+    expect(stepAgentFactsLine(agent)).toBe("reviewer · claude · default model");
   });
 });

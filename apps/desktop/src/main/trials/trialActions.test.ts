@@ -16,6 +16,7 @@ import {
   createWorkspace,
   getItem,
   getTrialPipeline,
+  listAgents,
   listCommentsForItem,
   listPipelines,
   listRunsForItem,
@@ -90,7 +91,7 @@ const step = (id: string, position: number, name: string, extra: Record<string, 
   position,
   name,
   type: "user",
-  ownerRole: null,
+  agent: null,
   entryAction: null as string | null,
   instructionsSummary: null as string | null,
   isTerminal: false,
@@ -120,7 +121,7 @@ function evidenceDraft(analyseSays = "Weigh what the item cites.") {
     entryStepId: "ev_analyse",
     target: { newPipeline: "Evidence" },
     steps: [
-      step("ev_analyse", 0, "Analyse", { type: "agent", ownerRole: "eo_adviser", entryAction: "analyse_evidence", instructionsSummary: analyseSays }),
+      step("ev_analyse", 0, "Analyse", { type: "agent", agent: "Adviser", entryAction: "analyse_evidence", instructionsSummary: analyseSays }),
       step("ev_check", 1, "Check"),
       step("ev_done", 2, "Done", { isTerminal: true }),
       step("ev_dropped", 3, "Dropped", { isTerminal: true }),
@@ -290,9 +291,9 @@ describe("a trial item on the step using the trial's definition", () => {
     const saved = savePipeline(handle.db, undefined, {
       pipelineId: published.id,
       // Each agent step names the Adviser (EO-875), as a publish binds the draft's kind.
-      steps: graph.steps.map(({ ownerRole, ...entry }) => ({
+      steps: graph.steps.map(({ agent, ...entry }) => ({
         ...entry,
-        agentId: ownerRole === null ? null : agentOfKind(handle.db, ownerRole),
+        agentId: agent === null ? null : (listAgents(handle.db).find((candidate) => candidate.name === agent)?.id ?? null),
         id: `live_${entry.id}`,
         pipelineId: published.id,
         results: [],
@@ -404,7 +405,7 @@ describe("a draft replacing a definition live work uses", () => {
     const checks = createPipeline(handle.db, { projectId, name: "Checks" });
     // The live step names a QA agent (EO-875); the draft below names its kind.
     const qa = createAgent(handle.db, { name: "QA", role: "qa", provider: "claude", instructions: "Check the work." });
-    const align = (({ ownerRole: _kind, ...rest }: ReturnType<typeof step>) => rest)(step("chk_align", 0, "Align", { type: "agent", entryAction: "alignment" }));
+    const align = (({ agent: _agent, ...rest }: ReturnType<typeof step>) => rest)(step("chk_align", 0, "Align", { type: "agent", entryAction: "alignment" }));
     const liveSteps = [
       { ...align, agentId: qa.id, pipelineId: checks.id, results: [], timeoutMs: null, workspaceId: null },
       { ...step("chk_rework", 1, "Rework", { isTerminal: true }), pipelineId: checks.id, results: [], timeoutMs: null, workspaceId: null },
@@ -424,7 +425,7 @@ describe("a draft replacing a definition live work uses", () => {
       rationale: "Blocked work goes back for rework too.",
       entryStepId: "chk_align",
       target: { pipelineId: checks.id },
-      steps: [step("chk_align", 0, "Align", { type: "agent", ownerRole: "qa", entryAction: "alignment" }), step("chk_rework", 1, "Rework", { isTerminal: true }), step("chk_done", 2, "Done", { isTerminal: true })],
+      steps: [step("chk_align", 0, "Align", { type: "agent", agent: "QA", entryAction: "alignment" }), step("chk_rework", 1, "Rework", { isTerminal: true }), step("chk_done", 2, "Done", { isTerminal: true })],
       routes: [
         { fromStepId: "chk_align", resultKey: "aligned", label: "Aligned", tone: "success", target: "chk_done", position: 0 },
         { fromStepId: "chk_align", resultKey: "gaps_found", label: "Gaps found", tone: "danger", target: "chk_rework", position: 1 },

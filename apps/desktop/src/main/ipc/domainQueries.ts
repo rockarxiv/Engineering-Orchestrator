@@ -43,6 +43,8 @@ import {
   entryRuleWords,
   shownEntryRule,
   stepAgentKind,
+  stepAgentOf,
+  stepAgentProblem,
 } from "@eo/core";
 import type { Db } from "../db/client.js";
 import type { Project } from "../db/repos/projectsRepo.js";
@@ -2467,14 +2469,21 @@ export function listPipelineStepViews(
   const { entryRules = [], name: pipelineName = "" } = getPipeline(db, input.pipelineId) ?? {};
   const moduleNames = new Map(listModules(db, true).map((module) => [module.id as string, module.name]));
   const agents = listAgents(db);
-  const stepKinds: Record<string, string> = {};
+  const stepAgents: NonNullable<IpcResponse<"pipelineSteps:list">["stepAgents"]> = {};
   for (const step of onBoard) {
-    const kind = stepAgentKind(agents, step);
-    if (kind !== null) stepKinds[step.id] = kind;
+    if (step.type !== "agent") continue;
+    const agent = stepAgentOf(agents, step);
+    stepAgents[step.id] = {
+      name: agent?.name ?? null,
+      kind: agent?.role ?? null,
+      provider: agent?.provider ?? null,
+      model: agent?.model ?? null,
+      problem: stepAgentProblem(agents, step),
+    };
   }
   return {
     steps: onBoard.map(toStepView),
-    stepKinds,
+    stepAgents,
     // Where work enters, alongside the graph it enters: the configuration
     // screen edits and publishes all three together (ARCHITECTURE.md, "Vocabulary").
     entryStepId: getPipeline(db, input.pipelineId)?.entryStepId ?? null,

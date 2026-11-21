@@ -90,7 +90,7 @@ describe("the document, as the diff reads it", () => {
   it("reports a kind bound to another agent as a change of agent (EO-875)", () => {
     const diff = suggestionDiff({ published: version([{ id: "review", agentId: "reviewer-agent" }]), document: document([STEP]), agentFor: () => "another-reviewer" });
 
-    expect(diff.steps.map((step) => step.fields)).toEqual([[{ field: "agentId", before: "reviewer-agent", after: "another-reviewer" }]]);
+    expect(diff.steps.map((step) => step.fields)).toEqual([[{ field: "agent", before: "reviewer-agent", after: "another-reviewer" }]]);
   });
 
   it("heads the comparison with the version approving it would publish", () => {

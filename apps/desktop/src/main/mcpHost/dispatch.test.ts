@@ -1234,7 +1234,7 @@ describe("an agent, through the tool that configures it", () => {
       enabled: true,
     });
     // The two things a caller would otherwise learn by being surprised.
-    expect(outcome.text).toContain("role is fixed");
+    expect(outcome.text).toContain("kind is fixed");
     expect(outcome.text).toContain("next dispatch");
   });
 
@@ -4006,7 +4006,7 @@ describe("keep checking through pipeline_get and pipeline_save", () => {
     const routes = graph.routes.filter((route) => route.fromStepId !== "pull_request_watch" || route.target !== USER_ATTENTION_TARGET);
     const steps = graph.steps.map((step) => {
       if (step.id !== "pull_request_watch") return step;
-      const person = { ...step, type: "user" as const, entryAction: null, ownerRole: null, watch: null };
+      const person = { ...step, type: "user" as const, entryAction: null, agentId: null, watch: null };
       return { ...person, results: resultsFromRoutes(person, routes) };
     });
 

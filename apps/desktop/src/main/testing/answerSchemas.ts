@@ -142,8 +142,8 @@ export function claudeViolations(schema: unknown): string[] {
 }
 
 const DRAFT_ROUTE = { fromStepId: "merge", resultKey: "merged", label: "Merged", tone: "success", target: "done", position: 0 };
-const DONE_STEP = { id: "done", position: 1, name: "Done", type: "user", ownerRole: null, entryAction: null, instructionsSummary: null, isTerminal: true, planMode: false };
-const MERGE_STEP = { id: "merge", position: 0, name: "Merge", type: "module", ownerRole: null, entryAction: null, instructionsSummary: null, isTerminal: false, planMode: false };
+const DONE_STEP = { id: "done", position: 1, name: "Done", type: "user", agent: null, entryAction: null, instructionsSummary: null, isTerminal: true, planMode: false };
+const MERGE_STEP = { id: "merge", position: 0, name: "Merge", type: "module", agent: null, entryAction: null, instructionsSummary: null, isTerminal: false, planMode: false };
 
 const MODULE = {
   name: "Wait for CI",

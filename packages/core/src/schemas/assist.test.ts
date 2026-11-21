@@ -15,8 +15,8 @@ function graph() {
     rationale: "A QA gate before review.",
     entryStepId: "implement",
     steps: [
-      { id: "implement", position: 0, name: "Implementer", type: "agent" as const, ownerRole: "implementer", entryAction: "implement", instructionsSummary: null, isTerminal: false, planMode: false },
-      { id: "done", position: 1, name: "Done", type: "user" as const, ownerRole: null, entryAction: null, instructionsSummary: null, isTerminal: true, planMode: false },
+      { id: "implement", position: 0, name: "Implementer", type: "agent" as const, agent: "Implementer", entryAction: "implement", instructionsSummary: null, isTerminal: false, planMode: false },
+      { id: "done", position: 1, name: "Done", type: "user" as const, agent: null, entryAction: null, instructionsSummary: null, isTerminal: true, planMode: false },
     ],
     routes: [{ fromStepId: "implement", resultKey: "done", label: "Done", tone: "success" as const, target: "done", position: 0 }],
   };
@@ -231,7 +231,7 @@ describe("an assist draft's target and new-step limits", () => {
   });
 
   it("carries a step's time limit and inputs, which the Architecture panel's draft does not", () => {
-    const step = { id: "ship", position: 2, name: "Ship", type: "module" as const, ownerRole: null, entryAction: "deploy", instructionsSummary: null, isTerminal: false, planMode: false };
+    const step = { id: "ship", position: 2, name: "Ship", type: "module" as const, agent: null, entryAction: "deploy", instructionsSummary: null, isTerminal: false, planMode: false };
     const draft = { ...graph(), steps: [...graph().steps, { ...step, timeoutMs: 58 * 60_000, inputs: { ciWaitSeconds: 2400 } }] };
 
     const parsed = AssistOutputSchema.safeParse({ message: "Here.", draft });
@@ -244,7 +244,7 @@ describe("an assist draft's target and new-step limits", () => {
   });
 
   it("carries a step's keep checking, with the give-up time defaulted, which the Architecture panel's draft does not (EO-516)", () => {
-    const step = { id: "watch", position: 2, name: "Watch", type: "builtin" as const, ownerRole: null, entryAction: "watch_pull_request", instructionsSummary: null, isTerminal: false, planMode: false };
+    const step = { id: "watch", position: 2, name: "Watch", type: "builtin" as const, agent: null, entryAction: "watch_pull_request", instructionsSummary: null, isTerminal: false, planMode: false };
     const draft = { ...graph(), steps: [...graph().steps, { ...step, watch: { everyMinutes: 5 }, inputs: { reportReady: true } }] };
 
     const parsed = AssistOutputSchema.safeParse({ message: "Here.", draft });
@@ -257,7 +257,7 @@ describe("an assist draft's target and new-step limits", () => {
 
 /** The settings, route flag and pipeline fields the editor used to be the only way to change (EO-520). */
 describe("an assist draft that tunes what exists", () => {
-  const ship = { id: "ship", position: 2, name: "Ship", type: "module" as const, ownerRole: null, entryAction: "deploy", instructionsSummary: null, isTerminal: false, planMode: false };
+  const ship = { id: "ship", position: 2, name: "Ship", type: "module" as const, agent: null, entryAction: "deploy", instructionsSummary: null, isTerminal: false, planMode: false };
 
   it("carries Works on, repository mode and the words for a default, running once and the item's own", () => {
     const draft = { ...graph(), steps: [...graph().steps, { ...ship, timeoutMs: "default", watch: "off", workspaceId: "item", workspaceMode: "read" }] };

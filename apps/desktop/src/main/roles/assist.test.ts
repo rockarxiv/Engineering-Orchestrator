@@ -1,4 +1,4 @@
-import { ADMIN_MCP_SERVER_NAME, stepAgentKind, type Agent, type AssistReply, type DiscussionQuestion, type PipelineDraft, type Item, type Uuid } from "@eo/core";
+import { ADMIN_MCP_SERVER_NAME, stepAgentOf, type Agent, type AssistReply, type DiscussionQuestion, type PipelineDraft, type Item, type Uuid } from "@eo/core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DbHandle } from "../db/client.js";
 import {
@@ -117,7 +117,7 @@ function currentGraph(): PipelineDraft {
         position: step.position,
         name: step.name,
         type: step.type,
-        ownerRole: stepAgentKind(listAgents(handle.db), step),
+        agent: stepAgentOf(listAgents(handle.db), step)?.name ?? null,
         entryAction: step.entryAction,
         instructionsSummary: step.instructionsSummary,
         isTerminal: step.isTerminal,

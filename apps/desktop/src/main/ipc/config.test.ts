@@ -20,6 +20,17 @@ function wrote(result: IpcResponse<"agents:save">): AgentDetail {
   if (!result.saved || result.agent === null) throw new Error(`the save was refused: ${result.problem ?? "no reason given"}`);
   return result.agent;
 }
+
+/**
+ * Points every step naming this agent at a new agent of its kind, so it
+ * can be archived or deleted (EO-876): a step that names it refuses both.
+ */
+function nameAnother(db: DbHandle["db"], agentId: string): Uuid {
+  const agent = getAgent(db, agentId as Uuid)!;
+  const standIn = createAgent(db, { name: `Stand-in ${agent.name}`, role: agent.role, provider: "fake", model: null, instructions: "x" });
+  for (const step of listPipelineSteps(db)) if (step.type === "agent" && step.agentId === agentId) setStepAgent(db, step.id, standIn.id);
+  return standIn.id;
+}
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DbHandle } from "../db/client.js";
 import {
@@ -33,6 +44,7 @@ import {
 import {
   archiveAgent,
   archivePipeline,
+  createAgent,
   createPipeline,
   createJiraConnection,
   createProject,
@@ -55,6 +67,8 @@ import {
   saveJiraBinding,
   saveModule,
   setSetting,
+  setStepAgent,
+  deleteAgent,
   setItemArchived,
   suggestKeyPrefix,
   transitionItem,
@@ -755,49 +769,77 @@ describe("agents", () => {
     expect(problems.some((problem) => problem.message.includes(`names ${existing.name}, which is disabled`))).toBe(true);
   });
 
-  it("answers with the steps it would leave with nobody, and archives nothing, until the call confirms", () => {
-    // What used to be an outright refusal (EO-186) is now the
-    // confirmation (EO-350): the last enabled reviewer is still named as
-    // leaving the Review step with nobody, and a person who has read
-    // that may go ahead.
+  it("refuses to archive or delete an agent a step names, naming the steps, whether or not the call confirms (EO-876)", () => {
     const reviewer = listAgentDetails(handle.db).agents.find((agent) => agent.role === "reviewer")!;
     const owned = listPipelineSteps(handle.db).filter((step) => step.type === "agent" && step.agentId === reviewer.id);
     expect(owned.length).toBeGreaterThan(0);
 
+    for (const confirm of [false, true]) {
+      const archived = archiveAgentCommand(handle.db, { id: reviewer.id, confirm });
+      const deleted = deleteAgentCommand(handle.db, { id: reviewer.id, confirm });
+      expect(archived.archived).toBe(false);
+      expect(deleted.deleted).toBe(false);
+      for (const step of owned) {
+        expect(archived.problem).toContain(`"${step.name}" on `);
+        expect(deleted.problem).toContain(`"${step.name}" on `);
+      }
+      expect(archived.problem).toContain(`${reviewer.name} cannot be archived while `);
+      expect(deleted.problem).toContain(`${reviewer.name} cannot be deleted while `);
+      expect(archived.problem).toContain("Choose another agent for ");
+      // Each step with the pipeline it is in, by name.
+      expect(archived.impact?.steps.map((step) => step.stepName).sort()).toEqual(owned.map((step) => step.name).sort());
+      expect(archived.impact?.steps.every((step) => step.pipelineName.length > 0)).toBe(true);
+    }
+    expect(getAgent(handle.db, reviewer.id as Uuid)).toMatchObject({ archivedAt: null, deletedAt: null });
+
+    // Once the steps name another agent, it may go.
+    nameAnother(handle.db, reviewer.id);
     const asked = archiveAgentCommand(handle.db, { id: reviewer.id, confirm: false });
-
-    expect(asked.archived).toBe(false);
-    expect(asked.problem).toBeNull();
-    expect(asked.impact?.leavesStepsWithNobody).toBe(true);
-    expect(asked.impact?.coveredBy).toEqual([]);
-    expect(asked.impact?.steps.map((step) => step.stepName).sort()).toEqual(owned.map((step) => step.name).sort());
-    // Each step with the pipeline it is in, by name.
-    expect(asked.impact?.steps.every((step) => step.pipelineName.length > 0)).toBe(true);
-    expect(listAgents(handle.db).find((agent) => agent.id === reviewer.id)!.archivedAt).toBeNull();
-
-    const confirmed = archiveAgentCommand(handle.db, { id: reviewer.id, confirm: true });
-
-    expect(confirmed.archived).toBe(true);
-    expect(listAgents(handle.db).find((agent) => agent.id === reviewer.id)!.archivedAt).not.toBeNull();
-    // Which is the state the validator reports, now arrived at on purpose.
-    const { problems } = validatePipelineCommand(handle.db, { pipelineId: "default", steps: currentStates(), routes: currentRoutes(), entryStepId: "worktree" });
-    expect(problems.some((problem) => problem.message.includes(`names ${reviewer.name}, which has been archived`))).toBe(true);
+    expect(asked).toMatchObject({ archived: false, problem: null });
+    expect(asked.impact?.steps).toEqual([]);
+    expect(archiveAgentCommand(handle.db, { id: reviewer.id, confirm: true }).archived).toBe(true);
   });
 
-  it("leaves the steps naming it with nobody, though another enabled agent of its kind is there (EO-875)", () => {
+  it("lists, under each agent, the pipeline steps that name it (EO-876)", () => {
+    const reviewer = listAgentDetails(handle.db).agents.find((agent) => agent.role === "reviewer")!;
+    const owned = listPipelineSteps(handle.db).filter((step) => step.type === "agent" && step.agentId === reviewer.id);
+
+    expect(reviewer.steps.map((step) => step.stepId).sort()).toEqual(owned.map((step) => step.id).sort());
+    expect(reviewer.steps.every((step) => step.pipelineName.length > 0 && step.stepName.length > 0)).toBe(true);
+    expect(reviewer.pipelineCount).toBe(new Set(owned.map((step) => step.pipelineId)).size);
+  });
+
+  it("disables an agent a step names, warning which steps stop (EO-876)", () => {
+    const reviewer = listAgentDetails(handle.db).agents.find((agent) => agent.role === "reviewer")!;
+    const owned = listPipelineSteps(handle.db).filter((step) => step.type === "agent" && step.agentId === reviewer.id);
+
+    const disabled = saveAgent(handle.db, { ...reviewer, enabled: false });
+
+    expect(disabled.saved).toBe(true);
+    expect(disabled.warning).toContain(`${reviewer.name} is disabled, so nothing runs on `);
+    for (const step of owned) expect(disabled.warning).toContain(`"${step.name}" on `);
+    expect(disabled.warning).toContain(" until it is enabled again or ");
+    // Said once, on the save that disables it, and not on any other.
+    expect(saveAgent(handle.db, { ...reviewer, enabled: false }).warning ?? null).toBeNull();
+    expect(saveAgent(handle.db, { ...reviewer, enabled: true }).warning ?? null).toBeNull();
+    const spare = wrote(saveAgent(handle.db, { name: "Tester", role: "tester", provider: "fake", model: null, instructions: "x", enabled: true, config: {} }));
+    expect(saveAgent(handle.db, { ...spare, enabled: false }).warning ?? null).toBeNull();
+  });
+
+  it("refuses while a step names it, though another enabled agent of its kind is there (EO-875, EO-876)", () => {
     // A step runs the agent it names and is never handed to another of
     // the same kind, so a second reviewer covers nothing.
     const second = wrote(saveAgent(handle.db, { name: "Second Reviewer", role: "reviewer", provider: "fake", model: null, instructions: "x", enabled: true, config: {} }));
     const first = listAgentDetails(handle.db).agents.find((agent) => agent.role === "reviewer" && agent.id !== second.id)!;
 
-    const asked = archiveAgentCommand(handle.db, { id: first.id, confirm: false });
+    const asked = archiveAgentCommand(handle.db, { id: first.id, confirm: true });
 
-    expect(asked.impact?.leavesStepsWithNobody).toBe(true);
+    expect(asked.archived).toBe(false);
     expect(asked.impact?.coveredBy).toEqual([]);
     expect(asked.impact?.steps.length).toBeGreaterThan(0);
-    expect(archiveAgentCommand(handle.db, { id: first.id, confirm: true }).archived).toBe(true);
     // …and the second one names no step, so archiving it takes nothing away.
     expect(archiveAgentCommand(handle.db, { id: second.id, confirm: false }).impact).toMatchObject({ steps: [], leavesStepsWithNobody: false });
+    expect(archiveAgentCommand(handle.db, { id: second.id, confirm: true }).archived).toBe(true);
   });
 
   it("names no steps for a role no step is owned by", () => {
@@ -847,6 +889,8 @@ describe("agents", () => {
     const run = createRun(handle.db, { itemId: item.id, agentId: implementer.id as Uuid, action: "implement", status: "running" });
     const engine = { cancelRun: vi.fn() };
 
+    nameAnother(handle.db, implementer.id);
+
     const asked = archiveAgentCommand(handle.db, { id: implementer.id, confirm: false }, engine);
     expect(asked.impact?.activeRuns).toEqual([{ runId: run.id, itemId: item.id, itemKey: item.key, itemTitle: "Being built" }]);
     expect(engine.cancelRun).not.toHaveBeenCalled();
@@ -865,6 +909,7 @@ describe("agents", () => {
     const queued = createRun(handle.db, { itemId: first.id, agentId: implementer.id as Uuid, action: "implement", status: "queued" });
     const running = createRun(handle.db, { itemId: second.id, agentId: implementer.id as Uuid, action: "implement", status: "running" });
     const engine = { cancelRun: vi.fn() };
+    nameAnother(handle.db, implementer.id);
 
     const asked = deleteAgentCommand(handle.db, { id: implementer.id, confirm: false }, engine);
     expect(asked.impact?.activeRuns.map((run) => run.runId).sort()).toEqual([queued.id, running.id].sort());
@@ -919,7 +964,8 @@ describe("agents", () => {
     // second agent of the kind make it fine: the step is not handed to it.
     const second = wrote(saveAgent(handle.db, { name: "Second Reviewer", role: "reviewer", provider: "fake", model: null, instructions: "x", enabled: true, config: {} }));
     const first = listAgentDetails(handle.db).agents.find((agent) => agent.role === "reviewer" && agent.id !== second.id)!;
-    archiveAgentCommand(handle.db, { id: first.id, confirm: true });
+    // Archived by the repository, as an organisation's record may: the command refuses while a step names it (EO-876).
+    archiveAgent(handle.db, first.id as Uuid);
 
     const { problems } = validatePipelineCommand(handle.db, { pipelineId: "default", steps: currentStates(), routes: currentRoutes(), entryStepId: "worktree" });
 
@@ -942,10 +988,11 @@ describe("deleting an agent", () => {
     const run = createRun(handle.db, { itemId: item.id, agentId: implementer.id as Uuid, action: "implement", status: "succeeded" });
     postComment(handle.db, { itemId: item.id, author: { type: "agent", agentId: implementer.id as Uuid }, body: "Done.", runId: run.id });
 
-    // Nothing is deleted until the call confirms.
+    // Nothing is deleted until the call confirms, and nothing while a step names it (EO-876).
+    expect(deleteAgentCommand(handle.db, { id: implementer.id, confirm: true }).deleted).toBe(false);
+    nameAnother(handle.db, implementer.id);
     const asked = deleteAgentCommand(handle.db, { id: implementer.id, confirm: false });
     expect(asked.deleted).toBe(false);
-    expect(asked.impact?.leavesStepsWithNobody).toBe(true);
     expect(listAgentDetails(handle.db).agents.some((agent) => agent.id === implementer.id)).toBe(true);
 
     expect(deleteAgentCommand(handle.db, { id: implementer.id, confirm: true })).toMatchObject({ deleted: true, problem: null });
@@ -958,7 +1005,8 @@ describe("deleting an agent", () => {
   it("leaves a tombstone off the Agents screen, archived ones included, and out of dispatch and the validator", () => {
     const reviewer = listAgentDetails(handle.db).agents.find((agent) => agent.role === "reviewer")!;
 
-    deleteAgentCommand(handle.db, { id: reviewer.id, confirm: true });
+    // By the repository, which the command deletes through: a step still names it, which the command would refuse (EO-876).
+    deleteAgent(handle.db, reviewer.id as Uuid);
 
     expect(listAgentDetails(handle.db).agents.some((agent) => agent.id === reviewer.id)).toBe(false);
     const tombstone = getAgent(handle.db, reviewer.id as Uuid)!;
@@ -985,6 +1033,7 @@ describe("deleting an agent", () => {
 
   it("does not let the shipped prompt refill a deleted agent's instructions", () => {
     const reviewer = listAgentDetails(handle.db).agents.find((agent) => agent.role === "reviewer")!;
+    nameAnother(handle.db, reviewer.id);
     deleteAgentCommand(handle.db, { id: reviewer.id, confirm: true });
 
     syncRolePrompts(handle.db);

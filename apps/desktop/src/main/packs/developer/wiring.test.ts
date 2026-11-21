@@ -156,8 +156,8 @@ describe("an assistant card that saves a module", () => {
       entryStepId: "release_merge",
       target: { newPipeline: name },
       steps: [
-        { id: "release_merge", position: 0, name: "Merge", type: "module", ownerRole: null, entryAction: "release-merge", instructionsSummary: null, isTerminal: false, planMode: false },
-        { id: "release_done", position: 1, name: "Released", type: "user", ownerRole: null, entryAction: null, instructionsSummary: null, isTerminal: true, planMode: false },
+        { id: "release_merge", position: 0, name: "Merge", type: "module", agent: null, entryAction: "release-merge", instructionsSummary: null, isTerminal: false, planMode: false },
+        { id: "release_done", position: 1, name: "Released", type: "user", agent: null, entryAction: null, instructionsSummary: null, isTerminal: true, planMode: false },
       ],
       routes: [{ fromStepId: "release_merge", resultKey: "merged", label: "Merged", tone: "success", target: "release_done", position: 0 }],
     };

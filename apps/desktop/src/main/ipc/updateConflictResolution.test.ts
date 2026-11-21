@@ -28,6 +28,7 @@ import {
   getPipelineOrigin,
   getUpdateConflict,
   listAgents,
+  updateAgent,
   listCommentsForItem,
   listPipelineVersions,
   listRoutesForPipeline,
@@ -165,9 +166,12 @@ type DraftOf = NonNullable<AssistReply["draft"]>;
 
 /** A step as a draft names it: what it is, with its settings left to the step unless given. */
 function draftStep(step: ConflictGraph["steps"][number], position: number, settings: Record<string, unknown> = {}) {
-  // A draft names the kind, as the conflict says it of every graph's step (EO-875).
-  const { id, name, type, ownerRole, entryAction, instructionsSummary, isTerminal, planMode } = step;
-  return { id, position, name, type, ownerRole, entryAction, instructionsSummary, isTerminal, planMode, ...settings };
+  // A draft names its agent by name (EO-876): the one the pipeline's step
+  // names, or else an agent of the kind the template's step needs.
+  const { id, name, type, ownerRole, agentId, entryAction, instructionsSummary, isTerminal, planMode } = step;
+  const agents = listAgents(handle.db);
+  const named = type !== "agent" ? undefined : (agents.find((candidate) => candidate.id === agentId) ?? agents.find((candidate) => candidate.role === ownerRole && candidate.archivedAt === null));
+  return { id, position, name, type, agent: named?.name ?? null, entryAction, instructionsSummary, isTerminal, planMode, ...settings };
 }
 
 const draftRoute = ({ fromStepId, resultKey, label, tone, target }: ConflictGraph["routes"][number], position: number) => ({ fromStepId, resultKey, label, tone, target, position });
@@ -380,11 +384,20 @@ describe("pipeline_update_conflict", () => {
     ).toEqual(["system"]);
   });
 
-  it("pipeline_get names each agent step's agent and the kind a draft names for it (EO-875)", async () => {
+  it("pipeline_get names each agent step's agent by the name a draft names it by, with its id, kind, backend and model (EO-875, EO-876)", async () => {
     const text = await pipelineGetText();
     const implementer = listAgents(handle.db).find((agent) => agent.role === "implementer")!;
 
-    expect(text).toContain(`(id: todo) [agent; agent ${implementer.id}, kind implementer]`);
+    expect(text).toContain(`(id: todo) [agent; agent "${implementer.name}" (agentId: ${implementer.id}; kind implementer, ${implementer.provider}, default model)]`);
+  });
+
+  it("pipeline_get says in words why nothing runs on a step whose agent cannot run (EO-876)", async () => {
+    const implementer = listAgents(handle.db).find((agent) => agent.role === "implementer")!;
+    updateAgent(handle.db, implementer.id, { enabled: false });
+
+    const text = await pipelineGetText();
+
+    expect(text).toContain(`${implementer.name} is disabled, so nothing runs here until it is enabled or the step names another agent.`);
   });
 
   it("refuses, saying so, for a pipeline with no held update", async () => {

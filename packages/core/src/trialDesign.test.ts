@@ -9,7 +9,7 @@ const step = (id: string, position: number, name: string, extra: Record<string, 
   position,
   name,
   type: "agent",
-  ownerRole: "implementer",
+  agent: "Implementer",
   entryAction: "implement",
   instructionsSummary: "Fix what the item says.",
   isTerminal: false,
@@ -24,10 +24,10 @@ const approved: DesignShape = {
     target: { newPipeline: "Hotfix" },
     steps: [
       step("fix", 0, "Fix"),
-      step("deploy", 1, "Deploy", { type: "module", ownerRole: null, entryAction: "deploy-module", timeoutMs: 60_000 }),
-      step("check", 2, "Check", { type: "user", ownerRole: null, entryAction: null, instructionsSummary: null }),
-      step("done", 3, "Done", { type: "user", ownerRole: null, entryAction: null, instructionsSummary: null, isTerminal: true }),
-      step("dropped", 4, "Dropped", { type: "user", ownerRole: null, entryAction: null, instructionsSummary: null, isTerminal: true }),
+      step("deploy", 1, "Deploy", { type: "module", agent: null, entryAction: "deploy-module", timeoutMs: 60_000 }),
+      step("check", 2, "Check", { type: "user", agent: null, entryAction: null, instructionsSummary: null }),
+      step("done", 3, "Done", { type: "user", agent: null, entryAction: null, instructionsSummary: null, isTerminal: true }),
+      step("dropped", 4, "Dropped", { type: "user", agent: null, entryAction: null, instructionsSummary: null, isTerminal: true }),
     ],
     routes: [
       { fromStepId: "fix", resultKey: "done", label: "Done", tone: "success", target: "deploy", position: 0 },
@@ -120,7 +120,7 @@ describe("classifyDesignChange", () => {
       classifyDesignChange(
         approved,
         revised(({ draft }) => {
-          draft.steps.push(step("qa", 5, "QA", { ownerRole: "qa", entryAction: "review" }) as never);
+          draft.steps.push(step("qa", 5, "QA", { agent: "QA", entryAction: "review" }) as never);
         }),
       ).design,
     ).toContain('it adds the step "QA"');
@@ -215,10 +215,10 @@ describe("classifyDesignChange", () => {
       approved,
       revised(({ draft }) => {
         draft.steps[1]!.entryAction = "other-module";
-        draft.steps[0]!.ownerRole = "reviewer";
+        draft.steps[0]!.agent = "Reviewer";
         draft.steps[2]!.isTerminal = true;
       }),
     );
-    expect(change.design).toEqual(['"Fix" is done by reviewer instead of implementer', '"Deploy" runs other-module instead of deploy-module', 'work ends on "Check" now']);
+    expect(change.design).toEqual(['"Fix" is done by Reviewer instead of Implementer', '"Deploy" runs other-module instead of deploy-module', 'work ends on "Check" now']);
   });
 });

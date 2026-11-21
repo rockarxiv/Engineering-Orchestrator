@@ -19,7 +19,7 @@ import {
   ProposalSummarySchema,
   proposedItemPath,
   specFields,
-  stepAgentKind,
+  stepAgentOf,
 } from "@eo/core";
 import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -1848,7 +1848,7 @@ describe("the buttons on a card", () => {
           name: step.name,
           type: step.type,
           // A draft names the kind; the step names its agent (EO-875).
-          ownerRole: stepAgentKind(listAgents(handle.db), step),
+          agent: stepAgentOf(listAgents(handle.db), step)?.name ?? null,
           entryAction: step.entryAction,
           instructionsSummary: step.instructionsSummary,
           isTerminal: step.isTerminal,
@@ -2814,10 +2814,10 @@ describe("the buttons on a card", () => {
       [
         ...base.steps
           .filter((step) => step.id !== "qa")
-          .map(({ ownerRole, ...step }) => ({
+          .map(({ agent, ...step }) => ({
             ...step,
             pipelineId: "default" as Uuid,
-            agentId: ownerRole === null ? null : agentOfKind(handle.db, ownerRole),
+            agentId: agent === null ? null : (listAgents(handle.db).find((candidate) => candidate.name === agent)?.id ?? null),
             inputs: {},
             timeoutMs: null,
           })),
@@ -3082,7 +3082,7 @@ describe("a pipeline built from the chat", () => {
           position: 0,
           name: "Merge",
           type: "module",
-          ownerRole: null,
+          agent: null,
           entryAction: "release-merge",
           instructionsSummary: null,
           isTerminal: false,
@@ -3091,7 +3091,7 @@ describe("a pipeline built from the chat", () => {
           inputs: { ciWaitSeconds: 2400 },
           ...merge,
         },
-        { id: "release_done", position: 1, name: "Released", type: "user", ownerRole: null, entryAction: null, instructionsSummary: null, isTerminal: true, planMode: false },
+        { id: "release_done", position: 1, name: "Released", type: "user", agent: null, entryAction: null, instructionsSummary: null, isTerminal: true, planMode: false },
       ],
       routes: [{ fromStepId: "release_merge", resultKey: "merged", label: "Merged", tone: "success", target: "release_done", position: 0 }],
     };
@@ -3343,7 +3343,7 @@ describe("a pipeline built from the chat", () => {
           position: 0,
           name: "Watching",
           type: "builtin",
-          ownerRole: null,
+          agent: null,
           entryAction: "watch_pull_request",
           instructionsSummary: null,
           isTerminal: false,
@@ -3352,7 +3352,7 @@ describe("a pipeline built from the chat", () => {
           inputs: { reportReady: true },
           ...watcher,
         },
-        { id: "pr_done", position: 1, name: "Merged", type: "user", ownerRole: null, entryAction: null, instructionsSummary: null, isTerminal: true, planMode: false },
+        { id: "pr_done", position: 1, name: "Merged", type: "user", agent: null, entryAction: null, instructionsSummary: null, isTerminal: true, planMode: false },
       ],
       routes: [
         { fromStepId: "pr_watch", resultKey: "merged", label: "Merged", tone: "success", target: "pr_done", position: 0 },
@@ -3960,7 +3960,7 @@ describe("a pipeline built from the chat", () => {
         ...draft,
         steps: [
           draft.steps[0]!,
-          { id: "release_tag", position: 1, name: "Tag", type: "module", ownerRole: null, entryAction: "release-tag", instructionsSummary: null, isTerminal: false, planMode: false },
+          { id: "release_tag", position: 1, name: "Tag", type: "module", agent: null, entryAction: "release-tag", instructionsSummary: null, isTerminal: false, planMode: false },
           { ...draft.steps[1]!, position: 2 },
         ],
         routes: [
@@ -4252,7 +4252,7 @@ describe("a pipeline built from the chat", () => {
           position,
           name: id,
           type: "module",
-          ownerRole: null,
+          agent: null,
           entryAction: moduleId,
           instructionsSummary: null,
           isTerminal: false,
@@ -4269,7 +4269,7 @@ describe("a pipeline built from the chat", () => {
               step("one", 0, first),
               step("two", 1, second),
               step("three", 2, third),
-              { id: "release_done", position: 3, name: "Released", type: "user", ownerRole: null, entryAction: null, instructionsSummary: null, isTerminal: true, planMode: false },
+              { id: "release_done", position: 3, name: "Released", type: "user", agent: null, entryAction: null, instructionsSummary: null, isTerminal: true, planMode: false },
             ],
             routes: [
               { fromStepId: "one", resultKey: "first", label: "First", tone: "success", target: "two", position: 0 },
@@ -4323,7 +4323,7 @@ describe("a pipeline built from the chat", () => {
           ...draft,
           steps: [
             draft.steps[0]!,
-            { id: "release_check", position: 1, name: "Check", type: "agent", ownerRole: "qa", entryAction: "alignment", instructionsSummary: null, isTerminal: false, planMode: false },
+            { id: "release_check", position: 1, name: "Check", type: "agent", agent: "QA", entryAction: "alignment", instructionsSummary: null, isTerminal: false, planMode: false },
             { ...draft.steps[1]!, position: 2 },
           ],
           routes: [
@@ -4966,9 +4966,9 @@ describe("a pipeline built from the chat", () => {
         entryStepId: "hotfix_fix",
         target: { pipelineId },
         steps: [
-          { id: "hotfix_fix", position: 0, name: "Fix", type: "agent", ownerRole: "implementer", entryAction: "implement", instructionsSummary: null, isTerminal: false, planMode: false, ...extra },
-          { id: "hotfix_review", position: 1, name: "Review", type: "agent", ownerRole: "reviewer", entryAction: "review", instructionsSummary: null, isTerminal: false, planMode: false },
-          { id: "hotfix_done", position: 2, name: "Done", type: "user", ownerRole: null, entryAction: null, instructionsSummary: null, isTerminal: true, planMode: false },
+          { id: "hotfix_fix", position: 0, name: "Fix", type: "agent", agent: "Implementer", entryAction: "implement", instructionsSummary: null, isTerminal: false, planMode: false, ...extra },
+          { id: "hotfix_review", position: 1, name: "Review", type: "agent", agent: "Reviewer", entryAction: "review", instructionsSummary: null, isTerminal: false, planMode: false },
+          { id: "hotfix_done", position: 2, name: "Done", type: "user", agent: null, entryAction: null, instructionsSummary: null, isTerminal: true, planMode: false },
         ],
         routes: [
           { fromStepId: "hotfix_fix", resultKey: "done", label: "Done", tone: "success", target: "hotfix_review", position: 0 },
@@ -5048,8 +5048,8 @@ describe("a pipeline built from the chat", () => {
         entryStepId: "qa_gate_check",
         target,
         steps: [
-          { id: "qa_gate_check", position: 0, name: "Check", type: "agent", ownerRole: "qa", entryAction: "alignment", instructionsSummary: null, isTerminal: false, planMode: false },
-          { id: "qa_gate_done", position: 1, name: "Checked", type: "user", ownerRole: null, entryAction: null, instructionsSummary: null, isTerminal: true, planMode: false },
+          { id: "qa_gate_check", position: 0, name: "Check", type: "agent", agent: "QA", entryAction: "alignment", instructionsSummary: null, isTerminal: false, planMode: false },
+          { id: "qa_gate_done", position: 1, name: "Checked", type: "user", agent: null, entryAction: null, instructionsSummary: null, isTerminal: true, planMode: false },
         ],
         routes: [
           { fromStepId: "qa_gate_check", resultKey: "aligned", label: "Aligned", tone: "success", target: "qa_gate_done", position: 0 },

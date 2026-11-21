@@ -43,6 +43,35 @@ function between(from: VersionRoute[], to: VersionRoute[]) {
   return diffVersions({ number: 6, steps: STEPS, routes: from }, { number: 7, steps: STEPS, routes: to });
 }
 
+describe("a change of a step's agent (EO-876)", () => {
+  const agentStep = (agentId: string | null) => step({ type: "agent", agentId, entryAction: "review" });
+  const names = new Map([
+    ["reviewer-claude", "Reviewer"],
+    ["reviewer-codex", "Reviewer on Codex"],
+  ]);
+
+  it("names both agents, by name, under the field the diff calls agent", () => {
+    const diff = diffVersions({ number: 1, steps: [agentStep("reviewer-claude")], routes: [] }, { number: 2, steps: [agentStep("reviewer-codex")], routes: [] }, undefined, names);
+    expect(diff.steps).toEqual([expect.objectContaining({ name: "Review", change: "changed", fields: [{ field: "agent", before: "Reviewer", after: "Reviewer on Codex" }] })]);
+  });
+
+  it("says a step that comes to name nobody, and an agent it cannot name by its id rather than as no change", () => {
+    const gone = diffVersions({ number: 1, steps: [agentStep("reviewer-claude")], routes: [] }, { number: 2, steps: [agentStep(null)], routes: [] }, undefined, names);
+    expect(gone.steps[0]!.fields).toEqual([{ field: "agent", before: "Reviewer", after: null }]);
+    const unknown = diffVersions({ number: 1, steps: [agentStep("reviewer-claude")], routes: [] }, { number: 2, steps: [agentStep("someone-else")], routes: [] }, undefined, names);
+    expect(unknown.steps[0]!.fields).toEqual([{ field: "agent", before: "Reviewer", after: "someone-else" }]);
+  });
+
+  it("reports two agents of one name as a change", () => {
+    const twins = new Map([
+      ["a", "Reviewer"],
+      ["b", "Reviewer"],
+    ]);
+    const diff = diffVersions({ number: 1, steps: [agentStep("a")], routes: [] }, { number: 2, steps: [agentStep("b")], routes: [] }, undefined, twins);
+    expect(diff.steps[0]!.fields).toEqual([{ field: "agent", before: "Reviewer", after: "Reviewer" }]);
+  });
+});
+
 describe("the difference between two versions", () => {
   it("names the pair it is about", () => {
     expect(between([route()], [route()])).toMatchObject({ from: 6, to: 7 });
