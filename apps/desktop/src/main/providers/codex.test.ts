@@ -1651,7 +1651,7 @@ describe("createCodexProvider", () => {
         coordination: "independent",
         members: null,
         participants: [{ key: "security", role: "reviewer", instructions: "Look for auth gaps.", required: null }],
-        outcomes: [{ key: "clear", label: "Clear", meaning: null }],
+        outcomes: [{ key: "clear", label: "Clear", meaning: null, rulesOut: null }],
         completion: { rules: [{ when: "all", outcomes: ["clear"], result: "approved" }], fallback: "changes_requested" },
         limits: { maxParticipants: null, maxParallel: 1, maxRetries: null, timeoutMs: null, budgetCents: null },
       };
@@ -1678,6 +1678,45 @@ describe("createCodexProvider", () => {
       const steps = fromCodex.ok ? (fromCodex.value as { draft: { steps: { team?: unknown }[] } }).draft.steps : [];
       expect(steps[0]!.team).toMatchObject({ members: "report_only", participants: [{ required: true }], limits: { maxParticipants: 4, maxParallel: 1, maxRetries: 1 } });
       expect(steps[1]!.team).toBe("none");
+    });
+
+    it("gives the same results a leader-led team's outcome rules out as a Claude answer, and none where Codex says null (EO-873)", async () => {
+      const strictTeam = {
+        coordination: "leader",
+        members: null,
+        leader: { role: "reviewer", instructions: "Split the review." },
+        roles: ["reviewer"],
+        outcomes: [
+          { key: "clear", label: "Clear", meaning: null, rulesOut: null },
+          { key: "blocking", label: "Blocking", meaning: null, rulesOut: ["approved"] },
+        ],
+        limits: { maxParticipants: null, maxParallel: null, maxRetries: null, maxRounds: null, timeoutMs: null, budgetCents: null },
+      };
+      const codex = structuredClone(ASSIST_ANSWER_WITH_MAPS.codex) as unknown as { outcome: { draft: { steps: { team: unknown }[] } } };
+      codex.outcome.draft.steps[0]!.team = strictTeam;
+      const strict = jsonSchemaOutputSchema(strictCodexOutputSchema(assistSchema())).parse(codex);
+      expect(strict.ok ? [] : strict.issues).toEqual([]);
+
+      const claude = structuredClone(ASSIST_ANSWER_WITH_MAPS.claude) as unknown as { outcome: { draft: { steps: { team?: unknown }[] } } };
+      claude.outcome.draft.steps[0]!.team = {
+        coordination: "leader",
+        leader: { role: "reviewer", instructions: "Split the review." },
+        roles: ["reviewer"],
+        outcomes: [
+          { key: "clear", label: "Clear" },
+          { key: "blocking", label: "Blocking", rulesOut: ["approved"] },
+        ],
+      };
+
+      const fromCodex = validateActionResult(registry, "assist", await answerFromCodex(codex));
+      const fromClaude = validateActionResult(registry, "assist", claude);
+      expect(fromClaude.ok).toBe(true);
+      expect(fromCodex).toEqual(fromClaude);
+      const team = fromCodex.ok ? (fromCodex.value as { draft: { steps: { team?: { outcomes: unknown[] } }[] } }).draft.steps[0]!.team : undefined;
+      expect(team?.outcomes).toEqual([
+        { key: "clear", label: "Clear", meaning: "" },
+        { key: "blocking", label: "Blocking", meaning: "", rulesOut: ["approved"] },
+      ]);
     });
 
     it("reads a new step's inputs of `{ ciWaitSeconds: 2400 }` from the one entry that says so", () => {

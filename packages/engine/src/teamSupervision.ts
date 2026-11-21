@@ -1,5 +1,5 @@
 import { decideIndependentTeam, LEADER_ASSIGNMENT_KEY } from "@eo/core";
-import type { IndependentTeam, LeaderAssignment, LeaderTeam, TeamContribution, TeamDecision } from "@eo/core";
+import type { IndependentTeam, LeaderAssignment, LeaderTeam, TeamContribution, TeamDecision, TeamOutcome } from "@eo/core";
 
 /**
  * What an independent team's supervisor does next (EO-846, ARCHITECTURE.md,
@@ -465,6 +465,66 @@ export function leaderFinalProblems(ledger: Pick<LeaderLedger, "assignments" | "
   if (contributions.length === 0 && ledger.contributions.length > 0) problems.push("It names none of the reports it relied on.");
   return problems;
 }
+
+/**
+ * Why EO will not take a leader's result over its own team's reports
+ * (EO-873): an accepted, current report whose outcome rules that result
+ * out, which the leader's `disagreements` does not overrule — a line of
+ * its own, `Overruled <assignment key or comment id>: <why>`, with a
+ * reason after the colon. Mentioning the report is not overruling it:
+ * "criteria" alone, or "No disagreements with criteria", is refused.
+ *
+ * Data in, data out, and no outcome or result named here: what rules out
+ * what is the team's declaration (`TeamOutcome.rulesOut`), so the same
+ * check holds a review team's "blocking" against "approved" and any other
+ * team's contradiction alike. EO checks that an override names the report
+ * and gives a reason; whether the reason persuades is for the person who
+ * reads it on the thread with the answer.
+ */
+export function ruledOutProblems(
+  outcomes: readonly Pick<TeamOutcome, "key" | "label" | "rulesOut">[],
+  contributions: readonly Pick<CurrentContribution, "key" | "reportId" | "outcome">[],
+  result: string,
+  disagreements: string,
+): string[] {
+  const ruling = new Map(outcomes.filter((outcome) => (outcome.rulesOut ?? []).includes(result)).map((outcome) => [outcome.key, outcome]));
+  const problems: string[] = [];
+  for (const contribution of contributions) {
+    const outcome = contribution.outcome === null ? undefined : ruling.get(contribution.outcome);
+    if (outcome === undefined) continue;
+    if (overrules(disagreements, contribution)) continue;
+    const report = contribution.reportId === null ? `**${contribution.key}**'s report` : `**${contribution.key}**'s report (comment ${contribution.reportId})`;
+    problems.push(
+      `Its result "${result}" is one ${report} rules out: it concluded "${outcome.label}" (${outcome.key}). Answer with a result that report allows, or overrule it on a line of your disagreements of its own: \`Overruled ${contribution.key}: <why>\`.`,
+    );
+  }
+  return problems;
+}
+
+/**
+ * One override line: `Overruled <report>: <why>`, a list marker before it
+ * allowed, the report its assignment key or comment id (with "comment"
+ * before it, or markdown around it, if the leader writes so), the reason
+ * after a colon or a dash of its own.
+ */
+const OVERRIDE_LINE = /^\s*(?:[-*+]\s+|\d+[.)]\s+)?\**overruled\**\s+(.+?)\s*(?::|\s[\u2013\u2014]\s)\s*(.*)$/i;
+
+/** Whether `text` overrules a report: an override line naming it, whose reason says something. */
+function overrules(text: string, contribution: Pick<CurrentContribution, "key" | "reportId">): boolean {
+  return text.split(/\r?\n/).some((line) => {
+    const match = OVERRIDE_LINE.exec(line);
+    if (match === null) return false;
+    return namesReport(match[1]!.replace(/[`*"']/g, " "), contribution) && /[\p{L}\p{N}]/u.test(match[2]!);
+  });
+}
+
+/** Whether `text` names a report: its assignment key as a word of its own, or its comment id. */
+function namesReport(text: string, contribution: Pick<CurrentContribution, "key" | "reportId">): boolean {
+  if (contribution.reportId !== null && text.includes(contribution.reportId)) return true;
+  return new RegExp(`(^|[^a-z0-9_])${escapeRegExp(contribution.key)}($|[^a-z0-9_])`, "i").test(text);
+}
+
+const escapeRegExp = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 /**
  * Whether a leader's accepted final answer still stands on the evidence as

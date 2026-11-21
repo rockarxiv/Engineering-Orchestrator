@@ -39,6 +39,8 @@ const versionOf = (version: string): TemplateVersion => shipped.get(SOFTWARE)!.f
 const bundled = JSON.parse(readFileSync(join(GALLERY_DIRECTORY, `${SOFTWARE}.json`), "utf8")) as Document;
 const reviewOf = (document: Document) => document.steps.find((step) => step.id === "review")!;
 const TEAM = reviewOf(bundled).team as LeaderTeam;
+/** Review's team as 1.5 shipped it, before its outcomes ruled anything out (EO-873). */
+const TEAM_15 = reviewOf(versionOf("1.5").document).team as LeaderTeam;
 
 /** Whitespace-insensitive: the prompt is hard-wrapped. */
 const flat = (text: string) => text.replace(/\s+/g, " ").trim();
@@ -96,7 +98,7 @@ describe("the software template's Review team (EO-868)", () => {
 
   it("is a new version that adds no role and no agent, and leaves every route and label as 1.4 had them", () => {
     const before = versionOf("1.4").document;
-    expect(bundled.template!.version).toBe("1.5");
+    expect(versionOf("1.5").document.template!.version).toBe("1.5");
     expect(compareTemplateVersions(bundled.template!.version, before.template!.version)).toBeGreaterThan(0);
     expect(bundled.roles.map((role) => role.slug)).toEqual(before.roles.map((role) => role.slug));
     expect(bundled.steps.map((step) => [step.id, step.ownerRole])).toEqual(before.steps.map((step) => [step.id, step.ownerRole]));
@@ -109,6 +111,16 @@ describe("the software template's Review team (EO-868)", () => {
     // The only bundled team is this one: no other step, on either board, has one.
     const teams = [...bundled.steps, ...bundled.boards.flatMap((board) => board.steps)].filter((step) => step.team !== undefined).map((step) => step.id);
     expect(teams).toEqual(["review"]);
+  });
+
+  it("rules out an approval where a pass reports a blocking issue or something only a person can decide, and nothing where it reports none (EO-873)", () => {
+    expect(bundled.template!.version).toBe("1.6");
+    expect(TEAM.outcomes.map((outcome) => [outcome.key, outcome.rulesOut])).toEqual([
+      ["clear", undefined],
+      ["blocking", ["approved"]],
+      ["needs_decision", ["approved"]],
+    ]);
+    expect({ ...TEAM, outcomes: TEAM.outcomes.map(({ rulesOut: _rulesOut, ...outcome }) => outcome) }).toEqual(TEAM_15);
   });
 
   it("validates and imports cleanly, its team and all", () => {
@@ -216,6 +228,7 @@ describe("an installation on 1.4, when 1.5 ships", () => {
   let handle: DbHandle;
   let shop: Uuid;
   let drive: string;
+  const upToFifteen = templateHistoryUpTo(GALLERY_DIRECTORY, SOFTWARE, "1.5");
 
   beforeEach(() => {
     handle = openMigratedTestDb();
@@ -260,12 +273,12 @@ describe("an installation on 1.4, when 1.5 ships", () => {
     const routesBefore = listRoutesForPipeline(handle.db, "default");
 
     expect(compareWithTemplate(handle.db, "default", versionOf("1.5"))!.merge.comparison.changes).toEqual([
-      expect.objectContaining({ key: { kind: "setting", stepId: "review", field: "team" }, outcome: "template", base: null, current: null, template: TEAM }),
+      expect.objectContaining({ key: { kind: "setting", stepId: "review", field: "team" }, outcome: "template", base: null, current: null, template: TEAM_15 }),
     ]);
 
-    expect(applyTemplateUpdates(handle.db, shipped, { isTheRecord: false })).toContainEqual(expect.objectContaining({ pipelineId: "default", outcome: "applied", from: "1.4", to: "1.5" }));
+    expect(applyTemplateUpdates(handle.db, upToFifteen, { isTheRecord: false })).toContainEqual(expect.objectContaining({ pipelineId: "default", outcome: "applied", from: "1.4", to: "1.5" }));
     expect(openUpdateConflict(handle.db, "default")).toBeUndefined();
-    expect(review().team).toEqual(TEAM);
+    expect(review().team).toEqual(TEAM_15);
     expect(getPipelineOrigin(handle.db, "default")?.version).toBe("1.5");
     expect(listRoutesForPipeline(handle.db, "default").map(({ fromStepId, resultKey, label, target }) => ({ fromStepId, resultKey, label, target }))).toEqual(
       routesBefore.map(({ fromStepId, resultKey, label, target }) => ({ fromStepId, resultKey, label, target })),
@@ -276,11 +289,11 @@ describe("an installation on 1.4, when 1.5 ships", () => {
     const theirs = StepTeamSchema.parse({ coordination: "leader", members: "isolated", leader: { role: "reviewer", instructions: "Review it by risk." }, roles: ["reviewer"] });
     personEdits({ team: theirs });
 
-    expect(applyTemplateUpdates(handle.db, shipped, { isTheRecord: false })).toContainEqual(expect.objectContaining({ pipelineId: "default", outcome: "conflict", from: "1.4", to: "1.5" }));
+    expect(applyTemplateUpdates(handle.db, upToFifteen, { isTheRecord: false })).toContainEqual(expect.objectContaining({ pipelineId: "default", outcome: "conflict", from: "1.4", to: "1.5" }));
     expect(review().team).toEqual(theirs);
     expect(getPipelineOrigin(handle.db, "default")?.version).toBe("1.4");
     expect(openUpdateConflict(handle.db, "default")?.conflicts).toEqual([
-      expect.objectContaining({ key: { kind: "setting", stepId: "review", field: "team" }, current: theirs, template: TEAM }),
+      expect.objectContaining({ key: { kind: "setting", stepId: "review", field: "team" }, current: theirs, template: TEAM_15 }),
     ]);
   });
 
@@ -289,9 +302,9 @@ describe("an installation on 1.4, when 1.5 ships", () => {
     shopWorks(GIT_WORKTREE_KIND);
     shopWorks(FOLDER_KIND);
 
-    expect(applyTemplateUpdates(handle.db, shipped, { isTheRecord: false })).toContainEqual(expect.objectContaining({ pipelineId: "default", outcome: "applied", from: "1.4", to: "1.5" }));
+    expect(applyTemplateUpdates(handle.db, upToFifteen, { isTheRecord: false })).toContainEqual(expect.objectContaining({ pipelineId: "default", outcome: "applied", from: "1.4", to: "1.5" }));
     expect(openUpdateConflict(handle.db, "default")).toBeUndefined();
-    expect(review().team).toEqual(TEAM);
+    expect(review().team).toEqual(TEAM_15);
     expect(getPipelineOrigin(handle.db, "default")?.version).toBe("1.5");
 
     const problems = storedGraphProblems(handle.db, "default", listStepsForPipeline(handle.db, "default"), listRoutesForPipeline(handle.db, "default"), getPipeline(handle.db, "default")!.entryStepId);
@@ -309,9 +322,9 @@ describe("an installation on 1.4, when 1.5 ships", () => {
   it("is applied for a project whose only workspace is a folder, its origin moving to 1.5, though Publish refuses the team there (EO-871)", () => {
     shopWorks(FOLDER_KIND);
 
-    expect(applyTemplateUpdates(handle.db, shipped, { isTheRecord: false })).toContainEqual(expect.objectContaining({ pipelineId: "default", outcome: "applied", from: "1.4", to: "1.5" }));
+    expect(applyTemplateUpdates(handle.db, upToFifteen, { isTheRecord: false })).toContainEqual(expect.objectContaining({ pipelineId: "default", outcome: "applied", from: "1.4", to: "1.5" }));
     expect(openUpdateConflict(handle.db, "default")).toBeUndefined();
-    expect(review().team).toEqual(TEAM);
+    expect(review().team).toEqual(TEAM_15);
     expect(getPipelineOrigin(handle.db, "default")?.version).toBe("1.5");
     // A person publishing the board is still told the team cannot run anywhere it works.
     const problems = storedGraphProblems(handle.db, "default", listStepsForPipeline(handle.db, "default"), listRoutesForPipeline(handle.db, "default"), getPipeline(handle.db, "default")!.entryStepId);
@@ -321,8 +334,40 @@ describe("an installation on 1.4, when 1.5 ships", () => {
   it("keeps an edit the person made to another of Review's settings, and adds the team beside it", () => {
     personEdits({ instructionsSummary: "Our own words for Review." });
 
-    expect(applyTemplateUpdates(handle.db, shipped, { isTheRecord: false })).toContainEqual(expect.objectContaining({ pipelineId: "default", outcome: "applied", to: "1.5" }));
+    expect(applyTemplateUpdates(handle.db, upToFifteen, { isTheRecord: false })).toContainEqual(expect.objectContaining({ pipelineId: "default", outcome: "applied", to: "1.5" }));
     expect(review().instructionsSummary).toBe("Our own words for Review.");
+    expect(review().team).toEqual(TEAM_15);
+  });
+});
+
+/**
+ * An installation on 1.5 (EO-873): 1.6 reaches it as any template update
+ * does, and is held where the person changed Review's team.
+ */
+describe("an installation on 1.5, when 1.6 ships", () => {
+  let handle: DbHandle;
+
+  beforeEach(() => {
+    handle = openMigratedTestDb();
+    const onFifteen = templateHistoryUpTo(GALLERY_DIRECTORY, SOFTWARE, "1.5");
+    backfillPipelineOrigins(handle.db, onFifteen);
+    adoptPipeline(handle.db, "default", createProject(handle.db, { name: "Shop", keyPrefix: "SHOP" }).id as Uuid);
+    applyTemplateUpdates(handle.db, onFifteen, { isTheRecord: false });
+    expect(getPipelineOrigin(handle.db, "default")?.version).toBe("1.5");
+  });
+
+  afterEach(() => handle.close());
+
+  const review = () => listStepsForPipeline(handle.db, "default").find((step) => step.id === "review")!;
+
+  it("is compared as a change to Review's team alone, and applied where the person left Review as it was", () => {
+    expect(review().team).toEqual(TEAM_15);
+    expect(compareWithTemplate(handle.db, "default", versionOf("1.6"))!.merge.comparison.changes).toEqual([
+      expect.objectContaining({ key: { kind: "setting", stepId: "review", field: "team" }, outcome: "template", base: TEAM_15, current: TEAM_15, template: TEAM }),
+    ]);
+    expect(applyTemplateUpdates(handle.db, shipped, { isTheRecord: false })).toContainEqual(expect.objectContaining({ pipelineId: "default", outcome: "applied", from: "1.5", to: "1.6" }));
+    expect(openUpdateConflict(handle.db, "default")).toBeUndefined();
     expect(review().team).toEqual(TEAM);
+    expect(getPipelineOrigin(handle.db, "default")?.version).toBe("1.6");
   });
 });
