@@ -1307,7 +1307,7 @@ describe("an agent step's routes against its action's declared results (EO-423)"
         severity: "error",
         stateId: "qa",
         message:
-          '"qa" asks Quinn for "ponder", but Quinn's kind, "qa", has no "ponder" action — choose an agent of a kind that has it, or define "ponder" for "qa".',
+          '"qa" asks Quinn for "ponder", but Quinn\'s kind, "qa", has no "ponder" action — choose an agent of a kind that has it, or define "ponder" for "qa".',
       },
     ]);
     expect(hasBlockingProblem(problems)).toBe(true);
@@ -1845,7 +1845,7 @@ describe("validatePipeline: the agent a step names (EO-875)", () => {
 
     expect(validatePipeline(input(QA))).toEqual([]);
     expect(errors(input(agent("Auditor", "auditor")))).toEqual([
-      '"review" asks Auditor for "alignment", but Auditor's kind, "auditor", has no "alignment" action — choose an agent of a kind that has it, or define "alignment" for "auditor".',
+      '"review" asks Auditor for "alignment", but Auditor\'s kind, "auditor", has no "alignment" action — choose an agent of a kind that has it, or define "alignment" for "auditor".',
     ]);
   });
 });
