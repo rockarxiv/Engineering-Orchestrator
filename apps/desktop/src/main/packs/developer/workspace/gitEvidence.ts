@@ -28,6 +28,12 @@ import { composeGitArgs } from "./git.js";
  * name, and is listed as a link and never read through; a submodule's
  * files are not part of the tree, and are said to be missing.
  *
+ * **Which new files are tracked.** The tree cannot say whether a file
+ * HEAD lacks was staged or left untracked, and an isolated member's copy
+ * must have each as the item had it (EO-872). So the paths the index
+ * tracks and HEAD does not are read with the tree and held still with it
+ * (`EvidenceSourceRef.added`).
+ *
  * The blobs `git add` writes are unreachable objects, which Git keeps for
  * two weeks by default before a `gc` may prune them; a baseline opened
  * after that is refused as gone, never captured afresh in its place.
@@ -83,8 +89,12 @@ export function gitEvidenceCapability(): WorkspaceEvidenceCapability {
           if (!added.ok) return { ok: false, problem: `EO could not capture the working tree of \`${top.value}\`: ${added.problem}` };
           const tree = await gitText(["write-tree"], top.value, env, signal);
           if (!tree.ok || !OID.test(tree.value)) return { ok: false, problem: `EO could not capture the working tree of \`${top.value}\`: ${tree.ok ? "git named no tree" : tree.problem}` };
-          if (tree.value === previous) return openTree(top.value, tree.value, commit, signal);
-          previous = tree.value;
+          const tracked = commit === null ? { ok: true as const, value: [] } : await addedInIndex(top.value, commit, signal);
+          if (!tracked.ok) return { ok: false, problem: `EO could not read which new files \`${top.value}\` tracks: ${tracked.problem}` };
+          // The tree and which of its new files the index tracks, both held still.
+          const taken = `${tree.value}\0${tracked.value.join("\0")}`;
+          if (taken === previous) return openTree(top.value, tree.value, commit, signal, tracked.value);
+          previous = taken;
         }
         return { ok: false, problem: `Files in \`${top.value}\` kept changing while EO captured them, so EO did not capture it for the team: a team is handed one consistent copy or none.` };
       } finally {
@@ -95,16 +105,31 @@ export function gitEvidenceCapability(): WorkspaceEvidenceCapability {
       if (source.kind !== "git") return { ok: false, problem: "That evidence was not captured from a repository." };
       const top = await gitText(["rev-parse", "--show-toplevel"], workspace.cwd, undefined, signal);
       if (!top.ok) return { ok: false, problem: `\`${workspace.cwd}\` is not in a Git repository EO can read, so the team's evidence could not be opened.` };
-      return openTree(top.value, source.tree, source.head, signal);
+      return openTree(top.value, source.tree, source.head, signal, source.added ?? []);
     },
   };
+}
+
+/**
+ * The paths the repository's own index tracks and `commit` does not
+ * (EO-872): a new file staged, or marked intent-to-add. Read, never
+ * written: `git diff` takes no lock on the index.
+ */
+async function addedInIndex(repository: string, commit: string, signal?: AbortSignal): Promise<EvidenceResult<string[]>> {
+  const staged = await gitRaw(["diff", "--cached", "--name-only", "-z", "--no-renames", "--diff-filter=A", commit], repository, undefined, signal);
+  if (!staged.ok) return { ok: false, problem: staged.error };
+  // An intent-to-add entry is new between the index and the working tree.
+  const intended = await gitRaw(["diff", "--name-only", "-z", "--no-renames", "--diff-filter=A"], repository, undefined, signal);
+  if (!intended.ok) return { ok: false, problem: intended.error };
+  const paths = [...staged.stdout.toString("utf8").split("\0"), ...intended.stdout.toString("utf8").split("\0")].filter((path) => path !== "");
+  return { ok: true, value: [...new Set(paths)].sort() };
 }
 
 interface TreeEntry extends EvidenceEntry {
   oid: string;
 }
 
-async function openTree(repository: string, tree: string, head: string | null, signal?: AbortSignal): Promise<EvidenceCaptureOutcome> {
+async function openTree(repository: string, tree: string, head: string | null, signal: AbortSignal | undefined, added: readonly string[]): Promise<EvidenceCaptureOutcome> {
   const type = await gitText(["cat-file", "-t", tree], repository, undefined, signal);
   if (!type.ok || type.value !== "tree") return { ok: false, problem: `The tree EO captured for the team (${tree.slice(0, 12)}) is no longer in \`${repository}\`, so it cannot be read.` };
   const listed = await gitRaw(["ls-tree", "-r", "-t", "-l", "-z", "--full-tree", tree], repository, undefined, signal);
@@ -120,7 +145,7 @@ async function openTree(repository: string, tree: string, head: string | null, s
     entries.push({ path, type: entryType, size: entryType === "file" ? Number(size) || 0 : 0, oid });
   }
   const files = entries.filter((entry) => entry.type === "file");
-  const source: EvidenceSourceRef = { kind: "git", tree, head, files: files.length, bytes: files.reduce((sum, entry) => sum + entry.size, 0) };
+  const source: EvidenceSourceRef = { kind: "git", tree, head, files: files.length, bytes: files.reduce((sum, entry) => sum + entry.size, 0), ...(added.length > 0 ? { added: [...added] } : {}) };
   const oids = new Map(entries.map((entry) => [entry.path, entry.oid]));
   const base = listedEvidence(source, entries, async (entry) => {
     const oid = oids.get(entry.path);

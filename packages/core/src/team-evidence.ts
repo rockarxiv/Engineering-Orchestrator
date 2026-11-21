@@ -107,6 +107,14 @@ export const EvidenceSourceRefSchema = z.discriminatedUnion("kind", [
       .nullable(),
     files: z.number().int().min(0),
     bytes: z.number().int().min(0),
+    /**
+     * The paths in the tree but not in `head` that the item's index tracked
+     * when it was captured (EO-872): an isolated member's copy has them as
+     * added files, and every other path not in `head` as untracked. Taken
+     * with the tree, so staging or unstaging afterwards changes no copy.
+     * Absent where there were none, and on a capture made before.
+     */
+    added: z.array(z.string().min(1)).optional(),
   }),
   z.strictObject({
     kind: z.literal("folder"),

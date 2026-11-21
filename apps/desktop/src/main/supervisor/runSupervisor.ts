@@ -8218,7 +8218,7 @@ export function createRunSupervisor(
         context,
         cwd: copyWorkspace.cwd,
         ...(foundCliTools.length > 0 ? { cliTools: foundCliTools } : {}),
-        ...discussionTurnOptions(item, agent),
+        ...memberDiscussionOptions(item, agent, request.environment),
         warmKey: attachments,
         ...(toolDirectory ? { toolDirectory: toolDirectory.path } : {}),
         ...(attachment.mcpServers[0] ? { repositoryMcp: attachment.mcpServers[0] } : {}),
@@ -8237,6 +8237,17 @@ export function createRunSupervisor(
         runSkills.delete(run.id);
       },
     };
+  }
+
+  /**
+   * An ordinary dispatch's per-turn options, with what the member's copy
+   * asks of its processes' environment laid over the run's own variables
+   * (EO-872). Delivered as the run's variables are, so on both backends.
+   */
+  function memberDiscussionOptions(item: Item, agent: Agent, environment: IsolatedTurnRequest["environment"]): ReturnType<typeof discussionTurnOptions> {
+    const ordinary = discussionTurnOptions(item, agent);
+    if (environment === undefined) return ordinary;
+    return { ...ordinary, environmentVariables: environment(ordinary.environmentVariables ?? {}) };
   }
 
   /**

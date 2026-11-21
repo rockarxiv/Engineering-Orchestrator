@@ -297,14 +297,14 @@ describe("an isolated member has its role's agent's rights (EO-867)", () => {
 
 describe("an isolated member's own copy (EO-867)", () => {
   it("is removed when its attempt ends, its report saying first what it changed there", async () => {
-    copyChanges = ["1 tracked file changed: `export.ts`", "HEAD moved from aaaaaaaaaaaa to bbbbbbbbbbbb"];
+    copyChanges = ["1 file changed: `export.ts`", "HEAD moved from aaaaaaaaaaaa to bbbbbbbbbbbb"];
     setTeam(isolated([{ key: "own", role: "qa" }]));
     script = () => answer({ outcome: "clear", report: "Ran the tests after a fix." });
     await supervisor().runOnce();
     expect(copies).toHaveLength(1);
     expect(copies[0]!.removed).toBe(true);
     const report = listCommentsForItem(handle.db, item.id).find((comment) => comment.body.includes("Ran the tests after a fix."));
-    expect(report?.body).toContain("**In its own copy of the workspace**, which EO has removed and none of which reached the item's work: 1 tracked file changed: `export.ts`; HEAD moved");
+    expect(report?.body).toContain("**In its own copy of the workspace**, which EO has removed and from which nothing was merged into the item's work: 1 file changed: `export.ts`; HEAD moved");
   });
 
   it("is one per attempt: two members working at once never share one", async () => {

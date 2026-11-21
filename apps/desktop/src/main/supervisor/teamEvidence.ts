@@ -117,6 +117,14 @@ export interface MemberCopy {
   changes(): Promise<string[]>;
   /** Removes it, whatever was done in it: nothing in a copy is anyone's work. Never throws. */
   remove(): Promise<void>;
+  /**
+   * What the member's processes' environment must carry for this copy,
+   * given the run's own variables, and answering them with its own laid
+   * over them — the git kind's tells the member's writes to the shared
+   * repository apart from anybody else's (EO-872). Absent where a copy
+   * needs nothing.
+   */
+  environment?(variables: Readonly<Record<string, string>>): Record<string, string>;
 }
 
 export type MemberCopyOutcome = { ok: true; copy: MemberCopy } | { ok: false; problem: string };

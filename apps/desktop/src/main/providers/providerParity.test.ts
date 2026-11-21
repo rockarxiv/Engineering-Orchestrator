@@ -19,6 +19,7 @@ import {
   type AgentEvent,
   type AgentForkResult,
   type AgentProviderResumeOptions,
+  type AgentProviderStartOptions,
   type AgentProvider,
   type AgentWriteAnswer,
   type AgentWriteRequest,
@@ -33,6 +34,7 @@ import {
   type Uuid,
   SKILL_READ_TOOL_NAME,
   SKILL_WRITE_TOOLS,
+  StepTeamSchema,
   TEAM_EVIDENCE_TOOLS,
 } from "@eo/core";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -42,6 +44,10 @@ import { attachmentEnvironment } from "../agentAttachments/serverEnvironment.js"
 import { attachmentsForRun } from "../db/repos/agentAttachmentsRepo.js";
 import { insertAttachments, listAgents, saveMcpServer, setAgentAttachment } from "../db/repos/index.js";
 import { createTestItem, openMigratedTestDb, openMigratedTestDbAt } from "../db/testHelpers.js";
+import { createAgent, createRoute, createStep, getItem, listRunsForItem, saveActionDefinition } from "../db/repos/index.js";
+import { noneWorkspaceKind } from "../supervisor/noneKind.js";
+import { createRunSupervisor } from "../supervisor/runSupervisor.js";
+import type { WorkspaceKind } from "../supervisor/workspaceKind.js";
 import { codexServerSecretReader } from "../engine.js";
 import { storeMcpServerSecret } from "../mcp/serverSecrets.js";
 import { startAgentWriteBridge } from "../mcp/writeBridge.js";
@@ -1058,8 +1064,8 @@ const CAPABILITIES = [
   },
   {
     name: "an isolated member's surface",
-    what: "an isolated team member's turn (EO-867) is started on its agent's ordinary provider exactly as an ordinary dispatch's is: EO's `eo` server listing what its agent's grants list, beside the repository index and its attached servers and skills; its backend's ordinary permissions (`bypassPermissions` on Claude, `danger-full-access` on Codex) and no report-only lock or hook — on a credential of its attempt's that serves no posting on the item and carries where its view of the thread ends",
-    same: { eoAndIndex: true, eoListsComment: true, credential: { reportOnly: null, writes: [REPOSITORY_CHECKOUT_TOOL_NAME, SKILL_READ_TOOL_NAME] }, threadBounded: true, ordinaryPermissions: true, everyCallHooked: false, skillsOffered: true },
+    what: "an isolated team member's turn (EO-867) is started on its agent's ordinary provider exactly as an ordinary dispatch's is: EO's `eo` server listing what its agent's grants list, beside the repository index and its attached servers and skills; its backend's ordinary permissions (`bypassPermissions` on Claude, `danger-full-access` on Codex) and no report-only lock or hook — on a credential of its attempt's that serves no posting on the item and carries where its view of the thread ends; the turn built, on both, by the supervisor's own isolated-member path (`isolatedMemberTurn`, EO-872) and never by hand, its CLI's environment carrying what its copy asks its processes to (the git kind's committer email of the attempt's)",
+    same: { eoAndIndex: true, eoListsComment: true, credential: { reportOnly: null, writes: [REPOSITORY_CHECKOUT_TOOL_NAME, SKILL_READ_TOOL_NAME] }, threadBounded: true, ordinaryPermissions: true, copyEnvironment: true, everyCallHooked: false, skillsOffered: true },
   },
   {
     name: "a report-only participant's refusals",
@@ -1581,15 +1587,104 @@ function participantRefusals(answers: Record<string, unknown>): { refused: strin
   };
 }
 
-/** An isolated team member's credential (EO-867): its attempt's, posting nothing, with its thread's boundary. */
-const MEMBER_CREDENTIAL = {
-  url: "http://127.0.0.1:1/agent-write",
-  token: "item-1~repository_checkout,skill_read~member_attempt-1.signed",
-  writes: [REPOSITORY_CHECKOUT_TOOL_NAME, SKILL_READ_TOOL_NAME],
-  teamMember: { itemId: "item-1", visibleThrough: 1, exposed: [], hidden: ["report-1"] },
-};
-const memberTurn = (cwd: string, extra: Record<string, unknown> = {}) =>
-  ({ ...startOpts, cwd, writeBridge: MEMBER_CREDENTIAL, repositoryMcp, memoryScopes: [...MEMORY_SCOPES], skillScope: SCOPED_RUN, ...extra }) as never;
+/** What an isolated member's copy asks its processes to carry (EO-872): the git kind's committer email of the attempt's. */
+const MEMBER_COPY_ENVIRONMENT = { GIT_COMMITTER_EMAIL: "team-member-attempt@eo.invalid" };
+
+/**
+ * An isolated team member's turn as the engine builds it (EO-872): one
+ * member of an isolated team on an agent step, run by the supervisor, so
+ * its options are what `isolatedMemberTurn` in `runSupervisor.ts` hands
+ * the agent's ordinary provider — here `adapter`, the backend's real one.
+ * Answers what the turn was started with and what it said.
+ */
+async function isolatedMemberThroughSupervisor(
+  backend: Backend,
+  adapter: (answer: unknown) => AgentProvider,
+  toolDirectory: string | null,
+): Promise<{ opts: AgentProviderStartOptions; events: AgentEvent[]; itemDirectory: string }> {
+  const root = scratchDirectory();
+  const handle = openMigratedTestDb();
+  const started: AgentProviderStartOptions[] = [];
+  const events: AgentEvent[] = [];
+  const answer = { outcome: "clear", report: "Looked at it in my own copy." };
+  try {
+    createAgent(handle.db, { name: "Quinn", role: "qa", provider: backend, instructions: "You check work against what was asked." });
+    createStep(handle.db, { id: "check", pipelineId: "default" as never, position: -2, name: "Alignment", type: "agent", ownerRole: "qa", entryAction: "alignment" });
+    createStep(handle.db, { id: "accepted", pipelineId: "default" as never, position: -1, name: "Accepted", type: "user", ownerRole: null, entryAction: null });
+    createRoute(handle.db, { pipelineId: "default" as never, fromStepId: "check", resultKey: "aligned", label: "Aligned", target: "accepted", position: 0 });
+    const saved = saveActionDefinition(handle.db, { role: "qa", action: "alignment", description: "Check the work.", results: [{ key: "aligned", label: "Aligned", meaning: "It is all there." }] });
+    if (!saved.ok) throw new Error("no action definition");
+    const team = StepTeamSchema.parse({
+      coordination: "independent",
+      members: "isolated",
+      participants: [{ key: "own", role: "qa", instructions: "Look at it as you would alone." }],
+      outcomes: [{ key: "clear", label: "Nothing found" }],
+      completion: { rules: [], fallback: "aligned" },
+      limits: { maxParticipants: 1, maxParallel: 1 },
+    });
+    (handle.db as unknown as { $client: { prepare(sql: string): { run(...args: unknown[]): unknown } } }).$client.prepare("update pipeline_steps set team = ? where id = 'check'").run(JSON.stringify(team));
+    const item = createTestItem(handle.db, { type: "story", title: "Check the export", stepId: "check" });
+    const none = noneWorkspaceKind(join(root, "no-disk"));
+    const evidence = none.evidence!;
+    // A copy asking its member's processes to carry a variable, as the git kind's does (EO-872).
+    const kind: WorkspaceKind = {
+      ...none,
+      attach: async () => ({ mcpServers: [repositoryMcp], skills: [], notices: [] }),
+      evidence: {
+        ...evidence,
+        async copy(copyItem, workspace, source, request) {
+          const made = await evidence.copy!(copyItem, workspace, source, request);
+          return made.ok ? { ok: true, copy: { ...made.copy, environment: (variables) => ({ ...variables, ...MEMBER_COPY_ENVIRONMENT }) } } : made;
+        },
+      },
+    };
+    const real = adapter(answer);
+    const supervisor = createRunSupervisor({
+      db: handle.db,
+      provider: () => ({
+        ...real,
+        start: (opts) => {
+          started.push(opts);
+          const stream = real.start(opts);
+          return {
+            ...(stream.interrupt === undefined ? {} : { interrupt: () => stream.interrupt!() }),
+            async *[Symbol.asyncIterator]() {
+              for await (const event of stream) {
+                events.push(event);
+                yield event;
+              }
+            },
+          };
+        },
+      }),
+      limits: { globalConcurrency: 1, perAgentConcurrency: 1, perRepositoryConcurrency: 1 },
+      reportOnlyProvider: () => {
+        throw new Error("An isolated member was built as a report-only participant.");
+      },
+      teamPollMs: 5,
+      noDiskRoot: join(root, "no-disk"),
+      kinds: new Map([["none", kind]]),
+      prepareToolDirectory: () => (toolDirectory === null ? null : { path: toolDirectory, serverNames: [] }),
+      agentWriteBridge: () =>
+        ({
+          tokenFor: (itemId: string, writes?: readonly string[], scope?: string) =>
+            writes === undefined ? { url: "http://127.0.0.1:1/agent-write", token: `${itemId}.signed` } : { url: "http://127.0.0.1:1/agent-write", token: `${itemId}~${writes.join(",")}~${scope ?? ""}.signed`, writes: [...writes] },
+          close: async () => undefined,
+        }) as never,
+    });
+    try {
+      await supervisor.runOnce();
+    } finally {
+      await supervisor.shutdown();
+    }
+    const runs = listRunsForItem(handle.db, item.id);
+    if (runs.some((run) => run.status === "failed")) throw new Error(`A run failed: ${runs.map((run) => run.error).join("; ")}`);
+    if (started.length !== 1 || getItem(handle.db, item.id)?.stepId !== "accepted") throw new Error(`The member's turn did not run through to its report (${started.length} started).`);
+    return { opts: started[0]!, events, itemDirectory: join(root, "no-disk", item.id) };
+  } finally {
+    handle.close();
+  }
+}
 
 /** What an isolated member's `eo` server lists and was handed (EO-867). */
 function memberServer(env: Record<string, string> | undefined): { eoListsComment: boolean; credential: unknown; threadBounded: boolean } {
@@ -3837,21 +3932,30 @@ const CLAUDE: Record<CapabilityName, Proof> = {
   },
 
   "an isolated member's surface": async () => {
-    // Claude's delivery: options. The agent's ordinary provider, handed the
-    // member's turn — its own directory, a tool directory, the index and
-    // memory — opens it as it opens any dispatch's.
+    // Claude's delivery: options. The member's turn as the supervisor
+    // builds it (`isolatedMemberTurn`) — its own copy, a tool directory,
+    // the index, its attempt's credential — handed to the agent's ordinary
+    // provider, which opens it as it opens any dispatch's.
     const toolDirectory = scratchDirectory();
     writeToolDirectory(toolDirectory, attachmentsForRun({ servers: [catalogueServer("github")], skills: SCOPED_SKILLS }, SCOPED_RUN));
-    const turn = scripted([sdk.init(), sdk.result()]);
-    const provider = createClaudeProvider({ runQuery: turn.runQuery, eoMcp: PARTICIPANT_EO_MCP, enableCommentTool: true, config: { allowedTools: ["Bash", "mcp__eo__comment"] } });
-    const events = await collect(provider.start(memberTurn("/tmp/member-copy", { toolDirectory })));
-    const options = turn.calls[0]?.options ?? {};
+    const turns: ReturnType<typeof scripted>[] = [];
+    const { opts, events, itemDirectory } = await isolatedMemberThroughSupervisor(
+      "claude",
+      (answer) => {
+        const turn = scripted([sdk.init(), sdk.result({ result: JSON.stringify(answer), structured_output: answer })]);
+        turns.push(turn);
+        return createClaudeProvider({ runQuery: turn.runQuery, eoMcp: PARTICIPANT_EO_MCP, enableCommentTool: true, config: { allowedTools: ["Bash", "mcp__eo__comment"] } });
+      },
+      toolDirectory,
+    );
+    const options = turns[0]?.calls[0]?.options ?? {};
     const servers = options["mcpServers"] as Record<string, { env?: Record<string, string> }> | undefined;
     const hooks = (options["hooks"] as { PreToolUse?: { matcher?: string }[] } | undefined)?.PreToolUse ?? [];
     return {
       eoAndIndex: servers?.["eo"] !== undefined && servers[repositoryMcp.name] !== undefined,
       ...memberServer(servers?.["eo"]?.env),
-      ordinaryPermissions: options["permissionMode"] === "bypassPermissions" && options["cwd"] === "/tmp/member-copy" && JSON.stringify(options["tools"]) !== "[]",
+      ordinaryPermissions: options["permissionMode"] === "bypassPermissions" && options["cwd"] === opts.cwd && opts.cwd !== itemDirectory && JSON.stringify(options["tools"]) !== "[]",
+      copyEnvironment: (options["env"] as Record<string, string | undefined> | undefined)?.["GIT_COMMITTER_EMAIL"] === MEMBER_COPY_ENVIRONMENT.GIT_COMMITTER_EMAIL,
       everyCallHooked: hooks.some((hook) => hook.matcher === undefined),
       skillsOffered: events.some((event) => event.type === "skills_delivered" && event.slugs.length > 0),
     };
@@ -5438,14 +5542,23 @@ const CODEX: Record<CapabilityName, Proof> = {
 
   "an isolated member's surface": async () => {
     // Codex's delivery: the launch's configuration and the thread it opens,
-    // from the agent's ordinary provider — nothing report-only about it.
+    // from the agent's ordinary provider handed the member's turn as the
+    // supervisor builds it (`isolatedMemberTurn`) — nothing report-only about it.
     const home = scratchDirectory();
-    const { fake, provider } = codexOver(
-      { after: { "turn/start": [note.turnStarted(), note.agentMessage("done"), note.turnCompleted()] } },
-      { eoMcp: PARTICIPANT_EO_MCP, codexHome: () => home, config: { model: PARTICIPANT_MODEL }, attachedServers: [catalogueServer("github")], attachedSkills: SCOPED_SKILLS } as Parameters<typeof createCodexProvider>[0],
+    const fakes: ReturnType<typeof codexOver>["fake"][] = [];
+    const { opts, events, itemDirectory } = await isolatedMemberThroughSupervisor(
+      "codex",
+      (answer) => {
+        const { fake, provider } = codexOver(
+          { after: { "turn/start": [note.turnStarted(), note.agentMessage(JSON.stringify(answer)), note.tokenUsage({ input: 10, output: 10 }), note.turnCompleted()] } },
+          { eoMcp: PARTICIPANT_EO_MCP, codexHome: () => home, config: { model: PARTICIPANT_MODEL }, attachedServers: [catalogueServer("github")], attachedSkills: SCOPED_SKILLS } as Parameters<typeof createCodexProvider>[0],
+        );
+        fakes.push(fake);
+        return provider;
+      },
+      null,
     );
-    const cwd = scratchDirectory();
-    const events = await collect(provider.start(memberTurn(cwd)));
+    const fake = fakes[0]!;
     const args = fake.launches[0]?.args ?? [];
     const opened = fake.paramsOf("thread/start") ?? {};
     const env = Object.fromEntries(
@@ -5458,7 +5571,8 @@ const CODEX: Record<CapabilityName, Proof> = {
     return {
       eoAndIndex: servers.has("eo") && servers.has(repositoryMcp.name),
       ...memberServer(env),
-      ordinaryPermissions: opened["sandbox"] === "danger-full-access" && opened["cwd"] === cwd && !args.includes("features.shell_tool=false"),
+      ordinaryPermissions: opened["sandbox"] === "danger-full-access" && opened["cwd"] === opts.cwd && opts.cwd !== itemDirectory && !args.includes("features.shell_tool=false"),
+      copyEnvironment: (fake.launches[0]?.options.env as Record<string, string | undefined> | undefined)?.["GIT_COMMITTER_EMAIL"] === MEMBER_COPY_ENVIRONMENT.GIT_COMMITTER_EMAIL,
       everyCallHooked: args.some((argument) => argument.startsWith("hooks.PreToolUse=") && argument.includes('matcher = "*"')),
       skillsOffered: events.some((event) => event.type === "skills_delivered" && event.slugs.length > 0),
     };
