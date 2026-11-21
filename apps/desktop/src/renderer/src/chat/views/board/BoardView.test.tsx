@@ -1,11 +1,13 @@
 import type { ReactNode } from "react";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { MemoryRouter, useLocation } from "react-router-dom";
+import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   EMPTY_SPEC_SHAPE,
   NO_GIT_STATE,
+  NO_POLICY,
+  SECTION_LOCK_TEXT,
   developerRegistry,
   toRegistryView,
   type InboxItem,
@@ -18,6 +20,7 @@ import { ItemReferenceProvider } from "../../conversation/ItemReferenceProvider"
 import { ViewPublisher } from "../../../shared/view/ViewPublisher";
 import { AskAssistantContext, type AskAssistant } from "../../askAssistant";
 import { instructionsAddress } from "../agents/address";
+import { AgentsView } from "../agents/AgentsView";
 import { moduleAddress } from "../settings/org/moduleAddress";
 import { BoardView } from "./BoardView";
 
@@ -522,15 +525,84 @@ describe("a column's owner line", () => {
     expect(within(merge).queryByRole("link")).toBeNull();
   });
 
-  it("opens an agent step's role on the Agents screen with its instructions in view", async () => {
+  it("opens an agent step's agent on the Agents screen with its instructions in view", async () => {
     mockIpc();
     renderBoard();
 
     const todo = await column("To Do");
     const link = within(todo).getByRole("link", { name: IMPLEMENTER_LINE });
-    expect(link).toHaveAttribute("href", instructionsAddress("implementer"));
+    expect(link).toHaveAttribute("href", instructionsAddress("agent-implementer"));
     fireEvent.click(link);
-    expect(where()).toBe("/agents?instructions=implementer");
+    expect(where()).toBe("/agents?instructions=agent-implementer");
+  });
+
+  // Two agents of one kind are told different things (EO-876): the
+  // header of a step naming the second opens the second, not the first
+  // agent of the kind.
+  it("opens the agent the step names, not another of its kind, when two agents share it", async () => {
+    const claude = { ...kindAgent("reviewer"), id: "reviewer-claude", name: "Reviewer", provider: "claude" };
+    const codex = { ...kindAgent("reviewer"), id: "reviewer-codex", name: "Codex Reviewer", provider: "codex" };
+    const detailed = [claude, codex].map((agent) => ({
+      ...agent,
+      instructions: `${agent.name}'s own instructions.`,
+      defaultInstructions: null,
+      builtin: true,
+      config: {},
+      pipelineCount: 1,
+    }));
+    const board = mockIpc({ agents: [...["implementer", "tester"].map(kindAgent), claude, codex], states: STATES.map((step) => (step.id === "review" ? { ...step, agentId: codex.id } : step)) });
+    window.eo.ipc.invoke = vi.fn(async (channel: string, payload: unknown) => {
+      switch (channel) {
+        case "agents:listDetailed":
+          return { ok: true, data: { agents: detailed } };
+        case "runtime:status":
+          return { ok: true, data: { runtime: null } };
+        case "providers:capabilities": {
+          const { provider } = payload as { provider: string };
+          return { ok: true, data: { capabilities: { provider, models: [], modelsAreLive: false, reasoningEfforts: [] }, models: [], problem: null } };
+        }
+        case "mcpServers:list":
+          return { ok: true, data: { servers: [], keychain: { available: true, backend: "gnome_libsecret", weak: false, warning: null } } };
+        case "skills:list":
+          return { ok: true, data: { skills: [] } };
+        case "agentAttachments:list":
+          return { ok: true, data: { attachments: [] } };
+        case "policy:get":
+          return { ok: true, data: { policy: NO_POLICY, fromServer: false, yours: null } };
+        case "sections:list":
+          return { ok: true, data: { published: [], locked: [], lockText: SECTION_LOCK_TEXT } };
+        default:
+          return board(channel, payload);
+      }
+    }) as never;
+    render(
+      <QueryClientProvider client={createQueryClient()}>
+        <MemoryRouter initialEntries={["/pipelines/default"]}>
+          <ViewPublisher>
+            <ItemReferenceProvider>
+              <Routes>
+                <Route path="/agents" element={<AgentsView />} />
+                <Route path="*" element={<BoardView pipelineId="default" />} />
+              </Routes>
+              <Where />
+            </ItemReferenceProvider>
+          </ViewPublisher>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    const review = await column("Review");
+    const link = await within(review).findByRole("link", { name: /^Codex Reviewer — reviewer · / });
+    expect(link).toHaveAttribute("href", instructionsAddress(codex.id));
+    fireEvent.click(link);
+
+    const editor = await screen.findByRole("region", { name: "Edit agent" });
+    await waitFor(() => expect(within(editor).getByRole("textbox", { name: "Instructions" })).toHaveValue("Codex Reviewer's own instructions."));
+    const open = within(screen.getByRole("list", { name: "Agents" }))
+      .getAllByRole("button")
+      .filter((row) => row.getAttribute("aria-current") === "true")
+      .map((row) => row.textContent ?? "");
+    expect(open).toEqual([expect.stringContaining("Codex Reviewer")]);
   });
 
   it("leaves an agent step with no role, a person's step, EO's own step and an end as they were, with nothing to press", async () => {

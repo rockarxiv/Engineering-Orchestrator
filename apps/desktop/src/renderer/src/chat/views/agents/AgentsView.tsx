@@ -143,9 +143,8 @@ export function AgentsView() {
   // `?actions=<role>` (EO-428): the role whose Actions section somebody was sent here for.
   const [searchParams] = useSearchParams();
   const actionsRole = searchParams.get(ACTIONS_FACET);
-  // `?instructions=<role>` (EO-805): the role whose agent's instructions somebody was sent here for.
-  const instructionsRole = searchParams.get(INSTRUCTIONS_FACET);
-  const addressedRole = actionsRole ?? instructionsRole;
+  // `?instructions=<agent id>` (EO-805, EO-876): the agent whose instructions somebody was sent here for.
+  const instructionsAgentId = actionsRole === null ? searchParams.get(INSTRUCTIONS_FACET) : null;
 
   const save = useMutation({
     mutationFn: (input: IpcRequest<"agents:save">) => ipcQuery("agents:save", input),
@@ -240,15 +239,20 @@ export function AgentsView() {
   // Retired agents are listed and hidden, not dropped (EO-186).
   const live = all.filter((agent) => agent.archivedAt === null);
   const archived = all.filter((agent) => agent.archivedAt !== null);
-  // `?actions=<role>` names a role, not an agent (EO-428) — as does
-  // `?instructions=<role>` (EO-805), resolved the same way — and is asked
+  // `?actions=<role>` names a role, not an agent (EO-428), and is asked
   // of every agent rather than of what the filters leave: a live one
-  // first, since that is who a pipeline step dispatches, and otherwise a
-  // retired one — a step can still name a role nobody live holds, and
-  // its actions are still that role's. Falling through to the first
-  // agent in the list would open another role's actions under an
-  // address that named this one.
-  const addressed = addressedRole === null ? undefined : (live.find((agent) => agent.role === addressedRole) ?? archived.find((agent) => agent.role === addressedRole));
+  // first, and otherwise a retired one — its actions are still that
+  // role's. `?instructions=<agent id>` names the one agent a step names
+  // (EO-876), live or retired: two agents of one kind have different
+  // instructions, so resolving it by kind could open the other one's.
+  // Falling through to the first agent in the list would open somebody
+  // else under an address that named this one.
+  const addressed =
+    actionsRole !== null
+      ? (live.find((agent) => agent.role === actionsRole) ?? archived.find((agent) => agent.role === actionsRole))
+      : instructionsAgentId !== null
+        ? all.find((agent) => agent.id === instructionsAgentId)
+        : undefined;
   // A retired agent the address opened is listed while it is what is
   // open, so the editor is never of a row the list does not have.
   const addressedOnly = addressed !== undefined && addressed.archivedAt !== null && selectedId === null && !showArchived ? [addressed] : [];
@@ -263,12 +267,19 @@ export function AgentsView() {
   // Grouped by scope (EO-475): the global agents, then each project's own.
   const groups = groupAgentsByScope(visible, projects);
   // Never a blank editor while there is anything to edit. Until somebody
-  // picks one, an address that names a role opens the agent it resolved to
-  // — and an address naming a role no agent holds, live or retired, opens
-  // none (EO-805): the first agent would be another role's, opened under
+  // picks one, an address opens the agent it resolved to — and an
+  // address naming a role no agent holds, or an agent that is gone, opens
+  // none (EO-805): the first agent would be somebody else, opened under
   // an address that named this one.
-  const unheldRole = addressedRole !== null && addressed === undefined ? addressedRole : null;
-  const selected = creating ?? visible.find((agent) => agent.id === selectedId) ?? addressed ?? (unheldRole === null ? groups[0]?.agents[0] : undefined) ?? null;
+  const unheld =
+    addressed !== undefined
+      ? null
+      : actionsRole !== null
+        ? { title: `No agent holds the ${actionsRole} role.`, role: true }
+        : instructionsAgentId !== null
+          ? { title: "The agent this link named is not here any more.", role: false }
+          : null;
+  const selected = creating ?? visible.find((agent) => agent.id === selectedId) ?? addressed ?? (unheld === null ? groups[0]?.agents[0] : undefined) ?? null;
 
   // What this view has picked out (EO-192): the effective selection, none while New agent is open, and none on Runtimes.
   const onAgents = tab === "agents";
@@ -421,7 +432,7 @@ export function AgentsView() {
 
           {agents.isLoading ? (
             <Loading />
-          ) : selected === null && (unheldRole === null || all.length === 0) ? (
+          ) : selected === null && (unheld === null || all.length === 0) ? (
             <EmptyState
               title={all.length === 0 ? "No agents configured yet." : "No agent matches this filter."}
               {...(all.length === 0 && !locked
@@ -444,8 +455,8 @@ export function AgentsView() {
               <div className="flex min-w-0 flex-1 flex-col">
                 {selected === null ? (
                   // The list stays beside it, so another agent is one press away.
-                  <EmptyState title={`No agent holds the ${unheldRole ?? ""} role.`}>
-                    {locked ? "Pick an agent from the list." : "Pick an agent from the list, or make one for the role with New agent."}
+                  <EmptyState title={unheld?.title ?? ""}>
+                    {locked || unheld?.role !== true ? "Pick an agent from the list." : "Pick an agent from the list, or make one for the role with New agent."}
                   </EmptyState>
                 ) : (
                 <AgentEditor
@@ -457,7 +468,7 @@ export function AgentsView() {
                   activeProject={activeProject}
                   onCustomise={(agentId, projectId) => customise.mutate({ agentId, projectId })}
                   revealActions={actionsRole !== null && selected.role === actionsRole}
-                  revealInstructions={actionsRole === null && instructionsRole !== null && selected.role === instructionsRole}
+                  revealInstructions={instructionsAgentId !== null && selected.id === instructionsAgentId}
                   busy={save.isPending || bind.isPending || customise.isPending}
                   error={
                     save.error?.message ??
