@@ -746,6 +746,9 @@ export function createTeamSupervisor(deps: TeamSupervisorDeps): TeamSupervisor {
       if (!built.ok) {
         updateRun(db, run.id, { status: "failed", error: built.problem, endedAt: deps.now() });
         endTeamAttempt(db, attempt.id, { status: "failed", error: built.problem }, deps.now());
+        // Said on the item (invariant 8, EO-870): a failure counted
+        // against the retries like any other, and nobody left to guess why.
+        if (getItem(db, item.id) !== undefined) note(item, run.id, `**${attempt.assignmentKey}** (${agent.name}) did not start: ${built.problem}`);
         return;
       }
       isolated = built;

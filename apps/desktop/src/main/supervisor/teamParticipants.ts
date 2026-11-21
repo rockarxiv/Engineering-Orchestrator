@@ -139,6 +139,14 @@ export function memberCredential(bridge: Pick<AgentWriteBridge, "tokenFor">, ite
   };
 }
 
+/**
+ * Why an isolated member was not started where EO has no write bridge to
+ * sign its credential (EO-870): its team boundary reaches its `eo` server
+ * only on that credential, and a server with none serves the whole thread.
+ */
+export const MEMBER_NO_BRIDGE =
+  "EO's agent write bridge is not listening, and a member's view of the thread reaches its `eo` server only on a credential that bridge signs: without one it would be served the whole thread, its team's other reports included.";
+
 /** Whether a comment is within a boundary: the rule `participantThread` applies, as a predicate. */
 export function withinBoundary(boundary: ThreadBoundary): (comment: Pick<Comment, "id" | "createdAt">) => boolean {
   const exposed = new Set(boundary.exposedCommentIds);

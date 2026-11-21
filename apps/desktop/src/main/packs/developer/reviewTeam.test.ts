@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { SDKMessage, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
-import { TEAM_PARTICIPANT_ACTION, uuidv7, type Agent, type AgentEvent, type AgentProvider, type AgentProviderStartOptions, type Item, type LeaderTeam, type StepTeam } from "@eo/core";
+import { TEAM_PARTICIPANT_ACTION, uuidv7, type Agent, type AgentEvent, type AgentProvider, type AgentProviderStartOptions, type AgentWriteBridgeAddress, type AgentWriteTool, type Item, type LeaderTeam, type StepTeam } from "@eo/core";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createClaudeProvider } from "../../providers/claude.js";
 import { createCodexProvider } from "../../providers/codex.js";
@@ -27,7 +27,9 @@ import { BUILTIN_RUNNERS } from "./builtins.js";
 import { developerSectionRenderers } from "./sections.js";
 import { createRoleWiring } from "./wiring.js";
 import { syncRolePrompts } from "../../roles/prompts.js";
+import type { AgentWriteBridge } from "../../mcp/writeBridge.js";
 import { createRunSupervisor, type RunSupervisor } from "../../supervisor/runSupervisor.js";
+import { MEMBER_NO_BRIDGE } from "../../supervisor/teamParticipants.js";
 
 /**
  * The bundled software template's Review step as a team (EO-868): a
@@ -169,7 +171,14 @@ function providerFor(agent: Agent): AgentProvider {
   };
 }
 
-function supervisor(): RunSupervisor {
+/** A bridge that signs nothing: a member's credential, and the team boundary on it, can be read back from what its turn is handed. */
+const bridge: Pick<AgentWriteBridge, "tokenFor" | "close"> = {
+  tokenFor: (itemId: string, writes?: readonly AgentWriteTool[], scope?: string): AgentWriteBridgeAddress =>
+    writes === undefined ? { url: "http://127.0.0.1:1/agent-write", token: `${itemId}.mac` } : { url: "http://127.0.0.1:1/agent-write", token: `${itemId}~${writes.join(",")}${scope === undefined ? "" : `~${scope}`}.mac`, writes: [...writes] },
+  close: async () => undefined,
+};
+
+function supervisor(extra: Partial<Parameters<typeof createRunSupervisor>[0]> = {}): RunSupervisor {
   const made = createRunSupervisor({
     db: handle.db,
     limits: LIMITS,
@@ -181,7 +190,9 @@ function supervisor(): RunSupervisor {
     noDiskRoot: join(scratch, "no-disk"),
     builtins: BUILTIN_RUNNERS,
     sectionRenderers: developerSectionRenderers,
+    agentWriteBridge: () => bridge as AgentWriteBridge,
     ...createRoleWiring(handle.db),
+    ...extra,
   });
   supervisors.push(made);
   return made;
@@ -377,6 +388,81 @@ describe("the template's Review team, on either backend (EO-868)", () => {
       expect(listCommentsForItem(handle.db, item.id).some((comment) => comment.body.includes("the pipeline routes this result to you"))).toBe(true);
       expect(ownVerdicts(item).some((comment) => comment.body.includes("per key or per account"))).toBe(true);
     });
+
+    /**
+     * A member's team boundary reaches its `eo` server only on the
+     * credential the write bridge signs (EO-870). With no bridge — not
+     * listening yet, or never — no member starts on either backend, each
+     * attempt fails and is retried as any execution failure is, and the
+     * item says why; nothing is ever served the whole thread.
+     */
+    it("starts no member without a write bridge, saying so on the item, and moves nothing", async () => {
+      const item = story();
+      script = () => {
+        throw new Error("No member's turn may start without its team boundary.");
+      };
+
+      await supervisor({ agentWriteBridge: () => null }).runOnce();
+
+      // No backend was reached: neither adapter was handed a turn.
+      expect(started).toEqual([]);
+      expect(crossed).toEqual([]);
+      expect(getItem(handle.db, item.id)?.stepId).toBe("review");
+      expect(listTransitionsForItem(handle.db, item.id)).toEqual([]);
+      // The leader's attempt, then its retry: each a failed run, each said on the item.
+      const members = listRunsForItem(handle.db, item.id).filter((run) => run.action === TEAM_PARTICIPANT_ACTION);
+      expect(members).toHaveLength(1 + reviewTeam().limits.maxRetries);
+      expect(members.every((run) => run.status === "failed" && run.error === MEMBER_NO_BRIDGE)).toBe(true);
+      const said = listCommentsForItem(handle.db, item.id).filter((comment) => comment.authorType === "engine" && comment.body.includes(MEMBER_NO_BRIDGE));
+      expect(said.map((comment) => comment.runId).sort()).toEqual(members.map((run) => run.id).sort());
+      expect(said[0]!.body).toContain("did not start");
+      const attempts = listTeamSessionsForItem(handle.db, item.id).at(-1)!.attempts;
+      expect(attempts.every((attempt) => attempt.status === "failed" && attempt.error === MEMBER_NO_BRIDGE)).toBe(true);
+    });
+  });
+});
+
+/**
+ * The template's case (EO-870): one reviewer agent staffs the leader and
+ * every pass, so each member's turn comes after runs of its own agent in
+ * its own session — the leader's first turn, and siblings that have
+ * finished. None of them is the agent having looked.
+ */
+describe.each(ROSTERS.filter((roster) => roster.reviewers.length === 1))("a Review team staffed by one agent, $name", (roster) => {
+  beforeEach(() => freshInstallation(roster));
+
+  const PERSON = "PERSON-SAID: the 429 must say when to retry, in seconds.";
+  /** The "What the person said" section of a turn's context. */
+  const personSection = (context: string) => /## What the person said\n([\s\S]*?)(?=\n## |$)/.exec(context)?.[1] ?? "";
+
+  it("shows every member and the leader a person's comment from before the session under what the person said, not only in the count", async () => {
+    const item = story();
+    postComment(handle.db, { itemId: item.id, author: { type: "human" }, kind: "note", body: PERSON });
+    const passes: Pass[] = ["criteria", "impact", "tests", "rules"];
+    const lead = leading(passes, () => ({ verdict: "approve", feedback: "Clean.", pull_request_body: "Body." }));
+    script = (turn) => (turn.leader ? lead(turn) : { outcome: { outcome: "clear", report: `Checked ${turn.assignment}.` } });
+
+    await supervisor().runOnce();
+
+    expect(getItem(handle.db, item.id)?.stepId).toBe(routeOf("approved"));
+    const reviewers = listAgents(handle.db).filter((agent) => agent.role === "reviewer");
+    expect(reviewers).toHaveLength(1);
+    expect(started.every((one) => one.agent.id === reviewers[0]!.id)).toBe(true);
+    expect(memberTurns()).toHaveLength(passes.length);
+
+    // Some members started only after a run of the same agent in the same session had ended: the leader's first turn, and siblings.
+    const runs = listRunsForItem(handle.db, item.id).filter((run) => run.action === TEAM_PARTICIPANT_ACTION);
+    const ended = (run: (typeof runs)[number]) => run.endedAt ?? Infinity;
+    const later = runs.filter((run) => runs.some((other) => other.id !== run.id && ended(other) <= (run.startedAt ?? 0)));
+    expect(later.length).toBeGreaterThanOrEqual(passes.length);
+
+    for (const [index, one] of started.entries()) {
+      const heading = /## Your assignment: \w+|## What you lead/.exec(one.opts.context)![0];
+      expect(personSection(one.opts.context), heading).toContain(PERSON);
+      expect(personSection(one.opts.context), heading).not.toContain("Nothing since you last worked on this ticket");
+      // And it crossed the backend so.
+      expect(await crossed[index]!.said(), heading).toContain(PERSON);
+    }
   });
 });
 
