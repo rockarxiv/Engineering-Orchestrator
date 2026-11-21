@@ -30,7 +30,7 @@ import {
 } from "../db/repos/index.js";
 import { listPipelinesUpdatedSince, upsertReplicaPipeline } from "../db/repos/projectMoveRepo.js";
 import { itemTypes, projects } from "../db/schema.js";
-import { agentOfKind, createTestItem, openMigratedTestDb } from "../db/testHelpers.js";
+import { createTestItem, openMigratedTestDb } from "../db/testHelpers.js";
 import { publishTrialCommand, sendToAssist } from "../ipc/assistCommands.js";
 import { savePipeline } from "../ipc/configCommands.js";
 import { clearPublishedView } from "../ipc/currentView.js";

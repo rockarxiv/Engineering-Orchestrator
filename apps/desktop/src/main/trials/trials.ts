@@ -1,7 +1,6 @@
 import { NONE_KIND, remapStepReferences, TERMINAL_TARGET, USER_ATTENTION_TARGET, uuidv7, type IpcPayload, type IpcResponse, type Item, type Uuid } from "@eo/core";
 import type { Db } from "../db/client.js";
 import {
-  listAgents,
   createItem,
   createPipeline,
   forkModuleForTrial,
