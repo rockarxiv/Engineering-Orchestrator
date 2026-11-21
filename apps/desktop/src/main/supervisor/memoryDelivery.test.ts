@@ -586,9 +586,10 @@ describe("memory on a dispatch", () => {
     }
     /** A step owned by a role EO ships no prompt for, and a person's own agent in it, made on the Agents screen. */
     function writerAgent(): Agent {
-      createStep(handle.db, { id: "draft", pipelineId: "default" as never, position: -4, name: "Draft", type: "agent", ownerRole: "writer", entryAction: "implement" });
       saveAgent(handle.db, { name: "Writer", role: "writer", provider: "claude", model: null, instructions: "You write release notes in the house style, and nothing else.", enabled: true });
-      return agentNamed("Writer");
+      const writer = agentNamed("Writer");
+      createStep(handle.db, { id: "draft", pipelineId: "default" as never, position: -4, name: "Draft", type: "agent", agentId: writer.id, entryAction: "implement" });
+      return writer;
     }
     /** Dispatches the one item ready, then deletes it, so the next dispatch is of the next item and not of this one's next step. */
     async function dispatch(on: Item) {

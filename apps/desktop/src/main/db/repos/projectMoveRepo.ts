@@ -38,7 +38,10 @@ import { attachArrivedTools, getAgentAttachments, replaceReplicaAttachments, typ
 import { getSkill, getSkillBySlug, skillOwner, writeMovedSkill } from "./skillsRepo.js";
 import { getMcpServer } from "./mcpServersRepo.js";
 import { clearSetting, getSetting, setSetting } from "./settingsRepo.js";
-import { getAgent, takesRecordCopy, upsertReplicaAgent } from "./agentsRepo.js";
+import { getAgent, listAgents, takesRecordCopy, upsertReplicaAgent } from "./agentsRepo.js";
+import { getDevice } from "./devicesRepo.js";
+import { insertMessage, openMessageAbout } from "./messagesRepo.js";
+import { agentForKind } from "../../stepAgents.js";
 import { deleteItem } from "./itemsRepo.js";
 import { publishedSectionRow } from "./publishedSectionsRepo.js";
 import { isDiverged } from "./divergenceRepo.js";
@@ -214,7 +217,9 @@ function trialColumnsOf(trial: RecordPipeline["trial"]): {
  * disagree about.
  */
 function toRecordPipeline(db: Db, row: typeof pipelines.$inferSelect): RecordPipeline {
+  const steps = db.select().from(pipelineSteps).where(eq(pipelineSteps.pipelineId, row.id)).orderBy(asc(pipelineSteps.position)).all();
   return {
+    stepAgents: stepAgentsOf(db, steps),
     id: row.id,
     projectId: row.projectId,
     name: row.name,
@@ -233,19 +238,13 @@ function toRecordPipeline(db: Db, row: typeof pipelines.$inferSelect): RecordPip
     trial: trialOfRow(row),
     archivedAt: row.archivedAt,
     updatedAt: row.updatedAt,
-    steps: db
-      .select()
-      .from(pipelineSteps)
-      .where(eq(pipelineSteps.pipelineId, row.id))
-      .orderBy(asc(pipelineSteps.position))
-      .all()
-      .map((step) => ({
+    steps: steps.map((step) => ({
         id: step.id,
         pipelineId: step.pipelineId,
         position: step.position,
         name: step.name,
         type: step.type as RecordPipeline["steps"][number]["type"],
-        ownerRole: step.ownerRole,
+        agentId: step.agentId,
         entryAction: step.entryAction,
         instructionsSummary: step.instructionsSummary,
         isTerminal: step.isTerminal,
@@ -287,6 +286,69 @@ function toRecordPipeline(db: Db, row: typeof pipelines.$inferSelect): RecordPip
     versions: versionsAReplicaNeeds(db, row.id, row.currentVersionId),
     origin: originToSend(db, row.id),
   };
+}
+
+/**
+ * Each agent a graph's steps name, as `RecordPipeline.stepAgents` carries
+ * it (EO-875): what a record that has not got the agent binds by.
+ */
+function stepAgentsOf(db: Db, steps: readonly { type: string; agentId: string | null }[]): NonNullable<RecordPipeline["stepAgents"]> {
+  const named = new Set(steps.flatMap((step) => (step.type === "agent" && step.agentId !== null ? [step.agentId] : [])));
+  const out: NonNullable<RecordPipeline["stepAgents"]> = {};
+  if (named.size === 0) return out;
+  for (const agent of listAgents(db)) if (named.has(agent.id)) out[agent.id] = { name: agent.name, kind: agent.role, projectId: agent.projectId };
+  return out;
+}
+
+/** What the message a move's rebinding sends is filed under. */
+export const STEP_AGENT_BOUND_ON_MOVE = "step_agent_bound_on_move";
+
+/**
+ * The agent each of a moved graph's agent steps names on this record
+ * (EO-875).
+ *
+ * A step names an agent by an id that is the sender's. The project's own
+ * agents travel with the move under their ids, so a step naming one keeps
+ * it. A global agent does not travel: a step naming one keeps it where
+ * this record holds the same agent, and otherwise is bound to this
+ * record's agent of the same kind for the project (`agentForKind`, as an
+ * import binds a kind), or to none where it has no agent of the kind.
+ * Dispatch never substitutes an agent, so this is where the decision is
+ * made, and each step it changes is said to the person moving the
+ * project, in a message naming the step, the agent it named and what it
+ * runs now. A step from a sender too old to say what it names keeps its
+ * id: there is nothing to bind by.
+ *
+ * Only the current graph: a move carries no pipeline versions, so a
+ * moved item finishes on the graph the record holds.
+ */
+function bindMovedSteps(db: Db, project: RecordProject, pipeline: RecordPipeline, deviceId: string): Map<string, string | null> {
+  const bound = new Map<string, string | null>();
+  const agentsHere = listAgents(db);
+  const recipientId = getDevice(db, deviceId)?.personId ?? null;
+  for (const step of pipeline.steps) {
+    if (step.type !== "agent" || step.agentId === null) continue;
+    const sent = pipeline.stepAgents?.[step.agentId];
+    if (sent === undefined || sent.projectId !== null) continue;
+    const here = agentsHere.find((agent) => agent.id === step.agentId);
+    if (here !== undefined && here.projectId === null) continue;
+    const chosen = agentForKind(agentsHere, sent.kind, project.id);
+    bound.set(step.id, chosen?.id ?? null);
+    if (recipientId === null || openMessageAbout(db, STEP_AGENT_BOUND_ON_MOVE, step.id) !== undefined) continue;
+    insertMessage(db, {
+      recipientId,
+      projectId: project.id,
+      source: STEP_AGENT_BOUND_ON_MOVE,
+      subject: step.id,
+      body:
+        chosen === undefined
+          ? `"${step.name}" on the "${pipeline.name}" pipeline named ${sent.name}, a "${sent.kind}" agent this record does not have, and the record has no "${sent.kind}" agent for ${project.name}. ` +
+            `So the step names no agent, and its work waits there: choose an agent on the step.`
+          : `"${step.name}" on the "${pipeline.name}" pipeline named ${sent.name}, a "${sent.kind}" agent this record does not have, so it now runs **${chosen.name}**, the record's "${sent.kind}" agent for ${project.name}. ` +
+            `To have another agent run it, choose that agent on the step.`,
+    });
+  }
+  return bound;
 }
 
 /** This pipeline's template origin as a page carries it, or null (EO-532). */
@@ -742,7 +804,7 @@ export function upsertReplicaPipeline(db: Db, pipeline: RecordPipeline): "writte
           position: step.position,
           name: step.name,
           type: step.type,
-          ownerRole: step.ownerRole,
+          agentId: step.agentId,
           entryAction: step.entryAction,
           instructionsSummary: step.instructionsSummary,
           isTerminal: step.isTerminal,
@@ -771,7 +833,7 @@ export function upsertReplicaPipeline(db: Db, pipeline: RecordPipeline): "writte
                 position: step.position,
                 name: step.name,
                 type: step.type,
-                ownerRole: step.ownerRole,
+                agentId: step.agentId,
                 entryAction: step.entryAction,
                 instructionsSummary: step.instructionsSummary,
                 isTerminal: step.isTerminal,
@@ -1712,8 +1774,12 @@ export function writeAdoptedPage(db: Db, project: RecordProject, page: RecordAdo
         })
         .run();
 
+      // The agent each step names here (EO-875): a global agent the sender
+      // names may not be one this record has.
+      const movedAgents = bindMovedSteps(db, project, pipeline, deviceId);
       for (const step of pipeline.steps) {
         counts.steps += 1;
+        const agentId = movedAgents.has(step.id) ? (movedAgents.get(step.id) ?? null) : step.agentId;
         db.insert(pipelineSteps)
           .values({
             id: step.id,
@@ -1721,7 +1787,7 @@ export function writeAdoptedPage(db: Db, project: RecordProject, page: RecordAdo
             position: step.position,
             name: step.name,
             type: step.type,
-            ownerRole: step.ownerRole,
+            agentId,
             entryAction: step.entryAction,
             instructionsSummary: step.instructionsSummary,
             isTerminal: step.isTerminal,
@@ -1749,7 +1815,7 @@ export function writeAdoptedPage(db: Db, project: RecordProject, page: RecordAdo
               position: step.position,
               name: step.name,
               type: step.type,
-              ownerRole: step.ownerRole,
+              agentId,
               entryAction: step.entryAction,
               instructionsSummary: step.instructionsSummary,
               isTerminal: step.isTerminal,

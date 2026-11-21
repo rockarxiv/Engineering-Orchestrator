@@ -123,6 +123,24 @@ function afterNeverGivingUp(rows: unknown[]): unknown[] {
 }
 
 /**
+ * Step rows as they read once 0181 has run over them (EO-875): no
+ * `owner_role`, and an `agent_id` naming the agent the old staffing rule
+ * would have dispatched — on these databases, whose pipelines are on no
+ * project and whose roles each hold one seeded global agent, the
+ * dispatchable agent of the role. For the tests of earlier migrations
+ * that replay every later one and hold the step rows to what was there.
+ */
+function afterStepsNameAgents(db: DbHandle["db"], rows: unknown[]): unknown[] {
+  const agentOf = (role: unknown): string | null =>
+    typeof role !== "string" ? null : (listAgents(db).find((agent) => agent.role === role && agent.enabled && agent.archivedAt === null)?.id ?? null);
+  return rows.map((row) => {
+    if (typeof row !== "object" || row === null || !("owner_role" in row)) return row;
+    const { owner_role: role, ...rest } = row as Record<string, unknown>;
+    return { ...rest, agent_id: rest["type"] === "agent" ? agentOf(role) : null };
+  });
+}
+
+/**
  * Agent rows as they read once 0126 and 0148 have run over them (EO-479,
  * EO-593): every agent holds the `memory_note` grant — appended to an
  * allowlist it had, or as the whole of one it did not — but a preview
@@ -1286,12 +1304,13 @@ describe("runMigrations", () => {
 
     // Both rooms survive as they were: their steps, their key counters
     // and the conversations already on them.
-    const steps = handle.db.all<{ id: string; owner_role: string | null; type: string }>(
-      sql`SELECT id, owner_role, type FROM pipeline_steps WHERE id IN ('discussion', 'architecture') ORDER BY id`,
+    // (`owner_role` is `agent_id` since 0181, EO-875: a person's step names no agent.)
+    const steps = handle.db.all<{ id: string; agent_id: string | null; type: string }>(
+      sql`SELECT id, agent_id, type FROM pipeline_steps WHERE id IN ('discussion', 'architecture') ORDER BY id`,
     );
     expect(steps).toEqual([
-      { id: "architecture", owner_role: null, type: "user" },
-      { id: "discussion", owner_role: null, type: "user" },
+      { id: "architecture", agent_id: null, type: "user" },
+      { id: "discussion", agent_id: null, type: "user" },
     ]);
     // Both counters, at the values they were on: a merged agent must not
     // renumber anybody's conversations.
@@ -1306,8 +1325,9 @@ describe("runMigrations", () => {
     expect(handle.db.get<{ author_id: string }>(sql`SELECT author_id FROM comments WHERE id = 'cm-arch'`)!.author_id).toBe(ARCHITECT);
 
     // The hand-wired step follows the rename. Left behind it would name a
-    // role with no enabled agent and park every item that reached it.
-    expect(handle.db.get<{ owner_role: string }>(sql`SELECT owner_role FROM pipeline_steps WHERE id = 'their_intake'`)!.owner_role).toBe("system");
+    // role with no enabled agent and park every item that reached it —
+    // and since 0181 (EO-875) it names the merged system agent itself.
+    expect(handle.db.get<{ agent_id: string }>(sql`SELECT agent_id FROM pipeline_steps WHERE id = 'their_intake'`)!.agent_id).toBe(owner.id);
 
     // Idempotent: the tool grants are guarded on their own absence, so a
     // second pass adds no duplicates and changes nothing.
@@ -1480,10 +1500,10 @@ describe("runMigrations", () => {
     // is ever spent on a chat, and nothing arrives here by transition.
     expect(
       handle.db.get(
-        sql`SELECT pipeline_id, type, owner_role, entry_action, is_terminal, off_board
+        sql`SELECT pipeline_id, type, agent_id, entry_action, is_terminal, off_board
             FROM pipeline_steps WHERE id = 'assist'`,
       ),
-    ).toEqual({ pipeline_id: "discussions", type: "user", owner_role: null, entry_action: null, is_terminal: 0, off_board: 1 });
+    ).toEqual({ pipeline_id: "discussions", type: "user", agent_id: null, entry_action: null, is_terminal: 0, off_board: 1 });
     // Its own sequence, so one thread per page does not put holes in the
     // numbers people read and quote.
     expect(handle.db.get(sql`SELECT next_value FROM key_counters WHERE prefix = 'ASK'`)).toEqual({ next_value: 1 });
@@ -2761,10 +2781,10 @@ describe("0073: the run's directory stops being named after one kind of workspac
 
     expect(
       handle.db.get(
-        sql`SELECT pipeline_id, type, owner_role, entry_action, is_terminal, off_board
+        sql`SELECT pipeline_id, type, agent_id, entry_action, is_terminal, off_board
             FROM pipeline_steps WHERE id = 'scenario'`,
       ),
-    ).toEqual({ pipeline_id: "discussions", type: "user", owner_role: null, entry_action: null, is_terminal: 0, off_board: 1 });
+    ).toEqual({ pipeline_id: "discussions", type: "user", agent_id: null, entry_action: null, is_terminal: 0, off_board: 1 });
     expect(handle.db.get(sql`SELECT next_value FROM key_counters WHERE prefix = 'SCN'`)).toEqual({ next_value: 1 });
     // 0123's pull request watch (EO-461) is added on the way past, and
     // moves Done one along; 0168 removes 0078's `job-thread` (EO-730).
@@ -3314,12 +3334,12 @@ describe("0123: the pull request is watched after Merge Request opens it", () =>
       { id: "ready_to_merge", position: 6 },
     ]);
     expect(
-      handle.db.get(sql`SELECT pipeline_id, name, type, owner_role, entry_action, is_terminal, watch_every_minutes, watch_give_up_hours, retired_version FROM pipeline_steps WHERE id = 'pull_request_watch'`),
+      handle.db.get(sql`SELECT pipeline_id, name, type, agent_id, entry_action, is_terminal, watch_every_minutes, watch_give_up_hours, retired_version FROM pipeline_steps WHERE id = 'pull_request_watch'`),
     ).toEqual({
       pipeline_id: "default",
       name: "Watching pull request",
       type: "builtin",
-      owner_role: null,
+      agent_id: null,
       entry_action: "watch_pull_request",
       is_terminal: 0,
       watch_every_minutes: 5,
@@ -3355,7 +3375,7 @@ describe("0123: the pull request is watched after Merge Request opens it", () =>
 
     upgrade();
 
-    expect(graph()).toEqual({ ...before, steps: afterNeverGivingUp(withoutThreadSteps(before.steps)) });
+    expect(graph()).toEqual({ ...before, steps: afterStepsNameAgents(handle.db, afterNeverGivingUp(withoutThreadSteps(before.steps))) });
   });
 
   it("changes nothing when Merge Request, Done or To Do is retired", () => {
@@ -3366,7 +3386,7 @@ describe("0123: the pull request is watched after Merge Request opens it", () =>
 
       upgrade();
 
-      expect(graph(), retired).toEqual({ ...before, steps: afterNeverGivingUp(withoutThreadSteps(before.steps)) });
+      expect(graph(), retired).toEqual({ ...before, steps: afterStepsNameAgents(handle.db, afterNeverGivingUp(withoutThreadSteps(before.steps))) });
       handle.close();
       rmSync(tempDir, { recursive: true, force: true });
     }
@@ -3376,7 +3396,15 @@ describe("0123: the pull request is watched after Merge Request opens it", () =>
 
   it("changes nothing when run against a database that already has the watch", () => {
     upgradeFrom();
-    upgrade();
+    // Up to the last migration whose steps still name a role: 0123's
+    // statements write `owner_role`, which 0181 drops (EO-875).
+    const through = mkdtempSync(join(tmpdir(), "eo-pull-request-watch-through-"));
+    try {
+      writeMigrationSetBefore(through, "0181_step_agent");
+      runMigrations(handle.db, through);
+    } finally {
+      rmSync(through, { recursive: true, force: true });
+    }
     const before = graph();
 
     // The migration's own statements, a second time: the journal would
@@ -3412,9 +3440,12 @@ describe("0123: the pull request is watched after Merge Request opens it", () =>
     handle.db.run(sql`ALTER TABLE pipeline_steps ADD module_version integer`);
     // And the one 0178 adds (EO-827).
     handle.db.run(sql`ALTER TABLE pipeline_steps ADD brief text`);
+    // And the one 0181 adds (EO-875).
+    handle.db.run(sql`ALTER TABLE pipeline_steps ADD agent_id text`);
     const before = ensureCurrentVersion(handle.db, "default")!;
     handle.db.run(sql`ALTER TABLE pipeline_steps DROP COLUMN module_version`);
     handle.db.run(sql`ALTER TABLE pipeline_steps DROP COLUMN brief`);
+    handle.db.run(sql`ALTER TABLE pipeline_steps DROP COLUMN agent_id`);
     handle.db.run(sql`ALTER TABLE pipeline_steps DROP COLUMN watch_never_gives_up`);
     handle.db.run(sql`ALTER TABLE pipelines DROP COLUMN entry_rules`);
     handle.db.run(sql`ALTER TABLE pipeline_versions DROP COLUMN entry_rules`);
@@ -3806,10 +3837,13 @@ describe("0154: follow-ups are gone", () => {
       handle.db.run(sql`ALTER TABLE pipeline_steps ADD module_version integer`);
       // And the one 0178 adds (EO-827).
       handle.db.run(sql`ALTER TABLE pipeline_steps ADD brief text`);
+      // And the one 0181 adds (EO-875).
+      handle.db.run(sql`ALTER TABLE pipeline_steps ADD agent_id text`);
       const finished = createTestItem(handle.db, { type: "story", title: "A finished story", stepId: "todo" });
       const waiting = createTestItem(handle.db, { type: "story", title: "A story with a question", stepId: "todo" });
       handle.db.run(sql`ALTER TABLE pipeline_steps DROP COLUMN module_version`);
       handle.db.run(sql`ALTER TABLE pipeline_steps DROP COLUMN brief`);
+      handle.db.run(sql`ALTER TABLE pipeline_steps DROP COLUMN agent_id`);
       handle.db.run(sql`ALTER TABLE pipelines DROP COLUMN entry_rules`);
       handle.db.run(sql`ALTER TABLE pipeline_versions DROP COLUMN entry_rules`);
       handle.db.run(sql`ALTER TABLE pipeline_versions DROP COLUMN release_notes`);
@@ -3915,9 +3949,12 @@ describe("0158: an attachment owned by the item (EO-702)", () => {
       handle.db.run(sql`ALTER TABLE pipeline_steps ADD module_version integer`);
       // And the one 0178 adds (EO-827).
       handle.db.run(sql`ALTER TABLE pipeline_steps ADD brief text`);
+      // And the one 0181 adds (EO-875).
+      handle.db.run(sql`ALTER TABLE pipeline_steps ADD agent_id text`);
       const item = createTestItem(handle.db, { type: "story", title: "Has a file", stepId: "todo" });
       handle.db.run(sql`ALTER TABLE pipeline_steps DROP COLUMN module_version`);
       handle.db.run(sql`ALTER TABLE pipeline_steps DROP COLUMN brief`);
+      handle.db.run(sql`ALTER TABLE pipeline_steps DROP COLUMN agent_id`);
       handle.db.run(sql`ALTER TABLE pipeline_versions DROP COLUMN release_notes`);
       handle.db.run(sql`ALTER TABLE item_types DROP COLUMN updated_at`);
       const comment = postComment(handle.db, { itemId: item.id, author: { type: "human" }, body: "Here is the mock." });
@@ -4001,9 +4038,12 @@ describe("0171: a dependency edge's wait rule (EO-776)", () => {
       runMigrations(handle.db, tempDir);
       // Filed by today's repository, which reads the column 0178 adds to steps (EO-827).
       handle.db.run(sql`ALTER TABLE pipeline_steps ADD brief text`);
+      // And the one 0181 adds (EO-875).
+      handle.db.run(sql`ALTER TABLE pipeline_steps ADD agent_id text`);
       const first = createTestItem(handle.db, { type: "story", title: "Goes first", stepId: "todo" });
       const second = createTestItem(handle.db, { type: "story", title: "Waits", stepId: "todo" });
       handle.db.run(sql`ALTER TABLE pipeline_steps DROP COLUMN brief`);
+      handle.db.run(sql`ALTER TABLE pipeline_steps DROP COLUMN agent_id`);
       handle.db.run(sql`INSERT INTO item_deps (item_id, depends_on_id) VALUES (${second.id}, ${first.id})`);
 
       runMigrations(handle.db, join(dirname(fileURLToPath(import.meta.url)), "migrations"));

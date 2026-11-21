@@ -1,4 +1,5 @@
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useStepAgentKind } from "../shared/agents/stepAgentKind";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate } from "react-router-dom";
 import { ArrowDown, Check, Copy, GitBranch, GitFork, LoaderCircle, PanelLeftClose, PanelRight, Pencil, RotateCcw, Sparkles } from "lucide-react";
@@ -864,6 +865,7 @@ function useHandOffTargets(pipelineId: string | null, pipelines: readonly Pipeli
  */
 function DraftCard({ message, conversationId, onDone }: CardProps) {
   const queryClient = useQueryClient();
+  const agentKindOf = useStepAgentKind();
   const navigate = useNavigate();
   const { active } = useProjects();
   const { pipelines } = usePipelines(active?.id ?? null);
@@ -1044,6 +1046,7 @@ function DraftCard({ message, conversationId, onDone }: CardProps) {
             steps={steps}
             routes={routes}
             elsewhere={elsewhere}
+            agentKindOf={agentKindOf}
             entryStepId={draft.data?.entryStepId ?? null}
             {...(newStepIds === undefined ? {} : { newStepIds })}
           />
@@ -1059,7 +1062,7 @@ function DraftCard({ message, conversationId, onDone }: CardProps) {
               ))}
             </ul>
           ) : null}
-          {trial !== null ? <DesignPlan trial={trial} steps={steps} /> : null}
+          {trial !== null ? <DesignPlan trial={trial} steps={steps} agentKindOf={agentKindOf} /> : null}
           {trial?.problem ? <p className="text-xs text-danger">{trial.problem}</p> : null}
           {asking !== null ? (
             <ConfirmCoverage

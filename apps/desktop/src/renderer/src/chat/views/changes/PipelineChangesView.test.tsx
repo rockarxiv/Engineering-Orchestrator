@@ -33,15 +33,15 @@ const ANSWER = {
         stepId: "review",
         name: "Second look",
         change: "changed" as const,
-        kind: { type: "agent" as const, ownerRole: "reviewer", entryAction: "review" },
+        kind: { type: "agent" as const, agentId: "agent-reviewer", entryAction: "review" },
         fields: [
           { field: "name", before: "Review", after: "Second look" },
           { field: "instructionsSummary", before: null, after: "Look again." },
         ],
       },
       // Its kind as the older version had it, since the newer has no such step (EO-681).
-      { stepId: "qa", name: "QA", change: "removed" as const, kind: { type: "module" as const, ownerRole: null, entryAction: "run_checks" }, fields: [] },
-      { stepId: "signoff", name: "Sign-off", change: "added" as const, kind: { type: "user" as const, ownerRole: null, entryAction: null }, fields: [] },
+      { stepId: "qa", name: "QA", change: "removed" as const, kind: { type: "module" as const, agentId: null, entryAction: "run_checks" }, fields: [] },
+      { stepId: "signoff", name: "Sign-off", change: "added" as const, kind: { type: "user" as const, agentId: null, entryAction: null }, fields: [] },
       // An end is not a kind of work, so it comes with none.
       { stepId: "shipped", name: "Shipped", change: "added" as const, kind: null, fields: [] },
     ],

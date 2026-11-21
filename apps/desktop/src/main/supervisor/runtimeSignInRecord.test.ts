@@ -4,7 +4,7 @@ import type { DbHandle } from "../db/client.js";
 import { issueDevice } from "../db/repos/devicesRepo.js";
 import { createStep, listAgents, listRunsForItem, updateAgent } from "../db/repos/index.js";
 import { createPerson } from "../db/repos/peopleRepo.js";
-import { createTestItem, openMigratedTestDb } from "../db/testHelpers.js";
+import { agentOfKind, createTestItem, openMigratedTestDb } from "../db/testHelpers.js";
 import { createFakeProvider } from "../providers/fake.js";
 import { validImplementResult } from "../providers/fixtures.js";
 import { createDeviceRecord, type DeviceRecord } from "../record/deviceRecord.js";
@@ -57,7 +57,7 @@ function backends(handle: DbHandle): void {
   const agents = listAgents(handle.db);
   updateAgent(handle.db, agents.find((agent) => agent.role === "implementer")!.id, { provider: "codex" });
   updateAgent(handle.db, agents.find((agent) => agent.role === "reviewer")!.id, { provider: "claude" });
-  createStep(handle.db, { id: "draft", pipelineId: "default" as Uuid, position: 25, name: "Draft", type: "agent", ownerRole: "reviewer", entryAction: "implement" });
+  createStep(handle.db, { id: "draft", pipelineId: "default" as Uuid, position: 25, name: "Draft", type: "agent", agentId: agentOfKind(handle.db, "reviewer"), entryAction: "implement" });
 }
 
 function deviceFor(name: string, machine: string): string {

@@ -22,6 +22,7 @@ import {
 import { compareThreeWay } from "@eo/engine";
 import type { AttachmentStorage } from "../attachments/storage.js";
 import type { Db } from "../db/client.js";
+import { bindOnProject, withKind } from "../stepAgents.js";
 import {
   approveModule,
   getAgent,
@@ -36,6 +37,7 @@ import {
   getPipeline,
   getProject,
   listActiveRuns,
+  listAgents,
   listCommentsForItem,
   listMentionsForComment,
   pipelineHasWebhookEntry,
@@ -1415,8 +1417,10 @@ export function assistDraftPublished(db: Db, input: IpcPayload<"assist:draftPubl
   if (version === undefined || version.createdAt < comment.createdAt) {
     return { resolved: false, problem: "The template update is still held: this draft has not been published since it was offered." };
   }
-  const published = { steps: read.steps, routes: read.routes };
-  const live = { steps: listStepsForPipeline(db, held.pipelineId).filter((step) => !step.offBoard), routes: listRoutesForPipeline(db, held.pipelineId) };
+  // Compared by kind, as the update compares them (EO-875).
+  const agents = listAgents(db);
+  const published = { steps: read.steps.map((step) => withKind(agents, step)), routes: read.routes };
+  const live = { steps: listStepsForPipeline(db, held.pipelineId).filter((step) => !step.offBoard).map((step) => withKind(agents, step)), routes: listRoutesForPipeline(db, held.pipelineId) };
   if (compareThreeWay(published, live, published).changes.length > 0) {
     return { resolved: false, problem: "The template update is still held: the pipeline as it stands is not this draft." };
   }
@@ -1529,7 +1533,8 @@ function createAndSavePipeline(db: Db, engine: EngineHandle | undefined, project
   const pipeline = createPipeline(db, { projectId: home.projectId, name, icon: graph.icon, position: Date.now() });
   const saved = savePipeline(db, engine, {
     pipelineId: pipeline.id,
-    steps: graph.steps.map((step) => ({ ...step, pipelineId: pipeline.id })),
+    // Each kind bound on the project the pipeline is made on (EO-875).
+    steps: bindOnProject(listAgents(db), graph.steps, home.projectId).map((step) => ({ ...step, pipelineId: pipeline.id })),
     routes: graph.routes.map((route) => ({ ...route, pipelineId: pipeline.id })),
     entryStepId: graph.entryStepId ?? "",
     ...entryRulesOf(graph),

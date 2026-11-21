@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { DbHandle } from "../db/client.js";
 import { createStep, currentOutputOf, listAgents, listCommentsForItem, listMentionsForComment, needsAttention, postComment, postOutputComment } from "../db/repos/index.js";
 import { awaitsTheStep } from "../roles/interpretation.js";
-import { createTestItem, openMigratedTestDb } from "../db/testHelpers.js";
+import { agentOfKind, createTestItem, openMigratedTestDb } from "../db/testHelpers.js";
 import { getItemDetail } from "./domainQueries.js";
 import { exportItemOutput, outputFormat, setItemOutput } from "./outputCommands.js";
 
@@ -172,7 +172,7 @@ describe("the item's current output, as the detail offers it", () => {
    * developer pipeline.
    */
   function draftAndApproval() {
-    createStep(handle.db, { id: "draft", pipelineId: "default" as Uuid, position: 20, name: "Draft", type: "agent", ownerRole: "implementer", entryAction: "implement" });
+    createStep(handle.db, { id: "draft", pipelineId: "default" as Uuid, position: 20, name: "Draft", type: "agent", agentId: agentOfKind(handle.db, "implementer"), entryAction: "implement" });
     createStep(handle.db, {
       id: "approval",
       pipelineId: "default" as Uuid,

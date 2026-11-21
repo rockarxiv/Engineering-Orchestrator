@@ -21,6 +21,10 @@ import { instructionsAddress } from "../agents/address";
 import { moduleAddress } from "../settings/org/moduleAddress";
 import { BoardView } from "./BoardView";
 
+/** An agent of each kind the fixtures' steps name, as `agent-<kind>` (EO-875): a step's kind is its agent's. */
+const kindAgent = (role: string) => ({ id: `agent-${role}`, name: role, role, provider: "fake", model: null, enabled: true, archivedAt: null });
+
+
 /**
  * The chat layout's board, held to what the classic board's suite holds
  * it to (`pipeline/PipelineDashboard.test.tsx`): the same IPC, the same
@@ -122,9 +126,9 @@ function item(overrides: Partial<ItemSummary> = {}): ItemSummary {
 }
 
 const STATES = [
-  { id: "todo", pipelineId: "default", position: 0, name: "To Do", type: "agent", ownerRole: "implementer", entryAction: "implement", instructionsSummary: null, isTerminal: false },
-  { id: "pending_approval", pipelineId: "default", position: 1, name: "Pending Approval", type: "user", ownerRole: null, entryAction: null, instructionsSummary: null, isTerminal: false },
-  { id: "review", pipelineId: "default", position: 2, name: "Review", type: "agent", ownerRole: "reviewer", entryAction: "review", instructionsSummary: null, isTerminal: false },
+  { id: "todo", pipelineId: "default", position: 0, name: "To Do", type: "agent", agentId: "agent-implementer", entryAction: "implement", instructionsSummary: null, isTerminal: false },
+  { id: "pending_approval", pipelineId: "default", position: 1, name: "Pending Approval", type: "user", agentId: null, entryAction: null, instructionsSummary: null, isTerminal: false },
+  { id: "review", pipelineId: "default", position: 2, name: "Review", type: "agent", agentId: "agent-reviewer", entryAction: "review", instructionsSummary: null, isTerminal: false },
 ];
 
 function pipeline(overrides: Partial<PipelineView> = {}): PipelineView {
@@ -227,7 +231,7 @@ function mockIpc(
       case "pipelines:list":
         return { ok: true, data: { pipelines: [...(options.pipelines ?? [])] } };
       case "agents:list":
-        return { ok: true, data: { agents: [] } };
+        return { ok: true, data: { agents: ["implementer", "reviewer", "tester"].map(kindAgent) } };
       case "people:list":
         return { ok: true, data: { people: options.people ?? [], groups: options.groups ?? [], fromServer: false } };
       case "modules:list":
@@ -307,7 +311,7 @@ const column = (name: string) => screen.findByRole("region", { name: new RegExp(
 describe("the board's columns", () => {
   it("draws one per step, in position order, and a new step is a new column", async () => {
     mockIpc({
-      states: [...STATES, { id: "qa", pipelineId: "default", position: 3, name: "QA", type: "agent", ownerRole: "tester", entryAction: "test", instructionsSummary: null, isTerminal: false }],
+      states: [...STATES, { id: "qa", pipelineId: "default", position: 3, name: "QA", type: "agent", agentId: "agent-tester", entryAction: "test", instructionsSummary: null, isTerminal: false }],
     });
     renderBoard();
 
@@ -327,10 +331,10 @@ describe("the board's columns", () => {
   it("draws each column as a raised panel headed by its name, count and kind chip, and each card raised on it (EO-680)", async () => {
     mockIpc({
       states: [
-        { id: "worktree", pipelineId: "default", position: -1, name: "Worktree", type: "builtin", ownerRole: null, entryAction: "create_worktree", instructionsSummary: null, isTerminal: false },
+        { id: "worktree", pipelineId: "default", position: -1, name: "Worktree", type: "builtin", agentId: null, entryAction: "create_worktree", instructionsSummary: null, isTerminal: false },
         ...STATES,
-        { id: "merge", pipelineId: "default", position: 3, name: "Merge", type: "module", ownerRole: null, entryAction: "merge_branch", instructionsSummary: null, isTerminal: false },
-        { id: "done", pipelineId: "default", position: 4, name: "Done", type: "user", ownerRole: null, entryAction: null, instructionsSummary: null, isTerminal: true },
+        { id: "merge", pipelineId: "default", position: 3, name: "Merge", type: "module", agentId: null, entryAction: "merge_branch", instructionsSummary: null, isTerminal: false },
+        { id: "done", pipelineId: "default", position: 4, name: "Done", type: "user", agentId: null, entryAction: null, instructionsSummary: null, isTerminal: true },
       ],
       items: [item({ id: "t1", title: "On to do", stepId: "todo", stepName: "To Do" })],
       version: { id: "v7", pipelineId: "default", number: 7, createdAt: 1, createdBy: "p1", createdByName: "Dana" },
@@ -468,7 +472,7 @@ describe("the board's columns", () => {
 
   it("says when a module column is not fully tested", async () => {
     mockIpc({
-      states: [...STATES, { id: "merge", pipelineId: "default", position: 3, name: "Merge", type: "module", ownerRole: null, entryAction: "mod-merge", instructionsSummary: null, isTerminal: false }],
+      states: [...STATES, { id: "merge", pipelineId: "default", position: 3, name: "Merge", type: "module", agentId: null, entryAction: "mod-merge", instructionsSummary: null, isTerminal: false }],
       modules: [{ id: "mod-merge", slug: "merge-pr", name: "Merge pull request", testRun: null, testsStale: false, testCount: 0 }],
     });
     renderBoard();
@@ -486,7 +490,7 @@ describe("the board's columns", () => {
  * they always said with nothing to press.
  */
 describe("a column's owner line", () => {
-  const MERGE = { id: "merge", pipelineId: "default", position: 3, name: "Merge", type: "module", ownerRole: null, entryAction: "mod-merge", instructionsSummary: null, isTerminal: false };
+  const MERGE = { id: "merge", pipelineId: "default", position: 3, name: "Merge", type: "module", agentId: null, entryAction: "mod-merge", instructionsSummary: null, isTerminal: false };
   const MODULE = { id: "mod-merge", slug: "merge-pr", name: "Merge pull request", testRun: null, testsStale: false, testCount: 0 };
 
   it("names a module step's module rather than its id, and opens that module in Settings → Modules", async () => {
@@ -526,10 +530,10 @@ describe("a column's owner line", () => {
   it("leaves an agent step with no role, a person's step, EO's own step and an end as they were, with nothing to press", async () => {
     mockIpc({
       states: [
-        { id: "worktree", pipelineId: "default", position: -1, name: "Worktree", type: "builtin", ownerRole: null, entryAction: "create_worktree", instructionsSummary: null, isTerminal: false },
-        { id: "unowned", pipelineId: "default", position: 0, name: "Unowned", type: "agent", ownerRole: null, entryAction: null, instructionsSummary: null, isTerminal: false },
-        { id: "approve", pipelineId: "default", position: 1, name: "Approve", type: "user", ownerRole: null, entryAction: null, instructionsSummary: null, isTerminal: false },
-        { id: "done", pipelineId: "default", position: 2, name: "Done", type: "user", ownerRole: null, entryAction: null, instructionsSummary: null, isTerminal: true },
+        { id: "worktree", pipelineId: "default", position: -1, name: "Worktree", type: "builtin", agentId: null, entryAction: "create_worktree", instructionsSummary: null, isTerminal: false },
+        { id: "unowned", pipelineId: "default", position: 0, name: "Unowned", type: "agent", agentId: null, entryAction: null, instructionsSummary: null, isTerminal: false },
+        { id: "approve", pipelineId: "default", position: 1, name: "Approve", type: "user", agentId: null, entryAction: null, instructionsSummary: null, isTerminal: false },
+        { id: "done", pipelineId: "default", position: 2, name: "Done", type: "user", agentId: null, entryAction: null, instructionsSummary: null, isTerminal: true },
       ],
       items: [],
     });
@@ -1820,7 +1824,7 @@ describe("the column heads", () => {
 
   it("all say where they stand once one step works nowhere, and name who approves", async () => {
     mockIpc({
-      states: [...STATES, { id: "ask", pipelineId: "default", position: 3, name: "Ask", type: "agent", ownerRole: "implementer", entryAction: "implement", instructionsSummary: null, isTerminal: false }],
+      states: [...STATES, { id: "ask", pipelineId: "default", position: 3, name: "Ask", type: "agent", agentId: "agent-implementer", entryAction: "implement", instructionsSummary: null, isTerminal: false }],
       verification: [checked("todo", ["commits", "tests ran"]), unchecked("pending_approval", "Anna Ruiz"), checked("review", []), unchecked("ask")],
     });
     renderBoard();
@@ -1833,7 +1837,7 @@ describe("the column heads", () => {
     mockIpc({
       states: [
         ...STATES,
-        { id: "wait", pipelineId: "default", position: 3, name: "Wait", type: "builtin", ownerRole: null, entryAction: "wait_until", instructionsSummary: null, isTerminal: false, watch: { everyMinutes: 1, giveUpAfterHours: 2 } },
+        { id: "wait", pipelineId: "default", position: 3, name: "Wait", type: "builtin", agentId: null, entryAction: "wait_until", instructionsSummary: null, isTerminal: false, watch: { everyMinutes: 1, giveUpAfterHours: 2 } },
       ],
     });
     renderBoard();
@@ -1852,7 +1856,7 @@ describe("the column heads", () => {
           position: 3,
           name: "Wait",
           type: "builtin",
-          ownerRole: null,
+          agentId: null,
           entryAction: "wait_until",
           instructionsSummary: null,
           isTerminal: false,

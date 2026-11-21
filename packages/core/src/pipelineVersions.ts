@@ -218,7 +218,8 @@ export const VersionStepSchema = z.object({
   position: z.number(),
   name: z.string(),
   type: z.string(),
-  ownerRole: z.string().nullable(),
+  /** The agent an agent step runs (EO-875). Defaulted, so a version from before steps named agents still parses. */
+  agentId: z.string().nullable().default(null),
   entryAction: z.string().nullable(),
   /** The prose under the step — what the design calls the prompt, and what a diff of a version is mostly about. */
   instructionsSummary: z.string().nullable(),
@@ -310,7 +311,7 @@ export const VersionDiffSchema = z.object({
        * of work, and for a diff from a record older than the field.
        */
       kind: z
-        .object({ type: PipelineStepViewSchema.shape.type, ownerRole: z.string().nullable(), entryAction: z.string().nullable() })
+        .object({ type: PipelineStepViewSchema.shape.type, agentId: z.string().nullable().default(null), entryAction: z.string().nullable() })
         .nullable()
         .default(null),
       /** Field-level, so "the prompt changed" and "it was renamed" are not the same line. */
@@ -355,7 +356,7 @@ export type VersionDiff = z.infer<typeof VersionDiffSchema>;
  * deliberately, and `results` because the buttons a human step offers
  * are what a person on an older version is actually given.
  */
-const DIFFED_FIELDS = ["name", "type", "ownerRole", "entryAction", "instructionsSummary", "isTerminal", "planMode", "offBoard", "position", "results", "watch", "brief"] as const;
+const DIFFED_FIELDS = ["name", "type", "agentId", "entryAction", "instructionsSummary", "isTerminal", "planMode", "offBoard", "position", "results", "watch", "brief"] as const;
 
 /**
  * And of a route, in the order it lists them.
@@ -460,7 +461,7 @@ function shownStepField(field: (typeof DIFFED_FIELDS)[number], step: VersionStep
 function stepKind(step: VersionStep): VersionDiff["steps"][number]["kind"] {
   if (step.isTerminal) return null;
   const type = PipelineStepViewSchema.shape.type.safeParse(step.type);
-  return type.success ? { type: type.data, ownerRole: step.ownerRole, entryAction: step.entryAction } : null;
+  return type.success ? { type: type.data, agentId: step.agentId, entryAction: step.entryAction } : null;
 }
 
 export function diffVersions(

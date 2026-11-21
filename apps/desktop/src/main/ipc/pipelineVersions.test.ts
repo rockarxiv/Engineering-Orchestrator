@@ -55,7 +55,7 @@ describe("a board whose pipeline has moved on", () => {
       position: index,
       name: step.name,
       type: step.type,
-      ownerRole: step.ownerRole,
+      agentId: step.agentId,
       entryAction: step.entryAction,
       instructionsSummary: step.instructionsSummary,
       isTerminal: step.isTerminal,
@@ -247,8 +247,8 @@ describe("a board whose pipeline has moved on", () => {
    * an `agent` step to run.
    */
   it("schedules an older version's item by the step its own version declares", () => {
-    createAgent(handle.db, { name: "Implementer", role: "implementer", provider: "fake", model: null, instructions: "Do the work." });
-    const agentStep: PipelineStep = { ...decide, type: "agent", ownerRole: "implementer", entryAction: "implement" };
+    const implementer = createAgent(handle.db, { name: "Implementer", role: "implementer", provider: "fake", model: null, instructions: "Do the work." });
+    const agentStep: PipelineStep = { ...decide, type: "agent", agentId: implementer.id, entryAction: "implement" };
     // Routed, because an agent step has to say where each result its
     // action declares goes (EO-423), and `implement` declares `done`.
     const implemented: StepRouteView = { id: "route-done", pipelineId, fromStepId: decide.id, resultKey: "done", label: "Done", tone: "success", target: done.id, position: 0 };
@@ -262,7 +262,7 @@ describe("a board whose pipeline has moved on", () => {
     expect(listStepsForPipeline(handle.db, pipelineId).find((step) => step.id === decide.id)?.type).toBe("user");
 
     const input = buildEligibilityInput(handle.db, false);
-    expect(input.stepsByItem?.get(item.id)).toMatchObject({ id: decide.id, type: "agent", ownerRole: "implementer" });
+    expect(input.stepsByItem?.get(item.id)).toMatchObject({ id: decide.id, type: "agent", agentId: implementer.id });
     // Nothing stands between it and a slot: the blocker asked of the
     // live row would be "this step has no role to dispatch".
     expect(dispatchBlocker(input, item.id)).toBeNull();
@@ -449,7 +449,7 @@ describe("a board whose pipeline has moved on", () => {
       position: index,
       name: step.name,
       type: step.type,
-      ownerRole: step.ownerRole,
+      agentId: step.agentId,
       entryAction: step.entryAction,
       instructionsSummary: step.instructionsSummary,
       isTerminal: step.isTerminal,
@@ -824,7 +824,7 @@ describe("a board whose pipeline has moved on", () => {
         stepId: decide.id,
         name: "Second look",
         change: "changed",
-        kind: { type: "user", ownerRole: null, entryAction: null },
+        kind: { type: "user", agentId: null, entryAction: null },
         fields: [
           { field: "name", before: "Review", after: "Second look" },
           { field: "instructionsSummary", before: null, after: "Look again." },

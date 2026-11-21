@@ -1675,7 +1675,8 @@ function renderPipeline(db, pipelineId) {
 
   const steps = queryAll(
     db,
-    "SELECT * FROM pipeline_steps WHERE pipeline_id = ? AND off_board = 0 ORDER BY position, id",
+    // The agent each step names (EO-875), by name and kind: a step carries no role of its own.
+    "SELECT s.*, a.name AS agent_name, a.role AS agent_role FROM pipeline_steps s LEFT JOIN agents a ON a.id = s.agent_id WHERE s.pipeline_id = ? AND s.off_board = 0 ORDER BY s.position, s.id",
     pipeline.id,
   );
   const routes = queryAll(db, "SELECT * FROM step_routes WHERE pipeline_id = ? ORDER BY from_step_id, position", pipeline.id);
@@ -1703,7 +1704,9 @@ function renderPipeline(db, pipelineId) {
         ? "waits for the person"
         : step.type === "builtin"
           ? `EO runs \`${step.entry_action ?? "nothing"}\``
-          : `\`${step.owner_role ?? "nobody"}\` runs \`${step.entry_action ?? "nothing"}\``;
+          : step.agent_name == null
+            ? `nobody runs \`${step.entry_action ?? "nothing"}\` — the step names no agent`
+            : `**${step.agent_name}** (\`${step.agent_role}\`) runs \`${step.entry_action ?? "nothing"}\``;
     const flags = [step.is_terminal ? "terminal" : null, step.plan_mode ? "plans first" : null].filter(Boolean);
     const held = counts.get(step.id) ?? 0;
     lines.push(`- \`${step.id}\` **${step.name}** — ${owner}${flags.length > 0 ? ` (${flags.join(", ")})` : ""}`);
@@ -1743,7 +1746,8 @@ function renderAgents(db) {
     // whether one of them can own the step being added.
     lines.push(`- what it does: ${summarizeInstructions(agent.instructions) ?? "nothing — it has no instructions yet"}`);
 
-    const owned = steps.filter((step) => step.owner_role === agent.role);
+    // The steps that name this agent (EO-875): a step runs the agent it names and no other.
+    const owned = steps.filter((step) => step.agent_id === agent.id);
     if (owned.length === 0) lines.push("- owns no steps");
     else {
       lines.push("- owns:");

@@ -8,6 +8,7 @@ import { ownerOf } from "../../parts";
 import { NotFullyTested } from "../../modules/NotFullyTested";
 import { BoardCard } from "./BoardCard";
 import { instructionsAddress } from "../agents/address";
+import { useStepAgentKind } from "../../../shared/agents/stepAgentKind";
 import { moduleAddress } from "../settings/org/moduleAddress";
 import { descriptionFor } from "../../../shared/pipeline/dashboard";
 import { WORK_STATE_FILL, WORK_STATE_WORDS, workLoad, workStateOf, type WorkStep } from "../../../shared/items/workState";
@@ -36,15 +37,17 @@ import { WORK_STATE_FILL, WORK_STATE_WORDS, workLoad, workStateOf, type WorkStep
  * role, a person's step and EO's own say what they always said — none of
  * them a link, since there is nothing to open.
  */
-function ownerLineOf(step: PipelineStepView, module: ModuleView | undefined): { label: string; to: string | null } {
+function ownerLineOf(step: PipelineStepView, module: ModuleView | undefined, agentKind: string | null): { label: string; to: string | null } {
   if (step.type === "module" && module !== undefined) return { label: module.name, to: moduleAddress(module.id) };
-  if (step.type === "agent" && step.ownerRole !== null) return { label: step.ownerRole, to: instructionsAddress(step.ownerRole) };
+  // The kind of the agent the step names (EO-875).
+  if (step.type === "agent" && agentKind !== null) return { label: agentKind, to: instructionsAddress(agentKind) };
   return { label: ownerOf(step).label, to: null };
 }
 
 /** What runs here: the role, the module, the action, or "you" — a link where there is something to open. */
 function OwnerLine({ step, module, ink }: { step: PipelineStepView; module: ModuleView | undefined; ink: string }) {
-  const { label, to } = ownerLineOf(step, module);
+  const kindOf = useStepAgentKind();
+  const { label, to } = ownerLineOf(step, module, kindOf(step));
   const className = cn("min-w-0 truncate font-mono text-[11.5px]", ink);
   if (to !== null)
     return (
@@ -212,7 +215,8 @@ export function StepColumn({
 }) {
   const { setNodeRef, isOver } = useDroppable({ id: step.id });
   const count = countLabel(items.length, vocabulary);
-  const summary = step.instructionsSummary ?? descriptionFor(step);
+  const kindOf = useStepAgentKind();
+  const summary = step.instructionsSummary ?? descriptionFor(step, kindOf(step));
   const lane = stepLane(step);
   return (
     <section
@@ -233,7 +237,7 @@ export function StepColumn({
               {items.length}
             </span>
           ) : null}
-          {step.isTerminal ? null : <StepKindChip step={step} className="ml-auto" />}
+          {step.isTerminal ? null : <StepKindChip step={{ ...step, agentKind: kindOf(step) }} className="ml-auto" />}
         </div>
         {step.isTerminal ? (
           <span className="text-[11px] text-ink-subtle">end</span>

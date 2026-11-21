@@ -28,7 +28,7 @@ function toStep(row: typeof pipelineSteps.$inferSelect): PipelineStep {
     position: row.position,
     name: row.name,
     type: row.type as PipelineStepType,
-    ownerRole: row.ownerRole,
+    agentId: row.agentId as Uuid | null,
     entryAction: row.entryAction,
     instructionsSummary: row.instructionsSummary,
     isTerminal: row.isTerminal,
@@ -318,7 +318,7 @@ export interface CreateStepInput {
   position: number;
   name: string;
   type?: PipelineStepType;
-  ownerRole?: string | null;
+  agentId?: string | null;
   entryAction?: string | null;
   instructionsSummary?: string | null;
   isTerminal?: boolean;
@@ -435,7 +435,7 @@ export function createStep(db: Db, input: CreateStepInput): PipelineStep {
       position: input.position,
       name: input.name,
       type: input.type ?? "agent",
-      ownerRole: input.ownerRole ?? null,
+      agentId: input.agentId ?? null,
       entryAction: input.entryAction ?? null,
       instructionsSummary: input.instructionsSummary ?? null,
       isTerminal: input.isTerminal ?? false,
@@ -950,7 +950,7 @@ export function replacePipelineGraph(
         position: step.position,
         name: step.name,
         type: step.type ?? "agent",
-        ownerRole: step.ownerRole ?? null,
+        agentId: step.agentId ?? null,
         entryAction: step.entryAction ?? null,
         instructionsSummary: step.instructionsSummary ?? null,
         isTerminal: step.isTerminal ?? false,

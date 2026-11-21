@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { jiraStateOf } from "@eo/core";
 import type { DbHandle } from "../client.js";
-import { attachWorkspace, createTestItem, openMigratedTestDb } from "../testHelpers.js";
+import { agentOfKind, attachWorkspace, createTestItem, openMigratedTestDb } from "../testHelpers.js";
 import { pendingPushesForItem } from "./outboxRepo.js";
 import { createPipeline, createStep } from "./pipelineStepsRepo.js";
 import { getItem, setJiraSync } from "./itemsRepo.js";
@@ -150,7 +150,7 @@ describe("transitionItem across pipelines", () => {
       pipelineId: pipeline.id,
       position: 0,
       name: "Merging",
-      ownerRole: "implementer",
+      agentId: agentOfKind(handle.db, "implementer"),
       entryAction: "merge",
     });
     return { pipeline, merging };

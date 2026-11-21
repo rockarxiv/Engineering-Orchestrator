@@ -45,7 +45,7 @@ function agentStep(overrides: Partial<PipelineStep> = {}): PipelineStep {
     position: 0,
     name: "Classify",
     type: "agent",
-    ownerRole: "implementer",
+    agentId: implementer.id,
     entryAction: "implement",
     instructionsSummary: null,
     isTerminal: false,
@@ -65,7 +65,7 @@ function agentStep(overrides: Partial<PipelineStep> = {}): PipelineStep {
 }
 
 describe("sideEffectingServersByStep", () => {
-  it("names a sending server against every step its role owns", () => {
+  it("names a sending server against every step its agent stands on", () => {
     const helpdesk = server("helpdesk", SENDS);
     setAgentAttachment(handle.db, { agentId: implementer.id, kind: "mcpServer", id: helpdesk.id, attached: true });
 
@@ -107,7 +107,7 @@ describe("sideEffectingServersByStep", () => {
     const retired = createAgent(handle.db, { name: "Retired", role: "triage", provider: "fake", model: null, instructions: "", enabled: false });
     setAgentAttachment(handle.db, { agentId: retired.id, kind: "mcpServer", id: helpdesk.id, attached: true });
 
-    expect(sideEffectingServersByStep(handle.db, [agentStep({ ownerRole: "triage" })])).toEqual({});
+    expect(sideEffectingServersByStep(handle.db, [agentStep({ agentId: retired.id })])).toEqual({});
   });
 
   it("asks the question only of steps an agent stands on", () => {
@@ -118,8 +118,8 @@ describe("sideEffectingServersByStep", () => {
     // step is the thing this refusal asks for rather than something it
     // is ever about.
     const others = [
-      agentStep({ id: "forge", type: "builtin", ownerRole: null, entryAction: "open_pull_request" }),
-      agentStep({ id: "approve", type: "user", ownerRole: null, entryAction: null }),
+      agentStep({ id: "forge", type: "builtin", agentId: null, entryAction: "open_pull_request" }),
+      agentStep({ id: "approve", type: "user", agentId: null, entryAction: null }),
     ];
     expect(sideEffectingServersByStep(handle.db, others)).toEqual({});
   });

@@ -26,7 +26,7 @@ import {
   versionAuthorName,
 } from "../db/repos/index.js";
 import { createProject } from "../db/repos/projectsRepo.js";
-import { createTestItem, messagesFrom, openMigratedTestDb } from "../db/testHelpers.js";
+import { agentOfKind, createTestItem, messagesFrom, openMigratedTestDb } from "../db/testHelpers.js";
 import { storedGraphProblems } from "../ipc/configCommands.js";
 import { pipelineVersionsCommand } from "../ipc/pipelineCommands.js";
 import { ACTIVE_PROJECT_KEY } from "../ipc/repositoryCommands.js";
@@ -272,7 +272,14 @@ describe("a pipeline whose step ids were re-minted on import", () => {
     replacePipelineGraph(
       handle.db,
       copy.id,
-      v10.document.steps.map((step) => ({ ...step, id: local(step.id), pipelineId: copy.id as Uuid, moduleVersion: null })),
+      // The document names kinds; the import binds each to this installation's agent of it (EO-875).
+      v10.document.steps.map(({ ownerRole, ...step }) => ({
+        ...step,
+        agentId: step.type === "agent" && ownerRole !== null ? agentOfKind(handle.db, ownerRole) : null,
+        id: local(step.id),
+        pipelineId: copy.id as Uuid,
+        moduleVersion: null,
+      })),
       v10.document.routes.map((route) => ({ ...route, pipelineId: copy.id as Uuid, fromStepId: local(route.fromStepId), target: local(route.target) })),
       { entryStepId: local("worktree") },
     );

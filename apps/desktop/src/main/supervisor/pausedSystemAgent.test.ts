@@ -19,7 +19,7 @@ import {
   updateAgent,
   updateRun,
 } from "../db/repos/index.js";
-import { attachWorkspace, createTestItem, openMigratedTestDb } from "../db/testHelpers.js";
+import { agentOfKind, attachWorkspace, createTestItem, openMigratedTestDb } from "../db/testHelpers.js";
 import { sendToAssist } from "../ipc/assistCommands.js";
 import { archiveProjectCommand } from "../ipc/archiveProjectCommand.js";
 import { sendToScenario } from "../ipc/scenarioCommands.js";
@@ -52,7 +52,7 @@ let implementer: Agent;
 
 beforeEach(() => {
   handle = openMigratedTestDb();
-  createStep(handle.db, { id: "ask", pipelineId: "default" as never, position: -1, name: "Intake", type: "agent", ownerRole: "system", entryAction: "intake" });
+  createStep(handle.db, { id: "ask", pipelineId: "default" as never, position: -1, name: "Intake", type: "agent", agentId: agentOfKind(handle.db, "system"), entryAction: "intake" });
   createRoute(handle.db, { pipelineId: "default" as never, fromStepId: "ask", resultKey: "done", label: "Understood", target: "todo", position: 0 });
   const agents = listAgents(handle.db);
   system = agents.find((agent) => agent.role === "system")!;
@@ -399,7 +399,8 @@ describe("what still stops a system agent run while paused", () => {
     expect(start).not.toHaveBeenCalled();
     expect(resume).not.toHaveBeenCalled();
     expect(runsOn(own)).toEqual([]);
-    expect(supervisor.dispatchBlockerFor(own.id)).toMatchObject({ kind: "no_enabled_agent" });
+    // The step names that agent (EO-875), so it is that agent that is off.
+    expect(supervisor.dispatchBlockerFor(own.id)).toMatchObject({ kind: "agent_unavailable", agentId: system.id, why: "disabled" });
   });
 
   it("an archived agent starts nothing, and is refused once EO is resumed, as any other agent would be", async () => {

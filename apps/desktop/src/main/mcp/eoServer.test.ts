@@ -715,7 +715,8 @@ describe("the configuration tools", () => {
     const text = textOf(responses, 5);
     expect(text).toContain("work enters at: worktree");
     expect(text).toContain("`review` **Review**");
-    expect(text).toContain("`reviewer` runs `review`");
+    // The agent the step names, and its kind (EO-875).
+    expect(text).toContain("**Reviewer** (`reviewer`) runs `review`");
     // What makes changing a step consequential rather than structural.
     expect(text).toContain("1 ticket(s) sitting here right now");
     expect(text).toContain("`review` / `changes_requested` → `todo`");

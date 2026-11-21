@@ -89,7 +89,7 @@ function mockIpc(fixture: Fixture = {}) {
     "pipelineSteps:list": (payload: unknown) => {
       const pipelineId = (payload as { pipelineId: string }).pipelineId;
       const steps = fixture.stepsByPipeline?.[pipelineId] ?? [
-        { id: "ready_to_merge", pipelineId, position: 5, name: "Done", type: "user", ownerRole: null, entryAction: null, instructionsSummary: null, isTerminal: true, planMode: false },
+        { id: "ready_to_merge", pipelineId, position: 5, name: "Done", type: "user", agentId: null, entryAction: null, instructionsSummary: null, isTerminal: true, planMode: false },
       ];
       return { steps, routes: [], entryStepId: null };
     },
@@ -296,8 +296,8 @@ describe("the status map and transition fields (J-04, J-05)", () => {
         { id: "hotfix", projectId: null, name: "Hotfix", icon: null, entryStepId: "hx_build", position: 1, archivedAt: null },
       ],
       stepsByPipeline: {
-        default: [{ id: "todo", pipelineId: "default", position: 0, name: "Build it", type: "agent", ownerRole: "implementer", entryAction: "implement", instructionsSummary: null, isTerminal: false, planMode: false }],
-        hotfix: [{ id: "hx_build", pipelineId: "hotfix", position: 0, name: "Ship it", type: "agent", ownerRole: "implementer", entryAction: "implement", instructionsSummary: null, isTerminal: false, planMode: false }],
+        default: [{ id: "todo", pipelineId: "default", position: 0, name: "Build it", type: "agent", agentId: "agent-implementer", entryAction: "implement", instructionsSummary: null, isTerminal: false, planMode: false }],
+        hotfix: [{ id: "hx_build", pipelineId: "hotfix", position: 0, name: "Ship it", type: "agent", agentId: "agent-implementer", entryAction: "implement", instructionsSummary: null, isTerminal: false, planMode: false }],
       },
     });
     draw();

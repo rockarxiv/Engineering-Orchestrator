@@ -1,10 +1,10 @@
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { BUILTIN_RESULTS, qualifiedItemType, type Uuid } from "@eo/core";
+import { BUILTIN_RESULTS, qualifiedItemType, stepAgentKind, type Uuid } from "@eo/core";
 import { validatePipeline } from "@eo/engine";
 import type { DbHandle } from "../db/client.js";
-import { listPipelines, listRoutesForPipeline, listStepsForPipeline } from "../db/repos/index.js";
+import { listAgents, listPipelines, listRoutesForPipeline, listStepsForPipeline } from "../db/repos/index.js";
 import { openMigratedTestDb } from "../db/testHelpers.js";
 import { exportPipeline, importPipeline } from "../modules/pipelineTransfer.js";
 import { registryForProject } from "../registry.js";
@@ -14,7 +14,7 @@ import { bundledTemplates } from "./templates.js";
 import { loadTemplateHistory } from "./history.js";
 import { backfillPipelineOrigins } from "./origins.js";
 import { applyTemplateUpdates } from "./templateUpdates.js";
-import { storedGraphProblems } from "../ipc/configCommands.js";
+import { stepAgentsForPipeline, storedGraphProblems } from "../ipc/configCommands.js";
 
 /**
  * "Software feature to merge" is the shipped Delivery pipeline, as a
@@ -207,13 +207,14 @@ describe("the pull request step's results, routed in what EO ships", () => {
     const steps = listStepsForPipeline(handle.db, pipelineId as Uuid);
     const routes = listRoutesForPipeline(handle.db, pipelineId as Uuid);
     const step = steps.find((candidate) => candidate.entryAction === "open_pull_request")!;
-    const implementer = steps.find((candidate) => candidate.ownerRole === "implementer")!;
+    const agents = listAgents(handle.db);
+    const implementer = steps.find((candidate) => stepAgentKind(agents, candidate) === "implementer")!;
 
     const problems = validatePipeline({
       steps,
       routes,
       entryStepId: listPipelines(handle.db).find((pipeline) => pipeline.id === pipelineId)?.entryStepId ?? null,
-      staffedRoles: ["implementer", "reviewer"],
+      ...stepAgentsForPipeline(handle.db, pipelineId),
       itemCountByStep: {},
       existingSteps: [],
       registry: registryForProject(handle.db, null),

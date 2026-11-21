@@ -18,7 +18,7 @@ function step(overrides: Partial<VersionStep> = {}): VersionStep {
     position: 1,
     name: "Review",
     type: "user",
-    ownerRole: null,
+    agentId: null,
     entryAction: null,
     instructionsSummary: null,
     isTerminal: false,
@@ -155,7 +155,7 @@ describe("the difference between two versions", () => {
         stepId: "review",
         name: "Review",
         change: "changed",
-        kind: { type: "user", ownerRole: null, entryAction: null },
+        kind: { type: "user", agentId: null, entryAction: null },
         fields: [{ field: "instructionsSummary", before: null, after: "Look again." }],
       },
     ]);
@@ -170,7 +170,7 @@ describe("the difference between two versions", () => {
     const diff = diffVersions({ number: 6, steps: STEPS, routes: [] }, { number: 7, steps: [step({ position: 4 }), STEPS[1]!], routes: [] });
 
     expect(diff.steps).toEqual([
-      { stepId: "review", name: "Review", change: "changed", kind: { type: "user", ownerRole: null, entryAction: null }, fields: [{ field: "position", before: "1", after: "4" }] },
+      { stepId: "review", name: "Review", change: "changed", kind: { type: "user", agentId: null, entryAction: null }, fields: [{ field: "position", before: "1", after: "4" }] },
     ]);
   });
 
@@ -250,7 +250,7 @@ describe("the difference between two versions", () => {
 
     expect(diff.steps).toEqual([
       { stepId: "done", name: "Done", change: "added", kind: null, fields: [] },
-      { stepId: "review", name: "Review", change: "removed", kind: { type: "user", ownerRole: null, entryAction: null }, fields: [] },
+      { stepId: "review", name: "Review", change: "removed", kind: { type: "user", agentId: null, entryAction: null }, fields: [] },
     ]);
   });
 
@@ -261,16 +261,16 @@ describe("the difference between two versions", () => {
    */
   it("carries each step's kind from the version it belongs to", () => {
     const script = step({ id: "match", name: "Match", type: "module", entryAction: "match_po" });
-    const agent = step({ id: "draft", name: "Draft", type: "agent", ownerRole: "writer", entryAction: "implement" });
+    const agent = step({ id: "draft", name: "Draft", type: "agent", agentId: "writer-agent", entryAction: "implement" });
     const diff = diffVersions(
       { number: 6, steps: [script, step()], routes: [] },
       { number: 7, steps: [agent, step({ type: "builtin", entryAction: "merge" })], routes: [] },
     );
 
     expect(diff.steps.map((row) => [row.name, row.change, row.kind])).toEqual([
-      ["Draft", "added", { type: "agent", ownerRole: "writer", entryAction: "implement" }],
-      ["Review", "changed", { type: "builtin", ownerRole: null, entryAction: "merge" }],
-      ["Match", "removed", { type: "module", ownerRole: null, entryAction: "match_po" }],
+      ["Draft", "added", { type: "agent", agentId: "writer-agent", entryAction: "implement" }],
+      ["Review", "changed", { type: "builtin", agentId: null, entryAction: "merge" }],
+      ["Match", "removed", { type: "module", agentId: null, entryAction: "match_po" }],
     ]);
   });
 
@@ -321,7 +321,7 @@ describe("the difference between two versions", () => {
 
   it("reads a version written before briefs as showing the default", () => {
     const parsed = PipelineGraphSnapshotSchema.parse({
-      steps: [{ id: "review", pipelineId: "p", position: 1, name: "Review", type: "user", ownerRole: null, entryAction: null, instructionsSummary: null, isTerminal: false, planMode: false }],
+      steps: [{ id: "review", pipelineId: "p", position: 1, name: "Review", type: "user", agentId: null, entryAction: null, instructionsSummary: null, isTerminal: false, planMode: false }],
       routes: [],
     });
     expect(parsed.steps[0]?.brief).toBeNull();

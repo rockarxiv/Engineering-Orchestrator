@@ -166,7 +166,7 @@ describe("dispatch on a reused thread", () => {
       promptHash: promptHash(implementer.instructions),
       config,
     });
-    handle.db.run(sql`UPDATE pipeline_steps SET owner_role = 'tester' WHERE id = 'todo'`);
+    handle.db.run(sql`UPDATE pipeline_steps SET agent_id = ${implementer.id} WHERE id = 'todo'`);
   }
 
   /**
@@ -348,7 +348,7 @@ describe("dispatch on a reused thread", () => {
     async (role) => {
       const shipped = listAgents(handle.db).find((agent) => agent.role === role)!;
       updateAgent(handle.db, shipped.id, { config: { reuseThreadPerItem: true } });
-      handle.db.run(sql`UPDATE pipeline_steps SET owner_role = ${role} WHERE id = 'todo'`);
+      handle.db.run(sql`UPDATE pipeline_steps SET agent_id = ${shipped.id} WHERE id = 'todo'`);
       priorRun({ agentId: shipped.id, instructionsHash: promptHash(shipped.instructions) });
 
       await supervisorFor({ result: validImplementResult }).runOnce();
@@ -1060,7 +1060,7 @@ describe("a human reply resuming a parked run", () => {
     expect(listRunsForItem(handle.db, item.id)[0]?.status).toBe("cancelled");
     const note = listCommentsForItem(handle.db, item.id).find((comment) => comment.authorType === "engine");
     expect(note?.body).toContain("has since been archived");
-    expect(note?.body).toContain('give the "implementer" role another agent');
+    expect(note?.body).toContain('choose another agent on the step');
 
     // And a second reply does not start it either — the refusal is not
     // a one-tick condition, it is the row.
@@ -1099,7 +1099,7 @@ describe("a human reply resuming a parked run", () => {
     expect(listRunsForItem(handle.db, item.id)[0]?.status).toBe("cancelled");
     const note = listCommentsForItem(handle.db, item.id).find((comment) => comment.authorType === "engine");
     expect(note?.body).toContain("has since been archived");
-    expect(note?.body).toContain('give the "implementer" role another agent');
+    expect(note?.body).toContain('choose another agent on the step');
   });
 
   it("does not resume a thread when the agent is archived while the query server is resolved", async () => {

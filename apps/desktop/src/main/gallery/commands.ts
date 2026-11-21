@@ -143,12 +143,16 @@ export function previewTemplate(db: Db, template: GalleryTemplate): GalleryPrevi
   const document = template.document;
   const projectId = previewProject(db);
 
+  // Before the pipeline is made, so its steps can name the agents this
+  // adds (EO-875): a step names its agent, and a preview's steps name a
+  // preview's own wherever no real agent of the kind can run.
+  staffForPreview(db, document);
+
   const prepared = previewPipeline(db, projectId, template);
   if (!prepared.ok) return { ok: false, reason: prepared.reason };
   const pipelineId = prepared.pipelineId;
 
   // Nobody is put on its human steps: a preview's are whoever is there.
-  staffForPreview(db, document);
 
   const pipeline = getPipeline(db, pipelineId);
   const entryStepId = pipeline?.entryStepId ?? null;
@@ -219,7 +223,7 @@ function previewPipeline(db: Db, projectId: Uuid, template: GalleryTemplate): { 
     if (pipeline !== undefined && pipeline.archivedAt === null && pipeline.projectId === projectId) return { ok: true, pipelineId: pipeline.id };
   }
 
-  const imported = importPipeline(db, { document: template.document, projectId, signedInBackends: [] });
+  const imported = importPipeline(db, { document: template.document, projectId, signedInBackends: [], preview: true });
   if (!imported.ok) return { ok: false, reason: imported.reason };
 
   setSetting(db, PREVIEW_PIPELINES_KEY, { ...known, [template.token]: imported.pipelineId });

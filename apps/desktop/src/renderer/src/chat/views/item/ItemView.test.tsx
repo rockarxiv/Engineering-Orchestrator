@@ -114,9 +114,9 @@ function detail(overrides: Partial<ItemDetailData> = {}): ItemDetailData {
 const AGENTS = [{ id: "a1", name: "Implementer", role: "implementer", provider: "fake", model: null, enabled: true, archivedAt: null }];
 
 const PIPELINE_STEPS = [
-  { id: "todo", pipelineId: "default", position: 0, name: "To Do", type: "agent", ownerRole: "implementer", entryAction: "implement", instructionsSummary: null, isTerminal: false },
-  { id: "review", pipelineId: "default", position: 1, name: "Review", type: "agent", ownerRole: "reviewer", entryAction: "review", instructionsSummary: null, isTerminal: false },
-  { id: "ready_to_merge", pipelineId: "default", position: 2, name: "Merge Request", type: "builtin", ownerRole: null, entryAction: null, instructionsSummary: null, isTerminal: true },
+  { id: "todo", pipelineId: "default", position: 0, name: "To Do", type: "agent", agentId: "agent-implementer", entryAction: "implement", instructionsSummary: null, isTerminal: false },
+  { id: "review", pipelineId: "default", position: 1, name: "Review", type: "agent", agentId: "agent-reviewer", entryAction: "review", instructionsSummary: null, isTerminal: false },
+  { id: "ready_to_merge", pipelineId: "default", position: 2, name: "Merge Request", type: "builtin", agentId: null, entryAction: null, instructionsSummary: null, isTerminal: true },
 ];
 
 function liveRun(overrides: Partial<RunView> = {}): RunView {
@@ -1428,7 +1428,7 @@ describe("deciding on a human step", () => {
       position: 3,
       name: "Approval",
       type: "user",
-      ownerRole: null,
+      agentId: null,
       entryAction: null,
       instructionsSummary: "Check the Q3 numbers before it is sent.\nThen approve.",
       isTerminal: false,

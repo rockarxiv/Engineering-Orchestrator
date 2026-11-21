@@ -276,7 +276,7 @@ describe("when the backend has lost the thread", () => {
     // fresh conversation that never came (invariant #8).
     const refusal = engineNotes().find((body) => body.includes("EO did not start this run"));
     expect(refusal).toContain("Implementer has been archived");
-    expect(refusal).toContain('give the "implementer" role another agent');
+    expect(refusal).toContain('choose another agent on the step');
     // No run of this agent's is left running: the abandoned one is
     // closed, and the replacement was refused rather than written.
     expect(runsOnItem().filter((run) => run.status === "running")).toEqual([]);

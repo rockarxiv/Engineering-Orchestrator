@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { LOCAL_PERSON_ID, uuidv7, RecordPipelineSchema, withDeviceIdentity, type EntryRule, type IpcChannel, type IpcPayload, type IpcResponse, type IpcResult, type Item, type Uuid } from "@eo/core";
 import { buildTickInput } from "../supervisor/buildTickInput.js";
 import type { DbHandle } from "../db/client.js";
-import { attachWorkspace, createTestItem, openMigratedTestDb } from "../db/testHelpers.js";
+import { agentOfKind, attachWorkspace, createTestItem, openMigratedTestDb } from "../db/testHelpers.js";
 import { deleteItem, getItem, linkJiraKey, updateItem } from "../db/repos/itemsRepo.js";
 import {
   getComment,
@@ -312,7 +312,7 @@ function seenBy(machine: Desktop, itemId: string): Item | undefined {
 
 describe("a signed-in desktop with no capacity left", () => {
   it("still asks the record, which offers it work no cap holds back, and a process that can run nothing does not ask", async () => {
-    const onEveryMachine = { id: "ask", pipelineId: "default" as never, position: -1, name: "Intake", type: "agent" as const, ownerRole: "system", entryAction: "intake" };
+    const onEveryMachine = { id: "ask", pipelineId: "default" as never, position: -1, name: "Intake", type: "agent" as const, agentId: agentOfKind(recordDb.db, "system"), entryAction: "intake" };
     createStep(recordDb.db, onEveryMachine);
     createStep(annaDb.db, onEveryMachine);
     const own = createTestItem(recordDb.db, { type: "feature", title: "The system agent's", stepId: "ask" });

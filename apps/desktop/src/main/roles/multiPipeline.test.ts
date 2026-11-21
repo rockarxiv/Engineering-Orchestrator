@@ -17,7 +17,7 @@ import {
   listPipelineSteps,
   transitionItem,
 } from "../db/repos/index.js";
-import { createTestItem, openMigratedTestDb, REVIEWABLE_SPEC } from "../db/testHelpers.js";
+import { agentOfKind, createTestItem, openMigratedTestDb, REVIEWABLE_SPEC } from "../db/testHelpers.js";
 import { createScriptedProvider } from "../providers/scripted.js";
 import { createRunSupervisor } from "../supervisor/runSupervisor.js";
 import { createRoleWiring } from "../packs/developer/wiring.js";
@@ -44,7 +44,7 @@ function buildSecondPipeline() {
     pipelineId: pipeline.id,
     position: 0,
     name: "Build",
-    ownerRole: "implementer",
+    agentId: agentOfKind(handle.db, "implementer"),
     entryAction: "implement",
   });
   const qa = createStep(handle.db, {
@@ -52,7 +52,7 @@ function buildSecondPipeline() {
     pipelineId: pipeline.id,
     position: 1,
     name: "QA",
-    ownerRole: "reviewer",
+    agentId: agentOfKind(handle.db, "reviewer"),
     entryAction: "review",
   });
   const shipped = createStep(handle.db, {
@@ -61,7 +61,7 @@ function buildSecondPipeline() {
     position: 2,
     name: "Shipped",
     type: "builtin",
-    ownerRole: null,
+    agentId: null,
     entryAction: null,
     isTerminal: true,
   });
@@ -249,7 +249,7 @@ function buildHandoff() {
     pipelineId: merge.id,
     position: 0,
     name: "Merge",
-    ownerRole: "reviewer",
+    agentId: agentOfKind(handle.db, "reviewer"),
     entryAction: "review",
   });
   const merged = createStep(handle.db, {
@@ -258,7 +258,7 @@ function buildHandoff() {
     position: 1,
     name: "Merged",
     type: "user",
-    ownerRole: null,
+    agentId: null,
     entryAction: null,
     isTerminal: true,
   });
@@ -272,7 +272,7 @@ function buildHandoff() {
     pipelineId: delivery.id,
     position: 0,
     name: "Build",
-    ownerRole: "implementer",
+    agentId: agentOfKind(handle.db, "implementer"),
     entryAction: "implement",
   });
   // The hand-off itself: out of this pipeline and into the other one.

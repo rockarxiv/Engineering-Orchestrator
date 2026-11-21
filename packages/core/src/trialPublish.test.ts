@@ -12,7 +12,7 @@ const step = (id: string, position: number, name: string, extra: Partial<Resolve
   position,
   name,
   type: "agent",
-  ownerRole: "implementer",
+  agentId: "implementer-agent",
   entryAction: "implement",
   instructionsSummary: "Fix it.",
   isTerminal: false,
@@ -34,7 +34,7 @@ const graph = (steps: ResolvedGraph["steps"], routes: Partial<ResolvedGraph["rou
   entryStepId: "fix",
 });
 
-const approved = graph([step("fix", 0, "Fix"), step("done", 1, "Done", { type: "user", ownerRole: null, entryAction: null, instructionsSummary: null, isTerminal: true })], [{}]);
+const approved = graph([step("fix", 0, "Fix"), step("done", 1, "Done", { type: "user", agentId: null, entryAction: null, instructionsSummary: null, isTerminal: true })], [{}]);
 
 describe("resolvedGraphChanges", () => {
   it("says nothing changed for the same graph", () => {

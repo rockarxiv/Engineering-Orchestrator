@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DbHandle } from "../db/client.js";
 import { createRoute, createRun, createStep, getItem, listCommentsForItem, updateRun } from "../db/repos/index.js";
 import { createItemLock } from "../supervisor/itemLock.js";
-import { createTestItem, openMigratedTestDb } from "../db/testHelpers.js";
+import { agentOfKind, createTestItem, openMigratedTestDb } from "../db/testHelpers.js";
 import type { EngineHandle } from "./domainCommands.js";
 import { decideItem } from "./domainCommands.js";
 import { getItemDetail } from "./domainQueries.js";
@@ -40,7 +40,7 @@ function fakeEngine(): EngineHandle {
  */
 function marketingPipeline(): { pipelineId: string } {
   const pipelineId = "default";
-  createStep(handle.db, { id: "draft", pipelineId: pipelineId as Uuid, position: 20, name: "Draft", type: "agent", ownerRole: "implementer", entryAction: "implement" });
+  createStep(handle.db, { id: "draft", pipelineId: pipelineId as Uuid, position: 20, name: "Draft", type: "agent", agentId: agentOfKind(handle.db, "implementer"), entryAction: "implement" });
   createStep(handle.db, {
     id: "approval",
     pipelineId: pipelineId as Uuid,

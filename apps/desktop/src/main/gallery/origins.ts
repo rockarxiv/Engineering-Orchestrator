@@ -1,7 +1,8 @@
 import type { PipelineStep } from "@eo/core";
 import { sameValue } from "@eo/engine";
 import type { Db } from "../db/client.js";
-import { getSetting, listStepsForPipeline, pipelinesWithoutOrigin, recordPipelineOrigin, setSetting } from "../db/repos/index.js";
+import { getSetting, listAgents, listStepsForPipeline, pipelinesWithoutOrigin, recordPipelineOrigin, setSetting } from "../db/repos/index.js";
+import { withKind } from "../stepAgents.js";
 import { compareTemplateVersions, type TemplateHistory, type TemplateVersion } from "./history.js";
 
 /**
@@ -59,7 +60,7 @@ export interface TemplateMatch {
  * between versions the ids could not tell apart, so a person's edits
  * still never decide whether a pipeline has a template behind it.
  */
-export function matchTemplateVersion(stepIds: readonly string[], history: TemplateHistory, steps: readonly PipelineStep[] = []): TemplateMatch | null {
+export function matchTemplateVersion(stepIds: readonly string[], history: TemplateHistory, steps: readonly MatchedStep[] = []): TemplateMatch | null {
   const held = new Set(stepIds);
   const byId = new Map(steps.map((step) => [step.id as string, step]));
   let best: Candidate | null = null;
@@ -96,8 +97,14 @@ interface Candidate {
  */
 const MATCHED_SETTINGS = ["type", "entryAction", "ownerRole", "watch", "results"] as const;
 
+/**
+ * A pipeline's step as it is matched: with the kind its agent brings as
+ * `ownerRole` (`withKind`, EO-875), since a template names kinds.
+ */
+export type MatchedStep = Pick<PipelineStep, "id"> & { readonly [F in (typeof MATCHED_SETTINGS)[number]]: unknown };
+
 /** How many of a version's step settings the pipeline holds differently. Nought where the caller gave no steps. */
-function differingSettings(version: TemplateVersion, steps: ReadonlyMap<string, PipelineStep>): number {
+function differingSettings(version: TemplateVersion, steps: ReadonlyMap<string, MatchedStep>): number {
   let differing = 0;
   for (const step of version.document.steps) {
     const held = steps.get(step.id);
@@ -144,9 +151,10 @@ export function backfillPipelineOrigins(db: Db, history: TemplateHistory): Backf
   if (history.size === 0) return { ran: false, recorded: [] };
 
   const recorded: BackfillResult["recorded"] = [];
+  const agents = listAgents(db);
   db.transaction(() => {
     for (const pipelineId of pipelinesWithoutOrigin(db)) {
-      const steps = listStepsForPipeline(db, pipelineId);
+      const steps = listStepsForPipeline(db, pipelineId).map((step) => withKind(agents, step));
       const match = matchTemplateVersion(
         steps.map((step) => step.id),
         history,

@@ -111,6 +111,7 @@ export function PipelineDrawing({
   selectedStepId = null,
   onSelectStep,
   newStepIds,
+  agentKindOf = () => null,
   className,
 }: {
   steps: PipelineStepView[];
@@ -135,8 +136,15 @@ export function PipelineDrawing({
    * on a new one every step would be new, which says nothing.
    */
   newStepIds?: ReadonlySet<string>;
+  /**
+   * The kind of the agent an agent step names (EO-875), for its chip: a
+   * step carries no role of its own. The screen drawing it passes
+   * `useStepAgentKind()`; absent, a chip says "agent".
+   */
+  agentKindOf?: (step: PipelineStepView) => string | null;
   className?: string;
 }) {
+  const kindOf = agentKindOf;
   const layout = useMemo(() => layoutPipeline(steps, routes, elsewhere), [steps, routes, elsewhere]);
   const describedBy = useId();
   if (layout.steps.length === 0) return null;
@@ -236,7 +244,7 @@ export function PipelineDrawing({
                       </span>
                     ) : null}
                     {/* An end is not a kind of work: no chip, and the outline says it. Said aloud, since the outline is not. */}
-                    {step.isTerminal ? <span className="sr-only">end</span> : <StepKindChip step={step} />}
+                    {step.isTerminal ? <span className="sr-only">end</span> : <StepKindChip step={{ ...step, agentKind: kindOf(step) }} />}
                   </span>
                 </span>
                 {noted ? (

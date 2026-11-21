@@ -4,11 +4,13 @@ import {
   THREAD_PER_CONVERSATION_ACTIONS,
   isThreadPerConversationAction,
   resultsFromRoutes,
-  rolesStaffedFor,
   staffingAgents,
   staffsItem,
+  stepAgentKind,
+  stepAgentOf,
+  stepAgentRefusal,
 } from "./index.js";
-import type { StaffingAgent, StepResult, Uuid } from "./index.js";
+import type { StaffingAgent, StepAgentFacts, StepResult, Uuid } from "./index.js";
 
 /**
  * The rooms whose item is one chat (EO-210, EO-356).
@@ -150,9 +152,39 @@ describe("the staffing rule — agents scoped to a project (EO-474)", () => {
     expect(staffingAgents([agent("global")], null, real(P))).toEqual([]);
   });
 
-  it("names a role staffed for a pipeline's work exactly when somebody would be dispatched for it", () => {
-    const agents = [agent("p", { projectId: P }), agent("r", { role: "reviewer" })];
-    expect(rolesStaffedFor(agents, real(P)).sort()).toEqual(["implementer", "reviewer"]);
-    expect(rolesStaffedFor(agents, real(Q))).toEqual(["reviewer"]);
+});
+
+describe("a step's agent (EO-875)", () => {
+  const P = "0199aa00-0000-7000-8000-0000000000a1" as Uuid;
+  const agent = (overrides: Partial<StepAgentFacts> = {}): StepAgentFacts => ({
+    id: "0199aa00-0000-7000-8000-0000000000b1" as Uuid,
+    name: "Reviewer",
+    role: "reviewer",
+    enabled: true,
+    archivedAt: null,
+    deletedAt: null,
+    config: {},
+    projectId: null,
+    ...overrides,
+  });
+  const real = { previewAt: null, projectId: P };
+
+  it("reads the kind a step needs from the agent it names, and nothing from a step of another kind", () => {
+    const reviewer = agent();
+    expect(stepAgentKind([reviewer], { type: "agent", agentId: reviewer.id })).toBe("reviewer");
+    expect(stepAgentOf([reviewer], { type: "agent", agentId: reviewer.id })).toBe(reviewer);
+    expect(stepAgentKind([reviewer], { type: "agent", agentId: null })).toBeNull();
+    expect(stepAgentKind([reviewer], { type: "user", agentId: reviewer.id })).toBeNull();
+    expect(stepAgentKind([], { type: "agent", agentId: reviewer.id })).toBeNull();
+  });
+
+  it("says why the named agent cannot run an item, the gone before the switched off", () => {
+    expect(stepAgentRefusal(agent(), real)).toBeNull();
+    expect(stepAgentRefusal(agent({ enabled: false }), real)).toBe("disabled");
+    expect(stepAgentRefusal(agent({ enabled: false, archivedAt: 1 }), real)).toBe("archived");
+    expect(stepAgentRefusal(agent({ enabled: false, archivedAt: 1, deletedAt: 2 }), real)).toBe("deleted");
+    expect(stepAgentRefusal(agent({ projectId: "0199aa00-0000-7000-8000-0000000000a2" as Uuid }), real)).toBe("other_project");
+    expect(stepAgentRefusal(agent({ config: { [PREVIEW_AGENT_KEY]: true } }), real)).toBe("preview_only");
+    expect(stepAgentRefusal(agent({ config: { [PREVIEW_AGENT_KEY]: true } }), { previewAt: 1, projectId: P })).toBeNull();
   });
 });

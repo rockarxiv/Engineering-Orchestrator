@@ -116,8 +116,8 @@ describe("what a set of rules is refused for", () => {
   });
 
   it("is what validatePipeline says, and only about rules it was handed", () => {
-    const input = { steps: [], routes: [], entryStepId: null, staffedRoles: [], itemCountByStep: {}, existingSteps: [], registry: developerRegistry() };
-    const step = { id: "a", pipelineId: "p", position: 0, name: "A", type: "user", ownerRole: null, entryAction: null, instructionsSummary: null, isTerminal: true, planMode: false, offBoard: false, results: [], inputs: {}, timeoutMs: null, watch: null, workspaceMode: "isolated", workspaceId: null, ownerPersonId: null, ownerGroupId: null } as never;
+    const input = { steps: [], routes: [], entryStepId: null, agents: [], projectId: null, itemCountByStep: {}, existingSteps: [], registry: developerRegistry() };
+    const step = { id: "a", pipelineId: "p", position: 0, name: "A", type: "user", agentId: null, entryAction: null, instructionsSummary: null, isTerminal: true, planMode: false, offBoard: false, results: [], inputs: {}, timeoutMs: null, watch: null, workspaceMode: "isolated", workspaceId: null, ownerPersonId: null, ownerGroupId: null } as never;
     const judged = (entryRules?: EntryRule[]) => validatePipeline({ ...input, steps: [step], entryStepId: "a", ...(entryRules === undefined ? {} : { entryRules }) }).map((problem) => problem.message);
 
     expect(judged().join()).not.toContain("entry rule");
@@ -204,9 +204,9 @@ describe("a module rule (EO-736)", () => {
   });
 
   it("is what validatePipeline refuses, with the module catalog it is given", () => {
-    const step = { id: "a", pipelineId: "p", position: 0, name: "A", type: "user", ownerRole: null, entryAction: null, instructionsSummary: null, isTerminal: true, planMode: false, offBoard: false, results: [], inputs: {}, timeoutMs: null, watch: null, workspaceMode: "isolated", workspaceId: null, ownerPersonId: null, ownerGroupId: null } as never;
+    const step = { id: "a", pipelineId: "p", position: 0, name: "A", type: "user", agentId: null, entryAction: null, instructionsSummary: null, isTerminal: true, planMode: false, offBoard: false, results: [], inputs: {}, timeoutMs: null, watch: null, workspaceMode: "isolated", workspaceId: null, ownerPersonId: null, ownerGroupId: null } as never;
     const judged = (modules: EntryCheckModule[]) =>
-      validatePipeline({ steps: [step], routes: [], entryStepId: "a", staffedRoles: [], itemCountByStep: {}, existingSteps: [], registry: developerRegistry(), modules: modules as never, entryRules: [{ kind: "module", module: "m1" }] })
+      validatePipeline({ steps: [step], routes: [], entryStepId: "a", agents: [], projectId: null, itemCountByStep: {}, existingSteps: [], registry: developerRegistry(), modules: modules as never, entryRules: [{ kind: "module", module: "m1" }] })
         .filter((problem) => problem.severity === "error" && problem.message.includes("entry rule"))
         .map((problem) => problem.message);
     expect(judged([fit])).toEqual([]);

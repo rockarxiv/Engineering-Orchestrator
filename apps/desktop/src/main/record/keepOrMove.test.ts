@@ -6,7 +6,7 @@ import { EMPTY_SPEC_SHAPE, LOCAL_PERSON_ID, type IpcPayload, type Item, type Rec
 import { sql } from "drizzle-orm";
 import { buildTickInput } from "../supervisor/buildTickInput.js";
 import type { DbHandle } from "../db/client.js";
-import { createTestItem, messagesAboutJob, openMigratedTestDb } from "../db/testHelpers.js";
+import { agentOfKind, createTestItem, messagesAboutJob, openMigratedTestDb } from "../db/testHelpers.js";
 import { getItemWatch, startItemWatch, updateItemWatch } from "../db/repos/itemWatchesRepo.js";
 import {
   abandonAdoption,
@@ -419,7 +419,7 @@ describe("signing in with two local projects and keeping both", () => {
 
   it("offers work no cap holds back on a kept project at a capacity of nought (EO-616)", async () => {
     const support = localProject("Support", "SUP");
-    createStep(annaDb.db, { id: "ask", pipelineId: "default" as never, position: -1, name: "Intake", type: "agent", ownerRole: "system", entryAction: "intake" });
+    createStep(annaDb.db, { id: "ask", pipelineId: "default" as never, position: -1, name: "Intake", type: "agent", agentId: agentOfKind(annaDb.db, "system"), entryAction: "intake" });
     const own = createTestItem(annaDb.db, { type: "feature", title: "The system agent's", stepId: "ask", projectId: support.id });
     itemOn(support.id, "A refund");
     signIn(anna);

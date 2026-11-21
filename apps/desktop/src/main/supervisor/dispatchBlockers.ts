@@ -116,9 +116,10 @@ export type RerunBlocker =
    * archived one does not — nothing un-archives — so a person sent
    * looking for it would be sent looking for nothing.
    *
-   * `role` travels with the name so the fix can point at the thing that
-   * still exists. The step is owned by a role, not by this agent, and
-   * another agent on that role is what makes the step run again.
+   * `role` — the agent's kind — travels with the name so the fix can
+   * point at what still exists: the step names this agent (EO-875), so
+   * choosing another agent on the step is what makes it run again, and
+   * another agent of the kind is who can still be asked.
    */
   | { kind: "agent_archived"; agentName: string; role: string }
   /**
@@ -220,7 +221,7 @@ export function blockerWords(blocker: Exclude<RerunBlocker, { kind: "run_active"
         // move is to go and un-archive it, and there is nothing to
         // press: the row is kept for the record and nothing brings it
         // back into service.
-        fix: `Archiving is one way, so give the "${blocker.role}" role another agent and mention that one.`,
+        fix: `Archiving is one way, so choose another agent on the step, or mention another "${blocker.role}" agent.`,
       };
     case "mention_depth":
       return {
@@ -298,14 +299,13 @@ export function blockerWords(blocker: Exclude<RerunBlocker, { kind: "run_active"
             fix: `Nothing to do: it carries on by itself once ${blocker.dependencyKey} gets there or finishes. Or remove the dependency.`,
           };
     }
-    case "no_enabled_agent":
+    case "no_agent":
       return {
-        condition:
-          blocker.role === null
-            ? "this step names no role, so nobody can be staffed on it"
-            : `no enabled agent holds the "${blocker.role}" role`,
-        fix: "Enable one in Settings.",
+        condition: "this step names no agent, so nobody can run it",
+        fix: "Choose an agent for the step.",
       };
+    case "agent_unavailable":
+      return agentUnavailableWords(blocker);
     case "dependency_pull_request_pending":
       return {
         condition: `its branch is built on ${blocker.dependencyKey}'s, so it waits for ${blocker.dependencyKey} to open its pull request`,
@@ -323,6 +323,60 @@ export function blockerWords(blocker: Exclude<RerunBlocker, { kind: "run_active"
         fix: "Move it to one.",
       };
   }
+}
+
+/**
+ * Why the agent a step names cannot run this item, and what to do
+ * (EO-875). The step names that agent and no other, so the fix is
+ * always about it or about the step: enable it where it can be enabled,
+ * otherwise choose another agent on the step. Never "another agent of
+ * the kind will pick it up", because none will.
+ */
+function agentUnavailableWords(blocker: Extract<ItemBlocker, { kind: "agent_unavailable" }>): { condition: string; fix: string } {
+  const name = blocker.agentName ?? "the agent it names";
+  switch (blocker.why) {
+    case "disabled":
+      return {
+        condition: `${name}, the agent this step names, is disabled`,
+        fix: `Enable ${name} in Agents, or choose another agent on the step.`,
+      };
+    case "archived":
+      return {
+        condition: `${name}, the agent this step names, has been archived`,
+        fix: "Choose another agent on the step.",
+      };
+    case "deleted":
+      return {
+        condition: `${name}, the agent this step names, has been deleted`,
+        fix: "Choose another agent on the step.",
+      };
+    case "missing":
+      return {
+        condition: "the agent this step names is not on this installation",
+        fix: "Choose another agent on the step.",
+      };
+    case "other_project":
+      return {
+        condition: `${name}, the agent this step names, works for another project than this ticket's`,
+        fix: "Choose an agent of this ticket's project, or a global one, on the step.",
+      };
+    case "preview_only":
+      return {
+        condition: `${name}, the agent this step names, runs previews only`,
+        fix: "Choose another agent on the step.",
+      };
+  }
+}
+
+/**
+ * The comment EO posts once on an item that reaches a step it cannot run
+ * (EO-875, invariant 8): the step names no agent, or one that cannot run
+ * this item. A note on the thread, said once for each stay on the step
+ * (`noteUnrunnableSteps`), naming the agent and the fix.
+ */
+export function unrunnableStepNote(stepName: string, blocker: Extract<ItemBlocker, { kind: "no_agent" | "agent_unavailable" }>): string {
+  const { condition, fix } = blockerWords(blocker);
+  return `Nothing will run "${stepName}" for this ticket: ${condition}. ${fix} It is not handed to another agent of the same kind.`;
 }
 
 /**
@@ -435,24 +489,24 @@ export function outOfProjectMentionRefusal(words: OutOfProject): string {
 export function outOfProjectDispatchRefusal(words: OutOfProject): string {
   return (
     `EO did not start this run: ${outOfProjectCondition(words)}, so it does not run here. ` +
-    "Give this ticket's project an agent of its own in this role, or use a global one. Nothing has changed."
+    "Choose an agent of this ticket's project, or a global one, on the step. Nothing has changed."
   );
 }
 
 /**
  * A parked run, a run interrupted by a restart or a run stopped for a
  * forced restart, whose agent has moved to another project since —
- * written off rather than carried on, and the item left for whoever
- * staffs the step for its own project.
+ * written off rather than carried on, and the item left for its step to
+ * name an agent that works for its own project (EO-875).
  *
  * `what` is the run in the person's words, as the start of a sentence
  * ("The run that was waiting for your answer here"), and `role` is the
- * step's role, which is who picks the work up now.
+ * agent's kind, the kind of agent the step needs.
  */
 export function outOfProjectRecoveryNote(words: OutOfProject, what: string, role: string): string {
   return (
     `${what} is closed rather than carried on: ${outOfProjectCondition(words)}. ` +
-    `This ticket is free to carry on — whoever works for its project in the "${role}" role picks the step up again.`
+    `This ticket is free to carry on once its step names a "${role}" agent that works for its project.`
   );
 }
 

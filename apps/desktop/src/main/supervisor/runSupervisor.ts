@@ -97,7 +97,8 @@ import {
   builtinResults,
   isBuiltinAction,
   servesProject,
-  staffingAgents,
+  stepAgentOf,
+  stepAgentRefusal,
   isThreadNotFound,
   isTurnNotEnded,
   TurnNotEndedError,
@@ -321,7 +322,7 @@ import { ASSIST_ACTION, ASSIST_STEP, conversationTurnOptions, CONVERSATION_SETTI
 import { changeReferenceProblem, createModuleChangeStaging, type ModuleChangeStaging } from "../roles/moduleChangeProposals.js";
 import { attachRunFiles } from "./runAttachments.js";
 import { blockedByActiveRunRefusal, createItemLock, type ItemHold, type ItemLock } from "./itemLock.js";
-import { archivedAgentRefusal, mentionDepthRefusal, outOfProjectDispatchRefusal, outOfProjectMentionRefusal, outOfProjectRecoveryNote, pullRequestHoldNote, rerunRefusal, stoppedByHandNote, type GateRefusal, type ItemBlocker, type OutOfProject, type RerunBlocker } from "./dispatchBlockers.js";
+import { archivedAgentRefusal, mentionDepthRefusal, outOfProjectDispatchRefusal, outOfProjectMentionRefusal, outOfProjectRecoveryNote, pullRequestHoldNote, rerunRefusal, stoppedByHandNote, unrunnableStepNote, type GateRefusal, type ItemBlocker, type OutOfProject, type RerunBlocker } from "./dispatchBlockers.js";
 import { watchDependencyRegressions } from "./dependencyGates.js";
 import { declaresNoCriteria, isMissingCriteriaAsk, missingCriteriaRefusal } from "./reviewCriteria.js";
 import { recordStop, stopStands } from "./stoppedByHand.js";
@@ -9801,9 +9802,9 @@ export function createRunSupervisor(
     }
 
     // Still the same step by id — but a step is data somebody can edit
-    // while preflight is open (invariant #7). Change Review's owner role
-    // to `implementer` and generic eligibility still says yes: the step
-    // is staffed, the item is on it, nothing is held. What it cannot
+    // while preflight is open (invariant #7). Change the agent Review
+    // names to the implementer and generic eligibility still says yes:
+    // the step's agent can run, the item is on it, nothing is held. What it cannot
     // see is that the request was classified against a contract that has
     // since stopped holding, and admitting it would run the reviewer at
     // a step the reviewer no longer owns, with an action it may no
@@ -9869,10 +9870,9 @@ export function createRunSupervisor(
 
   function whereItStandsNow(item: Item): { nowAt: string; rerunWith: string | null } {
     const step = stepForItem(db, item);
-    const owner =
-      step && step.type === "agent" && !step.isTerminal && step.ownerRole !== null
-        ? staffingAgents(listAgents(db), step.ownerRole, item)[0]
-        : undefined;
+    // The agent the step names (EO-875), which is who a rerun is asked of.
+    const named = step && !step.isTerminal ? stepAgentOf(listAgents(db), step) : undefined;
+    const owner = named !== undefined && stepAgentRefusal(named, item) === null ? named : undefined;
     return { nowAt: step?.name ?? "no step", rerunWith: owner?.name ?? null };
   }
 
@@ -10370,7 +10370,7 @@ export function createRunSupervisor(
           body: claimedElsewhere
             ? `Two runs on this ticket were interrupted by an app restart. Only one of them can carry on — a ticket has one checkout, and two agents in it is a diff nobody wrote — so attempt ${run.attempt} is marked orphaned and the other one continues. The ticket stays in "${item.stepId}".`
             : retiredAgent
-              ? `${retiredAgent.name} was archived while EO was not running, so the run it was interrupted in the middle of (attempt ${run.attempt}) is marked orphaned rather than resumed: an archived agent is dispatched to nothing, and nothing brings one back. The ticket stays in "${item.stepId}" for the next agent on the "${retiredAgent.role}" role to pick up.`
+              ? `${retiredAgent.name} was archived while EO was not running, so the run it was interrupted in the middle of (attempt ${run.attempt}) is marked orphaned rather than resumed: an archived agent is dispatched to nothing, and nothing brings one back. The ticket stays in "${item.stepId}" until its step names another agent.`
               : outOfProjectAgent
                 ? outOfProjectRecoveryNote(outOfProjectWords(outOfProjectAgent, item), `The run interrupted by the restart (attempt ${run.attempt})`, outOfProjectAgent.role)
                 : (notResumable ??
@@ -10831,6 +10831,9 @@ export function createRunSupervisor(
       // And an item whose pull request waits for its stacked
       // dependency's (EO-781) is told so, once for each stay on the step.
       notePullRequestHolds(tickInput);
+      // And an item on a step that names no agent, or one that cannot run
+      // it (EO-875), is told which and what to do, once for each stay.
+      noteUnrunnableSteps(tickInput);
       // **The device asks; it does not decide** (EO-324, ARCHITECTURE.md, "The record"). What
       // comes back is work the record has already leased to this
       // machine. In one process that is the same sweep-pick-claim this
@@ -10951,8 +10954,7 @@ export function createRunSupervisor(
       if (asked.has(item.id)) continue;
       const initiationId = workflowInitiationId(item, REVIEW_ACTION);
       const step = stepForItem(db, item);
-      const reviewer =
-        staffingAgents(input.agents, step?.ownerRole ?? null, item)[0] ?? null;
+      const reviewer = (step === undefined ? undefined : stepAgentOf(input.agents, step)) ?? null;
       refuseDispatch(
         item,
         reviewer,
@@ -10987,6 +10989,38 @@ export function createRunSupervisor(
       const step = stepForItem(db, item);
       if (step === undefined) continue;
       const body = pullRequestHoldNote(step.name, blocker);
+      const enteredAt = stepEntryTimes(db, [item.id]).get(item.id) ?? item.createdAt;
+      const alreadySaid = listCommentsForItem(db, item.id, { since: enteredAt }).some(
+        (comment) => comment.authorType === "engine" && comment.body === body,
+      );
+      if (alreadySaid) continue;
+      postComment(db, { itemId: item.id, author: { type: "engine" }, kind: "note", body });
+      onItemChanged(item.id);
+    }
+  }
+
+  /**
+   * Says once, in the thread, why an item is not dispatched at a step
+   * that names no agent or names one that cannot run it (EO-875,
+   * invariant 8): which agent, and what to do — enable it, or choose
+   * another agent on the step. The step names that agent and no other,
+   * so the item is never handed to another agent of the same kind, and
+   * without this it would sit on the board with nothing on its thread
+   * saying why.
+   *
+   * `notePullRequestHolds`' shape: a note and no run, since the fix is
+   * the step's or the agent's and lifts the hold by itself on the next
+   * tick; said once for each stay on the step, by asking the thread
+   * whether these words were already posted since the item entered it.
+   * Off-board steps are left alone: they hold conversations, which are
+   * answered when somebody writes in them rather than dispatched here.
+   */
+  function noteUnrunnableSteps(input: TickInput<GateRefusal>): void {
+    for (const { item, blocker } of dispatchBlockers(input)) {
+      if (blocker.kind !== "no_agent" && blocker.kind !== "agent_unavailable") continue;
+      const step = stepForItem(db, item);
+      if (step === undefined || step.offBoard) continue;
+      const body = unrunnableStepNote(step.name, blocker);
       const enteredAt = stepEntryTimes(db, [item.id]).get(item.id) ?? item.createdAt;
       const alreadySaid = listCommentsForItem(db, item.id, { since: enteredAt }).some(
         (comment) => comment.authorType === "engine" && comment.body === body,
@@ -12135,7 +12169,7 @@ export function createRunSupervisor(
       body:
         `${agent.name} was waiting for your answer here, and has since been archived. An archived agent is ` +
         `dispatched to nothing and nothing brings one back, so that run is closed and this ticket is free to ` +
-        `carry on — give the "${agent.role}" role another agent if this step is still to be run.`,
+        `carry on — choose another agent on the step if it is still to be run.`,
     });
     announceRun(priorRun.id, item.id, "cancelled");
   }

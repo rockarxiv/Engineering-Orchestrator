@@ -29,6 +29,7 @@ import type { ManagedDirectory } from "../managed/directory.js";
 import type { ModuleSecretsOptions } from "../modules/secrets.js";
 import { exportPipeline, parseExport, preflightImport } from "../modules/pipelineTransfer.js";
 import { registry } from "../registry.js";
+import { kindBinder } from "../stepAgents.js";
 import { itemTypesJudged, projectsServedByPipeline } from "./configCommands.js";
 import { galleryNeeds } from "../gallery/form.js";
 import {
@@ -41,6 +42,7 @@ import {
   divergence,
   findGroupByName,
   getPipeline,
+  listAgents,
   getPipelineVersion,
   getPerson,
   hasItemType,
@@ -323,7 +325,9 @@ export function suggestionDetailCommand(
   const against = published?.versionId ?? currentVersion(db, spec.pipelineId)?.id ?? null;
   const number = published?.versionNumber ?? currentVersion(db, spec.pipelineId)?.number ?? null;
   const snapshot = against === null ? undefined : versionGraph(db, against);
-  const diff = snapshot === undefined || number === null ? null : suggestionDiff({ published: { number, ...snapshot }, document });
+  // The document's kinds bound as approving it would bind them (EO-875).
+  const agentFor = snapshot === undefined ? undefined : kindBinder(listAgents(db), getPipeline(db, spec.pipelineId)?.projectId ?? null, snapshot.steps);
+  const diff = snapshot === undefined || number === null ? null : suggestionDiff({ published: { number, ...snapshot }, document, ...(agentFor === undefined ? {} : { agentFor }) });
 
   // The same lines the author's own needs check drew, from the same
   // function: what the document asks of the machine that would run it.
@@ -553,6 +557,8 @@ function applyDocument(
   const bySlug = new Map(listModules(db, true).map((module) => [module.slug, module.id as string]));
   const existing = listStepsForPipeline(db, pipelineId);
   const carried = new Set(document.steps.map((step) => step.id));
+  // The document names kinds; each is bound to an agent here (EO-875).
+  const agentFor = kindBinder(listAgents(db), getPipeline(db, pipelineId)?.projectId ?? null, existing);
 
   const steps = [
     ...document.steps.map((step) => ({
@@ -561,7 +567,7 @@ function applyDocument(
       position: step.position,
       name: step.name,
       type: step.type,
-      ownerRole: step.ownerRole,
+      agentId: agentFor(step),
       // Back from the slug the document travels as, into the id this
       // installation's rows use — the inverse of what `exportPipeline`
       // did on the way out.
@@ -580,7 +586,7 @@ function applyDocument(
         position: step.position,
         name: step.name,
         type: step.type,
-        ownerRole: step.ownerRole,
+        agentId: step.agentId,
         entryAction: step.entryAction,
         instructionsSummary: step.instructionsSummary,
         isTerminal: step.isTerminal,

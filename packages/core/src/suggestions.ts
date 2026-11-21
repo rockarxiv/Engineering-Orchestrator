@@ -173,14 +173,23 @@ export function editableWhenDiverged(channel: string): boolean {
  * a document never carries one, and the honest reading of what it does
  * carry is "on the board".
  */
-export function documentGraph(document: PipelineExport): { steps: VersionStep[]; routes: VersionRoute[]; entryRules: EntryRule[] } {
+export function documentGraph(
+  document: PipelineExport,
+  /**
+   * The agent each kind the document names would be bound to here
+   * (EO-875): a document names kinds, a version names agents, so a diff
+   * between them is honest only once the kinds are bound. Absent, no step
+   * names an agent.
+   */
+  agentFor: (step: { id: string; type: string; ownerRole: string | null }) => string | null = () => null,
+): { steps: VersionStep[]; routes: VersionRoute[]; entryRules: EntryRule[] } {
   return {
     steps: document.steps.map((step) => ({
       id: step.id,
       position: step.position,
       name: step.name,
       type: step.type,
-      ownerRole: step.ownerRole,
+      agentId: step.type === "agent" ? agentFor(step) : null,
       entryAction: step.entryAction,
       instructionsSummary: step.instructionsSummary,
       isTerminal: step.isTerminal,
@@ -222,8 +231,10 @@ export function documentGraph(document: PipelineExport): { steps: VersionStep[];
 export function suggestionDiff(input: {
   published: { number: number; steps: VersionStep[]; routes: VersionRoute[]; entryRules?: readonly EntryRule[] };
   document: PipelineExport;
+  /** `documentGraph`'s binding of the document's kinds to agents. */
+  agentFor?: (step: { id: string; type: string; ownerRole: string | null }) => string | null;
 }): VersionDiff {
-  return diffVersions({ ...input.published, ...withoutPins({ ...onBoard(input.published), ...(input.published.entryRules === undefined ? {} : { entryRules: input.published.entryRules }) }) }, { number: input.published.number + 1, ...documentGraph(input.document) });
+  return diffVersions({ ...input.published, ...withoutPins({ ...onBoard(input.published), ...(input.published.entryRules === undefined ? {} : { entryRules: input.published.entryRules }) }) }, { number: input.published.number + 1, ...documentGraph(input.document, input.agentFor) });
 }
 
 /**

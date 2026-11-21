@@ -1,5 +1,5 @@
-import { staffingAgents } from "@eo/core";
-import type { Agent, DependencyWait, Run, Item, PipelineStep } from "@eo/core";
+import { stepAgentKind, stepAgentOf, stepAgentRefusal } from "@eo/core";
+import type { Agent, DependencyWait, Run, Item, PipelineStep, StepAgentRefusal } from "@eo/core";
 import type { Edge } from "./dag.js";
 
 /**
@@ -211,14 +211,14 @@ export interface EligibilityInput<R extends DispatchRefusal = DispatchRefusal> {
   heldItemIds: Set<string>;
   /**
    * The global pause (ARCHITECTURE.md, "Guardrails"): true means no new
-   * dispatches, but for an agent step whose owner role is in
+   * dispatches, but for an agent step whose agent's kind is in
    * `pauseExemptRoles`.
    */
   paused: boolean;
   /**
-   * The roles a pause does not hold (EO-615). The host names them, because
-   * who those are is its business: this package compares them with a
-   * step's owner role and knows nothing else about them. A builtin or
+   * The kinds a pause does not hold (EO-615). The host names them, because
+   * who those are is its business: this package compares them with the
+   * kind of the agent a step names and knows nothing else about them. A builtin or
    * module step has nobody to exempt. Absent is nobody.
    */
   pauseExemptRoles?: ReadonlySet<string>;
@@ -265,8 +265,8 @@ export interface TickInput<R extends DispatchRefusal = DispatchRefusal> extends 
    */
   reservedSlots?: number;
   /**
-   * The roles none of `limits` holds back (EO-616). An agent step owned by
-   * one is dispatched whatever the three caps say, and its run still
+   * The kinds none of `limits` holds back (EO-616). An agent step whose
+   * agent is of one is dispatched whatever the three caps say, and its run still
    * counts against them for everything else, as any run does. The host
    * names them, as it does `pauseExemptRoles`. A builtin or module step
    * has no role to exempt. Absent is nobody.
@@ -347,13 +347,20 @@ export type DispatchBlocker<R extends DispatchRefusal = DispatchRefusal> =
    */
   | ({ kind: "watch_held" } & WatchHold)
   /**
-   * Nobody is staffed for the role this step is owned by.
-   *
-   * `role` is nullable because the column is: an `agent` step that names
-   * no role can never be staffed, and saying so is more use than
-   * pretending the role is the empty string.
+   * The `agent` step names no agent (EO-875), so nobody can run it until
+   * somebody chooses one.
    */
-  | { kind: "no_enabled_agent"; role: string | null }
+  | { kind: "no_agent" }
+  /**
+   * The agent the step names cannot run this item (EO-875):
+   * `stepAgentRefusal`'s reason, or `missing` for a name whose row is not
+   * here at all. `agentName` is null only for `missing`.
+   *
+   * Never answered by handing the item to another agent of the same
+   * kind: the step says who runs it, and only changing the step changes
+   * that.
+   */
+  | { kind: "agent_unavailable"; agentId: string; agentName: string | null; why: StepAgentRefusal | "missing" }
   /**
    * The installed pack turned this step away (`dispatchGate`).
    *
@@ -466,37 +473,34 @@ function eligibility<R extends DispatchRefusal>(input: EligibilityInput<R>) {
   };
 
   /**
-   * Somebody enabled and staffed for this role, capacity aside.
+   * Why the agent this step names cannot run this item, capacity aside,
+   * or null when it can (EO-875).
    *
-   * `isDispatchable` rather than `agent.enabled`, so an archived agent
-   * does not staff a role (EO-186). Counting one that will never run
-   * would produce the quietest failure this scheduler has: a step that
-   * validates, reports no blocker, and dispatches nothing forever.
-   *
-   * Asked of the *item* as well as the role since EO-316, because one
-   * kind of agent does not staff every item: a preview's own carries the
-   * pack's ordinary role name and exists only to walk a rehearsal
-   * (`staffsItem`). Counting it here would produce the opposite failure
-   * to the one above and a worse one — a real item reported staffed,
-   * dispatched, and answered by a placeholder that makes things up.
-   *
-   * And of the item's *project* since EO-474: a project's own agent
-   * staffs that project's items only, and outranks the global agents
-   * in its role there. All of it is `staffingAgents`, which the pick in
-   * step 7 below reads too — so "somebody holds this role" and "here is
-   * who runs it" cannot come apart.
+   * The step names one agent and only that agent is asked about. Live
+   * (`isDispatchable` by its parts: not deleted, archived or disabled),
+   * of this item's project or global, and not a preview's own on a real
+   * item — `stepAgentRefusal`, which the pick in step 7 below relies on
+   * having been asked, so "the step's agent can run this" and "here is
+   * the run" cannot come apart.
    */
-  const staffedFor = (role: string | null, item: Item): boolean => staffingAgents(agents, role, item).length > 0;
+  const agentBlocker = (step: PipelineStep, item: Item): DispatchBlocker<never> | null => {
+    if (step.agentId === null) return { kind: "no_agent" };
+    const agent = stepAgentOf(agents, step);
+    if (agent === undefined) return { kind: "agent_unavailable", agentId: step.agentId, agentName: null, why: "missing" };
+    const why = stepAgentRefusal(agent, item);
+    return why === null ? null : { kind: "agent_unavailable", agentId: agent.id, agentName: agent.name, why };
+  };
 
   /**
    * Whether the pause stands between this item and a run: every item,
-   * but for an agent step owned by a role the host exempted. An item on a
-   * step nobody can find is held with the rest.
+   * but for an agent step whose agent is of a kind the host exempted. An
+   * item on a step nobody can find is held with the rest.
    */
   const heldByPause = (item: Item): boolean => {
     if (!input.paused) return false;
     const step = stepFor(item);
-    return step?.type !== "agent" || step.ownerRole === null || !input.pauseExemptRoles?.has(step.ownerRole);
+    const kind = step === undefined ? null : stepAgentKind(agents, step);
+    return kind === null || !input.pauseExemptRoles?.has(kind);
   };
 
   /**
@@ -582,11 +586,10 @@ function eligibility<R extends DispatchRefusal>(input: EligibilityInput<R>) {
       return step.entryAction === null ? { kind: "step_not_dispatchable", stepId: step.id } : null;
     }
 
-    // 8. Nobody enabled holds this role. Capacity is *not* asked about:
-    // an agent that is merely busy is not a reason, it is a queue.
-    if (!staffedFor(step.ownerRole, item)) return { kind: "no_enabled_agent", role: step.ownerRole };
-
-    return null;
+    // 8. The step names no agent, or one that cannot run this item.
+    // Capacity is *not* asked about: an agent that is merely busy is not
+    // a reason, it is a queue.
+    return agentBlocker(step, item);
   }
 
   return { stepFor, itemById, blockerFor, heldByPause };
@@ -743,7 +746,8 @@ export function tick<R extends DispatchRefusal>(input: TickInput<R>): Dispatch[]
     const step = stepFor(item);
     if (!step) continue;
 
-    const uncapped = step.type === "agent" && step.ownerRole !== null && input.uncappedRoles?.has(step.ownerRole) === true;
+    const kind = stepAgentKind(agents, step);
+    const uncapped = kind !== null && input.uncappedRoles?.has(kind) === true;
     // A `continue` and not a `break`: a step further down may answer to no cap.
     if (!uncapped && globalRemaining <= 0) continue;
     if (!uncapped && !bucketHasCapacity(item)) continue; // 5. this bucket is already as busy as it's allowed to be
@@ -767,15 +771,14 @@ export function tick<R extends DispatchRefusal>(input: TickInput<R>): Dispatch[]
       continue;
     }
 
-    // 7. `blockerFor` has established that somebody enabled holds this
-    // role, so the only way this comes back empty is that every one of
-    // them is already at capacity.
-    // The candidates are `staffingAgents`'s, so a project's own agent
-    // that is busy leaves the item waiting for it rather than handing it
-    // to a global agent the project has stepped out from under (EO-474).
-    const staff = staffingAgents(agents, step.ownerRole, item);
-    const agent = staff.find(agentHasCapacity) ?? (uncapped ? staff[0] : undefined);
+    // 7. `blockerFor` has established that the agent the step names can
+    // run this item, so the only thing left is whether it has a slot. A
+    // busy agent leaves the item waiting for it: the step names one
+    // agent, and its work is never handed to another of the same kind
+    // (EO-875).
+    const agent = stepAgentOf(agents, step);
     if (!agent) continue;
+    if (!uncapped && !agentHasCapacity(agent)) continue;
 
     consumeAgentCapacity(agent);
     consumeBucketCapacity(item);

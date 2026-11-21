@@ -21,6 +21,7 @@ apps/desktop/src/main/db/repos/transitionsRepo.ts: throw new Error(`transitionIt
 apps/desktop/src/main/db/repos/workspacesRepo.ts: * here, the step falls back to the ticket's workspace, which is what it
 apps/desktop/src/main/db/repos/workspacesRepo.ts: if (folder) return folder.config.perItemSubfolder ? `${folder.config.path} · a subfolder per ticket` : folder.config.path;
 apps/desktop/src/main/db/schema.ts: * out loud, or NULL for "whatever the ticket is on" — which is what
+apps/desktop/src/main/db/stepAgentMigration.test.ts: 'Nothing will run "Audit" for this ticket: this step names no agent, so nobody can run it. Choose an agent for the step. It is not handed to another agent of the same kind.',
 apps/desktop/src/main/gallery/softwarePack.test.ts: * A builtin's unrouted result is only a warning — EO parks the ticket
 apps/desktop/src/main/gallery/softwarePack.test.ts: * missing route is a ticket stopped on a step nobody was watching.
 apps/desktop/src/main/guardDefaultNotice.ts: `This installation now has a daily spend ceiling of ${cents}¢ (${money(cents)}), across every ticket.`,
@@ -370,20 +371,23 @@ apps/desktop/src/main/supervisor/contextActions.test.ts: item: { key: "EO-1", ti
 apps/desktop/src/main/supervisor/dependencyGates.test.ts: 'Nothing will pick it up from "To Do" yet, though: this ticket is waiting on another that has not finished. Finish that ticket, or remove the dependency.',
 apps/desktop/src/main/supervisor/dependencyGates.ts: `This ticket stopped waiting for ${dependency.key} when it reached "${gateName}", so it carries on and is not held again — ` +
 apps/desktop/src/main/supervisor/dispatchAuthorisation.test.ts: expect(engineNotes().some((body) => body.includes("Run cancelled: you moved this ticket"))).toBe(true);
-apps/desktop/src/main/supervisor/dispatchBlockers.ts: "Give this ticket's project an agent of its own in this role, or use a global one. Nothing has changed."
+apps/desktop/src/main/supervisor/dispatchBlockers.ts: "Choose an agent of this ticket's project, or a global one, on the step. Nothing has changed."
 apps/desktop/src/main/supervisor/dispatchBlockers.ts: "Mention an agent that works for this ticket's project, or a global one. Nothing has changed."
 apps/desktop/src/main/supervisor/dispatchBlockers.ts: : `Mention ${rerunWith} to hand the step back, move the ticket, or hold it and resume it — any of the three picks it up again.`;
 apps/desktop/src/main/supervisor/dispatchBlockers.ts: ? `Move the ticket, or hold it and resume it, and it is picked up again.`
-apps/desktop/src/main/supervisor/dispatchBlockers.ts: `This ticket is free to carry on — whoever works for its project in the "${role}" role picks the step up again.`
+apps/desktop/src/main/supervisor/dispatchBlockers.ts: `This ticket is free to carry on once its step names a "${role}" agent that works for its project.`
 apps/desktop/src/main/supervisor/dispatchBlockers.ts: condition: "this ticket declares no acceptance criteria, so a review would have nothing to judge it against",
 apps/desktop/src/main/supervisor/dispatchBlockers.ts: condition: "this ticket is not sitting on a step an agent is dispatched at",
 apps/desktop/src/main/supervisor/dispatchBlockers.ts: condition: "this ticket is waiting on another that has not finished",
+apps/desktop/src/main/supervisor/dispatchBlockers.ts: condition: `${name}, the agent this step names, works for another project than this ticket's`,
 apps/desktop/src/main/supervisor/dispatchBlockers.ts: condition: `this ticket has moved to "${blocker.nowAt}" since you asked`,
 apps/desktop/src/main/supervisor/dispatchBlockers.ts: const where = itemProject === null ? "this ticket belongs to no project" : `this ticket is on "${itemProject}"`;
 apps/desktop/src/main/supervisor/dispatchBlockers.ts: fix: "Add at least one — `ticket_update` takes them on any type, and the ticket screen edits them.",
+apps/desktop/src/main/supervisor/dispatchBlockers.ts: fix: "Choose an agent of this ticket's project, or a global one, on the step.",
 apps/desktop/src/main/supervisor/dispatchBlockers.ts: fix: "Finish that ticket, or remove the dependency.",
 apps/desktop/src/main/supervisor/dispatchBlockers.ts: fix: "Say something on this ticket and they can carry on from there.",
 apps/desktop/src/main/supervisor/dispatchBlockers.ts: if (names.length === 0) return "agents on this ticket";
+apps/desktop/src/main/supervisor/dispatchBlockers.ts: return `Nothing will run "${stepName}" for this ticket: ${condition}. ${fix} It is not handed to another agent of the same kind.`;
 apps/desktop/src/main/supervisor/dispatchBlockers.ts: return { condition: "this ticket is on hold", fix: "Resume it." };
 apps/desktop/src/main/supervisor/itemExclusion.test.ts: expect(engineNotes[0]?.body).toBe(blockedByActiveRunRefusal("pick this ticket back up after your reply"));
 apps/desktop/src/main/supervisor/itemLock.test.ts: "EO did not move the ticket: an agent is working on it right now. Call ticket_move again with " +
@@ -417,7 +421,7 @@ apps/desktop/src/main/supervisor/runSupervisor.ts: // not claim a ticket has pro
 apps/desktop/src/main/supervisor/runSupervisor.ts: // so the output is on the ticket by the time whatever this routes to
 apps/desktop/src/main/supervisor/runSupervisor.ts: // ticket by then.
 apps/desktop/src/main/supervisor/runSupervisor.ts: ? "interrupted by an app restart; another interrupted run on this ticket was picked up instead"
-apps/desktop/src/main/supervisor/runSupervisor.ts: ? `${retiredAgent.name} was archived while EO was not running, so the run it was interrupted in the middle of (attempt ${run.attempt}) is marked orphaned rather than resumed: an archived agent is dispatched to nothing, and nothing brings one back. The ticket stays in "${item.stepId}" for the next agent on the "${retiredAgent.role}" role to pick up.`
+apps/desktop/src/main/supervisor/runSupervisor.ts: ? `${retiredAgent.name} was archived while EO was not running, so the run it was interrupted in the middle of (attempt ${run.attempt}) is marked orphaned rather than resumed: an archived agent is dispatched to nothing, and nothing brings one back. The ticket stays in "${item.stepId}" until its step names another agent.`
 apps/desktop/src/main/supervisor/runSupervisor.ts: ? `Two runs on this ticket were interrupted by an app restart. Only one of them can carry on — a ticket has one checkout, and two agents in it is a diff nobody wrote — so attempt ${run.attempt} is marked orphaned and the other one continues. The ticket stays in "${item.stepId}".`
 apps/desktop/src/main/supervisor/runSupervisor.ts: `${agent.name} was archived while EO was picking this ticket back up after a restart, so the run it was ` +
 apps/desktop/src/main/supervisor/runSupervisor.ts: `${error instanceof Error ? error.message : String(error)}. The ticket moves on regardless, and the ` +
@@ -449,6 +453,10 @@ apps/desktop/src/main/supervisor/runSupervisor.ts: text: `EO checked out \`${bra
 apps/desktop/src/main/supervisor/runSupervisor.ts: updateRun(db, runId, { status: "succeeded", error: "Finished after this ticket was moved to another step, so it was left where it is.", endedAt: ended });
 apps/desktop/src/main/supervisor/steering.test.ts: * The path is shared, so this is the ticket and transcript composers'
 apps/desktop/src/main/supervisor/steering.test.ts: it("carries the files posted with a comment from the ticket composer into the turn", async () => {
+apps/desktop/src/main/supervisor/stepAgentUnavailable.test.ts: 'Nothing will run "To Do" for this ticket: this step names no agent, so nobody can run it. Choose an agent for the step. It is not handed to another agent of the same kind.',
+apps/desktop/src/main/supervisor/stepAgentUnavailable.test.ts: says: "Nothing will run \"To Do\" for this ticket: Implementer, the agent this step names, has been archived. Choose another agent on the step.",
+apps/desktop/src/main/supervisor/stepAgentUnavailable.test.ts: says: "Nothing will run \"To Do\" for this ticket: Implementer, the agent this step names, has been deleted. Choose another agent on the step.",
+apps/desktop/src/main/supervisor/stepAgentUnavailable.test.ts: says: "Nothing will run \"To Do\" for this ticket: Implementer, the agent this step names, is disabled. Enable Implementer in Agents, or choose another agent on the step.",
 apps/desktop/src/main/supervisor/stepWorkspacePick.test.ts: * to *which disk* for a whole pipeline — the ticket's, and behind it the
 apps/desktop/src/main/supervisor/stepWorkspacePick.test.ts: // The ticket is on the repository, which is what every ticket in a
 apps/desktop/src/main/supervisor/stepWorkspacePick.test.ts: // hand-edit. The ticket's own workspace is the answer that leaves

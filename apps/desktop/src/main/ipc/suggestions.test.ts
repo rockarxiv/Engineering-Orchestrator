@@ -2,7 +2,7 @@ import { sql } from "drizzle-orm";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { SUGGESTIONS_PIPELINE_NAME, type IpcChannel, type IpcPayload, type IpcResponse, type Uuid } from "@eo/core";
 import type { DbHandle } from "../db/client.js";
-import { openMigratedTestDb } from "../db/testHelpers.js";
+import { agentOfKind, openMigratedTestDb } from "../db/testHelpers.js";
 import { markReplica } from "../db/recordRole.js";
 import { pipelines } from "../db/schema.js";
 import {
@@ -229,7 +229,7 @@ describe("suggesting a change from a desktop", () => {
       stepId: "review",
       name: "Second opinion",
       change: "changed",
-      kind: { type: "agent", ownerRole: "reviewer", entryAction: "review" },
+      kind: { type: "agent", agentId: agentOfKind(record.db, "reviewer"), entryAction: "review" },
       fields: [{ field: "name", before: "Review", after: "Second opinion" }],
     });
   });
@@ -441,7 +441,7 @@ describe("a pipeline this machine diverged", () => {
       stepId: "review",
       name: "Second opinion",
       change: "changed",
-      kind: { type: "agent", ownerRole: "reviewer", entryAction: "review" },
+      kind: { type: "agent", agentId: agentOfKind(device.db, "reviewer"), entryAction: "review" },
       fields: [{ field: "name", before: "Review", after: "Second opinion" }],
     });
   });

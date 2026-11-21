@@ -946,9 +946,17 @@ export const PipelineStepViewSchema = z.object({
   pipelineId: z.string(),
   position: z.number(),
   name: z.string(),
-  /** Who acts here: a role, a person, EO itself, or a module (`PipelineStepType`). */
+  /** Who acts here: an agent, a person, EO itself, or a module (`PipelineStepType`). */
   type: z.enum(["agent", "user", "builtin", "module"]),
-  ownerRole: z.string().nullable(),
+  /**
+   * The agent an `agent` step runs, by id (EO-875). Null on every other
+   * kind, and on an agent step with no agent chosen. The step carries no
+   * role: the kind it needs is the agent's (`stepAgentKind`).
+   *
+   * Defaulted, so a graph written before steps named agents still
+   * parses; an agent step left with none is refused by `validatePipeline`.
+   */
+  agentId: z.string().nullable().default(null),
   /** The agent action, the builtin function, or the module's id. Null on a `user` step. */
   entryAction: z.string().nullable(),
   instructionsSummary: z.string().nullable(),

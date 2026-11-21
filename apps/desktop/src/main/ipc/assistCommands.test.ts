@@ -19,6 +19,7 @@ import {
   ProposalSummarySchema,
   proposedItemPath,
   specFields,
+  stepAgentKind,
 } from "@eo/core";
 import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -36,6 +37,7 @@ import {
   getActionDefinition,
   listActionDefinitions,
   publishSection,
+  createAgent,
   createProject,
   createRun,
   deleteItem,
@@ -51,6 +53,7 @@ import {
   listRunEvents,
   listRunsForItem,
   postComment,
+  listAgents,
   listStepsForPipeline,
   approveModule,
   deleteModuleTest,
@@ -75,7 +78,7 @@ import {
   getPipeline,
   versionSnapshot,
 } from "../db/repos/index.js";
-import { createTestItem, openMigratedTestDb } from "../db/testHelpers.js";
+import { agentOfKind, createTestItem, openMigratedTestDb } from "../db/testHelpers.js";
 import { PREVIEW_PROJECT_KEY } from "../gallery/commands.js";
 import { PIPELINE_NEEDS_PROJECT } from "./pipelineHome.js";
 import { ACTIVE_PROJECT_KEY } from "./repositoryCommands.js";
@@ -1844,7 +1847,8 @@ describe("the buttons on a card", () => {
           position: step.position,
           name: step.name,
           type: step.type,
-          ownerRole: step.ownerRole,
+          // A draft names the kind; the step names its agent (EO-875).
+          ownerRole: stepAgentKind(listAgents(handle.db), step),
           entryAction: step.entryAction,
           instructionsSummary: step.instructionsSummary,
           isTerminal: step.isTerminal,
@@ -2810,14 +2814,20 @@ describe("the buttons on a card", () => {
       [
         ...base.steps
           .filter((step) => step.id !== "qa")
-          .map((step) => ({ ...step, pipelineId: "default" as Uuid, inputs: {}, timeoutMs: null })),
+          .map(({ ownerRole, ...step }) => ({
+            ...step,
+            pipelineId: "default" as Uuid,
+            agentId: ownerRole === null ? null : agentOfKind(handle.db, ownerRole),
+            inputs: {},
+            timeoutMs: null,
+          })),
         {
           pipelineId: "default" as Uuid,
           id: "ship",
           position: base.steps.length,
           name: "Ship",
           type: "module" as const,
-          ownerRole: null,
+          agentId: null,
           entryAction: moduleId,
           instructionsSummary: null,
           isTerminal: false,
@@ -4210,6 +4220,12 @@ describe("a pipeline built from the chat", () => {
      * the publish are not one transaction.
      */
     describe("a refusal after an approval has been written", () => {
+      // A step names an agent of its kind (EO-875): the `qa` step below
+      // is bound to this one when the draft is judged and published.
+      beforeEach(() => {
+        createAgent(handle.db, { name: "QA", role: "qa", provider: "fake", model: null, instructions: "Check the work." });
+      });
+
       /** A module in the catalog, unapproved, with one passing case, that a draft step names by its id. */
       function inTheCatalog(slug: string, result: string): string {
         const saved = saveModule(handle.db, {
@@ -4935,7 +4951,7 @@ describe("a pipeline built from the chat", () => {
         handle.db,
         pipeline.id,
         [
-          { id: "hotfix_fix", pipelineId: pipeline.id as Uuid, position: 0, name: "Fix", type: "agent", ownerRole: "implementer", entryAction: "implement", isTerminal: false },
+          { id: "hotfix_fix", pipelineId: pipeline.id as Uuid, position: 0, name: "Fix", type: "agent", agentId: agentOfKind(handle.db, "implementer"), entryAction: "implement", isTerminal: false },
           { id: "hotfix_done", pipelineId: pipeline.id as Uuid, position: 1, name: "Done", type: "user", isTerminal: true },
         ],
         [{ pipelineId: pipeline.id as Uuid, fromStepId: "hotfix_fix", resultKey: "done", label: "Done", tone: "success", target: "hotfix_done", position: 0 }],
@@ -5005,7 +5021,14 @@ describe("a pipeline built from the chat", () => {
   });
 
   describe("a draft that brings the action definitions it needs (EO-426)", () => {
-    const UNDEFINED_ACTION = 'its answer is not validated and will route as "done"';
+    // A step's action must be one of its agent's kind's actions (EO-875).
+    const UNDEFINED_ACTION = 'has no "alignment" action';
+    // A step names an agent of its kind (EO-875): the `qa` step below
+    // is bound to this one when the draft is judged and published.
+    beforeEach(() => {
+      createAgent(handle.db, { name: "QA", role: "qa", provider: "fake", model: null, instructions: "Check the work." });
+    });
+
 
     /** `qa` defines `alignment`, as the agent writes it beside a draft. */
     const ALIGNMENT = {
@@ -5052,12 +5075,13 @@ describe("a pipeline built from the chat", () => {
       expect(listActionDefinitions(handle.db)).toEqual([]);
     });
 
-    it("offers the same draft without the definition under the undefined-action warning", async () => {
+    it("refuses the same draft without the definition: QA's kind has no such action (EO-875)", async () => {
       const conversation = await openedOn("/settings");
 
-      const { cardIds } = turn(conversation, { message: "Here.", draft: qaDraft({ newPipeline: "QA gate" }) });
+      const { cardIds, rejections } = turn(conversation, { message: "Here.", draft: qaDraft({ newPipeline: "QA gate" }) });
 
-      expect(cardBody(conversation, cardIds[0]!)).toContain(UNDEFINED_ACTION);
+      expect(cardIds).toEqual([]);
+      expect(rejections.join("\n")).toContain(UNDEFINED_ACTION);
     });
 
     it("creates the pipeline and writes its definitions in one publish", async () => {

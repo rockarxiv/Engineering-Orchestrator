@@ -46,7 +46,7 @@ function document(steps: unknown[]): PipelineExport {
 function version(steps: Partial<VersionStep>[]): { number: number; steps: VersionStep[]; routes: [] } {
   return {
     number: 6,
-    steps: steps.map((step) => ({ ...(STEP as unknown as VersionStep), offBoard: false, ...step })),
+    steps: steps.map((step) => ({ ...(STEP as unknown as VersionStep), agentId: null, offBoard: false, ...step })),
     routes: [],
   };
 }
@@ -76,13 +76,21 @@ describe("the line a diverged pipeline draws", () => {
 describe("the document, as the diff reads it", () => {
   it("compares an export against a published version, field by field", () => {
     const diff = suggestionDiff({
-      published: version([{ id: "review", name: "Review" }]),
+      published: version([{ id: "review", name: "Review", agentId: "reviewer-agent" }]),
       document: document([{ ...STEP, name: "Second opinion" }]),
+      // The document names the kind; this installation binds it (EO-875).
+      agentFor: (step) => (step.ownerRole === "reviewer" ? "reviewer-agent" : null),
     });
 
     expect(diff.steps).toEqual([
-      { stepId: "review", name: "Second opinion", change: "changed", kind: { type: "agent", ownerRole: "reviewer", entryAction: null }, fields: [{ field: "name", before: "Review", after: "Second opinion" }] },
+      { stepId: "review", name: "Second opinion", change: "changed", kind: { type: "agent", agentId: "reviewer-agent", entryAction: null }, fields: [{ field: "name", before: "Review", after: "Second opinion" }] },
     ]);
+  });
+
+  it("reports a kind bound to another agent as a change of agent (EO-875)", () => {
+    const diff = suggestionDiff({ published: version([{ id: "review", agentId: "reviewer-agent" }]), document: document([STEP]), agentFor: () => "another-reviewer" });
+
+    expect(diff.steps.map((step) => step.fields)).toEqual([[{ field: "agentId", before: "reviewer-agent", after: "another-reviewer" }]]);
   });
 
   it("heads the comparison with the version approving it would publish", () => {

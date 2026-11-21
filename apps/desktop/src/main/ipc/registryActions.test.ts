@@ -1,7 +1,7 @@
 import { rmSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { fromRegistryView, RegistryViewSchema, type PipelineStepView, type RegistryView, type StepRouteView } from "@eo/core";
+import { fromRegistryView, RegistryViewSchema, type PipelineStepView, type RegistryView, type StepRouteView, type Uuid } from "@eo/core";
 import { validatePipeline, type ValidatePipelineInput } from "@eo/engine";
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { DbHandle } from "../db/client.js";
@@ -180,7 +180,7 @@ describe("one graph, validated in the renderer and in the main process (EO-423)"
         position,
         name: id,
         type: "agent",
-        ownerRole: null,
+        agentId: null,
         entryAction: null,
         instructionsSummary: null,
         isTerminal: false,
@@ -199,11 +199,16 @@ describe("one graph, validated in the renderer and in the main process (EO-423)"
     const route = (fromStepId: string, resultKey: string, target: string, position = 0) =>
       ({ id: `${fromStepId}:${resultKey}`, pipelineId: "p1", fromStepId, resultKey, label: resultKey, tone: "info", target, position }) as ValidatePipelineInput["routes"][number];
 
+    // The agents the steps name (EO-875): a reviewer and a QA agent.
+    const agent = (id: string, role: string) => ({ id: id as Uuid, name: role, role, enabled: true, archivedAt: null, deletedAt: null, config: {}, projectId: null });
+    const reviewer = agent("0199aa00-0000-7000-8000-0000000000b1", "reviewer");
+    const qa = agent("0199aa00-0000-7000-8000-0000000000b2", "qa");
+
     return {
       steps: [
-        step("review", 0, { ownerRole: "reviewer", entryAction: "review" }),
-        step("check", 1, { ownerRole: "qa", entryAction: "alignment" }),
-        step("muse", 2, { ownerRole: "qa", entryAction: "ponder" }),
+        step("review", 0, { agentId: reviewer.id, entryAction: "review" }),
+        step("check", 1, { agentId: qa.id, entryAction: "alignment" }),
+        step("muse", 2, { agentId: qa.id, entryAction: "ponder" }),
         step("end", 3, { type: "user", isTerminal: true }),
       ],
       routes: [
@@ -215,7 +220,8 @@ describe("one graph, validated in the renderer and in the main process (EO-423)"
         route("muse", "done", "end"),
       ],
       entryStepId: "review",
-      staffedRoles: ["reviewer", "qa"],
+      agents: [reviewer, qa],
+      projectId: null,
       itemCountByStep: {},
       existingSteps: [],
       registry,
@@ -234,7 +240,8 @@ describe("one graph, validated in the renderer and in the main process (EO-423)"
     expect(inMain.map((problem) => [problem.severity, problem.stateId, problem.resultKey])).toEqual([
       ["error", "review", "needs_user_input"],
       ["error", "check", "shrugged"],
-      ["warning", "muse", undefined],
+      // An action its agent's kind does not define is refused (EO-875); it was a warning.
+      ["error", "muse", undefined],
     ]);
   });
 });

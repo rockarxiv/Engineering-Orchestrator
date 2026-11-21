@@ -23,7 +23,7 @@ import {
   updateRun,
 } from "./db/repos/index.js";
 import { items, keyCounters, pipelines } from "./db/schema.js";
-import { createTestItem, messagesAboutJob, openMigratedTestDb } from "./db/testHelpers.js";
+import { agentOfKind, createTestItem, messagesAboutJob, openMigratedTestDb } from "./db/testHelpers.js";
 import { openAssistConversation, postAssistReply } from "./roles/assist.js";
 import { ASSIST_ACTION } from "./roles/conversationSteps.js";
 import { applyDiscussionProposal, applyNewItem } from "./roles/discussion.js";
@@ -327,7 +327,7 @@ describe("a route into another pipeline", () => {
 
   it("out of an agent step parks too, and the agent is not dispatched again", async () => {
     const to = intake([{ kind: "description" }]);
-    const step = createStep(handle.db, { pipelineId: "default" as Uuid, position: 40, name: "Check", type: "agent", ownerRole: "implementer", entryAction: "check" });
+    const step = createStep(handle.db, { pipelineId: "default" as Uuid, position: 40, name: "Check", type: "agent", agentId: agentOfKind(handle.db, "implementer"), entryAction: "check" });
     createRoute(handle.db, { pipelineId: "default" as Uuid, fromStepId: step.id, resultKey: "done", label: "Done", target: to.stepId });
     const item = createTestItem(handle.db, { type: "story", title: "Thin", stepId: step.id });
     const supervisor = createRunSupervisor({ db: handle.db, limits: LIMITS, provider: createScriptedProvider([{ when: () => true, script: { result: { result: "done" } } }]) });

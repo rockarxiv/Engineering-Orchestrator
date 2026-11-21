@@ -9,7 +9,7 @@ import { createStep } from "../db/repos/pipelineStepsRepo.js";
 import type { DbHandle } from "../db/client.js";
 import { comments } from "../db/schema.js";
 import { createRoute } from "../db/repos/index.js";
-import { createTestItem, openMigratedTestDb } from "../db/testHelpers.js";
+import { agentOfKind, createTestItem, openMigratedTestDb } from "../db/testHelpers.js";
 import { createFakeProvider } from "../providers/fake.js";
 import { malformedResultFixture, validImplementResult } from "../providers/fixtures.js";
 import { createRunSupervisor } from "./runSupervisor.js";
@@ -59,8 +59,8 @@ describe("result validation (A-02)", () => {
   // not a status") — a
   // conversation drives them now. These configure steps that run them,
   // which is exactly what a person could do and all these tests need.
-  createStep(handle.db, { id: "ask", pipelineId: "default" as never, position: -2, name: "Intake", type: "agent", ownerRole: "system", entryAction: "intake" });
-  createStep(handle.db, { id: "plan", pipelineId: "default" as never, position: -1, name: "Refine", type: "agent", ownerRole: "system", entryAction: "refine" });
+  createStep(handle.db, { id: "ask", pipelineId: "default" as never, position: -2, name: "Intake", type: "agent", agentId: agentOfKind(handle.db, "system"), entryAction: "intake" });
+  createStep(handle.db, { id: "plan", pipelineId: "default" as never, position: -1, name: "Refine", type: "agent", agentId: agentOfKind(handle.db, "system"), entryAction: "refine" });
   createRoute(handle.db, { pipelineId: "default" as never, fromStepId: "ask", resultKey: "done", label: "Understood", target: "plan", position: 0 });
   createRoute(handle.db, { pipelineId: "default" as never, fromStepId: "ask", resultKey: "classified_non_feature", label: "Already written", target: "todo", position: 1 });
   createRoute(handle.db, { pipelineId: "default" as never, fromStepId: "plan", resultKey: "decomposed", label: "Decomposed", target: "todo", position: 0 });
@@ -190,7 +190,7 @@ describe("result validation (A-02)", () => {
     // intake got a schema (KAN-32). A made-up stage is what the
     // invariant actually claims.
     parkBaseStory();
-    createStep(handle.db, { id: "triage", pipelineId: "default" as Uuid, position: -1, name: "Triage", ownerRole: "system", entryAction: "assess_risk" });
+    createStep(handle.db, { id: "triage", pipelineId: "default" as Uuid, position: -1, name: "Triage", agentId: agentOfKind(handle.db, "system"), entryAction: "assess_risk" });
     const feature = createTestItem(handle.db, { type: "feature", title: "F", stepId: "triage" });
     const supervisor = createRunSupervisor({
       db: handle.db,

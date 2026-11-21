@@ -1,4 +1,4 @@
-import { ADMIN_MCP_SERVER_NAME, AssistOutputSchema, NO_WORKSPACE, SCRATCH_KIND, pageDescriptorFor, type AssistOutput, type Item, type Uuid } from "@eo/core";
+import { ADMIN_MCP_SERVER_NAME, AssistOutputSchema, NO_WORKSPACE, SCRATCH_KIND, pageDescriptorFor, stepAgentKind, type AssistOutput, type Item, type Uuid } from "@eo/core";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { DbHandle } from "../db/client.js";
 import { markReplica } from "../db/recordRole.js";
@@ -15,6 +15,7 @@ import {
   getStep,
   listCommentsForItem,
   listModules,
+  listAgents,
   listProjects,
   listStepsForPipeline,
   markDiverged,
@@ -24,7 +25,7 @@ import {
   setStepOwner,
   updateRun,
 } from "../db/repos/index.js";
-import { openMigratedTestDb } from "../db/testHelpers.js";
+import { agentOfKind, openMigratedTestDb } from "../db/testHelpers.js";
 import { sectionLockFor } from "../managed/locks.js";
 import { assistAgent, postAssistReply } from "../roles/assist.js";
 import { ASSIST_ACTION } from "../roles/conversationSteps.js";
@@ -606,7 +607,7 @@ describe("restoring a version", () => {
         handle.db,
         pipeline.id,
         [
-          { id: "review_fix", pipelineId: id, position: 0, name: "Fix", type: "agent", ownerRole: "implementer", entryAction: "implement", isTerminal: false },
+          { id: "review_fix", pipelineId: id, position: 0, name: "Fix", type: "agent", agentId: agentOfKind(handle.db, "implementer"), entryAction: "implement", isTerminal: false },
           { id: "review_decide", pipelineId: id, position: 1, name: decideName, type: "user", isTerminal: false },
           { id: "review_done", pipelineId: id, position: 2, name: "Done", type: "user", isTerminal: true },
         ],
@@ -633,12 +634,13 @@ describe("restoring a version", () => {
       rationale: `Back to v${number}.`,
       entryStepId: graph.entryStepId!,
       target: { pipelineId },
-      steps: graph.steps.map(({ id, position, name, type, ownerRole, entryAction, instructionsSummary, isTerminal, planMode }) => ({
+      steps: graph.steps.map(({ id, position, name, type, agentId, entryAction, instructionsSummary, isTerminal, planMode }) => ({
         id,
         position,
         name,
         type,
-        ownerRole,
+        // A draft names the kind; the version names the agent (EO-875).
+        ownerRole: stepAgentKind(listAgents(handle.db), { type, agentId }),
         entryAction,
         instructionsSummary,
         isTerminal,

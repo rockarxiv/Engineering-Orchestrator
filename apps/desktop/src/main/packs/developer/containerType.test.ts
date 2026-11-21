@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { refineOutputSchemaFor, EMPTY_SPEC_SHAPE, developerRegistry, schemaByAction, resultSchemaFor, type ItemTypeEntry, type Item, type Uuid } from "@eo/core";
 import type { DbHandle } from "../../db/client.js";
 import {
+  createAgent,
   createRoute,
   createStep,
   deleteItem,
@@ -122,9 +123,14 @@ describe("a container type the code never heard of (KAN-146)", () => {
    * pipeline is. Different targets, so "routed as decomposed" cannot pass
    * by accident.
    */
+  /** An agent of a kind no pack ships, for the step to name (EO-875). */
+  function productOwner() {
+    return createAgent(handle.db, { name: "Product owner", role: "product-owner", provider: "fake", model: null, instructions: "Refine." });
+  }
+
   function refineStep(): { step: ReturnType<typeof createStep>; steps: ReturnType<typeof listPipelineSteps> } {
     const pipelineId = listPipelines(handle.db)[0]!.id;
-    const step = createStep(handle.db, { pipelineId, id: "planning", position: 9, name: "Planning", ownerRole: "product-owner", entryAction: "refine" });
+    const step = createStep(handle.db, { pipelineId, id: "planning", position: 9, name: "Planning", agentId: productOwner().id, entryAction: "refine" });
     createRoute(handle.db, { pipelineId, fromStepId: step.id, resultKey: "decomposed", label: "Decomposed", target: "review" });
     createRoute(handle.db, { pipelineId, fromStepId: step.id, resultKey: "clarified", label: "Clarified", target: "todo" });
     return { step, steps: listPipelineSteps(handle.db) };

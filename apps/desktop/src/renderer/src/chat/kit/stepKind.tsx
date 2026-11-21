@@ -19,7 +19,12 @@ import { cn } from "@eo/ui";
  * is one hover away.
  */
 
-type StepOwnerFields = Pick<PipelineStepView, "type" | "ownerRole" | "entryAction">;
+/**
+ * What the chip reads of a step. `agentKind` is the kind of the agent an
+ * agent step names (EO-875), which the caller reads from the agents
+ * (`useStepAgentKind`): a step carries no role of its own.
+ */
+export type StepOwnerFields = Pick<PipelineStepView, "type" | "entryAction"> & { agentKind?: string | null };
 
 const KIND: Record<PipelineStepView["type"], { label: string; dot: string }> = {
   agent: { label: "agent", dot: "bg-kind-agent" },
@@ -87,7 +92,7 @@ export function stepLane(step: StepOwnerFields & Pick<PipelineStepView, "isTermi
 export function ownerLine(step: StepOwnerFields): string {
   switch (step.type) {
     case "agent":
-      return `agent · ${step.ownerRole ?? "agent"}`;
+      return step.agentKind == null ? "agent" : `agent · ${step.agentKind}`;
     case "user":
       return "you";
     case "module":

@@ -1,3 +1,4 @@
+import { sql } from "drizzle-orm";
 import type { Agent, Item, Run } from "@eo/core";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { DbHandle } from "../db/client.js";
@@ -158,9 +159,10 @@ describe("a forced restart, after the stopped run's agent moved to another proje
 
 describe("a dispatch whose agent moves to another project during preflight", () => {
   it("is turned back before any turn starts", async () => {
-    // The scheduler picks Support's own implementer — it outranks the
-    // global one there — and the agent is moved while EO asks whether
-    // its backend is signed in, the first preflight await.
+    // The scheduler picks Support's own implementer — the step names it
+    // (EO-875) — and the agent is moved while EO asks whether its backend
+    // is signed in, the first preflight await.
+    handle.db.run(sql`UPDATE pipeline_steps SET agent_id = ${moved.id} WHERE id = 'todo'`);
     const { provider, movedTurns } = countingProvider();
     const supervisor = createRunSupervisor({
       db: handle.db,

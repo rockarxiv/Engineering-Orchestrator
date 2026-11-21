@@ -13,7 +13,7 @@ function step(overrides: Partial<PipelineStep> = {}): PipelineStep {
     position: 3,
     name: "Sign-off",
     type: "user",
-    ownerRole: null,
+    agentId: null,
     entryAction: null,
     instructionsSummary: null,
     isTerminal: false,
@@ -58,7 +58,7 @@ describe("deciding on a step", () => {
   });
 
   it("refuses a step an agent acts on, saying what acts there", () => {
-    const agentStep = step({ name: "Review", type: "agent", ownerRole: "reviewer", entryAction: "review", results: [] });
+    const agentStep = step({ name: "Review", type: "agent", agentId: "0199aa00-0000-7000-8000-0000000000b1" as Uuid, entryAction: "review", results: [] });
     expect(decisionRefusal({ step: agentStep, resultKey: "approved", comment: "" })).toBe(
       '"Review" is not a step a person decides on — it is dispatched to an agent, which reports its own result. Nothing has changed.',
     );

@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Agent, Item } from "@eo/core";
 import type { DbHandle } from "../db/client.js";
-import { createTestItem, openMigratedTestDb } from "../db/testHelpers.js";
+import { agentOfKind, createTestItem, openMigratedTestDb } from "../db/testHelpers.js";
 import { createStep, listAgents, listCommentsForItem, listPipelineSteps } from "../db/repos/index.js";
 import { leaseFor, listLeases } from "../db/repos/leasesRepo.js";
 import { listTransitionsForItem } from "../db/repos/transitionsRepo.js";
@@ -182,7 +182,7 @@ describe("one record per database", () => {
 
 describe("work no cap holds back (EO-616)", () => {
   const steward = (): void => {
-    createStep(handle.db, { id: "ask", pipelineId: "default" as never, position: -1, name: "Intake", type: "agent", ownerRole: "system", entryAction: "intake" });
+    createStep(handle.db, { id: "ask", pipelineId: "default" as never, position: -1, name: "Intake", type: "agent", agentId: agentOfKind(handle.db, "system"), entryAction: "intake" });
   };
   const input = () => buildTickInput(handle.db, LIMITS, false, {}, clock, Number.POSITIVE_INFINITY, null, false, new Set(), new Set(["system"]));
 

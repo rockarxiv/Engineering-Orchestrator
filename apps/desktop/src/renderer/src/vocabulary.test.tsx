@@ -71,8 +71,8 @@ import { RowsViewport } from "./chat/kit/testing";
 const NOW = new Date("2026-01-01T12:00:00Z").getTime();
 
 const STEPS = [
-  { id: "todo", pipelineId: "default", position: 0, name: "To Do", type: "agent", ownerRole: "implementer", entryAction: "implement", instructionsSummary: null, isTerminal: false },
-  { id: "review", pipelineId: "default", position: 1, name: "Review", type: "agent", ownerRole: "reviewer", entryAction: "review", instructionsSummary: null, isTerminal: false },
+  { id: "todo", pipelineId: "default", position: 0, name: "To Do", type: "agent", agentId: "agent-implementer", entryAction: "implement", instructionsSummary: null, isTerminal: false },
+  { id: "review", pipelineId: "default", position: 1, name: "Review", type: "agent", agentId: "agent-reviewer", entryAction: "review", instructionsSummary: null, isTerminal: false },
 ];
 
 const PIPELINES = [{ id: "default", projectId: "p1", name: "Delivery", icon: null, entryStepId: "todo", position: 0, archivedAt: null }];

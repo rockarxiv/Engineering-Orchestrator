@@ -16,7 +16,7 @@ import {
   updateAgent,
   updateRun,
 } from "../db/repos/index.js";
-import { createTestItem, openMigratedTestDb } from "../db/testHelpers.js";
+import { agentOfKind, createTestItem, openMigratedTestDb } from "../db/testHelpers.js";
 import { providerForAgent } from "../engine.js";
 import { createModuleRunnerLookup } from "../modules/registry.js";
 import type { ModuleSecretsOptions } from "../modules/secrets.js";
@@ -260,7 +260,7 @@ describe("the provider the app actually builds", () => {
    * somebody to add a route.
    */
   it("walks a step a template defined, taking its first declared result", async () => {
-    createStep(handle.db, { id: "draft", pipelineId: "default" as Uuid, position: 20, name: "Draft", type: "agent", ownerRole: "implementer", entryAction: "draft" });
+    createStep(handle.db, { id: "draft", pipelineId: "default" as Uuid, position: 20, name: "Draft", type: "agent", agentId: agentOfKind(handle.db, "implementer"), entryAction: "draft" });
     createRoute(handle.db, { pipelineId: "default" as Uuid, fromStepId: "draft", resultKey: "drafted", label: "Drafted", target: "ready_to_merge" });
     createRoute(handle.db, { pipelineId: "default" as Uuid, fromStepId: "draft", resultKey: "needs_another_pass", label: "Another pass", target: "todo", position: 1 });
     const item = createTestItem(handle.db, { type: "story", title: "Weekly report", stepId: "draft", previewAt: Date.now() });
@@ -274,7 +274,7 @@ describe("the provider the app actually builds", () => {
   });
 
   it("refuses that same step for real work, so the mark is what walked it", async () => {
-    createStep(handle.db, { id: "draft", pipelineId: "default" as Uuid, position: 20, name: "Draft", type: "agent", ownerRole: "implementer", entryAction: "draft" });
+    createStep(handle.db, { id: "draft", pipelineId: "default" as Uuid, position: 20, name: "Draft", type: "agent", agentId: agentOfKind(handle.db, "implementer"), entryAction: "draft" });
     createRoute(handle.db, { pipelineId: "default" as Uuid, fromStepId: "draft", resultKey: "drafted", label: "Drafted", target: "ready_to_merge" });
     const item = createTestItem(handle.db, { type: "story", title: "Rate limit the API", stepId: "draft" });
 

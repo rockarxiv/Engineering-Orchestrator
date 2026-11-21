@@ -2,7 +2,7 @@ import { isCommentAction, type Agent, type AgentProvider, type Item } from "@eo/
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DbHandle } from "../db/client.js";
 import { createRun, createStep, createRoute, listAgents, openMessageAbout, postComment, updateRun, listCommentsForItem, listRunsForItem, needsAttention, updateAgent } from "../db/repos/index.js";
-import { createTestItem, messagesFrom, openMigratedTestDb, REVIEWABLE_SPEC } from "../db/testHelpers.js";
+import { agentOfKind, createTestItem, messagesFrom, openMigratedTestDb, REVIEWABLE_SPEC } from "../db/testHelpers.js";
 import { answerMessageCommand } from "../messages/messages.js";
 import { createFakeProvider } from "../providers/fake.js";
 import { validImplementResult } from "../providers/fixtures.js";
@@ -125,7 +125,7 @@ describe("a runtime the probe says is signed out", () => {
   });
 
   it("still dispatches a Codex agent's item, a step the system role owns and a built-in step", async () => {
-    createStep(handle.db, { id: "ask", pipelineId: "default" as never, position: -1, name: "Intake", type: "agent", ownerRole: "system", entryAction: "intake" });
+    createStep(handle.db, { id: "ask", pipelineId: "default" as never, position: -1, name: "Intake", type: "agent", agentId: agentOfKind(handle.db, "system"), entryAction: "intake" });
     createRoute(handle.db, { pipelineId: "default" as never, fromStepId: "ask", resultKey: "done", label: "Understood", target: "todo", position: 0 });
     const held = forImplementer("Claude's");
     const review = forReviewer("Codex's");

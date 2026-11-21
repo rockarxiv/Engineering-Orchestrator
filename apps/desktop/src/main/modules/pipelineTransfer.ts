@@ -45,6 +45,8 @@ import {
   roleAskingForAdminGrant,
   servesProject,
   staffingAgents,
+  stepAgentKind,
+  stepAgentOf,
   TERMINAL_TARGET,
   USER_ATTENTION_TARGET,
   UNBOUND_BACKEND,
@@ -94,6 +96,7 @@ import {
 } from "../db/repos/index.js";
 import { briefProblems, entryRuleProblems } from "@eo/engine";
 import { registry } from "../registry.js";
+import { kindBinder } from "../stepAgents.js";
 import { adoptCarriedSchemas, adoptExportedActions, carriedSchemaRefusal, exportedActionRefusal, malformedActionRefusal } from "../actionDefinitionAdoption.js";
 import { loadRolePrompt } from "../roles/prompts.js";
 import { binariesNotFound } from "./readiness.js";
@@ -362,6 +365,7 @@ function exportedBoardKeys(db: Db, exported: Pipeline, further: readonly Pipelin
 /** One board as the document carries it, its key aside. `exported` is every step on every board that leaves. */
 function exportedBoard(db: Db, board: BoardToExport, exported: ReadonlySet<string>, slugById: ReadonlyMap<string, string>): Omit<ExportedBoard, "key"> {
   const { pipeline, steps } = board;
+  const exportAgents = listAgents(db);
   return {
     // Null rather than a step the document does not carry, for the same
     // reason: `pipelines.entry_step_id` is a foreign key.
@@ -384,7 +388,9 @@ function exportedBoard(db: Db, board: BoardToExport, exported: ReadonlySet<strin
       position: step.position,
       name: step.name,
       type: step.type,
-      ownerRole: step.ownerRole,
+      // The kind of the agent it names (EO-875): an agent's id means
+      // nothing on another machine, and an import binds the kind.
+      ownerRole: stepAgentKind(exportAgents, step),
       // Ids are local; a slug means the same thing on both machines.
       entryAction: step.type === "module" && step.entryAction !== null ? (slugById.get(step.entryAction) ?? step.entryAction) : step.entryAction,
       // The version it runs (EO-772), on a module step only: the module
@@ -469,12 +475,20 @@ function exportedBoard(db: Db, board: BoardToExport, exported: ReadonlySet<strin
  */
 function exportedRoles(
   db: Db,
-  steps: readonly { type: string; ownerRole: string | null }[],
+  steps: readonly { type: string; agentId: string | null }[],
   projectId: string | null,
 ): { document: ExportedRole[]; adminGrantHeldBy: string | null } {
-  const wanted = [...new Set(steps.filter((step) => step.type === "agent" && step.ownerRole !== null).map((step) => step.ownerRole as string))];
-  const reaching = listAgents(db).filter((agent) => agent.archivedAt === null && servesProject(agent, { projectId: projectId as Uuid | null }));
-  const live = [...reaching.filter((agent) => agent.projectId !== null), ...reaching.filter((agent) => agent.projectId === null)];
+  // A document names kinds, never agents (EO-875): each kind the steps'
+  // agents are of, carried with the prompt, tools, backend and model of
+  // the agent a step names — the recommendation the importer binds from.
+  const agents = listAgents(db);
+  const named = steps.flatMap((step) => stepAgentOf(agents, step) ?? []);
+  const wanted = [...new Set(named.map((agent) => agent.role))];
+  const reaching = agents.filter((agent) => agent.archivedAt === null && servesProject(agent, { projectId: projectId as Uuid | null }));
+  // An archived or deleted agent is recommended to nobody: its kind still
+  // travels, under no prompt, as a kind nobody here runs does.
+  const kept = named.filter((agent) => agent.archivedAt === null && agent.deletedAt === null);
+  const live = [...kept, ...reaching.filter((agent) => agent.projectId !== null), ...reaching.filter((agent) => agent.projectId === null)];
 
   const document: ExportedRole[] = [];
   let adminGrantHeldBy: string | null = null;
@@ -1337,6 +1351,12 @@ export interface ImportPipelineInput {
    * fails at the first dispatch.
    */
   signedInBackends?: readonly string[];
+  /**
+   * Bind each step's kind for a rehearsal (EO-875, `agentForKind`): a
+   * preview's own agent may be named where no real agent of the kind can
+   * run. The gallery's preview, and nothing else.
+   */
+  preview?: boolean;
 }
 
 export type ImportResult =
@@ -1532,7 +1552,7 @@ export function importPipeline(db: Db, input: ImportPipelineInput): ImportResult
   let keptDefinitions: { role: string; action: string }[] = [];
   try {
     db.transaction(() => {
-      ({ pipelineId, boardPipelineIds, stepIds, keptDefinitions } = writeImport(db, document, toCreate, idBySlug, input.projectId ?? null, input.signedInBackends ?? []));
+      ({ pipelineId, boardPipelineIds, stepIds, keptDefinitions } = writeImport(db, document, toCreate, idBySlug, input.projectId ?? null, input.signedInBackends ?? [], input.preview === true));
     });
   } catch (error) {
     // Rolled back by the transaction, so there is nothing half-written to
@@ -1569,6 +1589,8 @@ function writeImport(
   idBySlug: Map<string, string>,
   projectId: Uuid | null,
   signedInBackends: readonly string[],
+  /** Binding for a rehearsal (`ImportPipelineInput.preview`). */
+  preview: boolean,
 ): { pipelineId: string; boardPipelineIds: string[]; stepIds: Record<string, string>; keptDefinitions: { role: string; action: string }[] } {
   writeItemTypes(db, document, projectId);
   const keptDefinitions = writeRoles(db, document, signedInBackends, projectId);
@@ -1630,6 +1652,11 @@ function writeImport(
   const stepIdMap = new Map(documentSteps(document).map((step) => [step.id, uuidv7() as string]));
   const mapped = (id: string): string => stepIdMap.get(id) ?? id;
 
+  // Each agent step's kind, bound to one of the project's agents of that
+  // kind (EO-875) — read after the roles above are written, so a kind this
+  // import gave an agent names that agent.
+  const agentFor = kindBinder(listAgents(db), projectId, [], { preview });
+
   // Every board, each a pipeline of its own, in this one transaction
   // (EO-762): a template whose second board failed to write is not
   // installed at all, rather than installed with routes into nothing.
@@ -1661,7 +1688,7 @@ function writeImport(
         position: step.position,
         name: step.name,
         type: step.type,
-        ownerRole: step.ownerRole,
+        agentId: agentFor({ type: step.type, ownerRole: step.ownerRole }),
         entryAction: step.type === "module" && step.entryAction !== null ? (idBySlug.get(step.entryAction) ?? step.entryAction) : step.entryAction,
         // The version this import filed of the module it runs (EO-772); null
         // pins the default, which is right for a module reused from here.

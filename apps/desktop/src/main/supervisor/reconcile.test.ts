@@ -192,12 +192,12 @@ describe("reconcile", () => {
     expect(getRun(handle.db, interrupted.id)?.error).toContain("archived");
     expect(getItem(handle.db, item.id)?.stepId).toBe("todo");
 
-    // And said out loud, naming the role rather than the retired agent
-    // as what happens next.
+    // And said out loud, with what happens next: the step names another
+    // agent (EO-875), since none of the same kind takes it up by itself.
     const posted = handle.db.select().from(comments).all();
     expect(posted).toHaveLength(1);
     expect(posted[0]?.body).toContain("was archived while EO was not running");
-    expect(posted[0]?.body).toContain('the "implementer" role');
+    expect(posted[0]?.body).toContain("until its step names another agent");
   });
 
   it("does not resume a recovered thread when the agent is archived while the query server is resolved", async () => {

@@ -3,7 +3,7 @@ import { EMPTY_SPEC_SHAPE, type Item } from "@eo/core";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { DbHandle } from "../db/client.js";
 import { createRoute, createRun, createStep, getItem, getItemType, listAgents, listCommentsForItem, listRunsForItem, syncItemTypes, transitionItem, updateItem } from "../db/repos/index.js";
-import { createTestItem, openMigratedTestDb } from "../db/testHelpers.js";
+import { agentOfKind, createTestItem, openMigratedTestDb } from "../db/testHelpers.js";
 import { createScriptedProvider } from "../providers/scripted.js";
 import { buildDispatchContext } from "../supervisor/buildDispatchContext.js";
 import { createRunSupervisor } from "../supervisor/runSupervisor.js";
@@ -56,7 +56,7 @@ beforeEach(() => {
   // stopped having a step for it — a conversation drives it now — so this
   // configures one, which is exactly what a person could do and is the
   // only thing these tests need from it.
-  createStep(handle.db, { id: "ask", pipelineId: "default" as never, position: -1, name: "Intake", type: "agent", ownerRole: "system", entryAction: "intake" });
+  createStep(handle.db, { id: "ask", pipelineId: "default" as never, position: -1, name: "Intake", type: "agent", agentId: agentOfKind(handle.db, "system"), entryAction: "intake" });
   createRoute(handle.db, { pipelineId: "default" as never, fromStepId: "ask", resultKey: "done", label: "Understood", target: "todo", position: 0 });
   createRoute(handle.db, { pipelineId: "default" as never, fromStepId: "ask", resultKey: "classified_non_feature", label: "Already written", target: "todo", position: 1 });
   item = createTestItem(handle.db, { type: "feature", title: "Rate limiting", stepId: "ask" });

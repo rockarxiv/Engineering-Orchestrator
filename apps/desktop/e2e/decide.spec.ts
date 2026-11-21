@@ -35,7 +35,7 @@ function seedDecisionStep(home: string): void {
       { key: "send_back", label: "Send back", tone: "warning", requiresComment: true },
     ]);
     db.prepare(
-      `INSERT INTO pipeline_steps (id, pipeline_id, position, name, type, owner_role, entry_action, instructions_summary, is_terminal, plan_mode, off_board, results)
+      `INSERT INTO pipeline_steps (id, pipeline_id, position, name, type, agent_id, entry_action, instructions_summary, is_terminal, plan_mode, off_board, results)
        VALUES ('approval', ?, 20, 'Approval', 'user', NULL, NULL, 'Check the Q3 numbers before it is sent.', 0, 0, 0, ?)`,
     ).run(pipeline.id, results);
     db.prepare(

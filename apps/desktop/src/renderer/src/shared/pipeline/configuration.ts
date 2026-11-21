@@ -102,13 +102,13 @@ export function whatWasLeft(outcome: { moved: number; archived: number; running:
 /**
  * Switching who acts, with the fields the old kind owned cleared out.
  *
- * Without this a step could carry a role while being a built-in, or an
+ * Without this a step could name an agent while being a built-in, or an
  * entry action while being a person's — contradictions the old four kinds
  * allowed because nothing read them. The validator now rejects both, and a
  * screen that can produce a state its own validator refuses is a screen
  * that traps people.
  */
-export function changeKind(step: PipelineStepView, type: PipelineStepView["type"], roles: string[]): Partial<PipelineStepView> {
+export function changeKind(step: PipelineStepView, type: PipelineStepView["type"], agentIds: string[]): Partial<PipelineStepView> {
   // `inputs` goes with `entryAction` every time (EO-78). A configured
   // value belongs to the module that declared the input, and every branch
   // below clears the action — so keeping the values would leave numbers
@@ -125,10 +125,10 @@ export function changeKind(step: PipelineStepView, type: PipelineStepView["type"
   // `watch` goes too (EO-456): keep checking belongs to the function or
   // module the step ran, which every branch clears, and only a builtin or
   // a module step can keep checking at all.
-  if (type === "agent") return { type, ownerRole: step.ownerRole ?? roles[0] ?? null, entryAction: null, inputs: {}, timeoutMs: null, watch: null, moduleVersion: null, isTerminal: false };
-  if (type === "builtin" || type === "module") return { type, ownerRole: null, entryAction: null, inputs: {}, timeoutMs: null, watch: null, moduleVersion: null, isTerminal: false };
+  if (type === "agent") return { type, agentId: step.agentId ?? agentIds[0] ?? null, entryAction: null, inputs: {}, timeoutMs: null, watch: null, moduleVersion: null, isTerminal: false };
+  if (type === "builtin" || type === "module") return { type, agentId: null, entryAction: null, inputs: {}, timeoutMs: null, watch: null, moduleVersion: null, isTerminal: false };
   // Only a `user` step may be terminal — nothing runs where work is done.
-  return { type, ownerRole: null, entryAction: null, inputs: {}, timeoutMs: null, watch: null, moduleVersion: null };
+  return { type, agentId: null, entryAction: null, inputs: {}, timeoutMs: null, watch: null, moduleVersion: null };
 }
 
 /**
@@ -185,13 +185,19 @@ export function keptInputs(registry: RegistryFacts, step: Pick<PipelineStepView,
  * picked yet is null too — there is no declaration to read until
  * something is chosen.
  */
-export function declaredResults(registry: RegistryFacts, step: PipelineStepView, modules: ModuleView[]): string[] | null {
+export function declaredResults(
+  registry: RegistryFacts,
+  step: PipelineStepView,
+  modules: ModuleView[],
+  /** The kind of the agent the step names (EO-875), which its action is looked up by. */
+  agentKind: string | null = null,
+): string[] | null {
   if (step.type === "builtin") {
     const results = builtinResults(registry, step.entryAction);
     return results ? [...results] : null;
   }
   if (step.type === "module") return modules.find((module) => module.id === step.entryAction)?.manifest.results ?? null;
-  if (step.type === "agent" && step.entryAction !== null) return actionFactsFor(registry, step.ownerRole, step.entryAction)?.results.map((result) => result.key) ?? null;
+  if (step.type === "agent" && step.entryAction !== null) return actionFactsFor(registry, agentKind, step.entryAction)?.results.map((result) => result.key) ?? null;
   return null;
 }
 
@@ -290,10 +296,12 @@ export function fillResults(
   routes: StepRouteView[],
   results: string[],
   fallbackTarget: string,
+  /** The kind of the agent the step names (EO-875). */
+  agentKind: string | null = null,
 ): { routes: StepRouteView[]; dropped: StepRouteView[] } {
   const mine = routes.filter((route) => route.fromStepId === step.id);
   const byKey = new Map(mine.map((route) => [route.resultKey, route]));
-  const declared = step.type === "agent" && step.entryAction !== null ? actionFactsFor(registry, step.ownerRole, step.entryAction)?.results : undefined;
+  const declared = step.type === "agent" && step.entryAction !== null ? actionFactsFor(registry, agentKind, step.entryAction)?.results : undefined;
   const kept = step.type === "agent" ? mine.filter((route) => ENGINE_RESULTS.includes(route.resultKey) && !results.includes(route.resultKey)) : [];
   const filled = results.map((resultKey, position) => {
     const existing = byKey.get(resultKey);

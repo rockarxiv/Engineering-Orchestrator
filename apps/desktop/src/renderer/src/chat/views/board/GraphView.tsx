@@ -1,4 +1,5 @@
 import { useCallback, useMemo, useState } from "react";
+import { useStepAgentKind } from "../../../shared/agents/stepAgentKind";
 import { STEP_ID_FACET } from "@eo/core";
 import { usePipelineData, usePipelines } from "../../../query/hooks";
 import { useProjects } from "../../../query/useRepositories";
@@ -30,6 +31,7 @@ import { StepDetails } from "./StepDetails";
 
 export function GraphView({ pipelineId }: { pipelineId: string }) {
   const name = usePipelineName(pipelineId);
+  const agentKindOf = useStepAgentKind();
   const { items, states, routes, elsewhere, entrySentence, verification, workspaces, workspaceKind, isLoading, error } = usePipelineData(pipelineId);
   const ordered = useMemo(() => [...states].sort((a, b) => a.position - b.position), [states]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -72,6 +74,7 @@ export function GraphView({ pipelineId }: { pipelineId: string }) {
             steps={ordered}
             routes={routes}
             elsewhere={elsewhere}
+            agentKindOf={agentKindOf}
             entryStepId={entry}
             entryNote={entrySentence}
             loads={loads}

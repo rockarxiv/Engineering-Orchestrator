@@ -40,8 +40,6 @@ function rng(seed: number): () => number {
   };
 }
 
-const ROLES = ["implementer", "reviewer"] as const;
-
 function agentFor(role: string, index: number): Agent {
   return {
     id: `a-${role}-${index}` as Uuid,
@@ -59,15 +57,16 @@ function agentFor(role: string, index: number): Agent {
   };
 }
 
-function stepFor(pipelineId: string, position: number, role: string): PipelineStep {
+/** A step naming `agent` (EO-875): its action is its agent's kind's. */
+function stepFor(pipelineId: string, position: number, agent: Agent): PipelineStep {
   return {
     id: `${pipelineId}-s${position}`,
     pipelineId: pipelineId as Uuid,
     position,
     name: `Step ${position}`,
     type: "agent",
-    ownerRole: role,
-    entryAction: role === "reviewer" ? "review" : "implement",
+    agentId: agent.id,
+    entryAction: agent.role === "reviewer" ? "review" : "implement",
     instructionsSummary: null,
     isTerminal: false,
     planMode: false,
@@ -93,12 +92,15 @@ interface Generated {
 function generate(seed: number): Generated {
   const random = rng(seed);
   const pipelineCount = 1 + Math.floor(random() * 2);
+  const agents = [agentFor("implementer", 0), agentFor("implementer", 1), agentFor("reviewer", 0)];
+  // Each pipeline's implement step names its own implementer, so two
+  // agents of one kind are both in play; both review steps name the one
+  // reviewer.
   const steps: PipelineStep[] = [];
   for (let p = 0; p < pipelineCount; p++) {
-    for (let s = 0; s < 2; s++) steps.push(stepFor(`p${p}`, s, ROLES[s % ROLES.length]!));
+    steps.push(stepFor(`p${p}`, 0, agents[p]!));
+    steps.push(stepFor(`p${p}`, 1, agents[2]!));
   }
-
-  const agents = [agentFor("implementer", 0), agentFor("implementer", 1), agentFor("reviewer", 0)];
   const repositories: (Uuid | null)[] = ["r0" as Uuid, "r1" as Uuid, null];
 
   const itemCount = Math.floor(random() * 12);
@@ -260,13 +262,14 @@ describe("one scheduler tick", () => {
     }
   });
 
-  it("dispatches only an agent step owned by a role the pause exempts", () => {
+  it("dispatches only an agent step naming an agent of a kind the pause exempts", () => {
     for (const { seed, input } of CASES) {
-      const exempt = input.steps.find((step) => step.ownerRole !== null)?.ownerRole;
+      const kindOf = (step: PipelineStep | undefined) => input.agents.find((agent) => agent.id === step?.agentId)?.role;
+      const exempt = kindOf(input.steps.find((step) => step.agentId !== null));
       if (!exempt) continue;
       for (const dispatch of tick({ ...input, paused: true, pauseExemptRoles: new Set([exempt]) })) {
         const step = input.steps.find((candidate) => candidate.id === dispatch.stepId && candidate.pipelineId === dispatch.item.pipelineId);
-        expect({ seed, type: step?.type, role: step?.ownerRole }).toEqual({ seed, type: "agent", role: exempt });
+        expect({ seed, type: step?.type, kind: kindOf(step) }).toEqual({ seed, type: "agent", kind: exempt });
       }
     }
   });
@@ -321,13 +324,13 @@ describe("one scheduler tick", () => {
     }
   });
 
-  it("staffs an agent step with an agent whose role owns it", () => {
+  it("runs an agent step with exactly the agent it names, never another of its kind (EO-875)", () => {
     for (const { seed, input } of CASES) {
       const stepById = new Map(input.steps.map((step) => [step.id, step]));
       for (const dispatch of tick(input)) {
         const step = stepById.get(dispatch.item.stepId!)!;
         if (step.type !== "agent") continue;
-        expect({ seed, id: dispatch.item.id, role: dispatch.agent?.role }).toEqual({ seed, id: dispatch.item.id, role: step.ownerRole });
+        expect({ seed, id: dispatch.item.id, agent: dispatch.agent?.id }).toEqual({ seed, id: dispatch.item.id, agent: step.agentId });
       }
     }
   });

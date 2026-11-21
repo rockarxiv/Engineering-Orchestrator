@@ -1,11 +1,11 @@
 import { readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { ADMIN_MCP_SERVER_NAME, SECTION_LOCKED_CHANNELS, type IpcChannel, type IpcResponse } from "@eo/core";
+import { ADMIN_MCP_SERVER_NAME, SECTION_LOCKED_CHANNELS, type IpcChannel, type IpcResponse, type Uuid } from "@eo/core";
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import { adminDeliveryFor, adminDispatchFor } from "../agentAttachments/adminDelivery.js";
 import type { DbHandle } from "../db/client.js";
 import { markReplica } from "../db/recordRole.js";
-import { createPipeline, createStep, currentVersion, getActionDefinition, listActionDefinitions, listAgents, listRetiredStepsForPipeline, publishSection, setItemArchived } from "../db/repos/index.js";
+import { createAgent, createPipeline, createStep, currentVersion, getActionDefinition, listActionDefinitions, listAgents, listRetiredStepsForPipeline, publishSection, setItemArchived } from "../db/repos/index.js";
 import { createTestItem, openMigratedTestDb } from "../db/testHelpers.js";
 import { TOOLS, type Dispatch, type ToolOutcome } from "../mcpHost/catalog.js";
 import { toolsFor } from "../mcpHost/gate.js";
@@ -52,10 +52,16 @@ const ALIGNMENT = {
   fields: { properties: { gaps: { type: "array", items: { type: "string" } } }, required: ["gaps"] },
 };
 
+/** The agent of `kind` a step here names (EO-875): the installation's own, or one made for it, since a step names an agent rather than a role. */
+function agentOf(kind: string): Uuid {
+  const held = listAgents(handle.db).find((agent) => agent.role === kind && agent.archivedAt === null);
+  return held?.id ?? createAgent(handle.db, { name: kind, role: kind, provider: "fake", model: null, instructions: "" }).id;
+}
+
 /** A pipeline called "Quality" whose "Check" step is `qa` running `alignment`. */
 function aStepUsingAlignment(): void {
   const pipeline = createPipeline(handle.db, { name: "Quality" });
-  createStep(handle.db, { pipelineId: pipeline.id, position: 0, name: "Check", type: "agent", ownerRole: "qa", entryAction: "alignment" });
+  createStep(handle.db, { pipelineId: pipeline.id, position: 0, name: "Check", type: "agent", agentId: agentOf("qa"), entryAction: "alignment" });
 }
 
 beforeEach(async () => {
@@ -213,11 +219,11 @@ describe("role_action_delete", () => {
     expect(getActionDefinition(handle.db, "qa", "alignment")).toBeDefined();
   });
 
-  it("is not held by a step another role owns, or one on another action", async () => {
+  it("is not held by a step naming an agent of another kind, or one on another action", async () => {
     answered(await tool("role_action_save").run(dispatch, ALIGNMENT));
     const pipeline = createPipeline(handle.db, { name: "Quality" });
-    createStep(handle.db, { pipelineId: pipeline.id, position: 0, name: "Theirs", type: "agent", ownerRole: "auditor", entryAction: "alignment" });
-    createStep(handle.db, { pipelineId: pipeline.id, position: 1, name: "Other", type: "agent", ownerRole: "qa", entryAction: "smoke" });
+    createStep(handle.db, { pipelineId: pipeline.id, position: 0, name: "Theirs", type: "agent", agentId: agentOf("auditor"), entryAction: "alignment" });
+    createStep(handle.db, { pipelineId: pipeline.id, position: 1, name: "Other", type: "agent", agentId: agentOf("qa"), entryAction: "smoke" });
 
     const outcome = answered(await tool("role_action_delete").run(dispatch, { role: "qa", action: "alignment" }));
 
@@ -233,7 +239,7 @@ describe("role_action_delete", () => {
 
   /** Publishes Delivery with a "Check" step added: `qa` running `alignment`, both keys routed. */
   async function publishWithCheck(before: ReturnType<typeof delivery>) {
-    const check = { ...before.steps[0]!, id: "qa_check", name: "Check", type: "agent" as const, ownerRole: "qa", entryAction: "alignment", isTerminal: false, position: 99 };
+    const check = { ...before.steps[0]!, id: "qa_check", name: "Check", type: "agent" as const, agentId: agentOf("qa"), entryAction: "alignment", isTerminal: false, position: 99 };
     const withCheck = {
       ...before,
       steps: [...before.steps, check],

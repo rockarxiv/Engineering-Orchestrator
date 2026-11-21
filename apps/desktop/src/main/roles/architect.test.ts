@@ -1,7 +1,7 @@
-import { proposedActionDraft, type ConfigureOutput, type PipelineDraft } from "@eo/core";
+import { proposedActionDraft, stepAgentKind, type ConfigureOutput, type PipelineDraft } from "@eo/core";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { DbHandle } from "../db/client.js";
-import { createPipeline, createRoute, createStep, listRoutesForPipeline, listStepsForPipeline } from "../db/repos/index.js";
+import { createPipeline, createRoute, createStep, listAgents, listRoutesForPipeline, listStepsForPipeline } from "../db/repos/index.js";
 import { createTestItem, openMigratedTestDb } from "../db/testHelpers.js";
 import { renderDraft, validateDraft } from "./architect.js";
 
@@ -45,7 +45,7 @@ function currentGraph(): PipelineDraft {
       position: step.position,
       name: step.name,
       type: step.type,
-      ownerRole: step.ownerRole,
+      ownerRole: stepAgentKind(listAgents(handle.db), step),
       entryAction: step.entryAction,
       instructionsSummary: step.instructionsSummary,
       isTerminal: step.isTerminal,
@@ -347,15 +347,16 @@ describe("validateDraft", () => {
     expect(problems.some((problem) => problem.severity === "error" && problem.message.includes("Delivery · Shipped"))).toBe(true);
   });
 
-  it("warns about a role nobody staffs rather than blocking it", () => {
+  it("refuses a step naming a kind no agent here has, naming the step (EO-875)", () => {
     const draft = currentGraph();
     const problems = validateDraft(handle.db, "default", {
       ...draft,
       steps: draft.steps.map((step) => (step.id === "todo" ? { ...step, ownerRole: "tester" } : step)),
     });
 
-    expect(problems.some((problem) => problem.severity === "warning" && problem.message.includes("tester"))).toBe(true);
-    expect(problems.some((problem) => problem.severity === "error")).toBe(false);
+    // A step names an agent, and no agent of "tester" exists to bind it
+    // to: the step would name nobody, which Publish refuses too.
+    expect(problems).toContainEqual(expect.objectContaining({ severity: "error", stateId: "todo", message: expect.stringContaining("with no agent") }));
   });
 
   // A draft says nothing about keep checking, and publishing one carries

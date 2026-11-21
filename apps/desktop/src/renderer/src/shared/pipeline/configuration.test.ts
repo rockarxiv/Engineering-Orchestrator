@@ -137,13 +137,14 @@ describe("an agent step's declared results", () => {
       },
     ],
   });
-  const step = (ownerRole: string | null, entryAction: string | null): PipelineStepView => ({
+  // The kind is the step's agent's (EO-875): `agent-<kind>` here, handed to the readers beside the step.
+  const step = (kind: string | null, entryAction: string | null): PipelineStepView => ({
     id: "s",
     pipelineId: "default",
     position: 0,
     name: "Step",
     type: "agent",
-    ownerRole,
+    agentId: kind === null ? null : `agent-${kind}`,
     entryAction,
     instructionsSummary: null,
     isTerminal: false,
@@ -160,22 +161,22 @@ describe("an agent step's declared results", () => {
   const route = (resultKey: string, position: number, fromStepId = "s"): StepRouteView => ({ id: `${fromStepId}:${resultKey}`, pipelineId: "default", fromStepId, resultKey, label: "Mine", tone: "danger", target: "elsewhere", position });
 
   it("answers the role's own definition, then the pack's, and null only where nothing defines the action", () => {
-    expect(declaredResults(facts, step("qa", "alignment"), [])).toEqual(["aligned", "gaps_found"]);
+    expect(declaredResults(facts, step("qa", "alignment"), [], "qa")).toEqual(["aligned", "gaps_found"]);
     // Role plus action wins, for that role alone.
-    expect(declaredResults(facts, step("qa", "review"), [])).toEqual(["passed"]);
-    expect(declaredResults(facts, step("reviewer", "review"), [])).toEqual(["approved", "changes_requested", "needs_user_input"]);
+    expect(declaredResults(facts, step("qa", "review"), [], "qa")).toEqual(["passed"]);
+    expect(declaredResults(facts, step("reviewer", "review"), [], "reviewer")).toEqual(["approved", "changes_requested", "needs_user_input"]);
     // A role that defined nothing falls back to the pack's.
-    expect(declaredResults(facts, step("qa", "implement"), [])).toEqual(["done"]);
-    expect(declaredResults(facts, step(null, "implement"), [])).toEqual(["done"]);
+    expect(declaredResults(facts, step("qa", "implement"), [], "qa")).toEqual(["done"]);
+    expect(declaredResults(facts, step(null, "implement"), [], null)).toEqual(["done"]);
 
-    expect(declaredResults(facts, step("reviewer", "alignment"), [])).toBeNull();
-    expect(declaredResults(facts, step("qa", "legacy_check"), [])).toBeNull();
-    expect(declaredResults(facts, step("qa", null), [])).toBeNull();
+    expect(declaredResults(facts, step("reviewer", "alignment"), [], "reviewer")).toBeNull();
+    expect(declaredResults(facts, step("qa", "legacy_check"), [], "qa")).toBeNull();
+    expect(declaredResults(facts, step("qa", null), [], "qa")).toBeNull();
   });
 
   it("fills a row per key with the definition's label, keeps the engine's rows and reports the rest as dropped", () => {
     const routes = [route("aligned", 0), route("done", 1), route("escalation", 2), route("verification_failed", 3), route("done", 0, "other")];
-    const filled = fillResults(facts, step("qa", "alignment"), routes, ["aligned", "gaps_found"], "next");
+    const filled = fillResults(facts, step("qa", "alignment"), routes, ["aligned", "gaps_found"], "next", "qa");
     const mine = filled.routes.filter((each) => each.fromStepId === "s").sort((a, b) => a.position - b.position);
 
     expect(mine.map((each) => [each.resultKey, each.position])).toEqual([["aligned", 0], ["gaps_found", 1], ["escalation", 2], ["verification_failed", 3]]);
@@ -185,7 +186,7 @@ describe("an agent step's declared results", () => {
     expect(mine[2]).toMatchObject({ id: "s:escalation", target: "elsewhere" });
     expect(filled.dropped.map((each) => each.resultKey)).toEqual(["done"]);
     expect(filled.routes.filter((each) => each.fromStepId === "other")).toHaveLength(1);
-    expect(fillResults(facts, step("qa", "alignment"), [], ["aligned"], "next").routes[0]?.label).toBe("Aligned with the spec");
+    expect(fillResults(facts, step("qa", "alignment"), [], ["aligned"], "next", "qa").routes[0]?.label).toBe("Aligned with the spec");
   });
 
   it("still drops everything undeclared from a builtin's rows", () => {

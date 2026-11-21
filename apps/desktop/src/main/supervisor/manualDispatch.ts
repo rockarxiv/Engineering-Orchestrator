@@ -1,8 +1,7 @@
-import { asksToRerun, INTERPRET_ACTION, projectHasOwnAgent, staffsItem, type PipelineStep, type Run, type Uuid } from "@eo/core";
+import { asksToRerun, INTERPRET_ACTION, staffsItem, type PipelineStep, type Run, type Uuid } from "@eo/core";
 import type { Db } from "../db/client.js";
 import {
   getAgent,
-  listAgents,
   stepForItem,
   getItem,
   listActiveRuns,
@@ -91,14 +90,13 @@ export interface PendingResponse {
  * - the step is one an agent is dispatched at — not a `user` step, not
  *   a terminal one, and not a `builtin` or `module`, which run EO's own
  *   code and have no agent to hand anything back to;
- * - the agent named is the one that step is owned by. `@implementer
+ * - the agent named is the one that step names (EO-875). `@implementer
  *   rerun` while the item is at Review is not a request this can
- *   honour — the implementer does not own Review;
- * - and it is one the scheduler would staff this item with (EO-474):
- *   its scope reaches the item's project, and it is not a global agent
- *   on an item whose project has an agent of its own in the role. The
- *   same rule `staffingAgents` applies, asked without the named agent's
- *   own switch — that half is availability, below.
+ *   honour — Review names another agent — and nor is asking a second
+ *   reviewer to rerun a step that names the first;
+ * - and its scope reaches the item's project (EO-474), as the
+ *   scheduler's `stepAgentRefusal` asks, without the named agent's own
+ *   switch — that half is availability, below.
  *
  * Exported because it is asked twice, and the two answers must agree.
  * The mention is classified against it, and then several awaits later
@@ -130,20 +128,22 @@ export function rerunContract(db: Db, itemId: Uuid, agentId: Uuid, stepId: strin
   // decide what a rerun of that item does.
   const step = stepForItem(db, item);
   if (!step || step.isTerminal || step.type !== "agent") return null;
-  if (step.entryAction === null || step.ownerRole === null) return null;
+  if (step.entryAction === null || step.agentId === null) return null;
   // An item only ever resolves against a step of its own pipeline —
   // `tick()`'s rule, and it has to hold here too, or a rerun could run
   // another pipeline's action against the wrong role.
   if (step.pipelineId !== item.pipelineId) return null;
 
+  // The step's own agent and no other (EO-875): a step is run by the
+  // agent it names, and a rerun asked of another agent of the same kind
+  // would run the step with someone it does not name.
+  if (agentId !== step.agentId) return null;
   const agent = getAgent(db, agentId);
-  if (!agent || agent.role !== step.ownerRole) return null;
-  // Whom the scheduler would staff this item with (EO-474). Without it a
+  if (!agent) return null;
+  // Whom the scheduler would run this item with (EO-474). Without it a
   // mention would be a way round the scope: another project's agent
-  // asked by name, or the global agent on a project that has stepped out
-  // from under it, would run where tick() never sends either.
+  // asked by name would run where tick() never sends it.
   if (!staffsItem(agent, item)) return null;
-  if (agent.projectId === null && projectHasOwnAgent(listAgents(db), step.ownerRole, item)) return null;
   return { step, action: step.entryAction };
 }
 

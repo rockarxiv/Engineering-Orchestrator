@@ -2,7 +2,7 @@ import type { Uuid } from "@eo/core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DbHandle } from "../db/client.js";
 import { createAgent, createRoute, createStep, getItem, listCommentsForItem, postComment } from "../db/repos/index.js";
-import { createTestItem, openMigratedTestDb } from "../db/testHelpers.js";
+import { agentOfKind, createTestItem, openMigratedTestDb } from "../db/testHelpers.js";
 import { answersSinceLastAsk, newestAnswerToLastAsk } from "../roles/answers.js";
 import { unansweredQuestions } from "../roles/clarificationQuestions.js";
 import { createItemLock } from "../supervisor/itemLock.js";
@@ -50,7 +50,7 @@ function fakeEngine(): EngineHandle {
 /** A person approves a draft onward or sends it back with a reason. */
 function approvalPipeline(): void {
   const pipelineId = "default" as Uuid;
-  createStep(handle.db, { id: "draft", pipelineId, position: 20, name: "Draft", type: "agent", ownerRole: "implementer", entryAction: "implement" });
+  createStep(handle.db, { id: "draft", pipelineId, position: 20, name: "Draft", type: "agent", agentId: agentOfKind(handle.db, "implementer"), entryAction: "implement" });
   createStep(handle.db, {
     id: "approval",
     pipelineId,

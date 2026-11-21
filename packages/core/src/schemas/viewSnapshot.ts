@@ -136,6 +136,9 @@ export const ViewItemStepSchema = z.object({
   id: z.string(),
   name: z.string(),
   type: z.string(),
+  /** The agent an agent step runs (EO-875), or null. */
+  agentId: z.string().nullable().default(null),
+  /** The kind of that agent — its role — or null. Read from the agent: a step carries no role of its own. */
   ownerRole: z.string().nullable(),
   entryAction: z.string().nullable(),
   isTerminal: z.boolean(),
@@ -180,6 +183,9 @@ export const ViewStepSchema = z.object({
   name: z.string(),
   position: z.number(),
   type: z.string(),
+  /** The agent an agent step runs (EO-875), or null. */
+  agentId: z.string().nullable().default(null),
+  /** The kind of that agent — its role — or null. Read from the agent: a step carries no role of its own. */
   ownerRole: z.string().nullable(),
   entryAction: z.string().nullable(),
   /** Live items sitting here right now — what this step is holding. */

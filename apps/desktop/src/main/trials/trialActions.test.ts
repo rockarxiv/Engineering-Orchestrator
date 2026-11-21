@@ -29,7 +29,7 @@ import {
 } from "../db/repos/index.js";
 import { listPipelinesUpdatedSince, upsertReplicaPipeline } from "../db/repos/projectMoveRepo.js";
 import { itemTypes, projects } from "../db/schema.js";
-import { createTestItem, openMigratedTestDb } from "../db/testHelpers.js";
+import { agentOfKind, createTestItem, openMigratedTestDb } from "../db/testHelpers.js";
 import { publishTrialCommand, sendToAssist } from "../ipc/assistCommands.js";
 import { savePipeline } from "../ipc/configCommands.js";
 import { clearPublishedView } from "../ipc/currentView.js";
@@ -163,6 +163,9 @@ const approve = (chat: Item, card: Uuid) => approveTrialDesign(handle.db, { atta
 
 /** The Evidence design approved, its first round filed. */
 async function evidenceOnTrial(actions: unknown[] = [analyseEvidence()]) {
+  // The agent the draft's Analyse step is bound to (EO-875): a step names
+  // an agent of its kind, so one has to be there before the draft is.
+  createAgent(handle.db, { name: "Adviser", role: "eo_adviser", provider: "claude", instructions: "You weigh evidence." });
   const chat = await conversationOn("/settings");
   const card = turn(chat, { message: "Here is the design.", draft: evidenceDraft(), trial: EVIDENCE_PLAN, actions });
   const answer = await approve(chat, card);
@@ -249,7 +252,6 @@ describe("a draft that brings an action definition, approved as a design", () =>
 describe("a trial item on the step using the trial's definition", () => {
   it("is dispatched with the overlay's output schema, and moves on one of its results", async () => {
     const { trialId, claim } = await evidenceOnTrial();
-    createAgent(handle.db, { name: "Adviser", role: "eo_adviser", provider: "claude", instructions: "You weigh evidence." });
     const { provider, started, corrections } = recordingProvider({ result: "supported", summary: "The sources agree." });
 
     await supervisorWith(provider).runOnce();
@@ -267,7 +269,6 @@ describe("a trial item on the step using the trial's definition", () => {
 
   it("is refused a result the overlay does not declare, as a published definition's would be", async () => {
     const { trialId, claim } = await evidenceOnTrial();
-    createAgent(handle.db, { name: "Adviser", role: "eo_adviser", provider: "claude", instructions: "You weigh evidence." });
     const { provider, corrections } = recordingProvider({ result: "inconclusive", summary: "Hard to say." });
 
     await supervisorWith(provider).runOnce();
@@ -288,7 +289,16 @@ describe("a trial item on the step using the trial's definition", () => {
     graph.routes = graph.routes.filter((route) => route.fromStepId === "ev_analyse").map((route) => (route.target === "ev_check" ? { ...route, target: "ev_done" } : route));
     const saved = savePipeline(handle.db, undefined, {
       pipelineId: published.id,
-      steps: graph.steps.map((entry) => ({ ...entry, id: `live_${entry.id}`, pipelineId: published.id, results: [], timeoutMs: null, workspaceId: null })) as never,
+      // Each agent step names the Adviser (EO-875), as a publish binds the draft's kind.
+      steps: graph.steps.map(({ ownerRole, ...entry }) => ({
+        ...entry,
+        agentId: ownerRole === null ? null : agentOfKind(handle.db, ownerRole),
+        id: `live_${entry.id}`,
+        pipelineId: published.id,
+        results: [],
+        timeoutMs: null,
+        workspaceId: null,
+      })) as never,
       routes: graph.routes.map((route, index) => ({ ...route, id: `r${index}`, pipelineId: published.id, fromStepId: `live_${route.fromStepId}`, target: `live_${route.target}` })) as never,
       entryStepId: "live_ev_analyse",
     });
@@ -392,8 +402,11 @@ describe("a draft replacing a definition live work uses", () => {
     ).toBe(true);
     const installed = definitionRows();
     const checks = createPipeline(handle.db, { projectId, name: "Checks" });
+    // The live step names a QA agent (EO-875); the draft below names its kind.
+    const qa = createAgent(handle.db, { name: "QA", role: "qa", provider: "claude", instructions: "Check the work." });
+    const align = (({ ownerRole: _kind, ...rest }: ReturnType<typeof step>) => rest)(step("chk_align", 0, "Align", { type: "agent", entryAction: "alignment" }));
     const liveSteps = [
-      { ...step("chk_align", 0, "Align", { type: "agent", ownerRole: "qa", entryAction: "alignment" }), pipelineId: checks.id, results: [], timeoutMs: null, workspaceId: null },
+      { ...align, agentId: qa.id, pipelineId: checks.id, results: [], timeoutMs: null, workspaceId: null },
       { ...step("chk_rework", 1, "Rework", { isTerminal: true }), pipelineId: checks.id, results: [], timeoutMs: null, workspaceId: null },
       { ...step("chk_done", 2, "Done", { isTerminal: true }), pipelineId: checks.id, results: [], timeoutMs: null, workspaceId: null },
     ];

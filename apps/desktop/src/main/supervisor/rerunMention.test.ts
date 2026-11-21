@@ -18,7 +18,7 @@ import {
 import { listTransitionsForItem, transitionItem } from "../db/repos/transitionsRepo.js";
 import { getStep, listRoutesForPipeline, listStepsForPipeline, replacePipelineGraph } from "../db/repos/pipelineStepsRepo.js";
 import { holdItem, moveItem, postHumanComment, resumeHeldItem } from "../ipc/domainCommands.js";
-import { createTestItem, openMigratedTestDb, REVIEWABLE_SPEC } from "../db/testHelpers.js";
+import { agentOfKind, createTestItem, openMigratedTestDb, REVIEWABLE_SPEC } from "../db/testHelpers.js";
 import { createFakeProvider, type FakeProviderScript } from "../providers/fake.js";
 import { createRoleWiring } from "../packs/developer/wiring.js";
 import { createRunSupervisor, type RunSupervisor } from "./runSupervisor.js";
@@ -322,7 +322,7 @@ describe("a rerun EO will not dispatch", () => {
     // Not "enable it in Settings": there is no switch, and sending
     // somebody to look for one is worse than saying nothing.
     expect(refusal).not.toContain("Settings");
-    expect(refusal).toContain('give the "reviewer" role another agent');
+    expect(refusal).toContain('choose another agent on the step');
     // Closed, so the same paragraph is not posted again on the next
     // tick — and archiving being one-way, "again" would be forever.
     expect(listMentionsForComment(handle.db, comment.id).map((mention) => mention.status)).toEqual(["dismissed"]);
@@ -371,11 +371,10 @@ describe("a rerun EO will not dispatch", () => {
     expect(refusal).toContain("Reviewer is switched off");
     expect(listMentionsForComment(handle.db, comment.id).map((mention) => mention.status)).toEqual(["dismissed"]);
 
-    // The pipeline is untouched by any of this, and that is correct: the
-    // step is staffed by an enabled reviewer and the item is due, so
-    // the scheduler dispatches it on its own account. Refusing to run
-    // the agent somebody named is not a reason to stall the step.
-    expect(started.filter((run) => run.agentId === standIn.id)).toHaveLength(1);
+    // Nor does the step hand the work to the other agent of the kind
+    // (EO-875): the step names Reviewer, so it waits for Reviewer to be
+    // switched on or for another agent to be chosen on the step.
+    expect(started.filter((run) => run.agentId === standIn.id)).toEqual([]);
   });
 });
 
@@ -393,11 +392,10 @@ describe("what a resume promises", () => {
     expect(listRunsForItem(handle.db, item.id).some((run) => run.status !== "cancelled")).toBe(true);
   });
 
-  it("names an unstaffed role rather than promising a pickup", async () => {
-    // The scheduler's own staffing question, which a rerun request no
-    // longer asks — it names an agent, so it says whether *that* one is
-    // on. Here nobody holds the role at all, and "Enable one in
-    // Settings" is the right advice rather than the wrong one.
+  it("names the step's switched-off agent rather than promising a pickup", async () => {
+    // The scheduler's own question: whether the agent the step names
+    // (EO-875) can run. Here it is switched off, and enabling it or
+    // choosing another on the step is the advice.
     cancelledReviewRun();
     updateAgent(handle.db, reviewer.id, { enabled: false });
 
@@ -406,8 +404,8 @@ describe("what a resume promises", () => {
     resumeHeldItem(handle.db, supervisor, { itemId: item.id, cancelActiveRun: false });
 
     const acknowledgement = engineNotes().at(-1);
-    expect(acknowledgement).toContain('no enabled agent holds the "reviewer" role');
-    expect(acknowledgement).toContain("Enable one in Settings.");
+    expect(acknowledgement).toContain("Reviewer, the agent this step names, is disabled");
+    expect(acknowledgement).toContain("Enable Reviewer in Agents, or choose another agent on the step.");
 
     await supervisor.runOnce();
     expect(listRunsForItem(handle.db, item.id).every((run) => run.status === "cancelled")).toBe(true);
@@ -477,7 +475,7 @@ describe("a rerun whose preflight turns back", () => {
   }
 
   /**
-   * Hands Review to another role, through the same call the pipeline
+   * Hands Review to an agent of another kind, through the same call the pipeline
    * configuration screen publishes with — steps are updated in place, so
    * the item stays exactly where it is and only the contract changes.
    */
@@ -493,7 +491,7 @@ describe("a rerun whose preflight turns back", () => {
         position: step.position,
         name: step.name,
         type: step.type,
-        ownerRole: step.id === "review" ? role : step.ownerRole,
+        agentId: step.id === "review" ? agentOfKind(handle.db, role) : step.agentId,
         entryAction: step.entryAction,
         isTerminal: step.isTerminal,
       })),

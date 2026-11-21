@@ -24,7 +24,7 @@ import {
 import { issueDevice } from "../db/repos/devicesRepo.js";
 import { createPerson } from "../db/repos/peopleRepo.js";
 import { createProject, getProject } from "../db/repos/projectsRepo.js";
-import { createTestItem, openMigratedTestDb } from "../db/testHelpers.js";
+import { agentOfKind, createTestItem, openMigratedTestDb } from "../db/testHelpers.js";
 import type { TemplateHistory } from "../gallery/history.js";
 import { templateHistoryUpTo } from "../gallery/historyTestHelpers.js";
 import { describeTemplateStatus } from "../gallery/templateStatus.js";
@@ -92,7 +92,14 @@ function importedPipeline(projectId: Uuid): { pipelineId: string; ids: Map<strin
   replacePipelineGraph(
     deskDb.db,
     pipeline.id,
-    v10.document.steps.map((step) => ({ ...step, id: local(step.id), pipelineId: pipeline.id as Uuid, moduleVersion: null })),
+    // The document names kinds; the import binds each to this desktop's agent of it (EO-875).
+    v10.document.steps.map(({ ownerRole, ...step }) => ({
+      ...step,
+      agentId: step.type === "agent" && ownerRole !== null ? agentOfKind(deskDb.db, ownerRole) : null,
+      id: local(step.id),
+      pipelineId: pipeline.id as Uuid,
+      moduleVersion: null,
+    })),
     v10.document.routes.map((route) => ({ ...route, pipelineId: pipeline.id as Uuid, fromStepId: local(route.fromStepId), target: local(route.target) })),
     { entryStepId: local("worktree") },
   );

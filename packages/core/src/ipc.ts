@@ -3447,6 +3447,14 @@ export const recordContract = {
     z.object({ pipelineId: z.string() }),
     z.object({
       steps: z.array(PipelineStepViewSchema),
+      /**
+       * The kind of each agent step's agent, by step id (EO-875). A step
+       * names an agent and carries no kind of its own, while a draft names
+       * kinds: this is what lets `pipeline_get`'s reader write one. A step
+       * naming no agent, or one this installation does not have, is absent.
+       * Optional, so a client that predates it still reads a graph.
+       */
+      stepKinds: z.record(z.string(), z.string()).optional(),
       routes: z.array(StepRouteViewSchema),
       entryStepId: z.string().nullable(),
       /** What an item must have to enter (EO-610), as `pipeline:save` takes them. */

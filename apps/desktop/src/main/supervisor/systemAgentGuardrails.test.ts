@@ -23,7 +23,7 @@ import { leaseFor } from "../db/repos/leasesRepo.js";
 import { createPerson } from "../db/repos/peopleRepo.js";
 import { createProject, markProjectOnTheRecord } from "../db/repos/projectsRepo.js";
 import { setSetting } from "../db/repos/settingsRepo.js";
-import { attachWorkspace, createTestItem, openMigratedTestDb } from "../db/testHelpers.js";
+import { agentOfKind, attachWorkspace, createTestItem, openMigratedTestDb } from "../db/testHelpers.js";
 import { MANAGED_PERSON_ID_KEY } from "../identity/viewer.js";
 import { fireJob } from "../jobs/fire.js";
 import { createJob } from "../jobs/jobs.js";
@@ -55,7 +55,7 @@ let reviewer: Agent;
 
 beforeEach(() => {
   handle = openMigratedTestDb();
-  createStep(handle.db, { id: "ask", pipelineId: "default" as never, position: -1, name: "Intake", type: "agent", ownerRole: "system", entryAction: "intake" });
+  createStep(handle.db, { id: "ask", pipelineId: "default" as never, position: -1, name: "Intake", type: "agent", agentId: agentOfKind(handle.db, "system"), entryAction: "intake" });
   createRoute(handle.db, { pipelineId: "default" as never, fromStepId: "ask", resultKey: "done", label: "Understood", target: "ready_to_merge", position: 0 });
   const agents = listAgents(handle.db);
   system = agents.find((agent) => agent.role === "system")!;

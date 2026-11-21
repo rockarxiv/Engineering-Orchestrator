@@ -128,7 +128,7 @@ async function pipelineGetText(pipelineId = "default"): Promise<string> {
 const graphOf = (pipelineId = "default") => ({
   steps: listStepsForPipeline(handle.db, pipelineId)
     .filter((step) => !step.offBoard)
-    .map(({ id, type, entryAction, ownerRole, watch, inputs, results, name, position }) => ({ id, type, entryAction, ownerRole, watch, inputs, results, name, position })),
+    .map(({ id, type, entryAction, agentId, watch, inputs, results, name, position }) => ({ id, type, entryAction, agentId, watch, inputs, results, name, position })),
   routes: listRoutesForPipeline(handle.db, pipelineId).map(({ fromStepId, resultKey, target, label, tone }) => ({ fromStepId, resultKey, target, label, tone })),
 });
 
@@ -165,6 +165,7 @@ type DraftOf = NonNullable<AssistReply["draft"]>;
 
 /** A step as a draft names it: what it is, with its settings left to the step unless given. */
 function draftStep(step: ConflictGraph["steps"][number], position: number, settings: Record<string, unknown> = {}) {
+  // A draft names the kind, as the conflict says it of every graph's step (EO-875).
   const { id, name, type, ownerRole, entryAction, instructionsSummary, isTerminal, planMode } = step;
   return { id, position, name, type, ownerRole, entryAction, instructionsSummary, isTerminal, planMode, ...settings };
 }
@@ -377,6 +378,13 @@ describe("pipeline_update_conflict", () => {
         .filter((agent) => adminToolsEnabled(agent))
         .map((agent) => agent.role),
     ).toEqual(["system"]);
+  });
+
+  it("pipeline_get names each agent step's agent and the kind a draft names for it (EO-875)", async () => {
+    const text = await pipelineGetText();
+    const implementer = listAgents(handle.db).find((agent) => agent.role === "implementer")!;
+
+    expect(text).toContain(`(id: todo) [agent; agent ${implementer.id}, kind implementer]`);
   });
 
   it("refuses, saying so, for a pipeline with no held update", async () => {
@@ -600,7 +608,7 @@ describe("the person's edits since the base", () => {
     replacePipelineGraph(
       handle.db,
       "default",
-      conflict.template.steps as Parameters<typeof replacePipelineGraph>[2],
+      conflict.template.steps.map(({ ownerRole: _kind, ...step }) => step) as Parameters<typeof replacePipelineGraph>[2],
       conflict.template.routes.map(({ id: _id, ...route }) => route) as Parameters<typeof replacePipelineGraph>[3],
       { createdBy: dana.id },
     );

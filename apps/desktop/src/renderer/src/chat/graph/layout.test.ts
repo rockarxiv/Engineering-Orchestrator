@@ -9,7 +9,7 @@ function step(id: string, name: string, position: number, overrides: Partial<Pip
     position,
     name,
     type: "agent",
-    ownerRole: "implementer",
+    agentId: "agent-implementer",
     entryAction: "implement",
     instructionsSummary: null,
     isTerminal: false,
@@ -36,14 +36,14 @@ const ELSEWHERE: HandOffTargets[] = [{ pipelineId: "delivery", pipelineName: "De
 
 /** Release's shape: 8 steps and 17 routes — the straight line, send-backs, a skip, and every kind of exit. */
 const RELEASE_STEPS = [
-  step("prepare", "Prepare release", 0, { ownerRole: "release manager" }),
-  step("changelog", "Write changelog", 1, { ownerRole: "writer" }),
-  step("checks", "Run release checks", 2, { type: "module", ownerRole: null, entryAction: "release_checks" }),
-  step("approve", "Approve release", 3, { type: "user", ownerRole: null, entryAction: null }),
-  step("merge", "Merge release branch", 4, { type: "module", ownerRole: null, entryAction: "release_merge" }),
-  step("tag", "Tag", 5, { type: "module", ownerRole: null, entryAction: "release_tag" }),
-  step("announce", "Announce", 6, { ownerRole: "writer" }),
-  step("released", "Released", 7, { type: "user", ownerRole: null, entryAction: null, isTerminal: true }),
+  step("prepare", "Prepare release", 0, { agentId: "agent-release manager" }),
+  step("changelog", "Write changelog", 1, { agentId: "agent-writer" }),
+  step("checks", "Run release checks", 2, { type: "module", agentId: null, entryAction: "release_checks" }),
+  step("approve", "Approve release", 3, { type: "user", agentId: null, entryAction: null }),
+  step("merge", "Merge release branch", 4, { type: "module", agentId: null, entryAction: "release_merge" }),
+  step("tag", "Tag", 5, { type: "module", agentId: null, entryAction: "release_tag" }),
+  step("announce", "Announce", 6, { agentId: "agent-writer" }),
+  step("released", "Released", 7, { type: "user", agentId: null, entryAction: null, isTerminal: true }),
 ];
 
 const RELEASE_ROUTES = [

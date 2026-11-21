@@ -1,7 +1,7 @@
-import { PROPOSED_MODULE_NEEDS_TESTS, validateActionResult, type ConfigureOutput, type ModuleManifest, type PipelineDraft, type ProposedModule } from "@eo/core";
+import { PROPOSED_MODULE_NEEDS_TESTS, validateActionResult, stepAgentKind, type ConfigureOutput, type ModuleManifest, type PipelineDraft, type ProposedModule } from "@eo/core";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { DbHandle } from "../db/client.js";
-import { listRoutesForPipeline, listStepsForPipeline, saveModule } from "../db/repos/index.js";
+import { listAgents, listRoutesForPipeline, listStepsForPipeline, saveModule } from "../db/repos/index.js";
 import { openMigratedTestDb } from "../db/testHelpers.js";
 import { renderDraft, validateDraft } from "./architect.js";
 import { registryForProject } from "../registry.js";
@@ -59,7 +59,7 @@ function currentGraph(): PipelineDraft {
       position: step.position,
       name: step.name,
       type: step.type,
-      ownerRole: step.ownerRole,
+      ownerRole: stepAgentKind(listAgents(handle.db), step),
       entryAction: step.entryAction,
       instructionsSummary: step.instructionsSummary,
       isTerminal: step.isTerminal,

@@ -9,7 +9,7 @@ import { getItem } from "../db/repos/itemsRepo.js";
 import { createStep } from "../db/repos/pipelineStepsRepo.js";
 import { listRunsForItem } from "../db/repos/runsRepo.js";
 import { listTransitionsForItem, transitionItem } from "../db/repos/transitionsRepo.js";
-import { createTestItem, openMigratedTestDb } from "../db/testHelpers.js";
+import { agentOfKind, createTestItem, openMigratedTestDb } from "../db/testHelpers.js";
 import { createRunSupervisor } from "./runSupervisor.js";
 
 const LIMITS = { globalConcurrency: 5, perAgentConcurrency: 5, perRepositoryConcurrency: 10 };
@@ -69,9 +69,9 @@ describe("a step whose owner role defines its entry action", () => {
     handle = openMigratedTestDb();
     const qa = createAgent(handle.db, { name: "QA", role: "qa", provider: "claude", instructions: "You check work." });
     qaId = qa.id;
-    createStep(handle.db, { id: "check", pipelineId: "default" as never, position: -3, name: "Alignment", type: "agent", ownerRole: "qa", entryAction: "alignment" });
-    createStep(handle.db, { id: "rework", pipelineId: "default" as never, position: -2, name: "Rework", type: "user", ownerRole: null, entryAction: null });
-    createStep(handle.db, { id: "accepted", pipelineId: "default" as never, position: -1, name: "Accepted", type: "user", ownerRole: null, entryAction: null });
+    createStep(handle.db, { id: "check", pipelineId: "default" as never, position: -3, name: "Alignment", type: "agent", agentId: agentOfKind(handle.db, "qa"), entryAction: "alignment" });
+    createStep(handle.db, { id: "rework", pipelineId: "default" as never, position: -2, name: "Rework", type: "user", agentId: null, entryAction: null });
+    createStep(handle.db, { id: "accepted", pipelineId: "default" as never, position: -1, name: "Accepted", type: "user", agentId: null, entryAction: null });
     createRoute(handle.db, { pipelineId: "default" as never, fromStepId: "check", resultKey: "aligned", label: "Aligned", target: "accepted", position: 0 });
     createRoute(handle.db, { pipelineId: "default" as never, fromStepId: "check", resultKey: "gaps_found", label: "Gaps found", target: "rework", position: 1 });
 
@@ -166,8 +166,8 @@ describe("a step whose owner role defines its entry action", () => {
     createAgent(handle.db, { name: "Editor", role: "editor", provider: "claude", instructions: "You edit." });
     createAgent(handle.db, { name: "Intern", role: "intern", provider: "claude", instructions: "You help." });
     saveActionDefinition(handle.db, { role: "editor", action: "alignment", results: [{ key: "on_brief" }, { key: "off_brief" }] });
-    createStep(handle.db, { id: "copy_edit", pipelineId: "default" as never, position: -6, name: "Edit", type: "agent", ownerRole: "editor", entryAction: "alignment" });
-    createStep(handle.db, { id: "lend_a_hand", pipelineId: "default" as never, position: -5, name: "Assist", type: "agent", ownerRole: "intern", entryAction: "alignment" });
+    createStep(handle.db, { id: "copy_edit", pipelineId: "default" as never, position: -6, name: "Edit", type: "agent", agentId: agentOfKind(handle.db, "editor"), entryAction: "alignment" });
+    createStep(handle.db, { id: "lend_a_hand", pipelineId: "default" as never, position: -5, name: "Assist", type: "agent", agentId: agentOfKind(handle.db, "intern"), entryAction: "alignment" });
     createRoute(handle.db, { pipelineId: "default" as never, fromStepId: "copy_edit", resultKey: "on_brief", label: "On brief", target: "accepted", position: 0 });
     createRoute(handle.db, { pipelineId: "default" as never, fromStepId: "lend_a_hand", resultKey: "done", label: "Done", target: "accepted", position: 0 });
     createTestItem(handle.db, { type: "story", title: "For the editor", stepId: "copy_edit" });
@@ -219,7 +219,7 @@ describe("a step whose owner role defines its entry action", () => {
   });
 
   it("still holds a custom role with no definition of its own to the pack's implement shape", async () => {
-    createStep(handle.db, { id: "build", pipelineId: "default" as never, position: -4, name: "Build", type: "agent", ownerRole: "qa", entryAction: "implement" });
+    createStep(handle.db, { id: "build", pipelineId: "default" as never, position: -4, name: "Build", type: "agent", agentId: agentOfKind(handle.db, "qa"), entryAction: "implement" });
     createRoute(handle.db, { pipelineId: "default" as never, fromStepId: "build", resultKey: "done", label: "Done", target: "accepted", position: 0 });
     const story = createTestItem(handle.db, { type: "story", title: "Built by QA", stepId: "build" });
     // Out of the way, so the one dispatch is the `implement` one.

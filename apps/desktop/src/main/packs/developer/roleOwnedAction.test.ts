@@ -12,7 +12,7 @@ import { createProject, createRoute, createRun, postComment, updateWorkspace, ty
 import { getItem } from "../../db/repos/itemsRepo.js";
 import { createStep } from "../../db/repos/pipelineStepsRepo.js";
 import { listRunsForItem } from "../../db/repos/runsRepo.js";
-import { attachWorkspace, createTestItem, openMigratedTestDb, REVIEWABLE_SPEC } from "../../db/testHelpers.js";
+import { agentOfKind, attachWorkspace, createTestItem, openMigratedTestDb, REVIEWABLE_SPEC } from "../../db/testHelpers.js";
 import { packMeaningInForce } from "../../registry.js";
 import { isProposal, PROPOSAL_KIND } from "../../roles/proposal.js";
 import { buildSeedContext } from "../../supervisor/buildDispatchContext.js";
@@ -132,23 +132,23 @@ describe("a pack's action name, on a step owned by a custom role", () => {
     qaId = createAgent(handle.db, { name: "QA", role: "qa", provider: "claude", instructions: "You check work." }).id;
     auditorId = createAgent(handle.db, { name: "Auditor", role: "auditor", provider: "claude", instructions: "You audit." }).id;
 
-    createStep(handle.db, { id: "rework", pipelineId: DEFAULT, position: -2, name: "Rework", type: "user", ownerRole: null, entryAction: null });
-    createStep(handle.db, { id: "accepted", pipelineId: DEFAULT, position: -1, name: "Accepted", type: "user", ownerRole: null, entryAction: null });
+    createStep(handle.db, { id: "rework", pipelineId: DEFAULT, position: -2, name: "Rework", type: "user", agentId: null, entryAction: null });
+    createStep(handle.db, { id: "accepted", pipelineId: DEFAULT, position: -1, name: "Accepted", type: "user", agentId: null, entryAction: null });
 
     // Two review steps and two implement steps, alike but for who owns
     // them. Plan mode is on for both implement steps.
-    createStep(handle.db, { id: "qa_review", pipelineId: DEFAULT, position: -9, name: "QA", type: "agent", ownerRole: "qa", entryAction: "review" });
+    createStep(handle.db, { id: "qa_review", pipelineId: DEFAULT, position: -9, name: "QA", type: "agent", agentId: agentOfKind(handle.db, "qa"), entryAction: "review" });
     createRoute(handle.db, { pipelineId: DEFAULT, fromStepId: "qa_review", resultKey: "passed", label: "Passed", target: "accepted", position: 0 });
     createRoute(handle.db, { pipelineId: DEFAULT, fromStepId: "qa_review", resultKey: "failed", label: "Failed", target: "rework", position: 1 });
 
-    createStep(handle.db, { id: "audit", pipelineId: DEFAULT, position: -8, name: "Audit", type: "agent", ownerRole: "auditor", entryAction: "review" });
+    createStep(handle.db, { id: "audit", pipelineId: DEFAULT, position: -8, name: "Audit", type: "agent", agentId: agentOfKind(handle.db, "auditor"), entryAction: "review" });
     createRoute(handle.db, { pipelineId: DEFAULT, fromStepId: "audit", resultKey: "approved", label: "Approved", target: "accepted", position: 0 });
     createRoute(handle.db, { pipelineId: DEFAULT, fromStepId: "audit", resultKey: "changes_requested", label: "Changes requested", target: "rework", position: 1 });
 
-    createStep(handle.db, { id: "qa_build", pipelineId: DEFAULT, position: -7, name: "QA build", type: "agent", ownerRole: "qa", entryAction: "implement", planMode: true });
+    createStep(handle.db, { id: "qa_build", pipelineId: DEFAULT, position: -7, name: "QA build", type: "agent", agentId: agentOfKind(handle.db, "qa"), entryAction: "implement", planMode: true });
     createRoute(handle.db, { pipelineId: DEFAULT, fromStepId: "qa_build", resultKey: "built", label: "Built", target: "accepted", position: 0 });
 
-    createStep(handle.db, { id: "audit_build", pipelineId: DEFAULT, position: -6, name: "Audit build", type: "agent", ownerRole: "auditor", entryAction: "implement", planMode: true });
+    createStep(handle.db, { id: "audit_build", pipelineId: DEFAULT, position: -6, name: "Audit build", type: "agent", agentId: agentOfKind(handle.db, "auditor"), entryAction: "implement", planMode: true });
     createRoute(handle.db, { pipelineId: DEFAULT, fromStepId: "audit_build", resultKey: "done", label: "Done", target: "accepted", position: 0 });
 
     // `qa` defines both names for itself; `auditor` defines neither.
@@ -324,8 +324,8 @@ describe("a pack's action name, on a step owned by a custom role", () => {
 
     it("keeps the already-written note off a refine the role defined for itself", async () => {
       expect(saveActionDefinition(handle.db, { role: "qa", action: "refine", results: [{ key: "ready" }] }).ok).toBe(true);
-      createStep(handle.db, { id: "qa_refine", pipelineId: DEFAULT, position: -5, name: "QA refine", type: "agent", ownerRole: "qa", entryAction: "refine" });
-      createStep(handle.db, { id: "audit_refine", pipelineId: DEFAULT, position: -4, name: "Audit refine", type: "agent", ownerRole: "auditor", entryAction: "refine" });
+      createStep(handle.db, { id: "qa_refine", pipelineId: DEFAULT, position: -5, name: "QA refine", type: "agent", agentId: agentOfKind(handle.db, "qa"), entryAction: "refine" });
+      createStep(handle.db, { id: "audit_refine", pipelineId: DEFAULT, position: -4, name: "Audit refine", type: "agent", agentId: agentOfKind(handle.db, "auditor"), entryAction: "refine" });
       const qa = { id: qaId, role: "qa" } as never;
       const auditor = { id: auditorId, role: "auditor" } as never;
 

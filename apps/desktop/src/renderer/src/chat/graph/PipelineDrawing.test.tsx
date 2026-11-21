@@ -4,6 +4,10 @@ import { MemoryRouter } from "react-router-dom";
 import type { PipelineStepView, StepRouteView } from "@eo/core";
 import { PipelineDrawing } from "./PipelineDrawing";
 
+/** The kind of the agent a fixture step names, as `agent-<kind>` (EO-875), which a screen reads from its agents. */
+const KIND_OF = (step: { agentId: string | null }) => step.agentId?.replace(/^agent-/, "") ?? null;
+
+
 function step(id: string, name: string, position: number, overrides: Partial<PipelineStepView> = {}): PipelineStepView {
   return {
     id,
@@ -11,7 +15,7 @@ function step(id: string, name: string, position: number, overrides: Partial<Pip
     position,
     name,
     type: "agent",
-    ownerRole: "implementer",
+    agentId: "agent-implementer",
     entryAction: "implement",
     instructionsSummary: null,
     isTerminal: false,
@@ -30,11 +34,11 @@ function step(id: string, name: string, position: number, overrides: Partial<Pip
 
 /** One step of every kind, and an end. */
 const STEPS = [
-  step("worktree", "Worktree", 0, { type: "builtin", ownerRole: null, entryAction: "create_worktree" }),
+  step("worktree", "Worktree", 0, { type: "builtin", agentId: null, entryAction: "create_worktree" }),
   step("todo", "To Do", 1),
-  step("qa", "QA by hand", 2, { type: "user", ownerRole: null, entryAction: null }),
-  step("merge", "Merge", 3, { type: "module", ownerRole: null, entryAction: "merge_branch" }),
-  step("done", "Done", 4, { type: "user", ownerRole: null, entryAction: null, isTerminal: true }),
+  step("qa", "QA by hand", 2, { type: "user", agentId: null, entryAction: null }),
+  step("merge", "Merge", 3, { type: "module", agentId: null, entryAction: "merge_branch" }),
+  step("done", "Done", 4, { type: "user", agentId: null, entryAction: null, isTerminal: true }),
 ];
 
 const ROUTES: StepRouteView[] = STEPS.slice(0, -1).map((from, index) => ({
@@ -51,7 +55,7 @@ const ROUTES: StepRouteView[] = STEPS.slice(0, -1).map((from, index) => ({
 function draw(props: Partial<Parameters<typeof PipelineDrawing>[0]> = {}) {
   render(
     <MemoryRouter>
-      <PipelineDrawing steps={STEPS} routes={ROUTES} entryStepId="worktree" {...props} />
+      <PipelineDrawing steps={STEPS} routes={ROUTES} entryStepId="worktree" agentKindOf={KIND_OF} {...props} />
     </MemoryRouter>,
   );
   const graph = screen.getByRole("list", { name: "Pipeline graph" });
@@ -238,7 +242,7 @@ describe("a route's colour (EO-686)", () => {
   it("is amber only where it lands with you, red for a failure, neutral for a send-back and plain otherwise", () => {
     const { container } = render(
       <MemoryRouter>
-        <PipelineDrawing steps={STEPS} routes={routes} entryStepId="worktree" />
+        <PipelineDrawing steps={STEPS} routes={routes} entryStepId="worktree" agentKindOf={KIND_OF} />
       </MemoryRouter>,
     );
     const line = (id: string) => container.querySelector(`[data-route="${id}"]`)!;
