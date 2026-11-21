@@ -5,7 +5,11 @@ import {
   COMMENT_TOOL_NAME,
   participantTurnSchema,
   REPOSITORY_CHECKOUT_TOOL_NAME,
+  SKILL_LOADED_EVENT,
   SKILL_READ_TOOL_NAME,
+  SkillDraftSchema,
+  SKILLS_DELIVERED_EVENT,
+  SKILLS_SETTLED_EVENT,
   StepTeamSchema,
   TEAM_PARTICIPANT_ACTION,
   uuidv7,
@@ -23,12 +27,14 @@ import type { SectionRenderer } from "@eo/engine";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DbHandle } from "../db/client.js";
 import { saveActionDefinition } from "../db/repos/actionDefinitionsRepo.js";
+import { setAgentAttachment } from "../db/repos/agentAttachmentsRepo.js";
 import { createAgent } from "../db/repos/agentsRepo.js";
 import { listCommentsForItem, postComment } from "../db/repos/commentsRepo.js";
-import { createRoute } from "../db/repos/index.js";
+import { createRoute, listRunEvents } from "../db/repos/index.js";
 import { getItem } from "../db/repos/itemsRepo.js";
 import { createStep } from "../db/repos/pipelineStepsRepo.js";
 import { listRunsForItem } from "../db/repos/runsRepo.js";
+import { saveSkill } from "../db/repos/skillsRepo.js";
 import { listTeamSessionsForItem } from "../db/repos/teamSessionsRepo.js";
 import { transitionItem } from "../db/repos/transitionsRepo.js";
 import { createTestItem, openMigratedTestDbAt } from "../db/testHelpers.js";
@@ -493,5 +499,66 @@ describe("an isolated team behaves as a team does (EO-867)", () => {
     expect(started[1]!.opts.context).not.toContain("One thing to check.");
     expect(copies).toHaveLength(3);
     expect(copies.every((copy) => copy.removed)).toBe(true);
+  });
+});
+
+describe("an isolated member's skill usage (EO-867)", () => {
+  function attachSkill(agent: Agent, name: string): string {
+    const saved = saveSkill(handle.db, SkillDraftSchema.parse({ name, description: "A house playbook.", body: "Read the diff." }));
+    if (!saved.ok) throw new Error(saved.problems.join("\n"));
+    setAgentAttachment(handle.db, { agentId: agent.id, kind: "skill", id: saved.skill.id, attached: true });
+    return saved.skill.id;
+  }
+
+  /** A turn that is given its agent's skill and loads it, then answers. */
+  async function* withSkill(slug: string, data: unknown): AsyncGenerator<AgentEvent> {
+    yield { type: "thread_started", threadId: `thread-${uuidv7()}` };
+    yield { type: "skills_delivered", slugs: [slug] };
+    yield { type: "skill_loaded", slug };
+    yield { type: "result", data };
+  }
+
+  it("ends a leader's and a member's turn by agents with skills normally, settling each run's skills through its own buffer after its result", async () => {
+    const sasha = createAgent(handle.db, { name: "Sasha", role: "sec", provider: "claude", instructions: "You find ways in." });
+    const leaderSkill = attachSkill(quinn, "Leading");
+    const memberSkill = attachSkill(sasha, "Probing");
+    setTeam(
+      StepTeamSchema.parse({
+        coordination: "leader",
+        members: "isolated",
+        leader: { role: "qa", instructions: "Split the check by risk." },
+        roles: ["sec"],
+      }),
+    );
+    let quinnTurns = 0;
+    script = ({ agent }) => {
+      if (agent.name === "Sasha") return withSkill("probing", { outcome: { report: "SASHA-REPORT: the login holds." } });
+      quinnTurns += 1;
+      if (quinnTurns === 1) return withSkill("leading", { outcome: { decision: "assign", assignments: [{ key: "auth", role: "sec", instructions: "Look at the login.", required: true }], note: "One thing to check." } });
+      const reportId = listTeamSessionsForItem(handle.db, item.id).at(-1)!.attempts.find((attempt) => attempt.assignmentKey === "auth" && attempt.status === "completed")!.reportCommentId!;
+      return withSkill("leading", { outcome: { decision: "final", answer: { result: "aligned", summary: "The login holds." }, contributions: [reportId], disagreements: "None.", limitations: "None." } });
+    };
+    await supervisor().runOnce();
+
+    // Every turn's answer was taken, at its first try.
+    expect(started.map((one) => one.agent.name)).toEqual(["Quinn", "Sasha", "Quinn"]);
+    expect(getItem(handle.db, item.id)?.stepId).toBe("accepted");
+    const attempts = listTeamSessionsForItem(handle.db, item.id).at(-1)!.attempts;
+    expect(attempts.map((attempt) => attempt.error ?? null)).toEqual(attempts.map(() => null));
+
+    const turns = listRunsForItem(handle.db, item.id).filter((run) => run.action === TEAM_PARTICIPANT_ACTION);
+    expect(turns).toHaveLength(3);
+    for (const run of turns) {
+      const skillId = run.agentId === sasha.id ? memberSkill : leaderSkill;
+      const events = listRunEvents(handle.db, run.id);
+      const seqs = events.map((event) => event.seq);
+      expect(new Set(seqs).size).toBe(seqs.length);
+      expect(seqs).toEqual([...seqs].sort((a, b) => a - b));
+      expect(events.filter((event) => event.type === "result")).toHaveLength(1);
+      expect(events.filter((event) => event.type === SKILLS_SETTLED_EVENT)).toHaveLength(1);
+      expect(events.at(-1)?.type).toBe(SKILLS_SETTLED_EVENT);
+      expect(events.find((event) => event.type === SKILLS_DELIVERED_EVENT)?.payload).toMatchObject({ skillIds: [skillId] });
+      expect(events.find((event) => event.type === SKILL_LOADED_EVENT)?.payload).toMatchObject({ skillId });
+    }
   });
 });

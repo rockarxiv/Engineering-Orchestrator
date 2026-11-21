@@ -5248,14 +5248,16 @@ export function createRunSupervisor(
    * load, and the organisation's record runs its archival pass when one
    * arrives — by then every load of the run has, since a transcript
    * reaches it in order. Through the run's buffer where it still has one,
-   * for `recordSent`'s reason.
+   * for `recordSent`'s reason — `buffer` where the caller holds the run's
+   * own, as an isolated team member's turn does (EO-867), since that one
+   * is never registered and a write beside it would take a seq it is
+   * about to flush under.
    */
-  function settleSkillUsage(runId: Uuid): void {
+  function settleSkillUsage(runId: Uuid, buffer: RunEventBuffer | undefined = activeEventBuffers.get(runId)): void {
     const given = runSkills.get(runId);
     if (given === undefined || given.bySlug.size === 0) return;
     const settled: SkillsSettledEvent = { type: SKILLS_SETTLED_EVENT };
     try {
-      const buffer = activeEventBuffers.get(runId);
       if (buffer) {
         buffer.append(runId, SKILLS_SETTLED_EVENT, settled);
         buffer.flush();
@@ -8231,8 +8233,8 @@ export function createRunSupervisor(
         recordSkillUsage(run.id, buffer, item, agent, event);
         return true;
       },
-      done: () => {
-        settleSkillUsage(run.id);
+      done: (buffer) => {
+        settleSkillUsage(run.id, buffer);
         runSkills.delete(run.id);
       },
     };
